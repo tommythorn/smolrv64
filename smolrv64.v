@@ -1,11 +1,12 @@
 `default_nettype none
 
-`define rd  [11: 7]
-`define rs1 [19:15]
-`define rs2 [24:20]
-`define csr [31:20]
+`define insn_rd  [11: 7]
+`define insn_rs1 [19:15]
+`define insn_rs2 [24:20]
+`define insn_csr [31:20]
 
 `ifdef SIMULATE
+`define DISASS 1
 module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
    wire       tx_ready_o;
@@ -45,57 +46,78 @@ module smolrv64(input             clock,
                 output reg        halted_o   = 0);
 
    reg [31:0] mem[63:0]; initial $readmemh("mem.hex", mem, 0, 63);
-   reg [ 5:0] pc = 0;
+   reg [ 7:0] pc = 0;
    reg [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
 
-   reg [ 5:0] npc = 0;
-   wire [31:0] insn = mem[pc];
-
+   reg [ 7:0] npc = 0;
+   reg [63:0]  imm_i, imm_j, imm_b, imm_u;
+   reg [ 4:0]  rd, rs1, rs2;
+   wire [31:0] insn = mem[pc[7:2]];
    wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
 
    always @(posedge clock) begin
+      rd = insn`insn_rd;
+      rs1 = insn`insn_rs1;
+      rs2 = insn`insn_rs2;
+
+      imm_i = {{52{insn[31]}},insn[31:20]};
+      imm_j = {{32{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
+      imm_b = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
+      imm_u = {{32{insn[31]}},insn[31:12],12'd0};
+
       if (tx_ready_i)
         tx_valid_o <= 0;
-      npc = pc + 1;
+      npc = pc + 4;
 
-      if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
-
-         if (insn`rd != 0) rf[insn`rd] = rf[insn`rs1] + {{20{insn[31]}},insn[31:20]};
-
-`ifdef DISASS
-         $display("%05d   %x %x addi x%1d=x%1d,0x%1x    %x", $time,
-                  pc, insn, insn`rd, insn`rs1, {{52{insn[31]}},insn[31:20]}, rf[insn`rd]);
-`endif
-
-      end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
-
-         if (insn`rd != 0) rf[insn`rd] = 0; // XXX CSR value
-         tx_valid_o <= 1;
-         tx_data_o <= rf[insn`rs1];
-         if (tx_ready_i) begin
-`ifdef DISASS
-            $display("%05d   %x %x csrrw x%1d=0x%1x,x%1d    %x", $time,
-                     pc, insn, insn`rd, insn[31:20], insn`rs1, rf[insn`rd]);
-`endif
-         end else
-           npc = pc;
-
+      if ((insn & 32'h0000007f) == 32'h00000037) begin // LUI
+         if (rd) rf[rd] = imm_u;
+      end else if ((insn & 32'h0000007f) == 32'h00000017) begin // AUIPC
+         if (rd) rf[rd] = pc + imm_u;
+      end else if ((insn & 32'h0000007f) == 32'h0000006f) begin // JAL
+         if (rd) rf[rd] = npc;
+	 npc = pc + imm_j;
+      end else if ((insn & 32'h0000707f) == 32'h00000067) begin // JALR
+         if (rd) rf[rd] = npc;
+	 npc = (rf[rs1] + imm_i) & ~1;
       end else if ((insn & 32'h0000707f) == 32'h00000063) begin // BEQ
-
-         if (rf[insn`rs1] == rf[insn`rs2]) npc = pc + {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]}/2;
-
-`ifdef DISASS
-         $display("%05d   %x %x beq x%1d,x%1d", $time, pc, insn, insn`rs1, insn`rs2);
-`endif
-
+         if (rf[rs1] == rf[rs2]) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
+         if (rd != 0) rf[rd] = rf[rs1] + imm_i;
+      end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
+         if (rd != 0) rf[rd] = rf[rs1]; // XXX CSR value
+         tx_valid_o <= 1;
+         tx_data_o <= rf[rs1];
+         if (!tx_ready_i)
+           npc = pc;
       end else begin
-`ifdef DISASS
-         $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
-         $finish;
-`endif
          npc = pc;
          halted_o = 1;
       end
+
+
+`ifdef DISASS
+      if ((insn & 32'h0000007f) == 32'h00000037) // LUI
+         $display("%05d   %x %x lui     x%1d=0x%1x    %x", $time, pc, insn, rd, imm_u, rf[rd]);
+      else if ((insn & 32'h0000007f) == 32'h00000017) // AUIPC
+         $display("%05d   %x %x auipc   x%1d=0x%1x    %x", $time, pc, insn, rd, imm_u, rf[rd]);
+      else if ((insn & 32'h0000007f) == 32'h0000006f) // JAL
+         $display("%05d   %x %x jal     x%1d=%1d", $time, pc, insn, rd, imm_j);
+      else if ((insn & 32'h0000707f) == 32'h00000067) // JALR
+         $display("%05d   %x %x jalr    x%1d=%x", $time, pc, insn, rd, rs1);
+      else if ((insn & 32'h0000707f) == 32'h00000063) // BEQ
+         $display("%05d   %x %x beq     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00000013) // ADDI
+         $display("%05d   %x %x addi    x%1d=x%1d,0x%1x    %x", $time,
+                  pc, insn, rd, rs1, imm_i, rf[rd]);
+      else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
+         if (tx_ready_i)
+           $display("%05d   %x %x csrrw   x%1d=0x%1x,x%1d    %x", $time,
+                    pc, insn, rd, insn[31:20], rs1, rf[rd]);
+      end else begin
+         $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
+         $finish;
+      end
+`endif
 
       pc <= npc;
    end
