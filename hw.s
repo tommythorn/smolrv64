@@ -1,9 +1,9 @@
 .globl start
 start:  lui     s0, 0xF
 
+        auipc   a3, 0
         lui     a1, 0x12345
         addi    a2, a1, 0x678
-        auipc   a3, 0x10
         jal     dummy
 
         li      a0, 'H'
@@ -26,4 +26,7 @@ loop:   csrw    0x666,a0
 
         ebreak
 
-dummy:  ret
+dummy:  lb      x2,0(a3)
+        lh      x3,6(a3)
+        lw      x4,4(a3)
+        ret

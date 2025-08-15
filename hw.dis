@@ -6,9 +6,9 @@ Disassembly of section .text:
 
 0000000000000000 <start>:
    0:	0000f437          	lui	s0,0xf
-   4:	123455b7          	lui	a1,0x12345
-   8:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343e20>
-   c:	00010697          	auipc	a3,0x10
+   4:	00000697          	auipc	a3,0x0
+   8:	123455b7          	lui	a1,0x12345
+   c:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343e14>
   10:	044000ef          	jal	54 <dummy>
   14:	04800513          	li	a0,72
   18:	06500593          	li	a1,101
@@ -25,9 +25,12 @@ Disassembly of section .text:
   3c:	66669073          	csrw	0x666,a3
   40:	66671073          	csrw	0x666,a4
   44:	66679073          	csrw	0x666,a5
-  48:	fff40413          	addi	s0,s0,-1 # efff <__global_pointer$+0xd7a7>
+  48:	fff40413          	addi	s0,s0,-1 # efff <__global_pointer$+0xd79b>
   4c:	fe0450e3          	bgez	s0,2c <loop>
   50:	00100073          	ebreak
 
 0000000000000054 <dummy>:
-  54:	00008067          	ret
+  54:	00068103          	lb	sp,0(a3) # 4 <start+0x4>
+  58:	00669183          	lh	gp,6(a3)
+  5c:	0046a203          	lw	tp,4(a3)
+  60:	00008067          	ret
