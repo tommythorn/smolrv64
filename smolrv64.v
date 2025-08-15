@@ -52,10 +52,15 @@ module smolrv64(input             clock,
    reg [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
 
    reg [ 7:0] npc = 0;
-   reg [63:0]  imm_i, imm_j, imm_b, imm_u;
+   reg [63:0]  imm_i, imm_j, imm_b, imm_u, lea;
    reg [ 4:0]  rd, rs1, rs2;
    wire [31:0] insn = mem[pc[7:2]];
    wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
+
+   reg [1:0]   s; // execution state
+
+`define S_RUN 0
+`define S_LOAD 1
 
    always @(posedge clock) begin
       rd = insn`insn_rd;
@@ -93,6 +98,21 @@ module smolrv64(input             clock,
          if (rf[rs1] < rf[rs2]) npc = pc + imm_b;
       end else if ((insn & 32'h0000707f) == 32'h00007063) begin // BGEU
          if (rf[rs1] >= rf[rs2]) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00000003) begin // LB
+         lea = rf[rs1] + imm_i;
+	 s = `S_LOAD;
+      end else if ((insn & 32'h0000707f) == 32'h00001003) begin // LH
+         lea = rf[rs1] + imm_i;
+	 s = `S_LOAD;
+      end else if ((insn & 32'h0000707f) == 32'h00002003) begin // LW
+         lea = rf[rs1] + imm_i;
+	 s = `S_LOAD;
+      end else if ((insn & 32'h0000707f) == 32'h00004003) begin // LBU
+         lea = rf[rs1] + imm_i;
+	 s = `S_LOAD;
+      end else if ((insn & 32'h0000707f) == 32'h00005003) begin // LHU
+         lea = rf[rs1] + imm_i;
+	 s = `S_LOAD;
       end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
          if (rd != 0) rf[rd] = rf[rs1] + imm_i;
       end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
