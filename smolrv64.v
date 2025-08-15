@@ -6,7 +6,7 @@
 `define insn_csr [31:20]
 
 `ifdef SIMULATE
-`define DISASS 1
+//`define DISASS 1
 module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
    wire       tx_ready_o;
@@ -30,6 +30,8 @@ module smolrv64_tb;
 `else
        $write("%c", tx_data_i);
 `endif
+
+   always @(posedge clock) if (halted) $finish;
 
    initial begin
       $dumpfile("smolrv64.vcd");
@@ -81,6 +83,16 @@ module smolrv64(input             clock,
 	 npc = (rf[rs1] + imm_i) & ~1;
       end else if ((insn & 32'h0000707f) == 32'h00000063) begin // BEQ
          if (rf[rs1] == rf[rs2]) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00001063) begin // BNE
+         if (rf[rs1] != rf[rs2]) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00004063) begin // BLT
+         if ($signed(rf[rs1]) < $signed(rf[rs2])) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00005063) begin // BGE
+         if ($signed(rf[rs1]) >= $signed(rf[rs2])) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00006063) begin // BLTU
+         if (rf[rs1] < rf[rs2]) npc = pc + imm_b;
+      end else if ((insn & 32'h0000707f) == 32'h00007063) begin // BGEU
+         if (rf[rs1] >= rf[rs2]) npc = pc + imm_b;
       end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
          if (rd != 0) rf[rd] = rf[rs1] + imm_i;
       end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
@@ -106,6 +118,16 @@ module smolrv64(input             clock,
          $display("%05d   %x %x jalr    x%1d=%x", $time, pc, insn, rd, rs1);
       else if ((insn & 32'h0000707f) == 32'h00000063) // BEQ
          $display("%05d   %x %x beq     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00001063) // BNE
+         $display("%05d   %x %x bne     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00004063) // BLT
+         $display("%05d   %x %x blt     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00005063) // BGE
+         $display("%05d   %x %x bge     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00006063) // BLTU
+         $display("%05d   %x %x bltu    x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
+      else if ((insn & 32'h0000707f) == 32'h00007063) // BGEU
+         $display("%05d   %x %x bgeu    x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
       else if ((insn & 32'h0000707f) == 32'h00000013) // ADDI
          $display("%05d   %x %x addi    x%1d=x%1d,0x%1x    %x", $time,
                   pc, insn, rd, rs1, imm_i, rf[rd]);
@@ -113,10 +135,8 @@ module smolrv64(input             clock,
          if (tx_ready_i)
            $display("%05d   %x %x csrrw   x%1d=0x%1x,x%1d    %x", $time,
                     pc, insn, rd, insn[31:20], rs1, rf[rd]);
-      end else begin
-         $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
-         $finish;
-      end
+      end else
+        $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
 `endif
 
       pc <= npc;
