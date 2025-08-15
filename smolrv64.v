@@ -47,22 +47,22 @@ module smolrv64(input             clock,
                 output reg [ 7:0] tx_data_o  = 0,
                 output reg        halted_o   = 0);
 
-   reg [31:0] mem[63:0]; initial $readmemh("mem.hex", mem, 0, 63);
-   reg [ 7:0] pc = 0;
-   reg [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
+   reg [63:0]  mem[63:0]; initial $readmemh("mem.hex", mem, 0, 63);
+   reg [ 7:0]  pc = 0;
+   reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
 
-   reg [ 7:0] npc = 0;
+   reg [ 7:0]  npc = 0;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, lea;
    reg [ 4:0]  rd, rs1, rs2;
-   wire [31:0] insn = mem[pc[7:2]];
-   wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
-
+   reg [31:0]  insn;
    reg [1:0]   s; // execution state
+   wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
 
 `define S_RUN 0
 `define S_LOAD 1
 
    always @(posedge clock) begin
+      insn = mem[pc[7:3]] >> (pc[2] ? 32 : 0);
       rd = insn`insn_rd;
       rs1 = insn`insn_rs1;
       rs2 = insn`insn_rs2;

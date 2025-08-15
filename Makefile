@@ -11,4 +11,4 @@ mem.hex: hw.s
 	riscv64-elf-ld -Ttext=0 hw.o -o hw
 	riscv64-elf-objdump -d hw > hw.dis
 	riscv64-elf-objcopy -O binary hw hw.bin
-	hexdump -ve '1/4 "%08x\n"' hw.bin > mem.hex
+	hexdump -ve '1/8 "%016x\n"' hw.bin > mem.hex
