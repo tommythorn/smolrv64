@@ -6,6 +6,11 @@ start:  lui     s0, 0xF
         addi    a2, a1, 0x678
         jal     dummy
 
+	csrrci  t0,mscratch,31
+	csrrsi  t1,mscratch,2
+	csrrw   t0,mscratch,t0
+	csrrw   t0,mscratch,t0
+
         li      a0, 'H'
         li      a1, 'e'
         li      a2, 'l'

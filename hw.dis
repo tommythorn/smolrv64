@@ -8,41 +8,45 @@ Disassembly of section .text:
    0:	0000f437          	lui	s0,0xf
    4:	00000697          	auipc	a3,0x0
    8:	123455b7          	lui	a1,0x12345
-   c:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343dec>
-  10:	044000ef          	jal	54 <dummy>
-  14:	04800513          	li	a0,72
-  18:	06500593          	li	a1,101
-  1c:	06c00613          	li	a2,108
-  20:	06f00693          	li	a3,111
-  24:	00d00713          	li	a4,13
-  28:	00a00793          	li	a5,10
+   c:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343ddc>
+  10:	054000ef          	jal	64 <dummy>
+  14:	340ff2f3          	csrrci	t0,mscratch,31
+  18:	34016373          	csrrsi	t1,mscratch,2
+  1c:	340292f3          	csrrw	t0,mscratch,t0
+  20:	340292f3          	csrrw	t0,mscratch,t0
+  24:	04800513          	li	a0,72
+  28:	06500593          	li	a1,101
+  2c:	06c00613          	li	a2,108
+  30:	06f00693          	li	a3,111
+  34:	00d00713          	li	a4,13
+  38:	00a00793          	li	a5,10
 
-000000000000002c <loop>:
-  2c:	66651ff3          	csrrw	t6,0x666,a0
-  30:	66659073          	csrw	0x666,a1
-  34:	66661073          	csrw	0x666,a2
-  38:	66661073          	csrw	0x666,a2
-  3c:	66669073          	csrw	0x666,a3
-  40:	66671073          	csrw	0x666,a4
-  44:	66679073          	csrw	0x666,a5
-  48:	fff40413          	addi	s0,s0,-1 # efff <__global_pointer$+0xd773>
-  4c:	fe0450e3          	bgez	s0,2c <loop>
-  50:	00100073          	ebreak
+000000000000003c <loop>:
+  3c:	66651ff3          	csrrw	t6,0x666,a0
+  40:	66659073          	csrw	0x666,a1
+  44:	66661073          	csrw	0x666,a2
+  48:	66661073          	csrw	0x666,a2
+  4c:	66669073          	csrw	0x666,a3
+  50:	66671073          	csrw	0x666,a4
+  54:	66679073          	csrw	0x666,a5
+  58:	fff40413          	addi	s0,s0,-1 # efff <__global_pointer$+0xd763>
+  5c:	fe0450e3          	bgez	s0,3c <loop>
+  60:	00100073          	ebreak
 
-0000000000000054 <dummy>:
-  54:	00068103          	lb	sp,0(a3) # 4 <start+0x4>
-  58:	00669183          	lh	gp,6(a3)
-  5c:	0046a203          	lw	tp,4(a3)
-  60:	00000297          	auipc	t0,0x0
-  64:	02028293          	addi	t0,t0,32 # 80 <slot>
-  68:	001280a3          	sb	ra,1(t0)
-  6c:	0002b383          	ld	t2,0(t0)
-  70:	00729323          	sh	t2,6(t0)
-  74:	0002b383          	ld	t2,0(t0)
-  78:	00038413          	mv	s0,t2
-  7c:	00008067          	ret
+0000000000000064 <dummy>:
+  64:	00068103          	lb	sp,0(a3) # 4 <start+0x4>
+  68:	00669183          	lh	gp,6(a3)
+  6c:	0046a203          	lw	tp,4(a3)
+  70:	00000297          	auipc	t0,0x0
+  74:	02028293          	addi	t0,t0,32 # 90 <slot>
+  78:	001280a3          	sb	ra,1(t0)
+  7c:	0002b383          	ld	t2,0(t0)
+  80:	00729323          	sh	t2,6(t0)
+  84:	0002b383          	ld	t2,0(t0)
+  88:	00038413          	mv	s0,t2
+  8c:	00008067          	ret
 
-0000000000000080 <slot>:
-  80:	0000002b          	.word	0x0000002b
-  84:	0000002a          	.word	0x0000002a
-  88:	00000013          	nop
+0000000000000090 <slot>:
+  90:	0000002b          	.word	0x0000002b
+  94:	0000002a          	.word	0x0000002a
+  98:	00000013          	nop
