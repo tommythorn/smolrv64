@@ -41,11 +41,11 @@ module smolrv64_tb;
 endmodule
 `endif
 
-module smolrv64(input		  clock,
-                input wire	  tx_ready_i,
-                output reg	  tx_valid_o = 0,
+module smolrv64(input             clock,
+                input wire        tx_ready_i,
+                output reg        tx_valid_o = 0,
                 output reg [ 7:0] tx_data_o = 0,
-                output reg	  halted_o = 0);
+                output reg        halted_o = 0);
 
 // XXX Should I use param/localparam instead?
 `define CSR_MSCRATCH 12'h340
@@ -64,7 +64,7 @@ module smolrv64(input		  clock,
 `define S_ILLEGAL_INSN 7
    reg [`S_ILLEGAL_INSN:0] s = 1 << `S_FETCH; // execution state
 
-   reg [63:0]		   mem[2047:0]; initial $readmemh("mem.hex", mem, 0, 2047); // 16 KiB
+   reg [63:0]  mem[2047:0]; initial $readmemh("mem.hex", mem, 0, 2047); // 16 KiB
    reg [63:0]  pc = 0;
    reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
 
@@ -141,81 +141,81 @@ module smolrv64(input		  clock,
            $display("%05d   %x %x sd      x%1d,%1d(x%1d)", $time, pc, insn, rs2, imm_s, rs1);
          else if ((insn & 32'h0000707f) == 32'h00000013) // ADDI
            $display("%05d   %x %x addi    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00002013) // SLTI
+         else if ((insn & 32'h0000707f) == 32'h00002013) // SLTI
            $display("%05d   %x %x slti    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00003013) // SLTIU
+         else if ((insn & 32'h0000707f) == 32'h00003013) // SLTIU
            $display("%05d   %x %x sltiu   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00004013) // XORI
+         else if ((insn & 32'h0000707f) == 32'h00004013) // XORI
            $display("%05d   %x %x xori    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00006013) // ORI
+         else if ((insn & 32'h0000707f) == 32'h00006013) // ORI
            $display("%05d   %x %x ori     x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00007013) // ANDI
+         else if ((insn & 32'h0000707f) == 32'h00007013) // ANDI
            $display("%05d   %x %x andi    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00000033) // ADD
+         else if ((insn & 32'hfe00707f) == 32'h00000033) // ADD
            $display("%05d   %x %x add     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h40000033) // SUB
+         else if ((insn & 32'hfe00707f) == 32'h40000033) // SUB
            $display("%05d   %x %x sub     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00001033) // SLL
+         else if ((insn & 32'hfe00707f) == 32'h00001033) // SLL
            $display("%05d   %x %x sll     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00002033) // SLT
+         else if ((insn & 32'hfe00707f) == 32'h00002033) // SLT
            $display("%05d   %x %x slt     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00003033) // SLTU
+         else if ((insn & 32'hfe00707f) == 32'h00003033) // SLTU
            $display("%05d   %x %x sltu    x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00004033) // XOR
+         else if ((insn & 32'hfe00707f) == 32'h00004033) // XOR
            $display("%05d   %x %x xor     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00005033) // SRL
+         else if ((insn & 32'hfe00707f) == 32'h00005033) // SRL
            $display("%05d   %x %x srl     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h40005033) // SRA
+         else if ((insn & 32'hfe00707f) == 32'h40005033) // SRA
            $display("%05d   %x %x sra     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00006033) // OR
+         else if ((insn & 32'hfe00707f) == 32'h00006033) // OR
            $display("%05d   %x %x or      x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h00007033) // AND
+         else if ((insn & 32'hfe00707f) == 32'h00007033) // AND
            $display("%05d   %x %x and     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hf000707f) == 32'h0000000f) // FENCE
+         else if ((insn & 32'hf000707f) == 32'h0000000f) // FENCE
            $display("%05d   %x %x fence", $time, pc, insn);
-	 else if ((insn & 32'hf000707f) == 32'h8000000f) // FENCE.TSO
+         else if ((insn & 32'hf000707f) == 32'h8000000f) // FENCE.TSO
            $display("%05d   %x %x fence.tso", $time, pc, insn);
-	 else if ((insn & 32'hffffffff) == 32'h00000073) // ECALL
+         else if ((insn & 32'hffffffff) == 32'h00000073) // ECALL
            $display("%05d   %x %x ecall", $time, pc, insn);
-	 else if ((insn & 32'hffffffff) == 32'h00100073) // EBREAK
+         else if ((insn & 32'hffffffff) == 32'h00100073) // EBREAK
            $display("%05d   %x %x ebreak", $time, pc, insn);
-	 else if ((insn & 32'hfc00707f) == 32'h00001013) // SLLI
+         else if ((insn & 32'hfc00707f) == 32'h00001013) // SLLI
            $display("%05d   %x %x slli    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfc00707f) == 32'h00005013) // SRLI
+         else if ((insn & 32'hfc00707f) == 32'h00005013) // SRLI
            $display("%05d   %x %x srli    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfc00707f) == 32'h40005013) // SRAI
+         else if ((insn & 32'hfc00707f) == 32'h40005013) // SRAI
            $display("%05d   %x %x srai    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h0000001b) // ADDIW
+         else if ((insn & 32'h0000707f) == 32'h0000001b) // ADDIW
            $display("%05d   %x %x addiw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h0000101b) // SLLIW
+         else if ((insn & 32'hfe00707f) == 32'h0000101b) // SLLIW
            $display("%05d   %x %x srliw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h0000501b) // SRLIW
+         else if ((insn & 32'hfe00707f) == 32'h0000501b) // SRLIW
            $display("%05d   %x %x srliw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h4000501b) // SRAIW
+         else if ((insn & 32'hfe00707f) == 32'h4000501b) // SRAIW
            $display("%05d   %x %x sraiw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h0000003b) // ADDW
+         else if ((insn & 32'hfe00707f) == 32'h0000003b) // ADDW
            $display("%05d   %x %x addw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h4000003b) // SUBW
+         else if ((insn & 32'hfe00707f) == 32'h4000003b) // SUBW
            $display("%05d   %x %x subw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h0000103b) // SLLW
+         else if ((insn & 32'hfe00707f) == 32'h0000103b) // SLLW
            $display("%05d   %x %x sllw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h0000503b) // SRLW
+         else if ((insn & 32'hfe00707f) == 32'h0000503b) // SRLW
            $display("%05d   %x %x srlw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hfe00707f) == 32'h4000503b) // SRAW
+         else if ((insn & 32'hfe00707f) == 32'h4000503b) // SRAW
            $display("%05d   %x %x sraw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-	 else if ((insn & 32'hffffffff) == 32'h0000100f) // FENCE.I
+         else if ((insn & 32'hffffffff) == 32'h0000100f) // FENCE.I
            $display("%05d   %x %x fence.i", $time, pc, insn);
-	 else if ((insn & 32'h0000707f) == 32'h00001073) // CSRRW
+         else if ((insn & 32'h0000707f) == 32'h00001073) // CSRRW
            $display("%05d   %x %x csrrw    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00002073) // CSRRS
+         else if ((insn & 32'h0000707f) == 32'h00002073) // CSRRS
            $display("%05d   %x %x csrrs    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00003073) // CSRRC
+         else if ((insn & 32'h0000707f) == 32'h00003073) // CSRRC
            $display("%05d   %x %x csrrc    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00005073) // CSRRWI
+         else if ((insn & 32'h0000707f) == 32'h00005073) // CSRRWI
            $display("%05d   %x %x csrrwi   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00006073) // CSRRSI
+         else if ((insn & 32'h0000707f) == 32'h00006073) // CSRRSI
            $display("%05d   %x %x csrrsi   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-	 else if ((insn & 32'h0000707f) == 32'h00007073) // CSRRCI
+         else if ((insn & 32'h0000707f) == 32'h00007073) // CSRRCI
            $display("%05d   %x %x csrrci   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
          else
            $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
@@ -238,7 +238,7 @@ module smolrv64(input		  clock,
          rd = insn`insn_rd;
          rs1 = insn`insn_rs1;
          rs2 = insn`insn_rs2;
-	 shamt = insn[25:20];
+         shamt = insn[25:20];
 
          s1 <= rf[rs1];
          s2 <= rf[rs2];
@@ -253,16 +253,16 @@ module smolrv64(input		  clock,
          imm_b = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
          imm_u = {{32{insn[31]}},insn[31:12],12'd0};
          imm_s = {{52{insn[31]}},insn[31:25],insn[11:7]};
-	 csrno = insn[31:20];
+         csrno = insn[31:20];
 
          npc = pc + 4;
 
-	 // RV64I NB: the order of instructions [mostly] follows
-	 // simmerv for ease of reference, who in turn took the
-	 // ordering from the RISC-V spec.  There is intentionally
-	 // _no_ overlap in patterns so the order is not important,
-	 // but we keep the if-else chain in order to catch the
-	 // unhandled instructions.
+         // RV64I NB: the order of instructions [mostly] follows
+         // simmerv for ease of reference, who in turn took the
+         // ordering from the RISC-V spec.  There is intentionally
+         // _no_ overlap in patterns so the order is not important,
+         // but we keep the if-else chain in order to catch the
+         // unhandled instructions.
          if ((insn & 32'h0000007f) == 32'h00000037) begin // LUI
             if (rd) rf[rd] = imm_u;
          end else if ((insn & 32'h0000007f) == 32'h00000017) begin // AUIPC
@@ -324,114 +324,114 @@ module smolrv64(input		  clock,
             s <= 1 << `S_STORE;
          end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
             if (rd != 0) rf[rd] = s1 + imm_i;
-	 end else if ((insn & 32'h0000707f) == 32'h00002013) begin // SLTI
+         end else if ((insn & 32'h0000707f) == 32'h00002013) begin // SLTI
             if (rd != 0) rf[rd] = $signed(s1) < $signed(imm_i);
-	 end else if ((insn & 32'h0000707f) == 32'h00003013) begin // SLTIU
+         end else if ((insn & 32'h0000707f) == 32'h00003013) begin // SLTIU
             if (rd != 0) rf[rd] = s1 < imm_i;
-	 end else if ((insn & 32'h0000707f) == 32'h00004013) begin // XORI
+         end else if ((insn & 32'h0000707f) == 32'h00004013) begin // XORI
             if (rd != 0) rf[rd] = s1 ^ imm_i;
-	 end else if ((insn & 32'h0000707f) == 32'h00006013) begin // ORI
+         end else if ((insn & 32'h0000707f) == 32'h00006013) begin // ORI
             if (rd != 0) rf[rd] = s1 | imm_i;
-	 end else if ((insn & 32'h0000707f) == 32'h00007013) begin // ANDI
+         end else if ((insn & 32'h0000707f) == 32'h00007013) begin // ANDI
             if (rd != 0) rf[rd] = s1 & imm_i;
-	 end else if ((insn & 32'hfe00707f) == 32'h00000033) begin // ADD
+         end else if ((insn & 32'hfe00707f) == 32'h00000033) begin // ADD
             if (rd != 0) rf[rd] = s1 + s2;
-	 end else if ((insn & 32'hfe00707f) == 32'h40000033) begin // SUB
+         end else if ((insn & 32'hfe00707f) == 32'h40000033) begin // SUB
             if (rd != 0) rf[rd] = s1 - s2;
-	 end else if ((insn & 32'hfe00707f) == 32'h00001033) begin // SLL
+         end else if ((insn & 32'hfe00707f) == 32'h00001033) begin // SLL
             if (rd != 0) rf[rd] = s1 << s2[5:0];
-	 end else if ((insn & 32'hfe00707f) == 32'h00002033) begin // SLT
+         end else if ((insn & 32'hfe00707f) == 32'h00002033) begin // SLT
             if (rd != 0) rf[rd] = $signed(s1) < $signed(s2);
-	 end else if ((insn & 32'hfe00707f) == 32'h00003033) begin // SLTU
+         end else if ((insn & 32'hfe00707f) == 32'h00003033) begin // SLTU
             if (rd != 0) rf[rd] = s1 < s2;
-	 end else if ((insn & 32'hfe00707f) == 32'h00004033) begin // XOR
+         end else if ((insn & 32'hfe00707f) == 32'h00004033) begin // XOR
             if (rd != 0) rf[rd] = s1 ^ s2;
-	 end else if ((insn & 32'hfe00707f) == 32'h00005033) begin // SRL
+         end else if ((insn & 32'hfe00707f) == 32'h00005033) begin // SRL
             if (rd != 0) rf[rd] = s1 >> s2[5:0];
-	 end else if ((insn & 32'hfe00707f) == 32'h40005033) begin // SRA
+         end else if ((insn & 32'hfe00707f) == 32'h40005033) begin // SRA
             if (rd != 0) rf[rd] = $signed(s1) >> s2[5:0];
-	 end else if ((insn & 32'hfe00707f) == 32'h00006033) begin // OR
+         end else if ((insn & 32'hfe00707f) == 32'h00006033) begin // OR
             if (rd != 0) rf[rd] = s1 | s2;
-	 end else if ((insn & 32'hfe00707f) == 32'h00007033) begin // AND
+         end else if ((insn & 32'hfe00707f) == 32'h00007033) begin // AND
             if (rd != 0) rf[rd] = s1 & s2;
-	 end else if ((insn & 32'hf000707f) == 32'h0000000f) begin // FENCE
+         end else if ((insn & 32'hf000707f) == 32'h0000000f) begin // FENCE
             // Nothing to do here
-	 end else if ((insn & 32'hf000707f) == 32'h8000000f) begin // FENCE.TSO
+         end else if ((insn & 32'hf000707f) == 32'h8000000f) begin // FENCE.TSO
             // Nothing to do here
-//	 end else if ((insn & 32'hffffffff) == 32'h00000073) begin // ECALL
+//       end else if ((insn & 32'hffffffff) == 32'h00000073) begin // ECALL
             // trap_type = Trap::EnvironmentCallFromUMode + prv
-	    // tval = pc
-	    // s <= `S_HANDLE_TRAP; (this is a bit involved and shared)
-//	 end else if ((insn & 32'hffffffff) == 32'h00100073) begin // EBREAK
+            // tval = pc
+            // s <= `S_HANDLE_TRAP; (this is a bit involved and shared)
+//       end else if ((insn & 32'hffffffff) == 32'h00100073) begin // EBREAK
             // Requires debug mode
-	 end else if ((insn & 32'hfc00707f) == 32'h00001013) begin // SLLI
+         end else if ((insn & 32'hfc00707f) == 32'h00001013) begin // SLLI
             if (rd != 0) rf[rd] = s1 << shamt;
-	 end else if ((insn & 32'hfc00707f) == 32'h00005013) begin // SRLI
+         end else if ((insn & 32'hfc00707f) == 32'h00005013) begin // SRLI
             if (rd != 0) rf[rd] = s1 >> shamt;
-	 end else if ((insn & 32'hfc00707f) == 32'h40005013) begin // SRAI
+         end else if ((insn & 32'hfc00707f) == 32'h40005013) begin // SRAI
             if (rd != 0) rf[rd] = $signed(s1) >> shamt;
-	 end else if ((insn & 32'h0000707f) == 32'h0000001b) begin // ADDIW
-	    sext32 = s1[31:0] + imm_i[31:0];
+         end else if ((insn & 32'h0000707f) == 32'h0000001b) begin // ADDIW
+            sext32 = s1[31:0] + imm_i[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h0000101b) begin // SLLIW
-	    sext32 = s1[31:0] << shamt[4:0];
+         end else if ((insn & 32'hfe00707f) == 32'h0000101b) begin // SLLIW
+            sext32 = s1[31:0] << shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h0000501b) begin // SRLIW
+         end else if ((insn & 32'hfe00707f) == 32'h0000501b) begin // SRLIW
             sext32 = s1[31:0] >> shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h4000501b) begin // SRAIW
+         end else if ((insn & 32'hfe00707f) == 32'h4000501b) begin // SRAIW
             // NB: Yes, this is a crazy instruction with *two*
             // sign-extensions and it does _not_ behave like the MIPS
             // counterpart
             sext32 = $signed(s1[31:0]) >> shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h0000003b) begin // ADDW
+         end else if ((insn & 32'hfe00707f) == 32'h0000003b) begin // ADDW
             sext32 = s1[31:0] + s2[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h4000003b) begin // SUBW
+         end else if ((insn & 32'hfe00707f) == 32'h4000003b) begin // SUBW
             sext32 = s1[31:0] - s2[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h0000103b) begin // SLLW
+         end else if ((insn & 32'hfe00707f) == 32'h0000103b) begin // SLLW
             sext32 = s1[31:0] << s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h0000503b) begin // SRLW
+         end else if ((insn & 32'hfe00707f) == 32'h0000503b) begin // SRLW
             sext32 = s1[31:0] >> s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hfe00707f) == 32'h4000503b) begin // SRAW
+         end else if ((insn & 32'hfe00707f) == 32'h4000503b) begin // SRAW
             // NB: Yes, this is a crazy instruction with *two*
             // sign-extensions and it does _not_ behave like the MIPS
             // counterpart
             sext32 = $signed(s1[31:0]) >> s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-	 end else if ((insn & 32'hffffffff) == 32'h0000100f) begin // FENCE.I
+         end else if ((insn & 32'hffffffff) == 32'h0000100f) begin // FENCE.I
             // Nothing to do here [yet]
-	 end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
-	    // CSRRW and CSRRWI (and only those) do not read the CSR
-	    // if rd == 0 This matters [only] if the read has side
-	    // effects (I'm gulty of this part of RISC-V semantics).
-	    csr_op = `CSR_OP_COPY;
-	    csr_arg = s1;
-	    s <= 1 << `S_HANDLE_CSR;
-	 end else if ((insn & 32'h0000707f) == 32'h00002073) begin // CSRRS
-	    csr_op = `CSR_OP_OR;
-	    csr_arg = s1;
-	    s <= 1 << `S_HANDLE_CSR;
-	 end else if ((insn & 32'h0000707f) == 32'h00003073) begin // CSRRC
-	    csr_op = `CSR_OP_ANDN;
-	    csr_arg = s1;
-	    s <= 1 << `S_HANDLE_CSR;
-	 end else if ((insn & 32'h0000707f) == 32'h00005073) begin // CSRRWI
-	    csr_op = `CSR_OP_COPY;
-	    csr_arg = rs1;
-	    s <= 1 << `S_HANDLE_CSR;
-	 end else if ((insn & 32'h0000707f) == 32'h00006073) begin // CSRRSI
-	    csr_op = `CSR_OP_OR;
-	    csr_arg = rs1;
-	    s <= 1 << `S_HANDLE_CSR;
-	 end else if ((insn & 32'h0000707f) == 32'h00007073) begin // CSRRCI
-	    csr_op = `CSR_OP_ANDN;
-	    csr_arg = rs1;
-	    s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
+            // CSRRW and CSRRWI (and only those) do not read the CSR
+            // if rd == 0 This matters [only] if the read has side
+            // effects (I'm gulty of this part of RISC-V semantics).
+            csr_op = `CSR_OP_COPY;
+            csr_arg = s1;
+            s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00002073) begin // CSRRS
+            csr_op = `CSR_OP_OR;
+            csr_arg = s1;
+            s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00003073) begin // CSRRC
+            csr_op = `CSR_OP_ANDN;
+            csr_arg = s1;
+            s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00005073) begin // CSRRWI
+            csr_op = `CSR_OP_COPY;
+            csr_arg = rs1;
+            s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00006073) begin // CSRRSI
+            csr_op = `CSR_OP_OR;
+            csr_arg = rs1;
+            s <= 1 << `S_HANDLE_CSR;
+         end else if ((insn & 32'h0000707f) == 32'h00007073) begin // CSRRCI
+            csr_op = `CSR_OP_ANDN;
+            csr_arg = rs1;
+            s <= 1 << `S_HANDLE_CSR;
          end else begin
             s <= 1 << `S_ILLEGAL_INSN;
          end
@@ -477,46 +477,46 @@ module smolrv64(input		  clock,
       end
 
       if (s[`S_HANDLE_CSR]) begin
-	 s <= 1 << `S_FETCH;
-	 // The CSR is insn[]
+         s <= 1 << `S_FETCH;
+         // The CSR is insn[]
 
-	 if (rd != 0 || csr_op != `CSR_OP_COPY) begin
-	   // read the CSR
-	   case (csrno)
-	     `CSR_MSCRATCH: csr_read_val = csr_mscratch;
-	     12'h666: csr_read_val = 0;
-	     default: s <= 1 << `S_ILLEGAL_INSN;
-	   endcase
-	 end
+         if (rd != 0 || csr_op != `CSR_OP_COPY) begin
+           // read the CSR
+           case (csrno)
+             `CSR_MSCRATCH: csr_read_val = csr_mscratch;
+             12'h666: csr_read_val = 0;
+             default: s <= 1 << `S_ILLEGAL_INSN;
+           endcase
+         end
 
-	 case (csr_op)
-	   `CSR_OP_COPY: csr_write_val = csr_arg;
-	   `CSR_OP_OR: csr_write_val = csr_read_val | csr_arg;
-	   `CSR_OP_ANDN: csr_write_val = csr_read_val & ~csr_arg;
-	 endcase
+         case (csr_op)
+           `CSR_OP_COPY: csr_write_val = csr_arg;
+           `CSR_OP_OR: csr_write_val = csr_read_val | csr_arg;
+           `CSR_OP_ANDN: csr_write_val = csr_read_val & ~csr_arg;
+         endcase
 
-	 // CSRRS, CSRRC, CSRRSI, and CSRRCI don't write the CSR if rs1 == 0
-	 if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
-	   // write the CSR
-	   case (csrno)
-	     `CSR_MSCRATCH: csr_mscratch <= csr_write_val;
-	     12'h666: begin
-		// XXX This is the hacky UART backdoor.  It will be
-		// removed eventually.
-		tx_valid_o <= 1;
-		tx_data_o <= csr_write_val;
-		if (!tx_ready_i)
-		  s <= s; // Block here until consumed
-	     end
-	     default: s <= 1 << `S_ILLEGAL_INSN;
-	   endcase
-	 end
+         // CSRRS, CSRRC, CSRRSI, and CSRRCI don't write the CSR if rs1 == 0
+         if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
+           // write the CSR
+           case (csrno)
+             `CSR_MSCRATCH: csr_mscratch <= csr_write_val;
+             12'h666: begin
+                // XXX This is the hacky UART backdoor.  It will be
+                // removed eventually.
+                tx_valid_o <= 1;
+                tx_data_o <= csr_write_val;
+                if (!tx_ready_i)
+                  s <= s; // Block here until consumed
+             end
+             default: s <= 1 << `S_ILLEGAL_INSN;
+           endcase
+         end
          if (rd != 0) rf[rd] = csr_read_val;
       end
 
       if (s[`S_ILLEGAL_INSN]) begin
-	 // XXX In future this will raise a trap
-	 halted_o <= 1;
+         // XXX In future this will raise a trap
+         halted_o <= 1;
       end
    end
 endmodule
