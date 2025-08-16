@@ -13,7 +13,7 @@ start:  lui     s0, 0xF
         li      a4, '\r'
         li      a5, '\n'
 
-loop:   csrw    0x666,a0
+loop:   csrrw   x31,0x666,a0
         csrw    0x666,a1
         csrw    0x666,a2
         csrw    0x666,a2
@@ -32,7 +32,9 @@ dummy:  lb      x2,0(a3)
 
         la      x5, slot
 
-        sd      x1, (x5)
+        sb      x1, 1(x5)
+        ld      x7, (x5)
+        sh      x7, 6(x5)
         ld      x7, (x5)
         addi    x8,x7,0
 
