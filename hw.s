@@ -29,4 +29,15 @@ loop:   csrw    0x666,a0
 dummy:  lb      x2,0(a3)
         lh      x3,6(a3)
         lw      x4,4(a3)
+
+        la      x5, slot
+
+        sd      x1, (x5)
+        ld      x7, (x5)
+        addi    x8,x7,0
+
         ret
+
+slot:   .align 3
+        .word   43
+        .word   42
