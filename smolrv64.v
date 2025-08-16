@@ -49,15 +49,15 @@ module smolrv64(input             clock,
 
 `define S_FETCH 0
 `define S_DECODE 1
-`define S_LOAD_ALIGN 2
+`define S_EXECUTE 2
+`define S_LOAD_ALIGN 3
    reg [1:0]   s = `S_FETCH; // execution state
 
-   (* ram_style = "block" *)
-   reg [63:0]  mem[63:0]; initial $readmemh("mem.hex", mem, 0, 63);
+   reg [63:0]  mem[2047:0]; initial $readmemh("mem.hex", mem, 0, 2047); // 16 KiB
    reg [63:0]  pc = 0;
    reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
 
-   reg [63:0]  mem_addr;
+   reg [63:0]  mem_addr, s1, s2;
    wire [63:0] mem_data = mem[mem_addr[63:3]];
 
    reg [63:0]  npc = 0;
@@ -134,12 +134,19 @@ module smolrv64(input             clock,
 	 s <= `S_DECODE;
       end
 
-      if (s == `S_DECODE) begin
-         s <= `S_FETCH; // Default next stage
+      if (s == `S_DECODE) begin	 
          insn = mem_data >> (pc[2] ? 32 : 0);
          rd = insn`insn_rd;
          rs1 = insn`insn_rs1;
          rs2 = insn`insn_rs2;
+
+	 s1 <= rf[rs1];
+	 s2 <= rf[rs2];
+         s <= `S_EXECUTE;
+      end
+
+      if (s == `S_EXECUTE) begin
+	 s <= `S_FETCH; // Default next stage
 
          imm_i = {{52{insn[31]}},insn[31:20]};
          imm_j = {{32{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -158,43 +165,43 @@ module smolrv64(input             clock,
             npc = pc + imm_j;
          end else if ((insn & 32'h0000707f) == 32'h00000067) begin // JALR
             if (rd) rf[rd] = npc;
-            npc = (rf[rs1] + imm_i) & ~1;
+            npc = (s1 + imm_i) & ~1;
          end else if ((insn & 32'h0000707f) == 32'h00000063) begin // BEQ
-            if (rf[rs1] == rf[rs2]) npc = pc + imm_b;
+            if (s1 == s2) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00001063) begin // BNE
-            if (rf[rs1] != rf[rs2]) npc = pc + imm_b;
+            if (s1 != s2) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00004063) begin // BLT
-            if ($signed(rf[rs1]) < $signed(rf[rs2])) npc = pc + imm_b;
+            if ($signed(s1) < $signed(s2)) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00005063) begin // BGE
-            if ($signed(rf[rs1]) >= $signed(rf[rs2])) npc = pc + imm_b;
+            if ($signed(s1) >= $signed(s2)) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00006063) begin // BLTU
-            if (rf[rs1] < rf[rs2]) npc = pc + imm_b;
+            if (s1 < s2) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00007063) begin // BGEU
-            if (rf[rs1] >= rf[rs2]) npc = pc + imm_b;
+            if (s1 >= s2) npc = pc + imm_b;
          end else if ((insn & 32'h0000707f) == 32'h00000003) begin // LB
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00001003) begin // LH
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00002003) begin // LW
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00003003) begin // LD
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00004003) begin // LBU
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00005003) begin // LHU
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
          end else if ((insn & 32'h0000707f) == 32'h00006003) begin // LWU
-            mem_addr <= rf[rs1] + imm_i;
+            mem_addr <= s1 + imm_i;
             if (rd != 0) s <= `S_LOAD_ALIGN;
 /*
 	 end else if ((insn & 32'h0000707f) == 32'h00000023) begin // SB
-            //ea = rf[rs1] + imm_s;
+            //ea = s1 + imm_s;
 	    //mem[ea/8] oh fuck
 	 end else if ((insn & 32'h0000707f) == 32'h00001023) begin // SH
             //
@@ -202,19 +209,19 @@ module smolrv64(input             clock,
             //
 */
 	 end else if ((insn & 32'h0000707f) == 32'h00003023) begin // SD
-            mem[(rf[rs1] + imm_s) / 8] <= rf[rs2];
+            mem[(s1 + imm_s) / 8] <= s2;
          end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
-            if (rd != 0) rf[rd] = rf[rs1] + imm_i;
+            if (rd != 0) rf[rd] = s1 + imm_i;
          end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
-            if (rd != 0) rf[rd] = rf[rs1]; // XXX CSR value
+            if (rd != 0) rf[rd] = s1; // XXX CSR value
             tx_valid_o <= 1;
-            tx_data_o <= rf[rs1];
+            tx_data_o <= s1;
             if (!tx_ready_i)
-              s <= `S_DECODE;
+              s <= `S_EXECUTE;
          end else begin
             npc = pc;
-            halted_o = 1;
-	    s <= `S_DECODE;
+            halted_o <= 1;
+	    s <= `S_EXECUTE;
          end
       end
 
