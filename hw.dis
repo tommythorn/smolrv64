@@ -1,0 +1,21 @@
+
+hw:     file format elf64-littleriscv
+
+
+Disassembly of section .text:
+
+0000000000000000 <start>:
+   0:	04800513          	li	a0,72
+   4:	66651073          	csrw	0x666,a0
+   8:	06500513          	li	a0,101
+   c:	66651073          	csrw	0x666,a0
+  10:	06c00513          	li	a0,108
+  14:	66651073          	csrw	0x666,a0
+  18:	66651073          	csrw	0x666,a0
+  1c:	06f00513          	li	a0,111
+  20:	66651073          	csrw	0x666,a0
+  24:	00d00513          	li	a0,13
+  28:	66651073          	csrw	0x666,a0
+  2c:	00a00513          	li	a0,10
+  30:	66651073          	csrw	0x666,a0
+  34:	fc0006e3          	beqz	zero,0 <start>

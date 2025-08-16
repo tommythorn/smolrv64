@@ -9,6 +9,8 @@ start:
         csrw    0x666,a0
         li      a0, 'o'
         csrw    0x666,a0
+        li      a0, '\r'
+        csrw    0x666,a0
         li      a0, '\n'
         csrw    0x666,a0
         beq     x0,x0,start
