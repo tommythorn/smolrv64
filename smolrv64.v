@@ -95,7 +95,7 @@ module smolrv64(input             clock,
       // value written to rd
       if (s[`S_FETCH]) begin
 
-	 $write("%05d   %x %x ", $time, pc, insn);
+         $write("%05d   %x %x ", $time, pc, insn);
          if ((insn & 'h0000007f) == 'h00000037) // LUI
            $display("lui     x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
          else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
@@ -263,176 +263,298 @@ module smolrv64(input             clock,
          // _no_ overlap in patterns so the order is not important,
          // but we keep the if-else chain in order to catch the
          // unhandled instructions.
-         if ((insn & 32'h0000007f) == 32'h00000037) begin // LUI
+         if ((insn & 'h0000007f) == 'h00000037) begin // LUI
             if (rd) rf[rd] = imm_u;
-         end else if ((insn & 32'h0000007f) == 32'h00000017) begin // AUIPC
+         end
+
+         else if ((insn & 'h0000007f) == 'h00000017) begin // AUIPC
             if (rd) rf[rd] = pc + imm_u;
-         end else if ((insn & 32'h0000007f) == 32'h0000006f) begin // JAL
+         end
+
+         else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
             if (rd) rf[rd] = npc;
             npc = pc + imm_j;
-         end else if ((insn & 32'h0000707f) == 32'h00000067) begin // JALR
+         end
+
+         else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
             if (rd) rf[rd] = npc;
             npc = (s1 + imm_i) & ~1;
-         end else if ((insn & 32'h0000707f) == 32'h00000063) begin // BEQ
+         end
+
+         else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
             if (s1 == s2) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00001063) begin // BNE
+         end
+
+         else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
             if (s1 != s2) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00004063) begin // BLT
+         end
+
+         else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
             if ($signed(s1) < $signed(s2)) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00005063) begin // BGE
+         end
+
+         else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
             if ($signed(s1) >= $signed(s2)) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00006063) begin // BLTU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
             if (s1 < s2) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00007063) begin // BGEU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
             if (s1 >= s2) npc = pc + imm_b;
-         end else if ((insn & 32'h0000707f) == 32'h00000003) begin // LB
+         end
+
+         else if ((insn & 'h0000707f) == 'h00000003) begin // LB
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00001003) begin // LH
+         end
+
+         else if ((insn & 'h0000707f) == 'h00001003) begin // LH
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00002003) begin // LW
+         end
+
+         else if ((insn & 'h0000707f) == 'h00002003) begin // LW
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00003003) begin // LD
+         end
+
+         else if ((insn & 'h0000707f) == 'h00003003) begin // LD
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00004003) begin // LBU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00004003) begin // LBU
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00005003) begin // LHU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00005003) begin // LHU
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00006003) begin // LWU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00006003) begin // LWU
             mem_addr <= s1 + imm_i;
             if (rd != 0) s <= 1 << `S_LOAD_ALIGN;
-         end else if ((insn & 32'h0000707f) == 32'h00000023) begin // SB
+         end
+
+         else if ((insn & 'h0000707f) == 'h00000023) begin // SB
             mem_addr <= s1 + imm_s;
             mem_wr_mask <= 1;
             s <= 1 << `S_STORE;
-         end else if ((insn & 32'h0000707f) == 32'h00001023) begin // SH
+         end
+
+         else if ((insn & 'h0000707f) == 'h00001023) begin // SH
             mem_addr <= s1 + imm_s;
             mem_wr_mask <= 3;
             s <= 1 << `S_STORE;
-         end else if ((insn & 32'h0000707f) == 32'h00002023) begin // SW
+         end
+
+         else if ((insn & 'h0000707f) == 'h00002023) begin // SW
             mem_addr <= s1 + imm_s;
             mem_wr_mask <= 15;
             s <= 1 << `S_STORE;
-         end else if ((insn & 32'h0000707f) == 32'h00003023) begin // SD
+         end
+
+         else if ((insn & 'h0000707f) == 'h00003023) begin // SD
             mem_addr <= s1 + imm_s;
             mem_wr_mask <= 255;
             s <= 1 << `S_STORE;
-         end else if ((insn & 32'h0000707f) == 32'h00000013) begin // ADDI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00000013) begin // ADDI
             if (rd != 0) rf[rd] = s1 + imm_i;
-         end else if ((insn & 32'h0000707f) == 32'h00002013) begin // SLTI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00002013) begin // SLTI
             if (rd != 0) rf[rd] = $signed(s1) < $signed(imm_i);
-         end else if ((insn & 32'h0000707f) == 32'h00003013) begin // SLTIU
+         end
+
+         else if ((insn & 'h0000707f) == 'h00003013) begin // SLTIU
             if (rd != 0) rf[rd] = s1 < imm_i;
-         end else if ((insn & 32'h0000707f) == 32'h00004013) begin // XORI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00004013) begin // XORI
             if (rd != 0) rf[rd] = s1 ^ imm_i;
-         end else if ((insn & 32'h0000707f) == 32'h00006013) begin // ORI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00006013) begin // ORI
             if (rd != 0) rf[rd] = s1 | imm_i;
-         end else if ((insn & 32'h0000707f) == 32'h00007013) begin // ANDI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00007013) begin // ANDI
             if (rd != 0) rf[rd] = s1 & imm_i;
-         end else if ((insn & 32'hfe00707f) == 32'h00000033) begin // ADD
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00000033) begin // ADD
             if (rd != 0) rf[rd] = s1 + s2;
-         end else if ((insn & 32'hfe00707f) == 32'h40000033) begin // SUB
+         end
+
+         else if ((insn & 'hfe00707f) == 'h40000033) begin // SUB
             if (rd != 0) rf[rd] = s1 - s2;
-         end else if ((insn & 32'hfe00707f) == 32'h00001033) begin // SLL
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00001033) begin // SLL
             if (rd != 0) rf[rd] = s1 << s2[5:0];
-         end else if ((insn & 32'hfe00707f) == 32'h00002033) begin // SLT
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00002033) begin // SLT
             if (rd != 0) rf[rd] = $signed(s1) < $signed(s2);
-         end else if ((insn & 32'hfe00707f) == 32'h00003033) begin // SLTU
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00003033) begin // SLTU
             if (rd != 0) rf[rd] = s1 < s2;
-         end else if ((insn & 32'hfe00707f) == 32'h00004033) begin // XOR
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00004033) begin // XOR
             if (rd != 0) rf[rd] = s1 ^ s2;
-         end else if ((insn & 32'hfe00707f) == 32'h00005033) begin // SRL
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00005033) begin // SRL
             if (rd != 0) rf[rd] = s1 >> s2[5:0];
-         end else if ((insn & 32'hfe00707f) == 32'h40005033) begin // SRA
+         end
+
+         else if ((insn & 'hfe00707f) == 'h40005033) begin // SRA
             if (rd != 0) rf[rd] = $signed(s1) >> s2[5:0];
-         end else if ((insn & 32'hfe00707f) == 32'h00006033) begin // OR
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00006033) begin // OR
             if (rd != 0) rf[rd] = s1 | s2;
-         end else if ((insn & 32'hfe00707f) == 32'h00007033) begin // AND
+         end
+
+         else if ((insn & 'hfe00707f) == 'h00007033) begin // AND
             if (rd != 0) rf[rd] = s1 & s2;
-         end else if ((insn & 32'hf000707f) == 32'h0000000f) begin // FENCE
+         end
+
+         else if ((insn & 'hf000707f) == 'h0000000f) begin // FENCE
             // Nothing to do here
-         end else if ((insn & 32'hf000707f) == 32'h8000000f) begin // FENCE.TSO
+         end
+
+         else if ((insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
             // Nothing to do here
-//       end else if ((insn & 32'hffffffff) == 32'h00000073) begin // ECALL
+         end
+
+/*
+         else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
             // trap_type = Trap::EnvironmentCallFromUMode + prv
             // tval = pc
             // s <= `S_HANDLE_TRAP; (this is a bit involved and shared)
-//       end else if ((insn & 32'hffffffff) == 32'h00100073) begin // EBREAK
+         end
+
+         else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
             // Requires debug mode
-         end else if ((insn & 32'hfc00707f) == 32'h00001013) begin // SLLI
+         end
+*/
+
+         else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
             if (rd != 0) rf[rd] = s1 << shamt;
-         end else if ((insn & 32'hfc00707f) == 32'h00005013) begin // SRLI
+         end
+
+         else if ((insn & 'hfc00707f) == 'h00005013) begin // SRLI
             if (rd != 0) rf[rd] = s1 >> shamt;
-         end else if ((insn & 32'hfc00707f) == 32'h40005013) begin // SRAI
+         end
+
+         else if ((insn & 'hfc00707f) == 'h40005013) begin // SRAI
             if (rd != 0) rf[rd] = $signed(s1) >> shamt;
-         end else if ((insn & 32'h0000707f) == 32'h0000001b) begin // ADDIW
+         end
+
+         else if ((insn & 'h0000707f) == 'h0000001b) begin // ADDIW
             sext32 = s1[31:0] + imm_i[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h0000101b) begin // SLLIW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
             sext32 = s1[31:0] << shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h0000501b) begin // SRLIW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
             sext32 = s1[31:0] >> shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h4000501b) begin // SRAIW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
             // NB: Yes, this is a crazy instruction with *two*
             // sign-extensions and it does _not_ behave like the MIPS
             // counterpart
             sext32 = $signed(s1[31:0]) >> shamt[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h0000003b) begin // ADDW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h0000003b) begin // ADDW
             sext32 = s1[31:0] + s2[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h4000003b) begin // SUBW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h4000003b) begin // SUBW
             sext32 = s1[31:0] - s2[31:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h0000103b) begin // SLLW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h0000103b) begin // SLLW
             sext32 = s1[31:0] << s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h0000503b) begin // SRLW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h0000503b) begin // SRLW
             sext32 = s1[31:0] >> s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hfe00707f) == 32'h4000503b) begin // SRAW
+         end
+
+         else if ((insn & 'hfe00707f) == 'h4000503b) begin // SRAW
             // NB: Yes, this is a crazy instruction with *two*
             // sign-extensions and it does _not_ behave like the MIPS
             // counterpart
             sext32 = $signed(s1[31:0]) >> s2[4:0];
             if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
-         end else if ((insn & 32'hffffffff) == 32'h0000100f) begin // FENCE.I
+         end
+
+         else if ((insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
             // Nothing to do here [yet]
-         end else if ((insn & 32'h0000707f) == 32'h00001073) begin // CSRRW
+         end
+
+         else if ((insn & 'h0000707f) == 'h00001073) begin // CSRRW
             // CSRRW and CSRRWI (and only those) do not read the CSR
             // if rd == 0 This matters [only] if the read has side
             // effects (I'm gulty of this part of RISC-V semantics).
             csr_op = `CSR_OP_COPY;
             csr_arg = s1;
             s <= 1 << `S_HANDLE_CSR;
-         end else if ((insn & 32'h0000707f) == 32'h00002073) begin // CSRRS
+         end
+
+         else if ((insn & 'h0000707f) == 'h00002073) begin // CSRRS
             csr_op = `CSR_OP_OR;
             csr_arg = s1;
             s <= 1 << `S_HANDLE_CSR;
-         end else if ((insn & 32'h0000707f) == 32'h00003073) begin // CSRRC
+         end
+
+         else if ((insn & 'h0000707f) == 'h00003073) begin // CSRRC
             csr_op = `CSR_OP_ANDN;
             csr_arg = s1;
             s <= 1 << `S_HANDLE_CSR;
-         end else if ((insn & 32'h0000707f) == 32'h00005073) begin // CSRRWI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00005073) begin // CSRRWI
             csr_op = `CSR_OP_COPY;
             csr_arg = rs1;
             s <= 1 << `S_HANDLE_CSR;
-         end else if ((insn & 32'h0000707f) == 32'h00006073) begin // CSRRSI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00006073) begin // CSRRSI
             csr_op = `CSR_OP_OR;
             csr_arg = rs1;
             s <= 1 << `S_HANDLE_CSR;
-         end else if ((insn & 32'h0000707f) == 32'h00007073) begin // CSRRCI
+         end
+
+         else if ((insn & 'h0000707f) == 'h00007073) begin // CSRRCI
             csr_op = `CSR_OP_ANDN;
             csr_arg = rs1;
             s <= 1 << `S_HANDLE_CSR;
-         end else begin
+         end
+
+         else begin
             s <= 1 << `S_ILLEGAL_INSN;
          end
       end // if (s[`S_EXECUTE])
@@ -458,19 +580,19 @@ module smolrv64(input             clock,
          // complicate caches later).
          aligned = mem_data >> (mem_addr[2:0] * 8);
 
-         if ((insn & 32'h0000707f) == 32'h00000003) // LB
+         if ((insn & 'h0000707f) == 'h00000003) // LB
            rf[rd] = {{56{aligned[7]}},aligned[7:0]};
-         else if ((insn & 32'h0000707f) == 32'h00001003) // LH
+         else if ((insn & 'h0000707f) == 'h00001003) // LH
            rf[rd] = {{48{aligned[15]}},aligned[15:0]};
-         else if ((insn & 32'h0000707f) == 32'h00002003) // LW
+         else if ((insn & 'h0000707f) == 'h00002003) // LW
            rf[rd] = {{32{aligned[31]}},aligned[31:0]};
-         else if ((insn & 32'h0000707f) == 32'h00004003) // LBU
+         else if ((insn & 'h0000707f) == 'h00004003) // LBU
            rf[rd] = aligned[7:0];
-         else if ((insn & 32'h0000707f) == 32'h00005003) // LHU
+         else if ((insn & 'h0000707f) == 'h00005003) // LHU
            rf[rd] = aligned[15:0];
-         else if ((insn & 32'h0000707f) == 32'h00006003) // LWU
+         else if ((insn & 'h0000707f) == 'h00006003) // LWU
            rf[rd] = aligned[31:0];
-         else if ((insn & 32'h0000707f) == 32'h00003003) // LD
+         else if ((insn & 'h0000707f) == 'h00003003) // LD
            rf[rd] = aligned;
 
          s <= 1 << `S_FETCH;
