@@ -95,131 +95,131 @@ module smolrv64(input             clock,
       // value written to rd
       if (s[`S_FETCH]) begin
 
-         if ((insn & 32'h0000007f) == 32'h00000037) // LUI
-           $display("%05d   %x %x lui     x%1d=0x%1x    %x", $time, pc, insn, rd, imm_u, rf[rd]);
-         else if ((insn & 32'h0000007f) == 32'h00000017) // AUIPC
-           $display("%05d   %x %x auipc   x%1d=0x%1x    %x", $time, pc, insn, rd, imm_u, rf[rd]);
-         else if ((insn & 32'h0000007f) == 32'h0000006f) // JAL
-           $display("%05d   %x %x jal     x%1d=%1d", $time, pc, insn, rd, imm_j);
-         else if ((insn & 32'h0000707f) == 32'h00000067) // JALR
-           $display("%05d   %x %x jalr    x%1d=%x", $time, pc, insn, rd, rs1);
-         else if ((insn & 32'h0000707f) == 32'h00000063) // BEQ
-           $display("%05d   %x %x beq     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00001063) // BNE
-           $display("%05d   %x %x bne     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00004063) // BLT
-           $display("%05d   %x %x blt     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00005063) // BGE
-           $display("%05d   %x %x bge     x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00006063) // BLTU
-           $display("%05d   %x %x bltu    x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00007063) // BGEU
-           $display("%05d   %x %x bgeu    x%1d,x%1d,%1d", $time, pc, insn, rs1, rs2, $signed(imm_b));
-         else if ((insn & 32'h0000707f) == 32'h00001073) // CSRRW
-           $display("%05d   %x %x csrrw   x%1d=0x%1x,x%1d    %x", $time, pc, insn, rd, insn[31:20], rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00000003) // LB
-           $display("%05d   %x %x lb      x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00001003) // LH
-           $display("%05d   %x %x lh      x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00002003) // LW
-           $display("%05d   %x %x lw      x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00004003) // LBU
-           $display("%05d   %x %x lbu     x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00005003) // LHU
-           $display("%05d   %x %x lhu     x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00006003) // LWU
-           $display("%05d   %x %x lwu     x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00003003) // LD
-           $display("%05d   %x %x ld      x%1d=%1d(x%1d)    %x", $time, pc, insn, rd, imm_i, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00000023) // SB
-           $display("%05d   %x %x sb      x%1d,%1d(x%1d)", $time, pc, insn, rs2, imm_s, rs1);
-         else if ((insn & 32'h0000707f) == 32'h00001023) // SH
-           $display("%05d   %x %x sh      x%1d,%1d(x%1d)", $time, pc, insn, rs2, imm_s, rs1);
-         else if ((insn & 32'h0000707f) == 32'h00002023) // SW
-           $display("%05d   %x %x sw      x%1d,%1d(x%1d)", $time, pc, insn, rs2, imm_s, rs1);
-         else if ((insn & 32'h0000707f) == 32'h00003023) // SD
-           $display("%05d   %x %x sd      x%1d,%1d(x%1d)", $time, pc, insn, rs2, imm_s, rs1);
-         else if ((insn & 32'h0000707f) == 32'h00000013) // ADDI
-           $display("%05d   %x %x addi    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00002013) // SLTI
-           $display("%05d   %x %x slti    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00003013) // SLTIU
-           $display("%05d   %x %x sltiu   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00004013) // XORI
-           $display("%05d   %x %x xori    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00006013) // ORI
-           $display("%05d   %x %x ori     x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00007013) // ANDI
-           $display("%05d   %x %x andi    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00000033) // ADD
-           $display("%05d   %x %x add     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h40000033) // SUB
-           $display("%05d   %x %x sub     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00001033) // SLL
-           $display("%05d   %x %x sll     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00002033) // SLT
-           $display("%05d   %x %x slt     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00003033) // SLTU
-           $display("%05d   %x %x sltu    x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00004033) // XOR
-           $display("%05d   %x %x xor     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00005033) // SRL
-           $display("%05d   %x %x srl     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h40005033) // SRA
-           $display("%05d   %x %x sra     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00006033) // OR
-           $display("%05d   %x %x or      x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h00007033) // AND
-           $display("%05d   %x %x and     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hf000707f) == 32'h0000000f) // FENCE
-           $display("%05d   %x %x fence", $time, pc, insn);
-         else if ((insn & 32'hf000707f) == 32'h8000000f) // FENCE.TSO
-           $display("%05d   %x %x fence.tso", $time, pc, insn);
-         else if ((insn & 32'hffffffff) == 32'h00000073) // ECALL
-           $display("%05d   %x %x ecall", $time, pc, insn);
-         else if ((insn & 32'hffffffff) == 32'h00100073) // EBREAK
-           $display("%05d   %x %x ebreak", $time, pc, insn);
-         else if ((insn & 32'hfc00707f) == 32'h00001013) // SLLI
-           $display("%05d   %x %x slli    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfc00707f) == 32'h00005013) // SRLI
-           $display("%05d   %x %x srli    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfc00707f) == 32'h40005013) // SRAI
-           $display("%05d   %x %x srai    x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h0000001b) // ADDIW
-           $display("%05d   %x %x addiw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h0000101b) // SLLIW
-           $display("%05d   %x %x srliw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h0000501b) // SRLIW
-           $display("%05d   %x %x srliw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h4000501b) // SRAIW
-           $display("%05d   %x %x sraiw   x%1d=x%1d,0x%1x    %x", $time, pc, insn, rd, rs1, imm_i, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h0000003b) // ADDW
-           $display("%05d   %x %x addw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h4000003b) // SUBW
-           $display("%05d   %x %x subw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h0000103b) // SLLW
-           $display("%05d   %x %x sllw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h0000503b) // SRLW
-           $display("%05d   %x %x srlw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hfe00707f) == 32'h4000503b) // SRAW
-           $display("%05d   %x %x sraw     x%1d=x%1d,x%1d    %x", $time, pc, insn, rd, rs1, rs2, rf[rd]);
-         else if ((insn & 32'hffffffff) == 32'h0000100f) // FENCE.I
-           $display("%05d   %x %x fence.i", $time, pc, insn);
-         else if ((insn & 32'h0000707f) == 32'h00001073) // CSRRW
-           $display("%05d   %x %x csrrw    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00002073) // CSRRS
-           $display("%05d   %x %x csrrs    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00003073) // CSRRC
-           $display("%05d   %x %x csrrc    x%1d=x%1d,%3x,x%1d    %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00005073) // CSRRWI
-           $display("%05d   %x %x csrrwi   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00006073) // CSRRSI
-           $display("%05d   %x %x csrrsi   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
-         else if ((insn & 32'h0000707f) == 32'h00007073) // CSRRCI
-           $display("%05d   %x %x csrrci   x%1d=%3x,%1d          %x", $time, pc, insn, rd, csrno, rs1, rf[rd]);
+	 $write("%05d   %x %x ", $time, pc, insn);
+         if ((insn & 'h0000007f) == 'h00000037) // LUI
+           $display("lui     x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
+         else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
+           $display("auipc   x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
+         else if ((insn & 'h0000007f) == 'h0000006f) // JAL
+           $display("jal     x%1d,%1d", rd, imm_j);
+         else if ((insn & 'h0000707f) == 'h00000067) // JALR
+           $display("jalr    x%1d,%x", rd, rs1);
+         else if ((insn & 'h0000707f) == 'h00000063) // BEQ
+           $display("beq     x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00001063) // BNE
+           $display("bne     x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00004063) // BLT
+           $display("blt     x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00005063) // BGE
+           $display("bge     x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00006063) // BLTU
+           $display("bltu    x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00007063) // BGEU
+           $display("bgeu    x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
+         else if ((insn & 'h0000707f) == 'h00001073) // CSRRW
+           $display("csrrw   x%1d,0x%1x,x%1d    %x", rd, insn[31:20], rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00000003) // LB
+           $display("lb      x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00001003) // LH
+           $display("lh      x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00002003) // LW
+           $display("lw      x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00004003) // LBU
+           $display("lbu     x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00005003) // LHU
+           $display("lhu     x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00006003) // LWU
+           $display("lwu     x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00003003) // LD
+           $display("ld      x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00000023) // SB
+           $display("sb      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+         else if ((insn & 'h0000707f) == 'h00001023) // SH
+           $display("sh      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+         else if ((insn & 'h0000707f) == 'h00002023) // SW
+           $display("sw      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+         else if ((insn & 'h0000707f) == 'h00003023) // SD
+           $display("sd      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+         else if ((insn & 'h0000707f) == 'h00000013) // ADDI
+           $display("addi    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00002013) // SLTI
+           $display("slti    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00003013) // SLTIU
+           $display("sltiu   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00004013) // XORI
+           $display("xori    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00006013) // ORI
+           $display("ori     x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00007013) // ANDI
+           $display("andi    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00000033) // ADD
+           $display("add     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h40000033) // SUB
+           $display("sub     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00001033) // SLL
+           $display("sll     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00002033) // SLT
+           $display("slt     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00003033) // SLTU
+           $display("sltu    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00004033) // XOR
+           $display("xor     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00005033) // SRL
+           $display("srl     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h40005033) // SRA
+           $display("sra     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00006033) // OR
+           $display("or      x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h00007033) // AND
+           $display("and     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hf000707f) == 'h0000000f) // FENCE
+           $display("fence");
+         else if ((insn & 'hf000707f) == 'h8000000f) // FENCE.TSO
+           $display("fence.tso");
+         else if ((insn & 'hffffffff) == 'h00000073) // ECALL
+           $display("ecall");
+         else if ((insn & 'hffffffff) == 'h00100073) // EBREAK
+           $display("ebreak");
+         else if ((insn & 'hfc00707f) == 'h00001013) // SLLI
+           $display("slli    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfc00707f) == 'h00005013) // SRLI
+           $display("srli    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfc00707f) == 'h40005013) // SRAI
+           $display("srai    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h0000001b) // ADDIW
+           $display("addiw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h0000101b) // SLLIW
+           $display("srliw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h0000501b) // SRLIW
+           $display("srliw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h4000501b) // SRAIW
+           $display("sraiw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h0000003b) // ADDW
+           $display("addw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h4000003b) // SUBW
+           $display("subw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h0000103b) // SLLW
+           $display("sllw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h0000503b) // SRLW
+           $display("srlw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hfe00707f) == 'h4000503b) // SRAW
+           $display("sraw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+         else if ((insn & 'hffffffff) == 'h0000100f) // FENCE.I
+           $display("fence.i");
+         else if ((insn & 'h0000707f) == 'h00001073) // CSRRW
+           $display("csrrw    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00002073) // CSRRS
+           $display("csrrs    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00003073) // CSRRC
+           $display("csrrc    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00005073) // CSRRWI
+           $display("csrrwi   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00006073) // CSRRSI
+           $display("csrrsi   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+         else if ((insn & 'h0000707f) == 'h00007073) // CSRRCI
+           $display("csrrci   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
          else
-           $display("%05d   %x %x illegal or unsupported instruction", $time, pc, insn);
-
+           $display("illegal or unsupported instruction");
       end
 `endif
 
