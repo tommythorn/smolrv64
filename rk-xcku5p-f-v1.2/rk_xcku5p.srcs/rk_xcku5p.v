@@ -47,10 +47,10 @@ module rk_xcku5p(
 
    // On macOS, only speeds up to B230400 are defined in termios.h
    // Curiously macOS/FTDI works at 460800, but higher rates do not.
-   rs232tx #(200000000,115200) rs232tx_inst
+   rs232tx #(200000000,3000000) rs232tx_inst
      (clk_200_MHz, tx_data_i, tx_valid_i, tx_ready_o, txd);
 
-   rs232rx #(200000000,115200) rs232rx_inst
+   rs232rx #(200000000,3000000) rs232rx_inst
      (clk_200_MHz, rx_data_o, rx_valid_o, rx_ready_i, rxd, rx_overflow_o);
 
    wire halted;
