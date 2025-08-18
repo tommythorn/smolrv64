@@ -41,7 +41,7 @@ module smolrv64_tb;
 endmodule
 `endif
 
-module smolrv64(input             clock,
+module smolrv64(input wire        clock,
                 input wire        tx_ready_i,
                 output reg        tx_valid_o = 0,
                 output reg [ 7:0] tx_data_o = 0,
