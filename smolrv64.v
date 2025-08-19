@@ -77,6 +77,9 @@ module smolrv64(input wire        clock,
    reg [63:0]  npc = 0;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
    reg [31:0]  sext32;
+`ifdef SIMULATE
+   reg [127:0] tmp128;
+`endif
    reg [ 4:0]  rd, rs1, rs2;
    reg [ 5:0]  shamt;
    reg [11:0]  csrno;
@@ -586,6 +589,59 @@ module smolrv64(input wire        clock,
               csr_arg = rs1;
               state <= `S_HANDLE_CSR;
            end
+
+           else if ((insn & 'hfe00707f) == 'h02000033) begin // MUL
+              if (rd != 0) rf[rd] = s1 * s2;
+           end
+
+`ifdef SIMULATE
+           /*
+           else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
+           end
+
+           else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
+           end
+           */
+
+           else if ((insn & 'hfe00707f) == 'h02003033) begin // MULHU
+              tmp128 = {64'd0,s1} * {64'd0,s2};
+              $display("%d * %d = %d (%x)", s1, s2, tmp128, tmp128);
+              if (rd != 0) rf[rd] = tmp128[127:64];
+           end
+
+           /*
+           else if ((insn & 'hfe00707f) == 'h02004033) begin // DIV
+           end
+
+           else if ((insn & 'hfe00707f) == 'h02005033) begin // DIVU
+           end
+
+           else if ((insn & 'hfe00707f) == 'h02006033) begin // REM
+           end
+
+           else if ((insn & 'hfe00707f) == 'h02007033) begin // REMU
+           end
+           */
+
+           else if ((insn & 'hfe00707f) == 'h0200003b) begin // MULW
+              sext32 = $signed(s1[31:0]) * $signed(s2[31:0]);
+              if (rd != 0) rf[rd] = {{32{sext32[31]}},sext32};
+           end
+
+           /*
+           else if ((insn & 'hfe00707f) == 'h0200403b) begin // DIVW
+           end
+
+           else if ((insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
+           end
+
+           else if ((insn & 'hfe00707f) == 'h0200603b) begin // REMW
+           end
+
+           else if ((insn & 'hfe00707f) == 'h0200703b) begin // REMUW
+           end
+           */
+`endif
 
            else begin
               state <= `S_ILLEGAL_INSN;
