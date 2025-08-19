@@ -106,7 +106,7 @@ module smolrv64(input wire        clock,
 
            $write("%05d   %x %x ", $time, pc, insn);
            if ((insn & 'h0000007f) == 'h00000037) // LUI
-             $display("lui     x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
+             $display("lui     x%1d,0x%1x        %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
              $display("auipc   x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h0000006f) // JAL
@@ -204,29 +204,55 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe00707f) == 'h4000501b) // SRAIW
              $display("sraiw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000003b) // ADDW
-             $display("addw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+             $display("addw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h4000003b) // SUBW
-             $display("subw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+             $display("subw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000103b) // SLLW
-             $display("sllw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+             $display("sllw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000503b) // SRLW
-             $display("srlw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+             $display("srlw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h4000503b) // SRAW
-             $display("sraw     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+             $display("sraw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hffffffff) == 'h0000100f) // FENCE.I
              $display("fence.i");
            else if ((insn & 'h0000707f) == 'h00001073) // CSRRW
-             $display("csrrw    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrw   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00002073) // CSRRS
-             $display("csrrs    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrs   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00003073) // CSRRC
-             $display("csrrc    x%1d,x%1d,%3x,x%1d    %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrc   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00005073) // CSRRWI
-             $display("csrrwi   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrwi  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00006073) // CSRRSI
-             $display("csrrsi   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrsi  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00007073) // CSRRCI
-             $display("csrrci   x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrci  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02000033) // MUL
+             $display("mul     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02001033) // MULH
+             $display("mulh    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02002033) // MULHSU
+             $display("mulhsu  x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02003033) // MULHU
+             $display("mulhu   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02004033) // DIV
+             $display("div     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02005033) // DIVU
+             $display("divu    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02006033) // REM
+             $display("rem     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h02007033) // REMU
+             $display("remu    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h0200003b) // MULW
+             $display("mulw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h0200403b) // DIVW
+             $display("divw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h0200503b) // DIVUW
+             $display("divuw   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h0200603b) // REMW
+             $display("remw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hfe00707f) == 'h0200703b) // REMUW
+             $display("remuw   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else
              $display("illegal or unsupported instruction");
 `endif
