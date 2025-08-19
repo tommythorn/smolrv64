@@ -64,11 +64,11 @@ module smolrv64(input wire        clock,
 `define S_LOAD_ALIGN 5
 `define S_HANDLE_CSR 6
 `define S_ILLEGAL_INSN 7
-   reg [3:0] state = `S_FETCH; // execution state
+   reg [3:0]   state = `S_FETCH; // execution state
 
-   reg [63:0]  mem[2047:0]; initial $readmemh("mem.hex", mem, 0, 2047); // 16 KiB
-   reg [63:0]  pc = 0;
+   reg [63:0]  mem[4095:0]; initial $readmemh("mem.hex", mem, 0, 4095); // 32 KiB
    reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
+   reg [63:0]  pc = 0;
 
    reg [63:0]  mem_addr, s1, s2;
    reg [7:0]   mem_wr_mask;
