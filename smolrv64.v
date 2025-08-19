@@ -282,8 +282,8 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH; // Default next stage
 
            imm_i = {{52{insn[31]}},insn[31:20]};
-           imm_j = {{32{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
-           imm_b = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
+           imm_j = {{52{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
+           imm_b = {{52{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
            imm_u = {{32{insn[31]}},insn[31:12],12'd0};
            imm_s = {{52{insn[31]}},insn[31:25],insn[11:7]};
            csrno = insn[31:20];
