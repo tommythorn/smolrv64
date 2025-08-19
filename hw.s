@@ -1,5 +1,8 @@
 .globl start
-start:  lui     s0, 0xF
+start:  csrr    t0,mcycle
+        csrr    t0,minstret
+
+        lui     s0, 0xF
 
         auipc   a3, 0
         lui     a1, 0x12345
@@ -18,7 +21,10 @@ start:  lui     s0, 0xF
         li      a4, '\r'
         li      a5, '\n'
 
-loop:   csrrw   x31,0x666,a0
+        csrr    t0,mcycle
+        csrr    t0,minstret
+
+loop:   csrw    0x666,a0
         csrw    0x666,a1
         csrw    0x666,a2
         csrw    0x666,a2

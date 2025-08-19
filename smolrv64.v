@@ -49,6 +49,8 @@ module smolrv64(input wire        clock,
 
 // XXX Should I use param/localparam instead?
 `define CSR_MSCRATCH 12'h340
+`define CSR_MCYCLE   12'hb00
+`define CSR_MINSTRET 12'hb02
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -84,14 +86,20 @@ module smolrv64(input wire        clock,
    reg [ 1:0]  csr_op;
 
    // CSR state (just a place holder for now)
-   reg [63:0]  csr_mscratch = 'hDEADBEEFCAFEF00D;
+   reg [63:0]  csr_mscratch = 'hDEADBEEFCAFEF00D,
+               csr_mcycle   = 0,
+               csr_minstret = ~0; // -1 because we increase it in fetch
 
    always @(posedge clock) begin
+      csr_mcycle <= csr_mcycle + 1;
+
       if (tx_ready_i)
         tx_valid_o <= 0;
 
       case (state)
         `S_FETCH: begin
+           csr_minstret <= csr_minstret + 1;
+
 `ifdef DISASS
            // We disassemble the *previous* instruction so we can read the
            // value written to rd
@@ -604,6 +612,8 @@ module smolrv64(input wire        clock,
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
               case (csrno)
+                `CSR_MCYCLE: csr_read_val = csr_mcycle;
+                `CSR_MINSTRET: csr_read_val = csr_minstret;
                 `CSR_MSCRATCH: csr_read_val = csr_mscratch;
                 12'h666: csr_read_val = 0;
                 default: state <= `S_ILLEGAL_INSN;
@@ -620,6 +630,8 @@ module smolrv64(input wire        clock,
            if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               // write the CSR
               case (csrno)
+                `CSR_MCYCLE: csr_mcycle <= csr_write_val;
+                `CSR_MINSTRET: csr_minstret <= csr_write_val;
                 `CSR_MSCRATCH: csr_mscratch <= csr_write_val;
                 12'h666: begin
                    // XXX This is the hacky UART backdoor.  It will be
