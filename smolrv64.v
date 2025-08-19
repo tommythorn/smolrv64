@@ -470,16 +470,16 @@ module smolrv64(input wire        clock,
            end
 
            /*
-            else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
+           else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
             // trap_type = Trap::EnvironmentCallFromUMode + prv
             // tval = pc
             // state <= `S_HANDLE_TRAP; (this is a bit involved and shared)
-         end
+           end
 
-            else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
+           else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
             // Requires debug mode
-         end
-            */
+           end
+           */
 
            else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
               if (rd != 0) rf[rd] = s1 << shamt;
@@ -675,6 +675,9 @@ module smolrv64(input wire        clock,
 
         `S_ILLEGAL_INSN: begin
            // XXX In future this will raise a trap
+`ifdef DISASS
+           $display("%05d   %x %x illegal", $time, pc, insn);
+`endif
            halted_o <= 1;
         end
       endcase
