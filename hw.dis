@@ -5,23 +5,25 @@ hw:     file format elf64-littleriscv
 Disassembly of section .text:
 
 0000000000000000 <start>:
-   0:	b00022f3          	csrr	t0,mcycle
-   4:	b02022f3          	csrr	t0,minstret
-   8:	0000f437          	lui	s0,0xf
-   c:	00000697          	auipc	a3,0x0
-  10:	123455b7          	lui	a1,0x12345
-  14:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343dcc>
-  18:	05c000ef          	jal	74 <dummy>
-  1c:	340ff2f3          	csrrci	t0,mscratch,31
-  20:	34016373          	csrrsi	t1,mscratch,2
-  24:	340292f3          	csrrw	t0,mscratch,t0
+   0:	1ffc0040          	.word	0x1ffc0040
+   4:	0028                	.short	0x0028
+   6:	b00022f3          	csrr	t0,mcycle
+   a:	b02022f3          	csrr	t0,minstret
+   e:	643d                	lui	s0,0xf
+  10:	00000697          	auipc	a3,0x0
+  14:	123455b7          	lui	a1,0x12345
+  18:	67858613          	addi	a2,a1,1656 # 12345678 <__global_pointer$+0x12343dd6>
+  1c:	054000ef          	jal	70 <dummy>
+  20:	340ff2f3          	csrrci	t0,mscratch,31
+  24:	34016373          	csrrsi	t1,mscratch,2
   28:	340292f3          	csrrw	t0,mscratch,t0
-  2c:	04800513          	li	a0,72
-  30:	06500593          	li	a1,101
-  34:	06c00613          	li	a2,108
-  38:	06f00693          	li	a3,111
-  3c:	00d00713          	li	a4,13
-  40:	00a00793          	li	a5,10
+  2c:	340292f3          	csrrw	t0,mscratch,t0
+  30:	04800513          	li	a0,72
+  34:	06500593          	li	a1,101
+  38:	06c00613          	li	a2,108
+  3c:	06f00693          	li	a3,111
+  40:	4735                	li	a4,13
+  42:	47a9                	li	a5,10
   44:	b00022f3          	csrr	t0,mcycle
   48:	b02022f3          	csrr	t0,minstret
 
@@ -33,24 +35,24 @@ Disassembly of section .text:
   5c:	66669073          	csrw	0x666,a3
   60:	66671073          	csrw	0x666,a4
   64:	66679073          	csrw	0x666,a5
-  68:	fff40413          	addi	s0,s0,-1 # efff <__global_pointer$+0xd753>
-  6c:	fe0450e3          	bgez	s0,4c <loop>
-  70:	00100073          	ebreak
+  68:	147d                	addi	s0,s0,-1 # efff <__global_pointer$+0xd75d>
+  6a:	fe0451e3          	bgez	s0,4c <loop>
+  6e:	9002                	ebreak
 
-0000000000000074 <dummy>:
-  74:	00068103          	lb	sp,0(a3) # c <start+0xc>
-  78:	00669183          	lh	gp,6(a3)
-  7c:	0046a203          	lw	tp,4(a3)
-  80:	00000297          	auipc	t0,0x0
-  84:	02028293          	addi	t0,t0,32 # a0 <slot>
-  88:	001280a3          	sb	ra,1(t0)
-  8c:	0002b383          	ld	t2,0(t0)
-  90:	00729323          	sh	t2,6(t0)
-  94:	0002b383          	ld	t2,0(t0)
-  98:	00038413          	mv	s0,t2
-  9c:	00008067          	ret
+0000000000000070 <dummy>:
+  70:	00068103          	lb	sp,0(a3) # 10 <start+0x10>
+  74:	00669183          	lh	gp,6(a3)
+  78:	0046a203          	lw	tp,4(a3)
+  7c:	00000297          	auipc	t0,0x0
+  80:	01c28293          	addi	t0,t0,28 # 98 <slot>
+  84:	001280a3          	sb	ra,1(t0)
+  88:	0002b383          	ld	t2,0(t0)
+  8c:	00729323          	sh	t2,6(t0)
+  90:	0002b383          	ld	t2,0(t0)
+  94:	841e                	mv	s0,t2
+  96:	8082                	ret
 
-00000000000000a0 <slot>:
-  a0:	0000002b          	.word	0x0000002b
-  a4:	0000002a          	.word	0x0000002a
-  a8:	00000013          	nop
+0000000000000098 <slot>:
+  98:	0000002b          	.word	0x0000002b
+  9c:	0000002a          	.word	0x0000002a
+  a0:	0001                	nop

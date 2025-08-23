@@ -66,19 +66,29 @@ module smolrv64(input wire        clock,
 `define S_ILLEGAL_INSN 7
    reg [3:0]   state = `S_FETCH; // execution state
 
-   reg [63:0]  mem[4095:0]; initial $readmemh("mem.hex", mem, 0, 4095); // 32 KiB
+   // To enable penalty-free unaligned access, memory is split into
+   // even and odd word addresses and striped across them.  Any 64-bit
+   // word at address A will then be found in {mem1[A/8],mem0[A/8]} if
+   // A/4 is even and {mem0[A/8+1],mem1[A/8]} if A/4 is odd.
+   reg [31:0]  mem0[4095:0]; initial $readmemh("mem0.hex", mem0, 0, 4095); // 16 KiB
+   reg [31:0]  mem1[4095:0]; initial $readmemh("mem1.hex", mem1, 0, 4095); // 16 KiB
    reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
    reg [63:0]  pc = 0;
 
    reg [63:0]  mem_addr, s1, s2;
    reg [7:0]   mem_wr_mask;
-   wire [63:0] mem_data = mem[mem_addr[63:3]];
+   wire [31:0] mem_data0 = mem0[mem_addr[63:3] + mem_addr[2]];
+   wire [31:0] mem_data1 = mem1[mem_addr[63:3]];
 
    reg  [ 5:0] write_back_register = 0;
    reg  [63:0] write_back_value;
 
    reg [63:0]  npc = 0;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
+   reg [ 9:0]  nzuimm;
+   reg [63:0]  imm6;
+   reg [63:0]  imm_addi16sp;
+   reg [ 4:0]  uimm5w, uimm5d;
    reg [31:0]  sext32;
 `ifdef SIMULATE
    reg [127:0] tmp128;
@@ -112,8 +122,50 @@ module smolrv64(input wire        clock,
            // We disassemble the *previous* instruction so we can read the
            // value written to rd
 
-           $write("%05d   %x %x ", $time, pc, insn);
-           if ((insn & 'h0000007f) == 'h00000037) // LUI
+	   if (csr_mcycle) begin
+	   if ((insn & 3) == 3)
+             $write("%05d   %x %x ", $time, pc, insn);
+	   else
+	     $write("%05d   %x     %x ", $time, pc, insn[15:0]);
+           if ((insn & 'hffff) == 'h0000)
+	     $display("illegal");
+
+	   else if ((insn & 'he003) == 'h0000)
+             $display("c.addi16sp x%1d,%1d       %x", write_back_register, nzuimm, rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h2000)
+             $display("c.fld   x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, uimm5d, rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h4000)
+             $display("c.lw    x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, uimm5w, rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h6000)
+             $display("c.ld    x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, uimm5d, rf[write_back_register]);
+	   else if ((insn & 'he003) == 'ha000)
+             $display("c.fsd   x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, uimm5d);
+	   else if ((insn & 'he003) == 'hc000)
+             $display("c.sw    x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, uimm5w);
+	   else if ((insn & 'he003) == 'he000)
+             $display("c.sd    x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, uimm5d);
+
+	   else if (insn == 1) // XXX untested
+             $display("c.nop");
+	   else if ((insn & 'he003) == 'h0001) // XXX untested
+             $display("c.addi  x%1d,%1d           %x", write_back_register, $signed(imm6), rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h2001) // XXX untested
+             $display("c.addiw  x%1d,%1d          %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h4001) // XXX untested
+             $display("c.li     x%1d,%1d          %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
+	   else if ((insn & 'hef83) == 'h6101) // XXX untested
+             $display("c.addi16sp  %1d            %x UNTESTED", write_back_register, imm_addi16sp, rf[write_back_register]);
+	   else if ((insn & 'he003) == 'h6001) // XXX untested
+             $display("c.lui   x%1d,%1d           %x", write_back_register, $signed(imm6), rf[write_back_register]);
+
+	   else if ((insn & 'hf07f) == 'h8002) // XXX untested
+             $display("c.jr");
+	   else if ((insn & 'hf003) == 'h8002) // XXX untested
+             $display("c.mv    x%1d,x%1d          %x", write_back_register, rs2, rf[write_back_register]);
+
+
+
+	   else if ((insn & 'h0000007f) == 'h00000037) // LUI
              $display("lui     x%1d,0x%1x        %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
              $display("auipc   x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
@@ -263,6 +315,7 @@ module smolrv64(input wire        clock,
              $display("remuw   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else
              $display("illegal or unsupported instruction");
+	   end
 `endif
 
            mem_addr <= npc;
@@ -271,14 +324,27 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH_COMPLETE: begin
-           insn = pc[2] ? mem_data[63:32] : mem_data[31:0];
+	   aligned = pc[2] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
+	   //$display("   FETCHED %x: %x", pc, aligned);
+           insn = aligned >> (pc[1] * 16);
+	   //$display("   ALIGNED %x: %x", pc, insn);
            state <= `S_DECODE;
         end
 
         `S_DECODE: begin
            rd = insn`insn_rd;
-           rs1 = insn`insn_rs1;
-           rs2 = insn`insn_rs2;
+
+	   // XXX This is begging for a dedicated test bench
+	   // The general principle
+	   case (insn[1:0])
+	     0: {rs1,rs2} = {5'd8|insn[9:7], 5'd8|insn[4:2]};
+	     1: {rs1,rs2} = {5'd8|insn[9:7], 5'd8|insn[4:2]};
+	     2: {rs1,rs2} = {insn[11:7],     insn[6:2]};
+	     3: {rs1,rs2} = {insn`insn_rs1,  insn`insn_rs2};
+	   endcase
+	   // The special case
+	   if ((insn & 'he003) == 0) rs1 = 2;
+
            shamt = insn[25:20];
 
            s1 <= rf[rs1];
@@ -295,17 +361,71 @@ module smolrv64(input wire        clock,
            imm_b = {{52{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
            imm_u = {{32{insn[31]}},insn[31:12],12'd0};
            imm_s = {{52{insn[31]}},insn[31:25],insn[11:7]};
+	   nzuimm = {insn[10:7],insn[12:11],insn[5],insn[6],2'd0};
+	   uimm5w = {insn[5],insn[12:10],insn[6],2'd0};
+	   uimm5d = {{59{insn[12]}},insn[6:2]};
+	   imm6 = {{59{insn[12]}},insn[6:2]};
+	   imm_addi16sp = {{55{insn[12]}},insn[4:3],insn[5],insn[2],insn[6],4'd0};
+	   
            csrno = insn[31:20];
 
-           npc = pc + 4;
+           npc = pc + (insn[1:0] == 3 ? 4 : 2);
 
-           // RV64I NB: the order of instructions [mostly] follows
+           // RV64IC decoding
+	   //
+	   // The order of instructions [mostly] follows
            // simmerv for ease of reference, who in turn took the
            // ordering from the RISC-V spec.  There is intentionally
            // _no_ overlap in patterns so the order is not important,
            // but we keep the if-else chain in order to catch the
            // unhandled instructions.
-           if ((insn & 'h0000007f) == 'h00000037) begin // LUI
+
+	   if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN
+	      write_back_value = s1 + nzuimm;
+	      if ((insn & 'hffff) == 0) begin
+`ifdef SIMULATE
+		 $display("%05d   %x %x illegal C.ADDI4SPN variant", $time, pc, insn);
+`endif
+		state <= `S_ILLEGAL_INSN;
+	      end
+	      else
+		write_back_register = 2;
+	   end
+
+	   else if ((insn & 'he003) == 'h0001) begin // C.ADDI
+	      write_back_register = rs1;
+	      write_back_value = s1 + imm6;
+	   end
+	   // ...
+
+	   else if ((insn & 'he003) == 'h4001) begin // C.LI
+	      write_back_register = insn[11:7];
+	      write_back_value = imm6;
+	   end
+
+	   else if ((insn & 'he003) == 'h6001) begin // C.ADDI16SP/C.LUI
+	      if (rs1 == 2) begin
+		 write_back_value = s1 + $signed(imm_addi16sp);
+		 write_back_register = 2;
+	      end else begin
+		 write_back_value = imm6;
+		 write_back_register = insn[11:7];
+	      end
+	   end
+
+
+	   // ...
+	   
+	   else if ((insn & 'hf003) == 'h8002) begin // C.JR/C.MV XXX untested
+	      if (rs2 == 0) begin
+		 npc = s1 & ~1;
+	      end else begin
+		 write_back_register = rs1;
+		 write_back_value = s2;
+	      end
+	   end
+
+           else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
               write_back_value = imm_u;
            end
@@ -685,6 +805,13 @@ module smolrv64(input wire        clock,
 `endif
 
            else begin
+`ifdef SIMULATE
+	      if (insn[1:0] == 3)
+		$display("%05d   %x %x illegal unknown instruction", $time, pc, insn);
+	      else
+		$display("%05d   %x     %x illegal unknown instruction (%1d,%d)", $time, pc, insn[15:0], insn[15:13], insn[1:0]);
+	      $finish;
+`endif
               state <= `S_ILLEGAL_INSN;
            end
         end
@@ -692,23 +819,21 @@ module smolrv64(input wire        clock,
         `S_STORE: begin
            mem_wr_mask = mem_wr_mask << (mem_addr % 8);
            s2 = s2 << (8 * (mem_addr % 8));
-           if (mem_wr_mask[0]) mem[mem_addr / 8][ 7: 0] <= s2[ 7: 0];
-           if (mem_wr_mask[1]) mem[mem_addr / 8][15: 8] <= s2[15: 8];
-           if (mem_wr_mask[2]) mem[mem_addr / 8][23:16] <= s2[23:16];
-           if (mem_wr_mask[3]) mem[mem_addr / 8][31:24] <= s2[31:24];
-           if (mem_wr_mask[4]) mem[mem_addr / 8][39:32] <= s2[39:32];
-           if (mem_wr_mask[5]) mem[mem_addr / 8][47:40] <= s2[47:40];
-           if (mem_wr_mask[6]) mem[mem_addr / 8][55:48] <= s2[55:48];
-           if (mem_wr_mask[7]) mem[mem_addr / 8][63:56] <= s2[63:56];
+	   // XXX This is wrong for mem_addr[2] == 1
+           if (mem_wr_mask[0]) mem0[mem_addr / 8][ 7: 0] <= s2[ 7: 0];
+           if (mem_wr_mask[1]) mem0[mem_addr / 8][15: 8] <= s2[15: 8];
+           if (mem_wr_mask[2]) mem0[mem_addr / 8][23:16] <= s2[23:16];
+           if (mem_wr_mask[3]) mem0[mem_addr / 8][31:24] <= s2[31:24];
+           if (mem_wr_mask[4]) mem1[mem_addr / 8][ 7: 0] <= s2[39:32];
+           if (mem_wr_mask[5]) mem1[mem_addr / 8][15: 8] <= s2[47:40];
+           if (mem_wr_mask[6]) mem1[mem_addr / 8][23:16] <= s2[55:48];
+           if (mem_wr_mask[7]) mem1[mem_addr / 8][31:24] <= s2[63:56];
            state <= `S_FETCH;
         end
 
         `S_LOAD_ALIGN: begin
-           // XXX Doesn't handle misaligned data correctly (Technically,
-           // it does as long as the data doesn't span two words; it
-           // would be easy to support unaligned loads, but that would
-           // complicate caches later).
-           aligned = mem_data >> (mem_addr[2:0] * 8);
+	   aligned = mem_addr[2] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
+           aligned = aligned >> (mem_addr[2:0] * 8);
            write_back_register = rd;
 
            if ((insn & 'h0000707f) == 'h00000003) // LB
@@ -740,7 +865,12 @@ module smolrv64(input wire        clock,
                 `CSR_MINSTRET: csr_read_val = csr_minstret;
                 `CSR_MSCRATCH: csr_read_val = csr_mscratch;
                 12'h666: csr_read_val = 0;
-                default: state <= `S_ILLEGAL_INSN;
+                default: begin
+`ifdef SIMULATE
+		   $display("%05d   %x %x illegal CSR %x (read)", $time, pc, insn, csrno);
+`endif
+		   state <= `S_ILLEGAL_INSN;
+		end
               endcase
            end
 
@@ -765,7 +895,12 @@ module smolrv64(input wire        clock,
                    if (!tx_ready_i)
                      state <= state; // Block here until consumed
                 end
-                default: state <= `S_ILLEGAL_INSN;
+                default: begin
+`ifdef SIMULATE
+		   $display("%05d   %x %x illegal CSR %x (write)", $time, pc, insn, csrno);
+`endif
+		   state <= `S_ILLEGAL_INSN;
+		end
               endcase
            end
 
@@ -775,9 +910,6 @@ module smolrv64(input wire        clock,
 
         `S_ILLEGAL_INSN: begin
            // XXX In future this will raise a trap
-`ifdef DISASS
-           $display("%05d   %x %x illegal", $time, pc, insn);
-`endif
            halted_o <= 1;
         end
       endcase
