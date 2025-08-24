@@ -86,10 +86,14 @@ module smolrv64(input wire        clock,
 
    reg [63:0]  npc = 0;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
+   reg [11:0]  imm_j_c;
+   reg [ 8:0]  imm_b_c;
    reg [ 9:0]  nzuimm;
-   reg [63:0]  imm6;
+   reg [ 5:0]  imm6;
    reg [63:0]  imm_addi16sp;
    reg [ 4:0]  uimm5w, uimm5d;
+   reg [ 8:0]  uimm9_d, uimm9_d_s;
+   reg [ 7:0]  uimm8_w, uimm8_w_s;
    reg [31:0]  sext32;
 `ifdef SIMULATE
    reg [127:0] tmp128;
@@ -131,6 +135,7 @@ module smolrv64(input wire        clock,
            if ((insn & 'hffff) == 'h0000)
              $display("illegal");
 
+              // Quardrant 0
            else if ((insn & 'he003) == 'h0000)
              $display("c.addi16sp x%1d,%1d       %x", write_back_register, nzuimm, rf[write_back_register]);
            else if ((insn & 'he003) == 'h2000)
@@ -146,23 +151,69 @@ module smolrv64(input wire        clock,
            else if ((insn & 'he003) == 'he000)
              $display("c.sd    x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, uimm5d);
 
-           else if (insn == 1) // XXX untested
-             $display("c.nop");
-           else if ((insn & 'he003) == 'h0001) // XXX untested
+              // Quardrant 1
+           else if (insn == 1)
+             $display("c.nop UNTESTED");
+           else if ((insn & 'he003) == 'h0001)
              $display("c.addi  x%1d,%1d           %x", write_back_register, $signed(imm6), rf[write_back_register]);
-           else if ((insn & 'he003) == 'h2001) // XXX untested
+           else if ((insn & 'he003) == 'h2001)
              $display("c.addiw  x%1d,%1d          %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
-           else if ((insn & 'he003) == 'h4001) // XXX untested
-             $display("c.li     x%1d,%1d          %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
-           else if ((insn & 'hef83) == 'h6101) // XXX untested
+           else if ((insn & 'he003) == 'h4001)
+             $display("c.li     x%1d,%1d          %x", write_back_register, $signed(imm6), rf[write_back_register]);
+           else if ((insn & 'hef83) == 'h6101)
              $display("c.addi16sp  %1d            %x UNTESTED", write_back_register, imm_addi16sp, rf[write_back_register]);
-           else if ((insn & 'he003) == 'h6001) // XXX untested
-             $display("c.lui   x%1d,%1d           %x", write_back_register, $signed(imm6), rf[write_back_register]);
+           else if ((insn & 'he003) == 'h6001)
+             $display("c.lui   x%1d,%1d           %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
+           else if ((insn & 'hec03) == 'h8001)
+             $display("c.srli  x%1d,%1d           %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
+           else if ((insn & 'hec03) == 'h8401)
+             $display("c.srai  x%1d,%1d           %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
+           else if ((insn & 'hec03) == 'h8801)
+             $display("c.andi  x%1d,%1d           %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h8c01)
+             $display("c.sub   x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h8c21)
+             $display("c.xor   x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h8c41)
+             $display("c.or    x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h8c61)
+             $display("c.and   x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h9c01)
+             $display("c.subw  x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hec63) == 'h9c21)
+             $display("c.andw  x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'he003) == 'ha001)
+             $display("c.j     %8x                %x UNTESTED", pc + $signed(imm_j_c));
+           else if ((insn & 'he003) == 'hc001)
+             $display("c.beqz  x%1d,%8x           %x UNTESTED", rs1, pc + $signed(imm_b_c));
+           else if ((insn & 'he003) == 'he001)
+             $display("c.bnez  x%1d,%8x           %x UNTESTED", rs1, pc + $signed(imm_b_c));
 
-           else if ((insn & 'hf07f) == 'h8002) // XXX untested
-             $display("c.jr");
-           else if ((insn & 'hf003) == 'h8002) // XXX untested
-             $display("c.mv    x%1d,x%1d          %x", write_back_register, rs2, rf[write_back_register]);
+              // Quardrant 2
+           else if ((insn & 'he003) == 'h0002)
+             $display("c.slli  x%1d,x%1d          %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
+           else if ((insn & 'he003) == 'h2002)
+             $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+           else if ((insn & 'he003) == 'h4002)
+             $display("c.lwsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm8_w, rf[write_back_register]);
+           else if ((insn & 'he003) == 'h6002)
+             $display("c.ldsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+           else if ((insn & 'hf07f) == 'h8002)
+             $display("c.jr UNTESTED");
+           else if ((insn & 'hf003) == 'h8002)
+             $display("c.mv    x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
+           else if ((insn & 'hffff) == 'h9002)
+             $display("c.ebreak UNTESTED");
+           else if ((insn & 'hf07f) == 'h9002)
+             $display("c.jalr  x%1d UNTESTED", rs2);
+           else if ((insn & 'hf003) == 'h9002)
+             $display("c.add  x%1d,x%1d UNTESTED", write_back_register, rs2);
+           else if ((insn & 'he003) == 'ha002)
+             $display("c.fsdsp x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
+           else if ((insn & 'he003) == 'hc002)
+             $display("c.swsp  x%1d,%1d(sp) UNTESTED", rs2, uimm8_w_s);
+           else if ((insn & 'he003) == 'he002)
+             $display("c.sdsp  x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
 
 
 
@@ -366,9 +417,15 @@ module smolrv64(input wire        clock,
            nzuimm = {insn[10:7],insn[12:11],insn[5],insn[6],2'd0};
            uimm5w = {insn[5],insn[12:10],insn[6],2'd0};
            uimm5d = {{59{insn[12]}},insn[6:2]};
-           imm6 = {{59{insn[12]}},insn[6:2]};
+           imm6 = {insn[12],insn[6:2]};
            imm_addi16sp = {{55{insn[12]}},insn[4:3],insn[5],insn[2],insn[6],4'd0};
-           
+           imm_j_c = {insn[12],insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[4:3],1'd0};
+           imm_b_c = {insn[12],insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
+           uimm9_d = {insn[4:2],insn[12],insn[6:5],3'd0};
+           uimm8_w = {insn[3:2],insn[12],insn[6:4],2'd0};
+           uimm9_d_s = {insn[9:7],insn[12:10],3'd0};
+           uimm8_w_s = {insn[8:7],insn[12:9],2'd0};
+
            csrno = insn[31:20];
 
            npc = pc + (insn[1:0] == 3 ? 4 : 2);
@@ -396,13 +453,13 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'he003) == 'h0001) begin // C.ADDI
               write_back_register = rs1;
-              write_back_value = s1 + imm6;
+              write_back_value = s1 + $signed(imm6);
            end
            // ...
 
            else if ((insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = insn[11:7];
-              write_back_value = imm6;
+              write_back_value = $signed(imm6);
            end
 
            else if ((insn & 'he003) == 'h6001) begin // C.ADDI16SP/C.LUI
@@ -410,7 +467,7 @@ module smolrv64(input wire        clock,
                  write_back_value = s1 + $signed(imm_addi16sp);
                  write_back_register = 2;
               end else begin
-                 write_back_value = imm6;
+                 write_back_value = $signed(imm6);
                  write_back_register = insn[11:7];
               end
            end
