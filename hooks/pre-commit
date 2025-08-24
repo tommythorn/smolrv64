@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Print an introduction line in cyan
+printf "\033[0;36mPre-commit hook is linting your changes for non-standard code...\033[0m \n"
+
+# Grab feed of staged files
+files=$(git diff --name-only --cached)
+numfiles=$( printf '%s' "$files" | grep -c '^' )
+
+if [ $numfiles -eq 0 ]
+then
+  printf "\033[0;35mNo files staged. Nothing to check.\033[0m\n"
+  exit 1
+fi
+
+# Default to zero which means the changes are good and the commit can go ahead
+exitstatus=0
+
+numnonpassingfiles=0
+
+# Iterate over the filenames to discover the longest
+longest=0
+for i in $files
+do
+  if [ ${#i} -gt $longest ]
+  then
+    longest=${#i}
+  fi
+done
+
+# Iterate over the staged filenames
+for i in $files
+do
+  # Print file name eg: "Checking: text.txt"
+  printf "\033[0;35mChecking:\033[0m %s " "$i"
+
+  # Print some padding spaces so the failed/success statuses line up
+  padding=$(expr $longest - ${#i})
+  for ((n=0;n<$padding;n++))
+  do
+    printf " "
+  done
+
+  # Count number of lines with the plus symbol and tab characters at the start (eg. New lines, indented wrongly)
+  tabbedlines=$( git diff --cached -U0 -- $i | egrep "^\+	" )
+  tabbedlinecount=$( printf "%s" "$tabbedlines" | grep -c '^' )
+
+  # Print the coloured [failed] or [success] report
+  if [ $tabbedlinecount -gt 0 ]
+  then
+    printf "\033[0;31m[failed]\n"
+    ((numnonpassingfiles++))
+    exitstatus=1
+  else
+    printf "\033[0;32m[passed]\n"
+  fi
+
+  # Print report line about tab character being used
+  if [ $tabbedlinecount -gt 0 ]
+  then
+    printf "%s lines indented with a tab character: \033[0;32m \n" "$tabbedlinecount"
+    while read -r line;
+    do
+      printf "%s\n" "$line"
+    done <<< "$tabbedlines"
+    printf "\n"
+  fi
+
+  # Reset print color back to default for the next iteration
+  printf "\033[0m"
+
+done
+
+# Print a summary of lint
+if [ $exitstatus -eq 0 ]
+then
+  printf "\033[0;32m%s %s file" "--" "$numfiles"
+  if [ $numfiles -gt 1 ]
+  then
+    printf "s"
+  fi
+  printf " passed. Continuing with commit... \033[0m\n"
+else
+  printf "%s Sorry, %s of %s staged files contain lines that do not pass.\n" "--" "$numnonpassingfiles" "$numfiles"
+fi
+
+exit $exitstatus
