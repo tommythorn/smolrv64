@@ -397,9 +397,14 @@ module smolrv64(input wire        clock,
              3: {rs1,rs2} = {insn`insn_rs1,  insn`insn_rs2};
            endcase
            // The exceptions
-           if (insn[1:0] == 1 && insn[15]) 
+           if (insn[1:0] == 1 && insn[15])
              rs1 = 5'd8 | insn[9:7];
-           if ((insn & 'he003) == 0) rs1 = 2;
+           if (insn[1:0] == 2 && insn[15] == 0)
+             rs1 = 2; // sp
+           if (insn[1:0] == 2 && 5 <= insn[15:13])
+             rs1 = 2; // sp
+           if ((insn & 'he003) == 0)
+             rs1 = 2; // sp
 
            shamt = insn[25:20];
 
@@ -591,19 +596,30 @@ module smolrv64(input wire        clock,
 
               // Quardrant 2
            else if ((insn & 'he003) == 'h0002) begin // C.SLLI
-             $display("c.slli  x%1d,x%1d          %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
+              write_back_register = rs1;
+              write_back_value = s1 >> imm6[5:0];
            end
 
-           else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
-             $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
-           end
+           //else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
+           //  $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+           //end
 
            else if ((insn & 'he003) == 'h4002) begin // C.LWSP
-             $display("c.lwsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm8_w, rf[write_back_register]);
+              rd = insn[11:7]; // XXX this is a bit unclean
+              mem_addr = s1 + uimm8_w;
+              load_size_lg2 = 2|4;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'he003) == 'h6002) begin // C.LDSP
-             $display("c.ldsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+              rd = insn[11:7]; // XXX this is a bit unclean
+              mem_addr = s1 + uimm9_d;
+              load_size_lg2 = 3;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
@@ -615,31 +631,40 @@ module smolrv64(input wire        clock,
               write_back_value = s2;
            end
 
-           else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
-             $display("c.ebreak UNTESTED");
-           end
+           //else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
+           //  $display("c.ebreak UNTESTED");
+           //end
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
-             $display("c.jalr  x%1d UNTESTED", rs2);
+              npc = s1 & ~1;
            end
 
            else if ((insn & 'hf003) == 'h9002) begin // C.ADD
-             $display("c.add  x%1d,x%1d UNTESTED", write_back_register, rs2);
+              write_back_register = rs1;
+              write_back_value = s1 + s2;
            end
 
-           else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
-             $display("c.fsdsp x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
-           end
+           // else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
+           //  $display("c.fsdsp x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
+           // end
 
            else if ((insn & 'he003) == 'hc002) begin // C.SWSP
-             $display("c.swsp  x%1d,%1d(sp) UNTESTED", rs2, uimm8_w_s);
+              mem_addr = s1 + uimm8_w_s;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              mem_wr_mask <= 15;
+              state <= `S_STORE;
            end
 
            else if ((insn & 'he003) == 'he002) begin // C.SDSP
-             $display("c.sdsp  x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
+              mem_addr = s1 + uimm9_d_s;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              mem_wr_mask <= 255;
+              state <= `S_STORE;
            end
 
-           // Uncompressed
+           // Quardrant 3, uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
               write_back_value = imm_u;
