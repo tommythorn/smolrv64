@@ -3,11 +3,17 @@
 There are literally hundreds of RISC-V implementations already and
 I've even written some of them so why write yet another one?
 
-The purpose of this implementation is to be as simple as possible and
-as fast to implement as possible, thus, the RTL will look terribly
-inefficient and almost look like a software simulator.  That's on
-purpose!  Performance is *not* the goal.
+The goal of this implementation is to reach functionality as quickly as possible, thus, the RTL will prioritize simplicity over
+efficientcy and will resemble a software simulator.  That's on
+purpose!  Performance is *not* the goal (initially)
 
-Initially this will be a single-cycle implementation, but we expect we
-will have to migrate to a micro-sequenced implementation (FPGA rams
-generally want to be fed with a register).
+# Status
+
+RV64IC is fully implemented except for system features and debug.
+
+Currently two dev boards are directly supported: ULX3S and RX-XCKU5P-F.
+
+## Performace
+
+Performance isn't a priority, but IPC is about 0.22 at 25 MHz (ULX3S) and 200 MHz (RX-XCKU5P).
+
