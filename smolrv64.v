@@ -86,15 +86,16 @@ module smolrv64(input wire        clock,
 
    reg [63:0]  npc = 0;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
-   reg [11:0]  imm_j_c;
-   reg [ 8:0]  imm_b_c;
+   reg [63:0]  imm_j_c;
+   reg [63:0]  imm_b_c;
    reg [ 9:0]  nzuimm;
-   reg [ 5:0]  imm6;
+   reg [63:0]  imm6;
    reg [63:0]  imm_addi16sp;
    reg [ 4:0]  uimm5w, uimm5d;
    reg [ 8:0]  uimm9_d, uimm9_d_s;
    reg [ 7:0]  uimm8_w, uimm8_w_s;
    reg [31:0]  sext32;
+   reg [ 2:0]  load_size_lg2 = 'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
 `ifdef SIMULATE
    reg [127:0] tmp128;
 `endif
@@ -163,7 +164,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hef83) == 'h6101)
              $display("c.addi16sp  %1d            %x UNTESTED", write_back_register, imm_addi16sp, rf[write_back_register]);
            else if ((insn & 'he003) == 'h6001)
-             $display("c.lui   x%1d,%1d           %x UNTESTED", write_back_register, $signed(imm6), rf[write_back_register]);
+             $display("c.lui   x%1d,%1d           %x", write_back_register, $signed(imm6), rf[write_back_register]);
            else if ((insn & 'hec03) == 'h8001)
              $display("c.srli  x%1d,%1d           %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
            else if ((insn & 'hec03) == 'h8401)
@@ -199,7 +200,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'he003) == 'h6002)
              $display("c.ldsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
            else if ((insn & 'hf07f) == 'h8002)
-             $display("c.jr UNTESTED");
+             $display("c.jr    x%1d", rs1);
            else if ((insn & 'hf003) == 'h8002)
              $display("c.mv    x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
            else if ((insn & 'hffff) == 'h9002)
@@ -391,11 +392,13 @@ module smolrv64(input wire        clock,
            // The general principle
            case (insn[1:0])
              0: {rs1,rs2} = {5'd8|insn[9:7], 5'd8|insn[4:2]};
-             1: {rs1,rs2} = {5'd8|insn[9:7], 5'd8|insn[4:2]};
+             1: {rs1,rs2} = {insn[11:7], 5'd8|insn[4:2]};
              2: {rs1,rs2} = {insn[11:7],     insn[6:2]};
              3: {rs1,rs2} = {insn`insn_rs1,  insn`insn_rs2};
            endcase
-           // The special case
+           // The exceptions
+           if (insn[1:0] == 1 && insn[15]) 
+             rs1 = 5'd8 | insn[9:7];
            if ((insn & 'he003) == 0) rs1 = 2;
 
            shamt = insn[25:20];
@@ -417,10 +420,10 @@ module smolrv64(input wire        clock,
            nzuimm = {insn[10:7],insn[12:11],insn[5],insn[6],2'd0};
            uimm5w = {insn[5],insn[12:10],insn[6],2'd0};
            uimm5d = {{59{insn[12]}},insn[6:2]};
-           imm6 = {insn[12],insn[6:2]};
+           imm6 = {{59{insn[12]}},insn[6:2]};
            imm_addi16sp = {{55{insn[12]}},insn[4:3],insn[5],insn[2],insn[6],4'd0};
-           imm_j_c = {insn[12],insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[4:3],1'd0};
-           imm_b_c = {insn[12],insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
+           imm_j_c = {{53{insn[12]}},insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[4:3],1'd0};
+           imm_b_c = {{55{insn[12]}},insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
            uimm9_d = {insn[4:2],insn[12],insn[6:5],3'd0};
            uimm8_w = {insn[3:2],insn[12],insn[6:4],2'd0};
            uimm9_d_s = {insn[9:7],insn[12:10],3'd0};
@@ -439,7 +442,8 @@ module smolrv64(input wire        clock,
            // but we keep the if-else chain in order to catch the
            // unhandled instructions.
 
-           if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN
+           // Quardrant 0
+           if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
               write_back_value = s1 + nzuimm;
               if ((insn & 'hffff) == 0) begin
 `ifdef SIMULATE
@@ -451,39 +455,191 @@ module smolrv64(input wire        clock,
                 write_back_register = 2;
            end
 
+           //else if ((insn & 'he003) == 'h2000) begin // C.FLD
+             //$display("c.fld   x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, uimm5d, rf[write_back_register]);
+           //end
+
+           else if ((insn & 'he003) == 'h4000) begin // C.LW
+              load_size_lg2 = 2;
+              mem_addr = s1 + uimm5w;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              state <= `S_LOAD_ALIGN;
+           end
+
+           else if ((insn & 'he003) == 'h6000) begin // C.LD
+              load_size_lg2 = 4;
+              mem_addr = s1 + uimm5d;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              state <= `S_LOAD_ALIGN;
+           end
+
+           //else if ((insn & 'he003) == 'ha000) begin // C.FSD
+           //  $display("c.fsd   x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, uimm5d);
+           //end
+
+           else if ((insn & 'he003) == 'hc000) begin // C.SW
+              mem_addr = s1 + uimm5w;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              mem_wr_mask <= 15;
+              state <= `S_STORE;
+           end
+
+           else if ((insn & 'he003) == 'he000) begin // C.SD
+              mem_addr = s1 + uimm5d;
+              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
+              mem_addr1 <= mem_addr[63:3];
+              mem_wr_mask <= 255;
+              state <= `S_STORE;
+           end
+
+
+              // Quardrant 1
+           else if (insn == 1) begin // C.NOP
+             // NOP
+           end
+
            else if ((insn & 'he003) == 'h0001) begin // C.ADDI
               write_back_register = rs1;
-              write_back_value = s1 + $signed(imm6);
+              write_back_value = s1 + imm6;
            end
-           // ...
+
+           else if ((insn & 'he003) == 'h2001) begin // C.ADDIW
+              write_back_register = rs1;
+              sext32 = s1[31:0] + imm6;
+              write_back_value = {{32{sext32[31]}},sext32};
+           end
 
            else if ((insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = insn[11:7];
-              write_back_value = $signed(imm6);
+              write_back_value = imm6;
            end
 
-           else if ((insn & 'he003) == 'h6001) begin // C.ADDI16SP/C.LUI
-              if (rs1 == 2) begin
-                 write_back_value = s1 + $signed(imm_addi16sp);
-                 write_back_register = 2;
-              end else begin
-                 write_back_value = $signed(imm6);
-                 write_back_register = insn[11:7];
-              end
+           else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP
+              write_back_register = 2;
+              write_back_value = s1 + imm_addi16sp;
+           end
+
+           else if ((insn & 'he003) == 'h6001) begin // C.LUI
+              write_back_register = rs1;
+              write_back_value = imm6;
+           end
+
+           else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
+              write_back_register = rs1;
+              write_back_value = s1 >> imm6[5:0];
+           end
+
+           else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
+              write_back_register = rs1;
+              write_back_value = $signed(s1) >> imm6[5:0];
+           end
+
+           else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
+              write_back_register = rs1;
+              write_back_value = s1 & imm6;
+           end
+
+           else if ((insn & 'hec63) == 'h8c01) begin // C.SUB
+              write_back_register = rs1;
+              write_back_value = s1 - s2;
+           end
+
+           else if ((insn & 'hec63) == 'h8c21) begin // C.XOR
+              write_back_register = rs1;
+              write_back_value = s1 ^ s2;
+           end
+
+           else if ((insn & 'hec63) == 'h8c41) begin // C.OR
+              write_back_register = rs1;
+              write_back_value = s1 | s2;
+           end
+
+           else if ((insn & 'hec63) == 'h8c61) begin // C.AND
+              write_back_register = rs1;
+              write_back_value = s1 & s2;
+           end
+
+           else if ((insn & 'hec63) == 'h9c01) begin // C.SUBW
+              sext32 = s1[31:0] - s2[31:0];
+              write_back_register = rs1;
+              write_back_value = {{32{sext32[31]}},sext32};
+           end
+
+           else if ((insn & 'hec63) == 'h9c21) begin // C.ANDW
+              sext32 = s1[31:0] + s2[31:0];
+              write_back_register = rs1;
+              write_back_value = {{32{sext32[31]}},sext32};
+           end
+
+           else if ((insn & 'he003) == 'ha001) begin // C.J
+              npc = pc + imm_j_c;
+           end
+
+           else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
+              if (s1 == 0)
+                npc = pc + imm_j_c;
+           end
+
+           else if ((insn & 'he003) == 'he001) begin // C.BNEZ
+              if (s1 != 0)
+                npc = pc + imm_j_c;
            end
 
 
-           // ...
-           
-           else if ((insn & 'hf003) == 'h8002) begin // C.JR/C.MV XXX untested
-              if (rs2 == 0) begin
-                 npc = s1 & ~1;
-              end else begin
-                 write_back_register = rs1;
-                 write_back_value = s2;
-              end
+              // Quardrant 2
+           else if ((insn & 'he003) == 'h0002) begin // C.SLLI
+             $display("c.slli  x%1d,x%1d          %x UNTESTED", write_back_register, imm6, rf[write_back_register]);
            end
 
+           else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
+             $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+           end
+
+           else if ((insn & 'he003) == 'h4002) begin // C.LWSP
+             $display("c.lwsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm8_w, rf[write_back_register]);
+           end
+
+           else if ((insn & 'he003) == 'h6002) begin // C.LDSP
+             $display("c.ldsp  x%1d,%1d(sp)       %x UNTESTED", write_back_register, uimm9_d, rf[write_back_register]);
+           end
+
+           else if ((insn & 'hf07f) == 'h8002) begin // C.JR
+              npc = s1 & ~1;
+           end
+
+           else if ((insn & 'hf003) == 'h8002) begin // C.MV
+              write_back_register = rs1;
+              write_back_value = s2;
+           end
+
+           else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
+             $display("c.ebreak UNTESTED");
+           end
+
+           else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
+             $display("c.jalr  x%1d UNTESTED", rs2);
+           end
+
+           else if ((insn & 'hf003) == 'h9002) begin // C.ADD
+             $display("c.add  x%1d,x%1d UNTESTED", write_back_register, rs2);
+           end
+
+           else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
+             $display("c.fsdsp x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
+           end
+
+           else if ((insn & 'he003) == 'hc002) begin // C.SWSP
+             $display("c.swsp  x%1d,%1d(sp) UNTESTED", rs2, uimm8_w_s);
+           end
+
+           else if ((insn & 'he003) == 'he002) begin // C.SDSP
+             $display("c.sdsp  x%1d,%1d(sp) UNTESTED", rs2, uimm9_d_s);
+           end
+
+           // Uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
               write_back_value = imm_u;
@@ -532,6 +688,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00000003) begin // LB
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 0|4;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -539,6 +696,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00001003) begin // LH
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 1|4;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -546,6 +704,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00002003) begin // LW
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 2|4;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -553,6 +712,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00003003) begin // LD
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 3;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -560,6 +720,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00004003) begin // LBU
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 0;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -567,6 +728,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00005003) begin // LHU
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 1;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -574,6 +736,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00006003) begin // LWU
               mem_addr = s1 + imm_i;
+              load_size_lg2 = 2;
               mem_addr0 <= mem_addr[63:3] + mem_addr[2];
               mem_addr1 <= mem_addr[63:3];
               state <= `S_LOAD_ALIGN;
@@ -921,20 +1084,16 @@ module smolrv64(input wire        clock,
            aligned = aligned >> (mem_addr[2:0] * 8);
            write_back_register = rd;
 
-           if ((insn & 'h0000707f) == 'h00000003) // LB
-             write_back_value = {{56{aligned[7]}},aligned[7:0]};
-           else if ((insn & 'h0000707f) == 'h00001003) // LH
-             write_back_value = {{48{aligned[15]}},aligned[15:0]};
-           else if ((insn & 'h0000707f) == 'h00002003) // LW
-             write_back_value = {{32{aligned[31]}},aligned[31:0]};
-           else if ((insn & 'h0000707f) == 'h00004003) // LBU
-             write_back_value = aligned[7:0];
-           else if ((insn & 'h0000707f) == 'h00005003) // LHU
-             write_back_value = aligned[15:0];
-           else if ((insn & 'h0000707f) == 'h00006003) // LWU
-             write_back_value = aligned[31:0];
-           else if ((insn & 'h0000707f) == 'h00003003) // LD
-             write_back_value = aligned;
+           case (load_size_lg2)
+             0: write_back_value = aligned[7:0];
+             1: write_back_value = aligned[15:0];
+             2: write_back_value = aligned[31:0];
+             3: write_back_value = aligned;
+             4: write_back_value = {{56{aligned[7]}},aligned[7:0]};
+             5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
+             6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
+             7: write_back_value = 'hx;
+           endcase
 
            state <= `S_FETCH;
         end
