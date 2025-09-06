@@ -1,5 +1,5 @@
-.globl start
-start:  .short   0x0040
+.globl _start
+_start: .short   0x0040
 	.short   0x1ffc
 	.short   0x0028 # c.addi16sp but binutils can't grok
 

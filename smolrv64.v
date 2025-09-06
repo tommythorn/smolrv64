@@ -48,34 +48,81 @@ module smolrv64(input wire        clock,
                 output reg        halted_o = 0);
 
 // XXX Should I use param/localparam instead?
+`define TRAP_INSTRUCTION_ADDRESS_MISALIGNED      0
+`define TRAP_INSTRUCTION_ACCESS_FAULT            1
+`define TRAP_ILLEGAL_INSTRUCTION                 2
+`define TRAP_BREAKPOINT                          3
+`define TRAP_LOAD_ADDRESS_MISALIGNED             4
+`define TRAP_LOAD_ACCESS_FAULT                   5
+`define TRAP_STORE_ADDRESS_MISALIGNED            6
+`define TRAP_STORE_ACCESS_FAULT                  7
+`define TRAP_ENVIRONMENT_CALL_FROM_U_MODE        8
+`define TRAP_ENVIRONMENT_CALL_FROM_S_MODE        9
+// 10 is reserved
+`define TRAP_ENVIRONMENT_CALL_FROM_M_MODE       11
+`define TRAP_INSTRUCTIONPAGE_FAULT              12
+`define TRAP_LOAD_PAGE_FAULT                    13
+// 14 is reserved
+`define TRAP_STORE_PAGE_FAULT                   15
+
+`define TRAP_USER_SOFTWARE_INTERRUPT            100
+`define TRAP_SUPERVISOR_SOFTWARE_INTERRUPT      101
+`define TRAP_MACHINE_SOFTWARE_INTERRUPT         103
+
+`define TRAP_USER_TIMER_INTERRUPT               104
+`define TRAP_SUPERVISOR_TIMER_INTERRUPT         105
+`define TRAP_MACHINE_TIMER_INTERRUPT            107
+
+`define TRAP_USER_EXTERNAL_INTERRUPT            108
+`define TRAP_SUPERVISOR_EXTERNAL_INTERRUPT      109
+`define TRAP_MACHINE_EXTERNAL_INTERRUPT         111
+
+
+`define CSR_MSTATUS  12'h300
+`define CSR_MIE      12'h304
+`define CSR_MTVEC    12'h305
 `define CSR_MSCRATCH 12'h340
+`define CSR_MEPC     12'h341
+`define CSR_MCAUSE   12'h342
+`define CSR_MTVAL    12'h343
 `define CSR_MCYCLE   12'hb00
 `define CSR_MINSTRET 12'hb02
+`define CSR_MHARTID  12'hf14
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
 `define CSR_OP_ANDN 2
 
-`define S_FETCH 0
+`define S_FETCH          0
 `define S_FETCH_COMPLETE 1
-`define S_DECODE 2
-`define S_EXECUTE 3
-`define S_STORE 4
-`define S_LOAD_ALIGN 5
-`define S_HANDLE_CSR 6
-`define S_ILLEGAL_INSN 7
+`define S_DECODE         2
+`define S_EXECUTE        3
+`define S_STORE          4
+`define S_LOAD_ALIGN     5
+`define S_HANDLE_CSR     6
+`define S_EXCEPTION      7
+`define S_MUL_RUNNING    8
+`define S_DIV_RUNNING    9
+`define S_LAST_STATE    15 // Reminder to update the width of state
+
    reg [3:0]   state = `S_FETCH; // execution state
+
+`define MEM_START 'h80000000
+`define MEM_SIZE_LG2 15
+`define MEM_SIZE (1 << `MEM_SIZE_LG2)
+
 
    // To enable penalty-free unaligned access, memory is split into
    // even and odd word addresses and striped across them.  Any 64-bit
    // word at address A will then be found in {mem1[A/8],mem0[A/8]} if
    // A/4 is even and {mem0[A/8+1],mem1[A/8]} if A/4 is odd.
-   reg [31:0]  mem0[4095:0]; initial $readmemh("mem0.hex", mem0, 0, 4095); // 16 KiB
-   reg [31:0]  mem1[4095:0]; initial $readmemh("mem1.hex", mem1, 0, 4095); // 16 KiB
+   reg [31:0]  mem0[`MEM_SIZE/16-1:0]; initial $readmemh("mem0.hex", mem0, 0, `MEM_SIZE/16-1);
+   reg [31:0]  mem1[`MEM_SIZE/16-1:0]; initial $readmemh("mem1.hex", mem1, 0, `MEM_SIZE/16-1);
    reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
    reg [63:0]  pc = 0;
+   reg [ 1:0]  prv = 3;
 
-   reg [11:0]  mem_addr0, mem_addr1;
+   reg [`MEM_SIZE_LG2-4:0] mem_addr0, mem_addr1;
    reg [63:0]  mem_addr, s1, s2;
    reg [7:0]   mem_wr_mask;
    wire [31:0] mem_data0 = mem0[mem_addr0];
@@ -84,7 +131,7 @@ module smolrv64(input wire        clock,
    reg  [ 5:0] write_back_register = 0;
    reg  [63:0] write_back_value;
 
-   reg [63:0]  npc = 0;
+   reg [63:0]  npc = `MEM_START;
    reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
    reg [63:0]  imm_j_c;
    reg [63:0]  imm_b_c;
@@ -102,15 +149,28 @@ module smolrv64(input wire        clock,
    reg [ 4:0]  rd, rs1, rs2;
    reg [ 5:0]  shamt;
    reg [11:0]  csrno;
-   reg [31:0]  insn;
+   reg [31:0]  insn = 0;
    wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
 
    reg [ 1:0]  csr_op;
 
    // CSR state (just a place holder for now)
-   reg [63:0]  csr_mscratch = 'hDEADBEEFCAFEF00D,
+   reg [0:0]   csr_mie      = 0;
+   reg [63:0]  csr_mstatus  = 0,
+               csr_mtvec    = 0,
+               csr_mscratch = 'hDEADBEEFCAFEF00D,
+               csr_mepc     = 0,
+               csr_mcause   = 0,
+               csr_mtval    = 0,
                csr_mcycle   = 0,
                csr_minstret = ~0; // -1 because we increase it in fetch
+
+   reg [ 63:0] mul_b;
+   reg [127:0] mul_a, mul_p = 0;
+   reg         mul_output_sext32 = 0;
+   reg         mul_output_negate = 0;
+   reg         mul_output_high_part = 0;
+   reg [6:0]   div_count;
 
    always @(posedge clock) begin
       csr_mcycle <= csr_mcycle + 1;
@@ -130,9 +190,9 @@ module smolrv64(input wire        clock,
 
            if (csr_mcycle) begin
            if ((insn & 3) == 3)
-             $write("%05d   %x %x ", $time, pc, insn);
+             $write("%05d   %d %x %x ", $time, prv, pc, insn);
            else
-             $write("%05d   %x     %x ", $time, pc, insn[15:0]);
+             $write("%05d   %d %x     %x ", $time, prv, pc, insn[15:0]);
            if ((insn & 'hffff) == 'h0000)
              $display("illegal");
 
@@ -238,8 +298,6 @@ module smolrv64(input wire        clock,
              $display("bltu    x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
            else if ((insn & 'h0000707f) == 'h00007063) // BGEU
              $display("bgeu    x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
-           else if ((insn & 'h0000707f) == 'h00001073) // CSRRW
-             $display("csrrw   x%1d,0x%1x,x%1d    %x", rd, insn[31:20], rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00000003) // LB
              $display("lb      x%1d,%1d(x%1d)    %x", rd, imm_i, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00001003) // LH
@@ -329,17 +387,17 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hffffffff) == 'h0000100f) // FENCE.I
              $display("fence.i");
            else if ((insn & 'h0000707f) == 'h00001073) // CSRRW
-             $display("csrrw   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrw   x%1d,csr[%3x],x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00002073) // CSRRS
-             $display("csrrs   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrs   x%1d,csr[%3x],x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00003073) // CSRRC
-             $display("csrrc   x%1d,%3x,x%1d         %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrc   x%1d,csr[%3x],x%1d         %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00005073) // CSRRWI
-             $display("csrrwi  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrwi  x%1d,csr[%3x],%1d          %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00006073) // CSRRSI
-             $display("csrrsi  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrsi  x%1d,csr[%3x],%1d          %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00007073) // CSRRCI
-             $display("csrrci  x%1d,%3x,%1d          %x", rd, csrno, rs1, rf[rd]);
+             $display("csrrci  x%1d,csr[%3x],%1d          %x", rd, csrno, rs1, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h02000033) // MUL
              $display("mul     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h02001033) // MULH
@@ -366,6 +424,8 @@ module smolrv64(input wire        clock,
              $display("remw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0200703b) // REMUW
              $display("remuw   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+           else if ((insn & 'hffffffff) == 'h30200073) // MRET
+             $display("mret");
            else
              $display("illegal or unsupported instruction");
            end
@@ -375,6 +435,16 @@ module smolrv64(input wire        clock,
            mem_addr1 <= npc[63:3];
            pc <= npc;
            state <= `S_FETCH_COMPLETE;
+
+           if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+`ifdef SIMULATE
+              $display("%05d   %d %x xxxxxxxx illegal fetch address %x", $time, prv, npc);
+`endif
+              csr_mcause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+              csr_mepc = pc;
+              csr_mtval = 0;
+              state <= `S_EXCEPTION;
+           end
         end
 
         `S_FETCH_COMPLETE: begin
@@ -452,9 +522,12 @@ module smolrv64(input wire        clock,
               write_back_value = s1 + nzuimm;
               if ((insn & 'hffff) == 0) begin
 `ifdef SIMULATE
-                 $display("%05d   %x %x illegal C.ADDI4SPN variant", $time, pc, insn);
+                 $display("%05d   %x %d %x illegal C.ADDI4SPN variant", $time, prv, pc, insn);
 `endif
-                state <= `S_ILLEGAL_INSN;
+                 csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
+                 csr_mepc = pc;
+                 csr_mtval = insn;
+                 state <= `S_EXCEPTION;
               end
               else
                 write_back_register = 2;
@@ -887,17 +960,16 @@ module smolrv64(input wire        clock,
               // Nothing to do here
            end
 
-           /*
            else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
-            // trap_type = Trap::EnvironmentCallFromUMode + prv
-            // tval = pc
-            // state <= `S_HANDLE_TRAP; (this is a bit involved and shared)
+              csr_mcause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
+              csr_mepc = pc;
+              csr_mtval = 0;
+              state <= `S_EXCEPTION;
            end
 
            else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
             // Requires debug mode
            end
-           */
 
            else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
               write_back_register = rd;
@@ -1019,69 +1091,173 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfe00707f) == 'h02000033) begin // MUL
               write_back_register = rd;
-              write_back_value = s1 * s2;
+              mul_a = s1;
+              mul_b = s2;
+              state <= `S_MUL_RUNNING;
            end
 
-`ifdef SIMULATE
-           /*
            else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
+              write_back_register = rd;
+              mul_output_negate = s1[63] != s2[63];
+              mul_a = {64'd0,s1[63] ? -s1 : s1};
+              mul_b = s2[63] ? -s2 : s2;
+              mul_output_high_part = 1;
+              state <= `S_MUL_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
+              write_back_register = rd;
+              mul_output_negate = s1[63];
+              mul_a = {64'd0, s1[63] ? -s1 : s1};
+              mul_b = s2;
+              mul_output_high_part = 1;
+              state <= `S_MUL_RUNNING;
            end
-           */
 
            else if ((insn & 'hfe00707f) == 'h02003033) begin // MULHU
-              tmp128 = {64'd0,s1} * {64'd0,s2};
-              $display("%d * %d = %d (%x)", s1, s2, tmp128, tmp128);
               write_back_register = rd;
-              write_back_value = tmp128[127:64];
+              mul_a = {64'd0, s1};
+              mul_b = s2;
+              mul_output_high_part = 1;
+              state <= `S_MUL_RUNNING;
            end
 
-           /*
+
            else if ((insn & 'hfe00707f) == 'h02004033) begin // DIV
+              write_back_register = rd;
+              mul_output_negate = s1[63] != s2[63];
+              if (s2 == 0)
+                // No matter s1, this will produce -1 which is the correct answer
+                mul_output_negate = 0;
+              div_count = 64;
+              mul_p = {64'd0,s1[63] ? -s1 : s1};
+              mul_a = {s2[63] ? -s2 : s2, 63'd0};
+              mul_b = 0;
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h02005033) begin // DIVU
+              write_back_register = rd;
+              div_count = 64;
+              mul_p = {64'd0, s1};
+              mul_a = {s2, 63'd0};
+              mul_b = 0;
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h02006033) begin // REM
+              write_back_register = rd;
+              // "For REM, the sign of a nonzero result equals the sign of the dividend."
+              mul_output_negate = s1[63];
+              if (s2 == 0)
+                // No matter s1, this will produce -1 which is the correct answer
+                mul_output_negate = 0;
+              div_count = 64;
+              mul_p = {64'd0,s1[63] ? -s1 : s1};
+              mul_a = {s2[63] ? -s2 : s2, 63'd0};
+              mul_b = 0;
+              mul_output_high_part = 1; // XXX abusing variables
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h02007033) begin // REMU
+              write_back_register = rd;
+              // "For REM, the sign of a nonzero result equals the sign of the dividend."
+              if (s2 == 0)
+                // No matter s1, this will produce -1 which is the correct answer
+                mul_output_negate = 0;
+              div_count = 64;
+              mul_p = {64'd0,s1};
+              mul_a = {s2, 63'd0};
+              mul_b = 0;
+              mul_output_high_part = 1; // XXX abusing variables
+              state <= `S_DIV_RUNNING;
            end
-           */
 
            else if ((insn & 'hfe00707f) == 'h0200003b) begin // MULW
-              sext32 = $signed(s1[31:0]) * $signed(s2[31:0]);
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              mul_a = s1[31] ? {96'd0, -s1} : s1;
+              mul_b = s1[31] ? {32'd0, -s2} : s2;
+              mul_output_sext32 = 1;
+              state <= `S_MUL_RUNNING;
            end
 
-           /*
            else if ((insn & 'hfe00707f) == 'h0200403b) begin // DIVW
+              write_back_register = rd;
+              mul_output_negate = s1[31] != s2[31];
+              if (s2 == 0)
+                // No matter s1, this will produce -1 which is the correct answer
+                mul_output_negate = 0;
+              div_count = 32;
+              mul_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
+              mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
+              mul_b = 0;
+              mul_output_sext32 = 1;
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
+              write_back_register = rd;
+              if (s2 == 0)
+                // No matter s1, this will produce -1 which is the correct answer
+                mul_output_negate = 0;
+              div_count = 32;
+              mul_p = {96'd0, s1[31:0]};
+              mul_a = {s2[31:0], 31'd0};
+              mul_b = 0;
+              mul_output_sext32 = 1;
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200603b) begin // REMW
+              write_back_register = rd;
+              // "For REM, the sign of a nonzero result equals the sign of the dividend."
+              mul_output_negate = s1[31];
+              div_count = 32;
+              mul_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
+              mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
+              mul_b = 0;
+              mul_output_sext32 = 1;
+              mul_output_high_part = 1; // XXX abusing variables
+              state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200703b) begin // REMUW
+              write_back_register = rd;
+              // "For REM, the sign of a nonzero result equals the sign of the dividend."
+              div_count = 32;
+              mul_p = {96'd0, s1[31:0]};
+              mul_a = {s2[31:0], 31'd0};
+              mul_b = 0;
+              mul_output_sext32 = 1;
+              mul_output_high_part = 1; // XXX abusing variables
+              state <= `S_DIV_RUNNING;
            end
-           */
-`endif
+
+           else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
+              npc <= csr_mepc;
+
+              prv = csr_mstatus[12:11];
+              // XXX Vet this
+              csr_mstatus[3] = csr_mstatus[7];
+              csr_mstatus[7] = 1;
+              csr_mstatus[17] = csr_mstatus[12:11] == 3 ? csr_mstatus[17] : 0;
+              csr_mstatus[12:11] = 0;
+           end
 
            else begin
 `ifdef SIMULATE
               if (insn[1:0] == 3)
-                $display("%05d   %x %x illegal unknown instruction", $time, pc, insn);
+                $display("%05d   %d %x %x illegal unknown instruction", $time, prv, pc, insn);
               else
-                $display("%05d   %x     %x illegal unknown instruction (%1d,%d)", $time, pc, insn[15:0], insn[15:13], insn[1:0]);
+                $display("%05d   %d %x     %x illegal unknown instruction (%1d,%d)",
+                         $time, prv, pc, insn[15:0], insn[15:13], insn[1:0]);
               $finish;
 `endif
-              state <= `S_ILLEGAL_INSN;
+              csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
+              csr_mepc = pc;
+              csr_mtval = insn;
+              state <= `S_EXCEPTION;
            end
         end
 
@@ -1102,6 +1278,16 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[6]) mem1[mem_addr / 8][23:16] <= s2[55:48];
            if (mem_wr_mask[7]) mem1[mem_addr / 8][31:24] <= s2[63:56];
            state <= `S_FETCH;
+
+           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+`ifdef SIMULATE
+              $display("%05d   %x xxxxxxxx illegal store address %x", $time, mem_addr);
+`endif
+              csr_mcause = `TRAP_STORE_ACCESS_FAULT;
+              csr_mepc = pc;
+              csr_mtval = mem_addr;
+              state <= `S_EXCEPTION;
+           end
         end
 
         `S_LOAD_ALIGN: begin
@@ -1121,24 +1307,44 @@ module smolrv64(input wire        clock,
            endcase
 
            state <= `S_FETCH;
+
+           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+              // XXX This isn't catching unaligned access that overflows
+`ifdef SIMULATE
+              $display("%05d   %x xxxxxxxx illegal load address %x", $time, mem_addr);
+`endif
+              csr_mcause = `TRAP_LOAD_ACCESS_FAULT;
+              csr_mepc = pc;
+              csr_mtval = mem_addr;
+              state <= `S_EXCEPTION;
+           end
         end
 
         `S_HANDLE_CSR: begin
            state <= `S_FETCH;
-           // The CSR is insn[]
 
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
               case (csrno)
-                `CSR_MCYCLE: csr_read_val = csr_mcycle;
-                `CSR_MINSTRET: csr_read_val = csr_minstret;
+                `CSR_MSTATUS:  csr_read_val = csr_mstatus;
+                `CSR_MIE:      csr_read_val = csr_mie;
+                `CSR_MTVEC:    csr_read_val = csr_mtvec;
                 `CSR_MSCRATCH: csr_read_val = csr_mscratch;
-                12'h666: csr_read_val = 0;
+                `CSR_MEPC:     csr_read_val = csr_mepc;
+                `CSR_MCAUSE:   csr_read_val = csr_mcause;
+                `CSR_MTVAL:    csr_read_val = csr_mtval;
+                `CSR_MCYCLE:   csr_read_val = csr_mcycle;
+                `CSR_MINSTRET: csr_read_val = csr_minstret;
+                `CSR_MHARTID:  csr_read_val = 0;
+                12'h666:       csr_read_val = 0;
                 default: begin
 `ifdef SIMULATE
-                   $display("%05d   %x %x illegal CSR %x (read)", $time, pc, insn, csrno);
+                   $display("%05d   %d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
 `endif
-                   state <= `S_ILLEGAL_INSN;
+                   csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
+                   csr_mepc = pc;
+                   csr_mtval = insn;
+                   state <= `S_EXCEPTION;
                 end
               endcase
            end
@@ -1153,9 +1359,15 @@ module smolrv64(input wire        clock,
            if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               // write the CSR
               case (csrno)
-                `CSR_MCYCLE: csr_mcycle <= csr_write_val;
-                `CSR_MINSTRET: csr_minstret <= csr_write_val;
+                `CSR_MSTATUS:  csr_mstatus  <= csr_write_val;
+                `CSR_MIE:      csr_mie      <= csr_write_val;
+                `CSR_MTVEC:    csr_mtvec    <= csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
                 `CSR_MSCRATCH: csr_mscratch <= csr_write_val;
+                `CSR_MEPC:     csr_mepc     <= csr_write_val;
+                `CSR_MCAUSE:   csr_mcause   <= csr_write_val;
+                `CSR_MTVAL:    csr_mtval    <= csr_write_val;
+                `CSR_MCYCLE:   csr_mcycle   <= csr_write_val;
+                `CSR_MINSTRET: csr_minstret <= csr_write_val;
                 12'h666: begin
                    // XXX This is the hacky UART backdoor.  It will be
                    // removed eventually.
@@ -1166,9 +1378,10 @@ module smolrv64(input wire        clock,
                 end
                 default: begin
 `ifdef SIMULATE
-                   $display("%05d   %x %x illegal CSR %x (write)", $time, pc, insn, csrno);
+                   $display("%05d   %d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
 `endif
-                   state <= `S_ILLEGAL_INSN;
+                   // XXX set cause
+                   state <= `S_EXCEPTION;
                 end
               endcase
            end
@@ -1177,10 +1390,69 @@ module smolrv64(input wire        clock,
            write_back_value = csr_read_val;
         end
 
-        `S_ILLEGAL_INSN: begin
-           // XXX In future this will raise a trap
-           halted_o <= 1;
+        `S_EXCEPTION: begin
+           npc <= csr_mtvec;
+           state <= `S_FETCH;
         end
+
+        `S_MUL_RUNNING: begin
+           //$display("MUL: %x * %x + %x", mul_a, mul_b, mul_p);
+           if (mul_b != 0) begin
+              if (mul_b[0])
+                mul_p = mul_p + mul_a;
+              mul_a = mul_a << 1;
+              mul_b = mul_b >> 1;
+           end else begin
+
+              if (mul_output_sext32)
+                write_back_value = {{32{mul_p[31]}}, mul_p[31:0]};
+              else begin
+                 if (mul_output_negate)
+                   mul_p = ~mul_p + 1;
+                 else
+                   mul_p = mul_p;
+
+                 if (mul_output_high_part)
+                   write_back_value = mul_p[127:64];
+                 else
+                   write_back_value = mul_p[63:0];
+              end
+
+              // Reset to default values
+              mul_p = 0;
+              mul_output_negate = 0;
+              mul_output_high_part = 0;
+
+              state <= `S_FETCH;
+           end
+        end
+
+        `S_DIV_RUNNING: begin
+           if (div_count != 0) begin
+              mul_b = mul_b << 1;
+              if (mul_p >= mul_a) begin
+                 mul_p = mul_p - mul_a;
+                 mul_b = mul_b | 1;
+              end
+              mul_a = mul_a >> 1;
+              div_count = div_count  - 1;
+           end else begin
+              write_back_value = mul_output_negate ? -mul_b : mul_b;
+              if (mul_output_high_part)
+                // REM
+                write_back_value = mul_output_negate ? -mul_p[63:0] : mul_p[63:0];
+
+              if (mul_output_sext32)
+                write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+
+              mul_p = 0;
+              mul_output_negate = 0;
+              mul_output_high_part = 0;
+
+              state <= `S_FETCH;
+           end
+        end
+
       endcase
    end
 endmodule
