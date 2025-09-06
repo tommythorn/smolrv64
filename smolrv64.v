@@ -1234,6 +1234,94 @@ module smolrv64(input wire        clock,
               state <= `S_DIV_RUNNING;
            end
 
+           else if ((insn & 32'hf9f0707f) == 32'h1000202f) begin // LR.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h1800202f) begin // SC.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h0800202f) begin // AMOSWAP.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h0000202f) begin // AMOADD.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h2000202f) begin // AMOXOR.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h6000202f) begin // AMOAND.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h4000202f) begin // AMOOR.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h8000202f) begin // AMOMIN.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'ha000202f) begin // AMOMAX.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'hc000202f) begin // AMOMINU.W
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'he000202f) begin // AMOMAXU.W
+              //
+           end
+
+           else if ((insn & 32'hf9f0707f) == 32'h1000302f) begin // LR.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h1800302f) begin // SC.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h0800302f) begin // AMOSWAP.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h0000302f) begin // AMOADD.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h2000302f) begin // AMOXOR.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h6000302f) begin // AMOAND.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h4000302f) begin // AMOOR.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'h8000302f) begin // AMOMIN.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'ha000302f) begin // AMOMAX.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'hc000302f) begin // AMOMINU.D
+              //
+           end
+
+           else if ((insn & 32'hf800707f) == 32'he000302f) begin // AMOMAXU.D
+           //
+           end
+
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
               npc <= csr_mepc;
 
@@ -1402,7 +1490,9 @@ module smolrv64(input wire        clock,
                 mul_p = mul_p + mul_a;
               mul_a = mul_a << 1;
               mul_b = mul_b >> 1;
-           end else begin
+           end
+
+        else begin
 
               if (mul_output_sext32)
                 write_back_value = {{32{mul_p[31]}}, mul_p[31:0]};
