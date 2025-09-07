@@ -34,9 +34,14 @@ module smolrv64_tb;
    always @(posedge clock) if (halted) $finish;
 
    initial begin
+`ifdef RISCV_TESTS
+      #100000 $display("Test Failed with TIMEOUT");
+      $finish;
+`else
       $dumpfile("smolrv64.vcd");
       $dumpvars(0, smolrv64_tb);
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
+`endif
    end
 endmodule
 `endif
@@ -438,7 +443,9 @@ module smolrv64(input wire        clock,
 
            if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
-              $display("%05d   %d %x xxxxxxxx illegal fetch address %x", $time, prv, npc);
+`ifndef RISCV_TESTS
+              $display("%05d   %d %x illegal fetch address", $time, prv, npc);
+`endif
 `endif
               csr_mcause = `TRAP_INSTRUCTION_ACCESS_FAULT;
               csr_mepc = pc;
@@ -522,7 +529,9 @@ module smolrv64(input wire        clock,
               write_back_value = s1 + nzuimm;
               if ((insn & 'hffff) == 0) begin
 `ifdef SIMULATE
+`ifndef RISCV_TESTS
                  $display("%05d   %x %d %x illegal C.ADDI4SPN variant", $time, prv, pc, insn);
+`endif
 `endif
                  csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
                  csr_mepc = pc;
@@ -965,6 +974,15 @@ module smolrv64(input wire        clock,
               csr_mepc = pc;
               csr_mtval = 0;
               state <= `S_EXCEPTION;
+`ifdef RISCV_TESTS
+              if (rf[3] & 1) begin
+                 if (rf[3] / 2 == 0)
+                   $display("Test Passed");
+                 else
+                   $display("Test Failed with %3d", rf[3] / 2);
+                 $finish;
+              end
+`endif
            end
 
            else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
@@ -1335,12 +1353,14 @@ module smolrv64(input wire        clock,
 
            else begin
 `ifdef SIMULATE
+`ifndef RISCV_TESTS
               if (insn[1:0] == 3)
                 $display("%05d   %d %x %x illegal unknown instruction", $time, prv, pc, insn);
               else
                 $display("%05d   %d %x     %x illegal unknown instruction (%1d,%d)",
                          $time, prv, pc, insn[15:0], insn[15:13], insn[1:0]);
               $finish;
+`endif
 `endif
               csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
               csr_mepc = pc;
@@ -1369,7 +1389,9 @@ module smolrv64(input wire        clock,
 
            if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
-              $display("%05d   %x xxxxxxxx illegal store address %x", $time, mem_addr);
+`ifndef RISCV_TESTS
+              $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
+`endif
 `endif
               csr_mcause = `TRAP_STORE_ACCESS_FAULT;
               csr_mepc = pc;
@@ -1399,7 +1421,9 @@ module smolrv64(input wire        clock,
            if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
               // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
-              $display("%05d   %x xxxxxxxx illegal load address %x", $time, mem_addr);
+`ifndef RISCV_TESTS
+              $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
+`endif
 `endif
               csr_mcause = `TRAP_LOAD_ACCESS_FAULT;
               csr_mepc = pc;
@@ -1427,7 +1451,9 @@ module smolrv64(input wire        clock,
                 12'h666:       csr_read_val = 0;
                 default: begin
 `ifdef SIMULATE
+`ifndef RISCV_TESTS
                    $display("%05d   %d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
+`endif
 `endif
                    csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
                    csr_mepc = pc;
@@ -1466,7 +1492,9 @@ module smolrv64(input wire        clock,
                 end
                 default: begin
 `ifdef SIMULATE
+`ifndef RISCV_TESTS
                    $display("%05d   %d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
+`endif
 `endif
                    // XXX set cause
                    state <= `S_EXCEPTION;

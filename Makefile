@@ -1,5 +1,8 @@
 P=hw
 
+testall:
+	@./run-riscv-tests.sh
+
 run: $(P).bin
 	hexdump -ve '1/8 "%016x\n"' $^ > mem.hex
 	cut -c9-16 < mem.hex > mem0.hex
