@@ -118,43 +118,45 @@ module smolrv64(input wire        clock,
 
 
    // To enable penalty-free unaligned access, memory is split into
-   // even and odd word addresses and striped across them.  Any 64-bit
-   // word at address A will then be found in {mem1[A/8],mem0[A/8]} if
-   // A/4 is even and {mem0[A/8+1],mem1[A/8]} if A/4 is odd.
-   reg [31:0]  mem0[`MEM_SIZE/16-1:0]; initial $readmemh("mem0.hex", mem0, 0, `MEM_SIZE/16-1);
-   reg [31:0]  mem1[`MEM_SIZE/16-1:0]; initial $readmemh("mem1.hex", mem1, 0, `MEM_SIZE/16-1);
-   reg [63:0]  rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
-   reg [63:0]  pc = 0;
-   reg [ 1:0]  prv = 3;
+   // even and odd 64b word addresses and striped across them.  Any
+   // 64-bit word at address A will then be found in
+   // {mem1[A/16],mem0[A/16]} if A/8 is even and
+   // {mem0[A/16+1],mem1[A/16]} if A/8 is odd.
+   reg  [63:0] mem0[`MEM_SIZE/32-1:0]; initial $readmemh("mem0.hex", mem0, 0, `MEM_SIZE/32-1);
+   reg  [63:0] mem1[`MEM_SIZE/32-1:0]; initial $readmemh("mem1.hex", mem1, 0, `MEM_SIZE/32-1);
+   reg  [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
+   reg  [63:0] pc = 0;
+   reg  [ 1:0] prv = 3;
 
-   reg [`MEM_SIZE_LG2-4:0] mem_addr0, mem_addr1;
-   reg [63:0]  mem_addr, s1, s2;
-   reg [7:0]   mem_wr_mask;
-   wire [31:0] mem_data0 = mem0[mem_addr0];
-   wire [31:0] mem_data1 = mem1[mem_addr1];
+   reg  [`MEM_SIZE_LG2-4:0] mem_addr0, mem_addr1;
+   reg  [63:0] mem_addr, s1, s2;
+   reg  [15:0] mem_wr_mask;
+   wire [63:0] mem_data0 = mem0[mem_addr0];
+   wire [63:0] mem_data1 = mem1[mem_addr1];
 
    reg  [ 5:0] write_back_register = 0;
    reg  [63:0] write_back_value;
 
-   reg [63:0]  npc = `MEM_START;
-   reg [63:0]  imm_i, imm_j, imm_b, imm_u, imm_s, loaded, aligned, csr_arg, csr_read_val, csr_write_val;
-   reg [63:0]  imm_j_c;
-   reg [63:0]  imm_b_c;
-   reg [ 9:0]  nzuimm;
-   reg [63:0]  imm6;
-   reg [63:0]  imm_addi16sp;
-   reg [ 4:0]  uimm5w, uimm5d;
-   reg [ 8:0]  uimm9_d, uimm9_d_s;
-   reg [ 7:0]  uimm8_w, uimm8_w_s;
-   reg [31:0]  sext32;
-   reg [ 2:0]  load_size_lg2 = 'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
+   reg  [63:0] npc = `MEM_START;
+   reg  [127:0] aligned;
+   reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
+   reg  [63:0] imm_j_c;
+   reg  [63:0] imm_b_c;
+   reg  [ 9:0] nzuimm;
+   reg  [63:0] imm6;
+   reg  [63:0] imm_addi16sp;
+   reg  [ 4:0] uimm5w, uimm5d;
+   reg  [ 8:0] uimm9_d, uimm9_d_s;
+   reg  [ 7:0] uimm8_w, uimm8_w_s;
+   reg  [31:0] sext32;
+   reg  [ 2:0] load_size_lg2 = 'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
 `ifdef SIMULATE
-   reg [127:0] tmp128;
+   reg  [127:0] tmp128;
 `endif
-   reg [ 4:0]  rd, rs1, rs2;
-   reg [ 5:0]  shamt;
-   reg [11:0]  csrno;
-   reg [31:0]  insn = 0;
+   reg  [ 4:0] rd, rs1, rs2;
+   reg  [ 5:0] shamt;
+   reg  [11:0] csrno;
+   reg  [31:0] insn = 0;
    wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
 
    reg [ 1:0]  csr_op;
@@ -436,8 +438,8 @@ module smolrv64(input wire        clock,
            end
 `endif
 
-           mem_addr0 <= npc[63:3] + npc[2];
-           mem_addr1 <= npc[63:3];
+           mem_addr0 <= npc[63:4] + npc[3];
+           mem_addr1 <= npc[63:4];
            pc <= npc;
            state <= `S_FETCH_COMPLETE;
 
@@ -455,9 +457,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH_COMPLETE: begin
-           aligned = pc[2] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
+           aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            //$display("   FETCHED %x: %x", pc, aligned);
-           insn = aligned >> (pc[1] * 16);
+           insn = aligned >> (pc[2:1] * 16);
            //$display("   ALIGNED %x: %x", pc, insn);
            state <= `S_DECODE;
         end
@@ -549,16 +551,16 @@ module smolrv64(input wire        clock,
            else if ((insn & 'he003) == 'h4000) begin // C.LW
               load_size_lg2 = 2;
               mem_addr = s1 + uimm5w;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'he003) == 'h6000) begin // C.LD
               load_size_lg2 = 4;
               mem_addr = s1 + uimm5d;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
@@ -568,16 +570,16 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'he003) == 'hc000) begin // C.SW
               mem_addr = s1 + uimm5w;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
               state <= `S_STORE;
            end
 
            else if ((insn & 'he003) == 'he000) begin // C.SD
               mem_addr = s1 + uimm5d;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
               state <= `S_STORE;
            end
@@ -690,8 +692,8 @@ module smolrv64(input wire        clock,
               rd = insn[11:7]; // XXX this is a bit unclean
               mem_addr = s1 + uimm8_w;
               load_size_lg2 = 2|4;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
@@ -699,8 +701,8 @@ module smolrv64(input wire        clock,
               rd = insn[11:7]; // XXX this is a bit unclean
               mem_addr = s1 + uimm9_d;
               load_size_lg2 = 3;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
@@ -732,16 +734,16 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'he003) == 'hc002) begin // C.SWSP
               mem_addr = s1 + uimm8_w_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
               state <= `S_STORE;
            end
 
            else if ((insn & 'he003) == 'he002) begin // C.SDSP
               mem_addr = s1 + uimm9_d_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
               state <= `S_STORE;
            end
@@ -796,87 +798,87 @@ module smolrv64(input wire        clock,
            else if ((insn & 'h0000707f) == 'h00000003) begin // LB
               mem_addr = s1 + imm_i;
               load_size_lg2 = 0|4;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00001003) begin // LH
               mem_addr = s1 + imm_i;
               load_size_lg2 = 1|4;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00002003) begin // LW
               mem_addr = s1 + imm_i;
               load_size_lg2 = 2|4;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00003003) begin // LD
               mem_addr = s1 + imm_i;
               load_size_lg2 = 3;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00004003) begin // LBU
               mem_addr = s1 + imm_i;
               load_size_lg2 = 0;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00005003) begin // LHU
               mem_addr = s1 + imm_i;
               load_size_lg2 = 1;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00006003) begin // LWU
               mem_addr = s1 + imm_i;
               load_size_lg2 = 2;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'h0000707f) == 'h00000023) begin // SB
               mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 1;
               state <= `S_STORE;
            end
 
            else if ((insn & 'h0000707f) == 'h00001023) begin // SH
               mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 3;
               state <= `S_STORE;
            end
 
            else if ((insn & 'h0000707f) == 'h00002023) begin // SW
               mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
               state <= `S_STORE;
            end
 
            else if ((insn & 'h0000707f) == 'h00003023) begin // SD
               mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:3] + mem_addr[2];
-              mem_addr1 <= mem_addr[63:3];
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
               state <= `S_STORE;
            end
@@ -1370,21 +1372,26 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
-           mem_wr_mask = mem_wr_mask << (mem_addr % 8);
-           s2 = s2 << (8 * (mem_addr % 8));
-           if (mem_addr[2] == 1) begin
-              s2 = {s2[31:0],s2[63:32]};
-              mem_wr_mask = {mem_wr_mask[3:0],mem_wr_mask[7:4]};
-           end
+           mem_wr_mask = mem_wr_mask << (mem_addr % 16);
+           aligned = {64'd0,s2} << (8 * (mem_addr % 16));
 
-           if (mem_wr_mask[0]) mem0[mem_addr / 8][ 7: 0] <= s2[ 7: 0];
-           if (mem_wr_mask[1]) mem0[mem_addr / 8][15: 8] <= s2[15: 8];
-           if (mem_wr_mask[2]) mem0[mem_addr / 8][23:16] <= s2[23:16];
-           if (mem_wr_mask[3]) mem0[mem_addr / 8][31:24] <= s2[31:24];
-           if (mem_wr_mask[4]) mem1[mem_addr / 8][ 7: 0] <= s2[39:32];
-           if (mem_wr_mask[5]) mem1[mem_addr / 8][15: 8] <= s2[47:40];
-           if (mem_wr_mask[6]) mem1[mem_addr / 8][23:16] <= s2[55:48];
-           if (mem_wr_mask[7]) mem1[mem_addr / 8][31:24] <= s2[63:56];
+           if (mem_wr_mask[ 0]) mem0[mem_addr0][ 7: 0] <= aligned[ 7: 0];
+           if (mem_wr_mask[ 1]) mem0[mem_addr0][15: 8] <= aligned[15: 8];
+           if (mem_wr_mask[ 2]) mem0[mem_addr0][23:16] <= aligned[23:16];
+           if (mem_wr_mask[ 3]) mem0[mem_addr0][31:24] <= aligned[31:24];
+           if (mem_wr_mask[ 4]) mem0[mem_addr0][39:32] <= aligned[39:32];
+           if (mem_wr_mask[ 5]) mem0[mem_addr0][47:40] <= aligned[47:40];
+           if (mem_wr_mask[ 6]) mem0[mem_addr0][55:48] <= aligned[55:48];
+           if (mem_wr_mask[ 7]) mem0[mem_addr0][63:56] <= aligned[63:56];
+           if (mem_wr_mask[ 8]) mem1[mem_addr1][ 7: 0] <= aligned[71:64];
+           if (mem_wr_mask[ 9]) mem1[mem_addr1][15: 8] <= aligned[79:72];
+           if (mem_wr_mask[10]) mem1[mem_addr1][23:16] <= aligned[87:80];
+           if (mem_wr_mask[11]) mem1[mem_addr1][31:24] <= aligned[95:88];
+           if (mem_wr_mask[12]) mem1[mem_addr1][39:32] <= aligned[103:96];
+           if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
+           if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
+           if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
+
            state <= `S_FETCH;
 
            if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
@@ -1401,8 +1408,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_LOAD_ALIGN: begin
-           aligned = mem_addr[2] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
-           aligned = aligned >> (mem_addr[2:0] * 8);
+           aligned = {mem_data1, mem_data0};
+           aligned = aligned >> (mem_addr[3:0] * 8);
            write_back_register = rd;
 
            case (load_size_lg2)

@@ -4,16 +4,14 @@ testall:
 	@./run-riscv-tests.sh
 
 run: $(P).bin
-	hexdump -ve '1/8 "%016x\n"' $^ > mem.hex
-	cut -c9-16 < mem.hex > mem0.hex
-	cut -c1-8 < mem.hex > mem1.hex
+	./evenodd.py $^ 0 > mem0.hex
+	./evenodd.py $^ 1 > mem1.hex
 	iverilog -s smolrv64_tb -DSIMULATE smolrv64.v rs232tx.v
 	./a.out
 
 verbose: $(P).bin
-	hexdump -ve '1/8 "%016x\n"' $^ > mem.hex
-	cut -c9-16 < mem.hex > mem0.hex
-	cut -c1-8 < mem.hex > mem1.hex
+	./evenodd.py $^ 0 > mem0.hex
+	./evenodd.py $^ 1 > mem1.hex
 	iverilog -s smolrv64_tb -DSIMULATE -DDISASS smolrv64.v rs232tx.v
 	./a.out
 
@@ -31,8 +29,8 @@ mem.hex: $(P).bin
 %.dis: %
 	riscv64-elf-objdump -Mmax,no-aliases,numeric -d $^ > $@
 
-%0.hex: %.hex
-	cut -c9-16 < $^ > $@
+%0.hex: %.bin
+	./evenodd.py $^ 0 > $@
 
 %1.hex: %.hex
-	cut -c1-8 < $^ > $@
+	./evenodd.py $^ 1 > $@
