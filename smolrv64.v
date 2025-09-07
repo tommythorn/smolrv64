@@ -34,14 +34,16 @@ module smolrv64_tb;
    always @(posedge clock) if (halted) $finish;
 
    initial begin
-`ifdef RISCV_TESTS
-      #400000 $display("Test Failed with TIMEOUT");
-      $finish;
-`else
+/*
       $dumpfile("smolrv64.vcd");
       $dumpvars(0, smolrv64_tb);
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
+*/
+      #400000
+`ifdef RISCV_TESTS
+      $display("Test Failed with TIMEOUT");
 `endif
+      $finish;
    end
 endmodule
 `endif
@@ -84,6 +86,7 @@ module smolrv64(input wire        clock,
 
 
 `define CSR_MSTATUS  12'h300
+`define CSR_MISA     12'h301
 `define CSR_MIE      12'h304
 `define CSR_MTVEC    12'h305
 `define CSR_MSCRATCH 12'h340
@@ -255,7 +258,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hec63) == 'h9c21)
              $display("c.andw  x%1d,x%1d          %x UNTESTED", write_back_register, rs2, rf[write_back_register]);
            else if ((insn & 'he003) == 'ha001)
-             $display("c.j     %8x                %x UNTESTED", pc + $signed(imm_j_c));
+             $display("c.j     %8x", pc + $signed(imm_j_c));
            else if ((insn & 'he003) == 'hc001)
              $display("c.beqz  x%1d,%8x           %x UNTESTED", rs1, pc + $signed(imm_b_c));
            else if ((insn & 'he003) == 'he001)
@@ -294,9 +297,9 @@ module smolrv64(input wire        clock,
            else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
              $display("auipc   x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h0000006f) // JAL
-             $display("jal     x%1d,%1d", rd, imm_j);
+             $display("jal     x%1d,%1d        %x", rd, imm_j, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00000067) // JALR
-             $display("jalr    x%1d,%x", rd, rs1);
+             $display("jalr    x%1d,%x        %x", rd, rs1, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00000063) // BEQ
              $display("beq     x%1d,x%1d,%1d", rs1, rs2, $signed(imm_b));
            else if ((insn & 'h0000707f) == 'h00001063) // BNE
@@ -509,9 +512,7 @@ module smolrv64(input wire        clock,
 
         `S_FETCH_COMPLETE: begin
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
-           //$display("   FETCHED %x: %x", pc, aligned);
            insn = aligned >> (pc[2:1] * 16);
-           //$display("   ALIGNED %x: %x", pc, insn);
            state <= `S_DECODE;
         end
 
@@ -1389,8 +1390,13 @@ module smolrv64(input wire        clock,
 
         `S_STORE: begin
            reservation <= ~0;
-           mem_wr_mask = mem_wr_mask << (mem_addr % 16);
-           aligned = {64'd0,s2} << (8 * (mem_addr % 16));
+
+           aligned = {64'd0,s2} << (8 * (mem_addr % 8));
+           mem_wr_mask = mem_wr_mask << (mem_addr % 8);
+           if (mem_addr[3]) begin
+              aligned = {aligned[63:0], aligned[127:64]};
+              mem_wr_mask = {mem_wr_mask[7:0],mem_wr_mask[15:8]};
+           end
 
            if (mem_wr_mask[ 0]) mem0[mem_addr0][ 7: 0] <= aligned[ 7: 0];
            if (mem_wr_mask[ 1]) mem0[mem_addr0][15: 8] <= aligned[15: 8];
@@ -1425,16 +1431,16 @@ module smolrv64(input wire        clock,
         end
 
         `S_LOAD_ALIGN: begin
-           aligned = {mem_data1, mem_data0};
-           aligned = aligned >> (mem_addr[3:0] * 8);
+           aligned = mem_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
+           aligned = aligned >> (mem_addr[2:0] * 8);
            write_back_register = rd;
 
            case (load_size_lg2)
-             0: write_back_value = aligned[7:0];
+             0: write_back_value = aligned[ 7:0];
              1: write_back_value = aligned[15:0];
              2: write_back_value = aligned[31:0];
              3: write_back_value = aligned;
-             4: write_back_value = {{56{aligned[7]}},aligned[7:0]};
+             4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
              5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
              6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
              7: write_back_value = 'hx;
@@ -1498,6 +1504,13 @@ module smolrv64(input wire        clock,
               // read the CSR
               case (csrno)
                 `CSR_MSTATUS:  csr_read_val = csr_mstatus;
+                `CSR_MISA:     csr_read_val = 64'h8000000000141105; // 64'h800000000014112d with FD
+                // Hardwired 1 0100 0001 0001 0010 1101
+                //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
+                //           U  S      M    I   F  DC A
+                //    SUIMAFDC
+                // -                            F  D
+                // =         1 0100 0001 0001 0000 0101
                 `CSR_MIE:      csr_read_val = csr_mie;
                 `CSR_MTVEC:    csr_read_val = csr_mtvec;
                 `CSR_MSCRATCH: csr_read_val = csr_mscratch;
@@ -1533,6 +1546,7 @@ module smolrv64(input wire        clock,
               // write the CSR
               case (csrno)
                 `CSR_MSTATUS:  csr_mstatus  <= csr_write_val;
+                `CSR_MISA:     begin end
                 `CSR_MIE:      csr_mie      <= csr_write_val;
                 `CSR_MTVEC:    csr_mtvec    <= csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
                 `CSR_MSCRATCH: csr_mscratch <= csr_write_val;

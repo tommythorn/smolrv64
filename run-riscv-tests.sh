@@ -1,5 +1,5 @@
 #!/bin/bash
-for class in passes fails unsupported
+for class in passes fails #unsupported
 do echo
    echo "$class:"
    for x in riscv-tests/$class/*
