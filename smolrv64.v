@@ -674,7 +674,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
               write_back_register = rs1;
-              write_back_value = $signed(s1) >> imm6[5:0];
+              write_back_value = $signed(s1) >>> imm6[5:0];
            end
 
            else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
@@ -1001,7 +1001,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfe00707f) == 'h40005033) begin // SRA
               write_back_register = rd;
-              write_back_value = $signed(s1) >> s2[5:0];
+              write_back_value = $signed(s1) >>> s2[5:0];
            end
 
            else if ((insn & 'hfe00707f) == 'h00006033) begin // OR
@@ -1054,7 +1054,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfc00707f) == 'h40005013) begin // SRAI
               write_back_register = rd;
-              write_back_value = $signed(s1) >> shamt;
+              write_back_value = $signed(s1) >>> shamt;
            end
 
            else if ((insn & 'h0000707f) == 'h0000001b) begin // ADDIW
@@ -1079,7 +1079,7 @@ module smolrv64(input wire        clock,
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              sext32 = $signed(s1[31:0]) >> shamt[4:0];
+              sext32 = $signed(s1[31:0]) >>> shamt[4:0];
               write_back_register = rd;
               write_back_value = {{32{sext32[31]}},sext32};
            end
@@ -1112,7 +1112,7 @@ module smolrv64(input wire        clock,
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              sext32 = $signed(s1[31:0]) >> s2[4:0];
+              sext32 = $signed(s1[31:0]) >>> s2[4:0];
               write_back_register = rd;
               write_back_value = {{32{sext32[31]}},sext32};
            end
