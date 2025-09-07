@@ -1425,6 +1425,7 @@ module smolrv64(input wire        clock,
               $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
 `endif
 `endif
+              write_back_register = 0;
               csr_mcause = `TRAP_LOAD_ACCESS_FAULT;
               csr_mepc = pc;
               csr_mtval = mem_addr;
