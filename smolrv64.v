@@ -35,7 +35,7 @@ module smolrv64_tb;
 
    initial begin
 `ifdef RISCV_TESTS
-      #100000 $display("Test Failed with TIMEOUT");
+      #400000 $display("Test Failed with TIMEOUT");
       $finish;
 `else
       $dumpfile("smolrv64.vcd");
@@ -108,6 +108,7 @@ module smolrv64(input wire        clock,
 `define S_EXCEPTION      7
 `define S_MUL_RUNNING    8
 `define S_DIV_RUNNING    9
+`define S_AMO           10
 `define S_LAST_STATE    15 // Reminder to update the width of state
 
    reg [3:0]   state = `S_FETCH; // execution state
@@ -178,6 +179,9 @@ module smolrv64(input wire        clock,
    reg         mul_output_negate = 0;
    reg         mul_output_high_part = 0;
    reg [6:0]   div_count;
+
+   reg [63:0]  reservation = ~0;
+   reg         do_atomic = 0;
 
    always @(posedge clock) begin
       csr_mcycle <= csr_mcycle + 1;
@@ -431,6 +435,53 @@ module smolrv64(input wire        clock,
              $display("remw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0200703b) // REMUW
              $display("remuw   x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
+
+           else if ((insn & 'hf9f0707f) == 'h1000202f) // LR.W
+             $display("lr.w    x%1d,(x%1d)       %x", rd, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h1800202f) // SC.W
+             $display("sc.w    x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h0800202f) // AMOSWAP.W
+             $display("amoswap.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h0000202f) // AMOADD.W
+             $display("amoadd.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h2000202f) // AMOXOR.W
+             $display("amoxor.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h6000202f) // AMOAND.W
+             $display("amoand.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h4000202f) // AMOOR.W
+             $display("amoor.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h8000202f) // AMOMIN.W
+             $display("amomin.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'ha000202f) // AMOMAX.W
+             $display("amomax.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'hc000202f) // AMOMINU.W
+             $display("amominu.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'he000202f) // AMOMAXU.W
+             $display("amomaxu.w x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+
+           else if ((insn & 'hf9f0707f) == 'h1000302f) // LR.D
+             $display("lr.d    x%1d,(x%1d)       %x", rd, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h1800302f) // SC.D
+             $display("sc.d    x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h0800302f) // AMOSWAP.D
+             $display("amoswap.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h0000302f) // AMOADD.D
+             $display("amoadd.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h2000302f) // AMOXOR.D
+             $display("amoxor.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h6000302f) // AMOAND.D
+             $display("amoand.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h4000302f) // AMOOR.D
+             $display("amoor.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'h8000302f) // AMOMIN.D
+             $display("amomin.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'ha000302f) // AMOMAX.D
+             $display("amomax.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'hc000302f) // AMOMINU.D
+             $display("amominu.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+           else if ((insn & 'hf800707f) == 'he000302f) // AMOMAXU.D
+             $display("amomaxu.d x%1d,x%1d,(x%1d)    %x", rd, rs2, rs1, rf[rd]);
+
            else if ((insn & 'hffffffff) == 'h30200073) // MRET
              $display("mret");
            else
@@ -1254,92 +1305,57 @@ module smolrv64(input wire        clock,
               state <= `S_DIV_RUNNING;
            end
 
-           else if ((insn & 32'hf9f0707f) == 32'h1000202f) begin // LR.W
-              //
+           else if ((insn & 'hf9f0707f) == 'h1000202f || // LR.W
+                    (insn & 'hf9f0707f) == 'h1000302f)   // LR.D
+           begin
+              mem_addr = s1;
+              load_size_lg2 = 4 | (insn[12] ? 3 : 2);
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
+              reservation <= s1;
+              state <= `S_LOAD_ALIGN;
            end
 
-           else if ((insn & 32'hf800707f) == 32'h1800202f) begin // SC.W
-              //
+           else if ((insn & 'hf800707f) == 'h1800202f || // SC.W
+                    (insn & 'hf800707f) == 'h1800302f)   // SC.D
+           begin
+              write_back_register = rd;
+              write_back_value = 1;
+              if (reservation == s1) begin // XXX Should use physical address
+                 write_back_value = 0;
+                 mem_addr = s1;
+                 mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+                 mem_addr1 <= mem_addr[63:4];
+                 mem_wr_mask <= insn[12] ? 255 : 15;
+                 state <= `S_STORE;
+              end
            end
 
-           else if ((insn & 32'hf800707f) == 32'h0800202f) begin // AMOSWAP.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h0000202f) begin // AMOADD.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h2000202f) begin // AMOXOR.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h6000202f) begin // AMOAND.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h4000202f) begin // AMOOR.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h8000202f) begin // AMOMIN.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'ha000202f) begin // AMOMAX.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'hc000202f) begin // AMOMINU.W
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'he000202f) begin // AMOMAXU.W
-              //
-           end
-
-           else if ((insn & 32'hf9f0707f) == 32'h1000302f) begin // LR.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h1800302f) begin // SC.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h0800302f) begin // AMOSWAP.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h0000302f) begin // AMOADD.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h2000302f) begin // AMOXOR.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h6000302f) begin // AMOAND.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h4000302f) begin // AMOOR.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'h8000302f) begin // AMOMIN.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'ha000302f) begin // AMOMAX.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'hc000302f) begin // AMOMINU.D
-              //
-           end
-
-           else if ((insn & 32'hf800707f) == 32'he000302f) begin // AMOMAXU.D
-           //
+           else if ((insn & 'hf800707f) == 'h0800202f || // AMOSWAP.W
+                    (insn & 'hf800707f) == 'h0000202f || // AMOADD.W
+                    (insn & 'hf800707f) == 'h2000202f || // AMOXOR.W
+                    (insn & 'hf800707f) == 'h6000202f || // AMOAND.W
+                    (insn & 'hf800707f) == 'h4000202f || // AMOOR.W
+                    (insn & 'hf800707f) == 'h8000202f || // AMOMIN.W
+                    (insn & 'hf800707f) == 'ha000202f || // AMOMAX.W
+                    (insn & 'hf800707f) == 'hc000202f || // AMOMINU.W
+                    (insn & 'hf800707f) == 'he000202f || // AMOMAXU.W
+                    (insn & 'hf800707f) == 'h0800302f || // AMOSWAP.D
+                    (insn & 'hf800707f) == 'h0000302f || // AMOADD.D
+                    (insn & 'hf800707f) == 'h2000302f || // AMOXOR.D
+                    (insn & 'hf800707f) == 'h6000302f || // AMOAND.D
+                    (insn & 'hf800707f) == 'h4000302f || // AMOOR.D
+                    (insn & 'hf800707f) == 'h8000302f || // AMOMIN.D
+                    (insn & 'hf800707f) == 'ha000302f || // AMOMAX.D
+                    (insn & 'hf800707f) == 'hc000302f || // AMOMINU.D
+                    (insn & 'hf800707f) == 'he000302f)   // AMOMAXU.D
+            begin
+              mem_addr = s1;
+              load_size_lg2 = insn[12] ? 3 : 2;
+              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1 <= mem_addr[63:4];
+              do_atomic <= 1;
+              state <= `S_LOAD_ALIGN;
            end
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
@@ -1372,6 +1388,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
+           reservation <= ~0;
            mem_wr_mask = mem_wr_mask << (mem_addr % 16);
            aligned = {64'd0,s2} << (8 * (mem_addr % 16));
 
@@ -1425,6 +1442,9 @@ module smolrv64(input wire        clock,
 
            state <= `S_FETCH;
 
+           if (do_atomic)
+             state <= `S_AMO;
+
            if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
               // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
@@ -1439,6 +1459,37 @@ module smolrv64(input wire        clock,
               state <= `S_EXCEPTION;
            end
         end
+
+        `S_AMO: begin
+           mem_wr_mask <= 255;
+           if (!insn[12]) begin
+              write_back_value = {{32{write_back_value[31]}},write_back_value[31:0]};
+              s2 = {{32{s2[31]}},s2[31:0]};
+              mem_wr_mask <= 15;
+           end
+
+           case (insn[31:24])
+             'h08: s2 = s2; // AMOSWAP
+             'h00: s2 = s2 + write_back_value; // AMOADD
+             'h20: s2 = s2 ^ write_back_value; // AMOXOR
+             'h60: s2 = s2 & write_back_value; // AMOAND
+             'h40: s2 = s2 | write_back_value; // AMOOR
+             'h80: s2 = $signed(s2) < $signed(write_back_value) ? s2 : write_back_value; // AMOMIN
+             'ha0: s2 = $signed(s2) < $signed(write_back_value) ? write_back_value : s2; // AMOMAX
+             'hc0: s2 = s2 < write_back_value ? s2 : write_back_value; // AMOMINU
+             'he0: s2 = s2 < write_back_value ? write_back_value : s2; // AMOMAXU
+             default: begin
+`ifdef SIMULATE
+                $display("Impossible AMO"); $finish;
+`endif
+                s2 = 'hX;
+             end
+           endcase
+
+           do_atomic = 0;
+           state <= `S_STORE;
+        end
+
 
         `S_HANDLE_CSR: begin
            state <= `S_FETCH;
