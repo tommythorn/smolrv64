@@ -85,8 +85,11 @@ module smolrv64(input wire        clock,
 `define TRAP_MACHINE_EXTERNAL_INTERRUPT         111
 
 
+`define CSR_SATP     12'h180
 `define CSR_MSTATUS  12'h300
 `define CSR_MISA     12'h301
+`define CSR_MEDELEG  12'h302
+`define CSR_MIDELEG  12'h303
 `define CSR_MIE      12'h304
 `define CSR_MTVEC    12'h305
 `define CSR_MSCRATCH 12'h340
@@ -95,6 +98,8 @@ module smolrv64(input wire        clock,
 `define CSR_MTVAL    12'h343
 `define CSR_MCYCLE   12'hb00
 `define CSR_MINSTRET 12'hb02
+`define CSR_CYCLE    12'hc00
+`define CSR_INSTRET  12'hc02
 `define CSR_MHARTID  12'hf14
 
 `define CSR_OP_COPY 0
@@ -233,9 +238,9 @@ module smolrv64(input wire        clock,
 
            if (csr_mcycle) begin
            if ((insn & 3) == 3)
-             $write("%05d   %d %x %x ", $time, prv, pc, insn);
+             $write("%05d   %1d %x %x ", $time, prv, pc, insn);
            else
-             $write("%05d   %d %x     %x ", $time, prv, pc, insn[15:0]);
+             $write("%05d   %1d %x     %x ", $time, prv, pc, insn[15:0]);
            if ((insn & 'hffff) == 'h0000)
              $display("illegal instruction");
 
@@ -265,7 +270,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'he003) == 'h4001)
              $display("c.li    x%1d,%1d           %x", write_back_register, $signed(c_imm12_62), rf[write_back_register]);
            else if ((insn & 'hef83) == 'h6101)
-             $display("c.addi16sp x%1d,%1x        %x", write_back_register, c_imm12_43_5_2_6_x16, rf[write_back_register]);
+             $display("c.addi16sp x%1d,%x        %x", write_back_register, c_imm12_43_5_2_6_x16, rf[write_back_register]);
            else if ((insn & 'he003) == 'h6001)
              $display("c.lui   x%1d,%1d           %x", write_back_register, $signed(c_imm12_62)<<12, rf[write_back_register]);
            else if ((insn & 'hec03) == 'h8001)
@@ -322,9 +327,9 @@ module smolrv64(input wire        clock,
 
 
            else if ((insn & 'h0000007f) == 'h00000037) // LUI
-             $display("lui     x%1d,0x%1x        %x", rd, imm_u, rf[rd]);
+             $display("lui     x%1d,0x%x        %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h00000017) // AUIPC
-             $display("auipc   x%1d,0x%1x    %x", rd, imm_u, rf[rd]);
+             $display("auipc   x%1d,0x%x    %x", rd, imm_u, rf[rd]);
            else if ((insn & 'h0000007f) == 'h0000006f) // JAL
              $display("jal     x%1d,%x        %x", rd, pc + imm_j, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00000067) // JALR
@@ -363,18 +368,20 @@ module smolrv64(input wire        clock,
              $display("sw      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
            else if ((insn & 'h0000707f) == 'h00003023) // SD
              $display("sd      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+           else if ((insn & 'h0000707f) == 'h00000013 && rs1 == 0) // LI (ADDI)
+             $display("li      x%1d,0x%x         %x", rd, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00000013) // ADDI
-             $display("addi    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("addi    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00002013) // SLTI
-             $display("slti    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("slti    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00003013) // SLTIU
-             $display("sltiu   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("sltiu   x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00004013) // XORI
-             $display("xori    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("xori    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00006013) // ORI
-             $display("ori     x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("ori     x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h00007013) // ANDI
-             $display("andi    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("andi    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h00000033) // ADD
              $display("add     x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h40000033) // SUB
@@ -404,19 +411,19 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hffffffff) == 'h00100073) // EBREAK
              $display("ebreak");
            else if ((insn & 'hfc00707f) == 'h00001013) // SLLI
-             $display("slli    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("slli    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfc00707f) == 'h00005013) // SRLI
-             $display("srli    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("srli    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfc00707f) == 'h40005013) // SRAI
-             $display("srai    x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("srai    x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'h0000707f) == 'h0000001b) // ADDIW
-             $display("addiw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("addiw   x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000101b) // SLLIW
-             $display("srliw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("srliw   x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000501b) // SRLIW
-             $display("srliw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("srliw   x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h4000501b) // SRAIW
-             $display("sraiw   x%1d,x%1d,0x%1x    %x", rd, rs1, imm_i, rf[rd]);
+             $display("sraiw   x%1d,x%1d,0x%x    %x", rd, rs1, imm_i, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h0000003b) // ADDW
              $display("addw    x%1d,x%1d,x%1d    %x", rd, rs1, rs2, rf[rd]);
            else if ((insn & 'hfe00707f) == 'h4000003b) // SUBW
@@ -529,7 +536,7 @@ module smolrv64(input wire        clock,
            if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-              $display("%05d   %d %x illegal fetch address", $time, prv, npc);
+              $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
 `endif
 `endif
               csr_mcause = `TRAP_INSTRUCTION_ACCESS_FAULT;
@@ -1415,9 +1422,9 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
               if (insn[1:0] == 3)
-                $display("%05d   %d %x %x illegal unknown instruction", $time, prv, pc, insn);
+                $display("%05d   %1d %x %x illegal unknown instruction", $time, prv, pc, insn);
               else
-                $display("%05d   %d %x     %x illegal unknown instruction (%1d,%d)",
+                $display("%05d   %1d %x     %x illegal unknown instruction (%1d,%1d)",
                          $time, prv, pc, insn[15:0], insn[15:13], insn[1:0]);
               $finish;
 `endif
@@ -1562,12 +1569,14 @@ module smolrv64(input wire        clock,
                 `CSR_MTVAL:    csr_read_val = csr_mtval;
                 `CSR_MCYCLE:   csr_read_val = csr_mcycle;
                 `CSR_MINSTRET: csr_read_val = csr_minstret;
+                `CSR_CYCLE:    csr_read_val = csr_mcycle;
+                `CSR_INSTRET:  csr_read_val = csr_minstret;
                 `CSR_MHARTID:  csr_read_val = 0;
                 12'h666:       csr_read_val = 0;
                 default: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-                   $display("%05d   %d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
+                   $display("%05d   %1d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
 `endif
 `endif
                    csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -1616,7 +1625,7 @@ module smolrv64(input wire        clock,
                 default: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-                   $display("%05d   %d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
+                   $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
 `endif
 `endif
                    // XXX set cause
