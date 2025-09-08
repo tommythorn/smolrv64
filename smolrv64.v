@@ -169,14 +169,40 @@ module smolrv64(input wire        clock,
 
    // CSR state (just a place holder for now)
    reg [0:0]   csr_mie      = 0;
-   reg [63:0]  csr_mstatus  = 0,
-               csr_mtvec    = 0,
+   reg [63:0]  csr_mtvec    = 0,
                csr_mscratch = 'hDEADBEEFCAFEF00D,
                csr_mepc     = 0,
                csr_mcause   = 0,
                csr_mtval    = 0,
                csr_mcycle   = 0,
                csr_minstret = ~0; // -1 because we increase it in fetch
+
+   // MSTATUS subfields
+   // Global interrupt-enable bits
+   reg         uie = 0, sie = 0, mie =0;
+   // xPIE holds the value of the interrupt-enable bit active prior to the trap
+   reg         upie = 0, spie = 0, mpie = 0;
+   // xPP holds the previous privilege mode.
+   reg         spp = 0;
+   reg [  1:0] mpp;
+   // FS encodes the status of the FP unit, including fcsr and FP regs
+   reg [  1:0] fs = 0, xs = 0;
+   // When MPRV=1, load and store memory addresses are translated and
+   // protected as though the current privilege mode were set to MPP.
+   reg         mprv = 0;
+   // When SUM=0, S-mode memory accesses to pages that are accessible
+   // by U-mode (U=1 in Figure 4.15) will fault.
+   reg         sum;
+   // MXR modifies the privilege with which loads access virtual
+   // memory.  When 0, only loads from pages marked readable will
+   // succeed.  When 1, loads from pages marked either readable or
+   // executable (R=1 or X=1) will succeed.
+   reg         mxr = 0;
+   // Trap Virtual Memory, Timeout Wait, Trap SRET
+   reg         tvm = 0, tw = 0, tsr = 0;
+   wire [ 1:0] uxl = 2, sxl = 2; // 64-bit user and supervisor mode
+   // "Some Dirty"
+   wire        sd = fs == 3 || xs == 3;
 
    reg [ 63:0] mul_b;
    reg [127:0] mul_a, mul_p = 0;
@@ -201,8 +227,9 @@ module smolrv64(input wire        clock,
              rf[write_back_register] = write_back_value;
 
 `ifdef DISASS
-           // We disassemble the *previous* instruction so we can read the
-           // value written to rd
+           // We disassemble the *previous* instruction so we can read
+           // the value written to rd (but when csr_mcycle == 0 we
+           // have no previous instruction)
 
            if (csr_mcycle) begin
            if ((insn & 3) == 3)
@@ -210,7 +237,7 @@ module smolrv64(input wire        clock,
            else
              $write("%05d   %d %x     %x ", $time, prv, pc, insn[15:0]);
            if ((insn & 'hffff) == 'h0000)
-             $display("illegal");
+             $display("illegal instruction");
 
               // Quadrant 0
            else if ((insn & 'he003) == 'h0000)
@@ -590,11 +617,6 @@ module smolrv64(input wire        clock,
               write_back_register = rs2;
               write_back_value = s1 + c_nzuimm107_1211_5_6_x4;
               if ((insn & 'hffff) == 0) begin
-`ifdef SIMULATE
-`ifndef RISCV_TESTS
-                 $display("%05d   %x %d %x illegal C.ADDI4SPN variant", $time, prv, pc, insn);
-`endif
-`endif
                  write_back_register = 0;
                  csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
                  csr_mepc = pc;
@@ -1382,12 +1404,11 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
               npc <= csr_mepc;
 
-              prv = csr_mstatus[12:11];
-              // XXX Vet this
-              csr_mstatus[3] = csr_mstatus[7];
-              csr_mstatus[7] = 1;
-              csr_mstatus[17] = csr_mstatus[12:11] == 3 ? csr_mstatus[17] : 0;
-              csr_mstatus[12:11] = 0;
+              mprv = mpp == 3 ? mprv : 0;
+              prv = mpp;
+              mie = mpie;
+              mpie = 1;
+              mpp = 0;
            end
 
            else begin
@@ -1522,7 +1543,10 @@ module smolrv64(input wire        clock,
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
               case (csrno)
-                `CSR_MSTATUS:  csr_read_val = csr_mstatus;
+                `CSR_MSTATUS:
+                  csr_read_val = {sd, 27'd0, sxl, uxl, // 32
+                                  9'd0, tsr, tw, tvm, mxr, sum, mprv, xs, // 15
+                                  fs, mpp, 2'd0, spp, mpie, 1'd0, spie, upie, 1'd0, sie, uie}; // 17
                 `CSR_MISA:     csr_read_val = 64'h8000000000141105; // 64'h800000000014112d with FD
                 // Hardwired 1 0100 0001 0001 0010 1101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
@@ -1564,7 +1588,14 @@ module smolrv64(input wire        clock,
            if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               // write the CSR
               case (csrno)
-                `CSR_MSTATUS:  csr_mstatus  <= csr_write_val;
+                `CSR_MSTATUS: begin
+                   {sie, uie}        <= csr_write_val[1:0];
+                   {spie, upie, mie} <= csr_write_val[5:3];
+                   {spp, mpie}       <= csr_write_val[8:7];
+                   mpp               <= csr_write_val[12:11];
+                   // fs <= csr_write_val[14:13];
+                   {tsr, tw, tvm, mxr, sum, mprv} <= csr_write_val[22:17];
+                end
                 `CSR_MISA:     begin end
                 `CSR_MIE:      csr_mie      <= csr_write_val;
                 `CSR_MTVEC:    csr_mtvec    <= csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
