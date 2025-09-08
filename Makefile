@@ -1,7 +1,10 @@
 P=hw
 
 testall:
-	@./run-riscv-tests.sh
+	@./run-riscv-tests.sh passes fails
+
+fails:
+	@./run-riscv-tests.sh fails
 
 run: $(P).bin
 	./evenodd.py $^ 0 > mem0.hex
