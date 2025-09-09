@@ -1,31 +1,49 @@
-# Smol RV64
+# SmolRV64
 
-There are literally hundreds of RISC-V implementations already and
-I've even written some of them so why write yet another one?
+SmolRV64 is a single-file, single `always @(posedge clock)`
+micro-stepped RV64IMAC implementation which aspires to run Ubuntu.
 
-The goal of this implementation is to reach functionality as quickly
-as possible, thus, the RTL will prioritize simplicity over efficientcy
-and will resemble a software simulator.  That's on purpose!
-Performance is *not* the goal (initially)
+The goal to reach functionality as quickly as possible, thus, the RTL
+will prioritize simplicity over efficiency and will resemble a
+software simulator.  That's on purpose!  Performance is *not* the goal
+(initially).
+
+Once the goal of fully running Ubuntu is attained we will begin work
+on getting it fast (and tighten up the RTL a lot).
 
 # Status
 
-RV64IMC is fully implemented except for some system features and all
-debug.
+RV64IMAC is fully implemented (and modulo bugs), except for some
+system features, and all debug. The implementation is accompanied by
+the riscv-test test suite (launched with `make`).  As features are
+implemented, more tests are migrated from `fails` or `unsupported` to
+`passes`.
 
 Currently two dev boards are directly supported: ULX3S and RX-XCKU5P-F.
 
 ## Performace
 
-Performance isn't a priority, but IPC is about 0.22 at 25 MHz (ULX3S) and 200 MHz (RX-XCKU5P).
+Performance is not a priority, but IPC is about 0.22 at 25 MHz (ECP5)
+and 200 MHz (XCKU5P).
 
-# Coming soon
+# Milestone 1 (Coming soon)
 
-Atomic support is next
+- More bug fixes
+- UART on memory address 'h10000000 instead of the CSR666 hack
+- Complete CSR support (sans virtual memory)
+- Interrupts
 
-# Coming eventually
+# Milestone 2
+
+- DDR4 support on RK-XCKU5P-F
+- Cosim against Dromajo or Simmerv
+
+# Milestone 3 (Ubuntu)
 
 - Full system support, including virtual memory
-- Caches
-
-Floating point (F and G) support remains
+- Devices: CLINT, PLIC, ...
+- Floating point support (F and G) support either via bbl or
+  implemented
+- Caches (two-way virtually tagged skewed, maybe with SIEVE eviction?)
+- TLB (level 2 as level 1 is embedded in the cache), possibly with
+  some Cookoo hashing scheme
