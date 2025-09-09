@@ -106,6 +106,9 @@ module smolrv64(input wire        clock,
 `define CSR_CYCLE      12'hc00
 `define CSR_INSTRET    12'hc02
 `define CSR_MHARTID    12'hf14
+`define CSR_MVENDORID  12'hf11
+`define CSR_MARCHID    12'hf12
+`define CSR_MIMPID     12'hf13
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -1596,6 +1599,9 @@ module smolrv64(input wire        clock,
                 `CSR_CYCLE:    csr_read_val = csr_mcycle;
                 `CSR_INSTRET:  csr_read_val = csr_minstret;
                 `CSR_MHARTID:  csr_read_val = 0;
+                `CSR_MVENDORID:csr_read_val = 0;
+                `CSR_MARCHID:  csr_read_val = 9; // YARVI, Smolrv64 = YARVI4
+                `CSR_MIMPID:   csr_read_val = 'h20250907;
                 default: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
