@@ -154,7 +154,7 @@ module smolrv64(input wire        clock,
    reg  [63:0] npc = `MEM_START;
    reg  [127:0] aligned;
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
-   reg  [63:0] c_imm12_8_109_6_7_2_11_43_x2;
+   reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
    reg  [63:0] c_imm12_62;
@@ -299,7 +299,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfc63) == 'h9c21)
              $write("c.addw  x%1d,x%1d", write_back_register, rs2);
            else if ((insn & 'he003) == 'ha001)
-             $write("c.j     %8x", pc + $signed(c_imm12_8_109_6_7_2_11_43_x2));
+             $write("c.j     %8x", pc + $signed(c_imm12_8_109_6_7_2_11_53_x2));
            else if ((insn & 'he003) == 'hc001)
              $write("c.beqz  x%1d,%8x", rs1, pc + $signed(c_imm12_65_2_1110_43_x2));
            else if ((insn & 'he003) == 'he001)
@@ -606,10 +606,10 @@ module smolrv64(input wire        clock,
            c_uimm5_1210_6_x4       = {insn[5],insn[12:10],insn[6],2'd0};
            c_imm12_62              = {{59{insn[12]}},insn[6:2]};
            c_imm12_43_5_2_6_x16    = {{55{insn[12]}},insn[4:3],insn[5],insn[2],insn[6],4'd0};
-           c_imm12_8_109_6_7_2_11_43_x2
-                                   = {{53{insn[12]}},insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[4:3],
+           c_imm12_8_109_6_7_2_11_53_x2
+                                   = {{53{insn[12]}},insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[5:3],
                                       1'd0};
-           c_imm12_65_2_1110_43_x2 = {{55{insn[12]}},insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
+           c_imm12_65_2_1110_43_x2 = {{56{insn[12]}},insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
            c_uimm42_12_65_x8       = {insn[4:2],insn[12],insn[6:5],3'd0};
            c_uimm32_12_64_x4       = {insn[3:2],insn[12],insn[6:4],2'd0};
            c_uimm97_1210_x8        = {insn[9:7],insn[12:10],3'd0};
@@ -766,7 +766,7 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'he003) == 'ha001) begin // C.J
-              npc = pc + c_imm12_8_109_6_7_2_11_43_x2;
+              npc = pc + c_imm12_8_109_6_7_2_11_53_x2;
            end
 
            else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
