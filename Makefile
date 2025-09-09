@@ -1,4 +1,5 @@
 P=hw
+OPTS=
 
 testall:
 	@./run-riscv-tests.sh passes fails
@@ -9,13 +10,13 @@ fails:
 run: $(P).bin
 	./evenodd.py $^ 0 > mem0.hex
 	./evenodd.py $^ 1 > mem1.hex
-	iverilog -s smolrv64_tb -DSIMULATE smolrv64.v rs232tx.v
+	iverilog -s smolrv64_tb -DSIMULATE -DNO_TIMEOUT $(OPTS) smolrv64.v rs232tx.v
 	./a.out
 
 verbose: $(P).bin
 	./evenodd.py $^ 0 > mem0.hex
 	./evenodd.py $^ 1 > mem1.hex
-	iverilog -s smolrv64_tb -DSIMULATE -DDISASS smolrv64.v rs232tx.v
+	iverilog -s smolrv64_tb -DSIMULATE -DDISASS $(OPTS) smolrv64.v rs232tx.v
 	./a.out
 
 mem.hex: $(P).bin

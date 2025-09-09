@@ -39,11 +39,13 @@ module smolrv64_tb;
       $dumpvars(0, smolrv64_tb);
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
 */
+`ifndef NO_TIMEOUT
       #400000
 `ifdef RISCV_TESTS
       $display("Test Failed with TIMEOUT");
 `endif
       $finish;
+`endif
    end
 endmodule
 `endif
