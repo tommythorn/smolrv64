@@ -1449,6 +1449,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
+           state <= `S_FETCH;
            reservation <= ~0;
 
            aligned = {64'd0,s2} << (8 * (mem_addr % 8));
@@ -1456,6 +1457,26 @@ module smolrv64(input wire        clock,
            if (mem_addr[3]) begin
               aligned = {aligned[63:0], aligned[127:64]};
               mem_wr_mask = {mem_wr_mask[7:0],mem_wr_mask[15:8]};
+           end
+
+	   if (mem_addr == 'h10000000 && mem_wr_mask[0]) begin
+              tx_valid_o <= 1;
+              tx_data_o <= aligned[7:0];
+              if (!tx_ready_i)
+                state <= `S_STORE; // Block here until consumed
+
+	      mem_wr_mask[1] = 0;
+	   end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
+              $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
+`endif
+`endif
+              csr_mcause = `TRAP_STORE_ACCESS_FAULT;
+              csr_mepc = pc;
+              csr_mtval = mem_addr;
+	      mem_wr_mask = 0;
+              state <= `S_EXCEPTION;
            end
 
            if (mem_wr_mask[ 0]) mem0[mem_addr0][ 7: 0] <= aligned[ 7: 0];
@@ -1474,20 +1495,6 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
            if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
-
-           state <= `S_FETCH;
-
-           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
-`ifdef SIMULATE
-`ifndef RISCV_TESTS
-              $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
-`endif
-`endif
-              csr_mcause = `TRAP_STORE_ACCESS_FAULT;
-              csr_mepc = pc;
-              csr_mtval = mem_addr;
-              state <= `S_EXCEPTION;
-           end
         end
 
         `S_LOAD_ALIGN: begin
@@ -1589,7 +1596,6 @@ module smolrv64(input wire        clock,
                 `CSR_CYCLE:    csr_read_val = csr_mcycle;
                 `CSR_INSTRET:  csr_read_val = csr_minstret;
                 `CSR_MHARTID:  csr_read_val = 0;
-                12'h666:       csr_read_val = 0;
                 default: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
@@ -1674,14 +1680,6 @@ module smolrv64(input wire        clock,
                 `CSR_MIP:      csr_mip      <= csr_write_val;
                 `CSR_MCYCLE:   csr_mcycle   <= csr_write_val;
                 `CSR_MINSTRET: csr_minstret <= csr_write_val;
-                12'h666: begin
-                   // XXX This is the hacky UART backdoor.  It will be
-                   // removed eventually.
-                   tx_valid_o <= 1;
-                   tx_data_o <= csr_write_val;
-                   if (!tx_ready_i)
-                     state <= state; // Block here until consumed
-                end
                 default: begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
