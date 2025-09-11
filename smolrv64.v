@@ -133,14 +133,34 @@ module smolrv64(input wire        clock,
 `define MEM_SIZE_LG2 15
 `define MEM_SIZE (1 << `MEM_SIZE_LG2)
 
-
    // To enable penalty-free unaligned access, memory is split into
    // even and odd 64b word addresses and striped across them.  Any
    // 64-bit word at address A will then be found in
    // {mem1[A/16],mem0[A/16]} if A/8 is even and
    // {mem0[A/16+1],mem1[A/16]} if A/8 is odd.
-   reg  [63:0] mem0[`MEM_SIZE/32-1:0]; initial $readmemh("mem0.hex", mem0, 0, `MEM_SIZE/32-1);
-   reg  [63:0] mem1[`MEM_SIZE/32-1:0]; initial $readmemh("mem1.hex", mem1, 0, `MEM_SIZE/32-1);
+   reg  [63:0] mem0[`MEM_SIZE/32-1:0];
+   reg  [63:0] mem1[`MEM_SIZE/32-1:0];
+
+   reg [8*200:0] evenhex, oddhex;
+   initial begin
+`ifdef SIMULATE
+      if (!$value$plusargs("even=%s", evenhex)) begin
+         $display("ERROR: please specify the +even=<hexfile>");
+         $finish;
+      end
+      if (!$value$plusargs("odd=%s", oddhex)) begin
+         $display("ERROR: please specify the +odd=<hexfile>");
+         $finish;
+      end
+
+       $readmemh(evenhex, mem0, 0, `MEM_SIZE/32-1);
+       $readmemh(oddhex, mem1, 0, `MEM_SIZE/32-1);
+`else
+      $readmemh("mem.even", mem0, 0, `MEM_SIZE/32-1);
+      $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/32-1);
+`endif
+   end
+
    reg  [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
    reg  [63:0] pc = 0;
    reg  [ 1:0] prv = 3;
@@ -1462,14 +1482,14 @@ module smolrv64(input wire        clock,
               mem_wr_mask = {mem_wr_mask[7:0],mem_wr_mask[15:8]};
            end
 
-	   if (mem_addr == 'h10000000 && mem_wr_mask[0]) begin
+           if (mem_addr == 'h10000000 && mem_wr_mask[0]) begin
               tx_valid_o <= 1;
               tx_data_o <= aligned[7:0];
               if (!tx_ready_i)
                 state <= `S_STORE; // Block here until consumed
 
-	      mem_wr_mask[1] = 0;
-	   end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+              mem_wr_mask[1] = 0;
+           end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
               $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
@@ -1478,7 +1498,7 @@ module smolrv64(input wire        clock,
               csr_mcause = `TRAP_STORE_ACCESS_FAULT;
               csr_mepc = pc;
               csr_mtval = mem_addr;
-	      mem_wr_mask = 0;
+              mem_wr_mask = 0;
               state <= `S_EXCEPTION;
            end
 
