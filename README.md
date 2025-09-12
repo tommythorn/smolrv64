@@ -29,7 +29,7 @@ and 200 MHz (XCKU5P).
 # Milestone 1 (Coming soon)
 
 - More bug fixes
-- UART on memory address 'h10000000 instead of the CSR666 hack
+- DONE UART on memory address 'h10000000 instead of the CSR666 hack
 - Complete CSR support (sans virtual memory)
 - Interrupts
 
