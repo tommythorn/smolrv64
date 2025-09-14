@@ -558,7 +558,7 @@ module smolrv64(input wire        clock,
 
            if (write_back_register != 0)
              $display("     x%1d = %x", write_back_register, rf[write_back_register]);
-           else 
+           else
              $display("");
            end
 `endif
@@ -1444,7 +1444,7 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
-              npc <= csr_mepc;
+              npc = csr_mepc;
 
               mprv = mpp == 3 ? mprv : 0;
               prv = mpp;
@@ -1696,16 +1696,16 @@ module smolrv64(input wire        clock,
                      $display("XXX Interrupts are now pending (%x), not yet supported!", csr_mie & csr_mip);
                 end
                 `CSR_MISA:     begin end
-                `CSR_MIE:      csr_mie      <= csr_write_val;
-                `CSR_MTVEC:    csr_mtvec    <= csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
+                `CSR_MIE:      csr_mie      = csr_write_val;
+                `CSR_MTVEC:    csr_mtvec    = csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
                 `CSR_MCOUNTEREN: begin end
-                `CSR_MSCRATCH: csr_mscratch <= csr_write_val;
-                `CSR_MEPC:     csr_mepc     <= csr_write_val;
-                `CSR_MCAUSE:   csr_mcause   <= csr_write_val;
-                `CSR_MTVAL:    csr_mtval    <= csr_write_val;
-                `CSR_MIP:      csr_mip      <= csr_write_val;
-                `CSR_MCYCLE:   csr_mcycle   <= csr_write_val;
-                `CSR_MINSTRET: csr_minstret <= csr_write_val;
+                `CSR_MSCRATCH: csr_mscratch = csr_write_val;
+                `CSR_MEPC:     csr_mepc     = csr_write_val;
+                `CSR_MCAUSE:   csr_mcause   = csr_write_val;
+                `CSR_MTVAL:    csr_mtval    = csr_write_val;
+                `CSR_MIP:      csr_mip      = csr_write_val;
+                `CSR_MCYCLE:   csr_mcycle  <= csr_write_val;
+                `CSR_MINSTRET: csr_minstret = csr_write_val;
                 default: begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
@@ -1753,7 +1753,7 @@ module smolrv64(input wire        clock,
 
            mpp <= prv;
            prv <= 3;
-           npc <= csr_mtvec;
+           npc = csr_mtvec;
            
            state <= `S_FETCH;
         end
