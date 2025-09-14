@@ -1,5 +1,7 @@
 P=hw
 OPTS=
+#RV=riscv64-elf-
+RV=riscv64-linux-gnu-
 
 testall:
 	@./run-riscv-tests.sh passes fails
@@ -25,14 +27,17 @@ smolrv64-run: smolrv64.v rs232tx.v Makefile
 %.odd: %.bin
 	./evenodd.py $^ 1 > $@
 
+%.o: %.c
+	$(RV)gcc -march=rv64gc -c $^ -o $@
+
 %.o: %.s
-	riscv64-elf-as -march=rv64gc $^ -o $@
+	$(RV)as -march=rv64gc $^ -o $@
 
 %.elf: %.o
-	riscv64-elf-ld -Ttext=0x80000000 $^ -o $@
+	$(RV)ld -Ttext=0x80000000 $^ -o $@
 
 %.bin: %.elf
-	riscv64-elf-objcopy -O binary $^ $@
+	$(RV)objcopy -O binary $^ $@
 
 %.dis: %
-	riscv64-elf-objdump -Mmax,no-aliases,numeric -d $^ > $@
+	$(RV)objdump -Mmax,no-aliases,numeric -d $^ > $@

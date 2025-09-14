@@ -46,40 +46,38 @@ int main(int argc, char **argv) {
     // XXX convert to bitvector for greater reach
     primes_end = primes + NN;
 
-    
-
-    for (lp = (long *)primes; lp < (long *)primes_end - 1 - 4*8; lp += 4) {
-      lp[0] = 0x0101010101010101ull;
-      lp[1] = 0x0101010101010101ull;
-      lp[2] = 0x0101010101010101ull;
-      lp[3] = 0x0101010101010101ull;
-    }
-	
-    primes[NN] = 0;
-
-    myputs("2\n");
-
-    pi = primes;
     for (;;) {
-        p = 3 + 2*(pi - primes);
-        myputn(p);
-	myputc('\n');
-        cp = pi + p*(p/2);
-
-        while (!*++pi)
-            ;
-
-	if (pi >= primes_end) // XXX It would be a bug if it got beyond primes_end
-	  break;
-	      
-        while (cp < primes_end) {
-            *cp = 0; // Sieve out multiples of p
-            cp = cp + p;
+        for (lp = (long *)primes; lp < (long *)primes_end - 1 - 4*8; lp += 4) {
+            lp[0] = 0x0101010101010101ull;
+            lp[1] = 0x0101010101010101ull;
+            lp[2] = 0x0101010101010101ull;
+            lp[3] = 0x0101010101010101ull;
         }
 
-    }
+        primes[NN] = 0;
 
-    return 0;
+        myputs("2\n");
+
+        pi = primes;
+        for (;;) {
+            p = 3 + 2*(pi - primes);
+            myputn(p);
+            myputc('\n');
+            cp = pi + p*(p/2);
+
+            while (!*++pi)
+                ;
+
+            if (pi >= primes_end) // XXX It would be a bug if it got beyond primes_end
+                break;
+
+            while (cp < primes_end) {
+                *cp = 0; // Sieve out multiples of p
+                cp = cp + p;
+            }
+
+        }
+    }
 }
 
 void myputs(char *s) {
