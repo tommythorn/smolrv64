@@ -1,7 +1,12 @@
 P=hw
 OPTS=
-#RV=riscv64-elf-
-RV=riscv64-linux-gnu-
+platform=$(shell uname -o)
+
+ifeq ($(platform),Darwin)
+  RV=riscv64-elf-
+else # Assume Linux
+  RV=riscv64-linux-gnu-
+endif
 
 testall:
 	@./run-riscv-tests.sh passes fails
@@ -9,10 +14,10 @@ testall:
 fails:
 	@./run-riscv-tests.sh fails
 
-run: $(P).even  $(P).odd smolrv64-run
+run: $(P).even $(P).odd smolrv64-run
 	./smolrv64-run +even=$(P).even +odd=$(P).odd
 
-verbose: $(P).even  $(P).odd smolrv64-verbose
+verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
 smolrv64-verbose: smolrv64.v rs232tx.v Makefile
