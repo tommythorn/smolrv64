@@ -74,21 +74,29 @@ module smolrv64(input wire        clock,
 // 14 is reserved
 `define TRAP_STORE_PAGE_FAULT                   15
 
-`define TRAP_USER_SOFTWARE_INTERRUPT            100
-`define TRAP_SUPERVISOR_SOFTWARE_INTERRUPT      101
-`define TRAP_MACHINE_SOFTWARE_INTERRUPT         103
+`define USER_SOFTWARE_INTERRUPT                  0
+`define SUPERVISOR_SOFTWARE_INTERRUPT            1
+`define MACHINE_SOFTWARE_INTERRUPT               3
 
-`define TRAP_USER_TIMER_INTERRUPT               104
-`define TRAP_SUPERVISOR_TIMER_INTERRUPT         105
-`define TRAP_MACHINE_TIMER_INTERRUPT            107
+`define USER_TIMER_INTERRUPT                     4
+`define SUPERVISOR_TIMER_INTERRUPT               5
+`define MACHINE_TIMER_INTERRUPT                  7
 
-`define TRAP_USER_EXTERNAL_INTERRUPT            108
-`define TRAP_SUPERVISOR_EXTERNAL_INTERRUPT      109
-`define TRAP_MACHINE_EXTERNAL_INTERRUPT         111
+`define USER_EXTERNAL_INTERRUPT                  8
+`define SUPERVISOR_EXTERNAL_INTERRUPT            9
+`define MACHINE_EXTERNAL_INTERRUPT              11
 
-
+`define CSR_SSTATUS    12'h100
+`define CSR_SIE        12'h104
+`define CSR_STVEC      12'h105
 `define CSR_SCOUNTEREN 12'h106
+`define CSR_SEPC       12'h141
+`define CSR_SCAUSE     12'h142
+`define CSR_STVAL      12'h143
+`define CSR_SIP        12'h144
+
 `define CSR_SATP       12'h180
+
 `define CSR_MSTATUS    12'h300
 `define CSR_MISA       12'h301
 `define CSR_MEDELEG    12'h302
@@ -96,11 +104,17 @@ module smolrv64(input wire        clock,
 `define CSR_MIE        12'h304
 `define CSR_MTVEC      12'h305
 `define CSR_MCOUNTEREN 12'h306
+
 `define CSR_MSCRATCH   12'h340
 `define CSR_MEPC       12'h341
 `define CSR_MCAUSE     12'h342
 `define CSR_MTVAL      12'h343
 `define CSR_MIP        12'h344
+
+`define CSR_PMPCFG0    12'h3a0
+`define CSR_PMPADDR0   12'h3b0
+
+`define CSR_MNSTATUS   12'h744 // Don't know what that is
 `define CSR_MCYCLE     12'hb00
 `define CSR_MINSTRET   12'hb02
 `define CSR_CYCLE      12'hc00
@@ -200,16 +214,42 @@ module smolrv64(input wire        clock,
 
    reg [ 1:0]  csr_op;
 
-   // CSR state (just a place holder for now)
-   reg [63:0]  csr_mie      = 0,
-               csr_mtvec    = 0,
-               csr_mscratch = 'hDEADBEEFCAFEF00D,
-               csr_mepc     = 0,
-               csr_mcause   = 0,
-               csr_mtval    = 0,
-               csr_mip      = 0,
-               csr_mcycle   = 0,
-               csr_minstret = ~0; // -1 because we increase it in fetch
+   // CSR state
+   reg         deleg, m_ie, s_ie;
+   reg [63:0]  epc,
+               tval,
+               tvec;
+   reg [11:0]  csr_mie        = 0,
+               csr_mideleg    = 0,
+               // temporaries, will not turn into flops
+               cause,
+               pending_m,
+               pending_s;
+   reg [63:0]  csr_stvec      = 0,
+               csr_scounteren = 0,
+               csr_sepc       = 0,
+               csr_scause     = 0,
+               csr_satp       = 0,
+               csr_stval      = 0,
+               csr_medeleg    = 0,
+               csr_mtvec      = 0,
+               csr_mscratch   = 'hDEADBEEFCAFEF00D,
+               csr_mepc       = 0,
+               csr_mcause     = 0,
+               csr_mtval      = 0,
+               csr_mcycle     = 0,
+               csr_minstret   = ~0; // -1 because we increase it in fetch
+
+   // MIP subfields
+   reg         meip = 0, seip = 0, ueip = 0,
+               mtip = 0, stip = 0, utip = 0,
+               msip = 0, ssip = 0, usip = 0;
+
+   wire [11:0] csr_mip = {meip, 1'd0, seip, ueip,
+                          mtip, 1'd0, stip, utip,
+                          msip, 1'd0, ssip, usip};
+
+   reg         _dummy_e, _dummy_t, _dummy_s; // Will be eliminated by tool
 
    // MSTATUS subfields
    // Global interrupt-enable bits
@@ -273,7 +313,7 @@ module smolrv64(input wire        clock,
              $write("%05d   %1d %x     %x ", $time, prv, pc, insn[15:0]);
 
            if ((insn & 'hffff) == 'h0000)
-             $write("illegal instruction");
+             $write("c.unimp");
               // Quadrant 0
            else if ((insn & 'he003) == 'h0000)
              $write("c.addi4spn x%1d,%1d", write_back_register, c_nzuimm107_1211_5_6_x4);
@@ -550,9 +590,14 @@ module smolrv64(input wire        clock,
              $write("amominu.d x%1d,x%1d,(x%1d)", rd, rs2, rs1);
            else if ((insn & 'hf800707f) == 'he000302f) // AMOMAXU.D
              $write("amomaxu.d x%1d,x%1d,(x%1d)", rd, rs2, rs1);
-
            else if ((insn & 'hffffffff) == 'h30200073) // MRET
              $write("mret");
+           else if ((insn & 'hffffffff) == 'h10200073) // SRET
+             $write("sret");
+           else if ((insn & 'hfe007fff) == 'h12000073) // SFENCE.VMA
+             $write("sfence.vma");
+           else if ((insn & 'hffffffff) == 'h10500073) // WFI
+             $write("wfi");
            else
              $write("illegal or unsupported instruction");
 
@@ -568,15 +613,38 @@ module smolrv64(input wire        clock,
            pc <= npc;
            state <= `S_FETCH_COMPLETE;
 
-           if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+           // Copying SAIL here
+           pending_m = csr_mip & csr_mie & ~csr_mideleg;
+           pending_s = csr_mip & csr_mie & csr_mideleg;
+           m_ie = prv == 3 && mie || prv <= 2;
+           s_ie = prv == 1 && sie || prv == 0;
+
+           cause = m_ie && pending_m != 0 ? pending_m :
+                   s_ie && pending_s != 0 ? pending_s : 0;
+
+           if (cause != 0) begin
+              cause = cause[`MACHINE_EXTERNAL_INTERRUPT]    ? `MACHINE_EXTERNAL_INTERRUPT :
+                      cause[`MACHINE_SOFTWARE_INTERRUPT]    ? `MACHINE_SOFTWARE_INTERRUPT :
+                      cause[`MACHINE_TIMER_INTERRUPT]       ? `MACHINE_TIMER_INTERRUPT :
+                      cause[`SUPERVISOR_EXTERNAL_INTERRUPT] ? `SUPERVISOR_EXTERNAL_INTERRUPT :
+                      cause[`SUPERVISOR_SOFTWARE_INTERRUPT] ? `SUPERVISOR_SOFTWARE_INTERRUPT :
+                      cause[`SUPERVISOR_TIMER_INTERRUPT]    ? `SUPERVISOR_TIMER_INTERRUPT :
+                      cause[`USER_EXTERNAL_INTERRUPT]       ? `USER_EXTERNAL_INTERRUPT :
+                      cause[`USER_SOFTWARE_INTERRUPT]       ? `USER_SOFTWARE_INTERRUPT :
+                                                              `USER_TIMER_INTERRUPT;
+              cause = (1 << 63) | cause;
+              epc = npc;
+              tval = 0;
+              state <= `S_EXCEPTION;
+           end else if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
               $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
 `endif
 `endif
-              csr_mcause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-              csr_mepc = pc;
-              csr_mtval = 0;
+              cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+              epc = pc;
+              tval = 0;
               state <= `S_EXCEPTION;
            end
         end
@@ -641,7 +709,7 @@ module smolrv64(input wire        clock,
            c_uimm65_1210_x8        = {insn[6:5],insn[12:10],3'd0};
            c_uimm12_62             = {insn[12],insn[6:2]};
 
-           csrno = insn[31:20];
+           csrno                   = insn[31:20];
 
            npc = pc + (insn[1:0] == 3 ? 4 : 2);
 
@@ -660,9 +728,9 @@ module smolrv64(input wire        clock,
               write_back_value = s1 + c_nzuimm107_1211_5_6_x4;
               if ((insn & 'hffff) == 0) begin
                  write_back_register = 0;
-                 csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
-                 csr_mepc = pc;
-                 csr_mtval = insn;
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 epc = pc;
+                 tval = insn;
                  state <= `S_EXCEPTION;
               end
            end
@@ -1106,9 +1174,9 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
-              csr_mcause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
-              csr_mepc = pc;
-              csr_mtval = 0;
+              cause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
+              epc = pc;
+              tval = 0;
               state <= `S_EXCEPTION;
 `ifdef RISCV_TESTS
               if (rf[3] & 1) begin
@@ -1444,13 +1512,48 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
-              npc = csr_mepc;
-
-              mprv = mpp == 3 ? mprv : 0;
               prv = mpp;
+              mpp = 0;
               mie = mpie;
               mpie = 1;
-              mpp = 0;
+              npc = csr_mepc;
+              state <= `S_FETCH;
+           end
+
+           else if ((insn & 'hffffffff) == 'h10200073) begin // SRET
+              if (prv == 0 || prv == 1 && tsr) begin
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 epc = pc;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end else begin
+                 prv = spp;
+                 spp = 0;
+                 sie = spie;
+                 spie = 1;
+                 npc = csr_sepc;
+              end
+           end
+
+           else if ((insn & 'hfe007fff) == 'h12000073) begin // SFENCE.VMA
+              if (prv < 1 || prv == 1 && tvm) begin
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 epc = pc;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end
+           end
+
+           else if ((insn & 'hffffffff) == 'h10500073) begin // WFI
+              if (prv == 0 || prv == 1 && tw) begin
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 epc = pc;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end else if ((csr_mip & csr_mie) != 0)
+                state <= `S_FETCH;
+              else
+                state <= `S_EXECUTE; // Stay until csr_map changes (XXX doesn't yet)
            end
 
            else begin
@@ -1464,9 +1567,9 @@ module smolrv64(input wire        clock,
               $finish;
 `endif
 `endif
-              csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
-              csr_mepc = pc;
-              csr_mtval = insn;
+              cause = `TRAP_ILLEGAL_INSTRUCTION;
+              epc = pc;
+              tval = insn;
               state <= `S_EXCEPTION;
            end
         end
@@ -1495,9 +1598,9 @@ module smolrv64(input wire        clock,
               $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
 `endif
 `endif
-              csr_mcause = `TRAP_STORE_ACCESS_FAULT;
-              csr_mepc = pc;
-              csr_mtval = mem_addr;
+              cause = `TRAP_STORE_ACCESS_FAULT;
+              epc = pc;
+              tval = mem_addr;
               mem_wr_mask = 0;
               state <= `S_EXCEPTION;
            end
@@ -1548,9 +1651,9 @@ module smolrv64(input wire        clock,
 `endif
 `endif
               write_back_register = 0;
-              csr_mcause = `TRAP_LOAD_ACCESS_FAULT;
-              csr_mepc = pc;
-              csr_mtval = mem_addr;
+              cause = `TRAP_LOAD_ACCESS_FAULT;
+              epc = pc;
+              tval = mem_addr;
               state <= `S_EXCEPTION;
            end
         end
@@ -1594,11 +1697,33 @@ module smolrv64(input wire        clock,
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
               case (csrno)
-                `CSR_SCOUNTEREN: csr_read_val = 0;
+                `CSR_SSTATUS:
+                  csr_read_val = {sd, 29'd0,            uxl, 12'd0,  // 63:20
+                                                    mxr, sum, 1'd0,  // 19:17
+                                  xs,   fs,         4'd0,      spp,  // 16: 8
+                                  2'd0, spie, upie, 2'd0, sie, uie}; //  7: 0
+                `CSR_SIE:       csr_read_val = csr_mie & 'h222;
+                `CSR_STVEC:     csr_read_val = csr_stvec;
+                `CSR_SCOUNTEREN:csr_read_val = 0;
+                `CSR_SEPC:      csr_read_val = csr_sepc;
+                `CSR_SCAUSE:    csr_read_val = csr_scause;
+                `CSR_STVAL:     csr_read_val = csr_stval;
+                `CSR_SIP:       csr_read_val = csr_mip & csr_mideleg;
+
+                `CSR_SATP: begin
+                   if (prv == 1 && tvm) begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      epc = pc;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end else
+                     csr_read_val = csr_satp;
+                end
                 `CSR_MSTATUS:
-                  csr_read_val = {sd, 27'd0, sxl, uxl, // 32
-                                  9'd0, tsr, tw, tvm, mxr, sum, mprv, xs, // 15
-                                  fs, mpp, 2'd0, spp, mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; // 17
+                  csr_read_val = {sd, 27'd0,  sxl,  uxl, 9'd0,                  // 63:23
+                                              tsr,  tw,   tvm, mxr, sum, mprv,  // 22:17
+                                  xs,         fs,         mpp, 2'd0,      spp,  // 16: 8
+                                  mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; //  7: 0
                 `CSR_MISA:     csr_read_val = 64'h8000000000141105; // 64'h800000000014112d with FD
                 // Hardwired 1 0100 0001 0001 0010 1101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
@@ -1606,6 +1731,8 @@ module smolrv64(input wire        clock,
                 //    SUIMAFDC
                 // -                            F  D
                 // =         1 0100 0001 0001 0000 0101
+                `CSR_MEDELEG:  csr_read_val = csr_medeleg;
+                `CSR_MIDELEG:  csr_read_val = csr_mideleg;
                 `CSR_MIE:      csr_read_val = csr_mie;
                 `CSR_MTVEC:    csr_read_val = csr_mtvec;
                 `CSR_MCOUNTEREN: csr_read_val = 0;
@@ -1625,19 +1752,20 @@ module smolrv64(input wire        clock,
                 default: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-                   $display("%05d   %1d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
+                   if (csrno != `CSR_PMPADDR0) // We *really* don't care about this one
+                     $display("%05d   %1d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
 `endif
 `endif
-                   csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
-                   csr_mepc = pc;
-                   csr_mtval = insn;
+                   cause = `TRAP_ILLEGAL_INSTRUCTION;
+                   epc = pc;
+                   tval = insn;
                    state <= `S_EXCEPTION;
                 end
               endcase
 
               // As no side effects (beside exception have happend, we
               // can postpone the priviledge check to here
-              if ((csrno >> 8) & 3 > prv) begin
+              if (prv < csrno[9:8]) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
                  $display("%05d   %1d %x %x mode %d isn't priviledged to read CSR %x", $time,
@@ -1656,7 +1784,7 @@ module smolrv64(input wire        clock,
 
            // Write priviledge check
            if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
-              if ((csrno >> 8) & 3 > prv) begin
+              if (prv < csrno[9:8]) begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
@@ -1666,7 +1794,7 @@ module smolrv64(input wire        clock,
 `endif
               end
 
-              if ((csrno >> 10) & 3 == 3) begin
+              if (csrno[11:10] == 3) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
                  $display("%05d   %1d %x %x write attempt to Read Only CSR %x", $time,
@@ -1683,34 +1811,70 @@ module smolrv64(input wire        clock,
            if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
               // write the CSR
               case (csrno)
+                `CSR_SSTATUS: begin
+                   {mxr, sum}        = csr_write_val[19:18];
+                   fs                = csr_write_val[14:13];
+                   spp               = csr_write_val[8];
+                   {spie, upie}      = csr_write_val[5:4];
+                   {sie, uie}        = csr_write_val[1:0];
+                end
+                `CSR_SIE:       csr_mie    = csr_write_val & 'h222 | csr_mie & ~'h222;
+                `CSR_STVEC:     csr_stvec  = csr_write_val;
                 `CSR_SCOUNTEREN: begin end
+                `CSR_SEPC:      csr_sepc   = csr_write_val & ~1;
+                `CSR_SCAUSE:    csr_scause = csr_write_val;
+                `CSR_STVAL:     csr_stval  = csr_write_val;
+                `CSR_SIP:       begin
+                   if (csr_mideleg[9]) seip = csr_write_val[9];
+                   if (csr_mideleg[8]) ueip = csr_write_val[8];
+                   if (csr_mideleg[5]) stip = csr_write_val[5];
+                   if (csr_mideleg[4]) utip = csr_write_val[4];
+                   if (csr_mideleg[1]) ssip = csr_write_val[1];
+                   if (csr_mideleg[0]) usip = csr_write_val[0];
+                end
+                `CSR_SATP: begin
+                   if (prv == 1 && tvm) begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      epc = pc;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end else
+                     csr_satp = csr_write_val;
+                end
                 `CSR_MSTATUS: begin
                    {sie, uie}        = csr_write_val[1:0];
                    {spie, upie, mie} = csr_write_val[5:3];
                    {spp, mpie}       = csr_write_val[8:7];
                    mpp               = csr_write_val[12:11];
                    // fs = csr_write_val[14:13];
-                   {tsr, tw, tvm, mxr, sum, mprv} = csr_write_val[22:17];
-
-                   if (mie && (csr_mie & csr_mip) != 0)
-                     $display("XXX Interrupts are now pending (%x), not yet supported!", csr_mie & csr_mip);
+                   {tsr, tw, tvm, mxr, sum, mprv} <= csr_write_val[22:17];
                 end
                 `CSR_MISA:     begin end
+                `CSR_MEDELEG:  csr_medeleg  = csr_write_val;
+                `CSR_MIDELEG:  csr_mideleg  = csr_write_val;
                 `CSR_MIE:      csr_mie      = csr_write_val;
                 `CSR_MTVEC:    csr_mtvec    = csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
                 `CSR_MCOUNTEREN: begin end
                 `CSR_MSCRATCH: csr_mscratch = csr_write_val;
-                `CSR_MEPC:     csr_mepc     = csr_write_val;
+                `CSR_MEPC:     csr_mepc     = csr_write_val & ~1;
                 `CSR_MCAUSE:   csr_mcause   = csr_write_val;
                 `CSR_MTVAL:    csr_mtval    = csr_write_val;
-                `CSR_MIP:      csr_mip      = csr_write_val;
-                `CSR_MCYCLE:   csr_mcycle  <= csr_write_val;
+                `CSR_MIP:      begin
+                   seip = csr_write_val[9];
+                   ueip = csr_write_val[8];
+                   stip = csr_write_val[5];
+                   utip = csr_write_val[4];
+                   ssip = csr_write_val[1];
+                   usip = csr_write_val[0];
+                end
+                `CSR_MCYCLE:   csr_mcycle   = csr_write_val;
                 `CSR_MINSTRET: csr_minstret = csr_write_val;
                 default: begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-                   $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
+                   if (csrno != `CSR_PMPADDR0) // We *really* don't care about this one
+                     $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
 `endif
 `endif
                 end
@@ -1719,42 +1883,56 @@ module smolrv64(input wire        clock,
 
            write_back_value = csr_read_val;
            if (csr_access_failure) begin
-              csr_mcause = `TRAP_ILLEGAL_INSTRUCTION;
-              csr_mepc = pc;
-              csr_mtval = insn;
+              cause = `TRAP_ILLEGAL_INSTRUCTION;
+              epc = pc;
+              tval = insn;
 
               state <= `S_EXCEPTION;
            end
         end
 
         `S_EXCEPTION: begin
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
+           $display("%05d  ** Exception, cause %x, epc %x, tval %x", $time, cause, epc, tval);
+`endif
+`endif
+
            write_back_register = 0;
 
-           // XXX There is a *whole* lot missing here
+           // XXX We would probably save some gates by keeping cause
+           // one-hot and postpone the encoding until the assignment
+           // to csr_[ms]cause below.
+           deleg = prv <= 1 && (cause[63]
+                                ? csr_mideleg[csr_mcause[3:0]]
+                                : csr_medeleg[csr_mcause[3:0]]);
+           if (deleg) begin
+              csr_scause = cause;
+              csr_sepc = epc;
+              csr_stval = tval;
+              spie = sie;
+              sie = 0;
+              spp = prv;
+              tvec = csr_stvec;
+           end else begin
+              csr_mcause = cause;
+              csr_mepc = epc;
+              csr_mtval = tval;
+              mpie = mie;
+              mie = 0;
+              mpp = prv;
+              tvec = csr_mtvec;
+           end
 
-           // get M and S delegation based on it being an interrupt or an exception
-           // if no M delegation => M mode
-           // else if no S delegation => S mode
-           // else => U mode!
-           //
-           // Next, write the {epc,cause,tval} CSR corresponding to
-           // the mode (XXX which means that all the states writing
-           // csr_mcause etc directly are wrong) and pick npc from the
-           // corresponding tvec CSR (optionally handing vectoring for
-           // interrupts)
-           //
-           // FINALLY, read the corresponding status register updating
-           // it accordingly (this is full of obscure settings, fun).
-           
-           // Currently, we do none of that
+           prv = 3;
 
-           mpie = mie;
-           mie = 0;
-
-           mpp <= prv;
-           prv <= 3;
-           npc = csr_mtvec;
-           
+           // Handle vectored interrupts, just to be compatible
+           npc = tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3;
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
+           $display("%05d  ** Exception resuming at %x", $time, tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
+`endif
+`endif
            state <= `S_FETCH;
         end
 
@@ -1814,7 +1992,6 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH;
            end
         end
-
       endcase
    end
 endmodule

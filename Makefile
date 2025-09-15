@@ -9,10 +9,7 @@ else # Assume Linux
 endif
 
 testall:
-	@./run-riscv-tests.sh passes fails
-
-fails:
-	@./run-riscv-tests.sh fails
+	@./run-riscv-tests.sh passes #fails   now empty
 
 run: $(P).even $(P).odd smolrv64-run
 	./smolrv64-run +even=$(P).even +odd=$(P).odd
