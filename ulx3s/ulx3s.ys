@@ -1,5 +1,0 @@
-read_verilog ulx3s.v
-read_verilog ../smolrv64.v
-read_verilog ../rs232tx.v
-read_verilog ../rs232rx.v
-synth_ecp5 -noccu2 -nomux -nodram -json ulx3s.json

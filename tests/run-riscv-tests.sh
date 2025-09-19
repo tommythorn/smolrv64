@@ -1,6 +1,7 @@
 #!/bin/bash
 # passes fails unsupported
-iverilog  -o smolrv64-tests -s smolrv64_tb -DSIMULATE -DRISCV_TESTS smolrv64.v rs232tx.v
+SRC=../src
+iverilog -I$SRC  -o smolrv64-tests -s smolrv64_tb -DSIMULATE -DRISCV_TESTS $SRC/smolrv64.v $SRC/rs232tx.v
 
 for class in $*
 do echo
