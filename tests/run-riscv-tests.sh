@@ -1,7 +1,7 @@
 #!/bin/bash
 # passes fails unsupported
 
-make -C ../src smolrv64-tester
+make -C ../src smolrv64-tester || exit
 
 for class in $*
 do echo
