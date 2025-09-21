@@ -58,7 +58,7 @@ endmodule
 module smolrv64(input wire        clock,
                 input wire        tx_ready_i,
                 output reg        tx_valid_o = 0,
-                output reg [ 7:0] tx_data_o = 0,
+                output reg [ 7:0] tx_data_o,
                 output reg        halted_o = 0);
 
 // XXX Should I use param/localparam instead?
@@ -148,19 +148,21 @@ module smolrv64(input wire        clock,
 
    reg [3:0]   state = `S_FETCH; // execution state
 
-`define MEM_START 'h80000000
-`define MEM_SIZE_LG2 15
-`define MEM_SIZE (1 << `MEM_SIZE_LG2)
+`define MEM_BASEADDR    64'h80000000
+`define MEM_SIZE_LG2    15 // 32 KiB
+`define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
    // even and odd 64b word addresses and striped across them.  Any
    // 64-bit word at address A will then be found in
    // {mem1[A/16],mem0[A/16]} if A/8 is even and
    // {mem0[A/16+1],mem1[A/16]} if A/8 is odd.
-   reg  [63:0] mem0[`MEM_SIZE/32-1:0];
-   reg  [63:0] mem1[`MEM_SIZE/32-1:0];
+   reg  [63:0] mem0[`MEM_SIZE/16-1:0];
+   reg  [63:0] mem1[`MEM_SIZE/16-1:0];
 
+`ifdef SIMULATE
    reg [8*200:0] evenhex, oddhex;
+`endif
    initial begin
 `ifdef SIMULATE
       if (!$value$plusargs("even=%s", evenhex)) begin
@@ -172,11 +174,11 @@ module smolrv64(input wire        clock,
          $finish;
       end
 
-       $readmemh(evenhex, mem0, 0, `MEM_SIZE/32-1);
-       $readmemh(oddhex, mem1, 0, `MEM_SIZE/32-1);
+       $readmemh(evenhex, mem0, 0, `MEM_SIZE/16-1);
+       $readmemh(oddhex, mem1, 0, `MEM_SIZE/16-1);
 `else
-      $readmemh("mem.even", mem0, 0, `MEM_SIZE/32-1);
-      $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/32-1);
+      $readmemh("mem.even", mem0, 0, `MEM_SIZE/16-1);
+      $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/16-1);
 `endif
    end
 
@@ -184,16 +186,16 @@ module smolrv64(input wire        clock,
    reg  [63:0] pc = 0;
    reg  [ 1:0] prv = 3;
 
-   reg  [`MEM_SIZE_LG2-4:0] mem_addr0, mem_addr1;
+   reg  [`MEM_SIZE_LG2-5:0] mem_addr0, mem_addr1;
    reg  [63:0] mem_addr, s1, s2;
    reg  [15:0] mem_wr_mask;
    wire [63:0] mem_data0 = mem0[mem_addr0];
    wire [63:0] mem_data1 = mem1[mem_addr1];
 
-   reg  [ 5:0] write_back_register = 0;
+   reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
 
-   reg  [63:0] npc = `MEM_START;
+   reg  [63:0] npc = `MEM_BASEADDR;
    reg  [127:0] aligned;
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
@@ -201,13 +203,11 @@ module smolrv64(input wire        clock,
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
    reg  [63:0] c_imm12_62;
    reg  [63:0] c_imm12_43_5_2_6_x16;
-   reg  [ 4:0] c_uimm5_1210_6_x4;
+   reg  [ 6:0] c_uimm5_1210_6_x4;
    reg  [ 8:0] c_uimm42_12_65_x8, c_uimm97_1210_x8;
-   reg  [ 7:0] c_uimm32_12_64_x4, c_uimm87_129_x4;
-   reg  [ 8:0] c_uimm65_1210_x8;
-   reg  [ 5:0] c_uimm12_62;
+   reg  [ 7:0] c_uimm32_12_64_x4, c_uimm87_129_x4, c_uimm65_1210_x8;
    reg  [31:0] sext32;
-   reg  [ 2:0] load_size_lg2 = 'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
+   reg  [ 2:0] load_size_lg2 = 3'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
 `ifdef SIMULATE
    reg  [127:0] tmp128;
 `endif
@@ -215,9 +215,7 @@ module smolrv64(input wire        clock,
    reg  [ 5:0] shamt;
    reg  [11:0] csrno;
    reg  [31:0] insn = 0;
-   wire [63:0] br_offset = {{53{insn[31]}},insn[7],insn[30:25],insn[11:8]};
-
-   reg [ 1:0]  csr_op;
+   reg  [ 1:0] csr_op;
 
    // CSR state
    reg         deleg, m_ie, s_ie, cause_intr;
@@ -294,7 +292,11 @@ module smolrv64(input wire        clock,
    reg         do_atomic = 0;
    reg         csr_access_failure = 0;
 
+   reg [63:0]  store_value;
+
    always @(posedge clock) begin
+/* verilator lint_off WIDTHEXPAND */
+/* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
 
       if (tx_ready_i)
@@ -303,7 +305,8 @@ module smolrv64(input wire        clock,
       case (state)
         `S_FETCH: begin
            csr_minstret <= csr_minstret + 1;
-           if (write_back_register)
+
+           if (write_back_register != 0)
              rf[write_back_register] = write_back_value;
 
 `ifdef DISASS
@@ -349,9 +352,9 @@ module smolrv64(input wire        clock,
            else if ((insn & 'he003) == 'h6001)
              $write("c.lui   x%1d,%1d", write_back_register, $signed(c_imm12_62)<<12);
            else if ((insn & 'hec03) == 'h8001)
-             $write("c.srli  x%1d,%1d", write_back_register, c_uimm12_62);
+             $write("c.srli  x%1d,%1d", write_back_register, c_imm12_62[5:0]);
            else if ((insn & 'hec03) == 'h8401)
-             $write("c.srai  x%1d,%1d", write_back_register, c_uimm12_62);
+             $write("c.srai  x%1d,%1d", write_back_register, c_imm12_62[5:0]);
            else if ((insn & 'hec03) == 'h8801)
              $write("c.andi  x%1d,%x", write_back_register, c_imm12_62);
            else if ((insn & 'hfc63) == 'h8c01)
@@ -643,7 +646,7 @@ module smolrv64(input wire        clock,
               epc = npc;
               tval = 0;
               state <= `S_EXCEPTION;
-           end else if (npc[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+           end else if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
               $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
@@ -664,18 +667,15 @@ module smolrv64(input wire        clock,
 
         `S_DECODE: begin
            rd = insn`insn_rd;
-
-           // XXX This is begging for a dedicated test bench
-           // The general principle
            case (insn[1:0])
-             0: {rs1,rs2} = {5'd8|insn[9:7], 5'd8|insn[4:2]};
-             1: {rs1,rs2} = {insn[11:7], 5'd8|insn[4:2]};
-             2: {rs1,rs2} = {insn[11:7],     insn[6:2]};
-             3: {rs1,rs2} = {insn`insn_rs1,  insn`insn_rs2};
+             0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
+             1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
+             2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
+             3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
            endcase
            // The exceptions
            if (insn[1:0] == 1 && insn[15])
-             rs1 = 5'd8 | insn[9:7];
+             rs1 = {2'd1,insn[9:7]};
            if (insn[1:0] == 2 && insn[15:14] == 1)
              rs1 = 2; // sp
            if (insn[1:0] == 2 && 5 <= insn[15:13])
@@ -695,7 +695,7 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH; // Default next stage
 
            imm_i = {{52{insn[31]}},insn[31:20]};
-           imm_j = {{52{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
+           imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
            imm_b = {{52{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
            imm_u = {{32{insn[31]}},insn[31:12],12'd0};
            imm_s = {{52{insn[31]}},insn[31:25],insn[11:7]};
@@ -714,7 +714,6 @@ module smolrv64(input wire        clock,
            c_uimm87_129_x4         = {insn[8:7],insn[12:9],2'd0};
 
            c_uimm65_1210_x8        = {insn[6:5],insn[12:10],3'd0};
-           c_uimm12_62             = {insn[12],insn[6:2]};
 
            csrno                   = insn[31:20];
 
@@ -773,6 +772,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -781,6 +781,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -939,6 +940,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -947,6 +949,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -1065,6 +1068,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 1;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -1073,6 +1077,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 3;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -1081,6 +1086,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 15;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -1089,6 +1095,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               mem_wr_mask <= 255;
+              store_value = s2;
               state <= `S_STORE;
            end
 
@@ -1486,6 +1493,7 @@ module smolrv64(input wire        clock,
                  mem_addr0 <= mem_addr[63:4] + mem_addr[3];
                  mem_addr1 <= mem_addr[63:4];
                  mem_wr_mask <= insn[12] ? 255 : 15;
+                 store_value = s2;
                  state <= `S_STORE;
               end
            end
@@ -1585,7 +1593,7 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH;
            reservation <= ~0;
 
-           aligned = {64'd0,s2} << (8 * (mem_addr % 8));
+           aligned = {64'd0,store_value} << (8 * (mem_addr % 8));
            mem_wr_mask = mem_wr_mask << (mem_addr % 8);
            if (mem_addr[3]) begin
               aligned = {aligned[63:0], aligned[127:64]};
@@ -1599,7 +1607,7 @@ module smolrv64(input wire        clock,
                 state <= `S_STORE; // Block here until consumed
 
               mem_wr_mask[1] = 0;
-           end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+           end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
               $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
@@ -1642,7 +1650,7 @@ module smolrv64(input wire        clock,
              4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
              5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
              6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
-             7: write_back_value = 'hx;
+             7: write_back_value = 64'hx;
            endcase
 
            state <= `S_FETCH;
@@ -1650,7 +1658,7 @@ module smolrv64(input wire        clock,
            if (do_atomic)
              state <= `S_AMO;
 
-           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_START >> `MEM_SIZE_LG2) begin
+           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
               // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
@@ -1667,27 +1675,28 @@ module smolrv64(input wire        clock,
 
         `S_AMO: begin
            mem_wr_mask <= 255;
+           store_value = s2;
            if (!insn[12]) begin
               write_back_value = {{32{write_back_value[31]}},write_back_value[31:0]};
-              s2 = {{32{s2[31]}},s2[31:0]};
+              store_value = {{32{s2[31]}},s2[31:0]};
               mem_wr_mask <= 15;
            end
 
            case (insn[31:24])
-             'h08: s2 = s2; // AMOSWAP
-             'h00: s2 = s2 + write_back_value; // AMOADD
-             'h20: s2 = s2 ^ write_back_value; // AMOXOR
-             'h60: s2 = s2 & write_back_value; // AMOAND
-             'h40: s2 = s2 | write_back_value; // AMOOR
-             'h80: s2 = $signed(s2) < $signed(write_back_value) ? s2 : write_back_value; // AMOMIN
-             'ha0: s2 = $signed(s2) < $signed(write_back_value) ? write_back_value : s2; // AMOMAX
-             'hc0: s2 = s2 < write_back_value ? s2 : write_back_value; // AMOMINU
-             'he0: s2 = s2 < write_back_value ? write_back_value : s2; // AMOMAXU
+             'h08: begin end // AMOSWAP
+             'h00: store_value = store_value + write_back_value; // AMOADD
+             'h20: store_value = store_value ^ write_back_value; // AMOXOR
+             'h60: store_value = store_value & write_back_value; // AMOAND
+             'h40: store_value = store_value | write_back_value; // AMOOR
+             'h80: store_value = $signed(store_value) < $signed(write_back_value) ? store_value : write_back_value; // AMOMIN
+             'ha0: store_value = $signed(store_value) < $signed(write_back_value) ? write_back_value : store_value; // AMOMAX
+             'hc0: store_value = store_value < write_back_value ? store_value : write_back_value; // AMOMINU
+             'he0: store_value = store_value < write_back_value ? write_back_value : store_value; // AMOMAXU
              default: begin
 `ifdef SIMULATE
                 $display("Impossible AMO"); $finish;
 `endif
-                s2 = 'hX;
+                store_value = 64'hX;
              end
            endcase
 
@@ -1827,7 +1836,7 @@ module smolrv64(input wire        clock,
                 end
                 `CSR_SIE:       csr_mie    = csr_write_val & 'h222 | csr_mie & ~'h222;
                 `CSR_STVEC:     csr_stvec  = csr_write_val;
-                `CSR_SCOUNTEREN: begin end
+                `CSR_SCOUNTEREN:csr_scounteren = csr_write_val;
                 `CSR_SEPC:      csr_sepc   = csr_write_val & ~1;
                 `CSR_SCAUSE:    csr_scause = csr_write_val;
                 `CSR_STVAL:     csr_stval  = csr_write_val;
