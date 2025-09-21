@@ -20,6 +20,7 @@
 // -----------------------------------------------------------------------
 
 `timescale 1ns/10ps
+`default_nettype none
 
 /*
  * This RS232 receiver only offers a single element buffer, and

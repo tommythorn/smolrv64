@@ -1,12 +1,21 @@
 P=hw
 OPTS=
+IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE
 platform=$(shell uname -o)
 
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-
+  CC=clang
 else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
+
+# Icarus VPI support
+CFLAGS = -fPIC -shared -O2 -Wall
+VPI_CFLAGS = $(shell iverilog-vpi --cflags)
+VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
+
+SRCS=smolrv64.v rs232tx.v
 
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)
@@ -17,11 +26,17 @@ run: $(P).even $(P).odd smolrv64-run
 verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
-smolrv64-verbose: smolrv64.v rs232tx.v Makefile
-	iverilog -o $@ -s smolrv64_tb -DSIMULATE -DDISASS $(OPTS) smolrv64.v rs232tx.v
+smolrv64-verbose: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(IVOPTS) -o $@ -DDISASS $(SRCS)
 
-smolrv64-run: smolrv64.v rs232tx.v Makefile
-	iverilog -o $@ -s smolrv64_tb -DSIMULATE -DNO_TIMEOUT $(OPTS) smolrv64.v rs232tx.v
+smolrv64-run: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(IVOPTS) -o $@ -DNO_TIMEOUT -DVPI $(SRCS)
+
+smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(IVOPTS) -o $@ -DRISCV_TESTS $(SRCS)
+
+lint:
+	verilator  -Wall --cc --top-module smolrv64 $(SRCS)
 
 %.even: %.bin
 	./evenodd.py $^ 0 > $@
@@ -43,3 +58,6 @@ smolrv64-run: smolrv64.v rs232tx.v Makefile
 
 %.dis: %
 	$(RV)objdump -Mmax,no-aliases,numeric -d $^ > $@
+
+tty_vpi.vpi: tty_vpi.c
+	iverilog-vpi $^

@@ -1,3 +1,4 @@
+`timescale 1ns/10ps
 `default_nettype none
 
 `define insn_rd  [11: 7]
@@ -28,7 +29,11 @@ module smolrv64_tb;
 `ifdef DISASS
        $display("%05d  <<%c>>", $time, tx_data_i);
 `else
+  `ifdef VPI
+       $tty_write(tx_data_i);
+  `else
        $write("%c", tx_data_i);
+   `endif
 `endif
 
    always @(posedge clock) if (halted) $finish;
@@ -215,7 +220,7 @@ module smolrv64(input wire        clock,
    reg [ 1:0]  csr_op;
 
    // CSR state
-   reg         deleg, m_ie, s_ie;
+   reg         deleg, m_ie, s_ie, cause_intr;
    reg [63:0]  epc,
                tval,
                tvec;
@@ -622,6 +627,7 @@ module smolrv64(input wire        clock,
            cause = m_ie && pending_m != 0 ? pending_m :
                    s_ie && pending_s != 0 ? pending_s : 0;
 
+           cause_intr = 0;
            if (cause != 0) begin
               cause = cause[`MACHINE_EXTERNAL_INTERRUPT]    ? `MACHINE_EXTERNAL_INTERRUPT :
                       cause[`MACHINE_SOFTWARE_INTERRUPT]    ? `MACHINE_SOFTWARE_INTERRUPT :
@@ -632,7 +638,8 @@ module smolrv64(input wire        clock,
                       cause[`USER_EXTERNAL_INTERRUPT]       ? `USER_EXTERNAL_INTERRUPT :
                       cause[`USER_SOFTWARE_INTERRUPT]       ? `USER_SOFTWARE_INTERRUPT :
                                                               `USER_TIMER_INTERRUPT;
-              cause = (1 << 63) | cause;
+
+              cause_intr = 1;
               epc = npc;
               tval = 0;
               state <= `S_EXCEPTION;
@@ -1903,7 +1910,7 @@ module smolrv64(input wire        clock,
            // XXX We would probably save some gates by keeping cause
            // one-hot and postpone the encoding until the assignment
            // to csr_[ms]cause below.
-           deleg = prv <= 1 && (cause[63]
+           deleg = prv <= 1 && (cause_intr
                                 ? csr_mideleg[csr_mcause[3:0]]
                                 : csr_medeleg[csr_mcause[3:0]]);
            if (deleg) begin
