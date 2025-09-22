@@ -182,7 +182,7 @@ module smolrv64(input wire        clock,
 `endif
    end
 
-   reg  [63:0] rf[31:0];  initial $readmemh("rf.hex", rf, 0, 31);
+   reg  [63:0] regfile[31:0];  initial $readmemh("rf.hex", regfile, 0, 31);
    reg  [63:0] pc = 0;
    reg  [ 1:0] prv = 3;
 
@@ -307,7 +307,7 @@ module smolrv64(input wire        clock,
            csr_minstret <= csr_minstret + 1;
 
            if (write_back_register != 0)
-             rf[write_back_register] = write_back_value;
+             regfile[write_back_register] = write_back_value;
 
 `ifdef DISASS
            // We disassemble the *previous* instruction so we can read
@@ -610,7 +610,7 @@ module smolrv64(input wire        clock,
              $write("illegal or unsupported instruction");
 
            if (write_back_register != 0)
-             $display("     x%1d = %x", write_back_register, rf[write_back_register]);
+             $display("     x%1d = %x", write_back_register, regfile[write_back_register]);
            else
              $display("");
            end
@@ -685,8 +685,8 @@ module smolrv64(input wire        clock,
 
            shamt = insn[25:20];
 
-           s1 <= rf[rs1];
-           s2 <= rf[rs2];
+           s1 <= regfile[rs1];
+           s2 <= regfile[rs2];
            write_back_register = 0;
            state <= `S_EXECUTE;
         end
@@ -742,7 +742,7 @@ module smolrv64(input wire        clock,
            end
 
            //else if ((insn & 'he003) == 'h2000) begin // C.FLD
-             //$display("c.fld   x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, c_imm12_62, rf[write_back_register]);
+             //$display("c.fld   x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, c_imm12_62, regfile[write_back_register]);
            //end
 
            else if ((insn & 'he003) == 'h4000) begin // C.LW
@@ -886,7 +886,7 @@ module smolrv64(input wire        clock,
            end
 
            //else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
-           //  $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, c_uimm42_12_65_x8, rf[write_back_register]);
+           //  $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, c_uimm42_12_65_x8, regfile[write_back_register]);
            //end
 
            else if ((insn & 'he003) == 'h4002) begin // C.LWSP
@@ -1193,11 +1193,11 @@ module smolrv64(input wire        clock,
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef RISCV_TESTS
-              if (rf[3] & 1) begin
-                 if (rf[3] / 2 == 0)
+              if (regfile[3] & 1) begin
+                 if (regfile[3] / 2 == 0)
                    $display("Test Passed");
                  else
-                   $display("Test Failed with %3d", rf[3] / 2);
+                   $display("Test Failed with %3d", regfile[3] / 2);
                  $finish;
               end
 `endif
