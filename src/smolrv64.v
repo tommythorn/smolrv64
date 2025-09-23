@@ -135,6 +135,7 @@ module smolrv64(input wire        clock,
 
 `define S_FETCH          0
 `define S_FETCH_COMPLETE 1
+`define S_RF            12
 `define S_DECODE         2
 `define S_EXECUTE        3
 `define S_STORE          4
@@ -144,6 +145,7 @@ module smolrv64(input wire        clock,
 `define S_MUL_RUNNING    8
 `define S_DIV_RUNNING    9
 `define S_AMO           10
+`define S_FINISH        11
 `define S_LAST_STATE    15 // Reminder to update the width of state
 
    reg [3:0]   state = `S_FETCH; // execution state
@@ -157,7 +159,9 @@ module smolrv64(input wire        clock,
    // 64-bit word at address A will then be found in
    // {mem1[A/16],mem0[A/16]} if A/8 is even and
    // {mem0[A/16+1],mem1[A/16]} if A/8 is odd.
+   (*ram_block*)(* ram_style = "block" *)
    reg  [63:0] mem0[`MEM_SIZE/16-1:0];
+   (*ram_block*)(* ram_style = "block" *)
    reg  [63:0] mem1[`MEM_SIZE/16-1:0];
 
 `ifdef SIMULATE
@@ -182,18 +186,40 @@ module smolrv64(input wire        clock,
 `endif
    end
 
-   reg  [63:0] regfile[31:0];  initial $readmemh("rf.hex", regfile, 0, 31);
-   reg  [63:0] pc = 0;
-   reg  [ 1:0] prv = 3;
-
    reg  [`MEM_SIZE_LG2-5:0] mem_addr0, mem_addr1;
-   reg  [63:0] mem_addr, s1, s2;
+   reg  [63:0] mem_addr;
    reg  [15:0] mem_wr_mask;
    wire [63:0] mem_data0 = mem0[mem_addr0];
    wire [63:0] mem_data1 = mem1[mem_addr1];
 
+   /* RISC-V Architectural state: operating mode, pc, and registers*/
+   (* ram_style = "block" *)
+   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile, 0, 31);
+   reg  [63:0] pc = 0;
+   reg  [ 1:0] prv = 3;
+
+   // Read ports
+   reg  [ 4:0] rs1, rs2;
+// wire [63:0] s1 = regfile[rs1];
+// wire [63:0] s2 = regfile[rs2];
+// reg  [63:0] s1;
+// reg  [63:0] s2;
+   wire [63:0] s1;
+   wire [63:0] s2;
+
+
    reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
+
+   regfile rf_inst(.clock(clock),
+                   .write_valid(state == `S_FETCH && write_back_register != 0),
+                   .write_data(write_back_value),
+                   .write_addr(write_back_register),
+                   .read_addr_0(rs1),
+                   .read_addr_1(rs2),
+                   .read_data_0(s1),
+                   .read_data_1(s2));
+
 
    reg  [63:0] npc = `MEM_BASEADDR;
    reg  [127:0] aligned;
@@ -211,7 +237,7 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
    reg  [127:0] tmp128;
 `endif
-   reg  [ 4:0] rd, rs1, rs2;
+   reg  [ 4:0] rd;
    reg  [ 5:0] shamt;
    reg  [11:0] csrno;
    reg  [31:0] insn = 0;
@@ -610,14 +636,17 @@ module smolrv64(input wire        clock,
              $write("illegal or unsupported instruction");
 
            if (write_back_register != 0)
-             $display("     x%1d = %x", write_back_register, regfile[write_back_register]);
+             $display("     x%1d = %x", write_back_register, write_back_register == 0 ? 0 : write_back_value);
            else
              $display("");
            end
 `endif
 
-           mem_addr0 <= npc[63:4] + npc[3];
-           mem_addr1 <= npc[63:4];
+           // Sigh.  Verilator wants
+           //    mem_addr0 <= {npc[63:4] + 60'(npc[3])}[`MEM_SIZE_LG2-5:0];
+           // but Icarus Verilog doesn't understand that and wants
+           mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
+           mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
            pc <= npc;
            state <= `S_FETCH_COMPLETE;
 
@@ -661,11 +690,14 @@ module smolrv64(input wire        clock,
 
         `S_FETCH_COMPLETE: begin
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
+           // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
            insn = aligned >> (pc[2:1] * 16);
+/*
            state <= `S_DECODE;
         end
 
         `S_DECODE: begin
+*/
            rd = insn`insn_rd;
            case (insn[1:0])
              0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
@@ -683,16 +715,24 @@ module smolrv64(input wire        clock,
            if ((insn & 'he003) == 0)
              rs1 = 2; // sp
 
+//           s1 <= regfile[rs1];
+//           s2 <= regfile[rs2];
+
            shamt = insn[25:20];
 
-           s1 <= regfile[rs1];
-           s2 <= regfile[rs2];
            write_back_register = 0;
            state <= `S_EXECUTE;
+           state <= `S_RF;
         end
+
+        `S_RF: state <= `S_EXECUTE;
 
         `S_EXECUTE: begin
            state <= `S_FETCH; // Default next stage
+
+          `ifdef DISASS
+           $display("%05d S%02d       x%1d = %x, x%1d = %x", $time, state, rs1, s1, rs2, s2);
+           `endif
 
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -750,7 +790,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 2|4;
               mem_addr = s1 + c_uimm5_1210_6_x4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
+              mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
               state <= `S_LOAD_ALIGN;
            end
 
@@ -1193,13 +1233,8 @@ module smolrv64(input wire        clock,
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef RISCV_TESTS
-              if (regfile[3] & 1) begin
-                 if (regfile[3] / 2 == 0)
-                   $display("Test Passed");
-                 else
-                   $display("Test Failed with %3d", regfile[3] / 2);
-                 $finish;
-              end
+              rs1 = 3;
+              state <= `S_FINISH;
 `endif
            end
 
@@ -2008,6 +2043,61 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH;
            end
         end
+        `S_FINISH: begin
+
+`ifdef SIMULATE
+              if (s1 & 1) begin
+                 if (s1 / 2 == 0)
+                   $display("Test Passed");
+                 else
+                   $display("Test Failed with %3d", s1);
+                 $finish;
+              end
+`endif
+        end
       endcase
    end
+endmodule
+
+
+
+module regfile(input wire         clock,
+               input wire         write_valid,
+               input wire [ 4:0]  write_addr,
+               input wire [63:0]  write_data,
+               input wire [ 4:0]  read_addr_0,
+               input wire [ 4:0]  read_addr_1,
+
+`ifdef ASYNC_RF
+               output wire [63:0] read_data_0,
+               output wire [63:0] read_data_1
+`else
+               output reg  [63:0] read_data_0,
+               output reg  [63:0] read_data_1
+`endif
+);
+
+   (* ram_style = "block" *)
+   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile);
+
+   always @(posedge clock) begin
+`ifndef ASYNC_RF
+      read_data_0 = regfile[read_addr_0];
+      read_data_1 = regfile[read_addr_1];
+`endif
+
+`ifdef DISASS
+      $display("%05d                                                                                              x%1d; %x", $time, read_addr_0, read_data_0);
+`endif
+
+      if (write_valid) begin
+         regfile[write_addr] <= write_data;
+         //$display("%05d S%02d                                                   rf[%1d] <- %1d", $time, `S_FETCH, write_addr, write_data);
+      end
+   end
+
+`ifdef ASYNC_RF
+   assign read_data_0 = regfile[read_addr_0];
+   assign read_data_1 = regfile[read_addr_1];
+`endif
 endmodule
