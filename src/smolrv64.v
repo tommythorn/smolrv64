@@ -10,33 +10,58 @@
 //`define DISASS 1
 module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
-   wire       tx_ready_o;
-   wire       tx_valid_i;
-   wire [7:0] tx_data_i;
    wire       halted;
    wire       ftdi_rxd;
 
-   smolrv64 smolrv64_inst     (.clock     (clock),
-                               .tx_ready_i(tx_ready_o),
-                               .tx_valid_o(tx_valid_i),
-                               .tx_data_o (tx_data_i),
-                               .halted_o  (halted));
+   wire [19:0]          mmio_address;
+   wire                 mmio_read;
+   wire                 mmio_write;
+   wire [31:0]          mmio_writedata;
+   wire [ 3:0]          mmio_byteenable;
+   wire                 mmio_readdatavalid;
+   wire [31:0]          mmio_readdata;
 
-   rs232tx #(1,1) rs232tx_inst(clock, tx_data_i, tx_valid_i, tx_ready_o, ftdi_rxd);
+   smolrv64 smolrv64_inst(.clock                (clock),
 
-   always @(posedge clock)
-     if (tx_ready_o & tx_valid_i)
+                          .mmio_address         (mmio_address),
+                          .mmio_read            (mmio_read),
+                          .mmio_write           (mmio_write),
+                          .mmio_writedata       (mmio_writedata),
+                          .mmio_byteenable      (mmio_byteenable),
+                          .mmio_readdatavalid   (mmio_readdatavalid),
+                          .mmio_readdata        (mmio_readdata),
+
+                          .halted_o             (halted));
+
+   wire       tx_ready;
+   wire       tx_valid = mmio_write && mmio_address == 0 && mmio_byteenable[0];
+   wire [7:0] tx_data  = mmio_writedata[7:0];
+
+   rs232tx #(1,1) rs232tx_inst(clock, tx_data, tx_valid, tx_ready, ftdi_rxd);
+
+   always @(posedge clock) begin
+/*
+      if (mmio_write)
+        $display("%05d  MMIO write received: %x/%x <- %x (tx_valid %d tx_ready %d)",
+                 $time, mmio_address, mmio_byteenable, mmio_writedata, tx_valid, tx_ready);
+ */
+
+      if (tx_valid & !tx_ready) begin
+         $display("%05d  uart data overrun, dropped", $time);
+      end else if (tx_valid) begin
 `ifdef DISASS
-       $display("%05d  <<%c>>", $time, tx_data_i);
+         $display("%05d  <<%c>>", $time, tx_data);
 `else
   `ifdef VPI
-       $tty_write(tx_data_i);
+         $tty_write(tx_data);
   `else
-       $write("%c", tx_data_i);
+         $write("%c", tx_data);
    `endif
 `endif
+      end
 
-   always @(posedge clock) if (halted) $finish;
+      if (halted) $finish;
+   end
 
    initial begin
 /*
@@ -55,11 +80,30 @@ module smolrv64_tb;
 endmodule
 `endif
 
-module smolrv64(input wire        clock,
-                input wire        tx_ready_i,
-                output reg        tx_valid_o = 0,
-                output reg [ 7:0] tx_data_o,
-                output reg        halted_o = 0);
+module smolrv64(input wire               clock,
+/*
+ The eventual memory bus
+
+                output [`BUS_WIDTH-5:0] bus_address, // -1 - 4 for 128b
+                output                  bus_read,
+                output                  bus_write,
+                output [127:0]          bus_writedata,
+                output [ 15:0]          bus_byteenable, // Ignored unless bus_write
+                input                   bus_waitrequest,
+                input                   bus_readdatavalid,
+                input  [127:0]          bus_readdata,
+*/
+
+// The MMIO bus is 32b only and always aligned access
+                output reg  [19:0]           mmio_address,    // aligned byte addresses, aligned to 32b
+                output reg                   mmio_read = 0,
+                output reg                   mmio_write = 0,
+                output reg  [31:0]           mmio_writedata,
+                output reg  [ 3:0]           mmio_byteenable, // Ignored unless mmio_write
+                input  wire                  mmio_readdatavalid,
+                input  wire [31:0]           mmio_readdata,
+
+                output reg                   halted_o = 0);
 
 // XXX Should I use param/localparam instead?
 `define TRAP_INSTRUCTION_ADDRESS_MISALIGNED      0
@@ -325,8 +369,8 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
 
-      if (tx_ready_i)
-        tx_valid_o <= 0;
+      mmio_write <= 0;
+      mmio_read <= 0;
 
       case (state)
         `S_FETCH: begin
@@ -807,7 +851,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm5_1210_6_x4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 15;
+              mem_wr_mask = 15;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -816,7 +860,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm65_1210_x8;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 255;
+              mem_wr_mask = 255;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -975,7 +1019,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm87_129_x4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 15;
+              mem_wr_mask = 15;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -984,7 +1028,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm97_1210_x8;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 255;
+              mem_wr_mask = 255;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -1103,7 +1147,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + imm_s;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 1;
+              mem_wr_mask = 1;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -1112,7 +1156,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + imm_s;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 3;
+              mem_wr_mask = 3;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -1121,7 +1165,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + imm_s;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 15;
+              mem_wr_mask = 15;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -1130,7 +1174,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + imm_s;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask <= 255;
+              mem_wr_mask = 255;
               store_value = s2;
               state <= `S_STORE;
            end
@@ -1523,7 +1567,7 @@ module smolrv64(input wire        clock,
                  mem_addr = s1;
                  mem_addr0 <= mem_addr[63:4] + mem_addr[3];
                  mem_addr1 <= mem_addr[63:4];
-                 mem_wr_mask <= insn[12] ? 255 : 15;
+                 mem_wr_mask = insn[12] ? 255 : 15;
                  store_value = s2;
                  state <= `S_STORE;
               end
@@ -1624,20 +1668,32 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH;
            reservation <= ~0;
 
-           aligned = {64'd0,store_value} << (8 * (mem_addr % 8));
-           mem_wr_mask = mem_wr_mask << (mem_addr % 8);
-           if (mem_addr[3]) begin
-              aligned = {aligned[63:0], aligned[127:64]};
-              mem_wr_mask = {mem_wr_mask[7:0],mem_wr_mask[15:8]};
-           end
+           if (mem_addr[63:31] == 0) begin
+              // $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
 
-           if (mem_addr == 'h10000000 && mem_wr_mask[0]) begin
-              tx_valid_o <= 1;
-              tx_data_o <= aligned[7:0];
-              if (!tx_ready_i)
-                state <= `S_STORE; // Block here until consumed
+              // MMIO exception
+`ifdef SIMULATE
+              if (mem_wr_mask > 15) begin
+                 $display("64b store to MMIO address space isn't supported");
+                 $finish;
+                 // XXX Could make that an illegal instruction trap
+              end
+`endif
 
-              mem_wr_mask[1] = 0;
+              mmio_address = mem_addr;
+              mmio_write <= 1;
+              mmio_writedata = store_value << (8 * (mem_addr % 4));
+              mmio_byteenable = mem_wr_mask << (mem_addr % 4);
+
+`ifdef SIMULATE
+              if (mem_wr_mask != mmio_byteenable >> (mem_addr % 4)) begin
+                 $display("Unaligned store to MMIO address space isn't supported (%x != %x)",
+                          mem_wr_mask, mmio_byteenable >> (mem_addr % 4));
+                 $finish;
+                 // XXX Could make that an illegal instruction trap
+              end
+`endif
+              mem_wr_mask = 0;
            end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
@@ -1649,6 +1705,13 @@ module smolrv64(input wire        clock,
               tval = mem_addr;
               mem_wr_mask = 0;
               state <= `S_EXCEPTION;
+           end
+
+           aligned = {64'd0,store_value} << (8 * (mem_addr % 8));
+           mem_wr_mask = mem_wr_mask << (mem_addr % 8);
+           if (mem_addr[3]) begin
+              aligned = {aligned[63:0], aligned[127:64]};
+              mem_wr_mask = {mem_wr_mask[7:0],mem_wr_mask[15:8]};
            end
 
            if (mem_wr_mask[ 0]) mem0[mem_addr0][ 7: 0] <= aligned[ 7: 0];
@@ -1705,12 +1768,12 @@ module smolrv64(input wire        clock,
         end
 
         `S_AMO: begin
-           mem_wr_mask <= 255;
+           mem_wr_mask = 255;
            store_value = s2;
            if (!insn[12]) begin
               write_back_value = {{32{write_back_value[31]}},write_back_value[31:0]};
               store_value = {{32{s2[31]}},s2[31:0]};
-              mem_wr_mask <= 15;
+              mem_wr_mask = 15;
            end
 
            case (insn[31:24])
