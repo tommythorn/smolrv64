@@ -730,10 +730,6 @@ module smolrv64(input wire        clock,
         `S_EXECUTE: begin
            state <= `S_FETCH; // Default next stage
 
-          `ifdef DISASS
-           $display("%05d S%02d       x%1d = %x, x%1d = %x", $time, state, rs1, s1, rs2, s2);
-           `endif
-
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
            imm_b = {{52{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
@@ -2086,14 +2082,7 @@ module regfile(input wire         clock,
       read_data_1 = regfile[read_addr_1];
 `endif
 
-`ifdef DISASS
-      $display("%05d                                                                                              x%1d; %x", $time, read_addr_0, read_data_0);
-`endif
-
-      if (write_valid) begin
-         regfile[write_addr] <= write_data;
-         //$display("%05d S%02d                                                   rf[%1d] <- %1d", $time, `S_FETCH, write_addr, write_data);
-      end
+      if (write_valid) regfile[write_addr] <= write_data;
    end
 
 `ifdef ASYNC_RF
