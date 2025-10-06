@@ -26,20 +26,40 @@ module top(input        clk_25mhz,
 
    wire        halted;
 
-   // On macOS, only speeds up to B230400 are defined in termios.h
-   // Curiously macOS/FTDI works at 460800, but higher rates do not.
-   rs232tx #(25000000,115200) rs232tx_inst
-     (clk_25mhz, tx_data_i, tx_valid_i, tx_ready_o, ftdi_rxd);
+   wire [19:0]          mmio_address;
+   wire                 mmio_read;
+   wire                 mmio_write;
+   wire [31:0]          mmio_writedata;
+   wire [ 3:0]          mmio_byteenable;
+   wire                 mmio_readdatavalid;
+   wire [31:0]          mmio_readdata;
 
-   rs232rx #(25000000,115200) rs232rx_inst
-     (clk_25mhz, rx_data_o, rx_valid_o, rx_ready_i, ftdi_txd, rx_overflow_o);
+   smolrv64 smolrv64_inst(.clock                (clock),
 
-   smolrv64 smolrv64_inst(.clock     (clk_25mhz),
-                          .tx_ready_i(tx_ready_o),
-                          .tx_valid_o(tx_valid_i),
-                          .tx_data_o (tx_data_i),
-                          .halted_o  (halted));
+                          .mmio_address         (mmio_address),
+                          .mmio_read            (mmio_read),
+                          .mmio_write           (mmio_write),
+                          .mmio_writedata       (mmio_writedata),
+                          .mmio_byteenable      (mmio_byteenable),
+                          .mmio_readdatavalid   (mmio_readdatavalid),
+                          .mmio_readdata        (mmio_readdata),
 
-   always @(posedge clk_25mhz) ctr <= ctr + tx_valid_i;
+                          .halted_o             (halted));
+
+   reg        reset_n = 0;
+   wire       mmio_waitrequest; // Currently ignored
+   wire       uart5_irq; // Currently ignored
+
+   always @(posedge clk_25mhz) reset_n = 1;
+
+   uart5 uart5_inst(clock, reset_n,
+                    mmio_address[4:2],
+                    mmio_read, mmio_write, mmio_writedata, mmio_readdata, mmio_waitrequest,
+
+                    ftdi_txd, // = uart_rx, not a typo
+                    ftdi_rxd, // = uart_tx, not a typo
+                    uart5_irq);
+
+   always @(posedge clk_25mhz) ctr <= ctr + ftdi_rxd;
    always @(posedge clk_25mhz) led_r <= (ctr[W-1:W-8] | {4{halted}}) ^ {8{!btn[0]}};
 endmodule

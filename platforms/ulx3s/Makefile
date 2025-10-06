@@ -12,5 +12,5 @@ ulx3s_out.config: ulx3s.json
 		--lpf ulx3s_v20.lpf \
 		--textcfg ulx3s_out.config
 
-ulx3s.json: ulx3s.ys ulx3s.v $(SRC)/smolrv64.v $(SRC)/rs232rx.v $(SRC)/rs232tx.v $(SRC)/mem.even $(SRC)/mem.odd
+ulx3s.json: ulx3s.ys ulx3s.v $(SRC)/smolrv64.v $(SRC)/uart5.v $(SRC)/mem.even $(SRC)/mem.odd
 	yosys --top top ulx3s.ys 

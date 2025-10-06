@@ -1,4 +1,4 @@
-P=hw
+P=mem
 OPTS=
 IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE
 platform=$(shell uname -o)
@@ -15,7 +15,7 @@ CFLAGS = -fPIC -shared -O2 -Wall
 VPI_CFLAGS = $(shell iverilog-vpi --cflags)
 VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
 
-SRCS=smolrv64.v rs232tx.v
+SRCS=smolrv64.v uart5.v
 
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)

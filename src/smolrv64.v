@@ -12,6 +12,7 @@ module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
    wire       halted;
    wire       ftdi_rxd;
+   wire       ftdi_txd;
 
    wire [19:0]          mmio_address;
    wire                 mmio_read;
@@ -37,8 +38,18 @@ module smolrv64_tb;
    wire       tx_valid = mmio_write && mmio_address == 0 && mmio_byteenable[0];
    wire [7:0] tx_data  = mmio_writedata[7:0];
 
-   rs232tx #(1,1) rs232tx_inst(clock, tx_data, tx_valid, tx_ready, ftdi_rxd);
+   wire       reset_n = 0;
+   wire       mmio_waitrequest; // Currently ignored
+   wire       uart5_irq; // Currently ignored
 
+   uart5 uart5_inst(clock, reset_n,
+                    mmio_address[4:2],
+                    mmio_read, mmio_write, mmio_writedata, mmio_readdata, mmio_waitrequest,
+
+                    ftdi_txd, // = uart_rx, not a typo
+                    ftdi_rxd, // = uart_tx, not a typo
+                    uart5_irq);
+   
    always @(posedge clock) begin
 /*
       if (mmio_write)
@@ -2137,7 +2148,7 @@ module regfile(input wire         clock,
 );
 
    (* ram_style = "block" *)
-   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile);
+   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile, 0, 31);
 
    always @(posedge clock) begin
 `ifndef ASYNC_RF
