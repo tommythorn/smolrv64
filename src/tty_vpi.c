@@ -109,7 +109,8 @@ static PLI_INT32 tty_write_compiled(PLI_BYTE8 *_unused) {
             vpi_get_value(arg_handle, &arg_value);
             
             char ch = (char)arg_value.value.integer;
-            write(STDOUT_FILENO, &ch, 1);
+            while (write(STDOUT_FILENO, &ch, 1) == 0)
+              ;
             fflush(stdout);
         }
         vpi_free_object(arg_iterator);

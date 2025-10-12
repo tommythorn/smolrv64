@@ -22,7 +22,10 @@ module smolrv64_tb;
    wire                 mmio_readdatavalid;
    wire [31:0]          mmio_readdata;
 
+   reg                  reset_n = 0; always @(posedge clock) reset_n <= 1;
+
    smolrv64 smolrv64_inst(.clock                (clock),
+                          .reset                (!reset_n),
 
                           .mmio_address         (mmio_address),
                           .mmio_read            (mmio_read),
@@ -38,13 +41,14 @@ module smolrv64_tb;
    wire       tx_valid = mmio_write && mmio_address == 0 && mmio_byteenable[0];
    wire [7:0] tx_data  = mmio_writedata[7:0];
 
-   wire       reset_n = 0;
    wire       mmio_waitrequest; // Currently ignored
    wire       uart5_irq; // Currently ignored
 
    uart5 uart5_inst(clock, reset_n,
                     mmio_address[4:2],
-                    mmio_read, mmio_write, mmio_writedata, mmio_readdata, mmio_waitrequest,
+                    mmio_read, mmio_write, mmio_writedata,
+                    mmio_readdatavalid, mmio_readdata,
+                    mmio_waitrequest,
 
                     ftdi_txd, // = uart_rx, not a typo
                     ftdi_rxd, // = uart_tx, not a typo
@@ -71,7 +75,8 @@ module smolrv64_tb;
 `endif
       end
 
-      if (halted) $finish;
+      if (halted)
+        $finish;
    end
 
    initial begin
@@ -91,7 +96,8 @@ module smolrv64_tb;
 endmodule
 `endif
 
-module smolrv64(input wire               clock,
+module smolrv64(input wire        clock,
+                input wire        reset,
 /*
  The eventual memory bus
 
@@ -106,15 +112,16 @@ module smolrv64(input wire               clock,
 */
 
 // The MMIO bus is 32b only and always aligned access
-                output reg  [19:0]           mmio_address,    // aligned byte addresses, aligned to 32b
-                output reg                   mmio_read = 0,
-                output reg                   mmio_write = 0,
-                output reg  [31:0]           mmio_writedata,
-                output reg  [ 3:0]           mmio_byteenable, // Ignored unless mmio_write
-                input  wire                  mmio_readdatavalid,
-                input  wire [31:0]           mmio_readdata,
+                output reg [19:0] mmio_address,    // aligned byte addresses, aligned to 32b
+                output reg        mmio_read = 0,
+                output reg        mmio_write = 0,
+                output reg [31:0] mmio_writedata,  // Invalid unless mmio_write
+                output reg [ 3:0] mmio_byteenable, // Invalid unless mmio_write
 
-                output reg                   halted_o = 0);
+                input wire        mmio_readdatavalid,
+                input wire [31:0] mmio_readdata,
+
+                output reg        halted_o = 0);
 
 // XXX Should I use param/localparam instead?
 `define TRAP_INSTRUCTION_ADDRESS_MISALIGNED      0
@@ -188,19 +195,28 @@ module smolrv64(input wire               clock,
 `define CSR_OP_OR   1
 `define CSR_OP_ANDN 2
 
+// TODO: Renumber states so the order is more logical
 `define S_FETCH          0
 `define S_FETCH_COMPLETE 1
-`define S_RF            12
-`define S_DECODE         2
+`define S_RF             2
 `define S_EXECUTE        3
-`define S_STORE          4
+
+`define S_EXCEPTION      4
+
 `define S_LOAD_ALIGN     5
-`define S_HANDLE_CSR     6
-`define S_EXCEPTION      7
-`define S_MUL_RUNNING    8
-`define S_DIV_RUNNING    9
-`define S_AMO           10
-`define S_FINISH        11
+`define S_MMIO_READ      6
+`define S_MMIO_ALIGN     7
+`define S_AMO            8
+
+`define S_STORE          9
+
+`define S_HANDLE_CSR    10
+
+`define S_MUL_RUNNING   11
+`define S_DIV_RUNNING   12
+
+`define S_FINISH        14
+
 `define S_LAST_STATE    15 // Reminder to update the width of state
 
    reg [3:0]   state = `S_FETCH; // execution state
@@ -380,8 +396,8 @@ module smolrv64(input wire               clock,
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
 
-      mmio_write <= 0;
-      mmio_read <= 0;
+      mmio_write = 0;
+      mmio_read = 0;
 
       case (state)
         `S_FETCH: begin
@@ -747,12 +763,6 @@ module smolrv64(input wire               clock,
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
            insn = aligned >> (pc[2:1] * 16);
-/*
-           state <= `S_DECODE;
-        end
-
-        `S_DECODE: begin
-*/
            rd = insn`insn_rd;
            case (insn[1:0])
              0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
@@ -770,13 +780,9 @@ module smolrv64(input wire               clock,
            if ((insn & 'he003) == 0)
              rs1 = 2; // sp
 
-//           s1 <= regfile[rs1];
-//           s2 <= regfile[rs2];
-
            shamt = insn[25:20];
 
            write_back_register = 0;
-           state <= `S_EXECUTE;
            state <= `S_RF;
         end
 
@@ -1680,7 +1686,9 @@ module smolrv64(input wire               clock,
            reservation <= ~0;
 
            if (mem_addr[63:31] == 0) begin
-              // $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
+`ifdef TRACE_MMIO
+              $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
+`endif
 
               // MMIO exception
 `ifdef SIMULATE
@@ -1692,7 +1700,7 @@ module smolrv64(input wire               clock,
 `endif
 
               mmio_address = mem_addr;
-              mmio_write <= 1;
+              mmio_write = 1;
               mmio_writedata = store_value << (8 * (mem_addr % 4));
               mmio_byteenable = mem_wr_mask << (mem_addr % 4);
 
@@ -1763,7 +1771,30 @@ module smolrv64(input wire               clock,
            if (do_atomic)
              state <= `S_AMO;
 
-           if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+           if (mem_addr[63:31] == 0) begin
+`ifdef TRACE_MMIO
+              $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
+`endif
+              state <= `S_MMIO_READ;
+
+              // MMIO exception
+`ifdef SIMULATE
+              if (load_size_lg2 == 3) begin
+                 $display("64b loads from MMIO address space isn't supported");
+                 $finish;
+                 // XXX Could make that an illegal instruction trap
+              end
+
+              if ((mem_addr & ((1 << load_size_lg2[1:0]) - 1)) != 0) begin
+                 $display("Unaligned loads from MMIO address space isn't supported");
+                 $finish;
+                 // XXX Could make that an illegal instruction trap
+              end
+`endif
+
+              mmio_address = mem_addr;
+              mmio_read = 1;
+           end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
               // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
@@ -1775,6 +1806,46 @@ module smolrv64(input wire               clock,
               epc = pc;
               tval = mem_addr;
               state <= `S_EXCEPTION;
+           end
+        end
+
+        `S_MMIO_READ: state <= `S_MMIO_ALIGN;
+
+        `S_MMIO_ALIGN: if (mmio_readdatavalid) begin
+
+           aligned = mmio_readdata >> (mem_addr[1:0] * 8);
+
+/*
+           $display("%x >> %d = %x ==? %x",
+                    mmio_readdata,
+                    (mem_addr[1:0] * 8),
+                    mmio_readdata >> (mem_addr[1:0] * 8),
+                    aligned);
+*/
+
+           case (load_size_lg2)
+             0: write_back_value = aligned[ 7:0];
+             1: write_back_value = aligned[15:0];
+             2: write_back_value = mmio_readdata;
+             3: write_back_value = 64'h 6464DEADDEAD6464;
+             4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
+             5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
+             6: write_back_value = {{32{mmio_readdata[31]}},mmio_readdata[31:0]};
+             7: write_back_value = 64'h DEAD_BEEF_C0DE_CAFE;
+           endcase
+
+`ifdef TRACE_MMIO
+           $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
+`endif
+
+           state <= `S_FETCH;
+
+           if (do_atomic) begin
+`ifdef SIMULATE
+              $display("Sorry, atomics to MMIO aren't supported yet");
+              $finish;
+`endif
+              state <= `S_AMO;
            end
         end
 
@@ -2126,6 +2197,15 @@ module smolrv64(input wire               clock,
 `endif
         end
       endcase
+
+      if (reset) begin
+         state <= `S_FETCH;
+         csr_minstret <= 0;
+         csr_mcycle <= 0;
+         write_back_register <= 0;
+         npc <= `MEM_BASEADDR;
+         // XXX and a lot more
+      end
    end
 endmodule
 
