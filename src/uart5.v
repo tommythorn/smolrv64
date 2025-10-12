@@ -1,6 +1,24 @@
 // sifive,uart0 compatible UART Implementation with Avalon
 // Memory-Mapped Interface
-// Based on SiFive UART specification
+//
+// Based on SiFive UART specification, except RW registers are
+// implemented as WO registers with no loss of generality
+//
+// off | name   | write                         | read
+// --------------------------------------------------------------------------
+// 0   | txdata |              transmit_data:8  | full:1                 0:31
+// 1   | rxdata |                            -  | empty:1 0:23 receive_data:8
+// 2   | txctrl |  txcnt:3 -:14 nstop:1 txen:1  |                        0:32
+// 3   | rxctrl |  rxcnt:3 -:15         rxen:1  |                        0:32
+// 4   | ie     |          txwm_ie:1 rxwm_ie:1  |                        0:32
+// 5   | ip     |                            -  |         txwm_ip:1 rxwm_ip:1
+// 6   | div    |                     divm1:16  |                        0:32
+//
+// Bits not specified ignore writes, reads undefined (really 0)
+// txen/rxen enables the transmitted/receiver respectively
+// txcnt/rxcnt are levels for the respective watermark interrupts
+// ie are interrupt enables bits, ip interrupt pending bits
+// the bit rate is given by f_base / (divm1 + 1)
 
 `timescale 1ns/10ps
 `default_nettype none
@@ -19,6 +37,7 @@ module uart5 #(
     input wire avs_read,
     input wire avs_write,
     input wire [31:0] avs_writedata,
+    output reg        avs_readdatavalid,
     output reg [31:0] avs_readdata,
     output wire avs_waitrequest,
 
@@ -143,18 +162,19 @@ module uart5 #(
 
     // Avalon read interface
     always @(posedge clk or negedge rst_n) begin
+       avs_readdatavalid <= 0;
         if (!rst_n) begin
             avs_readdata <= 32'h0;
         end else if (avs_read) begin
+            avs_readdatavalid <= 1;
             case (avs_address)
                 TXDATA_ADDR: avs_readdata <= {tx_full, 31'h0};
                 RXDATA_ADDR: avs_readdata <= rx_empty ? {1'b1, 31'h0} : {1'b0, 24'h0, rx_fifo[rx_rd_ptr[$clog2(RX_FIFO_DEPTH)-1:0]]};
-                TXCTRL_ADDR: avs_readdata <= {13'h0, txctrl};
-                RXCTRL_ADDR: avs_readdata <= {13'h0, rxctrl};
-                IE_ADDR:     avs_readdata <= {30'h0, ie};
                 IP_ADDR:     avs_readdata <= {30'h0, ip};
-                DIV_ADDR:    avs_readdata <= {16'h0, div};
-                default:     avs_readdata <= 32'h0;
+                default: begin
+                   avs_readdata <= 32'h0;
+                   $display("Unexpected read of WO register %d", avs_address);
+                end
             endcase
         end
     end
@@ -165,8 +185,7 @@ module uart5 #(
             txctrl <= 19'h0;
             rxctrl <= 19'h0;
             ie <= 2'h0;
-            //div <= 16'h0;
-            div <= 16'd 217; // XXX This is a quick hack to default to 115,200 bps @ 25 MHz clock
+            div <= 16'h0;
             tx_wr_ptr <= {($clog2(TX_FIFO_DEPTH)+1){1'b0}};
         end else begin
             if (avs_write) begin
@@ -224,6 +243,9 @@ module uart5 #(
                     uart_tx_reg <= 1'b1;
                     if (!tx_empty && txctrl[TXCTRL_TXEN] && div != 0) begin
                         tx_shift_reg <= tx_fifo[tx_rd_ptr[$clog2(TX_FIFO_DEPTH)-1:0]];
+`ifdef ECHO_TX
+                        $write("%c", tx_fifo[tx_rd_ptr[$clog2(TX_FIFO_DEPTH)-1:0]]);
+`endif
                         tx_rd_ptr <= tx_rd_ptr + 1;
                         tx_state <= TX_START;
                         tx_baud_counter <= div - 1;
@@ -349,5 +371,4 @@ module uart5 #(
             endcase
         end
     end
-
 endmodule
