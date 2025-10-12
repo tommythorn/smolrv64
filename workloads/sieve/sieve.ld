@@ -13,10 +13,10 @@ SECTIONS
   . = 0x80000000;
   .text           :
   {
+    *(.text.startup .text.startup.*)
     *(.text)
     *(.text.unlikely .text.*_unlikely .text.unlikely.*)
     *(.text.exit .text.exit.*)
-    *(.text.startup .text.startup.*)
     *(.text.hot .text.hot.*)
     *(.stub .text.* .gnu.linkonce.t.*)
     /* .gnu.warning sections are handled specially by elf64.em.  */
