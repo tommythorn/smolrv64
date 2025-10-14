@@ -53,7 +53,9 @@ module smolrv64_tb;
                     ftdi_txd, // = uart_rx, not a typo
                     ftdi_rxd, // = uart_tx, not a typo
                     uart5_irq);
-   
+//   defparam uart5_inst.CLK_FREQUENCY = 2*115_200; // force UART to go fast in sim
+   defparam uart5_inst.CLK_FREQUENCY = 25_000_000;
+
    always @(posedge clock) begin
 /*
       if (mmio_write)
@@ -86,7 +88,7 @@ module smolrv64_tb;
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
 */
 `ifndef NO_TIMEOUT
-      #400000
+      #4000000
 `ifdef RISCV_TESTS
       $display("Test Failed with TIMEOUT");
 `endif
@@ -195,9 +197,20 @@ module smolrv64(input wire        clock,
 `define CSR_OP_OR   1
 `define CSR_OP_ANDN 2
 
-// TODO: Renumber states so the order is more logical
-`define S_FETCH          0
-`define S_FETCH_COMPLETE 1
+// Smolrv64's state machine: Every instruction (unless an interrupt is
+// pending) cycles through the first four: FETCH1, FETCH2, RF, and
+// EXECUTE, and most return back to FETCH1.  The register writeback is
+// overlapped with FETCH1 (a very modest consession to performance).
+//
+// All traps and interrupt go to EXCEPTION.  Loads go to LOAD_ALIGN,
+// and possibly to MMIO_READ and MMIO_ALIGN.  AMOs go through
+// LOAD_ALIGN, AMO, and STORE.
+//
+// CSR handling is factored out of EXECUTE into its own state, as are
+// multiplication and divisions.
+//
+`define S_FETCH1         0
+`define S_FETCH2         1
 `define S_RF             2
 `define S_EXECUTE        3
 
@@ -217,9 +230,9 @@ module smolrv64(input wire        clock,
 
 `define S_FINISH        14
 
-`define S_LAST_STATE    15 // Reminder to update the width of state
+`define S_LAST_STATE    15 // Here to remind us to update the width of state
 
-   reg [3:0]   state = `S_FETCH; // execution state
+   reg [3:0]   state = `S_FETCH1;
 
 `define MEM_BASEADDR    64'h80000000
 `define MEM_SIZE_LG2    15 // 32 KiB
@@ -283,7 +296,7 @@ module smolrv64(input wire        clock,
    reg  [63:0] write_back_value;
 
    regfile rf_inst(.clock(clock),
-                   .write_valid(state == `S_FETCH && write_back_register != 0),
+                   .write_valid(state == `S_FETCH1 && write_back_register != 0),
                    .write_data(write_back_value),
                    .write_addr(write_back_register),
                    .read_addr_0(rs1),
@@ -400,7 +413,7 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
 
       case (state)
-        `S_FETCH: begin
+        `S_FETCH1: begin
            csr_minstret <= csr_minstret + 1;
 
            if (write_back_register != 0)
@@ -719,7 +732,7 @@ module smolrv64(input wire        clock,
            mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
            mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
            pc <= npc;
-           state <= `S_FETCH_COMPLETE;
+           state <= `S_FETCH2;
 
            // Copying SAIL here
            pending_m = csr_mip & csr_mie & ~csr_mideleg;
@@ -759,7 +772,7 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_FETCH_COMPLETE: begin
+        `S_FETCH2: begin
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
            insn = aligned >> (pc[2:1] * 16);
@@ -789,7 +802,7 @@ module smolrv64(input wire        clock,
         `S_RF: state <= `S_EXECUTE;
 
         `S_EXECUTE: begin
-           state <= `S_FETCH; // Default next stage
+           state <= `S_FETCH1; // Default next stage
 
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -1624,7 +1637,7 @@ module smolrv64(input wire        clock,
               mie = mpie;
               mpie = 1;
               npc = csr_mepc;
-              state <= `S_FETCH;
+              state <= `S_FETCH1;
            end
 
            else if ((insn & 'hffffffff) == 'h10200073) begin // SRET
@@ -1658,7 +1671,7 @@ module smolrv64(input wire        clock,
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else if ((csr_mip & csr_mie) != 0)
-                state <= `S_FETCH;
+                state <= `S_FETCH1;
               else
                 state <= `S_EXECUTE; // Stay until csr_map changes (XXX doesn't yet)
            end
@@ -1682,7 +1695,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
-           state <= `S_FETCH;
+           state <= `S_FETCH1;
            reservation <= ~0;
 
            if (mem_addr[63:31] == 0) begin
@@ -1766,7 +1779,7 @@ module smolrv64(input wire        clock,
              7: write_back_value = 64'hx;
            endcase
 
-           state <= `S_FETCH;
+           state <= `S_FETCH1;
 
            if (do_atomic)
              state <= `S_AMO;
@@ -1838,7 +1851,7 @@ module smolrv64(input wire        clock,
            $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
 `endif
 
-           state <= `S_FETCH;
+           state <= `S_FETCH1;
 
            if (do_atomic) begin
 `ifdef SIMULATE
@@ -1882,7 +1895,7 @@ module smolrv64(input wire        clock,
 
 
         `S_HANDLE_CSR: begin
-           state <= `S_FETCH;
+           state <= `S_FETCH1;
            csr_access_failure = 0;
            write_back_register = rd;
 
@@ -2125,7 +2138,7 @@ module smolrv64(input wire        clock,
            $display("%05d  ** Exception resuming at %x", $time, tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
 `endif
 `endif
-           state <= `S_FETCH;
+           state <= `S_FETCH1;
         end
 
         `S_MUL_RUNNING: begin
@@ -2155,7 +2168,7 @@ module smolrv64(input wire        clock,
               muldiv_output_high_part = 0;
               muldiv_output_sext32 = 0;
 
-              state <= `S_FETCH;
+              state <= `S_FETCH1;
            end
         end
 
@@ -2182,7 +2195,7 @@ module smolrv64(input wire        clock,
               muldiv_output_high_part = 0;
               muldiv_output_sext32 = 0;
 
-              state <= `S_FETCH;
+              state <= `S_FETCH1;
            end
         end
         `S_FINISH: begin
@@ -2200,7 +2213,7 @@ module smolrv64(input wire        clock,
       endcase
 
       if (reset) begin
-         state <= `S_FETCH;
+         state <= `S_FETCH1;
          csr_minstret <= 0;
          csr_mcycle <= 0;
          write_back_register <= 0;

@@ -80,4 +80,5 @@ module top(input  wire      clk_25mhz,
                     ftdi_txd, // = input uart_rx, not a typo
                     ftdi_rxd, // = output uart_tx, not a typo
                     uart5_irq);
+   defparam uart5_inst.CLK_FREQUENCY = 25_000_000;
 endmodule

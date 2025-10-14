@@ -32,17 +32,18 @@ RX-XCKU5P-F.
 
 ## Performance
 
-Performance is not a priority, but IPC is about 0.22 at 25 MHz (ECP5)
-and 200 MHz (XCKU5P).
+Performance is not [yet] a priority, but IPC is about 0.22 at 25 MHz
+(ECP5) and 200 MHz (XCKU5P).
 
 # Milestone 2
 
-- MMIO bus etc
+- DONE: MMIO bus etc
 - DDR4 support on RK-XCKU5P-F
-- Cosim against Spike, Dromajo, or Simmerv
 
 # Milestone 3 (Ubuntu)
 
+- MAYBE: Cosim against Spike, Dromajo, or Simmerv
+- LIKELY: Run Tenstorrent's test suite
 - Full system support, including virtual memory
 - Devices: CLINT, PLIC, ...
 - Floating point support (F and G) support either via bbl or
@@ -53,3 +54,5 @@ and 200 MHz (XCKU5P).
 - Caches (two-way virtually tagged skewed, maybe with SIEVE eviction?)
 - TLB (level 2 as level 1 is embedded in the cache), possibly with
   some Cookoo hashing scheme
+- And finally: make it go fast (pipelining, branch prediction, and
+  much more)
