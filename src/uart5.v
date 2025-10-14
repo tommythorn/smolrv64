@@ -1,18 +1,21 @@
 // sifive,uart0 compatible UART Implementation with Avalon
 // Memory-Mapped Interface
 //
-// Based on SiFive UART specification, except RW registers are
-// implemented as WO registers with no loss of generality
+// Based on SiFive UART specification, except we export the base
+// frequency (from a module parameter) as a read-only register (as we
+// don't yet have a device tree).  With a stunning lack of ambition,
+// we are limited to 4 GHz.
 //
 // off | name   | write                         | read
 // --------------------------------------------------------------------------
 // 0   | txdata |              transmit_data:8  | full:1                 0:31
 // 1   | rxdata |                            -  | empty:1 0:23 receive_data:8
-// 2   | txctrl |  txcnt:3 -:14 nstop:1 txen:1  |                        0:32
-// 3   | rxctrl |  rxcnt:3 -:15         rxen:1  |                        0:32
-// 4   | ie     |          txwm_ie:1 rxwm_ie:1  |                        0:32
+// 2   | txctrl |  txcnt:3 -:14 nstop:1 txen:1  | (same)
+// 3   | rxctrl |  rxcnt:3 -:15         rxen:1  | (same)
+// 4   | ie     |          txwm_ie:1 rxwm_ie:1  | (same)
 // 5   | ip     |                            -  |         txwm_ip:1 rxwm_ip:1
-// 6   | div    |                     divm1:16  |                        0:32
+// 6   | div    |                     divm1:16  | (same)
+// 7   | freq   |                            -  |        base_frequency_Hz:32
 //
 // Bits not specified ignore writes, reads undefined (really 0)
 // txen/rxen enables the transmitted/receiver respectively
@@ -26,7 +29,8 @@
 module uart5 #(
     parameter TX_FIFO_DEPTH = 8,
     parameter RX_FIFO_DEPTH = 8,
-    parameter ADDR_WIDTH = 3  // 8 registers, need 3 bits for word addressing
+    parameter ADDR_WIDTH = 3,  // 8 registers, need 3 bits for word addressing
+    parameter CLK_FREQUENCY = 0
 )(
     // Clock and Reset
     input wire clk,
@@ -57,6 +61,7 @@ module uart5 #(
     localparam IE_ADDR     = 3'h4;  // 0x10
     localparam IP_ADDR     = 3'h5;  // 0x14
     localparam DIV_ADDR    = 3'h6;  // 0x18
+    localparam FREQ_ADDR   = 3'h7;  // 0x1C
 
     // Register bit definitions
     localparam TXDATA_FULL = 31;
@@ -170,11 +175,13 @@ module uart5 #(
             case (avs_address)
                 TXDATA_ADDR: avs_readdata <= {tx_full, 31'h0};
                 RXDATA_ADDR: avs_readdata <= rx_empty ? {1'b1, 31'h0} : {1'b0, 24'h0, rx_fifo[rx_rd_ptr[$clog2(RX_FIFO_DEPTH)-1:0]]};
+                TXCTRL_ADDR: avs_readdata <= {13'h0, txctrl};
+                RXCTRL_ADDR: avs_readdata <= {13'h0, rxctrl};
+                IE_ADDR:     avs_readdata <= {30'h0, ie};
                 IP_ADDR:     avs_readdata <= {30'h0, ip};
-                default: begin
-                   avs_readdata <= 32'h0;
-                   $display("Unexpected read of WO register %d", avs_address);
-                end
+                DIV_ADDR:    avs_readdata <= {16'h0, div};
+                FREQ_ADDR:   avs_readdata <= CLK_FREQUENCY;
+                default:     avs_readdata <= 32'hX; // This cannot happen
             endcase
         end
     end
@@ -241,14 +248,14 @@ module uart5 #(
             case (tx_state)
                 TX_IDLE: begin
                     uart_tx_reg <= 1'b1;
-                    if (!tx_empty && txctrl[TXCTRL_TXEN] && div != 0) begin
+                    if (!tx_empty && txctrl[TXCTRL_TXEN]) begin
                         tx_shift_reg <= tx_fifo[tx_rd_ptr[$clog2(TX_FIFO_DEPTH)-1:0]];
 `ifdef ECHO_TX
                         $write("%c", tx_fifo[tx_rd_ptr[$clog2(TX_FIFO_DEPTH)-1:0]]);
 `endif
                         tx_rd_ptr <= tx_rd_ptr + 1;
                         tx_state <= TX_START;
-                        tx_baud_counter <= div - 1;
+                        tx_baud_counter <= div;
                         tx_bit_counter <= 0;
                     end
                 end
@@ -258,7 +265,7 @@ module uart5 #(
                     if (tx_baud_counter == 0) begin
                         tx_state <= TX_DATA;
                         tx_bit_counter <= 0;
-                        tx_baud_counter <= div - 1;
+                        tx_baud_counter <= div;
                     end else begin
                         tx_baud_counter <= tx_baud_counter - 1;
                     end
@@ -269,7 +276,7 @@ module uart5 #(
                     if (tx_baud_counter == 0) begin
                         tx_bit_counter <= tx_bit_counter + 1;
                         tx_shift_reg <= {1'b1, tx_shift_reg[7:1]};
-                        tx_baud_counter <= div - 1;
+                        tx_baud_counter <= div;
                         if (tx_bit_counter == 7) begin
                             tx_state <= TX_STOP;
                         end
@@ -284,10 +291,10 @@ module uart5 #(
                         if (txctrl[TXCTRL_NSTOP] && tx_bit_counter == 8) begin
                             // Second stop bit
                             tx_bit_counter <= 9;
-                            tx_baud_counter <= div - 1;
+                            tx_baud_counter <= div;
                         end else begin
                             tx_state <= TX_WAIT;
-                            tx_baud_counter <= div - 1;
+                            tx_baud_counter <= div;
                         end
                     end else begin
                         tx_baud_counter <= tx_baud_counter - 1;
@@ -319,7 +326,7 @@ module uart5 #(
         end else begin
             case (rx_state)
                 RX_IDLE: begin
-                    if (!uart_rx_sync2 && rxctrl[RXCTRL_RXEN] && div != 0) begin
+                    if (!uart_rx_sync2 && rxctrl[RXCTRL_RXEN]) begin
                         // Start bit detected
                         rx_state <= RX_START;
                         rx_baud_counter <= (div >> 1) - 1;  // Sample at middle of bit
@@ -331,7 +338,7 @@ module uart5 #(
                         if (!uart_rx_sync2) begin  // Verify start bit
                             rx_state <= RX_DATA;
                             rx_bit_counter <= 0;
-                            rx_baud_counter <= div - 1;
+                            rx_baud_counter <= div;
                         end else begin
                             rx_state <= RX_IDLE;  // False start
                         end
@@ -344,7 +351,7 @@ module uart5 #(
                     if (rx_baud_counter == 0) begin
                         rx_shift_reg <= {uart_rx_sync2, rx_shift_reg[7:1]};
                         rx_bit_counter <= rx_bit_counter + 1;
-                        rx_baud_counter <= div - 1;
+                        rx_baud_counter <= div;
                         if (rx_bit_counter == 7) begin
                             rx_state <= RX_STOP;
                         end
