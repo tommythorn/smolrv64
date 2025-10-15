@@ -379,10 +379,10 @@ module smolrv64(input wire        clock,
    wire        sd = fs == 3 || xs == 3;
 
    reg [ 63:0] mul_b;
-   reg [127:0] mul_a, mul_p = 0;
-   reg         mul_output_sext32 = 0;
-   reg         mul_output_negate = 0;
-   reg         mul_output_high_part = 0;
+   reg [127:0] mul_a, muldiv_p = 0;
+   reg         muldiv_output_sext32 = 0;
+   reg         muldiv_output_negate = 0;
+   reg         muldiv_output_high_part = 0;
    reg [6:0]   div_count;
 
    reg [63:0]  reservation = ~0;
@@ -522,27 +522,27 @@ module smolrv64(input wire        clock,
            else if ((insn & 'h0000707f) == 'h00007063) // BGEU
              $write("bgeu    x%1d,x%1d,%x", rs1, rs2, pc + $signed(imm_b));
            else if ((insn & 'h0000707f) == 'h00000003) // LB
-             $write("lb      x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lb      x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00001003) // LH
-             $write("lh      x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lh      x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00002003) // LW
-             $write("lw      x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lw      x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00004003) // LBU
-             $write("lbu     x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lbu     x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00005003) // LHU
-             $write("lhu     x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lhu     x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00006003) // LWU
-             $write("lwu     x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("lwu     x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00003003) // LD
-             $write("ld      x%1d,%1d(x%1d)", rd, imm_i, rs1);
+             $write("ld      x%1d,%1d(x%1d)", rd, $signed(imm_i), rs1);
            else if ((insn & 'h0000707f) == 'h00000023) // SB
-             $write("sb      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+             $write("sb      x%1d,%1d(x%1d)", rs2, $signed(imm_s), rs1);
            else if ((insn & 'h0000707f) == 'h00001023) // SH
-             $write("sh      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+             $write("sh      x%1d,%1d(x%1d)", rs2, $signed(imm_s), rs1);
            else if ((insn & 'h0000707f) == 'h00002023) // SW
-             $write("sw      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+             $write("sw      x%1d,%1d(x%1d)", rs2, $signed(imm_s), rs1);
            else if ((insn & 'h0000707f) == 'h00003023) // SD
-             $write("sd      x%1d,%1d(x%1d)", rs2, imm_s, rs1);
+             $write("sd      x%1d,%1d(x%1d)", rs2, $signed(imm_s), rs1);
            else if ((insn & 'h0000707f) == 'h00000013 && rs1 == 0) // LI (ADDI)
              $write("li      x%1d,0x%x", rd, imm_i);
            else if ((insn & 'h0000707f) == 'h00000013) // ADDI
@@ -1426,19 +1426,19 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
               write_back_register = rd;
-              mul_output_negate = s1[63] != s2[63];
+              muldiv_output_negate = s1[63] != s2[63];
               mul_a = {64'd0,s1[63] ? -s1 : s1};
               mul_b = s2[63] ? -s2 : s2;
-              mul_output_high_part = 1;
+              muldiv_output_high_part = 1;
               state <= `S_MUL_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
               write_back_register = rd;
-              mul_output_negate = s1[63];
+              muldiv_output_negate = s1[63];
               mul_a = {64'd0, s1[63] ? -s1 : s1};
               mul_b = s2;
-              mul_output_high_part = 1;
+              muldiv_output_high_part = 1;
               state <= `S_MUL_RUNNING;
            end
 
@@ -1446,19 +1446,19 @@ module smolrv64(input wire        clock,
               write_back_register = rd;
               mul_a = {64'd0, s1};
               mul_b = s2;
-              mul_output_high_part = 1;
+              muldiv_output_high_part = 1;
               state <= `S_MUL_RUNNING;
            end
 
 
            else if ((insn & 'hfe00707f) == 'h02004033) begin // DIV
               write_back_register = rd;
-              mul_output_negate = s1[63] != s2[63];
+              muldiv_output_negate = s1[63] != s2[63];
               if (s2 == 0)
                 // No matter s1, this will produce -1 which is the correct answer
-                mul_output_negate = 0;
+                muldiv_output_negate = 0;
               div_count = 64;
-              mul_p = {64'd0,s1[63] ? -s1 : s1};
+              muldiv_p = {64'd0,s1[63] ? -s1 : s1};
               mul_a = {s2[63] ? -s2 : s2, 63'd0};
               mul_b = 0;
               state <= `S_DIV_RUNNING;
@@ -1467,7 +1467,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe00707f) == 'h02005033) begin // DIVU
               write_back_register = rd;
               div_count = 64;
-              mul_p = {64'd0, s1};
+              muldiv_p = {64'd0, s1};
               mul_a = {s2, 63'd0};
               mul_b = 0;
               state <= `S_DIV_RUNNING;
@@ -1476,15 +1476,15 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe00707f) == 'h02006033) begin // REM
               write_back_register = rd;
               // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              mul_output_negate = s1[63];
+              muldiv_output_negate = s1[63];
               if (s2 == 0)
                 // No matter s1, this will produce -1 which is the correct answer
-                mul_output_negate = 0;
+                muldiv_output_negate = 0;
               div_count = 64;
-              mul_p = {64'd0,s1[63] ? -s1 : s1};
+              muldiv_p = {64'd0,s1[63] ? -s1 : s1};
               mul_a = {s2[63] ? -s2 : s2, 63'd0};
               mul_b = 0;
-              mul_output_high_part = 1; // XXX abusing variables
+              muldiv_output_high_part = 1; // XXX abusing variables
               state <= `S_DIV_RUNNING;
            end
 
@@ -1493,12 +1493,12 @@ module smolrv64(input wire        clock,
               // "For REM, the sign of a nonzero result equals the sign of the dividend."
               if (s2 == 0)
                 // No matter s1, this will produce -1 which is the correct answer
-                mul_output_negate = 0;
+                muldiv_output_negate = 0;
               div_count = 64;
-              mul_p = {64'd0,s1};
+              muldiv_p = {64'd0,s1};
               mul_a = {s2, 63'd0};
               mul_b = 0;
-              mul_output_high_part = 1; // XXX abusing variables
+              muldiv_output_high_part = 1; // XXX abusing variables
               state <= `S_DIV_RUNNING;
            end
 
@@ -1506,21 +1506,21 @@ module smolrv64(input wire        clock,
               write_back_register = rd;
               mul_a = s1[31] ? {96'd0, -s1} : s1;
               mul_b = s1[31] ? {32'd0, -s2} : s2;
-              mul_output_sext32 = 1;
+              muldiv_output_sext32 = 1;
               state <= `S_MUL_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200403b) begin // DIVW
               write_back_register = rd;
-              mul_output_negate = s1[31] != s2[31];
+              muldiv_output_negate = s1[31] != s2[31];
               if (s2 == 0)
                 // No matter s1, this will produce -1 which is the correct answer
-                mul_output_negate = 0;
+                muldiv_output_negate = 0;
               div_count = 32;
-              mul_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
+              muldiv_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
               mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
               mul_b = 0;
-              mul_output_sext32 = 1;
+              muldiv_output_sext32 = 1;
               state <= `S_DIV_RUNNING;
            end
 
@@ -1528,25 +1528,25 @@ module smolrv64(input wire        clock,
               write_back_register = rd;
               if (s2 == 0)
                 // No matter s1, this will produce -1 which is the correct answer
-                mul_output_negate = 0;
+                muldiv_output_negate = 0;
               div_count = 32;
-              mul_p = {96'd0, s1[31:0]};
+              muldiv_p = {96'd0, s1[31:0]};
               mul_a = {s2[31:0], 31'd0};
               mul_b = 0;
-              mul_output_sext32 = 1;
+              muldiv_output_sext32 = 1;
               state <= `S_DIV_RUNNING;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200603b) begin // REMW
               write_back_register = rd;
               // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              mul_output_negate = s1[31];
+              muldiv_output_negate = s1[31];
               div_count = 32;
-              mul_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
+              muldiv_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
               mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
               mul_b = 0;
-              mul_output_sext32 = 1;
-              mul_output_high_part = 1; // XXX abusing variables
+              muldiv_output_sext32 = 1;
+              muldiv_output_high_part = 1; // XXX abusing variables
               state <= `S_DIV_RUNNING;
            end
 
@@ -1554,11 +1554,11 @@ module smolrv64(input wire        clock,
               write_back_register = rd;
               // "For REM, the sign of a nonzero result equals the sign of the dividend."
               div_count = 32;
-              mul_p = {96'd0, s1[31:0]};
+              muldiv_p = {96'd0, s1[31:0]};
               mul_a = {s2[31:0], 31'd0};
               mul_b = 0;
-              mul_output_sext32 = 1;
-              mul_output_high_part = 1; // XXX abusing variables
+              muldiv_output_sext32 = 1;
+              muldiv_output_high_part = 1; // XXX abusing variables
               state <= `S_DIV_RUNNING;
            end
 
@@ -2131,29 +2131,29 @@ module smolrv64(input wire        clock,
         `S_MUL_RUNNING: begin
            if (mul_b != 0) begin
               if (mul_b[0])
-                mul_p = mul_p + mul_a;
+                muldiv_p = muldiv_p + mul_a;
               mul_a = mul_a << 1;
               mul_b = mul_b >> 1;
            end else begin
-              if (mul_output_sext32)
-                write_back_value = {{32{mul_p[31]}}, mul_p[31:0]};
+              if (muldiv_output_sext32)
+                write_back_value = {{32{muldiv_p[31]}}, muldiv_p[31:0]};
               else begin
-                 if (mul_output_negate)
-                   mul_p = ~mul_p + 1;
+                 if (muldiv_output_negate)
+                   muldiv_p = ~muldiv_p + 1;
                  else
-                   mul_p = mul_p;
+                   muldiv_p = muldiv_p;
 
-                 if (mul_output_high_part)
-                   write_back_value = mul_p[127:64];
+                 if (muldiv_output_high_part)
+                   write_back_value = muldiv_p[127:64];
                  else
-                   write_back_value = mul_p[63:0];
+                   write_back_value = muldiv_p[63:0];
               end
 
               // Reset to default values
-              mul_p = 0;
-              mul_output_negate = 0;
-              mul_output_high_part = 0;
-              mul_output_sext32 = 0;
+              muldiv_p = 0;
+              muldiv_output_negate = 0;
+              muldiv_output_high_part = 0;
+              muldiv_output_sext32 = 0;
 
               state <= `S_FETCH;
            end
@@ -2162,25 +2162,25 @@ module smolrv64(input wire        clock,
         `S_DIV_RUNNING: begin
            if (div_count != 0) begin
               mul_b = mul_b << 1;
-              if (mul_p >= mul_a) begin
-                 mul_p = mul_p - mul_a;
+              if (muldiv_p >= mul_a) begin
+                 muldiv_p = muldiv_p - mul_a;
                  mul_b = mul_b | 1;
               end
               mul_a = mul_a >> 1;
               div_count = div_count  - 1;
            end else begin
-              write_back_value = mul_output_negate ? -mul_b : mul_b;
-              if (mul_output_high_part)
+              write_back_value = muldiv_output_negate ? -mul_b : mul_b;
+              if (muldiv_output_high_part)
                 // REM
-                write_back_value = mul_output_negate ? -mul_p[63:0] : mul_p[63:0];
+                write_back_value = muldiv_output_negate ? -muldiv_p[63:0] : muldiv_p[63:0];
 
-              if (mul_output_sext32)
+              if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
 
-              mul_p = 0;
-              mul_output_negate = 0;
-              mul_output_high_part = 0;
-              mul_output_sext32 = 0;
+              muldiv_p = 0;
+              muldiv_output_negate = 0;
+              muldiv_output_high_part = 0;
+              muldiv_output_sext32 = 0;
 
               state <= `S_FETCH;
            end
