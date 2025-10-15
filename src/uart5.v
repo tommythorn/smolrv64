@@ -1,10 +1,14 @@
 // sifive,uart0 compatible UART Implementation with Avalon
 // Memory-Mapped Interface
 //
-// Based on SiFive UART specification, except we export the base
-// frequency (from a module parameter) as a read-only register (as we
-// don't yet have a device tree).  With a stunning lack of ambition,
-// we are limited to 4 GHz.
+// Based on SiFive UART specification, except for an additional
+// register 7.  When read, it returns the base frequency (from a
+// module parameter) as a read-only register (as we don't yet have a
+// device tree).  With a stunning lack of ambition, we are limited to
+// 4 GHz.  When written, the lsb enables stretching the bps length by
+// a cycle, every other cycle, thus effectively is a "0.5" of div.
+// This enables, for example a 8.5 divisor which is needed for 3 Mb/s
+// at 25 MHz.
 //
 // off | name   | write                         | read
 // --------------------------------------------------------------------------
@@ -15,7 +19,7 @@
 // 4   | ie     |          txwm_ie:1 rxwm_ie:1  | (same)
 // 5   | ip     |                            -  |         txwm_ip:1 rxwm_ip:1
 // 6   | div    |                     divm1:16  | (same)
-// 7   | freq   |                            -  |        base_frequency_Hz:32
+// 7   | freq   |                   div_half:1  |        base_frequency_Hz:32
 //
 // Bits not specified ignore writes, reads undefined (really 0)
 // txen/rxen enables the transmitted/receiver respectively
@@ -77,6 +81,7 @@ module uart5 #(
     reg [18:0] rxctrl;  // bits [18:16] = rxcnt, [0] = rxen
     reg [1:0] ie;
     reg [15:0] div;
+    reg        div_half;
 
     // TX FIFO
     reg [7:0] tx_fifo [0:TX_FIFO_DEPTH-1];
@@ -207,6 +212,7 @@ module uart5 #(
                     RXCTRL_ADDR: rxctrl <= avs_writedata[18:0] & 19'h70001;
                     IE_ADDR:     ie <= avs_writedata[1:0];
                     DIV_ADDR:    div <= avs_writedata[15:0];
+                    FREQ_ADDR:   div_half <= avs_writedata[0];
                     default: ;
                 endcase
             end
@@ -276,7 +282,7 @@ module uart5 #(
                     if (tx_baud_counter == 0) begin
                         tx_bit_counter <= tx_bit_counter + 1;
                         tx_shift_reg <= {1'b1, tx_shift_reg[7:1]};
-                        tx_baud_counter <= div;
+                        tx_baud_counter <= div + (div_half & tx_bit_counter[0]);
                         if (tx_bit_counter == 7) begin
                             tx_state <= TX_STOP;
                         end
@@ -329,7 +335,7 @@ module uart5 #(
                     if (!uart_rx_sync2 && rxctrl[RXCTRL_RXEN]) begin
                         // Start bit detected
                         rx_state <= RX_START;
-                        rx_baud_counter <= (div >> 1) - 1;  // Sample at middle of bit
+                        rx_baud_counter <= div/2;  // Sample at middle of bit
                     end
                 end
 
@@ -351,7 +357,7 @@ module uart5 #(
                     if (rx_baud_counter == 0) begin
                         rx_shift_reg <= {uart_rx_sync2, rx_shift_reg[7:1]};
                         rx_bit_counter <= rx_bit_counter + 1;
-                        rx_baud_counter <= div;
+                        rx_baud_counter <= div + (div_half & rx_bit_counter[0]);
                         if (rx_bit_counter == 7) begin
                             rx_state <= RX_STOP;
                         end
