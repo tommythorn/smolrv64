@@ -2180,6 +2180,7 @@ module smolrv64(input wire        clock,
               mul_p = 0;
               mul_output_negate = 0;
               mul_output_high_part = 0;
+              mul_output_sext32 = 0;
 
               state <= `S_FETCH;
            end
