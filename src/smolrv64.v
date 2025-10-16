@@ -159,6 +159,7 @@ module smolrv64(input wire        clock,
 `define CSR_SIE        12'h104
 `define CSR_STVEC      12'h105
 `define CSR_SCOUNTEREN 12'h106
+`define CSR_SSCRATCH   12'h140
 `define CSR_SEPC       12'h141
 `define CSR_SCAUSE     12'h142
 `define CSR_STVAL      12'h143
@@ -183,6 +184,16 @@ module smolrv64(input wire        clock,
 `define CSR_PMPCFG0    12'h3a0
 `define CSR_PMPADDR0   12'h3b0
 
+// https://www.five-embeddev.com/riscv-debug-spec/v0.13-release/hwbp_registers.html
+`define CSR_TSELECT    12'h7a0 // which trigger is accessible through the other trigger registers
+`define CSR_TDATA1     12'h7a1 // type:4 dmode:1 data:59
+`define CSR_TDATA2     12'h7a2
+`define CSR_TDATA3     12'h7a3
+`define CSR_TINFO      12'h7a4 // RO
+`define CSR_TCONTROL   12'h7a5 // This is optional
+
+`define CSR_DCSR       12'h7b0
+`define CSR_DSCRATCH   12'h7b2
 `define CSR_MNSTATUS   12'h744 // Don't know what that is
 `define CSR_MCYCLE     12'hb00
 `define CSR_MINSTRET   12'hb02
@@ -329,8 +340,7 @@ module smolrv64(input wire        clock,
 
    // CSR state
    reg         deleg, m_ie, s_ie, cause_intr;
-   reg [63:0]  epc,
-               tval,
+   reg [63:0]  tval,
                tvec;
    reg [11:0]  csr_mie        = 0,
                csr_mideleg    = 0,
@@ -340,6 +350,7 @@ module smolrv64(input wire        clock,
                pending_s;
    reg [63:0]  csr_stvec      = 0,
                csr_scounteren = 0,
+               csr_sscratch   = 0,
                csr_sepc       = 0,
                csr_scause     = 0,
                csr_satp       = 0,
@@ -351,7 +362,7 @@ module smolrv64(input wire        clock,
                csr_mcause     = 0,
                csr_mtval      = 0,
                csr_mcycle     = 0,
-               csr_minstret   = ~0; // -1 because we increase it in fetch
+               csr_minstret   = -1; // because we increase it in fetch
 
    // MIP subfields
    reg         meip = 0, seip = 0, ueip = 0,
@@ -392,14 +403,14 @@ module smolrv64(input wire        clock,
    wire        sd = fs == 3 || xs == 3;
 
    reg [ 63:0] mul_b;
-   reg [127:0] mul_a, muldiv_p = 0;
-   reg         muldiv_output_sext32 = 0;
-   reg         muldiv_output_negate = 0;
-   reg         muldiv_output_high_part = 0;
+   reg [127:0] mul_a, muldiv_p;
+   reg         muldiv_output_sext32;
+   reg         muldiv_output_negate;
+   reg         muldiv_output_high_part;
    reg [6:0]   div_count;
 
    reg [63:0]  reservation = ~0;
-   reg         do_atomic = 0;
+   reg         do_atomic;
    reg         csr_access_failure = 0;
 
    reg [63:0]  store_value;
@@ -415,6 +426,13 @@ module smolrv64(input wire        clock,
       case (state)
         `S_FETCH1: begin
            csr_minstret <= csr_minstret + 1;
+
+           // Reset to default values
+           muldiv_p = 0;
+           muldiv_output_negate = 0;
+           muldiv_output_high_part = 0;
+           muldiv_output_sext32 = 0;
+           do_atomic = 0;
 
            if (write_back_register != 0)
              regfile[write_back_register] = write_back_value;
@@ -500,7 +518,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hf003) == 'h8002)
              $write("c.mv    x%1d,x%1d", write_back_register, rs2);
            else if ((insn & 'hffff) == 'h9002)
-             $write("c.ebreak UNTESTED");
+             $write("c.ebreak");
            else if ((insn & 'hf07f) == 'h9002)
              $write("c.jalr  x1,0(x%1d)", rs1);
            else if ((insn & 'hf003) == 'h9002)
@@ -756,7 +774,6 @@ module smolrv64(input wire        clock,
                                                               `USER_TIMER_INTERRUPT;
 
               cause_intr = 1;
-              epc = npc;
               tval = 0;
               state <= `S_EXCEPTION;
            end else if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
@@ -766,7 +783,6 @@ module smolrv64(input wire        clock,
 `endif
 `endif
               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-              epc = pc;
               tval = 0;
               state <= `S_EXCEPTION;
            end
@@ -845,7 +861,6 @@ module smolrv64(input wire        clock,
               if ((insn & 'hffff) == 0) begin
                  write_back_register = 0;
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 epc = pc;
                  tval = insn;
                  state <= `S_EXCEPTION;
               end
@@ -1026,9 +1041,11 @@ module smolrv64(input wire        clock,
               write_back_value = s2;
            end
 
-           //else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
-           //  $display("c.ebreak UNTESTED");
-           //end
+           else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
+              cause = `TRAP_BREAKPOINT;
+              tval = 0;
+              state <= `S_EXCEPTION;
+           end
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
@@ -1299,7 +1316,6 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
               cause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
-              epc = pc;
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef RISCV_TESTS
@@ -1309,7 +1325,9 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
-            // Requires debug mode
+              cause = `TRAP_BREAKPOINT;
+              tval = 0;
+              state <= `S_EXCEPTION;
            end
 
            else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
@@ -1643,10 +1661,10 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hffffffff) == 'h10200073) begin // SRET
               if (prv == 0 || prv == 1 && tsr) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 epc = pc;
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else begin
+                 if (spp != 3) mprv = 0;
                  prv = spp;
                  spp = 0;
                  sie = spie;
@@ -1658,7 +1676,6 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe007fff) == 'h12000073) begin // SFENCE.VMA
               if (prv < 1 || prv == 1 && tvm) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 epc = pc;
                  tval = insn;
                  state <= `S_EXCEPTION;
               end
@@ -1667,7 +1684,6 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hffffffff) == 'h10500073) begin // WFI
               if (prv == 0 || prv == 1 && tw) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 epc = pc;
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else if ((csr_mip & csr_mie) != 0)
@@ -1688,7 +1704,6 @@ module smolrv64(input wire        clock,
 `endif
 `endif
               cause = `TRAP_ILLEGAL_INSTRUCTION;
-              epc = pc;
               tval = insn;
               state <= `S_EXCEPTION;
            end
@@ -1733,7 +1748,6 @@ module smolrv64(input wire        clock,
 `endif
 `endif
               cause = `TRAP_STORE_ACCESS_FAULT;
-              epc = pc;
               tval = mem_addr;
               mem_wr_mask = 0;
               state <= `S_EXCEPTION;
@@ -1816,7 +1830,6 @@ module smolrv64(input wire        clock,
 `endif
               write_back_register = 0;
               cause = `TRAP_LOAD_ACCESS_FAULT;
-              epc = pc;
               tval = mem_addr;
               state <= `S_EXCEPTION;
            end
@@ -1889,7 +1902,6 @@ module smolrv64(input wire        clock,
              end
            endcase
 
-           do_atomic = 0;
            state <= `S_STORE;
         end
 
@@ -1910,6 +1922,7 @@ module smolrv64(input wire        clock,
                 `CSR_SIE:       csr_read_val = csr_mie & 'h222;
                 `CSR_STVEC:     csr_read_val = csr_stvec;
                 `CSR_SCOUNTEREN:csr_read_val = 0;
+                `CSR_SSCRATCH:  csr_read_val = csr_sscratch;
                 `CSR_SEPC:      csr_read_val = csr_sepc;
                 `CSR_SCAUSE:    csr_read_val = csr_scause;
                 `CSR_STVAL:     csr_read_val = csr_stval;
@@ -1918,7 +1931,6 @@ module smolrv64(input wire        clock,
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      epc = pc;
                       tval = insn;
                       state <= `S_EXCEPTION;
                    end else
@@ -1946,6 +1958,11 @@ module smolrv64(input wire        clock,
                 `CSR_MCAUSE:   csr_read_val = csr_mcause;
                 `CSR_MTVAL:    csr_read_val = csr_mtval;
                 `CSR_MIP:      csr_read_val = csr_mip;
+                `CSR_TSELECT:  csr_read_val = 0;
+                `CSR_TDATA1:   csr_read_val = 0;
+                `CSR_TDATA2:   csr_read_val = 0;
+                `CSR_TDATA3:   csr_read_val = 0;
+                `CSR_TINFO:    csr_read_val = 0;
                 `CSR_MCYCLE:   csr_read_val = csr_mcycle;
                 `CSR_MINSTRET: csr_read_val = csr_minstret;
                 `CSR_CYCLE:    csr_read_val = csr_mcycle;
@@ -1962,7 +1979,6 @@ module smolrv64(input wire        clock,
 `endif
 `endif
                    cause = `TRAP_ILLEGAL_INSTRUCTION;
-                   epc = pc;
                    tval = insn;
                    state <= `S_EXCEPTION;
                 end
@@ -2026,6 +2042,7 @@ module smolrv64(input wire        clock,
                 `CSR_SIE:       csr_mie    = csr_write_val & 'h222 | csr_mie & ~'h222;
                 `CSR_STVEC:     csr_stvec  = csr_write_val;
                 `CSR_SCOUNTEREN:csr_scounteren = csr_write_val;
+                `CSR_SSCRATCH:  csr_sscratch = csr_write_val;
                 `CSR_SEPC:      csr_sepc   = csr_write_val & ~1;
                 `CSR_SCAUSE:    csr_scause = csr_write_val;
                 `CSR_STVAL:     csr_stval  = csr_write_val;
@@ -2040,7 +2057,6 @@ module smolrv64(input wire        clock,
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      epc = pc;
                       tval = insn;
                       state <= `S_EXCEPTION;
                    end else
@@ -2072,6 +2088,10 @@ module smolrv64(input wire        clock,
                    ssip = csr_write_val[1];
                    usip = csr_write_val[0];
                 end
+                `CSR_TSELECT:  begin end
+                `CSR_TDATA1:   begin end
+                `CSR_TDATA2:   begin end
+                `CSR_TDATA3:   begin end
                 `CSR_MCYCLE:   csr_mcycle   = csr_write_val;
                 `CSR_MINSTRET: csr_minstret = csr_write_val;
                 default: begin
@@ -2089,7 +2109,6 @@ module smolrv64(input wire        clock,
            write_back_value = csr_read_val;
            if (csr_access_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
-              epc = pc;
               tval = insn;
 
               state <= `S_EXCEPTION;
@@ -2099,21 +2118,19 @@ module smolrv64(input wire        clock,
         `S_EXCEPTION: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-           $display("%05d  ** Exception, cause %x, epc %x, tval %x", $time, cause, epc, tval);
+           $display("%05d  ** Exception, cause %x, pc %x, tval %x", $time, cause, pc, tval);
 `endif
 `endif
 
            write_back_register = 0;
 
-           // XXX We would probably save some gates by keeping cause
-           // one-hot and postpone the encoding until the assignment
-           // to csr_[ms]cause below.
-           deleg = prv <= 1 && (cause_intr
-                                ? csr_mideleg[csr_mcause[3:0]]
-                                : csr_medeleg[csr_mcause[3:0]]);
+           // XXX We would probably save gates by factoring the deleg
+           // calculation out to where cause is set as it's unually a
+           // constant.
+           deleg = prv <= 1 && (cause_intr ? csr_mideleg[cause[3:0]] : csr_medeleg[cause[3:0]]);
            if (deleg) begin
               csr_scause = cause;
-              csr_sepc = epc;
+              csr_sepc = pc;
               csr_stval = tval;
               spie = sie;
               sie = 0;
@@ -2121,7 +2138,7 @@ module smolrv64(input wire        clock,
               tvec = csr_stvec;
            end else begin
               csr_mcause = cause;
-              csr_mepc = epc;
+              csr_mepc = pc;
               csr_mtval = tval;
               mpie = mie;
               mie = 0;
@@ -2152,7 +2169,7 @@ module smolrv64(input wire        clock,
                 write_back_value = {{32{muldiv_p[31]}}, muldiv_p[31:0]};
               else begin
                  if (muldiv_output_negate)
-                   muldiv_p = ~muldiv_p + 1;
+                   muldiv_p = -muldiv_p;
                  else
                    muldiv_p = muldiv_p;
 
@@ -2161,12 +2178,6 @@ module smolrv64(input wire        clock,
                  else
                    write_back_value = muldiv_p[63:0];
               end
-
-              // Reset to default values
-              muldiv_p = 0;
-              muldiv_output_negate = 0;
-              muldiv_output_high_part = 0;
-              muldiv_output_sext32 = 0;
 
               state <= `S_FETCH1;
            end
@@ -2189,11 +2200,6 @@ module smolrv64(input wire        clock,
 
               if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
-
-              muldiv_p = 0;
-              muldiv_output_negate = 0;
-              muldiv_output_high_part = 0;
-              muldiv_output_sext32 = 0;
 
               state <= `S_FETCH1;
            end

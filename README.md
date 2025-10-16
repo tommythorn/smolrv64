@@ -14,10 +14,7 @@ on getting it fast (and tighten up the RTL a lot).
 # Status
 
 Milestone 1: RV64IMAC is fully implemented (and modulo bugs), except
-for:
-1. Virtual Memory support
-2. Debug support.
-
+for virtual memory support.
 
 System support (for example external mmio memory bus) is high priority
 and will come next, followed by Virtual memory and Floating point
