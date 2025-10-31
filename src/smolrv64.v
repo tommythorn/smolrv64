@@ -243,10 +243,10 @@ module smolrv64(input wire        clock,
 
 `define S_LAST_STATE    15 // Here to remind us to update the width of state
 
-   reg [3:0]   state = `S_FETCH1;
+   reg [3:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
-`define MEM_SIZE_LG2    15 // 32 KiB
+`define MEM_SIZE_LG2    15 // 32 KiB !!! Remember to update x2 in rf.hex
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
@@ -288,15 +288,11 @@ module smolrv64(input wire        clock,
    wire [63:0] mem_data1 = mem1[mem_addr1];
 
    /* RISC-V Architectural state: operating mode, pc, and registers*/
-   (* ram_style = "block" *)
-   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile, 0, 31);
-   reg  [63:0] pc = 0;
-   reg  [ 1:0] prv = 3;
+   reg  [63:0] pc = 0; // XXX We should set this on reset
+   reg  [ 1:0] prv = 3; // XXX We should set this on reset
 
    // Read ports
    reg  [ 4:0] rs1, rs2;
-// wire [63:0] s1 = regfile[rs1];
-// wire [63:0] s2 = regfile[rs2];
 // reg  [63:0] s1;
 // reg  [63:0] s2;
    wire [63:0] s1;
@@ -316,7 +312,7 @@ module smolrv64(input wire        clock,
                    .read_data_1(s2));
 
 
-   reg  [63:0] npc = `MEM_BASEADDR;
+   reg  [63:0] npc = `MEM_BASEADDR; // XXX We should set this on reset
    reg  [127:0] aligned;
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
@@ -328,21 +324,21 @@ module smolrv64(input wire        clock,
    reg  [ 8:0] c_uimm42_12_65_x8, c_uimm97_1210_x8;
    reg  [ 7:0] c_uimm32_12_64_x4, c_uimm87_129_x4, c_uimm65_1210_x8;
    reg  [31:0] sext32;
-   reg  [ 2:0] load_size_lg2 = 3'hx; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
+   reg  [ 2:0] load_size_lg2; // 0 = B, 1 = H, 2 = W, 3 = D, +4 for sign-extend
 `ifdef SIMULATE
    reg  [127:0] tmp128;
 `endif
    reg  [ 4:0] rd;
    reg  [ 5:0] shamt;
    reg  [11:0] csrno;
-   reg  [31:0] insn = 0;
+   reg  [31:0] insn = 0; // XXX We should set this on reset
    reg  [ 1:0] csr_op;
 
    // CSR state
    reg         deleg, m_ie, s_ie, cause_intr;
    reg [63:0]  tval,
                tvec;
-   reg [11:0]  csr_mie        = 0,
+   reg [11:0]  csr_mie        = 0, // XXX We should set this on reset
                csr_mideleg    = 0,
                // temporaries, will not turn into flops
                cause,
@@ -355,8 +351,8 @@ module smolrv64(input wire        clock,
                csr_scause     = 0,
                csr_satp       = 0,
                csr_stval      = 0,
-               csr_medeleg    = 0,
-               csr_mtvec      = 0,
+               csr_medeleg    = 0, // XXX We should set this on reset
+               csr_mtvec      = 0, // XXX We should set this on reset
                csr_mscratch   = 'hDEADBEEFCAFEF00D,
                csr_mepc       = 0,
                csr_mcause     = 0,
@@ -377,7 +373,7 @@ module smolrv64(input wire        clock,
 
    // MSTATUS subfields
    // Global interrupt-enable bits
-   reg         uie = 0, sie = 0, mie =0;
+   reg         uie = 0, sie = 0, mie = 0;
    // xPIE holds the value of the interrupt-enable bit active prior to the trap
    reg         upie = 0, spie = 0, mpie = 0;
    // xPP holds the previous privilege mode.
@@ -433,9 +429,6 @@ module smolrv64(input wire        clock,
            muldiv_output_high_part = 0;
            muldiv_output_sext32 = 0;
            do_atomic = 0;
-
-           if (write_back_register != 0)
-             regfile[write_back_register] = write_back_value;
 
 `ifdef DISASS
            // We disassemble the *previous* instruction so we can read
@@ -2248,6 +2241,11 @@ module regfile(input wire         clock,
 );
 
    (* ram_style = "block" *)
+   // Since the memory currently is baked into SmolRV64 and we
+   // don't have a device tree, we take the shortcut of
+   // - embedding the frequency into register 7 of the UART
+   // - initializing sp to the end of physical memory.
+   // This is only true for now and will definitely change.
    reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile, 0, 31);
 
    always @(posedge clock) begin
