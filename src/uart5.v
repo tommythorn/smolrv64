@@ -1,14 +1,23 @@
 // sifive,uart0 compatible UART Implementation with Avalon
 // Memory-Mapped Interface
 //
-// Based on SiFive UART specification, except for an additional
-// register 7.  When read, it returns the base frequency (from a
-// module parameter) as a read-only register (as we don't yet have a
-// device tree).  With a stunning lack of ambition, we are limited to
-// 4 GHz.  When written, the lsb enables stretching the bps length by
-// a cycle, every other cycle, thus effectively is a "0.5" of div.
-// This enables, for example a 8.5 divisor which is needed for 3 Mb/s
-// at 25 MHz.
+// Based on SiFive UART specification, with the following backwards
+// compatible(?) extensions:
+//
+// - an additional register 7 provides the base frequency from a
+//   module parameter when read (with a stunning lack of ambition, we
+//   are limited to 4 GHz).
+//
+//   When written, the lsb enables stretching the bps length by a
+//   cycle, every other cycle, thus effectively is a "0.5" of div.
+//   This enables, for example a 8.5 divisor which is needed for
+//   3 Mb/s at 25 MHz.
+//
+// - RXDATA returns two additional flags in bit 30 and 29
+//   respectively: OVERFLOW (when the RX fifo dropped bytes to a full
+//   FIFO) and, redundantly, TXFULL.  The rationale for the last one
+//   is that a combined serial service routine can save an MMIO load.
+
 //
 // off | name   | write                         | read
 // --------------------------------------------------------------------------
@@ -33,28 +42,28 @@
 module uart5 #(
     parameter TX_FIFO_DEPTH = 8,
     parameter RX_FIFO_DEPTH = 8,
-    parameter ADDR_WIDTH = 3,  // 8 registers, need 3 bits for word addressing
+    parameter ADDR_WIDTH = 3, // 8 registers, need 3 bits for word addressing
     parameter CLK_FREQUENCY = 0
 )(
     // Clock and Reset
-    input wire clk,
-    input wire rst_n,
+    input wire                  clk,
+    input wire                  rst_n,
 
     // Avalon Memory-Mapped Slave Interface
     input wire [ADDR_WIDTH-1:0] avs_address,
-    input wire avs_read,
-    input wire avs_write,
-    input wire [31:0] avs_writedata,
-    output reg        avs_readdatavalid,
-    output reg [31:0] avs_readdata,
-    output wire avs_waitrequest,
+    input wire                  avs_read,
+    input wire                  avs_write,
+    input wire [31:0]           avs_writedata,
+    output reg                  avs_readdatavalid,
+    output reg [31:0]           avs_readdata,
+    output wire                 avs_waitrequest,
 
     // UART Serial Interface
-    input wire uart_rx,
-    output wire uart_tx,
+    input wire                  uart_rx,
+    output wire                 uart_tx,
 
     // Interrupt
-    output wire irq
+    output wire                 irq
 );
 
     // Register addresses (word-aligned)
@@ -68,8 +77,12 @@ module uart5 #(
     localparam FREQ_ADDR   = 3'h7;  // 0x1C
 
     // Register bit definitions
-    localparam TXDATA_FULL = 31;
-    localparam RXDATA_EMPTY = 31;
+    localparam TXDATA_FULL         = 31;
+
+    localparam RXDATA_RXEMPTY      = 31;
+    localparam RXDATA_RXOVERFLOWED = 30;
+    localparam RXDATA_TXFULL       = 29;
+
     localparam TXCTRL_TXEN = 0;
     localparam TXCTRL_NSTOP = 1;
     localparam RXCTRL_RXEN = 0;
@@ -79,40 +92,41 @@ module uart5 #(
     // Registers
     reg [18:0] txctrl;  // bits [18:16] = txcnt, [1:0] = nstop, txen
     reg [18:0] rxctrl;  // bits [18:16] = rxcnt, [0] = rxen
-    reg [1:0] ie;
+    reg [1:0]  ie;
     reg [15:0] div;
     reg        div_half;
 
     // TX FIFO
-    reg [7:0] tx_fifo [0:TX_FIFO_DEPTH-1];
+    reg [7:0]  tx_fifo [0:TX_FIFO_DEPTH-1];
     reg [$clog2(TX_FIFO_DEPTH):0] tx_wr_ptr;
     reg [$clog2(TX_FIFO_DEPTH):0] tx_rd_ptr;
     wire [$clog2(TX_FIFO_DEPTH):0] tx_count;
-    wire tx_full;
-    wire tx_empty;
+    wire                           tx_full;
+    wire                           tx_empty;
 
     // RX FIFO
     reg [7:0] rx_fifo [0:RX_FIFO_DEPTH-1];
     reg [$clog2(RX_FIFO_DEPTH):0] rx_wr_ptr;
     reg [$clog2(RX_FIFO_DEPTH):0] rx_rd_ptr;
     wire [$clog2(RX_FIFO_DEPTH):0] rx_count;
-    wire rx_full;
-    wire rx_empty;
+    wire                           rx_full;
+    wire                           rx_empty;
+    reg                            rx_overflowed;
 
     // UART TX/RX state machines
-    reg [3:0] tx_state;
-    reg [3:0] rx_state;
-    reg [15:0] tx_baud_counter;
-    reg [15:0] rx_baud_counter;
-    reg [3:0] tx_bit_counter;
-    reg [3:0] rx_bit_counter;
-    reg [7:0] tx_shift_reg;
-    reg [7:0] rx_shift_reg;
-    reg uart_tx_reg;
-    reg uart_rx_sync1, uart_rx_sync2;
+    reg [3:0]                      tx_state;
+    reg [3:0]                      rx_state;
+    reg [15:0]                     tx_baud_counter;
+    reg [15:0]                     rx_baud_counter;
+    reg [3:0]                      tx_bit_counter;
+    reg [3:0]                      rx_bit_counter;
+    reg [7:0]                      tx_shift_reg;
+    reg [7:0]                      rx_shift_reg;
+    reg                            uart_tx_reg;
+    reg                            uart_rx_sync1, uart_rx_sync2;
 
     // Initialize FIFO memory to prevent X propagation
-    integer init_i;
+    integer                        init_i;
     initial begin
         for (init_i = 0; init_i < TX_FIFO_DEPTH; init_i = init_i + 1)
             tx_fifo[init_i] = 8'h00;
@@ -149,7 +163,7 @@ module uart5 #(
     reg ip_txwm_reg;
     reg ip_rxwm_reg;
 
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             ip_txwm_reg <= 1'b0;
             ip_rxwm_reg <= 1'b0;
@@ -171,15 +185,16 @@ module uart5 #(
     assign uart_tx = uart_tx_reg;
 
     // Avalon read interface
-    always @(posedge clk or negedge rst_n) begin
-       avs_readdatavalid <= 0;
+    always @(posedge clk) begin
+        avs_readdatavalid <= 0;
         if (!rst_n) begin
             avs_readdata <= 32'h0;
         end else if (avs_read) begin
             avs_readdatavalid <= 1;
             case (avs_address)
                 TXDATA_ADDR: avs_readdata <= {tx_full, 31'h0};
-                RXDATA_ADDR: avs_readdata <= rx_empty ? {1'b1, 31'h0} : {1'b0, 24'h0, rx_fifo[rx_rd_ptr[$clog2(RX_FIFO_DEPTH)-1:0]]};
+                RXDATA_ADDR: avs_readdata <= {rx_empty, rx_overflowed, tx_full, 21'd0,
+                                              rx_fifo[rx_rd_ptr[$clog2(RX_FIFO_DEPTH)-1:0]]};
                 TXCTRL_ADDR: avs_readdata <= {13'h0, txctrl};
                 RXCTRL_ADDR: avs_readdata <= {13'h0, rxctrl};
                 IE_ADDR:     avs_readdata <= {30'h0, ie};
@@ -192,12 +207,13 @@ module uart5 #(
     end
 
     // Avalon write interface and register updates
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             txctrl <= 19'h0;
             rxctrl <= 19'h0;
             ie <= 2'h0;
             div <= 16'h0;
+            div_half <= 16'h0;
             tx_wr_ptr <= {($clog2(TX_FIFO_DEPTH)+1){1'b0}};
         end else begin
             if (avs_write) begin
@@ -220,7 +236,7 @@ module uart5 #(
     end
 
     // RX FIFO read pointer update (on RXDATA read)
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             rx_rd_ptr <= {($clog2(RX_FIFO_DEPTH)+1){1'b0}};
         end else begin
@@ -231,7 +247,7 @@ module uart5 #(
     end
 
     // UART RX synchronizer
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             uart_rx_sync1 <= 1'b1;
             uart_rx_sync2 <= 1'b1;
@@ -242,7 +258,7 @@ module uart5 #(
     end
 
     // UART TX state machine
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             tx_state <= TX_IDLE;
             tx_baud_counter <= 16'h0;
@@ -322,14 +338,18 @@ module uart5 #(
     end
 
     // UART RX state machine
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             rx_state <= RX_IDLE;
             rx_baud_counter <= 16'h0;
             rx_bit_counter <= 4'h0;
             rx_shift_reg <= 8'h0;
             rx_wr_ptr <= {($clog2(RX_FIFO_DEPTH)+1){1'b0}};
+            rx_overflowed <= 0;
         end else begin
+            if (avs_read && avs_address == RXDATA_ADDR)
+                rx_overflowed <= 0;
+
             case (rx_state)
                 RX_IDLE: begin
                     if (!uart_rx_sync2 && rxctrl[RXCTRL_RXEN]) begin
@@ -369,7 +389,9 @@ module uart5 #(
                 RX_STOP: begin
                     if (rx_baud_counter == 0) begin
                         if (uart_rx_sync2) begin  // Valid stop bit
-                            if (!rx_full) begin
+                            if (rx_full) begin
+                                rx_overflowed <= 1;
+                            end else begin
                                 rx_fifo[rx_wr_ptr[$clog2(RX_FIFO_DEPTH)-1:0]] <= rx_shift_reg;
                                 rx_wr_ptr <= rx_wr_ptr + 1;
                             end
