@@ -239,6 +239,8 @@ module smolrv64(input wire        clock,
 `define S_MUL_RUNNING   11
 `define S_DIV_RUNNING   12
 
+`define S_PTW_READ      13
+
 `define S_FINISH        14
 
 `define S_LAST_STATE    15 // Here to remind us to update the width of state
@@ -246,7 +248,7 @@ module smolrv64(input wire        clock,
    reg [3:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
-`define MEM_SIZE_LG2    15 // 32 KiB !!! Remember to update x2 in rf.hex
+`define MEM_SIZE_LG2    17 // 128 KiB !!! Remember to update x2 in rf.hex
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
@@ -411,6 +413,16 @@ module smolrv64(input wire        clock,
 
    reg [63:0]  store_value;
 
+   // Sv39 page table walk state
+   reg [ 1:0]  ptw_level;       // Current walk level (2, 1, 0)
+   reg [ 3:0]  ptw_return;      // State to return to after translation
+   reg [63:0]  ptw_va;          // Virtual address being translated
+   reg [63:0]  ptw_pte_addr;    // Physical address of PTE being read
+   reg [ 1:0]  ptw_access;      // 0=fetch, 1=load, 2=store, 3=AMO (R+W)
+   reg [ 1:0]  ptw_prv;         // Effective privilege for permission check
+   reg         translated = 0;  // Set by PTW, cleared by consumer
+   reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
+
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
@@ -422,6 +434,7 @@ module smolrv64(input wire        clock,
       case (state)
         `S_FETCH1: begin
            csr_minstret <= csr_minstret + 1;
+           translated <= 0;
 
            // Reset to default values
            muldiv_p = 0;
@@ -434,13 +447,24 @@ module smolrv64(input wire        clock,
 `include "disass.vh"
 `endif
 
-           // Sigh.  Verilator wants
-           //    mem_addr0 <= {npc[63:4] + 60'(npc[3])}[`MEM_SIZE_LG2-5:0];
-           // but Icarus Verilog doesn't understand that and wants
-           mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
-           mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
            pc <= npc;
-           state <= `S_FETCH2;
+
+           if (csr_satp[63:60] == 4'd8 && prv != 3) begin
+              // Sv39 instruction fetch translation
+              ptw_va = npc;
+              ptw_level = 2;
+              ptw_access = 0;
+              ptw_prv = prv;
+              ptw_return = `S_FETCH2;
+              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, npc[38:30], 3'd0};
+              mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              state <= `S_PTW_READ;
+           end else begin
+              mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
+              mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
+              state <= `S_FETCH2;
+           end
 
            // Copying SAIL here
            pending_m = csr_mip & csr_mie & ~csr_mideleg;
@@ -466,15 +490,18 @@ module smolrv64(input wire        clock,
               cause_intr = 1;
               tval = 0;
               state <= `S_EXCEPTION;
-           end else if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+           end else if (csr_satp[63:60] != 4'd8 || prv == 3) begin
+              // Physical address check only when VM is off
+              if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-              $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
+                 $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
 `endif
 `endif
-              cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-              tval = 0;
-              state <= `S_EXCEPTION;
+                 cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+                 tval = 0;
+                 state <= `S_EXCEPTION;
+              end
            end
         end
 
@@ -1400,6 +1427,19 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
+           if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
+              // Sv39 store address translation
+              ptw_va = mem_addr;
+              ptw_level = 2;
+              ptw_access = 2;
+              ptw_prv = mprv ? mpp : prv;
+              ptw_return = `S_STORE;
+              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
+              mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              state <= `S_PTW_READ;
+           end else begin
+           translated <= 0;
            state <= `S_FETCH1;
            reservation <= ~0;
 
@@ -1466,62 +1506,78 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
            if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
+           end // else (translated)
         end
 
         `S_LOAD_ALIGN: begin
-           aligned = mem_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
-           aligned = aligned >> (mem_addr[2:0] * 8);
+           if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
+              // Sv39 load/AMO address translation
+              ptw_va = mem_addr;
+              ptw_level = 2;
+              ptw_access = do_atomic ? 2'd3 : 2'd1;
+              ptw_prv = mprv ? mpp : prv;
+              ptw_return = `S_LOAD_ALIGN;
+              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
+              mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              state <= `S_PTW_READ;
+           end else begin
+              if (!do_atomic) translated <= 0;
 
-           case (load_size_lg2)
-             0: write_back_value = aligned[ 7:0];
-             1: write_back_value = aligned[15:0];
-             2: write_back_value = aligned[31:0];
-             3: write_back_value = aligned;
-             4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
-             5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
-             6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
-             7: write_back_value = 64'hx;
-           endcase
+              aligned = mem_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
+              aligned = aligned >> (mem_addr[2:0] * 8);
 
-           state <= `S_FETCH1;
+              case (load_size_lg2)
+                0: write_back_value = aligned[ 7:0];
+                1: write_back_value = aligned[15:0];
+                2: write_back_value = aligned[31:0];
+                3: write_back_value = aligned;
+                4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
+                5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
+                6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
+                7: write_back_value = 64'hx;
+              endcase
 
-           if (do_atomic)
-             state <= `S_AMO;
+              state <= `S_FETCH1;
 
-           if (mem_addr[63:31] == 0) begin
+              if (do_atomic)
+                state <= `S_AMO;
+
+              if (mem_addr[63:31] == 0) begin
 `ifdef TRACE_MMIO
-              $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
+                 $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
 `endif
-              state <= `S_MMIO_READ;
+                 state <= `S_MMIO_READ;
 
-              // MMIO exception
+                 // MMIO exception
 `ifdef SIMULATE
-              if (load_size_lg2 == 3) begin
-                 $display("64b loads from MMIO address space isn't supported");
-                 $finish;
-                 // XXX Could make that an illegal instruction trap
-              end
+                 if (load_size_lg2 == 3) begin
+                    $display("64b loads from MMIO address space isn't supported");
+                    $finish;
+                    // XXX Could make that an illegal instruction trap
+                 end
 
-              if ((mem_addr & ((1 << load_size_lg2[1:0]) - 1)) != 0) begin
-                 $display("Unaligned loads from MMIO address space isn't supported");
-                 $finish;
-                 // XXX Could make that an illegal instruction trap
-              end
+                 if ((mem_addr & ((1 << load_size_lg2[1:0]) - 1)) != 0) begin
+                    $display("Unaligned loads from MMIO address space isn't supported");
+                    $finish;
+                    // XXX Could make that an illegal instruction trap
+                 end
 `endif
 
-              mmio_address = mem_addr;
-              mmio_read = 1;
-           end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-              // XXX This isn't catching unaligned access that overflows
+                 mmio_address = mem_addr;
+                 mmio_read = 1;
+              end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+                 // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-              $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
+                 $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
 `endif
 `endif
-              write_back_register = 0;
-              cause = `TRAP_LOAD_ACCESS_FAULT;
-              tval = mem_addr;
-              state <= `S_EXCEPTION;
+                 write_back_register = 0;
+                 cause = `TRAP_LOAD_ACCESS_FAULT;
+                 tval = mem_addr;
+                 state <= `S_EXCEPTION;
+              end
            end
         end
 
@@ -1894,6 +1950,99 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH1;
            end
         end
+
+        `S_PTW_READ: begin
+           // Sv39 page table walk: read PTE from memory
+           aligned = ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
+           // PTE is aligned[63:0] (8-byte aligned, no shift needed)
+           // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
+
+           ptw_fault_cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
+                             ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
+                                               `TRAP_STORE_PAGE_FAULT;
+
+           if (ptw_va[63:39] != {25{ptw_va[38]}}) begin
+              // Non-canonical Sv39 virtual address
+              cause = ptw_fault_cause;
+              tval = ptw_va;
+              state <= `S_EXCEPTION;
+           end else if (!aligned[0] || !aligned[1] && aligned[2]) begin
+              // Invalid PTE: V=0 or (R=0 && W=1)
+              cause = ptw_fault_cause;
+              tval = ptw_va;
+              state <= `S_EXCEPTION;
+           end else if (aligned[1] || aligned[3]) begin
+              // Leaf PTE (R=1 or X=1)
+
+              if ((ptw_level == 2 && aligned[27:10] != 0) ||
+                  (ptw_level == 1 && aligned[18:10] != 0)) begin
+                 // Misaligned superpage
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if (!aligned[6] || (ptw_access >= 2 && !aligned[7])) begin
+                 // A bit clear, or D bit clear on store/AMO
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if (ptw_access == 0 && !aligned[3]) begin
+                 // Fetch requires X
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if ((ptw_access == 1 || ptw_access == 3) &&
+                           !aligned[1] && !(mxr && aligned[3])) begin
+                 // Load/AMO requires R (or X when MXR)
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if ((ptw_access == 2 || ptw_access == 3) && !aligned[2]) begin
+                 // Store/AMO requires W
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if (ptw_prv == 0 && !aligned[4]) begin
+                 // U-mode but page not marked U
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if (ptw_prv == 1 && aligned[4] && (ptw_access == 0 || !sum)) begin
+                 // S-mode accessing U page: forbidden for fetch, or load/store without SUM
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else begin
+                 // Translation successful - compute physical address
+                 case (ptw_level)
+                   2: mem_addr = {8'd0, aligned[53:28], ptw_va[29:0]}; // 1 GiB superpage
+                   1: mem_addr = {8'd0, aligned[53:19], ptw_va[20:0]}; // 2 MiB superpage
+                   0: mem_addr = {8'd0, aligned[53:10], ptw_va[11:0]}; // 4 KiB page
+                   default: mem_addr = 0;
+                 endcase
+                 mem_addr0 <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
+                 mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
+                 translated <= 1;
+                 state <= ptw_return;
+              end
+           end else if (ptw_level == 0) begin
+              // Non-leaf at level 0: invalid
+              cause = ptw_fault_cause;
+              tval = ptw_va;
+              state <= `S_EXCEPTION;
+           end else begin
+              // Non-leaf PTE: descend to next level
+              ptw_level = ptw_level - 1;
+              case (ptw_level)
+                1: ptw_pte_addr = {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[29:21], 3'd0};
+                0: ptw_pte_addr = {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
+                default: ptw_pte_addr = 0;
+              endcase
+              mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              // Stay in S_PTW_READ
+           end
+        end
+
         `S_FINISH: begin
 
 `ifdef SIMULATE
