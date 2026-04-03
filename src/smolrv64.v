@@ -1378,7 +1378,7 @@ module smolrv64(input wire        clock,
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else begin
-                 if (spp != 3) mprv = 0;
+                 mprv = 0; // sret can only return to S or U, never M
                   $display("*** SRET prv %d -> %d", prv, spp);
                  prv = spp;
                  spp = 0;
