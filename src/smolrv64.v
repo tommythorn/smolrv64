@@ -492,11 +492,7 @@ module smolrv64(input wire        clock,
            end else if (csr_satp[63:60] != 4'd8 || prv == 3) begin
               // Physical address check only when VM is off
               if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-`ifdef SIMULATE
-`ifndef RISCV_TESTS
-                 $display("%05d   %1d %x illegal fetch address", $time, prv, npc);
-`endif
-`endif
+                 $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d", $time, prv, npc, csr_satp[63:60]);
                  cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                  tval = 0;
                  state <= `S_EXCEPTION;
@@ -1382,6 +1378,7 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end else begin
                  if (spp != 3) mprv = 0;
+                  $display("*** SRET prv %d -> %d", prv, spp);
                  prv = spp;
                  spp = 0;
                  sie = spie;
@@ -1427,6 +1424,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
+           $display("*** STORE csr_satp[63:60] %d, mprv %d, mpp %d, prv %d, translated %d",
+                    csr_satp[63:60], mprv, mpp, prv, translated);
+
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
               ptw_va = mem_addr;
@@ -1876,7 +1876,7 @@ module smolrv64(input wire        clock,
            // constant.
            deleg = prv <= 1 && (cause_intr ? csr_mideleg[cause[3:0]] : csr_medeleg[cause[3:0]]);
            if (deleg) begin
-              csr_scause = cause;
+              csr_scause = {cause_intr, 51'd0, cause};
               csr_sepc = pc;
               csr_stval = tval;
               spie = sie;
@@ -1885,7 +1885,7 @@ module smolrv64(input wire        clock,
               tvec = csr_stvec;
               prv = 1;
            end else begin
-              csr_mcause = cause;
+              csr_mcause = {cause_intr, 51'd0, cause};
               csr_mepc = pc;
               csr_mtval = tval;
               mpie = mie;
@@ -2020,10 +2020,11 @@ module smolrv64(input wire        clock,
                    0: mem_addr = {8'd0, aligned[53:10], ptw_va[11:0]}; // 4 KiB page
                    default: mem_addr = 0;
                  endcase
-                 mem_addr0 <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
-                 mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
-                 translated <= 1;
-                 state <= ptw_return;
+                  mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
+                  mem_addr1  <= mem_addr[`MEM_SIZE_LG2-1:4];
+                  translated <= 1;
+                  $display("*** PTW translated %x -> mem_addr %x", ptw_va, mem_addr);
+                  state      <= ptw_return;
               end
            end else if (ptw_level == 0) begin
               // Non-leaf at level 0: invalid
