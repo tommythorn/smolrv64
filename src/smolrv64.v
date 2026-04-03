@@ -434,7 +434,6 @@ module smolrv64(input wire        clock,
       case (state)
         `S_FETCH1: begin
            csr_minstret <= csr_minstret + 1;
-           translated <= 0;
 
            // Reset to default values
            muldiv_p = 0;
@@ -506,6 +505,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH2: begin
+           translated <= 0;
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
            insn = aligned >> (pc[2:1] * 16);
@@ -1622,6 +1622,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_AMO: begin
+           translated <= 0;
            mem_wr_mask = 255;
            store_value = s2;
            if (!insn[12]) begin
