@@ -1363,6 +1363,7 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
+              if (mpp != 3) mprv = 0;
               prv = mpp;
               mpp = 0;
               mie = mpie;
