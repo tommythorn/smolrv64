@@ -1816,7 +1816,7 @@ module smolrv64(input wire        clock,
                    {spp, mpie}       = csr_write_val[8:7];
                    mpp               = csr_write_val[12:11];
                    // fs = csr_write_val[14:13];
-                   {tsr, tw, tvm, mxr, sum, mprv} <= csr_write_val[22:17];
+                   {tsr, tw, tvm, mxr, sum, mprv} = csr_write_val[22:17];
                 end
                 `CSR_MISA:     begin end
                 `CSR_MEDELEG:  csr_medeleg  = csr_write_val;
