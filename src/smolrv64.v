@@ -1897,10 +1897,10 @@ module smolrv64(input wire        clock,
            end
 
            // Handle vectored interrupts, just to be compatible
-           npc = tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3;
+           npc = (tvec[0] && cause_intr) ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3;
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-           $display("%05d  ** Exception resuming at %x", $time, tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
+           $display("%05d  ** Exception resuming at %x", $time, (tvec[0] && cause_intr) ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
 `endif
 `endif
            state <= `S_FETCH1;
