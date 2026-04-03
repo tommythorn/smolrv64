@@ -1883,6 +1883,7 @@ module smolrv64(input wire        clock,
               sie = 0;
               spp = prv;
               tvec = csr_stvec;
+              prv = 1;
            end else begin
               csr_mcause = cause;
               csr_mepc = pc;
@@ -1891,9 +1892,8 @@ module smolrv64(input wire        clock,
               mie = 0;
               mpp = prv;
               tvec = csr_mtvec;
+              prv = 3;
            end
-
-           prv = 3;
 
            // Handle vectored interrupts, just to be compatible
            npc = tvec & 3 ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3;
