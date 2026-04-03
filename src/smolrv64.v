@@ -88,7 +88,7 @@ module smolrv64_tb;
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
 */
 `ifndef NO_TIMEOUT
-      #4000000
+      #5000000
 `ifdef RISCV_TESTS
       $display("Test Failed with TIMEOUT");
 `endif
@@ -248,7 +248,7 @@ module smolrv64(input wire        clock,
    reg [3:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
-`define MEM_SIZE_LG2    17 // 128 KiB !!! Remember to update x2 in rf.hex
+`define MEM_SIZE_LG2    20 // 1 MiB !!! Remember to update x2 in rf.hex
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
@@ -264,6 +264,7 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
    reg [8*200:0] evenhex, oddhex;
 `endif
+   integer i;
    initial begin
 `ifdef SIMULATE
       if (!$value$plusargs("even=%s", evenhex)) begin
@@ -275,6 +276,10 @@ module smolrv64(input wire        clock,
          $finish;
       end
 
+       for (i = 0; i < `MEM_SIZE/16; i = i + 1) begin
+          mem0[i] = 0;
+          mem1[i] = 0;
+       end
        $readmemh(evenhex, mem0, 0, `MEM_SIZE/16-1);
        $readmemh(oddhex, mem1, 0, `MEM_SIZE/16-1);
 `else
@@ -492,7 +497,9 @@ module smolrv64(input wire        clock,
            end else if (csr_satp[63:60] != 4'd8 || prv == 3) begin
               // Physical address check only when VM is off
               if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+`ifdef SIMULATE
                  $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d", $time, prv, npc, csr_satp[63:60]);
+`endif
                  cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                  tval = 0;
                  state <= `S_EXCEPTION;
@@ -1032,8 +1039,11 @@ module smolrv64(input wire        clock,
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef RISCV_TESTS
-              rs1 = 3;
-              state <= `S_FINISH;
+              $display("ECALL: pc %x prv %d time %0t", pc, prv, $time);
+              if (prv == 3 || csr_satp[63:60] == 0) begin
+                 rs1 = 3;
+                 state <= `S_FINISH;
+              end
 `endif
            end
 
@@ -1378,8 +1388,10 @@ module smolrv64(input wire        clock,
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else begin
+`ifdef RISCV_TESTS
+                 $display("SRET: pc %x prv %d->%d sepc %x time %0t", pc, prv, spp, csr_sepc, $time);
+`endif
                  mprv = 0; // sret can only return to S or U, never M
-                  $display("*** SRET prv %d -> %d", prv, spp);
                  prv = spp;
                  spp = 0;
                  sie = spie;
@@ -1425,8 +1437,6 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE: begin
-           $display("*** STORE csr_satp[63:60] %d, mprv %d, mpp %d, prv %d, translated %d",
-                    csr_satp[63:60], mprv, mpp, prv, translated);
 
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
@@ -1507,6 +1517,17 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
            if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
+
+`ifdef RISCV_TESTS
+           // tohost detection: physical 0x80001000 = mem0[0x100]
+           if (mem_addr0 == 'h100 && mem_wr_mask[0] && store_value != 0) begin
+              if (store_value == 1)
+                 $display("Test Passed");
+              else
+                 $display("Test Failed with %3d", store_value);
+              $finish;
+           end
+`endif
            end // else (translated)
         end
 
@@ -1781,6 +1802,10 @@ module smolrv64(input wire        clock,
               // write the CSR
               case (csrno)
                 `CSR_SSTATUS: begin
+`ifdef RISCV_TESTS
+                   if (sum != csr_write_val[18])
+                      $display("SSTATUS: sum %d->%d pc %x time %0t", sum, csr_write_val[18], pc, $time);
+`endif
                    {mxr, sum}        = csr_write_val[19:18];
                    fs                = csr_write_val[14:13];
                    spp               = csr_write_val[8];
@@ -1865,6 +1890,9 @@ module smolrv64(input wire        clock,
 `ifndef RISCV_TESTS
            $display("%05d  ** Exception, cause %x, pc %x, tval %x", $time, cause, pc, tval);
 `endif
+`endif
+`ifdef RISCV_TESTS
+           $display("EXCEPTION: cause %x pc %x tval %x prv %d time %0t", cause, pc, tval, prv, $time);
 `endif
 
            write_back_register = 0;
@@ -1955,7 +1983,10 @@ module smolrv64(input wire        clock,
            aligned = ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
            // PTE is aligned[63:0] (8-byte aligned, no shift needed)
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
-
+`ifdef RISCV_TESTS
+           $display("PTW: va %x level %d pte_addr %x pte %x access %d prv %d time %0t",
+                    ptw_va, ptw_level, ptw_pte_addr, aligned[63:0], ptw_access, ptw_prv, $time);
+`endif
            ptw_fault_cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                              ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
                                                `TRAP_STORE_PAGE_FAULT;
@@ -1976,11 +2007,6 @@ module smolrv64(input wire        clock,
               if ((ptw_level == 2 && aligned[27:10] != 0) ||
                   (ptw_level == 1 && aligned[18:10] != 0)) begin
                  // Misaligned superpage
-                 cause = ptw_fault_cause;
-                 tval = ptw_va;
-                 state <= `S_EXCEPTION;
-              end else if (!aligned[6] || (ptw_access >= 2 && !aligned[7])) begin
-                 // A bit clear, or D bit clear on store/AMO
                  cause = ptw_fault_cause;
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
@@ -2010,6 +2036,11 @@ module smolrv64(input wire        clock,
                  cause = ptw_fault_cause;
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
+              end else if (!aligned[6] || (ptw_access >= 2 && !aligned[7])) begin
+                 // Software A/D management (RVA22): fault if A=0 or D=0 for store/AMO
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
               end else begin
                  // Translation successful - compute physical address
                  case (ptw_level)
@@ -2018,10 +2049,10 @@ module smolrv64(input wire        clock,
                    0: mem_addr = {8'd0, aligned[53:10], ptw_va[11:0]}; // 4 KiB page
                    default: mem_addr = 0;
                  endcase
+
                   mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
                   mem_addr1  <= mem_addr[`MEM_SIZE_LG2-1:4];
                   translated <= 1;
-                  $display("*** PTW translated %x -> mem_addr %x", ptw_va, mem_addr);
                   state      <= ptw_return;
               end
            end else if (ptw_level == 0) begin
