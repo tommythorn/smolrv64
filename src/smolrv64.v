@@ -1650,7 +1650,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_AMO: begin
-           translated <= 0;
+           // Note: translated stays set from S_LOAD_ALIGN PTW (ptw_access=3
+           // already checked both read and write permission), so S_STORE
+           // will skip re-translation and use the physical mem_addr directly.
            mem_wr_mask = 255;
            store_value = s2;
            if (!insn[12]) begin
