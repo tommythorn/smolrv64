@@ -1038,8 +1038,12 @@ module smolrv64(input wire        clock,
               cause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
               tval = 0;
               state <= `S_EXCEPTION;
-`ifdef RISCV_TESTS
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
               $display("ECALL: pc %x prv %d time %0t", pc, prv, $time);
+`endif
+`endif
+`ifdef RISCV_TESTS
               if (prv == 3 || csr_satp[63:60] == 0) begin
                  rs1 = 3;
                  state <= `S_FINISH;
@@ -1388,8 +1392,10 @@ module smolrv64(input wire        clock,
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else begin
-`ifdef RISCV_TESTS
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
                  $display("SRET: pc %x prv %d->%d sepc %x time %0t", pc, prv, spp, csr_sepc, $time);
+`endif
 `endif
                  mprv = 0; // sret can only return to S or U, never M
                  prv = spp;
@@ -1802,9 +1808,11 @@ module smolrv64(input wire        clock,
               // write the CSR
               case (csrno)
                 `CSR_SSTATUS: begin
-`ifdef RISCV_TESTS
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
                    if (sum != csr_write_val[18])
                       $display("SSTATUS: sum %d->%d pc %x time %0t", sum, csr_write_val[18], pc, $time);
+`endif
 `endif
                    {mxr, sum}        = csr_write_val[19:18];
                    fs                = csr_write_val[14:13];
@@ -1888,11 +1896,8 @@ module smolrv64(input wire        clock,
         `S_EXCEPTION: begin
 `ifdef SIMULATE
 `ifndef RISCV_TESTS
-           $display("%05d  ** Exception, cause %x, pc %x, tval %x", $time, cause, pc, tval);
+           $display("%05d  ** Exception, cause %x, pc %x, tval %x, prv %d", $time, cause, pc, tval, prv);
 `endif
-`endif
-`ifdef RISCV_TESTS
-           $display("EXCEPTION: cause %x pc %x tval %x prv %d time %0t", cause, pc, tval, prv, $time);
 `endif
 
            write_back_register = 0;
@@ -1983,9 +1988,11 @@ module smolrv64(input wire        clock,
            aligned = ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
            // PTE is aligned[63:0] (8-byte aligned, no shift needed)
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
-`ifdef RISCV_TESTS
+`ifdef SIMULATE
+`ifndef RISCV_TESTS
            $display("PTW: va %x level %d pte_addr %x pte %x access %d prv %d time %0t",
                     ptw_va, ptw_level, ptw_pte_addr, aligned[63:0], ptw_access, ptw_prv, $time);
+`endif
 `endif
            ptw_fault_cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                              ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
