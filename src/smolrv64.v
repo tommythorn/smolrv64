@@ -1795,10 +1795,7 @@ module smolrv64(input wire        clock,
                 `CSR_SCAUSE:    csr_scause = csr_write_val;
                 `CSR_STVAL:     csr_stval  = csr_write_val;
                 `CSR_SIP:       begin
-                   if (csr_mideleg[9]) seip = csr_write_val[9];
-                   if (csr_mideleg[8]) ueip = csr_write_val[8];
-                   if (csr_mideleg[5]) stip = csr_write_val[5];
-                   if (csr_mideleg[4]) utip = csr_write_val[4];
+                   // Only SSIP (bit 1) is writable via SIP; SEIP/STIP are read-only
                    if (csr_mideleg[1]) ssip = csr_write_val[1];
                    if (csr_mideleg[0]) usip = csr_write_val[0];
                 end
