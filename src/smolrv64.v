@@ -249,7 +249,7 @@ module smolrv64(input wire        clock,
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
-`define MEM_SIZE_LG2    20 // 1 MiB !!! Remember to update x2 in rf.hex
+`define MEM_SIZE_LG2    22 // 4 MiB !!! Remember to update x2 in rf.hex
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
@@ -500,7 +500,9 @@ module smolrv64(input wire        clock,
               // Physical address check only when VM is off
               if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
+`ifndef RISCV_TESTS
                  $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d", $time, prv, npc, csr_satp[63:60]);
+`endif
 `endif
                  cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                  tval = 0;
@@ -2032,7 +2034,12 @@ module smolrv64(input wire        clock,
            end else if (aligned[1] || aligned[3]) begin
               // Leaf PTE (R=1 or X=1)
 
-              if ((ptw_level == 2 && aligned[27:10] != 0) ||
+              if (aligned[63] && (ptw_level != 0 || aligned[13:10] != 4'b1000)) begin
+                 // NAPOT: N bit reserved on superpages; at level 0 only 64 KiB supported
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
+              end else if ((ptw_level == 2 && aligned[27:10] != 0) ||
                   (ptw_level == 1 && aligned[18:10] != 0)) begin
                  // Misaligned superpage
                  cause = ptw_fault_cause;
@@ -2074,7 +2081,9 @@ module smolrv64(input wire        clock,
                  case (ptw_level)
                    2: mem_addr = {8'd0, aligned[53:28], ptw_va[29:0]}; // 1 GiB superpage
                    1: mem_addr = {8'd0, aligned[53:19], ptw_va[20:0]}; // 2 MiB superpage
-                   0: mem_addr = {8'd0, aligned[53:10], ptw_va[11:0]}; // 4 KiB page
+                   0: mem_addr = aligned[63]
+                        ? {8'd0, aligned[53:14], ptw_va[15:0]}  // 64 KiB NAPOT
+                        : {8'd0, aligned[53:10], ptw_va[11:0]}; // 4 KiB page
                    default: mem_addr = 0;
                  endcase
 
