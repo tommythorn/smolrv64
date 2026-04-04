@@ -13,43 +13,51 @@ on getting it fast (and tighten up the RTL a lot).
 
 # Status
 
-Milestone 1: RV64IMAC is fully implemented (and modulo bugs), except
-for virtual memory support.
-
-System support (for example external mmio memory bus) is high priority
-and will come next, followed by Virtual memory and Floating point
-support.
-
-The implementation is accompanied by the riscv-test test suite
-(launched with `make`).  As features are implemented, more tests are
-migrated from `unsupported` to `passes`.
-
-Currently two dev boards are directly supported: ULX3S and
-RX-XCKU5P-F.
+194 riscv-tests pass (106 physical-mode, 66 virtual-mode, 22 other).
+RV64IMAC with Sv39 virtual memory and Ssvnapot is implemented.
+Two FPGA dev boards are directly supported: ULX3S and RX-XCKU5P-F.
 
 ## Performance
 
 Performance is not [yet] a priority, but IPC is about 0.22 at 25 MHz
 (ECP5) and 200 MHz (XCKU5P).
 
-# Milestone 2
+# Milestones
 
-- DONE: MMIO bus etc
+## M1: Boot a minimal Linux (buildroot, CONFIG_FPU=n)
+
+SmolRV64 targets 100% compatibility with [Simmerv](https://github.com/tommythorn/simmerv)
+(an ISA-level reference model which already boots full Ubuntu).
+This means we can reuse the same OpenSBI, device tree, kernel, and
+initrd images.  For simulation, everything is preloaded into memory;
+for FPGA, a tiny bootloader will load from flash/UART.
+
+What's needed:
+- [x] Sv39 page table walk with software A/D (RVA22)
+- [x] Ssvnapot (64 KiB NAPOT pages)
+- [x] Cross-page instruction fetch
+- [ ] CLINT (mtime, mtimecmp, msip) — timer interrupts
+- [ ] PLIC — external interrupt routing (UART RX at minimum)
+- [ ] UART — Linux console (extend existing uart5.v or replace)
+- [ ] Bring up OpenSBI (great incremental test for CSR/privilege bugs)
+- [ ] Boot Linux with serial console
+
+Not needed for M1: FPU (kernel can trap-emulate or CONFIG_FPU=n),
+TLBs, caches (correctness first, performance later).
+
+## M2: Run Ubuntu
+
+- Floating point (F+D) — required for userspace
+- iTLB and dTLB — needed for acceptable performance
+- Instruction and data caches
 - DDR4 support on RK-XCKU5P-F
+- Cosim harness against Simmerv for lockstep debugging
 
-# Milestone 3 (Ubuntu)
+## Beyond: Make it fast
 
-- MAYBE: Cosim against Spike, Dromajo, or Simmerv
-- LIKELY: Run Tenstorrent's test suite
-- Full system support, including virtual memory
-- Devices: CLINT, PLIC, ...
-- Floating point support (F and G) support either via bbl or
-  implemented
-
-# Beyond (Sharpening the saw)
-
+- Pipeline
+- Branch prediction
+- Out-of-order, superscalar
 - Caches (two-way virtually tagged skewed, maybe with SIEVE eviction?)
 - TLB (level 2 as level 1 is embedded in the cache), possibly with
-  some Cookoo hashing scheme
-- And finally: make it go fast (pipelining, branch prediction, and
-  much more)
+  some Cuckoo hashing scheme
