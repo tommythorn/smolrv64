@@ -24,6 +24,9 @@ module smolrv64_tb;
 
    reg                  reset_n = 0; always @(posedge clock) reset_n <= 1;
 
+   wire       mmio_waitrequest; // Currently ignored
+   wire       uart5_irq;
+
    smolrv64 smolrv64_inst(.clock                (clock),
                           .reset                (!reset_n),
 
@@ -35,14 +38,13 @@ module smolrv64_tb;
                           .mmio_readdatavalid   (mmio_readdatavalid),
                           .mmio_readdata        (mmio_readdata),
 
+                          .ext_irq              ({62'd0, uart5_irq}),
+
                           .halted_o             (halted));
 
    wire       tx_ready;
    wire       tx_valid = mmio_write && mmio_address == 0 && mmio_byteenable[0];
    wire [7:0] tx_data  = mmio_writedata[7:0];
-
-   wire       mmio_waitrequest; // Currently ignored
-   wire       uart5_irq; // Currently ignored
 
    uart5 uart5_inst(clock, reset_n,
                     mmio_address[4:2],
@@ -122,6 +124,8 @@ module smolrv64(input wire        clock,
 
                 input wire        mmio_readdatavalid,
                 input wire [31:0] mmio_readdata,
+
+                input wire [63:1] ext_irq,         // External interrupt sources for PLIC
 
                 output reg        halted_o = 0);
 
@@ -268,6 +272,8 @@ module smolrv64(input wire        clock,
    reg [63:0] tohost_phys;
 `endif
 `endif
+   // Forward declaration for init
+   reg [31:0]  plic_priority [0:63];
    integer i;
    initial begin
 `ifdef SIMULATE
@@ -288,6 +294,7 @@ module smolrv64(input wire        clock,
           mem0[i] = 0;
           mem1[i] = 0;
        end
+       for (i = 0; i < 64; i = i + 1) plic_priority[i] = 0;
        $readmemh(evenhex, mem0, 0, `MEM_SIZE/16-1);
        $readmemh(oddhex, mem1, 0, `MEM_SIZE/16-1);
 `else
@@ -295,6 +302,7 @@ module smolrv64(input wire        clock,
       $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/16-1);
 `endif
    end
+
 
    reg  [`MEM_SIZE_LG2-5:0] mem_addr0, mem_addr1;
    reg  [63:0] mem_addr;
@@ -380,18 +388,44 @@ module smolrv64(input wire        clock,
    reg [63:0]  clint_mtimecmp = ~0;
    reg         clint_msip = 0;
 
-   // MIP subfields (mtip and msip driven by CLINT, read-only from CSR side)
-   reg         meip = 0, seip = 0, ueip = 0,
+   // PLIC (SiFive layout, base 0x0C000000)
+   // Only S-mode context implemented (context 1)
+   // plic_priority declared above (before initial block)
+   reg [63:0]  plic_pending = 0;       // Interrupt pending bits
+   reg [63:0]  plic_enabled = 0;       // Enable bits (S-mode context)
+   reg [31:0]  plic_threshold = 0;     // Priority threshold (S-mode)
+   reg [ 5:0]  plic_claim = 0;        // Last claimed IRQ
+
+   // Combinational: find highest-priority pending+enabled interrupt
+   reg [5:0]   plic_best_irq;
+   reg [31:0]  plic_best_priority;
+   integer     plic_i;
+   always @(*) begin
+      plic_best_irq = 0;
+      plic_best_priority = 0;
+      for (plic_i = 1; plic_i < 64; plic_i = plic_i + 1)
+         if (plic_pending[plic_i] && plic_enabled[plic_i] &&
+             plic_priority[plic_i] > plic_threshold &&
+             plic_priority[plic_i] > plic_best_priority) begin
+            plic_best_irq = plic_i[5:0];
+            plic_best_priority = plic_priority[plic_i];
+         end
+   end
+   wire plic_has_irq = plic_best_irq != 0;
+
+   // MIP subfields
+   // MEIP/SEIP driven by PLIC, MTIP/MSIP driven by CLINT
+   reg         ueip = 0,
                stip = 0, utip = 0,
                ssip = 0, usip = 0;
+   wire        meip = plic_has_irq;
+   wire        seip = plic_has_irq;
    wire        mtip = clint_mtime >= clint_mtimecmp;
    wire        msip = clint_msip;
 
    wire [11:0] csr_mip = {meip, 1'd0, seip, ueip,
                           mtip, 1'd0, stip, utip,
                           msip, 1'd0, ssip, usip};
-
-   reg         _dummy_e, _dummy_t, _dummy_s; // Will be eliminated by tool
 
    // MSTATUS subfields
    // Global interrupt-enable bits
@@ -449,6 +483,9 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
       clint_mtime <= clint_mtime + 1;
+
+      // Latch external interrupts into PLIC pending
+      plic_pending <= plic_pending | {ext_irq, 1'b0};
 
       mmio_write = 0;
       mmio_read = 0;
@@ -1518,6 +1555,25 @@ module smolrv64(input wire        clock,
                 16'hBFFC: clint_mtime[63:32] <= store_value[31:0];
               endcase
               mem_wr_mask = 0;
+           end else if (mem_addr[63:24] == 40'h0C) begin
+              // PLIC write (base 0x0C000000)
+              if (mem_addr[23:0] <= 24'h0000FF)
+                 plic_priority[mem_addr[7:2]] <= store_value[31:0];
+              else if (mem_addr[23:0] >= 24'h002080 && mem_addr[23:0] <= 24'h002087) begin
+                 if (mem_wr_mask[4])
+                    plic_enabled <= store_value;
+                 else if (mem_addr[2])
+                    plic_enabled[63:32] <= store_value[31:0];
+                 else
+                    plic_enabled[31:0] <= store_value[31:0];
+              end else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
+                 plic_threshold <= store_value[31:0];
+              else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
+                 // Claim complete: clear pending bit
+                 if (store_value[5:0] != 0)
+                    plic_pending[store_value[5:0]] <= 0;
+              end
+              mem_wr_mask = 0;
            end else if (mem_addr[63:31] == 0) begin
 `ifdef TRACE_MMIO
               $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
@@ -1624,6 +1680,24 @@ module smolrv64(input wire        clock,
                    default:  write_back_value = 0;
                  endcase
                  // 32-bit loads need sign/zero extension
+                 if (load_size_lg2 == 2)
+                    write_back_value = write_back_value[31:0];
+                 else if (load_size_lg2 == 6)
+                    write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+              end else if (mem_addr[63:24] == 40'h0C) begin
+                 // PLIC read (base 0x0C000000)
+                 if (mem_addr[23:0] <= 24'h0000FF)
+                    write_back_value = plic_priority[mem_addr[7:2]];
+                 else if (mem_addr[23:0] >= 24'h001000 && mem_addr[23:0] <= 24'h00107F)
+                    write_back_value = plic_pending >> ((mem_addr[6:0] - 7'h00) * 8);
+                 else if (mem_addr[23:0] >= 24'h002080 && mem_addr[23:0] <= 24'h002087)
+                    write_back_value = plic_enabled;
+                 else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
+                    write_back_value = plic_threshold;
+                 else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007)
+                    write_back_value = plic_best_irq;
+                 else
+                    write_back_value = 0;
                  if (load_size_lg2 == 2)
                     write_back_value = write_back_value[31:0];
                  else if (load_size_lg2 == 6)
@@ -1904,7 +1978,8 @@ module smolrv64(input wire        clock,
                 `CSR_MCAUSE:   csr_mcause   = csr_write_val;
                 `CSR_MTVAL:    csr_mtval    = csr_write_val;
                 `CSR_MIP:      begin
-                   seip = csr_write_val[9];
+                   // MEIP/SEIP (bits 11,9) are read-only, driven by PLIC
+                   // MTIP/MSIP (bits 7,3) are read-only, driven by CLINT
                    ueip = csr_write_val[8];
                    stip = csr_write_val[5];
                    utip = csr_write_val[4];
