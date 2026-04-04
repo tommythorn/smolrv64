@@ -242,10 +242,11 @@ module smolrv64(input wire        clock,
 `define S_PTW_READ      13
 
 `define S_FINISH        14
+`define S_FETCH2_HALF   15
 
-`define S_LAST_STATE    15 // Here to remind us to update the width of state
+`define S_LAST_STATE    16 // Here to remind us to update the width of state
 
-   reg [3:0]   state = `S_FETCH1; // XXX We should set this on reset
+   reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
 `define MEM_SIZE_LG2    20 // 1 MiB !!! Remember to update x2 in rf.hex
@@ -427,6 +428,7 @@ module smolrv64(input wire        clock,
    reg [ 1:0]  ptw_prv;         // Effective privilege for permission check
    reg         translated = 0;  // Set by PTW, cleared by consumer
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
+   reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
@@ -512,27 +514,44 @@ module smolrv64(input wire        clock,
            aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
            insn = aligned >> (pc[2:1] * 16);
-           rd = insn`insn_rd;
-           case (insn[1:0])
-             0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
-             1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
-             2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
-             3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
-           endcase
-           // The exceptions
-           if (insn[1:0] == 1 && insn[15])
-             rs1 = {2'd1,insn[9:7]};
-           if (insn[1:0] == 2 && insn[15:14] == 1)
-             rs1 = 2; // sp
-           if (insn[1:0] == 2 && 5 <= insn[15:13])
-             rs1 = 2; // sp
-           if ((insn & 'he003) == 0)
-             rs1 = 2; // sp
 
-           shamt = insn[25:20];
+           // Cross-page instruction fetch: 32-bit insn at last halfword of a page
+           // In VM mode, the next page may map to a different physical page
+           if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
+               csr_satp[63:60] == 4'd8 && prv != 3) begin
+              insn_half <= insn[15:0];
+              ptw_va = pc + 2;
+              ptw_level = 2;
+              ptw_access = 0;
+              ptw_prv = prv;
+              ptw_return = `S_FETCH2_HALF;
+              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
+              mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              state <= `S_PTW_READ;
+           end else begin
+              rd = insn`insn_rd;
+              case (insn[1:0])
+                0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
+                1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
+                2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
+                3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
+              endcase
+              // The exceptions
+              if (insn[1:0] == 1 && insn[15])
+                rs1 = {2'd1,insn[9:7]};
+              if (insn[1:0] == 2 && insn[15:14] == 1)
+                rs1 = 2; // sp
+              if (insn[1:0] == 2 && 5 <= insn[15:13])
+                rs1 = 2; // sp
+              if ((insn & 'he003) == 0)
+                rs1 = 2; // sp
 
-           write_back_register = 0;
-           state <= `S_RF;
+              shamt = insn[25:20];
+
+              write_back_register = 0;
+              state <= `S_RF;
+           end
         end
 
         `S_RF: state <= `S_EXECUTE;
@@ -2081,6 +2100,22 @@ module smolrv64(input wire        clock,
               mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
               // Stay in S_PTW_READ
            end
+        end
+
+        `S_FETCH2_HALF: begin
+           // Second half of cross-page instruction fetch
+           // The PTW translated pc+2 and the memory read has the upper halfword
+           translated <= 0;
+           // pc+2 is page-aligned (0x...000), so bit 3 is 0
+           aligned = {mem_data1, mem_data0};
+           insn = {aligned[15:0], insn_half};
+           rd = insn`insn_rd;
+           {rs1,rs2} = {insn`insn_rs1, insn`insn_rs2}; // Always format 3 (32-bit)
+
+           shamt = insn[25:20];
+
+           write_back_register = 0;
+           state <= `S_RF;
         end
 
         `S_FINISH: begin
