@@ -1,6 +1,6 @@
 P=mem
 OPTS=
-IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE
+IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=20
 platform=$(shell uname -o)
 
 ifeq ($(platform),Darwin)
@@ -36,7 +36,7 @@ smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
 smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DRISCV_TESTS $(SRCS)
+	iverilog $(IVOPTS) -o $@ -DRISCV_TESTS -DMEM_SIZE_LG2=22 $(SRCS)
 
 lint:
 	verilator  -Wall --cc --top-module smolrv64 $(SRCS)

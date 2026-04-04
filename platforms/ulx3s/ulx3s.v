@@ -23,6 +23,12 @@ module top(input  wire      clk_25mhz,
    reg [10:0] reset_counter = 10;
    wire       reset = reset_counter != 0;
 
+   // Internal UART TX/RX byte interface
+   wire       uart_tx_valid;
+   wire [7:0] uart_tx_data;
+   wire       rx_valid;
+   wire [7:0] rx_data;
+
    smolrv64 smolrv64_inst(.clock                (clock),
                           .reset                (reset),
                           .mmio_address         (mmio_address),
@@ -33,10 +39,27 @@ module top(input  wire      clk_25mhz,
                           .mmio_readdatavalid   (mmio_readdatavalid),
                           .mmio_readdata        (mmio_readdata),
 
+                          .ext_irq              (63'd0),
+
+                          .uart_tx_valid        (uart_tx_valid),
+                          .uart_tx_data         (uart_tx_data),
+                          .uart_rx_valid        (rx_valid),
+                          .uart_rx_data         (rx_data),
+
                           .halted_o             (halted));
 
-   wire       mmio_waitrequest; // Currently ignored
-   wire       uart5_irq; // Currently ignored
+   // RS232 TX: byte interface -> serial pin
+   wire       tx_ready;
+   rs232tx #(.CLK_FREQ(25_000_000), .BAUD(115200)) rs232tx_inst
+     (.clk(clock), .rst_n(!reset),
+      .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
+      .tx(ftdi_rxd)); // ftdi_rxd = our TX output
+
+   // RS232 RX: serial pin -> byte interface
+   rs232rx #(.CLK_FREQ(25_000_000), .BAUD(115200)) rs232rx_inst
+     (.clk(clock), .rst_n(!reset),
+      .data(rx_data), .valid(rx_valid),
+      .rxd(ftdi_txd)); // ftdi_txd = our RX input
 
    reg [31:0] counter;
    reg        prev_bit = 1, prev_write = 0;
@@ -45,8 +68,6 @@ module top(input  wire      clk_25mhz,
    always @(posedge clk_25mhz) begin
       if (reset_counter != 0)
         reset_counter <= reset_counter - 1;
-//    if (mmio_write && mmio_address == 0)
-//      led <= write_data[7:0];
 
       counter <= counter + 1;
       prev_bit   <= ftdi_rxd;
@@ -66,19 +87,4 @@ module top(input  wire      clk_25mhz,
          reset_counter <= !0;
       end
    end
-
-   uart5 uart5_inst(clock,
-                    !reset,
-                    mmio_address[4:2],
-                    mmio_read,
-                    mmio_write,
-                    mmio_writedata,
-                    mmio_readdatavalid,
-                    mmio_readdata,
-                    mmio_waitrequest,
-
-                    ftdi_txd, // = input uart_rx, not a typo
-                    ftdi_rxd, // = output uart_tx, not a typo
-                    uart5_irq);
-   defparam uart5_inst.CLK_FREQUENCY = 25_000_000;
 endmodule

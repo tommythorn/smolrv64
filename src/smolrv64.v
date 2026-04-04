@@ -11,8 +11,6 @@
 module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
    wire       halted;
-   wire       ftdi_rxd;
-   wire       ftdi_txd;
 
    wire [19:0]          mmio_address;
    wire                 mmio_read;
@@ -25,7 +23,8 @@ module smolrv64_tb;
    reg                  reset_n = 0; always @(posedge clock) reset_n <= 1;
 
    wire       mmio_waitrequest; // Currently ignored
-   wire       uart5_irq;
+   wire       uart_tx_valid;
+   wire [7:0] uart_tx_data;
 
    smolrv64 smolrv64_inst(.clock                (clock),
                           .reset                (!reset_n),
@@ -38,43 +37,24 @@ module smolrv64_tb;
                           .mmio_readdatavalid   (mmio_readdatavalid),
                           .mmio_readdata        (mmio_readdata),
 
-                          .ext_irq              ({62'd0, uart5_irq}),
+                          .ext_irq              (63'd0),
+
+                          .uart_tx_valid        (uart_tx_valid),
+                          .uart_tx_data         (uart_tx_data),
+                          .uart_rx_valid        (1'b0),
+                          .uart_rx_data         (8'd0),
 
                           .halted_o             (halted));
 
-   wire       tx_ready;
-   wire       tx_valid = mmio_write && mmio_address == 0 && mmio_byteenable[0];
-   wire [7:0] tx_data  = mmio_writedata[7:0];
-
-   uart5 uart5_inst(clock, reset_n,
-                    mmio_address[4:2],
-                    mmio_read, mmio_write, mmio_writedata,
-                    mmio_readdatavalid, mmio_readdata,
-                    mmio_waitrequest,
-
-                    ftdi_txd, // = uart_rx, not a typo
-                    ftdi_rxd, // = uart_tx, not a typo
-                    uart5_irq);
-//   defparam uart5_inst.CLK_FREQUENCY = 2*115_200; // force UART to go fast in sim
-   defparam uart5_inst.CLK_FREQUENCY = 25_000_000;
-
    always @(posedge clock) begin
-/*
-      if (mmio_write)
-        $display("%05d  MMIO write received: %x/%x <- %x (tx_valid %d tx_ready %d)",
-                 $time, mmio_address, mmio_byteenable, mmio_writedata, tx_valid, tx_ready);
- */
-
-      if (tx_valid & !tx_ready) begin
-         $display("%05d  uart data overrun, dropped", $time);
-      end else if (tx_valid) begin
+      if (uart_tx_valid) begin
 `ifdef DISASS
-         $display("%05d  <<%c>>", $time, tx_data);
+         $display("%05d  <<%c>>", $time, uart_tx_data);
 `else
   `ifdef VPI
-         $tty_write(tx_data);
+         $tty_write(uart_tx_data);
   `else
-         $write("%c", tx_data);
+         $write("%c", uart_tx_data);
    `endif
 `endif
       end
@@ -126,6 +106,12 @@ module smolrv64(input wire        clock,
                 input wire [31:0] mmio_readdata,
 
                 input wire [63:1] ext_irq,         // External interrupt sources for PLIC
+
+                // NS16550A UART (at 0x10000000)
+                output reg        uart_tx_valid = 0, // Active for one cycle on THR write
+                output reg [ 7:0] uart_tx_data,
+                input wire        uart_rx_valid,      // Pulse to enqueue a byte
+                input wire [ 7:0] uart_rx_data,
 
                 output reg        halted_o = 0);
 
@@ -253,7 +239,9 @@ module smolrv64(input wire        clock,
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `define MEM_BASEADDR    64'h80000000
-`define MEM_SIZE_LG2    22 // 4 MiB !!! Remember to update x2 in rf.hex
+`ifndef MEM_SIZE_LG2
+`define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
+`endif
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
 
    // To enable penalty-free unaligned access, memory is split into
@@ -273,7 +261,7 @@ module smolrv64(input wire        clock,
 `endif
 `endif
    // Forward declaration for init
-   reg [31:0]  plic_priority [0:63];
+   reg [ 2:0]  plic_priority [0:63];
    integer i;
    initial begin
 `ifdef SIMULATE
@@ -388,30 +376,68 @@ module smolrv64(input wire        clock,
    reg [63:0]  clint_mtimecmp = ~0;
    reg         clint_msip = 0;
 
+   // NS16550A UART state (at 0x10000000, IRQ 10 on PLIC)
+   reg [7:0]   uart_ier = 0;        // Interrupt Enable Register
+   reg         uart_fcr_fifo = 0;   // FCR bit 0: FIFO enable
+   reg [7:0]   uart_lcr = 0;        // Line Control Register (DLAB = bit 7)
+   reg [7:0]   uart_mcr = 0;        // Modem Control Register
+   reg [7:0]   uart_scr = 0;        // Scratch Register
+   reg [7:0]   uart_rx_fifo [0:15]; // 16-byte RX FIFO
+   reg [3:0]   uart_rx_head = 0, uart_rx_tail = 0;
+   wire [4:0]  uart_rx_count = uart_rx_tail - uart_rx_head;
+   wire        uart_rx_empty = uart_rx_head == uart_rx_tail;
+   wire        uart_rx_ip = uart_ier[0] && !uart_rx_empty;  // RX data available
+   wire        uart_thre_ip = uart_ier[1];                   // THR always empty
+   // IIR: bit 0 = 0 means interrupt pending, 1 = no pending; bits [7:6] = FIFO status
+   wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h04} :
+                           uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h02} :
+                                          {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h01};
+   wire [7:0]  uart_lsr = {1'b0, 1'b1, 1'b1, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
+   wire        uart_irq_out = uart_rx_ip || uart_thre_ip;
+
    // PLIC (SiFive layout, base 0x0C000000)
    // Only S-mode context implemented (context 1)
    // plic_priority declared above (before initial block)
    reg [63:0]  plic_pending = 0;       // Interrupt pending bits
    reg [63:0]  plic_enabled = 0;       // Enable bits (S-mode context)
-   reg [31:0]  plic_threshold = 0;     // Priority threshold (S-mode)
+   reg [ 2:0]  plic_threshold = 0;     // Priority threshold (S-mode)
    reg [ 5:0]  plic_claim = 0;        // Last claimed IRQ
 
-   // Combinational: find highest-priority pending+enabled interrupt
-   reg [5:0]   plic_best_irq;
-   reg [31:0]  plic_best_priority;
-   integer     plic_i;
-   always @(*) begin
-      plic_best_irq = 0;
-      plic_best_priority = 0;
-      for (plic_i = 1; plic_i < 64; plic_i = plic_i + 1)
-         if (plic_pending[plic_i] && plic_enabled[plic_i] &&
-             plic_priority[plic_i] > plic_threshold &&
-             plic_priority[plic_i] > plic_best_priority) begin
-            plic_best_irq = plic_i[5:0];
-            plic_best_priority = plic_priority[plic_i];
-         end
+   // Find highest-priority pending+enabled interrupt (2-cycle pipeline)
+   // Stage 1: scan 4 groups of 16, register results
+   reg [5:0] plic_grp_irq_r [0:3];
+   reg [2:0] plic_grp_pri_r [0:3];
+   integer   plic_i, plic_g;
+   always @(posedge clock) begin : plic_stage1
+      reg [5:0] gi;
+      reg [2:0] gp;
+      for (plic_g = 0; plic_g < 4; plic_g = plic_g + 1) begin
+         gi = 0; gp = 0;
+         for (plic_i = plic_g * 16; plic_i < (plic_g + 1) * 16; plic_i = plic_i + 1)
+            if (plic_i > 0 &&
+                plic_pending[plic_i] && plic_enabled[plic_i] &&
+                plic_priority[plic_i] > plic_threshold &&
+                plic_priority[plic_i] > gp) begin
+               gi = plic_i[5:0];
+               gp = plic_priority[plic_i];
+            end
+         plic_grp_irq_r[plic_g] <= gi;
+         plic_grp_pri_r[plic_g] <= gp;
+      end
    end
-   wire plic_has_irq = plic_best_irq != 0;
+   // Stage 2: merge 4 registered group results
+   reg [5:0] plic_best_irq = 0;
+   reg       plic_has_irq = 0;
+   always @(posedge clock) begin : plic_stage2
+      reg [5:0] best_irq;
+      reg [2:0] best_pri;
+      best_irq = plic_grp_irq_r[0]; best_pri = plic_grp_pri_r[0];
+      if (plic_grp_pri_r[1] > best_pri) begin best_irq = plic_grp_irq_r[1]; best_pri = plic_grp_pri_r[1]; end
+      if (plic_grp_pri_r[2] > best_pri) begin best_irq = plic_grp_irq_r[2]; best_pri = plic_grp_pri_r[2]; end
+      if (plic_grp_pri_r[3] > best_pri) begin best_irq = plic_grp_irq_r[3]; best_pri = plic_grp_pri_r[3]; end
+      plic_best_irq <= best_irq;
+      plic_has_irq  <= best_irq != 0;
+   end
 
    // MIP subfields
    // MEIP/SEIP driven by PLIC, MTIP/MSIP driven by CLINT
@@ -420,7 +446,8 @@ module smolrv64(input wire        clock,
                ssip = 0, usip = 0;
    wire        meip = plic_has_irq;
    wire        seip = plic_has_irq;
-   wire        mtip = clint_mtime >= clint_mtimecmp;
+   reg         mtip = 0;
+   always @(posedge clock) mtip <= clint_mtime >= clint_mtimecmp;
    wire        msip = clint_msip;
 
    wire [11:0] csr_mip = {meip, 1'd0, seip, ueip,
@@ -483,9 +510,17 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
       clint_mtime <= clint_mtime + 1;
+      uart_tx_valid <= 0;
 
-      // Latch external interrupts into PLIC pending
-      plic_pending <= plic_pending | {ext_irq, 1'b0};
+      // Enqueue UART RX data
+      if (uart_rx_valid && uart_rx_count < 16) begin
+         uart_rx_fifo[uart_rx_tail[3:0]] <= uart_rx_data;
+         uart_rx_tail <= uart_rx_tail + 1;
+      end
+
+      // Latch external interrupts into PLIC pending (source 10 = UART)
+      plic_pending <= plic_pending | {ext_irq, 1'b0}
+                    | (uart_irq_out ? (64'd1 << 10) : 64'd0);
 
       mmio_write = 0;
       mmio_read = 0;
@@ -1539,7 +1574,24 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH1;
            reservation <= ~0;
 
-           if (mem_addr[63:16] == 48'h0200) begin
+           if (mem_addr[63:4] == 60'h1000_0000) begin
+              // NS16550A UART write (0x10000000-0x10000007)
+              case (mem_addr[2:0])
+                0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
+                      uart_tx_valid <= 1;
+                      uart_tx_data <= store_value[7:0];
+                   end
+                1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
+                2: begin // FCR (write-only)
+                   uart_fcr_fifo <= store_value[0];
+                   if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
+                end
+                3: uart_lcr <= store_value[7:0];
+                4: uart_mcr <= store_value[4:0];
+                7: uart_scr <= store_value[7:0];
+              endcase
+              mem_wr_mask = 0;
+           end else if (mem_addr[63:16] == 48'h0200) begin
               // CLINT: 0x02000000 msip, 0x02004000 mtimecmp, 0x0200BFF8 mtime
               case (mem_addr[15:0])
                 16'h0000: clint_msip <= store_value[0];
@@ -1558,7 +1610,7 @@ module smolrv64(input wire        clock,
            end else if (mem_addr[63:24] == 40'h0C) begin
               // PLIC write (base 0x0C000000)
               if (mem_addr[23:0] <= 24'h0000FF)
-                 plic_priority[mem_addr[7:2]] <= store_value[31:0];
+                 plic_priority[mem_addr[7:2]] <= store_value[2:0];
               else if (mem_addr[23:0] >= 24'h002080 && mem_addr[23:0] <= 24'h002087) begin
                  if (mem_wr_mask[4])
                     plic_enabled <= store_value;
@@ -1567,7 +1619,7 @@ module smolrv64(input wire        clock,
                  else
                     plic_enabled[31:0] <= store_value[31:0];
               end else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
-                 plic_threshold <= store_value[31:0];
+                 plic_threshold <= store_value[2:0];
               else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
                  // Claim complete: clear pending bit
                  if (store_value[5:0] != 0)
@@ -1669,7 +1721,24 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                 state <= `S_AMO;
 
-              if (mem_addr[63:16] == 48'h0200) begin
+              if (mem_addr[63:4] == 60'h1000_0000) begin
+                 // NS16550A UART read (0x10000000-0x10000007)
+                 case (mem_addr[2:0])
+                   0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
+                         write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head[3:0]];
+                         if (!uart_rx_empty) uart_rx_head <= uart_rx_head + 1;
+                      end else
+                         write_back_value = 0; // DLL (divisor, ignored)
+                   1: write_back_value = uart_lcr[7] ? 0 : {4'd0, uart_ier[3:0]};
+                   2: write_back_value = uart_iir;
+                   3: write_back_value = uart_lcr;
+                   4: write_back_value = uart_mcr;
+                   5: write_back_value = uart_lsr;
+                   6: write_back_value = 8'hB0; // MSR: CTS+DSR+CD asserted
+                   7: write_back_value = uart_scr;
+                   default: write_back_value = 0;
+                 endcase
+              end else if (mem_addr[63:16] == 48'h0200) begin
                  // CLINT read: return value directly, no MMIO bus
                  case (mem_addr[15:0])
                    16'h0000: write_back_value = {63'd0, clint_msip};

@@ -29,35 +29,41 @@ module rk_xcku5p(
    assign led[2] = 0 ^ key[2];
    assign led[3] = toggle ^ key[3];
 
+   wire halted;
+   wire       uart_tx_valid;
+   wire [7:0] uart_tx_data;
+   wire       rx_valid;
+   wire [7:0] rx_data;
 
-   wire        tx_ready_o;
-   wire        tx_valid_i;
-   wire [7:0]  tx_data_i;
+   smolrv64 smolrv64_inst(.clock          (clk_200_MHz),
+                          .reset          (1'b0),
+                          .mmio_address   (),
+                          .mmio_read      (),
+                          .mmio_write     (),
+                          .mmio_writedata (),
+                          .mmio_byteenable(),
+                          .mmio_readdatavalid(1'b0),
+                          .mmio_readdata  (32'd0),
 
-   wire        rx_ready_i;
-   wire        rx_valid_o;
-   wire [7:0]  rx_data_o;
-   wire        rx_overflow_o;
+                          .ext_irq        (63'd0),
 
-   /*
-   assign tx_valid_i = rx_valid_o;
-   assign tx_data_i = rx_data_o ^ 1;
-   assign rx_ready_i = tx_ready_o;
-   */
+                          .uart_tx_valid  (uart_tx_valid),
+                          .uart_tx_data   (uart_tx_data),
+                          .uart_rx_valid  (rx_valid),
+                          .uart_rx_data   (rx_data),
+
+                          .halted_o       (halted));
 
    // On macOS, only speeds up to B230400 are defined in termios.h
    // Curiously macOS/FTDI works at 460800, but higher rates do not.
-   rs232tx #(200000000,3000000) rs232tx_inst
-     (clk_200_MHz, tx_data_i, tx_valid_i, tx_ready_o, txd);
+   wire tx_ready;
+   rs232tx #(.CLK_FREQ(200_000_000), .BAUD(3_000_000)) rs232tx_inst
+     (.clk(clk_200_MHz), .rst_n(1'b1),
+      .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
+      .tx(txd));
 
-   rs232rx #(200000000,3000000) rs232rx_inst
-     (clk_200_MHz, rx_data_o, rx_valid_o, rx_ready_i, rxd, rx_overflow_o);
-
-   wire halted;
-
-   smolrv64 smolrv64_inst(.clock     (clk_200_MHz),
-                          .tx_ready_i(tx_ready_o),
-                          .tx_valid_o(tx_valid_i),
-                          .tx_data_o (tx_data_i),
-                          .halted_o  (halted));
+   rs232rx #(.CLK_FREQ(200_000_000), .BAUD(3_000_000)) rs232rx_inst
+     (.clk(clk_200_MHz), .rst_n(1'b1),
+      .data(rx_data), .valid(rx_valid),
+      .rxd(rxd));
 endmodule
