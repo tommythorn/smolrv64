@@ -375,10 +375,17 @@ module smolrv64(input wire        clock,
                csr_mcycle     = 0,
                csr_minstret   = -1; // because we increase it in fetch
 
-   // MIP subfields
+   // CLINT
+   reg [63:0]  clint_mtime = 0;
+   reg [63:0]  clint_mtimecmp = ~0;
+   reg         clint_msip = 0;
+
+   // MIP subfields (mtip and msip driven by CLINT, read-only from CSR side)
    reg         meip = 0, seip = 0, ueip = 0,
-               mtip = 0, stip = 0, utip = 0,
-               msip = 0, ssip = 0, usip = 0;
+               stip = 0, utip = 0,
+               ssip = 0, usip = 0;
+   wire        mtip = clint_mtime >= clint_mtimecmp;
+   wire        msip = clint_msip;
 
    wire [11:0] csr_mip = {meip, 1'd0, seip, ueip,
                           mtip, 1'd0, stip, utip,
@@ -441,6 +448,7 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
+      clint_mtime <= clint_mtime + 1;
 
       mmio_write = 0;
       mmio_read = 0;
@@ -1494,18 +1502,25 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH1;
            reservation <= ~0;
 
-           if (mem_addr[63:31] == 0) begin
+           if (mem_addr[63:16] == 48'h0200) begin
+              // CLINT: 0x02000000 msip, 0x02004000 mtimecmp, 0x0200BFF8 mtime
+              case (mem_addr[15:0])
+                16'h0000: clint_msip <= store_value[0];
+                16'h4000: if (mem_wr_mask[4])
+                             clint_mtimecmp <= store_value;
+                          else
+                             clint_mtimecmp[31:0] <= store_value[31:0];
+                16'h4004: clint_mtimecmp[63:32] <= store_value[31:0];
+                16'hBFF8: if (mem_wr_mask[4])
+                             clint_mtime <= store_value;
+                          else
+                             clint_mtime[31:0] <= store_value[31:0];
+                16'hBFFC: clint_mtime[63:32] <= store_value[31:0];
+              endcase
+              mem_wr_mask = 0;
+           end else if (mem_addr[63:31] == 0) begin
 `ifdef TRACE_MMIO
               $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
-`endif
-
-              // MMIO exception
-`ifdef SIMULATE
-              if (mem_wr_mask > 15) begin
-                 $display("64b store to MMIO address space isn't supported");
-                 $finish;
-                 // XXX Could make that an illegal instruction trap
-              end
 `endif
 
               mmio_address = mem_addr;
@@ -1513,14 +1528,6 @@ module smolrv64(input wire        clock,
               mmio_writedata = store_value << (8 * (mem_addr % 4));
               mmio_byteenable = mem_wr_mask << (mem_addr % 4);
 
-`ifdef SIMULATE
-              if (mem_wr_mask != mmio_byteenable >> (mem_addr % 4)) begin
-                 $display("Unaligned store to MMIO address space isn't supported (%x != %x)",
-                          mem_wr_mask, mmio_byteenable >> (mem_addr % 4));
-                 $finish;
-                 // XXX Could make that an illegal instruction trap
-              end
-`endif
               mem_wr_mask = 0;
            end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
@@ -1606,26 +1613,26 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                 state <= `S_AMO;
 
-              if (mem_addr[63:31] == 0) begin
+              if (mem_addr[63:16] == 48'h0200) begin
+                 // CLINT read: return value directly, no MMIO bus
+                 case (mem_addr[15:0])
+                   16'h0000: write_back_value = {63'd0, clint_msip};
+                   16'h4000: write_back_value = clint_mtimecmp;
+                   16'h4004: write_back_value = clint_mtimecmp[63:32];
+                   16'hBFF8: write_back_value = clint_mtime;
+                   16'hBFFC: write_back_value = clint_mtime[63:32];
+                   default:  write_back_value = 0;
+                 endcase
+                 // 32-bit loads need sign/zero extension
+                 if (load_size_lg2 == 2)
+                    write_back_value = write_back_value[31:0];
+                 else if (load_size_lg2 == 6)
+                    write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+              end else if (mem_addr[63:31] == 0) begin
 `ifdef TRACE_MMIO
                  $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
 `endif
                  state <= `S_MMIO_READ;
-
-                 // MMIO exception
-`ifdef SIMULATE
-                 if (load_size_lg2 == 3) begin
-                    $display("64b loads from MMIO address space isn't supported");
-                    $finish;
-                    // XXX Could make that an illegal instruction trap
-                 end
-
-                 if ((mem_addr & ((1 << load_size_lg2[1:0]) - 1)) != 0) begin
-                    $display("Unaligned loads from MMIO address space isn't supported");
-                    $finish;
-                    // XXX Could make that an illegal instruction trap
-                 end
-`endif
 
                  mmio_address = mem_addr;
                  mmio_read = 1;
@@ -2149,6 +2156,7 @@ module smolrv64(input wire        clock,
          state <= `S_FETCH1;
          csr_minstret <= 0;
          csr_mcycle <= 0;
+         clint_mtime <= 0;
          write_back_register <= 0;
          npc <= `MEM_BASEADDR;
          // XXX and a lot more
