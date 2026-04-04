@@ -264,6 +264,9 @@ module smolrv64(input wire        clock,
 
 `ifdef SIMULATE
    reg [8*200:0] evenhex, oddhex;
+`ifdef RISCV_TESTS
+   reg [63:0] tohost_phys;
+`endif
 `endif
    integer i;
    initial begin
@@ -276,6 +279,10 @@ module smolrv64(input wire        clock,
          $display("ERROR: please specify the +odd=<hexfile>");
          $finish;
       end
+`ifdef RISCV_TESTS
+      if (!$value$plusargs("tohost=%h", tohost_phys))
+         tohost_phys = 64'h80001000;
+`endif
 
        for (i = 0; i < `MEM_SIZE/16; i = i + 1) begin
           mem0[i] = 0;
@@ -1076,12 +1083,6 @@ module smolrv64(input wire        clock,
               $display("ECALL: pc %x prv %d time %0t", pc, prv, $time);
 `endif
 `endif
-`ifdef RISCV_TESTS
-              if (prv == 3 || csr_satp[63:60] == 0) begin
-                 rs1 = 3;
-                 state <= `S_FINISH;
-              end
-`endif
            end
 
            else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
@@ -1558,8 +1559,9 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
 
 `ifdef RISCV_TESTS
-           // tohost detection: physical 0x80001000 = mem0[0x100]
-           if (mem_addr0 == 'h100 && mem_wr_mask[0] && store_value != 0) begin
+           // tohost detection: store to tohost address terminates simulation
+           if (mem_addr0 == tohost_phys[`MEM_SIZE_LG2-1:4] + tohost_phys[3] &&
+               mem_wr_mask[0] && store_value != 0) begin
               if (store_value == 1)
                  $display("Test Passed");
               else
@@ -2141,18 +2143,6 @@ module smolrv64(input wire        clock,
            state <= `S_RF;
         end
 
-        `S_FINISH: begin
-
-`ifdef SIMULATE
-              if (s1 & 1) begin
-                 if (s1 / 2 == 0)
-                   $display("Test Passed");
-                 else
-                   $display("Test Failed with %3d", s1);
-                 $finish;
-              end
-`endif
-        end
       endcase
 
       if (reset) begin

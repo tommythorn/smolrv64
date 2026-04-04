@@ -10,6 +10,17 @@ do echo
    do base=`basename $x .bin`
       path=../tests/riscv-tests/$class/$base
       printf "%-25s " $base
-      (cd ../src;./smolrv64-tester +even=$path.even +odd=$path.odd)|egrep -v '(WARNING|finish called at)'
+
+      # Extract tohost address from ELF if available
+      elf=riscv-tests/$class/$base
+      tohost=""
+      if [ -f "$elf" ]; then
+         addr=$(riscv64-elf-nm "$elf" 2>/dev/null | awk '/ tohost$/{print $1}')
+         if [ -n "$addr" ]; then
+            tohost="+tohost=$addr"
+         fi
+      fi
+
+      (cd ../src;./smolrv64-tester +even=$path.even +odd=$path.odd $tohost)|egrep -v '(WARNING|finish called at)'
    done
 done
