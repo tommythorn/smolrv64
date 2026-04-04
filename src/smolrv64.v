@@ -452,6 +452,18 @@ module smolrv64(input wire        clock,
 `ifdef DISASS
 `include "disass.vh"
 `endif
+`ifdef TRACE
+           if (csr_mcycle) begin
+              if ((insn & 3) == 3)
+                $write("%0d %0d %016x %08x", csr_minstret - 1, prv, pc, insn);
+              else
+                $write("%0d %0d %016x %04x", csr_minstret - 1, prv, pc, insn[15:0]);
+              if (write_back_register != 0)
+                $display(" %0d %016x", write_back_register, write_back_value);
+              else
+                $display("");
+           end
+`endif
 
            pc <= npc;
 
@@ -500,7 +512,7 @@ module smolrv64(input wire        clock,
               // Physical address check only when VM is off
               if (npc >> `MEM_SIZE_LG2 != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d", $time, prv, npc, csr_satp[63:60]);
 `endif
 `endif
@@ -1060,7 +1072,7 @@ module smolrv64(input wire        clock,
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
               $display("ECALL: pc %x prv %d time %0t", pc, prv, $time);
 `endif
 `endif
@@ -1414,7 +1426,7 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end else begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("SRET: pc %x prv %d->%d sepc %x time %0t", pc, prv, spp, csr_sepc, $time);
 `endif
 `endif
@@ -1448,7 +1460,7 @@ module smolrv64(input wire        clock,
 
            else begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
               if (insn[1:0] == 3)
                 $display("%05d   %1d %x %x illegal unknown instruction", $time, prv, pc, insn);
               else
@@ -1511,7 +1523,7 @@ module smolrv64(input wire        clock,
               mem_wr_mask = 0;
            end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
               $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
 `endif
 `endif
@@ -1618,7 +1630,7 @@ module smolrv64(input wire        clock,
               end else if (mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // XXX This isn't catching unaligned access that overflows
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
 `endif
 `endif
@@ -1756,6 +1768,8 @@ module smolrv64(input wire        clock,
                 `CSR_MCAUSE:   csr_read_val = csr_mcause;
                 `CSR_MTVAL:    csr_read_val = csr_mtval;
                 `CSR_MIP:      csr_read_val = csr_mip;
+                `CSR_PMPCFG0:  csr_read_val = 0;
+                `CSR_PMPADDR0: csr_read_val = 0;
                 `CSR_TSELECT:  csr_read_val = 0;
                 `CSR_TDATA1:   csr_read_val = 0;
                 `CSR_TDATA2:   csr_read_val = 0;
@@ -1771,9 +1785,8 @@ module smolrv64(input wire        clock,
                 `CSR_MIMPID:   csr_read_val = 'h20250907;
                 default: begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
-                   if (csrno != `CSR_PMPADDR0) // We *really* don't care about this one
-                     $display("%05d   %1d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
+`ifdef VERBOSE
+                   $display("%05d   %1d %x %x illegal CSR %x (read)", $time, prv, pc, insn, csrno);
 `endif
 `endif
                    cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -1786,7 +1799,7 @@ module smolrv64(input wire        clock,
               // can postpone the priviledge check to here
               if (prv < csrno[9:8]) begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("%05d   %1d %x %x mode %d isn't priviledged to read CSR %x", $time,
                           prv, pc, insn, prv, csrno);
 `endif
@@ -1806,7 +1819,7 @@ module smolrv64(input wire        clock,
               if (prv < csrno[9:8]) begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("%05d   %1d %x %x mode isn't priviledged to write CSR %x", $time,
                           prv, pc, insn, csrno);
 `endif
@@ -1815,7 +1828,7 @@ module smolrv64(input wire        clock,
 
               if (csrno[11:10] == 3) begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                  $display("%05d   %1d %x %x write attempt to Read Only CSR %x", $time,
                           prv, pc, insn, csrno);
 `endif
@@ -1832,7 +1845,7 @@ module smolrv64(input wire        clock,
               case (csrno)
                 `CSR_SSTATUS: begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
                    if (sum != csr_write_val[18])
                       $display("SSTATUS: sum %d->%d pc %x time %0t", sum, csr_write_val[18], pc, $time);
 `endif
@@ -1868,7 +1881,7 @@ module smolrv64(input wire        clock,
                    {spie, upie, mie} = csr_write_val[5:3];
                    {spp, mpie}       = csr_write_val[8:7];
                    mpp               = csr_write_val[12:11];
-                   // fs = csr_write_val[14:13];
+                   fs                = csr_write_val[14:13];
                    {tsr, tw, tvm, mxr, sum, mprv} = csr_write_val[22:17];
                 end
                 `CSR_MISA:     begin end
@@ -1889,6 +1902,8 @@ module smolrv64(input wire        clock,
                    ssip = csr_write_val[1];
                    usip = csr_write_val[0];
                 end
+                `CSR_PMPCFG0:  begin end
+                `CSR_PMPADDR0: begin end
                 `CSR_TSELECT:  begin end
                 `CSR_TDATA1:   begin end
                 `CSR_TDATA2:   begin end
@@ -1898,9 +1913,8 @@ module smolrv64(input wire        clock,
                 default: begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
-                   if (csrno != `CSR_PMPADDR0) // We *really* don't care about this one
-                     $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
+`ifdef VERBOSE
+                   $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
 `endif
 `endif
                 end
@@ -1918,7 +1932,7 @@ module smolrv64(input wire        clock,
 
         `S_EXCEPTION: begin
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
            $display("%05d  ** Exception, cause %x, pc %x, tval %x, prv %d", $time, cause, pc, tval, prv);
 `endif
 `endif
@@ -1952,7 +1966,7 @@ module smolrv64(input wire        clock,
            // Handle vectored interrupts, just to be compatible
            npc = (tvec[0] && cause_intr) ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3;
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
            $display("%05d  ** Exception resuming at %x", $time, (tvec[0] && cause_intr) ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
 `endif
 `endif
@@ -2012,7 +2026,7 @@ module smolrv64(input wire        clock,
            // PTE is aligned[63:0] (8-byte aligned, no shift needed)
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
 `ifdef SIMULATE
-`ifndef RISCV_TESTS
+`ifdef VERBOSE
            $display("PTW: va %x level %d pte_addr %x pte %x access %d prv %d time %0t",
                     ptw_va, ptw_level, ptw_pte_addr, aligned[63:0], ptw_access, ptw_prv, $time);
 `endif

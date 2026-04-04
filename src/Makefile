@@ -27,10 +27,13 @@ verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
 smolrv64-verbose: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DDISASS $(SRCS)
+	iverilog $(IVOPTS) -o $@ -DDISASS -DVERBOSE $(SRCS)
 
 smolrv64-run: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DNO_TIMEOUT -DVPI $(SRCS)
+
+smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
 smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DRISCV_TESTS $(SRCS)
