@@ -10,63 +10,48 @@
 // As the largest possible prime factor of a composite number is the
 // square root of the number, we can stop weeding out numbers when we
 // reach that.  All remaining numbers are primes.
-//
-// Missed:
-//  #define
-//  initialized locals (and globals?)
-//  global arrays
-//  for (..)
 
-//#include <stdio.h>
-//#include <stdlib.h>
-//#include <string.h>
-//#include <locale.h>
-
-// We take the follows claims as self evident
-typedef int int32_t;
 typedef unsigned char uint8_t;
 
-// XXX This is problematic as different platforms _will_ have
-// different frequencies and we currently don't have access to the
-// frequency from software.  For Right Now, we assume 25 MHz and
-// 115,200 bps
-#define BASE_FREQUENCY 25000000
-//#define UART_SPEED       115200
-//#define UART_SPEED       460800
-//#define UART_SPEED       921600
-#define UART_SPEED        1500000
-//#define UART_SPEED      3000000
-#define UART0_BASE     ((volatile int32_t *)0x10000000)
+// NS16550A UART at 0x10000000
+#define UART0_BASE  ((volatile uint8_t *)0x10000000)
+#define CLK_FREQ    200000000
+#define UART_SPEED  3000000
 
-enum SiFive_UART_Register {TXDATA, RXDATA, TXCTRL, RXCTRL, IE, IP, DIV, FREQ};
-// Register bit definitions
-#define TXDATA_FULL_BIT  31
-#define RXDATA_EMPTY_BIT 31
-#define TXCTRL_EN_BIT     0
-#define TXCTRL_NSTOP_BIT  1
-#define RXCTRL_EN_BIT     0
-#define IE_TXWM_BIT       0
-#define IE_RXWM_BIT       1
+// Register offsets
+#define UART_THR  0   // Transmit Holding Register (write, DLAB=0)
+#define UART_RBR  0   // Receive Buffer Register   (read,  DLAB=0)
+#define UART_DLL  0   // Divisor Latch LSB          (DLAB=1)
+#define UART_IER  1   // Interrupt Enable Register  (DLAB=0)
+#define UART_DLH  1   // Divisor Latch MSB          (DLAB=1)
+#define UART_FCR  2   // FIFO Control Register      (write)
+#define UART_LCR  3   // Line Control Register
+#define UART_LSR  5   // Line Status Register
 
-void uart_init(volatile int32_t *base, int32_t uart_speed) {
-  // Rounding: f/g + 1/2 = f/g + 1/2*g/g = (f + g/2) / g
-  int div = (base[FREQ] + uart_speed/2) / uart_speed;
-  if (div < 1)
-      div = 1; // avoid 0
-  base[DIV] = div-1;
-  base[TXCTRL] = 1 << TXCTRL_EN_BIT;  // Enable TX
-  base[RXCTRL] = 1 << RXCTRL_EN_BIT;  // Enable RX
+#define LCR_DLAB  0x80
+#define LCR_8N1   0x03
+#define LSR_THRE  0x20  // Transmit Holding Register Empty
+#define LSR_DR    0x01  // Data Ready
+
+void uart_init(volatile uint8_t *base, int clk_freq, int baud) {
+    int div = clk_freq / (16 * baud);
+    if (div < 1) div = 1;
+    base[UART_LCR] = LCR_DLAB;
+    base[UART_DLL] = div & 0xFF;
+    base[UART_DLH] = (div >> 8) & 0xFF;
+    base[UART_LCR] = LCR_8N1;
+    base[UART_FCR] = 0x07;   // enable + clear FIFOs
+    base[UART_IER] = 0x00;   // no interrupts
 }
 
-uint8_t uart_receive_blocking(volatile int32_t *base) {
-  int c;
-  do c = base[RXDATA]; while (c < 0);
-  return (uint8_t) c;
+uint8_t uart_receive_blocking(volatile uint8_t *base) {
+    while (!(base[UART_LSR] & LSR_DR));
+    return base[UART_RBR];
 }
 
-void uart_send_blocking(volatile int32_t *base, uint8_t c) {
-  while (base[TXDATA]);
-  base[TXDATA] = c;
+void uart_send_blocking(volatile uint8_t *base, uint8_t c) {
+    while (!(base[UART_LSR] & LSR_THRE));
+    base[UART_THR] = c;
 }
 
 
@@ -88,7 +73,7 @@ int main(int argc, char **argv) {
     char *primes_end, *cp, *pi;
     long *lp;
 
-    uart_init(UART0_BASE, UART_SPEED);
+    uart_init(UART0_BASE, CLK_FREQ, UART_SPEED);
 
     NN = N*N;
 
@@ -136,8 +121,6 @@ void myputs(char *s) {
     myputc(*s++);
   }
 }
-
-
 
 void myputn(unsigned n) {
   if (n >= 10)

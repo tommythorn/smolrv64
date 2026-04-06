@@ -32,6 +32,9 @@ smolrv64-verbose: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-run: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DNO_TIMEOUT -DVPI $(SRCS)
 
+smolrv64-sim: $(SRCS) Makefile
+	iverilog $(IVOPTS) -o $@ $(SRCS)
+
 smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 

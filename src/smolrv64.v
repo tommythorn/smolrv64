@@ -1574,8 +1574,8 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH1;
            reservation <= ~0;
 
-           if (mem_addr[63:4] == 60'h1000_0000) begin
-              // NS16550A UART write (0x10000000-0x10000007)
+           if (mem_addr[63:4] == 60'h100_0000) begin
+              // NS16550A UART write (0x10000000-0x1000000F)
               case (mem_addr[2:0])
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
                       uart_tx_valid <= 1;
@@ -1721,8 +1721,8 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                 state <= `S_AMO;
 
-              if (mem_addr[63:4] == 60'h1000_0000) begin
-                 // NS16550A UART read (0x10000000-0x10000007)
+              if (mem_addr[63:4] == 60'h100_0000) begin
+                 // NS16550A UART read (0x10000000-0x1000000F)
                  case (mem_addr[2:0])
                    0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
                          write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head[3:0]];
