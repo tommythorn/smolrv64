@@ -5,9 +5,10 @@ XPR      := $(PROJECT).xpr
 RUNS_DIR := $(PROJECT).runs
 BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit
 TTY      := /dev/ttyUSB1
+WORKLOAD ?= ../../workloads/sieve
 export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 
-.PHONY: all synth impl bit program clean
+.PHONY: all synth impl bit program load clean
 
 all: bit
 
@@ -23,6 +24,11 @@ bit: $(XPR)
 program:
 	@test -f $(BIT) || { echo "ERROR: $(BIT) not found — run 'make bit' first"; exit 1; }
 	$(VIVADO) $(VFLAGS) -source program.tcl -tclargs $(BIT)
+
+load:
+	$(MAKE) -C $(WORKLOAD) load
+	$(MAKE) bit
+	$(MAKE) program
 
 $(BIT): bit
 
@@ -41,5 +47,6 @@ help:
 	@echo "  make impl     — synthesis + implementation"
 	@echo "  make bit      — synthesis + implementation + bitstream"
 	@echo "  make program  — program device over JTAG"
+	@echo "  make load     — build workload, rebuild bitstream, program (WORKLOAD=path)"
 	@echo "  make clean    — remove all generated files"
 	@echo "  make connect  — connect to the serial port"

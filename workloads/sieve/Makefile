@@ -29,4 +29,8 @@ sim: sieve.even sieve.odd $(SRC_DIR)/smolrv64-sim
 		+even=$(CURDIR)/sieve.even \
 		+odd=$(CURDIR)/sieve.odd
 
-.PHONY: sim
+load: sieve.bin
+	$(SRC_DIR)/evenodd.py sieve.bin 0 > $(SRC_DIR)/mem.even
+	$(SRC_DIR)/evenodd.py sieve.bin 1 > $(SRC_DIR)/mem.odd
+
+.PHONY: sim load
