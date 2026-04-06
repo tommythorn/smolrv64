@@ -23,16 +23,17 @@
 `default_nettype none
 
 module rs232tx
-   ( input  wire        clock
+   ( input  wire        clk
+   , input  wire        rst_n
    , input  wire  [7:0] data
    , input  wire        valid
    , output reg         ready = 1
-   , output wire        serial_out
+   , output wire        tx
    );
 
-   parameter           frequency   = 0;
-   parameter           bps         = 0;
-   parameter           period      = (frequency + bps/2) / bps;
+   parameter           CLK_FREQ    = 0;
+   parameter           BAUD        = 0;
+   parameter           period      = (CLK_FREQ + BAUD/2) / BAUD;
    // Worst-case period: 300 bps @ 500 MHz = 2 000 000 ~= 2^19
    parameter           TTYCLK_SIGN = 20; // 2^TTYCLK_SIGN > period_max * 2
    parameter           COUNT_SIGN  = 4;
@@ -41,10 +42,10 @@ module rs232tx
    reg  [8:0]           shift_out   = ~0;
    reg  [COUNT_SIGN:0]  count       = ~0; // [  -16;   15]
 
-   assign               serial_out  = shift_out[0];
+   assign               tx          = shift_out[0];
 // assign               ready       = count[COUNT_SIGN] & ttyclk[TTYCLK_SIGN];
 
-   always @(posedge clock) begin
+   always @(posedge clk) begin
       if (~ttyclk[TTYCLK_SIGN]) begin
          ttyclk     <= ttyclk - 1'd 1;
       end else if (~count[COUNT_SIGN]) begin
