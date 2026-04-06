@@ -49,6 +49,7 @@ module rk_xcku5p(
 
                           .uart_tx_valid  (uart_tx_valid),
                           .uart_tx_data   (uart_tx_data),
+                          .uart_tx_ready  (tx_ready),
                           .uart_rx_valid  (rx_valid),
                           .uart_rx_data   (rx_data),
 

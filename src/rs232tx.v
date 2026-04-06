@@ -27,7 +27,7 @@ module rs232tx
    , input  wire        rst_n
    , input  wire  [7:0] data
    , input  wire        valid
-   , output reg         ready = 1
+   , output wire        ready
    , output wire        tx
    );
 
@@ -43,7 +43,7 @@ module rs232tx
    reg  [COUNT_SIGN:0]  count       = ~0; // [  -16;   15]
 
    assign               tx          = shift_out[0];
-// assign               ready       = count[COUNT_SIGN] & ttyclk[TTYCLK_SIGN];
+   assign               ready       = count[COUNT_SIGN] & ttyclk[TTYCLK_SIGN];
 
    always @(posedge clk) begin
       if (~ttyclk[TTYCLK_SIGN]) begin
@@ -53,12 +53,10 @@ module rs232tx
          count      <= count - 1'd 1;
          shift_out  <= {1'd 1, shift_out[8:1]};
       end else begin
-         ready <= 1;
          if (ready & valid) begin
             ttyclk     <= period - 2'd 2;
             count      <= 9; // 1 start bit + 8 d + 1 stop - 1 due to SIGN trick
             shift_out  <= {data, 1'd 0};
-            ready      <= 0;
          end
       end
    end

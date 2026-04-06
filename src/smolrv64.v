@@ -41,6 +41,7 @@ module smolrv64_tb;
 
                           .uart_tx_valid        (uart_tx_valid),
                           .uart_tx_data         (uart_tx_data),
+                          .uart_tx_ready        (1'b1),
                           .uart_rx_valid        (1'b0),
                           .uart_rx_data         (8'd0),
 
@@ -110,6 +111,7 @@ module smolrv64(input wire        clock,
                 // NS16550A UART (at 0x10000000)
                 output reg        uart_tx_valid = 0, // Active for one cycle on THR write
                 output reg [ 7:0] uart_tx_data,
+                input wire        uart_tx_ready,      // TX holding register empty (from UART)
                 input wire        uart_rx_valid,      // Pulse to enqueue a byte
                 input wire [ 7:0] uart_rx_data,
 
@@ -392,7 +394,7 @@ module smolrv64(input wire        clock,
    wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h04} :
                            uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h02} :
                                           {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h01};
-   wire [7:0]  uart_lsr = {1'b0, 1'b1, 1'b1, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
+   wire [7:0]  uart_lsr = {1'b0, uart_tx_ready, uart_tx_ready, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
    wire        uart_irq_out = uart_rx_ip || uart_thre_ip;
 
    // PLIC (SiFive layout, base 0x0C000000)
