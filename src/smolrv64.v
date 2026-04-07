@@ -25,6 +25,8 @@ module smolrv64_tb;
    wire       mmio_waitrequest; // Currently ignored
    wire       uart_tx_valid;
    wire [7:0] uart_tx_data;
+   reg        uart_rx_valid_tb = 0;
+   reg  [7:0] uart_rx_data_tb  = 0;
 
    smolrv64 smolrv64_inst(.clock                (clock),
                           .reset                (!reset_n),
@@ -42,8 +44,8 @@ module smolrv64_tb;
                           .uart_tx_valid        (uart_tx_valid),
                           .uart_tx_data         (uart_tx_data),
                           .uart_tx_ready        (1'b1),
-                          .uart_rx_valid        (1'b0),
-                          .uart_rx_data         (8'd0),
+                          .uart_rx_valid        (uart_rx_valid_tb),
+                          .uart_rx_data         (uart_rx_data_tb),
 
                           .halted_o             (halted));
 
@@ -59,6 +61,19 @@ module smolrv64_tb;
    `endif
 `endif
       end
+
+`ifdef VPI
+      begin : rx_poll
+         integer ch;
+         ch = $tty_read;
+         if (ch >= 0) begin
+            uart_rx_valid_tb <= 1;
+            uart_rx_data_tb  <= ch[7:0];
+         end else begin
+            uart_rx_valid_tb <= 0;
+         end
+      end
+`endif
 
       if (halted)
         $finish;
@@ -408,9 +423,9 @@ module smolrv64(input wire        clock,
    reg [7:0]   uart_lcr = 0;        // Line Control Register (DLAB = bit 7)
    reg [7:0]   uart_mcr = 0;        // Modem Control Register
    reg [7:0]   uart_scr = 0;        // Scratch Register
-   reg [7:0]   uart_rx_fifo [0:15]; // 16-byte RX FIFO
-   reg [3:0]   uart_rx_head = 0, uart_rx_tail = 0;
-   wire [4:0]  uart_rx_count = uart_rx_tail - uart_rx_head;
+   reg [7:0]   uart_rx_fifo [0:255]; // 256-byte RX FIFO
+   reg [7:0]   uart_rx_head = 0, uart_rx_tail = 0;
+   wire [8:0]  uart_rx_count = uart_rx_tail - uart_rx_head;
    wire        uart_rx_empty = uart_rx_head == uart_rx_tail;
    wire        uart_rx_ip = uart_ier[0] && !uart_rx_empty;  // RX data available
    wire        uart_thre_ip = uart_ier[1];                   // THR always empty
@@ -539,8 +554,8 @@ module smolrv64(input wire        clock,
       uart_tx_valid <= 0;
 
       // Enqueue UART RX data
-      if (uart_rx_valid && uart_rx_count < 16) begin
-         uart_rx_fifo[uart_rx_tail[3:0]] <= uart_rx_data;
+      if (uart_rx_valid && uart_rx_count < 256) begin
+         uart_rx_fifo[uart_rx_tail] <= uart_rx_data;
          uart_rx_tail <= uart_rx_tail + 1;
       end
 
@@ -1837,7 +1852,7 @@ module smolrv64(input wire        clock,
                  // NS16550A UART read (0x10000000-0x1000000F)
                  case (mem_addr[2:0])
                    0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
-                         write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head[3:0]];
+                         write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head];
                          if (!uart_rx_empty) uart_rx_head <= uart_rx_head + 1;
                       end else
                          write_back_value = 0; // DLL (divisor, ignored)

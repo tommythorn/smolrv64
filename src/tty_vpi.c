@@ -14,32 +14,24 @@ static struct termios orig_termios;
 // Initialize TTY for non-blocking, non-canonical mode
 static int init_tty(void) {
     struct termios new_termios;
-    
+
     if (tty_initialized) return 0;
-    
-    // Get current terminal attributes
-    if (tcgetattr(STDIN_FILENO, &orig_termios) < 0) {
-        vpi_printf("Error getting terminal attributes: %s\n", strerror(errno));
-        return -1;
-    }
-    
-    // Set up new terminal attributes
-    new_termios = orig_termios;
-    new_termios.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echo
-    new_termios.c_cc[VMIN] = 0;  // Non-blocking read
-    new_termios.c_cc[VTIME] = 0; // No timeout
-    
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &new_termios) < 0) {
-        vpi_printf("Error setting terminal attributes: %s\n", strerror(errno));
-        return -1;
-    }
-    
-    // Set stdin to non-blocking
+
+    // Set stdin to non-blocking regardless of whether it's a TTY
     int flags = fcntl(STDIN_FILENO, F_GETFL);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-    
+
+    // TTY-specific setup: disable canonical mode and echo for interactive use
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
+        new_termios = orig_termios;
+        new_termios.c_lflag &= ~(ICANON | ECHO);
+        new_termios.c_cc[VMIN] = 0;
+        new_termios.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
+    }
+    // If tcgetattr fails (pipe/file), O_NONBLOCK above is sufficient
+
     tty_initialized = 1;
-    vpi_printf("TTY initialized for non-blocking input\n");
     return 0;
 }
 
