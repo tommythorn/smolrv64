@@ -257,7 +257,7 @@ module smolrv64(input wire        clock,
 
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
-`define MEM_BASEADDR    64'h70000000
+`define MEM_BASEADDR    64'h80000000
 `ifndef MEM_SIZE_LG2
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif
@@ -590,7 +590,7 @@ module smolrv64(input wire        clock,
               ptw_prv = prv;
               ptw_return = `S_FETCH2;
               ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, npc[38:30], 3'd0};
-              if (ptw_pte_addr[31]) begin
+              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
                  dram_burst_addr = ptw_pte_addr[30:5];
                  dram_read       = 1;
@@ -602,14 +602,14 @@ module smolrv64(input wire        clock,
                  state <= `S_PTW_READ;
               end
            end else begin
-              if (npc[63:31] == 1) begin
-                 // DRAM fetch (0x80000000-0xFFFFFFFF)
+              if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+                 // DRAM fetch (above BRAM overlay: 0x80400000-0xFFFFFFFF)
                  fetch_from_dram <= 1;
                  dram_burst_addr  = npc[30:5];
                  dram_read        = 1;
                  state           <= `S_DRAM_FETCH_WAIT;
               end else begin
-                 // BRAM fetch
+                 // BRAM fetch (overlay 0x80000000-0x803FFFFF, or lower addresses)
                  fetch_from_dram <= 0;
                  mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
                  mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
@@ -683,7 +683,7 @@ module smolrv64(input wire        clock,
               ptw_prv = prv;
               ptw_return = `S_FETCH2_HALF;
               ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
-              if (ptw_pte_addr[31]) begin
+              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
                  dram_burst_addr = ptw_pte_addr[30:5];
                  dram_read       = 1;
@@ -1636,7 +1636,7 @@ module smolrv64(input wire        clock,
               ptw_prv = mprv ? mpp : prv;
               ptw_return = `S_STORE;
               ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              if (ptw_pte_addr[31]) begin
+              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
                  dram_burst_addr = ptw_pte_addr[30:5];
                  dram_read       = 1;
@@ -1800,7 +1800,7 @@ module smolrv64(input wire        clock,
               ptw_prv = mprv ? mpp : prv;
               ptw_return = `S_LOAD_ALIGN;
               ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              if (ptw_pte_addr[31]) begin
+              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
                  dram_burst_addr = ptw_pte_addr[30:5];
                  dram_read       = 1;
@@ -2377,8 +2377,8 @@ module smolrv64(input wire        clock,
 
                   translated <= 1;
                   if (ptw_return == `S_FETCH2 || ptw_return == `S_FETCH2_HALF) begin
-                     if (mem_addr[31]) begin
-                        // DRAM instruction fetch
+                     if (mem_addr[31] && mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+                        // DRAM instruction fetch (above BRAM overlay)
                         fetch_from_dram <= 1;
                         dram_burst_addr  = mem_addr[30:5];
                         dram_read        = 1;
@@ -2409,7 +2409,7 @@ module smolrv64(input wire        clock,
                 0: ptw_pte_addr = {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
                 default: ptw_pte_addr = 0;
               endcase
-              if (ptw_pte_addr[31]) begin
+              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
                  dram_burst_addr = ptw_pte_addr[30:5];
                  dram_read       = 1;
