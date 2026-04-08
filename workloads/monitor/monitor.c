@@ -9,7 +9,7 @@ typedef unsigned long  uint64_t;
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
-#define CLK_FREQ    200000000
+#define CLK_FREQ    333333333
 #define UART_SPEED  3000000
 
 #define UART_THR  0
@@ -121,6 +121,9 @@ int main(void)
     char buf[LINE_MAX];
 
     uart_init(UART0_BASE, CLK_FREQ, UART_SPEED);
+    // Flush any spurious chars received during init or terminal connect
+    while (UART0_BASE[UART_LSR] & LSR_DR)
+        (void)UART0_BASE[UART_RBR];
     puts_("\nsmolrv64 monitor\n");
 
     for (;;) {

@@ -75,6 +75,8 @@ int main(int argc, char **argv) {
 
     uart_init(UART0_BASE, CLK_FREQ, UART_SPEED);
 
+    myputs("\nPrimes:\n");
+
     NN = N*N;
 
     // 3 5 7 9 11 13 .. i*2+3
