@@ -3,7 +3,10 @@
 #   step: synth | impl | bit (default: bit — runs all)
 
 set step "bit"
-if {[llength $argv] > 0} { set step [lindex $argv 0] }
+set force 0
+foreach arg $argv {
+    if {$arg eq "force"} { set force 1 } else { set step $arg }
+}
 
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 puts "Opening project: $xpr"
@@ -11,15 +14,16 @@ open_project $xpr
 
 # Helper: launch a run only if it needs work
 proc run_if_needed {run_id to_step jobs} {
+    global force
     set run [get_runs $run_id]
     set needs_refresh [get_property NEEDS_REFRESH $run]
     set progress      [get_property PROGRESS      $run]
-    if {!$needs_refresh && $progress eq "100%"} {
+    if {!$force && !$needs_refresh && $progress eq "100%"} {
         puts "  $run_id already up to date, skipping."
         return
     }
-    if {$needs_refresh} {
-        puts "  $run_id needs refresh — resetting before launch."
+    if {$force || $needs_refresh} {
+        puts "  $run_id resetting before launch."
         reset_run $run_id
     }
     if {$to_step ne ""} {

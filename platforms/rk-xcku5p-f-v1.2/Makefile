@@ -27,7 +27,7 @@ program:
 
 load:
 	$(MAKE) -C $(WORKLOAD) load
-	$(MAKE) bit
+	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs bit force
 	$(MAKE) program
 
 $(BIT): bit
