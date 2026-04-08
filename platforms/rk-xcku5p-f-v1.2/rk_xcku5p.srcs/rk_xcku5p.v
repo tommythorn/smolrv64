@@ -35,10 +35,10 @@ module rk_xcku5p(
    wire cpu_reset = ui_rst | ~init_calib_complete;
 
    // Heartbeat counter driven by UI clock
-   reg [31:0] count = 0;
+   reg [34:0] count = 0;
    reg        toggle = 0;
    always @(posedge ui_clk)
-     if (count == 'd 16_666_666) begin  // ~10 Hz at 333 MHz
+     if (count == 'd 333_333_333) begin  // 0.5 Hz at 333.33 MHz
         toggle <= !toggle;
         count <= 0;
      end else
