@@ -153,16 +153,17 @@ module rk_xcku5p(
    wire [7:0] uart_tx_data;
    wire       rx_valid;
    wire [7:0] rx_data;
+   wire       mmio_read;
 
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
       .reset                (cpu_reset),
       .mmio_address         (),
-      .mmio_read            (),
+      .mmio_read            (mmio_read),
       .mmio_write           (),
       .mmio_writedata       (),
       .mmio_byteenable      (),
-      .mmio_readdatavalid   (1'b0),
+      .mmio_readdatavalid   (mmio_read),
       .mmio_readdata        (32'd0),
 
       .ext_irq              (63'd0),
@@ -194,6 +195,6 @@ module rk_xcku5p(
 
    rs232rx #(.CLK_FREQ(333_333_333), .BAUD(3_000_000)) rs232rx_inst
      (.clk(ui_clk), .rst_n(~ui_rst),
-      .data(rx_data), .valid(rx_valid),
+      .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd));
 endmodule
