@@ -51,6 +51,20 @@ if {$step in {impl bit}} {
     puts "Implementation complete."
 }
 
+# Timing check after implementation
+if {$step in {impl bit}} {
+    set wns [get_property STATS.WNS [get_runs impl_1]]
+    set tns [get_property STATS.TNS [get_runs impl_1]]
+    set failing [get_property STATS.FAILING_NETS [get_runs impl_1]]
+    if {$wns < 0} {
+        puts "\n*** TIMING VIOLATION: WNS=${wns}ns  TNS=${tns}ns  failing_endpoints=$failing ***"
+        puts "    Design will not function reliably at this clock frequency."
+        error "Timing not met — fix violations before generating bitstream."
+    } else {
+        puts "Timing met: WNS=${wns}ns"
+    }
+}
+
 # Bitstream
 if {$step in {bit}} {
     puts "\n=== Generating Bitstream ==="
