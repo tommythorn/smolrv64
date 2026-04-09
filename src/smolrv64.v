@@ -268,7 +268,9 @@ module smolrv64(input wire        clock,
 `define S_DRAM_FETCH_HALF_WAIT 20  // wait for 2nd burst of cross-burst fetch
 `define S_DRAM_LOAD2_WAIT      21  // wait for 2nd burst of cross-burst load
 `define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
-`define S_LAST_STATE           23  // update state register width accordingly
+`define S_RF2                  23  // wait for BRAM regfile read (rs1/rs2 set in S_RF)
+`define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
+`define S_LAST_STATE           24  // update state register width accordingly
 
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
@@ -338,14 +340,13 @@ module smolrv64(input wire        clock,
 
    // Read ports
    reg  [ 4:0] rs1, rs2;
-// reg  [63:0] s1;
-// reg  [63:0] s2;
-   wire [63:0] s1;
+   wire [63:0] s1;        // combinatorial BRAM output; stable from S_RF2 onwards
    wire [63:0] s2;
-
 
    reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
+   reg  [63:0] exe_add   = 0;  // execute-stage intermediate (registered at S_EXECUTE→S_EXECUTE2)
+   reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
 
    regfile rf_inst(.clock(clock),
                    .write_valid(state == `S_FETCH1 && write_back_register != 0),
@@ -684,9 +685,14 @@ module smolrv64(input wire        clock,
            end else begin
               aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
            end
-           // SV: insn = {aligned >> (pc[2:1] * 16)}[31:0];
-           insn = aligned >> (pc[2:1] * 16);
+           // Register insn; cross-page check and decode happen in S_RF using stable insn_reg.
+           insn <= aligned >> (pc[2:1] * 16);
+           write_back_register = 0;
+           state <= `S_RF;
+        end
 
+        `S_RF: begin
+           // insn is registered (captured at S_FETCH2 clock edge).
            // Cross-page instruction fetch: 32-bit insn at last halfword of a page
            // In VM mode, the next page may map to a different physical page
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
@@ -736,14 +742,18 @@ module smolrv64(input wire        clock,
               shamt = insn[25:20];
 
               write_back_register = 0;
-              state <= `S_RF;
+              state <= `S_RF2;
            end
         end
 
-        `S_RF: state <= `S_EXECUTE;
+        `S_RF2: begin
+           // One-cycle wait: BRAM output (s1/s2 wires) is stable by S_EXECUTE.
+           // rs1/rs2 were set in S_RF; regfile output is valid here and in S_EXECUTE.
+           state <= `S_EXECUTE;
+        end
 
         `S_EXECUTE: begin
-           state <= `S_FETCH1; // Default next stage
+           state <= `S_EXECUTE2; // Default: complete write_back_value
 
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -782,7 +792,8 @@ module smolrv64(input wire        clock,
            // Quadrant 0
            if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
               write_back_register = rs2;
-              write_back_value = s1 + c_nzuimm107_1211_5_6_x4;
+              exe_add <= s1 + c_nzuimm107_1211_5_6_x4;
+              exe_sext32 <= 0;
               if ((insn & 'hffff) == 0) begin
                  write_back_register = 0;
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -843,75 +854,86 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'he003) == 'h0001) begin // C.ADDI
               write_back_register = rs1;
-              write_back_value = s1 + c_imm12_62;
+              exe_add <= s1 + c_imm12_62;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'he003) == 'h2001) begin // C.ADDIW
               write_back_register = rs1;
-              sext32 = s1[31:0] + c_imm12_62;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] + c_imm12_62;
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = insn[11:7];
-              write_back_value = c_imm12_62;
+              exe_add <= c_imm12_62;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP
               write_back_register = rs1;
-              write_back_value = s1 + c_imm12_43_5_2_6_x16;
+              exe_add <= s1 + c_imm12_43_5_2_6_x16;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'he003) == 'h6001) begin // C.LUI
               write_back_register = rs1;
-              write_back_value = c_imm12_62<<12;
+              exe_add <= c_imm12_62<<12;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
               write_back_register = rs1;
-              write_back_value = s1 >> c_imm12_62[5:0];
+              exe_add <= s1 >> c_imm12_62[5:0];
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
               write_back_register = rs1;
-              write_back_value = $signed(s1) >>> c_imm12_62[5:0];
+              exe_add <= $signed(s1) >>> c_imm12_62[5:0];
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = rs1;
-              write_back_value = s1 & c_imm12_62;
+              exe_add <= s1 & c_imm12_62;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c01) begin // C.SUB
               write_back_register = rs1;
-              write_back_value = s1 - s2;
+              exe_add <= s1 - s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = rs1;
-              write_back_value = s1 ^ s2;
+              exe_add <= s1 ^ s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = rs1;
-              write_back_value = s1 | s2;
+              exe_add <= s1 | s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = rs1;
-              write_back_value = s1 & s2;
+              exe_add <= s1 & s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h9c01) begin // C.SUBW
-              sext32 = s1[31:0] - s2[31:0];
               write_back_register = rs1;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] - s2[31:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfc63) == 'h9c21) begin // C.ADDW
-              sext32 = s1[31:0] + s2[31:0];
               write_back_register = rs1;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] + s2[31:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'he003) == 'ha001) begin // C.J
@@ -932,7 +954,8 @@ module smolrv64(input wire        clock,
               // Quadrant 2
            else if ((insn & 'he003) == 'h0002) begin // C.SLLI
               write_back_register = rs1;
-              write_back_value = s1 << c_imm12_62[5:0];
+              exe_add <= s1 << c_imm12_62[5:0];
+              exe_sext32 <= 0;
            end
 
            //else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
@@ -963,7 +986,8 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf003) == 'h8002) begin // C.MV
               write_back_register = rs1;
-              write_back_value = s2;
+              exe_add <= s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
@@ -974,13 +998,15 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
-              write_back_value = pc + 2;
+              exe_add <= pc + 2;
+              exe_sext32 <= 0;
               npc = s1 & ~1;
            end
 
            else if ((insn & 'hf003) == 'h9002) begin // C.ADD
               write_back_register = rs1;
-              write_back_value = s1 + s2;
+              exe_add <= s1 + s2;
+              exe_sext32 <= 0;
            end
 
            // else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
@@ -1008,23 +1034,27 @@ module smolrv64(input wire        clock,
            // Quadrant 3, uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
-              write_back_value = imm_u;
+              exe_add <= imm_u;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000007f) == 'h00000017) begin // AUIPC
               write_back_register = rd;
-              write_back_value = pc + imm_u;
+              exe_add <= pc + imm_u;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = rd;
-              write_back_value = npc;
+              exe_add <= npc;
+              exe_sext32 <= 0;
               npc = pc + imm_j;
            end
 
            else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = rd;
-              write_back_value = npc;
+              exe_add <= npc;
+              exe_sext32 <= 0;
               npc = (s1 + imm_i) & ~1;
            end
 
@@ -1153,82 +1183,98 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00000013) begin // ADDI
               write_back_register = rd;
-              write_back_value = s1 + imm_i;
+              exe_add <= s1 + imm_i;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00002013) begin // SLTI
               write_back_register = rd;
-              write_back_value = $signed(s1) < $signed(imm_i);
+              exe_add <= $signed(s1) < $signed(imm_i);
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00003013) begin // SLTIU
               write_back_register = rd;
-              write_back_value = s1 < imm_i;
+              exe_add <= s1 < imm_i;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = rd;
-              write_back_value = s1 ^ imm_i;
+              exe_add <= s1 ^ imm_i;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = rd;
-              write_back_value = s1 | imm_i;
+              exe_add <= s1 | imm_i;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = rd;
-              write_back_value = s1 & imm_i;
+              exe_add <= s1 & imm_i;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00000033) begin // ADD
               write_back_register = rd;
-              write_back_value = s1 + s2;
+              exe_add <= s1 + s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h40000033) begin // SUB
               write_back_register = rd;
-              write_back_value = s1 - s2;
+              exe_add <= s1 - s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00001033) begin // SLL
               write_back_register = rd;
-              write_back_value = s1 << s2[5:0];
+              exe_add <= s1 << s2[5:0];
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00002033) begin // SLT
               write_back_register = rd;
-              write_back_value = $signed(s1) < $signed(s2);
+              exe_add <= $signed(s1) < $signed(s2);
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00003033) begin // SLTU
               write_back_register = rd;
-              write_back_value = s1 < s2;
+              exe_add <= s1 < s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = rd;
-              write_back_value = s1 ^ s2;
+              exe_add <= s1 ^ s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00005033) begin // SRL
               write_back_register = rd;
-              write_back_value = s1 >> s2[5:0];
+              exe_add <= s1 >> s2[5:0];
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h40005033) begin // SRA
               write_back_register = rd;
-              write_back_value = $signed(s1) >>> s2[5:0];
+              exe_add <= $signed(s1) >>> s2[5:0];
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = rd;
-              write_back_value = s1 | s2;
+              exe_add <= s1 | s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = rd;
-              write_back_value = s1 & s2;
+              exe_add <= s1 & s2;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hf000707f) == 'h0000000f) begin // FENCE
@@ -1258,77 +1304,80 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
               write_back_register = rd;
-              write_back_value = s1 << shamt;
+              exe_add <= s1 << shamt;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc00707f) == 'h00005013) begin // SRLI
               write_back_register = rd;
-              write_back_value = s1 >> shamt;
+              exe_add <= s1 >> shamt;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc00707f) == 'h40005013) begin // SRAI
               write_back_register = rd;
-              write_back_value = $signed(s1) >>> shamt;
+              exe_add <= $signed(s1) >>> shamt;
+              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h0000001b) begin // ADDIW
-              sext32 = s1[31:0] + imm_i[31:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] + imm_i[31:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
-              sext32 = s1[31:0] << shamt[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] << shamt[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
-              sext32 = s1[31:0] >> shamt[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] >> shamt[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              sext32 = $signed(s1[31:0]) >>> shamt[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= $signed(s1[31:0]) >>> shamt[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000003b) begin // ADDW
-              sext32 = s1[31:0] + s2[31:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] + s2[31:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000003b) begin // SUBW
-              sext32 = s1[31:0] - s2[31:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] - s2[31:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000103b) begin // SLLW
-              sext32 = s1[31:0] << s2[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] << s2[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000503b) begin // SRLW
-              sext32 = s1[31:0] >> s2[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= s1[31:0] >> s2[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000503b) begin // SRAW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              sext32 = $signed(s1[31:0]) >>> s2[4:0];
               write_back_register = rd;
-              write_back_value = {{32{sext32[31]}},sext32};
+              exe_add <= $signed(s1[31:0]) >>> s2[4:0];
+              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
@@ -1535,15 +1584,17 @@ module smolrv64(input wire        clock,
                     (insn & 'hf800707f) == 'h1800302f)   // SC.D
            begin
               write_back_register = rd;
-              write_back_value = 1;
               if (reservation == s1) begin // XXX Should use physical address
-                 write_back_value = 0;
+                 write_back_value <= 0;
                  mem_addr = s1;
                  mem_addr0 <= mem_addr[63:4] + mem_addr[3];
                  mem_addr1 <= mem_addr[63:4];
                  mem_wr_mask = insn[12] ? 255 : 15;
                  store_value = s2;
                  state <= `S_STORE;
+              end else begin
+                 exe_add <= 1;  // SC fail: write 1 (via S_EXECUTE2)
+                 exe_sext32 <= 0;
               end
            end
 
@@ -1639,6 +1690,11 @@ module smolrv64(input wire        clock,
               tval = insn;
               state <= `S_EXCEPTION;
            end
+        end
+
+        `S_EXECUTE2: begin
+           write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
+           state <= `S_FETCH1;
         end
 
         `S_STORE: begin
@@ -2454,7 +2510,7 @@ module smolrv64(input wire        clock,
            shamt = insn[25:20];
 
            write_back_register = 0;
-           state <= `S_RF;
+           state <= `S_RF2;  // rs1/rs2 already decoded here; skip S_RF
         end
 
         `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
