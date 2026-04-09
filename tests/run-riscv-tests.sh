@@ -5,24 +5,31 @@ make -C ../src smolrv64-tester || exit
 
 NM=$(which riscv64-elf-nm 2>/dev/null || which riscv64-linux-gnu-nm 2>/dev/null || echo "")
 
-for class in $*
-do echo
-   echo "$class:"
-   for x in riscv-tests/$class/*.bin
-   do base=`basename $x .bin`
-      path=../tests/riscv-tests/$class/$base
-      printf "%-25s " $base
+lock=$(mktemp)
+trap 'rm -f "$lock"' EXIT
 
-      # Extract tohost address from ELF if available
-      elf=riscv-tests/$class/$base
+for class in "$@"
+do
+   echo
+   echo "$class:"
+
+   for x in riscv-tests/$class/*.bin
+   do base=$(basename "$x" .bin)
+      path=../tests/riscv-tests/$class/$base
+
       tohost=""
+      elf=riscv-tests/$class/$base
       if [ -f "$elf" ] && [ -n "$NM" ]; then
          addr=$("$NM" "$elf" 2>/dev/null | awk '/ tohost$/{print $1}')
-         if [ -n "$addr" ]; then
-            tohost="+tohost=$addr"
-         fi
+         [ -n "$addr" ] && tohost="+tohost=$addr"
       fi
 
-      (cd ../src;./smolrv64-tester +even=$path.even +odd=$path.odd $tohost)|egrep -v '(WARNING|finish called at)'
+      (
+         out=$(cd ../src; ./smolrv64-tester +even="$path.even" +odd="$path.odd" $tohost 2>&1 \
+               | grep -Ev '(WARNING|finish called at)')
+         flock "$lock" printf "%-25s %s\n" "$base" "$out"
+      ) &
    done
+
+   wait
 done
