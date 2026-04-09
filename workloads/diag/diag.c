@@ -42,6 +42,10 @@ int main(void)
         if (c == '\r') {
             putc_('\r');
             putc_('\n');
+        } else if (c == '@') {
+            char *s = "Hello World here is a longer string to test things out a bit. ";
+            while (*s)
+                putc_(*s++);
         }
     }
 }
