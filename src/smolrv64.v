@@ -270,7 +270,10 @@ module smolrv64(input wire        clock,
 `define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
 `define S_RF2                  23  // wait for BRAM regfile read (rs1/rs2 set in S_RF)
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
-`define S_LAST_STATE           24  // update state register width accordingly
+`define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
+`define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
+`define S_FETCH1B              27  // register LUTRAM mem0/mem1 output before S_FETCH2 reads insn
+`define S_LAST_STATE           27  // update state register width accordingly
 
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
@@ -333,6 +336,8 @@ module smolrv64(input wire        clock,
    reg  [15:0] mem_wr_mask;
    wire [63:0] mem_data0 = mem0[mem_addr0];
    wire [63:0] mem_data1 = mem1[mem_addr1];
+   reg  [63:0] mem_data0_q = 0;  // registered copy latched in S_FETCH1B; used by S_FETCH2
+   reg  [63:0] mem_data1_q = 0;
 
    /* RISC-V Architectural state: operating mode, pc, and registers*/
    reg  [63:0] pc = 0; // XXX We should set this on reset
@@ -340,8 +345,10 @@ module smolrv64(input wire        clock,
 
    // Read ports
    reg  [ 4:0] rs1, rs2;
-   wire [63:0] s1;        // combinatorial BRAM output; stable from S_RF2 onwards
-   wire [63:0] s2;
+   wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF3 onwards
+   wire [63:0] s2_bram;
+   reg  [63:0] s1 = 0;    // flip-flop copy of s1_bram; captured in S_RF3, used in S_EXECUTE
+   reg  [63:0] s2 = 0;
 
    reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
@@ -354,8 +361,8 @@ module smolrv64(input wire        clock,
                    .write_addr(write_back_register),
                    .read_addr_0(rs1),
                    .read_addr_1(rs2),
-                   .read_data_0(s1),
-                   .read_data_1(s2));
+                   .read_data_0(s1_bram),
+                   .read_data_1(s2_bram));
 
 
    reg  [63:0] npc = `MEM_BASEADDR; // XXX We should set this on reset
@@ -367,6 +374,7 @@ module smolrv64(input wire        clock,
    reg  [31:0]  dram2_mask;         // DDR4 byte mask for split-store second burst
    reg          dram_store_split;   // 1 = second burst pending after DRAM_STORE_WAIT
    reg  [127:0] aligned;
+   reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
@@ -629,7 +637,7 @@ module smolrv64(input wire        clock,
                  fetch_from_dram <= 0;
                  mem_addr0 <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
                  mem_addr1 <= npc[`MEM_SIZE_LG2-1:4];
-                 state <= `S_FETCH2;
+                 state <= `S_FETCH1B;
               end
            end
 
@@ -683,7 +691,7 @@ module smolrv64(input wire        clock,
                 2'b11: aligned = {64'bx, dram_latched[255:192]};
               endcase
            end else begin
-              aligned = pc[3] == 0 ? {mem_data1,mem_data0} : {mem_data0,mem_data1};
+              aligned = pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
            end
            // Register insn; cross-page check and decode happen in S_RF using stable insn_reg.
            insn <= aligned >> (pc[2:1] * 16);
@@ -747,9 +755,27 @@ module smolrv64(input wire        clock,
         end
 
         `S_RF2: begin
-           // One-cycle wait: BRAM output (s1/s2 wires) is stable by S_EXECUTE.
-           // rs1/rs2 were set in S_RF; regfile output is valid here and in S_EXECUTE.
+           // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output settles in S_RF3.
+           state <= `S_RF3;
+        end
+
+        `S_RF3: begin
+           // Register BRAM output into s1/s2 flip-flops.
+           // s1_bram/s2_bram are now valid (BRAM read with new rs1/rs2 completed in S_RF2).
+           s1 <= s1_bram;
+           s2 <= s2_bram;
            state <= `S_EXECUTE;
+        end
+
+        `S_FETCH1B: begin
+           // Register the async LUTRAM mem0/mem1 output into flip-flops.
+           // mem_addr0/mem_addr1 were set (via <=) in S_FETCH1, so are stable now.
+           // mem_data0/mem_data1 are combinatorial (async) and fully settled this cycle.
+           // S_FETCH2 reads mem_data0_q/mem_data1_q instead of the LUTRAM directly,
+           // breaking the LUTRAM-read → pte_latch-LUT → insn-reg timing path.
+           mem_data0_q <= mem_data0;
+           mem_data1_q <= mem_data1;
+           state <= `S_FETCH2;
         end
 
         `S_EXECUTE: begin
@@ -2363,12 +2389,19 @@ module smolrv64(input wire        clock,
         end
 
         `S_PTW_READ: begin
-           // Sv39 page table walk: read PTE from memory
+           // Sv39 page table walk: latch PTE from memory; process in S_PTW_PROCESS.
+           // Registering here breaks the LUTRAM-read → dram_burst_addr timing path.
            if (ptw_from_dram)
-              aligned = dram_latched >> (ptw_pte_addr[4:3] * 64);
+              pte_latch <= dram_latched >> (ptw_pte_addr[4:3] * 64);
            else
-              aligned = ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
-           // PTE is aligned[63:0] (8-byte aligned, no shift needed)
+              pte_latch <= ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
+           state <= `S_PTW_PROCESS;
+        end
+
+        `S_PTW_PROCESS: begin
+           // Sv39 page table walk: process PTE latched in S_PTW_READ.
+           // PTE is pte_latch[63:0]; use aligned as a local alias for readability.
+           aligned = pte_latch;
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -2459,7 +2492,9 @@ module smolrv64(input wire        clock,
                         fetch_from_dram <= 0;
                         mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
                         mem_addr1  <= mem_addr[`MEM_SIZE_LG2-1:4];
-                        state      <= ptw_return;
+                        // S_FETCH2 reads from mem_data0_q/mem_data1_q (registered in S_FETCH1B).
+                        // Route through S_FETCH1B to capture the LUTRAM output first.
+                        state      <= (ptw_return == `S_FETCH2) ? `S_FETCH1B : ptw_return;
                      end
                   end else begin
                      mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
@@ -2489,7 +2524,7 @@ module smolrv64(input wire        clock,
                  ptw_from_dram <= 0;
                  mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
                  mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 // Stay in S_PTW_READ
+                 state     <= `S_PTW_READ;  // re-read next PTE level
               end
            end
         end
@@ -2626,8 +2661,10 @@ module regfile(input wire         clock,
 
    always @(posedge clock) begin
 `ifndef ASYNC_RF
-      read_data_0 = regfile[read_addr_0];
-      read_data_1 = regfile[read_addr_1];
+      // Non-blocking: samples read_addr at the clock edge (before any blocking
+      // assignments from other always blocks), ensuring deterministic simulation.
+      read_data_0 <= regfile[read_addr_0];
+      read_data_1 <= regfile[read_addr_1];
 `endif
 
       if (write_valid) regfile[write_addr] <= write_data;
