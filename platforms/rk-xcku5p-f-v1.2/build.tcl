@@ -37,16 +37,18 @@ proc run_if_needed {run_id to_step jobs} {
     }
 }
 
-# Synthesis
+# Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {
     puts "\n=== Running Synthesis ==="
+    set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
 }
 
-# Implementation
+# Implementation — use Performance_ExplorePostRoutePhysOpt for timing closure
 if {$step in {impl bit}} {
     puts "\n=== Running Implementation ==="
+    set_property STRATEGY Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
     run_if_needed impl_1 "" 12
     puts "Implementation complete."
 }

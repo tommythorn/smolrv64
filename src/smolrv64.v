@@ -273,7 +273,24 @@ module smolrv64(input wire        clock,
 `define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_FETCH1B              27  // register LUTRAM mem0/mem1 output before S_FETCH2 reads insn
-`define S_LAST_STATE           27  // update state register width accordingly
+`define S_LOAD_LATCH           28  // register LUTRAM mem0/mem1 output before S_LOAD_ALIGN reads data
+`define S_LAST_STATE           28  // update state register width accordingly
+
+// pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
+// Breaking the 50-case priority if-else exe_add path into two pipeline stages
+// reduces the critical path from ~15 LUT levels to ~7 LUT levels per stage.
+`define EXOP_ADD  4'd0   // exe_add = s1 + pre_exe_b  (s1[31:0]+b[31:0] if sxt)
+`define EXOP_SUB  4'd1   // exe_add = s1 - pre_exe_b
+`define EXOP_SHL  4'd2   // exe_add = s1 << b[5:0]    (s1[31:0]<<b[4:0] if sxt)
+`define EXOP_SHR  4'd3   // exe_add = s1 >> b[5:0]
+`define EXOP_SAR  4'd4   // exe_add = $signed(s1) >>> b[5:0]
+`define EXOP_XOR  4'd5   // exe_add = s1 ^ b
+`define EXOP_OR   4'd6   // exe_add = s1 | b
+`define EXOP_AND  4'd7   // exe_add = s1 & b
+`define EXOP_LTS  4'd8   // exe_add = ($signed(s1) < $signed(b)) ? 1 : 0
+`define EXOP_LTU  4'd9   // exe_add = (s1 < b) ? 1 : 0
+`define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
+`define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
 
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
@@ -354,6 +371,17 @@ module smolrv64(input wire        clock,
    reg  [63:0] write_back_value;
    reg  [63:0] exe_add   = 0;  // execute-stage intermediate (registered at S_EXECUTE→S_EXECUTE2)
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
+   // Pre-decoded ALU control: computed in S_RF3, consumed in S_EXECUTE case block.
+   // Breaks the ~50-condition priority if-else chain critical path into two pipeline stages.
+   reg  [ 3:0] pre_exe_op  = 0;  // EXOP_* operation code
+   reg  [63:0] pre_exe_b   = 0;  // second operand
+   reg         pre_exe_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
+
+   // Pre-registered interrupt check: computed every cycle, consumed in S_FETCH1.
+   // Breaks the mtip_reg → cause_priority_encode → state_reg path (~10 LUT levels)
+   // into two shorter stages (~4 LUT levels each).
+   reg         pre_intr_pending = 0;  // 1 = interrupt pending (checked in S_FETCH1)
+   reg  [11:0] pre_intr_cause   = 0;  // encoded interrupt cause number
 
    regfile rf_inst(.clock(clock),
                    .write_valid(state == `S_FETCH1 && write_back_register != 0),
@@ -396,15 +424,13 @@ module smolrv64(input wire        clock,
    reg  [ 1:0] csr_op;
 
    // CSR state
-   reg         deleg, m_ie, s_ie, cause_intr;
+   reg         deleg, cause_intr;
    reg [63:0]  tval,
                tvec;
    reg [11:0]  csr_mie        = 0, // XXX We should set this on reset
                csr_mideleg    = 0,
-               // temporaries, will not turn into flops
-               cause,
-               pending_m,
-               pending_s;
+               // temporary, will not turn into flop
+               cause;
    reg [63:0]  csr_stvec      = 0,
                csr_scounteren = 0,
                csr_sscratch   = 0,
@@ -546,7 +572,7 @@ module smolrv64(input wire        clock,
 
    // Sv39 page table walk state
    reg [ 1:0]  ptw_level;       // Current walk level (2, 1, 0)
-   reg [ 3:0]  ptw_return;      // State to return to after translation
+   reg [ 4:0]  ptw_return;      // State to return to after translation
    reg [63:0]  ptw_va;          // Virtual address being translated
    reg [63:0]  ptw_pte_addr;    // Physical address of PTE being read
    reg [ 1:0]  ptw_access;      // 0=fetch, 1=load, 2=store, 3=AMO (R+W)
@@ -576,6 +602,32 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
       dram_read  = 0;
       dram_write = 0;
+
+      // Pre-register interrupt pending for S_FETCH1 timing closure.
+      // Computed from current FFs so the result is available as a stable FF in
+      // the NEXT cycle (adding ≤1 cycle of interrupt detection latency, which
+      // is architecturally legal).
+      begin : pre_intr_precompute
+         reg [11:0] pi_pm, pi_ps, pi_raw;
+         pi_pm = csr_mip & csr_mie & ~csr_mideleg;
+         pi_ps = csr_mip & csr_mie &  csr_mideleg;
+         if ((prv == 3 ? mie : 1'b1) && pi_pm != 0)
+            pi_raw = pi_pm;
+         else if (((prv == 1) ? sie : (prv == 0)) && pi_ps != 0)
+            pi_raw = pi_ps;
+         else
+            pi_raw = 0;
+         pre_intr_pending <= pi_raw != 0;
+         pre_intr_cause   <= pi_raw[`MACHINE_EXTERNAL_INTERRUPT] ? `MACHINE_EXTERNAL_INTERRUPT :
+                             pi_raw[`MACHINE_SOFTWARE_INTERRUPT] ? `MACHINE_SOFTWARE_INTERRUPT :
+                             pi_raw[`MACHINE_TIMER_INTERRUPT]    ? `MACHINE_TIMER_INTERRUPT :
+                             pi_raw[`SUPERVISOR_EXTERNAL_INTERRUPT] ? `SUPERVISOR_EXTERNAL_INTERRUPT :
+                             pi_raw[`SUPERVISOR_SOFTWARE_INTERRUPT] ? `SUPERVISOR_SOFTWARE_INTERRUPT :
+                             pi_raw[`SUPERVISOR_TIMER_INTERRUPT] ? `SUPERVISOR_TIMER_INTERRUPT :
+                             pi_raw[`USER_EXTERNAL_INTERRUPT]    ? `USER_EXTERNAL_INTERRUPT :
+                             pi_raw[`USER_SOFTWARE_INTERRUPT]    ? `USER_SOFTWARE_INTERRUPT :
+                                                                   `USER_TIMER_INTERRUPT;
+      end
 
       case (state)
         `S_FETCH1: begin
@@ -641,27 +693,11 @@ module smolrv64(input wire        clock,
               end
            end
 
-           // Copying SAIL here
-           pending_m = csr_mip & csr_mie & ~csr_mideleg;
-           pending_s = csr_mip & csr_mie & csr_mideleg;
-           m_ie = prv == 3 && mie || prv <= 2;
-           s_ie = prv == 1 && sie || prv == 0;
-
-           cause = m_ie && pending_m != 0 ? pending_m :
-                   s_ie && pending_s != 0 ? pending_s : 0;
-
+           // Use pre-registered interrupt check (computed previous cycle) for timing closure.
+           // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
            cause_intr = 0;
-           if (cause != 0) begin
-              cause = cause[`MACHINE_EXTERNAL_INTERRUPT]    ? `MACHINE_EXTERNAL_INTERRUPT :
-                      cause[`MACHINE_SOFTWARE_INTERRUPT]    ? `MACHINE_SOFTWARE_INTERRUPT :
-                      cause[`MACHINE_TIMER_INTERRUPT]       ? `MACHINE_TIMER_INTERRUPT :
-                      cause[`SUPERVISOR_EXTERNAL_INTERRUPT] ? `SUPERVISOR_EXTERNAL_INTERRUPT :
-                      cause[`SUPERVISOR_SOFTWARE_INTERRUPT] ? `SUPERVISOR_SOFTWARE_INTERRUPT :
-                      cause[`SUPERVISOR_TIMER_INTERRUPT]    ? `SUPERVISOR_TIMER_INTERRUPT :
-                      cause[`USER_EXTERNAL_INTERRUPT]       ? `USER_EXTERNAL_INTERRUPT :
-                      cause[`USER_SOFTWARE_INTERRUPT]       ? `USER_SOFTWARE_INTERRUPT :
-                                                              `USER_TIMER_INTERRUPT;
-
+           if (pre_intr_pending) begin
+              cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
               state <= `S_EXCEPTION;
@@ -765,6 +801,193 @@ module smolrv64(input wire        clock,
            s1 <= s1_bram;
            s2 <= s2_bram;
            state <= `S_EXECUTE;
+
+           // Pre-decode ALU operation and second operand for S_EXECUTE.
+           // insn, pc are registered FFs; s2_bram is the BRAM combinational output.
+           // All assignments use <= so they register into pre_exe_op/pre_exe_b/pre_exe_sxt.
+           // Immediates are computed inline (1-3 LUT from insn_reg) rather than read from
+           // the imm_i/imm_u registers (which are only updated with = inside S_EXECUTE).
+           begin : rf3_pre_decode
+              reg [63:0] d_imm_i, d_imm_u, d_c_imm;
+
+              d_imm_i = {{52{insn[31]}},insn[31:20]};
+              d_imm_u = {{32{insn[31]}},insn[31:12],12'd0};
+              d_c_imm = {{59{insn[12]}},insn[6:2]};  // c_imm12_62
+
+              // Default: harmless value (only matters for instructions reaching S_EXECUTE2)
+              pre_exe_op  <= `EXOP_OPB;
+              pre_exe_b   <= 64'd0;
+              pre_exe_sxt <= 0;
+
+              // ---- Compressed instructions (insn[1:0] != 2'b11) ----
+
+              // Quadrant 0
+              if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
+                 pre_exe_op <= `EXOP_ADD;
+                 pre_exe_b  <= {54'd0, insn[10:7], insn[12:11], insn[5], insn[6], 2'd0};
+              end
+
+              // Quadrant 1
+              else if ((insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
+                 pre_exe_op <= `EXOP_ADD;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
+                 pre_exe_op  <= `EXOP_ADD;
+                 pre_exe_b   <= d_c_imm;
+                 pre_exe_sxt <= 1;
+              end
+              else if ((insn & 'he003) == 'h4001) begin // C.LI
+                 pre_exe_op <= `EXOP_OPB;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
+                 pre_exe_op <= `EXOP_ADD;
+                 pre_exe_b  <= {{55{insn[12]}}, insn[4:3], insn[5], insn[2], insn[6], 4'd0};
+              end
+              else if ((insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
+                 pre_exe_op <= `EXOP_OPB;
+                 pre_exe_b  <= {{47{insn[12]}}, insn[6:2], 12'd0};
+              end
+              else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
+                 pre_exe_op <= `EXOP_SHR;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
+                 pre_exe_op <= `EXOP_SAR;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
+                 pre_exe_op <= `EXOP_AND;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'hfc63) == 'h8c01) begin // C.SUB
+                 pre_exe_op <= `EXOP_SUB;
+                 pre_exe_b  <= s2_bram;
+              end
+              else if ((insn & 'hfc63) == 'h8c21) begin // C.XOR
+                 pre_exe_op <= `EXOP_XOR;
+                 pre_exe_b  <= s2_bram;
+              end
+              else if ((insn & 'hfc63) == 'h8c41) begin // C.OR
+                 pre_exe_op <= `EXOP_OR;
+                 pre_exe_b  <= s2_bram;
+              end
+              else if ((insn & 'hfc63) == 'h8c61) begin // C.AND
+                 pre_exe_op <= `EXOP_AND;
+                 pre_exe_b  <= s2_bram;
+              end
+              else if ((insn & 'hfc63) == 'h9c01) begin // C.SUBW
+                 pre_exe_op  <= `EXOP_SUB;
+                 pre_exe_b   <= s2_bram;
+                 pre_exe_sxt <= 1;
+              end
+              else if ((insn & 'hfc63) == 'h9c21) begin // C.ADDW
+                 pre_exe_op  <= `EXOP_ADD;
+                 pre_exe_b   <= s2_bram;
+                 pre_exe_sxt <= 1;
+              end
+
+              // Quadrant 2
+              else if ((insn & 'he003) == 'h0002) begin // C.SLLI
+                 pre_exe_op <= `EXOP_SHL;
+                 pre_exe_b  <= d_c_imm;
+              end
+              else if ((insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
+                 ;
+              end
+              else if ((insn & 'hf003) == 'h8002) begin // C.MV
+                 pre_exe_op <= `EXOP_OPB;
+                 pre_exe_b  <= s2_bram;
+              end
+              else if ((insn & 'hf07f) == 'h9002) begin // C.JALR (link = pc+2)
+                 pre_exe_op <= `EXOP_OPB;
+                 pre_exe_b  <= pc + 2;
+              end
+              else if ((insn & 'hf003) == 'h9002) begin // C.ADD
+                 pre_exe_op <= `EXOP_ADD;
+                 pre_exe_b  <= s2_bram;
+              end
+
+              // ---- 32-bit instructions (insn[1:0] == 2'b11) ----
+              else if (insn[1:0] == 2'b11) begin
+                 case (insn[6:2])
+                    5'b01101: begin // LUI
+                       pre_exe_op <= `EXOP_OPB;
+                       pre_exe_b  <= d_imm_u;
+                    end
+                    5'b00101: begin // AUIPC
+                       pre_exe_op <= `EXOP_OPB;
+                       pre_exe_b  <= pc + d_imm_u;
+                    end
+                    5'b11011: begin // JAL (link = pc+4)
+                       pre_exe_op <= `EXOP_OPB;
+                       pre_exe_b  <= pc + 4;
+                    end
+                    5'b11001: begin // JALR (link = pc+4)
+                       pre_exe_op <= `EXOP_OPB;
+                       pre_exe_b  <= pc + 4;
+                    end
+                    5'b00100: begin // OP-IMM: funct3 selects operation
+                       pre_exe_b <= d_imm_i; // default; shifts override below
+                       case (insn[14:12])
+                          3'b000: pre_exe_op <= `EXOP_ADD;   // ADDI
+                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {58'd0, insn[25:20]}; end  // SLLI
+                          3'b010: pre_exe_op <= `EXOP_LTS;   // SLTI
+                          3'b011: pre_exe_op <= `EXOP_LTU;   // SLTIU
+                          3'b100: pre_exe_op <= `EXOP_XOR;   // XORI
+                          3'b101: begin // SRLI / SRAI
+                             pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             pre_exe_b  <= {58'd0, insn[25:20]};
+                          end
+                          3'b110: pre_exe_op <= `EXOP_OR;    // ORI
+                          3'b111: pre_exe_op <= `EXOP_AND;   // ANDI
+                       endcase
+                    end
+                    5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
+                       pre_exe_b <= s2_bram;
+                       case (insn[14:12])
+                          3'b000: pre_exe_op <= insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
+                          3'b001: pre_exe_op <= `EXOP_SHL;  // SLL
+                          3'b010: pre_exe_op <= `EXOP_LTS;  // SLT
+                          3'b011: pre_exe_op <= `EXOP_LTU;  // SLTU
+                          3'b100: pre_exe_op <= `EXOP_XOR;  // XOR
+                          3'b101: pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
+                          3'b110: pre_exe_op <= `EXOP_OR;   // OR
+                          3'b111: pre_exe_op <= `EXOP_AND;  // AND
+                          // MUL/DIV (funct7[0]=1): exe_add unused; default EXOP_OPB is fine
+                       endcase
+                    end
+                    5'b00110: begin // OP-IMM-32 (W-type immediates)
+                       pre_exe_sxt <= 1;
+                       case (insn[14:12])
+                          3'b000: begin pre_exe_op <= `EXOP_ADD; pre_exe_b <= d_imm_i; end  // ADDIW
+                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {59'd0, insn[24:20]}; end  // SLLIW
+                          3'b101: begin  // SRLIW / SRAIW
+                             pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             pre_exe_b  <= {59'd0, insn[24:20]};
+                          end
+                          default: ; // other funct3: no exe_add
+                       endcase
+                    end
+                    5'b01110: begin // OP-REG-32 (W-type register)
+                       pre_exe_sxt <= 1;
+                       pre_exe_b <= s2_bram;
+                       case (insn[14:12])
+                          3'b000: pre_exe_op <= insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
+                          3'b001: pre_exe_op <= `EXOP_SHL;  // SLLW
+                          3'b101: pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
+                          // MUL/DIV-W: exe_add unused
+                          default: ;
+                       endcase
+                    end
+                    5'b01011: begin // AMO — SC.W/D fail path writes exe_add = 1
+                       pre_exe_op <= `EXOP_ONE;
+                    end
+                    default: ; // LOAD, STORE, BRANCH, CSR, etc.: exe_add unused
+                 endcase
+              end
+           end // rf3_pre_decode
         end
 
         `S_FETCH1B: begin
@@ -776,6 +999,16 @@ module smolrv64(input wire        clock,
            mem_data0_q <= mem_data0;
            mem_data1_q <= mem_data1;
            state <= `S_FETCH2;
+        end
+
+        `S_LOAD_LATCH: begin
+           // Register the async LUTRAM mem0/mem1 output into flip-flops.
+           // mem_addr0/mem_addr1 were set (via <=) in the preceding state, so are stable.
+           // S_LOAD_ALIGN uses mem_data0_q/mem_data1_q instead of the async LUTRAM wires,
+           // breaking the mem_addr0_reg → LUTRAM → alignment → write_back_value_reg path.
+           mem_data0_q <= mem_data0;
+           mem_data1_q <= mem_data1;
+           state <= `S_LOAD_ALIGN;
         end
 
         `S_EXECUTE: begin
@@ -818,8 +1051,6 @@ module smolrv64(input wire        clock,
            // Quadrant 0
            if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
               write_back_register = rs2;
-              exe_add <= s1 + c_nzuimm107_1211_5_6_x4;
-              exe_sext32 <= 0;
               if ((insn & 'hffff) == 0) begin
                  write_back_register = 0;
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -838,7 +1069,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm5_1210_6_x4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'he003) == 'h6000) begin // C.LD
@@ -847,7 +1078,7 @@ module smolrv64(input wire        clock,
               mem_addr = s1 + c_uimm65_1210_x8;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            //else if ((insn & 'he003) == 'ha000) begin // C.FSD
@@ -880,86 +1111,58 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'he003) == 'h0001) begin // C.ADDI
               write_back_register = rs1;
-              exe_add <= s1 + c_imm12_62;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'he003) == 'h2001) begin // C.ADDIW
               write_back_register = rs1;
-              exe_add <= s1[31:0] + c_imm12_62;
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = insn[11:7];
-              exe_add <= c_imm12_62;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP
               write_back_register = rs1;
-              exe_add <= s1 + c_imm12_43_5_2_6_x16;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'he003) == 'h6001) begin // C.LUI
               write_back_register = rs1;
-              exe_add <= c_imm12_62<<12;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
               write_back_register = rs1;
-              exe_add <= s1 >> c_imm12_62[5:0];
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
               write_back_register = rs1;
-              exe_add <= $signed(s1) >>> c_imm12_62[5:0];
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = rs1;
-              exe_add <= s1 & c_imm12_62;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c01) begin // C.SUB
               write_back_register = rs1;
-              exe_add <= s1 - s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = rs1;
-              exe_add <= s1 ^ s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = rs1;
-              exe_add <= s1 | s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = rs1;
-              exe_add <= s1 & s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc63) == 'h9c01) begin // C.SUBW
               write_back_register = rs1;
-              exe_add <= s1[31:0] - s2[31:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfc63) == 'h9c21) begin // C.ADDW
               write_back_register = rs1;
-              exe_add <= s1[31:0] + s2[31:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'he003) == 'ha001) begin // C.J
@@ -980,8 +1183,6 @@ module smolrv64(input wire        clock,
               // Quadrant 2
            else if ((insn & 'he003) == 'h0002) begin // C.SLLI
               write_back_register = rs1;
-              exe_add <= s1 << c_imm12_62[5:0];
-              exe_sext32 <= 0;
            end
 
            //else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
@@ -994,7 +1195,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 2|4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'he003) == 'h6002) begin // C.LDSP
@@ -1003,7 +1204,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 3;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
@@ -1012,8 +1213,6 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf003) == 'h8002) begin // C.MV
               write_back_register = rs1;
-              exe_add <= s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
@@ -1024,15 +1223,11 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
-              exe_add <= pc + 2;
-              exe_sext32 <= 0;
               npc = s1 & ~1;
            end
 
            else if ((insn & 'hf003) == 'h9002) begin // C.ADD
               write_back_register = rs1;
-              exe_add <= s1 + s2;
-              exe_sext32 <= 0;
            end
 
            // else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
@@ -1060,27 +1255,19 @@ module smolrv64(input wire        clock,
            // Quadrant 3, uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
-              exe_add <= imm_u;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000007f) == 'h00000017) begin // AUIPC
               write_back_register = rd;
-              exe_add <= pc + imm_u;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = rd;
-              exe_add <= npc;
-              exe_sext32 <= 0;
               npc = pc + imm_j;
            end
 
            else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = rd;
-              exe_add <= npc;
-              exe_sext32 <= 0;
               npc = (s1 + imm_i) & ~1;
            end
 
@@ -1114,7 +1301,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 0|4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00001003) begin // LH
@@ -1123,7 +1310,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 1|4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00002003) begin // LW
@@ -1132,7 +1319,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 2|4;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00003003) begin // LD
@@ -1141,7 +1328,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 3;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00004003) begin // LBU
@@ -1150,7 +1337,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 0;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00005003) begin // LHU
@@ -1159,7 +1346,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 1;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00006003) begin // LWU
@@ -1168,7 +1355,7 @@ module smolrv64(input wire        clock,
               load_size_lg2 = 2;
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'h0000707f) == 'h00000023) begin // SB
@@ -1209,98 +1396,66 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00000013) begin // ADDI
               write_back_register = rd;
-              exe_add <= s1 + imm_i;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00002013) begin // SLTI
               write_back_register = rd;
-              exe_add <= $signed(s1) < $signed(imm_i);
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00003013) begin // SLTIU
               write_back_register = rd;
-              exe_add <= s1 < imm_i;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = rd;
-              exe_add <= s1 ^ imm_i;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = rd;
-              exe_add <= s1 | imm_i;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = rd;
-              exe_add <= s1 & imm_i;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00000033) begin // ADD
               write_back_register = rd;
-              exe_add <= s1 + s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h40000033) begin // SUB
               write_back_register = rd;
-              exe_add <= s1 - s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00001033) begin // SLL
               write_back_register = rd;
-              exe_add <= s1 << s2[5:0];
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00002033) begin // SLT
               write_back_register = rd;
-              exe_add <= $signed(s1) < $signed(s2);
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00003033) begin // SLTU
               write_back_register = rd;
-              exe_add <= s1 < s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = rd;
-              exe_add <= s1 ^ s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00005033) begin // SRL
               write_back_register = rd;
-              exe_add <= s1 >> s2[5:0];
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h40005033) begin // SRA
               write_back_register = rd;
-              exe_add <= $signed(s1) >>> s2[5:0];
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = rd;
-              exe_add <= s1 | s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = rd;
-              exe_add <= s1 & s2;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hf000707f) == 'h0000000f) begin // FENCE
@@ -1330,38 +1485,26 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
               write_back_register = rd;
-              exe_add <= s1 << shamt;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc00707f) == 'h00005013) begin // SRLI
               write_back_register = rd;
-              exe_add <= s1 >> shamt;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'hfc00707f) == 'h40005013) begin // SRAI
               write_back_register = rd;
-              exe_add <= $signed(s1) >>> shamt;
-              exe_sext32 <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h0000001b) begin // ADDIW
               write_back_register = rd;
-              exe_add <= s1[31:0] + imm_i[31:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
               write_back_register = rd;
-              exe_add <= s1[31:0] << shamt[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
               write_back_register = rd;
-              exe_add <= s1[31:0] >> shamt[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
@@ -1369,32 +1512,22 @@ module smolrv64(input wire        clock,
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
               write_back_register = rd;
-              exe_add <= $signed(s1[31:0]) >>> shamt[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000003b) begin // ADDW
               write_back_register = rd;
-              exe_add <= s1[31:0] + s2[31:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000003b) begin // SUBW
               write_back_register = rd;
-              exe_add <= s1[31:0] - s2[31:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000103b) begin // SLLW
               write_back_register = rd;
-              exe_add <= s1[31:0] << s2[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h0000503b) begin // SRLW
               write_back_register = rd;
-              exe_add <= s1[31:0] >> s2[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hfe00707f) == 'h4000503b) begin // SRAW
@@ -1402,8 +1535,6 @@ module smolrv64(input wire        clock,
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
               write_back_register = rd;
-              exe_add <= $signed(s1[31:0]) >>> s2[4:0];
-              exe_sext32 <= 1;
            end
 
            else if ((insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
@@ -1603,7 +1734,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               reservation <= s1;
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'hf800707f) == 'h1800202f || // SC.W
@@ -1619,8 +1750,6 @@ module smolrv64(input wire        clock,
                  store_value = s2;
                  state <= `S_STORE;
               end else begin
-                 exe_add <= 1;  // SC fail: write 1 (via S_EXECUTE2)
-                 exe_sext32 <= 0;
               end
            end
 
@@ -1649,7 +1778,7 @@ module smolrv64(input wire        clock,
               mem_addr0 <= mem_addr[63:4] + mem_addr[3];
               mem_addr1 <= mem_addr[63:4];
               do_atomic <= 1;
-              state <= `S_LOAD_ALIGN;
+              state <= `S_LOAD_LATCH;
            end
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
@@ -1716,6 +1845,41 @@ module smolrv64(input wire        clock,
               tval = insn;
               state <= `S_EXCEPTION;
            end
+
+           // Pre-registered ALU computation: uses pre_exe_op/pre_exe_b decoded in S_RF3.
+           // Both operands (s1, pre_exe_b) and selector (pre_exe_op) are flip-flops,
+           // so the critical path is only ~7 LUT levels (vs ~15 with the inline if-else).
+           case (pre_exe_op)
+              `EXOP_ADD: exe_add <= pre_exe_sxt
+                            ? {32'd0, s1[31:0] + pre_exe_b[31:0]}
+                            : s1 + pre_exe_b;
+              `EXOP_SUB: exe_add <= pre_exe_sxt
+                            ? {32'd0, s1[31:0] - pre_exe_b[31:0]}
+                            : s1 - pre_exe_b;
+              `EXOP_SHL: exe_add <= pre_exe_sxt
+                            ? {32'd0, s1[31:0] << pre_exe_b[4:0]}
+                            : s1 << pre_exe_b[5:0];
+              `EXOP_SHR: exe_add <= pre_exe_sxt
+                            ? {32'd0, s1[31:0] >> pre_exe_b[4:0]}
+                            : s1 >> pre_exe_b[5:0];
+              // EXOP_SAR: use if/else to avoid ternary mixing signed/unsigned arms
+              // (Verilog coerces $signed(s1)>>>n to unsigned/logical when the
+              //  other ternary arm is unsigned, breaking arithmetic right shift)
+              `EXOP_SAR: if (pre_exe_sxt)
+                            exe_add <= {32'd0, $signed(s1[31:0]) >>> pre_exe_b[4:0]};
+                         else
+                            exe_add <= $signed(s1) >>> pre_exe_b[5:0];
+              `EXOP_XOR: exe_add <= s1 ^ pre_exe_b;
+              `EXOP_OR:  exe_add <= s1 | pre_exe_b;
+              `EXOP_AND: exe_add <= s1 & pre_exe_b;
+              `EXOP_LTS: exe_add <= $signed(s1) < $signed(pre_exe_b) ? 1 : 0;
+              `EXOP_LTU: exe_add <= s1 < pre_exe_b ? 1 : 0;
+              `EXOP_OPB: exe_add <= pre_exe_b;
+              `EXOP_ONE: exe_add <= 1;
+              default:   exe_add <= 0;
+           endcase
+           exe_sext32 <= pre_exe_sxt;
+
         end
 
         `S_EXECUTE2: begin
@@ -1895,7 +2059,7 @@ module smolrv64(input wire        clock,
               ptw_level = 2;
               ptw_access = do_atomic ? 2'd3 : 2'd1;
               ptw_prv = mprv ? mpp : prv;
-              ptw_return = `S_LOAD_ALIGN;
+              ptw_return = `S_LOAD_LATCH;
               ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
               if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  ptw_from_dram <= 1;
@@ -1911,7 +2075,7 @@ module smolrv64(input wire        clock,
            end else begin
               if (!do_atomic) translated <= 0;
 
-              aligned = mem_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
+              aligned = mem_addr[3] ? {mem_data0_q, mem_data1_q} : {mem_data1_q, mem_data0_q};
               aligned = aligned >> (mem_addr[2:0] * 8);
 
               case (load_size_lg2)
