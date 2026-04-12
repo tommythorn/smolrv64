@@ -2714,9 +2714,17 @@ module smolrv64(input wire        clock,
            state <= `S_RF2;  // rs1/rs2 already decoded here; skip S_RF
         end
 
-        `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
-           dram_latched <= dram_readdata;
-           state        <= `S_FETCH2;
+        `S_DRAM_FETCH_WAIT: begin
+           if (dram_readdatavalid) begin
+              dram_latched <= dram_readdata;
+              state        <= `S_FETCH2;
+           end else if (dram_write_ready) begin
+              // Adapter is idle but data hasn't returned: our initial dram_read
+              // pulse was missed because the adapter was processing a preceding
+              // write (e.g. a DRAM stack push).  Re-assert the read; dram_burst_addr
+              // still holds the fetch address set in S_FETCH1.
+              dram_read = 1;
+           end
         end
 
         `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin

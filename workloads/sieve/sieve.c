@@ -15,7 +15,7 @@ typedef unsigned char uint8_t;
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
-#define CLK_FREQ    200000000
+#define CLK_FREQ    333333333
 #define UART_SPEED  3000000
 
 // Register offsets
