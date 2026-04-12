@@ -5,7 +5,7 @@ XPR      := $(PROJECT).xpr
 RUNS_DIR := $(PROJECT).runs
 BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit
 TTY      := /dev/ttyUSB1
-WORKLOAD ?= ../../workloads/sieve
+WORKLOAD ?= ../../workloads/monitor
 export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 
 .PHONY: all synth impl bit program load clean
@@ -26,7 +26,7 @@ program:
 	$(VIVADO) $(VFLAGS) -source program.tcl -tclargs $(BIT)
 
 load:
-	$(MAKE) -C $(WORKLOAD) load
+	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000
 	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs bit force
 	$(MAKE) program
 

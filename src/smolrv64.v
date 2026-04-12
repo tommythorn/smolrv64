@@ -294,7 +294,9 @@ module smolrv64(input wire        clock,
 
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
-`define MEM_BASEADDR    64'h80000000
+`ifndef MEM_BASEADDR
+`define MEM_BASEADDR    64'h80000000  // override with -DMEM_BASEADDR=64'hXXXXXXXX
+`endif
 `ifndef MEM_SIZE_LG2
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif

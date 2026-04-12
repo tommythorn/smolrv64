@@ -10,7 +10,7 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS
 {
-  . = 0x80000000;
+  . = MEM_BASE;  /* set by --defsym MEM_BASE=... on linker command line */
   .text           :
   {
     *(.text.startup .text.startup.*)

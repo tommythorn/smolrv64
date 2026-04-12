@@ -128,6 +128,7 @@
         <Option Name="DesignMode" Val="RTL"/>
         <Option Name="TopModule" Val="rk_xcku5p"/>
         <Option Name="TopAutoSet" Val="TRUE"/>
+        <Verilog_Define Name="MEM_BASEADDR" Val="64&apos;h70000000"/>
       </Config>
     </FileSet>
     <FileSet Name="constrs_1" Type="Constrs" RelSrcDir="$PSRCDIR/constrs_1" RelGenDir="$PGENDIR/constrs_1">

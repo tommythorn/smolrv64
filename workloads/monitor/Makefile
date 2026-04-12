@@ -7,13 +7,14 @@ else # Assume Linux
 endif
 
 SRC_DIR = ../../src
+MEM_BASE ?= 0x80000000
 
 monitor.bin: monitor.elf
 	$(RV)objcopy -O binary monitor.elf monitor.bin
 
 monitor.elf: monitor.c crt0.s
 	$(RV)gcc -mabi=lp64 -mcmodel=medany -march=rv64imac_zicsr -fno-builtin -nostdlib \
-		-Wl,-Tmonitor.ld -O \
+		-Wl,-Tmonitor.ld -Wl,--defsym,MEM_BASE=$(MEM_BASE) -O \
 		crt0.s monitor.c -o monitor.elf
 
 monitor.even: monitor.bin

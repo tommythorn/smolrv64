@@ -37,6 +37,9 @@ proc run_if_needed {run_id to_step jobs} {
     }
 }
 
+# Set SRAM base to 0x70000000 for this platform (below the DDR4 range at 0x80000000)
+set_property verilog_define "MEM_BASEADDR=64'h70000000" [current_fileset]
+
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {
     puts "\n=== Running Synthesis ==="

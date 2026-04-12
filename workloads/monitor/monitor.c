@@ -222,6 +222,112 @@ static uint64_t load_base64(uint64_t addr)
     return total;
 }
 
+/* ── XMODEM-1K receive ───────────────────────────────────────────────── */
+/* Simpler and more reliable than Y-modem: no header block, no batch end.
+ * Host side: sx -k <file>   (lrzsz)
+ *         or: sz --xmodem -k <file> */
+#define XM_SOH  0x01   /* 128-byte block */
+#define XM_STX  0x02   /* 1024-byte block */
+#define XM_EOT  0x04
+#define XM_ACK  0x06
+#define XM_NAK  0x15
+#define XM_CAN  0x18
+
+static uint16_t xm_crc16(const uint8_t *buf, int len)
+{
+    uint16_t crc = 0;
+    for (; len--; buf++) {
+        crc ^= (uint16_t)*buf << 8;
+        for (int i = 0; i < 8; i++)
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+    }
+    return crc;
+}
+
+/* Non-blocking UART read with a spin-count timeout.
+ * Returns 1 and stores byte in *out if a byte arrived; 0 on timeout. */
+static int uart_getc_tmo(uint32_t tmo, uint8_t *out)
+{
+    while (tmo--) {
+        if (UART0_BASE[UART_LSR] & LSR_DR) {
+            *out = UART0_BASE[UART_RBR];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Receive XMODEM-1K to addr.
+ * Sends 'C' every ~1 s until the sender responds (up to ~30 s total).
+ * Returns bytes written (always a multiple of block size — last block may
+ * contain up to 1023 padding bytes), or (uint64_t)-1 on cancel/timeout. */
+static uint64_t xmodem1k_recv(uint64_t addr)
+{
+    static uint8_t blkbuf[1024]; /* static to keep off the stack */
+    volatile uint8_t *dst = (volatile uint8_t *)addr;
+    uint64_t total = 0;
+    int next_blk = 1;
+    uint8_t c;
+
+    /* Send 'C' with ~1-second retries until the sender starts */
+    for (int tries = 30; tries > 0; tries--) {
+        uart_putc(UART0_BASE, 'C');
+        if (uart_getc_tmo(CLK_FREQ / 5, &c))  /* ~200 ms per poll */
+            goto got;
+    }
+    return (uint64_t)-1;  /* sender never responded */
+
+got:
+    for (;;) {
+        if (c == XM_EOT) {
+            uart_putc(UART0_BASE, XM_ACK);
+            return total;
+        }
+        if (c == XM_CAN) {
+            /* Two consecutive CANs = abort */
+            if (uart_getc_tmo(CLK_FREQ / 10, &c) && c == XM_CAN) {
+                uart_putc(UART0_BASE, XM_ACK);
+                return (uint64_t)-1;
+            }
+            goto next;
+        }
+        if (c != XM_SOH && c != XM_STX) goto next;
+
+        int blen    = (c == XM_STX) ? 1024 : 128;
+        uint8_t blk = uart_getc(UART0_BASE);
+        uint8_t inv = uart_getc(UART0_BASE);
+        for (int i = 0; i < blen; i++)
+            blkbuf[i] = uart_getc(UART0_BASE);
+        uint16_t crc_got = ((uint16_t)uart_getc(UART0_BASE) << 8)
+                          |  uart_getc(UART0_BASE);
+
+        if ((uint8_t)(blk ^ inv) != 0xFF || xm_crc16(blkbuf, blen) != crc_got) {
+            uart_putc(UART0_BASE, XM_NAK);
+            goto next;
+        }
+        if (blk == (uint8_t)(next_blk & 0xFF)) {
+            for (int i = 0; i < blen; i++) *dst++ = blkbuf[i];
+            total += blen;
+            next_blk++;
+        } else if (blk != (uint8_t)((next_blk - 1) & 0xFF)) {
+            /* Out-of-sequence block: cancel */
+            uart_putc(UART0_BASE, XM_CAN);
+            uart_putc(UART0_BASE, XM_CAN);
+            return (uint64_t)-1;
+        }
+        /* Duplicate of previous block: ACK and ignore */
+        uart_putc(UART0_BASE, XM_ACK);
+
+next:
+        /* Wait up to ~10 s for next byte; timeout = stalled transfer */
+        if (!uart_getc_tmo((uint32_t)CLK_FREQ * 10, &c)) {
+            uart_putc(UART0_BASE, XM_CAN);
+            uart_putc(UART0_BASE, XM_CAN);
+            return (uint64_t)-1;
+        }
+    }
+}
+
 typedef void (*fn_t)(void);
 
 int main(void)
@@ -300,6 +406,17 @@ int main(void)
             n = load_base64(addr);
             puthex64(n); puts_(" bytes loaded\n");
 
+        } else if (*p == 'Y' || *p == 'y') {
+            p = parse_hex(p + 1, &addr);
+            if (!p) { puts_("usage: Y<addr>\n"); continue; }
+            puts_("start XMODEM-1K send now\n");
+            {
+                uint64_t n = xmodem1k_recv(addr);
+                if (n == (uint64_t)-1)
+                    puts_("cancelled\n");
+                else { puthex64(n); puts_(" bytes loaded\n"); }
+            }
+
         } else if (*p == 'X' || *p == 'x') {
             p = parse_hex(p + 1, &addr);
             if (!p) { puts_("usage: X<addr>\n"); continue; }
@@ -315,6 +432,7 @@ int main(void)
             puts_("WB<addr> <val>   write 8-bit byte\n");
             puts_("T<addr>          hexdump 256 bytes\n");
             puts_("L<addr>          load base64 blob (empty line ends)\n");
+            puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
             puts_("X<addr>          execute from address\n");
 
         } else if (*p != 0) {

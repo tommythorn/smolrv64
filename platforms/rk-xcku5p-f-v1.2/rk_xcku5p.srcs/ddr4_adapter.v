@@ -44,6 +44,12 @@ module ddr4_adapter(
     localparam RD_WAIT = 2'd3;
 
     reg [1:0] state = IDLE;
+    // Tracks whether the write data FIFO entry has been accepted by the MIG.
+    // Prevents re-presenting the same data when app_rdy and app_wdf_rdy go high
+    // in different cycles (e.g. app_wdf_rdy=1 first during DDR4 refresh when
+    // app_rdy=0).  Without this flag the data would be written to the FIFO
+    // twice, causing every subsequent write to use the previous write's data.
+    reg        wdf_done = 0;
 
     assign dram_write_ready = (state == IDLE);
 
@@ -54,6 +60,7 @@ module ddr4_adapter(
             app_wdf_wren       <= 0;
             app_wdf_end        <= 0;
             dram_readdatavalid <= 0;
+            wdf_done           <= 0;
         end else begin
             // Default: deassert one-cycle pulses
             app_en             <= 0;
@@ -64,46 +71,66 @@ module ddr4_adapter(
                 IDLE: begin
                     if (dram_write) begin
                         // Latch write command and data
-                        app_addr     <= {3'b0, dram_burst_addr};
+                        // app_addr is a byte address; dram_burst_addr is the 32-byte burst
+                        // index (phys_addr[30:5]), so multiply by 32 (shift left 5).
+                        // Use bits [23:0] of dram_burst_addr for the 29-bit MIG address:
+                        //   {dram_burst_addr[23:0], 5'b0} = phys_addr[28:0]
+                        // (bits [25:24] = phys_addr[30:29] = 0 for valid DDR4 range 0x80000000-0x9FFFFFFF)
+                        app_addr     <= {dram_burst_addr[23:0], 5'b0};
                         app_cmd      <= 3'b000;  // WRITE
                         app_wdf_data <= dram_writedata;
                         app_wdf_mask <= dram_byte_mask;  // 1=mask (same convention as MIG)
                         app_wdf_end  <= 1;
-                        // Assert command and write data simultaneously
+                        // Assert command and write data; wait for MIG acceptance in WR_CMD.
+                        // Do NOT shortcut to IDLE even if app_rdy && app_wdf_rdy look ready here:
+                        // app_en/app_wdf_wren are registered (<=) so they only become 1 NEXT cycle.
+                        // The acceptance check must happen in WR_CMD where app_en is already high.
                         app_en       <= 1;
                         app_wdf_wren <= 1;
-                        if (app_rdy && app_wdf_rdy)
-                            state <= IDLE;   // accepted in one cycle
-                        else
-                            state <= WR_CMD; // wait for acceptance
+                        wdf_done     <= 0;
+                        state        <= WR_CMD;
                     end else if (dram_read) begin
-                        // Latch read command
-                        app_addr <= {3'b0, dram_burst_addr};
+                        // Latch read command; always go through RD_CMD for proper handshake.
+                        // app_en is registered (<=) so it becomes 1 NEXT cycle (in RD_CMD).
+                        // RD_CMD checks app_rdy while app_en is already high — that is the
+                        // correct simultaneous-assertion required by the MIG native interface.
+                        app_addr <= {dram_burst_addr[23:0], 5'b0};  // byte address = burst_idx * 32
                         app_cmd  <= 3'b001;  // READ
                         app_en   <= 1;
-                        if (app_rdy)
-                            state <= RD_WAIT;
-                        else
-                            state <= RD_CMD;
+                        state <= RD_CMD;
                     end
                 end
 
                 WR_CMD: begin
-                    // Re-present command and write data until MIG accepts both
-                    app_en       <= 1;
-                    app_wdf_wren <= 1;
-                    // app_addr, app_cmd, app_wdf_data, app_wdf_mask, app_wdf_end
-                    // retain their values from IDLE
-                    if (app_rdy && app_wdf_rdy)
+                    // Write data FIFO: present data until MIG accepts it (app_wdf_rdy=1
+                    // while app_wdf_wren=1).  Once accepted, stop presenting to prevent
+                    // a duplicate FIFO entry if app_rdy is still 0 (e.g. DDR4 refresh).
+                    if (!wdf_done) begin
+                        if (app_wdf_rdy) begin
+                            wdf_done <= 1;  // data accepted this cycle; don't re-present
+                        end else begin
+                            app_wdf_wren <= 1;  // FIFO not ready; re-present next cycle
+                        end
+                    end
+                    // Write command: keep presenting until MIG accepts it.
+                    if (app_rdy) begin
                         state <= IDLE;
+                    end else begin
+                        app_en <= 1;
+                    end
                 end
 
                 RD_CMD: begin
-                    // Re-present read command until MIG accepts it
-                    app_en <= 1;
-                    // app_addr, app_cmd retain values from IDLE
-                    if (app_rdy)
+                    // Re-present read command until MIG accepts it.
+                    // app_en is already 1 (from IDLE or previous RD_CMD).
+                    // On the acceptance cycle, stop asserting app_en so no duplicate
+                    // command is issued on the first cycle of RD_WAIT.
+                    if (app_rdy) begin
+                        // app_addr, app_cmd retain values; default deasserts app_en
                         state <= RD_WAIT;
+                    end else begin
+                        app_en <= 1;
+                    end
                 end
 
                 RD_WAIT: begin
