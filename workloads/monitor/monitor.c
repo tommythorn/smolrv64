@@ -7,7 +7,7 @@
 //   WB<addr> <val>   - write 8-bit byte to address
 //   T<addr>          - hexdump 256 bytes starting at address
 //   L<addr>          - load base64-encoded binary to address (end with empty line)
-//   X<addr>          - jump to address and execute
+//   X<addr> [a0 [a1]] - jump to address and execute
 //   ?                - help
 
 typedef unsigned char      uint8_t;
@@ -329,6 +329,7 @@ next:
 }
 
 typedef void (*fn_t)(void);
+typedef void (*fn_t2)(uint64_t, uint64_t);
 
 int main(void)
 {
@@ -418,10 +419,13 @@ int main(void)
             }
 
         } else if (*p == 'X' || *p == 'x') {
+            uint64_t a0 = 0, a1 = 0;
             p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: X<addr>\n"); continue; }
+            if (!p) { puts_("usage: X<addr> [a0 [a1]]\n"); continue; }
+            if (*p == ' ') { const char *q = parse_hex(p + 1, &a0); if (q) p = q; }
+            if (*p == ' ') { const char *q = parse_hex(p + 1, &a1); if (q) p = q; }
             puts_("jumping...\n");
-            ((fn_t)addr)();
+            ((fn_t2)addr)(a0, a1);
             puts_("returned\n");
 
         } else if (*p == '?' || *p == 'h' || *p == 'H') {
@@ -433,7 +437,7 @@ int main(void)
             puts_("T<addr>          hexdump 256 bytes\n");
             puts_("L<addr>          load base64 blob (empty line ends)\n");
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
-            puts_("X<addr>          execute from address\n");
+            puts_("X<addr> [a0 [a1]] execute from address\n");
 
         } else if (*p != 0) {
             puts_("unknown command (? for help)\n");
