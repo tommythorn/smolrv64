@@ -35,6 +35,12 @@ smolrv64-run: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-sim: $(SRCS) Makefile
 	iverilog $(IVOPTS) -o $@ $(SRCS)
 
+smolrv64-linux-sim: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=27 -DVPI -DNO_TIMEOUT -o $@ $(SRCS)
+
+smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
+	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT -o $@ $(SRCS)
+
 smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
