@@ -301,6 +301,9 @@ module smolrv64(input wire        clock,
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
+`ifndef RESET_PC
+`define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
+`endif
 
    // To enable penalty-free unaligned access, memory is split into
    // even and odd 64b word addresses and striped across them.  Any
@@ -395,7 +398,7 @@ module smolrv64(input wire        clock,
                    .read_data_1(s2_bram));
 
 
-   reg  [63:0] npc = `MEM_BASEADDR; // XXX We should set this on reset
+   reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
    reg  [255:0] dram_latched;       // holds first DDR4 burst across states
    reg          fetch_from_dram;    // set when current fetch came from DRAM
    reg          ptw_from_dram;      // set when current PTW PTE came from DRAM
@@ -403,6 +406,11 @@ module smolrv64(input wire        clock,
    reg  [63:0]  dram2_data_part;    // overflow bytes for split store
    reg  [31:0]  dram2_mask;         // DDR4 byte mask for split-store second burst
    reg          dram_store_split;   // 1 = second burst pending after DRAM_STORE_WAIT
+
+`ifndef BUS_TIMEOUT_LG2
+`define BUS_TIMEOUT_LG2 10  // 1024 cycles before access fault
+`endif
+   reg [`BUS_TIMEOUT_LG2-1:0] bus_timeout_ctr = 0;
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
@@ -1826,10 +1834,8 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = insn;
                  state <= `S_EXCEPTION;
-              end else if ((csr_mip & csr_mie) != 0)
-                state <= `S_FETCH1;
-              else
-                state <= `S_EXECUTE; // Stay until csr_map changes (XXX doesn't yet)
+              end else
+                state <= `S_FETCH1; // treat as NOP (no real sleep in simulation)
            end
 
            else begin
@@ -2227,7 +2233,9 @@ module smolrv64(input wire        clock,
               mem_wr_mask = 15;
            end
 
-           case (insn[31:24])
+           // insn[31:27]=funct5, insn[26]=aq, insn[25]=rl, insn[24]=rs2[4]
+           // Mask aq/rl/rs2[4] so any register and any ordering variant is handled.
+           case ({insn[31:27], 3'b0})
              'h08: begin end // AMOSWAP
              'h00: store_value = store_value + write_back_value; // AMOADD
              'h20: store_value = store_value ^ write_back_value; // AMOXOR
@@ -2468,6 +2476,7 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
 `ifdef VERBOSE
            $display("%05d  ** Exception, cause %x, pc %x, tval %x, prv %d", $time, cause, pc, tval, prv);
+           $fflush(0);
 `endif
 `endif
 
@@ -2795,13 +2804,59 @@ module smolrv64(input wire        clock,
 
       endcase
 
+      // Bus timeout: fault if an external bus access doesn't respond
+      begin : bus_timeout_logic
+         reg bus_waiting;
+         bus_waiting = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
+                       state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
+                       state == `S_DRAM_PTW_WAIT   ||
+                       state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
+                       state == `S_MMIO_ALIGN;
+         if (bus_waiting) begin
+            bus_timeout_ctr <= bus_timeout_ctr + 1;
+            if (&bus_timeout_ctr) begin
+               cause_intr = 0;
+               case (state)
+                 `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
+                    cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+                    tval = pc;
+                 end
+                 `S_DRAM_STORE_WAIT, `S_DRAM_STORE2: begin
+                    cause = `TRAP_STORE_ACCESS_FAULT;
+                    tval = mem_addr;
+                 end
+                 `S_DRAM_PTW_WAIT: begin
+                    // PTW timeout: fault depends on what triggered the walk
+                    cause = ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
+                            ptw_access == 2 || ptw_access == 3 ? `TRAP_STORE_ACCESS_FAULT :
+                            `TRAP_LOAD_ACCESS_FAULT;
+                    tval = ptw_va;
+                 end
+                 default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
+                    cause = `TRAP_LOAD_ACCESS_FAULT;
+                    tval = mem_addr;
+                 end
+               endcase
+`ifdef SIMULATE
+`ifdef VERBOSE
+               $display("%05d  ** Bus timeout in state %0d, cause %0d, tval %x", $time, state, cause, tval);
+`endif
+`endif
+               write_back_register = 0;
+               state <= `S_EXCEPTION;
+            end
+         end else
+            bus_timeout_ctr <= 0;
+      end
+
       if (reset) begin
          state <= `S_FETCH1;
          csr_minstret <= 0;
          csr_mcycle <= 0;
          clint_mtime <= 0;
          write_back_register <= 0;
-         npc <= `MEM_BASEADDR;
+         npc <= `RESET_PC;
+         bus_timeout_ctr <= 0;
          // XXX and a lot more
       end
    end
@@ -2831,7 +2886,14 @@ module regfile(input wire         clock,
    // - embedding the frequency into register 7 of the UART
    // - initializing sp to the end of physical memory.
    // This is only true for now and will definitely change.
-   reg  [63:0] regfile[31:0]; initial $readmemh("rf.hex", regfile, 0, 31);
+   reg  [63:0] regfile[31:0];
+   reg [8*200:0] rf_path;
+   initial begin
+      if ($value$plusargs("rf=%s", rf_path))
+         $readmemh(rf_path, regfile, 0, 31);
+      else
+         $readmemh("rf.hex", regfile, 0, 31);
+   end
 
    always @(posedge clock) begin
 `ifndef ASYNC_RF
