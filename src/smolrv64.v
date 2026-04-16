@@ -8,8 +8,12 @@
 
 `ifdef SIMULATE
 //`define DISASS 1
+`ifdef VERILATOR
+module smolrv64_tb(input wire clock);
+`else
 module smolrv64_tb;
    reg        clock = 1; always #5 clock = !clock;
+`endif
    wire       halted;
 
    wire [19:0]          mmio_address;
@@ -199,7 +203,37 @@ module smolrv64(input wire        clock,
 `define CSR_MIP        12'h344
 
 `define CSR_PMPCFG0    12'h3a0
+`define CSR_PMPCFG1    12'h3a1
+`define CSR_PMPCFG2    12'h3a2
+`define CSR_PMPCFG3    12'h3a3
+`define CSR_PMPCFG4    12'h3a4
+`define CSR_PMPCFG5    12'h3a5
+`define CSR_PMPCFG6    12'h3a6
+`define CSR_PMPCFG7    12'h3a7
+`define CSR_PMPCFG8    12'h3a8
+`define CSR_PMPCFG9    12'h3a9
+`define CSR_PMPCFG10   12'h3aa
+`define CSR_PMPCFG11   12'h3ab
+`define CSR_PMPCFG12   12'h3ac
+`define CSR_PMPCFG13   12'h3ad
+`define CSR_PMPCFG14   12'h3ae
+`define CSR_PMPCFG15   12'h3af
 `define CSR_PMPADDR0   12'h3b0
+`define CSR_PMPADDR1   12'h3b1
+`define CSR_PMPADDR2   12'h3b2
+`define CSR_PMPADDR3   12'h3b3
+`define CSR_PMPADDR4   12'h3b4
+`define CSR_PMPADDR5   12'h3b5
+`define CSR_PMPADDR6   12'h3b6
+`define CSR_PMPADDR7   12'h3b7
+`define CSR_PMPADDR8   12'h3b8
+`define CSR_PMPADDR9   12'h3b9
+`define CSR_PMPADDR10  12'h3ba
+`define CSR_PMPADDR11  12'h3bb
+`define CSR_PMPADDR12  12'h3bc
+`define CSR_PMPADDR13  12'h3bd
+`define CSR_PMPADDR14  12'h3be
+`define CSR_PMPADDR15  12'h3bf
 
 // https://www.five-embeddev.com/riscv-debug-spec/v0.13-release/hwbp_registers.html
 `define CSR_TSELECT    12'h7a0 // which trigger is accessible through the other trigger registers
@@ -213,8 +247,10 @@ module smolrv64(input wire        clock,
 `define CSR_DSCRATCH   12'h7b2
 `define CSR_MNSTATUS   12'h744 // Don't know what that is
 `define CSR_MCYCLE     12'hb00
+`define CSR_MTIME      12'hb01
 `define CSR_MINSTRET   12'hb02
 `define CSR_CYCLE      12'hc00
+`define CSR_TIME       12'hc01
 `define CSR_INSTRET    12'hc02
 `define CSR_MHARTID    12'hf14
 `define CSR_MVENDORID  12'hf11
@@ -475,9 +511,9 @@ module smolrv64(input wire        clock,
    wire        uart_rx_ip = uart_ier[0] && !uart_rx_empty;  // RX data available
    wire        uart_thre_ip = uart_ier[1];                   // THR always empty
    // IIR: bit 0 = 0 means interrupt pending, 1 = no pending; bits [7:6] = FIFO status
-   wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h04} :
-                           uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h02} :
-                                          {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h01};
+   wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4} :
+                          uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2} :
+                                         {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h1};
    wire [7:0]  uart_lsr = {1'b0, uart_tx_ready, uart_tx_ready, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
    wire        uart_irq_out = uart_rx_ip || uart_thre_ip;
 
@@ -2264,7 +2300,11 @@ module smolrv64(input wire        clock,
 
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
-              case (csrno)
+
+              // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
+              // (0 PMP entries implemented; all accesses permitted).
+              if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
+              else case (csrno)
                 `CSR_SSTATUS:
                   csr_read_val = {sd, 29'd0,            uxl, 12'd0,  // 63:20
                                                     mxr, sum, 1'd0,  // 19:17
@@ -2292,13 +2332,13 @@ module smolrv64(input wire        clock,
                                               tsr,  tw,   tvm, mxr, sum, mprv,  // 22:17
                                   xs,         fs,         mpp, 2'd0,      spp,  // 16: 8
                                   mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; //  7: 0
-                `CSR_MISA:     csr_read_val = 64'h8000000000141105; // 64'h800000000014112d with FD
+                `CSR_MISA:     csr_read_val = 64'h800000000014112d; // 64'h800000000014112d with FD
                 // Hardwired 1 0100 0001 0001 0010 1101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
                 //           U  S      M    I   F  DC A
                 //    SUIMAFDC
                 // -                            F  D
-                // =         1 0100 0001 0001 0000 0101
+                // =         1 0100 0001 0001 0000 0101 = 1105
                 `CSR_MEDELEG:  csr_read_val = csr_medeleg;
                 `CSR_MIDELEG:  csr_read_val = csr_mideleg;
                 `CSR_MIE:      csr_read_val = csr_mie;
@@ -2309,16 +2349,16 @@ module smolrv64(input wire        clock,
                 `CSR_MCAUSE:   csr_read_val = csr_mcause;
                 `CSR_MTVAL:    csr_read_val = csr_mtval;
                 `CSR_MIP:      csr_read_val = csr_mip;
-                `CSR_PMPCFG0:  csr_read_val = 0;
-                `CSR_PMPADDR0: csr_read_val = 0;
                 `CSR_TSELECT:  csr_read_val = 0;
                 `CSR_TDATA1:   csr_read_val = 0;
                 `CSR_TDATA2:   csr_read_val = 0;
                 `CSR_TDATA3:   csr_read_val = 0;
                 `CSR_TINFO:    csr_read_val = 0;
                 `CSR_MCYCLE:   csr_read_val = csr_mcycle;
+                `CSR_MTIME:    csr_read_val = clint_mtime; // XXX I'm not sure this is what we want
                 `CSR_MINSTRET: csr_read_val = csr_minstret;
                 `CSR_CYCLE:    csr_read_val = csr_mcycle;
+                `CSR_TIME:     csr_read_val = clint_mtime; // XXX I'm not sure this is what we want
                 `CSR_INSTRET:  csr_read_val = csr_minstret;
                 `CSR_MHARTID:  csr_read_val = 0;
                 `CSR_MVENDORID:csr_read_val = 0;
@@ -2383,7 +2423,11 @@ module smolrv64(input wire        clock,
            // CSRRS, CSRRC, CSRRSI, and CSRRCI don't write the CSR if rs1 == 0
            if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
               // write the CSR
-              case (csrno)
+
+              // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
+              // (0 PMP entries implemented; all accesses permitted).
+              if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
+              else case (csrno)
                 `CSR_SSTATUS: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -2444,8 +2488,6 @@ module smolrv64(input wire        clock,
                    ssip = csr_write_val[1];
                    usip = csr_write_val[0];
                 end
-                `CSR_PMPCFG0:  begin end
-                `CSR_PMPADDR0: begin end
                 `CSR_TSELECT:  begin end
                 `CSR_TDATA1:   begin end
                 `CSR_TDATA2:   begin end

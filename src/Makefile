@@ -41,6 +41,19 @@ smolrv64-linux-sim: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT -o $@ $(SRCS)
 
+# Verilator build of the same config — much faster simulation.
+# Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
+# is needed.
+smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		-DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_verbose -o smolrv64-linux-verbose-vl \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_verbose/smolrv64-linux-verbose-vl $@
+
 smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
