@@ -176,6 +176,10 @@ module smolrv64(input wire        clock,
 `define SUPERVISOR_EXTERNAL_INTERRUPT            9
 `define MACHINE_EXTERNAL_INTERRUPT              11
 
+`define CSR_FFLAGS     12'h001
+`define CSR_FRM        12'h002
+`define CSR_FCSR       12'h003
+
 `define CSR_SSTATUS    12'h100
 `define CSR_SIE        12'h104
 `define CSR_STVEC      12'h105
@@ -420,6 +424,19 @@ module smolrv64(input wire        clock,
 
    reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
+   // Parallel FP writeback path. Unlike the int path, there is no x0-style
+   // hardwire: f0 is a real register, so a separate _valid bit gates writes.
+   reg         write_back_fp_valid = 0;
+   reg  [ 4:0] write_back_fp_register = 0;
+   reg  [63:0] write_back_fp_value;
+   wire [63:0] f1_bram;     // FP regfile read port 0 (addressed by rs1)
+   wire [63:0] f2_bram;     // FP regfile read port 1 (addressed by rs2)
+   reg  [63:0] f1 = 0;      // flip-flop copy of f1_bram; captured in S_RF3
+   reg  [63:0] f2 = 0;
+   // Single-precision operand reads: if the f-reg isn't properly NaN-boxed,
+   // the spec says single-precision ops see the canonical qNaN 0x7fc00000.
+   wire [31:0] f1_s = (&f1[63:32]) ? f1[31:0] : 32'h7fc00000;
+   wire [31:0] f2_s = (&f2[63:32]) ? f2[31:0] : 32'h7fc00000;
    reg  [63:0] exe_add   = 0;  // execute-stage intermediate (registered at S_EXECUTE→S_EXECUTE2)
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
    // Pre-decoded ALU control: computed in S_RF3, consumed in S_EXECUTE case block.
@@ -450,6 +467,15 @@ module smolrv64(input wire        clock,
                    .read_addr_1(rs2),
                    .read_data_0(s1_bram),
                    .read_data_1(s2_bram));
+
+   fregfile f_rf_inst(.clock(clock),
+                      .write_valid(state == `S_FETCH1 && write_back_fp_valid),
+                      .write_data(write_back_fp_value),
+                      .write_addr(write_back_fp_register),
+                      .read_addr_0(rs1),
+                      .read_addr_1(rs2),
+                      .read_data_0(f1_bram),
+                      .read_data_1(f2_bram));
 
 
    reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
@@ -510,6 +536,11 @@ module smolrv64(input wire        clock,
                csr_mtval      = 0,
                csr_mcycle     = 0,
                csr_minstret   = -1; // because we increase it in fetch
+
+   // fcsr: fflags[4:0] (NV|DZ|OF|UF|NX) + frm[2:0]. Phase 1 has no arithmetic
+   // producers of fflags, so it stays at whatever software wrote.
+   reg [ 4:0]  fflags = 0;
+   reg [ 2:0]  frm = 0;
 
    // CLINT
    reg [63:0]  clint_mtime = 0;
@@ -668,6 +699,45 @@ module smolrv64(input wire        clock,
    reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
 `endif
 
+   // IEEE 754 FCLASS: 10-bit one-hot classification (bit 0 = -inf, ..., bit 9 = qNaN).
+   // Single-precision variant enforces NaN-boxing: unboxed value → canonical qNaN.
+   function [63:0] fclass_d;
+      input [63:0] v;
+      reg         sign;
+      reg [10:0]  exp;
+      reg [51:0]  mant;
+      reg         exp_all1, exp_0, mant_0, qbit;
+      begin
+         sign = v[63]; exp = v[62:52]; mant = v[51:0];
+         exp_all1 = &exp;  exp_0 = exp == 0;  mant_0 = mant == 0;  qbit = mant[51];
+         if      (exp_all1 && mant_0)   fclass_d = sign ? 64'h001 : 64'h080; // ±inf
+         else if (exp_all1)             fclass_d = qbit ? 64'h200 : 64'h100; // qNaN / sNaN
+         else if (exp_0 && mant_0)      fclass_d = sign ? 64'h008 : 64'h010; // ±0
+         else if (exp_0)                fclass_d = sign ? 64'h004 : 64'h020; // ±subnormal
+         else                           fclass_d = sign ? 64'h002 : 64'h040; // ±normal
+      end
+   endfunction
+
+   function [63:0] fclass_s;
+      input [63:0] v;
+      reg         sign;
+      reg [ 7:0]  exp;
+      reg [22:0]  mant;
+      reg         exp_all1, exp_0, mant_0, qbit;
+      begin
+         if (~(&v[63:32])) fclass_s = 64'h200; // improperly NaN-boxed → canonical qNaN
+         else begin
+            sign = v[31]; exp = v[30:23]; mant = v[22:0];
+            exp_all1 = &exp;  exp_0 = exp == 0;  mant_0 = mant == 0;  qbit = mant[22];
+            if      (exp_all1 && mant_0)   fclass_s = sign ? 64'h001 : 64'h080;
+            else if (exp_all1)             fclass_s = qbit ? 64'h200 : 64'h100;
+            else if (exp_0 && mant_0)      fclass_s = sign ? 64'h008 : 64'h010;
+            else if (exp_0)                fclass_s = sign ? 64'h004 : 64'h020;
+            else                           fclass_s = sign ? 64'h002 : 64'h040;
+         end
+      end
+   endfunction
+
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
@@ -739,12 +809,16 @@ module smolrv64(input wire        clock,
                   pc,
                   npc,
                   insn,
+                  // rd_kind: 2=fp (takes priority — FP writes never coexist with int),
+                  //          1=int (nonzero write_back_register), 0=none.
+                  write_back_fp_valid        ? 8'd2 :
                   (write_back_register != 0) ? 8'd1 : 8'd0,
-                  {3'd0, write_back_register},
+                  write_back_fp_valid        ? {3'd0, write_back_fp_register}
+                                             : {3'd0, write_back_register},
                   {6'd0, prv},
                   8'd0,
-                  32'd0,
-                  write_back_value,
+                  {27'd0, fflags},
+                  write_back_fp_valid ? write_back_fp_value : write_back_value,
                   64'd0,
                   64'd0,
                   clint_mtime - 1
@@ -845,6 +919,7 @@ module smolrv64(input wire        clock,
            // Register insn; cross-page check and decode happen in S_RF using stable insn_reg.
            insn <= aligned >> (pc[2:1] * 16);
            write_back_register = 0;
+           write_back_fp_valid = 0;
            state <= `S_RF;
         end
 
@@ -913,6 +988,8 @@ module smolrv64(input wire        clock,
            // s1_bram/s2_bram are now valid (BRAM read with new rs1/rs2 completed in S_RF2).
            s1 <= s1_bram;
            s2 <= s2_bram;
+           f1 <= f1_bram;
+           f2 <= f2_bram;
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
            reservation_match <= (reservation == s1_bram);
@@ -1877,6 +1954,112 @@ module smolrv64(input wire        clock,
                 state <= `S_FETCH1; // treat as NOP (no real sleep in simulation)
            end
 
+           // OP-FP (opcode 0x53) — arithmetic-free Phase 1 insns:
+           // FMV.{W.X,X.W,D.X,X.D}, FSGNJ{,N,X}.{S,D}, FCLASS.{S,D}.
+           // Everything else in this opcode falls through to illegal.
+           else if (insn[6:0] == 7'b1010011) begin
+              if (fs == 0) begin
+                 // FP state disabled by mstatus.FS — any FP insn traps.
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end else begin
+                 // Reaching an FP insn dirties the FP state.
+                 fs = 3;
+                 case (insn[31:25])
+                   // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
+                   7'b0010000: begin
+                      write_back_fp_valid    = 1;
+                      write_back_fp_register = rd;
+                      case (insn[14:12])
+                        3'b000: write_back_fp_value <= {32'hffffffff, f2_s[31],             f1_s[30:0]};
+                        3'b001: write_back_fp_value <= {32'hffffffff, ~f2_s[31],            f1_s[30:0]};
+                        3'b010: write_back_fp_value <= {32'hffffffff, f2_s[31] ^ f1_s[31],  f1_s[30:0]};
+                        default: begin
+                           write_back_fp_valid = 0;
+                           cause = `TRAP_ILLEGAL_INSTRUCTION;
+                           tval = insn;
+                           state <= `S_EXCEPTION;
+                        end
+                      endcase
+                      if (insn[14:12] < 3) state <= `S_FETCH1;
+                   end
+                   // FSGNJ/N/X .D — no boxing check; 64-bit direct.
+                   7'b0010001: begin
+                      write_back_fp_valid    = 1;
+                      write_back_fp_register = rd;
+                      case (insn[14:12])
+                        3'b000: write_back_fp_value <= {f2[63],         f1[62:0]};
+                        3'b001: write_back_fp_value <= {~f2[63],        f1[62:0]};
+                        3'b010: write_back_fp_value <= {f2[63] ^ f1[63], f1[62:0]};
+                        default: begin
+                           write_back_fp_valid = 0;
+                           cause = `TRAP_ILLEGAL_INSTRUCTION;
+                           tval = insn;
+                           state <= `S_EXCEPTION;
+                        end
+                      endcase
+                      if (insn[14:12] < 3) state <= `S_FETCH1;
+                   end
+                   // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
+                   7'b1110000: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                      write_back_register = rd;
+                      write_back_value    <= {{32{f1[31]}}, f1[31:0]};
+                      state               <= `S_FETCH1;
+                   end else if (insn[24:20] == 5'd0 && insn[14:12] == 3'b001) begin
+                      write_back_register = rd;
+                      write_back_value    <= fclass_s(f1);
+                      state               <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
+                   7'b1110001: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                      write_back_register = rd;
+                      write_back_value    <= f1;
+                      state               <= `S_FETCH1;
+                   end else if (insn[24:20] == 5'd0 && insn[14:12] == 3'b001) begin
+                      write_back_register = rd;
+                      write_back_value    <= fclass_d(f1);
+                      state               <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   // FMV.W.X (rs2=0, rm=0): NaN-box s1[31:0] into f[rd].
+                   7'b1111000: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                      write_back_fp_valid    = 1;
+                      write_back_fp_register = rd;
+                      write_back_fp_value    <= {32'hffffffff, s1[31:0]};
+                      state                  <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   // FMV.D.X (rs2=0, rm=0): full 64-bit move.
+                   7'b1111001: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                      write_back_fp_valid    = 1;
+                      write_back_fp_register = rd;
+                      write_back_fp_value    <= s1;
+                      state                  <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   default: begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                 endcase
+              end
+           end
+
            else begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -2308,6 +2491,9 @@ module smolrv64(input wire        clock,
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
               else case (csrno)
+                `CSR_FFLAGS:    csr_read_val = {59'd0, fflags};
+                `CSR_FRM:       csr_read_val = {61'd0, frm};
+                `CSR_FCSR:      csr_read_val = {56'd0, frm, fflags};
                 `CSR_SSTATUS:
                   csr_read_val = {sd, 29'd0,            uxl, 12'd0,  // 63:20
                                                     mxr, sum, 1'd0,  // 19:17
@@ -2434,6 +2620,12 @@ module smolrv64(input wire        clock,
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
               else case (csrno)
+                // fcsr: fflags aliased at [4:0], frm aliased at [7:5].
+                // Writing any of these is an implicit "FP state touched"
+                // event, so we mark FS=Dirty at the same time.
+                `CSR_FFLAGS: begin fflags      = csr_write_val[4:0];      fs = 3; end
+                `CSR_FRM:    begin frm         = csr_write_val[2:0];      fs = 3; end
+                `CSR_FCSR:   begin {frm,fflags}= csr_write_val[7:0];      fs = 3; end
                 `CSR_SSTATUS: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -2982,5 +3174,43 @@ module regfile(input wire         clock,
 `ifdef ASYNC_RF
    assign read_data_0 = regfile[read_addr_0];
    assign read_data_1 = regfile[read_addr_1];
+`endif
+endmodule
+
+// Floating-point register file. Structurally identical to the int regfile,
+// but f0 is a real register (no x0 hardwire; gating stays at the instance),
+// and the array is initialized to 0 (no rf.hex seed).
+module fregfile(input wire         clock,
+                input wire         write_valid,
+                input wire [ 4:0]  write_addr,
+                input wire [63:0]  write_data,
+                input wire [ 4:0]  read_addr_0,
+                input wire [ 4:0]  read_addr_1,
+
+`ifdef ASYNC_RF
+                output wire [63:0] read_data_0,
+                output wire [63:0] read_data_1
+`else
+                output reg  [63:0] read_data_0,
+                output reg  [63:0] read_data_1
+`endif
+);
+   (* ram_style = "block" *)
+   reg  [63:0] fregfile[31:0];
+   integer i;
+   initial for (i = 0; i < 32; i = i + 1) fregfile[i] = 0;
+
+   always @(posedge clock) begin
+`ifndef ASYNC_RF
+      read_data_0 <= fregfile[read_addr_0];
+      read_data_1 <= fregfile[read_addr_1];
+`endif
+
+      if (write_valid) fregfile[write_addr] <= write_data;
+   end
+
+`ifdef ASYNC_RF
+   assign read_data_0 = fregfile[read_addr_0];
+   assign read_data_1 = fregfile[read_addr_1];
 `endif
 endmodule
