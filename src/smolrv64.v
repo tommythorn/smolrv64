@@ -690,6 +690,12 @@ module smolrv64(input wire        clock,
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
+   // Marks the S_FETCH1 cycle immediately after S_EXCEPTION. Used to
+   // suppress a stale pre_intr_pending (sampled before S_EXCEPTION's
+   // mie:=0 landed). Also used by VERILATOR_COSIM to skip the dummy
+   // post-trap retire. Set in S_EXCEPTION, cleared in S_FETCH1.
+   reg        just_trapped = 0;
+
 `ifdef VERILATOR_COSIM
    import "DPI-C" function void cosim_retire(
        input longint unsigned pc,
@@ -703,9 +709,9 @@ module smolrv64(input wire        clock,
        input longint unsigned rd_val,
        input longint unsigned trap_cause,
        input longint unsigned trap_tval,
-       input longint unsigned mtime
+       input longint unsigned mtime,
+       input longint unsigned mepc
    );
-   reg        just_trapped = 0;  // suppress S_FETCH1 retire after trap emission
    reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
    reg [1:0]  prv_retire   = 0;  // prv at instruction start, for cosim retire hook (MRET/SRET change prv mid-execute)
 `endif
@@ -883,11 +889,12 @@ module smolrv64(input wire        clock,
                   write_back_fp_valid ? write_back_fp_value : write_back_value,
                   64'd0,
                   64'd0,
-                  clint_mtime - 1
+                  clint_mtime - 1,
+                  csr_mepc
               );
            end
-           just_trapped <= 0;
 `endif
+           just_trapped <= 0;
 
 `ifdef DISASS
 `include "disass.vh"
@@ -944,8 +951,11 @@ module smolrv64(input wire        clock,
 
            // Use pre-registered interrupt check (computed previous cycle) for timing closure.
            // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
+           // Suppress on the S_FETCH1 right after a trap: pre_intr_pending was
+           // computed from the pre-trap mie (S_EXCEPTION's mie:=0 hadn't landed
+           // yet), so it is stale here. just_trapped marks exactly that cycle.
            cause_intr = 0;
-           if (pre_intr_pending) begin
+           if (pre_intr_pending && !just_trapped) begin
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -2896,10 +2906,11 @@ module smolrv64(input wire        clock,
                64'd0,
                {cause_intr, 51'd0, cause},   // architectural mcause/scause form
                tval,
-               clint_mtime - 1
+               clint_mtime - 1,
+               csr_mepc
            );
-           just_trapped <= 1;
 `endif
+           just_trapped <= 1;
 
            state <= `S_FETCH1;
         end

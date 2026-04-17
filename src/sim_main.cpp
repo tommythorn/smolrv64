@@ -95,7 +95,7 @@ bool load_rf(const char* path) {
 void dump_retire(const char* label, const SimmervRetire& r) {
     std::fprintf(stderr,
         "  %s seq=%llu pc=%016llx npc=%016llx insn=%08x prv=%u trap=%u "
-        "rd=(k%u,x%u)=%016llx cause=%016llx tval=%016llx mt=%llu\n",
+        "rd=(k%u,x%u)=%016llx cause=%016llx tval=%016llx mt=%llu mepc=%016llx\n",
         label,
         (unsigned long long)r.seqno,
         (unsigned long long)r.pc,
@@ -104,7 +104,8 @@ void dump_retire(const char* label, const SimmervRetire& r) {
         (unsigned long long)r.rd_val,
         (unsigned long long)r.trap_cause,
         (unsigned long long)r.trap_tval,
-        (unsigned long long)r.mtime);
+        (unsigned long long)r.mtime,
+        (unsigned long long)r.mepc);
 }
 
 [[noreturn]] void mismatch_abort(const SimmervRetire& dut, const SimmervRetire& ref) {
@@ -139,7 +140,8 @@ extern "C" void cosim_retire(
     unsigned long long rd_val,
     unsigned long long trap_cause,
     unsigned long long trap_tval,
-    unsigned long long mtime)
+    unsigned long long mtime,
+    unsigned long long mepc)
 {
     g_seqno++;
 
@@ -157,6 +159,7 @@ extern "C" void cosim_retire(
     dut.trap_tval  = trap_tval;
     dut.mtime      = mtime;
     dut.seqno      = g_seqno;
+    dut.mepc       = mepc;
 
     simmerv_set_mtime(g_ctx, mtime);
     SimmervRetire ref{};
@@ -166,19 +169,18 @@ extern "C" void cosim_retire(
         std::abort();
     }
 
-    const bool rd_writes = dut.rd_kind != 0 && dut.rd_idx != 0;
     const bool ok =
-        dut.pc      == ref.pc      &&
-        dut.next_pc == ref.next_pc &&
-        dut.insn    == ref.insn    &&
-        dut.prv     == ref.prv     &&
-        dut.trapped == ref.trapped &&
-        dut.rd_kind == ref.rd_kind &&
-        dut.rd_idx  == ref.rd_idx  &&
-        (!rd_writes || dut.rd_val == ref.rd_val) &&
-        (!dut.trapped ||
-            (dut.trap_cause == ref.trap_cause &&
-             dut.trap_tval  == ref.trap_tval));
+        dut.pc         == ref.pc        &&
+        dut.next_pc    == ref.next_pc   &&
+        dut.insn       == ref.insn      &&
+        dut.rd_kind    == ref.rd_kind   &&
+        dut.rd_idx     == ref.rd_idx    &&
+        dut.prv        == ref.prv       &&
+        dut.trapped    == ref.trapped   &&
+        (dut.rd_kind == 0 || dut.rd_val == ref.rd_val) &&
+        dut.trap_cause == ref.trap_cause &&
+        dut.trap_tval  == ref.trap_tval &&
+        dut.mepc       == ref.mepc;
 
     g_ring[g_ring_idx] = { dut, ref, true };
     g_ring_idx = (g_ring_idx + 1) % RING_N;
