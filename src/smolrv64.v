@@ -696,6 +696,16 @@ module smolrv64(input wire        clock,
    // post-trap retire. Set in S_EXCEPTION, cleared in S_FETCH1.
    reg        just_trapped = 0;
 
+   // Marks the S_FETCH1 cycle(s) of the instruction immediately after an
+   // xRET. xRET can re-enable interrupts (via mie/sie <- mpie/spie) and
+   // pre_intr_pending may catch that change in time to fire on the very
+   // next S_FETCH1 — causing the xRET target to never retire. Spec allows
+   // either behavior, but for cosim we pick "let the xRET target retire
+   // first" uniformly, regardless of whether the interrupt was pending
+   // before xRET or became pending after. Set in MRET/SRET, cleared in
+   // S_FETCH1.
+   reg        just_xret = 0;
+
 `ifdef VERILATOR_COSIM
    import "DPI-C" function void cosim_retire(
        input longint unsigned pc,
@@ -895,6 +905,7 @@ module smolrv64(input wire        clock,
            end
 `endif
            just_trapped <= 0;
+           just_xret <= 0;
 
 `ifdef DISASS
 `include "disass.vh"
@@ -951,11 +962,11 @@ module smolrv64(input wire        clock,
 
            // Use pre-registered interrupt check (computed previous cycle) for timing closure.
            // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
-           // Suppress on the S_FETCH1 right after a trap: pre_intr_pending was
-           // computed from the pre-trap mie (S_EXCEPTION's mie:=0 hadn't landed
-           // yet), so it is stale here. just_trapped marks exactly that cycle.
+           // Suppress on the S_FETCH1 right after a trap or xRET: in both cases
+           // the interrupt-enable/mask was just changed and we want the target
+           // instruction to retire before any newly-unmasked interrupt fires.
            cause_intr = 0;
-           if (pre_intr_pending && !just_trapped) begin
+           if (pre_intr_pending && !just_trapped && !just_xret) begin
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -2018,6 +2029,7 @@ module smolrv64(input wire        clock,
               mie = mpie;
               mpie = 1;
               npc = csr_mepc;
+              just_xret <= 1;
               state <= `S_FETCH1;
            end
 
@@ -2038,6 +2050,7 @@ module smolrv64(input wire        clock,
                  sie = spie;
                  spie = 1;
                  npc = csr_sepc;
+                 just_xret <= 1;
               end
            end
 
@@ -2838,6 +2851,13 @@ module smolrv64(input wire        clock,
 
               state <= `S_EXCEPTION;
            end
+
+           // Any CSR write may change interrupt-enable/pending state
+           // (sstatus/mstatus/sie/mie/mip/mideleg). pre_intr_pending
+           // is a FF sampled the cycle BEFORE S_FETCH1 from current CSR
+           // FF values, so it is stale for one cycle after any CSR write.
+           // Reuse just_xret as a generic one-cycle suppress flag.
+           just_xret <= 1;
         end
 
         `S_EXCEPTION: begin
@@ -2889,14 +2909,15 @@ module smolrv64(input wire        clock,
 `ifdef VERILATOR_COSIM
            // Trap retire: pc/insn still hold the trapping instruction; npc is
            // the trap vector we just computed. prv_at_trap is pre-trap prv.
-           // For instruction-side faults (misaligned/access/page), the fetch
-           // never completed — report insn=0 to match simmerv's convention.
+           // Report insn=0 whenever no instruction actually retired: async
+           // interrupts, and instruction-side faults (misaligned/access/page)
+           // where the fetch never completed. Matches simmerv's convention.
            cosim_retire(
                pc,
                npc,
-               (!cause_intr && (cause == `TRAP_INSTRUCTION_ADDRESS_MISALIGNED ||
-                                cause == `TRAP_INSTRUCTION_ACCESS_FAULT ||
-                                cause == `TRAP_INSTRUCTIONPAGE_FAULT))
+               (cause_intr || cause == `TRAP_INSTRUCTION_ADDRESS_MISALIGNED ||
+                              cause == `TRAP_INSTRUCTION_ACCESS_FAULT ||
+                              cause == `TRAP_INSTRUCTIONPAGE_FAULT)
                    ? 32'd0 : insn,
                8'd0,                         // no writeback on trap
                8'd0,
