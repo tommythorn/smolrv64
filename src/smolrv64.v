@@ -707,6 +707,7 @@ module smolrv64(input wire        clock,
    );
    reg        just_trapped = 0;  // suppress S_FETCH1 retire after trap emission
    reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
+   reg [1:0]  prv_retire   = 0;  // prv at instruction start, for cosim retire hook (MRET/SRET change prv mid-execute)
 `endif
 
    // IEEE 754 FCLASS: 10-bit one-hot classification (bit 0 = -inf, ..., bit 9 = qNaN).
@@ -876,7 +877,7 @@ module smolrv64(input wire        clock,
                   (write_back_register != 0) ? 8'd1 : 8'd0,
                   write_back_fp_valid        ? {3'd0, write_back_fp_register}
                                              : {3'd0, write_back_register},
-                  {6'd0, prv},
+                  {6'd0, prv_retire},
                   8'd0,
                   {27'd0, fflags},
                   write_back_fp_valid ? write_back_fp_value : write_back_value,
@@ -1414,6 +1415,9 @@ module smolrv64(input wire        clock,
 
         `S_EXECUTE: begin
            state <= `S_EXECUTE2; // Default: complete write_back_value
+`ifdef VERILATOR_COSIM
+           prv_retire <= prv;    // snapshot pre-execution prv for cosim (MRET/SRET mutate prv below)
+`endif
 
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -2875,10 +2879,15 @@ module smolrv64(input wire        clock,
 `ifdef VERILATOR_COSIM
            // Trap retire: pc/insn still hold the trapping instruction; npc is
            // the trap vector we just computed. prv_at_trap is pre-trap prv.
+           // For instruction-side faults (misaligned/access/page), the fetch
+           // never completed — report insn=0 to match simmerv's convention.
            cosim_retire(
                pc,
                npc,
-               insn,
+               (!cause_intr && (cause == `TRAP_INSTRUCTION_ADDRESS_MISALIGNED ||
+                                cause == `TRAP_INSTRUCTION_ACCESS_FAULT ||
+                                cause == `TRAP_INSTRUCTIONPAGE_FAULT))
+                   ? 32'd0 : insn,
                8'd0,                         // no writeback on trap
                8'd0,
                {6'd0, prv_at_trap},
