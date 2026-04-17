@@ -1,0 +1,83 @@
+/dts-v1/;
+
+/ {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "riscv-virtio";
+        model = "riscv-virtio,qemu";
+
+        chosen {
+                linux,initrd-start = <0 0xfcdff000>;
+                linux,initrd-end   = <0 0xfffff000>;
+                bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel";
+                stdout-path = "/uart@10000000";
+        };
+
+        uart@10000000 {
+                interrupts = <10>;
+                interrupt-parent = <3>;
+                clock-frequency = <0x384000>;
+                reg = <0 0x10000000 0 0x100>;
+                compatible = "ns16550a";
+        };
+
+        cpus {
+                #address-cells = <1>;
+                #size-cells = <0>;
+                timebase-frequency = <1000000>; // 1 MHz
+
+                cpu-map {
+                        cluster0 {
+                                core0 {
+                                        cpu = <1>;
+                                };
+                        };
+                };
+
+                cpu@0 {
+                        phandle = <1>;
+                        device_type = "cpu";
+                        reg = <0>;
+                        status = "okay";
+                        compatible = "riscv";
+                        riscv,isa = "rv64imacsu";
+                        mmu-type = "riscv,sv39";
+
+                        interrupt-controller {
+                                #interrupt-cells = <1>;
+                                interrupt-controller;
+                                compatible = "riscv,cpu-intc";
+                                phandle = <2>;
+                        };
+                };
+        };
+
+        soc {
+                #address-cells = <2>;
+                #size-cells = <2>;
+                compatible = "simple-bus";
+                ranges;
+
+                interrupt-controller@c000000 {
+                        phandle = <3>;
+                        riscv,ndev = <0x35>;
+                        reg = <0 0xc000000 0 0x4000000>;
+                        interrupts-extended = <2 0xb 2 9>;
+                        interrupt-controller;
+                        compatible = "riscv,plic0";
+                        #interrupt-cells = <1>;
+                        #address-cells = <0>;
+                };
+
+                clint@2000000 {
+                        interrupts-extended = <2 3 2 7>;
+                        reg = <0 0x2000000 0 0x10000>;
+                        compatible = "riscv,clint0";
+                };
+        };
+
+        memory@80000000 {
+                device_type = "memory";
+                reg = <0 0x80000000 0 0x8000000>;
+        };
+};

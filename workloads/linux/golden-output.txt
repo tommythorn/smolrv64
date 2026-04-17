@@ -1,0 +1,151 @@
+
+OpenSBI v0.8
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name       : riscv-virtio,qemu
+Platform Features   : timer,mfdeleg
+Platform HART Count : 1
+Boot HART ID        : 0
+Boot HART ISA       : rv64imafdcsu
+BOOT HART Features  : pmp,scounteren,mcounteren,time
+BOOT HART PMP Count : 16
+Firmware Base       : 0x80000000
+Firmware Size       : 96 KB
+Runtime SBI Version : 0.2
+
+MIDELEG : 0x0000000000000222
+MEDELEG : 0x000000000000b109
+[    0.000000] OF: fdt: Ignoring memory range 0x80000000 - 0x80200000
+[    0.000000] Linux version 5.4.0 (takahiro@takahiro-VirtualBox) (gcc version 10.1.0 (GCC)) #1 SMP Sun Oct 11 20:31:00 PDT 2020
+[    0.000000] earlycon: sbi0 at I/O port 0x0 (options '')
+[    0.000000] printk: bootconsole [sbi0] enabled
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] initrd extends beyond end of memory - disabling initrd
+[    0.000000] Zone ranges:
+[    0.000000]   DMA32    [mem 0x0000000080200000-0x0000000087ffffff]
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080200000-0x0000000087ffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080200000-0x0000000087ffffff]
+[    0.000000] On node 0 totalpages: 32256
+[    0.000000]   DMA32 zone: 441 pages used for memmap
+[    0.000000]   DMA32 zone: 0 pages reserved
+[    0.000000]   DMA32 zone: 32256 pages, LIFO batch:7
+[    0.000000] software IO TLB: mapped [mem 0x83e3d000-0x87e3d000] (64MB)
+[    0.000000] elf_hwcap is 0x1105
+[    0.000000] percpu: Embedded 17 pages/cpu s30680 r8192 d30760 u69632
+[    0.000000] pcpu-alloc: s30680 r8192 d30760 u69632 alloc=17*4096
+[    0.000000] pcpu-alloc: [0] 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 31815
+[    0.000000] Kernel command line: console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel
+[    0.000000] Dentry cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[    0.000000] Sorting __ex_table...
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] Memory: 51976K/129024K available (6166K kernel code, 387K rwdata, 1962K rodata, 213K init, 305K bss, 77048K reserved, 0K cma-reserved)
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=8 to nr_cpu_ids=1.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.000000] NR_IRQS: 0, nr_irqs: 0, preallocated irqs: 0
+[    0.000000] plic: mapped 53 interrupts with 1 handlers for 2 contexts.
+[    0.000000] riscv_timer_init_dt: Registering clocksource cpuid [0] hartid [0]
+[    0.000000] clocksource: riscv_clocksource: mask: 0xffffffffffffffff max_cycles: 0x1d854df40, max_idle_ns: 3526361616960 ns
+[    0.000022] sched_clock: 64 bits at 1000kHz, resolution 1000ns, wraps every 2199023255500ns
+[    0.000674] Console: colour dummy device 80x25
+[    0.000973] Calibrating delay loop (skipped), value calculated using timer frequency.. 2.00 BogoMIPS (lpj=4000)
+[    0.001430] pid_max: default: 32768 minimum: 301
+[    0.002052] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.002389] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.006807] rcu: Hierarchical SRCU implementation.
+[    0.007695] smp: Bringing up secondary CPUs ...
+[    0.007915] smp: Brought up 1 node, 1 CPU
+[    0.009053] devtmpfs: initialized
+[    0.011159] random: get_random_u32 called from bucket_table_alloc.isra.0+0x4e/0x154 with crng_init=0
+[    0.012237] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.012749] futex hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.013959] NET: Registered protocol family 16
+[    0.051411] vgaarb: loaded
+[    0.052298] SCSI subsystem initialized
+[    0.052888] libata version 3.00 loaded.
+[    0.053850] usbcore: registered new interface driver usbfs
+[    0.054249] usbcore: registered new interface driver hub
+[    0.054599] usbcore: registered new device driver usb
+[    0.056961] clocksource: Switched to clocksource riscv_clocksource
+[    0.075700] NET: Registered protocol family 2
+[    0.077239] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.077658] TCP established hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[    0.078051] TCP bind hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.078419] TCP: Hash tables configured (established 1024 bind 1024)
+[    0.078913] UDP hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.079267] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.079928] NET: Registered protocol family 1
+[    0.081384] RPC: Registered named UNIX socket transport module.
+[    0.081666] RPC: Registered udp transport module.
+[    0.081885] RPC: Registered tcp transport module.
+[    0.082102] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    0.082398] PCI: CLS 0 bytes, default 64
+[    0.084518] workingset: timestamp_bits=62 max_order=14 bucket_order=0
+[    0.109464] NFS: Registering the id_resolver key type
+[    0.109759] Key type id_resolver registered
+[    0.109961] Key type id_legacy registered
+[    0.110172] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    0.110863] 9p: Installing v9fs 9p2000 file system support
+[    0.112008] NET: Registered protocol family 38
+[    0.112308] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 253)
+[    0.112642] io scheduler mq-deadline registered
+[    0.112858] io scheduler kyber registered
+[    0.223267] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.226457] printk: console [ttyS0] disabled
+[    0.226793] 10000000.uart: ttyS0 at MMIO 0x10000000 (irq = 10, base_baud = 230400) is a 16550A
+[    0.227237] printk: console [ttyS0] enabled
+[    0.227237] printk: console [ttyS0] enabled
+[    0.227481] printk: bootconsole [sbi0] disabled
+[    0.227481] printk: bootconsole [sbi0] disabled
+[    0.229287] [drm] radeon kernel modesetting enabled.
+[    0.242070] loop: module loaded
+[    0.243391] libphy: Fixed MDIO Bus: probed
+[    0.244975] e1000e: Intel(R) PRO/1000 Network Driver - 3.2.6-k
+[    0.245050] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    0.245388] ehci_hcd: USB 2.0 'Enhanced' Host Controller (EHCI) Driver
+[    0.245469] ehci-pci: EHCI PCI platform driver
+[    0.245624] ehci-platform: EHCI generic platform driver
+[    0.245791] ohci_hcd: USB 1.1 'Open' Host Controller (OHCI) Driver
+[    0.245867] ohci-pci: OHCI PCI platform driver
+[    0.246018] ohci-platform: OHCI generic platform driver
+[    0.246490] usbcore: registered new interface driver uas
+[    0.246690] usbcore: registered new interface driver usb-storage
+[    0.247154] mousedev: PS/2 mouse device common for all mice
+[    0.248325] usbcore: registered new interface driver usbhid
+[    0.248398] usbhid: USB HID core driver
+[    0.250686] NET: Registered protocol family 10
+[    0.252542] Segment Routing with IPv6
+[    0.252840] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.254376] NET: Registered protocol family 17
+[    0.255001] 9pnet: Installing 9P2000 support
+[    0.255193] Key type dns_resolver registered
+[    0.257573] VFS: Cannot open root device "raw" or unknown-block(0,0): error -6
+[    0.257667] Please append a correct "root=" boot option; here are the available partitions:
+[    0.257775] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[    0.257886] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.4.0 #1
+[    0.257957] Call Trace:
+[    0.258032] [<ffffffff80037ac4>] walk_stackframe+0x0/0xa6
+[    0.258116] [<ffffffff80037c3a>] show_stack+0x2a/0x34
+[    0.258194] [<ffffffff80621aa6>] dump_stack+0x6e/0x88
+[    0.258270] [<ffffffff8003cb82>] panic+0xdc/0x246
+[    0.258344] [<ffffffff80000f7c>] mount_block_root+0x184/0x218
+[    0.258423] [<ffffffff8000111e>] mount_root+0x10e/0x124
+[    0.258503] [<ffffffff80001246>] prepare_namespace+0x112/0x15c
+[    0.258584] [<ffffffff80000c12>] kernel_init_freeable+0x188/0x1a4
+[    0.258666] [<ffffffff80636382>] kernel_init+0x12/0xf0
+[    0.258742] [<ffffffff80036818>] ret_from_exception+0x0/0xc
+[    0.258837] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0) ]---
