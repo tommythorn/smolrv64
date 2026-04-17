@@ -711,6 +711,8 @@ module smolrv64(input wire        clock,
            // fetch (csr_mcycle == 0) and the dummy fetch right after a trap
            // (just_trapped set by S_EXCEPTION).
            if (csr_mcycle != 0 && !just_trapped) begin
+              // mtime passed to simmerv is (clint_mtime - 1): the value
+              // observed during S_HANDLE_CSR, one cycle before retire.
               cosim_retire(
                   pc,
                   npc,
@@ -723,7 +725,7 @@ module smolrv64(input wire        clock,
                   write_back_value,
                   64'd0,
                   64'd0,
-                  clint_mtime
+                  clint_mtime - 1
               );
            end
            just_trapped <= 0;
@@ -2618,7 +2620,7 @@ module smolrv64(input wire        clock,
                64'd0,
                {cause_intr, 51'd0, cause},   // architectural mcause/scause form
                tval,
-               clint_mtime
+               clint_mtime - 1
            );
            just_trapped <= 1;
 `endif

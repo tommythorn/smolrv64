@@ -26,48 +26,68 @@ constexpr size_t RING_N = 32;
 RingEntry g_ring[RING_N] = {};
 size_t    g_ring_idx = 0;
 
-bool read_hex_words(const char* path, std::vector<uint64_t>& out) {
+// Matches Verilog $readmemh: supports @ADDR directives for sparse layouts.
+// `parity` 0 = even file (bytes 16*idx .. +7), 1 = odd file (bytes 16*idx+8 .. +15).
+bool load_sparse(const char* path, int parity, std::vector<uint8_t>& ram) {
     std::ifstream in(path);
     if (!in) {
         std::fprintf(stderr, "cosim: cannot open %s\n", path);
         return false;
     }
     std::string line;
+    uint64_t idx = 0;
     while (std::getline(in, line)) {
         size_t s = line.find_first_not_of(" \t\r\n");
         if (s == std::string::npos) continue;
         line = line.substr(s);
-        if (line.empty() || line[0] == '/' || line[0] == '@') continue;
-        out.push_back(std::stoull(line, nullptr, 16));
+        if (line.empty() || line[0] == '/') continue;
+        if (line[0] == '@') {
+            idx = std::stoull(line.substr(1), nullptr, 16);
+            continue;
+        }
+        uint64_t w = std::stoull(line, nullptr, 16);
+        uint64_t byte_off = idx * 16 + (parity ? 8 : 0);
+        if (byte_off + 8 > ram.size()) {
+            std::fprintf(stderr, "cosim: %s offset 0x%llx out of range\n",
+                         path, (unsigned long long)byte_off);
+            return false;
+        }
+        for (int b = 0; b < 8; b++) ram[byte_off + b] = (w >> (8*b)) & 0xff;
+        idx++;
     }
     return true;
 }
 
 bool load_image(const char* even_path, const char* odd_path) {
-    std::vector<uint64_t> even, odd;
-    if (!read_hex_words(even_path, even)) return false;
-    if (!read_hex_words(odd_path,  odd))  return false;
-    size_t n_pairs = std::max(even.size(), odd.size());
-    std::vector<uint8_t> ram(n_pairs * 16, 0);
-    for (size_t i = 0; i < even.size(); i++) {
-        uint64_t w = even[i];
-        for (int b = 0; b < 8; b++) ram[16*i + b] = (w >> (8*b)) & 0xff;
-    }
-    for (size_t i = 0; i < odd.size(); i++) {
-        uint64_t w = odd[i];
-        for (int b = 0; b < 8; b++) ram[16*i + 8 + b] = (w >> (8*b)) & 0xff;
-    }
+    // Pre-size to the full RAM so simmerv's pre-installed DTB is overwritten
+    // with zeros past the loaded image; matches smolrv64's zeroed BRAM.
+    std::vector<uint8_t> ram(MEM_BYTES, 0);
+    if (!load_sparse(even_path, 0, ram)) return false;
+    if (!load_sparse(odd_path,  1, ram)) return false;
     if (simmerv_write_memory(g_ctx, MEM_BASE, ram.data(), ram.size()) != 0) {
         std::fprintf(stderr, "cosim: simmerv_write_memory(image) failed\n");
         return false;
     }
-    // Zero the tail so simmerv's pre-installed DTB doesn't diverge from
-    // smolrv64's zero-initialized BRAM beyond the loaded image.
-    constexpr size_t CHUNK = 1 << 20;
-    std::vector<uint8_t> zero(CHUNK, 0);
-    for (uint64_t off = ram.size(); off < MEM_BYTES; off += CHUNK) {
-        size_t n = std::min((uint64_t)CHUNK, MEM_BYTES - off);
-        simmerv_write_memory(g_ctx, MEM_BASE + off, zero.data(), n);
+    return true;
+}
+
+// rf.hex: 32 lines of hex, one per integer register x0..x31.
+bool load_rf(const char* path) {
+    std::ifstream in(path);
+    if (!in) {
+        std::fprintf(stderr, "cosim: cannot open %s\n", path);
+        return false;
+    }
+    std::string line;
+    uint32_t idx = 0;
+    while (std::getline(in, line) && idx < 32) {
+        size_t s = line.find_first_not_of(" \t\r\n");
+        if (s == std::string::npos) continue;
+        line = line.substr(s);
+        if (line.empty() || line[0] == '/' || line[0] == '@') continue;
+        uint64_t v = std::stoull(line, nullptr, 16);
+        simmerv_write_register(g_ctx, idx, v);
+        idx++;
     }
     return true;
 }
@@ -199,6 +219,9 @@ int main(int argc, char** argv) {
     }
     if (!load_image(even, odd)) return 1;
     simmerv_zero_registers(g_ctx);
+    if (const char* rf = parse_plusarg(argc, argv, "rf")) {
+        if (!load_rf(rf)) return 1;
+    }
     simmerv_set_pc(g_ctx, RESET_PC);
     simmerv_set_mtime(g_ctx, 0);
 #endif
