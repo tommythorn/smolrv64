@@ -2377,13 +2377,16 @@ module smolrv64(input wire        clock,
                                               tsr,  tw,   tvm, mxr, sum, mprv,  // 22:17
                                   xs,         fs,         mpp, 2'd0,      spp,  // 16: 8
                                   mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; //  7: 0
-                `CSR_MISA:     csr_read_val = 64'h800000000014112d; // 64'h800000000014112d with FD
-                // Hardwired 1 0100 0001 0001 0010 1101
+                // F/D are NOT implemented yet — advertising them causes OS/test
+                // code (e.g., rv64mi-p-csr test 12, OpenSBI FP probe) to issue
+                // FP insns that then trap illegally. Flip back to 0x112d when
+                // F/D actually land.
+                `CSR_MISA:     csr_read_val = 64'h8000000000141105;
+                // Hardwired 1 0100 0001 0001 0000 0101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
                 //           U  S      M    I   F  DC A
                 //    SUIMAFDC
-                // -                            F  D
-                // =         1 0100 0001 0001 0000 0101 = 1105
+                // FD-enabled variant would be 0x800000000014112d.
                 `CSR_MEDELEG:  csr_read_val = csr_medeleg;
                 `CSR_MIDELEG:  csr_read_val = csr_mideleg;
                 `CSR_MIE:      csr_read_val = csr_mie;
