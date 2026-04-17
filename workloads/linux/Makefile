@@ -25,7 +25,7 @@ run: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-vl
 
 golden-output.txt:
 	(cd ~/github/simmerv; cargo b -rq;\
-         timeout 1 target/release/simmerv_cli -n -d $(CURDIR)/dts.dtb,0x90000000 $(CURDIR)/fw_payload.bin,0x80000000) > $@
+         timeout 1 target/release/simmerv_cli -n -d $(CURDIR)/dts.dtb,0x81000000 $(CURDIR)/fw_payload.bin,0x80000000) > $@
 
 are-we-there-yet:
 	@(timeout 10 $(MAKE) -s run) | tee /tmp/sim.run.txt
