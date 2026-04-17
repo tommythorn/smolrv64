@@ -328,6 +328,16 @@ module smolrv64(input wire        clock,
 `define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
 `define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
 
+// pre_mem_op: memory access class pre-decoded in S_RF3, consumed in S_EXECUTE.
+// Collapses the 22 per-insn load/store/AMO branches into one shared block
+// (single mem_addr adder, single mem_addr0/mem_addr1 splitter).
+`define MEMOP_NONE  3'd0
+`define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U} + C.LW/C.LD/C.LWSP/C.LDSP
+`define MEMOP_STORE 3'd2  // S{B,H,W,D}    + C.SW/C.SD/C.SWSP/C.SDSP
+`define MEMOP_LR    3'd3  // LR.W / LR.D
+`define MEMOP_SC    3'd4  // SC.W / SC.D
+`define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
+
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `ifndef MEM_BASEADDR
@@ -417,6 +427,14 @@ module smolrv64(input wire        clock,
    reg  [ 3:0] pre_exe_op  = 0;  // EXOP_* operation code
    reg  [63:0] pre_exe_b   = 0;  // second operand
    reg         pre_exe_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
+
+   // Pre-decoded mem access: computed in S_RF3, consumed in S_EXECUTE shared block.
+   // Collapses 22 load/store/AMO branches into one; shares a single s1+offset adder.
+   reg  [ 2:0] pre_mem_op       = 0; // MEMOP_* class code (NONE/LOAD/STORE/LR/SC/AMO)
+   reg  [63:0] pre_mem_offset   = 0; // byte offset added to s1 to form mem_addr
+   reg  [ 2:0] pre_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
+   reg  [ 7:0] pre_mem_wr_mask  = 0; // byte-enable for stores+SC
+   reg  [ 4:0] pre_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
 
    // Pre-registered interrupt check: computed every cycle, consumed in S_FETCH1.
    // Breaks the mtip_reg → cause_priority_encode → state_reg path (~10 LUT levels)
@@ -611,6 +629,10 @@ module smolrv64(input wire        clock,
    reg [6:0]   div_count;
 
    reg [63:0]  reservation = ~0;
+   // Registered LR/SC reservation hit, computed at S_RF3→S_EXECUTE edge
+   // (reservation == s1_bram) so S_EXECUTE's SC branch doesn't have to do
+   // the 64-bit compare in-flight with the mem_addr next-D mux.
+   reg         reservation_match = 0;
    reg         do_atomic;
    reg         csr_access_failure = 0;
 
@@ -891,6 +913,9 @@ module smolrv64(input wire        clock,
            // s1_bram/s2_bram are now valid (BRAM read with new rs1/rs2 completed in S_RF2).
            s1 <= s1_bram;
            s2 <= s2_bram;
+           // Pre-compute SC reservation match one cycle early; S_EXECUTE's
+           // SC branch then only sees a 1-bit registered hit.
+           reservation_match <= (reservation == s1_bram);
            state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
@@ -1079,6 +1104,133 @@ module smolrv64(input wire        clock,
                  endcase
               end
            end // rf3_pre_decode
+
+           // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
+           // early so S_EXECUTE can share a single s1+offset adder instead of
+           // selecting between 22 parallel adders. Immediates are computed
+           // inline from insn bits (the imm_*/c_uimm* registers are written
+           // in S_EXECUTE and therefore stale here).
+           begin : rf3_mem_decode
+              reg [63:0] d_imm_i_s, d_imm_s_s;
+              reg [63:0] d_clw_off, d_cld_off, d_clwsp_off, d_cldsp_off,
+                         d_cswsp_off, d_csdsp_off;
+
+              d_imm_i_s    = {{52{insn[31]}}, insn[31:20]};
+              d_imm_s_s    = {{52{insn[31]}}, insn[31:25], insn[11:7]};
+              d_clw_off    = {57'd0, insn[5],    insn[12:10], insn[6],     2'd0};
+              d_cld_off    = {56'd0, insn[6:5],  insn[12:10],              3'd0};
+              d_clwsp_off  = {56'd0, insn[3:2],  insn[12],    insn[6:4],   2'd0};
+              d_cldsp_off  = {55'd0, insn[4:2],  insn[12],    insn[6:5],   3'd0};
+              d_cswsp_off  = {56'd0, insn[8:7],  insn[12:9],               2'd0};
+              d_csdsp_off  = {55'd0, insn[9:7],  insn[12:10],              3'd0};
+
+              // Defaults: non-mem instruction
+              pre_mem_op        <= `MEMOP_NONE;
+              pre_mem_offset    <= 64'd0;
+              pre_load_size_lg2 <= 3'd0;
+              pre_mem_wr_mask   <= 8'd0;
+              pre_mem_wb_reg    <= 5'd0;
+
+              // Compressed loads / stores (quadrants 0 & 2)
+              if ((insn & 'he003) == 'h4000) begin // C.LW
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_clw_off;
+                 pre_load_size_lg2 <= 3'b110; // W, sign-extend
+                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+              end
+              else if ((insn & 'he003) == 'h6000) begin // C.LD
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_cld_off;
+                 pre_load_size_lg2 <= 3'b011; // D
+                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+              end
+              else if ((insn & 'he003) == 'hc000) begin // C.SW
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_clw_off;
+                 pre_mem_wr_mask <= 8'h0f;
+              end
+              else if ((insn & 'he003) == 'he000) begin // C.SD
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_cld_off;
+                 pre_mem_wr_mask <= 8'hff;
+              end
+              else if ((insn & 'he003) == 'h4002) begin // C.LWSP
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_clwsp_off;
+                 pre_load_size_lg2 <= 3'b110;
+                 pre_mem_wb_reg    <= insn[11:7];
+              end
+              else if ((insn & 'he003) == 'h6002) begin // C.LDSP
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_cldsp_off;
+                 pre_load_size_lg2 <= 3'b011;
+                 pre_mem_wb_reg    <= insn[11:7];
+              end
+              else if ((insn & 'he003) == 'hc002) begin // C.SWSP
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_cswsp_off;
+                 pre_mem_wr_mask <= 8'h0f;
+              end
+              else if ((insn & 'he003) == 'he002) begin // C.SDSP
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_csdsp_off;
+                 pre_mem_wr_mask <= 8'hff;
+              end
+
+              // Uncompressed loads / stores / atomics
+              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b00000) begin // LOAD
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_imm_i_s;
+                 // funct3 = insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
+                 // Current encoding: load_size_lg2 = {sxt, size[1:0]} where sxt=1 means sign-ext.
+                 //   LB=0|4, LH=1|4, LW=2|4, LD=3, LBU=0, LHU=1, LWU=2.
+                 // RISC-V: funct3[2]=0 is signed (B/H/W), funct3[2]=1 is unsigned (BU/HU/WU); LD has funct3=011 (size=3, no sxt).
+                 // So load_size_lg2 = {~funct3[2] & (funct3[1:0] != 2'b11), funct3[1:0]}.
+                 pre_load_size_lg2 <= {~insn[14] & ~(insn[13] & insn[12]), insn[13:12]};
+                 pre_mem_wb_reg    <= insn[11:7];
+              end
+              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01000) begin // STORE
+                 pre_mem_op     <= `MEMOP_STORE;
+                 pre_mem_offset <= d_imm_s_s;
+                 // wr_mask = (1 << (1 << funct3[1:0])) - 1
+                 case (insn[13:12])
+                    2'b00: pre_mem_wr_mask <= 8'h01; // SB
+                    2'b01: pre_mem_wr_mask <= 8'h03; // SH
+                    2'b10: pre_mem_wr_mask <= 8'h0f; // SW
+                    2'b11: pre_mem_wr_mask <= 8'hff; // SD
+                 endcase
+              end
+              else if ((insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
+                       (insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
+                 pre_mem_op        <= `MEMOP_LR;
+                 pre_mem_offset    <= 64'd0;
+                 pre_load_size_lg2 <= insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
+                 pre_mem_wb_reg    <= insn[11:7];
+              end
+              else if ((insn & 'hf800707f) == 'h1800202f ||  // SC.W
+                       (insn & 'hf800707f) == 'h1800302f) begin // SC.D
+                 pre_mem_op      <= `MEMOP_SC;
+                 pre_mem_offset  <= 64'd0;
+                 pre_mem_wr_mask <= insn[12] ? 8'hff : 8'h0f;
+                 pre_mem_wb_reg  <= insn[11:7];
+              end
+              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01011 &&
+                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
+                 // funct5 must be one of the 9 defined AMO variants; otherwise
+                 // leave pre_mem_op = MEMOP_NONE so S_EXECUTE traps illegal-insn.
+                 // (LR/SC are funct5 00010/00011, already matched above.)
+                 case (insn[31:27])
+                    5'b00000, 5'b00001, 5'b00100, 5'b01000, 5'b01100,
+                    5'b10000, 5'b10100, 5'b11000, 5'b11100: begin
+                       pre_mem_op        <= `MEMOP_AMO;
+                       pre_mem_offset    <= 64'd0;
+                       pre_load_size_lg2 <= insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
+                       pre_mem_wb_reg    <= insn[11:7];
+                    end
+                    default: ; // illegal AMO funct5: falls through
+                 endcase
+              end
+           end // rf3_mem_decode
         end
 
         `S_FETCH1B: begin
@@ -1139,8 +1291,48 @@ module smolrv64(input wire        clock,
            // but we keep the if-else chain in order to catch the
            // unhandled instructions.
 
+           // Shared mem-access block — collapses all load/store/LR/SC/AMO
+           // branches using the pre-decoded signals from rf3_mem_decode.
+           // One s1+pre_mem_offset adder and one mem_addr0/1 splitter
+           // replace 22 parallel copies, shrinking the mem_addr critical
+           // path from ~14 LUT levels to ~7.
+           if (pre_mem_op != `MEMOP_NONE) begin
+              write_back_register = pre_mem_wb_reg;
+              mem_addr      = s1 + pre_mem_offset;
+              load_size_lg2 = pre_load_size_lg2;
+              mem_addr0    <= mem_addr[63:4] + mem_addr[3];
+              mem_addr1    <= mem_addr[63:4];
+              case (pre_mem_op)
+                 `MEMOP_LOAD: state <= `S_LOAD_LATCH;
+                 `MEMOP_STORE: begin
+                    mem_wr_mask = pre_mem_wr_mask;
+                    store_value = s2;
+                    state <= `S_STORE;
+                 end
+                 `MEMOP_LR: begin
+                    reservation <= s1;
+                    state <= `S_LOAD_LATCH;
+                 end
+                 `MEMOP_SC: begin
+                    if (reservation_match) begin
+                       write_back_value <= 0;
+                       mem_wr_mask = pre_mem_wr_mask;
+                       store_value = s2;
+                       state <= `S_STORE;
+                    end
+                    // SC fail: write_back_value = 1 from EXOP_ONE in rf3_pre_decode;
+                    // default state <= S_EXECUTE2 at top of S_EXECUTE retires it.
+                 end
+                 `MEMOP_AMO: begin
+                    do_atomic <= 1;
+                    state <= `S_LOAD_LATCH;
+                 end
+                 default: ;
+              endcase
+           end
+
            // Quadrant 0
-           if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
+           else if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
               write_back_register = rs2;
               if ((insn & 'hffff) == 0) begin
                  write_back_register = 0;
@@ -1150,50 +1342,7 @@ module smolrv64(input wire        clock,
               end
            end
 
-           //else if ((insn & 'he003) == 'h2000) begin // C.FLD
-             //$display("c.fld   x%1d,%1d(x%1d)    %x UNTESTED", write_back_register, rs1, c_imm12_62, regfile[write_back_register]);
-           //end
-
-           else if ((insn & 'he003) == 'h4000) begin // C.LW
-              write_back_register = rs2;
-              load_size_lg2 = 2|4;
-              mem_addr = s1 + c_uimm5_1210_6_x4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'he003) == 'h6000) begin // C.LD
-              write_back_register = rs2;
-              load_size_lg2 = 3;
-              mem_addr = s1 + c_uimm65_1210_x8;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           //else if ((insn & 'he003) == 'ha000) begin // C.FSD
-           //  $display("c.fsd   x%1d,%1d(x%1d)    UNTESTED", rs2, rs1, c_imm12_62);
-           //end
-
-           else if ((insn & 'he003) == 'hc000) begin // C.SW
-              mem_addr = s1 + c_uimm5_1210_6_x4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 15;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
-           else if ((insn & 'he003) == 'he000) begin // C.SD
-              mem_addr = s1 + c_uimm65_1210_x8;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 255;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
+           // C.LW / C.LD / C.SW / C.SD handled by shared mem block above.
 
               // Quadrant 1
            else if (insn == 1) begin // C.NOP
@@ -1276,27 +1425,7 @@ module smolrv64(input wire        clock,
               write_back_register = rs1;
            end
 
-           //else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
-           //  $display("c.fldsp x%1d,%1d(sp)       %x UNTESTED", write_back_register, c_uimm42_12_65_x8, regfile[write_back_register]);
-           //end
-
-           else if ((insn & 'he003) == 'h4002) begin // C.LWSP
-              write_back_register = insn[11:7]; // XXX this is a bit unclean
-              mem_addr = s1 + c_uimm32_12_64_x4;
-              load_size_lg2 = 2|4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'he003) == 'h6002) begin // C.LDSP
-              write_back_register = insn[11:7]; // XXX this is a bit unclean
-              mem_addr = s1 + c_uimm42_12_65_x8;
-              load_size_lg2 = 3;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
+           // C.LWSP / C.LDSP handled by shared mem block above.
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
               npc = s1 & ~1;
@@ -1321,27 +1450,7 @@ module smolrv64(input wire        clock,
               write_back_register = rs1;
            end
 
-           // else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
-           //  $display("c.fsdsp x%1d,%1d(sp) UNTESTED", rs2, c_uimm97_1210_x8);
-           // end
-
-           else if ((insn & 'he003) == 'hc002) begin // C.SWSP
-              mem_addr = s1 + c_uimm87_129_x4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 15;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
-           else if ((insn & 'he003) == 'he002) begin // C.SDSP
-              mem_addr = s1 + c_uimm97_1210_x8;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 255;
-              store_value = s2;
-              state <= `S_STORE;
-           end
+           // C.SWSP / C.SDSP handled by shared mem block above.
 
            // Quadrant 3, uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
@@ -1386,104 +1495,7 @@ module smolrv64(input wire        clock,
               if (s1 >= s2) npc = pc + imm_b;
            end
 
-           else if ((insn & 'h0000707f) == 'h00000003) begin // LB
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 0|4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00001003) begin // LH
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 1|4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00002003) begin // LW
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 2|4;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00003003) begin // LD
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 3;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00004003) begin // LBU
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 0;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00005003) begin // LHU
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 1;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00006003) begin // LWU
-              write_back_register = rd;
-              mem_addr = s1 + imm_i;
-              load_size_lg2 = 2;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00000023) begin // SB
-              mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 1;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00001023) begin // SH
-              mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 3;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00002023) begin // SW
-              mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 15;
-              store_value = s2;
-              state <= `S_STORE;
-           end
-
-           else if ((insn & 'h0000707f) == 'h00003023) begin // SD
-              mem_addr = s1 + imm_s;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              mem_wr_mask = 255;
-              store_value = s2;
-              state <= `S_STORE;
-           end
+           // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
 
            else if ((insn & 'h0000707f) == 'h00000013) begin // ADDI
               write_back_register = rd;
@@ -1816,61 +1828,7 @@ module smolrv64(input wire        clock,
               state <= `S_DIV_RUNNING;
            end
 
-           else if ((insn & 'hf9f0707f) == 'h1000202f || // LR.W
-                    (insn & 'hf9f0707f) == 'h1000302f)   // LR.D
-           begin
-              write_back_register = rd;
-              mem_addr = s1;
-              load_size_lg2 = 4 | (insn[12] ? 3 : 2);
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              reservation <= s1;
-              state <= `S_LOAD_LATCH;
-           end
-
-           else if ((insn & 'hf800707f) == 'h1800202f || // SC.W
-                    (insn & 'hf800707f) == 'h1800302f)   // SC.D
-           begin
-              write_back_register = rd;
-              if (reservation == s1) begin // XXX Should use physical address
-                 write_back_value <= 0;
-                 mem_addr = s1;
-                 mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-                 mem_addr1 <= mem_addr[63:4];
-                 mem_wr_mask = insn[12] ? 255 : 15;
-                 store_value = s2;
-                 state <= `S_STORE;
-              end else begin
-              end
-           end
-
-           else if ((insn & 'hf800707f) == 'h0800202f || // AMOSWAP.W
-                    (insn & 'hf800707f) == 'h0000202f || // AMOADD.W
-                    (insn & 'hf800707f) == 'h2000202f || // AMOXOR.W
-                    (insn & 'hf800707f) == 'h6000202f || // AMOAND.W
-                    (insn & 'hf800707f) == 'h4000202f || // AMOOR.W
-                    (insn & 'hf800707f) == 'h8000202f || // AMOMIN.W
-                    (insn & 'hf800707f) == 'ha000202f || // AMOMAX.W
-                    (insn & 'hf800707f) == 'hc000202f || // AMOMINU.W
-                    (insn & 'hf800707f) == 'he000202f || // AMOMAXU.W
-                    (insn & 'hf800707f) == 'h0800302f || // AMOSWAP.D
-                    (insn & 'hf800707f) == 'h0000302f || // AMOADD.D
-                    (insn & 'hf800707f) == 'h2000302f || // AMOXOR.D
-                    (insn & 'hf800707f) == 'h6000302f || // AMOAND.D
-                    (insn & 'hf800707f) == 'h4000302f || // AMOOR.D
-                    (insn & 'hf800707f) == 'h8000302f || // AMOMIN.D
-                    (insn & 'hf800707f) == 'ha000302f || // AMOMAX.D
-                    (insn & 'hf800707f) == 'hc000302f || // AMOMINU.D
-                    (insn & 'hf800707f) == 'he000302f)   // AMOMAXU.D
-            begin
-              write_back_register = rd;
-              mem_addr = s1;
-              load_size_lg2 = insn[12] ? 3 : 2;
-              mem_addr0 <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1 <= mem_addr[63:4];
-              do_atomic <= 1;
-              state <= `S_LOAD_LATCH;
-           end
+           // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
               if (mpp != 3) mprv = 0;
