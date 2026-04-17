@@ -452,6 +452,16 @@ module smolrv64(input wire        clock,
    reg  [ 2:0] pre_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
    reg  [ 7:0] pre_mem_wr_mask  = 0; // byte-enable for stores+SC
    reg  [ 4:0] pre_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
+   reg         pre_mem_fp       = 0; // 1 = FLW/FLD/FSW/FSD (route via f-regfile, NaN-box FLW)
+   reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
+
+   // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
+   // FP bit-ops set pre_mem_fp=0; their result is already in write_back_fp_value.
+   wire        fp_load_retiring   = write_back_fp_valid && pre_mem_fp;
+   wire [63:0] fp_writeback_data  = fp_load_retiring
+                                    ? (load_size_lg2[0] ? write_back_value
+                                                        : {32'hffffffff, write_back_value[31:0]})
+                                    : write_back_fp_value;
 
    // Pre-registered interrupt check: computed every cycle, consumed in S_FETCH1.
    // Breaks the mtip_reg → cause_priority_encode → state_reg path (~10 LUT levels)
@@ -470,7 +480,7 @@ module smolrv64(input wire        clock,
 
    fregfile f_rf_inst(.clock(clock),
                       .write_valid(state == `S_FETCH1 && write_back_fp_valid),
-                      .write_data(write_back_fp_value),
+                      .write_data(fp_writeback_data),
                       .write_addr(write_back_fp_register),
                       .read_addr_0(rs1),
                       .read_addr_1(rs2),
@@ -503,7 +513,6 @@ module smolrv64(input wire        clock,
    reg  [ 8:0] c_uimm42_12_65_x8, c_uimm97_1210_x8;
    reg  [ 7:0] c_uimm32_12_64_x4, c_uimm87_129_x4, c_uimm65_1210_x8;
    reg  [31:0] sext32;
-   reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 `ifdef SIMULATE
    reg  [127:0] tmp128;
 `endif
@@ -1207,6 +1216,7 @@ module smolrv64(input wire        clock,
               pre_load_size_lg2 <= 3'd0;
               pre_mem_wr_mask   <= 8'd0;
               pre_mem_wb_reg    <= 5'd0;
+              pre_mem_fp        <= 1'b0;
 
               // Compressed loads / stores (quadrants 0 & 2)
               if ((insn & 'he003) == 'h4000) begin // C.LW
@@ -1291,6 +1301,25 @@ module smolrv64(input wire        clock,
                  pre_mem_wr_mask <= insn[12] ? 8'hff : 8'h0f;
                  pre_mem_wb_reg  <= insn[11:7];
               end
+              // FP loads: FLW (funct3=010) and FLD (funct3=011); opcode 0000111
+              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b00001 &&
+                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_imm_i_s;
+                 // FLW: 32-bit zero-extend (load_size_lg2=010), NaN-box in S_LOAD_ALIGN.
+                 // FLD: 64-bit (load_size_lg2=011).
+                 pre_load_size_lg2 <= {1'b0, insn[13:12]};
+                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_mem_fp        <= 1'b1;
+              end
+              // FP stores: FSW (funct3=010) and FSD (funct3=011); opcode 0100111
+              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01001 &&
+                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin
+                 pre_mem_op        <= `MEMOP_STORE;
+                 pre_mem_offset    <= d_imm_s_s;
+                 pre_mem_wr_mask   <= insn[12] ? 8'hff : 8'h0f;
+                 pre_mem_fp        <= 1'b1;
+              end
               else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01011 &&
                        (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
                  // funct5 must be one of the 9 defined AMO variants; otherwise
@@ -1374,7 +1403,15 @@ module smolrv64(input wire        clock,
            // replace 22 parallel copies, shrinking the mem_addr critical
            // path from ~14 LUT levels to ~7.
            if (pre_mem_op != `MEMOP_NONE) begin
-              write_back_register = pre_mem_wb_reg;
+              if (pre_mem_fp && fs == 0) begin
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end else begin
+              if (pre_mem_fp) fs = 3;
+              write_back_register    = pre_mem_fp ? 5'd0 : pre_mem_wb_reg;
+              write_back_fp_valid    = pre_mem_fp && pre_mem_op == `MEMOP_LOAD;
+              write_back_fp_register = pre_mem_wb_reg;
               mem_addr      = s1 + pre_mem_offset;
               load_size_lg2 = pre_load_size_lg2;
               mem_addr0    <= mem_addr[63:4] + mem_addr[3];
@@ -1383,7 +1420,7 @@ module smolrv64(input wire        clock,
                  `MEMOP_LOAD: state <= `S_LOAD_LATCH;
                  `MEMOP_STORE: begin
                     mem_wr_mask = pre_mem_wr_mask;
-                    store_value = s2;
+                    store_value = pre_mem_fp ? f2 : s2;
                     state <= `S_STORE;
                  end
                  `MEMOP_LR: begin
@@ -1406,6 +1443,7 @@ module smolrv64(input wire        clock,
                  end
                  default: ;
               endcase
+              end // else: !(pre_mem_fp && fs == 0)
            end
 
            // Quadrant 0
@@ -2522,15 +2560,15 @@ module smolrv64(input wire        clock,
                                   xs,         fs,         mpp, 2'd0,      spp,  // 16: 8
                                   mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; //  7: 0
                 // F/D are NOT implemented yet — advertising them causes OS/test
-                // code (e.g., rv64mi-p-csr test 12, OpenSBI FP probe) to issue
-                // FP insns that then trap illegally. Flip back to 0x112d when
-                // F/D actually land.
-                `CSR_MISA:     csr_read_val = 64'h8000000000141105;
-                // Hardwired 1 0100 0001 0001 0000 0101
+                // F/D bits ON since FP Phase 2 (regfile + bit-ops + FL*/FS*).
+                // Arithmetic FP insns (FADD/FMUL/FCVT/FEQ/...) will still trap
+                // illegal until Phase 4 lands. Accepted: OpenSBI/Linux/riscv-tests
+                // that issue arithmetic will break temporarily.
+                `CSR_MISA:     csr_read_val = 64'h800000000014112d;
+                // Hardwired 1 0100 0001 0001 0010 1101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
-                //           U  S      M    I   F  DC A
+                //           U  S      M    I F  DC A
                 //    SUIMAFDC
-                // FD-enabled variant would be 0x800000000014112d.
                 `CSR_MEDELEG:  csr_read_val = csr_medeleg;
                 `CSR_MIDELEG:  csr_read_val = csr_mideleg;
                 `CSR_MIE:      csr_read_val = csr_mie;
