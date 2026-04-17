@@ -521,6 +521,7 @@ module smolrv64(input wire        clock,
    reg  [11:0] csrno;
    reg  [31:0] insn = 0; // XXX We should set this on reset
    reg  [ 1:0] csr_op;
+   reg  [ 1:0] fcmp_result; // {nv, result} from fcmp_s/fcmp_d
 
    // CSR state
    reg         deleg, cause_intr;
@@ -744,6 +745,57 @@ module smolrv64(input wire        clock,
             else if (exp_0)                fclass_s = sign ? 64'h004 : 64'h020;
             else                           fclass_s = sign ? 64'h002 : 64'h040;
          end
+      end
+   endfunction
+
+   // FP compares: returns {nv, result} where nv→fflags.NV, result→integer rd bit 0.
+   // op (from insn[14:12]): 000=FLE, 001=FLT, 010=FEQ.
+   // FEQ sets NV only on signaling NaN; FLT/FLE set NV on any NaN.
+   function [1:0] fcmp_s;
+      input [2:0] op;
+      input [31:0] a, b;
+      reg a_nan, b_nan, a_snan, b_snan, both_zero, eq, lt, le;
+      begin
+         a_nan = (a[30:23] == 8'hff) && (a[22:0] != 0);
+         b_nan = (b[30:23] == 8'hff) && (b[22:0] != 0);
+         a_snan = a_nan && !a[22];
+         b_snan = b_nan && !b[22];
+         both_zero = (a[30:0] == 0) && (b[30:0] == 0);
+         if (a_nan || b_nan)        begin eq = 0; lt = 0; le = 0; end
+         else if (both_zero)        begin eq = 1; lt = 0; le = 1; end
+         else if (a[31] != b[31])   begin eq = 0; lt = a[31]; le = a[31]; end
+         else if (!a[31])           begin eq = (a == b); lt = (a <  b); le = (a <= b); end
+         else                       begin eq = (a == b); lt = (a >  b); le = (a >= b); end
+         case (op)
+            3'b000:  fcmp_s = {a_nan  | b_nan,  le};
+            3'b001:  fcmp_s = {a_nan  | b_nan,  lt};
+            3'b010:  fcmp_s = {a_snan | b_snan, eq};
+            default: fcmp_s = 2'b00;
+         endcase
+      end
+   endfunction
+
+   function [1:0] fcmp_d;
+      input [2:0] op;
+      input [63:0] a, b;
+      reg a_nan, b_nan, a_snan, b_snan, both_zero, eq, lt, le;
+      begin
+         a_nan = (a[62:52] == 11'h7ff) && (a[51:0] != 0);
+         b_nan = (b[62:52] == 11'h7ff) && (b[51:0] != 0);
+         a_snan = a_nan && !a[51];
+         b_snan = b_nan && !b[51];
+         both_zero = (a[62:0] == 0) && (b[62:0] == 0);
+         if (a_nan || b_nan)        begin eq = 0; lt = 0; le = 0; end
+         else if (both_zero)        begin eq = 1; lt = 0; le = 1; end
+         else if (a[63] != b[63])   begin eq = 0; lt = a[63]; le = a[63]; end
+         else if (!a[63])           begin eq = (a == b); lt = (a <  b); le = (a <= b); end
+         else                       begin eq = (a == b); lt = (a >  b); le = (a >= b); end
+         case (op)
+            3'b000:  fcmp_d = {a_nan  | b_nan,  le};
+            3'b001:  fcmp_d = {a_nan  | b_nan,  lt};
+            3'b010:  fcmp_d = {a_snan | b_snan, eq};
+            default: fcmp_d = 2'b00;
+         endcase
       end
    endfunction
 
@@ -2038,6 +2090,30 @@ module smolrv64(input wire        clock,
                         end
                       endcase
                       if (insn[14:12] < 3) state <= `S_FETCH1;
+                   end
+                   // FEQ.S / FLT.S / FLE.S — integer rd; NV flag on NaN per op.
+                   7'b1010000: if (insn[14:12] <= 3'b010) begin
+                      fcmp_result = fcmp_s(insn[14:12], f1_s, f2_s);
+                      write_back_register = rd;
+                      write_back_value    <= {63'd0, fcmp_result[0]};
+                      if (fcmp_result[1]) fflags = fflags | 5'b10000;
+                      state               <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   // FEQ.D / FLT.D / FLE.D
+                   7'b1010001: if (insn[14:12] <= 3'b010) begin
+                      fcmp_result = fcmp_d(insn[14:12], f1, f2);
+                      write_back_register = rd;
+                      write_back_value    <= {63'd0, fcmp_result[0]};
+                      if (fcmp_result[1]) fflags = fflags | 5'b10000;
+                      state               <= `S_FETCH1;
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
                    end
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
                    7'b1110000: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
