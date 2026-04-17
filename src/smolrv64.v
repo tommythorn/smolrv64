@@ -627,6 +627,25 @@ module smolrv64(input wire        clock,
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
+`ifdef VERILATOR_COSIM
+   import "DPI-C" function void cosim_retire(
+       input longint unsigned pc,
+       input longint unsigned next_pc,
+       input int    unsigned insn,
+       input byte   unsigned rd_kind,   // 0=none, 1=int, 2=fp
+       input byte   unsigned rd_idx,
+       input byte   unsigned prv,       // pre-retire privilege
+       input byte   unsigned trapped,
+       input int    unsigned fflags,
+       input longint unsigned rd_val,
+       input longint unsigned trap_cause,
+       input longint unsigned trap_tval,
+       input longint unsigned mtime
+   );
+   reg        just_trapped = 0;  // suppress S_FETCH1 retire after trap emission
+   reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
+`endif
+
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
@@ -685,6 +704,30 @@ module smolrv64(input wire        clock,
            muldiv_output_high_part = 0;
            muldiv_output_sext32 = 0;
            do_atomic = 0;
+
+`ifdef VERILATOR_COSIM
+           // Normal retire: pc/insn/write_back_* still hold the just-completed
+           // instruction's data; npc is its post-retire pc. Skip the first
+           // fetch (csr_mcycle == 0) and the dummy fetch right after a trap
+           // (just_trapped set by S_EXCEPTION).
+           if (csr_mcycle != 0 && !just_trapped) begin
+              cosim_retire(
+                  pc,
+                  npc,
+                  insn,
+                  (write_back_register != 0) ? 8'd1 : 8'd0,
+                  {3'd0, write_back_register},
+                  {6'd0, prv},
+                  8'd0,
+                  32'd0,
+                  write_back_value,
+                  64'd0,
+                  64'd0,
+                  clint_mtime
+              );
+           end
+           just_trapped <= 0;
+`endif
 
 `ifdef DISASS
 `include "disass.vh"
@@ -2522,6 +2565,10 @@ module smolrv64(input wire        clock,
 `endif
 `endif
 
+`ifdef VERILATOR_COSIM
+           prv_at_trap = prv;  // capture before the mutation below
+`endif
+
            write_back_register = 0;
 
            // XXX We would probably save gates by factoring the deleg
@@ -2555,6 +2602,27 @@ module smolrv64(input wire        clock,
            $display("%05d  ** Exception resuming at %x", $time, (tvec[0] && cause_intr) ? (tvec & ~3) + cause[11:0] * 4 : tvec & ~3);
 `endif
 `endif
+
+`ifdef VERILATOR_COSIM
+           // Trap retire: pc/insn still hold the trapping instruction; npc is
+           // the trap vector we just computed. prv_at_trap is pre-trap prv.
+           cosim_retire(
+               pc,
+               npc,
+               insn,
+               8'd0,                         // no writeback on trap
+               8'd0,
+               {6'd0, prv_at_trap},
+               8'd1,                         // trapped
+               32'd0,
+               64'd0,
+               {cause_intr, 51'd0, cause},   // architectural mcause/scause form
+               tval,
+               clint_mtime
+           );
+           just_trapped <= 1;
+`endif
+
            state <= `S_FETCH1;
         end
 

@@ -54,6 +54,33 @@ smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 		$(SRCS) sim_main.cpp
 	cp obj_dir_verbose/smolrv64-linux-verbose-vl $@
 
+# Cosim build: smolrv64 under Verilator + simmerv (via C ABI) in lockstep.
+# Every retired instruction is sent to simmerv via a DPI callback and the
+# two architectural states are compared.  Fails loudly on divergence.
+SIMMERV_DIR     ?= $(HOME)/github/simmerv
+SIMMERV_LIB_DIR := $(SIMMERV_DIR)/target/release
+SIMMERV_INCLUDE := $(SIMMERV_DIR)/cosim
+
+$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a: \
+		$(wildcard $(SIMMERV_DIR)/src/*.rs) \
+		$(wildcard $(SIMMERV_DIR)/src/**/*.rs) \
+		$(wildcard $(SIMMERV_DIR)/cosim/src/*.rs) \
+		$(SIMMERV_DIR)/Cargo.toml \
+		$(SIMMERV_DIR)/cosim/Cargo.toml
+	cd $(SIMMERV_DIR) && cargo build --release -p simmerv-cosim
+
+smolrv64-linux-cosim: $(SRCS) sim_main.cpp Makefile \
+		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
+	verilator --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		-DSIMULATE -DMEM_SIZE_LG2=27 -DNO_TIMEOUT -DVERILATOR_COSIM \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3 -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
+		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-Mdir obj_dir_cosim -o smolrv64-linux-cosim \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_cosim/smolrv64-linux-cosim $@
+
 smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
