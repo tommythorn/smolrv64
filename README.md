@@ -52,6 +52,7 @@ TLBs, caches (correctness first, performance later).
 - Instruction and data caches
 - DDR4 support on RK-XCKU5P-F
 - Cosim harness against Simmerv for lockstep debugging
+  ([docs/cosim.md](docs/cosim.md) — Phase 1 landed)
 
 ## Beyond: Make it fast
 
