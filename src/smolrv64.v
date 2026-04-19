@@ -729,7 +729,8 @@ module smolrv64(input wire        clock,
        input longint unsigned trap_tval,
        input longint unsigned mtime,
        input longint unsigned mtimecmp,
-       input longint unsigned mepc
+       input longint unsigned mepc,
+       input byte     unsigned seip
    );
    reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
    reg [1:0]  prv_retire   = 0;  // prv at instruction start, for cosim retire hook (MRET/SRET change prv mid-execute)
@@ -908,7 +909,8 @@ module smolrv64(input wire        clock,
                   64'd0,
                   clint_mtime_prev,
                   clint_mtimecmp,
-                  csr_mepc
+                  csr_mepc,
+                  {7'd0, seip}
               );
            end
 `endif
@@ -2946,7 +2948,8 @@ module smolrv64(input wire        clock,
                tval,
                clint_mtime_prev,
                clint_mtimecmp,
-               csr_mepc
+               csr_mepc,
+               {7'd0, seip}
            );
 `endif
            just_trapped <= 1;

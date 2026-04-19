@@ -142,7 +142,8 @@ extern "C" void cosim_retire(
     unsigned long long trap_tval,
     unsigned long long mtime,
     unsigned long long mtimecmp,
-    unsigned long long mepc)
+    unsigned long long mepc,
+    unsigned char      seip)
 {
     g_seqno++;
 
@@ -170,6 +171,12 @@ extern "C" void cosim_retire(
     const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
     const bool dut_taking_mtip = trapped && trap_cause == MTIP_CAUSE;
     simmerv_set_mtimecmp(g_ctx, dut_taking_mtip ? mtimecmp : ~0ULL);
+    // Mirror DUT's PLIC→SEIP line: the two sims have independent UART/PLIC
+    // state, so force simmerv's supervisor-external-interrupt bit to match.
+    simmerv_set_seip(g_ctx, seip != 0);
+    // Mirror DUT's only PLIC-connected IRQ (UART = 10) into simmerv's PLIC
+    // pending mask so claim/pending MMIO reads return the same IRQ number.
+    simmerv_set_plic_ip(g_ctx, 10, seip != 0);
     SimmervRetire ref{};
     if (simmerv_step_retire(g_ctx, &ref) != 0) {
         std::fprintf(stderr, "cosim: simmerv_step_retire failed at seq %llu\n",
