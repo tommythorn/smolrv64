@@ -12,10 +12,10 @@ MEM_BASE ?= 0x80000000
 monitor.bin: monitor.elf
 	$(RV)objcopy -O binary monitor.elf monitor.bin
 
-monitor.elf: monitor.c crt0.s
+monitor.elf: monitor.c blake3.c blake3.h crt0.s
 	$(RV)gcc -mabi=lp64 -mcmodel=medany -march=rv64imac_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tmonitor.ld -Wl,--defsym,MEM_BASE=$(MEM_BASE) -O \
-		crt0.s monitor.c -o monitor.elf
+		crt0.s monitor.c blake3.c -o monitor.elf
 
 monitor.even: monitor.bin
 	$(SRC_DIR)/evenodd.py $< 0 > $@
@@ -23,7 +23,7 @@ monitor.even: monitor.bin
 monitor.odd: monitor.bin
 	$(SRC_DIR)/evenodd.py $< 1 > $@
 
-$(SRC_DIR)/smolrv64-run: $(SRC_DIR)/smolrv64.v $(SRC_DIR)/uart5.v
+$(SRC_DIR)/smolrv64-run: $(SRC_DIR)/smolrv64.v
 	$(MAKE) -C $(SRC_DIR) smolrv64-run
 
 sim: monitor.even monitor.odd $(SRC_DIR)/smolrv64-sim

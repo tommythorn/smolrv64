@@ -7,6 +7,8 @@
 //   WB<addr> <val>   - write 8-bit byte to address
 //   T<addr>          - hexdump 256 bytes starting at address
 //   L<addr>          - load base64-encoded binary to address (end with empty line)
+//   Y<addr>          - receive XMODEM-1K upload to address
+//   C<addr> <len>    - blake3-256 of len bytes at address
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   ?                - help
 
@@ -14,6 +16,8 @@ typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;
 typedef unsigned int       uint32_t;
 typedef unsigned long      uint64_t;
+
+#include "blake3.h"
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
@@ -418,6 +422,22 @@ int main(void)
                 else { puthex64(n); puts_(" bytes loaded\n"); }
             }
 
+        } else if (*p == 'C' || *p == 'c') {
+            uint64_t len;
+            p = parse_hex(p + 1, &addr);
+            if (!p) { puts_("usage: C<addr> <len>\n"); continue; }
+            while (*p == ' ') p++;
+            p = parse_hex(p, &len);
+            if (!p) { puts_("usage: C<addr> <len>\n"); continue; }
+            {
+                uint8_t hash[32];
+                int i;
+                blake3_hash((const void *)addr, len, hash);
+                puts_("blake3: ");
+                for (i = 0; i < 32; i++) puthex8(hash[i]);
+                putc_('\n');
+            }
+
         } else if (*p == 'X' || *p == 'x') {
             uint64_t a0 = 0, a1 = 0;
             p = parse_hex(p + 1, &addr);
@@ -437,6 +457,7 @@ int main(void)
             puts_("T<addr>          hexdump 256 bytes\n");
             puts_("L<addr>          load base64 blob (empty line ends)\n");
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
+            puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
 
         } else if (*p != 0) {
