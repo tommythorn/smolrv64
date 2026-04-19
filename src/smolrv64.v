@@ -62,6 +62,7 @@ module smolrv64_tb;
          $tty_write(uart_tx_data);
   `else
          $write("%c", uart_tx_data);
+         $fflush(1);
    `endif
 `endif
       end
@@ -554,6 +555,13 @@ module smolrv64(input wire        clock,
 
    // CLINT
    reg [63:0]  clint_mtime = 0;
+`ifdef VERILATOR_COSIM
+   // One-cycle-delayed snapshot of clint_mtime. CSR TIME reads latch a value
+   // that retires the cycle after; pass the delayed snapshot to simmerv so
+   // its CSR TIME read returns the same value.
+   reg [63:0]  clint_mtime_prev = 0;
+   always @(posedge clock) clint_mtime_prev <= clint_mtime;
+`endif
    reg [63:0]  clint_mtimecmp = ~0;
    reg         clint_msip = 0;
 
@@ -820,7 +828,7 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
-      clint_mtime <= clint_mtime + 1;
+      if (csr_mcycle[4:0] == 5'b0) clint_mtime <= clint_mtime + 1;
       uart_tx_valid <= 0;
 
       // Enqueue UART RX data
@@ -881,8 +889,6 @@ module smolrv64(input wire        clock,
            // fetch (csr_mcycle == 0) and the dummy fetch right after a trap
            // (just_trapped set by S_EXCEPTION).
            if (csr_mcycle != 0 && !just_trapped) begin
-              // mtime passed to simmerv is (clint_mtime - 1): the value
-              // observed during S_HANDLE_CSR, one cycle before retire.
               cosim_retire(
                   pc,
                   npc,
@@ -899,7 +905,7 @@ module smolrv64(input wire        clock,
                   write_back_fp_valid ? write_back_fp_value : write_back_value,
                   64'd0,
                   64'd0,
-                  clint_mtime - 1,
+                  clint_mtime_prev,
                   csr_mepc
               );
            end
@@ -2286,6 +2292,10 @@ module smolrv64(input wire        clock,
 
            if (mem_addr[63:4] == 60'h100_0000) begin
               // NS16550A UART write (0x10000000-0x1000000F)
+`ifdef VERBOSE
+              $display("%05d  UART_WR addr=%016x off=%0d data=%016x mask=%02x lcr=%02x",
+                       $time, {mem_addr, 4'b0}, mem_addr[2:0], store_value, mem_wr_mask, uart_lcr);
+`endif
               case (mem_addr[2:0])
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
                       uart_tx_valid <= 1;
@@ -2927,7 +2937,7 @@ module smolrv64(input wire        clock,
                64'd0,
                {cause_intr, 51'd0, cause},   // architectural mcause/scause form
                tval,
-               clint_mtime - 1,
+               clint_mtime_prev,
                csr_mepc
            );
 `endif
