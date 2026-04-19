@@ -2494,6 +2494,11 @@ module smolrv64(input wire        clock,
                    7: write_back_value = uart_scr;
                    default: write_back_value = 0;
                  endcase
+                 // Byte/half sign extension for LB/LH (load_size_lg2 = {sxt, size}).
+                 if (load_size_lg2 == 4) // LB
+                    write_back_value = {{56{write_back_value[7]}}, write_back_value[7:0]};
+                 else if (load_size_lg2 == 5) // LH
+                    write_back_value = {{48{write_back_value[15]}}, write_back_value[15:0]};
               end else if (mem_addr[63:16] == 48'h0200) begin
                  // CLINT read: return value directly, no MMIO bus
                  case (mem_addr[15:0])
