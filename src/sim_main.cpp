@@ -141,6 +141,7 @@ extern "C" void cosim_retire(
     unsigned long long trap_cause,
     unsigned long long trap_tval,
     unsigned long long mtime,
+    unsigned long long mtimecmp,
     unsigned long long mepc)
 {
     g_seqno++;
@@ -162,6 +163,13 @@ extern "C" void cosim_retire(
     dut.mepc       = mepc;
 
     simmerv_set_mtime(g_ctx, mtime);
+    // Only allow simmerv to take MTIP exactly when DUT does. DUT's mtip bit
+    // latches as soon as mtime>=mtimecmp, but DUT only vectors at the next
+    // fetch boundary; simmerv would otherwise fire immediately. Gate by the
+    // actual trap retire with machine-timer cause (0x8000000000000007).
+    const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
+    const bool dut_taking_mtip = trapped && trap_cause == MTIP_CAUSE;
+    simmerv_set_mtimecmp(g_ctx, dut_taking_mtip ? mtimecmp : ~0ULL);
     SimmervRetire ref{};
     if (simmerv_step_retire(g_ctx, &ref) != 0) {
         std::fprintf(stderr, "cosim: simmerv_step_retire failed at seq %llu\n",
@@ -205,6 +213,9 @@ static const char* parse_plusarg(int argc, char** argv, const char* key) {
 #endif // VERILATOR_COSIM
 
 int main(int argc, char** argv) {
+    // Force stdout line-buffered so UART bytes from Verilog $write survive
+    // SIGTERM / timeout when piped (e.g. `make run | tee …`).
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     Verilated::commandArgs(argc, argv);
 
 #ifdef VERILATOR_COSIM

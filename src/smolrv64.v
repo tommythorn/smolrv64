@@ -728,6 +728,7 @@ module smolrv64(input wire        clock,
        input longint unsigned trap_cause,
        input longint unsigned trap_tval,
        input longint unsigned mtime,
+       input longint unsigned mtimecmp,
        input longint unsigned mepc
    );
    reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
@@ -906,6 +907,7 @@ module smolrv64(input wire        clock,
                   64'd0,
                   64'd0,
                   clint_mtime_prev,
+                  clint_mtimecmp,
                   csr_mepc
               );
            end
@@ -2938,6 +2940,7 @@ module smolrv64(input wire        clock,
                {cause_intr, 51'd0, cause},   // architectural mcause/scause form
                tval,
                clint_mtime_prev,
+               clint_mtimecmp,
                csr_mepc
            );
 `endif
