@@ -15,7 +15,7 @@ CFLAGS = -fPIC -shared -O2 -Wall
 VPI_CFLAGS = $(shell iverilog-vpi --cflags)
 VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
 
-SRCS=smolrv64.v uart5.v
+SRCS=smolrv64.v
 
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)
@@ -50,9 +50,22 @@ smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 		-DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
 		-O3 -CFLAGS "-O3" \
-		-Mdir obj_dir_verbose -o smolrv64-linux-verbose-vl \
+		-Mdir obj_dir_verbose -o $@ \
 		$(SRCS) sim_main.cpp
-	cp obj_dir_verbose/smolrv64-linux-verbose-vl $@
+	cp obj_dir_verbose/$@ $@
+
+# Verilator build of the same config — much faster simulation.
+# Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
+# is needed.
+smolrv64-linux-vl: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		-DSIMULATE -DMEM_SIZE_LG2=27 -DNO_TIMEOUT \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_verbose -o $@ \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_verbose/$@ $@
 
 # Cosim build: smolrv64 under Verilator + simmerv (via C ABI) in lockstep.
 # Every retired instruction is sent to simmerv via a DPI callback and the

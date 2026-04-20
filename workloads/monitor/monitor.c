@@ -9,6 +9,7 @@
 //   L<addr>          - load base64-encoded binary to address (end with empty line)
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
+//   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   ?                - help
 
@@ -438,6 +439,26 @@ int main(void)
                 putc_('\n');
             }
 
+        } else if (*p == 'Z' || *p == 'z') {
+            uint64_t len, fill = 0;
+            p = parse_hex(p + 1, &addr);
+            if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
+            while (*p == ' ') p++;
+            p = parse_hex(p, &len);
+            if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
+            while (*p == ' ') p++;
+            if (*p) {
+                const char *q = parse_hex(p, &fill);
+                if (!q) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
+            }
+            {
+                volatile uint8_t *d = (volatile uint8_t *)addr;
+                uint8_t b = (uint8_t)fill;
+                uint64_t i;
+                for (i = 0; i < len; i++) d[i] = b;
+            }
+            puts_("ok\n");
+
         } else if (*p == 'X' || *p == 'x') {
             uint64_t a0 = 0, a1 = 0;
             p = parse_hex(p + 1, &addr);
@@ -447,6 +468,29 @@ int main(void)
             puts_("jumping...\n");
             ((fn_t2)addr)(a0, a1);
             puts_("returned\n");
+
+        } else if (*p == 'P' || *p == 'p') {
+            uint64_t mn, mx, tot, cnt, to;
+            asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
+            asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
+            asm volatile ("csrr %0, 0xfc2" : "=r"(tot));
+            asm volatile ("csrr %0, 0xfc3" : "=r"(cnt));
+            asm volatile ("csrr %0, 0xfc4" : "=r"(to));
+            if (p[1] == 'c' || p[1] == 'C') {
+                asm volatile ("csrw 0xfc3, zero");
+                puts_("cleared\n");
+            } else {
+                puts_("mig min="); puthex64(mn);
+                puts_(" max=");    puthex64(mx);
+                puts_(" total=");  puthex64(tot);
+                puts_(" count=");  puthex64(cnt);
+                puts_(" timeouts="); puthex64(to);
+                if (cnt) {
+                    puts_(" avg=");
+                    puthex64(tot / cnt);
+                }
+                putc_('\n');
+            }
 
         } else if (*p == '?' || *p == 'h' || *p == 'H') {
             puts_("R<addr>          read 64-bit word\n");
@@ -458,7 +502,9 @@ int main(void)
             puts_("L<addr>          load base64 blob (empty line ends)\n");
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
             puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
+            puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
+            puts_("P                dump MIG latency stats; Pc clears them\n");
 
         } else if (*p != 0) {
             puts_("unknown command (? for help)\n");

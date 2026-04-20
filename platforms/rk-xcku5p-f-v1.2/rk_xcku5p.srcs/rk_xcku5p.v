@@ -31,8 +31,12 @@ module rk_xcku5p(
    wire ui_rst;           // c0_ddr4_ui_clk_sync_rst (active high)
    wire init_calib_complete;
 
-   // CPU is held in reset until calibration completes
-   wire cpu_reset = ui_rst | ~init_calib_complete;
+   // CPU is held in reset until calibration completes.
+   // key[1] is a soft-reset button (active low): pulses the CPU reset without
+   // touching the DDR4 MIG, so calibration is preserved and mig_* latency
+   // stats CSRs (which aren't in the CPU's reset block) survive across a
+   // soft reset. Press key[1] to return to the monitor from a hung workload.
+   wire cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
 
    // Heartbeat counter driven by UI clock
    reg [34:0] count = 0;
@@ -119,6 +123,7 @@ module rk_xcku5p(
    wire         dram_readdatavalid;
    wire [255:0] dram_readdata;
    wire         dram_write_ready;
+   wire         dram_abandon_read;
 
    // DDR4 adapter: bridges CPU DRAM bus to MIG native app interface
    ddr4_adapter ddr4_adapter_inst (
@@ -133,6 +138,7 @@ module rk_xcku5p(
       .dram_readdatavalid   (dram_readdatavalid),
       .dram_readdata        (dram_readdata),
       .dram_write_ready     (dram_write_ready),
+      .dram_abandon_read    (dram_abandon_read),
 
       .app_addr             (c0_ddr4_app_addr),
       .app_cmd              (c0_ddr4_app_cmd),
@@ -176,6 +182,7 @@ module rk_xcku5p(
       .dram_readdatavalid   (dram_readdatavalid),
       .dram_readdata        (dram_readdata),
       .dram_write_ready     (dram_write_ready),
+      .dram_abandon_read    (dram_abandon_read),
 
       .uart_tx_valid        (uart_tx_valid),
       .uart_tx_data         (uart_tx_data),

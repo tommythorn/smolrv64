@@ -144,6 +144,7 @@ module smolrv64(input wire        clock,
                 input wire         dram_readdatavalid,
                 input wire [255:0] dram_readdata,
                 input wire         dram_write_ready,   // adapter idle, can accept a write
+                output reg         dram_abandon_read,  // pulse: discard any in-flight read response
 
                 output reg        halted_o = 0);
 
@@ -261,6 +262,13 @@ module smolrv64(input wire        clock,
 `define CSR_MVENDORID  12'hf11
 `define CSR_MARCHID    12'hf12
 `define CSR_MIMPID     12'hf13
+
+// Custom MRO CSRs: DDR4 transaction latency stats (cycles spent in S_DRAM_* waits)
+`define CSR_MIG_MIN      12'hfc0
+`define CSR_MIG_MAX      12'hfc1
+`define CSR_MIG_TOTAL    12'hfc2
+`define CSR_MIG_COUNT    12'hfc3
+`define CSR_MIG_TIMEOUTS 12'hfc4
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -499,9 +507,23 @@ module smolrv64(input wire        clock,
    reg          dram_store_split;   // 1 = second burst pending after DRAM_STORE_WAIT
 
 `ifndef BUS_TIMEOUT_LG2
-`define BUS_TIMEOUT_LG2 10  // 1024 cycles before access fault
+`define BUS_TIMEOUT_LG2 24  // ~16M cycles before access fault
 `endif
    reg [`BUS_TIMEOUT_LG2-1:0] bus_timeout_ctr = 0;
+   // Registered one-cycle-ahead terminal-count, so the cause/state
+   // combinational cone sees a FF output instead of a deep AND tree.
+   // Fires one cycle after bus_timeout_ctr saturates — negligible at
+   // 16M-cycle threshold, but critical for timing closure.
+   reg        bus_timeout_expired = 0;
+
+   // DDR4 transaction latency stats (cycles spent in S_DRAM_* wait states)
+   reg [31:0] mig_latency_ctr = 0;
+   reg        mig_prev_waiting = 0;
+   reg [31:0] csr_mig_min    = 32'hFFFFFFFF;
+   reg [31:0] csr_mig_max    = 0;
+   reg [63:0] csr_mig_total  = 0;
+   reg [63:0] csr_mig_count  = 0;
+   reg [63:0] csr_mig_timeouts = 0;
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
@@ -581,7 +603,64 @@ module smolrv64(input wire        clock,
    wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4} :
                           uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2} :
                                          {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h1};
+`ifdef PC_TRACE
+   // Debug PC tracer (see tracer block below). When armed, SW sees a dummy
+   // always-ready UART; the tracer owns the physical TX exclusively.
+   reg        dbg_armed   = 0;
+   reg [ 7:0] dbg_s_count = 0;
+   reg        dbg_busy    = 0;
+   reg [63:0] dbg_pc      = 0;
+   reg [ 1:0] dbg_mode    = 0;
+   reg        dbg_is_trap = 0;
+   reg [ 5:0] dbg_cause   = 0;
+   reg [ 5:0] dbg_pos     = 0;
+   localparam integer DBG_N_RETIRE = 64;
+   function [7:0] dbg_hex;
+      input [3:0] n;
+      dbg_hex = n < 10 ? 8'h30 + {4'd0, n} : 8'h57 + {4'd0, n};
+   endfunction
+   function [7:0] dbg_byte_at;
+      input [ 5:0] pos;
+      input [63:0] p;
+      input [ 1:0] m;
+      input        trap;
+      input [ 5:0] cs;
+      begin
+         case (pos)
+           6'd0:  dbg_byte_at = m == 2'd3 ? "M" : m == 2'd1 ? "S" : "U";
+           6'd1:  dbg_byte_at = " ";
+           6'd2:  dbg_byte_at = dbg_hex(p[63:60]);
+           6'd3:  dbg_byte_at = dbg_hex(p[59:56]);
+           6'd4:  dbg_byte_at = dbg_hex(p[55:52]);
+           6'd5:  dbg_byte_at = dbg_hex(p[51:48]);
+           6'd6:  dbg_byte_at = dbg_hex(p[47:44]);
+           6'd7:  dbg_byte_at = dbg_hex(p[43:40]);
+           6'd8:  dbg_byte_at = dbg_hex(p[39:36]);
+           6'd9:  dbg_byte_at = dbg_hex(p[35:32]);
+           6'd10: dbg_byte_at = dbg_hex(p[31:28]);
+           6'd11: dbg_byte_at = dbg_hex(p[27:24]);
+           6'd12: dbg_byte_at = dbg_hex(p[23:20]);
+           6'd13: dbg_byte_at = dbg_hex(p[19:16]);
+           6'd14: dbg_byte_at = dbg_hex(p[15:12]);
+           6'd15: dbg_byte_at = dbg_hex(p[11: 8]);
+           6'd16: dbg_byte_at = dbg_hex(p[ 7: 4]);
+           6'd17: dbg_byte_at = dbg_hex(p[ 3: 0]);
+           6'd18: dbg_byte_at = trap ? " " : "\n";
+           6'd19: dbg_byte_at = "c";
+           6'd20: dbg_byte_at = "=";
+           6'd21: dbg_byte_at = dbg_hex({2'd0, cs[5:4]});
+           6'd22: dbg_byte_at = dbg_hex(cs[3:0]);
+           6'd23: dbg_byte_at = "\n";
+           default: dbg_byte_at = "?";
+         endcase
+      end
+   endfunction
+   wire [7:0]  uart_lsr = dbg_armed
+        ? {1'b0, 1'b1,           1'b1,           4'b0, !uart_rx_empty}
+        : {1'b0, uart_tx_ready,  uart_tx_ready,  4'b0, !uart_rx_empty};
+`else
    wire [7:0]  uart_lsr = {1'b0, uart_tx_ready, uart_tx_ready, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
+`endif
    wire        uart_irq_out = uart_rx_ip || uart_thre_ip;
 
    // PLIC (SiFive layout, base 0x0C000000)
@@ -732,9 +811,10 @@ module smolrv64(input wire        clock,
        input longint unsigned mepc,
        input byte     unsigned seip
    );
-   reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
-   reg [1:0]  prv_retire   = 0;  // prv at instruction start, for cosim retire hook (MRET/SRET change prv mid-execute)
 `endif
+   // Pre-retire / pre-trap privilege snapshots. Also used by PC_TRACE.
+   reg [1:0]  prv_at_trap  = 0;  // pre-trap privilege, captured in S_EXCEPTION
+   reg [1:0]  prv_retire   = 0;  // prv at instruction start (MRET/SRET change prv mid-execute)
 
    // IEEE 754 FCLASS: 10-bit one-hot classification (bit 0 = -inf, ..., bit 9 = qNaN).
    // Single-precision variant enforces NaN-boxing: unboxed value → canonical qNaN.
@@ -847,6 +927,7 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
       dram_read  = 0;
       dram_write = 0;
+      dram_abandon_read = 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -874,6 +955,20 @@ module smolrv64(input wire        clock,
                                                                    `USER_TIMER_INTERRUPT;
       end
 
+`ifdef PC_TRACE
+      if (dbg_busy) begin
+         // Gate on !uart_tx_valid so we don't re-assert valid before the UART
+         // has latched the previous byte (rs232tx needs ready & valid to
+         // coincide for exactly one cycle; ready stays high until it sees valid).
+         if (uart_tx_ready && !uart_tx_valid) begin
+            uart_tx_valid <= 1;
+            uart_tx_data  <= dbg_byte_at(dbg_pos, dbg_pc, dbg_mode, dbg_is_trap, dbg_cause);
+            dbg_pos       <= dbg_pos + 1;
+            if (dbg_pos == (dbg_is_trap ? 6'd23 : 6'd18))
+               dbg_busy <= 0;
+         end
+      end else
+`endif
       case (state)
         `S_FETCH1: begin
            csr_minstret <= csr_minstret + 1;
@@ -912,6 +1007,21 @@ module smolrv64(input wire        clock,
                   csr_mepc,
                   {7'd0, seip}
               );
+           end
+`endif
+`ifdef PC_TRACE
+           if (csr_mcycle != 0 && !just_trapped) begin
+              // Arm on first M→S transition (OpenSBI's mret into Linux).
+              if (!dbg_armed && prv_retire == 2'd3 && prv != 2'd3) begin
+                 dbg_armed <= 1;
+              end else if (dbg_armed && dbg_s_count < DBG_N_RETIRE[7:0] && !dbg_busy) begin
+                 dbg_busy    <= 1;
+                 dbg_pc      <= pc;
+                 dbg_mode    <= prv_retire;
+                 dbg_is_trap <= 0;
+                 dbg_pos     <= 0;
+                 dbg_s_count <= dbg_s_count + 1;
+              end
            end
 `endif
            just_trapped <= 0;
@@ -1446,9 +1556,7 @@ module smolrv64(input wire        clock,
 
         `S_EXECUTE: begin
            state <= `S_EXECUTE2; // Default: complete write_back_value
-`ifdef VERILATOR_COSIM
-           prv_retire <= prv;    // snapshot pre-execution prv for cosim (MRET/SRET mutate prv below)
-`endif
+           prv_retire <= prv;    // snapshot pre-execution prv (MRET/SRET mutate prv below)
 
            imm_i = {{52{insn[31]}},insn[31:20]};
            imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
@@ -2302,8 +2410,15 @@ module smolrv64(input wire        clock,
 `endif
               case (mem_addr[2:0])
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
+`ifdef PC_TRACE
+                      if (!dbg_armed) begin
+                         uart_tx_valid <= 1;
+                         uart_tx_data <= store_value[7:0];
+                      end
+`else
                       uart_tx_valid <= 1;
                       uart_tx_data <= store_value[7:0];
+`endif
                    end
                 1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
                 2: begin // FCR (write-only)
@@ -2716,6 +2831,11 @@ module smolrv64(input wire        clock,
                 `CSR_MVENDORID:csr_read_val = 0;
                 `CSR_MARCHID:  csr_read_val = 9; // YARVI, Smolrv64 = YARVI4
                 `CSR_MIMPID:   csr_read_val = 'h20250907;
+                `CSR_MIG_MIN:  csr_read_val = {32'd0, csr_mig_min};
+                `CSR_MIG_MAX:  csr_read_val = {32'd0, csr_mig_max};
+                `CSR_MIG_TOTAL:csr_read_val = csr_mig_total;
+                `CSR_MIG_COUNT:csr_read_val = csr_mig_count;
+                `CSR_MIG_TIMEOUTS:csr_read_val = csr_mig_timeouts;
                 default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -2852,6 +2972,20 @@ module smolrv64(input wire        clock,
                 `CSR_TDATA3:   begin end
                 `CSR_MCYCLE:   csr_mcycle   = csr_write_val;
                 `CSR_MINSTRET: csr_minstret = csr_write_val;
+                // Any write to any mig_* CSR clears all four to their initial
+                // sentinels (fresh measurement window).  The written value is
+                // ignored; this is the "clear stats" knob for the monitor.
+                `CSR_MIG_MIN,
+                `CSR_MIG_MAX,
+                `CSR_MIG_TOTAL,
+                `CSR_MIG_COUNT,
+                `CSR_MIG_TIMEOUTS: begin
+                   csr_mig_min      <= 32'hFFFFFFFF;
+                   csr_mig_max      <= 0;
+                   csr_mig_total    <= 0;
+                   csr_mig_count    <= 0;
+                   csr_mig_timeouts <= 0;
+                end
                 default: begin
                  csr_access_failure = 1;
 `ifdef SIMULATE
@@ -2887,9 +3021,7 @@ module smolrv64(input wire        clock,
 `endif
 `endif
 
-`ifdef VERILATOR_COSIM
            prv_at_trap = prv;  // capture before the mutation below
-`endif
 
            write_back_register = 0;
 
@@ -2951,6 +3083,16 @@ module smolrv64(input wire        clock,
                csr_mepc,
                {7'd0, seip}
            );
+`endif
+`ifdef PC_TRACE
+           if (dbg_armed && !dbg_busy) begin
+              dbg_busy    <= 1;
+              dbg_pc      <= pc;
+              dbg_mode    <= prv_at_trap;
+              dbg_is_trap <= 1;
+              dbg_cause   <= cause[5:0];
+              dbg_pos     <= 0;
+           end
 `endif
            just_trapped <= 1;
 
@@ -3253,9 +3395,21 @@ module smolrv64(input wire        clock,
                        state == `S_DRAM_PTW_WAIT   ||
                        state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
                        state == `S_MMIO_ALIGN;
+         bus_timeout_expired <= bus_waiting && &bus_timeout_ctr;
          if (bus_waiting) begin
             bus_timeout_ctr <= bus_timeout_ctr + 1;
-            if (&bus_timeout_ctr) begin
+            if (bus_timeout_expired) begin
+               bus_timeout_ctr     <= 0;
+               bus_timeout_expired <= 0;
+               csr_mig_timeouts <= csr_mig_timeouts + 1;
+               // Any timeout in a state that expects a read response means
+               // we're abandoning an in-flight read; tell the adapter to
+               // drain the eventual MIG response rather than returning it
+               // to us as stale data (and keep the adapter from wedging).
+               if (state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
+                   state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
+                   state == `S_DRAM_PTW_WAIT)
+                 dram_abandon_read = 1;
                cause_intr = 0;
                case (state)
                  `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
@@ -3288,6 +3442,21 @@ module smolrv64(input wire        clock,
             end
          end else
             bus_timeout_ctr <= 0;
+
+         // MIG latency stats: measure cycles in any S_DRAM_* wait state.
+         // Counter runs while bus_waiting; on falling edge, fold into stats.
+         mig_prev_waiting <= bus_waiting;
+         if (bus_waiting) begin
+            mig_latency_ctr <= mig_latency_ctr + 1;
+         end else begin
+            mig_latency_ctr <= 0;
+            if (mig_prev_waiting) begin
+               csr_mig_count <= csr_mig_count + 1;
+               csr_mig_total <= csr_mig_total + {32'd0, mig_latency_ctr};
+               if (mig_latency_ctr < csr_mig_min) csr_mig_min <= mig_latency_ctr;
+               if (mig_latency_ctr > csr_mig_max) csr_mig_max <= mig_latency_ctr;
+            end
+         end
       end
 
       if (reset) begin
@@ -3298,7 +3467,41 @@ module smolrv64(input wire        clock,
          write_back_register <= 0;
          npc <= `RESET_PC;
          bus_timeout_ctr <= 0;
-         // XXX and a lot more
+         // Note: mig_* stats CSRs intentionally NOT reset here, so they
+         // survive a soft reset (e.g. key[1] on the FPGA board).  Initial
+         // values come from the reg declarations (FPGA config-time init).
+         // Clear them with a CSR write to CSR_MIG_COUNT (see CSR write block).
+
+         // Architectural state needed to cleanly resume execution from
+         // RESET_PC in M-mode with paging off (e.g. after a soft reset
+         // that returns to the monitor from a running Linux workload).
+         prv              <= 3;
+         csr_satp         <= 0;
+         csr_mie          <= 0;
+         csr_mideleg      <= 0;
+         csr_medeleg      <= 0;
+         csr_mtvec        <= 0;
+         csr_stvec        <= 0;
+         mie              <= 0;
+         sie              <= 0;
+         uie              <= 0;
+         mpie             <= 0;
+         spie             <= 0;
+         upie             <= 0;
+         mpp              <= 0;
+         spp              <= 0;
+         mprv             <= 0;
+         pre_intr_pending <= 0;
+         just_trapped     <= 0;
+         just_xret        <= 0;
+         fetch_from_dram  <= 0;
+         translated       <= 0;
+         dram_read        <= 0;
+         dram_write       <= 0;
+         dram_store_split <= 0;
+         ptw_from_dram    <= 0;
+         mig_latency_ctr  <= 0;
+         mig_prev_waiting <= 0;
       end
    end
 endmodule

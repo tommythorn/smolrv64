@@ -8,7 +8,14 @@ TTY      := /dev/ttyUSB1
 WORKLOAD ?= ../../workloads/monitor
 export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 
-.PHONY: all synth impl bit program load clean
+# Optional: PC_TRACE=1 enables the synth-time debug PC tracer in smolrv64.v.
+# When set, the bitstream includes the tracer: SW sees a dummy UART after
+# OpenSBI's mret into Linux, and the real TX emits one line per retire.
+ifneq ($(strip $(PC_TRACE)),)
+export PC_TRACE
+endif
+
+.PHONY: all synth impl bit program load clean timing
 
 all: bit
 
@@ -24,6 +31,11 @@ bit: $(XPR)
 program:
 	@test -f $(BIT) || { echo "ERROR: $(BIT) not found — run 'make bit' first"; exit 1; }
 	$(VIVADO) $(VFLAGS) -source program.tcl -tclargs $(BIT)
+
+# Open the impl_1 checkpoint and dump worst setup paths.  Use this to diagnose
+# timing violations without rebuilding.
+timing:
+	$(VIVADO) $(VFLAGS) -source report_timing.tcl
 
 load:
 	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000

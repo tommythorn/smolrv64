@@ -22,6 +22,7 @@ module ddr4_adapter(
     output reg          dram_readdatavalid, // pulse: dram_readdata valid this cycle
     output reg  [255:0] dram_readdata,      // read data
     output wire         dram_write_ready,   // 1 = adapter is IDLE, can accept a write
+    input  wire         dram_abandon_read,  // pulse: CPU abandoned the in-flight read
 
     // DDR4 native app interface (to ddr4_0 IP)
     output reg  [28:0]  app_addr,
@@ -38,12 +39,13 @@ module ddr4_adapter(
     input  wire         app_rd_data_valid
 );
 
-    localparam IDLE    = 2'd0;
-    localparam WR_CMD  = 2'd1;
-    localparam RD_CMD  = 2'd2;
-    localparam RD_WAIT = 2'd3;
+    localparam IDLE     = 3'd0;
+    localparam WR_CMD   = 3'd1;
+    localparam RD_CMD   = 3'd2;
+    localparam RD_WAIT  = 3'd3;
+    localparam RD_DRAIN = 3'd4;  // abandoned read: swallow MIG response, then IDLE
 
-    reg [1:0] state = IDLE;
+    reg [2:0] state = IDLE;
     // Tracks whether the write data FIFO entry has been accepted by the MIG.
     // Prevents re-presenting the same data when app_rdy and app_wdf_rdy go high
     // in different cycles (e.g. app_wdf_rdy=1 first during DDR4 refresh when
@@ -139,7 +141,20 @@ module ddr4_adapter(
                         dram_readdata      <= app_rd_data;
                         dram_readdatavalid <= 1;
                         state              <= IDLE;
+                    end else if (dram_abandon_read) begin
+                        // CPU gave up (bus timeout).  Stay quiet until the
+                        // MIG's eventual response arrives, then silently
+                        // drop it and return to IDLE.  Crucially, do NOT
+                        // pulse dram_readdatavalid — the CPU has moved on
+                        // and would latch stale data for a different fetch.
+                        state <= RD_DRAIN;
                     end
+                end
+
+                RD_DRAIN: begin
+                    // Swallow the abandoned read's late MIG response.
+                    if (app_rd_data_valid)
+                        state <= IDLE;
                 end
             endcase
         end
