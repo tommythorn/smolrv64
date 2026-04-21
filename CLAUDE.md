@@ -13,17 +13,16 @@
   passing as expeced (currently `(make)|&grep 'Test Passed'|wc -l`
   returning 209 is success).
 
-## Debugging Approach
-- Always identify the root cause before running builds, simulations,
-  or tests - do not 'try things' to burn cycles.
-
-- When given a stale context summary, verify the current state of the
-  problem before acting on prior plans.
-
-- Limit initial codebase exploration; if stuck after a few Read/Grep
-  calls, ask the user for direction.
-
 ## Code Change Conventions
+
+- Always think really hard about simplifying the problem and the
+  solution.  If something needs a special case, go back and revisit
+  why it's a special case and see if there's a way to make the special
+  case fold in natual to a general case.
+
+- Aggressively favour less and simpler code over more code, refactor
+  when it can reduce complexity or size of code.
+
 - Never manually edit generated files (e.g., decoder files); modify
   the generator or source instead.
 
@@ -32,6 +31,17 @@
 
 - Only change what was explicitly requested - e.g., if user asks to
   tune dTLB, do not also modify iTLB.
+
+## Debugging Approach
+
+- Always identify the root cause before running builds, simulations,
+  or tests - do not 'try things' to burn cycles.
+
+- When given a stale context summary, verify the current state of the
+  problem before acting on prior plans.
+
+- Limit initial codebase exploration; if stuck after a few Read/Grep
+  calls, ask the user for direction.
 
 ## Vivado workflow (XCKU5P platform)
 
