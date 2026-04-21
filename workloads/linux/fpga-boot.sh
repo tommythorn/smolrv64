@@ -43,7 +43,7 @@ wait_for_new_complete() {
     local deadline=$(( SECONDS + TIMEOUT ))
     while (( SECONDS < deadline )); do
         local n
-        n=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || echo 0)
+        n=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
         if (( n >= target )); then return 0; fi
         sleep 2
     done
@@ -62,7 +62,7 @@ send_file() {
     echo "[fpga-boot]   done ($file)"
 }
 
-base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || echo 0)
+base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
 send_file "$DTB_ADDR" "$DTB" $((base + 1))
 send_file "$FW_ADDR"  "$FW"  $((base + 2))
 
