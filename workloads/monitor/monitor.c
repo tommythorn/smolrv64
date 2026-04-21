@@ -470,12 +470,17 @@ int main(void)
             puts_("returned\n");
 
         } else if (*p == 'P' || *p == 'p') {
-            uint64_t mn, mx, tot, cnt, to;
+            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
             asm volatile ("csrr %0, 0xfc2" : "=r"(tot));
             asm volatile ("csrr %0, 0xfc3" : "=r"(cnt));
             asm volatile ("csrr %0, 0xfc4" : "=r"(to));
+            asm volatile ("csrr %0, 0xfc5" : "=r"(to_pc));
+            asm volatile ("csrr %0, 0xfc6" : "=r"(to_tv));
+            asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
+            asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
+            asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
             if (p[1] == 'c' || p[1] == 'C') {
                 asm volatile ("csrw 0xfc3, zero");
                 puts_("cleared\n");
@@ -490,6 +495,14 @@ int main(void)
                     puthex64(tot / cnt);
                 }
                 putc_('\n');
+                if (to) {
+                    puts_("first-to pc="); puthex64(to_pc);
+                    puts_(" tval=");  puthex64(to_tv);
+                    puts_(" state="); puthex64(to_st);
+                    puts_(" cause="); puthex64(to_ca);
+                    puts_(" addr=");  puthex64(to_ad);
+                    putc_('\n');
+                }
             }
 
         } else if (*p == '?' || *p == 'h' || *p == 'H') {
