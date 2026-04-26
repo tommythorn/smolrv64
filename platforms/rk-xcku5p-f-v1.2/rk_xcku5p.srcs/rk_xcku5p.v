@@ -36,35 +36,7 @@ module rk_xcku5p(
    // touching the DDR4 MIG, so calibration is preserved and mig_* latency
    // stats CSRs (which aren't in the CPU's reset block) survive across a
    // soft reset. Press key[1] to return to the monitor from a hung workload.
-   // wd_reset pulses under the same policy when the watchdog below fires.
-   wire wd_reset;
-   wire cpu_reset = ui_rst | ~init_calib_complete | ~key[1] | wd_reset;
-
-   // UART-activity watchdog.  If the CPU produces no UART output for ~5 min,
-   // pulse cpu_reset so the monitor comes back without human intervention.
-   // Clock is ~333.33 MHz; threshold 3*2^35 cycles ≈ 5.15 min.  Cleared by any
-   // uart_tx_valid pulse (character handed to the serial TX).
-   reg [36:0] wd_count      = 0;
-   reg        wd_reset_r    = 0;
-   reg [9:0]  wd_pulse_ctr  = 0;
-   always @(posedge ui_clk) begin
-      if (uart_tx_valid) begin
-         wd_count <= 0;
-      end else if (wd_reset_r) begin
-         if (wd_pulse_ctr == 0) begin
-            wd_reset_r <= 0;
-            wd_count   <= 0;  // restart watchdog after firing
-         end else begin
-            wd_pulse_ctr <= wd_pulse_ctr - 1;
-         end
-      end else if (&wd_count[36:35]) begin  // ~5.15 min with no UART output
-         wd_reset_r   <= 1;
-         wd_pulse_ctr <= 10'h3FF;
-      end else begin
-         wd_count <= wd_count + 1;
-      end
-   end
-   assign wd_reset = wd_reset_r;
+   wire cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
 
    // Heartbeat counter driven by UI clock
    reg [34:0] count = 0;
