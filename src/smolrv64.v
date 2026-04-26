@@ -2663,6 +2663,39 @@ module smolrv64(input wire        clock,
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
               start_ptw(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
+           end else if (phys_region(mem_addr) == `REGION_UART) begin
+              translated <= 0;
+              state <= `S_FETCH1;
+              reservation <= ~0;
+
+              // Keep UART writes on the original store cycle; only BRAM writes
+              // need the delayed commit state for SRAM WE timing.
+`ifdef VERBOSE
+              $display("%05d  UART_WR addr=%016x off=%0d data=%016x mask=%02x lcr=%02x",
+                       $time, {mem_addr, 4'b0}, mem_addr[2:0], store_value, mem_wr_mask, uart_lcr);
+`endif
+              case (mem_addr[2:0])
+                0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
+`ifdef PC_TRACE
+                      if (!dbg_armed) begin
+                         uart_tx_valid <= 1;
+                         uart_tx_data <= store_value[7:0];
+                      end
+`else
+                      uart_tx_valid <= 1;
+                      uart_tx_data <= store_value[7:0];
+`endif
+                   end
+                1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
+                2: begin // FCR (write-only)
+                   uart_fcr_fifo <= store_value[0];
+                   if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
+                end
+                3: uart_lcr <= store_value[7:0];
+                4: uart_mcr <= store_value[4:0];
+                7: uart_scr <= store_value[7:0];
+              endcase
+              mem_wr_mask = 0;
            end else begin
               state <= `S_STORE_COMMIT;
            end
