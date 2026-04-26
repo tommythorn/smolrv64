@@ -3073,6 +3073,10 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
+              // mhpmevent3-31 and mhpmcounter3-31 — M-mode only, hardwired
+              // to zero (no programmable performance counters implemented).
+              else if (('h323 <= csrno && csrno <= 'h33F) ||
+                       ('hB03 <= csrno && csrno <= 'hB1F)) csr_read_val = 0;
               else case (csrno)
                 `CSR_FFLAGS:    csr_read_val = {59'd0, fflags};
                 `CSR_FRM:       csr_read_val = {61'd0, frm};
@@ -3212,6 +3216,9 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
+              // mhpmevent3-31 and mhpmcounter3-31 — M-mode only, writes ignored.
+              else if (('h323 <= csrno && csrno <= 'h33F) ||
+                       ('hB03 <= csrno && csrno <= 'hB1F)) begin end
               else case (csrno)
                 // fcsr: fflags aliased at [4:0], frm aliased at [7:5].
                 // Writing any of these is an implicit "FP state touched"
@@ -3249,8 +3256,12 @@ module smolrv64(input wire        clock,
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = insn;
                       state <= `S_EXCEPTION;
-                   end else
+                   end else if (csr_write_val[63:60] == 4'd0 ||
+                                csr_write_val[63:60] == 4'd8) begin
+                     // WARL: only Bare and Sv39 are supported; unsupported
+                     // MODE values cause the entire write to have no effect.
                      csr_satp = csr_write_val;
+                   end
                 end
                 `CSR_MSTATUS: begin
                    {sie, uie}        = csr_write_val[1:0];
