@@ -568,7 +568,8 @@ module smolrv64(input wire        clock,
 `define S_LOAD_LATCH           28  // register LUTRAM mem0/mem1 output before S_LOAD_ALIGN reads data
 `define S_DRAM_STORE_RESP_WAIT 29  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  30  // absorb one cycle so AXI busy flags see a new write
-`define S_LAST_STATE           30  // update state register width accordingly
+`define S_STORE_COMMIT         31  // commit a store after translation/routing decision
+`define S_LAST_STATE           31  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -2663,6 +2664,11 @@ module smolrv64(input wire        clock,
               // Sv39 store address translation
               start_ptw(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
            end else begin
+              state <= `S_STORE_COMMIT;
+           end
+        end
+
+        `S_STORE_COMMIT: begin
            translated <= 0;
            state <= `S_FETCH1;
            reservation <= ~0;
@@ -2823,7 +2829,6 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
            if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
-           end // else (translated)
         end
 
         `S_LOAD_ALIGN: begin
