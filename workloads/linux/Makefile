@@ -4,7 +4,7 @@ SIMMERV = $(HOME)/github/simmerv
 mem.even mem.odd: dts.dtb fw_payload.bin
 	$(SRC_DIR)/mkhex.py mem 0:fw_payload.bin 1000000:dts.dtb
 
-$(SRC_DIR)/smolrv64-linux-verbose: $(SRC_DIR)/smolrv64.v
+$(SRC_DIR)/smolrv64-linux-verbose:
 	$(MAKE) -C $(SRC_DIR) smolrv64-linux-verbose
 
 sim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-verbose
@@ -34,6 +34,7 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-cosim
 		+rf=$(CURDIR)/rf.hex
 
 .PHONY: cosim
+.PHONY: $(SRC_DIR)/smolrv64-linux-verbose $(SRC_DIR)/smolrv64-linux-vl $(SRC_DIR)/smolrv64-linux-cosim
 
 $(SIMMERV)/target/release/simmerv_cli:
 	cd $(SIMMERV); cargo b -r

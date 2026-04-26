@@ -1392,10 +1392,17 @@ module smolrv64(input wire        clock,
               ptw_return   = `S_FETCH2_HALF;
               ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
               state        <= `S_PTW_LAUNCH;
-           // Cross-doubleword DRAM fetch: 32-bit instruction straddles 8-byte boundary
-           end else if (fetch_from_dram && pc[2:1] == 2'b11 && insn[1:0] == 2'b11) begin
+           // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
+           // instruction starts in the last halfword of the current chunk. Even for a
+           // 16-bit compressed insn, cosim/debug expect the upper 16 bits to reflect
+           // the following halfword rather than zero/X.
+           end else if (fetch_from_dram && pc[2:1] == 2'b11) begin
               insn_half       <= insn[15:0];
-              dram_addr <= pc[30:3] + 1;
+              // For translated fetches, mem_addr still holds the physical
+              // address of the current fetch chunk from the PTW result.
+              dram_addr <= (csr_satp[63:60] == 4'd8 && prv != 3)
+                           ? mem_addr[30:3] + 1
+                           : pc[30:3] + 1;
               dram_read       <= 1;
               state           <= `S_DRAM_FETCH_HALF_WAIT;
            end else begin
@@ -3508,8 +3515,8 @@ module smolrv64(input wire        clock,
               // Non-leaf PTE: descend to next level
               ptw_level <= ptw_level - 1;
               case (ptw_level)
-                1: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[29:21], 3'd0};
-                0: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
+                2: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[29:21], 3'd0};
+                1: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
                 default: ptw_pte_addr <= 0;
               endcase
               state <= `S_PTW_LAUNCH;
@@ -3531,7 +3538,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH2_HALF: begin
-           // Second half of cross-page or cross-doubleword instruction fetch
+           // Second half of cross-page or cross-doubleword instruction fetch.
+           // Reassemble the 32-bit fetch word and then decode based on its actual
+           // low 2 bits, so both compressed and uncompressed cases work.
            translated <= 0;
            if (fetch_from_dram)
               // pc+2 is at byte 0 of the next 8B chunk (dram_latched was updated)
@@ -3541,7 +3550,20 @@ module smolrv64(input wire        clock,
               aligned = {mem_data1, mem_data0};
            insn = {aligned[15:0], insn_half};
            rd = insn`insn_rd;
-           {rs1,rs2} = {insn`insn_rs1, insn`insn_rs2}; // Always format 3 (32-bit)
+           case (insn[1:0])
+             0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
+             1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
+             2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
+             3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
+           endcase
+           if (insn[1:0] == 1 && insn[15])
+             rs1 = {2'd1,insn[9:7]};
+           if (insn[1:0] == 2 && insn[15:14] == 1)
+             rs1 = 2; // sp
+           if (insn[1:0] == 2 && 5 <= insn[15:13])
+             rs1 = 2; // sp
+           if ((insn & 'he003) == 0)
+             rs1 = 2; // sp
 
            shamt = insn[25:20];
 

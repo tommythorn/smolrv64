@@ -125,6 +125,13 @@ void dump_retire(const char* label, const SimmervRetire& r) {
     std::abort();
 }
 
+static inline uint32_t canonicalize_retired_insn(uint32_t insn) {
+    // Simmerv preserves the following halfword in bits [31:16] for compressed
+    // retirements, while the DUT may report only the architectural 16-bit
+    // opcode. Compare compressed instructions on their meaningful low halfword.
+    return (insn & 0x3) == 0x3 ? insn : (insn & 0xffffu);
+}
+
 } // namespace
 
 // DPI callback from smolrv64.v (one per retired instruction or trap).
@@ -184,10 +191,13 @@ extern "C" void cosim_retire(
         std::abort();
     }
 
+    const uint32_t dut_insn_cmp = canonicalize_retired_insn(dut.insn);
+    const uint32_t ref_insn_cmp = canonicalize_retired_insn(ref.insn);
+
     const bool ok =
         dut.pc         == ref.pc        &&
         dut.next_pc    == ref.next_pc   &&
-        dut.insn       == ref.insn      &&
+        dut_insn_cmp   == ref_insn_cmp  &&
         dut.rd_kind    == ref.rd_kind   &&
         dut.rd_idx     == ref.rd_idx    &&
         dut.prv        == ref.prv       &&
