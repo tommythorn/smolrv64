@@ -658,10 +658,14 @@ module smolrv64(input wire        clock,
           mem1[i] = 0;
        end
        for (i = 0; i < 64; i = i + 1) plic_priority[i] = 0;
-       if (sram_evenhex[0])
+       if (sram_evenhex != 0)
           $readmemh(sram_evenhex, mem0, 0, `MEM_SIZE/16-1);
-       if (sram_oddhex[0])
+       if (sram_oddhex != 0)
           $readmemh(sram_oddhex, mem1, 0, `MEM_SIZE/16-1);
+`ifdef DEBUG_SRAM_INIT
+       $display("SRAM_INIT even=%0s odd=%0s mem0[0]=%016x mem1[0]=%016x",
+                sram_evenhex, sram_oddhex, mem0[0], mem1[0]);
+`endif
 `else
       $readmemh("mem.even", mem0, 0, `MEM_SIZE/16-1);
       $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/16-1);
@@ -1184,7 +1188,7 @@ module smolrv64(input wire        clock,
    function [2:0] phys_region;
       input [63:0] addr;
       begin
-         if ((addr & 64'hffff_ffff_ffff_fff0) == 64'h0000_0001_0000_0000)
+         if ((addr & 64'hffff_ffff_ffff_fff0) == 64'h0000_0000_1000_0000)
             phys_region = `REGION_UART;
          else if ((addr & 64'hffff_ffff_ffff_0000) == 64'h0000_0000_0200_0000)
             phys_region = `REGION_CLINT;
