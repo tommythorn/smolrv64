@@ -132,6 +132,28 @@ static inline uint32_t canonicalize_retired_insn(uint32_t insn) {
     return (insn & 0x3) == 0x3 ? insn : (insn & 0xffffu);
 }
 
+// If the retiring insn is a Zicsr read of a CSR whose value is hardware-
+// dependent (and so simmerv would naturally diverge), return its csrno;
+// otherwise return -1. Covers the free-running counters that drift
+// between DUT and REF: cycle/time/instret and their M-mode aliases.
+static inline int csr_read_to_override(uint32_t insn) {
+    if ((insn & 0x7f) != 0x73) return -1;            // not SYSTEM
+    const uint32_t f3 = (insn >> 12) & 0x7;
+    // Zicsr funct3: 001/010/011 (CSRRW/RS/RC), 101/110/111 (immediate forms).
+    if (f3 == 0 || f3 == 4) return -1;
+    const uint32_t csrno = (insn >> 20) & 0xfff;
+    switch (csrno) {
+        case 0xC00:  // cycle
+        case 0xC01:  // time
+        case 0xC02:  // instret
+        case 0xB00:  // mcycle
+        case 0xB02:  // minstret
+            return (int)csrno;
+        default:
+            return -1;
+    }
+}
+
 } // namespace
 
 // DPI callback from smolrv64.v (one per retired instruction or trap).
@@ -184,6 +206,18 @@ extern "C" void cosim_retire(
     // Mirror DUT's only PLIC-connected IRQ (UART = 10) into simmerv's PLIC
     // pending mask so claim/pending MMIO reads return the same IRQ number.
     simmerv_set_plic_ip(g_ctx, 10, seip != 0);
+    // For free-running counter CSRs (cycle/time/instret and M-aliases),
+    // force simmerv's next read to return the DUT's read result. Each
+    // counter advances at a model-specific rate, so direct comparison is
+    // unstable — let the DUT's value win. Only meaningful when the DUT
+    // actually wrote a destination register, in which case rd_val IS the
+    // read result.
+    if (!trapped && rd_kind != 0) {
+        const int override_csr = csr_read_to_override(insn);
+        if (override_csr >= 0) {
+            simmerv_arm_csr_read(g_ctx, (uint16_t)override_csr, rd_val);
+        }
+    }
     SimmervRetire ref{};
     if (simmerv_step_retire(g_ctx, &ref) != 0) {
         std::fprintf(stderr, "cosim: simmerv_step_retire failed at seq %llu\n",
