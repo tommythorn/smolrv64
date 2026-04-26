@@ -596,6 +596,14 @@ module smolrv64(input wire        clock,
 `define MEMOP_SC    3'd4  // SC.W / SC.D
 `define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
 
+`define REGION_UART    3'd0
+`define REGION_CLINT   3'd1
+`define REGION_PLIC    3'd2
+`define REGION_BRAM    3'd3
+`define REGION_MMIO    3'd4
+`define REGION_DRAM    3'd5
+`define REGION_ILLEGAL 3'd6
+
    reg [4:0]   state = `S_FETCH1; // XXX We should set this on reset
 
 `ifndef MEM_BASEADDR
@@ -1172,6 +1180,42 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [2:0] phys_region;
+      input [63:0] addr;
+      begin
+         if ((addr & 64'hffff_ffff_ffff_fff0) == 64'h0000_0001_0000_0000)
+            phys_region = `REGION_UART;
+         else if ((addr & 64'hffff_ffff_ffff_0000) == 64'h0000_0000_0200_0000)
+            phys_region = `REGION_CLINT;
+         else if ((addr & 64'hffff_ffff_ff00_0000) == 64'h0000_0000_0c00_0000)
+            phys_region = `REGION_PLIC;
+         else if (((addr ^ `MEM_BASEADDR) & (64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2)) == 0)
+            phys_region = `REGION_BRAM;
+         else if (addr[63:31] == 0)
+            phys_region = `REGION_MMIO;
+         else if (addr[63:31] == 1)
+            phys_region = `REGION_DRAM;
+         else
+            phys_region = `REGION_ILLEGAL;
+      end
+   endfunction
+
+   task start_ptw;
+      input [63:0] req_va;
+      input [ 1:0] req_access;
+      input [ 1:0] req_prv;
+      input [ 4:0] req_return;
+      begin
+         ptw_va       = req_va;
+         ptw_level    = 2;
+         ptw_access   = req_access;
+         ptw_prv      = req_prv;
+         ptw_return   = req_return;
+         ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, req_va[38:30], 3'd0};
+         state        <= `S_PTW_LAUNCH;
+      end
+   endtask
+
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
@@ -1312,13 +1356,7 @@ module smolrv64(input wire        clock,
 
            if (csr_satp[63:60] == 4'd8 && prv != 3) begin
               // Sv39 instruction fetch translation
-              ptw_va       = npc;
-              ptw_level    = 2;
-              ptw_access   = 0;
-              ptw_prv      = prv;
-              ptw_return   = `S_FETCH2;
-              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, npc[38:30], 3'd0};
-              state        <= `S_PTW_LAUNCH;
+              start_ptw(npc, 2'd0, prv, `S_FETCH2);
            end else begin
               if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
@@ -1385,13 +1423,7 @@ module smolrv64(input wire        clock,
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
                csr_satp[63:60] == 4'd8 && prv != 3) begin
               insn_half <= insn[15:0];
-              ptw_va       = pc + 2;
-              ptw_level    = 2;
-              ptw_access   = 0;
-              ptw_prv      = prv;
-              ptw_return   = `S_FETCH2_HALF;
-              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
-              state        <= `S_PTW_LAUNCH;
+              start_ptw(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
            // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
            // instruction starts in the last halfword of the current chunk. Even for a
            // 16-bit compressed insn, cosim/debug expect the upper 16 bits to reflect
@@ -2629,13 +2661,7 @@ module smolrv64(input wire        clock,
 
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
-              ptw_va       = mem_addr;
-              ptw_level    = 2;
-              ptw_access   = 2;
-              ptw_prv      = mprv ? mpp : prv;
-              ptw_return   = `S_STORE;
-              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              state        <= `S_PTW_LAUNCH;
+              start_ptw(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
            end else begin
            translated <= 0;
            state <= `S_FETCH1;
@@ -2654,7 +2680,8 @@ module smolrv64(input wire        clock,
            end
 `endif
 
-           if (mem_addr[63:4] == 60'h100_0000) begin
+           case (phys_region(mem_addr))
+             `REGION_UART: begin
               // NS16550A UART write (0x10000000-0x1000000F)
 `ifdef VERBOSE
               $display("%05d  UART_WR addr=%016x off=%0d data=%016x mask=%02x lcr=%02x",
@@ -2682,7 +2709,8 @@ module smolrv64(input wire        clock,
                 7: uart_scr <= store_value[7:0];
               endcase
               mem_wr_mask = 0;
-           end else if (mem_addr[63:16] == 48'h0200) begin
+             end
+             `REGION_CLINT: begin
               // CLINT: 0x02000000 msip, 0x02004000 mtimecmp, 0x0200BFF8 mtime
               case (mem_addr[15:0])
                 16'h0000: clint_msip <= store_value[0];
@@ -2698,7 +2726,8 @@ module smolrv64(input wire        clock,
                 16'hBFFC: clint_mtime[63:32] <= store_value[31:0];
               endcase
               mem_wr_mask = 0;
-           end else if (mem_addr[63:24] == 40'h0C) begin
+             end
+             `REGION_PLIC: begin
               // PLIC write (base 0x0C000000)
               if (mem_addr[23:0] <= 24'h0000FF)
                  plic_priority[mem_addr[7:2]] <= store_value[2:0];
@@ -2717,9 +2746,11 @@ module smolrv64(input wire        clock,
                     plic_pending[store_value[5:0]] <= 0;
               end
               mem_wr_mask = 0;
-           end else if (mem_addr[63:`MEM_SIZE_LG2] == `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+             end
+             `REGION_BRAM: begin
               // BRAM store: fall through to BRAM write code below (mem_wr_mask stays set)
-           end else if (mem_addr[63:31] == 0) begin
+             end
+             `REGION_MMIO: begin
 `ifdef TRACE_MMIO
               $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
 `endif
@@ -2730,7 +2761,8 @@ module smolrv64(input wire        clock,
               mmio_byteenable = mem_wr_mask << (mem_addr % 4);
 
               mem_wr_mask = 0;
-           end else if (mem_addr[63:31] == 1) begin
+             end
+             `REGION_DRAM: begin
               // DRAM store (0x80000000-0xFFFFFFFF)
               begin : dram_store_calc
                  reg [127:0] wide_data;
@@ -2754,7 +2786,8 @@ module smolrv64(input wire        clock,
                     state             <= dram_write_ready ? `S_DRAM_STORE_RESP_ARM : `S_DRAM_STORE_WAIT;
                  end
               end
-           end else begin
+             end
+             default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
               $display("%05d   %x xxxxxxxx illegal store address %x", $time, prv, mem_addr);
@@ -2764,7 +2797,8 @@ module smolrv64(input wire        clock,
               tval = mem_addr;
               mem_wr_mask = 0;
               state <= `S_EXCEPTION;
-           end
+             end
+           endcase
 
            aligned = {64'd0,store_value} << (8 * (mem_addr % 8));
            mem_wr_mask = mem_wr_mask << (mem_addr % 8);
@@ -2795,13 +2829,7 @@ module smolrv64(input wire        clock,
         `S_LOAD_ALIGN: begin
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 load/AMO address translation
-              ptw_va       = mem_addr;
-              ptw_level    = 2;
-              ptw_access   = do_atomic ? 2'd3 : 2'd1;
-              ptw_prv      = mprv ? mpp : prv;
-              ptw_return   = `S_LOAD_LATCH;
-              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              state        <= `S_PTW_LAUNCH;
+              start_ptw(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_LATCH);
            end else begin
               if (!do_atomic) translated <= 0;
 
@@ -2824,7 +2852,8 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                 state <= `S_AMO;
 
-              if (mem_addr[63:4] == 60'h100_0000) begin
+              case (phys_region(mem_addr))
+                `REGION_UART: begin
                  // NS16550A UART read (0x10000000-0x1000000F)
                  case (mem_addr[2:0])
                    0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
@@ -2846,7 +2875,8 @@ module smolrv64(input wire        clock,
                     write_back_value = {{56{write_back_value[7]}}, write_back_value[7:0]};
                  else if (load_size_lg2 == 5) // LH
                     write_back_value = {{48{write_back_value[15]}}, write_back_value[15:0]};
-              end else if (mem_addr[63:16] == 48'h0200) begin
+                end
+                `REGION_CLINT: begin
                  // CLINT read: return value directly, no MMIO bus
                  case (mem_addr[15:0])
                    16'h0000: write_back_value = {63'd0, clint_msip};
@@ -2861,7 +2891,8 @@ module smolrv64(input wire        clock,
                     write_back_value = write_back_value[31:0];
                  else if (load_size_lg2 == 6)
                     write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
-              end else if (mem_addr[63:24] == 40'h0C) begin
+                end
+                `REGION_PLIC: begin
                  // PLIC read (base 0x0C000000)
                  if (mem_addr[23:0] <= 24'h0000FF)
                     write_back_value = plic_priority[mem_addr[7:2]];
@@ -2879,9 +2910,11 @@ module smolrv64(input wire        clock,
                     write_back_value = write_back_value[31:0];
                  else if (load_size_lg2 == 6)
                     write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
-              end else if (mem_addr[63:`MEM_SIZE_LG2] == `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+                end
+                `REGION_BRAM: begin
                  // BRAM load: write_back_value already computed from speculative read above
-              end else if (mem_addr[63:31] == 0) begin
+                end
+                `REGION_MMIO: begin
 `ifdef TRACE_MMIO
                  $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
 `endif
@@ -2889,12 +2922,14 @@ module smolrv64(input wire        clock,
 
                  mmio_address = mem_addr;
                  mmio_read = 1;
-              end else if (mem_addr[63:31] == 1) begin
+                end
+                `REGION_DRAM: begin
                  // DRAM load (0x80000000-0xFFFFFFFF)
                  dram_addr <= mem_addr[30:3];
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
-              end else begin
+                end
+                default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
                  $display("%05d   %x xxxxxxxx illegal load address %x", $time, prv, mem_addr);
@@ -2904,7 +2939,8 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_LOAD_ACCESS_FAULT;
                  tval = mem_addr;
                  state <= `S_EXCEPTION;
-              end
+                end
+              endcase
            end
         end
 
