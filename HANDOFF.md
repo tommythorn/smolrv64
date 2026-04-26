@@ -2,14 +2,12 @@
 
 ## Goal
 
-Boot OpenSBI v0.8 + Linux 5.4 on smolrv64 (RV64IMAFDC, Verilog) running
-on a Xilinx XCKU5P FPGA with DDR4 backing store. Make output match
+Boot OpenSBI + Linux on smolrv64 (RV64IMAFDC, Verilog) running on a
+Xilinx XCKU5P FPGA with DDR4 backing store. Make output match
 `workloads/linux/golden-output.txt` from the simmerv gold run.
 
 Simulation boots Linux cleanly. FPGA boot stops after OpenSBI prints
-`MEDELEG : 0x000000000000b109` and produces no further output. The
-single `mig timeouts=1` latched during the run is the smoking gun we
-are chasing — see **Current working theory** and **Open concern** below.
+`MEDELEG : 0x000000000000b109` and produces no further output.
 
 ## Repository layout (paths are relative to repo root)
 
@@ -147,159 +145,6 @@ clears all of them to their sentinel values — that is the monitor's
 
 Use `P` in the monitor to print everything; `Pc` clears.
 
-## Current working theory (2026-04-20)
-
-On the last FPGA boot after MEDELEG:
-
-```
-state = 0x12  (S_DRAM_PTW_WAIT)
-cause = 1     (INSTR_ACCESS_FAULT)
-pc    = 0xffffffff800000b6
-tval  = 0xffffffff800000b6
-addr  = 0x0000000000223fe0   (DDR byte addr of the PTE fetch)
-issued = 0x34bc35
-resp   = 0x34bc35            (EQUAL)
-```
-
-Importantly, even after a power cycle, we can reproduce the issue
-repeatedly and always with exactly the values above (ruling out
-marginal timing issues and other random events).
-
-Likely relevant is that the last instruction prior to the hang is the
-first memory access after turning on virtual memory (a store to
-address 0xffffffff8082fce8).  Here is the corresponding execution
-trace from the software simulation.  This strongly points the finger
-at the page table walker:
-```
-2757854 1 00000000802000dc 962e     c.add       a2, a2, a1, 0000000000000000      ffffffff80000104
-2757855 1 00000000802000de 10561073 csrrw       , a2, x0, 0000000000000105
-2757856 1 00000000802000e2 00c55613 srli        a2, a0, x0, 000000000000000c                 80223
-2757857 1 00000000802000e6 fff0059b addiw       a1, x0, x0, 00000000ffffffff      ffffffffffffffff
-2757858 1 00000000802000ea 15fe     c.slli      a1, a1, x0, 000000000000003f      8000000000000000
-2757859 1 00000000802000ec 8e4d     c.or        a2, a2, a1, 0000000000000000      8000000000080223
-2757860 1 00000000802000ee 0088c517 auipc       a0, x0, x0, 000000000088c000              80a8c0ee
-2757861 1 00000000802000f2 f1250513 addi        a0, a0, x0, 00000000ffffff12              80a8c000
-2757862 1 00000000802000f6 8131     c.srli      a0, a0, x0, 000000000000000c                 80a8c
-2757863 1 00000000802000f8 8d4d     c.or        a0, a0, a1, 0000000000000000      8000000000080a8c
-2757864 1 00000000802000fa 12000073 sfencevma   , x0, x0, 0000000000000000
-2757865 1 00000000802000fe 18051073 csrrw       , a0, x0, 0000000000000180
-2757867 1 ffffffff80000104 00000517 auipc       a0, x0, x0, 0000000000000000      ffffffff80000104
-2757868 1 ffffffff80000108 06850513 addi        a0, a0, x0, 0000000000000068      ffffffff8000016c
-2757869 1 ffffffff8000010c 10551073 csrrw       , a0, x0, 0000000000000105
-2757870 1 ffffffff80000110 00886197 auipc       gp, x0, x0, 0000000000886000      ffffffff80886110
-2757871 1 ffffffff80000114 7b818193 addi        gp, gp, x0, 00000000000007b8      ffffffff808868c8
-2757872 1 ffffffff80000118 18061073 csrrw       , a2, x0, 0000000000000180
-2757873 1 ffffffff8000011c 12000073 sfencevma   , x0, x0, 0000000000000000
-2757874 1 ffffffff80000120 8082     c.jr        , ra, x0, 0000000000000000
-2757875 1 ffffffff800000aa 00830217 auipc       tp, x0, x0, 0000000000830000      ffffffff808300aa
-2757876 1 ffffffff800000ae c1620213 addi        tp, tp, x0, 00000000fffffc16      ffffffff8082fcc0
-2757877 1 ffffffff800000b2 02022423 sw          , tp, x0, 0000000000000028
-2757878 1 ffffffff800000b6 0082a117 auipc       sp, x0, x0, 000000000082a000      ffffffff8082a0b6
-```
-
-
-Interpretation:
-
-- The sign-extended VA is a legitimate kernel-space access; PTE offset
-  matches, so it is real kernel code, not garbage PC.
-- `issued == resp` means the adapter had serviced **every** read it
-  had been handed when the timeout latched. No read was in flight from
-  the MIG's point of view. **MIG exonerated for this timeout.**
-- The CPU was nonetheless sitting in `S_DRAM_PTW_WAIT` waiting for
-  `dram_readdatavalid` that (by the counters) had either already been
-  delivered, or was never actually issued.
-- Simulation does not reproduce this. FPGA is conservatively clocked
-  and actively cooled, so pure timing marginality is unlikely.
-
-After the trap, the CPU keeps executing (the monitor's `count` climbs
-for hundreds of millions of MIG ops) but produces no further console
-output — so Linux is alive but stuck in some silent loop. **Important:**
-`P` can only be invoked from the monitor after a soft reset, so you
-cannot poll Linux liveness directly with it; the counters only tell
-you about the last run window up to the moment key[1] was pressed.
-
-## Open concern: ddr4_adapter handshake correctness
-
-**This is where the user wants the next session to look.** The user is
-not convinced the MIG native-app handshake is used correctly in
-`platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs/ddr4_adapter.v`. Specific
-things to audit against the Xilinx DDR4 MIG native interface spec:
-
-1. **`app_en` + `app_rdy` simultaneous-assertion requirement.** The
-   MIG spec requires `app_en` high **and** `app_rdy` sampled high on
-   the **same** rising edge for the command to be accepted. The
-   adapter registers `app_en` (`<=`) so it only becomes high on the
-   *next* cycle. IDLE asserts `app_en <= 1` and transitions to RD_CMD;
-   RD_CMD then checks `app_rdy` while `app_en` is already high. That
-   is the claimed correct moment. Verify:
-   - On acceptance, does the default-deassert of `app_en` (from the
-     outer `always @` default) correctly stop asserting on the next
-     cycle, or could it issue a duplicate command?
-   - On the IDLE→RD_CMD transition: is it actually possible for RD_CMD
-     to see `app_rdy=1` on its first cycle (giving a 1-cycle total
-     issue), or does the MIG require at least one `app_en=1 while
-     app_rdy=0` cycle first?
-
-2. **Write data FIFO ordering.** `app_wdf_rdy` can deassert
-   independently of `app_rdy`. The current code uses a `wdf_done`
-   latch to prevent double-pushing if `app_wdf_rdy` leads `app_rdy`.
-   But: is it legal to push WDF data **before** the write command is
-   accepted, or must the command be in first / at the same time? The
-   comments claim "either order is fine"; confirm against the IP
-   product guide (PG150 / UG586 / the MIG configuration report in the
-   Vivado project).
-
-3. **`app_wdf_end` pulsing.** Currently latched to 1 alongside the
-   write command and never explicitly deasserted during WR_CMD.
-   `app_wdf_end` should be high **only** on the final cycle of a
-   write-data burst. For a 256-bit APP_DATA_WIDTH equal to the MIG's
-   internal burst size, that is one cycle. If the MIG sees
-   `app_wdf_end=1 && app_wdf_wren=1` for *two* consecutive cycles
-   during a stall, does it treat that as two bursts?
-
-4. **Read response ordering.** For back-to-back reads the MIG can
-   return data out of order in some configurations. The adapter
-   currently handles only one in-flight read (IDLE → RD_CMD → RD_WAIT
-   → IDLE). If two reads could ever be in flight, `app_rd_data_valid`
-   could reorder. The counter pair `issued==resp` means no reads were
-   dropped, but it does NOT prove that `dram_readdata` captured the
-   right burst. Consider checking `app_rd_data_end` too.
-
-5. **`dram_abandon_read` + `RD_DRAIN`.** When the CPU times out, the
-   adapter transitions to RD_DRAIN to swallow the late response. But
-   during RD_DRAIN the CPU might issue a fresh `dram_read` — and
-   `dram_write_ready = (state == IDLE)` is false, so the pulse is
-   lost. That is a pure bug source for post-timeout dead-silence,
-   matching the observed FPGA symptom. Worth auditing whether the CPU
-   can reach a state where it asserts `dram_read` while adapter is
-   non-IDLE.
-
-6. **Reset domain.** `ddr4_adapter` uses `rst_n = ~ui_rst` from the
-   MIG UI clock. The CPU uses a separate derived `cpu_reset`. If the
-   CPU asserts `dram_read` during the window after `cpu_reset` but
-   before the adapter has seen any reset, the pulse may be misread.
-   The current counters (`mig_rd_issued_count` / `_resp_count`) are
-   **intentionally not reset** to allow cross-reset diagnostics.
-
-### Concrete next experiments (cheapest first)
-
-1. **Verify `app_en` never stays high for two consecutive accepted
-   cycles.** Add a counter `mig_duplicate_cmd_count` that increments
-   when `app_en=1 && app_rdy=1` while the adapter believes it already
-   transitioned out of RD_CMD/WR_CMD. Should always be 0.
-2. **Add a `dram_read_dropped_count` CSR.** Count cycles where
-   `dram_read=1` asserted by the CPU but `dram_write_ready=0` (i.e.
-   the adapter was not IDLE). If nonzero at the hang, the adapter is
-   silently losing requests — very plausible root cause.
-3. **Sim-level MIG assertions.** Write a tiny Verilog testbench that
-   instantiates `ddr4_adapter` with a mock MIG model enforcing the
-   protocol (no `app_rdy=1` on the same cycle as a previous accepted
-   command unless `app_en` dropped and rose again, etc.) and drive it
-   with fuzzed patterns. Catch the violation in sim, not silicon.
-4. **Re-check `app_wdf_end` single-cycle-pulse rule** against the
-   MIG's actual configuration (`APP_DATA_WIDTH=256`, the full MIG
-   burst — so one `app_wdf_end` cycle is expected).
-
 ## Key facts still valid
 
 - `fw_payload.bin @ 0x80000000`, `dts.dtb @ 0x81000000` (updated from
@@ -345,6 +190,8 @@ things to audit against the Xilinx DDR4 MIG native interface spec:
 Full list in `src/smolrv64.v` near the state-machine defines.
 
 ## Recent commits (for context)
+
+This might be out of date
 
 ```
 57bd22e  Match the 0x81000000 dtb address

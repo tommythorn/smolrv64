@@ -8,6 +8,10 @@
 
 `ifdef SIMULATE
 //`define DISASS 1
+`ifndef AXI_MEM_SIZE_LG2
+`define AXI_MEM_SIZE_LG2 27
+`endif
+`define AXI_MEM_SIZE (1 << `AXI_MEM_SIZE_LG2)
 `ifdef VERILATOR
 module smolrv64_tb(input wire clock);
 `else
@@ -21,8 +25,8 @@ module smolrv64_tb;
    wire                 mmio_write;
    wire [31:0]          mmio_writedata;
    wire [ 3:0]          mmio_byteenable;
-   wire                 mmio_readdatavalid;
-   wire [31:0]          mmio_readdata;
+   wire                 mmio_readdatavalid = 1'b0;
+   wire [31:0]          mmio_readdata = 32'd0;
 
    reg                  reset_n = 0; always @(posedge clock) reset_n <= 1;
 
@@ -31,6 +35,172 @@ module smolrv64_tb;
    wire [7:0] uart_tx_data;
    reg        uart_rx_valid_tb = 0;
    reg  [7:0] uart_rx_data_tb  = 0;
+   wire [ 2:0] m_axi_awid;
+   wire [30:0] m_axi_awaddr;
+   wire [ 7:0] m_axi_awlen;
+   wire [ 2:0] m_axi_awsize;
+   wire [ 1:0] m_axi_awburst;
+   wire        m_axi_awlock;
+   wire [ 3:0] m_axi_awcache;
+   wire [ 2:0] m_axi_awprot;
+   wire [ 3:0] m_axi_awqos;
+   wire        m_axi_awvalid;
+   wire        m_axi_awready;
+   wire [63:0] m_axi_wdata;
+   wire [ 7:0] m_axi_wstrb;
+   wire        m_axi_wlast;
+   wire        m_axi_wvalid;
+   wire        m_axi_wready;
+   reg  [ 2:0] m_axi_bid = 0;
+   reg  [ 1:0] m_axi_bresp = 0;
+   reg         m_axi_bvalid = 0;
+   wire        m_axi_bready;
+   wire [ 2:0] m_axi_arid;
+   wire [30:0] m_axi_araddr;
+   wire [ 7:0] m_axi_arlen;
+   wire [ 2:0] m_axi_arsize;
+   wire [ 1:0] m_axi_arburst;
+   wire        m_axi_arlock;
+   wire [ 3:0] m_axi_arcache;
+   wire [ 2:0] m_axi_arprot;
+   wire [ 3:0] m_axi_arqos;
+   wire        m_axi_arvalid;
+   wire        m_axi_arready;
+   reg  [ 2:0] m_axi_rid = 0;
+   reg  [63:0] m_axi_rdata = 0;
+   reg  [ 1:0] m_axi_rresp = 0;
+   reg         m_axi_rlast = 1'b1;
+   reg         m_axi_rvalid = 0;
+   wire        m_axi_rready;
+
+   // Simulation DDR model: same 16-byte-striped even/odd 64-bit banking as the
+   // on-core SRAM arrays, so existing mem.even/mem.odd style images can be reused.
+   reg [63:0] axi_mem0[`AXI_MEM_SIZE/16-1:0];
+   reg [63:0] axi_mem1[`AXI_MEM_SIZE/16-1:0];
+   reg [8*200:0] evenhex = 0, oddhex = 0, axi_evenhex = 0, axi_oddhex = 0;
+   reg            axi_aw_seen = 0;
+   reg            axi_w_seen = 0;
+   reg [30:0]     axi_awaddr_q = 0;
+   reg [63:0]     axi_wdata_q = 0;
+   reg [ 7:0]     axi_wstrb_q = 0;
+   reg            axi_b_pending = 0;
+   reg [30:0]     axi_araddr_q = 0;
+   reg            axi_r_pending = 0;
+   integer        tb_i, tb_b;
+
+   assign m_axi_awready = !axi_aw_seen && !axi_b_pending;
+   assign m_axi_wready  = !axi_w_seen  && !axi_b_pending;
+   assign m_axi_arready = !axi_r_pending && !m_axi_rvalid;
+
+   function [63:0] axi_read64;
+      input [30:0] addr;
+      begin
+         if (addr[`AXI_MEM_SIZE_LG2-1:4] >= `AXI_MEM_SIZE/16)
+            axi_read64 = 64'd0;
+         else if (addr[3])
+            axi_read64 = axi_mem1[addr[`AXI_MEM_SIZE_LG2-1:4]];
+         else
+            axi_read64 = axi_mem0[addr[`AXI_MEM_SIZE_LG2-1:4]];
+      end
+   endfunction
+
+   task axi_write64;
+      input [30:0] addr;
+      input [63:0] data;
+      input [ 7:0] strb;
+      reg   [63:0] word;
+      begin
+         if (addr[`AXI_MEM_SIZE_LG2-1:4] < `AXI_MEM_SIZE/16) begin
+            word = axi_read64(addr);
+            for (tb_b = 0; tb_b < 8; tb_b = tb_b + 1)
+               if (strb[tb_b])
+                  word[8*tb_b +: 8] = data[8*tb_b +: 8];
+            if (addr[3])
+               axi_mem1[addr[`AXI_MEM_SIZE_LG2-1:4]] = word;
+            else
+               axi_mem0[addr[`AXI_MEM_SIZE_LG2-1:4]] = word;
+         end
+      end
+   endtask
+
+   initial begin
+      for (tb_i = 0; tb_i < `AXI_MEM_SIZE/16; tb_i = tb_i + 1) begin
+         axi_mem0[tb_i] = 0;
+         axi_mem1[tb_i] = 0;
+      end
+
+      if ($value$plusargs("even=%s", evenhex)) begin
+         if (!$value$plusargs("odd=%s", oddhex)) begin
+            $display("ERROR: please specify the +odd=<hexfile>");
+            $finish;
+         end
+         $readmemh(evenhex, axi_mem0, 0, `AXI_MEM_SIZE/16-1);
+         $readmemh(oddhex,  axi_mem1, 0, `AXI_MEM_SIZE/16-1);
+      end else if ($value$plusargs("odd=%s", oddhex)) begin
+         $display("ERROR: please specify the +even=<hexfile>");
+         $finish;
+      end else if ($value$plusargs("axi_even=%s", axi_evenhex)) begin
+         if (!$value$plusargs("axi_odd=%s", axi_oddhex)) begin
+            $display("ERROR: please specify the +axi_odd=<hexfile>");
+            $finish;
+         end
+         $readmemh(axi_evenhex, axi_mem0, 0, `AXI_MEM_SIZE/16-1);
+         $readmemh(axi_oddhex,  axi_mem1, 0, `AXI_MEM_SIZE/16-1);
+      end else if ($value$plusargs("axi_odd=%s", axi_oddhex)) begin
+         $display("ERROR: please specify the +axi_even=<hexfile>");
+         $finish;
+      end
+   end
+
+   always @(posedge clock) begin
+      if (m_axi_awvalid && m_axi_awready) begin
+         axi_aw_seen  <= 1;
+         axi_awaddr_q <= m_axi_awaddr;
+      end
+      if (m_axi_wvalid && m_axi_wready) begin
+         axi_w_seen  <= 1;
+         axi_wdata_q <= m_axi_wdata;
+         axi_wstrb_q <= m_axi_wstrb;
+      end
+      if (axi_aw_seen && axi_w_seen && !axi_b_pending) begin
+         axi_write64(axi_awaddr_q, axi_wdata_q, axi_wstrb_q);
+         axi_aw_seen  <= 0;
+         axi_w_seen   <= 0;
+         axi_b_pending <= 1;
+      end
+      if (axi_b_pending && !m_axi_bvalid) begin
+         m_axi_bid    <= 3'b000;
+         m_axi_bresp  <= 2'b00;
+         m_axi_bvalid <= 1;
+      end else if (m_axi_bvalid && m_axi_bready) begin
+         m_axi_bvalid   <= 0;
+         axi_b_pending  <= 0;
+      end
+
+      if (m_axi_arvalid && m_axi_arready) begin
+         axi_araddr_q <= m_axi_araddr;
+         axi_r_pending <= 1;
+      end
+      if (axi_r_pending && !m_axi_rvalid) begin
+         m_axi_rid    <= 3'b000;
+         m_axi_rdata  <= axi_read64(axi_araddr_q);
+         m_axi_rresp  <= 2'b00;
+         m_axi_rlast  <= 1'b1;
+         m_axi_rvalid <= 1;
+         axi_r_pending <= 0;
+      end else if (m_axi_rvalid && m_axi_rready) begin
+         m_axi_rvalid <= 0;
+      end
+
+      if (!reset_n) begin
+         m_axi_bvalid  <= 0;
+         m_axi_rvalid  <= 0;
+         axi_aw_seen   <= 0;
+         axi_w_seen    <= 0;
+         axi_b_pending <= 0;
+         axi_r_pending <= 0;
+      end
+   end
 
    smolrv64 smolrv64_inst(.clock                (clock),
                           .reset                (!reset_n),
@@ -50,6 +220,44 @@ module smolrv64_tb;
                           .uart_tx_ready        (1'b1),
                           .uart_rx_valid        (uart_rx_valid_tb),
                           .uart_rx_data         (uart_rx_data_tb),
+
+                          .m_axi_awid           (m_axi_awid),
+                          .m_axi_awaddr         (m_axi_awaddr),
+                          .m_axi_awlen          (m_axi_awlen),
+                          .m_axi_awsize         (m_axi_awsize),
+                          .m_axi_awburst        (m_axi_awburst),
+                          .m_axi_awlock         (m_axi_awlock),
+                          .m_axi_awcache        (m_axi_awcache),
+                          .m_axi_awprot         (m_axi_awprot),
+                          .m_axi_awqos          (m_axi_awqos),
+                          .m_axi_awvalid        (m_axi_awvalid),
+                          .m_axi_awready        (m_axi_awready),
+                          .m_axi_wdata          (m_axi_wdata),
+                          .m_axi_wstrb          (m_axi_wstrb),
+                          .m_axi_wlast          (m_axi_wlast),
+                          .m_axi_wvalid         (m_axi_wvalid),
+                          .m_axi_wready         (m_axi_wready),
+                          .m_axi_bid            (m_axi_bid),
+                          .m_axi_bresp          (m_axi_bresp),
+                          .m_axi_bvalid         (m_axi_bvalid),
+                          .m_axi_bready         (m_axi_bready),
+                          .m_axi_arid           (m_axi_arid),
+                          .m_axi_araddr         (m_axi_araddr),
+                          .m_axi_arlen          (m_axi_arlen),
+                          .m_axi_arsize         (m_axi_arsize),
+                          .m_axi_arburst        (m_axi_arburst),
+                          .m_axi_arlock         (m_axi_arlock),
+                          .m_axi_arcache        (m_axi_arcache),
+                          .m_axi_arprot         (m_axi_arprot),
+                          .m_axi_arqos          (m_axi_arqos),
+                          .m_axi_arvalid        (m_axi_arvalid),
+                          .m_axi_arready        (m_axi_arready),
+                          .m_axi_rid            (m_axi_rid),
+                          .m_axi_rdata          (m_axi_rdata),
+                          .m_axi_rresp          (m_axi_rresp),
+                          .m_axi_rlast          (m_axi_rlast),
+                          .m_axi_rvalid         (m_axi_rvalid),
+                          .m_axi_rready         (m_axi_rready),
 
                           .halted_o             (halted));
 
@@ -91,7 +299,7 @@ module smolrv64_tb;
       $display("Open the smolrv64.vcd with https://app.surfer-project.org/");
 */
 `ifndef NO_TIMEOUT
-      #5000000
+      #10000000
 `ifdef RISCV_TESTS
       $display("Test Failed with TIMEOUT");
 `endif
@@ -135,16 +343,46 @@ module smolrv64(input wire        clock,
                 input wire        uart_rx_valid,      // Pulse to enqueue a byte
                 input wire [ 7:0] uart_rx_data,
 
-                // External DRAM bus (0x80000000-0xFFFFFFFF), 256-bit wide, 32-byte burst
-                output reg [25:0]  dram_burst_addr,    // 32-byte burst address (phys_addr[30:5])
-                output reg         dram_read,
-                output reg         dram_write,
-                output reg [255:0] dram_writedata,     // pre-shifted full 256-bit burst
-                output reg [31:0]  dram_byte_mask,     // DDR4 convention: 1=mask out (don't write)
-                input wire         dram_readdatavalid,
-                input wire [255:0] dram_readdata,
-                input wire         dram_write_ready,   // adapter idle, can accept a write
-                output reg         dram_abandon_read,  // pulse: discard any in-flight read response
+                // AXI4 master to DDR4 (0x80000000-0xFFFFFFFF, 64-bit data).
+                // Fixed: arsize/awsize=8B, arlen/awlen=0 (single-beat).  At most one
+                // read and one write in flight.
+                output wire [ 2:0] m_axi_awid,
+                output wire [30:0] m_axi_awaddr,
+                output wire [ 7:0] m_axi_awlen,
+                output wire [ 2:0] m_axi_awsize,
+                output wire [ 1:0] m_axi_awburst,
+                output wire        m_axi_awlock,
+                output wire [ 3:0] m_axi_awcache,
+                output wire [ 2:0] m_axi_awprot,
+                output wire [ 3:0] m_axi_awqos,
+                output wire        m_axi_awvalid,
+                input  wire        m_axi_awready,
+                output wire [63:0] m_axi_wdata,
+                output wire [ 7:0] m_axi_wstrb,
+                output wire        m_axi_wlast,
+                output wire        m_axi_wvalid,
+                input  wire        m_axi_wready,
+                input  wire [ 2:0] m_axi_bid,
+                input  wire [ 1:0] m_axi_bresp,
+                input  wire        m_axi_bvalid,
+                output wire        m_axi_bready,
+                output wire [ 2:0] m_axi_arid,
+                output wire [30:0] m_axi_araddr,
+                output wire [ 7:0] m_axi_arlen,
+                output wire [ 2:0] m_axi_arsize,
+                output wire [ 1:0] m_axi_arburst,
+                output wire        m_axi_arlock,
+                output wire [ 3:0] m_axi_arcache,
+                output wire [ 2:0] m_axi_arprot,
+                output wire [ 3:0] m_axi_arqos,
+                output wire        m_axi_arvalid,
+                input  wire        m_axi_arready,
+                input  wire [ 2:0] m_axi_rid,
+                input  wire [63:0] m_axi_rdata,
+                input  wire [ 1:0] m_axi_rresp,
+                input  wire        m_axi_rlast,
+                input  wire        m_axi_rvalid,
+                output wire        m_axi_rready,
 
                 output reg        halted_o = 0);
 
@@ -312,7 +550,7 @@ module smolrv64(input wire        clock,
 
 `define S_PTW_READ      13
 
-`define S_FINISH        14
+`define S_PTW_LAUNCH    14  // launch PTW PTE fetch after ptw_* request fields are registered
 `define S_FETCH2_HALF   15
 
 `define S_DRAM_FETCH_WAIT      16  // wait for DRAM instruction fetch
@@ -328,7 +566,9 @@ module smolrv64(input wire        clock,
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_FETCH1B              27  // register LUTRAM mem0/mem1 output before S_FETCH2 reads insn
 `define S_LOAD_LATCH           28  // register LUTRAM mem0/mem1 output before S_LOAD_ALIGN reads data
-`define S_LAST_STATE           28  // update state register width accordingly
+`define S_DRAM_STORE_RESP_WAIT 29  // wait for an issued DRAM store to fully drain
+`define S_DRAM_STORE_RESP_ARM  30  // absorb one cycle so AXI busy flags see a new write
+`define S_LAST_STATE           30  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -380,7 +620,7 @@ module smolrv64(input wire        clock,
    reg  [63:0] mem1[`MEM_SIZE/16-1:0];
 
 `ifdef SIMULATE
-   reg [8*200:0] evenhex, oddhex;
+   reg [8*200:0] sram_evenhex = 0, sram_oddhex = 0;
 `ifdef RISCV_TESTS
    reg [63:0] tohost_phys;
 `endif
@@ -390,12 +630,13 @@ module smolrv64(input wire        clock,
    integer i;
    initial begin
 `ifdef SIMULATE
-      if (!$value$plusargs("even=%s", evenhex)) begin
-         $display("ERROR: please specify the +even=<hexfile>");
-         $finish;
-      end
-      if (!$value$plusargs("odd=%s", oddhex)) begin
-         $display("ERROR: please specify the +odd=<hexfile>");
+      if ($value$plusargs("sram_even=%s", sram_evenhex)) begin
+         if (!$value$plusargs("sram_odd=%s", sram_oddhex)) begin
+            $display("ERROR: please specify the +sram_odd=<hexfile>");
+            $finish;
+         end
+      end else if ($value$plusargs("sram_odd=%s", sram_oddhex)) begin
+         $display("ERROR: please specify the +sram_even=<hexfile>");
          $finish;
       end
 `ifdef RISCV_TESTS
@@ -408,8 +649,10 @@ module smolrv64(input wire        clock,
           mem1[i] = 0;
        end
        for (i = 0; i < 64; i = i + 1) plic_priority[i] = 0;
-       $readmemh(evenhex, mem0, 0, `MEM_SIZE/16-1);
-       $readmemh(oddhex, mem1, 0, `MEM_SIZE/16-1);
+       if (sram_evenhex[0])
+          $readmemh(sram_evenhex, mem0, 0, `MEM_SIZE/16-1);
+       if (sram_oddhex[0])
+          $readmemh(sram_oddhex, mem1, 0, `MEM_SIZE/16-1);
 `else
       $readmemh("mem.even", mem0, 0, `MEM_SIZE/16-1);
       $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/16-1);
@@ -503,13 +746,25 @@ module smolrv64(input wire        clock,
 
 
    reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
-   reg  [255:0] dram_latched;       // holds first DDR4 burst across states
-   reg          fetch_from_dram;    // set when current fetch came from DRAM
-   reg          ptw_from_dram;      // set when current PTW PTE came from DRAM
-   reg  [25:0]  dram2_addr;         // burst address for 2nd burst of split store
-   reg  [63:0]  dram2_data_part;    // overflow bytes for split store
-   reg  [31:0]  dram2_mask;         // DDR4 byte mask for split-store second burst
-   reg          dram_store_split;   // 1 = second burst pending after DRAM_STORE_WAIT
+
+   // CPU<->AXI master signalling (master block lives at the bottom of this module).
+   // dram_addr is the 8B-aligned doubleword address (= phys[30:3]).
+   reg  [27:0]  dram_addr;
+   reg          dram_read = 0;
+   reg          dram_write = 0;
+   reg  [63:0]  dram_writedata;
+   reg  [ 7:0]  dram_wstrb;          // AXI convention: 1 = write byte
+   wire         dram_readdatavalid;
+   wire [63:0]  dram_readdata;
+   wire         dram_write_ready;    // master idle (no AW/W/B in flight)
+
+   reg  [63:0]  dram_latched;        // holds first 8B chunk across states
+   reg          fetch_from_dram;     // set when current fetch came from DRAM
+   reg          ptw_from_dram;       // set when current PTW PTE came from DRAM
+   reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
+   reg  [63:0]  dram2_data_part;     // overflow bytes for split store
+   reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
+   reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
 
 `ifndef BUS_TIMEOUT_LG2
 `define BUS_TIMEOUT_LG2 24  // ~16M cycles before access fault
@@ -937,8 +1192,7 @@ module smolrv64(input wire        clock,
       mmio_write = 0;
       mmio_read = 0;
       dram_read  <= 0;
-      dram_write = 0;
-      dram_abandon_read = 0;
+      dram_write <= 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -1058,28 +1312,18 @@ module smolrv64(input wire        clock,
 
            if (csr_satp[63:60] == 4'd8 && prv != 3) begin
               // Sv39 instruction fetch translation
-              ptw_va = npc;
-              ptw_level = 2;
-              ptw_access = 0;
-              ptw_prv = prv;
-              ptw_return = `S_FETCH2;
-              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, npc[38:30], 3'd0};
-              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 ptw_from_dram   <= 1;
-                 dram_burst_addr <= ptw_pte_addr[30:5];
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_PTW_WAIT;
-              end else begin
-                 ptw_from_dram   <= 0;
-                 mem_addr0       <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-                 mem_addr1       <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 state           <= `S_PTW_READ;
-              end
+              ptw_va       = npc;
+              ptw_level    = 2;
+              ptw_access   = 0;
+              ptw_prv      = prv;
+              ptw_return   = `S_FETCH2;
+              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, npc[38:30], 3'd0};
+              state        <= `S_PTW_LAUNCH;
            end else begin
               if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
                  fetch_from_dram  <= 1;
-                 dram_burst_addr  <= npc[30:5];
+                 dram_addr  <= npc[30:3];
                  dram_read        <= 1;
                  state            <= `S_DRAM_FETCH_WAIT;
               end else begin
@@ -1121,12 +1365,9 @@ module smolrv64(input wire        clock,
         `S_FETCH2: begin
            translated <= 0;
            if (fetch_from_dram) begin
-              case (pc[4:3])
-                2'b00: aligned = dram_latched[127:0];
-                2'b01: aligned = dram_latched[191:64];
-                2'b10: aligned = dram_latched[255:128];
-                2'b11: aligned = {64'bx, dram_latched[255:192]};
-              endcase
+              // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
+              // detected and re-fetched in S_RF; the upper 64 bits are don't-care.
+              aligned = {64'bx, dram_latched};
            end else begin
               aligned = pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
            end
@@ -1144,27 +1385,17 @@ module smolrv64(input wire        clock,
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
                csr_satp[63:60] == 4'd8 && prv != 3) begin
               insn_half <= insn[15:0];
-              ptw_va = pc + 2;
-              ptw_level = 2;
-              ptw_access = 0;
-              ptw_prv = prv;
-              ptw_return = `S_FETCH2_HALF;
-              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
-              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 ptw_from_dram   <= 1;
-                 dram_burst_addr <= ptw_pte_addr[30:5];
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_PTW_WAIT;
-              end else begin
-                 ptw_from_dram <= 0;
-                 mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-                 mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 state <= `S_PTW_READ;
-              end
-           // Cross-burst DRAM fetch: 32-bit instruction straddles 32-byte burst boundary
-           end else if (fetch_from_dram && pc[4:1] == 4'b1111 && insn[1:0] == 2'b11) begin
+              ptw_va       = pc + 2;
+              ptw_level    = 2;
+              ptw_access   = 0;
+              ptw_prv      = prv;
+              ptw_return   = `S_FETCH2_HALF;
+              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, ptw_va[38:30], 3'd0};
+              state        <= `S_PTW_LAUNCH;
+           // Cross-doubleword DRAM fetch: 32-bit instruction straddles 8-byte boundary
+           end else if (fetch_from_dram && pc[2:1] == 2'b11 && insn[1:0] == 2'b11) begin
               insn_half       <= insn[15:0];
-              dram_burst_addr <= pc[30:5] + 1;
+              dram_addr <= pc[30:3] + 1;
               dram_read       <= 1;
               state           <= `S_DRAM_FETCH_HALF_WAIT;
            end else begin
@@ -2391,27 +2622,30 @@ module smolrv64(input wire        clock,
 
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
-              ptw_va = mem_addr;
-              ptw_level = 2;
-              ptw_access = 2;
-              ptw_prv = mprv ? mpp : prv;
-              ptw_return = `S_STORE;
-              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 ptw_from_dram   <= 1;
-                 dram_burst_addr <= ptw_pte_addr[30:5];
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_PTW_WAIT;
-              end else begin
-                 ptw_from_dram <= 0;
-                 mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-                 mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 state <= `S_PTW_READ;
-              end
+              ptw_va       = mem_addr;
+              ptw_level    = 2;
+              ptw_access   = 2;
+              ptw_prv      = mprv ? mpp : prv;
+              ptw_return   = `S_STORE;
+              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
+              state        <= `S_PTW_LAUNCH;
            end else begin
            translated <= 0;
            state <= `S_FETCH1;
            reservation <= ~0;
+
+`ifdef RISCV_TESTS
+           // riscv-tests signal completion by storing gp to "tohost". In the
+           // FPGA-like sim config the program image lives behind AXI, so this
+           // terminating store must be recognized before the store is routed.
+           if (mem_addr == tohost_phys && mem_wr_mask[0] && store_value != 0) begin
+              if (store_value == 1)
+                 $display("Test Passed");
+              else
+                 $display("Test Failed with %3d", store_value);
+              $finish;
+           end
+`endif
 
            if (mem_addr[63:4] == 60'h100_0000) begin
               // NS16550A UART write (0x10000000-0x1000000F)
@@ -2492,25 +2726,25 @@ module smolrv64(input wire        clock,
            end else if (mem_addr[63:31] == 1) begin
               // DRAM store (0x80000000-0xFFFFFFFF)
               begin : dram_store_calc
-                 reg [511:0] wide_data;
-                 reg  [63:0] wide_mask;
-                 wide_data = {448'd0, store_value} << (mem_addr[4:0] * 8);
-                 wide_mask = {48'd0,  mem_wr_mask}  << mem_addr[4:0];
-                 dram_burst_addr <= mem_addr[30:5];
-                 dram_writedata  <= wide_data[255:0];
-                 dram_byte_mask  <= ~wide_mask[31:0];
+                 reg [127:0] wide_data;
+                 reg  [15:0] wide_mask;
+                 wide_data = {64'd0, store_value} << (mem_addr[2:0] * 8);
+                 wide_mask = {8'd0, mem_wr_mask[7:0]} << mem_addr[2:0];
+                 dram_addr       <= mem_addr[30:3];
+                 dram_writedata  <= wide_data[63:0];
+                 dram_wstrb      <= wide_mask[7:0];
                  dram_write      <= 1;
                  mem_wr_mask     = 0;
-                 if (|wide_mask[63:32]) begin
-                    // Overflow into next burst: save for S_DRAM_STORE2
-                    dram2_addr        <= mem_addr[30:5] + 1;
-                    dram2_data_part   <= wide_data[319:256];
-                    dram2_mask        <= ~wide_mask[63:32];
+                 if (|wide_mask[15:8]) begin
+                    // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
+                    dram2_addr        <= mem_addr[30:3] + 1;
+                    dram2_data_part   <= wide_data[127:64];
+                    dram2_wstrb       <= wide_mask[15:8];
                     dram_store_split  <= 1;
-                    state             <= dram_write_ready ? `S_DRAM_STORE2 : `S_DRAM_STORE_WAIT;
+                    state             <= dram_write_ready ? `S_DRAM_STORE_RESP_ARM : `S_DRAM_STORE_WAIT;
                  end else begin
                     dram_store_split  <= 0;
-                    if (!dram_write_ready) state <= `S_DRAM_STORE_WAIT;
+                    state             <= dram_write_ready ? `S_DRAM_STORE_RESP_ARM : `S_DRAM_STORE_WAIT;
                  end
               end
            end else begin
@@ -2548,41 +2782,19 @@ module smolrv64(input wire        clock,
            if (mem_wr_mask[13]) mem1[mem_addr1][47:40] <= aligned[111:104];
            if (mem_wr_mask[14]) mem1[mem_addr1][55:48] <= aligned[119:112];
            if (mem_wr_mask[15]) mem1[mem_addr1][63:56] <= aligned[127:120];
-
-`ifdef RISCV_TESTS
-           // tohost detection: store to tohost address terminates simulation
-           if (mem_addr0 == tohost_phys[`MEM_SIZE_LG2-1:4] + tohost_phys[3] &&
-               mem_wr_mask[0] && store_value != 0) begin
-              if (store_value == 1)
-                 $display("Test Passed");
-              else
-                 $display("Test Failed with %3d", store_value);
-              $finish;
-           end
-`endif
            end // else (translated)
         end
 
         `S_LOAD_ALIGN: begin
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 load/AMO address translation
-              ptw_va = mem_addr;
-              ptw_level = 2;
-              ptw_access = do_atomic ? 2'd3 : 2'd1;
-              ptw_prv = mprv ? mpp : prv;
-              ptw_return = `S_LOAD_LATCH;
-              ptw_pte_addr = {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
-              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 ptw_from_dram   <= 1;
-                 dram_burst_addr <= ptw_pte_addr[30:5];
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_PTW_WAIT;
-              end else begin
-                 ptw_from_dram <= 0;
-                 mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-                 mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 state <= `S_PTW_READ;
-              end
+              ptw_va       = mem_addr;
+              ptw_level    = 2;
+              ptw_access   = do_atomic ? 2'd3 : 2'd1;
+              ptw_prv      = mprv ? mpp : prv;
+              ptw_return   = `S_LOAD_LATCH;
+              ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, mem_addr[38:30], 3'd0};
+              state        <= `S_PTW_LAUNCH;
            end else begin
               if (!do_atomic) translated <= 0;
 
@@ -2672,7 +2884,7 @@ module smolrv64(input wire        clock,
                  mmio_read = 1;
               end else if (mem_addr[63:31] == 1) begin
                  // DRAM load (0x80000000-0xFFFFFFFF)
-                 dram_burst_addr <= mem_addr[30:5];
+                 dram_addr <= mem_addr[30:3];
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
               end else begin
@@ -2766,7 +2978,7 @@ module smolrv64(input wire        clock,
 
 
         `S_HANDLE_CSR: begin
-           state <= `S_FETCH1;
+           state <= `S_EXECUTE2;
            csr_access_failure = 0;
            write_back_register = rd;
 
@@ -3023,7 +3235,8 @@ module smolrv64(input wire        clock,
               endcase
            end
 
-           write_back_value = csr_read_val;
+           exe_add <= csr_read_val;
+           exe_sext32 <= 0;
            if (csr_access_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               tval = insn;
@@ -3174,9 +3387,9 @@ module smolrv64(input wire        clock,
 
         `S_PTW_READ: begin
            // Sv39 page table walk: latch PTE from memory; process in S_PTW_PROCESS.
-           // Registering here breaks the LUTRAM-read → dram_burst_addr timing path.
+           // Registering here breaks the LUTRAM-read → dram_addr timing path.
            if (ptw_from_dram)
-              pte_latch <= dram_latched >> (ptw_pte_addr[4:3] * 64);
+              pte_latch <= dram_latched;
            else
               pte_latch <= ptw_pte_addr[3] ? {mem_data0, mem_data1} : {mem_data1, mem_data0};
            state <= `S_PTW_PROCESS;
@@ -3268,7 +3481,7 @@ module smolrv64(input wire        clock,
                      if (mem_addr[31] && mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                         // DRAM instruction fetch (above BRAM overlay)
                         fetch_from_dram <= 1;
-                        dram_burst_addr <= mem_addr[30:5];
+                        dram_addr <= mem_addr[30:3];
                         dram_read       <= 1;
                         state           <= (ptw_return == `S_FETCH2) ?
                                            `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
@@ -3293,32 +3506,36 @@ module smolrv64(input wire        clock,
               state <= `S_EXCEPTION;
            end else begin
               // Non-leaf PTE: descend to next level
-              ptw_level = ptw_level - 1;
+              ptw_level <= ptw_level - 1;
               case (ptw_level)
-                1: ptw_pte_addr = {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[29:21], 3'd0};
-                0: ptw_pte_addr = {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
-                default: ptw_pte_addr = 0;
+                1: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[29:21], 3'd0};
+                0: ptw_pte_addr <= {8'd0, aligned[53:10], 12'd0} + {52'd0, ptw_va[20:12], 3'd0};
+                default: ptw_pte_addr <= 0;
               endcase
-              if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 ptw_from_dram   <= 1;
-                 dram_burst_addr <= ptw_pte_addr[30:5];
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_PTW_WAIT;
-              end else begin
-                 ptw_from_dram <= 0;
-                 mem_addr0 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-                 mem_addr1 <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-                 state     <= `S_PTW_READ;  // re-read next PTE level
-              end
+              state <= `S_PTW_LAUNCH;
+           end
+        end
+
+        `S_PTW_LAUNCH: begin
+           if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+              ptw_from_dram <= 1;
+              dram_addr     <= ptw_pte_addr[30:3];
+              dram_read     <= 1;
+              state         <= `S_DRAM_PTW_WAIT;
+           end else begin
+              ptw_from_dram <= 0;
+              mem_addr0     <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
+              mem_addr1     <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
+              state         <= `S_PTW_READ;
            end
         end
 
         `S_FETCH2_HALF: begin
-           // Second half of cross-page or cross-burst instruction fetch
+           // Second half of cross-page or cross-doubleword instruction fetch
            translated <= 0;
            if (fetch_from_dram)
-              // pc+2 is at byte 0 of the next burst (dram_latched was updated)
-              aligned = dram_latched[127:0];
+              // pc+2 is at byte 0 of the next 8B chunk (dram_latched was updated)
+              aligned = {64'bx, dram_latched};
            else
               // pc+2 is page-aligned (0x...000), so bit 3 is 0
               aligned = {mem_data1, mem_data0};
@@ -3332,17 +3549,9 @@ module smolrv64(input wire        clock,
            state <= `S_RF2;  // rs1/rs2 already decoded here; skip S_RF
         end
 
-        `S_DRAM_FETCH_WAIT: begin
-           if (dram_readdatavalid) begin
-              dram_latched <= dram_readdata;
-              state        <= `S_FETCH2;
-           end else if (dram_write_ready) begin
-              // Adapter is idle but data hasn't returned: our initial dram_read
-              // pulse was missed because the adapter was processing a preceding
-              // write (e.g. a DRAM stack push).  Re-assert the read; dram_burst_addr
-              // still holds the fetch address set in S_FETCH1.
-              dram_read <= 1;
-           end
+        `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
+           dram_latched <= dram_readdata;
+           state        <= `S_FETCH2;
         end
 
         `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin
@@ -3356,15 +3565,14 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_LOAD_WAIT: if (dram_readdatavalid) begin
-           if ({1'b0, mem_addr[4:0]} + (1 << (load_size_lg2 & 3)) > 32) begin
-              // Access crosses burst boundary — need second read
+           if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
+              // Access crosses 8-byte boundary — need second read
               dram_latched    <= dram_readdata;
-              dram_burst_addr <= mem_addr[30:5] + 1;
+              dram_addr <= mem_addr[30:3] + 1;
               dram_read       <= 1;
               state           <= `S_DRAM_LOAD2_WAIT;
            end else begin
-              // Single burst: extract value
-              aligned = dram_readdata >> (mem_addr[4:0] * 8);
+              aligned = dram_readdata >> (mem_addr[2:0] * 8);
               case (load_size_lg2)
                 0: write_back_value = aligned[7:0];
                 1: write_back_value = aligned[15:0];
@@ -3381,8 +3589,8 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_LOAD2_WAIT: if (dram_readdatavalid) begin
            begin : dram_load2
-              reg [511:0] combo;
-              combo = {dram_readdata, dram_latched} >> (mem_addr[4:0] * 8);
+              reg [127:0] combo;
+              combo = {dram_readdata, dram_latched} >> (mem_addr[2:0] * 8);
               case (load_size_lg2)
                 0: write_back_value = combo[7:0];
                 1: write_back_value = combo[15:0];
@@ -3398,17 +3606,26 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_STORE_WAIT: if (dram_write_ready) begin
-           // Issue the first write now that adapter is ready
+           // Issue the first write now that the master is idle
            dram_write <= 1;
-           state      <= dram_store_split ? `S_DRAM_STORE2 : `S_FETCH1;
+           state      <= `S_DRAM_STORE_RESP_ARM;
         end
 
         `S_DRAM_STORE2: if (dram_write_ready) begin
-           dram_burst_addr <= dram2_addr;
-           dram_writedata  <= {192'd0, dram2_data_part};
-           dram_byte_mask  <= dram2_mask;
+           dram_addr       <= dram2_addr;
+           dram_writedata  <= dram2_data_part;
+           dram_wstrb      <= dram2_wstrb;
            dram_write      <= 1;
-           state           <= `S_FETCH1;
+           dram_store_split <= 0;
+           state           <= `S_DRAM_STORE_RESP_ARM;
+        end
+
+        `S_DRAM_STORE_RESP_ARM: begin
+           state <= `S_DRAM_STORE_RESP_WAIT;
+        end
+
+        `S_DRAM_STORE_RESP_WAIT: if (dram_write_ready) begin
+           state <= dram_store_split ? `S_DRAM_STORE2 : `S_FETCH1;
         end
 
       endcase
@@ -3420,6 +3637,7 @@ module smolrv64(input wire        clock,
                        state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
                        state == `S_DRAM_PTW_WAIT   ||
                        state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
+                       state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
                        state == `S_MMIO_ALIGN;
          bus_timeout_expired <= bus_waiting && &bus_timeout_ctr;
          if (bus_waiting) begin
@@ -3428,21 +3646,16 @@ module smolrv64(input wire        clock,
                bus_timeout_ctr     <= 0;
                bus_timeout_expired <= 0;
                csr_mig_timeouts <= csr_mig_timeouts + 1;
-               // Any timeout in a state that expects a read response means
-               // we're abandoning an in-flight read; tell the adapter to
-               // drain the eventual MIG response rather than returning it
-               // to us as stale data (and keep the adapter from wedging).
-               if (state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
-                   state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
-                   state == `S_DRAM_PTW_WAIT)
-                 dram_abandon_read = 1;
+               // Late R beats from an abandoned read are silently swallowed by
+               // the AXI master (it gates dram_readdatavalid on bus_waiting), so
+               // no separate "abandon" handshake is needed.
                cause_intr = 0;
                case (state)
                  `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
                     cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                     tval = pc;
                  end
-                 `S_DRAM_STORE_WAIT, `S_DRAM_STORE2: begin
+                 `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
                     cause = `TRAP_STORE_ACCESS_FAULT;
                     tval = mem_addr;
                  end
@@ -3466,7 +3679,7 @@ module smolrv64(input wire        clock,
                   csr_mig_to_tval  <= tval;
                   csr_mig_to_state <= {59'd0, state};
                   csr_mig_to_cause <= {52'd0, cause};
-                  csr_mig_to_addr  <= {29'd0, dram_burst_addr, 5'd0};
+                  csr_mig_to_addr  <= {33'd0, dram_addr, 3'd0};
                end
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -3540,6 +3753,102 @@ module smolrv64(input wire        clock,
          mig_prev_waiting <= 0;
       end
    end
+
+   // ----- AXI4 master to DDR4 -----
+   // Single read in flight, single write in flight.  arsize/awsize fixed at
+   // 8B; arlen/awlen=0 (one beat).  CPU pulses dram_read with dram_addr
+   // latched; pulses dram_write with dram_addr/dram_writedata/dram_wstrb
+   // latched.  dram_readdatavalid is gated on the CPU being in a DRAM-read
+   // wait state, so a late R beat following a bus_timeout is silently
+   // dropped (replaces the old dram_abandon_read drain).
+   reg         ar_busy = 0;
+   reg         r_busy  = 0;
+   reg [27:0]  ar_addr_r;
+   reg [63:0]  rdata_r;
+
+   reg         aw_busy = 0;
+   reg         w_busy  = 0;
+   reg         b_busy  = 0;
+   reg [27:0]  aw_addr_r;
+   reg [63:0]  w_data_r;
+   reg [ 7:0]  w_strb_r;
+
+   reg         dram_readdatavalid_r = 0;
+   wire        dram_read_wait =
+        state == `S_DRAM_FETCH_WAIT      ||
+        state == `S_DRAM_FETCH_HALF_WAIT ||
+        state == `S_DRAM_LOAD_WAIT       ||
+        state == `S_DRAM_LOAD2_WAIT      ||
+        state == `S_DRAM_PTW_WAIT;
+
+   assign dram_readdatavalid = dram_readdatavalid_r;
+   assign dram_readdata      = rdata_r;
+   assign dram_write_ready   = !aw_busy && !w_busy && !b_busy;
+
+   always @(posedge clock) begin
+      dram_readdatavalid_r <= 0;
+
+      // AR / R
+      if (dram_read) begin
+         ar_addr_r <= dram_addr;
+         ar_busy   <= 1;
+         r_busy    <= 1;
+      end
+      if (ar_busy && m_axi_arready) ar_busy <= 0;
+      if (r_busy && m_axi_rvalid) begin
+         rdata_r              <= m_axi_rdata;
+         r_busy               <= 0;
+         dram_readdatavalid_r <= dram_read_wait;
+      end
+
+      // AW / W / B
+      if (dram_write) begin
+         aw_addr_r <= dram_addr;
+         w_data_r  <= dram_writedata;
+         w_strb_r  <= dram_wstrb;
+         aw_busy   <= 1;
+         w_busy    <= 1;
+         b_busy    <= 1;
+      end
+      if (aw_busy && m_axi_awready) aw_busy <= 0;
+      if (w_busy  && m_axi_wready ) w_busy  <= 0;
+      if (b_busy  && m_axi_bvalid ) b_busy  <= 0;
+
+      if (reset) begin
+         ar_busy <= 0; r_busy <= 0;
+         aw_busy <= 0; w_busy <= 0; b_busy <= 0;
+         dram_readdatavalid_r <= 0;
+      end
+   end
+
+   assign m_axi_arvalid = ar_busy;
+   assign m_axi_araddr  = {ar_addr_r, 3'b000};
+   assign m_axi_arlen   = 8'd0;
+   assign m_axi_arsize  = 3'b011;       // 8 bytes
+   assign m_axi_arburst = 2'b01;        // INCR
+   assign m_axi_arid    = 3'b000;
+   assign m_axi_arlock  = 1'b0;
+   assign m_axi_arcache = 4'b0011;
+   assign m_axi_arprot  = 3'b000;
+   assign m_axi_arqos   = 4'b0000;
+   assign m_axi_rready  = 1'b1;
+
+   assign m_axi_awvalid = aw_busy;
+   assign m_axi_awaddr  = {aw_addr_r, 3'b000};
+   assign m_axi_awlen   = 8'd0;
+   assign m_axi_awsize  = 3'b011;
+   assign m_axi_awburst = 2'b01;
+   assign m_axi_awid    = 3'b000;
+   assign m_axi_awlock  = 1'b0;
+   assign m_axi_awcache = 4'b0011;
+   assign m_axi_awprot  = 3'b000;
+   assign m_axi_awqos   = 4'b0000;
+   assign m_axi_wvalid  = w_busy;
+   assign m_axi_wdata   = w_data_r;
+   assign m_axi_wstrb   = w_strb_r;
+   assign m_axi_wlast   = 1'b1;
+   assign m_axi_bready  = 1'b1;
+
 endmodule
 
 

@@ -1,6 +1,10 @@
 P=mem
 OPTS=
-IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=20
+SIM_MEM_BASE="64'h70000000"
+SIM_RESET_PC="64'h80000000"
+SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
+TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
+IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS)
 platform=$(shell uname -o)
 
 ifeq ($(platform),Darwin)
@@ -36,10 +40,10 @@ smolrv64-sim: $(SRCS) Makefile
 	iverilog $(IVOPTS) -o $@ $(SRCS)
 
 smolrv64-linux-sim: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=27 -DVPI -DNO_TIMEOUT -o $@ $(SRCS)
+	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS) -DVPI -DNO_TIMEOUT -o $@ $(SRCS)
 
 smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb -DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT -o $@ $(SRCS)
+	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS) -DDISASS -DVERBOSE -DNO_TIMEOUT -o $@ $(SRCS)
 
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
@@ -47,7 +51,7 @@ smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 	verilator --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
-		-DSIMULATE -DMEM_SIZE_LG2=27 -DDISASS -DVERBOSE -DNO_TIMEOUT \
+		$(SIM_VDEFS) -DDISASS -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
 		-O3 -CFLAGS "-O3" \
 		-Mdir obj_dir_verbose -o $@ \
@@ -60,7 +64,7 @@ smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 smolrv64-linux-vl: $(SRCS) sim_main.cpp Makefile
 	verilator --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
-		-DSIMULATE -DMEM_SIZE_LG2=27 -DNO_TIMEOUT \
+		$(SIM_VDEFS) -DNO_TIMEOUT \
 		-Wno-fatal \
 		-O3 -CFLAGS "-O3" \
 		-Mdir obj_dir_verbose -o $@ \
@@ -86,7 +90,7 @@ smolrv64-linux-cosim: $(SRCS) sim_main.cpp Makefile \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
-		-DSIMULATE -DMEM_SIZE_LG2=27 -DNO_TIMEOUT -DVERILATOR_COSIM \
+		$(SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
 		-O3 -CFLAGS "-O3 -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
@@ -98,7 +102,7 @@ smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
 
 smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DRISCV_TESTS -DMEM_SIZE_LG2=22 $(SRCS)
+	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(TESTER_VDEFS) -o $@ -DRISCV_TESTS $(SRCS)
 
 lint:
 	verilator  -Wall --cc --top-module smolrv64 $(SRCS)

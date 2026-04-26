@@ -470,7 +470,8 @@ int main(void)
             puts_("returned\n");
 
         } else if (*p == 'P' || *p == 'p') {
-            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
+            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad, last_pc;
+            uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
             asm volatile ("csrr %0, 0xfc2" : "=r"(tot));
@@ -481,6 +482,13 @@ int main(void)
             asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
             asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
             asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
+            asm volatile ("csrr %0, 0xfca" : "=r"(last_pc));
+            asm volatile ("csrr %0, mcause" : "=r"(mcause));
+            asm volatile ("csrr %0, mtval"  : "=r"(mtval));
+            asm volatile ("csrr %0, mepc"   : "=r"(mepc));
+            asm volatile ("csrr %0, scause" : "=r"(scause));
+            asm volatile ("csrr %0, stval"  : "=r"(stval));
+            asm volatile ("csrr %0, sepc"   : "=r"(sepc));
             if (p[1] == 'c' || p[1] == 'C') {
                 asm volatile ("csrw 0xfc3, zero");
                 puts_("cleared\n");
@@ -494,6 +502,15 @@ int main(void)
                     puts_(" avg=");
                     puthex64(tot / cnt);
                 }
+                putc_('\n');
+                puts_("last_pc="); puthex64(last_pc); putc_('\n');
+                puts_("scause="); puthex64(scause);
+                puts_(" stval="); puthex64(stval);
+                puts_(" sepc=");  puthex64(sepc);
+                putc_('\n');
+                puts_("mcause="); puthex64(mcause);
+                puts_(" mtval="); puthex64(mtval);
+                puts_(" mepc=");  puthex64(mepc);
                 putc_('\n');
                 if (to) {
                     puts_("first-to pc="); puthex64(to_pc);

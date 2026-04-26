@@ -82,25 +82,52 @@ module rk_xcku5p(
    assign led[2] = halted;
    assign led[3] = key[3];
 
-   // DDR4 native app interface wires
-   wire [28:0]  c0_ddr4_app_addr;
-   wire [2:0]   c0_ddr4_app_cmd;
-   wire         c0_ddr4_app_en;
-   wire [255:0] c0_ddr4_app_wdf_data;
-   wire         c0_ddr4_app_wdf_end;
-   wire [31:0]  c0_ddr4_app_wdf_mask;
-   wire         c0_ddr4_app_wdf_wren;
-   wire [255:0] c0_ddr4_app_rd_data;
-   wire         c0_ddr4_app_rd_data_end;
-   wire         c0_ddr4_app_rd_data_valid;
-   wire         c0_ddr4_app_rdy;
-   wire         c0_ddr4_app_wdf_rdy;
    wire         dbg_clk;
    wire [511:0] dbg_bus;
    wire         c0_ddr4_reset_n_int;
    assign c0_ddr4_reset_n = c0_ddr4_reset_n_int;
 
-   // DDR4 MIG IP instantiation
+   // AXI4 wires between smolrv64 and the DDR4 IP (64-bit data, 31-bit byte addr,
+   // 3-bit ID, 8-byte beats, single-beat bursts).
+   wire [ 2:0] m_axi_awid;
+   wire [30:0] m_axi_awaddr;
+   wire [ 7:0] m_axi_awlen;
+   wire [ 2:0] m_axi_awsize;
+   wire [ 1:0] m_axi_awburst;
+   wire        m_axi_awlock;
+   wire [ 3:0] m_axi_awcache;
+   wire [ 2:0] m_axi_awprot;
+   wire [ 3:0] m_axi_awqos;
+   wire        m_axi_awvalid;
+   wire        m_axi_awready;
+   wire [63:0] m_axi_wdata;
+   wire [ 7:0] m_axi_wstrb;
+   wire        m_axi_wlast;
+   wire        m_axi_wvalid;
+   wire        m_axi_wready;
+   wire [ 2:0] m_axi_bid;
+   wire [ 1:0] m_axi_bresp;
+   wire        m_axi_bvalid;
+   wire        m_axi_bready;
+   wire [ 2:0] m_axi_arid;
+   wire [30:0] m_axi_araddr;
+   wire [ 7:0] m_axi_arlen;
+   wire [ 2:0] m_axi_arsize;
+   wire [ 1:0] m_axi_arburst;
+   wire        m_axi_arlock;
+   wire [ 3:0] m_axi_arcache;
+   wire [ 2:0] m_axi_arprot;
+   wire [ 3:0] m_axi_arqos;
+   wire        m_axi_arvalid;
+   wire        m_axi_arready;
+   wire [ 2:0] m_axi_rid;
+   wire [63:0] m_axi_rdata;
+   wire [ 1:0] m_axi_rresp;
+   wire        m_axi_rlast;
+   wire        m_axi_rvalid;
+   wire        m_axi_rready;
+
+   // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
       .sys_rst                        (~key[0]),          // active-high; key[0] low = pressed = reset
 
@@ -126,60 +153,45 @@ module rk_xcku5p(
       .c0_ddr4_ui_clk_sync_rst        (ui_rst),
       .dbg_clk                        (dbg_clk),
 
-      .c0_ddr4_app_addr               (c0_ddr4_app_addr),
-      .c0_ddr4_app_cmd                (c0_ddr4_app_cmd),
-      .c0_ddr4_app_en                 (c0_ddr4_app_en),
-      .c0_ddr4_app_hi_pri             (1'b0),
-      .c0_ddr4_app_wdf_data           (c0_ddr4_app_wdf_data),
-      .c0_ddr4_app_wdf_end            (c0_ddr4_app_wdf_end),
-      .c0_ddr4_app_wdf_mask           (c0_ddr4_app_wdf_mask),
-      .c0_ddr4_app_wdf_wren           (c0_ddr4_app_wdf_wren),
-      .c0_ddr4_app_rd_data            (c0_ddr4_app_rd_data),
-      .c0_ddr4_app_rd_data_end        (c0_ddr4_app_rd_data_end),
-      .c0_ddr4_app_rd_data_valid      (c0_ddr4_app_rd_data_valid),
-      .c0_ddr4_app_rdy                (c0_ddr4_app_rdy),
-      .c0_ddr4_app_wdf_rdy            (c0_ddr4_app_wdf_rdy),
+      .c0_ddr4_aresetn                (~ui_rst),
+      .c0_ddr4_s_axi_awid             (m_axi_awid),
+      .c0_ddr4_s_axi_awaddr           (m_axi_awaddr),
+      .c0_ddr4_s_axi_awlen            (m_axi_awlen),
+      .c0_ddr4_s_axi_awsize           (m_axi_awsize),
+      .c0_ddr4_s_axi_awburst          (m_axi_awburst),
+      .c0_ddr4_s_axi_awlock           (m_axi_awlock),
+      .c0_ddr4_s_axi_awcache          (m_axi_awcache),
+      .c0_ddr4_s_axi_awprot           (m_axi_awprot),
+      .c0_ddr4_s_axi_awqos            (m_axi_awqos),
+      .c0_ddr4_s_axi_awvalid          (m_axi_awvalid),
+      .c0_ddr4_s_axi_awready          (m_axi_awready),
+      .c0_ddr4_s_axi_wdata            (m_axi_wdata),
+      .c0_ddr4_s_axi_wstrb            (m_axi_wstrb),
+      .c0_ddr4_s_axi_wlast            (m_axi_wlast),
+      .c0_ddr4_s_axi_wvalid           (m_axi_wvalid),
+      .c0_ddr4_s_axi_wready           (m_axi_wready),
+      .c0_ddr4_s_axi_bid              (m_axi_bid),
+      .c0_ddr4_s_axi_bresp            (m_axi_bresp),
+      .c0_ddr4_s_axi_bvalid           (m_axi_bvalid),
+      .c0_ddr4_s_axi_bready           (m_axi_bready),
+      .c0_ddr4_s_axi_arid             (m_axi_arid),
+      .c0_ddr4_s_axi_araddr           (m_axi_araddr),
+      .c0_ddr4_s_axi_arlen            (m_axi_arlen),
+      .c0_ddr4_s_axi_arsize           (m_axi_arsize),
+      .c0_ddr4_s_axi_arburst          (m_axi_arburst),
+      .c0_ddr4_s_axi_arlock           (m_axi_arlock),
+      .c0_ddr4_s_axi_arcache          (m_axi_arcache),
+      .c0_ddr4_s_axi_arprot           (m_axi_arprot),
+      .c0_ddr4_s_axi_arqos            (m_axi_arqos),
+      .c0_ddr4_s_axi_arvalid          (m_axi_arvalid),
+      .c0_ddr4_s_axi_arready          (m_axi_arready),
+      .c0_ddr4_s_axi_rid              (m_axi_rid),
+      .c0_ddr4_s_axi_rdata            (m_axi_rdata),
+      .c0_ddr4_s_axi_rresp            (m_axi_rresp),
+      .c0_ddr4_s_axi_rlast            (m_axi_rlast),
+      .c0_ddr4_s_axi_rvalid           (m_axi_rvalid),
+      .c0_ddr4_s_axi_rready           (m_axi_rready),
       .dbg_bus                        (dbg_bus)
-   );
-
-   // CPU DRAM bus signals
-   wire [25:0]  dram_burst_addr;
-   wire         dram_read;
-   wire         dram_write;
-   wire [255:0] dram_writedata;
-   wire [31:0]  dram_byte_mask;
-   wire         dram_readdatavalid;
-   wire [255:0] dram_readdata;
-   wire         dram_write_ready;
-   wire         dram_abandon_read;
-
-   // DDR4 adapter: bridges CPU DRAM bus to MIG native app interface
-   ddr4_adapter ddr4_adapter_inst (
-      .clk                  (ui_clk),
-      .rst_n                (~ui_rst),
-
-      .dram_burst_addr      (dram_burst_addr),
-      .dram_read            (dram_read),
-      .dram_write           (dram_write),
-      .dram_writedata       (dram_writedata),
-      .dram_byte_mask       (dram_byte_mask),
-      .dram_readdatavalid   (dram_readdatavalid),
-      .dram_readdata        (dram_readdata),
-      .dram_write_ready     (dram_write_ready),
-      .dram_abandon_read    (dram_abandon_read),
-
-      .app_addr             (c0_ddr4_app_addr),
-      .app_cmd              (c0_ddr4_app_cmd),
-      .app_en               (c0_ddr4_app_en),
-      .app_rdy              (c0_ddr4_app_rdy),
-      .app_wdf_data         (c0_ddr4_app_wdf_data),
-      .app_wdf_end          (c0_ddr4_app_wdf_end),
-      .app_wdf_mask         (c0_ddr4_app_wdf_mask),
-      .app_wdf_wren         (c0_ddr4_app_wdf_wren),
-      .app_wdf_rdy          (c0_ddr4_app_wdf_rdy),
-      .app_rd_data          (c0_ddr4_app_rd_data),
-      .app_rd_data_end      (c0_ddr4_app_rd_data_end),
-      .app_rd_data_valid    (c0_ddr4_app_rd_data_valid)
    );
 
    wire halted;
@@ -202,15 +214,43 @@ module rk_xcku5p(
 
       .ext_irq              (63'd0),
 
-      .dram_burst_addr      (dram_burst_addr),
-      .dram_read            (dram_read),
-      .dram_write           (dram_write),
-      .dram_writedata       (dram_writedata),
-      .dram_byte_mask       (dram_byte_mask),
-      .dram_readdatavalid   (dram_readdatavalid),
-      .dram_readdata        (dram_readdata),
-      .dram_write_ready     (dram_write_ready),
-      .dram_abandon_read    (dram_abandon_read),
+      .m_axi_awid           (m_axi_awid),
+      .m_axi_awaddr         (m_axi_awaddr),
+      .m_axi_awlen          (m_axi_awlen),
+      .m_axi_awsize         (m_axi_awsize),
+      .m_axi_awburst        (m_axi_awburst),
+      .m_axi_awlock         (m_axi_awlock),
+      .m_axi_awcache        (m_axi_awcache),
+      .m_axi_awprot         (m_axi_awprot),
+      .m_axi_awqos          (m_axi_awqos),
+      .m_axi_awvalid        (m_axi_awvalid),
+      .m_axi_awready        (m_axi_awready),
+      .m_axi_wdata          (m_axi_wdata),
+      .m_axi_wstrb          (m_axi_wstrb),
+      .m_axi_wlast          (m_axi_wlast),
+      .m_axi_wvalid         (m_axi_wvalid),
+      .m_axi_wready         (m_axi_wready),
+      .m_axi_bid            (m_axi_bid),
+      .m_axi_bresp          (m_axi_bresp),
+      .m_axi_bvalid         (m_axi_bvalid),
+      .m_axi_bready         (m_axi_bready),
+      .m_axi_arid           (m_axi_arid),
+      .m_axi_araddr         (m_axi_araddr),
+      .m_axi_arlen          (m_axi_arlen),
+      .m_axi_arsize         (m_axi_arsize),
+      .m_axi_arburst        (m_axi_arburst),
+      .m_axi_arlock         (m_axi_arlock),
+      .m_axi_arcache        (m_axi_arcache),
+      .m_axi_arprot         (m_axi_arprot),
+      .m_axi_arqos          (m_axi_arqos),
+      .m_axi_arvalid        (m_axi_arvalid),
+      .m_axi_arready        (m_axi_arready),
+      .m_axi_rid            (m_axi_rid),
+      .m_axi_rdata          (m_axi_rdata),
+      .m_axi_rresp          (m_axi_rresp),
+      .m_axi_rlast          (m_axi_rlast),
+      .m_axi_rvalid         (m_axi_rvalid),
+      .m_axi_rready         (m_axi_rready),
 
       .uart_tx_valid        (uart_tx_valid),
       .uart_tx_data         (uart_tx_data),

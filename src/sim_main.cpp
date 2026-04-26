@@ -14,9 +14,9 @@
 
 namespace {
 
-constexpr uint64_t MEM_BASE  = 0x80000000ULL;
-constexpr size_t   MEM_BYTES = 128ULL * 1024 * 1024;   // matches MEM_SIZE_LG2=27
-constexpr uint64_t RESET_PC  = 0x80000000ULL;          // matches smolrv64 default
+constexpr uint64_t SRAM_BASE = 0x70000000ULL;
+constexpr uint64_t AXI_BASE  = 0x80000000ULL;
+constexpr size_t   MEM_BYTES = 128ULL * 1024 * 1024;   // matches AXI_MEM_SIZE_LG2=27
 
 SimmervCtx* g_ctx    = nullptr;
 uint64_t    g_seqno  = 0;
@@ -58,13 +58,13 @@ bool load_sparse(const char* path, int parity, std::vector<uint8_t>& ram) {
     return true;
 }
 
-bool load_image(const char* even_path, const char* odd_path) {
+bool load_image(uint64_t base, const char* even_path, const char* odd_path) {
     // Pre-size to the full RAM so simmerv's pre-installed DTB is overwritten
     // with zeros past the loaded image; matches smolrv64's zeroed BRAM.
     std::vector<uint8_t> ram(MEM_BYTES, 0);
     if (!load_sparse(even_path, 0, ram)) return false;
     if (!load_sparse(odd_path,  1, ram)) return false;
-    if (simmerv_write_memory(g_ctx, MEM_BASE, ram.data(), ram.size()) != 0) {
+    if (simmerv_write_memory(g_ctx, base, ram.data(), ram.size()) != 0) {
         std::fprintf(stderr, "cosim: simmerv_write_memory(image) failed\n");
         return false;
     }
@@ -217,6 +217,12 @@ static const char* parse_plusarg(int argc, char** argv, const char* key) {
     }
     return nullptr;
 }
+
+static uint64_t parse_plusarg_hex(int argc, char** argv, const char* key, uint64_t fallback) {
+    if (const char* val = parse_plusarg(argc, argv, key))
+        return std::strtoull(val, nullptr, 16);
+    return fallback;
+}
 #endif // VERILATOR_COSIM
 
 int main(int argc, char** argv) {
@@ -237,12 +243,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cosim: need +even=<path> +odd=<path>\n");
         return 1;
     }
-    if (!load_image(even, odd)) return 1;
+    if (!load_image(AXI_BASE, even, odd)) return 1;
+    if (const char* sram_even = parse_plusarg(argc, argv, "sram_even")) {
+        const char* sram_odd = parse_plusarg(argc, argv, "sram_odd");
+        if (!sram_odd) {
+            std::fprintf(stderr, "cosim: need +sram_odd=<path> with +sram_even=<path>\n");
+            return 1;
+        }
+        if (!load_image(SRAM_BASE, sram_even, sram_odd)) return 1;
+    } else if (parse_plusarg(argc, argv, "sram_odd")) {
+        std::fprintf(stderr, "cosim: need +sram_even=<path> with +sram_odd=<path>\n");
+        return 1;
+    }
     simmerv_zero_registers(g_ctx);
     if (const char* rf = parse_plusarg(argc, argv, "rf")) {
         if (!load_rf(rf)) return 1;
     }
-    simmerv_set_pc(g_ctx, RESET_PC);
+    simmerv_set_pc(g_ctx, parse_plusarg_hex(argc, argv, "reset_pc", AXI_BASE));
     simmerv_set_mtime(g_ctx, 0);
 #endif
 

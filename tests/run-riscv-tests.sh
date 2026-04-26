@@ -3,7 +3,13 @@
 
 make -C ../src smolrv64-tester || exit
 
-NM=$(which riscv64-elf-nm 2>/dev/null || which riscv64-linux-gnu-nm 2>/dev/null || echo "")
+NM=$(command -v riscv64-elf-nm 2>/dev/null || command -v riscv64-linux-gnu-nm 2>/dev/null || echo "")
+DEFAULT_JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+JOBS=${JOBS:-$DEFAULT_JOBS}
+
+case "$JOBS" in
+   ''|*[!0-9]*|0) JOBS=1 ;;
+esac
 
 lock=$(mktemp)
 trap 'rm -f "$lock"' EXIT
@@ -29,6 +35,10 @@ do
                | grep -Ev '(WARNING|finish called at)')
          flock "$lock" printf "%-25s %s\n" "$base" "$out"
       ) &
+
+      while [ "$(jobs -pr | wc -l)" -ge "$JOBS" ]; do
+         wait -n
+      done
    done
 
    wait

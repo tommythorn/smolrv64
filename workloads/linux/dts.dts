@@ -4,11 +4,11 @@
         #address-cells = <2>;
         #size-cells = <2>;
         compatible = "riscv-virtio";
-        model = "riscv-virtio,qemu";
+        model = "SmolRV64 20260422";
 
         chosen {
-                linux,initrd-start = <0 0xfcdff000>;
-                linux,initrd-end   = <0 0xfffff000>;
+                linux,initrd-start = <0 0x84dff000>;
+                linux,initrd-end   = <0 0x87fff000>;
                 bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel";
                 stdout-path = "/uart@10000000";
         };
@@ -24,7 +24,7 @@
         cpus {
                 #address-cells = <1>;
                 #size-cells = <0>;
-                timebase-frequency = <1000000>; // 1 MHz
+                timebase-frequency = <10416666>; // 10.41666 MHz
 
                 cpu-map {
                         cluster0 {
@@ -78,6 +78,6 @@
 
         memory@80000000 {
                 device_type = "memory";
-                reg = <0 0x80000000 0 0x8000000>;
+                reg = <0 0x80000000 0 0x07fff000>;
         };
 };
