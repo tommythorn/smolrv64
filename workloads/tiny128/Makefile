@@ -1,5 +1,5 @@
 SRC_DIR  = ../../src
-SIMMERV = $(HOME)/github/simmerv
+SIMMERV = $(HOME)/simmerv
 
 # XXX The offsets should be computed automatically from the starting address
 # It's printf "%x" $((addr-base)/16), eg. (0x87f00000-0x80000000)/16 = 0x7f0000
