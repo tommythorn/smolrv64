@@ -803,6 +803,8 @@ module smolrv64(input wire        clock,
    // Fires one cycle after bus_timeout_ctr saturates — negligible at
    // 16M-cycle threshold, but critical for timing closure.
    reg        bus_timeout_expired = 0;
+   reg [63:0] bus_timeout_tval = 0;
+   reg [11:0] bus_timeout_cause = 0;
 
    // DDR4 transaction latency stats (cycles spent in S_DRAM_* wait states)
    reg [31:0] mig_latency_ctr = 0;
@@ -820,7 +822,7 @@ module smolrv64(input wire        clock,
    reg [63:0] csr_mig_to_addr  = 0;
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
-   reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val;
+   reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val, csr_satp_write_val;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
@@ -1240,7 +1242,7 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
-      if (csr_mcycle[4:0] == 5'b0) clint_mtime <= clint_mtime + 1;
+      clint_mtime <= csr_minstret/32;
       uart_tx_valid <= 0;
 
       // Enqueue UART RX data
@@ -3293,11 +3295,19 @@ module smolrv64(input wire        clock,
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = insn;
                       state <= `S_EXCEPTION;
-                   end else if (csr_write_val[63:60] == 4'd0 ||
-                                csr_write_val[63:60] == 4'd8) begin
-                     // WARL: only Bare and Sv39 are supported; unsupported
-                     // MODE values cause the entire write to have no effect.
-                     csr_satp = csr_write_val;
+                   end else begin
+                     case (csr_op)
+                       `CSR_OP_COPY: csr_satp_write_val = csr_arg;
+                       `CSR_OP_OR:   csr_satp_write_val = csr_satp | csr_arg;
+                       default:      csr_satp_write_val = csr_satp & ~csr_arg;
+                     endcase
+
+                     if (csr_satp_write_val[63:60] == 4'd0 ||
+                         csr_satp_write_val[63:60] == 4'd8) begin
+                       // WARL: only Bare and Sv39 are supported; unsupported
+                       // MODE values cause the entire write to have no effect.
+                       csr_satp = csr_satp_write_val;
+                     end
                    end
                 end
                 `CSR_MSTATUS: begin
@@ -3792,6 +3802,26 @@ module smolrv64(input wire        clock,
          bus_timeout_expired <= bus_waiting && &bus_timeout_ctr;
          if (bus_waiting) begin
             bus_timeout_ctr <= bus_timeout_ctr + 1;
+            case (state)
+              `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
+                 bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
+                 bus_timeout_tval  <= pc;
+              end
+              `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
+                 bus_timeout_cause <= `TRAP_STORE_ACCESS_FAULT;
+                 bus_timeout_tval  <= mem_addr;
+              end
+              `S_DRAM_PTW_WAIT: begin
+                 bus_timeout_cause <= ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
+                                      ptw_access == 2 || ptw_access == 3 ? `TRAP_STORE_ACCESS_FAULT :
+                                      `TRAP_LOAD_ACCESS_FAULT;
+                 bus_timeout_tval <= ptw_va;
+              end
+              default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
+                 bus_timeout_cause <= `TRAP_LOAD_ACCESS_FAULT;
+                 bus_timeout_tval  <= mem_addr;
+              end
+            endcase
             if (bus_timeout_expired) begin
                bus_timeout_ctr     <= 0;
                bus_timeout_expired <= 0;
@@ -3800,35 +3830,16 @@ module smolrv64(input wire        clock,
                // the AXI master (it gates dram_readdatavalid on bus_waiting), so
                // no separate "abandon" handshake is needed.
                cause_intr = 0;
-               case (state)
-                 `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
-                    cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-                    tval = pc;
-                 end
-                 `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
-                    cause = `TRAP_STORE_ACCESS_FAULT;
-                    tval = mem_addr;
-                 end
-                 `S_DRAM_PTW_WAIT: begin
-                    // PTW timeout: fault depends on what triggered the walk
-                    cause = ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
-                            ptw_access == 2 || ptw_access == 3 ? `TRAP_STORE_ACCESS_FAULT :
-                            `TRAP_LOAD_ACCESS_FAULT;
-                    tval = ptw_va;
-                 end
-                 default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
-                    cause = `TRAP_LOAD_ACCESS_FAULT;
-                    tval = mem_addr;
-                 end
-               endcase
+               cause = bus_timeout_cause;
+               tval = bus_timeout_tval;
                // Latch context of the FIRST timeout in this measurement
                // window (don't overwrite on aftershock faults in the trap
                // handler).  Cleared when csr_mig_timeouts is cleared.
                if (csr_mig_timeouts == 0) begin
                   csr_mig_to_pc    <= pc;
-                  csr_mig_to_tval  <= tval;
+                  csr_mig_to_tval  <= bus_timeout_tval;
                   csr_mig_to_state <= {59'd0, state};
-                  csr_mig_to_cause <= {52'd0, cause};
+                  csr_mig_to_cause <= {52'd0, bus_timeout_cause};
                   csr_mig_to_addr  <= {33'd0, dram_addr, 3'd0};
                end
 `ifdef SIMULATE
@@ -3866,6 +3877,9 @@ module smolrv64(input wire        clock,
          write_back_register <= 0;
          npc <= `RESET_PC;
          bus_timeout_ctr <= 0;
+         bus_timeout_expired <= 0;
+         bus_timeout_tval <= 0;
+         bus_timeout_cause <= 0;
          // Note: mig_* stats CSRs intentionally NOT reset here, so they
          // survive a soft reset (e.g. key[1] on the FPGA board).  Initial
          // values come from the reg declarations (FPGA config-time init).
