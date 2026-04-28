@@ -2710,10 +2710,6 @@ module smolrv64(input wire        clock,
 
               // Keep UART writes on the original store cycle; only BRAM writes
               // need the delayed commit state for SRAM WE timing.
-`ifdef VERBOSE
-              $display("%05d  UART_WR addr=%016x off=%0d data=%016x mask=%02x lcr=%02x",
-                       $time, {mem_addr, 4'b0}, mem_addr[2:0], store_value, mem_wr_mask, uart_lcr);
-`endif
               case (mem_addr[2:0])
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
 `ifdef PC_TRACE
@@ -2766,10 +2762,6 @@ module smolrv64(input wire        clock,
            case (phys_region(mem_addr))
              `REGION_UART: begin
               // NS16550A UART write (0x10000000-0x1000000F)
-`ifdef VERBOSE
-              $display("%05d  UART_WR addr=%016x off=%0d data=%016x mask=%02x lcr=%02x",
-                       $time, {mem_addr, 4'b0}, mem_addr[2:0], store_value, mem_wr_mask, uart_lcr);
-`endif
               case (mem_addr[2:0])
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
 `ifdef PC_TRACE
