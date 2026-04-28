@@ -21,13 +21,6 @@
 		compatible = "ns16550a";
 	};
 
-	virtio_mmio@10001000 {
-		interrupts = <1>;
-		interrupt-parent = <3>;
-		reg = <0 0x10001000 0 0x1000>;
-		compatible = "virtio,mmio";
-	};
-
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
