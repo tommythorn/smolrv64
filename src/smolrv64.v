@@ -592,8 +592,8 @@ module smolrv64(input wire        clock,
 // Collapses the 22 per-insn load/store/AMO branches into one shared block
 // (single mem_addr adder, single mem_addr0/mem_addr1 splitter).
 `define MEMOP_NONE  3'd0
-`define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U} + C.LW/C.LD/C.LWSP/C.LDSP
-`define MEMOP_STORE 3'd2  // S{B,H,W,D}    + C.SW/C.SD/C.SWSP/C.SDSP
+`define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U}, FLW/FLD, compressed integer/FP loads
+`define MEMOP_STORE 3'd2  // S{B,H,W,D}, FSW/FSD, compressed integer/FP stores
 `define MEMOP_LR    3'd3  // LR.W / LR.D
 `define MEMOP_SC    3'd4  // SC.W / SC.D
 `define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
@@ -737,7 +737,7 @@ module smolrv64(input wire        clock,
    reg  [ 2:0] pre_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
    reg  [ 7:0] pre_mem_wr_mask  = 0; // byte-enable for stores+SC
    reg  [ 4:0] pre_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
-   reg         pre_mem_fp       = 0; // 1 = FLW/FLD/FSW/FSD (route via f-regfile, NaN-box FLW)
+   reg         pre_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
    reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 
    // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
@@ -1468,7 +1468,7 @@ module smolrv64(input wire        clock,
               // The exceptions
               if (insn[1:0] == 1 && insn[15])
                 rs1 = {2'd1,insn[9:7]};
-              if (insn[1:0] == 2 && insn[15:14] == 1)
+              if (insn[1:0] == 2 && (insn[15:13] == 3'b001 || insn[15:14] == 2'b01))
                 rs1 = 2; // sp
               if (insn[1:0] == 2 && 5 <= insn[15:13])
                 rs1 = 2; // sp
@@ -1720,6 +1720,13 @@ module smolrv64(input wire        clock,
                  pre_load_size_lg2 <= 3'b110; // W, sign-extend
                  pre_mem_wb_reg    <= {2'b01, insn[4:2]};
               end
+              else if ((insn & 'he003) == 'h2000) begin // C.FLD
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_cld_off;
+                 pre_load_size_lg2 <= 3'b011; // D
+                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+                 pre_mem_fp        <= 1'b1;
+              end
               else if ((insn & 'he003) == 'h6000) begin // C.LD
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cld_off;
@@ -1730,6 +1737,12 @@ module smolrv64(input wire        clock,
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_clw_off;
                  pre_mem_wr_mask <= 8'h0f;
+              end
+              else if ((insn & 'he003) == 'ha000) begin // C.FSD
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_cld_off;
+                 pre_mem_wr_mask <= 8'hff;
+                 pre_mem_fp      <= 1'b1;
               end
               else if ((insn & 'he003) == 'he000) begin // C.SD
                  pre_mem_op      <= `MEMOP_STORE;
@@ -1742,6 +1755,13 @@ module smolrv64(input wire        clock,
                  pre_load_size_lg2 <= 3'b110;
                  pre_mem_wb_reg    <= insn[11:7];
               end
+              else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
+                 pre_mem_op        <= `MEMOP_LOAD;
+                 pre_mem_offset    <= d_cldsp_off;
+                 pre_load_size_lg2 <= 3'b011;
+                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_mem_fp        <= 1'b1;
+              end
               else if ((insn & 'he003) == 'h6002) begin // C.LDSP
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cldsp_off;
@@ -1752,6 +1772,12 @@ module smolrv64(input wire        clock,
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_cswsp_off;
                  pre_mem_wr_mask <= 8'h0f;
+              end
+              else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
+                 pre_mem_op      <= `MEMOP_STORE;
+                 pre_mem_offset  <= d_csdsp_off;
+                 pre_mem_wr_mask <= 8'hff;
+                 pre_mem_fp      <= 1'b1;
               end
               else if ((insn & 'he003) == 'he002) begin // C.SDSP
                  pre_mem_op      <= `MEMOP_STORE;
@@ -1948,7 +1974,7 @@ module smolrv64(input wire        clock,
               end
            end
 
-           // C.LW / C.LD / C.SW / C.SD handled by shared mem block above.
+           // Compressed integer/FP loads and stores are handled by the shared mem block above.
 
               // Quadrant 1
            else if (insn == 1) begin // C.NOP
@@ -2031,7 +2057,7 @@ module smolrv64(input wire        clock,
               write_back_register = rs1;
            end
 
-           // C.LWSP / C.LDSP handled by shared mem block above.
+           // C.LWSP / C.LDSP / C.FLDSP handled by shared mem block above.
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
               npc = s1 & ~1;
@@ -2056,7 +2082,7 @@ module smolrv64(input wire        clock,
               write_back_register = rs1;
            end
 
-           // C.SWSP / C.SDSP handled by shared mem block above.
+           // C.SWSP / C.SDSP / C.FSDSP handled by shared mem block above.
 
            // Quadrant 3, uncompressed
            else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
@@ -3668,7 +3694,7 @@ module smolrv64(input wire        clock,
            endcase
            if (insn[1:0] == 1 && insn[15])
              rs1 = {2'd1,insn[9:7]};
-           if (insn[1:0] == 2 && insn[15:14] == 1)
+           if (insn[1:0] == 2 && (insn[15:13] == 3'b001 || insn[15:14] == 2'b01))
              rs1 = 2; // sp
            if (insn[1:0] == 2 && 5 <= insn[15:13])
              rs1 = 2; // sp

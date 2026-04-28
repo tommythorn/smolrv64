@@ -14,13 +14,13 @@
            else if ((insn & 'he003) == 'h0000)
              $write("c.addi4spn x%1d,%1d", write_back_register, c_nzuimm107_1211_5_6_x4);
            else if ((insn & 'he003) == 'h2000)
-             $write("c.fld   x%1d,%1d(x%1d)            UNTESTED", write_back_register, rs1, c_uimm65_1210_x8);
+             $write("c.fld   f%1d,%1d(x%1d)", write_back_fp_register, c_uimm65_1210_x8, rs1);
            else if ((insn & 'he003) == 'h4000)
              $write("c.lw    x%1d,%1d(x%1d)", write_back_register, c_uimm5_1210_6_x4, rs1);
            else if ((insn & 'he003) == 'h6000)
              $write("c.ld    x%1d,%1d(x%1d)", write_back_register, c_uimm65_1210_x8, rs1);
            else if ((insn & 'he003) == 'ha000)
-             $write("c.fsd   x%1d,%1d(x%1d)    UNTESTED", rs2, c_uimm65_1210_x8, rs1);
+             $write("c.fsd   f%1d,%1d(x%1d)", rs2, c_uimm65_1210_x8, rs1);
            else if ((insn & 'he003) == 'hc000)
              $write("c.sw    x%1d,%1d(x%1d)", rs2, c_uimm5_1210_6_x4, rs1);
            else if ((insn & 'he003) == 'he000)
@@ -68,7 +68,7 @@
            else if ((insn & 'he003) == 'h0002)
              $write("c.slli  x%1d,%1d", write_back_register, c_imm12_62[5:0]);
            else if ((insn & 'he003) == 'h2002)
-             $write("c.fldsp x%1d,%1d(x2)       UNTESTED", write_back_register, c_uimm42_12_65_x8);
+             $write("c.fldsp f%1d,%1d(x2)", write_back_fp_register, c_uimm42_12_65_x8);
            else if ((insn & 'he003) == 'h4002)
              $write("c.lwsp  x%1d,%1d(x2)", write_back_register, c_uimm32_12_64_x4);
            else if ((insn & 'he003) == 'h6002)
@@ -84,7 +84,7 @@
            else if ((insn & 'hf003) == 'h9002)
              $write("c.add   x%1d,x%1d", write_back_register, rs2);
            else if ((insn & 'he003) == 'ha002)
-             $write("c.fsdsp x%1d,%1d(x2)       UNTESTED", rs2, c_uimm97_1210_x8);
+             $write("c.fsdsp f%1d,%1d(x2)", rs2, c_uimm97_1210_x8);
            else if ((insn & 'he003) == 'hc002)
              $write("c.swsp  x%1d,%1d(x2)", rs2, c_uimm87_129_x4);
            else if ((insn & 'he003) == 'he002)
