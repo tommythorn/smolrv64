@@ -10,6 +10,7 @@
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
+//   S                - probe SD card over SPI
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   ?                - help
 
@@ -38,6 +39,18 @@ typedef unsigned long      uint64_t;
 #define LCR_8N1   0x03
 #define LSR_THRE  0x20
 #define LSR_DR    0x01
+
+#define SD_SPI_BASE     ((volatile uint32_t *)0x10001000)
+#define SD_CS_GPIO_BASE ((volatile uint32_t *)0x10001100)
+#define SD_CD_GPIO_BASE ((volatile uint32_t *)0x10001200)
+
+#define SD_SPI_RXDATA   0
+#define SD_SPI_TXDATA   1
+#define SD_SPI_STATUS   2
+#define SD_SPI_CONTROL  3
+#define SD_SPI_BAUD     4
+
+#define SD_SPI_READY    0x01
 
 static void uart_init(volatile uint8_t *base, int clk_freq, int baud)
 {
@@ -333,6 +346,250 @@ next:
     }
 }
 
+static void sd_cs_assert(int assert)
+{
+    SD_CS_GPIO_BASE[0] = assert ? 0 : 1;
+}
+
+static void sd_spi_init(int baud)
+{
+    SD_SPI_BASE[SD_SPI_CONTROL] = 0; /* mode 0 */
+    SD_SPI_BASE[SD_SPI_BAUD] = (uint32_t)baud;
+}
+
+static uint8_t sd_spi_xfer(uint8_t tx, int *ok)
+{
+    uint32_t tmo = 1000000;
+
+    SD_SPI_BASE[SD_SPI_TXDATA] = tx;
+    while (tmo--) {
+        if (SD_SPI_BASE[SD_SPI_STATUS] & SD_SPI_READY)
+            return (uint8_t)SD_SPI_BASE[SD_SPI_RXDATA];
+    }
+
+    *ok = 0;
+    return 0xff;
+}
+
+static void sd_idle_clocks(int bytes, int *ok)
+{
+    while (bytes-- && *ok)
+        (void)sd_spi_xfer(0xff, ok);
+}
+
+static int sd_cmd_raw(uint8_t cmd, uint32_t arg, uint8_t crc,
+                      uint8_t *resp, int resp_len, int *ok)
+{
+    uint8_t r = 0xff;
+
+    (void)sd_spi_xfer(0xff, ok);
+    (void)sd_spi_xfer(0x40 | cmd, ok);
+    (void)sd_spi_xfer((uint8_t)(arg >> 24), ok);
+    (void)sd_spi_xfer((uint8_t)(arg >> 16), ok);
+    (void)sd_spi_xfer((uint8_t)(arg >> 8), ok);
+    (void)sd_spi_xfer((uint8_t)arg, ok);
+    (void)sd_spi_xfer(crc, ok);
+
+    for (int i = 0; i < 16 && *ok; i++) {
+        r = sd_spi_xfer(0xff, ok);
+        if ((r & 0x80) == 0)
+            break;
+    }
+
+    if (!*ok || (r & 0x80))
+        return -1;
+
+    if (resp_len > 0)
+        resp[0] = r;
+    for (int i = 1; i < resp_len && *ok; i++)
+        resp[i] = sd_spi_xfer(0xff, ok);
+
+    return *ok ? 0 : -1;
+}
+
+static int sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc,
+                  uint8_t *resp, int resp_len, int *ok)
+{
+    int rc;
+
+    sd_cs_assert(1);
+    rc = sd_cmd_raw(cmd, arg, crc, resp, resp_len, ok);
+    sd_cs_assert(0);
+    (void)sd_spi_xfer(0xff, ok);
+
+    return rc;
+}
+
+static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
+{
+    uint8_t r1 = 0xff;
+
+    sd_cs_assert(1);
+    if (sd_cmd_raw(cmd, 0, 0x01, &r1, 1, ok) < 0 || r1 != 0) {
+        sd_cs_assert(0);
+        (void)sd_spi_xfer(0xff, ok);
+        return r1;
+    }
+
+    for (uint32_t tmo = 100000; tmo && *ok; tmo--) {
+        uint8_t token = sd_spi_xfer(0xff, ok);
+        if (token == 0xfe) {
+            for (int i = 0; i < 16; i++)
+                buf[i] = sd_spi_xfer(0xff, ok);
+            (void)sd_spi_xfer(0xff, ok); /* crc */
+            (void)sd_spi_xfer(0xff, ok);
+            sd_cs_assert(0);
+            (void)sd_spi_xfer(0xff, ok);
+            return *ok ? 0 : -1;
+        }
+        if ((token & 0xf0) == 0)
+            break;
+    }
+
+    sd_cs_assert(0);
+    (void)sd_spi_xfer(0xff, ok);
+    return -1;
+}
+
+static void print_sd_r1(const char *name, uint8_t r1)
+{
+    puts_(name);
+    puts_(" R1=");
+    puthex8(r1);
+    if (r1 & 0x01) puts_(" idle");
+    if (r1 & 0x02) puts_(" erase-reset");
+    if (r1 & 0x04) puts_(" illegal-cmd");
+    if (r1 & 0x08) puts_(" crc-err");
+    if (r1 & 0x10) puts_(" erase-seq-err");
+    if (r1 & 0x20) puts_(" addr-err");
+    if (r1 & 0x40) puts_(" param-err");
+    putc_('\n');
+}
+
+static void print_sd_csd_capacity(const uint8_t *csd)
+{
+    uint64_t capacity = 0;
+    uint8_t csdver = csd[0] >> 6;
+
+    puts_("CSD: ");
+    for (int i = 0; i < 16; i++)
+        puthex8(csd[i]);
+    putc_('\n');
+
+    if (csdver == 1) {
+        uint32_t c_size = ((uint32_t)(csd[7] & 0x3f) << 16) |
+                          ((uint32_t)csd[8] << 8) |
+                          csd[9];
+        capacity = ((uint64_t)c_size + 1) << 19;
+    } else if (csdver == 0) {
+        uint32_t read_bl_len = csd[5] & 0x0f;
+        uint32_t c_size = ((uint32_t)(csd[6] & 0x03) << 10) |
+                          ((uint32_t)csd[7] << 2) |
+                          ((csd[8] & 0xc0) >> 6);
+        uint32_t c_size_mult = ((csd[9] & 0x03) << 1) |
+                               ((csd[10] & 0x80) >> 7);
+        capacity = ((uint64_t)c_size + 1) << (c_size_mult + 2 + read_bl_len);
+    }
+
+    puts_("CSD version=");
+    puthex8(csdver);
+    if (capacity) {
+        puts_(" capacity=");
+        puthex64(capacity);
+        puts_(" bytes (");
+        puthex64(capacity >> 20);
+        puts_(" MiB)\n");
+    } else {
+        puts_(" capacity=unknown\n");
+    }
+}
+
+static void sd_probe(void)
+{
+    int ok = 1;
+    uint8_t r[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t csd[16];
+    uint32_t cd_raw = SD_CD_GPIO_BASE[0] & 1;
+    int initialized = 0;
+    int v2_card = 0;
+
+    puts_("sd_cd raw=");
+    puthex8(cd_raw);
+    puts_(cd_raw ? " present=no (active-low)\n" : " present=yes (active-low)\n");
+
+    sd_spi_init(255); /* about 650 kHz from 333 MHz UI clock */
+    sd_cs_assert(0);
+    sd_idle_clocks(10, &ok);
+
+    if (!ok) {
+        puts_("SPI timeout during idle clocks\n");
+        return;
+    }
+
+    if (sd_cmd(0, 0, 0x95, r, 1, &ok) < 0) {
+        puts_("CMD0: no response\n");
+        return;
+    }
+    print_sd_r1("CMD0", r[0]);
+
+    if (sd_cmd(8, 0x000001aa, 0x87, r, 5, &ok) < 0) {
+        puts_("CMD8: no response\n");
+    } else {
+        print_sd_r1("CMD8", r[0]);
+        puts_("CMD8 echo=");
+        puthex8(r[3]);
+        puthex8(r[4]);
+        putc_('\n');
+        v2_card = !(r[0] & 0x04) && r[3] == 0x01 && r[4] == 0xaa;
+    }
+
+    for (int i = 0; i < 1000 && ok; i++) {
+        uint8_t r55;
+        uint32_t acmd41_arg = v2_card ? 0x40000000 : 0;
+        if (sd_cmd(55, 0, 0x01, &r55, 1, &ok) < 0) {
+            puts_("CMD55: no response\n");
+            break;
+        }
+        if (sd_cmd(41, acmd41_arg, 0x01, r, 1, &ok) < 0) {
+            puts_("ACMD41: no response\n");
+            break;
+        }
+        if (r[0] == 0) {
+            initialized = 1;
+            puts_("ACMD41 ready after ");
+            puthex32(i + 1);
+            puts_(" tries\n");
+            break;
+        }
+    }
+    if (!initialized)
+        print_sd_r1("ACMD41 last", r[0]);
+
+    if (sd_cmd(58, 0, 0x01, r, 5, &ok) == 0) {
+        uint32_t ocr = ((uint32_t)r[1] << 24) |
+                       ((uint32_t)r[2] << 16) |
+                       ((uint32_t)r[3] << 8) |
+                       r[4];
+        print_sd_r1("CMD58", r[0]);
+        puts_("OCR=");
+        puthex32(ocr);
+        puts_((ocr & 0x40000000) ? " CCS=1\n" : " CCS=0\n");
+    } else {
+        puts_("CMD58: no response\n");
+    }
+
+    if (initialized) {
+        sd_spi_init(12); /* about 12.8 MHz */
+        if (sd_read_register(9, csd, &ok) == 0)
+            print_sd_csd_capacity(csd);
+        else
+            puts_("CMD9/CSD: failed\n");
+    }
+
+    if (!ok)
+        puts_("SPI timeout\n");
+}
+
 typedef void (*fn_t)(void);
 typedef void (*fn_t2)(uint64_t, uint64_t);
 
@@ -459,6 +716,9 @@ int main(void)
             }
             puts_("ok\n");
 
+        } else if (*p == 'S' || *p == 's') {
+            sd_probe();
+
         } else if (*p == 'X' || *p == 'x') {
             uint64_t a0 = 0, a1 = 0;
             p = parse_hex(p + 1, &addr);
@@ -533,6 +793,7 @@ int main(void)
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
             puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
             puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
+            puts_("S                probe SD card over SPI\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
             puts_("P                dump MIG latency stats; Pc clears them\n");
 
