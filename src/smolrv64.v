@@ -2865,6 +2865,70 @@ module smolrv64(input wire        clock,
                       state <= `S_EXCEPTION;
 `endif
                    end
+                   // FCVT.S.D
+                   7'b0100000: if (insn[24:20] == 5'd1) begin
+`ifdef USE_CVFPU
+                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                         cause = `TRAP_ILLEGAL_INSTRUCTION;
+                         tval = insn;
+                         state <= `S_EXCEPTION;
+                      end else begin
+                         cvfpu_operands[0] <= f1;
+                         cvfpu_operands[1] <= 64'd0;
+                         cvfpu_operands[2] <= 64'd0;
+                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
+                         cvfpu_op_mod   <= 1'b0;
+                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
+                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
+                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
+                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_in_valid <= 1'b1;
+                         state          <= `S_CVFPU_ISSUE;
+                      end
+`else
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+`endif
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
+                   // FCVT.D.S
+                   7'b0100001: if (insn[24:20] == 5'd0) begin
+`ifdef USE_CVFPU
+                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                         cause = `TRAP_ILLEGAL_INSTRUCTION;
+                         tval = insn;
+                         state <= `S_EXCEPTION;
+                      end else begin
+                         cvfpu_operands[0] <= f1;
+                         cvfpu_operands[1] <= 64'd0;
+                         cvfpu_operands[2] <= 64'd0;
+                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
+                         cvfpu_op_mod   <= 1'b0;
+                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
+                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
+                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
+                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_in_valid <= 1'b1;
+                         state          <= `S_CVFPU_ISSUE;
+                      end
+`else
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+`endif
+                   end else begin
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+                   end
                    // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
                    7'b0010000: begin
                       write_back_fp_valid    = 1;
