@@ -13,18 +13,26 @@ on getting it fast (and tighten up the RTL a lot).
 
 # Status
 
-194 riscv-tests pass (106 physical-mode, 66 virtual-mode, 22 other).
-RV64IMAC with Sv39 virtual memory and Ssvnapot is implemented.
-Two FPGA dev boards are directly supported: ULX3S and RX-XCKU5P-F.
+209 riscv-tests pass. RV64IMAC with Sv39 virtual memory and Ssvnapot
+is implemented.  Most basic parts of FP (FD extensions) is there, but
+no math yet.
+
+RX-XCKU5P-F FPGA dev boards is directly supported.
+
+Devices:
+- UART
+- CLINT
+- PLIC
+- SPI-MMC (SDcard)
 
 ## Performance
 
-Performance is not [yet] a priority, but IPC is about 0.22 at 25 MHz
-(ECP5) and 200 MHz (XCKU5P).
+It's insanely slow.  Performance is not yet a priority, however the RK
+target is using a 333 MHz clock and CPI is significant due to DDR4.
 
 # Milestones
 
-## M1: Boot a minimal Linux (buildroot, CONFIG_FPU=n)
+## M1: Boot a minimal Linux
 
 SmolRV64 targets 100% compatibility with [Simmerv](https://github.com/tommythorn/simmerv)
 (an ISA-level reference model which already boots full Ubuntu).
@@ -36,29 +44,33 @@ What's needed:
 - [x] Sv39 page table walk with software A/D (RVA22)
 - [x] Ssvnapot (64 KiB NAPOT pages)
 - [x] Cross-page instruction fetch
-- [ ] CLINT (mtime, mtimecmp, msip) — timer interrupts
-- [ ] PLIC — external interrupt routing (UART RX at minimum)
-- [ ] UART — Linux console (extend existing uart5.v or replace)
-- [ ] Bring up OpenSBI (great incremental test for CSR/privilege bugs)
-- [ ] Boot Linux with serial console
-
-Not needed for M1: FPU (kernel can trap-emulate or CONFIG_FPU=n),
-TLBs, caches (correctness first, performance later).
+- [x] CLINT (mtime, mtimecmp, msip) — timer interrupts
+- [x] PLIC — external interrupt routing (UART RX at minimum)
+- [x] UART — Linux console (extend existing uart5.v or replace)
+- [x] DDR4 support on RK-XCKU5P-F
+- [x] Cosim harness against Simmerv for lockstep debugging
+      ([docs/cosim.md](docs/cosim.md) — Phase 1 landed)
+- [x] Bring up OpenSBI (great incremental test for CSR/privilege bugs)
+- [x] Boot Linux with serial console M1!!!
 
 ## M2: Run Ubuntu
 
-- Floating point (F+D) — required for userspace
-- iTLB and dTLB — needed for acceptable performance
-- Instruction and data caches
-- DDR4 support on RK-XCKU5P-F
-- Cosim harness against Simmerv for lockstep debugging
-  ([docs/cosim.md](docs/cosim.md) — Phase 1 landed)
+- [x] SDcard interface for permanent storage
+- [ ] Full Compliant Floating point (F+D)
+- [ ] Simple directly mapped TLB
+- [ ] Simple directly mapped physical cache (64-byte lines)
 
-## Beyond: Make it fast
+## Beyond: Making it fast
 
-- Pipeline
-- Branch prediction
-- Out-of-order, superscalar
-- Caches (two-way virtually tagged skewed, maybe with SIEVE eviction?)
-- TLB (level 2 as level 1 is embedded in the cache), possibly with
-  some Cuckoo hashing scheme
+Planning for this is still in the early stages
+
+- [ ] TBD: more advanced TLBs using some Cuckoo hashing scheme
+- [ ] TBD: more advanced skew-associative virtually tagged Instruction
+      and data caches
+- [ ] Out-of-order (before pipelining for ease of debugging)
+- [ ] 4-wide superscalar
+- [ ] Branch prediction
+- [ ] Pipelining
+
+- [ ] RVA22
+- [ ] RVA23 (incl. vector)
