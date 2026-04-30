@@ -572,7 +572,9 @@ module smolrv64(input wire        clock,
 `define S_STORE_BRAM_WRITE     32  // full-word writeback after BRAM store read/modify
 `define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
 `define S_CVFPU_WAIT           34  // wait for a CVFPU result
-`define S_LAST_STATE           34  // update state register width accordingly
+`define S_CVFPU_FMA_RF2        35  // wait for rs3 FP regfile read
+`define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
+`define S_LAST_STATE           36  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -3180,6 +3182,33 @@ module smolrv64(input wire        clock,
               end
            end
 
+           // R4 fused multiply-add/subtract family: FMADD/FMSUB/FNMSUB/FNMADD.
+           else if (insn[6:4] == 3'b100 && insn[1:0] == 2'b11) begin
+              if (fs == 0) begin
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+              end else begin
+                 fs = 3;
+`ifdef USE_CVFPU
+                 if (insn[26:25] > 2'b01 ||
+                     insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                     (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                    cause = `TRAP_ILLEGAL_INSTRUCTION;
+                    tval = insn;
+                    state <= `S_EXCEPTION;
+                 end else begin
+                    rs1 <= insn[31:27]; // rs3; reuse FP read port 0
+                    state <= `S_CVFPU_FMA_RF2;
+                 end
+`else
+                 cause = `TRAP_ILLEGAL_INSTRUCTION;
+                 tval = insn;
+                 state <= `S_EXCEPTION;
+`endif
+              end
+           end
+
            else begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -3238,6 +3267,26 @@ module smolrv64(input wire        clock,
         end
 
 `ifdef USE_CVFPU
+        `S_CVFPU_FMA_RF2: begin
+           state <= `S_CVFPU_FMA_RF3;
+        end
+
+        `S_CVFPU_FMA_RF3: begin
+           cvfpu_operands[0] <= f1;
+           cvfpu_operands[1] <= f2;
+           cvfpu_operands[2] <= f1_bram;
+           cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+           cvfpu_op       <= insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
+           cvfpu_op_mod   <= insn[2]; // add/sub variant
+           cvfpu_src_fmt  <= {2'd0, insn[25]}; // FP32/FP64
+           cvfpu_dst_fmt  <= {2'd0, insn[25]}; // FP32/FP64
+           cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
+           cvfpu_tag_in   <= {3'd0, rd};
+           cvfpu_write_fp <= 1'b1;
+           cvfpu_in_valid <= 1'b1;
+           state          <= `S_CVFPU_ISSUE;
+        end
+
         `S_CVFPU_ISSUE: begin
            if (cvfpu_in_ready) begin
               cvfpu_in_valid <= 1'b0;
