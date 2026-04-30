@@ -778,6 +778,37 @@ module smolrv64(input wire        clock,
                       .read_data_0(f1_bram),
                       .read_data_1(f2_bram));
 
+`ifdef USE_CVFPU
+   wire        cvfpu_in_ready;
+   wire [63:0] cvfpu_result;
+   wire [ 4:0] cvfpu_fflags;
+   wire [ 7:0] cvfpu_tag_out;
+   wire        cvfpu_out_valid;
+   wire        cvfpu_busy;
+
+   smolrv64_cvfpu cvfpu_inst(
+      .clock     ( clock ),
+      .reset     ( reset ),
+      .in_valid  ( 1'b0 ),
+      .in_ready  ( cvfpu_in_ready ),
+      .operands  ( '0 ),
+      .rnd_mode  ( 3'd0 ),
+      .op        ( 4'd0 ),
+      .op_mod    ( 1'b0 ),
+      .src_fmt   ( 3'd0 ),
+      .dst_fmt   ( 3'd0 ),
+      .int_fmt   ( 2'd0 ),
+      .tag_in    ( 8'd0 ),
+      .result    ( cvfpu_result ),
+      .fflags    ( cvfpu_fflags ),
+      .tag_out   ( cvfpu_tag_out ),
+      .out_valid ( cvfpu_out_valid ),
+      .out_ready ( 1'b1 ),
+      .flush     ( 1'b0 ),
+      .busy      ( cvfpu_busy )
+   );
+`endif
+
 
    reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
 

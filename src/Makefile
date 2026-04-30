@@ -20,6 +20,7 @@ VPI_CFLAGS = $(shell iverilog-vpi --cflags)
 VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
 
 SRCS=smolrv64.v
+CVFPU_SRCS=smolrv64_cvfpu.sv
 
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)
@@ -106,6 +107,19 @@ smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
 
 lint:
 	verilator  -Wall --cc --top-module smolrv64 $(SRCS)
+
+cvfpu-lint: $(CVFPU_SRCS) cvfpu_sources.f Makefile
+	verilator -sv --lint-only -Wno-fatal \
+		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+		--top-module smolrv64_cvfpu \
+		-f cvfpu_sources.f $(CVFPU_SRCS)
+
+smolrv64-cvfpu-lint: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f Makefile
+	verilator -sv --lint-only -Wno-fatal -DUSE_CVFPU \
+		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
+		--top-module smolrv64 \
+		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS)
 
 %.even: %.bin
 	./evenodd.py $^ 0 > $@
