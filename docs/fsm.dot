@@ -1,0 +1,166 @@
+digraph smolrv64_fsm {
+  rankdir=LR;
+  graph [fontname="Helvetica", bgcolor="white", splines=spline, nodesep=0.35, ranksep=0.55];
+  node  [fontname="Helvetica", shape=box, style="rounded,filled", fontsize=10];
+  edge  [fontname="Helvetica", fontsize=8, color="#444444"];
+
+  // ── Color groups ─────────────────────────────────────────
+  // fetch:   blue
+  // exec:    grey
+  // fp:      amber
+  // load:    green
+  // store:   yellow
+  // ptw:     purple
+  // trap:    red
+
+  S_FETCH1               [fillcolor="#cfe2ff"];
+  S_FETCH1B              [fillcolor="#cfe2ff"];
+  S_FETCH2               [fillcolor="#cfe2ff"];
+  S_FETCH2_HALF          [fillcolor="#cfe2ff"];
+  S_RF                   [fillcolor="#cfe2ff"];
+  S_RF2                  [fillcolor="#cfe2ff"];
+  S_RF3                  [fillcolor="#cfe2ff"];
+  S_DRAM_FETCH_WAIT      [fillcolor="#cfe2ff"];
+  S_DRAM_FETCH_HALF_WAIT [fillcolor="#cfe2ff"];
+
+  S_EXECUTE              [fillcolor="#e2e3e5"];
+  S_EXECUTE2             [fillcolor="#e2e3e5"];
+  S_HANDLE_CSR           [fillcolor="#e2e3e5"];
+  S_MUL_RUNNING          [fillcolor="#e2e3e5"];
+  S_DIV_RUNNING          [fillcolor="#e2e3e5"];
+
+  S_CVFPU_ISSUE          [fillcolor="#ffe9b3"];
+  S_CVFPU_WAIT           [fillcolor="#ffe9b3"];
+  S_CVFPU_FMA_RF2        [fillcolor="#ffe9b3"];
+  S_CVFPU_FMA_RF3        [fillcolor="#ffe9b3"];
+
+  S_LOAD_LATCH           [fillcolor="#d1fae5"];
+  S_LOAD_ALIGN           [fillcolor="#d1fae5"];
+  S_DRAM_LOAD_WAIT       [fillcolor="#d1fae5"];
+  S_DRAM_LOAD2_WAIT      [fillcolor="#d1fae5"];
+  S_MMIO_READ            [fillcolor="#d1fae5"];
+  S_MMIO_ALIGN           [fillcolor="#d1fae5"];
+  S_AMO                  [fillcolor="#d1fae5"];
+
+  S_STORE                [fillcolor="#fde68a"];
+  S_STORE_COMMIT         [fillcolor="#fde68a"];
+  S_STORE_BRAM_WRITE     [fillcolor="#fde68a"];
+  S_DRAM_STORE_WAIT      [fillcolor="#fde68a"];
+  S_DRAM_STORE2          [fillcolor="#fde68a"];
+  S_DRAM_STORE_RESP_ARM  [fillcolor="#fde68a"];
+  S_DRAM_STORE_RESP_WAIT [fillcolor="#fde68a"];
+
+  S_PTW_LAUNCH           [fillcolor="#ede9fe"];
+  S_PTW_READ             [fillcolor="#ede9fe"];
+  S_PTW_PROCESS          [fillcolor="#ede9fe"];
+  S_DRAM_PTW_WAIT        [fillcolor="#ede9fe"];
+
+  S_EXCEPTION            [fillcolor="#fecaca"];
+
+  start [shape=circle, label="", width=0.2, fillcolor=black, style=filled];
+  start -> S_FETCH1;
+
+  // ── Fetch / decode / regfile ────────────────────────────
+  S_FETCH1  -> S_FETCH1B               [label="BRAM"];
+  S_FETCH1  -> S_DRAM_FETCH_WAIT       [label="DRAM"];
+  S_FETCH1  -> S_PTW_LAUNCH            [label="VM, TLB miss"];
+  S_FETCH1  -> S_EXCEPTION             [label="irq / fault"];
+  S_FETCH1B -> S_FETCH2;
+  S_FETCH2  -> S_RF;
+  S_DRAM_FETCH_WAIT      -> S_FETCH2;
+  S_DRAM_FETCH_WAIT      -> S_FETCH1B;
+  S_DRAM_FETCH_WAIT      -> S_PTW_LAUNCH    [label="cross-page"];
+  S_DRAM_FETCH_WAIT      -> S_EXCEPTION     [label="bus / xlat fault"];
+  S_DRAM_FETCH_HALF_WAIT -> S_FETCH2_HALF;
+  S_FETCH2_HALF          -> S_RF2;
+  S_RF  -> S_RF2;
+  S_RF  -> S_DRAM_FETCH_HALF_WAIT      [label="cross-burst 2nd half"];
+  S_RF2 -> S_RF3;
+  S_RF3 -> S_EXECUTE;
+
+  // ── Execute fan-out ─────────────────────────────────────
+  S_EXECUTE -> S_EXECUTE2              [label="ALU"];
+  S_EXECUTE -> S_FETCH1                [label="branch / jump"];
+  S_EXECUTE -> S_HANDLE_CSR            [label="CSR / xRET"];
+  S_EXECUTE -> S_MUL_RUNNING           [label="MUL*"];
+  S_EXECUTE -> S_DIV_RUNNING           [label="DIV* / REM*"];
+  S_EXECUTE -> S_LOAD_LATCH            [label="load / AMO read"];
+  S_EXECUTE -> S_STORE                 [label="store / AMO write"];
+  S_EXECUTE -> S_CVFPU_ISSUE           [label="FP non-FMA"];
+  S_EXECUTE -> S_CVFPU_FMA_RF2         [label="FMA (need rs3)"];
+  S_EXECUTE -> S_EXCEPTION             [label="illegal / ecall / ebreak"];
+  S_EXECUTE2    -> S_FETCH1;
+  S_MUL_RUNNING -> S_FETCH1;
+  S_DIV_RUNNING -> S_FETCH1;
+  S_HANDLE_CSR  -> S_EXECUTE2;
+  S_HANDLE_CSR  -> S_EXCEPTION;
+
+  // ── FP via CVFPU ────────────────────────────────────────
+  S_CVFPU_FMA_RF2 -> S_CVFPU_FMA_RF3;
+  S_CVFPU_FMA_RF3 -> S_CVFPU_ISSUE;
+  S_CVFPU_ISSUE   -> S_CVFPU_WAIT      [label="accepted"];
+  S_CVFPU_ISSUE   -> S_FETCH1          [label="single-cycle"];
+  S_CVFPU_WAIT    -> S_FETCH1;
+
+  // ── Load path ───────────────────────────────────────────
+  S_LOAD_LATCH       -> S_LOAD_ALIGN;
+  S_LOAD_ALIGN       -> S_FETCH1            [label="BRAM hit"];
+  S_LOAD_ALIGN       -> S_DRAM_LOAD_WAIT    [label="DRAM"];
+  S_LOAD_ALIGN       -> S_MMIO_READ         [label="MMIO"];
+  S_LOAD_ALIGN       -> S_AMO               [label="AMO read done"];
+  S_LOAD_ALIGN       -> S_EXCEPTION         [label="misalign / fault"];
+  S_DRAM_LOAD_WAIT   -> S_DRAM_LOAD2_WAIT;
+  S_DRAM_LOAD2_WAIT  -> S_FETCH1;
+  S_DRAM_LOAD2_WAIT  -> S_AMO;
+  S_MMIO_READ        -> S_MMIO_ALIGN;
+  S_MMIO_ALIGN       -> S_FETCH1;
+  S_MMIO_ALIGN       -> S_AMO;
+  S_AMO              -> S_STORE;
+
+  // ── Store path ──────────────────────────────────────────
+  S_STORE                -> S_STORE_COMMIT;
+  S_STORE                -> S_FETCH1                  [label="trivial"];
+  S_STORE_COMMIT         -> S_STORE_BRAM_WRITE        [label="BRAM r-m-w"];
+  S_STORE_COMMIT         -> S_FETCH1                  [label="DRAM/MMIO issued"];
+  S_STORE_COMMIT         -> S_EXCEPTION               [label="misalign / fault"];
+  S_STORE_BRAM_WRITE     -> S_FETCH1;
+  S_DRAM_STORE_WAIT      -> S_DRAM_STORE_RESP_ARM;
+  S_DRAM_STORE2          -> S_DRAM_STORE_RESP_ARM;
+  S_DRAM_STORE_RESP_ARM  -> S_DRAM_STORE_RESP_WAIT;
+  S_DRAM_STORE_RESP_WAIT -> S_DRAM_STORE2             [label="2nd burst"];
+  S_DRAM_STORE_RESP_WAIT -> S_FETCH1                  [label="drained"];
+
+  // ── Page-table walker ───────────────────────────────────
+  S_PTW_LAUNCH    -> S_PTW_READ;
+  S_PTW_LAUNCH    -> S_DRAM_PTW_WAIT;
+  S_DRAM_PTW_WAIT -> S_PTW_READ;
+  S_DRAM_PTW_WAIT -> S_FETCH1;
+  S_DRAM_PTW_WAIT -> S_EXCEPTION;
+  S_PTW_READ      -> S_PTW_PROCESS;
+  S_PTW_PROCESS   -> S_DRAM_FETCH_WAIT      [label="leaf, ifetch DRAM"];
+  S_PTW_PROCESS   -> S_DRAM_FETCH_HALF_WAIT [label="leaf, ifetch 2nd half"];
+  S_PTW_PROCESS   -> S_FETCH1B              [label="leaf, ifetch BRAM"];
+  S_PTW_PROCESS   -> S_PTW_READ             [label="descend non-leaf"];
+  S_PTW_PROCESS   -> S_LOAD_ALIGN           [label="leaf, load resume"];
+  S_PTW_PROCESS   -> S_STORE_COMMIT         [label="leaf, store resume"];
+  S_PTW_PROCESS   -> S_EXCEPTION            [label="invalid / perm"];
+
+  // ── Exception sink ──────────────────────────────────────
+  S_EXCEPTION -> S_FETCH1;
+
+  // Legend
+  subgraph cluster_legend {
+    label = "Legend";
+    fontsize = 10;
+    style = "rounded";
+    color = "#888888";
+    L_fetch [label="fetch / decode", fillcolor="#cfe2ff"];
+    L_exec  [label="execute",        fillcolor="#e2e3e5"];
+    L_fp    [label="CVFPU",          fillcolor="#ffe9b3"];
+    L_load  [label="load / MMIO",    fillcolor="#d1fae5"];
+    L_store [label="store",          fillcolor="#fde68a"];
+    L_ptw   [label="page walk",      fillcolor="#ede9fe"];
+    L_trap  [label="trap",           fillcolor="#fecaca"];
+    L_fetch -> L_exec -> L_fp -> L_load -> L_store -> L_ptw -> L_trap [style=invis];
+  }
+}
