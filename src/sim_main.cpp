@@ -310,7 +310,9 @@ int main(int argc, char** argv) {
     Vsmolrv64_tb* top = new Vsmolrv64_tb;
     while (!Verilated::gotFinish()) {
         top->clock = 0; top->eval();
+        Verilated::timeInc(1);
         top->clock = 1; top->eval();
+        Verilated::timeInc(1);
     }
     delete top;
 

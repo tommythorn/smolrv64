@@ -21,6 +21,7 @@ VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
 
 SRCS=smolrv64.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
+CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)
@@ -105,6 +106,18 @@ smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
 	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(TESTER_VDEFS) -o $@ -DRISCV_TESTS $(SRCS)
 
+smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile
+	verilator -sv --cc --exe --build -j 0 --timing \
+		--top-module smolrv64_tb \
+		-DUSE_CVFPU $(TESTER_VDEFS) -DRISCV_TESTS \
+		-Wno-fatal \
+		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_cvfpu_tester -o $@ \
+		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
+	cp obj_dir_cvfpu_tester/$@ $@
+
 lint:
 	verilator  -Wall --cc --top-module smolrv64 $(SRCS)
 
@@ -120,6 +133,14 @@ smolrv64-cvfpu-lint: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f Makefile
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
 		--top-module smolrv64 \
 		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS)
+
+cvfpu-smoke: $(CVFPU_SRCS) $(CVFPU_SMOKE_TB) cvfpu_sources.f Makefile
+	verilator -sv --binary --timing -Wno-fatal \
+		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+		--top-module cvfpu_smoke_tb \
+		-Mdir obj_dir_cvfpu_smoke \
+		-f cvfpu_sources.f $(CVFPU_SRCS) $(CVFPU_SMOKE_TB)
+	./obj_dir_cvfpu_smoke/Vcvfpu_smoke_tb
 
 %.even: %.bin
 	./evenodd.py $^ 0 > $@

@@ -3290,7 +3290,20 @@ module smolrv64(input wire        clock,
         `S_CVFPU_ISSUE: begin
            if (cvfpu_in_ready) begin
               cvfpu_in_valid <= 1'b0;
-              state <= `S_CVFPU_WAIT;
+              if (cvfpu_out_valid) begin
+                 if (cvfpu_write_fp) begin
+                    write_back_fp_valid    = 1;
+                    write_back_fp_register = cvfpu_tag_out[4:0];
+                    write_back_fp_value    <= cvfpu_result;
+                 end else begin
+                    write_back_register = cvfpu_tag_out[4:0];
+                    write_back_value    <= cvfpu_result;
+                 end
+                 fflags = fflags | cvfpu_fflags;
+                 state  <= `S_FETCH1;
+              end else begin
+                 state <= `S_CVFPU_WAIT;
+              end
            end
         end
 
