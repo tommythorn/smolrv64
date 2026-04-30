@@ -618,6 +618,12 @@ module smolrv64(input wire        clock,
 `ifndef RESET_PC
 `define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
 `endif
+`ifndef SRAM_EVENHEX
+`define SRAM_EVENHEX    "mem.even"
+`endif
+`ifndef SRAM_ODDHEX
+`define SRAM_ODDHEX     "mem.odd"
+`endif
 
    // To enable penalty-free unaligned access, memory is split into
    // even and odd 64b word addresses and striped across them.  Any
@@ -668,8 +674,8 @@ module smolrv64(input wire        clock,
                 sram_evenhex, sram_oddhex, mem0[0], mem1[0]);
 `endif
 `else
-      $readmemh("mem.even", mem0, 0, `MEM_SIZE/16-1);
-      $readmemh("mem.odd",  mem1, 0, `MEM_SIZE/16-1);
+      $readmemh(`SRAM_EVENHEX, mem0, 0, `MEM_SIZE/16-1);
+      $readmemh(`SRAM_ODDHEX,  mem1, 0, `MEM_SIZE/16-1);
 `endif
    end
 

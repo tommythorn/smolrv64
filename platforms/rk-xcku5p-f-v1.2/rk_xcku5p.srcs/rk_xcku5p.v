@@ -8,6 +8,10 @@ module rk_xcku5p(
     input  wire       rxd,
     output wire [3:0] led,
     output wire       txd,
+    output wire       sd_clk,
+    output wire       sd_cmd,
+    input  wire       sd_cd,
+    inout  wire [3:0] sd_d,
 
     // DDR4 physical ports
     output wire        c0_ddr4_act_n,
@@ -171,18 +175,114 @@ module rk_xcku5p(
    wire [7:0] uart_tx_data;
    wire       rx_valid;
    wire [7:0] rx_data;
+   wire [19:0] mmio_address;
    wire       mmio_read;
+   wire       mmio_write;
+   wire [31:0] mmio_writedata;
+   wire [ 3:0] mmio_byteenable;
+   wire        mmio_readdatavalid;
+   wire [31:0] mmio_readdata;
+
+   wire        spi_sd_clk;
+   wire        spi_sd_mosi;
+   wire        spi_sd_miso;
+   wire [ 3:0] sd_d_i;
+   wire [ 3:0] sd_d_o;
+   wire [ 3:0] sd_d_t;
+   wire [ 7:0] sd_gpio;
+   reg         sd_cd_meta = 1'b1;
+   reg         sd_cd_sync = 1'b1;
+
+   assign sd_clk  = spi_sd_clk;
+   assign sd_cmd  = spi_sd_mosi;
+   assign spi_sd_miso = sd_d_i[0];
+   assign sd_d_o = {sd_gpio[0], 1'b1, 1'b1, 1'b1};
+   assign sd_d_t = 4'b0001;
+
+   genvar sd_i;
+   generate
+      for (sd_i = 0; sd_i < 4; sd_i = sd_i + 1) begin : sd_d_iobufs
+         IOBUF sd_d_iobuf(
+            .I  (sd_d_o[sd_i]),
+            .O  (sd_d_i[sd_i]),
+            .T  (sd_d_t[sd_i]),
+            .IO (sd_d[sd_i])
+         );
+      end
+   endgenerate
+
+   wire        sd_spi_sel    = mmio_address[19:8] == 12'h010;
+   wire        sd_gpio_sel   = mmio_address[19:8] == 12'h011;
+   wire        sd_cd_gpio_sel = mmio_address[19:8] == 12'h012;
+   wire [31:0] sd_spi_readdata;
+   wire [31:0] sd_gpio_readdata;
+   wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
+   reg         mmio_read_d1 = 0;
+   reg         mmio_read_d2 = 0;
+   reg  [31:0] mmio_readdata_q = 32'd0;
+
+   always @(posedge ui_clk) begin
+      if (cpu_reset) begin
+         sd_cd_meta <= 1'b1;
+         sd_cd_sync <= 1'b1;
+         mmio_read_d1 <= 1'b0;
+         mmio_read_d2 <= 1'b0;
+         mmio_readdata_q <= 32'd0;
+      end else begin
+         sd_cd_meta <= sd_cd;
+         sd_cd_sync <= sd_cd_meta;
+         mmio_read_d1 <= mmio_read;
+         mmio_read_d2 <= mmio_read_d1;
+         if (mmio_read) begin
+            if (sd_spi_sel)
+               mmio_readdata_q <= sd_spi_readdata;
+            else if (sd_gpio_sel)
+               mmio_readdata_q <= sd_gpio_readdata;
+            else if (sd_cd_gpio_sel)
+               mmio_readdata_q <= sd_cd_gpio_readdata;
+            else
+               mmio_readdata_q <= 32'd0;
+         end
+      end
+   end
+
+   assign mmio_readdatavalid = mmio_read_d2;
+   assign mmio_readdata = mmio_readdata_q;
+
+   sd_spi_oc_tiny sd_spi_inst(
+      .clock        (ui_clk),
+      .reset        (cpu_reset),
+      .address      (mmio_address[7:0]),
+      .read_data    (sd_spi_readdata),
+      .read         (mmio_read && sd_spi_sel),
+      .write        (mmio_write && sd_spi_sel),
+      .write_data   (mmio_writedata),
+      .byteenable   (mmio_byteenable),
+      .spi_clk      (spi_sd_clk),
+      .spi_mosi     (spi_sd_mosi),
+      .spi_miso     (spi_sd_miso)
+   );
+
+   sd_gpio_dat sd_gpio_inst(
+      .clock        (ui_clk),
+      .reset        (cpu_reset),
+      .write        (mmio_write && sd_gpio_sel),
+      .write_data   (mmio_writedata),
+      .byteenable   (mmio_byteenable),
+      .gpio_out     (sd_gpio),
+      .read_data    (sd_gpio_readdata)
+   );
 
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
       .reset                (cpu_reset),
-      .mmio_address         (),
+      .mmio_address         (mmio_address),
       .mmio_read            (mmio_read),
-      .mmio_write           (),
-      .mmio_writedata       (),
-      .mmio_byteenable      (),
-      .mmio_readdatavalid   (mmio_read),
-      .mmio_readdata        (32'd0),
+      .mmio_write           (mmio_write),
+      .mmio_writedata       (mmio_writedata),
+      .mmio_byteenable      (mmio_byteenable),
+      .mmio_readdatavalid   (mmio_readdatavalid),
+      .mmio_readdata        (mmio_readdata),
 
       .ext_irq              (63'd0),
 
@@ -244,4 +344,187 @@ module rk_xcku5p(
      (.clk(ui_clk), .rst_n(~ui_rst),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd));
+endmodule
+
+`ifndef SYNTHESIS
+module IOBUF(input wire I,
+             output wire O,
+             input wire T,
+             inout wire IO);
+   assign IO = T ? 1'bz : I;
+   assign O = IO;
+endmodule
+`endif
+
+module sd_gpio_dat(input  wire        clock,
+                   input  wire        reset,
+                   input  wire        write,
+                   input  wire [31:0] write_data,
+                   input  wire [ 3:0] byteenable,
+                   output reg  [ 7:0] gpio_out = 8'h01,
+                   output wire [31:0] read_data);
+   assign read_data = {24'd0, gpio_out};
+
+   always @(posedge clock) begin
+      if (reset)
+         gpio_out <= 8'h01;
+      else if (write && byteenable[0])
+         gpio_out <= write_data[7:0];
+   end
+endmodule
+
+module sd_spi_oc_tiny(input  wire        clock,
+                      input  wire        reset,
+                      input  wire [ 7:0] address,
+                      output reg  [31:0] read_data,
+                      input  wire        read,
+                      input  wire        write,
+                      input  wire [31:0] write_data,
+                      input  wire [ 3:0] byteenable,
+                      output reg         spi_clk = 1'b0,
+                      output reg         spi_mosi = 1'b1,
+                      input  wire        spi_miso);
+   localparam [7:0] REG_RXDATA  = 8'h00;
+   localparam [7:0] REG_TXDATA  = 8'h04;
+   localparam [7:0] REG_STATUS  = 8'h08;
+   localparam [7:0] REG_CONTROL = 8'h0c;
+   localparam [7:0] REG_BAUD    = 8'h10;
+
+   reg [7:0] control = 8'd0;
+   reg [7:0] baud = 8'd255;
+   reg [7:0] baud_count = 8'd0;
+   reg [7:0] tx_shift = 8'hff;
+   reg [7:0] rx_shift = 8'd0;
+   reg [7:0] pending_tx = 8'hff;
+   reg [7:0] txr_data = 8'd0;
+   reg [7:0] rx_data = 8'd0;
+   reg [2:0] bit_index = 3'd7;
+   reg       busy = 1'b0;
+   reg       phase = 1'b0;
+   reg       pending_valid = 1'b0;
+   reg       txr_valid = 1'b0;
+   reg       rx_valid = 1'b0;
+
+   wire cpol = control[1];
+   wire cpha = control[0];
+   wire [7:0] reg_addr = address[7:0] & 8'hfc;
+   wire       txdata_write = write && byteenable[0] && reg_addr == REG_TXDATA;
+   wire       completing = busy && baud_count == 0 && phase && bit_index == 0;
+   wire [7:0] completed_rx = cpha ? {rx_shift[7:1], spi_miso} : rx_shift;
+
+   task start_transfer;
+      input [7:0] value;
+      begin
+         busy <= 1'b1;
+         phase <= 1'b0;
+         baud_count <= baud;
+         bit_index <= 3'd7;
+         tx_shift <= value;
+         rx_shift <= 8'd0;
+         spi_clk <= cpol;
+         spi_mosi <= value[7];
+      end
+   endtask
+
+   always @* begin
+      case (reg_addr)
+        REG_RXDATA:  read_data = {24'd0, rx_data};
+        REG_TXDATA:  read_data = {24'd0, txr_data};
+        REG_STATUS:  read_data = {30'd0, txr_valid, !busy && !pending_valid && !txr_valid};
+        REG_CONTROL: read_data = {24'd0, control};
+        REG_BAUD:    read_data = {24'd0, baud};
+        default:     read_data = 32'd0;
+      endcase
+   end
+
+   always @(posedge clock) begin
+      if (reset) begin
+         control <= 8'd0;
+         baud <= 8'd255;
+         baud_count <= 8'd0;
+         tx_shift <= 8'hff;
+         rx_shift <= 8'd0;
+         pending_tx <= 8'hff;
+         txr_data <= 8'd0;
+         rx_data <= 8'd0;
+         bit_index <= 3'd7;
+         busy <= 1'b0;
+         phase <= 1'b0;
+         pending_valid <= 1'b0;
+         txr_valid <= 1'b0;
+         rx_valid <= 1'b0;
+         spi_clk <= 1'b0;
+         spi_mosi <= 1'b1;
+      end else begin
+         if (write && byteenable[0]) begin
+            case (reg_addr)
+              REG_TXDATA: begin
+                 if (rx_valid && !busy && !pending_valid) begin
+                    txr_data <= rx_data;
+                    txr_valid <= 1'b1;
+                    rx_valid <= 1'b0;
+                 end
+                 if (busy && !completing)
+                    {pending_valid, pending_tx} <= {1'b1, write_data[7:0]};
+                 else if (!busy)
+                    start_transfer(write_data[7:0]);
+              end
+              REG_STATUS: begin
+                 txr_valid <= txr_valid & write_data[1];
+                 rx_valid <= rx_valid & write_data[0];
+              end
+              REG_CONTROL: begin
+                 control <= write_data[7:0];
+                 if (!busy)
+                    spi_clk <= write_data[1];
+              end
+              REG_BAUD: baud <= write_data[7:0];
+              default: begin
+              end
+            endcase
+         end
+
+         if (read && reg_addr == REG_TXDATA && txr_valid)
+            txr_valid <= 1'b0;
+         if (read && reg_addr == REG_RXDATA && rx_valid)
+            rx_valid <= 1'b0;
+
+         if (busy) begin
+            if (baud_count != 0) begin
+               baud_count <= baud_count - 1'b1;
+            end else begin
+               baud_count <= baud;
+               if (!phase) begin
+                  spi_clk <= ~cpol;
+                  phase <= 1'b1;
+                  if (!cpha)
+                     rx_shift[bit_index] <= spi_miso;
+                  else
+                     spi_mosi <= tx_shift[bit_index];
+               end else begin
+                  spi_clk <= cpol;
+                  phase <= 1'b0;
+                  if (cpha)
+                     rx_shift[bit_index] <= spi_miso;
+                  if (bit_index == 0) begin
+                     busy <= 1'b0;
+                     spi_mosi <= 1'b1;
+                     if (pending_valid || txdata_write) begin
+                        txr_data <= completed_rx;
+                        txr_valid <= 1'b1;
+                        pending_valid <= 1'b0;
+                        start_transfer(pending_valid ? pending_tx : write_data[7:0]);
+                     end else begin
+                        rx_data <= completed_rx;
+                        rx_valid <= 1'b1;
+                     end
+                  end else begin
+                     bit_index <= bit_index - 1'b1;
+                     spi_mosi <= tx_shift[bit_index - 1'b1];
+                  end
+               end
+            end
+         end
+      end
+   end
 endmodule

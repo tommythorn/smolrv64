@@ -19,8 +19,18 @@ create_clock -period 5.0 [get_ports "sys_clk_p"]
 # set_property PACKAGE_PIN V6) [ get_ports "gt_clk156p25_n" ]
 # set_property PACKAGE_PIN V7 [ get_ports "gt_clk156p25_p" ]
 
-# designs/ddr4_0_ex/imports/example_design.xdc
-#set_property PACKAGE_PIN Y15 [get_ports sd_clk]
+# SD card in SPI mode.  sd_cmd is MOSI, sd_d[0] is MISO, sd_d[3] is CS#,
+# and sd_cd is active-low card detect.
+set_property PACKAGE_PIN Y15  [get_ports "sd_clk"]
+set_property PACKAGE_PIN AA15 [get_ports "sd_cmd"]
+set_property PACKAGE_PIN AB14 [get_ports "sd_d[0]"]
+set_property PACKAGE_PIN AA14 [get_ports "sd_d[1]"]
+set_property PACKAGE_PIN AB16 [get_ports "sd_d[2]"]
+set_property PACKAGE_PIN AB15 [get_ports "sd_d[3]"]
+set_property PACKAGE_PIN Y16  [get_ports "sd_cd"]
+set_property IOSTANDARD LVCMOS33 [get_ports {sd_clk sd_cmd sd_cd sd_d[*]}]
+set_property DRIVE 8 [get_ports {sd_clk sd_cmd sd_d[*]}]
+set_property PULLUP true [get_ports {sd_cmd sd_cd sd_d[*]}]
 
 # From schematics
 #set_property PACKAGE_PIN AB6 [ get_ports "pcie_clk_n" ]

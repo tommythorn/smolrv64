@@ -10,7 +10,8 @@
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
-//   S                - probe SD card over SPI
+//   S [sector]       - probe SD card, or dump 512-byte sector in hex
+//   SL<sector> <count> <addr> - read SD sectors into memory
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   ?                - help
 
@@ -52,6 +53,8 @@ typedef unsigned long      uint64_t;
 
 #define SD_SPI_READY    0x01
 
+static uint8_t sd_sector_buf[512];
+
 static void uart_init(volatile uint8_t *base, int clk_freq, int baud)
 {
     int div = clk_freq / (16 * baud);
@@ -89,28 +92,31 @@ static void puts_(const char *s)
         putc_(*s++);
 }
 
-static void puthex8(uint8_t v)
+static void puthex4(uint32_t v)
 {
-    putc_("0123456789abcdef"[v >> 4]);
-    putc_("0123456789abcdef"[v & 0xf]);
+    v &= 0xf;
+    putc_(v < 10 ? '0' + v : 'a' + (v - 10));
 }
 
-static void puthex16(uint16_t v)
+static void puthex8(uint32_t v)
 {
-    puthex8(v >> 8);
-    puthex8(v & 0xff);
+    v &= 0xff;
+    puthex4(v >> 4);
+    puthex4(v);
 }
 
 static void puthex32(uint32_t v)
 {
-    puthex16(v >> 16);
-    puthex16(v & 0xffff);
+    puthex8(v >> 24);
+    puthex8(v >> 16);
+    puthex8(v >> 8);
+    puthex8(v);
 }
 
 static void puthex64(uint64_t v)
 {
-    puthex32(v >> 32);
-    puthex32(v & 0xffffffff);
+    puthex32((uint32_t)(v >> 32));
+    puthex32((uint32_t)v);
 }
 
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
@@ -176,6 +182,31 @@ static void hexdump(uint64_t addr, int len)
         putc_('|');
         for (j = 0; j < row; j++) {
             uint8_t b = ((volatile uint8_t *)(addr + i))[j];
+            putc_(b >= 0x20 && b < 0x7f ? b : '.');
+        }
+        putc_('|');
+        putc_('\n');
+    }
+}
+
+static void hexdump_bytes(const uint8_t *data, uint64_t base, int len)
+{
+    int i;
+    for (i = 0; i < len; i += 16) {
+        int j, row = len - i < 16 ? len - i : 16;
+        puthex64(base + i);
+        puts_(":  ");
+        for (j = 0; j < 16; j++) {
+            if (j < row)
+                puthex8(data[i + j]);
+            else
+                puts_("  ");
+            putc_(j == 7 ? '-' : ' ');
+        }
+        putc_(' ');
+        putc_('|');
+        for (j = 0; j < row; j++) {
+            uint8_t b = data[i + j];
             putc_(b >= 0x20 && b < 0x7f ? b : '.');
         }
         putc_('|');
@@ -420,12 +451,12 @@ static int sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc,
     return rc;
 }
 
-static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
+static int sd_read_data(uint8_t cmd, uint32_t arg, volatile uint8_t *buf, int len, int *ok)
 {
     uint8_t r1 = 0xff;
 
     sd_cs_assert(1);
-    if (sd_cmd_raw(cmd, 0, 0x01, &r1, 1, ok) < 0 || r1 != 0) {
+    if (sd_cmd_raw(cmd, arg, 0x01, &r1, 1, ok) < 0 || r1 != 0) {
         sd_cs_assert(0);
         (void)sd_spi_xfer(0xff, ok);
         return r1;
@@ -434,7 +465,7 @@ static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
     for (uint32_t tmo = 100000; tmo && *ok; tmo--) {
         uint8_t token = sd_spi_xfer(0xff, ok);
         if (token == 0xfe) {
-            for (int i = 0; i < 16; i++)
+            for (int i = 0; i < len; i++)
                 buf[i] = sd_spi_xfer(0xff, ok);
             (void)sd_spi_xfer(0xff, ok); /* crc */
             (void)sd_spi_xfer(0xff, ok);
@@ -449,6 +480,25 @@ static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
     sd_cs_assert(0);
     (void)sd_spi_xfer(0xff, ok);
     return -1;
+}
+
+static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
+{
+    return sd_read_data(cmd, 0, buf, 16, ok);
+}
+
+static int sd_sector_arg(uint64_t sector, int high_capacity, uint32_t *arg)
+{
+    if (high_capacity) {
+        if (sector > 0xffffffff)
+            return -1;
+        *arg = (uint32_t)sector;
+    } else {
+        if (sector > 0x7fffff)
+            return -1;
+        *arg = (uint32_t)(sector << 9);
+    }
+    return 0;
 }
 
 static void print_sd_r1(const char *name, uint8_t r1)
@@ -504,42 +554,53 @@ static void print_sd_csd_capacity(const uint8_t *csd)
     }
 }
 
-static void sd_probe(void)
+static int sd_init_card(int verbose, int *high_capacity)
 {
     int ok = 1;
     uint8_t r[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
-    uint8_t csd[16];
     uint32_t cd_raw = SD_CD_GPIO_BASE[0] & 1;
     int initialized = 0;
     int v2_card = 0;
+    uint32_t ocr = 0;
 
-    puts_("sd_cd raw=");
-    puthex8(cd_raw);
-    puts_(cd_raw ? " present=no (active-low)\n" : " present=yes (active-low)\n");
+    if (high_capacity)
+        *high_capacity = 0;
+
+    if (verbose) {
+        puts_("sd_cd raw=");
+        puthex8(cd_raw);
+        puts_(cd_raw ? " present=no (active-low)\n" : " present=yes (active-low)\n");
+    }
 
     sd_spi_init(255); /* about 650 kHz from 333 MHz UI clock */
     sd_cs_assert(0);
     sd_idle_clocks(10, &ok);
 
     if (!ok) {
-        puts_("SPI timeout during idle clocks\n");
-        return;
+        if (verbose)
+            puts_("SPI timeout during idle clocks\n");
+        return -1;
     }
 
     if (sd_cmd(0, 0, 0x95, r, 1, &ok) < 0) {
-        puts_("CMD0: no response\n");
-        return;
+        if (verbose)
+            puts_("CMD0: no response\n");
+        return -1;
     }
-    print_sd_r1("CMD0", r[0]);
+    if (verbose)
+        print_sd_r1("CMD0", r[0]);
 
     if (sd_cmd(8, 0x000001aa, 0x87, r, 5, &ok) < 0) {
-        puts_("CMD8: no response\n");
+        if (verbose)
+            puts_("CMD8: no response\n");
     } else {
-        print_sd_r1("CMD8", r[0]);
-        puts_("CMD8 echo=");
-        puthex8(r[3]);
-        puthex8(r[4]);
-        putc_('\n');
+        if (verbose) {
+            print_sd_r1("CMD8", r[0]);
+            puts_("CMD8 echo=");
+            puthex8(r[3]);
+            puthex8(r[4]);
+            putc_('\n');
+        }
         v2_card = !(r[0] & 0x04) && r[3] == 0x01 && r[4] == 0xaa;
     }
 
@@ -556,29 +617,50 @@ static void sd_probe(void)
         }
         if (r[0] == 0) {
             initialized = 1;
-            puts_("ACMD41 ready after ");
-            puthex32(i + 1);
-            puts_(" tries\n");
+            if (verbose) {
+                puts_("ACMD41 ready after ");
+                puthex32(i + 1);
+                puts_(" tries\n");
+            }
             break;
         }
     }
-    if (!initialized)
+    if (!initialized && verbose)
         print_sd_r1("ACMD41 last", r[0]);
 
     if (sd_cmd(58, 0, 0x01, r, 5, &ok) == 0) {
-        uint32_t ocr = ((uint32_t)r[1] << 24) |
-                       ((uint32_t)r[2] << 16) |
-                       ((uint32_t)r[3] << 8) |
-                       r[4];
-        print_sd_r1("CMD58", r[0]);
-        puts_("OCR=");
-        puthex32(ocr);
-        puts_((ocr & 0x40000000) ? " CCS=1\n" : " CCS=0\n");
+        ocr = ((uint32_t)r[1] << 24) |
+              ((uint32_t)r[2] << 16) |
+              ((uint32_t)r[3] << 8) |
+              r[4];
+        if (high_capacity)
+            *high_capacity = (ocr & 0x40000000) != 0;
+        if (verbose) {
+            print_sd_r1("CMD58", r[0]);
+            puts_("OCR=");
+            puthex32(ocr);
+            puts_((ocr & 0x40000000) ? " CCS=1\n" : " CCS=0\n");
+        }
     } else {
-        puts_("CMD58: no response\n");
+        if (verbose)
+            puts_("CMD58: no response\n");
     }
 
-    if (initialized) {
+    if (!ok) {
+        if (verbose)
+            puts_("SPI timeout\n");
+        return -1;
+    }
+
+    return initialized ? 0 : -1;
+}
+
+static void sd_probe(void)
+{
+    int ok = 1;
+    uint8_t csd[16];
+
+    if (sd_init_card(1, 0) == 0) {
         sd_spi_init(12); /* about 12.8 MHz */
         if (sd_read_register(9, csd, &ok) == 0)
             print_sd_csd_capacity(csd);
@@ -588,6 +670,89 @@ static void sd_probe(void)
 
     if (!ok)
         puts_("SPI timeout\n");
+}
+
+static void sd_dump_sector(uint64_t sector)
+{
+    int ok = 1;
+    int high_capacity = 0;
+    uint32_t arg;
+    int rc;
+
+    if (sd_init_card(0, &high_capacity) < 0) {
+        puts_("SD init failed; run S for details\n");
+        return;
+    }
+
+    if (sd_sector_arg(sector, high_capacity, &arg) < 0) {
+        puts_("sector too large for card addressing mode\n");
+        return;
+    }
+
+    sd_spi_init(12); /* about 12.8 MHz */
+    rc = sd_read_data(17, arg, sd_sector_buf, sizeof(sd_sector_buf), &ok);
+    if (rc != 0 || !ok) {
+        puts_("CMD17/read failed");
+        if (!ok)
+            puts_(" (SPI timeout)");
+        putc_('\n');
+        return;
+    }
+
+    puts_("sector=");
+    puthex64(sector);
+    puts_(" arg=");
+    puthex32(arg);
+    puts_(high_capacity ? " SDHC/SDXC\n" : " SDSC\n");
+    hexdump_bytes(sd_sector_buf, sector << 9, sizeof(sd_sector_buf));
+}
+
+static void sd_load_sectors(uint64_t sector, uint64_t count, uint64_t addr)
+{
+    int ok = 1;
+    int high_capacity = 0;
+    volatile uint8_t *dst = (volatile uint8_t *)addr;
+
+    if (count == 0) {
+        puts_("count must be nonzero\n");
+        return;
+    }
+
+    if (sd_init_card(0, &high_capacity) < 0) {
+        puts_("SD init failed; run S for details\n");
+        return;
+    }
+
+    sd_spi_init(12); /* about 12.8 MHz */
+    for (uint64_t i = 0; i < count; i++) {
+        uint32_t arg;
+        int rc;
+
+        if (sd_sector_arg(sector + i, high_capacity, &arg) < 0) {
+            puts_("sector too large for card addressing mode\n");
+            return;
+        }
+
+        rc = sd_read_data(17, arg, dst + (i << 9), 512, &ok);
+        if (rc != 0 || !ok) {
+            puts_("CMD17/read failed at sector=");
+            puthex64(sector + i);
+            if (!ok)
+                puts_(" (SPI timeout)");
+            putc_('\n');
+            return;
+        }
+    }
+
+    puts_("loaded sectors=");
+    puthex64(sector);
+    puts_(" count=");
+    puthex64(count);
+    puts_(" addr=");
+    puthex64(addr);
+    puts_(" bytes=");
+    puthex64(count << 9);
+    putc_('\n');
 }
 
 typedef void (*fn_t)(void);
@@ -717,7 +882,30 @@ int main(void)
             puts_("ok\n");
 
         } else if (*p == 'S' || *p == 's') {
-            sd_probe();
+            uint64_t sector, count, load_addr;
+            if (p[1] == 'L' || p[1] == 'l') {
+                p += 2;
+                while (*p == ' ') p++;
+                p = parse_hex(p, &sector);
+                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
+                while (*p == ' ') p++;
+                p = parse_hex(p, &count);
+                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
+                while (*p == ' ') p++;
+                p = parse_hex(p, &load_addr);
+                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
+                sd_load_sectors(sector, count, load_addr);
+                continue;
+            }
+
+            p++;
+            while (*p == ' ') p++;
+            if (*p) {
+                if (!parse_hex(p, &sector)) { puts_("usage: S [sector]\n"); continue; }
+                sd_dump_sector(sector);
+            } else {
+                sd_probe();
+            }
 
         } else if (*p == 'X' || *p == 'x') {
             uint64_t a0 = 0, a1 = 0;
@@ -793,7 +981,8 @@ int main(void)
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
             puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
             puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
-            puts_("S                probe SD card over SPI\n");
+            puts_("S [sector]       probe SD card, or dump 512-byte sector\n");
+            puts_("SL<sec> <n> <addr> read n SD sectors into memory\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
             puts_("P                dump MIG latency stats; Pc clears them\n");
 
