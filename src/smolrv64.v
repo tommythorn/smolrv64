@@ -570,7 +570,9 @@ module smolrv64(input wire        clock,
 `define S_DRAM_STORE_RESP_ARM  30  // absorb one cycle so AXI busy flags see a new write
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
 `define S_STORE_BRAM_WRITE     32  // full-word writeback after BRAM store read/modify
-`define S_LAST_STATE           32  // update state register width accordingly
+`define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
+`define S_CVFPU_WAIT           34  // wait for a CVFPU result
+`define S_LAST_STATE           34  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -779,6 +781,15 @@ module smolrv64(input wire        clock,
                       .read_data_1(f2_bram));
 
 `ifdef USE_CVFPU
+   reg         cvfpu_in_valid = 0;
+   reg  [2:0][63:0] cvfpu_operands = '0;
+   reg  [ 2:0] cvfpu_rnd_mode = 0;
+   reg  [ 3:0] cvfpu_op = 0;
+   reg         cvfpu_op_mod = 0;
+   reg  [ 2:0] cvfpu_src_fmt = 0;
+   reg  [ 2:0] cvfpu_dst_fmt = 0;
+   reg  [ 1:0] cvfpu_int_fmt = 0;
+   reg  [ 7:0] cvfpu_tag_in = 0;
    wire        cvfpu_in_ready;
    wire [63:0] cvfpu_result;
    wire [ 4:0] cvfpu_fflags;
@@ -789,16 +800,16 @@ module smolrv64(input wire        clock,
    smolrv64_cvfpu cvfpu_inst(
       .clock     ( clock ),
       .reset     ( reset ),
-      .in_valid  ( 1'b0 ),
+      .in_valid  ( cvfpu_in_valid ),
       .in_ready  ( cvfpu_in_ready ),
-      .operands  ( '0 ),
-      .rnd_mode  ( 3'd0 ),
-      .op        ( 4'd0 ),
-      .op_mod    ( 1'b0 ),
-      .src_fmt   ( 3'd0 ),
-      .dst_fmt   ( 3'd0 ),
-      .int_fmt   ( 2'd0 ),
-      .tag_in    ( 8'd0 ),
+      .operands  ( cvfpu_operands ),
+      .rnd_mode  ( cvfpu_rnd_mode ),
+      .op        ( cvfpu_op ),
+      .op_mod    ( cvfpu_op_mod ),
+      .src_fmt   ( cvfpu_src_fmt ),
+      .dst_fmt   ( cvfpu_dst_fmt ),
+      .int_fmt   ( cvfpu_int_fmt ),
+      .tag_in    ( cvfpu_tag_in ),
       .result    ( cvfpu_result ),
       .fflags    ( cvfpu_fflags ),
       .tag_out   ( cvfpu_tag_out ),
@@ -1347,6 +1358,9 @@ module smolrv64(input wire        clock,
            muldiv_output_high_part = 0;
            muldiv_output_sext32 = 0;
            do_atomic = 0;
+`ifdef USE_CVFPU
+           cvfpu_in_valid <= 0;
+`endif
 
 `ifdef VERILATOR_COSIM
            // Normal retire: pc/insn/write_back_* still hold the just-completed
@@ -2563,6 +2577,60 @@ module smolrv64(input wire        clock,
                  // Reaching an FP insn dirties the FP state.
                  fs = 3;
                  case (insn[31:25])
+                   // FADD.S / FSUB.S
+                   7'b0000000,
+                   7'b0000100: begin
+`ifdef USE_CVFPU
+                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                         cause = `TRAP_ILLEGAL_INSTRUCTION;
+                         tval = insn;
+                         state <= `S_EXCEPTION;
+                      end else begin
+                         cvfpu_operands <= '{64'd0, f1, f2};
+                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
+                         cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
+                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
+                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
+                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
+                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_in_valid <= 1'b1;
+                         state          <= `S_CVFPU_ISSUE;
+                      end
+`else
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+`endif
+                   end
+                   // FADD.D / FSUB.D
+                   7'b0000001,
+                   7'b0000101: begin
+`ifdef USE_CVFPU
+                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                         cause = `TRAP_ILLEGAL_INSTRUCTION;
+                         tval = insn;
+                         state <= `S_EXCEPTION;
+                      end else begin
+                         cvfpu_operands <= '{64'd0, f1, f2};
+                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
+                         cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
+                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
+                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
+                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
+                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_in_valid <= 1'b1;
+                         state          <= `S_CVFPU_ISSUE;
+                      end
+`else
+                      cause = `TRAP_ILLEGAL_INSTRUCTION;
+                      tval = insn;
+                      state <= `S_EXCEPTION;
+`endif
+                   end
                    // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
                    7'b0010000: begin
                       write_back_fp_valid    = 1;
@@ -2736,6 +2804,25 @@ module smolrv64(input wire        clock,
            write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
            state <= `S_FETCH1;
         end
+
+`ifdef USE_CVFPU
+        `S_CVFPU_ISSUE: begin
+           if (cvfpu_in_ready) begin
+              cvfpu_in_valid <= 1'b0;
+              state <= `S_CVFPU_WAIT;
+           end
+        end
+
+        `S_CVFPU_WAIT: begin
+           if (cvfpu_out_valid) begin
+              write_back_fp_valid    = 1;
+              write_back_fp_register = cvfpu_tag_out[4:0];
+              write_back_fp_value    <= cvfpu_result;
+              fflags                 = fflags | cvfpu_fflags;
+              state                  <= `S_FETCH1;
+           end
+        end
+`endif
 
         `S_STORE: begin
 
