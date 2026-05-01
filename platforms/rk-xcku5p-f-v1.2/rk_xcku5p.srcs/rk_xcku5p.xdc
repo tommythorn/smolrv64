@@ -155,6 +155,11 @@ set_property PACKAGE_PIN P19  [ get_ports "c0_ddr4_reset_n" ]
 # Timing waiver for DDR4 calibration IP internal signal
 create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-17} -description "Ignore the TIMING-17 Critical Warning for sl_iport_i" -objects [get_pins -quiet -leaf -of [get_nets -quiet u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/u_ddr_cal/U_XSDB_SLAVE/sl_iport_i*] -filter {DIRECTION==IN}]
 
+# CVFPU runs from a BUFGCE_DIV /4 clock and crosses to the 333 MHz core
+# through a one-request CDC bridge.
+create_generated_clock -name fpu_clk_div4 -divide_by 4 -source [get_pins fpu_clk_buf/I] [get_pins fpu_clk_buf/O]
+set_clock_groups -asynchronous -group [get_clocks mmcm_clkout0] -group [get_clocks fpu_clk_div4]
+
 # Bitstream configuration
 set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
 set_property CONFIG_MODE SPIx4 [current_design]

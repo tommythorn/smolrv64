@@ -32,6 +32,7 @@ module rk_xcku5p(
 
    // DDR4 UI clock (333.33 MHz) and reset from the IP
    wire ui_clk;
+   wire fpu_clk;
    wire ui_rst;           // c0_ddr4_ui_clk_sync_rst (active high)
    wire init_calib_complete;
 
@@ -57,6 +58,18 @@ module rk_xcku5p(
    assign led[1] = toggle;              // heartbeat (UI clock domain)
    assign led[2] = halted;
    assign led[3] = key[3];
+
+   // CVFPU is throughput-capable but much deeper than the integer core.  The
+   // core issues one FP operation at a time and waits, so run the FPU island at
+   // a conservative divided clock and bridge it inside smolrv64_cvfpu.
+   BUFGCE_DIV #(
+      .BUFGCE_DIVIDE(4)
+   ) fpu_clk_buf (
+      .I  (ui_clk),
+      .CE (1'b1),
+      .CLR(ui_rst),
+      .O  (fpu_clk)
+   );
 
    wire         dbg_clk;
    wire [511:0] dbg_bus;
@@ -275,6 +288,7 @@ module rk_xcku5p(
 
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
+      .fpu_clock            (fpu_clk),
       .reset                (cpu_reset),
       .mmio_address         (mmio_address),
       .mmio_read            (mmio_read),

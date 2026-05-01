@@ -203,6 +203,7 @@ module smolrv64_tb;
    end
 
    smolrv64 smolrv64_inst(.clock                (clock),
+                          .fpu_clock            (clock),
                           .reset                (!reset_n),
 
                           .mmio_address         (mmio_address),
@@ -310,6 +311,7 @@ endmodule
 `endif
 
 module smolrv64(input wire        clock,
+                input wire        fpu_clock,
                 input wire        reset,
 /*
  The eventual memory bus
@@ -802,6 +804,7 @@ module smolrv64(input wire        clock,
 
    smolrv64_cvfpu cvfpu_inst(
       .clock     ( clock ),
+      .fpu_clock ( fpu_clock ),
       .reset     ( reset ),
       .in_valid  ( cvfpu_in_valid ),
       .in_ready  ( cvfpu_in_ready ),

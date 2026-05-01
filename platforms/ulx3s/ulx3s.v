@@ -30,6 +30,7 @@ module top(input  wire      clk_25mhz,
    wire [7:0] rx_data;
 
    smolrv64 smolrv64_inst(.clock                (clock),
+                          .fpu_clock            (clock),
                           .reset                (reset),
                           .mmio_address         (mmio_address),
                           .mmio_read            (mmio_read),

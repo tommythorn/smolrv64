@@ -24,6 +24,7 @@ module cvfpu_smoke_tb;
 
    smolrv64_cvfpu dut(
       .clock     ( clock     ),
+      .fpu_clock ( clock     ),
       .reset     ( reset     ),
       .in_valid  ( in_valid  ),
       .in_ready  ( in_ready  ),

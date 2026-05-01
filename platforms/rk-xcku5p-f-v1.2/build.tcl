@@ -9,8 +9,79 @@ foreach arg $argv {
 }
 
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set repo_root [file normalize [file join [file dirname [info script]] ../..]]
+set src_dir [file join $repo_root src]
+set sram_even [file join $repo_root src mem.even]
+set sram_odd  [file join $repo_root src mem.odd]
+set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
 puts "Opening project: $xpr"
 open_project $xpr
+
+proc add_source_if_missing {fileset file file_type} {
+    set normalized [file normalize $file]
+    if {![file exists $normalized]} {
+        error "RTL source missing: $normalized"
+    }
+    if {[llength [get_files -quiet $normalized]] == 0} {
+        add_files -norecurse -fileset $fileset $normalized
+    }
+    if {$file_type ne ""} {
+        set_property file_type $file_type [get_files -quiet $normalized]
+    }
+}
+
+proc add_unique_property_value {object property value} {
+    set values [get_property $property $object]
+    if {[lsearch -exact $values $value] < 0} {
+        lappend values $value
+        set_property $property $values $object
+    }
+}
+
+proc configure_cvfpu_sources {repo_root src_dir} {
+    set fileset [current_fileset]
+    set cvfpu_manifest [file join $src_dir cvfpu_sources.f]
+    if {![file exists $cvfpu_manifest]} {
+        error "CVFPU source manifest missing: $cvfpu_manifest"
+    }
+
+    puts "Enabling CVFPU sources from: $cvfpu_manifest"
+    set cvfpu_files {}
+    set fh [open $cvfpu_manifest r]
+    while {[gets $fh line] >= 0} {
+        set line [string trim $line]
+        if {$line eq "" || [string match "#*" $line]} {
+            continue
+        }
+        if {[string match "+incdir+*" $line]} {
+            set incdir [file normalize [file join $src_dir [string range $line 8 end]]]
+            if {![file isdirectory $incdir]} {
+                error "CVFPU include directory missing: $incdir"
+            }
+            add_unique_property_value $fileset include_dirs $incdir
+            continue
+        }
+        if {[string match "+*" $line]} {
+            error "Unsupported CVFPU manifest option: $line"
+        }
+        lappend cvfpu_files [file normalize [file join $src_dir $line]]
+    }
+    close $fh
+
+    foreach file $cvfpu_files {
+        set ext [string tolower [file extension $file]]
+        set file_type ""
+        if {$ext eq ".sv"} {
+            set file_type SystemVerilog
+        }
+        add_source_if_missing $fileset $file $file_type
+    }
+    add_source_if_missing $fileset [file join $src_dir smolrv64_cvfpu.sv] SystemVerilog
+
+    # USE_CVFPU exposes SystemVerilog syntax inside smolrv64.v.
+    add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog
+    update_compile_order -fileset $fileset
+}
 
 # Helper: launch a run only if it needs work
 proc run_if_needed {run_id to_step jobs} {
@@ -38,16 +109,37 @@ proc run_if_needed {run_id to_step jobs} {
 }
 
 # Set SRAM base to 0x70000000 for this platform (below the DDR4 range at 0x80000000)
-set vdefines [list "MEM_BASEADDR=64'h70000000"]
+foreach image [list $sram_even $sram_odd] {
+    if {![file exists $image]} {
+        error "SRAM init file missing: $image\nRun 'make load' or build the workload images first."
+    }
+}
+puts "SRAM init even: $sram_even"
+puts "SRAM init odd:  $sram_odd"
+
+set vdefines [list \
+    "MEM_BASEADDR=64'h70000000" \
+    [format {SRAM_EVENHEX="%s"} $sram_even] \
+    [format {SRAM_ODDHEX="%s"} $sram_odd]]
 if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"} {
     puts "Enabling PC_TRACE debug tracer."
     lappend vdefines "PC_TRACE"
 }
+lappend vdefines "USE_CVFPU"
 set_property verilog_define $vdefines [current_fileset]
+configure_cvfpu_sources $repo_root $src_dir
 
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {
     puts "\n=== Running Synthesis ==="
+    # The SRAM workload is loaded with $readmemh, so the hex file contents are
+    # part of the bitstream even when the RTL text is unchanged. Vivado's
+    # auto-incremental synthesis can reuse BRAM INIT values from the reference
+    # checkpoint and silently preserve an older monitor image.
+    set_property AUTO_INCREMENTAL_CHECKPOINT 0 [get_runs synth_1]
+    if {[lsearch [list_property [get_runs synth_1]] INCREMENTAL_CHECKPOINT] >= 0} {
+        set_property INCREMENTAL_CHECKPOINT "" [get_runs synth_1]
+    }
     set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
@@ -57,6 +149,10 @@ if {$step in {synth impl bit}} {
 if {$step in {impl bit}} {
     puts "\n=== Running Implementation ==="
     set_property STRATEGY Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
+    if {![file exists $cvfpu_timing_hook]} {
+        error "CVFPU timing hook missing: $cvfpu_timing_hook"
+    }
+    set_property STEPS.OPT_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
     run_if_needed impl_1 "" 12
     puts "Implementation complete."
 }
