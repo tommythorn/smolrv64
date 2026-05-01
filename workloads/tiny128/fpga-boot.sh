@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DTB=${DTB:-tiny128.dtb}
-FW=${FW:-fw_payload.elf-6.15.0.bin}
+FW=${FW:-fw_payload.bin-1.7+v7.1-rc1}
 INITRD=${INITRD:-tiny128.cpio}
 DTB_ADDR=${DTB_ADDR:-87f00000}
 FW_ADDR=${FW_ADDR:-80000000}
