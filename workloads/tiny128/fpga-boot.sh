@@ -20,9 +20,9 @@ cd "$(dirname "$0")"
 DTB=${DTB:-tiny128.dtb}
 FW=${FW:-fw_payload.bin-1.7+v7.1-rc1}
 INITRD=${INITRD:-tiny128.cpio}
-DTB_ADDR=${DTB_ADDR:-87f00000}
+DTB_ADDR=${DTB_ADDR:-9ff00000}
 FW_ADDR=${FW_ADDR:-80000000}
-INITRD_ADDR=${INITRD_ADDR:-8752c000}
+INITRD_ADDR=${INITRD_ADDR:-9f52c000}
 LOG=${LOG:-screenlog.0}
 TIMEOUT=${TIMEOUT:-900}   # seconds per xmodem transfer
 CHAR_DELAY=${CHAR_DELAY:-0.02}
