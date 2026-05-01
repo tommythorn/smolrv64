@@ -444,7 +444,7 @@ module sd_spi_oc_tiny(input  wire        clock,
       case (reg_addr)
         REG_RXDATA:  read_data = {24'd0, rx_data};
         REG_TXDATA:  read_data = {24'd0, txr_data};
-        REG_STATUS:  read_data = {30'd0, txr_valid, !busy && !pending_valid && !txr_valid};
+        REG_STATUS:  read_data = {30'd0, txr_valid, !busy && !pending_valid};
         REG_CONTROL: read_data = {24'd0, control};
         REG_BAUD:    read_data = {24'd0, baud};
         default:     read_data = 32'd0;
@@ -473,6 +473,7 @@ module sd_spi_oc_tiny(input  wire        clock,
          if (write && byteenable[0]) begin
             case (reg_addr)
               REG_TXDATA: begin
+                 txr_valid <= 1'b0;
                  if (rx_valid && !busy && !pending_valid) begin
                     txr_data <= rx_data;
                     txr_valid <= 1'b1;
