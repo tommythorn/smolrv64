@@ -927,6 +927,7 @@ module smolrv64(input wire        clock,
 
    // CLINT
    reg [63:0]  clint_mtime = 0;
+   reg [13:0]  clint_mtime_clock_scaler = 0;
 `ifdef VERILATOR_COSIM
    // One-cycle-delayed snapshot of clint_mtime. CSR TIME reads latch a value
    // that retires the cycle after; pass the delayed snapshot to simmerv so
@@ -1296,7 +1297,12 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
-      clint_mtime <= csr_minstret/32;
+      // XXX This isn't very portable
+      if (clint_mtime_clock_scaler[13]) begin
+         clint_mtime_clock_scaler <= 3333 - 2; // 333.3333.. MHz / 3333 ~ 100.01 kHz
+         clint_mtime <= clint_mtime + 1;
+      end else
+        clint_mtime_clock_scaler <= clint_mtime_clock_scaler - 1;
       uart_tx_valid <= 0;
 
       // Enqueue UART RX data
