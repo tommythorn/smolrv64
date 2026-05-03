@@ -9,8 +9,20 @@
 	chosen {
 		linux,initrd-start = <0 0x9f52c000>;
 		linux,initrd-end   = <0 0x9ff00000>;
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel";
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
+
+                /* Development-only static seed: replace with per-boot random bytes later. */
+                rng-seed = [
+                        6f 2c 91 7a 44 1e d3 b8
+                        0a cc 59 32 f4 81 25 9d
+                        e7 10 ba 6c 38 5f 02 c1
+                        93 d4 76 af 20 8b ee 41
+                        15 62 9a cd 57 03 b4 f8
+                        80 2d 11 6e a9 4c 73 05
+                        dc 37 f1 98 24 bb 60 0f
+                        4a e2 7d 36 c5 19 8c a0
+                ];
 	};
 
 	uart@10000000 {
