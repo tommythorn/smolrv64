@@ -849,6 +849,7 @@ module smolrv64(input wire        clock,
    wire [63:0]  dram_readdata_next;
    wire         dram_readdata_next_valid;
    wire         dram_write_ready;    // master idle (no AW/W/B in flight)
+   wire         dram_write_done;     // write response observed for issued write
 
    reg  [63:0]  dram_latched;        // holds first 8B chunk across states
    reg  [63:0]  dram_latched_next;   // holds ADDR+8 chunk for misaligned access
@@ -914,6 +915,7 @@ module smolrv64(input wire        clock,
    reg [63:0] axi_write_data = 0;
    reg [ 7:0] axi_write_strb = 0;
    wire       axi_write_ready;
+   wire       axi_write_done;
 
    wire [63:0] cache_dram_addr = {33'd0, dram_addr, 3'b000};
    wire [63:0] cache_dram_next_addr = cache_dram_addr + 64'd8;
@@ -4608,7 +4610,7 @@ module smolrv64(input wire        clock,
            state <= `S_DRAM_STORE_RESP_WAIT;
         end
 
-        `S_DRAM_STORE_RESP_WAIT: if (dram_write_ready) begin
+        `S_DRAM_STORE_RESP_WAIT: if (dram_write_done) begin
            state <= dram_store_split ? `S_DRAM_STORE2 : `S_FETCH1;
         end
 
@@ -4753,6 +4755,7 @@ module smolrv64(input wire        clock,
    assign dram_readdata_next = dram_readdata_next_r;
    assign dram_readdata_next_valid = dram_readdata_next_valid_r;
    assign dram_write_ready   = cache_idle && axi_write_ready && !axi_read;
+   assign dram_write_done    = axi_write_done;
 
    always @(posedge clock) begin
       cache_bank0_rd_data <= cache_bank0[cache_bank0_rd_idx];
@@ -4917,6 +4920,7 @@ module smolrv64(input wire        clock,
    assign axi_readdatavalid = axi_readdatavalid_r;
    assign axi_readdata      = rdata_r;
    assign axi_write_ready   = !aw_busy && !w_busy && !b_busy;
+   assign axi_write_done    = b_busy && m_axi_bvalid;
 
    always @(posedge clock) begin
       axi_readdatavalid_r <= 0;
