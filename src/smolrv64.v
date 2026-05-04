@@ -793,6 +793,8 @@ module smolrv64(input wire        clock,
    reg         cvfpu_in_valid = 0;
    reg  [2:0][63:0] cvfpu_operands = '0;
    reg  [ 2:0] cvfpu_rnd_mode = 0;
+   reg  [ 2:0] pre_fp_rnd_mode = 0;
+   reg         pre_fp_rmode_ok = 1'b1;
    reg  [ 3:0] cvfpu_op = 0;
    reg         cvfpu_op_mod = 0;
    reg  [ 2:0] cvfpu_src_fmt = 0;
@@ -833,6 +835,7 @@ module smolrv64(input wire        clock,
 
 
    reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
+   reg  [63:0] pre_npc = `RESET_PC;
 
    // CPU<->AXI master signalling (master block lives at the bottom of this module).
    // dram_addr is the 8B-aligned doubleword address (= phys[30:3]).
@@ -1028,7 +1031,7 @@ module smolrv64(input wire        clock,
 `endif
    reg  [ 4:0] rd;
    reg  [ 5:0] shamt;
-   reg  [11:0] csrno;
+   (* max_fanout = 16 *) reg [11:0] csrno;
    reg  [31:0] insn = 0; // XXX We should set this on reset
    reg  [ 1:0] csr_op;
    reg  [ 1:0] fcmp_result; // {nv, result} from fcmp_s/fcmp_d
@@ -1894,6 +1897,54 @@ module smolrv64(input wire        clock,
               end
            end // rf3_pre_decode
 
+           begin : rf3_npc_decode
+              reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
+
+              d_imm_i = {{52{insn[31]}}, insn[31:20]};
+              d_imm_j = {{44{insn[31]}}, insn[19:12], insn[20], insn[30:21], 1'b0};
+              d_imm_b = {{52{insn[31]}}, insn[7], insn[30:25], insn[11:8], 1'b0};
+              d_c_j   = {{53{insn[12]}}, insn[8], insn[10:9], insn[6], insn[7],
+                         insn[2], insn[11], insn[5:3], 1'b0};
+              d_c_b   = {{56{insn[12]}}, insn[6:5], insn[2], insn[11:10],
+                         insn[4:3], 1'b0};
+
+              pre_npc <= pc + (insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+
+              if ((insn & 'he003) == 'ha001) begin // C.J
+                 pre_npc <= pc + d_c_j;
+              end else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
+                 if (s1_bram == 0) pre_npc <= pc + d_c_b;
+              end else if ((insn & 'he003) == 'he001) begin // C.BNEZ
+                 if (s1_bram != 0) pre_npc <= pc + d_c_b;
+              end else if ((insn & 'hf07f) == 'h8002) begin // C.JR
+                 pre_npc <= s1_bram & ~64'd1;
+              end else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
+                 pre_npc <= s1_bram & ~64'd1;
+              end else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
+                 pre_npc <= pc + d_imm_j;
+              end else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
+                 pre_npc <= (s1_bram + d_imm_i) & ~64'd1;
+              end else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
+                 if (s1_bram == s2_bram) pre_npc <= pc + d_imm_b;
+              end else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
+                 if (s1_bram != s2_bram) pre_npc <= pc + d_imm_b;
+              end else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
+                 if ($signed(s1_bram) < $signed(s2_bram)) pre_npc <= pc + d_imm_b;
+              end else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
+                 if ($signed(s1_bram) >= $signed(s2_bram)) pre_npc <= pc + d_imm_b;
+              end else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
+                 if (s1_bram < s2_bram) pre_npc <= pc + d_imm_b;
+              end else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
+                 if (s1_bram >= s2_bram) pre_npc <= pc + d_imm_b;
+              end
+           end // rf3_npc_decode
+
+`ifdef USE_CVFPU
+           pre_fp_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+           pre_fp_rmode_ok <= !(insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
+                                (insn[14:12] == 3'b111 && frm > 3'b100));
+`endif
+
            // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
            // early so S_EXECUTE can share a single s1+offset adder instead of
            // selecting between 22 parallel adders. Immediates are computed
@@ -2111,7 +2162,7 @@ module smolrv64(input wire        clock,
 
            csrno                   = insn[31:20];
 
-           npc = pc + (insn[1:0] == 3 ? 4 : 2);
+           npc = pre_npc;
 
            // RV64IC decoding
            //
@@ -2246,17 +2297,12 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'he003) == 'ha001) begin // C.J
-              npc = pc + c_imm12_8_109_6_7_2_11_53_x2;
            end
 
            else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
-              if (s1 == 0)
-                npc = pc + $signed(c_imm12_65_2_1110_43_x2);
            end
 
            else if ((insn & 'he003) == 'he001) begin // C.BNEZ
-              if (s1 != 0)
-                npc = pc + $signed(c_imm12_65_2_1110_43_x2);
            end
 
 
@@ -2268,7 +2314,6 @@ module smolrv64(input wire        clock,
            // C.LWSP / C.LDSP / C.FLDSP handled by shared mem block above.
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
-              npc = s1 & ~1;
            end
 
            else if ((insn & 'hf003) == 'h8002) begin // C.MV
@@ -2283,7 +2328,6 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
-              npc = s1 & ~1;
            end
 
            else if ((insn & 'hf003) == 'h9002) begin // C.ADD
@@ -2303,36 +2347,28 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = rd;
-              npc = pc + imm_j;
            end
 
            else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = rd;
-              npc = (s1 + imm_i) & ~1;
            end
 
            else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
-              if (s1 == s2) npc = pc + imm_b;
            end
 
            else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
-              if (s1 != s2) npc = pc + imm_b;
            end
 
            else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
-              if ($signed(s1) < $signed(s2)) npc = pc + imm_b;
            end
 
            else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
-              if ($signed(s1) >= $signed(s2)) npc = pc + imm_b;
            end
 
            else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
-              if (s1 < s2) npc = pc + imm_b;
            end
 
            else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
-              if (s1 >= s2) npc = pc + imm_b;
            end
 
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
@@ -2736,8 +2772,7 @@ module smolrv64(input wire        clock,
                    7'b0000000,
                    7'b0000100: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2745,7 +2780,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= 64'd0;
                          cvfpu_operands[1] <= f1;
                          cvfpu_operands[2] <= f2;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
                          cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -2765,8 +2800,7 @@ module smolrv64(input wire        clock,
                    7'b0000001,
                    7'b0000101: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2774,7 +2808,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= 64'd0;
                          cvfpu_operands[1] <= f1;
                          cvfpu_operands[2] <= f2;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
                          cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -2793,8 +2827,7 @@ module smolrv64(input wire        clock,
                    // FMUL.S
                    7'b0001000: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2802,7 +2835,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd3; // fpnew_pkg::MUL
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -2821,8 +2854,7 @@ module smolrv64(input wire        clock,
                    // FMUL.D
                    7'b0001001: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2830,7 +2862,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd3; // fpnew_pkg::MUL
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -2849,8 +2881,7 @@ module smolrv64(input wire        clock,
                    // FDIV.S
                    7'b0001100: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2858,7 +2889,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd4; // fpnew_pkg::DIV
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -2877,8 +2908,7 @@ module smolrv64(input wire        clock,
                    // FDIV.D
                    7'b0001101: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2886,7 +2916,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd4; // fpnew_pkg::DIV
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -2905,8 +2935,7 @@ module smolrv64(input wire        clock,
                    // FSQRT.S
                    7'b0101100: if (insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2914,7 +2943,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd5; // fpnew_pkg::SQRT
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -2937,8 +2966,7 @@ module smolrv64(input wire        clock,
                    // FSQRT.D
                    7'b0101101: if (insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -2946,7 +2974,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd5; // fpnew_pkg::SQRT
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -3023,8 +3051,7 @@ module smolrv64(input wire        clock,
                    // FCVT.S.D
                    7'b0100000: if (insn[24:20] == 5'd1) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3032,7 +3059,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -3055,8 +3082,7 @@ module smolrv64(input wire        clock,
                    // FCVT.D.S
                    7'b0100001: if (insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3064,7 +3090,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -3145,8 +3171,7 @@ module smolrv64(input wire        clock,
                    // FCVT.W[U].S / FCVT.L[U].S
                    7'b1100000: if (insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3154,7 +3179,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd11; // fpnew_pkg::F2I
                          cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -3178,8 +3203,7 @@ module smolrv64(input wire        clock,
                    // FCVT.W[U].D / FCVT.L[U].D
                    7'b1100001: if (insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3187,7 +3211,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd11; // fpnew_pkg::F2I
                          cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -3211,8 +3235,7 @@ module smolrv64(input wire        clock,
                    // FCVT.S.W[U] / FCVT.S.L[U]
                    7'b1101000: if (insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3220,7 +3243,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= s1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd12; // fpnew_pkg::I2F
                          cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // unused
@@ -3244,8 +3267,7 @@ module smolrv64(input wire        clock,
                    // FCVT.D.W[U] / FCVT.D.L[U]
                    7'b1101001: if (insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                          (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                      if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = insn;
                          state <= `S_EXCEPTION;
@@ -3253,7 +3275,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[0] <= s1;
                          cvfpu_operands[1] <= 64'd0;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd12; // fpnew_pkg::I2F
                          cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // unused
@@ -3342,9 +3364,7 @@ module smolrv64(input wire        clock,
               end else begin
                  fs = 3;
 `ifdef USE_CVFPU
-                 if (insn[26:25] > 2'b01 ||
-                     insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                     (insn[14:12] == 3'b111 && frm > 3'b100)) begin
+                 if (insn[26:25] > 2'b01 || !pre_fp_rmode_ok) begin
                     cause = `TRAP_ILLEGAL_INSTRUCTION;
                     tval = insn;
                     state <= `S_EXCEPTION;
@@ -3426,7 +3446,7 @@ module smolrv64(input wire        clock,
            cvfpu_operands[0] <= f1;
            cvfpu_operands[1] <= f2;
            cvfpu_operands[2] <= f1_bram;
-           cvfpu_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
+           cvfpu_rnd_mode <= pre_fp_rnd_mode;
            cvfpu_op       <= insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
            cvfpu_op_mod   <= insn[2]; // add/sub variant
            cvfpu_src_fmt  <= {2'd0, insn[25]}; // FP32/FP64
@@ -3639,7 +3659,6 @@ module smolrv64(input wire        clock,
                  dram_addr       <= mem_addr[30:3];
                  dram_writedata  <= wide_data[63:0];
                  dram_wstrb      <= wide_mask[7:0];
-                 dram_write      <= 1;
                  mem_wr_mask     = 0;
                  if (|wide_mask[15:8]) begin
                     // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
@@ -3647,10 +3666,20 @@ module smolrv64(input wire        clock,
                     dram2_data_part   <= wide_data[127:64];
                     dram2_wstrb       <= wide_mask[15:8];
                     dram_store_split  <= 1;
-                    state             <= dram_write_ready ? `S_DRAM_STORE_RESP_ARM : `S_DRAM_STORE_WAIT;
+                    if (dram_write_ready) begin
+                       dram_write <= 1;
+                       state      <= `S_DRAM_STORE_RESP_ARM;
+                    end else begin
+                       state      <= `S_DRAM_STORE_WAIT;
+                    end
                  end else begin
                     dram_store_split  <= 0;
-                    state             <= dram_write_ready ? `S_DRAM_STORE_RESP_ARM : `S_DRAM_STORE_WAIT;
+                    if (dram_write_ready) begin
+                       dram_write <= 1;
+                       state      <= `S_DRAM_STORE_RESP_ARM;
+                    end else begin
+                       state      <= `S_DRAM_STORE_WAIT;
+                    end
                  end
               end
              end
@@ -4671,6 +4700,7 @@ module smolrv64(input wire        clock,
          clint_mtime <= 0;
          write_back_register <= 0;
          npc <= `RESET_PC;
+         pre_npc <= `RESET_PC;
          bus_timeout_ctr <= 0;
          bus_timeout_expired <= 0;
          bus_timeout_tval <= 0;
@@ -4700,6 +4730,10 @@ module smolrv64(input wire        clock,
          spp              <= 0;
          mprv             <= 0;
          pre_intr_pending <= 0;
+`ifdef USE_CVFPU
+         pre_fp_rnd_mode  <= 0;
+         pre_fp_rmode_ok  <= 1'b1;
+`endif
          just_trapped     <= 0;
          just_xret        <= 0;
          fetch_from_dram  <= 0;
@@ -4765,7 +4799,7 @@ module smolrv64(input wire        clock,
                                                              : cache_dram_idx;
               cache_next_rd_idx   <= cache_dram_next_idx;
               cache_state         <= CACHE_TAG_READ;
-           end else if (dram_write) begin
+           end else if (dram_write && axi_write_ready && !axi_read) begin
               cache_tag_wr_en   <= 1;
               cache_tag_wr_idx  <= cache_dram_idx;
               cache_tag_wr_data <= {cache_epoch, 1'b0, cache_dram_tag};
@@ -4901,7 +4935,7 @@ module smolrv64(input wire        clock,
       end
 
       // AW / W / B
-      if (axi_write) begin
+      if (axi_write && axi_write_ready) begin
          aw_addr_r <= axi_write_addr;
          w_data_r  <= axi_write_data;
          w_strb_r  <= axi_write_strb;
