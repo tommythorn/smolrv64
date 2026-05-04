@@ -126,6 +126,7 @@ if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"
     lappend vdefines "PC_TRACE"
 }
 lappend vdefines "USE_CVFPU"
+lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir
 
