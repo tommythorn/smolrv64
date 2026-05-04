@@ -621,6 +621,12 @@ module smolrv64(input wire        clock,
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
+`ifndef CACHE_INDEX_BITS
+`define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
+`endif
+`define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
+`define CACHE_HALF_LINES (1 << (`CACHE_INDEX_BITS - 1))
+`define CACHE_TAG_BITS  (64 - `CACHE_INDEX_BITS - 6)
 `ifndef RESET_PC
 `define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
 `endif
@@ -838,15 +844,146 @@ module smolrv64(input wire        clock,
    reg  [ 7:0]  dram_wstrb;          // AXI convention: 1 = write byte
    wire         dram_readdatavalid;
    wire [63:0]  dram_readdata;
+   wire [63:0]  dram_readdata_next;
+   wire         dram_readdata_next_valid;
    wire         dram_write_ready;    // master idle (no AW/W/B in flight)
 
    reg  [63:0]  dram_latched;        // holds first 8B chunk across states
+   reg  [63:0]  dram_latched_next;   // holds ADDR+8 chunk for misaligned access
+   reg          dram_latched_next_valid;
    reg          fetch_from_dram;     // set when current fetch came from DRAM
    reg          ptw_from_dram;       // set when current PTW PTE came from DRAM
    reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
    reg  [63:0]  dram2_data_part;     // overflow bytes for split store
    reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
    reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
+
+   // Physical direct-mapped write-through cache for external DRAM reads.
+   // The core-side granularity stays 64-bit; misses fill the surrounding
+   // 64-byte line as eight 64-bit beats from the AXI backing path.
+   localparam [2:0] CACHE_IDLE      = 3'd0;
+   localparam [2:0] CACHE_LOOKUP    = 3'd1;
+   localparam [2:0] CACHE_FILL_REQ  = 3'd2;
+   localparam [2:0] CACHE_FILL_WAIT = 3'd3;
+
+   (* ram_style = "ultra" *) reg [63:0] cache_bank0_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank0_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank1_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank1_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank2_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank2_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank3_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank3_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank4_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank4_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank5_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank5_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank6_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank6_hi[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank7_lo[`CACHE_HALF_LINES-1:0];
+   (* ram_style = "ultra" *) reg [63:0] cache_bank7_hi[`CACHE_HALF_LINES-1:0];
+   reg [`CACHE_TAG_BITS-1:0] cache_tag[`CACHE_LINES-1:0];
+   reg                       cache_valid[`CACHE_LINES-1:0];
+
+   reg [ 2:0] cache_state = CACHE_IDLE;
+   reg [63:0] cache_addr = 0;
+   reg [63:0] cache_next_addr = 0;
+   reg [63:0] cache_fill_base = 0;
+   reg [ 2:0] cache_fill_beat = 0;
+   reg [ 2:0] cache_req_bank = 0;
+   reg [ 2:0] cache_req_next_bank = 0;
+   reg        cache_req_same_line = 0;
+   reg [63:0] cache_fill_return_data = 0;
+   reg [63:0] cache_fill_next_data = 0;
+   reg [63:0] cache_lookup_next_data = 0;
+   reg        cache_lookup_next_hit = 0;
+   reg        dram_readdatavalid_r = 0;
+   reg [63:0] dram_readdata_r = 0;
+   reg [63:0] dram_readdata_next_r = 0;
+   reg        dram_readdata_next_valid_r = 0;
+   wire       cache_idle = cache_state == CACHE_IDLE;
+
+   reg        axi_read = 0;
+   reg [27:0] axi_read_addr = 0;
+   wire       axi_readdatavalid;
+   wire [63:0] axi_readdata;
+   reg        axi_write = 0;
+   reg [27:0] axi_write_addr = 0;
+   reg [63:0] axi_write_data = 0;
+   reg [ 7:0] axi_write_strb = 0;
+   wire       axi_write_ready;
+   integer    cache_i;
+
+   initial begin
+      for (cache_i = 0; cache_i < `CACHE_LINES; cache_i = cache_i + 1)
+         cache_valid[cache_i] = 1'b0;
+   end
+
+   task cache_store_bank;
+      input [`CACHE_INDEX_BITS-1:0] idx;
+      input [2:0] bank;
+      input [63:0] data;
+      reg [`CACHE_INDEX_BITS-2:0] subidx;
+      begin
+         subidx = idx[`CACHE_INDEX_BITS-2:0];
+         case (bank)
+           3'd0: if (idx[`CACHE_INDEX_BITS-1]) cache_bank0_hi[subidx] <= data; else cache_bank0_lo[subidx] <= data;
+           3'd1: if (idx[`CACHE_INDEX_BITS-1]) cache_bank1_hi[subidx] <= data; else cache_bank1_lo[subidx] <= data;
+           3'd2: if (idx[`CACHE_INDEX_BITS-1]) cache_bank2_hi[subidx] <= data; else cache_bank2_lo[subidx] <= data;
+           3'd3: if (idx[`CACHE_INDEX_BITS-1]) cache_bank3_hi[subidx] <= data; else cache_bank3_lo[subidx] <= data;
+           3'd4: if (idx[`CACHE_INDEX_BITS-1]) cache_bank4_hi[subidx] <= data; else cache_bank4_lo[subidx] <= data;
+           3'd5: if (idx[`CACHE_INDEX_BITS-1]) cache_bank5_hi[subidx] <= data; else cache_bank5_lo[subidx] <= data;
+           3'd6: if (idx[`CACHE_INDEX_BITS-1]) cache_bank6_hi[subidx] <= data; else cache_bank6_lo[subidx] <= data;
+           3'd7: if (idx[`CACHE_INDEX_BITS-1]) cache_bank7_hi[subidx] <= data; else cache_bank7_lo[subidx] <= data;
+         endcase
+      end
+   endtask
+
+   function [63:0] cache_read_bank;
+      input [`CACHE_INDEX_BITS-1:0] idx;
+      input [2:0] bank;
+      reg [`CACHE_INDEX_BITS-2:0] subidx;
+      begin
+         subidx = idx[`CACHE_INDEX_BITS-2:0];
+         case (bank)
+           3'd0: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank0_hi[subidx] : cache_bank0_lo[subidx];
+           3'd1: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank1_hi[subidx] : cache_bank1_lo[subidx];
+           3'd2: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank2_hi[subidx] : cache_bank2_lo[subidx];
+           3'd3: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank3_hi[subidx] : cache_bank3_lo[subidx];
+           3'd4: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank4_hi[subidx] : cache_bank4_lo[subidx];
+           3'd5: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank5_hi[subidx] : cache_bank5_lo[subidx];
+           3'd6: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank6_hi[subidx] : cache_bank6_lo[subidx];
+           3'd7: cache_read_bank = idx[`CACHE_INDEX_BITS-1] ? cache_bank7_hi[subidx] : cache_bank7_lo[subidx];
+           default: cache_read_bank = 64'd0;
+         endcase
+      end
+   endfunction
+
+   task cache_update_word_if_hit;
+      input [63:0] addr;
+      input [63:0] data;
+      input [ 7:0] strb;
+      reg [`CACHE_INDEX_BITS-1:0] idx;
+      reg [`CACHE_TAG_BITS-1:0] tag;
+      reg [`CACHE_INDEX_BITS-2:0] subidx;
+      begin
+         idx = addr[`CACHE_INDEX_BITS+5:6];
+         tag = addr[63:`CACHE_INDEX_BITS+6];
+         subidx = idx[`CACHE_INDEX_BITS-2:0];
+         if (cache_valid[idx] && cache_tag[idx] == tag) begin
+            case (addr[5:3])
+              3'd0: if (idx[`CACHE_INDEX_BITS-1]) cache_bank0_hi[subidx] <= merge_store_bytes(cache_bank0_hi[subidx], data, strb); else cache_bank0_lo[subidx] <= merge_store_bytes(cache_bank0_lo[subidx], data, strb);
+              3'd1: if (idx[`CACHE_INDEX_BITS-1]) cache_bank1_hi[subidx] <= merge_store_bytes(cache_bank1_hi[subidx], data, strb); else cache_bank1_lo[subidx] <= merge_store_bytes(cache_bank1_lo[subidx], data, strb);
+              3'd2: if (idx[`CACHE_INDEX_BITS-1]) cache_bank2_hi[subidx] <= merge_store_bytes(cache_bank2_hi[subidx], data, strb); else cache_bank2_lo[subidx] <= merge_store_bytes(cache_bank2_lo[subidx], data, strb);
+              3'd3: if (idx[`CACHE_INDEX_BITS-1]) cache_bank3_hi[subidx] <= merge_store_bytes(cache_bank3_hi[subidx], data, strb); else cache_bank3_lo[subidx] <= merge_store_bytes(cache_bank3_lo[subidx], data, strb);
+              3'd4: if (idx[`CACHE_INDEX_BITS-1]) cache_bank4_hi[subidx] <= merge_store_bytes(cache_bank4_hi[subidx], data, strb); else cache_bank4_lo[subidx] <= merge_store_bytes(cache_bank4_lo[subidx], data, strb);
+              3'd5: if (idx[`CACHE_INDEX_BITS-1]) cache_bank5_hi[subidx] <= merge_store_bytes(cache_bank5_hi[subidx], data, strb); else cache_bank5_lo[subidx] <= merge_store_bytes(cache_bank5_lo[subidx], data, strb);
+              3'd6: if (idx[`CACHE_INDEX_BITS-1]) cache_bank6_hi[subidx] <= merge_store_bytes(cache_bank6_hi[subidx], data, strb); else cache_bank6_lo[subidx] <= merge_store_bytes(cache_bank6_lo[subidx], data, strb);
+              3'd7: if (idx[`CACHE_INDEX_BITS-1]) cache_bank7_hi[subidx] <= merge_store_bytes(cache_bank7_hi[subidx], data, strb); else cache_bank7_lo[subidx] <= merge_store_bytes(cache_bank7_lo[subidx], data, strb);
+            endcase
+         end
+      end
+   endtask
 
 `ifndef BUS_TIMEOUT_LG2
 `define BUS_TIMEOUT_LG2 24  // ~16M cycles before access fault
@@ -1516,13 +1653,18 @@ module smolrv64(input wire        clock,
            // the following halfword rather than zero/X.
            end else if (fetch_from_dram && pc[2:1] == 2'b11) begin
               insn_half       <= insn[15:0];
-              // For translated fetches, mem_addr still holds the physical
-              // address of the current fetch chunk from the PTW result.
-              dram_addr <= (csr_satp[63:60] == 4'd8 && prv != 3)
-                           ? mem_addr[30:3] + 1
-                           : pc[30:3] + 1;
-              dram_read       <= 1;
-              state           <= `S_DRAM_FETCH_HALF_WAIT;
+              if (dram_latched_next_valid) begin
+                 dram_latched <= dram_latched_next;
+                 state        <= `S_FETCH2_HALF;
+              end else begin
+                 // For translated fetches, mem_addr still holds the physical
+                 // address of the current fetch chunk from the PTW result.
+                 dram_addr <= (csr_satp[63:60] == 4'd8 && prv != 3)
+                              ? mem_addr[30:3] + 1
+                              : pc[30:3] + 1;
+                 dram_read       <= 1;
+                 state           <= `S_DRAM_FETCH_HALF_WAIT;
+              end
            end else begin
               rd = insn`insn_rd;
               case (insn[1:0])
@@ -4342,13 +4484,17 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
-           dram_latched <= dram_readdata;
-           state        <= `S_FETCH2;
+           dram_latched            <= dram_readdata;
+           dram_latched_next       <= dram_readdata_next;
+           dram_latched_next_valid <= dram_readdata_next_valid;
+           state                   <= `S_FETCH2;
         end
 
         `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin
-           dram_latched <= dram_readdata;
-           state        <= `S_FETCH2_HALF;
+           dram_latched            <= dram_readdata;
+           dram_latched_next       <= dram_readdata_next;
+           dram_latched_next_valid <= dram_readdata_next_valid;
+           state                   <= `S_FETCH2_HALF;
         end
 
         `S_DRAM_PTW_WAIT: if (dram_readdatavalid) begin
@@ -4358,11 +4504,28 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_LOAD_WAIT: if (dram_readdatavalid) begin
            if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
-              // Access crosses 8-byte boundary — need second read
-              dram_latched    <= dram_readdata;
-              dram_addr <= mem_addr[30:3] + 1;
-              dram_read       <= 1;
-              state           <= `S_DRAM_LOAD2_WAIT;
+              if (dram_readdata_next_valid) begin : dram_load_cross_cached
+                 reg [127:0] combo;
+                 combo = {dram_readdata_next, dram_readdata} >> (mem_addr[2:0] * 8);
+                 case (load_size_lg2)
+                   0: write_back_value = combo[7:0];
+                   1: write_back_value = combo[15:0];
+                   2: write_back_value = combo[31:0];
+                   3: write_back_value = combo[63:0];
+                   4: write_back_value = {{56{combo[7]}},  combo[7:0]};
+                   5: write_back_value = {{48{combo[15]}}, combo[15:0]};
+                   6: write_back_value = {{32{combo[31]}}, combo[31:0]};
+                   default: write_back_value = 0;
+                 endcase
+                 state <= do_atomic ? `S_AMO : `S_FETCH1;
+              end else begin
+                 // Access crosses a cache-line boundary and the second line
+                 // missed during the parallel lookup; request it only now.
+                 dram_latched    <= dram_readdata;
+                 dram_addr <= mem_addr[30:3] + 1;
+                 dram_read       <= 1;
+                 state           <= `S_DRAM_LOAD2_WAIT;
+              end
            end else begin
               aligned = dram_readdata >> (mem_addr[2:0] * 8);
               case (load_size_lg2)
@@ -4540,6 +4703,7 @@ module smolrv64(input wire        clock,
          just_trapped     <= 0;
          just_xret        <= 0;
          fetch_from_dram  <= 0;
+         dram_latched_next_valid <= 0;
          translated       <= 0;
          dram_read        <= 0;
          dram_write       <= 0;
@@ -4550,13 +4714,118 @@ module smolrv64(input wire        clock,
       end
    end
 
+   assign dram_readdatavalid = dram_readdatavalid_r;
+   assign dram_readdata      = dram_readdata_r;
+   assign dram_readdata_next = dram_readdata_next_r;
+   assign dram_readdata_next_valid = dram_readdata_next_valid_r;
+   assign dram_write_ready   = cache_idle && axi_write_ready && !axi_read;
+
+   always @(posedge clock) begin
+      dram_readdatavalid_r <= 0;
+      dram_readdata_next_valid_r <= 0;
+      axi_read  <= 0;
+      axi_write <= 0;
+
+      case (cache_state)
+        CACHE_IDLE: begin
+           if (dram_read) begin
+              cache_addr          <= {33'd0, dram_addr, 3'b000};
+              cache_next_addr     <= {33'd0, dram_addr, 3'b000} + 64'd8;
+              cache_req_bank      <= dram_addr[2:0];
+              cache_req_next_bank <= dram_addr[2:0] + 3'd1;
+              cache_req_same_line <= dram_addr[2:0] != 3'd7;
+              cache_state         <= CACHE_LOOKUP;
+           end else if (dram_write) begin
+              cache_update_word_if_hit({33'd0, dram_addr, 3'b000}, dram_writedata, dram_wstrb);
+              axi_write_addr <= dram_addr;
+              axi_write_data <= dram_writedata;
+              axi_write_strb <= dram_wstrb;
+              axi_write      <= 1;
+           end
+        end
+
+        CACHE_LOOKUP: begin : cache_lookup
+           reg [`CACHE_INDEX_BITS-1:0] idx;
+           reg [`CACHE_INDEX_BITS-1:0] next_idx;
+           reg [`CACHE_TAG_BITS-1:0] tag;
+           reg [`CACHE_TAG_BITS-1:0] next_tag;
+           idx = cache_addr[`CACHE_INDEX_BITS+5:6];
+           next_idx = cache_next_addr[`CACHE_INDEX_BITS+5:6];
+           tag = cache_addr[63:`CACHE_INDEX_BITS+6];
+           next_tag = cache_next_addr[63:`CACHE_INDEX_BITS+6];
+
+           cache_lookup_next_hit <= cache_valid[next_idx] && cache_tag[next_idx] == next_tag;
+           cache_lookup_next_data <= cache_read_bank(next_idx, cache_req_next_bank);
+           if (cache_valid[idx] && cache_tag[idx] == tag) begin
+              dram_readdata_r <= cache_read_bank(idx, cache_req_bank);
+              dram_readdata_next_r <= cache_read_bank(next_idx, cache_req_next_bank);
+              dram_readdata_next_valid_r <= cache_req_same_line ||
+                                            (cache_valid[next_idx] && cache_tag[next_idx] == next_tag);
+              dram_readdatavalid_r <= 1;
+              cache_state <= CACHE_IDLE;
+           end else begin
+              cache_fill_base <= {cache_addr[63:6], 6'd0};
+              cache_fill_beat <= 0;
+              cache_fill_return_data <= 0;
+              cache_fill_next_data <= 0;
+              cache_valid[idx] <= 1'b0;
+              cache_state <= CACHE_FILL_REQ;
+           end
+        end
+
+        CACHE_FILL_REQ: begin
+           axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
+           axi_read      <= 1;
+           cache_state   <= CACHE_FILL_WAIT;
+        end
+
+        CACHE_FILL_WAIT: begin
+           if (axi_readdatavalid) begin : cache_fill
+              reg [`CACHE_INDEX_BITS-1:0] idx;
+              reg [`CACHE_TAG_BITS-1:0] tag;
+              idx = cache_fill_base[`CACHE_INDEX_BITS+5:6];
+              tag = cache_fill_base[63:`CACHE_INDEX_BITS+6];
+              cache_store_bank(idx, cache_fill_beat, axi_readdata);
+              if (cache_fill_beat == cache_req_bank)
+                 cache_fill_return_data <= axi_readdata;
+              if (cache_fill_beat == cache_req_next_bank)
+                 cache_fill_next_data <= axi_readdata;
+              if (cache_fill_beat == 3'd7) begin
+                 cache_tag[idx]   <= tag;
+                 cache_valid[idx] <= 1'b1;
+                 dram_readdata_r  <= cache_req_bank == 3'd7 ? axi_readdata : cache_fill_return_data;
+                 dram_readdata_next_r <= cache_req_same_line
+                                          ? (cache_req_next_bank == 3'd7 ? axi_readdata
+                                                                         : cache_fill_next_data)
+                                          : cache_lookup_next_data;
+                 dram_readdata_next_valid_r <= cache_req_same_line || cache_lookup_next_hit;
+                 dram_readdatavalid_r <= 1;
+                 cache_state      <= CACHE_IDLE;
+              end else begin
+                 cache_fill_beat <= cache_fill_beat + 1;
+                 cache_state     <= CACHE_FILL_REQ;
+              end
+           end
+        end
+
+        default: cache_state <= CACHE_IDLE;
+      endcase
+
+      if (reset) begin
+         cache_state <= CACHE_IDLE;
+         dram_readdatavalid_r <= 0;
+         dram_readdata_next_valid_r <= 0;
+         axi_read <= 0;
+         axi_write <= 0;
+         for (cache_i = 0; cache_i < `CACHE_LINES; cache_i = cache_i + 1)
+            cache_valid[cache_i] <= 1'b0;
+      end
+   end
+
    // ----- AXI4 master to DDR4 -----
    // Single read in flight, single write in flight.  arsize/awsize fixed at
-   // 8B; arlen/awlen=0 (one beat).  CPU pulses dram_read with dram_addr
-   // latched; pulses dram_write with dram_addr/dram_writedata/dram_wstrb
-   // latched.  dram_readdatavalid is gated on the CPU being in a DRAM-read
-   // wait state, so a late R beat following a bus_timeout is silently
-   // dropped (replaces the old dram_abandon_read drain).
+   // 8B; arlen/awlen=0 (one beat).  The physical cache above this block
+   // emits axi_read/axi_write pulses for line fills and write-through stores.
    reg         ar_busy = 0;
    reg         r_busy  = 0;
    reg [27:0]  ar_addr_r;
@@ -4569,24 +4838,18 @@ module smolrv64(input wire        clock,
    reg [63:0]  w_data_r;
    reg [ 7:0]  w_strb_r;
 
-   reg         dram_readdatavalid_r = 0;
-   wire        dram_read_wait =
-        state == `S_DRAM_FETCH_WAIT      ||
-        state == `S_DRAM_FETCH_HALF_WAIT ||
-        state == `S_DRAM_LOAD_WAIT       ||
-        state == `S_DRAM_LOAD2_WAIT      ||
-        state == `S_DRAM_PTW_WAIT;
+   reg         axi_readdatavalid_r = 0;
 
-   assign dram_readdatavalid = dram_readdatavalid_r;
-   assign dram_readdata      = rdata_r;
-   assign dram_write_ready   = !aw_busy && !w_busy && !b_busy;
+   assign axi_readdatavalid = axi_readdatavalid_r;
+   assign axi_readdata      = rdata_r;
+   assign axi_write_ready   = !aw_busy && !w_busy && !b_busy;
 
    always @(posedge clock) begin
-      dram_readdatavalid_r <= 0;
+      axi_readdatavalid_r <= 0;
 
       // AR / R
-      if (dram_read) begin
-         ar_addr_r <= dram_addr;
+      if (axi_read) begin
+         ar_addr_r <= axi_read_addr;
          ar_busy   <= 1;
          r_busy    <= 1;
       end
@@ -4594,14 +4857,14 @@ module smolrv64(input wire        clock,
       if (r_busy && m_axi_rvalid) begin
          rdata_r              <= m_axi_rdata;
          r_busy               <= 0;
-         dram_readdatavalid_r <= dram_read_wait;
+         axi_readdatavalid_r  <= 1;
       end
 
       // AW / W / B
-      if (dram_write) begin
-         aw_addr_r <= dram_addr;
-         w_data_r  <= dram_writedata;
-         w_strb_r  <= dram_wstrb;
+      if (axi_write) begin
+         aw_addr_r <= axi_write_addr;
+         w_data_r  <= axi_write_data;
+         w_strb_r  <= axi_write_strb;
          aw_busy   <= 1;
          w_busy    <= 1;
          b_busy    <= 1;
@@ -4613,7 +4876,7 @@ module smolrv64(input wire        clock,
       if (reset) begin
          ar_busy <= 0; r_busy <= 0;
          aw_busy <= 0; w_busy <= 0; b_busy <= 0;
-         dram_readdatavalid_r <= 0;
+         axi_readdatavalid_r <= 0;
       end
    end
 
