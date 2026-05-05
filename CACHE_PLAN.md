@@ -69,6 +69,64 @@ large UltraRAM-backed cache:
 The implementation should support smaller sizes for simulation and synthesis
 experiments, but it should not be designed around a tiny LUTRAM-only cache.
 
+## Current Status
+
+The first hardware cache milestone has been reached: SmolRV64 boots Ubuntu on
+the FPGA with a unified physical DRAM read cache, and the large cache arrays no
+longer synthesize as distributed RAM. The implementation is still a prototype,
+not the final memory architecture described by this plan.
+
+Known current properties:
+
+- DRAM cache data arrays and tag metadata are mapped to FPGA memory resources
+  instead of massive LUTRAM.
+- The cache is unified for the implemented DRAM read path and has been tested
+  far enough to boot Ubuntu on hardware.
+- Stores currently remain write-through and conservative.
+- The local `mem0`/`mem1` SRAM arrays still appear as separate memories in the
+  load/store/fetch path. They should instead become cacheable backing memory
+  behind the same memory front-end as DRAM, or be replaced by that backing path.
+- The current RTL contains a correctness workaround for Sv39 data accesses that
+  cross a 4 KiB page boundary: those accesses trap as misaligned instead of
+  being split across two translated pages. That avoids the corruption class that
+  blocked Ubuntu boot, but it is not the desired long-term behavior.
+
+## Outstanding Work
+
+The remaining cache work is substantial. This list is not ordered by priority.
+
+- Move `mem0`/`mem1` behind the cache/front-end. Local SRAM should be cacheable
+  backing memory, like DRAM, not a separate load/store/fetch fast path. This is
+  both a cleanup goal and a synthesis goal, because those arrays still show up
+  as independent memories.
+- Stop invalidating cache lines merely because a write-through store occurs. On
+  a cached store hit, update the selected bytes in the cache and issue the
+  write-through. Invalidation should be reserved for real coherency events,
+  explicit maintenance, or reset/flush behavior.
+- Re-evaluate the write policy. Write-through was the right debug-first policy,
+  but a write-back cache will likely be better for Linux. That requires dirty
+  metadata, eviction writeback, store miss policy, FENCE/write-buffer ordering,
+  and careful exception/reset behavior.
+- Consider a two-way skew-associative cache. A direct-mapped cache is simple,
+  but Linux can create conflict-heavy access patterns. Two ways with different
+  index hashes should reduce misses more than simply shrinking/expanding a
+  direct-mapped cache, but it needs a replacement policy and a timing study.
+- Review all misaligned memory operation paths: within one 64-byte line,
+  crossing 64-bit banks inside one line, crossing two cache lines, and crossing
+  two pages. Ideally these should have no added penalty on cache hits.
+  Cross-page accesses are the hardest case because both pages must be
+  translated, checked, and then combined/split without partial corruption.
+- Eventually split instruction and data caches, but keep them coherent. A split
+  design needs `fence.i` semantics, D-cache to I-cache invalidation or snooping,
+  and PTW coherence with stores that update page tables.
+- Timing: quantify how small the cache would need to be to recover the cycle or
+  pipeline stage added to meet timing. Compare cache size, associativity, BRAM
+  versus UltraRAM mapping, WNS, resource use, and hit latency.
+- Add cache-specific simulation and hardware stress tests for corruption cases:
+  repeated SD reads, page-table-heavy workloads, line-crossing stores, random
+  byte-mask stores, replacement under write pressure, and user/kernel workloads
+  that exercise high virtual addresses near Sv39 boundaries.
+
 ## Current Memory Map Context
 
 Current relevant regions:
@@ -294,8 +352,16 @@ unit, or move into the front-end. The first implementation should minimize
 behavioral churn: keep architectural load formatting where it is today if
 practical.
 
-Misaligned loads should preserve current behavior. If the current core traps or
-handles them specially, the cache should not silently change that behavior.
+Misaligned accesses need a dedicated follow-up review. The ideal behavior is no
+extra penalty when all required bytes are already resident in cache, including
+accesses that cross a 64-bit bank boundary or a 64-byte cache-line boundary.
+Cross-page accesses require two translations and two permission checks before
+any architectural state is updated.
+
+The current cross-page Sv39 workaround traps such accesses as misaligned. That
+is acceptable as a temporary correctness fix, but the long-term cache/front-end
+should translate both pages, split the physical accesses as needed, and combine
+or merge the result without partial stores or stale bytes.
 
 ## Cached Store Behavior
 
@@ -319,6 +385,17 @@ is simple and correct. A write buffer can be added later.
 
 The write-through path should write only the requested bytes/word to backing
 memory, not the whole line.
+
+A write-through store must not invalidate an otherwise valid cached line just
+because the core is writing. If the line hits, update the selected bytes in the
+cache and send the same byte enables to backing memory. If the line misses, the
+policy can be write-allocate or no-write-allocate, but it should be explicit and
+tested. Blind invalidation increases miss rate and can hide stale-line bugs.
+
+Write-back should be revisited after the blocking write-through design is
+stable. It will likely reduce memory traffic for Linux, but it adds dirty bits,
+eviction writeback, writeback/fill arbitration, FENCE draining, and more complex
+fault and reset cases.
 
 ## Write Buffer As A Second Step
 
@@ -439,6 +516,12 @@ memfe_resp_fault
 The exact signal names can follow existing local style. The important point is
 that fetch, LSU, and PTW stop reaching directly into SRAM/DRAM/MMIO cases.
 
+`mem0` and `mem1` are specifically part of this cleanup. They should not remain
+special CPU-visible memories that bypass the cache. Either keep them as the
+local SRAM backing store behind the cached-memory path, or replace them with the
+same lower-level backing interface used by DRAM. In both cases, the core-side
+load/store/fetch/PTW logic should see only the memory front-end.
+
 ## Page Table Walker Integration
 
 The PTW should become a normal cache client.
@@ -492,6 +575,13 @@ FENCE.I:
 
 If a split I/D cache is ever added later, `fence.i` becomes more complex. That
 is one reason to keep the first cache unified.
+
+Future split instruction/data caches must remain coherent from the architecture
+point of view. Stores that modify executable memory must become visible to
+later instruction fetches after `fence.i`; stores that update page tables must
+be visible to PTW reads; and write-back dirty data must not leave the I-cache or
+PTW observing stale memory. The split-cache design therefore needs either
+targeted invalidation, snooping, or explicit cache-maintenance machinery.
 
 ## Exceptions And Faults
 
@@ -563,8 +653,12 @@ Known possible conflict sources:
 
 Correct tagging across SRAM and DRAM is essential. Do not rely on index alone.
 
-If conflict misses are severe, the next design step would be 2-way
-associativity, but that should not be part of the first implementation.
+If conflict misses are severe, the next design step should be two-way
+skew-associativity rather than plain two-way associativity. Use a different
+index hash per way so addresses that collide in one way are less likely to
+collide in the other. This needs replacement-state metadata, hit selection, and
+eviction policy work, and it must be measured against the timing cost of reading
+and comparing two candidate lines.
 
 ## Timing Strategy
 
@@ -583,6 +677,22 @@ Important timing choices:
 - Avoid direct fanout from every pipeline state into every device decoder.
 
 Expected hit latency can be more than one cycle. That is acceptable.
+
+The current hardware path paid an additional cycle/stage to meet timing. A
+specific follow-up experiment should determine what cache sizes and
+organizations could recover that cycle:
+
+```text
+vary line count / index bits
+compare direct-mapped versus two-way skew-associative
+compare BRAM and UltraRAM mapping
+record WNS, resource use, and cache hit latency
+boot or run a representative workload when timing closes
+```
+
+The result should answer whether a smaller cache is actually faster overall, or
+whether the extra hit stage is still the better tradeoff because it avoids DDR
+miss latency more often.
 
 ## Suggested FSM
 
@@ -737,6 +847,7 @@ Check:
 - Linux boot to login.
 - SD read/write.
 - Large SD read hash stability.
+- Ubuntu boot.
 
 ### Stage 6: FPGA 2 MiB Cache Experiment
 
@@ -745,6 +856,44 @@ Only after 1 MiB works and meets timing:
 - Increase line count to 32768.
 - Re-run synthesis/implementation.
 - Compare timing, utilization, boot speed, SD hash tests.
+
+### Stage 7: Complete Unified Memory Front-End
+
+After the DRAM cache is stable on hardware, remove the remaining separate
+SRAM/DRAM/fetch/load/store/PTW memory paths. `mem0`/`mem1` should become
+cacheable backing memory or disappear behind the same lower-level interface as
+DRAM.
+
+Expected result:
+
+- No direct CPU-side access to `mem0`/`mem1`.
+- SRAM and DRAM both use the same cacheability and miss/fill machinery.
+- PTW, fetch, and data accesses share one response path.
+- Distributed RAM inference is limited to genuinely small structures such as
+  FIFOs, not large architectural memories.
+
+### Stage 8: Store Policy Cleanup
+
+Remove store-triggered line invalidation from the write-through cache. Then
+evaluate write-back.
+
+Expected result:
+
+- Store hits update cached bytes and backing memory.
+- Store misses follow one documented policy.
+- Read-after-write to the same line hits correctly.
+- Replacement and write pressure tests do not corrupt backing memory.
+
+### Stage 9: Associativity And Timing Experiments
+
+Compare direct-mapped, smaller direct-mapped, and two-way skew-associative
+variants.
+
+Expected result:
+
+- A measured cache size/timing table.
+- A measured miss-rate or workload-runtime table.
+- A decision on whether the extra timing stage should stay.
 
 ## Test Plan
 
@@ -773,17 +922,24 @@ Cache-specific tests to add:
 - Load hit after fill.
 - Store hit updates cached data.
 - Store hit writes through to backing memory.
+- Store hit does not invalidate the line.
 - Store miss write-allocates.
 - Byte/half/word/dword stores update only selected bytes.
 - Fill crossing multiple banks.
 - Direct-mapped replacement with different tags.
 - SRAM and DRAM addresses with same index do not alias.
+- `mem0`/`mem1` accesses go through the same cache/front-end as DRAM.
 - MMIO read does not allocate.
 - MMIO write does not allocate.
 - Instruction fetch from MMIO faults.
 - PTW read through cache.
 - FENCE waits for pending write-through.
 - FENCE.I flushes prefetched instruction state.
+- Misaligned load/store within one cache line.
+- Misaligned load/store crossing two cache lines, with both lines already hot.
+- Misaligned load/store crossing two pages, with both translations valid.
+- Cross-page store fault cases do not partially corrupt either page.
+- High Sv39 user addresses near the canonical boundary.
 
 ## Debug Instrumentation
 
@@ -830,20 +986,31 @@ Keep these behind synthesis/simulation guards so they do not affect FPGA timing.
 - Does the direct-mapped 1 MiB cache meet timing with the current CVFPU
   integration?
 - Should cache counters be memory-mapped, CSR-like, or monitor-only?
+- What is the right final policy for cached store misses: write-allocate or
+  no-write-allocate?
+- How much write-back machinery is worth adding before split I/D caches?
+- What index hashes work best for a two-way skew-associative cache without
+  hurting timing?
+- Can cross-line misaligned hits be serviced without a bubble, and what extra
+  bank/tag read ports or prefetch state would that require?
+- How should cross-page misaligned stores preserve precise behavior when the
+  first page succeeds and the second page faults?
 
-## Recommended First Commit Boundary
+## Recommended Next Commit Boundaries
 
-The safest first commit should only add the memory front-end skeleton and
-region classifier, with behavior equivalent to today. It should not add cache
-state yet.
+Future commits should keep correctness fixes separate from architectural cache
+changes whenever possible.
 
-That commit should make later cache work mechanical:
+Suggested boundaries:
 
-- Existing fetch path submits a front-end request.
-- Existing LSU submits a front-end request.
-- Existing PTW submits a front-end request.
-- Front-end routes to current SRAM/DRAM/MMIO logic.
-- Tests pass with no expected behavioral change.
+- Cross-page Sv39 correctness fix and tests.
+- `mem0`/`mem1` front-end unification with behavior-preserving tests.
+- Write-through store-hit update without invalidation.
+- Misaligned hot-hit behavior improvements.
+- Write-back metadata and eviction writeback.
+- Two-way skew-associative experiment.
+- Split coherent I/D cache experiment.
 
-After that, adding the cache array becomes a localized replacement of the
-cacheable-memory branch inside the front-end.
+Each commit should have a simulation check and, for cache/timing changes, a
+hardware-oriented test note describing whether Vivado implementation was run or
+intentionally deferred.

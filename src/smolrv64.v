@@ -2194,33 +2194,62 @@ module smolrv64(input wire        clock,
               load_size_lg2 = pre_load_size_lg2;
               mem_addr0    <= mem_addr[63:4] + mem_addr[3];
               mem_addr1    <= mem_addr[63:4];
-              case (pre_mem_op)
-                 `MEMOP_LOAD: state <= `S_LOAD_LATCH;
-                 `MEMOP_STORE: begin
-                    mem_wr_mask = pre_mem_wr_mask;
-                    store_value = pre_mem_fp ? f2 : s2;
-                    state <= `S_STORE;
+              begin : mem_access_dispatch
+                 reg [12:0] mem_access_bytes;
+
+                 case (pre_mem_op)
+                   `MEMOP_STORE,
+                   `MEMOP_SC: begin
+                      case (pre_mem_wr_mask)
+                        8'hff: mem_access_bytes = 13'd8;
+                        8'h0f: mem_access_bytes = 13'd4;
+                        8'h03: mem_access_bytes = 13'd2;
+                        default: mem_access_bytes = 13'd1;
+                      endcase
+                   end
+                   default: mem_access_bytes = 13'd1 << pre_load_size_lg2[1:0];
+                 endcase
+
+                 if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 &&
+                     (pre_mem_op != `MEMOP_SC || reservation_match) &&
+                     ({1'b0, mem_addr[11:0]} + mem_access_bytes > 13'd4096)) begin
+                    cause = (pre_mem_op == `MEMOP_STORE || pre_mem_op == `MEMOP_SC || pre_mem_op == `MEMOP_AMO)
+                            ? `TRAP_STORE_ADDRESS_MISALIGNED
+                            : `TRAP_LOAD_ADDRESS_MISALIGNED;
+                    tval = mem_addr;
+                    write_back_register = 0;
+                    write_back_fp_valid = 0;
+                    state <= `S_EXCEPTION;
+                 end else begin
+                    case (pre_mem_op)
+                       `MEMOP_LOAD: state <= `S_LOAD_LATCH;
+                       `MEMOP_STORE: begin
+                          mem_wr_mask = pre_mem_wr_mask;
+                          store_value = pre_mem_fp ? f2 : s2;
+                          state <= `S_STORE;
+                       end
+                       `MEMOP_LR: begin
+                          reservation <= s1;
+                          state <= `S_LOAD_LATCH;
+                       end
+                       `MEMOP_SC: begin
+                          if (reservation_match) begin
+                             write_back_value <= 0;
+                             mem_wr_mask = pre_mem_wr_mask;
+                             store_value = s2;
+                             state <= `S_STORE;
+                          end
+                          // SC fail: write_back_value = 1 from EXOP_ONE in rf3_pre_decode;
+                          // default state <= S_EXECUTE2 at top of S_EXECUTE retires it.
+                       end
+                       `MEMOP_AMO: begin
+                          do_atomic <= 1;
+                          state <= `S_LOAD_LATCH;
+                       end
+                       default: ;
+                    endcase
                  end
-                 `MEMOP_LR: begin
-                    reservation <= s1;
-                    state <= `S_LOAD_LATCH;
-                 end
-                 `MEMOP_SC: begin
-                    if (reservation_match) begin
-                       write_back_value <= 0;
-                       mem_wr_mask = pre_mem_wr_mask;
-                       store_value = s2;
-                       state <= `S_STORE;
-                    end
-                    // SC fail: write_back_value = 1 from EXOP_ONE in rf3_pre_decode;
-                    // default state <= S_EXECUTE2 at top of S_EXECUTE retires it.
-                 end
-                 `MEMOP_AMO: begin
-                    do_atomic <= 1;
-                    state <= `S_LOAD_LATCH;
-                 end
-                 default: ;
-              endcase
+              end
               end // else: !(pre_mem_fp && fs == 0)
            end
 
