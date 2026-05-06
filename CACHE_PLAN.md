@@ -82,7 +82,9 @@ Known current properties:
   instead of massive LUTRAM.
 - The cache is unified for the implemented DRAM read path and has been tested
   far enough to boot Ubuntu on hardware.
-- Stores currently remain write-through and conservative.
+- Stores to DRAM now use write-allocate/write-back behavior: cache hits update
+  the selected bytes and mark the line dirty; dirty direct-mapped victims are
+  written back before refill.
 - The local `mem0`/`mem1` SRAM arrays still appear as separate memories in the
   load/store/fetch path. They should instead become cacheable backing memory
   behind the same memory front-end as DRAM, or be replaced by that backing path.
@@ -99,14 +101,10 @@ The remaining cache work is substantial. This list is not ordered by priority.
   backing memory, like DRAM, not a separate load/store/fetch fast path. This is
   both a cleanup goal and a synthesis goal, because those arrays still show up
   as independent memories.
-- Stop invalidating cache lines merely because a write-through store occurs. On
-  a cached store hit, update the selected bytes in the cache and issue the
-  write-through. Invalidation should be reserved for real coherency events,
-  explicit maintenance, or reset/flush behavior.
-- Re-evaluate the write policy. Write-through was the right debug-first policy,
-  but a write-back cache will likely be better for Linux. That requires dirty
-  metadata, eviction writeback, store miss policy, FENCE/write-buffer ordering,
-  and careful exception/reset behavior.
+- Continue validating the write-back policy under hardware workloads. The first
+  write-back implementation is still blocking and direct-mapped: it has dirty
+  metadata, store allocation, and eviction writeback, but no explicit cache
+  maintenance path, write buffer, or external DMA coherence.
 - Consider a two-way skew-associative cache. A direct-mapped cache is simple,
   but Linux can create conflict-heavy access patterns. Two ways with different
   index hashes should reduce misses more than simply shrinking/expanding a
@@ -179,7 +177,7 @@ virtual data address
   -> existing translation/PTW if paging is enabled
   -> physical address
   -> cacheable-region check
-      cached: cache lookup/fill/store update/write-through
+      cached: cache lookup/fill/store update/write-back
       uncached: single MMIO transaction through bypass
 ```
 
@@ -279,10 +277,12 @@ Metadata:
 
 ```text
 valid[line_index]
+dirty[line_index]
 tag[line_index]
 ```
 
-No dirty bit in the first implementation because stores are write-through.
+The current prototype uses dirty metadata for the DRAM cache so stores can be
+write-back.
 
 For a 1 MiB cache with 34-bit physical addresses, approximate metadata is:
 
@@ -292,6 +292,7 @@ tag bits   = PA_BITS - index_bits - offset_bits
            = 34 - 14 - 6
            = 14 bits
 valid      = 16384 bits
+dirty      = 16384 bits
 tag RAM    = 16384 * 14 bits
 ```
 
@@ -372,30 +373,19 @@ For cached stores:
 2. Classify PA.
 3. If cache hit:
      update selected bank bytes using byte enables
-     issue write-through to backing memory
+     mark the line dirty
 4. If cache miss and write-allocate:
+     write back the victim first if it is valid and dirty
      fill line
      update selected bank bytes
-     issue write-through to backing memory
+     mark the line dirty
 5. Complete store when required ordering is satisfied.
 ```
 
-For the first version, stores may block until the write-through completes. This
-is simple and correct. A write buffer can be added later.
-
-The write-through path should write only the requested bytes/word to backing
-memory, not the whole line.
-
-A write-through store must not invalidate an otherwise valid cached line just
-because the core is writing. If the line hits, update the selected bytes in the
-cache and send the same byte enables to backing memory. If the line misses, the
-policy can be write-allocate or no-write-allocate, but it should be explicit and
-tested. Blind invalidation increases miss rate and can hide stale-line bugs.
-
-Write-back should be revisited after the blocking write-through design is
-stable. It will likely reduce memory traffic for Linux, but it adds dirty bits,
-eviction writeback, writeback/fill arbitration, FENCE draining, and more complex
-fault and reset cases.
+For now stores block until the cache hit/miss action is complete. Dirty victim
+writeback writes the whole 64-byte line before the new line is filled. A write
+buffer can be added later, but it will need explicit ordering around uncached
+MMIO and FENCE.
 
 ## Write Buffer As A Second Step
 
@@ -467,8 +457,8 @@ On a cache miss:
 6. Return the originally requested word/bytes.
 ```
 
-For direct-mapped write-through, no eviction writeback is required. If a valid
-line is replaced, simply overwrite it.
+For direct-mapped write-back, a valid dirty victim must be written back before
+the new line is filled. A valid clean line can be overwritten directly.
 
 Important detail: update valid last, after all data banks and tag are written.
 If reset or exception machinery can observe partially filled lines, the line
@@ -481,7 +471,7 @@ The cache front-end needs two lower-level target paths:
 ```text
 cached backing path:
   SRAM and DRAM line fills
-  cached write-through stores
+  dirty cache-line writebacks
 
 uncached bypass path:
   MMIO reads/writes
@@ -565,7 +555,7 @@ Initial behavior:
 ```text
 FENCE:
   wait until the cache front-end is idle
-  wait until any write-through transaction has completed
+  wait until any active writeback transaction has completed
   if write buffer exists later, drain it
 
 FENCE.I:
@@ -739,11 +729,10 @@ HIT_RESP
 
 STORE_UPDATE
   update selected bank bytes
-  issue write-through
-  if blocking stores -> WRITE_THROUGH_WAIT
-  else               -> STORE_RESP
+  mark line dirty
+  return STORE_RESP
 
-WRITE_THROUGH_WAIT
+WRITEBACK_WAIT
   wait for backing write completion
   -> STORE_RESP
 
@@ -819,7 +808,7 @@ Suggested size:
 ```text
 4 KiB or 8 KiB
 64-byte lines
-write-through
+write-back
 write-allocate
 ```
 
@@ -891,13 +880,14 @@ Expected result:
 
 ### Stage 8: Store Policy Cleanup
 
-Remove store-triggered line invalidation from the write-through cache. Then
-evaluate write-back.
+Replace the debug-first write-through/invalidate behavior with write-back
+store allocation.
 
 Expected result:
 
-- Store hits update cached bytes and backing memory.
-- Store misses follow one documented policy.
+- Store hits update cached bytes and mark the line dirty.
+- Store misses write-allocate.
+- Dirty victims are written back before replacement.
 - Read-after-write to the same line hits correctly.
 - Replacement and write pressure tests do not corrupt backing memory.
 
@@ -938,9 +928,9 @@ Cache-specific tests to add:
 
 - Load hit after fill.
 - Store hit updates cached data.
-- Store hit writes through to backing memory.
 - Store hit does not invalidate the line.
 - Store miss write-allocates.
+- Dirty victim writeback preserves all eight 64-bit beats.
 - Byte/half/word/dword stores update only selected bytes.
 - Fill crossing multiple banks.
 - Direct-mapped replacement with different tags.
@@ -950,7 +940,7 @@ Cache-specific tests to add:
 - MMIO write does not allocate.
 - Instruction fetch from MMIO faults.
 - PTW read through cache.
-- FENCE waits for pending write-through.
+- FENCE waits for pending cache activity.
 - FENCE.I flushes prefetched instruction state.
 - Misaligned load/store within one cache line.
 - Misaligned load/store crossing two cache lines, with both lines already hot.
@@ -969,7 +959,7 @@ data store requests
 ptw requests
 cache hits
 cache misses
-write-through writes
+dirty writebacks
 uncached reads
 uncached writes
 fills
@@ -1003,9 +993,9 @@ Keep these behind synthesis/simulation guards so they do not affect FPGA timing.
 - Does the direct-mapped 1 MiB cache meet timing with the current CVFPU
   integration?
 - Should cache counters be memory-mapped, CSR-like, or monitor-only?
-- What is the right final policy for cached store misses: write-allocate or
-  no-write-allocate?
-- How much write-back machinery is worth adding before split I/D caches?
+- Does the blocking write-back policy hold up under Linux write pressure?
+- How much additional write-back machinery, such as a write buffer or explicit
+  maintenance operation, is worth adding before split I/D caches?
 - What index hashes work best for a two-way skew-associative cache without
   hurting timing?
 - Can cross-line misaligned hits be serviced without a bubble, and what extra
@@ -1022,9 +1012,8 @@ Suggested boundaries:
 
 - Cross-page Sv39 correctness fix and tests.
 - `mem0`/`mem1` front-end unification with behavior-preserving tests.
-- Write-through store-hit update without invalidation.
+- Write-back stress tests and any required correctness fixes.
 - Misaligned hot-hit behavior improvements.
-- Write-back metadata and eviction writeback.
 - Two-way skew-associative experiment.
 - Split coherent I/D cache experiment.
 

@@ -656,7 +656,9 @@ module smolrv64(input wire        clock,
 `endif
 `define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
 `define CACHE_TAG_BITS  (64 - `CACHE_INDEX_BITS - 6)
-`define CACHE_META_BITS (`CACHE_TAG_BITS + 1)
+`define CACHE_VALID_BIT `CACHE_TAG_BITS
+`define CACHE_DIRTY_BIT (`CACHE_TAG_BITS + 1)
+`define CACHE_META_BITS (`CACHE_TAG_BITS + 2)
 `ifndef RESET_PC
 `define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
 `endif
@@ -890,15 +892,17 @@ module smolrv64(input wire        clock,
    reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
    reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
 
-   // Physical direct-mapped write-through cache for external DRAM reads.
+   // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
    // 64-byte line as eight 64-bit beats from the AXI backing path.
-   localparam [2:0] CACHE_IDLE      = 3'd0;
-   localparam [2:0] CACHE_TAG_READ  = 3'd1;
-   localparam [2:0] CACHE_TAG_CHECK = 3'd2;
-   localparam [2:0] CACHE_FILL_REQ  = 3'd3;
-   localparam [2:0] CACHE_FILL_WAIT = 3'd4;
-   localparam [2:0] CACHE_HIT_RESP  = 3'd5;
+   localparam [3:0] CACHE_IDLE      = 4'd0;
+   localparam [3:0] CACHE_TAG_READ  = 4'd1;
+   localparam [3:0] CACHE_TAG_CHECK = 4'd2;
+   localparam [3:0] CACHE_FILL_REQ  = 4'd3;
+   localparam [3:0] CACHE_FILL_WAIT = 4'd4;
+   localparam [3:0] CACHE_HIT_RESP  = 4'd5;
+   localparam [3:0] CACHE_WB_REQ    = 4'd6;
+   localparam [3:0] CACHE_WB_WAIT   = 4'd7;
 
    (* ram_style = "block" *) reg [63:0] cache_bank0[0:`CACHE_LINES-1];
    (* ram_style = "block" *) reg [63:0] cache_bank1[0:`CACHE_LINES-1];
@@ -910,18 +914,25 @@ module smolrv64(input wire        clock,
    (* ram_style = "block" *) reg [63:0] cache_bank7[0:`CACHE_LINES-1];
    // Duplicate tag RAM keeps the line-crossing next-word hit check synchronous
    // without asking Vivado to build a multi-read-port tag memory in LUTs.
-   // Tag metadata is {valid, tag}; the RAMs power up zeroed, so all lines start
-   // invalid. Soft reset waits for this cache to go idle and does not flush it.
+   // Tag metadata is {dirty, valid, tag}; the RAMs power up zeroed, so all
+   // lines start invalid and clean. Soft reset waits for this cache to go idle
+   // and does not flush it.
 
-   reg [ 2:0] cache_state = CACHE_IDLE;
+   reg [ 3:0] cache_state = CACHE_IDLE;
    reg [63:0] cache_addr = 0;
    reg [63:0] cache_fill_base = 0;
+   reg [63:0] cache_wb_base = 0;
    reg [ 2:0] cache_fill_beat = 0;
+   reg [ 2:0] cache_wb_beat = 0;
    reg [ 2:0] cache_req_bank = 0;
    reg [ 2:0] cache_req_next_bank = 0;
    reg        cache_req_same_line = 0;
+   reg        cache_req_write = 0;
    reg [`CACHE_TAG_BITS-1:0] cache_req_tag = 0;
    reg [`CACHE_TAG_BITS-1:0] cache_req_next_tag = 0;
+   reg [`CACHE_TAG_BITS-1:0] cache_victim_tag = 0;
+   reg [63:0] cache_store_data = 0;
+   reg [ 7:0] cache_store_strb = 0;
    reg [63:0] cache_fill_return_data = 0;
    reg [63:0] cache_fill_next_data = 0;
    reg [63:0] cache_lookup_data = 0;
@@ -929,10 +940,12 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_hit = 0;
    reg        cache_lookup_next_hit = 0;
    reg        cache_lookup_next_valid = 0;
+   reg        cache_lookup_dirty = 0;
    reg        dram_readdatavalid_r = 0;
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
    reg        dram_readdata_next_valid_r = 0;
+   reg        dram_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
 
    reg        axi_read = 0;
@@ -966,8 +979,7 @@ module smolrv64(input wire        clock,
 
    wire       hpm_instret_pulse = state == `S_FETCH1;
    wire       hpm_cache_read_pulse = cache_state == CACHE_IDLE && dram_read;
-   wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write &&
-                                      axi_write_ready && !axi_read;
+   wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
    wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
    wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && axi_readdatavalid;
@@ -4996,8 +5008,8 @@ module smolrv64(input wire        clock,
    assign dram_readdata      = dram_readdata_r;
    assign dram_readdata_next = dram_readdata_next_r;
    assign dram_readdata_next_valid = dram_readdata_next_valid_r;
-   assign dram_write_ready   = cache_idle && axi_write_ready && !axi_read;
-   assign dram_write_done    = axi_write_done;
+   assign dram_write_ready   = cache_idle;
+   assign dram_write_done    = dram_write_done_r;
 
    always @(posedge clock) begin
       cache_bank0_rd_data <= cache_bank0[cache_bank0_rd_idx];
@@ -5009,16 +5021,33 @@ module smolrv64(input wire        clock,
       cache_bank6_rd_data <= cache_bank6[cache_rd_idx];
       cache_bank7_rd_data <= cache_bank7[cache_rd_idx];
 
-      if (cache_state == CACHE_FILL_WAIT && axi_readdatavalid) begin
+      if (cache_state == CACHE_FILL_WAIT && axi_readdatavalid) begin : cache_fill_bank_write
+         reg [63:0] fill_word;
+         fill_word = axi_readdata;
+         if (cache_req_write && cache_fill_beat == cache_req_bank)
+            fill_word = merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
          case (cache_fill_beat)
-           3'd0: cache_bank0[cache_fill_idx] <= axi_readdata;
-           3'd1: cache_bank1[cache_fill_idx] <= axi_readdata;
-           3'd2: cache_bank2[cache_fill_idx] <= axi_readdata;
-           3'd3: cache_bank3[cache_fill_idx] <= axi_readdata;
-           3'd4: cache_bank4[cache_fill_idx] <= axi_readdata;
-           3'd5: cache_bank5[cache_fill_idx] <= axi_readdata;
-           3'd6: cache_bank6[cache_fill_idx] <= axi_readdata;
-           3'd7: cache_bank7[cache_fill_idx] <= axi_readdata;
+           3'd0: cache_bank0[cache_fill_idx] <= fill_word;
+           3'd1: cache_bank1[cache_fill_idx] <= fill_word;
+           3'd2: cache_bank2[cache_fill_idx] <= fill_word;
+           3'd3: cache_bank3[cache_fill_idx] <= fill_word;
+           3'd4: cache_bank4[cache_fill_idx] <= fill_word;
+           3'd5: cache_bank5[cache_fill_idx] <= fill_word;
+           3'd6: cache_bank6[cache_fill_idx] <= fill_word;
+           3'd7: cache_bank7[cache_fill_idx] <= fill_word;
+         endcase
+      end
+
+      if (cache_state == CACHE_HIT_RESP && cache_req_write && cache_lookup_hit) begin
+         case (cache_req_bank)
+           3'd0: cache_bank0[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd1: cache_bank1[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd2: cache_bank2[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd3: cache_bank3[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd4: cache_bank4[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd5: cache_bank5[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd6: cache_bank6[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+           3'd7: cache_bank7[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
          endcase
       end
    end
@@ -5026,6 +5055,7 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
+      dram_write_done_r <= 0;
       axi_read  <= 0;
       axi_write <= 0;
       cache_tag_wr_en <= 0;
@@ -5034,6 +5064,7 @@ module smolrv64(input wire        clock,
         CACHE_IDLE: begin
            if (dram_read) begin
               cache_addr          <= cache_dram_addr;
+              cache_req_write     <= 0;
               cache_req_tag       <= cache_dram_tag;
               cache_req_next_tag  <= cache_dram_next_tag;
               cache_req_bank      <= dram_addr[2:0];
@@ -5044,14 +5075,20 @@ module smolrv64(input wire        clock,
                                                              : cache_dram_idx;
               cache_next_rd_idx   <= cache_dram_next_idx;
               cache_state         <= CACHE_TAG_READ;
-           end else if (dram_write && axi_write_ready && !axi_read) begin
-              cache_tag_wr_en   <= 1;
-              cache_tag_wr_idx  <= cache_dram_idx;
-              cache_tag_wr_data <= {1'b0, cache_dram_tag};
-              axi_write_addr <= dram_addr;
-              axi_write_data <= dram_writedata;
-              axi_write_strb <= dram_wstrb;
-              axi_write      <= 1;
+           end else if (dram_write) begin
+              cache_addr          <= cache_dram_addr;
+              cache_req_write     <= 1;
+              cache_req_tag       <= cache_dram_tag;
+              cache_req_next_tag  <= cache_dram_next_tag;
+              cache_req_bank      <= dram_addr[2:0];
+              cache_req_next_bank <= dram_addr[2:0] + 3'd1;
+              cache_req_same_line <= 1;
+              cache_store_data    <= dram_writedata;
+              cache_store_strb    <= dram_wstrb;
+              cache_rd_idx        <= cache_dram_idx;
+              cache_bank0_rd_idx  <= cache_dram_idx;
+              cache_next_rd_idx   <= cache_dram_next_idx;
+              cache_state         <= CACHE_TAG_READ;
            end
         end
 
@@ -5061,33 +5098,71 @@ module smolrv64(input wire        clock,
 
         CACHE_TAG_CHECK: begin
            cache_lookup_hit <=
-                cache_tag_rd_data[`CACHE_TAG_BITS] &&
+                cache_tag_rd_data[`CACHE_VALID_BIT] &&
                 cache_tag_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_tag;
            cache_lookup_next_hit <=
-                cache_tag_next_rd_data[`CACHE_TAG_BITS] &&
+                cache_tag_next_rd_data[`CACHE_VALID_BIT] &&
                 cache_tag_next_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_next_tag;
            cache_lookup_data <= cache_selected_bank_data(cache_req_bank);
            cache_lookup_next_data <= cache_selected_bank_data(cache_req_next_bank);
            cache_lookup_next_valid <=
                 cache_req_same_line ||
-                (cache_tag_next_rd_data[`CACHE_TAG_BITS] &&
+                (cache_tag_next_rd_data[`CACHE_VALID_BIT] &&
                  cache_tag_next_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_next_tag);
+           cache_lookup_dirty <= cache_tag_rd_data[`CACHE_VALID_BIT] &&
+                                 cache_tag_rd_data[`CACHE_DIRTY_BIT];
+           cache_victim_tag <= cache_tag_rd_data[`CACHE_TAG_BITS-1:0];
            cache_state <= CACHE_HIT_RESP;
         end
 
         CACHE_HIT_RESP: begin
            if (cache_lookup_hit) begin
-              dram_readdata_r <= cache_lookup_data;
-              dram_readdata_next_r <= cache_lookup_next_data;
-              dram_readdata_next_valid_r <= cache_lookup_next_valid;
-              dram_readdatavalid_r <= 1;
+              if (cache_req_write) begin
+                 cache_tag_wr_en   <= 1;
+                 cache_tag_wr_idx  <= cache_rd_idx;
+                 cache_tag_wr_data <= {1'b1, 1'b1, cache_req_tag};
+                 dram_write_done_r <= 1;
+              end else begin
+                 dram_readdata_r <= cache_lookup_data;
+                 dram_readdata_next_r <= cache_lookup_next_data;
+                 dram_readdata_next_valid_r <= cache_lookup_next_valid;
+                 dram_readdatavalid_r <= 1;
+              end
               cache_state <= CACHE_IDLE;
            end else begin
               cache_fill_base <= {cache_addr[63:6], 6'd0};
               cache_fill_beat <= 0;
               cache_fill_return_data <= 0;
               cache_fill_next_data <= 0;
-              cache_state <= CACHE_FILL_REQ;
+              if (cache_lookup_dirty) begin
+                 cache_wb_base <= {cache_victim_tag, cache_rd_idx, 6'd0};
+                 cache_wb_beat <= 0;
+                 cache_state <= CACHE_WB_REQ;
+              end else begin
+                 cache_state <= CACHE_FILL_REQ;
+              end
+           end
+        end
+
+        CACHE_WB_REQ: begin
+           if (axi_write_ready && !axi_read) begin
+              axi_write_addr <= cache_wb_base[30:3] + {25'd0, cache_wb_beat};
+              axi_write_data <= cache_selected_bank_data(cache_wb_beat);
+              axi_write_strb <= 8'hff;
+              axi_write      <= 1;
+              cache_state    <= CACHE_WB_WAIT;
+           end
+        end
+
+        CACHE_WB_WAIT: begin
+           if (axi_write_done) begin
+              if (cache_wb_beat == 3'd7) begin
+                 cache_wb_beat <= 0;
+                 cache_state <= CACHE_FILL_REQ;
+              end else begin
+                 cache_wb_beat <= cache_wb_beat + 1;
+                 cache_state <= CACHE_WB_REQ;
+              end
            end
         end
 
@@ -5099,21 +5174,29 @@ module smolrv64(input wire        clock,
 
         CACHE_FILL_WAIT: begin
            if (axi_readdatavalid) begin
-              if (cache_fill_beat == cache_req_bank)
-                 cache_fill_return_data <= axi_readdata;
+              if (cache_fill_beat == cache_req_bank) begin
+                 if (cache_req_write)
+                    cache_fill_return_data <= merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
+                 else
+                    cache_fill_return_data <= axi_readdata;
+              end
               if (cache_fill_beat == cache_req_next_bank)
                  cache_fill_next_data <= axi_readdata;
               if (cache_fill_beat == 3'd7) begin
                  cache_tag_wr_en   <= 1;
                  cache_tag_wr_idx  <= cache_fill_idx;
-                 cache_tag_wr_data <= {1'b1, cache_fill_tag};
-                 dram_readdata_r  <= cache_req_bank == 3'd7 ? axi_readdata : cache_fill_return_data;
-                 dram_readdata_next_r <= cache_req_same_line
-                                          ? (cache_req_next_bank == 3'd7 ? axi_readdata
-                                                                         : cache_fill_next_data)
-                                          : cache_lookup_next_data;
-                 dram_readdata_next_valid_r <= cache_req_same_line || cache_lookup_next_hit;
-                 dram_readdatavalid_r <= 1;
+                 cache_tag_wr_data <= {cache_req_write, 1'b1, cache_fill_tag};
+                 if (cache_req_write) begin
+                    dram_write_done_r <= 1;
+                 end else begin
+                    dram_readdata_r <= cache_req_bank == 3'd7 ? axi_readdata : cache_fill_return_data;
+                    dram_readdata_next_r <= cache_req_same_line
+                                             ? (cache_req_next_bank == 3'd7 ? axi_readdata
+                                                                            : cache_fill_next_data)
+                                             : cache_lookup_next_data;
+                    dram_readdata_next_valid_r <= cache_req_same_line || cache_lookup_next_hit;
+                    dram_readdatavalid_r <= 1;
+                 end
                  cache_state      <= CACHE_IDLE;
               end else begin
                  cache_fill_beat <= cache_fill_beat + 1;
@@ -5129,6 +5212,7 @@ module smolrv64(input wire        clock,
          cache_state <= CACHE_IDLE;
          dram_readdatavalid_r <= 0;
          dram_readdata_next_valid_r <= 0;
+         dram_write_done_r <= 0;
          axi_read <= 0;
          axi_write <= 0;
          cache_tag_wr_en <= 0;
@@ -5138,7 +5222,7 @@ module smolrv64(input wire        clock,
    // ----- AXI4 master to DDR4 -----
    // Single read in flight, single write in flight.  arsize/awsize fixed at
    // 8B; arlen/awlen=0 (one beat).  The physical cache above this block
-   // emits axi_read/axi_write pulses for line fills and write-through stores.
+   // emits axi_read/axi_write pulses for line fills and dirty-line writeback.
    assign axi_readdatavalid = axi_readdatavalid_r;
    assign axi_readdata      = rdata_r;
    assign axi_write_ready   = !aw_busy && !w_busy && !b_busy;
