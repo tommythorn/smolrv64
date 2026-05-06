@@ -903,6 +903,7 @@ module smolrv64(input wire        clock,
    localparam [3:0] CACHE_HIT_RESP  = 4'd5;
    localparam [3:0] CACHE_WB_REQ    = 4'd6;
    localparam [3:0] CACHE_WB_WAIT   = 4'd7;
+   localparam [3:0] CACHE_WB_PREP   = 4'd8;
 
    (* ram_style = "block" *) reg [63:0] cache_bank0[0:`CACHE_LINES-1];
    (* ram_style = "block" *) reg [63:0] cache_bank1[0:`CACHE_LINES-1];
@@ -5137,11 +5138,16 @@ module smolrv64(input wire        clock,
               if (cache_lookup_dirty) begin
                  cache_wb_base <= {cache_victim_tag, cache_rd_idx, 6'd0};
                  cache_wb_beat <= 0;
-                 cache_state <= CACHE_WB_REQ;
+                 cache_bank0_rd_idx <= cache_rd_idx;
+                 cache_state <= CACHE_WB_PREP;
               end else begin
                  cache_state <= CACHE_FILL_REQ;
               end
            end
+        end
+
+        CACHE_WB_PREP: begin
+           cache_state <= CACHE_WB_REQ;
         end
 
         CACHE_WB_REQ: begin
