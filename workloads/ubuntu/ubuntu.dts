@@ -51,10 +51,11 @@
 			reg = <0>;
 			status = "okay";
 			compatible = "riscv";
-			riscv,isa = "rv64imafdcsu";
+			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_sscofpmf";
 			riscv,isa-base = "rv64i";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
-				"zicntr", "zicsr", "zifencei";
+				"zicntr", "zicsr", "zifencei", "zihpm",
+				"sscofpmf";
 			mmu-type = "riscv,sv39";
 
 			cpu_intc: interrupt-controller {
@@ -63,6 +64,34 @@
 				compatible = "riscv,cpu-intc";
 			};
 		};
+	};
+
+	pmu {
+		compatible = "riscv,pmu";
+		riscv,event-to-mhpmcounters =
+			<0x00001 0x00001 0x0000fff9>,
+			<0x00002 0x00002 0x0000fffc>,
+			<0x00003 0x00003 0x0000fff8>,
+			<0x00004 0x00004 0x0000fff8>,
+			<0x00007 0x00007 0x0000fff8>,
+			<0x10000 0x10000 0x0000fff8>,
+			<0x10001 0x10001 0x0000fff8>,
+			<0x10002 0x10002 0x0000fff8>,
+			<0x10008 0x10008 0x0000fff8>,
+			<0x10009 0x10009 0x0000fff8>;
+		riscv,event-to-mhpmevent =
+			<0x00001 0x00000000 0x00000001>,
+			<0x00002 0x00000000 0x00000002>,
+			<0x00003 0x00000000 0x00000100>,
+			<0x00004 0x00000000 0x00000102>,
+			<0x00007 0x00000000 0x00000202>,
+			<0x10000 0x00000000 0x00000100>,
+			<0x10001 0x00000000 0x00000102>,
+			<0x10002 0x00000000 0x00000105>,
+			<0x10008 0x00000000 0x00000100>,
+			<0x10009 0x00000000 0x00000102>;
+		riscv,raw-event-to-mhpmcounters =
+			<0x00000000 0x00000000 0xffffffff 0xffff0000 0x0000fff8>;
 	};
 
 	soc {

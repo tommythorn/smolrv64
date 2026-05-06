@@ -417,6 +417,7 @@ module smolrv64(input wire        clock,
 `define USER_EXTERNAL_INTERRUPT                  8
 `define SUPERVISOR_EXTERNAL_INTERRUPT            9
 `define MACHINE_EXTERNAL_INTERRUPT              11
+`define LOCAL_COUNTER_OVERFLOW_INTERRUPT        13
 
 `define CSR_FFLAGS     12'h001
 `define CSR_FRM        12'h002
@@ -431,6 +432,7 @@ module smolrv64(input wire        clock,
 `define CSR_SCAUSE     12'h142
 `define CSR_STVAL      12'h143
 `define CSR_SIP        12'h144
+`define CSR_SCOUNTOVF  12'hda0
 
 `define CSR_SATP       12'h180
 
@@ -441,6 +443,10 @@ module smolrv64(input wire        clock,
 `define CSR_MIE        12'h304
 `define CSR_MTVEC      12'h305
 `define CSR_MCOUNTEREN 12'h306
+`define CSR_MCOUNTINHIBIT 12'h320
+`define CSR_MCYCLECFG  12'h321
+`define CSR_MINSTRETCFG 12'h322
+`define CSR_MHPMEVENT3 12'h323
 
 `define CSR_MSCRATCH   12'h340
 `define CSR_MEPC       12'h341
@@ -495,9 +501,11 @@ module smolrv64(input wire        clock,
 `define CSR_MCYCLE     12'hb00
 `define CSR_MTIME      12'hb01
 `define CSR_MINSTRET   12'hb02
+`define CSR_MHPMCOUNTER3 12'hb03
 `define CSR_CYCLE      12'hc00
 `define CSR_TIME       12'hc01
 `define CSR_INSTRET    12'hc02
+`define CSR_HPMCOUNTER3 12'hc03
 `define CSR_MHARTID    12'hf14
 `define CSR_MVENDORID  12'hf11
 `define CSR_MARCHID    12'hf12
@@ -603,6 +611,25 @@ module smolrv64(input wire        clock,
 `define MEMOP_LR    3'd3  // LR.W / LR.D
 `define MEMOP_SC    3'd4  // SC.W / SC.D
 `define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
+
+`define HPM_COUNTERS 13
+`define HPM_LAST     (3 + `HPM_COUNTERS - 1)
+`define HPM_COUNTER_MASK ((64'h1 << (`HPM_COUNTERS + 3)) - 1)
+`define HPM_INHIBIT_MASK (`HPM_COUNTER_MASK & ~64'h2)
+`define HPM_OF_BIT 63
+
+`define HPM_EVENT_NONE             16'h0000
+`define HPM_EVENT_CYCLES           16'h0001
+`define HPM_EVENT_INSTRUCTIONS     16'h0002
+`define HPM_EVENT_CACHE_READ       16'h0100
+`define HPM_EVENT_CACHE_HIT        16'h0101
+`define HPM_EVENT_CACHE_MISS       16'h0102
+`define HPM_EVENT_CACHE_FILL_LINE  16'h0103
+`define HPM_EVENT_CACHE_FILL_BEAT  16'h0104
+`define HPM_EVENT_CACHE_WRITE      16'h0105
+`define HPM_EVENT_AXI_READ         16'h0200
+`define HPM_EVENT_AXI_WRITE        16'h0201
+`define HPM_EVENT_BUS_WAIT_CYCLE   16'h0202
 
 `define REGION_UART    3'd0
 `define REGION_CLINT   3'd1
@@ -937,6 +964,23 @@ module smolrv64(input wire        clock,
                                 axi_master_idle;
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
+   wire       hpm_instret_pulse = state == `S_FETCH1;
+   wire       hpm_cache_read_pulse = cache_state == CACHE_IDLE && dram_read;
+   wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write &&
+                                      axi_write_ready && !axi_read;
+   wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
+   wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
+   wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && axi_readdatavalid;
+   wire       hpm_cache_fill_line_pulse = hpm_cache_fill_beat_pulse && cache_fill_beat == 3'd7;
+   wire       hpm_axi_read_pulse = axi_read;
+   wire       hpm_axi_write_pulse = axi_write && axi_write_ready;
+   wire       hpm_bus_wait_cycle = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
+                                   state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
+                                   state == `S_DRAM_PTW_WAIT   ||
+                                   state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
+                                   state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
+                                   state == `S_MMIO_ALIGN;
+
    wire [63:0] cache_dram_addr = {33'd0, dram_addr, 3'b000};
    wire [63:0] cache_dram_next_addr = cache_dram_addr + 64'd8;
    wire [`CACHE_INDEX_BITS-1:0] cache_dram_idx =
@@ -982,6 +1026,36 @@ module smolrv64(input wire        clock,
            3'd6: cache_selected_bank_data = cache_bank6_rd_data;
            3'd7: cache_selected_bank_data = cache_bank7_rd_data;
            default: cache_selected_bank_data = 64'd0;
+         endcase
+      end
+   endfunction
+
+   function hpm_event_active;
+      input [15:0] event_code;
+      input        instret_pulse;
+      input        cache_read_pulse;
+      input        cache_hit_pulse;
+      input        cache_miss_pulse;
+      input        cache_fill_line_pulse;
+      input        cache_fill_beat_pulse;
+      input        cache_write_pulse;
+      input        axi_read_pulse;
+      input        axi_write_pulse;
+      input        bus_wait_cycle;
+      begin
+         case (event_code)
+           `HPM_EVENT_CYCLES:          hpm_event_active = 1'b1;
+           `HPM_EVENT_INSTRUCTIONS:    hpm_event_active = instret_pulse;
+           `HPM_EVENT_CACHE_READ:      hpm_event_active = cache_read_pulse;
+           `HPM_EVENT_CACHE_HIT:       hpm_event_active = cache_hit_pulse;
+           `HPM_EVENT_CACHE_MISS:      hpm_event_active = cache_miss_pulse;
+           `HPM_EVENT_CACHE_FILL_LINE: hpm_event_active = cache_fill_line_pulse;
+           `HPM_EVENT_CACHE_FILL_BEAT: hpm_event_active = cache_fill_beat_pulse;
+           `HPM_EVENT_CACHE_WRITE:     hpm_event_active = cache_write_pulse;
+           `HPM_EVENT_AXI_READ:        hpm_event_active = axi_read_pulse;
+           `HPM_EVENT_AXI_WRITE:       hpm_event_active = axi_write_pulse;
+           `HPM_EVENT_BUS_WAIT_CYCLE:  hpm_event_active = bus_wait_cycle;
+           default:                    hpm_event_active = 1'b0;
          endcase
       end
    endfunction
@@ -1062,12 +1136,16 @@ module smolrv64(input wire        clock,
    reg         deleg, cause_intr;
    reg [63:0]  tval,
                tvec;
-   reg [11:0]  csr_mie        = 0, // XXX We should set this on reset
+   reg [13:0]  csr_mie        = 0, // XXX We should set this on reset
                csr_mideleg    = 0,
                // temporary, will not turn into flop
                cause;
    reg [63:0]  csr_stvec      = 0,
                csr_scounteren = 0,
+               csr_mcounteren = 0,
+               csr_mcountinhibit = 0,
+               csr_mcyclecfg  = 0,
+               csr_minstretcfg = 0,
                csr_sscratch   = 0,
                csr_sepc       = 0,
                csr_scause     = 0,
@@ -1081,6 +1159,46 @@ module smolrv64(input wire        clock,
                csr_mtval      = 0,
                csr_mcycle     = 0,
                csr_minstret   = -1; // because we increase it in fetch
+   reg [63:0]  csr_mhpmcounter[0:`HPM_COUNTERS-1];
+   reg [63:0]  csr_mhpmevent[0:`HPM_COUNTERS-1];
+   reg [63:0]  csr_scountovf_read_val = 0;
+   integer     hpm_i, hpm_j;
+
+   initial begin
+      for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
+         csr_mhpmcounter[hpm_i] = 0;
+         csr_mhpmevent[hpm_i] = 0;
+      end
+   end
+
+   always @(*) begin
+      csr_scountovf_read_val = 0;
+      for (hpm_j = 0; hpm_j < `HPM_COUNTERS; hpm_j = hpm_j + 1)
+         csr_scountovf_read_val[hpm_j + 3] = csr_mhpmevent[hpm_j][`HPM_OF_BIT];
+   end
+
+   function counter_access_allowed;
+      input [4:0] counter_idx;
+      begin
+         if (prv == 3)
+           counter_access_allowed = 1;
+         else if (prv == 1)
+           counter_access_allowed = csr_mcounteren[counter_idx];
+         else
+           counter_access_allowed = csr_mcounteren[counter_idx] && csr_scounteren[counter_idx];
+      end
+   endfunction
+
+   function hpm_mode_enabled;
+      input [63:0] event_sel;
+      begin
+         case (prv)
+           3: hpm_mode_enabled = !event_sel[62]; // MINH
+           1: hpm_mode_enabled = !event_sel[61]; // SINH
+           default: hpm_mode_enabled = !event_sel[60]; // UINH
+         endcase
+      end
+   endfunction
 
    // fcsr: fflags[4:0] (NV|DZ|OF|UF|NX) + frm[2:0]. Phase 1 has no arithmetic
    // producers of fflags, so it stays at whatever software wrote.
@@ -1223,6 +1341,7 @@ module smolrv64(input wire        clock,
    // MIP subfields
    // MEIP/SEIP driven by PLIC, MTIP/MSIP driven by CLINT
    reg         ueip = 0,
+               lcofip = 0,
                stip = 0, utip = 0,
                ssip = 0, usip = 0;
    wire        meip = plic_has_irq;
@@ -1231,7 +1350,7 @@ module smolrv64(input wire        clock,
    always @(posedge clock) mtip <= clint_mtime >= clint_mtimecmp;
    wire        msip = clint_msip;
 
-   wire [11:0] csr_mip = {meip, 1'd0, seip, ueip,
+   wire [13:0] csr_mip = {lcofip, 1'd0, meip, 1'd0, seip, ueip,
                           mtip, 1'd0, stip, utip,
                           msip, 1'd0, ssip, usip};
 
@@ -1458,7 +1577,30 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
-      csr_mcycle <= csr_mcycle + 1;
+      if (!csr_mcountinhibit[0] && hpm_mode_enabled(csr_mcyclecfg))
+         csr_mcycle <= csr_mcycle + 1;
+      for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
+         if (!csr_mcountinhibit[hpm_i + 3] &&
+             hpm_mode_enabled(csr_mhpmevent[hpm_i]) &&
+             hpm_event_active(csr_mhpmevent[hpm_i][15:0],
+                              hpm_instret_pulse,
+                              hpm_cache_read_pulse,
+                              hpm_cache_hit_pulse,
+                              hpm_cache_miss_pulse,
+                              hpm_cache_fill_line_pulse,
+                              hpm_cache_fill_beat_pulse,
+                              hpm_cache_write_pulse,
+                              hpm_axi_read_pulse,
+                              hpm_axi_write_pulse,
+                              hpm_bus_wait_cycle)) begin
+            if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
+                !csr_mhpmevent[hpm_i][`HPM_OF_BIT]) begin
+               csr_mhpmevent[hpm_i] <= csr_mhpmevent[hpm_i] | 64'h8000_0000_0000_0000;
+               lcofip <= 1;
+            end
+            csr_mhpmcounter[hpm_i] <= csr_mhpmcounter[hpm_i] + 1;
+         end
+      end
       if (reset)
          core_reset_pending <= 1;
       // XXX This isn't very portable
@@ -1489,7 +1631,7 @@ module smolrv64(input wire        clock,
       // the NEXT cycle (adding ≤1 cycle of interrupt detection latency, which
       // is architecturally legal).
       begin : pre_intr_precompute
-         reg [11:0] pi_pm, pi_ps, pi_raw;
+         reg [13:0] pi_pm, pi_ps, pi_raw;
          pi_pm = csr_mip & csr_mie & ~csr_mideleg;
          pi_ps = csr_mip & csr_mie &  csr_mideleg;
          if ((prv == 3 ? mie : 1'b1) && pi_pm != 0)
@@ -1499,7 +1641,8 @@ module smolrv64(input wire        clock,
          else
             pi_raw = 0;
          pre_intr_pending <= pi_raw != 0;
-         pre_intr_cause   <= pi_raw[`MACHINE_EXTERNAL_INTERRUPT] ? `MACHINE_EXTERNAL_INTERRUPT :
+         pre_intr_cause   <= pi_raw[`LOCAL_COUNTER_OVERFLOW_INTERRUPT] ? `LOCAL_COUNTER_OVERFLOW_INTERRUPT :
+                             pi_raw[`MACHINE_EXTERNAL_INTERRUPT] ? `MACHINE_EXTERNAL_INTERRUPT :
                              pi_raw[`MACHINE_SOFTWARE_INTERRUPT] ? `MACHINE_SOFTWARE_INTERRUPT :
                              pi_raw[`MACHINE_TIMER_INTERRUPT]    ? `MACHINE_TIMER_INTERRUPT :
                              pi_raw[`SUPERVISOR_EXTERNAL_INTERRUPT] ? `SUPERVISOR_EXTERNAL_INTERRUPT :
@@ -1526,7 +1669,8 @@ module smolrv64(input wire        clock,
 `endif
       case (state)
         `S_FETCH1: begin
-           csr_minstret <= csr_minstret + 1;
+           if (!csr_mcountinhibit[2] && hpm_mode_enabled(csr_minstretcfg))
+              csr_minstret <= csr_minstret + 1;
 
            // Reset to default values
            muldiv_p = 0;
@@ -3968,10 +4112,22 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
-              // mhpmevent3-31 and mhpmcounter3-31 — M-mode only, hardwired
-              // to zero (no programmable performance counters implemented).
-              else if (('h323 <= csrno && csrno <= 'h33F) ||
-                       ('hB03 <= csrno && csrno <= 'hB1F)) csr_read_val = 0;
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= 12'h33f) begin
+                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1))
+                    csr_read_val = csr_mhpmevent[csrno - `CSR_MHPMEVENT3];
+                 else
+                    csr_read_val = 0;
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= 12'hb1f) begin
+                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1))
+                    csr_read_val = csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3];
+                 else
+                    csr_read_val = 0;
+              end else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= 12'hc1f) begin
+                 if (csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1))
+                    csr_read_val = csr_mhpmcounter[csrno - `CSR_HPMCOUNTER3];
+                 else
+                    csr_read_val = 0;
+              end
               else case (csrno)
                 `CSR_FFLAGS:    csr_read_val = {59'd0, fflags};
                 `CSR_FRM:       csr_read_val = {61'd0, frm};
@@ -3981,14 +4137,15 @@ module smolrv64(input wire        clock,
                                                     mxr, sum, 1'd0,  // 19:17
                                   xs,   fs,         4'd0,      spp,  // 16: 8
                                   2'd0, spie, upie, 2'd0, sie, uie}; //  7: 0
-                `CSR_SIE:       csr_read_val = csr_mie & 'h222;
+                `CSR_SIE:       csr_read_val = csr_mie & 14'h2222;
                 `CSR_STVEC:     csr_read_val = csr_stvec;
-                `CSR_SCOUNTEREN:csr_read_val = 0;
+                `CSR_SCOUNTEREN:csr_read_val = csr_scounteren;
                 `CSR_SSCRATCH:  csr_read_val = csr_sscratch;
                 `CSR_SEPC:      csr_read_val = csr_sepc;
                 `CSR_SCAUSE:    csr_read_val = csr_scause;
                 `CSR_STVAL:     csr_read_val = csr_stval;
                 `CSR_SIP:       csr_read_val = csr_mip & csr_mideleg;
+                `CSR_SCOUNTOVF: csr_read_val = csr_scountovf_read_val;
 
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
@@ -4017,7 +4174,10 @@ module smolrv64(input wire        clock,
                 `CSR_MIDELEG:  csr_read_val = csr_mideleg;
                 `CSR_MIE:      csr_read_val = csr_mie;
                 `CSR_MTVEC:    csr_read_val = csr_mtvec;
-                `CSR_MCOUNTEREN: csr_read_val = 0;
+                `CSR_MCOUNTEREN: csr_read_val = csr_mcounteren;
+                `CSR_MCOUNTINHIBIT: csr_read_val = csr_mcountinhibit & `HPM_INHIBIT_MASK;
+                `CSR_MCYCLECFG: csr_read_val = csr_mcyclecfg;
+                `CSR_MINSTRETCFG: csr_read_val = csr_minstretcfg;
                 `CSR_MSCRATCH: csr_read_val = csr_mscratch;
                 `CSR_MEPC:     csr_read_val = csr_mepc;
                 `CSR_MCAUSE:   csr_read_val = csr_mcause;
@@ -4071,6 +4231,17 @@ module smolrv64(input wire        clock,
 `endif
                  csr_access_failure = 1;
               end
+              if (!csr_access_failure) begin
+                 if (csrno == `CSR_CYCLE && !counter_access_allowed(5'd0))
+                    csr_access_failure = 1;
+                 else if (csrno == `CSR_TIME && !counter_access_allowed(5'd1))
+                    csr_access_failure = 1;
+                 else if (csrno == `CSR_INSTRET && !counter_access_allowed(5'd2))
+                    csr_access_failure = 1;
+                 else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= 12'hc1f &&
+                          !counter_access_allowed({1'b0, csrno[4:0]}))
+                    csr_access_failure = 1;
+              end
            end
 
            case (csr_op)
@@ -4111,9 +4282,13 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
-              // mhpmevent3-31 and mhpmcounter3-31 — M-mode only, writes ignored.
-              else if (('h323 <= csrno && csrno <= 'h33F) ||
-                       ('hB03 <= csrno && csrno <= 'hB1F)) begin end
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= 12'h33f) begin
+                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1))
+                    csr_mhpmevent[csrno - `CSR_MHPMEVENT3] <= csr_write_val;
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= 12'hb1f) begin
+                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1))
+                    csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3] <= csr_write_val;
+              end
               else case (csrno)
                 // fcsr: fflags aliased at [4:0], frm aliased at [7:5].
                 // Writing any of these is an implicit "FP state touched"
@@ -4134,15 +4309,16 @@ module smolrv64(input wire        clock,
                    {spie, upie}      = csr_write_val[5:4];
                    {sie, uie}        = csr_write_val[1:0];
                 end
-                `CSR_SIE:       csr_mie    = csr_write_val & 'h222 | csr_mie & ~'h222;
+                `CSR_SIE:       csr_mie    = csr_write_val & 14'h2222 | csr_mie & ~14'h2222;
                 `CSR_STVEC:     csr_stvec  = csr_write_val;
-                `CSR_SCOUNTEREN:csr_scounteren = csr_write_val;
+                `CSR_SCOUNTEREN:csr_scounteren = csr_write_val & `HPM_COUNTER_MASK;
                 `CSR_SSCRATCH:  csr_sscratch = csr_write_val;
                 `CSR_SEPC:      csr_sepc   = csr_write_val & ~1;
                 `CSR_SCAUSE:    csr_scause = csr_write_val;
                 `CSR_STVAL:     csr_stval  = csr_write_val;
                 `CSR_SIP:       begin
                    // Only SSIP (bit 1) is writable via SIP; SEIP/STIP are read-only
+                   if (csr_mideleg[13]) lcofip = csr_write_val[13];
                    if (csr_mideleg[1]) ssip = csr_write_val[1];
                    if (csr_mideleg[0]) usip = csr_write_val[0];
                 end
@@ -4179,7 +4355,10 @@ module smolrv64(input wire        clock,
                 `CSR_MIDELEG:  csr_mideleg  = csr_write_val;
                 `CSR_MIE:      csr_mie      = csr_write_val;
                 `CSR_MTVEC:    csr_mtvec    = csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
-                `CSR_MCOUNTEREN: begin end
+                `CSR_MCOUNTEREN: csr_mcounteren = csr_write_val & `HPM_COUNTER_MASK;
+                `CSR_MCOUNTINHIBIT: csr_mcountinhibit = csr_write_val & `HPM_INHIBIT_MASK;
+                `CSR_MCYCLECFG: csr_mcyclecfg = csr_write_val;
+                `CSR_MINSTRETCFG: csr_minstretcfg = csr_write_val;
                 `CSR_MSCRATCH: csr_mscratch = csr_write_val;
                 `CSR_MEPC:     csr_mepc     = csr_write_val & ~1;
                 `CSR_MCAUSE:   csr_mcause   = csr_write_val;
@@ -4187,6 +4366,7 @@ module smolrv64(input wire        clock,
                 `CSR_MIP:      begin
                    // MEIP/SEIP (bits 11,9) are read-only, driven by PLIC
                    // MTIP/MSIP (bits 7,3) are read-only, driven by CLINT
+                   lcofip = csr_write_val[13];
                    ueip = csr_write_val[8];
                    stip = csr_write_val[5];
                    utip = csr_write_val[4];
@@ -4197,8 +4377,8 @@ module smolrv64(input wire        clock,
                 `CSR_TDATA1:   begin end
                 `CSR_TDATA2:   begin end
                 `CSR_TDATA3:   begin end
-                `CSR_MCYCLE:   csr_mcycle   = csr_write_val;
-                `CSR_MINSTRET: csr_minstret = csr_write_val;
+                `CSR_MCYCLE:   csr_mcycle   <= csr_write_val;
+                `CSR_MINSTRET: csr_minstret <= csr_write_val;
                 // Any write to any mig_* CSR clears all four to their initial
                 // sentinels (fresh measurement window).  The written value is
                 // ignored; this is the "clear stats" knob for the monitor.
@@ -4772,6 +4952,12 @@ module smolrv64(input wire        clock,
          csr_mie          <= 0;
          csr_mideleg      <= 0;
          csr_medeleg      <= 0;
+         csr_mcounteren   <= 0;
+         csr_scounteren   <= 0;
+         csr_mcountinhibit <= 0;
+         csr_mcyclecfg    <= 0;
+         csr_minstretcfg  <= 0;
+         lcofip           <= 0;
          csr_mtvec        <= 0;
          csr_stvec        <= 0;
          mie              <= 0;
@@ -4799,6 +4985,10 @@ module smolrv64(input wire        clock,
          ptw_from_dram    <= 0;
          mig_latency_ctr  <= 0;
          mig_prev_waiting <= 0;
+         for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
+            csr_mhpmcounter[hpm_i] <= 0;
+            csr_mhpmevent[hpm_i] <= 0;
+         end
       end
    end
 
