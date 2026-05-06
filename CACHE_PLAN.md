@@ -601,12 +601,29 @@ enough classification for the existing pipeline state to select the right trap.
 
 ## Reset And Initialization
 
-On reset:
+At FPGA configuration / simulation start:
 
-- Clear all valid bits.
-- Tags and data banks do not need to be cleared if valid bits are cleared.
-- Any lower-level transaction state must reset to idle.
-- Any write buffer added later must reset empty.
+- Initialize cache metadata RAMs to zero, so every valid bit starts clear.
+- Data banks do not need to be initialized if valid bits are clear.
+- Backing SRAM/DRAM image loading should initialize backing memory, not cache
+  contents.
+
+On soft reset:
+
+- Treat reset like an interrupt: latch the request, then take it only when the
+  CPU/cache/AXI state machine is in its home state.
+- Do not reset the DRAM controller.
+- Do not flush cache tags or data.
+- Do not reinitialize backing memory.
+- Reset only architectural CPU/control state after the memory path is idle.
+
+This is valid because the cache is unified, physical, and coherent with the
+core's own stores. A cached line remains a valid copy of physical memory across
+soft reset as long as backing memory is preserved and there are no external
+incoherent writers.
+
+Any write-back cache added later should preserve this rule: soft reset should
+wait until it can be taken cleanly, not discard dirty cache state.
 
 For simulation:
 

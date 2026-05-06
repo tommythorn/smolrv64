@@ -613,6 +613,9 @@ module smolrv64(input wire        clock,
 `define REGION_ILLEGAL 3'd6
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
+   reg         core_reset_pending = 0;
+   wire        core_reset_home;
+   wire        core_reset_now;
 
 `ifndef MEM_BASEADDR
 `define MEM_BASEADDR    64'h80000000  // override with -DMEM_BASEADDR=64'hXXXXXXXX
@@ -626,8 +629,7 @@ module smolrv64(input wire        clock,
 `endif
 `define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
 `define CACHE_TAG_BITS  (64 - `CACHE_INDEX_BITS - 6)
-`define CACHE_EPOCH_BITS 8
-`define CACHE_META_BITS (`CACHE_TAG_BITS + `CACHE_EPOCH_BITS + 1)
+`define CACHE_META_BITS (`CACHE_TAG_BITS + 1)
 `ifndef RESET_PC
 `define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
 `endif
@@ -812,7 +814,7 @@ module smolrv64(input wire        clock,
    smolrv64_cvfpu cvfpu_inst(
       .clock     ( clock ),
       .fpu_clock ( fpu_clock ),
-      .reset     ( reset ),
+      .reset     ( core_reset_now ),
       .in_valid  ( cvfpu_in_valid ),
       .in_ready  ( cvfpu_in_ready ),
       .operands  ( cvfpu_operands ),
@@ -881,6 +883,8 @@ module smolrv64(input wire        clock,
    (* ram_style = "block" *) reg [63:0] cache_bank7[0:`CACHE_LINES-1];
    // Duplicate tag RAM keeps the line-crossing next-word hit check synchronous
    // without asking Vivado to build a multi-read-port tag memory in LUTs.
+   // Tag metadata is {valid, tag}; the RAMs power up zeroed, so all lines start
+   // invalid. Soft reset waits for this cache to go idle and does not flush it.
 
    reg [ 2:0] cache_state = CACHE_IDLE;
    reg [63:0] cache_addr = 0;
@@ -898,8 +902,6 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_hit = 0;
    reg        cache_lookup_next_hit = 0;
    reg        cache_lookup_next_valid = 0;
-   reg [`CACHE_EPOCH_BITS-1:0] cache_epoch = 0;
-   reg        cache_reset_prev = 0;
    reg        dram_readdatavalid_r = 0;
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
@@ -916,6 +918,24 @@ module smolrv64(input wire        clock,
    reg [ 7:0] axi_write_strb = 0;
    wire       axi_write_ready;
    wire       axi_write_done;
+
+   reg        ar_busy = 0;
+   reg        r_busy  = 0;
+   reg [27:0] ar_addr_r;
+   reg [63:0] rdata_r;
+   reg        aw_busy = 0;
+   reg        w_busy  = 0;
+   reg        b_busy  = 0;
+   reg [27:0] aw_addr_r;
+   reg [63:0] w_data_r;
+   reg [ 7:0] w_strb_r;
+   reg        axi_readdatavalid_r = 0;
+
+   wire       axi_master_idle = !ar_busy && !r_busy && !aw_busy && !w_busy && !b_busy;
+   assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
+                                !dram_read && !dram_write && !axi_read && !axi_write &&
+                                axi_master_idle;
+   assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
    wire [63:0] cache_dram_addr = {33'd0, dram_addr, 3'b000};
    wire [63:0] cache_dram_next_addr = cache_dram_addr + 64'd8;
@@ -1439,6 +1459,8 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
       csr_mcycle <= csr_mcycle + 1;
+      if (reset)
+         core_reset_pending <= 1;
       // XXX This isn't very portable
       if (clint_mtime_clock_scaler[13]) begin
          clint_mtime_clock_scaler <= 3333 - 2; // 333.3333.. MHz / 3333 ~ 100.01 kHz
@@ -4724,7 +4746,8 @@ module smolrv64(input wire        clock,
          end
       end
 
-      if (reset) begin
+      if (core_reset_now) begin
+         core_reset_pending <= 0;
          state <= `S_FETCH1;
          csr_minstret <= 0;
          csr_mcycle <= 0;
@@ -4834,7 +4857,7 @@ module smolrv64(input wire        clock,
            end else if (dram_write && axi_write_ready && !axi_read) begin
               cache_tag_wr_en   <= 1;
               cache_tag_wr_idx  <= cache_dram_idx;
-              cache_tag_wr_data <= {cache_epoch, 1'b0, cache_dram_tag};
+              cache_tag_wr_data <= {1'b0, cache_dram_tag};
               axi_write_addr <= dram_addr;
               axi_write_data <= dram_writedata;
               axi_write_strb <= dram_wstrb;
@@ -4848,19 +4871,16 @@ module smolrv64(input wire        clock,
 
         CACHE_TAG_CHECK: begin
            cache_lookup_hit <=
-                cache_tag_rd_data[`CACHE_META_BITS-1:`CACHE_TAG_BITS+1] == cache_epoch &&
                 cache_tag_rd_data[`CACHE_TAG_BITS] &&
                 cache_tag_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_tag;
            cache_lookup_next_hit <=
-                cache_tag_next_rd_data[`CACHE_META_BITS-1:`CACHE_TAG_BITS+1] == cache_epoch &&
                 cache_tag_next_rd_data[`CACHE_TAG_BITS] &&
                 cache_tag_next_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_next_tag;
            cache_lookup_data <= cache_selected_bank_data(cache_req_bank);
            cache_lookup_next_data <= cache_selected_bank_data(cache_req_next_bank);
            cache_lookup_next_valid <=
                 cache_req_same_line ||
-                (cache_tag_next_rd_data[`CACHE_META_BITS-1:`CACHE_TAG_BITS+1] == cache_epoch &&
-                 cache_tag_next_rd_data[`CACHE_TAG_BITS] &&
+                (cache_tag_next_rd_data[`CACHE_TAG_BITS] &&
                  cache_tag_next_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_next_tag);
            cache_state <= CACHE_HIT_RESP;
         end
@@ -4896,7 +4916,7 @@ module smolrv64(input wire        clock,
               if (cache_fill_beat == 3'd7) begin
                  cache_tag_wr_en   <= 1;
                  cache_tag_wr_idx  <= cache_fill_idx;
-                 cache_tag_wr_data <= {cache_epoch, 1'b1, cache_fill_tag};
+                 cache_tag_wr_data <= {1'b1, cache_fill_tag};
                  dram_readdata_r  <= cache_req_bank == 3'd7 ? axi_readdata : cache_fill_return_data;
                  dram_readdata_next_r <= cache_req_same_line
                                           ? (cache_req_next_bank == 3'd7 ? axi_readdata
@@ -4915,16 +4935,13 @@ module smolrv64(input wire        clock,
         default: cache_state <= CACHE_IDLE;
       endcase
 
-      cache_reset_prev <= reset;
-      if (reset) begin
+      if (core_reset_now) begin
          cache_state <= CACHE_IDLE;
          dram_readdatavalid_r <= 0;
          dram_readdata_next_valid_r <= 0;
          axi_read <= 0;
          axi_write <= 0;
          cache_tag_wr_en <= 0;
-         if (!cache_reset_prev)
-            cache_epoch <= cache_epoch + 1'b1;
       end
    end
 
@@ -4932,20 +4949,6 @@ module smolrv64(input wire        clock,
    // Single read in flight, single write in flight.  arsize/awsize fixed at
    // 8B; arlen/awlen=0 (one beat).  The physical cache above this block
    // emits axi_read/axi_write pulses for line fills and write-through stores.
-   reg         ar_busy = 0;
-   reg         r_busy  = 0;
-   reg [27:0]  ar_addr_r;
-   reg [63:0]  rdata_r;
-
-   reg         aw_busy = 0;
-   reg         w_busy  = 0;
-   reg         b_busy  = 0;
-   reg [27:0]  aw_addr_r;
-   reg [63:0]  w_data_r;
-   reg [ 7:0]  w_strb_r;
-
-   reg         axi_readdatavalid_r = 0;
-
    assign axi_readdatavalid = axi_readdatavalid_r;
    assign axi_readdata      = rdata_r;
    assign axi_write_ready   = !aw_busy && !w_busy && !b_busy;
@@ -4980,7 +4983,7 @@ module smolrv64(input wire        clock,
       if (w_busy  && m_axi_wready ) w_busy  <= 0;
       if (b_busy  && m_axi_bvalid ) b_busy  <= 0;
 
-      if (reset) begin
+      if (core_reset_now) begin
          ar_busy <= 0; r_busy <= 0;
          aw_busy <= 0; w_busy <= 0; b_busy <= 0;
          axi_readdatavalid_r <= 0;
@@ -5053,7 +5056,7 @@ module smolrv64_sdpram #(
       .RST_MODE_B          ( "SYNC" ),
       .SIM_ASSERT_CHK      ( 0 ),
       .USE_EMBEDDED_CONSTRAINT( 0 ),
-      .USE_MEM_INIT        ( 0 ),
+      .USE_MEM_INIT        ( 1 ),
       .WAKEUP_TIME         ( "disable_sleep" ),
       .WRITE_DATA_WIDTH_A  ( DATA_WIDTH ),
       .WRITE_MODE_B        ( "read_first" )
@@ -5099,7 +5102,7 @@ module smolrv64_sdpram #(
       .RST_MODE_B          ( "SYNC" ),
       .SIM_ASSERT_CHK      ( 0 ),
       .USE_EMBEDDED_CONSTRAINT( 0 ),
-      .USE_MEM_INIT        ( 0 ),
+      .USE_MEM_INIT        ( 1 ),
       .WAKEUP_TIME         ( "disable_sleep" ),
       .WRITE_DATA_WIDTH_A  ( DATA_WIDTH ),
       .WRITE_MODE_B        ( "read_first" )
@@ -5124,6 +5127,12 @@ module smolrv64_sdpram #(
 `else
    (* ram_style = "block" *) reg [DATA_WIDTH-1:0] ram[0:(1 << ADDR_WIDTH)-1];
    reg [DATA_WIDTH-1:0] rd_data_r = 0;
+   integer ram_init_i;
+
+   initial begin
+      for (ram_init_i = 0; ram_init_i < (1 << ADDR_WIDTH); ram_init_i = ram_init_i + 1)
+         ram[ram_init_i] = 0;
+   end
 
    assign rd_data = rd_data_r;
 
