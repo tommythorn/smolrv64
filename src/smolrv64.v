@@ -905,14 +905,9 @@ module smolrv64(input wire        clock,
    localparam [3:0] CACHE_WB_WAIT   = 4'd7;
    localparam [3:0] CACHE_WB_PREP   = 4'd8;
 
-   (* ram_style = "block" *) reg [63:0] cache_bank0[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank1[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank2[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank3[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank4[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank5[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank6[0:`CACHE_LINES-1];
-   (* ram_style = "block" *) reg [63:0] cache_bank7[0:`CACHE_LINES-1];
+   reg [ 7:0] cache_bank_wr_en = 0;
+   reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
+   reg [63:0] cache_bank_wr_data = 0;
    // Duplicate tag RAM keeps the line-crossing next-word hit check synchronous
    // without asking Vivado to build a multi-read-port tag memory in LUTs.
    // Tag metadata is {dirty, valid, tag}; the RAMs power up zeroed, so all
@@ -1017,14 +1012,14 @@ module smolrv64(input wire        clock,
    reg                         cache_tag_wr_en = 0;
    reg  [`CACHE_INDEX_BITS-1:0] cache_tag_wr_idx = 0;
    reg  [`CACHE_META_BITS-1:0]  cache_tag_wr_data = 0;
-   reg [63:0] cache_bank0_rd_data = 0;
-   reg [63:0] cache_bank1_rd_data = 0;
-   reg [63:0] cache_bank2_rd_data = 0;
-   reg [63:0] cache_bank3_rd_data = 0;
-   reg [63:0] cache_bank4_rd_data = 0;
-   reg [63:0] cache_bank5_rd_data = 0;
-   reg [63:0] cache_bank6_rd_data = 0;
-   reg [63:0] cache_bank7_rd_data = 0;
+   wire [63:0] cache_bank0_rd_data;
+   wire [63:0] cache_bank1_rd_data;
+   wire [63:0] cache_bank2_rd_data;
+   wire [63:0] cache_bank3_rd_data;
+   wire [63:0] cache_bank4_rd_data;
+   wire [63:0] cache_bank5_rd_data;
+   wire [63:0] cache_bank6_rd_data;
+   wire [63:0] cache_bank7_rd_data;
 
    function [63:0] cache_selected_bank_data;
       input [2:0] bank;
@@ -1085,6 +1080,122 @@ module smolrv64(input wire        clock,
       .wr_data ( cache_tag_wr_data )
    );
 
+   always @* begin
+      cache_bank_wr_en = 8'd0;
+      cache_bank_wr_idx = cache_fill_idx;
+      cache_bank_wr_data = axi_readdata;
+
+      if (cache_state == CACHE_FILL_WAIT && axi_readdatavalid) begin
+         cache_bank_wr_en = 8'd1 << cache_fill_beat;
+         cache_bank_wr_idx = cache_fill_idx;
+         cache_bank_wr_data = axi_readdata;
+         if (cache_req_write && cache_fill_beat == cache_req_bank)
+            cache_bank_wr_data = merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
+      end
+
+      if (cache_state == CACHE_HIT_RESP && cache_req_write && cache_lookup_hit) begin
+         cache_bank_wr_en = 8'd1 << cache_req_bank;
+         cache_bank_wr_idx = cache_rd_idx;
+         cache_bank_wr_data = merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+      end
+   end
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank0_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_bank0_rd_idx ),
+      .rd_data ( cache_bank0_rd_data ),
+      .wr_en   ( cache_bank_wr_en[0] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank1_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank1_rd_data ),
+      .wr_en   ( cache_bank_wr_en[1] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank2_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank2_rd_data ),
+      .wr_en   ( cache_bank_wr_en[2] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank3_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank3_rd_data ),
+      .wr_en   ( cache_bank_wr_en[3] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank4_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank4_rd_data ),
+      .wr_en   ( cache_bank_wr_en[4] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank5_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank5_rd_data ),
+      .wr_en   ( cache_bank_wr_en[5] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank6_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank6_rd_data ),
+      .wr_en   ( cache_bank_wr_en[6] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(64)
+   ) cache_bank7_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_rd_idx ),
+      .rd_data ( cache_bank7_rd_data ),
+      .wr_en   ( cache_bank_wr_en[7] ),
+      .wr_addr ( cache_bank_wr_idx ),
+      .wr_data ( cache_bank_wr_data )
+   );
+
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
       .DATA_WIDTH(`CACHE_META_BITS)
@@ -1125,7 +1236,7 @@ module smolrv64(input wire        clock,
    reg [63:0] csr_mig_to_addr  = 0;
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
-   reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_write_val, csr_satp_write_val;
+   reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_satp_write_val;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
@@ -1175,6 +1286,10 @@ module smolrv64(input wire        clock,
    reg [63:0]  csr_mhpmcounter[0:`HPM_COUNTERS-1];
    reg [63:0]  csr_mhpmevent[0:`HPM_COUNTERS-1];
    reg [63:0]  csr_scountovf_read_val = 0;
+   reg         hpm_counter_wr_en = 0;
+   reg         hpm_event_wr_en = 0;
+   reg [ 3:0]  hpm_wr_idx = 0;
+   reg [63:0]  hpm_wr_data = 0;
    integer     hpm_i, hpm_j;
 
    initial begin
@@ -1209,6 +1324,20 @@ module smolrv64(input wire        clock,
            3: hpm_mode_enabled = !event_sel[62]; // MINH
            1: hpm_mode_enabled = !event_sel[61]; // SINH
            default: hpm_mode_enabled = !event_sel[60]; // UINH
+         endcase
+      end
+   endfunction
+
+   function [63:0] csr_modify_value;
+      input [63:0] old_val;
+      input [63:0] write_arg;
+      input [ 1:0] op;
+      begin
+         case (op)
+           `CSR_OP_COPY: csr_modify_value = write_arg;
+           `CSR_OP_OR:   csr_modify_value = old_val | write_arg;
+           `CSR_OP_ANDN: csr_modify_value = old_val & ~write_arg;
+           default:      csr_modify_value = old_val;
          endcase
       end
    endfunction
@@ -1593,25 +1722,36 @@ module smolrv64(input wire        clock,
       if (!csr_mcountinhibit[0] && hpm_mode_enabled(csr_mcyclecfg))
          csr_mcycle <= csr_mcycle + 1;
       for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
-         if (!csr_mcountinhibit[hpm_i + 3] &&
-             hpm_mode_enabled(csr_mhpmevent[hpm_i]) &&
-             hpm_event_active(csr_mhpmevent[hpm_i][15:0],
-                              hpm_instret_pulse,
-                              hpm_cache_read_pulse,
-                              hpm_cache_hit_pulse,
-                              hpm_cache_miss_pulse,
-                              hpm_cache_fill_line_pulse,
-                              hpm_cache_fill_beat_pulse,
-                              hpm_cache_write_pulse,
-                              hpm_axi_read_pulse,
-                              hpm_axi_write_pulse,
-                              hpm_bus_wait_cycle)) begin
-            if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
-                !csr_mhpmevent[hpm_i][`HPM_OF_BIT]) begin
-               csr_mhpmevent[hpm_i] <= csr_mhpmevent[hpm_i] | 64'h8000_0000_0000_0000;
-               lcofip <= 1;
+         if (core_reset_now) begin
+            csr_mhpmcounter[hpm_i] <= 0;
+            csr_mhpmevent[hpm_i] <= 0;
+         end else begin
+            if (hpm_event_wr_en && hpm_wr_idx == hpm_i[3:0]) begin
+               csr_mhpmevent[hpm_i] <= hpm_wr_data;
             end
-            csr_mhpmcounter[hpm_i] <= csr_mhpmcounter[hpm_i] + 1;
+            if (hpm_counter_wr_en && hpm_wr_idx == hpm_i[3:0]) begin
+               csr_mhpmcounter[hpm_i] <= hpm_wr_data;
+            end else if (!csr_mcountinhibit[hpm_i + 3] &&
+                         hpm_mode_enabled(csr_mhpmevent[hpm_i]) &&
+                         hpm_event_active(csr_mhpmevent[hpm_i][15:0],
+                                          hpm_instret_pulse,
+                                          hpm_cache_read_pulse,
+                                          hpm_cache_hit_pulse,
+                                          hpm_cache_miss_pulse,
+                                          hpm_cache_fill_line_pulse,
+                                          hpm_cache_fill_beat_pulse,
+                                          hpm_cache_write_pulse,
+                                          hpm_axi_read_pulse,
+                                          hpm_axi_write_pulse,
+                                          hpm_bus_wait_cycle)) begin
+               if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
+                   !csr_mhpmevent[hpm_i][`HPM_OF_BIT] &&
+                   !(hpm_event_wr_en && hpm_wr_idx == hpm_i[3:0])) begin
+                  csr_mhpmevent[hpm_i] <= csr_mhpmevent[hpm_i] | 64'h8000_0000_0000_0000;
+                  lcofip <= 1;
+               end
+               csr_mhpmcounter[hpm_i] <= csr_mhpmcounter[hpm_i] + 1;
+            end
          end
       end
       if (reset)
@@ -1638,6 +1778,8 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
       dram_read  <= 0;
       dram_write <= 0;
+      hpm_counter_wr_en <= 0;
+      hpm_event_wr_en <= 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -4257,12 +4399,6 @@ module smolrv64(input wire        clock,
               end
            end
 
-           case (csr_op)
-             `CSR_OP_COPY: csr_write_val = csr_arg;
-             `CSR_OP_OR: csr_write_val = csr_read_val | csr_arg;
-             `CSR_OP_ANDN: csr_write_val = csr_read_val & ~csr_arg;
-           endcase
-
            // Write priviledge check
            if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
               if (prv < csrno[9:8]) begin
@@ -4296,44 +4432,73 @@ module smolrv64(input wire        clock,
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
               else if (`CSR_MHPMEVENT3 <= csrno && csrno <= 12'h33f) begin
-                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1))
-                    csr_mhpmevent[csrno - `CSR_MHPMEVENT3] <= csr_write_val;
+                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
+                    hpm_event_wr_en <= 1;
+                    hpm_wr_idx <= csrno[3:0] - 4'd3;
+                    hpm_wr_data <= csr_modify_value(csr_mhpmevent[csrno - `CSR_MHPMEVENT3],
+                                                     csr_arg, csr_op);
+                 end
               end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= 12'hb1f) begin
-                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1))
-                    csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3] <= csr_write_val;
+                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
+                    hpm_counter_wr_en <= 1;
+                    hpm_wr_idx <= csrno[3:0] - 4'd3;
+                    hpm_wr_data <= csr_modify_value(csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3],
+                                                     csr_arg, csr_op);
+                 end
               end
               else case (csrno)
                 // fcsr: fflags aliased at [4:0], frm aliased at [7:5].
                 // Writing any of these is an implicit "FP state touched"
                 // event, so we mark FS=Dirty at the same time.
-                `CSR_FFLAGS: begin fflags      = csr_write_val[4:0];      fs = 3; end
-                `CSR_FRM:    begin frm         = csr_write_val[2:0];      fs = 3; end
-                `CSR_FCSR:   begin {frm,fflags}= csr_write_val[7:0];      fs = 3; end
-                `CSR_SSTATUS: begin
+                `CSR_FFLAGS: begin : csr_write_fflags
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({59'd0, fflags}, csr_arg, csr_op);
+                   fflags = csr_next[4:0];
+                   fs = 3;
+                end
+                `CSR_FRM: begin : csr_write_frm
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({61'd0, frm}, csr_arg, csr_op);
+                   frm = csr_next[2:0];
+                   fs = 3;
+                end
+                `CSR_FCSR: begin : csr_write_fcsr
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({56'd0, frm, fflags}, csr_arg, csr_op);
+                   {frm, fflags} = csr_next[7:0];
+                   fs = 3;
+                end
+                `CSR_SSTATUS: begin : csr_write_sstatus
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({sd, 29'd0, uxl, 12'd0, mxr, sum, 1'd0,
+                                                xs, fs, 4'd0, spp, 2'd0, spie, upie, 2'd0, sie, uie},
+                                               csr_arg, csr_op);
 `ifdef SIMULATE
 `ifdef VERBOSE
-                   if (sum != csr_write_val[18])
-                      $display("SSTATUS: sum %d->%d pc %x time %0t", sum, csr_write_val[18], pc, $time);
+                   if (sum != csr_next[18])
+                      $display("SSTATUS: sum %d->%d pc %x time %0t", sum, csr_next[18], pc, $time);
 `endif
 `endif
-                   {mxr, sum}        = csr_write_val[19:18];
-                   fs                = csr_write_val[14:13];
-                   spp               = csr_write_val[8];
-                   {spie, upie}      = csr_write_val[5:4];
-                   {sie, uie}        = csr_write_val[1:0];
+                   {mxr, sum}        = csr_next[19:18];
+                   fs                = csr_next[14:13];
+                   spp               = csr_next[8];
+                   {spie, upie}      = csr_next[5:4];
+                   {sie, uie}        = csr_next[1:0];
                 end
-                `CSR_SIE:       csr_mie    = csr_write_val & 14'h2222 | csr_mie & ~14'h2222;
-                `CSR_STVEC:     csr_stvec  = csr_write_val;
-                `CSR_SCOUNTEREN:csr_scounteren = csr_write_val & `HPM_COUNTER_MASK;
-                `CSR_SSCRATCH:  csr_sscratch = csr_write_val;
-                `CSR_SEPC:      csr_sepc   = csr_write_val & ~1;
-                `CSR_SCAUSE:    csr_scause = csr_write_val;
-                `CSR_STVAL:     csr_stval  = csr_write_val;
-                `CSR_SIP:       begin
+                `CSR_SIE:       csr_mie    = csr_modify_value(csr_mie & 14'h2222, csr_arg, csr_op) & 14'h2222 | csr_mie & ~14'h2222;
+                `CSR_STVEC:     csr_stvec  = csr_modify_value(csr_stvec, csr_arg, csr_op);
+                `CSR_SCOUNTEREN:csr_scounteren = csr_modify_value(csr_scounteren, csr_arg, csr_op) & `HPM_COUNTER_MASK;
+                `CSR_SSCRATCH:  csr_sscratch = csr_modify_value(csr_sscratch, csr_arg, csr_op);
+                `CSR_SEPC:      csr_sepc   = csr_modify_value(csr_sepc, csr_arg, csr_op) & ~1;
+                `CSR_SCAUSE:    csr_scause = csr_modify_value(csr_scause, csr_arg, csr_op);
+                `CSR_STVAL:     csr_stval  = csr_modify_value(csr_stval, csr_arg, csr_op);
+                `CSR_SIP:       begin : csr_write_sip
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value(csr_mip & csr_mideleg, csr_arg, csr_op);
                    // Only SSIP (bit 1) is writable via SIP; SEIP/STIP are read-only
-                   if (csr_mideleg[13]) lcofip = csr_write_val[13];
-                   if (csr_mideleg[1]) ssip = csr_write_val[1];
-                   if (csr_mideleg[0]) usip = csr_write_val[0];
+                   if (csr_mideleg[13]) lcofip = csr_next[13];
+                   if (csr_mideleg[1]) ssip = csr_next[1];
+                   if (csr_mideleg[0]) usip = csr_next[0];
                 end
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
@@ -4355,43 +4520,51 @@ module smolrv64(input wire        clock,
                      end
                    end
                 end
-                `CSR_MSTATUS: begin
-                   {sie, uie}        = csr_write_val[1:0];
-                   {spie, upie, mie} = csr_write_val[5:3];
-                   {spp, mpie}       = csr_write_val[8:7];
-                   mpp               = csr_write_val[12:11];
-                   fs                = csr_write_val[14:13];
-                   {tsr, tw, tvm, mxr, sum, mprv} = csr_write_val[22:17];
+                `CSR_MSTATUS: begin : csr_write_mstatus
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({sd, 27'd0, sxl, uxl, 9'd0,
+                                                tsr, tw, tvm, mxr, sum, mprv,
+                                                xs, fs, mpp, 2'd0, spp,
+                                                mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie},
+                                               csr_arg, csr_op);
+                   {sie, uie}        = csr_next[1:0];
+                   {spie, upie, mie} = csr_next[5:3];
+                   {spp, mpie}       = csr_next[8:7];
+                   mpp               = csr_next[12:11];
+                   fs                = csr_next[14:13];
+                   {tsr, tw, tvm, mxr, sum, mprv} = csr_next[22:17];
                 end
                 `CSR_MISA:     begin end
-                `CSR_MEDELEG:  csr_medeleg  = csr_write_val;
-                `CSR_MIDELEG:  csr_mideleg  = csr_write_val;
-                `CSR_MIE:      csr_mie      = csr_write_val;
-                `CSR_MTVEC:    csr_mtvec    = csr_write_val; // XXX enforce 256-byte alignment for vectored interrupts
-                `CSR_MCOUNTEREN: csr_mcounteren = csr_write_val & `HPM_COUNTER_MASK;
-                `CSR_MCOUNTINHIBIT: csr_mcountinhibit = csr_write_val & `HPM_INHIBIT_MASK;
-                `CSR_MCYCLECFG: csr_mcyclecfg = csr_write_val;
-                `CSR_MINSTRETCFG: csr_minstretcfg = csr_write_val;
-                `CSR_MSCRATCH: csr_mscratch = csr_write_val;
-                `CSR_MEPC:     csr_mepc     = csr_write_val & ~1;
-                `CSR_MCAUSE:   csr_mcause   = csr_write_val;
-                `CSR_MTVAL:    csr_mtval    = csr_write_val;
-                `CSR_MIP:      begin
+                `CSR_MEDELEG:  csr_medeleg  = csr_modify_value(csr_medeleg, csr_arg, csr_op);
+                `CSR_MIDELEG:  csr_mideleg  = csr_modify_value(csr_mideleg, csr_arg, csr_op);
+                `CSR_MIE:      csr_mie      = csr_modify_value(csr_mie, csr_arg, csr_op);
+                `CSR_MTVEC:    csr_mtvec    = csr_modify_value(csr_mtvec, csr_arg, csr_op); // XXX enforce 256-byte alignment for vectored interrupts
+                `CSR_MCOUNTEREN: csr_mcounteren = csr_modify_value(csr_mcounteren, csr_arg, csr_op) & `HPM_COUNTER_MASK;
+                `CSR_MCOUNTINHIBIT: csr_mcountinhibit = csr_modify_value(csr_mcountinhibit, csr_arg, csr_op) & `HPM_INHIBIT_MASK;
+                `CSR_MCYCLECFG: csr_mcyclecfg = csr_modify_value(csr_mcyclecfg, csr_arg, csr_op);
+                `CSR_MINSTRETCFG: csr_minstretcfg = csr_modify_value(csr_minstretcfg, csr_arg, csr_op);
+                `CSR_MSCRATCH: csr_mscratch = csr_modify_value(csr_mscratch, csr_arg, csr_op);
+                `CSR_MEPC:     csr_mepc     = csr_modify_value(csr_mepc, csr_arg, csr_op) & ~1;
+                `CSR_MCAUSE:   csr_mcause   = csr_modify_value(csr_mcause, csr_arg, csr_op);
+                `CSR_MTVAL:    csr_mtval    = csr_modify_value(csr_mtval, csr_arg, csr_op);
+                `CSR_MIP:      begin : csr_write_mip
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value(csr_mip, csr_arg, csr_op);
                    // MEIP/SEIP (bits 11,9) are read-only, driven by PLIC
                    // MTIP/MSIP (bits 7,3) are read-only, driven by CLINT
-                   lcofip = csr_write_val[13];
-                   ueip = csr_write_val[8];
-                   stip = csr_write_val[5];
-                   utip = csr_write_val[4];
-                   ssip = csr_write_val[1];
-                   usip = csr_write_val[0];
+                   lcofip = csr_next[13];
+                   ueip = csr_next[8];
+                   stip = csr_next[5];
+                   utip = csr_next[4];
+                   ssip = csr_next[1];
+                   usip = csr_next[0];
                 end
                 `CSR_TSELECT:  begin end
                 `CSR_TDATA1:   begin end
                 `CSR_TDATA2:   begin end
                 `CSR_TDATA3:   begin end
-                `CSR_MCYCLE:   csr_mcycle   <= csr_write_val;
-                `CSR_MINSTRET: csr_minstret <= csr_write_val;
+                `CSR_MCYCLE:   csr_mcycle   <= csr_modify_value(csr_mcycle, csr_arg, csr_op);
+                `CSR_MINSTRET: csr_minstret <= csr_modify_value(csr_minstret, csr_arg, csr_op);
                 // Any write to any mig_* CSR clears all four to their initial
                 // sentinels (fresh measurement window).  The written value is
                 // ignored; this is the "clear stats" knob for the monitor.
@@ -4998,10 +5171,8 @@ module smolrv64(input wire        clock,
          ptw_from_dram    <= 0;
          mig_latency_ctr  <= 0;
          mig_prev_waiting <= 0;
-         for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
-            csr_mhpmcounter[hpm_i] <= 0;
-            csr_mhpmevent[hpm_i] <= 0;
-         end
+         hpm_counter_wr_en <= 0;
+         hpm_event_wr_en   <= 0;
       end
    end
 
@@ -5011,47 +5182,6 @@ module smolrv64(input wire        clock,
    assign dram_readdata_next_valid = dram_readdata_next_valid_r;
    assign dram_write_ready   = cache_idle;
    assign dram_write_done    = dram_write_done_r;
-
-   always @(posedge clock) begin
-      cache_bank0_rd_data <= cache_bank0[cache_bank0_rd_idx];
-      cache_bank1_rd_data <= cache_bank1[cache_rd_idx];
-      cache_bank2_rd_data <= cache_bank2[cache_rd_idx];
-      cache_bank3_rd_data <= cache_bank3[cache_rd_idx];
-      cache_bank4_rd_data <= cache_bank4[cache_rd_idx];
-      cache_bank5_rd_data <= cache_bank5[cache_rd_idx];
-      cache_bank6_rd_data <= cache_bank6[cache_rd_idx];
-      cache_bank7_rd_data <= cache_bank7[cache_rd_idx];
-
-      if (cache_state == CACHE_FILL_WAIT && axi_readdatavalid) begin : cache_fill_bank_write
-         reg [63:0] fill_word;
-         fill_word = axi_readdata;
-         if (cache_req_write && cache_fill_beat == cache_req_bank)
-            fill_word = merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
-         case (cache_fill_beat)
-           3'd0: cache_bank0[cache_fill_idx] <= fill_word;
-           3'd1: cache_bank1[cache_fill_idx] <= fill_word;
-           3'd2: cache_bank2[cache_fill_idx] <= fill_word;
-           3'd3: cache_bank3[cache_fill_idx] <= fill_word;
-           3'd4: cache_bank4[cache_fill_idx] <= fill_word;
-           3'd5: cache_bank5[cache_fill_idx] <= fill_word;
-           3'd6: cache_bank6[cache_fill_idx] <= fill_word;
-           3'd7: cache_bank7[cache_fill_idx] <= fill_word;
-         endcase
-      end
-
-      if (cache_state == CACHE_HIT_RESP && cache_req_write && cache_lookup_hit) begin
-         case (cache_req_bank)
-           3'd0: cache_bank0[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd1: cache_bank1[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd2: cache_bank2[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd3: cache_bank3[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd4: cache_bank4[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd5: cache_bank5[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd6: cache_bank6[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-           3'd7: cache_bank7[cache_rd_idx] <= merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
-         endcase
-      end
-   end
 
    always @(posedge clock) begin
       dram_readdatavalid_r <= 0;
