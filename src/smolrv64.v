@@ -4634,7 +4634,7 @@ module smolrv64(input wire        clock,
            // constant.
            deleg = prv <= 1 && (cause_intr ? csr_mideleg[cause[3:0]] : csr_medeleg[cause[3:0]]);
            if (deleg) begin
-              csr_scause = {cause_intr, 51'd0, cause};
+              csr_scause = {cause_intr, 63'd0} | {50'd0, cause};
               csr_sepc = pc;
               csr_stval = tval;
               spie = sie;
@@ -4643,7 +4643,7 @@ module smolrv64(input wire        clock,
               tvec = csr_stvec;
               prv = 1;
            end else begin
-              csr_mcause = {cause_intr, 51'd0, cause};
+              csr_mcause = {cause_intr, 63'd0} | {50'd0, cause};
               csr_mepc = pc;
               csr_mtval = tval;
               mpie = mie;
@@ -4680,7 +4680,7 @@ module smolrv64(input wire        clock,
                8'd1,                         // trapped
                32'd0,
                64'd0,
-               {cause_intr, 51'd0, cause},   // architectural mcause/scause form
+               ({cause_intr, 63'd0} | {50'd0, cause}),   // architectural mcause/scause form
                tval,
                clint_mtime_prev,
                clint_mtimecmp,
