@@ -3,21 +3,21 @@
 SmolRV64 is a single-file, single `always @(posedge clock)`
 micro-stepped RV64IMAC implementation which aspires to run Ubuntu.
 
-The goal to reach functionality as quickly as possible, thus, the RTL
-will prioritize simplicity over efficiency and will resemble a
-software simulator.  That's on purpose!  Performance is *not* the goal
-(initially).
+The first goal was functionality, so the RTL still has a simulator-like
+shape in many places.  The current work is shifting toward performance
+without losing that debuggability.
 
-Once the goal of fully running Ubuntu is attained we will begin work
-on getting it fast (and tighten up the RTL a lot).
+The primary FPGA target is the RK-XCKU5P-F board with DDR4, SD card, and
+a 3 Mbaud serial console.
 
 # Status
 
-209 riscv-tests pass. RV64IMAC with Sv39 virtual memory and Ssvnapot
-is implemented.  Most basic parts of FP (FD extensions) is there, but
-no math yet.
+RV64IMAC with Sv39 virtual memory and Ssvnapot is implemented.  Basic
+F/D register and CSR plumbing exists, with CVFPU integration in progress.
+The core has a direct-mapped physical write-back cache, a small fetch
+buffer, and split direct-mapped TLBs for 4 KiB and 2 MiB pages.
 
-RX-XCKU5P-F FPGA dev boards is directly supported.
+RK-XCKU5P-F FPGA dev boards are directly supported.
 
 Devices:
 - UART
@@ -25,10 +25,20 @@ Devices:
 - PLIC
 - SPI-MMC (SDcard)
 
+Board notes:
+- The RK UART is hardwired for 3,000,000 baud.  Use `make connect` in
+  `platforms/rk-xcku5p-f-v1.2` or run `screen /dev/ttyUSB1 3000000`.
+- The Ubuntu device tree intentionally advertises a faster CLINT
+  timebase than the hardware would otherwise imply, so Linux does not
+  give up on the machine for being too slow during boot.
+
 ## Performance
 
-It's insanely slow.  Performance is not yet a priority, however the RK
-target is using a 333 MHz clock and CPI is significant due to DDR4.
+Performance is now an active area of work.  The RK target runs the core
+from the DDR4 UI clock at about 333 MHz, but CPI is still dominated by
+frontend, translation, cache, and DDR4 latency.  Recent work added cache,
+fetch, TLB, and HPM/stat counters so Linux can expose where cycles go.
+The current RK implementation closes timing with a small margin.
 
 # Milestones
 
@@ -57,16 +67,14 @@ What's needed:
 
 - [x] SDcard interface for permanent storage
 - [ ] Full Compliant Floating point (F+D)
-- [ ] Simple directly mapped TLB
-- [ ] Simple directly mapped physical cache (64-byte lines)
+- [x] Split direct-mapped TLBs for 4 KiB and 2 MiB pages
+- [x] Direct-mapped physical write-back cache (64-byte lines)
+- [x] Close timing with cache, TLB, fetch buffer, and CVFPU enabled
 
 ## Beyond: Making it fast
 
-Planning for this is still in the early stages
-
-- [ ] TBD: more advanced TLBs using some Cuckoo hashing scheme
-- [ ] TBD: more advanced skew-associative virtually tagged Instruction
-      and data caches
+- [ ] More advanced TLBs after the direct-mapped design is characterized
+- [ ] Skew-associative virtually indexed frontend/cache experiments
 - [ ] Out-of-order (before pipelining for ease of debugging)
 - [ ] 4-wide superscalar
 - [ ] Branch prediction

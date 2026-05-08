@@ -587,7 +587,10 @@ module smolrv64(input wire        clock,
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
 `define S_TLB_HIT              39  // route the registered TLB hit result
-`define S_LAST_STATE           39  // update state register width accordingly
+`define S_TLB_START_FETCH      40  // start instruction-fetch translation after fetch miss decision
+`define S_TLB_START_FETCH_HALF 41  // start cross-page instruction-fetch translation
+`define S_PTW_START            42  // start PTW after TLB miss decision
+`define S_LAST_STATE           42  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -797,7 +800,7 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] rs1, rs2;
    wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF3 onwards
    wire [63:0] s2_bram;
-   reg  [63:0] s1 = 0;    // flip-flop copy of s1_bram; captured in S_RF3, used in S_EXECUTE
+   (* max_fanout = 32 *) reg [63:0] s1 = 0; // flip-flop copy of s1_bram; captured in S_RF3, used in S_EXECUTE
    reg  [63:0] s2 = 0;
 
    reg  [ 4:0] write_back_register = 0;
@@ -820,7 +823,7 @@ module smolrv64(input wire        clock,
    // Pre-decoded ALU control: computed in S_RF3, consumed in S_EXECUTE case block.
    // Breaks the ~50-condition priority if-else chain critical path into two pipeline stages.
    reg  [ 3:0] pre_exe_op  = 0;  // EXOP_* operation code
-   reg  [63:0] pre_exe_b   = 0;  // second operand
+   (* max_fanout = 32 *) reg [63:0] pre_exe_b = 0; // second operand
    reg         pre_exe_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
 
    // Pre-decoded mem access: computed in S_RF3, consumed in S_EXECUTE shared block.
@@ -910,7 +913,7 @@ module smolrv64(input wire        clock,
 `endif
 
 
-   reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
+   (* max_fanout = 32 *) reg [63:0] npc = `RESET_PC; // XXX We should set this on reset
    reg  [63:0] pre_npc = `RESET_PC;
    reg  [63:0] pre_jalr_target = `RESET_PC;
    reg  [63:0] pre_branch_target = `RESET_PC;
@@ -1049,6 +1052,31 @@ module smolrv64(input wire        clock,
                                    state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
                                    state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
                                    state == `S_MMIO_ALIGN;
+   reg        hpm_instret_q = 0;
+   reg        hpm_cache_read_q = 0;
+   reg        hpm_cache_hit_q = 0;
+   reg        hpm_cache_miss_q = 0;
+   reg        hpm_cache_fill_line_q = 0;
+   reg        hpm_cache_fill_beat_q = 0;
+   reg        hpm_cache_write_q = 0;
+   reg        hpm_axi_read_q = 0;
+   reg        hpm_axi_write_q = 0;
+   reg        hpm_bus_wait_q = 0;
+   reg        hpm_tlb_lookup_q = 0;
+   reg        hpm_tlb_hit_q = 0;
+   reg        hpm_tlb_miss_q = 0;
+   reg        hpm_tlb_hit_4k_q = 0;
+   reg        hpm_tlb_hit_2m_q = 0;
+   reg        hpm_tlb_insert_4k_q = 0;
+   reg        hpm_tlb_insert_2m_q = 0;
+   reg        hpm_tlb_evict_4k_q = 0;
+   reg        hpm_tlb_evict_2m_q = 0;
+   reg        hpm_tlb_uncached_1g_q = 0;
+   reg        hpm_tlb_uncached_napot_q = 0;
+   reg        hpm_ptw_leaf_4k_q = 0;
+   reg        hpm_ptw_leaf_2m_q = 0;
+   reg        hpm_ptw_leaf_1g_q = 0;
+   reg        hpm_ptw_leaf_napot_q = 0;
 
 `ifdef SIMULATE
    reg cache_trace_enabled = 0;
@@ -1135,6 +1163,9 @@ module smolrv64(input wire        clock,
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
            `S_TLB_HIT:               state_name = "TLB_HIT";
+           `S_TLB_START_FETCH:       state_name = "TLB_START_FETCH";
+           `S_TLB_START_FETCH_HALF:  state_name = "TLB_START_FETCH_HALF";
+           `S_PTW_START:             state_name = "PTW_START";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1554,7 +1585,7 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] rd;
    reg  [ 5:0] shamt;
    (* max_fanout = 16 *) reg [11:0] csrno;
-   reg  [31:0] insn = 0; // XXX We should set this on reset
+   (* max_fanout = 32 *) reg [31:0] insn = 0; // XXX We should set this on reset
    reg  [ 1:0] csr_op;
    reg  [ 1:0] fcmp_result; // {nv, result} from fcmp_s/fcmp_d
 
@@ -1646,7 +1677,7 @@ module smolrv64(input wire        clock,
    end
 
    function counter_access_allowed;
-      input [4:0] counter_idx;
+      input [5:0] counter_idx;
       begin
          if (prv == 3)
            counter_access_allowed = 1;
@@ -2308,6 +2339,59 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
       if (!csr_mcountinhibit[0] && hpm_mode_enabled(csr_mcyclecfg))
          csr_mcycle <= csr_mcycle + 1;
+      if (core_reset_now) begin
+         hpm_instret_q <= 0;
+         hpm_cache_read_q <= 0;
+         hpm_cache_hit_q <= 0;
+         hpm_cache_miss_q <= 0;
+         hpm_cache_fill_line_q <= 0;
+         hpm_cache_fill_beat_q <= 0;
+         hpm_cache_write_q <= 0;
+         hpm_axi_read_q <= 0;
+         hpm_axi_write_q <= 0;
+         hpm_bus_wait_q <= 0;
+         hpm_tlb_lookup_q <= 0;
+         hpm_tlb_hit_q <= 0;
+         hpm_tlb_miss_q <= 0;
+         hpm_tlb_hit_4k_q <= 0;
+         hpm_tlb_hit_2m_q <= 0;
+         hpm_tlb_insert_4k_q <= 0;
+         hpm_tlb_insert_2m_q <= 0;
+         hpm_tlb_evict_4k_q <= 0;
+         hpm_tlb_evict_2m_q <= 0;
+         hpm_tlb_uncached_1g_q <= 0;
+         hpm_tlb_uncached_napot_q <= 0;
+         hpm_ptw_leaf_4k_q <= 0;
+         hpm_ptw_leaf_2m_q <= 0;
+         hpm_ptw_leaf_1g_q <= 0;
+         hpm_ptw_leaf_napot_q <= 0;
+      end else begin
+         hpm_instret_q <= hpm_instret_pulse;
+         hpm_cache_read_q <= hpm_cache_read_pulse;
+         hpm_cache_hit_q <= hpm_cache_hit_pulse;
+         hpm_cache_miss_q <= hpm_cache_miss_pulse;
+         hpm_cache_fill_line_q <= hpm_cache_fill_line_pulse;
+         hpm_cache_fill_beat_q <= hpm_cache_fill_beat_pulse;
+         hpm_cache_write_q <= hpm_cache_write_pulse;
+         hpm_axi_read_q <= hpm_axi_read_pulse;
+         hpm_axi_write_q <= hpm_axi_write_pulse;
+         hpm_bus_wait_q <= hpm_bus_wait_cycle;
+         hpm_tlb_lookup_q <= hpm_tlb_lookup_pulse;
+         hpm_tlb_hit_q <= hpm_tlb_hit_pulse;
+         hpm_tlb_miss_q <= hpm_tlb_miss_pulse;
+         hpm_tlb_hit_4k_q <= hpm_tlb_hit_4k_pulse;
+         hpm_tlb_hit_2m_q <= hpm_tlb_hit_2m_pulse;
+         hpm_tlb_insert_4k_q <= hpm_tlb_insert_4k_pulse;
+         hpm_tlb_insert_2m_q <= hpm_tlb_insert_2m_pulse;
+         hpm_tlb_evict_4k_q <= hpm_tlb_evict_4k_pulse;
+         hpm_tlb_evict_2m_q <= hpm_tlb_evict_2m_pulse;
+         hpm_tlb_uncached_1g_q <= hpm_tlb_uncached_1g_pulse;
+         hpm_tlb_uncached_napot_q <= hpm_tlb_uncached_napot_pulse;
+         hpm_ptw_leaf_4k_q <= hpm_ptw_leaf_4k_pulse;
+         hpm_ptw_leaf_2m_q <= hpm_ptw_leaf_2m_pulse;
+         hpm_ptw_leaf_1g_q <= hpm_ptw_leaf_1g_pulse;
+         hpm_ptw_leaf_napot_q <= hpm_ptw_leaf_napot_pulse;
+      end
       for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
          if (core_reset_now) begin
             csr_mhpmcounter[hpm_i] <= 0;
@@ -2321,31 +2405,31 @@ module smolrv64(input wire        clock,
             end else if (!csr_mcountinhibit[hpm_i + 3] &&
                          hpm_mode_enabled(csr_mhpmevent[hpm_i]) &&
                          hpm_event_active(csr_mhpmevent[hpm_i][15:0],
-                                          hpm_instret_pulse,
-                                          hpm_cache_read_pulse,
-                                          hpm_cache_hit_pulse,
-                                          hpm_cache_miss_pulse,
-                                          hpm_cache_fill_line_pulse,
-                                          hpm_cache_fill_beat_pulse,
-                                          hpm_cache_write_pulse,
-                                          hpm_axi_read_pulse,
-                                          hpm_axi_write_pulse,
-                                          hpm_bus_wait_cycle,
-                                          hpm_tlb_lookup_pulse,
-                                          hpm_tlb_hit_pulse,
-                                          hpm_tlb_miss_pulse,
-                                          hpm_tlb_hit_4k_pulse,
-                                          hpm_tlb_hit_2m_pulse,
-                                          hpm_tlb_insert_4k_pulse,
-                                          hpm_tlb_insert_2m_pulse,
-                                          hpm_tlb_evict_4k_pulse,
-                                          hpm_tlb_evict_2m_pulse,
-                                          hpm_tlb_uncached_1g_pulse,
-                                          hpm_tlb_uncached_napot_pulse,
-                                          hpm_ptw_leaf_4k_pulse,
-                                          hpm_ptw_leaf_2m_pulse,
-                                          hpm_ptw_leaf_1g_pulse,
-                                          hpm_ptw_leaf_napot_pulse)) begin
+                                          hpm_instret_q,
+                                          hpm_cache_read_q,
+                                          hpm_cache_hit_q,
+                                          hpm_cache_miss_q,
+                                          hpm_cache_fill_line_q,
+                                          hpm_cache_fill_beat_q,
+                                          hpm_cache_write_q,
+                                          hpm_axi_read_q,
+                                          hpm_axi_write_q,
+                                          hpm_bus_wait_q,
+                                          hpm_tlb_lookup_q,
+                                          hpm_tlb_hit_q,
+                                          hpm_tlb_miss_q,
+                                          hpm_tlb_hit_4k_q,
+                                          hpm_tlb_hit_2m_q,
+                                          hpm_tlb_insert_4k_q,
+                                          hpm_tlb_insert_2m_q,
+                                          hpm_tlb_evict_4k_q,
+                                          hpm_tlb_evict_2m_q,
+                                          hpm_tlb_uncached_1g_q,
+                                          hpm_tlb_uncached_napot_q,
+                                          hpm_ptw_leaf_4k_q,
+                                          hpm_ptw_leaf_2m_q,
+                                          hpm_ptw_leaf_1g_q,
+                                          hpm_ptw_leaf_napot_q)) begin
                if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
                    !csr_mhpmevent[hpm_i][`HPM_OF_BIT] &&
                    !(hpm_event_wr_en && hpm_wr_idx == hpm_i[3:0])) begin
@@ -2553,7 +2637,7 @@ module smolrv64(input wire        clock,
               state <= `S_RF;
            end else if (csr_satp[63:60] == 4'd8 && prv != 3) begin
               // Sv39 instruction fetch translation
-              start_translation(npc, 2'd0, prv, `S_FETCH2);
+              state <= `S_TLB_START_FETCH;
            end else begin
               if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
@@ -2629,7 +2713,7 @@ module smolrv64(input wire        clock,
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
                csr_satp[63:60] == 4'd8 && prv != 3) begin
               insn_half <= insn[15:0];
-              start_translation(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
+              state <= `S_TLB_START_FETCH_HALF;
            // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
            // instruction starts in the last halfword of the current chunk. Even for a
            // 16-bit compressed insn, cosim/debug expect the upper 16 bits to reflect
@@ -4578,6 +4662,7 @@ module smolrv64(input wire        clock,
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
                 7: uart_scr <= store_value[7:0];
+                default: begin end
               endcase
               mem_wr_mask = 0;
            end else begin
@@ -4648,6 +4733,7 @@ module smolrv64(input wire        clock,
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
                 7: uart_scr <= store_value[7:0];
+                default: begin end
               endcase
               mem_wr_mask = 0;
              end
@@ -4665,6 +4751,7 @@ module smolrv64(input wire        clock,
                           else
                              clint_mtime[31:0] <= store_value[31:0];
                 16'hBFFC: clint_mtime[63:32] <= store_value[31:0];
+                default: begin end
               endcase
               mem_wr_mask = 0;
              end
@@ -5108,11 +5195,11 @@ module smolrv64(input wire        clock,
                  csr_access_failure = 1;
               end
               if (!csr_access_failure) begin
-                 if (csrno == `CSR_CYCLE && !counter_access_allowed(5'd0))
+                 if (csrno == `CSR_CYCLE && !counter_access_allowed(6'd0))
                     csr_access_failure = 1;
-                 else if (csrno == `CSR_TIME && !counter_access_allowed(5'd1))
+                 else if (csrno == `CSR_TIME && !counter_access_allowed(6'd1))
                     csr_access_failure = 1;
-                 else if (csrno == `CSR_INSTRET && !counter_access_allowed(5'd2))
+                 else if (csrno == `CSR_INSTRET && !counter_access_allowed(6'd2))
                     csr_access_failure = 1;
                  else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1) &&
                           !counter_access_allowed({1'b0, csrno[4:0]}))
@@ -5475,6 +5562,14 @@ module smolrv64(input wire        clock,
            state <= `S_TLB_CHECK;
         end
 
+        `S_TLB_START_FETCH: begin
+           start_translation(pc, 2'd0, prv, `S_FETCH2);
+        end
+
+        `S_TLB_START_FETCH_HALF: begin
+           start_translation(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
+        end
+
         `S_TLB_CHECK: begin
            if (tlb_4k_hit) begin
               tlb_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
@@ -5483,12 +5578,16 @@ module smolrv64(input wire        clock,
               tlb_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
               state <= `S_TLB_HIT;
            end else begin
-              start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
+              state <= `S_PTW_START;
            end
         end
 
         `S_TLB_HIT: begin
            route_translated_addr(tlb_hit_pa, tlb_req_return);
+        end
+
+        `S_PTW_START: begin
+           start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
         end
 
         `S_PTW_READ: begin

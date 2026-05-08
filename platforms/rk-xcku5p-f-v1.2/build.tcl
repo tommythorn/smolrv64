@@ -150,6 +150,8 @@ if {$step in {synth impl bit}} {
 if {$step in {impl bit}} {
     puts "\n=== Running Implementation ==="
     set_property STRATEGY Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
+    set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+    set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
     if {![file exists $cvfpu_timing_hook]} {
         error "CVFPU timing hook missing: $cvfpu_timing_hook"
     }

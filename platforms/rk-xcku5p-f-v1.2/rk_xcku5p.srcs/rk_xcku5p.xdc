@@ -157,8 +157,12 @@ create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-
 
 # CVFPU runs from a BUFGCE_DIV /4 clock and crosses to the 333 MHz core
 # through a one-request CDC bridge.
-create_generated_clock -name fpu_clk_div4 -divide_by 4 -source [get_pins fpu_clk_buf/I] [get_pins fpu_clk_buf/O]
-set_clock_groups -asynchronous -group [get_clocks mmcm_clkout0] -group [get_clocks fpu_clk_div4]
+create_generated_clock -add -name fpu_clk_div4 -divide_by 4 -source [get_pins fpu_clk_buf/I] [get_pins fpu_clk_buf/O]
+set core_clk [get_clocks -quiet mmcm_clkout0]
+set cvfpu_clk [get_clocks -quiet fpu_clk_div4]
+if {[llength $core_clk] && [llength $cvfpu_clk]} {
+    set_clock_groups -asynchronous -group $core_clk -group $cvfpu_clk
+}
 
 # Bitstream configuration
 set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
@@ -167,32 +171,5 @@ set_property BITSTREAM.CONFIG.CONFIGRATE 51.0 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 
-# Ethernet phy (RTL8211F-CG) pins
-set_property IOSTANDARD LVCMOS18 [get_ports eth_rxc]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[3]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[2]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[1]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[0]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[3]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[2]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[1]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[0]}]
-set_property IOSTANDARD LVCMOS18 [get_ports eth_rx_ctl]
-set_property IOSTANDARD LVCMOS18 [get_ports eth_tx_ctl]
-set_property IOSTANDARD LVCMOS18 [get_ports eth_txc]
-set_property IOSTANDARD LVCMOS33 [get_ports sys_rst_n]
-
-set_property PACKAGE_PIN K20 [get_ports {eth_txd[3]}]
-set_property PACKAGE_PIN L20 [get_ports {eth_txd[2]}]
-set_property PACKAGE_PIN L22 [get_ports {eth_txd[1]}]
-set_property PACKAGE_PIN L23 [get_ports {eth_txd[0]}]
-set_property PACKAGE_PIN K26 [get_ports {eth_rxd[3]}]
-set_property PACKAGE_PIN K25 [get_ports {eth_rxd[2]}]
-set_property PACKAGE_PIN L25 [get_ports {eth_rxd[1]}]
-set_property PACKAGE_PIN L24 [get_ports {eth_rxd[0]}]
-
-set_property PACKAGE_PIN K22 [get_ports eth_rxc]
-set_property PACKAGE_PIN K23 [get_ports eth_rx_ctl]
-set_property PACKAGE_PIN M26 [get_ports eth_tx_ctl]
-set_property PACKAGE_PIN M25 [get_ports eth_txc]
-set_property PACKAGE_PIN K9  [get_ports sys_rst_n]
+# Ethernet/sys_rst_n pins are intentionally unconstrained here because the
+# current rk_xcku5p top level does not expose those ports.
