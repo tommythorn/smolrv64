@@ -584,8 +584,10 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_WAIT           34  // wait for a CVFPU result
 `define S_CVFPU_FMA_RF2        35  // wait for rs3 FP regfile read
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
-`define S_TLB_LOOKUP           37  // check translation cache before launching PTW
-`define S_LAST_STATE           37  // update state register width accordingly
+`define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
+`define S_TLB_CHECK            38  // compare direct-mapped TLB entries
+`define S_TLB_HIT              39  // route the registered TLB hit result
+`define S_LAST_STATE           39  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -631,6 +633,21 @@ module smolrv64(input wire        clock,
 `define HPM_EVENT_AXI_READ         16'h0200
 `define HPM_EVENT_AXI_WRITE        16'h0201
 `define HPM_EVENT_BUS_WAIT_CYCLE   16'h0202
+`define HPM_EVENT_TLB_LOOKUP       16'h0300
+`define HPM_EVENT_TLB_HIT          16'h0301
+`define HPM_EVENT_TLB_MISS         16'h0302
+`define HPM_EVENT_TLB_HIT_4K       16'h0303
+`define HPM_EVENT_TLB_HIT_2M       16'h0304
+`define HPM_EVENT_TLB_INSERT_4K    16'h0305
+`define HPM_EVENT_TLB_INSERT_2M    16'h0306
+`define HPM_EVENT_TLB_EVICT_4K     16'h0307
+`define HPM_EVENT_TLB_EVICT_2M     16'h0308
+`define HPM_EVENT_TLB_UNCACHED_1G  16'h0309
+`define HPM_EVENT_TLB_UNCACHED_NAPOT 16'h030a
+`define HPM_EVENT_PTW_LEAF_4K      16'h0310
+`define HPM_EVENT_PTW_LEAF_2M      16'h0311
+`define HPM_EVENT_PTW_LEAF_1G      16'h0312
+`define HPM_EVENT_PTW_LEAF_NAPOT   16'h0313
 
 `define REGION_UART    3'd0
 `define REGION_CLINT   3'd1
@@ -653,14 +670,35 @@ module smolrv64(input wire        clock,
 `endif
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
    localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
+   localparam TLB_CTX_BITS = 6;
+   localparam TLB_SATP_BITS = 64;
+   localparam TLB_2M_TAG_BITS = 18;
+   localparam TLB_2M_PBASE_BITS = 43;
+   localparam TLB_2M_DATA_BITS = TLB_2M_TAG_BITS + TLB_2M_PBASE_BITS +
+                                 TLB_SATP_BITS + TLB_CTX_BITS;
+   localparam TLB_4K_TAG_BITS = 27;
+   localparam TLB_4K_PBASE_BITS = 52;
+   localparam TLB_4K_DATA_BITS = TLB_4K_TAG_BITS + TLB_4K_PBASE_BITS +
+                                 TLB_SATP_BITS + TLB_CTX_BITS;
+   localparam TLB_CTX_LSB = 0;
+   localparam TLB_SATP_LSB = TLB_CTX_LSB + TLB_CTX_BITS;
+   localparam TLB_2M_PBASE_LSB = TLB_SATP_LSB + TLB_SATP_BITS;
+   localparam TLB_2M_TAG_LSB = TLB_2M_PBASE_LSB + TLB_2M_PBASE_BITS;
+   localparam TLB_4K_PBASE_LSB = TLB_SATP_LSB + TLB_SATP_BITS;
+   localparam TLB_4K_TAG_LSB = TLB_4K_PBASE_LSB + TLB_4K_PBASE_BITS;
 `ifndef CACHE_INDEX_BITS
 `define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
 `endif
 `define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
-`ifndef TLB_INDEX_BITS
-`define TLB_INDEX_BITS 4
+`ifndef TLB_2M_INDEX_BITS
+`define TLB_2M_INDEX_BITS 8
 `endif
-`define TLB_ENTRIES (1 << `TLB_INDEX_BITS)
+`ifndef TLB_4K_INDEX_BITS
+`define TLB_4K_INDEX_BITS 10
+`endif
+`define TLB_2M_ENTRIES (1 << `TLB_2M_INDEX_BITS)
+`define TLB_4K_ENTRIES (1 << `TLB_4K_INDEX_BITS)
+`define TLB_ENTRIES (`TLB_2M_ENTRIES + `TLB_4K_ENTRIES)
 `define CACHE_PHYS_BITS 31 // Cached DRAM addresses are {33'd0, dram_addr[27:0], 3'b000}.
 `define CACHE_TAG_BITS  (`CACHE_PHYS_BITS - `CACHE_INDEX_BITS - 6)
 `define CACHE_VALID_BIT `CACHE_TAG_BITS
@@ -1037,6 +1075,17 @@ module smolrv64(input wire        clock,
    reg [63:0] ptw_stat_leaf_64k_napot = 0;
    reg [63:0] ptw_stat_leaf_2m = 0;
    reg [63:0] ptw_stat_leaf_1g = 0;
+   reg [63:0] tlb_stat_lookups = 0;
+   reg [63:0] tlb_stat_hits = 0;
+   reg [63:0] tlb_stat_misses = 0;
+   reg [63:0] tlb_stat_hits_4k = 0;
+   reg [63:0] tlb_stat_hits_2m = 0;
+   reg [63:0] tlb_stat_inserts_4k = 0;
+   reg [63:0] tlb_stat_inserts_2m = 0;
+   reg [63:0] tlb_stat_evicts_4k = 0;
+   reg [63:0] tlb_stat_evicts_2m = 0;
+   reg [63:0] tlb_stat_uncached_1g = 0;
+   reg [63:0] tlb_stat_uncached_napot = 0;
    integer tlb_stat_entries_4k = 0;
    integer tlb_stat_entries_2m = 0;
    integer tlb_stat_entries_1g = 0;
@@ -1084,6 +1133,8 @@ module smolrv64(input wire        clock,
            `S_CVFPU_FMA_RF2:         state_name = "CVFPU_FMA_RF2";
            `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
+           `S_TLB_CHECK:             state_name = "TLB_CHECK";
+           `S_TLB_HIT:               state_name = "TLB_HIT";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1147,6 +1198,18 @@ module smolrv64(input wire        clock,
                   tlb_entries_total == 0 ? 0 : (tlb_stat_entries_1g * 10000) / tlb_entries_total);
          $display("%05d TLB_ENTRY_PAGE_SIZE total=%0d capacity=%0d",
                   $time, tlb_entries_total, `TLB_ENTRIES);
+         $display("%05d TLB_CAPACITY name=4K entries=%0d", $time, `TLB_4K_ENTRIES);
+         $display("%05d TLB_CAPACITY name=2M entries=%0d", $time, `TLB_2M_ENTRIES);
+         $display("%05d TLB_STATS lookups=%0d hits=%0d misses=%0d hit_pct_x100=%0d",
+                  $time, tlb_stat_lookups, tlb_stat_hits, tlb_stat_misses,
+                  tlb_stat_lookups == 0 ? 64'd0 :
+                  (tlb_stat_hits * 64'd10000) / tlb_stat_lookups);
+         $display("%05d TLB_STATS_4K hits=%0d inserts=%0d evicts=%0d",
+                  $time, tlb_stat_hits_4k, tlb_stat_inserts_4k, tlb_stat_evicts_4k);
+         $display("%05d TLB_STATS_2M hits=%0d inserts=%0d evicts=%0d",
+                  $time, tlb_stat_hits_2m, tlb_stat_inserts_2m, tlb_stat_evicts_2m);
+         $display("%05d TLB_UNCACHED page_1g=%0d napot=%0d",
+                  $time, tlb_stat_uncached_1g, tlb_stat_uncached_napot);
 
          ptw_leaf_total = ptw_stat_leaf_4k + ptw_stat_leaf_64k_napot +
                           ptw_stat_leaf_2m + ptw_stat_leaf_1g;
@@ -1259,6 +1322,21 @@ module smolrv64(input wire        clock,
       input        axi_read_pulse;
       input        axi_write_pulse;
       input        bus_wait_cycle;
+      input        tlb_lookup_pulse;
+      input        tlb_hit_pulse;
+      input        tlb_miss_pulse;
+      input        tlb_hit_4k_pulse;
+      input        tlb_hit_2m_pulse;
+      input        tlb_insert_4k_pulse;
+      input        tlb_insert_2m_pulse;
+      input        tlb_evict_4k_pulse;
+      input        tlb_evict_2m_pulse;
+      input        tlb_uncached_1g_pulse;
+      input        tlb_uncached_napot_pulse;
+      input        ptw_leaf_4k_pulse;
+      input        ptw_leaf_2m_pulse;
+      input        ptw_leaf_1g_pulse;
+      input        ptw_leaf_napot_pulse;
       begin
          case (event_code)
            `HPM_EVENT_CYCLES:          hpm_event_active = 1'b1;
@@ -1272,6 +1350,21 @@ module smolrv64(input wire        clock,
            `HPM_EVENT_AXI_READ:        hpm_event_active = axi_read_pulse;
            `HPM_EVENT_AXI_WRITE:       hpm_event_active = axi_write_pulse;
            `HPM_EVENT_BUS_WAIT_CYCLE:  hpm_event_active = bus_wait_cycle;
+           `HPM_EVENT_TLB_LOOKUP:      hpm_event_active = tlb_lookup_pulse;
+           `HPM_EVENT_TLB_HIT:         hpm_event_active = tlb_hit_pulse;
+           `HPM_EVENT_TLB_MISS:        hpm_event_active = tlb_miss_pulse;
+           `HPM_EVENT_TLB_HIT_4K:      hpm_event_active = tlb_hit_4k_pulse;
+           `HPM_EVENT_TLB_HIT_2M:      hpm_event_active = tlb_hit_2m_pulse;
+           `HPM_EVENT_TLB_INSERT_4K:   hpm_event_active = tlb_insert_4k_pulse;
+           `HPM_EVENT_TLB_INSERT_2M:   hpm_event_active = tlb_insert_2m_pulse;
+           `HPM_EVENT_TLB_EVICT_4K:    hpm_event_active = tlb_evict_4k_pulse;
+           `HPM_EVENT_TLB_EVICT_2M:    hpm_event_active = tlb_evict_2m_pulse;
+           `HPM_EVENT_TLB_UNCACHED_1G: hpm_event_active = tlb_uncached_1g_pulse;
+           `HPM_EVENT_TLB_UNCACHED_NAPOT: hpm_event_active = tlb_uncached_napot_pulse;
+           `HPM_EVENT_PTW_LEAF_4K:     hpm_event_active = ptw_leaf_4k_pulse;
+           `HPM_EVENT_PTW_LEAF_2M:     hpm_event_active = ptw_leaf_2m_pulse;
+           `HPM_EVENT_PTW_LEAF_1G:     hpm_event_active = ptw_leaf_1g_pulse;
+           `HPM_EVENT_PTW_LEAF_NAPOT:  hpm_event_active = ptw_leaf_napot_pulse;
            default:                    hpm_event_active = 1'b0;
          endcase
       end
@@ -1812,13 +1905,18 @@ module smolrv64(input wire        clock,
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
-   reg [`TLB_ENTRIES-1:0] tlb_valid = 0;
-   reg [ 1:0]  tlb_level [0:`TLB_ENTRIES-1];
-   reg [26:0]  tlb_vpn   [0:`TLB_ENTRIES-1];
-   reg [63:0]  tlb_pbase [0:`TLB_ENTRIES-1];
-   reg [63:0]  tlb_satp  [0:`TLB_ENTRIES-1];
-   reg [ 5:0]  tlb_ctx   [0:`TLB_ENTRIES-1]; // {access, effective prv, SUM, MXR}
-   reg [`TLB_INDEX_BITS-1:0] tlb_replace = 0;
+   reg [`TLB_4K_ENTRIES-1:0] tlb_4k_valid = 0;
+   reg [`TLB_2M_ENTRIES-1:0] tlb_2m_valid = 0;
+   reg [`TLB_4K_INDEX_BITS-1:0] tlb_4k_rd_idx = 0;
+   reg [`TLB_2M_INDEX_BITS-1:0] tlb_2m_rd_idx = 0;
+   reg [`TLB_4K_INDEX_BITS-1:0] tlb_4k_wr_idx = 0;
+   reg [`TLB_2M_INDEX_BITS-1:0] tlb_2m_wr_idx = 0;
+   reg                         tlb_4k_wr_en = 0;
+   reg                         tlb_2m_wr_en = 0;
+   reg [TLB_4K_DATA_BITS-1:0]  tlb_4k_wr_data = 0;
+   reg [TLB_2M_DATA_BITS-1:0]  tlb_2m_wr_data = 0;
+   wire [TLB_4K_DATA_BITS-1:0] tlb_4k_rd_data;
+   wire [TLB_2M_DATA_BITS-1:0] tlb_2m_rd_data;
    reg [63:0]  tlb_req_va;
    reg [63:0]  tlb_req_satp;
    reg [ 1:0]  tlb_req_access;
@@ -1826,6 +1924,103 @@ module smolrv64(input wire        clock,
    reg         tlb_req_sum;
    reg         tlb_req_mxr;
    reg [ 4:0]  tlb_req_return;
+   reg [63:0]  tlb_hit_pa;
+   reg         hpm_tlb_insert_4k_pulse = 0;
+   reg         hpm_tlb_insert_2m_pulse = 0;
+   reg         hpm_tlb_evict_4k_pulse = 0;
+   reg         hpm_tlb_evict_2m_pulse = 0;
+   reg         hpm_tlb_uncached_1g_pulse = 0;
+   reg         hpm_tlb_uncached_napot_pulse = 0;
+   reg         hpm_ptw_leaf_4k_pulse = 0;
+   reg         hpm_ptw_leaf_2m_pulse = 0;
+   reg         hpm_ptw_leaf_1g_pulse = 0;
+   reg         hpm_ptw_leaf_napot_pulse = 0;
+
+   function [`TLB_2M_INDEX_BITS-1:0] tlb_2m_index;
+      input [63:0] va;
+      input [ 1:0] access;
+      input [ 1:0] prv;
+      input        sum;
+      input        mxr;
+      reg [TLB_CTX_BITS-1:0] ctx;
+      begin
+         ctx = {access, prv, sum, mxr};
+         tlb_2m_index = va[28:21] ^ va[36:29] ^ {6'd0, va[38:37]} ^
+                        {2'd0, ctx};
+      end
+   endfunction
+
+   function [`TLB_4K_INDEX_BITS-1:0] tlb_4k_index;
+      input [63:0] va;
+      input [ 1:0] access;
+      input [ 1:0] prv;
+      input        sum;
+      input        mxr;
+      reg [TLB_CTX_BITS-1:0] ctx;
+      begin
+         ctx = {access, prv, sum, mxr};
+         tlb_4k_index = va[21:12] ^ {1'b0, va[30:22]} ^
+                        {8'd0, va[38:37]} ^ {4'd0, ctx};
+      end
+   endfunction
+
+   wire [TLB_CTX_BITS-1:0] tlb_req_ctx = {tlb_req_access, tlb_req_prv,
+                                          tlb_req_sum, tlb_req_mxr};
+   wire [TLB_4K_TAG_BITS-1:0]    tlb_4k_rd_tag =
+      tlb_4k_rd_data[TLB_4K_TAG_LSB +: TLB_4K_TAG_BITS];
+   wire [TLB_4K_PBASE_BITS-1:0]  tlb_4k_rd_pbase =
+      tlb_4k_rd_data[TLB_4K_PBASE_LSB +: TLB_4K_PBASE_BITS];
+   wire [TLB_SATP_BITS-1:0]      tlb_4k_rd_satp =
+      tlb_4k_rd_data[TLB_SATP_LSB +: TLB_SATP_BITS];
+   wire [TLB_CTX_BITS-1:0]       tlb_4k_rd_ctx =
+      tlb_4k_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
+   wire [TLB_2M_TAG_BITS-1:0]    tlb_2m_rd_tag =
+      tlb_2m_rd_data[TLB_2M_TAG_LSB +: TLB_2M_TAG_BITS];
+   wire [TLB_2M_PBASE_BITS-1:0]  tlb_2m_rd_pbase =
+      tlb_2m_rd_data[TLB_2M_PBASE_LSB +: TLB_2M_PBASE_BITS];
+   wire [TLB_SATP_BITS-1:0]      tlb_2m_rd_satp =
+      tlb_2m_rd_data[TLB_SATP_LSB +: TLB_SATP_BITS];
+   wire [TLB_CTX_BITS-1:0]       tlb_2m_rd_ctx =
+      tlb_2m_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
+   wire tlb_4k_hit = state == `S_TLB_CHECK &&
+                     tlb_4k_valid[tlb_4k_rd_idx] &&
+                     tlb_4k_rd_tag == tlb_req_va[38:12] &&
+                     tlb_4k_rd_satp == tlb_req_satp &&
+                     tlb_4k_rd_ctx == tlb_req_ctx;
+   wire tlb_2m_hit = state == `S_TLB_CHECK &&
+                     tlb_2m_valid[tlb_2m_rd_idx] &&
+                     tlb_2m_rd_tag == tlb_req_va[38:21] &&
+                     tlb_2m_rd_satp == tlb_req_satp &&
+                     tlb_2m_rd_ctx == tlb_req_ctx;
+   wire hpm_tlb_lookup_pulse = state == `S_TLB_LOOKUP;
+   wire hpm_tlb_hit_pulse = state == `S_TLB_CHECK && (tlb_4k_hit || tlb_2m_hit);
+   wire hpm_tlb_miss_pulse = state == `S_TLB_CHECK && !(tlb_4k_hit || tlb_2m_hit);
+   wire hpm_tlb_hit_4k_pulse = tlb_4k_hit;
+   wire hpm_tlb_hit_2m_pulse = !tlb_4k_hit && tlb_2m_hit;
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`TLB_4K_INDEX_BITS),
+      .DATA_WIDTH(TLB_4K_DATA_BITS)
+   ) tlb_4k_ram (
+      .clock   ( clock ),
+      .rd_addr ( tlb_4k_rd_idx ),
+      .rd_data ( tlb_4k_rd_data ),
+      .wr_en   ( tlb_4k_wr_en ),
+      .wr_addr ( tlb_4k_wr_idx ),
+      .wr_data ( tlb_4k_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`TLB_2M_INDEX_BITS),
+      .DATA_WIDTH(TLB_2M_DATA_BITS)
+   ) tlb_2m_ram (
+      .clock   ( clock ),
+      .rd_addr ( tlb_2m_rd_idx ),
+      .rd_data ( tlb_2m_rd_data ),
+      .wr_en   ( tlb_2m_wr_en ),
+      .wr_addr ( tlb_2m_wr_idx ),
+      .wr_data ( tlb_2m_wr_data )
+   );
 
    // Marks the S_FETCH1 cycle immediately after S_EXCEPTION. Used to
    // suppress a stale pre_intr_pending (sampled before S_EXCEPTION's
@@ -1977,10 +2172,9 @@ module smolrv64(input wire        clock,
    endfunction
 
    task flush_tlb;
-      integer i;
       begin
-         for (i = 0; i < `TLB_ENTRIES; i = i + 1)
-            tlb_valid[i] <= 0;
+         tlb_4k_valid <= 0;
+         tlb_2m_valid <= 0;
 `ifdef SIMULATE
          tlb_stat_entries_4k = 0;
          tlb_stat_entries_2m = 0;
@@ -2055,6 +2249,8 @@ module smolrv64(input wire        clock,
          tlb_req_sum    <= sum;
          tlb_req_mxr    <= mxr;
          tlb_req_return <= req_return;
+         tlb_4k_rd_idx  <= tlb_4k_index(req_va, req_access, req_prv, sum, mxr);
+         tlb_2m_rd_idx  <= tlb_2m_index(req_va, req_access, req_prv, sum, mxr);
          state          <= `S_TLB_LOOKUP;
       end
    endtask
@@ -2068,32 +2264,42 @@ module smolrv64(input wire        clock,
       input [63:0] req_satp;
       input        req_sum;
       input        req_mxr;
+      reg [`TLB_4K_INDEX_BITS-1:0] req_4k_idx;
+      reg [`TLB_2M_INDEX_BITS-1:0] req_2m_idx;
       begin
+         req_4k_idx = tlb_4k_index(req_va, req_access, req_prv,
+                                   req_sum, req_mxr);
+         req_2m_idx = tlb_2m_index(req_va, req_access, req_prv,
+                                   req_sum, req_mxr);
+         if (req_level == 1) begin
 `ifdef SIMULATE
-         if (tlb_valid[tlb_replace]) begin
-            case (tlb_level[tlb_replace])
-              2: tlb_stat_entries_1g = tlb_stat_entries_1g - 1;
-              1: tlb_stat_entries_2m = tlb_stat_entries_2m - 1;
-              default: tlb_stat_entries_4k = tlb_stat_entries_4k - 1;
-            endcase
-         end
-         case (req_level)
-           2: tlb_stat_entries_1g = tlb_stat_entries_1g + 1;
-           1: tlb_stat_entries_2m = tlb_stat_entries_2m + 1;
-           default: tlb_stat_entries_4k = tlb_stat_entries_4k + 1;
-         endcase
+            if (!tlb_2m_valid[req_2m_idx])
+               tlb_stat_entries_2m = tlb_stat_entries_2m + 1;
 `endif
-         tlb_valid[tlb_replace] <= 1;
-         tlb_level[tlb_replace] <= req_level;
-         tlb_vpn[tlb_replace]   <= req_va[38:12];
-         case (req_level)
-           2: tlb_pbase[tlb_replace] <= {req_pa[63:30], 30'd0};
-           1: tlb_pbase[tlb_replace] <= {req_pa[63:21], 21'd0};
-           default: tlb_pbase[tlb_replace] <= {req_pa[63:12], 12'd0};
-         endcase
-         tlb_satp[tlb_replace] <= req_satp;
-         tlb_ctx[tlb_replace]  <= {req_access, req_prv, req_sum, req_mxr};
-         tlb_replace           <= tlb_replace + 1;
+            hpm_tlb_insert_2m_pulse <= 1;
+            if (tlb_2m_valid[req_2m_idx])
+               hpm_tlb_evict_2m_pulse <= 1;
+            tlb_2m_valid[req_2m_idx] <= 1;
+            tlb_2m_wr_en <= 1;
+            tlb_2m_wr_idx <= req_2m_idx;
+            tlb_2m_wr_data <= {req_va[38:21], req_pa[63:21], req_satp,
+                               {req_access, req_prv, req_sum, req_mxr}};
+         end else if (req_level == 0) begin
+`ifdef SIMULATE
+            if (!tlb_4k_valid[req_4k_idx])
+               tlb_stat_entries_4k = tlb_stat_entries_4k + 1;
+`endif
+            hpm_tlb_insert_4k_pulse <= 1;
+            if (tlb_4k_valid[req_4k_idx])
+               hpm_tlb_evict_4k_pulse <= 1;
+            tlb_4k_valid[req_4k_idx] <= 1;
+            tlb_4k_wr_en <= 1;
+            tlb_4k_wr_idx <= req_4k_idx;
+            tlb_4k_wr_data <= {req_va[38:12], req_pa[63:12], req_satp,
+                               {req_access, req_prv, req_sum, req_mxr}};
+         end else begin
+            hpm_tlb_uncached_1g_pulse <= 1;
+         end
       end
    endtask
 
@@ -2124,7 +2330,22 @@ module smolrv64(input wire        clock,
                                           hpm_cache_write_pulse,
                                           hpm_axi_read_pulse,
                                           hpm_axi_write_pulse,
-                                          hpm_bus_wait_cycle)) begin
+                                          hpm_bus_wait_cycle,
+                                          hpm_tlb_lookup_pulse,
+                                          hpm_tlb_hit_pulse,
+                                          hpm_tlb_miss_pulse,
+                                          hpm_tlb_hit_4k_pulse,
+                                          hpm_tlb_hit_2m_pulse,
+                                          hpm_tlb_insert_4k_pulse,
+                                          hpm_tlb_insert_2m_pulse,
+                                          hpm_tlb_evict_4k_pulse,
+                                          hpm_tlb_evict_2m_pulse,
+                                          hpm_tlb_uncached_1g_pulse,
+                                          hpm_tlb_uncached_napot_pulse,
+                                          hpm_ptw_leaf_4k_pulse,
+                                          hpm_ptw_leaf_2m_pulse,
+                                          hpm_ptw_leaf_1g_pulse,
+                                          hpm_ptw_leaf_napot_pulse)) begin
                if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
                    !csr_mhpmevent[hpm_i][`HPM_OF_BIT] &&
                    !(hpm_event_wr_en && hpm_wr_idx == hpm_i[3:0])) begin
@@ -2173,6 +2394,18 @@ module smolrv64(input wire        clock,
       dram_write <= 0;
       hpm_counter_wr_en <= 0;
       hpm_event_wr_en <= 0;
+      tlb_4k_wr_en <= 0;
+      tlb_2m_wr_en <= 0;
+      hpm_tlb_insert_4k_pulse <= 0;
+      hpm_tlb_insert_2m_pulse <= 0;
+      hpm_tlb_evict_4k_pulse <= 0;
+      hpm_tlb_evict_2m_pulse <= 0;
+      hpm_tlb_uncached_1g_pulse <= 0;
+      hpm_tlb_uncached_napot_pulse <= 0;
+      hpm_ptw_leaf_4k_pulse <= 0;
+      hpm_ptw_leaf_2m_pulse <= 0;
+      hpm_ptw_leaf_1g_pulse <= 0;
+      hpm_ptw_leaf_napot_pulse <= 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -5239,38 +5472,23 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_LOOKUP: begin
-           begin : tlb_lookup
-              integer i;
-              reg hit;
-              reg tag_match;
-              reg [63:0] hit_pa;
+           state <= `S_TLB_CHECK;
+        end
 
-              hit = 0;
-              hit_pa = 0;
-              for (i = 0; i < `TLB_ENTRIES; i = i + 1) begin
-                 case (tlb_level[i])
-                   2: tag_match = tlb_vpn[i][26:18] == tlb_req_va[38:30];
-                   1: tag_match = tlb_vpn[i][26:9]  == tlb_req_va[38:21];
-                   default: tag_match = tlb_vpn[i] == tlb_req_va[38:12];
-                 endcase
-                 if (!hit && tlb_valid[i] &&
-                     tlb_satp[i] == tlb_req_satp &&
-                     tlb_ctx[i] == {tlb_req_access, tlb_req_prv, tlb_req_sum, tlb_req_mxr} &&
-                     tag_match) begin
-                    hit = 1;
-                    case (tlb_level[i])
-                      2: hit_pa = {tlb_pbase[i][63:30], tlb_req_va[29:0]};
-                      1: hit_pa = {tlb_pbase[i][63:21], tlb_req_va[20:0]};
-                      default: hit_pa = {tlb_pbase[i][63:12], tlb_req_va[11:0]};
-                    endcase
-                 end
-              end
-
-              if (hit)
-                 route_translated_addr(hit_pa, tlb_req_return);
-              else
-                 start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
+        `S_TLB_CHECK: begin
+           if (tlb_4k_hit) begin
+              tlb_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
+              state <= `S_TLB_HIT;
+           end else if (tlb_2m_hit) begin
+              tlb_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
+              state <= `S_TLB_HIT;
+           end else begin
+              start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
            end
+        end
+
+        `S_TLB_HIT: begin
+           route_translated_addr(tlb_hit_pa, tlb_req_return);
         end
 
         `S_PTW_READ: begin
@@ -5378,9 +5596,22 @@ module smolrv64(input wire        clock,
                   endcase
 `endif
 
+                  case (ptw_level)
+                    2: hpm_ptw_leaf_1g_pulse <= 1;
+                    1: hpm_ptw_leaf_2m_pulse <= 1;
+                    default: begin
+                       if (aligned[63])
+                          hpm_ptw_leaf_napot_pulse <= 1;
+                       else
+                          hpm_ptw_leaf_4k_pulse <= 1;
+                    end
+                  endcase
+
                   if (!(ptw_level == 0 && aligned[63]))
                      insert_tlb(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
                                 ptw_satp, ptw_sum, ptw_mxr);
+                  else
+                     hpm_tlb_uncached_napot_pulse <= 1;
                   route_translated_addr(mem_addr, ptw_return);
               end
            end else if (ptw_level == 0) begin
@@ -5697,7 +5928,25 @@ module smolrv64(input wire        clock,
          mig_prev_waiting <= 0;
          hpm_counter_wr_en <= 0;
          hpm_event_wr_en   <= 0;
-         tlb_replace       <= 0;
+         tlb_4k_rd_idx     <= 0;
+         tlb_2m_rd_idx     <= 0;
+         tlb_4k_wr_idx     <= 0;
+         tlb_2m_wr_idx     <= 0;
+         tlb_4k_wr_en      <= 0;
+         tlb_2m_wr_en      <= 0;
+         tlb_4k_wr_data    <= 0;
+         tlb_2m_wr_data    <= 0;
+         tlb_hit_pa        <= 0;
+         hpm_tlb_insert_4k_pulse <= 0;
+         hpm_tlb_insert_2m_pulse <= 0;
+         hpm_tlb_evict_4k_pulse <= 0;
+         hpm_tlb_evict_2m_pulse <= 0;
+         hpm_tlb_uncached_1g_pulse <= 0;
+         hpm_tlb_uncached_napot_pulse <= 0;
+         hpm_ptw_leaf_4k_pulse <= 0;
+         hpm_ptw_leaf_2m_pulse <= 0;
+         hpm_ptw_leaf_1g_pulse <= 0;
+         hpm_ptw_leaf_napot_pulse <= 0;
          flush_tlb;
 `ifdef SIMULATE
          fetch_buf_stat_hits <= 0;
@@ -5706,6 +5955,17 @@ module smolrv64(input wire        clock,
          ptw_stat_leaf_64k_napot <= 0;
          ptw_stat_leaf_2m <= 0;
          ptw_stat_leaf_1g <= 0;
+         tlb_stat_lookups <= 0;
+         tlb_stat_hits <= 0;
+         tlb_stat_misses <= 0;
+         tlb_stat_hits_4k <= 0;
+         tlb_stat_hits_2m <= 0;
+         tlb_stat_inserts_4k <= 0;
+         tlb_stat_inserts_2m <= 0;
+         tlb_stat_evicts_4k <= 0;
+         tlb_stat_evicts_2m <= 0;
+         tlb_stat_uncached_1g <= 0;
+         tlb_stat_uncached_napot <= 0;
          tlb_stat_entries_4k = 0;
          tlb_stat_entries_2m = 0;
          tlb_stat_entries_1g = 0;
@@ -5954,6 +6214,29 @@ module smolrv64(input wire        clock,
          if (cache_wb_line_pulse)
             cache_stat_wb_lines <= cache_stat_wb_lines + 1;
       end
+
+      if (hpm_tlb_lookup_pulse)
+         tlb_stat_lookups <= tlb_stat_lookups + 1;
+      if (hpm_tlb_hit_pulse)
+         tlb_stat_hits <= tlb_stat_hits + 1;
+      if (hpm_tlb_miss_pulse)
+         tlb_stat_misses <= tlb_stat_misses + 1;
+      if (hpm_tlb_hit_4k_pulse)
+         tlb_stat_hits_4k <= tlb_stat_hits_4k + 1;
+      if (hpm_tlb_hit_2m_pulse)
+         tlb_stat_hits_2m <= tlb_stat_hits_2m + 1;
+      if (hpm_tlb_insert_4k_pulse)
+         tlb_stat_inserts_4k <= tlb_stat_inserts_4k + 1;
+      if (hpm_tlb_insert_2m_pulse)
+         tlb_stat_inserts_2m <= tlb_stat_inserts_2m + 1;
+      if (hpm_tlb_evict_4k_pulse)
+         tlb_stat_evicts_4k <= tlb_stat_evicts_4k + 1;
+      if (hpm_tlb_evict_2m_pulse)
+         tlb_stat_evicts_2m <= tlb_stat_evicts_2m + 1;
+      if (hpm_tlb_uncached_1g_pulse)
+         tlb_stat_uncached_1g <= tlb_stat_uncached_1g + 1;
+      if (hpm_tlb_uncached_napot_pulse)
+         tlb_stat_uncached_napot <= tlb_stat_uncached_napot + 1;
 
       if (cache_trace_enabled) begin
          if (hpm_cache_miss_pulse) begin
