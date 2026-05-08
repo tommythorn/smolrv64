@@ -657,6 +657,10 @@ module smolrv64(input wire        clock,
 `define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
 `endif
 `define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
+`ifndef TLB_INDEX_BITS
+`define TLB_INDEX_BITS 4
+`endif
+`define TLB_ENTRIES (1 << `TLB_INDEX_BITS)
 `define CACHE_PHYS_BITS 31 // Cached DRAM addresses are {33'd0, dram_addr[27:0], 3'b000}.
 `define CACHE_TAG_BITS  (`CACHE_PHYS_BITS - `CACHE_INDEX_BITS - 6)
 `define CACHE_VALID_BIT `CACHE_TAG_BITS
@@ -1029,6 +1033,13 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_stat_wb_lines = 0;
    reg [63:0] fetch_buf_stat_hits = 0;
    reg [63:0] fetch_buf_stat_misses = 0;
+   reg [63:0] ptw_stat_leaf_4k = 0;
+   reg [63:0] ptw_stat_leaf_64k_napot = 0;
+   reg [63:0] ptw_stat_leaf_2m = 0;
+   reg [63:0] ptw_stat_leaf_1g = 0;
+   integer tlb_stat_entries_4k = 0;
+   integer tlb_stat_entries_2m = 0;
+   integer tlb_stat_entries_1g = 0;
    integer state_stat_i;
 
    function [8*24-1:0] state_name;
@@ -1098,6 +1109,8 @@ module smolrv64(input wire        clock,
 
    task dump_state_summary;
       integer i;
+      integer tlb_entries_total;
+      reg [63:0] ptw_leaf_total;
       begin
          $display("%05d STATE SUMMARY cycles=%0d instret=%0d",
                   $time, state_stat_total_cycles, state_stat_instret);
@@ -1117,6 +1130,39 @@ module smolrv64(input wire        clock,
                         (cache_state_stat_cycles[i] * 64'd10000) / state_stat_total_cycles);
             end
          end
+
+         tlb_entries_total = tlb_stat_entries_4k +
+                             tlb_stat_entries_2m +
+                             tlb_stat_entries_1g;
+         $display("%05d TLB_ENTRY_PAGE_SIZE name=4K entries=%0d pct_x100=%0d",
+                  $time, tlb_stat_entries_4k,
+                  tlb_entries_total == 0 ? 0 : (tlb_stat_entries_4k * 10000) / tlb_entries_total);
+         $display("%05d TLB_ENTRY_PAGE_SIZE name=64K_NAPOT entries=0 pct_x100=0",
+                  $time);
+         $display("%05d TLB_ENTRY_PAGE_SIZE name=2M entries=%0d pct_x100=%0d",
+                  $time, tlb_stat_entries_2m,
+                  tlb_entries_total == 0 ? 0 : (tlb_stat_entries_2m * 10000) / tlb_entries_total);
+         $display("%05d TLB_ENTRY_PAGE_SIZE name=1G entries=%0d pct_x100=%0d",
+                  $time, tlb_stat_entries_1g,
+                  tlb_entries_total == 0 ? 0 : (tlb_stat_entries_1g * 10000) / tlb_entries_total);
+         $display("%05d TLB_ENTRY_PAGE_SIZE total=%0d capacity=%0d",
+                  $time, tlb_entries_total, `TLB_ENTRIES);
+
+         ptw_leaf_total = ptw_stat_leaf_4k + ptw_stat_leaf_64k_napot +
+                          ptw_stat_leaf_2m + ptw_stat_leaf_1g;
+         $display("%05d PTW_PAGE_SIZE name=4K walks=%0d pct_x100=%0d",
+                  $time, ptw_stat_leaf_4k,
+                  ptw_leaf_total == 0 ? 64'd0 : (ptw_stat_leaf_4k * 64'd10000) / ptw_leaf_total);
+         $display("%05d PTW_PAGE_SIZE name=64K_NAPOT walks=%0d pct_x100=%0d",
+                  $time, ptw_stat_leaf_64k_napot,
+                  ptw_leaf_total == 0 ? 64'd0 : (ptw_stat_leaf_64k_napot * 64'd10000) / ptw_leaf_total);
+         $display("%05d PTW_PAGE_SIZE name=2M walks=%0d pct_x100=%0d",
+                  $time, ptw_stat_leaf_2m,
+                  ptw_leaf_total == 0 ? 64'd0 : (ptw_stat_leaf_2m * 64'd10000) / ptw_leaf_total);
+         $display("%05d PTW_PAGE_SIZE name=1G walks=%0d pct_x100=%0d",
+                  $time, ptw_stat_leaf_1g,
+                  ptw_leaf_total == 0 ? 64'd0 : (ptw_stat_leaf_1g * 64'd10000) / ptw_leaf_total);
+         $display("%05d PTW_PAGE_SIZE total=%0d", $time, ptw_leaf_total);
       end
    endtask
 
@@ -1766,10 +1812,6 @@ module smolrv64(input wire        clock,
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
-`ifndef TLB_INDEX_BITS
-`define TLB_INDEX_BITS 4
-`endif
-`define TLB_ENTRIES (1 << `TLB_INDEX_BITS)
    reg [`TLB_ENTRIES-1:0] tlb_valid = 0;
    reg [ 1:0]  tlb_level [0:`TLB_ENTRIES-1];
    reg [26:0]  tlb_vpn   [0:`TLB_ENTRIES-1];
@@ -1939,6 +1981,11 @@ module smolrv64(input wire        clock,
       begin
          for (i = 0; i < `TLB_ENTRIES; i = i + 1)
             tlb_valid[i] <= 0;
+`ifdef SIMULATE
+         tlb_stat_entries_4k = 0;
+         tlb_stat_entries_2m = 0;
+         tlb_stat_entries_1g = 0;
+`endif
       end
    endtask
 
@@ -2022,6 +2069,20 @@ module smolrv64(input wire        clock,
       input        req_sum;
       input        req_mxr;
       begin
+`ifdef SIMULATE
+         if (tlb_valid[tlb_replace]) begin
+            case (tlb_level[tlb_replace])
+              2: tlb_stat_entries_1g = tlb_stat_entries_1g - 1;
+              1: tlb_stat_entries_2m = tlb_stat_entries_2m - 1;
+              default: tlb_stat_entries_4k = tlb_stat_entries_4k - 1;
+            endcase
+         end
+         case (req_level)
+           2: tlb_stat_entries_1g = tlb_stat_entries_1g + 1;
+           1: tlb_stat_entries_2m = tlb_stat_entries_2m + 1;
+           default: tlb_stat_entries_4k = tlb_stat_entries_4k + 1;
+         endcase
+`endif
          tlb_valid[tlb_replace] <= 1;
          tlb_level[tlb_replace] <= req_level;
          tlb_vpn[tlb_replace]   <= req_va[38:12];
@@ -5304,6 +5365,19 @@ module smolrv64(input wire        clock,
                    default: mem_addr = 0;
                  endcase
 
+`ifdef SIMULATE
+                  case (ptw_level)
+                    2: ptw_stat_leaf_1g <= ptw_stat_leaf_1g + 1;
+                    1: ptw_stat_leaf_2m <= ptw_stat_leaf_2m + 1;
+                    default: begin
+                       if (aligned[63])
+                          ptw_stat_leaf_64k_napot <= ptw_stat_leaf_64k_napot + 1;
+                       else
+                          ptw_stat_leaf_4k <= ptw_stat_leaf_4k + 1;
+                    end
+                  endcase
+`endif
+
                   if (!(ptw_level == 0 && aligned[63]))
                      insert_tlb(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
                                 ptw_satp, ptw_sum, ptw_mxr);
@@ -5628,6 +5702,13 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
          fetch_buf_stat_hits <= 0;
          fetch_buf_stat_misses <= 0;
+         ptw_stat_leaf_4k <= 0;
+         ptw_stat_leaf_64k_napot <= 0;
+         ptw_stat_leaf_2m <= 0;
+         ptw_stat_leaf_1g <= 0;
+         tlb_stat_entries_4k = 0;
+         tlb_stat_entries_2m = 0;
+         tlb_stat_entries_1g = 0;
 `endif
       end
    end
