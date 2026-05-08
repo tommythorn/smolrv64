@@ -917,6 +917,7 @@ module smolrv64(input wire        clock,
    localparam [3:0] CACHE_WB_REQ    = 4'd6;
    localparam [3:0] CACHE_WB_WAIT   = 4'd7;
    localparam [3:0] CACHE_WB_PREP   = 4'd8;
+   localparam [3:0] CACHE_LAST_STATE = CACHE_WB_PREP;
 
    reg [ 7:0] cache_bank_wr_en = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
@@ -1009,6 +1010,14 @@ module smolrv64(input wire        clock,
    reg cache_trace_enabled = 0;
    reg cache_summary_enabled = 0;
    reg fetch_buf_summary_enabled = 0;
+   reg state_summary_enabled = 0;
+   integer state_summary_interval = 0;
+   reg state_summary_interval_seen = 0;
+   reg [63:0] state_summary_next = 0;
+   reg [63:0] state_stat_total_cycles = 0;
+   reg [63:0] state_stat_instret = 0;
+   reg [63:0] state_stat_cycles [0:`S_LAST_STATE];
+   reg [63:0] cache_state_stat_cycles [0:CACHE_LAST_STATE];
    reg [63:0] cache_stat_reads = 0;
    reg [63:0] cache_stat_writes = 0;
    reg [63:0] cache_stat_hits = 0;
@@ -1018,16 +1027,125 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_stat_wb_lines = 0;
    reg [63:0] fetch_buf_stat_hits = 0;
    reg [63:0] fetch_buf_stat_misses = 0;
+   integer state_stat_i;
+
+   function [8*24-1:0] state_name;
+      input [5:0] s;
+      begin
+         case (s)
+           `S_FETCH1:                state_name = "FETCH1";
+           `S_FETCH2:                state_name = "FETCH2";
+           `S_RF:                    state_name = "RF";
+           `S_EXECUTE:               state_name = "EXECUTE";
+           `S_EXCEPTION:             state_name = "EXCEPTION";
+           `S_LOAD_ALIGN:            state_name = "LOAD_ALIGN";
+           `S_MMIO_READ:             state_name = "MMIO_READ";
+           `S_MMIO_ALIGN:            state_name = "MMIO_ALIGN";
+           `S_AMO:                   state_name = "AMO";
+           `S_STORE:                 state_name = "STORE";
+           `S_HANDLE_CSR:            state_name = "HANDLE_CSR";
+           `S_MUL_RUNNING:           state_name = "MUL_RUNNING";
+           `S_DIV_RUNNING:           state_name = "DIV_RUNNING";
+           `S_PTW_READ:              state_name = "PTW_READ";
+           `S_PTW_LAUNCH:            state_name = "PTW_LAUNCH";
+           `S_FETCH2_HALF:           state_name = "FETCH2_HALF";
+           `S_DRAM_FETCH_WAIT:       state_name = "DRAM_FETCH_WAIT";
+           `S_DRAM_LOAD_WAIT:        state_name = "DRAM_LOAD_WAIT";
+           `S_DRAM_PTW_WAIT:         state_name = "DRAM_PTW_WAIT";
+           `S_DRAM_STORE_WAIT:       state_name = "DRAM_STORE_WAIT";
+           `S_DRAM_FETCH_HALF_WAIT:  state_name = "DRAM_FETCH_HALF_WAIT";
+           `S_DRAM_LOAD2_WAIT:       state_name = "DRAM_LOAD2_WAIT";
+           `S_DRAM_STORE2:           state_name = "DRAM_STORE2";
+           `S_RF2:                   state_name = "RF2";
+           `S_EXECUTE2:              state_name = "EXECUTE2";
+           `S_PTW_PROCESS:           state_name = "PTW_PROCESS";
+           `S_RF3:                   state_name = "RF3";
+           `S_FETCH1B:               state_name = "FETCH1B";
+           `S_LOAD_LATCH:            state_name = "LOAD_LATCH";
+           `S_DRAM_STORE_RESP_WAIT:  state_name = "DRAM_STORE_RESP_WAIT";
+           `S_DRAM_STORE_RESP_ARM:   state_name = "DRAM_STORE_RESP_ARM";
+           `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
+           `S_STORE_BRAM_WRITE:      state_name = "STORE_BRAM_WRITE";
+           `S_CVFPU_ISSUE:           state_name = "CVFPU_ISSUE";
+           `S_CVFPU_WAIT:            state_name = "CVFPU_WAIT";
+           `S_CVFPU_FMA_RF2:         state_name = "CVFPU_FMA_RF2";
+           `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
+           default:                  state_name = "UNKNOWN";
+         endcase
+      end
+   endfunction
+
+   function [8*16-1:0] cache_state_name;
+      input [3:0] s;
+      begin
+         case (s)
+           CACHE_IDLE:      cache_state_name = "IDLE";
+           CACHE_TAG_READ:  cache_state_name = "TAG_READ";
+           CACHE_TAG_CHECK: cache_state_name = "TAG_CHECK";
+           CACHE_FILL_REQ:  cache_state_name = "FILL_REQ";
+           CACHE_FILL_WAIT: cache_state_name = "FILL_WAIT";
+           CACHE_HIT_RESP:  cache_state_name = "HIT_RESP";
+           CACHE_WB_REQ:    cache_state_name = "WB_REQ";
+           CACHE_WB_WAIT:   cache_state_name = "WB_WAIT";
+           CACHE_WB_PREP:   cache_state_name = "WB_PREP";
+           default:         cache_state_name = "UNKNOWN";
+         endcase
+      end
+   endfunction
+
+   task dump_state_summary;
+      integer i;
+      begin
+         $display("%05d STATE SUMMARY cycles=%0d instret=%0d",
+                  $time, state_stat_total_cycles, state_stat_instret);
+         for (i = 0; i <= `S_LAST_STATE; i = i + 1) begin
+            if (state_stat_cycles[i] != 0) begin
+               $display("%05d STATE %0d %-24s cycles=%0d pct_x100=%0d",
+                        $time, i, state_name(i[5:0]), state_stat_cycles[i],
+                        state_stat_total_cycles == 0 ? 64'd0 :
+                        (state_stat_cycles[i] * 64'd10000) / state_stat_total_cycles);
+            end
+         end
+         for (i = 0; i <= CACHE_LAST_STATE; i = i + 1) begin
+            if (cache_state_stat_cycles[i] != 0) begin
+               $display("%05d CACHE_STATE %0d %-16s cycles=%0d pct_x100=%0d",
+                        $time, i, cache_state_name(i[3:0]), cache_state_stat_cycles[i],
+                        state_stat_total_cycles == 0 ? 64'd0 :
+                        (cache_state_stat_cycles[i] * 64'd10000) / state_stat_total_cycles);
+            end
+         end
+      end
+   endtask
+
    initial begin
+      for (state_stat_i = 0; state_stat_i <= `S_LAST_STATE; state_stat_i = state_stat_i + 1)
+         state_stat_cycles[state_stat_i] = 0;
+      for (state_stat_i = 0; state_stat_i <= CACHE_LAST_STATE; state_stat_i = state_stat_i + 1)
+         cache_state_stat_cycles[state_stat_i] = 0;
       cache_trace_enabled = $test$plusargs("cache_trace");
       cache_summary_enabled = $test$plusargs("cache_summary");
       fetch_buf_summary_enabled = $test$plusargs("fetch_buf_summary");
+      state_summary_enabled = $test$plusargs("state_summary");
+      state_summary_interval_seen = $value$plusargs("state_summary_interval=%d", state_summary_interval);
+      if (state_summary_interval_seen)
+         state_summary_enabled = 1;
+      else if (state_summary_enabled)
+         state_summary_interval = 1000000;
+      if (state_summary_interval < 0)
+         state_summary_interval = 0;
+      state_summary_next = {32'd0, state_summary_interval};
       if (cache_trace_enabled)
          $display("CACHE TRACE ENABLED");
       if (cache_summary_enabled)
          $display("CACHE SUMMARY ENABLED");
       if (fetch_buf_summary_enabled)
          $display("FETCH BUFFER SUMMARY ENABLED");
+      if (state_summary_enabled) begin
+         if (state_summary_interval != 0)
+            $display("STATE SUMMARY ENABLED interval=%0d cycles", state_summary_interval);
+         else
+            $display("STATE SUMMARY ENABLED");
+      end
    end
 `endif
 
@@ -5580,6 +5698,21 @@ module smolrv64(input wire        clock,
 
 `ifdef SIMULATE
    always @(posedge clock) begin
+      if (state_summary_enabled && !reset) begin
+         state_stat_total_cycles <= state_stat_total_cycles + 1;
+         if (hpm_instret_pulse)
+            state_stat_instret <= state_stat_instret + 1;
+         if (state <= `S_LAST_STATE)
+            state_stat_cycles[state] <= state_stat_cycles[state] + 1;
+         if (cache_state <= CACHE_LAST_STATE)
+            cache_state_stat_cycles[cache_state] <= cache_state_stat_cycles[cache_state] + 1;
+         if (state_summary_interval != 0 &&
+             state_stat_total_cycles + 1 >= state_summary_next) begin
+            dump_state_summary;
+            state_summary_next <= state_summary_next + state_summary_interval;
+         end
+      end
+
       if (cache_summary_enabled) begin
          if (hpm_cache_read_pulse)
             cache_stat_reads <= cache_stat_reads + 1;
