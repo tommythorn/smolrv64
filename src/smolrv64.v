@@ -895,6 +895,15 @@ module smolrv64(input wire        clock,
    reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
    reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
 
+   // Small raw instruction fetch window.  This is intentionally not
+   // speculative: it only supplies the already-resolved npc in S_FETCH1.
+   reg          fetch_buf_valid = 0;
+   reg  [63:0]  fetch_buf_base_va = 0; // 8-byte aligned VA of fetch_buf_data[63:0]
+   reg  [59:0]  fetch_buf_next_va_hi = 0;
+   reg  [63:0]  fetch_buf_satp = 0;
+   reg  [ 1:0]  fetch_buf_prv = 0;
+   reg  [127:0] fetch_buf_data = 0;
+
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
    // 64-byte line as eight 64-bit beats from the AXI backing path.
@@ -998,6 +1007,7 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
    reg cache_trace_enabled = 0;
    reg cache_summary_enabled = 0;
+   reg fetch_buf_summary_enabled = 0;
    reg [63:0] cache_stat_reads = 0;
    reg [63:0] cache_stat_writes = 0;
    reg [63:0] cache_stat_hits = 0;
@@ -1005,13 +1015,18 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_stat_dirty_misses = 0;
    reg [63:0] cache_stat_fill_lines = 0;
    reg [63:0] cache_stat_wb_lines = 0;
+   reg [63:0] fetch_buf_stat_hits = 0;
+   reg [63:0] fetch_buf_stat_misses = 0;
    initial begin
       cache_trace_enabled = $test$plusargs("cache_trace");
       cache_summary_enabled = $test$plusargs("cache_summary");
+      fetch_buf_summary_enabled = $test$plusargs("fetch_buf_summary");
       if (cache_trace_enabled)
          $display("CACHE TRACE ENABLED");
       if (cache_summary_enabled)
          $display("CACHE SUMMARY ENABLED");
+      if (fetch_buf_summary_enabled)
+         $display("FETCH BUFFER SUMMARY ENABLED");
    end
 `endif
 
@@ -1315,6 +1330,44 @@ module smolrv64(input wire        clock,
    reg         hpm_counter_wr_en = 0;
    reg         hpm_event_wr_en = 0;
    reg [ 3:0]  hpm_wr_idx = 0;
+
+   function [31:0] fetch_buf_pick_insn;
+      input [127:0] data;
+      input [3:0]   byte_offset;
+      begin
+         case (byte_offset[3:1])
+           3'd0:    fetch_buf_pick_insn = data[31:0];
+           3'd1:    fetch_buf_pick_insn = data[47:16];
+           3'd2:    fetch_buf_pick_insn = data[63:32];
+           3'd3:    fetch_buf_pick_insn = data[79:48];
+           3'd4:    fetch_buf_pick_insn = data[95:64];
+           3'd5:    fetch_buf_pick_insn = data[111:80];
+           3'd6:    fetch_buf_pick_insn = data[127:96];
+           default: fetch_buf_pick_insn = {16'd0, data[127:112]};
+         endcase
+      end
+   endfunction
+
+   wire        fetch_buf_context_hit = fetch_buf_valid &&
+                                       fetch_buf_prv == prv &&
+                                       fetch_buf_satp == csr_satp;
+   wire        fetch_buf_addr_same_hi = npc[63:4] == fetch_buf_base_va[63:4];
+   wire        fetch_buf_addr_next_hi = npc[63:4] == fetch_buf_next_va_hi;
+   wire        fetch_buf_addr_hit = fetch_buf_context_hit && !npc[0] &&
+                                    ((!fetch_buf_base_va[3] && fetch_buf_addr_same_hi) ||
+                                     ( fetch_buf_base_va[3] &&
+                                       ((fetch_buf_addr_same_hi &&  npc[3]) ||
+                                        (fetch_buf_addr_next_hi && !npc[3]))));
+   wire [3:0]  fetch_buf_offset = fetch_buf_base_va[3] ?
+                                  (fetch_buf_addr_same_hi ? {1'b0, npc[2:0]} :
+                                                            {1'b1, npc[2:0]}) :
+                                  npc[3:0];
+   wire [31:0] fetch_buf_insn = fetch_buf_pick_insn(fetch_buf_data, fetch_buf_offset);
+   wire        fetch_buf_full_insn_hit = fetch_buf_insn[1:0] != 2'b11 ||
+                                         fetch_buf_offset <= 4'd12;
+   wire        fetch_buf_hit = fetch_buf_addr_hit && fetch_buf_full_insn_hit;
+   wire [63:0] fetch_buf_fill_base_va = {pc[63:3], 3'b000};
+   wire        fetch_buf_fill_page_ok = fetch_buf_fill_base_va[11:0] <= 12'hff0;
    reg [63:0]  hpm_wr_data = 0;
    integer     hpm_i, hpm_j;
 
@@ -1392,12 +1445,19 @@ module smolrv64(input wire        clock,
    reg [7:0]   uart_lcr = 0;        // Line Control Register (DLAB = bit 7)
    reg [7:0]   uart_mcr = 0;        // Modem Control Register
    reg [7:0]   uart_scr = 0;        // Scratch Register
+   reg [7:0]   uart_tx_fifo [0:255]; // TX FIFO between 16550 model and RS232
+   reg [8:0]   uart_tx_head = 0, uart_tx_tail = 0;
    reg [7:0]   uart_rx_fifo [0:255]; // 256-byte RX FIFO
    reg [7:0]   uart_rx_head = 0, uart_rx_tail = 0;
+   wire [8:0]  uart_tx_count = uart_tx_tail - uart_tx_head;
+   wire        uart_tx_empty = uart_tx_head == uart_tx_tail;
+   wire        uart_tx_full = uart_tx_count == 9'd256;
+   wire        uart_tx_accept = !uart_tx_full;
+   wire        uart_tx_idle = uart_tx_empty && uart_tx_ready;
    wire [8:0]  uart_rx_count = uart_rx_tail - uart_rx_head;
    wire        uart_rx_empty = uart_rx_head == uart_rx_tail;
    wire        uart_rx_ip = uart_ier[0] && !uart_rx_empty;  // RX data available
-   wire        uart_thre_ip = uart_ier[1];                   // THR always empty
+   wire        uart_thre_ip = uart_ier[1] && uart_tx_accept;
    // IIR: bit 0 = 0 means interrupt pending, 1 = no pending; bits [7:6] = FIFO status
    wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4} :
                           uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2} :
@@ -1456,9 +1516,9 @@ module smolrv64(input wire        clock,
    endfunction
    wire [7:0]  uart_lsr = dbg_armed
         ? {1'b0, 1'b1,           1'b1,           4'b0, !uart_rx_empty}
-        : {1'b0, uart_tx_ready,  uart_tx_ready,  4'b0, !uart_rx_empty};
+        : {1'b0, uart_tx_idle,   uart_tx_accept, 4'b0, !uart_rx_empty};
 `else
-   wire [7:0]  uart_lsr = {1'b0, uart_tx_ready, uart_tx_ready, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
+   wire [7:0]  uart_lsr = {1'b0, uart_tx_idle, uart_tx_accept, 4'b0, !uart_rx_empty}; // TEMT|THRE + DR
 `endif
    wire        uart_irq_out = uart_rx_ip || uart_thre_ip;
 
@@ -1798,6 +1858,16 @@ module smolrv64(input wire        clock,
          uart_rx_tail <= uart_rx_tail + 1;
       end
 
+`ifdef PC_TRACE
+      if (!dbg_armed && uart_tx_ready && !uart_tx_valid && !uart_tx_empty) begin
+`else
+      if (uart_tx_ready && !uart_tx_valid && !uart_tx_empty) begin
+`endif
+         uart_tx_valid <= 1;
+         uart_tx_data  <= uart_tx_fifo[uart_tx_head[7:0]];
+         uart_tx_head  <= uart_tx_head + 1;
+      end
+
       // Latch external interrupts into PLIC pending (source 10 = UART)
       plic_pending <= plic_pending | {ext_irq, 1'b0}
                     | (uart_irq_out ? (64'd1 << 10) : 64'd0);
@@ -1931,7 +2001,29 @@ module smolrv64(input wire        clock,
 
            pc <= npc;
 
-           if (csr_satp[63:60] == 4'd8 && prv != 3) begin
+`ifdef SIMULATE
+           if (fetch_buf_summary_enabled) begin
+              if (fetch_buf_hit)
+                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
+              else begin
+                 fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
+                 if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
+                    $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
+                             $time,
+                             fetch_buf_stat_hits + (fetch_buf_hit ? 64'd1 : 64'd0),
+                             fetch_buf_stat_misses + 64'd1);
+              end
+           end
+`endif
+
+           if (fetch_buf_hit) begin
+              insn <= fetch_buf_insn;
+              write_back_register = 0;
+              write_back_fp_valid = 0;
+              translated <= 0;
+              fetch_from_dram <= 0;
+              state <= `S_RF;
+           end else if (csr_satp[63:60] == 4'd8 && prv != 3) begin
               // Sv39 instruction fetch translation
               start_ptw(npc, 2'd0, prv, `S_FETCH2);
            end else begin
@@ -1982,9 +2074,18 @@ module smolrv64(input wire        clock,
            if (fetch_from_dram) begin
               // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
               // detected and re-fetched in S_RF; the upper 64 bits are don't-care.
-              aligned = {64'bx, dram_latched};
+              aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
+                                                 : {64'bx, dram_latched};
            end else begin
               aligned = pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
+           end
+           if (fetch_buf_fill_page_ok && (!fetch_from_dram || dram_latched_next_valid)) begin
+              fetch_buf_valid   <= 1;
+              fetch_buf_base_va <= fetch_buf_fill_base_va;
+              fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
+              fetch_buf_satp    <= csr_satp;
+              fetch_buf_prv     <= prv;
+              fetch_buf_data    <= aligned;
            end
            // Register insn; cross-page check and decode happen in S_RF using stable insn_reg.
            insn <= aligned >> (pc[2:1] * 16);
@@ -2917,7 +3018,7 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
-              // Nothing to do here [yet]
+              fetch_buf_valid <= 0;
            end
 
            else if ((insn & 'h0000707f) == 'h00001073) begin // CSRRW
@@ -3107,6 +3208,7 @@ module smolrv64(input wire        clock,
            // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
 
            else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
+              fetch_buf_valid <= 0;
               if (mpp != 3) mprv = 0;
               prv = mpp;
               mpp = 0;
@@ -3123,6 +3225,7 @@ module smolrv64(input wire        clock,
                  tval = insn;
                  state <= `S_EXCEPTION;
               end else begin
+                 fetch_buf_valid <= 0;
 `ifdef SIMULATE
 `ifdef VERBOSE
                  $display("SRET: pc %x prv %d->%d sepc %x time %0t", pc, prv, spp, csr_sepc, $time);
@@ -3143,7 +3246,8 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = insn;
                  state <= `S_EXCEPTION;
-              end
+              end else
+                 fetch_buf_valid <= 0;
            end
 
            else if ((insn & 'hffffffff) == 'h10500073) begin // WFI
@@ -3910,18 +4014,23 @@ module smolrv64(input wire        clock,
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
 `ifdef PC_TRACE
                       if (!dbg_armed) begin
-                         uart_tx_valid <= 1;
-                         uart_tx_data <= store_value[7:0];
+                         if (uart_tx_accept) begin
+                            uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
+                            uart_tx_tail <= uart_tx_tail + 1;
+                         end
                       end
 `else
-                      uart_tx_valid <= 1;
-                      uart_tx_data <= store_value[7:0];
+                      if (uart_tx_accept) begin
+                         uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
+                         uart_tx_tail <= uart_tx_tail + 1;
+                      end
 `endif
                    end
                 1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
                 2: begin // FCR (write-only)
                    uart_fcr_fifo <= store_value[0];
                    if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
+                   if (store_value[2]) begin uart_tx_head <= 0; uart_tx_tail <= 0; end
                 end
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
@@ -3962,18 +4071,23 @@ module smolrv64(input wire        clock,
                 0: if (!uart_lcr[7]) begin // THR (when DLAB=0)
 `ifdef PC_TRACE
                       if (!dbg_armed) begin
-                         uart_tx_valid <= 1;
-                         uart_tx_data <= store_value[7:0];
+                         if (uart_tx_accept) begin
+                            uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
+                            uart_tx_tail <= uart_tx_tail + 1;
+                         end
                       end
 `else
-                      uart_tx_valid <= 1;
-                      uart_tx_data <= store_value[7:0];
+                      if (uart_tx_accept) begin
+                         uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
+                         uart_tx_tail <= uart_tx_tail + 1;
+                      end
 `endif
                    end
                 1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
                 2: begin // FCR (write-only)
                    uart_fcr_fifo <= store_value[0];
                    if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
+                   if (store_value[2]) begin uart_tx_head <= 0; uart_tx_tail <= 0; end
                 end
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
@@ -4563,6 +4677,7 @@ module smolrv64(input wire        clock,
                        // WARL: only Bare and Sv39 are supported; unsupported
                        // MODE values cause the entire write to have no effect.
                        csr_satp = csr_satp_write_val;
+                       fetch_buf_valid <= 0;
                      end
                    end
                 end
@@ -4743,6 +4858,7 @@ module smolrv64(input wire        clock,
            end
 `endif
            just_trapped <= 1;
+           fetch_buf_valid <= 0;
 
            state <= `S_FETCH1;
         end
@@ -5209,6 +5325,9 @@ module smolrv64(input wire        clock,
 `endif
          just_trapped     <= 0;
          just_xret        <= 0;
+         fetch_buf_valid  <= 0;
+         uart_tx_head     <= 0;
+         uart_tx_tail     <= 0;
          fetch_from_dram  <= 0;
          dram_latched_next_valid <= 0;
          translated       <= 0;
@@ -5220,6 +5339,10 @@ module smolrv64(input wire        clock,
          mig_prev_waiting <= 0;
          hpm_counter_wr_en <= 0;
          hpm_event_wr_en   <= 0;
+`ifdef SIMULATE
+         fetch_buf_stat_hits <= 0;
+         fetch_buf_stat_misses <= 0;
+`endif
       end
    end
 
@@ -5329,6 +5452,7 @@ module smolrv64(input wire        clock,
 
         CACHE_WB_REQ: begin
            if (axi_write_ready && !axi_read) begin
+`ifdef SIMULATE
               if (cache_trace_enabled) begin
                  $display("%05d CACHE WBREQ beat=%0d addr=%016h data=%016h",
                           $time,
@@ -5336,6 +5460,7 @@ module smolrv64(input wire        clock,
                           cache_wb_base + (64'd8 * cache_wb_beat),
                           cache_selected_bank_data(cache_wb_beat));
               end
+`endif
               axi_write_addr <= cache_wb_base[30:3] + {25'd0, cache_wb_beat};
               axi_write_data <= cache_selected_bank_data(cache_wb_beat);
               axi_write_strb <= 8'hff;
@@ -5357,12 +5482,14 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_FILL_REQ: begin
+`ifdef SIMULATE
            if (cache_trace_enabled) begin
               $display("%05d CACHE FILLREQ beat=%0d addr=%016h",
                        $time,
                        cache_fill_beat,
                        cache_fill_base + (64'd8 * cache_fill_beat));
            end
+`endif
            axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
            axi_read      <= 1;
            cache_state   <= CACHE_FILL_WAIT;
