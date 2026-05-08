@@ -584,7 +584,8 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_WAIT           34  // wait for a CVFPU result
 `define S_CVFPU_FMA_RF2        35  // wait for rs3 FP regfile read
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
-`define S_LAST_STATE           36  // update state register width accordingly
+`define S_TLB_LOOKUP           37  // check translation cache before launching PTW
+`define S_LAST_STATE           37  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -651,6 +652,7 @@ module smolrv64(input wire        clock,
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
+   localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
 `ifndef CACHE_INDEX_BITS
 `define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
 `endif
@@ -1070,6 +1072,7 @@ module smolrv64(input wire        clock,
            `S_CVFPU_WAIT:            state_name = "CVFPU_WAIT";
            `S_CVFPU_FMA_RF2:         state_name = "CVFPU_FMA_RF2";
            `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
+           `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1756,9 +1759,31 @@ module smolrv64(input wire        clock,
    reg [63:0]  ptw_pte_addr;    // Physical address of PTE being read
    reg [ 1:0]  ptw_access;      // 0=fetch, 1=load, 2=store, 3=AMO (R+W)
    reg [ 1:0]  ptw_prv;         // Effective privilege for permission check
+   reg [63:0]  ptw_satp;        // SATP value used to launch the walk
+   reg         ptw_sum;         // SUM value used for permission check
+   reg         ptw_mxr;         // MXR value used for permission check
    reg         translated = 0;  // Set by PTW, cleared by consumer
    reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
+
+`ifndef TLB_INDEX_BITS
+`define TLB_INDEX_BITS 4
+`endif
+`define TLB_ENTRIES (1 << `TLB_INDEX_BITS)
+   reg [`TLB_ENTRIES-1:0] tlb_valid = 0;
+   reg [ 1:0]  tlb_level [0:`TLB_ENTRIES-1];
+   reg [26:0]  tlb_vpn   [0:`TLB_ENTRIES-1];
+   reg [63:0]  tlb_pbase [0:`TLB_ENTRIES-1];
+   reg [63:0]  tlb_satp  [0:`TLB_ENTRIES-1];
+   reg [ 5:0]  tlb_ctx   [0:`TLB_ENTRIES-1]; // {access, effective prv, SUM, MXR}
+   reg [`TLB_INDEX_BITS-1:0] tlb_replace = 0;
+   reg [63:0]  tlb_req_va;
+   reg [63:0]  tlb_req_satp;
+   reg [ 1:0]  tlb_req_access;
+   reg [ 1:0]  tlb_req_prv;
+   reg         tlb_req_sum;
+   reg         tlb_req_mxr;
+   reg [ 4:0]  tlb_req_return;
 
    // Marks the S_FETCH1 cycle immediately after S_EXCEPTION. Used to
    // suppress a stale pre_intr_pending (sampled before S_EXCEPTION's
@@ -1909,6 +1934,48 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   task flush_tlb;
+      integer i;
+      begin
+         for (i = 0; i < `TLB_ENTRIES; i = i + 1)
+            tlb_valid[i] <= 0;
+      end
+   endtask
+
+/* verilator lint_off WIDTHTRUNC */
+   task route_translated_addr;
+      input [63:0] req_pa;
+      input [ 4:0] req_return;
+      begin
+         mem_addr = req_pa;
+         translated <= 1;
+         if (req_return == `S_FETCH2 || req_return == `S_FETCH2_HALF) begin
+            if (mem_addr[31] && mem_addr[63:`MEM_SIZE_LG2] != MEM_BASEADDR_VALUE[63:`MEM_SIZE_LG2]) begin
+               // DRAM instruction fetch (above BRAM overlay)
+               fetch_from_dram <= 1;
+               dram_addr       <= mem_addr[30:3];
+               dram_read       <= 1;
+               state           <= (req_return == `S_FETCH2) ?
+                                  `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
+            end else begin
+               fetch_from_dram <= 0;
+               mem_addr0       <= mem_addr[`MEM_SIZE_LG2-1:4] +
+                                  {{(`MEM_SIZE_LG2-4){1'b0}}, mem_addr[3]};
+               mem_addr1       <= mem_addr[`MEM_SIZE_LG2-1:4];
+               // Route through S_FETCH1B to capture synchronous SRAM output.
+               fetch_latch_half <= req_return == `S_FETCH2_HALF;
+               state           <= `S_FETCH1B;
+            end
+         end else begin
+            mem_addr0 <= mem_addr[`MEM_SIZE_LG2-1:4] +
+                         {{(`MEM_SIZE_LG2-4){1'b0}}, mem_addr[3]};
+            mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
+            state     <= {1'b0, req_return};
+         end
+      end
+   endtask
+/* verilator lint_on WIDTHTRUNC */
+
    task start_ptw;
       input [63:0] req_va;
       input [ 1:0] req_access;
@@ -1919,9 +1986,53 @@ module smolrv64(input wire        clock,
          ptw_level    = 2;
          ptw_access   = req_access;
          ptw_prv      = req_prv;
+         ptw_satp     = csr_satp;
+         ptw_sum      = sum;
+         ptw_mxr      = mxr;
          ptw_return   = req_return;
          ptw_pte_addr <= {8'd0, csr_satp[43:0], 12'd0} + {52'd0, req_va[38:30], 3'd0};
          state        <= `S_PTW_LAUNCH;
+      end
+   endtask
+
+   task start_translation;
+      input [63:0] req_va;
+      input [ 1:0] req_access;
+      input [ 1:0] req_prv;
+      input [ 4:0] req_return;
+      begin
+         tlb_req_va     <= req_va;
+         tlb_req_satp   <= csr_satp;
+         tlb_req_access <= req_access;
+         tlb_req_prv    <= req_prv;
+         tlb_req_sum    <= sum;
+         tlb_req_mxr    <= mxr;
+         tlb_req_return <= req_return;
+         state          <= `S_TLB_LOOKUP;
+      end
+   endtask
+
+   task insert_tlb;
+      input [63:0] req_va;
+      input [63:0] req_pa;
+      input [ 1:0] req_level;
+      input [ 1:0] req_access;
+      input [ 1:0] req_prv;
+      input [63:0] req_satp;
+      input        req_sum;
+      input        req_mxr;
+      begin
+         tlb_valid[tlb_replace] <= 1;
+         tlb_level[tlb_replace] <= req_level;
+         tlb_vpn[tlb_replace]   <= req_va[38:12];
+         case (req_level)
+           2: tlb_pbase[tlb_replace] <= {req_pa[63:30], 30'd0};
+           1: tlb_pbase[tlb_replace] <= {req_pa[63:21], 21'd0};
+           default: tlb_pbase[tlb_replace] <= {req_pa[63:12], 12'd0};
+         endcase
+         tlb_satp[tlb_replace] <= req_satp;
+         tlb_ctx[tlb_replace]  <= {req_access, req_prv, req_sum, req_mxr};
+         tlb_replace           <= tlb_replace + 1;
       end
    endtask
 
@@ -2148,7 +2259,7 @@ module smolrv64(input wire        clock,
               state <= `S_RF;
            end else if (csr_satp[63:60] == 4'd8 && prv != 3) begin
               // Sv39 instruction fetch translation
-              start_ptw(npc, 2'd0, prv, `S_FETCH2);
+              start_translation(npc, 2'd0, prv, `S_FETCH2);
            end else begin
               if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
@@ -2224,7 +2335,7 @@ module smolrv64(input wire        clock,
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
                csr_satp[63:60] == 4'd8 && prv != 3) begin
               insn_half <= insn[15:0];
-              start_ptw(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
+              start_translation(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
            // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
            // instruction starts in the last halfword of the current chunk. Even for a
            // 16-bit compressed insn, cosim/debug expect the upper 16 bits to reflect
@@ -3369,8 +3480,10 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = insn;
                  state <= `S_EXCEPTION;
-              end else
+              end else begin
                  fetch_buf_valid <= 0;
+                 flush_tlb;
+              end
            end
 
            else if ((insn & 'hffffffff) == 'h10500073) begin // WFI
@@ -4125,7 +4238,7 @@ module smolrv64(input wire        clock,
 
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 store address translation
-              start_ptw(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
+              start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
            end else if (phys_region(mem_addr) == `REGION_UART) begin
               translated <= 0;
               state <= `S_FETCH1;
@@ -4376,7 +4489,7 @@ module smolrv64(input wire        clock,
         `S_LOAD_ALIGN: begin
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 load/AMO address translation
-              start_ptw(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_LATCH);
+              start_translation(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_LATCH);
            end else begin
               if (!do_atomic) translated <= 0;
 
@@ -4831,6 +4944,7 @@ module smolrv64(input wire        clock,
                        // MODE values cause the entire write to have no effect.
                        csr_satp = csr_satp_write_val;
                        fetch_buf_valid <= 0;
+                       flush_tlb;
                      end
                    end
                 end
@@ -5063,6 +5177,41 @@ module smolrv64(input wire        clock,
            end
         end
 
+        `S_TLB_LOOKUP: begin
+           begin : tlb_lookup
+              integer i;
+              reg hit;
+              reg tag_match;
+              reg [63:0] hit_pa;
+
+              hit = 0;
+              hit_pa = 0;
+              for (i = 0; i < `TLB_ENTRIES; i = i + 1) begin
+                 case (tlb_level[i])
+                   2: tag_match = tlb_vpn[i][26:18] == tlb_req_va[38:30];
+                   1: tag_match = tlb_vpn[i][26:9]  == tlb_req_va[38:21];
+                   default: tag_match = tlb_vpn[i] == tlb_req_va[38:12];
+                 endcase
+                 if (!hit && tlb_valid[i] &&
+                     tlb_satp[i] == tlb_req_satp &&
+                     tlb_ctx[i] == {tlb_req_access, tlb_req_prv, tlb_req_sum, tlb_req_mxr} &&
+                     tag_match) begin
+                    hit = 1;
+                    case (tlb_level[i])
+                      2: hit_pa = {tlb_pbase[i][63:30], tlb_req_va[29:0]};
+                      1: hit_pa = {tlb_pbase[i][63:21], tlb_req_va[20:0]};
+                      default: hit_pa = {tlb_pbase[i][63:12], tlb_req_va[11:0]};
+                    endcase
+                 end
+              end
+
+              if (hit)
+                 route_translated_addr(hit_pa, tlb_req_return);
+              else
+                 start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
+           end
+        end
+
         `S_PTW_READ: begin
            // Sv39 page table walk: latch PTE from memory; process in S_PTW_PROCESS.
            // Registering here also gives the SRAM a synchronous read port.
@@ -5119,7 +5268,7 @@ module smolrv64(input wire        clock,
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
               end else if ((ptw_access == 1 || ptw_access == 3) &&
-                           !aligned[1] && !(mxr && aligned[3])) begin
+                           !aligned[1] && !(ptw_mxr && aligned[3])) begin
                  // Load/AMO requires R (or X when MXR)
                  cause = ptw_fault_cause;
                  tval = ptw_va;
@@ -5134,7 +5283,7 @@ module smolrv64(input wire        clock,
                  cause = ptw_fault_cause;
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
-              end else if (ptw_prv == 1 && aligned[4] && (ptw_access == 0 || !sum)) begin
+              end else if (ptw_prv == 1 && aligned[4] && (ptw_access == 0 || !ptw_sum)) begin
                  // S-mode accessing U page: forbidden for fetch, or load/store without SUM
                  cause = ptw_fault_cause;
                  tval = ptw_va;
@@ -5155,29 +5304,10 @@ module smolrv64(input wire        clock,
                    default: mem_addr = 0;
                  endcase
 
-                  translated <= 1;
-                  if (ptw_return == `S_FETCH2 || ptw_return == `S_FETCH2_HALF) begin
-                     if (mem_addr[31] && mem_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                        // DRAM instruction fetch (above BRAM overlay)
-                        fetch_from_dram <= 1;
-                        dram_addr <= mem_addr[30:3];
-                        dram_read       <= 1;
-                        state           <= (ptw_return == `S_FETCH2) ?
-                                           `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
-                     end else begin
-                        fetch_from_dram <= 0;
-                        mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
-                        mem_addr1  <= mem_addr[`MEM_SIZE_LG2-1:4];
-                        // Route through S_FETCH1B to capture the synchronous
-                        // SRAM output before fetch assembly.
-                        fetch_latch_half <= ptw_return == `S_FETCH2_HALF;
-                        state      <= `S_FETCH1B;
-                     end
-                  end else begin
-                     mem_addr0  <= mem_addr[`MEM_SIZE_LG2-1:4] + mem_addr[3];
-                     mem_addr1  <= mem_addr[`MEM_SIZE_LG2-1:4];
-                     state      <= ptw_return;
-                  end
+                  if (!(ptw_level == 0 && aligned[63]))
+                     insert_tlb(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
+                                ptw_satp, ptw_sum, ptw_mxr);
+                  route_translated_addr(mem_addr, ptw_return);
               end
            end else if (ptw_level == 0) begin
               // Non-leaf at level 0: invalid
@@ -5493,6 +5623,8 @@ module smolrv64(input wire        clock,
          mig_prev_waiting <= 0;
          hpm_counter_wr_en <= 0;
          hpm_event_wr_en   <= 0;
+         tlb_replace       <= 0;
+         flush_tlb;
 `ifdef SIMULATE
          fetch_buf_stat_hits <= 0;
          fetch_buf_stat_misses <= 0;
