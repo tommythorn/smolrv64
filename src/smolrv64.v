@@ -655,7 +655,8 @@ module smolrv64(input wire        clock,
 `define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
 `endif
 `define CACHE_LINES     (1 << `CACHE_INDEX_BITS)
-`define CACHE_TAG_BITS  (64 - `CACHE_INDEX_BITS - 6)
+`define CACHE_PHYS_BITS 31 // Cached DRAM addresses are {33'd0, dram_addr[27:0], 3'b000}.
+`define CACHE_TAG_BITS  (`CACHE_PHYS_BITS - `CACHE_INDEX_BITS - 6)
 `define CACHE_VALID_BIT `CACHE_TAG_BITS
 `define CACHE_DIRTY_BIT (`CACHE_TAG_BITS + 1)
 `define CACHE_META_BITS (`CACHE_TAG_BITS + 2)
@@ -1037,13 +1038,13 @@ module smolrv64(input wire        clock,
    wire [`CACHE_INDEX_BITS-1:0] cache_dram_next_idx =
         cache_dram_next_addr[`CACHE_INDEX_BITS+5:6];
    wire [`CACHE_TAG_BITS-1:0] cache_dram_tag =
-        cache_dram_addr[63:`CACHE_INDEX_BITS+6];
+        cache_dram_addr[`CACHE_PHYS_BITS-1:`CACHE_INDEX_BITS+6];
    wire [`CACHE_TAG_BITS-1:0] cache_dram_next_tag =
-        cache_dram_next_addr[63:`CACHE_INDEX_BITS+6];
+        cache_dram_next_addr[`CACHE_PHYS_BITS-1:`CACHE_INDEX_BITS+6];
    wire [`CACHE_INDEX_BITS-1:0] cache_fill_idx =
         cache_fill_base[`CACHE_INDEX_BITS+5:6];
    wire [`CACHE_TAG_BITS-1:0] cache_fill_tag =
-        cache_fill_base[63:`CACHE_INDEX_BITS+6];
+        cache_fill_base[`CACHE_PHYS_BITS-1:`CACHE_INDEX_BITS+6];
 
    reg [`CACHE_INDEX_BITS-1:0] cache_rd_idx = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank0_rd_idx = 0;
@@ -1447,6 +1448,7 @@ module smolrv64(input wire        clock,
    reg [7:0]   uart_scr = 0;        // Scratch Register
    reg [7:0]   uart_tx_fifo [0:255]; // TX FIFO between 16550 model and RS232
    reg [8:0]   uart_tx_head = 0, uart_tx_tail = 0;
+   reg         uart_thre_pending = 0;
    reg [7:0]   uart_rx_fifo [0:255]; // 256-byte RX FIFO
    reg [7:0]   uart_rx_head = 0, uart_rx_tail = 0;
    wire [8:0]  uart_tx_count = uart_tx_tail - uart_tx_head;
@@ -1457,10 +1459,11 @@ module smolrv64(input wire        clock,
    wire [8:0]  uart_rx_count = uart_rx_tail - uart_rx_head;
    wire        uart_rx_empty = uart_rx_head == uart_rx_tail;
    wire        uart_rx_ip = uart_ier[0] && !uart_rx_empty;  // RX data available
-   wire        uart_thre_ip = uart_ier[1] && uart_tx_accept;
+   wire        uart_thre_ip = uart_ier[1] && uart_thre_pending;
+   wire        uart_iir_thre = !uart_rx_ip && uart_thre_ip;
    // IIR: bit 0 = 0 means interrupt pending, 1 = no pending; bits [7:6] = FIFO status
    wire [7:0]  uart_iir = uart_rx_ip   ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4} :
-                          uart_thre_ip ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2} :
+                          uart_iir_thre ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2} :
                                          {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h1};
 `ifdef PC_TRACE
    // Debug PC tracer (see tracer block below). When armed, SW sees a dummy
@@ -1866,6 +1869,8 @@ module smolrv64(input wire        clock,
          uart_tx_valid <= 1;
          uart_tx_data  <= uart_tx_fifo[uart_tx_head[7:0]];
          uart_tx_head  <= uart_tx_head + 1;
+         if (uart_tx_count == 9'd1 || uart_tx_full)
+            uart_thre_pending <= 1;
       end
 
       // Latch external interrupts into PLIC pending (source 10 = UART)
@@ -4017,20 +4022,33 @@ module smolrv64(input wire        clock,
                          if (uart_tx_accept) begin
                             uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
                             uart_tx_tail <= uart_tx_tail + 1;
+                            uart_thre_pending <= 0;
                          end
                       end
 `else
                       if (uart_tx_accept) begin
                          uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
                          uart_tx_tail <= uart_tx_tail + 1;
+                         uart_thre_pending <= 0;
                       end
 `endif
                    end
-                1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
+                1: if (!uart_lcr[7]) begin // Only bits [3:0] valid
+                   uart_ier <= store_value[3:0];
+                   if (!store_value[1])
+                      uart_thre_pending <= 0;
+                   else if (!uart_ier[1] && uart_tx_accept)
+                      uart_thre_pending <= 1;
+                end
                 2: begin // FCR (write-only)
                    uart_fcr_fifo <= store_value[0];
                    if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
-                   if (store_value[2]) begin uart_tx_head <= 0; uart_tx_tail <= 0; end
+                   if (store_value[2]) begin
+                      uart_tx_head <= 0;
+                      uart_tx_tail <= 0;
+                      if (uart_ier[1])
+                         uart_thre_pending <= 1;
+                   end
                 end
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
@@ -4074,20 +4092,33 @@ module smolrv64(input wire        clock,
                          if (uart_tx_accept) begin
                             uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
                             uart_tx_tail <= uart_tx_tail + 1;
+                            uart_thre_pending <= 0;
                          end
                       end
 `else
                       if (uart_tx_accept) begin
                          uart_tx_fifo[uart_tx_tail[7:0]] <= store_value[7:0];
                          uart_tx_tail <= uart_tx_tail + 1;
+                         uart_thre_pending <= 0;
                       end
 `endif
                    end
-                1: if (!uart_lcr[7]) uart_ier <= store_value[3:0]; // Only bits [3:0] valid
+                1: if (!uart_lcr[7]) begin // Only bits [3:0] valid
+                   uart_ier <= store_value[3:0];
+                   if (!store_value[1])
+                      uart_thre_pending <= 0;
+                   else if (!uart_ier[1] && uart_tx_accept)
+                      uart_thre_pending <= 1;
+                end
                 2: begin // FCR (write-only)
                    uart_fcr_fifo <= store_value[0];
                    if (store_value[1]) begin uart_rx_head <= 0; uart_rx_tail <= 0; end
-                   if (store_value[2]) begin uart_tx_head <= 0; uart_tx_tail <= 0; end
+                   if (store_value[2]) begin
+                      uart_tx_head <= 0;
+                      uart_tx_tail <= 0;
+                      if (uart_ier[1])
+                         uart_thre_pending <= 1;
+                   end
                 end
                 3: uart_lcr <= store_value[7:0];
                 4: uart_mcr <= store_value[4:0];
@@ -4260,7 +4291,11 @@ module smolrv64(input wire        clock,
                       end else
                          write_back_value = 0; // DLL (divisor, ignored)
                    1: write_back_value = uart_lcr[7] ? 0 : {4'd0, uart_ier[3:0]};
-                   2: write_back_value = uart_iir;
+                   2: begin
+                      write_back_value = uart_iir;
+                      if (uart_iir_thre)
+                         uart_thre_pending <= 0;
+                   end
                    3: write_back_value = uart_lcr;
                    4: write_back_value = uart_mcr;
                    5: write_back_value = uart_lsr;
@@ -5328,6 +5363,7 @@ module smolrv64(input wire        clock,
          fetch_buf_valid  <= 0;
          uart_tx_head     <= 0;
          uart_tx_tail     <= 0;
+         uart_thre_pending <= 0;
          fetch_from_dram  <= 0;
          dram_latched_next_valid <= 0;
          translated       <= 0;
