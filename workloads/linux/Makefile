@@ -1,5 +1,6 @@
 SRC_DIR  = ../../src
 SIMMERV = $(HOME)/github/simmerv
+SIM_ARGS ?=
 
 mem.even mem.odd: dts.dtb fw_payload.bin
 	$(SRC_DIR)/mkhex.py mem 0:fw_payload.bin 1000000:dts.dtb
@@ -9,6 +10,7 @@ $(SRC_DIR)/smolrv64-linux-verbose:
 
 sim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-verbose
 	cd $(SRC_DIR) && ./smolrv64-linux-verbose \
+		$(SIM_ARGS) \
 		+even=$(CURDIR)/mem.even \
 		+odd=$(CURDIR)/mem.odd \
 		+rf=$(CURDIR)/rf.hex
@@ -20,6 +22,7 @@ $(SRC_DIR)/smolrv64-linux-vl:
 
 run: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-vl
 	@cd $(SRC_DIR) && ./smolrv64-linux-vl \
+		$(SIM_ARGS) \
 		+even=$(CURDIR)/mem.even \
 		+odd=$(CURDIR)/mem.odd \
 		+rf=$(CURDIR)/rf.hex
@@ -29,6 +32,7 @@ $(SRC_DIR)/smolrv64-linux-cosim:
 
 cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-cosim
 	@cd $(SRC_DIR) && ./smolrv64-linux-cosim \
+		$(SIM_ARGS) \
 		+even=$(CURDIR)/mem.even \
 		+odd=$(CURDIR)/mem.odd \
 		+rf=$(CURDIR)/rf.hex

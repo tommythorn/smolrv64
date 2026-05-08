@@ -867,6 +867,9 @@ module smolrv64(input wire        clock,
 
    reg  [63:0] npc = `RESET_PC; // XXX We should set this on reset
    reg  [63:0] pre_npc = `RESET_PC;
+   reg  [63:0] pre_jalr_target = `RESET_PC;
+   reg  [63:0] pre_branch_target = `RESET_PC;
+   reg         pre_branch_taken = 0;
 
    // CPU<->AXI master signalling (master block lives at the bottom of this module).
    // dram_addr is the 8B-aligned doubleword address (= phys[30:3]).
@@ -980,6 +983,9 @@ module smolrv64(input wire        clock,
    wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
    wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && axi_readdatavalid;
    wire       hpm_cache_fill_line_pulse = hpm_cache_fill_beat_pulse && cache_fill_beat == 3'd7;
+   wire       cache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
+                                    axi_write_ready && !axi_read &&
+                                    cache_wb_beat == 3'd0;
    wire       hpm_axi_read_pulse = axi_read;
    wire       hpm_axi_write_pulse = axi_write && axi_write_ready;
    wire       hpm_bus_wait_cycle = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
@@ -988,6 +994,26 @@ module smolrv64(input wire        clock,
                                    state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
                                    state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
                                    state == `S_MMIO_ALIGN;
+
+`ifdef SIMULATE
+   reg cache_trace_enabled = 0;
+   reg cache_summary_enabled = 0;
+   reg [63:0] cache_stat_reads = 0;
+   reg [63:0] cache_stat_writes = 0;
+   reg [63:0] cache_stat_hits = 0;
+   reg [63:0] cache_stat_misses = 0;
+   reg [63:0] cache_stat_dirty_misses = 0;
+   reg [63:0] cache_stat_fill_lines = 0;
+   reg [63:0] cache_stat_wb_lines = 0;
+   initial begin
+      cache_trace_enabled = $test$plusargs("cache_trace");
+      cache_summary_enabled = $test$plusargs("cache_summary");
+      if (cache_trace_enabled)
+         $display("CACHE TRACE ENABLED");
+      if (cache_summary_enabled)
+         $display("CACHE SUMMARY ENABLED");
+   end
+`endif
 
    wire [63:0] cache_dram_addr = {33'd0, dram_addr, 3'b000};
    wire [63:0] cache_dram_next_addr = cache_dram_addr + 64'd8;
@@ -1525,6 +1551,8 @@ module smolrv64(input wire        clock,
 
    reg [ 63:0] mul_b;
    reg [127:0] mul_a, muldiv_p;
+   reg [ 63:0] pre_mul_abs_s1, pre_mul_abs_s2;
+   reg [ 31:0] pre_mul_abs_s1w, pre_mul_abs_s2w;
    reg         muldiv_output_sext32;
    reg         muldiv_output_negate;
    reg         muldiv_output_high_part;
@@ -2031,6 +2059,10 @@ module smolrv64(input wire        clock,
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
            reservation_match <= (reservation == s1_bram);
+           pre_mul_abs_s1  <= s1_bram[63] ? -s1_bram : s1_bram;
+           pre_mul_abs_s2  <= s2_bram[63] ? -s2_bram : s2_bram;
+           pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
+           pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
            state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
@@ -2232,33 +2264,38 @@ module smolrv64(input wire        clock,
                          insn[4:3], 1'b0};
 
               pre_npc <= pc + (insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+              pre_jalr_target <= (s1_bram + d_imm_i) & ~64'd1;
+              pre_branch_target <= pc + d_imm_b;
+              pre_branch_taken <= 0;
 
               if ((insn & 'he003) == 'ha001) begin // C.J
                  pre_npc <= pc + d_c_j;
               end else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
-                 if (s1_bram == 0) pre_npc <= pc + d_c_b;
+                 pre_branch_target <= pc + d_c_b;
+                 pre_branch_taken <= s1_bram == 0;
               end else if ((insn & 'he003) == 'he001) begin // C.BNEZ
-                 if (s1_bram != 0) pre_npc <= pc + d_c_b;
+                 pre_branch_target <= pc + d_c_b;
+                 pre_branch_taken <= s1_bram != 0;
               end else if ((insn & 'hf07f) == 'h8002) begin // C.JR
-                 pre_npc <= s1_bram & ~64'd1;
+                 pre_jalr_target <= s1_bram & ~64'd1;
               end else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
-                 pre_npc <= s1_bram & ~64'd1;
+                 pre_jalr_target <= s1_bram & ~64'd1;
               end else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
                  pre_npc <= pc + d_imm_j;
               end else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
-                 pre_npc <= (s1_bram + d_imm_i) & ~64'd1;
+                 pre_jalr_target <= (s1_bram + d_imm_i) & ~64'd1;
               end else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
-                 if (s1_bram == s2_bram) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= s1_bram == s2_bram;
               end else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
-                 if (s1_bram != s2_bram) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= s1_bram != s2_bram;
               end else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
-                 if ($signed(s1_bram) < $signed(s2_bram)) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= $signed(s1_bram) < $signed(s2_bram);
               end else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
-                 if ($signed(s1_bram) >= $signed(s2_bram)) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= $signed(s1_bram) >= $signed(s2_bram);
               end else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
-                 if (s1_bram < s2_bram) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= s1_bram < s2_bram;
               end else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
-                 if (s1_bram >= s2_bram) pre_npc <= pc + d_imm_b;
+                 pre_branch_taken <= s1_bram >= s2_bram;
               end
            end // rf3_npc_decode
 
@@ -2652,9 +2689,11 @@ module smolrv64(input wire        clock,
            end
 
            else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'he003) == 'he001) begin // C.BNEZ
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
 
@@ -2666,6 +2705,7 @@ module smolrv64(input wire        clock,
            // C.LWSP / C.LDSP / C.FLDSP handled by shared mem block above.
 
            else if ((insn & 'hf07f) == 'h8002) begin // C.JR
+              npc = pre_jalr_target;
            end
 
            else if ((insn & 'hf003) == 'h8002) begin // C.MV
@@ -2680,6 +2720,7 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
+              npc = pre_jalr_target;
            end
 
            else if ((insn & 'hf003) == 'h9002) begin // C.ADD
@@ -2703,24 +2744,31 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = rd;
+              npc = pre_jalr_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
+              if (pre_branch_taken) npc = pre_branch_target;
            end
 
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
@@ -2921,8 +2969,8 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
               write_back_register = rd;
               muldiv_output_negate = s1[63] != s2[63];
-              mul_a = {64'd0,s1[63] ? -s1 : s1};
-              mul_b = s2[63] ? -s2 : s2;
+              mul_a = {64'd0, pre_mul_abs_s1};
+              mul_b = pre_mul_abs_s2;
               muldiv_output_high_part = 1;
               state <= `S_MUL_RUNNING;
            end
@@ -2930,7 +2978,7 @@ module smolrv64(input wire        clock,
            else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
               write_back_register = rd;
               muldiv_output_negate = s1[63];
-              mul_a = {64'd0, s1[63] ? -s1 : s1};
+              mul_a = {64'd0, pre_mul_abs_s1};
               mul_b = s2;
               muldiv_output_high_part = 1;
               state <= `S_MUL_RUNNING;
@@ -2952,8 +3000,8 @@ module smolrv64(input wire        clock,
                 // No matter s1, this will produce -1 which is the correct answer
                 muldiv_output_negate = 0;
               div_count = 64;
-              muldiv_p = {64'd0,s1[63] ? -s1 : s1};
-              mul_a = {s2[63] ? -s2 : s2, 63'd0};
+              muldiv_p = {64'd0, pre_mul_abs_s1};
+              mul_a = {pre_mul_abs_s2, 63'd0};
               mul_b = 0;
               state <= `S_DIV_RUNNING;
            end
@@ -2975,8 +3023,8 @@ module smolrv64(input wire        clock,
                 // No matter s1, this will produce -1 which is the correct answer
                 muldiv_output_negate = 0;
               div_count = 64;
-              muldiv_p = {64'd0,s1[63] ? -s1 : s1};
-              mul_a = {s2[63] ? -s2 : s2, 63'd0};
+              muldiv_p = {64'd0, pre_mul_abs_s1};
+              mul_a = {pre_mul_abs_s2, 63'd0};
               mul_b = 0;
               muldiv_output_high_part = 1; // XXX abusing variables
               state <= `S_DIV_RUNNING;
@@ -3011,8 +3059,8 @@ module smolrv64(input wire        clock,
                 // No matter s1, this will produce -1 which is the correct answer
                 muldiv_output_negate = 0;
               div_count = 32;
-              muldiv_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
-              mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
+              muldiv_p = {96'd0, pre_mul_abs_s1w};
+              mul_a = {pre_mul_abs_s2w, 31'd0};
               mul_b = 0;
               muldiv_output_sext32 = 1;
               state <= `S_DIV_RUNNING;
@@ -3036,8 +3084,8 @@ module smolrv64(input wire        clock,
               // "For REM, the sign of a nonzero result equals the sign of the dividend."
               muldiv_output_negate = s1[31];
               div_count = 32;
-              muldiv_p = {96'd0,s1[31] ? -s1[31:0] : s1[31:0]};
-              mul_a = {s2[31] ? -s2[31:0] : s2[31:0], 31'd0};
+              muldiv_p = {96'd0, pre_mul_abs_s1w};
+              mul_a = {pre_mul_abs_s2w, 31'd0};
               mul_b = 0;
               muldiv_output_sext32 = 1;
               muldiv_output_high_part = 1; // XXX abusing variables
@@ -4259,6 +4307,7 @@ module smolrv64(input wire        clock,
         `S_HANDLE_CSR: begin
            state <= `S_EXECUTE2;
            csr_access_failure = 0;
+           tval = insn;
            write_back_register = rd;
 
            if (rd != 0 || csr_op != `CSR_OP_COPY) begin
@@ -4267,19 +4316,19 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
-              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= 12'h33f) begin
-                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1))
-                    csr_read_val = csr_mhpmevent[csrno - `CSR_MHPMEVENT3];
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
+                 if (csrno[3:0] >= 4'd3)
+                    csr_read_val = csr_mhpmevent[csrno[3:0] - 4'd3];
                  else
                     csr_read_val = 0;
-              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= 12'hb1f) begin
-                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1))
-                    csr_read_val = csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3];
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
+                 if (csrno[3:0] >= 4'd3)
+                    csr_read_val = csr_mhpmcounter[csrno[3:0] - 4'd3];
                  else
                     csr_read_val = 0;
-              end else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= 12'hc1f) begin
-                 if (csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1))
-                    csr_read_val = csr_mhpmcounter[csrno - `CSR_HPMCOUNTER3];
+              end else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
+                 if (csrno[3:0] >= 4'd3)
+                    csr_read_val = csr_mhpmcounter[csrno[3:0] - 4'd3];
                  else
                     csr_read_val = 0;
               end
@@ -4305,7 +4354,6 @@ module smolrv64(input wire        clock,
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
                       state <= `S_EXCEPTION;
                    end else
                      csr_read_val = csr_satp;
@@ -4370,7 +4418,6 @@ module smolrv64(input wire        clock,
 `endif
 `endif
                    cause = `TRAP_ILLEGAL_INSTRUCTION;
-                   tval = insn;
                    state <= `S_EXCEPTION;
                 end
               endcase
@@ -4393,7 +4440,7 @@ module smolrv64(input wire        clock,
                     csr_access_failure = 1;
                  else if (csrno == `CSR_INSTRET && !counter_access_allowed(5'd2))
                     csr_access_failure = 1;
-                 else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= 12'hc1f &&
+                 else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1) &&
                           !counter_access_allowed({1'b0, csrno[4:0]}))
                     csr_access_failure = 1;
               end
@@ -4431,18 +4478,18 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
-              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= 12'h33f) begin
-                 if (csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
+                 if (csrno[3:0] >= 4'd3) begin
                     hpm_event_wr_en <= 1;
                     hpm_wr_idx <= csrno[3:0] - 4'd3;
-                    hpm_wr_data <= csr_modify_value(csr_mhpmevent[csrno - `CSR_MHPMEVENT3],
+                    hpm_wr_data <= csr_modify_value(csr_mhpmevent[csrno[3:0] - 4'd3],
                                                      csr_arg, csr_op);
                  end
-              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= 12'hb1f) begin
-                 if (csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
+                 if (csrno[3:0] >= 4'd3) begin
                     hpm_counter_wr_en <= 1;
                     hpm_wr_idx <= csrno[3:0] - 4'd3;
-                    hpm_wr_data <= csr_modify_value(csr_mhpmcounter[csrno - `CSR_MHPMCOUNTER3],
+                    hpm_wr_data <= csr_modify_value(csr_mhpmcounter[csrno[3:0] - 4'd3],
                                                      csr_arg, csr_op);
                  end
               end
@@ -4503,7 +4550,6 @@ module smolrv64(input wire        clock,
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
                       state <= `S_EXCEPTION;
                    end else begin
                      case (csr_op)
@@ -4604,8 +4650,6 @@ module smolrv64(input wire        clock,
            exe_sext32 <= 0;
            if (csr_access_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
-              tval = insn;
-
               state <= `S_EXCEPTION;
            end
 
@@ -5121,6 +5165,9 @@ module smolrv64(input wire        clock,
          write_back_register <= 0;
          npc <= `RESET_PC;
          pre_npc <= `RESET_PC;
+         pre_jalr_target <= `RESET_PC;
+         pre_branch_target <= `RESET_PC;
+         pre_branch_taken <= 0;
          bus_timeout_ctr <= 0;
          bus_timeout_expired <= 0;
          bus_timeout_tval <= 0;
@@ -5282,6 +5329,13 @@ module smolrv64(input wire        clock,
 
         CACHE_WB_REQ: begin
            if (axi_write_ready && !axi_read) begin
+              if (cache_trace_enabled) begin
+                 $display("%05d CACHE WBREQ beat=%0d addr=%016h data=%016h",
+                          $time,
+                          cache_wb_beat,
+                          cache_wb_base + (64'd8 * cache_wb_beat),
+                          cache_selected_bank_data(cache_wb_beat));
+              end
               axi_write_addr <= cache_wb_base[30:3] + {25'd0, cache_wb_beat};
               axi_write_data <= cache_selected_bank_data(cache_wb_beat);
               axi_write_strb <= 8'hff;
@@ -5303,6 +5357,12 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_FILL_REQ: begin
+           if (cache_trace_enabled) begin
+              $display("%05d CACHE FILLREQ beat=%0d addr=%016h",
+                       $time,
+                       cache_fill_beat,
+                       cache_fill_base + (64'd8 * cache_fill_beat));
+           end
            axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
            axi_read      <= 1;
            cache_state   <= CACHE_FILL_WAIT;
@@ -5354,6 +5414,66 @@ module smolrv64(input wire        clock,
          cache_tag_wr_en <= 0;
       end
    end
+
+`ifdef SIMULATE
+   always @(posedge clock) begin
+      if (cache_summary_enabled) begin
+         if (hpm_cache_read_pulse)
+            cache_stat_reads <= cache_stat_reads + 1;
+         if (hpm_cache_write_pulse)
+            cache_stat_writes <= cache_stat_writes + 1;
+         if (hpm_cache_hit_pulse)
+            cache_stat_hits <= cache_stat_hits + 1;
+         if (hpm_cache_miss_pulse) begin
+            cache_stat_misses <= cache_stat_misses + 1;
+            if (cache_lookup_dirty)
+               cache_stat_dirty_misses <= cache_stat_dirty_misses + 1;
+            if (cache_stat_misses[12:0] == 13'h1fff) begin
+               $display("%05d CACHE SUMMARY reads=%0d writes=%0d hits=%0d misses=%0d dirty_misses=%0d fill_lines=%0d wb_lines=%0d",
+                        $time,
+                        cache_stat_reads + (hpm_cache_read_pulse ? 64'd1 : 64'd0),
+                        cache_stat_writes + (hpm_cache_write_pulse ? 64'd1 : 64'd0),
+                        cache_stat_hits + (hpm_cache_hit_pulse ? 64'd1 : 64'd0),
+                        cache_stat_misses + 64'd1,
+                        cache_stat_dirty_misses + (cache_lookup_dirty ? 64'd1 : 64'd0),
+                        cache_stat_fill_lines + (hpm_cache_fill_line_pulse ? 64'd1 : 64'd0),
+                        cache_stat_wb_lines + (cache_wb_line_pulse ? 64'd1 : 64'd0));
+            end
+         end
+         if (hpm_cache_fill_line_pulse)
+            cache_stat_fill_lines <= cache_stat_fill_lines + 1;
+         if (cache_wb_line_pulse)
+            cache_stat_wb_lines <= cache_stat_wb_lines + 1;
+      end
+
+      if (cache_trace_enabled) begin
+         if (hpm_cache_miss_pulse) begin
+            $display("%05d CACHE MISS  op=%0d addr=%016h bank=%0d next_bank=%0d same_line=%0d dirty=%0d victim=%016h",
+                     $time,
+                     cache_req_write,
+                     cache_addr,
+                     cache_req_bank,
+                     cache_req_next_bank,
+                     cache_req_same_line,
+                     cache_lookup_dirty,
+                     {cache_victim_tag, cache_rd_idx, 6'd0});
+         end
+         if (hpm_cache_fill_beat_pulse) begin
+            $display("%05d CACHE FILLD beat=%0d addr=%016h data=%016h",
+                     $time,
+                     cache_fill_beat,
+                     cache_fill_base + (64'd8 * cache_fill_beat),
+                     axi_readdata);
+         end
+         if (hpm_cache_fill_line_pulse) begin
+            $display("%05d CACHE FILLDONE addr=%016h write=%0d",
+                     $time,
+                     cache_fill_base,
+                     cache_req_write);
+         end
+      end
+   end
+`endif
 
    // ----- AXI4 master to DDR4 -----
    // Single read in flight, single write in flight.  arsize/awsize fixed at
