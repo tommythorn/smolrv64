@@ -154,6 +154,8 @@ module rk_xcku5p(
    wire        core_axi_rvalid;
    wire        core_axi_rready;
 
+   localparam USE_DDR_ARB = 1'b0;
+
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
       .sys_rst                        (~key[0]),          // active-high; key[0] low = pressed = reset
@@ -356,6 +358,8 @@ module rk_xcku5p(
       .device_status           ()
    );
 
+   generate
+   if (USE_DDR_ARB) begin : gen_ddr_arbiter
    axi_two_master_arbiter ddr4_arbiter_inst(
       .clock          (ui_clk),
       .reset          (cpu_reset),
@@ -474,6 +478,50 @@ module rk_xcku5p(
       .m_axi_rvalid   (m_axi_rvalid),
       .m_axi_rready   (m_axi_rready)
    );
+   end else begin : gen_ddr_direct
+      assign m_axi_awid        = core_axi_awid;
+      assign m_axi_awaddr      = core_axi_awaddr;
+      assign m_axi_awlen       = core_axi_awlen;
+      assign m_axi_awsize      = core_axi_awsize;
+      assign m_axi_awburst     = core_axi_awburst;
+      assign m_axi_awlock      = core_axi_awlock;
+      assign m_axi_awcache     = core_axi_awcache;
+      assign m_axi_awprot      = core_axi_awprot;
+      assign m_axi_awqos       = core_axi_awqos;
+      assign m_axi_awvalid     = core_axi_awvalid;
+      assign core_axi_awready  = m_axi_awready;
+
+      assign m_axi_wdata       = core_axi_wdata;
+      assign m_axi_wstrb       = core_axi_wstrb;
+      assign m_axi_wlast       = core_axi_wlast;
+      assign m_axi_wvalid      = core_axi_wvalid;
+      assign core_axi_wready   = m_axi_wready;
+
+      assign core_axi_bid      = m_axi_bid;
+      assign core_axi_bresp    = m_axi_bresp;
+      assign core_axi_bvalid   = m_axi_bvalid;
+      assign m_axi_bready      = core_axi_bready;
+
+      assign m_axi_arid        = core_axi_arid;
+      assign m_axi_araddr      = core_axi_araddr;
+      assign m_axi_arlen       = core_axi_arlen;
+      assign m_axi_arsize      = core_axi_arsize;
+      assign m_axi_arburst     = core_axi_arburst;
+      assign m_axi_arlock      = core_axi_arlock;
+      assign m_axi_arcache     = core_axi_arcache;
+      assign m_axi_arprot      = core_axi_arprot;
+      assign m_axi_arqos       = core_axi_arqos;
+      assign m_axi_arvalid     = core_axi_arvalid;
+      assign core_axi_arready  = m_axi_arready;
+
+      assign core_axi_rid      = m_axi_rid;
+      assign core_axi_rdata    = m_axi_rdata;
+      assign core_axi_rresp    = m_axi_rresp;
+      assign core_axi_rlast    = m_axi_rlast;
+      assign core_axi_rvalid   = m_axi_rvalid;
+      assign m_axi_rready      = core_axi_rready;
+   end
+   endgenerate
 
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
