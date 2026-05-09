@@ -152,7 +152,7 @@
 				broken-cd;
 				bus-width = <1>;
 				voltage-ranges = <3300 3300>;
-				spi-max-frequency = <12500000>;
+				spi-max-frequency = <25000000>;
 			};
 		};
 
