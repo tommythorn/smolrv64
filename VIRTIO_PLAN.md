@@ -102,6 +102,8 @@ performance work become entangled.
 - A standalone `virtio_mmio` register shell exists in `src/virtio_mmio.v`.
 - The RK top instantiates a dormant block-device shell at `0x10002000`.
 - The RK top routes the shell interrupt to PLIC source 11.
+- The RK top now routes DDR4 through a two-master AXI arbiter.  The second
+  master is tied idle until the first virtio backend DMA engine is connected.
 - `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
   it only after a backend can complete queue requests.
 
