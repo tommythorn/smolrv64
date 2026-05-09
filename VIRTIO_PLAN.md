@@ -102,12 +102,19 @@ performance work become entangled.
 - A standalone `virtio_mmio` register shell exists in `src/virtio_mmio.v`.
 - The RK top instantiates a dormant block-device shell at `0x10002000`.
 - The RK top routes the shell interrupt to PLIC source 11.
-- The RK top now routes DDR4 through a two-master AXI arbiter.  The second
-  master is connected to the first virtio block backend DMA engine.
+- A two-master AXI arbiter exists for routing both the CPU and device DMA to
+  DDR4, but it is not in the active RK build while the DMA path is being made
+  timing-clean.  The active hardware build routes the CPU directly to the DDR4
+  MIG.
 - A fake RAM-less virtio-blk backend can walk one split-virtqueue request,
   return deterministic read data, discard writes, update the used ring, and
-  raise the virtio interrupt.  The DT node remains disabled until the cache/DMA
-  coherency path is ready enough for Linux to safely probe it.
+  raise the virtio interrupt.  It is currently compiled out of the RK top
+  because the first integrated version did not meet timing at 333 MHz; it needs
+  pipelining or floorplanning before hardware enablement.
+- The RK top keeps the virtio block shell dormant (`DeviceID = 0`) while the
+  backend and DDR DMA arbiter are disconnected from the hardware build.  The DT
+  node remains disabled until the cache/DMA coherency path is ready enough for
+  Linux to safely probe it.
 - `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
   it only after a backend can complete queue requests.
 
