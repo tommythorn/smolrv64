@@ -103,7 +103,11 @@ performance work become entangled.
 - The RK top instantiates a dormant block-device shell at `0x10002000`.
 - The RK top routes the shell interrupt to PLIC source 11.
 - The RK top now routes DDR4 through a two-master AXI arbiter.  The second
-  master is tied idle until the first virtio backend DMA engine is connected.
+  master is connected to the first virtio block backend DMA engine.
+- A fake RAM-less virtio-blk backend can walk one split-virtqueue request,
+  return deterministic read data, discard writes, update the used ring, and
+  raise the virtio interrupt.  The DT node remains disabled until the cache/DMA
+  coherency path is ready enough for Linux to safely probe it.
 - `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
   it only after a backend can complete queue requests.
 

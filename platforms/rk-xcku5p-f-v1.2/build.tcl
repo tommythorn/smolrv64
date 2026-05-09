@@ -77,7 +77,9 @@ proc configure_cvfpu_sources {repo_root src_dir} {
         add_source_if_missing $fileset $file $file_type
     }
     add_source_if_missing $fileset [file join $src_dir smolrv64_cvfpu.sv] SystemVerilog
+    add_source_if_missing $fileset [file join $src_dir axi_single_beat_master.v] Verilog
     add_source_if_missing $fileset [file join $src_dir axi_two_master_arbiter.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir virtio_blk_fake.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
 
     # USE_CVFPU exposes SystemVerilog syntax inside smolrv64.v.

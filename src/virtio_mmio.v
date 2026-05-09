@@ -6,7 +6,15 @@ module virtio_mmio #(
     parameter [31:0] VENDOR_ID = 32'h736d_6f6c,
     parameter [31:0] DEVICE_FEATURES_0 = 32'd0,
     parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0001,
-    parameter [31:0] QUEUE_NUM_MAX = 32'd8
+    parameter [31:0] QUEUE_NUM_MAX = 32'd8,
+    parameter [31:0] CONFIG_WORD_0 = 32'd0,
+    parameter [31:0] CONFIG_WORD_1 = 32'd0,
+    parameter [31:0] CONFIG_WORD_2 = 32'd0,
+    parameter [31:0] CONFIG_WORD_3 = 32'd0,
+    parameter [31:0] CONFIG_WORD_4 = 32'd0,
+    parameter [31:0] CONFIG_WORD_5 = 32'd0,
+    parameter [31:0] CONFIG_WORD_6 = 32'd0,
+    parameter [31:0] CONFIG_WORD_7 = 32'd0
 ) (
     input  wire        clock,
     input  wire        reset,
@@ -100,7 +108,19 @@ module virtio_mmio #(
            REG_QUEUE_USED_LOW:   read_data = active_queue_selected ? queue_device[31:0] : 32'd0;
            REG_QUEUE_USED_HIGH:  read_data = active_queue_selected ? queue_device[63:32] : 32'd0;
            REG_CONFIG_GEN:       read_data = 32'd0;
-           default:              read_data = 32'd0;
+           default: begin
+              case (reg_addr)
+                12'h100: read_data = CONFIG_WORD_0;
+                12'h104: read_data = CONFIG_WORD_1;
+                12'h108: read_data = CONFIG_WORD_2;
+                12'h10c: read_data = CONFIG_WORD_3;
+                12'h110: read_data = CONFIG_WORD_4;
+                12'h114: read_data = CONFIG_WORD_5;
+                12'h118: read_data = CONFIG_WORD_6;
+                12'h11c: read_data = CONFIG_WORD_7;
+                default: read_data = 32'd0;
+              endcase
+           end
          endcase
       end
    end
