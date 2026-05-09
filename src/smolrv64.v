@@ -2468,7 +2468,8 @@ module smolrv64(input wire        clock,
             uart_thre_pending <= 1;
       end
 
-      // Latch external interrupts into PLIC pending (source 10 = UART)
+      // Latch external interrupts into PLIC pending (source 10 = UART in core,
+      // platform sources arrive through ext_irq[63:1]).
       plic_pending <= plic_pending | {ext_irq, 1'b0}
                     | (uart_irq_out ? (64'd1 << 10) : 64'd0);
 

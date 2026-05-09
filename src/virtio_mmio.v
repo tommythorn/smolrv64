@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 `default_nettype none
 
 module virtio_mmio #(
@@ -10,7 +11,7 @@ module virtio_mmio #(
     input  wire        clock,
     input  wire        reset,
 
-    input  wire [ 7:0] address,
+    input  wire [11:0] address,
     input  wire        read,
     output reg  [31:0] read_data,
     input  wire        write,
@@ -36,36 +37,36 @@ module virtio_mmio #(
    localparam [31:0] VIRTIO_MAGIC = 32'h7472_6976; /* "virt" little-endian */
    localparam [31:0] VIRTIO_VERSION = 32'd2;
 
-   localparam [7:0] REG_MAGIC_VALUE      = 8'h00;
-   localparam [7:0] REG_VERSION          = 8'h04;
-   localparam [7:0] REG_DEVICE_ID        = 8'h08;
-   localparam [7:0] REG_VENDOR_ID        = 8'h0c;
-   localparam [7:0] REG_DEVICE_FEATURES  = 8'h10;
-   localparam [7:0] REG_DEVICE_FEAT_SEL  = 8'h14;
-   localparam [7:0] REG_DRIVER_FEATURES  = 8'h20;
-   localparam [7:0] REG_DRIVER_FEAT_SEL  = 8'h24;
-   localparam [7:0] REG_QUEUE_SEL        = 8'h30;
-   localparam [7:0] REG_QUEUE_NUM_MAX    = 8'h34;
-   localparam [7:0] REG_QUEUE_NUM        = 8'h38;
-   localparam [7:0] REG_QUEUE_READY      = 8'h44;
-   localparam [7:0] REG_QUEUE_NOTIFY     = 8'h50;
-   localparam [7:0] REG_INTERRUPT_STATUS = 8'h60;
-   localparam [7:0] REG_INTERRUPT_ACK    = 8'h64;
-   localparam [7:0] REG_STATUS           = 8'h70;
-   localparam [7:0] REG_QUEUE_DESC_LOW   = 8'h80;
-   localparam [7:0] REG_QUEUE_DESC_HIGH  = 8'h84;
-   localparam [7:0] REG_QUEUE_AVAIL_LOW  = 8'h90;
-   localparam [7:0] REG_QUEUE_AVAIL_HIGH = 8'h94;
-   localparam [7:0] REG_QUEUE_USED_LOW   = 8'ha0;
-   localparam [7:0] REG_QUEUE_USED_HIGH  = 8'ha4;
-   localparam [7:0] REG_CONFIG_GEN       = 8'hfc;
+   localparam [11:0] REG_MAGIC_VALUE      = 12'h000;
+   localparam [11:0] REG_VERSION          = 12'h004;
+   localparam [11:0] REG_DEVICE_ID        = 12'h008;
+   localparam [11:0] REG_VENDOR_ID        = 12'h00c;
+   localparam [11:0] REG_DEVICE_FEATURES  = 12'h010;
+   localparam [11:0] REG_DEVICE_FEAT_SEL  = 12'h014;
+   localparam [11:0] REG_DRIVER_FEATURES  = 12'h020;
+   localparam [11:0] REG_DRIVER_FEAT_SEL  = 12'h024;
+   localparam [11:0] REG_QUEUE_SEL        = 12'h030;
+   localparam [11:0] REG_QUEUE_NUM_MAX    = 12'h034;
+   localparam [11:0] REG_QUEUE_NUM        = 12'h038;
+   localparam [11:0] REG_QUEUE_READY      = 12'h044;
+   localparam [11:0] REG_QUEUE_NOTIFY     = 12'h050;
+   localparam [11:0] REG_INTERRUPT_STATUS = 12'h060;
+   localparam [11:0] REG_INTERRUPT_ACK    = 12'h064;
+   localparam [11:0] REG_STATUS           = 12'h070;
+   localparam [11:0] REG_QUEUE_DESC_LOW   = 12'h080;
+   localparam [11:0] REG_QUEUE_DESC_HIGH  = 12'h084;
+   localparam [11:0] REG_QUEUE_AVAIL_LOW  = 12'h090;
+   localparam [11:0] REG_QUEUE_AVAIL_HIGH = 12'h094;
+   localparam [11:0] REG_QUEUE_USED_LOW   = 12'h0a0;
+   localparam [11:0] REG_QUEUE_USED_HIGH  = 12'h0a4;
+   localparam [11:0] REG_CONFIG_GEN       = 12'h0fc;
 
    reg [31:0] device_features_sel;
    reg [31:0] driver_features_sel;
    reg [31:0] queue_sel;
    reg [1:0]  interrupt_status;
 
-   wire [7:0] reg_addr = address & 8'hfc;
+   wire [11:0] reg_addr = address & 12'hffc;
    wire       write_word = write && &byteenable;
    wire       active_queue_selected = queue_sel == 32'd0;
 

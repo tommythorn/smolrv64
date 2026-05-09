@@ -227,9 +227,12 @@ module rk_xcku5p(
    wire        sd_spi_sel    = mmio_address[19:8] == 12'h010;
    wire        sd_gpio_sel   = mmio_address[19:8] == 12'h011;
    wire        sd_cd_gpio_sel = mmio_address[19:8] == 12'h012;
+   wire        virtio_blk_sel = mmio_address[19:12] == 8'h02;
    wire [31:0] sd_spi_readdata;
    wire [31:0] sd_gpio_readdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
+   wire [31:0] virtio_blk_readdata;
+   wire        virtio_blk_irq;
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
@@ -253,6 +256,8 @@ module rk_xcku5p(
                mmio_readdata_q <= sd_gpio_readdata;
             else if (sd_cd_gpio_sel)
                mmio_readdata_q <= sd_cd_gpio_readdata;
+            else if (virtio_blk_sel)
+               mmio_readdata_q <= virtio_blk_readdata;
             else
                mmio_readdata_q <= 32'd0;
          end
@@ -286,6 +291,33 @@ module rk_xcku5p(
       .read_data    (sd_gpio_readdata)
    );
 
+   virtio_mmio #(
+      .DEVICE_ID(32'd0), /* Dormant until a block backend can complete queues. */
+      .QUEUE_NUM_MAX(32'd8)
+   ) virtio_blk_inst(
+      .clock                   (ui_clk),
+      .reset                   (cpu_reset),
+      .address                 (mmio_address[11:0]),
+      .read                    (mmio_read && virtio_blk_sel),
+      .read_data               (virtio_blk_readdata),
+      .write                   (mmio_write && virtio_blk_sel),
+      .write_data              (mmio_writedata),
+      .byteenable              (mmio_byteenable),
+      .irq                     (virtio_blk_irq),
+      .queue_notify_pulse      (),
+      .queue_notify_value      (),
+      .used_buffer_interrupt   (1'b0),
+      .config_change_interrupt (1'b0),
+      .driver_features_0       (),
+      .driver_features_1       (),
+      .queue_num               (),
+      .queue_ready             (),
+      .queue_desc              (),
+      .queue_driver            (),
+      .queue_device            (),
+      .device_status           ()
+   );
+
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
       .fpu_clock            (fpu_clk),
@@ -298,7 +330,7 @@ module rk_xcku5p(
       .mmio_readdatavalid   (mmio_readdatavalid),
       .mmio_readdata        (mmio_readdata),
 
-      .ext_irq              (63'd0),
+      .ext_irq              ({52'd0, virtio_blk_irq, 10'd0}),
 
       .m_axi_awid           (m_axi_awid),
       .m_axi_awaddr         (m_axi_awaddr),

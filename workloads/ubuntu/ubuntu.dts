@@ -155,6 +155,14 @@
 				spi-max-frequency = <12500000>;
 			};
 		};
+
+		virtio_blk: virtio@10002000 {
+			compatible = "virtio,mmio";
+			reg = <0 0x10002000 0 0x1000>;
+			interrupts = <11>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
 	};
 
 	memory@80000000 {

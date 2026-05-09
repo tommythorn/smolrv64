@@ -97,6 +97,14 @@ Linux boots from the existing SD/MMC path
 That milestone proves the shared mechanism before the SD backend and DMA
 performance work become entangled.
 
+## Current Progress
+
+- A standalone `virtio_mmio` register shell exists in `src/virtio_mmio.v`.
+- The RK top instantiates a dormant block-device shell at `0x10002000`.
+- The RK top routes the shell interrupt to PLIC source 11.
+- `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
+  it only after a backend can complete queue requests.
+
 ## Proposed Address Map
 
 Keep the existing device addresses stable:
@@ -128,4 +136,3 @@ If `/proc/config.gz` is unavailable:
 ```sh
 grep -E 'VIRTIO_MMIO|VIRTIO_BLK|VIRTIO_NET|RISCV_ISA_ZICBOM|RISCV_DMA_NONCOHERENT' /boot/config-$(uname -r)
 ```
-
