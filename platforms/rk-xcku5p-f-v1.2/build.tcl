@@ -41,6 +41,10 @@ proc add_unique_property_value {object property value} {
 proc configure_cvfpu_sources {repo_root src_dir} {
     set fileset [current_fileset]
     set cvfpu_manifest [file join $src_dir cvfpu_sources.f]
+    set cvfpu_submodule [file join $repo_root third_party cvfpu src common_cells include]
+    if {![file isdirectory $cvfpu_submodule]} {
+        error "CVFPU submodule is missing or incomplete: $cvfpu_submodule\nRun: git submodule update --init --recursive"
+    }
     if {![file exists $cvfpu_manifest]} {
         error "CVFPU source manifest missing: $cvfpu_manifest"
     }
@@ -95,10 +99,8 @@ proc run_if_needed {run_id to_step jobs} {
         puts "  $run_id already up to date, skipping."
         return
     }
-    if {$force || $needs_refresh} {
-        puts "  $run_id resetting before launch."
-        reset_run $run_id
-    }
+    puts "  $run_id resetting before launch."
+    reset_run $run_id
     if {$to_step ne ""} {
         launch_runs $run -to_step $to_step -jobs $jobs
     } else {
