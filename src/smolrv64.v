@@ -1821,8 +1821,11 @@ module smolrv64(input wire        clock,
    // plic_priority declared above (before initial block)
    reg [63:0]  plic_pending = 0;       // Interrupt pending bits
    reg [63:0]  plic_enabled = 0;       // Enable bits (S-mode context)
+   reg [63:0]  plic_in_service = 0;    // Gateway has delivered source; wait for completion
    reg [ 2:0]  plic_threshold = 0;     // Priority threshold (S-mode)
    reg [ 5:0]  plic_claim = 0;        // Last claimed IRQ
+   wire [63:0] plic_source_level = {ext_irq, 1'b0}
+                                  | (uart_irq_out ? (64'd1 << 10) : 64'd0);
 
    // Find highest-priority pending+enabled interrupt (2-cycle pipeline)
    // Stage 1: scan 4 groups of 16, register results
@@ -2468,10 +2471,10 @@ module smolrv64(input wire        clock,
             uart_thre_pending <= 1;
       end
 
-      // Latch external interrupts into PLIC pending (source 10 = UART in core,
-      // platform sources arrive through ext_irq[63:1]).
-      plic_pending <= plic_pending | {ext_irq, 1'b0}
-                    | (uart_irq_out ? (64'd1 << 10) : 64'd0);
+      // PLIC gateway model: a source can become pending only while it is not
+      // already pending and not in service. Claim clears pending and marks the
+      // source in service; completion rearms the gateway.
+      plic_pending <= plic_pending | (plic_source_level & ~plic_in_service);
 
       mmio_write = 0;
       mmio_read = 0;
@@ -4770,9 +4773,10 @@ module smolrv64(input wire        clock,
               end else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
                  plic_threshold <= store_value[2:0];
               else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
-                 // Claim complete: clear pending bit
+                 // Completion: rearm the source gateway. If the source is
+                 // still asserted, it will become pending again next cycle.
                  if (store_value[5:0] != 0)
-                    plic_pending[store_value[5:0]] <= 0;
+                    plic_in_service[store_value[5:0]] <= 0;
               end
               mem_wr_mask = 0;
              end
@@ -4948,8 +4952,13 @@ module smolrv64(input wire        clock,
                     write_back_value = plic_enabled;
                  else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
                     write_back_value = plic_threshold;
-                 else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007)
+                 else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
                     write_back_value = plic_best_irq;
+                    if (plic_best_irq != 0) begin
+                       plic_pending[plic_best_irq] <= 0;
+                       plic_in_service[plic_best_irq] <= 1;
+                    end
+                 end
                  else
                     write_back_value = 0;
                  if (load_size_lg2 == 2)
@@ -6017,6 +6026,10 @@ module smolrv64(input wire        clock,
          uart_tx_head     <= 0;
          uart_tx_tail     <= 0;
          uart_thre_pending <= 0;
+         plic_pending     <= 0;
+         plic_in_service  <= 0;
+         plic_enabled     <= 0;
+         plic_threshold   <= 0;
          fetch_from_dram  <= 0;
          dram_latched_next_valid <= 0;
          translated       <= 0;
