@@ -5,7 +5,7 @@ module virtio_mmio #(
     parameter [31:0] DEVICE_ID = 32'd0,
     parameter [31:0] VENDOR_ID = 32'h736d_6f6c,
     parameter [31:0] DEVICE_FEATURES_0 = 32'd0,
-    parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0001,
+    parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0003,
     parameter [31:0] QUEUE_NUM_MAX = 32'd8,
     parameter [31:0] QUEUE_COUNT = 32'd1
 ) (
