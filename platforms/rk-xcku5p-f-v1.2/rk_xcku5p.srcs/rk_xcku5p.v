@@ -154,7 +154,7 @@ module rk_xcku5p(
    wire        core_axi_rvalid;
    wire        core_axi_rready;
 
-   localparam USE_DDR_ARB = 1'b0;
+   localparam USE_DDR_ARB = 1'b1;
 
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
@@ -276,6 +276,52 @@ module rk_xcku5p(
    wire [31:0] virtio_net_readdata;
    wire        virtio_blk_irq;
    wire        virtio_net_irq;
+   wire        virtio_net_queue_notify_pulse;
+   wire [31:0] virtio_net_queue_notify_value;
+   wire        virtio_net_used_buffer_interrupt;
+   wire [31:0] virtio_net_queue1_num;
+   wire        virtio_net_queue1_ready;
+   wire [63:0] virtio_net_queue1_desc;
+   wire [63:0] virtio_net_queue1_driver;
+   wire [63:0] virtio_net_queue1_device;
+   wire [ 7:0] virtio_net_device_status;
+   wire [ 2:0] virtio_net_axi_awid;
+   wire [30:0] virtio_net_axi_awaddr;
+   wire [ 7:0] virtio_net_axi_awlen;
+   wire [ 2:0] virtio_net_axi_awsize;
+   wire [ 1:0] virtio_net_axi_awburst;
+   wire        virtio_net_axi_awlock;
+   wire [ 3:0] virtio_net_axi_awcache;
+   wire [ 2:0] virtio_net_axi_awprot;
+   wire [ 3:0] virtio_net_axi_awqos;
+   wire        virtio_net_axi_awvalid;
+   wire        virtio_net_axi_awready;
+   wire [63:0] virtio_net_axi_wdata;
+   wire [ 7:0] virtio_net_axi_wstrb;
+   wire        virtio_net_axi_wlast;
+   wire        virtio_net_axi_wvalid;
+   wire        virtio_net_axi_wready;
+   wire [ 2:0] virtio_net_axi_bid;
+   wire [ 1:0] virtio_net_axi_bresp;
+   wire        virtio_net_axi_bvalid;
+   wire        virtio_net_axi_bready;
+   wire [ 2:0] virtio_net_axi_arid;
+   wire [30:0] virtio_net_axi_araddr;
+   wire [ 7:0] virtio_net_axi_arlen;
+   wire [ 2:0] virtio_net_axi_arsize;
+   wire [ 1:0] virtio_net_axi_arburst;
+   wire        virtio_net_axi_arlock;
+   wire [ 3:0] virtio_net_axi_arcache;
+   wire [ 2:0] virtio_net_axi_arprot;
+   wire [ 3:0] virtio_net_axi_arqos;
+   wire        virtio_net_axi_arvalid;
+   wire        virtio_net_axi_arready;
+   wire [ 2:0] virtio_net_axi_rid;
+   wire [63:0] virtio_net_axi_rdata;
+   wire [ 1:0] virtio_net_axi_rresp;
+   wire        virtio_net_axi_rlast;
+   wire        virtio_net_axi_rvalid;
+   wire        virtio_net_axi_rready;
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
@@ -364,7 +410,7 @@ module rk_xcku5p(
    );
 
    virtio_mmio #(
-      .DEVICE_ID(32'd1), /* Network device; DT keeps Linux from probing it yet. */
+      .DEVICE_ID(32'd1), /* Network device with a minimal TX-drop backend. */
       .QUEUE_NUM_MAX(32'd8),
       .QUEUE_COUNT(32'd2)
    ) virtio_net_inst(
@@ -377,9 +423,9 @@ module rk_xcku5p(
       .write_data              (mmio_writedata),
       .byteenable              (mmio_byteenable),
       .irq                     (virtio_net_irq),
-      .queue_notify_pulse      (),
-      .queue_notify_value      (),
-      .used_buffer_interrupt   (1'b0),
+      .queue_notify_pulse      (virtio_net_queue_notify_pulse),
+      .queue_notify_value      (virtio_net_queue_notify_value),
+      .used_buffer_interrupt   (virtio_net_used_buffer_interrupt),
       .config_change_interrupt (1'b0),
       .driver_features_0       (),
       .driver_features_1       (),
@@ -393,12 +439,64 @@ module rk_xcku5p(
       .queue0_desc             (),
       .queue0_driver           (),
       .queue0_device           (),
-      .queue1_num              (),
-      .queue1_ready            (),
-      .queue1_desc             (),
-      .queue1_driver           (),
-      .queue1_device           (),
-      .device_status           ()
+      .queue1_num              (virtio_net_queue1_num),
+      .queue1_ready            (virtio_net_queue1_ready),
+      .queue1_desc             (virtio_net_queue1_desc),
+      .queue1_driver           (virtio_net_queue1_driver),
+      .queue1_device           (virtio_net_queue1_device),
+      .device_status           (virtio_net_device_status)
+   );
+
+   virtio_net_tx_drop virtio_net_tx_drop_inst(
+      .clock                   (ui_clk),
+      .reset                   (cpu_reset),
+      .queue_notify_pulse      (virtio_net_queue_notify_pulse),
+      .queue_notify_value      (virtio_net_queue_notify_value),
+      .tx_queue_num            (virtio_net_queue1_num),
+      .tx_queue_ready          (virtio_net_queue1_ready),
+      .tx_queue_desc           (virtio_net_queue1_desc),
+      .tx_queue_driver         (virtio_net_queue1_driver),
+      .tx_queue_device         (virtio_net_queue1_device),
+      .device_status           (virtio_net_device_status),
+      .used_buffer_interrupt   (virtio_net_used_buffer_interrupt),
+
+      .m_axi_awid              (virtio_net_axi_awid),
+      .m_axi_awaddr            (virtio_net_axi_awaddr),
+      .m_axi_awlen             (virtio_net_axi_awlen),
+      .m_axi_awsize            (virtio_net_axi_awsize),
+      .m_axi_awburst           (virtio_net_axi_awburst),
+      .m_axi_awlock            (virtio_net_axi_awlock),
+      .m_axi_awcache           (virtio_net_axi_awcache),
+      .m_axi_awprot            (virtio_net_axi_awprot),
+      .m_axi_awqos             (virtio_net_axi_awqos),
+      .m_axi_awvalid           (virtio_net_axi_awvalid),
+      .m_axi_awready           (virtio_net_axi_awready),
+      .m_axi_wdata             (virtio_net_axi_wdata),
+      .m_axi_wstrb             (virtio_net_axi_wstrb),
+      .m_axi_wlast             (virtio_net_axi_wlast),
+      .m_axi_wvalid            (virtio_net_axi_wvalid),
+      .m_axi_wready            (virtio_net_axi_wready),
+      .m_axi_bid               (virtio_net_axi_bid),
+      .m_axi_bresp             (virtio_net_axi_bresp),
+      .m_axi_bvalid            (virtio_net_axi_bvalid),
+      .m_axi_bready            (virtio_net_axi_bready),
+      .m_axi_arid              (virtio_net_axi_arid),
+      .m_axi_araddr            (virtio_net_axi_araddr),
+      .m_axi_arlen             (virtio_net_axi_arlen),
+      .m_axi_arsize            (virtio_net_axi_arsize),
+      .m_axi_arburst           (virtio_net_axi_arburst),
+      .m_axi_arlock            (virtio_net_axi_arlock),
+      .m_axi_arcache           (virtio_net_axi_arcache),
+      .m_axi_arprot            (virtio_net_axi_arprot),
+      .m_axi_arqos             (virtio_net_axi_arqos),
+      .m_axi_arvalid           (virtio_net_axi_arvalid),
+      .m_axi_arready           (virtio_net_axi_arready),
+      .m_axi_rid               (virtio_net_axi_rid),
+      .m_axi_rdata             (virtio_net_axi_rdata),
+      .m_axi_rresp             (virtio_net_axi_rresp),
+      .m_axi_rlast             (virtio_net_axi_rlast),
+      .m_axi_rvalid            (virtio_net_axi_rvalid),
+      .m_axi_rready            (virtio_net_axi_rready)
    );
 
    generate
@@ -445,43 +543,43 @@ module rk_xcku5p(
       .s0_axi_rvalid  (core_axi_rvalid),
       .s0_axi_rready  (core_axi_rready),
 
-      .s1_axi_awid    (3'd0),
-      .s1_axi_awaddr  (31'd0),
-      .s1_axi_awlen   (8'd0),
-      .s1_axi_awsize  (3'd3),
-      .s1_axi_awburst (2'b01),
-      .s1_axi_awlock  (1'b0),
-      .s1_axi_awcache (4'b0011),
-      .s1_axi_awprot  (3'b000),
-      .s1_axi_awqos   (4'd0),
-      .s1_axi_awvalid (1'b0),
-      .s1_axi_awready (),
-      .s1_axi_wdata   (64'd0),
-      .s1_axi_wstrb   (8'd0),
-      .s1_axi_wlast   (1'b1),
-      .s1_axi_wvalid  (1'b0),
-      .s1_axi_wready  (),
-      .s1_axi_bid     (),
-      .s1_axi_bresp   (),
-      .s1_axi_bvalid  (),
-      .s1_axi_bready  (1'b1),
-      .s1_axi_arid    (3'd0),
-      .s1_axi_araddr  (31'd0),
-      .s1_axi_arlen   (8'd0),
-      .s1_axi_arsize  (3'd3),
-      .s1_axi_arburst (2'b01),
-      .s1_axi_arlock  (1'b0),
-      .s1_axi_arcache (4'b0011),
-      .s1_axi_arprot  (3'b000),
-      .s1_axi_arqos   (4'd0),
-      .s1_axi_arvalid (1'b0),
-      .s1_axi_arready (),
-      .s1_axi_rid     (),
-      .s1_axi_rdata   (),
-      .s1_axi_rresp   (),
-      .s1_axi_rlast   (),
-      .s1_axi_rvalid  (),
-      .s1_axi_rready  (1'b1),
+      .s1_axi_awid    (virtio_net_axi_awid),
+      .s1_axi_awaddr  (virtio_net_axi_awaddr),
+      .s1_axi_awlen   (virtio_net_axi_awlen),
+      .s1_axi_awsize  (virtio_net_axi_awsize),
+      .s1_axi_awburst (virtio_net_axi_awburst),
+      .s1_axi_awlock  (virtio_net_axi_awlock),
+      .s1_axi_awcache (virtio_net_axi_awcache),
+      .s1_axi_awprot  (virtio_net_axi_awprot),
+      .s1_axi_awqos   (virtio_net_axi_awqos),
+      .s1_axi_awvalid (virtio_net_axi_awvalid),
+      .s1_axi_awready (virtio_net_axi_awready),
+      .s1_axi_wdata   (virtio_net_axi_wdata),
+      .s1_axi_wstrb   (virtio_net_axi_wstrb),
+      .s1_axi_wlast   (virtio_net_axi_wlast),
+      .s1_axi_wvalid  (virtio_net_axi_wvalid),
+      .s1_axi_wready  (virtio_net_axi_wready),
+      .s1_axi_bid     (virtio_net_axi_bid),
+      .s1_axi_bresp   (virtio_net_axi_bresp),
+      .s1_axi_bvalid  (virtio_net_axi_bvalid),
+      .s1_axi_bready  (virtio_net_axi_bready),
+      .s1_axi_arid    (virtio_net_axi_arid),
+      .s1_axi_araddr  (virtio_net_axi_araddr),
+      .s1_axi_arlen   (virtio_net_axi_arlen),
+      .s1_axi_arsize  (virtio_net_axi_arsize),
+      .s1_axi_arburst (virtio_net_axi_arburst),
+      .s1_axi_arlock  (virtio_net_axi_arlock),
+      .s1_axi_arcache (virtio_net_axi_arcache),
+      .s1_axi_arprot  (virtio_net_axi_arprot),
+      .s1_axi_arqos   (virtio_net_axi_arqos),
+      .s1_axi_arvalid (virtio_net_axi_arvalid),
+      .s1_axi_arready (virtio_net_axi_arready),
+      .s1_axi_rid     (virtio_net_axi_rid),
+      .s1_axi_rdata   (virtio_net_axi_rdata),
+      .s1_axi_rresp   (virtio_net_axi_rresp),
+      .s1_axi_rlast   (virtio_net_axi_rlast),
+      .s1_axi_rvalid  (virtio_net_axi_rvalid),
+      .s1_axi_rready  (virtio_net_axi_rready),
 
       .m_axi_awid     (m_axi_awid),
       .m_axi_awaddr   (m_axi_awaddr),
