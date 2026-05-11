@@ -576,8 +576,8 @@ module smolrv64(input wire        clock,
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_FETCH1B              27  // register SRAM mem0/mem1 output before S_FETCH2 reads insn
 `define S_LOAD_LATCH           28  // register SRAM mem0/mem1 output before S_LOAD_ALIGN reads data
-`define S_DRAM_STORE_RESP_WAIT 29  // wait for an issued DRAM store to fully drain
-`define S_DRAM_STORE_RESP_ARM  30  // absorb one cycle so AXI busy flags see a new write
+`define S_CBO_EXEC             29  // execute translated cache-block operation
+`define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
 `define S_STORE_BRAM_WRITE     32  // full-word writeback after BRAM store read/modify
 `define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
@@ -590,7 +590,10 @@ module smolrv64(input wire        clock,
 `define S_TLB_START_FETCH      40  // start instruction-fetch translation after fetch miss decision
 `define S_TLB_START_FETCH_HALF 41  // start cross-page instruction-fetch translation
 `define S_PTW_START            42  // start PTW after TLB miss decision
-`define S_LAST_STATE           42  // update state register width accordingly
+`define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
+`define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
+`define S_FETCH2_DRAM          45  // latch instruction from DRAM fetch without fetch-source mux
+`define S_LAST_STATE           45  // update state register width accordingly
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -964,7 +967,10 @@ module smolrv64(input wire        clock,
    localparam [3:0] CACHE_WB_REQ    = 4'd6;
    localparam [3:0] CACHE_WB_WAIT   = 4'd7;
    localparam [3:0] CACHE_WB_PREP   = 4'd8;
-   localparam [3:0] CACHE_LAST_STATE = CACHE_WB_PREP;
+   localparam [3:0] CACHE_CBO_TAG_READ  = 4'd9;
+   localparam [3:0] CACHE_CBO_TAG_CHECK = 4'd10;
+   localparam [3:0] CACHE_CBO_RESP      = 4'd11;
+   localparam [3:0] CACHE_LAST_STATE = CACHE_CBO_RESP;
 
    reg [ 7:0] cache_bank_wr_en = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
@@ -998,12 +1004,17 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_next_hit = 0;
    reg        cache_lookup_next_valid = 0;
    reg        cache_lookup_dirty = 0;
+   reg        cache_wb_after_cbo = 0;
+   reg        cache_cbo_flush = 0;
+   reg [30:6] cache_cbo_line_addr = 0;
+   reg        cache_cbo_done_r = 0;
    reg        dram_readdatavalid_r = 0;
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
    reg        dram_readdata_next_valid_r = 0;
    reg        dram_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
+   wire       cache_cbo_done = cache_cbo_done_r;
 
    reg        axi_read = 0;
    reg [27:0] axi_read_addr = 0;
@@ -1166,6 +1177,9 @@ module smolrv64(input wire        clock,
            `S_TLB_START_FETCH:       state_name = "TLB_START_FETCH";
            `S_TLB_START_FETCH_HALF:  state_name = "TLB_START_FETCH_HALF";
            `S_PTW_START:             state_name = "PTW_START";
+           `S_CBO_EXEC:              state_name = "CBO_EXEC";
+           `S_CBO_WAIT:              state_name = "CBO_WAIT";
+           `S_FETCH2_DRAM:           state_name = "FETCH2_DRAM";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1184,6 +1198,9 @@ module smolrv64(input wire        clock,
            CACHE_WB_REQ:    cache_state_name = "WB_REQ";
            CACHE_WB_WAIT:   cache_state_name = "WB_WAIT";
            CACHE_WB_PREP:   cache_state_name = "WB_PREP";
+           CACHE_CBO_TAG_READ:  cache_state_name = "CBO_TAG_READ";
+           CACHE_CBO_TAG_CHECK: cache_state_name = "CBO_TAG_CHECK";
+           CACHE_CBO_RESP:      cache_state_name = "CBO_RESP";
            default:         cache_state_name = "UNKNOWN";
          endcase
       end
@@ -2480,6 +2497,7 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
       dram_read  <= 0;
       dram_write <= 0;
+      cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
       hpm_event_wr_en <= 0;
       tlb_4k_wr_en <= 0;
@@ -2646,7 +2664,7 @@ module smolrv64(input wire        clock,
               if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
                  // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
                  fetch_from_dram  <= 1;
-                 dram_addr  <= npc[30:3];
+                 dram_addr        <= npc[30:3];
                  dram_read        <= 1;
                  state            <= `S_DRAM_FETCH_WAIT;
               end else begin
@@ -2687,15 +2705,8 @@ module smolrv64(input wire        clock,
 
         `S_FETCH2: begin
            translated <= 0;
-           if (fetch_from_dram) begin
-              // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
-              // detected and re-fetched in S_RF; the upper 64 bits are don't-care.
-              aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
-                                                 : {64'bx, dram_latched};
-           end else begin
-              aligned = pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
-           end
-           if (fetch_buf_fill_page_ok && (!fetch_from_dram || dram_latched_next_valid)) begin
+           aligned = pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
+           if (fetch_buf_fill_page_ok) begin
               fetch_buf_valid   <= 1;
               fetch_buf_base_va <= fetch_buf_fill_base_va;
               fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
@@ -2704,6 +2715,26 @@ module smolrv64(input wire        clock,
               fetch_buf_data    <= aligned;
            end
            // Register insn; cross-page check and decode happen in S_RF using stable insn_reg.
+           insn <= aligned >> (pc[2:1] * 16);
+           write_back_register = 0;
+           write_back_fp_valid = 0;
+           state <= `S_RF;
+        end
+
+        `S_FETCH2_DRAM: begin
+           translated <= 0;
+           // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
+           // detected and re-fetched in S_RF; the upper 64 bits are don't-care.
+           aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
+                                              : {64'bx, dram_latched};
+           if (fetch_buf_fill_page_ok && dram_latched_next_valid) begin
+              fetch_buf_valid   <= 1;
+              fetch_buf_base_va <= fetch_buf_fill_base_va;
+              fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
+              fetch_buf_satp    <= csr_satp;
+              fetch_buf_prv     <= prv;
+              fetch_buf_data    <= aligned;
+           end
            insn <= aligned >> (pc[2:1] * 16);
            write_back_register = 0;
            write_back_fp_valid = 0;
@@ -3560,6 +3591,17 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
               // Nothing to do here
+           end
+
+           else if ((insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
+                    (insn & 'hfff0707f) == 'h0010200f || // CBO.CLEAN
+                    (insn & 'hfff0707f) == 'h0020200f) begin // CBO.FLUSH
+              mem_addr = s1;
+              translated <= 0;
+              if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3)
+                 start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_CBO_EXEC);
+              else
+                 state <= `S_CBO_EXEC;
            end
 
            else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
@@ -4615,6 +4657,24 @@ module smolrv64(input wire        clock,
            end
         end
 `endif
+
+        `S_CBO_EXEC: begin
+           translated <= 0;
+           if (phys_region(mem_addr) == `REGION_DRAM) begin
+              if (cache_idle) begin
+                 cache_cbo_line_addr <= mem_addr[30:6];
+                 cache_cbo_flush <= 1;
+                 state <= `S_CBO_WAIT;
+              end
+           end else begin
+              state <= `S_FETCH1;
+           end
+        end
+
+        `S_CBO_WAIT: begin
+           if (cache_cbo_done)
+              state <= `S_FETCH1;
+        end
 
         `S_STORE: begin
 
@@ -5792,7 +5852,7 @@ module smolrv64(input wire        clock,
            dram_latched            <= dram_readdata;
            dram_latched_next       <= dram_readdata_next;
            dram_latched_next_valid <= dram_readdata_next_valid;
-           state                   <= `S_FETCH2;
+           state                   <= `S_FETCH2_DRAM;
         end
 
         `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin
@@ -6097,13 +6157,20 @@ module smolrv64(input wire        clock,
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
       dram_write_done_r <= 0;
+      cache_cbo_done_r <= 0;
       axi_read  <= 0;
       axi_write <= 0;
       cache_tag_wr_en <= 0;
 
       case (cache_state)
         CACHE_IDLE: begin
-           if (dram_read) begin
+           if (cache_cbo_flush) begin
+              cache_addr         <= {33'd0, cache_cbo_line_addr, 6'd0};
+              cache_req_tag      <= cache_cbo_line_addr[`CACHE_INDEX_BITS+6 +: `CACHE_TAG_BITS];
+              cache_rd_idx       <= cache_cbo_line_addr[`CACHE_INDEX_BITS+5:6];
+              cache_bank0_rd_idx <= cache_cbo_line_addr[`CACHE_INDEX_BITS+5:6];
+              cache_state        <= CACHE_CBO_TAG_READ;
+           end else if (dram_read) begin
               cache_addr          <= cache_dram_addr;
               cache_req_write     <= 0;
               cache_req_tag       <= cache_dram_tag;
@@ -6163,13 +6230,14 @@ module smolrv64(input wire        clock,
                  cache_tag_wr_idx  <= cache_rd_idx;
                  cache_tag_wr_data <= {1'b1, 1'b1, cache_req_tag};
                  dram_write_done_r <= 1;
+                 cache_state <= CACHE_IDLE;
               end else begin
                  dram_readdata_r <= cache_lookup_data;
                  dram_readdata_next_r <= cache_lookup_next_data;
                  dram_readdata_next_valid_r <= cache_lookup_next_valid;
                  dram_readdatavalid_r <= 1;
+                 cache_state <= CACHE_IDLE;
               end
-              cache_state <= CACHE_IDLE;
            end else begin
               cache_fill_base <= {cache_addr[63:6], 6'd0};
               cache_fill_beat <= 0;
@@ -6179,6 +6247,7 @@ module smolrv64(input wire        clock,
                  cache_wb_base <= {cache_victim_tag, cache_rd_idx, 6'd0};
                  cache_wb_beat <= 0;
                  cache_bank0_rd_idx <= cache_rd_idx;
+                 cache_wb_after_cbo <= 1'b0;
                  cache_state <= CACHE_WB_PREP;
               end else begin
                  cache_state <= CACHE_FILL_REQ;
@@ -6213,11 +6282,52 @@ module smolrv64(input wire        clock,
            if (axi_write_done) begin
               if (cache_wb_beat == 3'd7) begin
                  cache_wb_beat <= 0;
-                 cache_state <= CACHE_FILL_REQ;
+                 if (cache_wb_after_cbo) begin
+                    cache_tag_wr_en <= 1;
+                    cache_tag_wr_idx <= cache_rd_idx;
+                    cache_tag_wr_data <= {1'b0, 1'b0, cache_req_tag};
+                    cache_wb_after_cbo <= 1'b0;
+                    cache_cbo_done_r <= 1;
+                    cache_state <= CACHE_IDLE;
+                 end else begin
+                    cache_state <= CACHE_FILL_REQ;
+                 end
               end else begin
                  cache_wb_beat <= cache_wb_beat + 1;
                  cache_state <= CACHE_WB_REQ;
               end
+           end
+        end
+
+        CACHE_CBO_TAG_READ: begin
+           cache_state <= CACHE_CBO_TAG_CHECK;
+        end
+
+        CACHE_CBO_TAG_CHECK: begin
+           cache_lookup_hit <=
+                cache_tag_rd_data[`CACHE_VALID_BIT] &&
+                cache_tag_rd_data[`CACHE_TAG_BITS-1:0] == cache_req_tag;
+           cache_lookup_dirty <= cache_tag_rd_data[`CACHE_VALID_BIT] &&
+                                 cache_tag_rd_data[`CACHE_DIRTY_BIT];
+           cache_victim_tag <= cache_tag_rd_data[`CACHE_TAG_BITS-1:0];
+           cache_state <= CACHE_CBO_RESP;
+        end
+
+        CACHE_CBO_RESP: begin
+           if (cache_lookup_hit && cache_lookup_dirty) begin
+              cache_wb_base <= {cache_req_tag, cache_rd_idx, 6'd0};
+              cache_wb_beat <= 0;
+              cache_bank0_rd_idx <= cache_rd_idx;
+              cache_wb_after_cbo <= 1'b1;
+              cache_state <= CACHE_WB_PREP;
+           end else begin
+              if (cache_lookup_hit) begin
+                 cache_tag_wr_en <= 1;
+                 cache_tag_wr_idx <= cache_rd_idx;
+                 cache_tag_wr_data <= {1'b0, 1'b0, cache_req_tag};
+              end
+              cache_cbo_done_r <= 1;
+              cache_state <= CACHE_IDLE;
            end
         end
 
@@ -6279,6 +6389,8 @@ module smolrv64(input wire        clock,
          axi_read <= 0;
          axi_write <= 0;
          cache_tag_wr_en <= 0;
+         cache_cbo_done_r <= 0;
+         cache_wb_after_cbo <= 0;
       end
    end
 
