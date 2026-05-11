@@ -6,7 +6,6 @@ module virtio_net_tx_drop(
     input  wire        reset,
 
     input  wire        queue_notify_pulse,
-    input  wire [31:0] queue_notify_value,
     input  wire [31:0] tx_queue_num,
     input  wire        tx_queue_ready,
     input  wire [63:0] tx_queue_desc,
@@ -116,7 +115,7 @@ module virtio_net_tx_drop(
                               tx_queue_desc[63:32] == 32'd0 &&
                               tx_queue_driver[63:32] == 32'd0 &&
                               tx_queue_device[63:32] == 32'd0;
-   wire tx_notify = queue_notify_pulse && queue_notify_value == 32'd1;
+   wire tx_notify = queue_notify_pulse;
    wire [15:0] next_avail_idx = last_avail_idx + 16'd1;
 
    task start_read64;

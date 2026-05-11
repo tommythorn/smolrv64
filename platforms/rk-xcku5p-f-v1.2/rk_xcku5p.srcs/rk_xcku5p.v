@@ -451,7 +451,6 @@ module rk_xcku5p(
       .clock                   (ui_clk),
       .reset                   (cpu_reset),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),
-      .queue_notify_value      (virtio_net_queue_notify_value),
       .tx_queue_num            (virtio_net_queue1_num),
       .tx_queue_ready          (virtio_net_queue1_ready),
       .tx_queue_desc           (virtio_net_queue1_desc),

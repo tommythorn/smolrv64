@@ -594,7 +594,25 @@ module smolrv64(input wire        clock,
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
 `define S_FETCH2_DRAM          45  // latch instruction from DRAM fetch without fetch-source mux
-`define S_LAST_STATE           45  // update state register width accordingly
+`define S_FETCH_BUF_CHECK      46  // register fetch-buffer hit decision
+`define S_FETCH_BUF_USE        47  // consume registered fetch-buffer hit or launch miss path
+`define S_MULDIV_START         48  // initialize iterative M-extension datapath
+`define S_TLB_DECIDE           49  // consume registered TLB hit decision
+`define S_LAST_STATE           49  // update state register width accordingly
+
+`define MULDIV_MUL             4'd0
+`define MULDIV_MULH            4'd1
+`define MULDIV_MULHSU          4'd2
+`define MULDIV_MULHU           4'd3
+`define MULDIV_DIV             4'd4
+`define MULDIV_DIVU            4'd5
+`define MULDIV_REM             4'd6
+`define MULDIV_REMU            4'd7
+`define MULDIV_MULW            4'd8
+`define MULDIV_DIVW            4'd9
+`define MULDIV_DIVUW           4'd10
+`define MULDIV_REMW            4'd11
+`define MULDIV_REMUW           4'd12
 
 // pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
@@ -955,6 +973,8 @@ module smolrv64(input wire        clock,
    reg  [63:0]  fetch_buf_satp = 0;
    reg  [ 1:0]  fetch_buf_prv = 0;
    reg  [127:0] fetch_buf_data = 0;
+   reg          fetch_buf_latched_hit = 0;
+   reg  [31:0]  fetch_buf_latched_insn = 0;
 
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
@@ -1181,6 +1201,10 @@ module smolrv64(input wire        clock,
            `S_CBO_EXEC:              state_name = "CBO_EXEC";
            `S_CBO_WAIT:              state_name = "CBO_WAIT";
            `S_FETCH2_DRAM:           state_name = "FETCH2_DRAM";
+           `S_FETCH_BUF_CHECK:       state_name = "FETCH_BUF_CHECK";
+           `S_FETCH_BUF_USE:         state_name = "FETCH_BUF_USE";
+           `S_MULDIV_START:          state_name = "MULDIV_START";
+           `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1932,6 +1956,7 @@ module smolrv64(input wire        clock,
    reg         muldiv_output_sext32;
    reg         muldiv_output_negate;
    reg         muldiv_output_high_part;
+   reg [3:0]   muldiv_start_op = `MULDIV_MUL;
    reg [6:0]   div_count;
 
    reg [63:0]  reservation = ~0;
@@ -1978,6 +2003,8 @@ module smolrv64(input wire        clock,
    reg         tlb_req_mxr;
    reg [ 4:0]  tlb_req_return;
    reg [63:0]  tlb_hit_pa;
+   reg         tlb_latched_4k_hit = 0;
+   reg         tlb_latched_2m_hit = 0;
    reg         hpm_tlb_insert_4k_pulse = 0;
    reg         hpm_tlb_insert_2m_pulse = 0;
    reg         hpm_tlb_evict_4k_pulse = 0;
@@ -2046,10 +2073,10 @@ module smolrv64(input wire        clock,
                      tlb_2m_rd_satp == tlb_req_satp &&
                      tlb_2m_rd_ctx == tlb_req_ctx;
    wire hpm_tlb_lookup_pulse = state == `S_TLB_LOOKUP;
-   wire hpm_tlb_hit_pulse = state == `S_TLB_CHECK && (tlb_4k_hit || tlb_2m_hit);
-   wire hpm_tlb_miss_pulse = state == `S_TLB_CHECK && !(tlb_4k_hit || tlb_2m_hit);
-   wire hpm_tlb_hit_4k_pulse = tlb_4k_hit;
-   wire hpm_tlb_hit_2m_pulse = !tlb_4k_hit && tlb_2m_hit;
+   wire hpm_tlb_hit_pulse = state == `S_TLB_DECIDE && (tlb_latched_4k_hit || tlb_latched_2m_hit);
+   wire hpm_tlb_miss_pulse = state == `S_TLB_DECIDE && !(tlb_latched_4k_hit || tlb_latched_2m_hit);
+   wire hpm_tlb_hit_4k_pulse = state == `S_TLB_DECIDE && tlb_latched_4k_hit;
+   wire hpm_tlb_hit_2m_pulse = state == `S_TLB_DECIDE && !tlb_latched_4k_hit && tlb_latched_2m_hit;
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`TLB_4K_INDEX_BITS),
@@ -2233,6 +2260,34 @@ module smolrv64(input wire        clock,
          tlb_stat_entries_2m = 0;
          tlb_stat_entries_1g = 0;
 `endif
+      end
+   endtask
+
+   task start_instruction_fetch_miss;
+      input [63:0] fetch_va;
+      reg [`MEM_SIZE_LG2-4:0] fetch_bram_addr0;
+      begin
+         if (csr_satp[63:60] == 4'd8 && prv != 3) begin
+            // Sv39 instruction fetch translation
+            state <= `S_TLB_START_FETCH;
+         end else begin
+            if (fetch_va[63:31] == 1 &&
+                fetch_va[63:`MEM_SIZE_LG2] != MEM_BASEADDR_VALUE[63:`MEM_SIZE_LG2]) begin
+               // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
+               fetch_from_dram  <= 1;
+               dram_addr        <= fetch_va[30:3];
+               dram_read        <= 1;
+               state            <= `S_DRAM_FETCH_WAIT;
+            end else begin
+               // BRAM fetch physical
+               fetch_bram_addr0 = fetch_va[`MEM_SIZE_LG2-1:4] +
+                                  {{(`MEM_SIZE_LG2-4){1'b0}}, fetch_va[3]};
+               fetch_from_dram  <= 0;
+               mem_addr0        <= fetch_bram_addr0[`MEM_SIZE_LG2-5:0];
+               mem_addr1        <= fetch_va[`MEM_SIZE_LG2-1:4];
+               state            <= `S_FETCH1B;
+            end
+         end
       end
    endtask
 
@@ -2639,44 +2694,21 @@ module smolrv64(input wire        clock,
 
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
-              if (fetch_buf_hit)
-                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
-              else begin
+              if (!fetch_buf_context_hit) begin
                  fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
                  if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
                     $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
                              $time,
-                             fetch_buf_stat_hits + (fetch_buf_hit ? 64'd1 : 64'd0),
+                             fetch_buf_stat_hits,
                              fetch_buf_stat_misses + 64'd1);
               end
            end
 `endif
 
-           if (fetch_buf_hit) begin
-              insn <= fetch_buf_insn;
-              write_back_register = 0;
-              write_back_fp_valid = 0;
-              translated <= 0;
-              fetch_from_dram <= 0;
-              state <= `S_RF;
-           end else if (csr_satp[63:60] == 4'd8 && prv != 3) begin
-              // Sv39 instruction fetch translation
-              state <= `S_TLB_START_FETCH;
-           end else begin
-              if (npc[63:31] == 1 && npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
-                 // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
-                 fetch_from_dram  <= 1;
-                 dram_addr        <= npc[30:3];
-                 dram_read        <= 1;
-                 state            <= `S_DRAM_FETCH_WAIT;
-              end else begin
-                 // BRAM fetch physical
-                 fetch_from_dram  <= 0;
-                 mem_addr0        <= npc[`MEM_SIZE_LG2-1:4] + npc[3];
-                 mem_addr1        <= npc[`MEM_SIZE_LG2-1:4];
-                 state            <= `S_FETCH1B;
-              end
-           end
+           if (fetch_buf_context_hit)
+              state <= `S_FETCH_BUF_CHECK;
+           else
+              start_instruction_fetch_miss(npc);
 
            // Use pre-registered interrupt check (computed previous cycle) for timing closure.
            // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
@@ -2702,6 +2734,39 @@ module smolrv64(input wire        clock,
                  tval = 0;
                  state <= `S_EXCEPTION;
               end
+           end
+        end
+
+        `S_FETCH_BUF_CHECK: begin
+           fetch_buf_latched_hit  <= fetch_buf_hit;
+           fetch_buf_latched_insn <= fetch_buf_insn;
+           state                  <= `S_FETCH_BUF_USE;
+        end
+
+        `S_FETCH_BUF_USE: begin
+`ifdef SIMULATE
+           if (fetch_buf_summary_enabled) begin
+              if (fetch_buf_latched_hit)
+                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
+              else begin
+                 fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
+                 if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
+                    $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
+                             $time,
+                             fetch_buf_stat_hits + (fetch_buf_latched_hit ? 64'd1 : 64'd0),
+                             fetch_buf_stat_misses + 64'd1);
+              end
+           end
+`endif
+           if (fetch_buf_latched_hit) begin
+              insn <= fetch_buf_latched_insn;
+              write_back_register = 0;
+              write_back_fp_valid = 0;
+              translated <= 0;
+              fetch_from_dram <= 0;
+              state <= `S_RF;
+           end else begin
+              start_instruction_fetch_miss(npc);
            end
         end
 
@@ -3722,147 +3787,81 @@ module smolrv64(input wire        clock,
 
            else if ((insn & 'hfe00707f) == 'h02000033) begin // MUL
               write_back_register = rd;
-              mul_a = s1;
-              mul_b = s2;
-              state <= `S_MUL_RUNNING;
+              muldiv_start_op <= `MULDIV_MUL;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
               write_back_register = rd;
-              muldiv_output_negate = s1[63] != s2[63];
-              mul_a = {64'd0, pre_mul_abs_s1};
-              mul_b = pre_mul_abs_s2;
-              muldiv_output_high_part = 1;
-              state <= `S_MUL_RUNNING;
+              muldiv_start_op <= `MULDIV_MULH;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
               write_back_register = rd;
-              muldiv_output_negate = s1[63];
-              mul_a = {64'd0, pre_mul_abs_s1};
-              mul_b = s2;
-              muldiv_output_high_part = 1;
-              state <= `S_MUL_RUNNING;
+              muldiv_start_op <= `MULDIV_MULHSU;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02003033) begin // MULHU
               write_back_register = rd;
-              mul_a = {64'd0, s1};
-              mul_b = s2;
-              muldiv_output_high_part = 1;
-              state <= `S_MUL_RUNNING;
+              muldiv_start_op <= `MULDIV_MULHU;
+              state <= `S_MULDIV_START;
            end
 
 
            else if ((insn & 'hfe00707f) == 'h02004033) begin // DIV
               write_back_register = rd;
-              muldiv_output_negate = s1[63] != s2[63];
-              if (s2 == 0)
-                // No matter s1, this will produce -1 which is the correct answer
-                muldiv_output_negate = 0;
-              div_count = 64;
-              muldiv_p = {64'd0, pre_mul_abs_s1};
-              mul_a = {pre_mul_abs_s2, 63'd0};
-              mul_b = 0;
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_DIV;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02005033) begin // DIVU
               write_back_register = rd;
-              div_count = 64;
-              muldiv_p = {64'd0, s1};
-              mul_a = {s2, 63'd0};
-              mul_b = 0;
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_DIVU;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02006033) begin // REM
               write_back_register = rd;
-              // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              muldiv_output_negate = s1[63];
-              if (s2 == 0)
-                // No matter s1, this will produce -1 which is the correct answer
-                muldiv_output_negate = 0;
-              div_count = 64;
-              muldiv_p = {64'd0, pre_mul_abs_s1};
-              mul_a = {pre_mul_abs_s2, 63'd0};
-              mul_b = 0;
-              muldiv_output_high_part = 1; // XXX abusing variables
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_REM;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h02007033) begin // REMU
               write_back_register = rd;
-              // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              if (s2 == 0)
-                // No matter s1, this will produce -1 which is the correct answer
-                muldiv_output_negate = 0;
-              div_count = 64;
-              muldiv_p = {64'd0,s1};
-              mul_a = {s2, 63'd0};
-              mul_b = 0;
-              muldiv_output_high_part = 1; // XXX abusing variables
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_REMU;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200003b) begin // MULW
               write_back_register = rd;
-              mul_a = s1[31:0];
-              mul_b = s2[31:0];
-              muldiv_output_sext32 = 1;
-              state <= `S_MUL_RUNNING;
+              muldiv_start_op <= `MULDIV_MULW;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200403b) begin // DIVW
               write_back_register = rd;
-              muldiv_output_negate = s1[31] != s2[31];
-              if (s2 == 0)
-                // No matter s1, this will produce -1 which is the correct answer
-                muldiv_output_negate = 0;
-              div_count = 32;
-              muldiv_p = {96'd0, pre_mul_abs_s1w};
-              mul_a = {pre_mul_abs_s2w, 31'd0};
-              mul_b = 0;
-              muldiv_output_sext32 = 1;
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_DIVW;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
               write_back_register = rd;
-              if (s2 == 0)
-                // No matter s1, this will produce -1 which is the correct answer
-                muldiv_output_negate = 0;
-              div_count = 32;
-              muldiv_p = {96'd0, s1[31:0]};
-              mul_a = {s2[31:0], 31'd0};
-              mul_b = 0;
-              muldiv_output_sext32 = 1;
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_DIVUW;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200603b) begin // REMW
               write_back_register = rd;
-              // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              muldiv_output_negate = s1[31];
-              div_count = 32;
-              muldiv_p = {96'd0, pre_mul_abs_s1w};
-              mul_a = {pre_mul_abs_s2w, 31'd0};
-              mul_b = 0;
-              muldiv_output_sext32 = 1;
-              muldiv_output_high_part = 1; // XXX abusing variables
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_REMW;
+              state <= `S_MULDIV_START;
            end
 
            else if ((insn & 'hfe00707f) == 'h0200703b) begin // REMUW
               write_back_register = rd;
-              // "For REM, the sign of a nonzero result equals the sign of the dividend."
-              div_count = 32;
-              muldiv_p = {96'd0, s1[31:0]};
-              mul_a = {s2[31:0], 31'd0};
-              mul_b = 0;
-              muldiv_output_sext32 = 1;
-              muldiv_output_high_part = 1; // XXX abusing variables
-              state <= `S_DIV_RUNNING;
+              muldiv_start_op <= `MULDIV_REMUW;
+              state <= `S_MULDIV_START;
            end
 
            // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
@@ -5137,9 +5136,11 @@ module smolrv64(input wire        clock,
         end
 
 
-        `S_HANDLE_CSR: begin
+        `S_HANDLE_CSR: begin : handle_csr_state
+           reg csr_write_failure;
            state <= `S_EXECUTE2;
            csr_access_failure = 0;
+           csr_write_failure = 0;
            tval = insn;
            write_back_register = rd;
 
@@ -5281,9 +5282,9 @@ module smolrv64(input wire        clock,
            end
 
            // Write priviledge check
-           if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
+           if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               if (prv < csrno[9:8]) begin
-                 csr_access_failure = 1;
+                 csr_write_failure = 1;
 `ifdef SIMULATE
 `ifdef VERBOSE
                  $display("%05d   %1d %x %x mode isn't priviledged to write CSR %x", $time,
@@ -5299,14 +5300,14 @@ module smolrv64(input wire        clock,
                           prv, pc, insn, csrno);
 `endif
 `endif
-                 csr_access_failure = 1;
+                 csr_write_failure = 1;
               end
            end
 
 
 
            // CSRRS, CSRRC, CSRRSI, and CSRRCI don't write the CSR if rs1 == 0
-           if (!csr_access_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
+           if (!csr_write_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
               // write the CSR
 
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
@@ -5477,7 +5478,7 @@ module smolrv64(input wire        clock,
                    csr_mig_to_addr  <= 0;
                 end
                 default: begin
-                 csr_access_failure = 1;
+                 csr_write_failure = 1;
 `ifdef SIMULATE
 `ifdef VERBOSE
                    $display("%05d   %1d %x %x illegal CSR %x (write)", $time, prv, pc, insn, csrno);
@@ -5489,7 +5490,7 @@ module smolrv64(input wire        clock,
 
            exe_add <= csr_read_val;
            exe_sext32 <= 0;
-           if (csr_access_failure) begin
+           if (csr_access_failure || csr_write_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               state <= `S_EXCEPTION;
            end
@@ -5589,6 +5590,149 @@ module smolrv64(input wire        clock,
            state <= `S_FETCH1;
         end
 
+        `S_MULDIV_START: begin
+           muldiv_output_sext32 = 0;
+           muldiv_output_negate = 0;
+           muldiv_output_high_part = 0;
+
+           case (muldiv_start_op)
+             `MULDIV_MUL: begin
+                mul_a = s1;
+                mul_b = s2;
+                state <= `S_MUL_RUNNING;
+             end
+
+             `MULDIV_MULH: begin
+                muldiv_output_negate = s1[63] != s2[63];
+                mul_a = {64'd0, pre_mul_abs_s1};
+                mul_b = pre_mul_abs_s2;
+                muldiv_output_high_part = 1;
+                state <= `S_MUL_RUNNING;
+             end
+
+             `MULDIV_MULHSU: begin
+                muldiv_output_negate = s1[63];
+                mul_a = {64'd0, pre_mul_abs_s1};
+                mul_b = s2;
+                muldiv_output_high_part = 1;
+                state <= `S_MUL_RUNNING;
+             end
+
+             `MULDIV_MULHU: begin
+                mul_a = {64'd0, s1};
+                mul_b = s2;
+                muldiv_output_high_part = 1;
+                state <= `S_MUL_RUNNING;
+             end
+
+             `MULDIV_DIV: begin
+                muldiv_output_negate = s1[63] != s2[63];
+                if (s2 == 0)
+                  // No matter s1, this will produce -1 which is the correct answer
+                  muldiv_output_negate = 0;
+                div_count = 64;
+                muldiv_p = {64'd0, pre_mul_abs_s1};
+                mul_a = {pre_mul_abs_s2, 63'd0};
+                mul_b = 0;
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_DIVU: begin
+                div_count = 64;
+                muldiv_p = {64'd0, s1};
+                mul_a = {s2, 63'd0};
+                mul_b = 0;
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_REM: begin
+                // "For REM, the sign of a nonzero result equals the sign of the dividend."
+                muldiv_output_negate = s1[63];
+                if (s2 == 0)
+                  // Preserve existing divide-by-zero behavior.
+                  muldiv_output_negate = 0;
+                div_count = 64;
+                muldiv_p = {64'd0, pre_mul_abs_s1};
+                mul_a = {pre_mul_abs_s2, 63'd0};
+                mul_b = 0;
+                muldiv_output_high_part = 1; // XXX abusing variables
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_REMU: begin
+                if (s2 == 0)
+                  // No matter s1, this will produce -1 which is the correct answer
+                  muldiv_output_negate = 0;
+                div_count = 64;
+                muldiv_p = {64'd0, s1};
+                mul_a = {s2, 63'd0};
+                mul_b = 0;
+                muldiv_output_high_part = 1; // XXX abusing variables
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_MULW: begin
+                mul_a = s1[31:0];
+                mul_b = s2[31:0];
+                muldiv_output_sext32 = 1;
+                state <= `S_MUL_RUNNING;
+             end
+
+             `MULDIV_DIVW: begin
+                muldiv_output_negate = s1[31] != s2[31];
+                if (s2 == 0)
+                  // No matter s1, this will produce -1 which is the correct answer
+                  muldiv_output_negate = 0;
+                div_count = 32;
+                muldiv_p = {96'd0, pre_mul_abs_s1w};
+                mul_a = {pre_mul_abs_s2w, 31'd0};
+                mul_b = 0;
+                muldiv_output_sext32 = 1;
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_DIVUW: begin
+                if (s2 == 0)
+                  // No matter s1, this will produce -1 which is the correct answer
+                  muldiv_output_negate = 0;
+                div_count = 32;
+                muldiv_p = {96'd0, s1[31:0]};
+                mul_a = {s2[31:0], 31'd0};
+                mul_b = 0;
+                muldiv_output_sext32 = 1;
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_REMW: begin
+                // "For REM, the sign of a nonzero result equals the sign of the dividend."
+                muldiv_output_negate = s1[31];
+                div_count = 32;
+                muldiv_p = {96'd0, pre_mul_abs_s1w};
+                mul_a = {pre_mul_abs_s2w, 31'd0};
+                mul_b = 0;
+                muldiv_output_sext32 = 1;
+                muldiv_output_high_part = 1; // XXX abusing variables
+                state <= `S_DIV_RUNNING;
+             end
+
+             `MULDIV_REMUW: begin
+                div_count = 32;
+                muldiv_p = {96'd0, s1[31:0]};
+                mul_a = {s2[31:0], 31'd0};
+                mul_b = 0;
+                muldiv_output_sext32 = 1;
+                muldiv_output_high_part = 1; // XXX abusing variables
+                state <= `S_DIV_RUNNING;
+             end
+
+             default: begin
+                cause = `TRAP_ILLEGAL_INSTRUCTION;
+                tval = insn;
+                state <= `S_EXCEPTION;
+             end
+           endcase
+        end
+
         `S_MUL_RUNNING: begin
            if (mul_b != 0) begin
               if (mul_b[0])
@@ -5649,11 +5793,18 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_CHECK: begin
+           tlb_latched_4k_hit <= tlb_4k_hit;
+           tlb_latched_2m_hit <= tlb_2m_hit;
            if (tlb_4k_hit) begin
               tlb_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
-              state <= `S_TLB_HIT;
            end else if (tlb_2m_hit) begin
               tlb_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
+           end
+           state <= `S_TLB_DECIDE;
+        end
+
+        `S_TLB_DECIDE: begin
+           if (tlb_latched_4k_hit || tlb_latched_2m_hit) begin
               state <= `S_TLB_HIT;
            end else begin
               state <= `S_PTW_START;
@@ -6092,6 +6243,9 @@ module smolrv64(input wire        clock,
          just_trapped     <= 0;
          just_xret        <= 0;
          fetch_buf_valid  <= 0;
+         fetch_buf_latched_hit <= 0;
+         fetch_buf_latched_insn <= 0;
+         muldiv_start_op <= `MULDIV_MUL;
          uart_tx_head     <= 0;
          uart_tx_tail     <= 0;
          uart_thre_pending <= 0;
@@ -6114,12 +6268,14 @@ module smolrv64(input wire        clock,
          tlb_2m_rd_idx     <= 0;
          tlb_4k_wr_idx     <= 0;
          tlb_2m_wr_idx     <= 0;
-         tlb_4k_wr_en      <= 0;
-         tlb_2m_wr_en      <= 0;
-         tlb_4k_wr_data    <= 0;
-         tlb_2m_wr_data    <= 0;
-         tlb_hit_pa        <= 0;
-         hpm_tlb_insert_4k_pulse <= 0;
+        tlb_4k_wr_en      <= 0;
+        tlb_2m_wr_en      <= 0;
+        tlb_4k_wr_data    <= 0;
+        tlb_2m_wr_data    <= 0;
+        tlb_hit_pa        <= 0;
+        tlb_latched_4k_hit <= 0;
+        tlb_latched_2m_hit <= 0;
+        hpm_tlb_insert_4k_pulse <= 0;
          hpm_tlb_insert_2m_pulse <= 0;
          hpm_tlb_evict_4k_pulse <= 0;
          hpm_tlb_evict_2m_pulse <= 0;
