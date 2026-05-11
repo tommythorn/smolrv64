@@ -123,10 +123,15 @@ module axi_two_master_arbiter(
    reg write_owner;
    reg read_active;
    reg read_owner;
+   reg write_prefer_s1;
+   reg read_prefer_s1;
 
    wire s0_write_req = s0_axi_awvalid | s0_axi_wvalid;
-   wire write_sel = write_active ? write_owner : (!s0_write_req && (s1_axi_awvalid | s1_axi_wvalid));
-   wire read_sel = read_active ? read_owner : (!s0_axi_arvalid && s1_axi_arvalid);
+   wire s1_write_req = s1_axi_awvalid | s1_axi_wvalid;
+   wire write_grant_s1 = s1_write_req && (!s0_write_req || write_prefer_s1);
+   wire read_grant_s1 = s1_axi_arvalid && (!s0_axi_arvalid || read_prefer_s1);
+   wire write_sel = write_active ? write_owner : write_grant_s1;
+   wire read_sel = read_active ? read_owner : read_grant_s1;
 
    always @(posedge clock) begin
       if (reset) begin
@@ -134,19 +139,23 @@ module axi_two_master_arbiter(
          write_owner <= 1'b0;
          read_active <= 1'b0;
          read_owner <= 1'b0;
+         write_prefer_s1 <= 1'b0;
+         read_prefer_s1 <= 1'b0;
       end else begin
-         if (!write_active && (s0_write_req || s1_axi_awvalid || s1_axi_wvalid)) begin
+         if (!write_active && (s0_write_req || s1_write_req)) begin
             write_active <= 1'b1;
-            write_owner <= write_sel;
+            write_owner <= write_grant_s1;
          end else if (m_axi_bvalid && m_axi_bready) begin
             write_active <= 1'b0;
+            write_prefer_s1 <= !write_owner;
          end
 
          if (!read_active && (s0_axi_arvalid || s1_axi_arvalid)) begin
             read_active <= 1'b1;
-            read_owner <= read_sel;
+            read_owner <= read_grant_s1;
          end else if (m_axi_rvalid && m_axi_rready && m_axi_rlast) begin
             read_active <= 1'b0;
+            read_prefer_s1 <= !read_owner;
          end
       end
    end
