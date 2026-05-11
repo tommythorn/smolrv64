@@ -427,6 +427,7 @@ module smolrv64(input wire        clock,
 `define CSR_SIE        12'h104
 `define CSR_STVEC      12'h105
 `define CSR_SCOUNTEREN 12'h106
+`define CSR_SENVCFG    12'h10a
 `define CSR_SSCRATCH   12'h140
 `define CSR_SEPC       12'h141
 `define CSR_SCAUSE     12'h142
@@ -1633,6 +1634,7 @@ module smolrv64(input wire        clock,
                csr_mtval      = 0,
                csr_mcycle     = 0,
                csr_minstret   = -1; // because we increase it in fetch
+   reg [7:0]   csr_senvcfg = 0;
    reg [63:0]  csr_mhpmcounter[0:`HPM_COUNTERS-1];
    reg [63:0]  csr_mhpmevent[0:`HPM_COUNTERS-1];
    reg [63:0]  csr_scountovf_read_val = 0;
@@ -5175,6 +5177,7 @@ module smolrv64(input wire        clock,
                 `CSR_SIE:       csr_read_val = csr_mie & 14'h2222;
                 `CSR_STVEC:     csr_read_val = csr_stvec;
                 `CSR_SCOUNTEREN:csr_read_val = csr_scounteren;
+                `CSR_SENVCFG:   csr_read_val = {56'd0, csr_senvcfg};
                 `CSR_SSCRATCH:  csr_read_val = csr_sscratch;
                 `CSR_SEPC:      csr_read_val = csr_sepc;
                 `CSR_SCAUSE:    csr_read_val = csr_scause;
@@ -5366,6 +5369,11 @@ module smolrv64(input wire        clock,
                 `CSR_SIE:       csr_mie    = csr_modify_value(csr_mie & 14'h2222, csr_arg, csr_op) & 14'h2222 | csr_mie & ~14'h2222;
                 `CSR_STVEC:     csr_stvec  = csr_modify_value(csr_stvec, csr_arg, csr_op);
                 `CSR_SCOUNTEREN:csr_scounteren = csr_modify_value(csr_scounteren, csr_arg, csr_op) & `HPM_COUNTER_MASK;
+                `CSR_SENVCFG: begin : csr_write_senvcfg
+                   reg [63:0] csr_next;
+                   csr_next = csr_modify_value({56'd0, csr_senvcfg}, csr_arg, csr_op);
+                   csr_senvcfg = csr_next[7:0] & 8'hf1;
+                end
                 `CSR_SSCRATCH:  csr_sscratch = csr_modify_value(csr_sscratch, csr_arg, csr_op);
                 `CSR_SEPC:      csr_sepc   = csr_modify_value(csr_sepc, csr_arg, csr_op) & ~1;
                 `CSR_SCAUSE:    csr_scause = csr_modify_value(csr_scause, csr_arg, csr_op);
@@ -6060,6 +6068,7 @@ module smolrv64(input wire        clock,
          csr_medeleg      <= 0;
          csr_mcounteren   <= 0;
          csr_scounteren   <= 0;
+         csr_senvcfg      <= 0;
          csr_mcountinhibit <= 0;
          csr_mcyclecfg    <= 0;
          csr_minstretcfg  <= 0;
