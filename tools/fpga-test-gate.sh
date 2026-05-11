@@ -45,9 +45,6 @@ if ! git -C "$ROOT" diff --quiet -- \
     fail_dirty
 fi
 
-log "cleaning untracked platform artifacts"
-git -C "$PLATFORM" clean -fd
-
 run_logged bit make -C "$PLATFORM" bit
 
 BIT="$PLATFORM/rk_xcku5p.runs/impl_1/rk_xcku5p.bit"

@@ -22,8 +22,11 @@ edits.
 The expected gate sequence is:
 
 1. Refuse dirty source state.
-2. Run `git clean -fd` inside `platforms/rk-xcku5p-f-v1.2`.
-3. Run `make -C platforms/rk-xcku5p-f-v1.2 bit`.
-4. Check that the bitstream exists and timing did not fail.
-5. Run `make -C platforms/rk-xcku5p-f-v1.2 program`.
-6. Run `workloads/ubuntu/ubuntu-boot.sh`.
+2. Run `make -C platforms/rk-xcku5p-f-v1.2 bit`.
+3. Check that the bitstream exists and timing did not fail.
+4. Run `make -C platforms/rk-xcku5p-f-v1.2 program`.
+5. Run `workloads/ubuntu/ubuntu-boot.sh`.
+
+Do not clean the platform build directory by default. Only run a clean when
+there is a specific stale-artifact suspicion and the user agrees that the extra
+synthesis time is warranted.
