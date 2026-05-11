@@ -69,6 +69,7 @@ module virtio_net_tx_drop(
 
    localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
    localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
+   localparam [15:0] IDLE_POLL_DELAY   = 16'hffff;
 
    reg [4:0]  state;
    reg [15:0] last_avail_idx;
@@ -78,6 +79,7 @@ module virtio_net_tx_drop(
    reg        notify_pending;
    reg [ 7:0] empty_retry_count;
    reg [15:0] retry_delay;
+   reg [15:0] poll_delay;
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -162,16 +164,28 @@ module virtio_net_tx_drop(
          notify_pending <= 1'b0;
          empty_retry_count <= 8'd0;
          retry_delay <= 16'd0;
+         poll_delay <= IDLE_POLL_DELAY;
       end else begin
          if (tx_notify)
             notify_pending <= 1'b1;
 
          case (state)
            S_IDLE: begin
-              if ((tx_notify || notify_pending) && tx_queue_configured && driver_ok) begin
-                 notify_pending <= 1'b0;
-                 empty_retry_count <= EMPTY_RETRY_COUNT;
-                 state <= S_READ_AVAIL;
+              if (tx_queue_configured && driver_ok) begin
+                 if (tx_notify || notify_pending) begin
+                    notify_pending <= 1'b0;
+                    empty_retry_count <= EMPTY_RETRY_COUNT;
+                    poll_delay <= IDLE_POLL_DELAY;
+                    state <= S_READ_AVAIL;
+                 end else if (poll_delay == 16'd0) begin
+                    empty_retry_count <= 8'd0;
+                    poll_delay <= IDLE_POLL_DELAY;
+                    state <= S_READ_AVAIL;
+                 end else begin
+                    poll_delay <= poll_delay - 16'd1;
+                 end
+              end else begin
+                 poll_delay <= IDLE_POLL_DELAY;
               end
            end
 
@@ -192,6 +206,7 @@ module virtio_net_tx_drop(
                        retry_delay <= EMPTY_RETRY_DELAY;
                        state <= S_RETRY_WAIT;
                     end else begin
+                       poll_delay <= IDLE_POLL_DELAY;
                        state <= S_IDLE;
                     end
                  end else begin
@@ -271,6 +286,7 @@ module virtio_net_tx_drop(
                  notify_pending <= 1'b0;
                  state <= S_READ_AVAIL;
               end else begin
+                 poll_delay <= IDLE_POLL_DELAY;
                  state <= S_IDLE;
               end
            end
