@@ -6,6 +6,7 @@ module virtio_net_tx_drop(
     input  wire        reset,
 
     input  wire        queue_notify_pulse,
+    input  wire [31:0] queue_notify_value,
     input  wire [31:0] tx_queue_num,
     input  wire        tx_queue_ready,
     input  wire [63:0] tx_queue_desc,
@@ -64,6 +65,10 @@ module virtio_net_tx_drop(
    localparam [4:0] S_WRITE_USED_IDX = 5'd9;
    localparam [4:0] S_WAIT_USED_IDX  = 5'd10;
    localparam [4:0] S_COMPLETE       = 5'd11;
+   localparam [4:0] S_RETRY_WAIT     = 5'd12;
+
+   localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
+   localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
 
    reg [4:0]  state;
    reg [15:0] last_avail_idx;
@@ -71,6 +76,8 @@ module virtio_net_tx_drop(
    reg [15:0] used_idx;
    reg [15:0] head_desc;
    reg        notify_pending;
+   reg [ 7:0] empty_retry_count;
+   reg [15:0] retry_delay;
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -115,7 +122,7 @@ module virtio_net_tx_drop(
                               tx_queue_desc[63:32] == 32'd0 &&
                               tx_queue_driver[63:32] == 32'd0 &&
                               tx_queue_device[63:32] == 32'd0;
-   wire tx_notify = queue_notify_pulse;
+   wire tx_notify = queue_notify_pulse && queue_notify_value == 32'd1;
    wire [15:0] next_avail_idx = last_avail_idx + 16'd1;
 
    task start_read64;
@@ -153,6 +160,8 @@ module virtio_net_tx_drop(
          used_idx <= 16'd0;
          head_desc <= 16'd0;
          notify_pending <= 1'b0;
+         empty_retry_count <= 8'd0;
+         retry_delay <= 16'd0;
       end else begin
          if (tx_notify)
             notify_pending <= 1'b1;
@@ -161,6 +170,7 @@ module virtio_net_tx_drop(
            S_IDLE: begin
               if ((tx_notify || notify_pending) && tx_queue_configured && driver_ok) begin
                  notify_pending <= 1'b0;
+                 empty_retry_count <= EMPTY_RETRY_COUNT;
                  state <= S_READ_AVAIL;
               end
            end
@@ -174,12 +184,27 @@ module virtio_net_tx_drop(
            S_WAIT_AVAIL: begin
               if (dma_rsp_valid) begin
                  avail_idx <= get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7);
-                 if (dma_rsp_error ||
-                     get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx)
+                 if (dma_rsp_error)
                     state <= S_IDLE;
-                 else
+                 else if (get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx) begin
+                    if (empty_retry_count != 8'd0) begin
+                       empty_retry_count <= empty_retry_count - 8'd1;
+                       retry_delay <= EMPTY_RETRY_DELAY;
+                       state <= S_RETRY_WAIT;
+                    end else begin
+                       state <= S_IDLE;
+                    end
+                 end else begin
                     state <= S_READ_RING;
+                 end
               end
+           end
+
+           S_RETRY_WAIT: begin
+              if (retry_delay == 16'd0)
+                 state <= S_READ_AVAIL;
+              else
+                 retry_delay <= retry_delay - 16'd1;
            end
 
            S_READ_RING: begin
