@@ -1007,6 +1007,7 @@ module smolrv64(input wire        clock,
    reg  [63:0]  fetch_req_pc = `RESET_PC;
    reg  [63:0]  fetch_req_satp = 0;
    reg  [ 1:0]  fetch_req_prv = 3;
+   reg          fetch_req_fast_ready = 0;
 
    // Registered fetch result boundary.  Kept for fallback/debug staging, while
    // the normal front-end producer paths now accept directly into decode.
@@ -2321,6 +2322,7 @@ module smolrv64(input wire        clock,
       input [ 1:0] fetch_prv;
       reg [`MEM_SIZE_LG2-4:0] fetch_bram_addr0;
       begin
+         fetch_req_fast_ready <= 0;
          if (fetch_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
             state <= `S_TLB_START_FETCH;
@@ -2355,11 +2357,26 @@ module smolrv64(input wire        clock,
          fetch_from_dram <= accept_from_dram;
          translated <= 0;
          fetch_req_valid <= 0;
+         fetch_req_fast_ready <= 0;
          fetch_res_valid <= 0;
          rf_decode_valid <= 0;
-         write_back_register = 0;
-         write_back_fp_valid = 0;
+         write_back_register <= 0;
+         write_back_fp_valid <= 0;
          state <= `S_RF;
+      end
+   endtask
+
+   task prepare_retire_fetch;
+      input [63:0] prepare_pc;
+      input [63:0] prepare_satp;
+      input [ 1:0] prepare_prv;
+      begin
+         fetch_req_valid <= 1;
+         fetch_req_pc <= prepare_pc;
+         fetch_req_satp <= prepare_satp;
+         fetch_req_prv <= prepare_prv;
+         fetch_req_fast_ready <= 1;
+         fetch_res_valid <= 0;
       end
    endtask
 
@@ -2764,10 +2781,6 @@ module smolrv64(input wire        clock,
 `endif
 
            pc <= npc;
-           fetch_req_valid <= 1;
-           fetch_req_pc    <= npc;
-           fetch_req_satp  <= csr_satp;
-           fetch_req_prv   <= prv;
            fetch_res_valid <= 0;
 
            state <= `S_FETCH_REQ;
@@ -2780,6 +2793,7 @@ module smolrv64(input wire        clock,
            cause_intr = 0;
            if (pre_intr_pending && !just_trapped && !just_xret) begin
               fetch_req_valid <= 0;
+              fetch_req_fast_ready <= 0;
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -2796,8 +2810,29 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                  tval = 0;
                  fetch_req_valid <= 0;
+                 fetch_req_fast_ready <= 0;
                  state <= `S_EXCEPTION;
+              end else if (fetch_req_fast_ready && fetch_req_valid) begin
+`ifdef SIMULATE
+                 if (fetch_buf_summary_enabled && fetch_buf_hit)
+                    fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
+`endif
+                 fetch_req_fast_ready <= 0;
+                 if (fetch_buf_hit)
+                    accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
+              end else begin
+                 prepare_retire_fetch(npc, csr_satp, prv);
               end
+           end else if (fetch_req_fast_ready && fetch_req_valid) begin
+`ifdef SIMULATE
+              if (fetch_buf_summary_enabled && fetch_buf_hit)
+                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
+`endif
+              fetch_req_fast_ready <= 0;
+              if (fetch_buf_hit)
+                 accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
+           end else begin
+              prepare_retire_fetch(npc, csr_satp, prv);
            end
         end
 
@@ -2818,6 +2853,7 @@ module smolrv64(input wire        clock,
 `endif
 
            if (!fetch_req_valid) begin
+              fetch_req_fast_ready <= 0;
               state <= `S_FETCH1;
            end else if (fetch_buf_hit) begin
               accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
@@ -4713,6 +4749,7 @@ module smolrv64(input wire        clock,
               write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
            end
+           prepare_retire_fetch(npc, csr_satp, prv);
            state <= `S_FETCH1;
         end
 
@@ -6315,6 +6352,7 @@ module smolrv64(input wire        clock,
          write_back_register <= 0;
          npc <= `RESET_PC;
          fetch_req_valid <= 0;
+         fetch_req_fast_ready <= 0;
          fetch_req_pc <= `RESET_PC;
          fetch_req_satp <= 0;
          fetch_req_prv <= 3;
