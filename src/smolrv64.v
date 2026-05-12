@@ -1011,6 +1011,8 @@ module smolrv64(input wire        clock,
    reg  [63:0]  rf_decode_pc = `RESET_PC;
    reg  [31:0]  rf_decode_insn = 0;
    reg          rf_decode_from_dram = 0;
+   wire [63:0]  rf3_pc = rf_decode_pc;
+   wire [31:0]  rf3_insn = rf_decode_insn;
 
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
@@ -2970,142 +2972,142 @@ module smolrv64(input wire        clock,
            state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
-           // insn, pc are registered FFs; s2_bram is the BRAM combinational output.
+           // rf3_insn, rf3_pc are registered FFs; s2_bram is the BRAM combinational output.
            // All assignments use <= so they register into pre_exe_op/pre_exe_b/pre_exe_sxt.
            // Immediates are computed inline (1-3 LUT from insn_reg) rather than read from
            // the imm_i/imm_u registers (which are only updated with = inside S_EXECUTE).
            begin : rf3_pre_decode
               reg [63:0] d_imm_i, d_imm_u, d_c_imm;
 
-              d_imm_i = {{52{insn[31]}},insn[31:20]};
-              d_imm_u = {{32{insn[31]}},insn[31:12],12'd0};
-              d_c_imm = {{59{insn[12]}},insn[6:2]};  // c_imm12_62
+              d_imm_i = {{52{rf3_insn[31]}},rf3_insn[31:20]};
+              d_imm_u = {{32{rf3_insn[31]}},rf3_insn[31:12],12'd0};
+              d_c_imm = {{59{rf3_insn[12]}},rf3_insn[6:2]};  // c_imm12_62
 
               // Default: harmless value (only matters for instructions reaching S_EXECUTE2)
               pre_exe_op  <= `EXOP_OPB;
               pre_exe_b   <= 64'd0;
               pre_exe_sxt <= 0;
 
-              // ---- Compressed instructions (insn[1:0] != 2'b11) ----
+              // ---- Compressed instructions (rf3_insn[1:0] != 2'b11) ----
 
               // Quadrant 0
-              if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
+              if ((rf3_insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
                  pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= {54'd0, insn[10:7], insn[12:11], insn[5], insn[6], 2'd0};
+                 pre_exe_b  <= {54'd0, rf3_insn[10:7], rf3_insn[12:11], rf3_insn[5], rf3_insn[6], 2'd0};
               end
 
               // Quadrant 1
-              else if ((insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
+              else if ((rf3_insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
                  pre_exe_op <= `EXOP_ADD;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
+              else if ((rf3_insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
                  pre_exe_op  <= `EXOP_ADD;
                  pre_exe_b   <= d_c_imm;
                  pre_exe_sxt <= 1;
               end
-              else if ((insn & 'he003) == 'h4001) begin // C.LI
+              else if ((rf3_insn & 'he003) == 'h4001) begin // C.LI
                  pre_exe_op <= `EXOP_OPB;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
+              else if ((rf3_insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
                  pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= {{55{insn[12]}}, insn[4:3], insn[5], insn[2], insn[6], 4'd0};
+                 pre_exe_b  <= {{55{rf3_insn[12]}}, rf3_insn[4:3], rf3_insn[5], rf3_insn[2], rf3_insn[6], 4'd0};
               end
-              else if ((insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
+              else if ((rf3_insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
                  pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= {{47{insn[12]}}, insn[6:2], 12'd0};
+                 pre_exe_b  <= {{47{rf3_insn[12]}}, rf3_insn[6:2], 12'd0};
               end
-              else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
+              else if ((rf3_insn & 'hec03) == 'h8001) begin // C.SRLI
                  pre_exe_op <= `EXOP_SHR;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
+              else if ((rf3_insn & 'hec03) == 'h8401) begin // C.SRAI
                  pre_exe_op <= `EXOP_SAR;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
+              else if ((rf3_insn & 'hec03) == 'h8801) begin // C.ANDI
                  pre_exe_op <= `EXOP_AND;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'hfc63) == 'h8c01) begin // C.SUB
+              else if ((rf3_insn & 'hfc63) == 'h8c01) begin // C.SUB
                  pre_exe_op <= `EXOP_SUB;
                  pre_exe_b  <= s2_bram;
               end
-              else if ((insn & 'hfc63) == 'h8c21) begin // C.XOR
+              else if ((rf3_insn & 'hfc63) == 'h8c21) begin // C.XOR
                  pre_exe_op <= `EXOP_XOR;
                  pre_exe_b  <= s2_bram;
               end
-              else if ((insn & 'hfc63) == 'h8c41) begin // C.OR
+              else if ((rf3_insn & 'hfc63) == 'h8c41) begin // C.OR
                  pre_exe_op <= `EXOP_OR;
                  pre_exe_b  <= s2_bram;
               end
-              else if ((insn & 'hfc63) == 'h8c61) begin // C.AND
+              else if ((rf3_insn & 'hfc63) == 'h8c61) begin // C.AND
                  pre_exe_op <= `EXOP_AND;
                  pre_exe_b  <= s2_bram;
               end
-              else if ((insn & 'hfc63) == 'h9c01) begin // C.SUBW
+              else if ((rf3_insn & 'hfc63) == 'h9c01) begin // C.SUBW
                  pre_exe_op  <= `EXOP_SUB;
                  pre_exe_b   <= s2_bram;
                  pre_exe_sxt <= 1;
               end
-              else if ((insn & 'hfc63) == 'h9c21) begin // C.ADDW
+              else if ((rf3_insn & 'hfc63) == 'h9c21) begin // C.ADDW
                  pre_exe_op  <= `EXOP_ADD;
                  pre_exe_b   <= s2_bram;
                  pre_exe_sxt <= 1;
               end
 
               // Quadrant 2
-              else if ((insn & 'he003) == 'h0002) begin // C.SLLI
+              else if ((rf3_insn & 'he003) == 'h0002) begin // C.SLLI
                  pre_exe_op <= `EXOP_SHL;
                  pre_exe_b  <= d_c_imm;
               end
-              else if ((insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
+              else if ((rf3_insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
                  ;
               end
-              else if ((insn & 'hf003) == 'h8002) begin // C.MV
+              else if ((rf3_insn & 'hf003) == 'h8002) begin // C.MV
                  pre_exe_op <= `EXOP_OPB;
                  pre_exe_b  <= s2_bram;
               end
-              else if ((insn & 'hf07f) == 'h9002) begin // C.JALR (link = pc+2)
+              else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR (link = rf3_pc+2)
                  pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= pc + 2;
+                 pre_exe_b  <= rf3_pc + 2;
               end
-              else if ((insn & 'hf003) == 'h9002) begin // C.ADD
+              else if ((rf3_insn & 'hf003) == 'h9002) begin // C.ADD
                  pre_exe_op <= `EXOP_ADD;
                  pre_exe_b  <= s2_bram;
               end
 
-              // ---- 32-bit instructions (insn[1:0] == 2'b11) ----
-              else if (insn[1:0] == 2'b11) begin
-                 case (insn[6:2])
+              // ---- 32-bit instructions (rf3_insn[1:0] == 2'b11) ----
+              else if (rf3_insn[1:0] == 2'b11) begin
+                 case (rf3_insn[6:2])
                     5'b01101: begin // LUI
                        pre_exe_op <= `EXOP_OPB;
                        pre_exe_b  <= d_imm_u;
                     end
                     5'b00101: begin // AUIPC
                        pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= pc + d_imm_u;
+                       pre_exe_b  <= rf3_pc + d_imm_u;
                     end
-                    5'b11011: begin // JAL (link = pc+4)
+                    5'b11011: begin // JAL (link = rf3_pc+4)
                        pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= pc + 4;
+                       pre_exe_b  <= rf3_pc + 4;
                     end
-                    5'b11001: begin // JALR (link = pc+4)
+                    5'b11001: begin // JALR (link = rf3_pc+4)
                        pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= pc + 4;
+                       pre_exe_b  <= rf3_pc + 4;
                     end
                     5'b00100: begin // OP-IMM: funct3 selects operation
                        pre_exe_b <= d_imm_i; // default; shifts override below
-                       case (insn[14:12])
+                       case (rf3_insn[14:12])
                           3'b000: pre_exe_op <= `EXOP_ADD;   // ADDI
-                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {58'd0, insn[25:20]}; end  // SLLI
+                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {58'd0, rf3_insn[25:20]}; end  // SLLI
                           3'b010: pre_exe_op <= `EXOP_LTS;   // SLTI
                           3'b011: pre_exe_op <= `EXOP_LTU;   // SLTIU
                           3'b100: pre_exe_op <= `EXOP_XOR;   // XORI
                           3'b101: begin // SRLI / SRAI
-                             pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             pre_exe_b  <= {58'd0, insn[25:20]};
+                             pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             pre_exe_b  <= {58'd0, rf3_insn[25:20]};
                           end
                           3'b110: pre_exe_op <= `EXOP_OR;    // ORI
                           3'b111: pre_exe_op <= `EXOP_AND;   // ANDI
@@ -3113,13 +3115,13 @@ module smolrv64(input wire        clock,
                     end
                     5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
                        pre_exe_b <= s2_bram;
-                       case (insn[14:12])
-                          3'b000: pre_exe_op <= insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
+                       case (rf3_insn[14:12])
+                          3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
                           3'b001: pre_exe_op <= `EXOP_SHL;  // SLL
                           3'b010: pre_exe_op <= `EXOP_LTS;  // SLT
                           3'b011: pre_exe_op <= `EXOP_LTU;  // SLTU
                           3'b100: pre_exe_op <= `EXOP_XOR;  // XOR
-                          3'b101: pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
+                          3'b101: pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
                           3'b110: pre_exe_op <= `EXOP_OR;   // OR
                           3'b111: pre_exe_op <= `EXOP_AND;  // AND
                           // MUL/DIV (funct7[0]=1): exe_add unused; default EXOP_OPB is fine
@@ -3127,12 +3129,12 @@ module smolrv64(input wire        clock,
                     end
                     5'b00110: begin // OP-IMM-32 (W-type immediates)
                        pre_exe_sxt <= 1;
-                       case (insn[14:12])
+                       case (rf3_insn[14:12])
                           3'b000: begin pre_exe_op <= `EXOP_ADD; pre_exe_b <= d_imm_i; end  // ADDIW
-                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {59'd0, insn[24:20]}; end  // SLLIW
+                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {59'd0, rf3_insn[24:20]}; end  // SLLIW
                           3'b101: begin  // SRLIW / SRAIW
-                             pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             pre_exe_b  <= {59'd0, insn[24:20]};
+                             pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             pre_exe_b  <= {59'd0, rf3_insn[24:20]};
                           end
                           default: ; // other funct3: no exe_add
                        endcase
@@ -3140,10 +3142,10 @@ module smolrv64(input wire        clock,
                     5'b01110: begin // OP-REG-32 (W-type register)
                        pre_exe_sxt <= 1;
                        pre_exe_b <= s2_bram;
-                       case (insn[14:12])
-                          3'b000: pre_exe_op <= insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
+                       case (rf3_insn[14:12])
+                          3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
                           3'b001: pre_exe_op <= `EXOP_SHL;  // SLLW
-                          3'b101: pre_exe_op <= insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
+                          3'b101: pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
                           // MUL/DIV-W: exe_add unused
                           default: ;
                        endcase
@@ -3159,74 +3161,74 @@ module smolrv64(input wire        clock,
            begin : rf3_npc_decode
               reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
 
-              d_imm_i = {{52{insn[31]}}, insn[31:20]};
-              d_imm_j = {{44{insn[31]}}, insn[19:12], insn[20], insn[30:21], 1'b0};
-              d_imm_b = {{52{insn[31]}}, insn[7], insn[30:25], insn[11:8], 1'b0};
-              d_c_j   = {{53{insn[12]}}, insn[8], insn[10:9], insn[6], insn[7],
-                         insn[2], insn[11], insn[5:3], 1'b0};
-              d_c_b   = {{56{insn[12]}}, insn[6:5], insn[2], insn[11:10],
-                         insn[4:3], 1'b0};
+              d_imm_i = {{52{rf3_insn[31]}}, rf3_insn[31:20]};
+              d_imm_j = {{44{rf3_insn[31]}}, rf3_insn[19:12], rf3_insn[20], rf3_insn[30:21], 1'b0};
+              d_imm_b = {{52{rf3_insn[31]}}, rf3_insn[7], rf3_insn[30:25], rf3_insn[11:8], 1'b0};
+              d_c_j   = {{53{rf3_insn[12]}}, rf3_insn[8], rf3_insn[10:9], rf3_insn[6], rf3_insn[7],
+                         rf3_insn[2], rf3_insn[11], rf3_insn[5:3], 1'b0};
+              d_c_b   = {{56{rf3_insn[12]}}, rf3_insn[6:5], rf3_insn[2], rf3_insn[11:10],
+                         rf3_insn[4:3], 1'b0};
 
-              pre_npc <= pc + (insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+              pre_npc <= rf3_pc + (rf3_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
               pre_jalr_target <= (s1_bram + d_imm_i) & ~64'd1;
-              pre_branch_target <= pc + d_imm_b;
+              pre_branch_target <= rf3_pc + d_imm_b;
               pre_branch_taken <= 0;
 
-              if ((insn & 'he003) == 'ha001) begin // C.J
-                 pre_npc <= pc + d_c_j;
-              end else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
-                 pre_branch_target <= pc + d_c_b;
+              if ((rf3_insn & 'he003) == 'ha001) begin // C.J
+                 pre_npc <= rf3_pc + d_c_j;
+              end else if ((rf3_insn & 'he003) == 'hc001) begin // C.BEQZ
+                 pre_branch_target <= rf3_pc + d_c_b;
                  pre_branch_taken <= s1_bram == 0;
-              end else if ((insn & 'he003) == 'he001) begin // C.BNEZ
-                 pre_branch_target <= pc + d_c_b;
+              end else if ((rf3_insn & 'he003) == 'he001) begin // C.BNEZ
+                 pre_branch_target <= rf3_pc + d_c_b;
                  pre_branch_taken <= s1_bram != 0;
-              end else if ((insn & 'hf07f) == 'h8002) begin // C.JR
+              end else if ((rf3_insn & 'hf07f) == 'h8002) begin // C.JR
                  pre_jalr_target <= s1_bram & ~64'd1;
-              end else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
+              end else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR
                  pre_jalr_target <= s1_bram & ~64'd1;
-              end else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
-                 pre_npc <= pc + d_imm_j;
-              end else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
+              end else if ((rf3_insn & 'h0000007f) == 'h0000006f) begin // JAL
+                 pre_npc <= rf3_pc + d_imm_j;
+              end else if ((rf3_insn & 'h0000707f) == 'h00000067) begin // JALR
                  pre_jalr_target <= (s1_bram + d_imm_i) & ~64'd1;
-              end else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
+              end else if ((rf3_insn & 'h0000707f) == 'h00000063) begin // BEQ
                  pre_branch_taken <= s1_bram == s2_bram;
-              end else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
+              end else if ((rf3_insn & 'h0000707f) == 'h00001063) begin // BNE
                  pre_branch_taken <= s1_bram != s2_bram;
-              end else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
+              end else if ((rf3_insn & 'h0000707f) == 'h00004063) begin // BLT
                  pre_branch_taken <= $signed(s1_bram) < $signed(s2_bram);
-              end else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
+              end else if ((rf3_insn & 'h0000707f) == 'h00005063) begin // BGE
                  pre_branch_taken <= $signed(s1_bram) >= $signed(s2_bram);
-              end else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
+              end else if ((rf3_insn & 'h0000707f) == 'h00006063) begin // BLTU
                  pre_branch_taken <= s1_bram < s2_bram;
-              end else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
+              end else if ((rf3_insn & 'h0000707f) == 'h00007063) begin // BGEU
                  pre_branch_taken <= s1_bram >= s2_bram;
               end
            end // rf3_npc_decode
 
 `ifdef USE_CVFPU
-           pre_fp_rnd_mode <= insn[14:12] == 3'b111 ? frm : insn[14:12];
-           pre_fp_rmode_ok <= !(insn[14:12] == 3'b101 || insn[14:12] == 3'b110 ||
-                                (insn[14:12] == 3'b111 && frm > 3'b100));
+           pre_fp_rnd_mode <= rf3_insn[14:12] == 3'b111 ? frm : rf3_insn[14:12];
+           pre_fp_rmode_ok <= !(rf3_insn[14:12] == 3'b101 || rf3_insn[14:12] == 3'b110 ||
+                                (rf3_insn[14:12] == 3'b111 && frm > 3'b100));
 `endif
 
            // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
            // early so S_EXECUTE can share a single s1+offset adder instead of
            // selecting between 22 parallel adders. Immediates are computed
-           // inline from insn bits (the imm_*/c_uimm* registers are written
+           // inline from rf3_insn bits (the imm_*/c_uimm* registers are written
            // in S_EXECUTE and therefore stale here).
            begin : rf3_mem_decode
               reg [63:0] d_imm_i_s, d_imm_s_s;
               reg [63:0] d_clw_off, d_cld_off, d_clwsp_off, d_cldsp_off,
                          d_cswsp_off, d_csdsp_off;
 
-              d_imm_i_s    = {{52{insn[31]}}, insn[31:20]};
-              d_imm_s_s    = {{52{insn[31]}}, insn[31:25], insn[11:7]};
-              d_clw_off    = {57'd0, insn[5],    insn[12:10], insn[6],     2'd0};
-              d_cld_off    = {56'd0, insn[6:5],  insn[12:10],              3'd0};
-              d_clwsp_off  = {56'd0, insn[3:2],  insn[12],    insn[6:4],   2'd0};
-              d_cldsp_off  = {55'd0, insn[4:2],  insn[12],    insn[6:5],   3'd0};
-              d_cswsp_off  = {56'd0, insn[8:7],  insn[12:9],               2'd0};
-              d_csdsp_off  = {55'd0, insn[9:7],  insn[12:10],              3'd0};
+              d_imm_i_s    = {{52{rf3_insn[31]}}, rf3_insn[31:20]};
+              d_imm_s_s    = {{52{rf3_insn[31]}}, rf3_insn[31:25], rf3_insn[11:7]};
+              d_clw_off    = {57'd0, rf3_insn[5],    rf3_insn[12:10], rf3_insn[6],     2'd0};
+              d_cld_off    = {56'd0, rf3_insn[6:5],  rf3_insn[12:10],              3'd0};
+              d_clwsp_off  = {56'd0, rf3_insn[3:2],  rf3_insn[12],    rf3_insn[6:4],   2'd0};
+              d_cldsp_off  = {55'd0, rf3_insn[4:2],  rf3_insn[12],    rf3_insn[6:5],   3'd0};
+              d_cswsp_off  = {56'd0, rf3_insn[8:7],  rf3_insn[12:9],               2'd0};
+              d_csdsp_off  = {55'd0, rf3_insn[9:7],  rf3_insn[12:10],              3'd0};
 
               // Defaults: non-mem instruction
               pre_mem_op        <= `MEMOP_NONE;
@@ -3237,145 +3239,145 @@ module smolrv64(input wire        clock,
               pre_mem_fp        <= 1'b0;
 
               // Compressed loads / stores (quadrants 0 & 2)
-              if ((insn & 'he003) == 'h4000) begin // C.LW
+              if ((rf3_insn & 'he003) == 'h4000) begin // C.LW
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_clw_off;
                  pre_load_size_lg2 <= 3'b110; // W, sign-extend
-                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
               end
-              else if ((insn & 'he003) == 'h2000) begin // C.FLD
+              else if ((rf3_insn & 'he003) == 'h2000) begin // C.FLD
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cld_off;
                  pre_load_size_lg2 <= 3'b011; // D
-                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
                  pre_mem_fp        <= 1'b1;
               end
-              else if ((insn & 'he003) == 'h6000) begin // C.LD
+              else if ((rf3_insn & 'he003) == 'h6000) begin // C.LD
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cld_off;
                  pre_load_size_lg2 <= 3'b011; // D
-                 pre_mem_wb_reg    <= {2'b01, insn[4:2]};
+                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
               end
-              else if ((insn & 'he003) == 'hc000) begin // C.SW
+              else if ((rf3_insn & 'he003) == 'hc000) begin // C.SW
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_clw_off;
                  pre_mem_wr_mask <= 8'h0f;
               end
-              else if ((insn & 'he003) == 'ha000) begin // C.FSD
+              else if ((rf3_insn & 'he003) == 'ha000) begin // C.FSD
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_cld_off;
                  pre_mem_wr_mask <= 8'hff;
                  pre_mem_fp      <= 1'b1;
               end
-              else if ((insn & 'he003) == 'he000) begin // C.SD
+              else if ((rf3_insn & 'he003) == 'he000) begin // C.SD
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_cld_off;
                  pre_mem_wr_mask <= 8'hff;
               end
-              else if ((insn & 'he003) == 'h4002) begin // C.LWSP
+              else if ((rf3_insn & 'he003) == 'h4002) begin // C.LWSP
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_clwsp_off;
                  pre_load_size_lg2 <= 3'b110;
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
               end
-              else if ((insn & 'he003) == 'h2002) begin // C.FLDSP
+              else if ((rf3_insn & 'he003) == 'h2002) begin // C.FLDSP
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cldsp_off;
                  pre_load_size_lg2 <= 3'b011;
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
                  pre_mem_fp        <= 1'b1;
               end
-              else if ((insn & 'he003) == 'h6002) begin // C.LDSP
+              else if ((rf3_insn & 'he003) == 'h6002) begin // C.LDSP
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_cldsp_off;
                  pre_load_size_lg2 <= 3'b011;
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
               end
-              else if ((insn & 'he003) == 'hc002) begin // C.SWSP
+              else if ((rf3_insn & 'he003) == 'hc002) begin // C.SWSP
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_cswsp_off;
                  pre_mem_wr_mask <= 8'h0f;
               end
-              else if ((insn & 'he003) == 'ha002) begin // C.FSDSP
+              else if ((rf3_insn & 'he003) == 'ha002) begin // C.FSDSP
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_csdsp_off;
                  pre_mem_wr_mask <= 8'hff;
                  pre_mem_fp      <= 1'b1;
               end
-              else if ((insn & 'he003) == 'he002) begin // C.SDSP
+              else if ((rf3_insn & 'he003) == 'he002) begin // C.SDSP
                  pre_mem_op      <= `MEMOP_STORE;
                  pre_mem_offset  <= d_csdsp_off;
                  pre_mem_wr_mask <= 8'hff;
               end
 
               // Uncompressed loads / stores / atomics
-              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b00000) begin // LOAD
+              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00000) begin // LOAD
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_imm_i_s;
-                 // funct3 = insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
+                 // funct3 = rf3_insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
                  // Current encoding: load_size_lg2 = {sxt, size[1:0]} where sxt=1 means sign-ext.
                  //   LB=0|4, LH=1|4, LW=2|4, LD=3, LBU=0, LHU=1, LWU=2.
                  // RISC-V: funct3[2]=0 is signed (B/H/W), funct3[2]=1 is unsigned (BU/HU/WU); LD has funct3=011 (size=3, no sxt).
                  // So load_size_lg2 = {~funct3[2] & (funct3[1:0] != 2'b11), funct3[1:0]}.
-                 pre_load_size_lg2 <= {~insn[14] & ~(insn[13] & insn[12]), insn[13:12]};
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_load_size_lg2 <= {~rf3_insn[14] & ~(rf3_insn[13] & rf3_insn[12]), rf3_insn[13:12]};
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
               end
-              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01000) begin // STORE
+              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01000) begin // STORE
                  pre_mem_op     <= `MEMOP_STORE;
                  pre_mem_offset <= d_imm_s_s;
                  // wr_mask = (1 << (1 << funct3[1:0])) - 1
-                 case (insn[13:12])
+                 case (rf3_insn[13:12])
                     2'b00: pre_mem_wr_mask <= 8'h01; // SB
                     2'b01: pre_mem_wr_mask <= 8'h03; // SH
                     2'b10: pre_mem_wr_mask <= 8'h0f; // SW
                     2'b11: pre_mem_wr_mask <= 8'hff; // SD
                  endcase
               end
-              else if ((insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
-                       (insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
+              else if ((rf3_insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
+                       (rf3_insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
                  pre_mem_op        <= `MEMOP_LR;
                  pre_mem_offset    <= 64'd0;
-                 pre_load_size_lg2 <= insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
               end
-              else if ((insn & 'hf800707f) == 'h1800202f ||  // SC.W
-                       (insn & 'hf800707f) == 'h1800302f) begin // SC.D
+              else if ((rf3_insn & 'hf800707f) == 'h1800202f ||  // SC.W
+                       (rf3_insn & 'hf800707f) == 'h1800302f) begin // SC.D
                  pre_mem_op      <= `MEMOP_SC;
                  pre_mem_offset  <= 64'd0;
-                 pre_mem_wr_mask <= insn[12] ? 8'hff : 8'h0f;
-                 pre_mem_wb_reg  <= insn[11:7];
+                 pre_mem_wr_mask <= rf3_insn[12] ? 8'hff : 8'h0f;
+                 pre_mem_wb_reg  <= rf3_insn[11:7];
               end
               // FP loads: FLW (funct3=010) and FLD (funct3=011); opcode 0000111
-              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b00001 &&
-                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin
+              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00001 &&
+                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
                  pre_mem_op        <= `MEMOP_LOAD;
                  pre_mem_offset    <= d_imm_i_s;
                  // FLW: 32-bit zero-extend (load_size_lg2=010), NaN-box in S_LOAD_ALIGN.
                  // FLD: 64-bit (load_size_lg2=011).
-                 pre_load_size_lg2 <= {1'b0, insn[13:12]};
-                 pre_mem_wb_reg    <= insn[11:7];
+                 pre_load_size_lg2 <= {1'b0, rf3_insn[13:12]};
+                 pre_mem_wb_reg    <= rf3_insn[11:7];
                  pre_mem_fp        <= 1'b1;
               end
               // FP stores: FSW (funct3=010) and FSD (funct3=011); opcode 0100111
-              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01001 &&
-                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin
+              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01001 &&
+                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
                  pre_mem_op        <= `MEMOP_STORE;
                  pre_mem_offset    <= d_imm_s_s;
-                 pre_mem_wr_mask   <= insn[12] ? 8'hff : 8'h0f;
+                 pre_mem_wr_mask   <= rf3_insn[12] ? 8'hff : 8'h0f;
                  pre_mem_fp        <= 1'b1;
               end
-              else if (insn[1:0] == 2'b11 && insn[6:2] == 5'b01011 &&
-                       (insn[14:12] == 3'b010 || insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
+              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01011 &&
+                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
                  // funct5 must be one of the 9 defined AMO variants; otherwise
-                 // leave pre_mem_op = MEMOP_NONE so S_EXECUTE traps illegal-insn.
+                 // leave pre_mem_op = MEMOP_NONE so S_EXECUTE traps illegal instruction.
                  // (LR/SC are funct5 00010/00011, already matched above.)
-                 case (insn[31:27])
+                 case (rf3_insn[31:27])
                     5'b00000, 5'b00001, 5'b00100, 5'b01000, 5'b01100,
                     5'b10000, 5'b10100, 5'b11000, 5'b11100: begin
                        pre_mem_op        <= `MEMOP_AMO;
                        pre_mem_offset    <= 64'd0;
-                       pre_load_size_lg2 <= insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
-                       pre_mem_wb_reg    <= insn[11:7];
+                       pre_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
+                       pre_mem_wb_reg    <= rf3_insn[11:7];
                     end
                     default: ; // illegal AMO funct5: falls through
                  endcase
