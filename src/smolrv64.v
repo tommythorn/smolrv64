@@ -594,8 +594,8 @@ module smolrv64(input wire        clock,
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
 `define S_FETCH2_DRAM          45  // latch instruction from DRAM fetch without fetch-source mux
-`define S_FETCH_BUF_CHECK      46  // register fetch-buffer hit decision
-`define S_FETCH_BUF_USE        47  // consume registered fetch-buffer hit or launch miss path
+`define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
+`define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
@@ -2804,12 +2804,14 @@ module smolrv64(input wire        clock,
         `S_FETCH_REQ: begin
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
-              if (!fetch_buf_context_hit) begin
+              if (fetch_buf_hit) begin
+                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
+              end else begin
                  fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
                  if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
                     $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
                              $time,
-                             fetch_buf_stat_hits,
+                             fetch_buf_stat_hits + (fetch_buf_hit ? 64'd1 : 64'd0),
                              fetch_buf_stat_misses + 64'd1);
               end
            end
@@ -2817,8 +2819,8 @@ module smolrv64(input wire        clock,
 
            if (!fetch_req_valid) begin
               state <= `S_FETCH1;
-           end else if (fetch_buf_context_hit) begin
-              state <= `S_FETCH_BUF_CHECK;
+           end else if (fetch_buf_hit) begin
+              accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
            end else begin
               start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
            end
