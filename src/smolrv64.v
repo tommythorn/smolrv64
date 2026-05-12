@@ -868,6 +868,7 @@ module smolrv64(input wire        clock,
    // Execute request boundary. S_RF3 asserts this after registering operands
    // and predecode outputs; S_EXECUTE clears it when accepted.
    reg         execute_req_valid = 0;
+   reg         execute_res_valid = 0;
 
    // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
    // FP bit-ops set pre_mem_fp=0; their result is already in write_back_fp_value.
@@ -2712,6 +2713,7 @@ module smolrv64(input wire        clock,
 `endif
            just_trapped <= 0;
            just_xret <= 0;
+           execute_res_valid <= 0;
 
 `ifdef DISASS
 `include "disass.vh"
@@ -3402,6 +3404,7 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH1;
            end else begin
            execute_req_valid <= 0;
+           execute_res_valid <= 1;
            state <= `S_EXECUTE2; // Default: complete write_back_value
            prv_retire <= prv;    // snapshot pre-execution prv (MRET/SRET mutate prv below)
 
@@ -4690,7 +4693,10 @@ module smolrv64(input wire        clock,
         end
 
         `S_EXECUTE2: begin
-           write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
+           if (execute_res_valid) begin
+              write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
+              execute_res_valid <= 0;
+           end
            state <= `S_FETCH1;
         end
 
@@ -6307,6 +6313,7 @@ module smolrv64(input wire        clock,
          rf_decode_insn <= 0;
          rf_decode_from_dram <= 0;
          execute_req_valid <= 0;
+         execute_res_valid <= 0;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
          pre_branch_target <= `RESET_PC;
