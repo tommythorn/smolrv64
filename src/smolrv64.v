@@ -2362,7 +2362,49 @@ module smolrv64(input wire        clock,
          rf_decode_valid <= 0;
          write_back_register <= 0;
          write_back_fp_valid <= 0;
-         state <= `S_RF;
+         if (accept_pc[11:0] == 12'hFFE && accept_insn[1:0] == 2'b11 &&
+             csr_satp[63:60] == 4'd8 && prv != 3) begin
+            insn_half <= accept_insn[15:0];
+            state <= `S_TLB_START_FETCH_HALF;
+         end else if (accept_from_dram && accept_pc[2:1] == 2'b11) begin
+            insn_half <= accept_insn[15:0];
+            if (dram_latched_next_valid) begin
+               dram_latched <= dram_latched_next;
+               state <= `S_FETCH2_HALF;
+            end else begin
+               // For translated fetches, mem_addr still holds the physical
+               // address of the current fetch chunk from the PTW result.
+               dram_addr <= (csr_satp[63:60] == 4'd8 && prv != 3)
+                            ? mem_addr[30:3] + 1
+                            : accept_pc[30:3] + 1;
+               dram_read <= 1;
+               state <= `S_DRAM_FETCH_HALF_WAIT;
+            end
+         end else begin
+            rf_decode_valid <= 1;
+            rf_decode_pc <= accept_pc;
+            rf_decode_insn <= accept_insn;
+            rf_decode_from_dram <= accept_from_dram;
+            rd = accept_insn`insn_rd;
+            case (accept_insn[1:0])
+              0: {rs1,rs2} = {{2'd1,accept_insn[9:7]}, {2'd1,accept_insn[4:2]}};
+              1: {rs1,rs2} = {accept_insn[11:7],       {2'd1,accept_insn[4:2]}};
+              2: {rs1,rs2} = {accept_insn[11:7],       accept_insn[6:2]};
+              3: {rs1,rs2} = {accept_insn`insn_rs1,    accept_insn`insn_rs2};
+            endcase
+            // The exceptions
+            if (accept_insn[1:0] == 1 && accept_insn[15])
+              rs1 = {2'd1,accept_insn[9:7]};
+            if (accept_insn[1:0] == 2 && (accept_insn[15:13] == 3'b001 || accept_insn[15:14] == 2'b01))
+              rs1 = 2; // sp
+            if (accept_insn[1:0] == 2 && 5 <= accept_insn[15:13])
+              rs1 = 2; // sp
+            if ((accept_insn & 'he003) == 0)
+              rs1 = 2; // sp
+
+            shamt = accept_insn[25:20];
+            state <= `S_RF2;
+         end
       end
    endtask
 
