@@ -27,6 +27,15 @@ LOG=${LOG:-screenlog.0}
 TIMEOUT=${TIMEOUT:-900}   # seconds per xmodem transfer
 CHAR_DELAY=${CHAR_DELAY:-0.02}
 
+if [[ "$DTB" == *.dtb ]]; then
+    DTS="${DTB%.dtb}.dts"
+    if [[ -f "$DTS" && ( ! -f "$DTB" || "$DTS" -nt "$DTB" ) ]]; then
+        command -v dtc >/dev/null || { echo "ERROR: $DTS is newer than $DTB but dtc is not installed" >&2; exit 1; }
+        echo "[ubuntu-boot] regenerating $DTB from $DTS"
+        dtc -I dts -O dtb -o "$DTB" "$DTS"
+    fi
+fi
+
 SESSION=${1:-$(screen -ls | awk '/\t[0-9]+\./ {print $1; exit}')}
 if [[ -z "${SESSION:-}" ]]; then
     echo "ERROR: no screen session found; pass one as arg" >&2
