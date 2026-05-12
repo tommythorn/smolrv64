@@ -1000,6 +1000,13 @@ module smolrv64(input wire        clock,
    reg          fetch_res_translated = 0;
    reg  [ 1:0]  fetch_res_source = `FETCH_SRC_BRAM;
 
+   // Register/decode request boundary. S_RF produces this valid bit when it
+   // has decoded rs1/rs2/rd/shamt and launched the BRAM register-file read.
+   reg          rf_decode_valid = 0;
+   reg  [63:0]  rf_decode_pc = `RESET_PC;
+   reg  [31:0]  rf_decode_insn = 0;
+   reg          rf_decode_from_dram = 0;
+
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
    // 64-byte line as eight 64-bit beats from the AXI backing path.
@@ -2868,6 +2875,7 @@ module smolrv64(input wire        clock,
               translated <= 0;
               fetch_req_valid <= 0;
               fetch_res_valid <= 0;
+              rf_decode_valid <= 0;
               state <= `S_RF;
            end else begin
               state <= `S_FETCH1;
@@ -2881,6 +2889,7 @@ module smolrv64(input wire        clock,
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
                csr_satp[63:60] == 4'd8 && prv != 3) begin
               insn_half <= insn[15:0];
+              rf_decode_valid <= 0;
               state <= `S_TLB_START_FETCH_HALF;
            // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
            // instruction starts in the last halfword of the current chunk. Even for a
@@ -2890,6 +2899,7 @@ module smolrv64(input wire        clock,
               insn_half       <= insn[15:0];
               if (dram_latched_next_valid) begin
                  dram_latched <= dram_latched_next;
+                 rf_decode_valid <= 0;
                  state        <= `S_FETCH2_HALF;
               end else begin
                  // For translated fetches, mem_addr still holds the physical
@@ -2898,9 +2908,14 @@ module smolrv64(input wire        clock,
                               ? mem_addr[30:3] + 1
                               : pc[30:3] + 1;
                  dram_read       <= 1;
+                 rf_decode_valid <= 0;
                  state           <= `S_DRAM_FETCH_HALF_WAIT;
               end
            end else begin
+              rf_decode_valid <= 1;
+              rf_decode_pc <= pc;
+              rf_decode_insn <= insn;
+              rf_decode_from_dram <= fetch_from_dram;
               rd = insn`insn_rd;
               case (insn[1:0])
                 0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
@@ -2927,7 +2942,7 @@ module smolrv64(input wire        clock,
 
         `S_RF2: begin
            // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output settles in S_RF3.
-           state <= `S_RF3;
+           state <= rf_decode_valid ? `S_RF3 : `S_FETCH1;
         end
 
         `S_RF3: begin
@@ -2944,6 +2959,7 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s2  <= s2_bram[63] ? -s2_bram : s2_bram;
            pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
            pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
+           rf_decode_valid <= 0;
            state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
@@ -6070,6 +6086,10 @@ module smolrv64(input wire        clock,
            shamt = insn[25:20];
 
            write_back_register = 0;
+           rf_decode_valid <= 1;
+           rf_decode_pc <= pc;
+           rf_decode_insn <= insn;
+           rf_decode_from_dram <= fetch_from_dram;
            state <= `S_RF2;  // rs1/rs2 already decoded here; skip S_RF
         end
 
@@ -6272,6 +6292,10 @@ module smolrv64(input wire        clock,
          fetch_res_from_dram <= 0;
          fetch_res_translated <= 0;
          fetch_res_source <= `FETCH_SRC_BRAM;
+         rf_decode_valid <= 0;
+         rf_decode_pc <= `RESET_PC;
+         rf_decode_insn <= 0;
+         rf_decode_from_dram <= 0;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
          pre_branch_target <= `RESET_PC;
