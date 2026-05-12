@@ -6277,6 +6277,7 @@ module smolrv64(input wire        clock,
            if (dram_store_split) begin
               state <= `S_DRAM_STORE2;
            end else begin
+              prepare_retire_fetch(npc, csr_satp, prv);
               state <= `S_FETCH1;
            end
         end
