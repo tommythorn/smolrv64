@@ -117,6 +117,53 @@ become entangled.
 - `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
   it only after a backend can complete queue requests.
 
+## Resume Note: Stop Chasing Noncoherent Virtio
+
+As of commit `366ce99` (`Instrument virtio net TX path`), hardware testing
+proved the virtio-net TX failure is a cache coherency problem, not an interrupt
+delivery problem.
+
+Observed on the programmed board:
+
+- Ubuntu booted with virtio-net enumerated.
+- `systemd-networkd` brought `eth0` up.
+- Linux repeatedly reported:
+  `virtio_net virtio0 eth0: NETDEV WATCHDOG: transmit queue 0 timed out`.
+- The debug overlay at `0x10003f00` showed:
+  - `debug_status = 0x0F000060`
+  - `notify_count = 1`
+  - `read_avail_count = 0x100`
+  - `empty_avail_count = 0x100`
+  - `read_ring_count = 0`
+  - `complete_count = 0`
+  - `irq_count = 0`
+  - `dma_error_count = 0`
+
+Interpretation:
+
+Linux kicks TX queue 1, the RTL backend repeatedly reads the avail ring, but it
+always sees `avail.idx == 0`. The backend never reaches descriptor-ring reads,
+used-ring writes, or interrupts. That means the device DMA path is reading stale
+DDR contents while Linux's updated virtqueue state is resident in the CPU cache.
+
+Do not spend more time trying to fix this as an IRQ, queue-notify, or
+virtio-mmio register bug. The current TX-drop backend is useful only as a
+coherency reproducer and smoke test.
+
+Next direction:
+
+1. Build a coherent DMA path before extending virtio-net or adding virtio-blk.
+2. Prefer a hardware coherent-IO path where DMA reads probe/read dirty CPU
+   cache lines and DMA writes update or invalidate resident CPU lines.
+3. A fallback is correct Zicbom/noncoherent DMA, but only if Linux's
+   `cbo.clean`, `cbo.flush`, and `cbo.inval` paths are verified to make
+   virtqueue updates visible before device DMA.
+4. Keep the debug overlay until coherent DMA is working; it gives a cheap
+   pass/fail signal:
+   `read_ring_count` and `complete_count` must advance after `notify_count`.
+5. Once coherent DMA is available, retest the same bit-level scenario before
+   adding the real Ethernet MAC/PHY data path.
+
 ## Proposed Address Map
 
 Keep the existing device addresses stable:

@@ -125,6 +125,54 @@ The remaining cache work is substantial. This list is not ordered by priority.
   byte-mask stores, replacement under write pressure, and user/kernel workloads
   that exercise high virtual addresses near Sv39 boundaries.
 
+## Coherent IO Priority
+
+Virtio-net hardware testing made DMA coherency the next required cache task.
+The current CPU cache is write-back and external device DMA reaches DDR through
+an AXI arbiter without observing dirty CPU cache lines. With Linux virtio-net,
+the TX backend was kicked but repeatedly read `avail.idx == 0` from DDR while
+Linux had already advanced the avail ring in cached memory.
+
+Do not treat coherent IO as optional cleanup. It is required before useful
+virtio-net, virtio-blk, Ethernet, or framebuffer DMA work can proceed.
+
+Preferred implementation direction:
+
+- Add an explicit coherent-DMA interface at the CPU/cache boundary rather than
+  making each device know cache internals.
+- For DMA reads:
+  - check whether the requested physical 64-byte line is resident in the CPU
+    cache;
+  - if clean or absent, DDR data is usable;
+  - if dirty and resident, return data from the cache line or write it back
+    before the DMA read completes.
+- For DMA writes:
+  - if the line is resident, either update the cached bytes and mark dirty or
+    invalidate the line after merging policy is settled;
+  - if absent, write DDR normally.
+- Keep the first hardware protocol blocking and conservative. One DMA request
+  at a time is fine for the first virtio-net proof.
+- Preserve the existing AXI path as the backing-memory path, but place the
+  coherency check in front of it for device masters.
+
+Fallback direction:
+
+- Correct noncoherent DMA through RISC-V Zicbom can be kept as a secondary
+  path, but it must be proven with hardware counters before relying on it.
+- If using Zicbom, verify that Linux actually executes `cbo.clean`,
+  `cbo.flush`, and `cbo.inval` for the virtqueue pages, and that each operation
+  probes the correct cache line and completes only after writeback/invalidation
+  is visible to DDR/device DMA.
+
+Minimum acceptance test:
+
+1. Boot Ubuntu with virtio-net enabled.
+2. Bring `eth0` up.
+3. Confirm no `NETDEV WATCHDOG` after the first TX traffic.
+4. Read the virtio-net debug overlay:
+   `notify_count > 0`, `read_ring_count > 0`, `complete_count > 0`,
+   `dma_error_count == 0`.
+
 ## Current Memory Map Context
 
 Current relevant regions:
