@@ -868,6 +868,10 @@ module smolrv64(input wire        clock,
    // Execute request boundary. S_RF3 asserts this after registering operands
    // and predecode outputs; S_EXECUTE clears it when accepted.
    reg         execute_req_valid = 0;
+   reg  [63:0] execute_req_pc = `RESET_PC;
+   reg  [31:0] execute_req_insn = 0;
+   wire [63:0] ex_pc = execute_req_pc;
+   wire [31:0] ex_insn = execute_req_insn;
    reg         execute_res_valid = 0;
 
    // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
@@ -2968,6 +2972,8 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
            pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
            rf_decode_valid <= 0;
+           execute_req_pc <= rf3_pc;
+           execute_req_insn <= rf3_insn;
            execute_req_valid <= 1;
            state <= `S_EXECUTE;
 
@@ -3410,28 +3416,28 @@ module smolrv64(input wire        clock,
            state <= `S_EXECUTE2; // Default: complete write_back_value
            prv_retire <= prv;    // snapshot pre-execution prv (MRET/SRET mutate prv below)
 
-           imm_i = {{52{insn[31]}},insn[31:20]};
-           imm_j = {{44{insn[31]}},insn[19:12],insn[20],insn[30:21],1'd0};
-           imm_b = {{52{insn[31]}},insn[7],insn[30:25],insn[11:8],1'd0};
-           imm_u = {{32{insn[31]}},insn[31:12],12'd0};
-           imm_s = {{52{insn[31]}},insn[31:25],insn[11:7]};
+           imm_i = {{52{ex_insn[31]}},ex_insn[31:20]};
+           imm_j = {{44{ex_insn[31]}},ex_insn[19:12],ex_insn[20],ex_insn[30:21],1'd0};
+           imm_b = {{52{ex_insn[31]}},ex_insn[7],ex_insn[30:25],ex_insn[11:8],1'd0};
+           imm_u = {{32{ex_insn[31]}},ex_insn[31:12],12'd0};
+           imm_s = {{52{ex_insn[31]}},ex_insn[31:25],ex_insn[11:7]};
 
-           c_nzuimm107_1211_5_6_x4 = {insn[10:7],insn[12:11],insn[5],insn[6],2'd0};
-           c_uimm5_1210_6_x4       = {insn[5],insn[12:10],insn[6],2'd0};
-           c_imm12_62              = {{59{insn[12]}},insn[6:2]};
-           c_imm12_43_5_2_6_x16    = {{55{insn[12]}},insn[4:3],insn[5],insn[2],insn[6],4'd0};
+           c_nzuimm107_1211_5_6_x4 = {ex_insn[10:7],ex_insn[12:11],ex_insn[5],ex_insn[6],2'd0};
+           c_uimm5_1210_6_x4       = {ex_insn[5],ex_insn[12:10],ex_insn[6],2'd0};
+           c_imm12_62              = {{59{ex_insn[12]}},ex_insn[6:2]};
+           c_imm12_43_5_2_6_x16    = {{55{ex_insn[12]}},ex_insn[4:3],ex_insn[5],ex_insn[2],ex_insn[6],4'd0};
            c_imm12_8_109_6_7_2_11_53_x2
-                                   = {{53{insn[12]}},insn[8],insn[10:9],insn[6],insn[7],insn[2],insn[11],insn[5:3],
+                                   = {{53{ex_insn[12]}},ex_insn[8],ex_insn[10:9],ex_insn[6],ex_insn[7],ex_insn[2],ex_insn[11],ex_insn[5:3],
                                       1'd0};
-           c_imm12_65_2_1110_43_x2 = {{56{insn[12]}},insn[6:5],insn[2],insn[11:10],insn[4:3],1'd0};
-           c_uimm42_12_65_x8       = {insn[4:2],insn[12],insn[6:5],3'd0};
-           c_uimm32_12_64_x4       = {insn[3:2],insn[12],insn[6:4],2'd0};
-           c_uimm97_1210_x8        = {insn[9:7],insn[12:10],3'd0};
-           c_uimm87_129_x4         = {insn[8:7],insn[12:9],2'd0};
+           c_imm12_65_2_1110_43_x2 = {{56{ex_insn[12]}},ex_insn[6:5],ex_insn[2],ex_insn[11:10],ex_insn[4:3],1'd0};
+           c_uimm42_12_65_x8       = {ex_insn[4:2],ex_insn[12],ex_insn[6:5],3'd0};
+           c_uimm32_12_64_x4       = {ex_insn[3:2],ex_insn[12],ex_insn[6:4],2'd0};
+           c_uimm97_1210_x8        = {ex_insn[9:7],ex_insn[12:10],3'd0};
+           c_uimm87_129_x4         = {ex_insn[8:7],ex_insn[12:9],2'd0};
 
-           c_uimm65_1210_x8        = {insn[6:5],insn[12:10],3'd0};
+           c_uimm65_1210_x8        = {ex_insn[6:5],ex_insn[12:10],3'd0};
 
-           csrno                   = insn[31:20];
+           csrno                   = ex_insn[31:20];
 
            npc = pre_npc;
 
@@ -3452,7 +3458,7 @@ module smolrv64(input wire        clock,
            if (pre_mem_op != `MEMOP_NONE) begin
               if (pre_mem_fp && fs == 0) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
               if (pre_mem_fp) fs = 3;
@@ -3523,12 +3529,12 @@ module smolrv64(input wire        clock,
            end
 
            // Quadrant 0
-           else if ((insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
+           else if ((ex_insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
               write_back_register = rs2;
-              if ((insn & 'hffff) == 0) begin
+              if ((ex_insn & 'hffff) == 0) begin
                  write_back_register = 0;
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end
            end
@@ -3536,229 +3542,229 @@ module smolrv64(input wire        clock,
            // Compressed integer/FP loads and stores are handled by the shared mem block above.
 
               // Quadrant 1
-           else if (insn == 1) begin // C.NOP
+           else if (ex_insn == 1) begin // C.NOP
              // NOP
            end
 
-           else if ((insn & 'he003) == 'h0001) begin // C.ADDI
+           else if ((ex_insn & 'he003) == 'h0001) begin // C.ADDI
               write_back_register = rs1;
            end
 
-           else if ((insn & 'he003) == 'h2001) begin // C.ADDIW
+           else if ((ex_insn & 'he003) == 'h2001) begin // C.ADDIW
               write_back_register = rs1;
            end
 
-           else if ((insn & 'he003) == 'h4001) begin // C.LI
-              write_back_register = insn[11:7];
+           else if ((ex_insn & 'he003) == 'h4001) begin // C.LI
+              write_back_register = ex_insn[11:7];
            end
 
-           else if ((insn & 'hef83) == 'h6101) begin // C.ADDI16SP
+           else if ((ex_insn & 'hef83) == 'h6101) begin // C.ADDI16SP
               write_back_register = rs1;
            end
 
-           else if ((insn & 'he003) == 'h6001) begin // C.LUI
+           else if ((ex_insn & 'he003) == 'h6001) begin // C.LUI
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hec03) == 'h8001) begin // C.SRLI
+           else if ((ex_insn & 'hec03) == 'h8001) begin // C.SRLI
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hec03) == 'h8401) begin // C.SRAI
+           else if ((ex_insn & 'hec03) == 'h8401) begin // C.SRAI
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hec03) == 'h8801) begin // C.ANDI
+           else if ((ex_insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h8c01) begin // C.SUB
+           else if ((ex_insn & 'hfc63) == 'h8c01) begin // C.SUB
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h8c21) begin // C.XOR
+           else if ((ex_insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h8c41) begin // C.OR
+           else if ((ex_insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h8c61) begin // C.AND
+           else if ((ex_insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h9c01) begin // C.SUBW
+           else if ((ex_insn & 'hfc63) == 'h9c01) begin // C.SUBW
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hfc63) == 'h9c21) begin // C.ADDW
+           else if ((ex_insn & 'hfc63) == 'h9c21) begin // C.ADDW
               write_back_register = rs1;
            end
 
-           else if ((insn & 'he003) == 'ha001) begin // C.J
+           else if ((ex_insn & 'he003) == 'ha001) begin // C.J
            end
 
-           else if ((insn & 'he003) == 'hc001) begin // C.BEQZ
+           else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'he003) == 'he001) begin // C.BNEZ
+           else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
 
               // Quadrant 2
-           else if ((insn & 'he003) == 'h0002) begin // C.SLLI
+           else if ((ex_insn & 'he003) == 'h0002) begin // C.SLLI
               write_back_register = rs1;
            end
 
            // C.LWSP / C.LDSP / C.FLDSP handled by shared mem block above.
 
-           else if ((insn & 'hf07f) == 'h8002) begin // C.JR
+           else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
               npc = pre_jalr_target;
            end
 
-           else if ((insn & 'hf003) == 'h8002) begin // C.MV
+           else if ((ex_insn & 'hf003) == 'h8002) begin // C.MV
               write_back_register = rs1;
            end
 
-           else if ((insn & 'hffff) == 'h9002) begin // C.EBREAK
+           else if ((ex_insn & 'hffff) == 'h9002) begin // C.EBREAK
               cause = `TRAP_BREAKPOINT;
               tval = 0;
               state <= `S_EXCEPTION;
            end
 
-           else if ((insn & 'hf07f) == 'h9002) begin // C.JALR
+           else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
               npc = pre_jalr_target;
            end
 
-           else if ((insn & 'hf003) == 'h9002) begin // C.ADD
+           else if ((ex_insn & 'hf003) == 'h9002) begin // C.ADD
               write_back_register = rs1;
            end
 
            // C.SWSP / C.SDSP / C.FSDSP handled by shared mem block above.
 
            // Quadrant 3, uncompressed
-           else if ((insn & 'h0000007f) == 'h00000037) begin // LUI
+           else if ((ex_insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000007f) == 'h00000017) begin // AUIPC
+           else if ((ex_insn & 'h0000007f) == 'h00000017) begin // AUIPC
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000007f) == 'h0000006f) begin // JAL
+           else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00000067) begin // JALR
+           else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = rd;
               npc = pre_jalr_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00000063) begin // BEQ
+           else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00001063) begin // BNE
+           else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00004063) begin // BLT
+           else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00005063) begin // BGE
+           else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00006063) begin // BLTU
+           else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
-           else if ((insn & 'h0000707f) == 'h00007063) begin // BGEU
+           else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
               if (pre_branch_taken) npc = pre_branch_target;
            end
 
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
 
-           else if ((insn & 'h0000707f) == 'h00000013) begin // ADDI
+           else if ((ex_insn & 'h0000707f) == 'h00000013) begin // ADDI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00002013) begin // SLTI
+           else if ((ex_insn & 'h0000707f) == 'h00002013) begin // SLTI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00003013) begin // SLTIU
+           else if ((ex_insn & 'h0000707f) == 'h00003013) begin // SLTIU
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00004013) begin // XORI
+           else if ((ex_insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00006013) begin // ORI
+           else if ((ex_insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h00007013) begin // ANDI
+           else if ((ex_insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00000033) begin // ADD
+           else if ((ex_insn & 'hfe00707f) == 'h00000033) begin // ADD
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h40000033) begin // SUB
+           else if ((ex_insn & 'hfe00707f) == 'h40000033) begin // SUB
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00001033) begin // SLL
+           else if ((ex_insn & 'hfe00707f) == 'h00001033) begin // SLL
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00002033) begin // SLT
+           else if ((ex_insn & 'hfe00707f) == 'h00002033) begin // SLT
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00003033) begin // SLTU
+           else if ((ex_insn & 'hfe00707f) == 'h00003033) begin // SLTU
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00004033) begin // XOR
+           else if ((ex_insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00005033) begin // SRL
+           else if ((ex_insn & 'hfe00707f) == 'h00005033) begin // SRL
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h40005033) begin // SRA
+           else if ((ex_insn & 'hfe00707f) == 'h40005033) begin // SRA
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00006033) begin // OR
+           else if ((ex_insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h00007033) begin // AND
+           else if ((ex_insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = rd;
            end
 
-           else if ((insn & 'hf000707f) == 'h0000000f) begin // FENCE
+           else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
               // Nothing to do here
            end
 
-           else if ((insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
+           else if ((ex_insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
               // Nothing to do here
            end
 
-           else if ((insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
-                    (insn & 'hfff0707f) == 'h0010200f || // CBO.CLEAN
-                    (insn & 'hfff0707f) == 'h0020200f) begin // CBO.FLUSH
+           else if ((ex_insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
+                    (ex_insn & 'hfff0707f) == 'h0010200f || // CBO.CLEAN
+                    (ex_insn & 'hfff0707f) == 'h0020200f) begin // CBO.FLUSH
               mem_addr = s1;
               translated <= 0;
               if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3)
@@ -3767,82 +3773,82 @@ module smolrv64(input wire        clock,
                  state <= `S_CBO_EXEC;
            end
 
-           else if ((insn & 'hffffffff) == 'h00000073) begin // ECALL
+           else if ((ex_insn & 'hffffffff) == 'h00000073) begin // ECALL
               cause = `TRAP_ENVIRONMENT_CALL_FROM_U_MODE + prv;
               tval = 0;
               state <= `S_EXCEPTION;
 `ifdef SIMULATE
 `ifdef VERBOSE
-              $display("ECALL: pc %x prv %d time %0t", pc, prv, $time);
+              $display("ECALL: pc %x prv %d time %0t", ex_pc, prv, $time);
 `endif
 `endif
            end
 
-           else if ((insn & 'hffffffff) == 'h00100073) begin // EBREAK
+           else if ((ex_insn & 'hffffffff) == 'h00100073) begin // EBREAK
               cause = `TRAP_BREAKPOINT;
               tval = 0;
               state <= `S_EXCEPTION;
            end
 
-           else if ((insn & 'hfc00707f) == 'h00001013) begin // SLLI
+           else if ((ex_insn & 'hfc00707f) == 'h00001013) begin // SLLI
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfc00707f) == 'h00005013) begin // SRLI
+           else if ((ex_insn & 'hfc00707f) == 'h00005013) begin // SRLI
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfc00707f) == 'h40005013) begin // SRAI
+           else if ((ex_insn & 'hfc00707f) == 'h40005013) begin // SRAI
               write_back_register = rd;
            end
 
-           else if ((insn & 'h0000707f) == 'h0000001b) begin // ADDIW
+           else if ((ex_insn & 'h0000707f) == 'h0000001b) begin // ADDIW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
+           else if ((ex_insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
+           else if ((ex_insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
+           else if ((ex_insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0000003b) begin // ADDW
+           else if ((ex_insn & 'hfe00707f) == 'h0000003b) begin // ADDW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h4000003b) begin // SUBW
+           else if ((ex_insn & 'hfe00707f) == 'h4000003b) begin // SUBW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0000103b) begin // SLLW
+           else if ((ex_insn & 'hfe00707f) == 'h0000103b) begin // SLLW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0000503b) begin // SRLW
+           else if ((ex_insn & 'hfe00707f) == 'h0000503b) begin // SRLW
               write_back_register = rd;
            end
 
-           else if ((insn & 'hfe00707f) == 'h4000503b) begin // SRAW
+           else if ((ex_insn & 'hfe00707f) == 'h4000503b) begin // SRAW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
               write_back_register = rd;
            end
 
-           else if ((insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
+           else if ((ex_insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
               fetch_buf_valid <= 0;
            end
 
-           else if ((insn & 'h0000707f) == 'h00001073) begin // CSRRW
+           else if ((ex_insn & 'h0000707f) == 'h00001073) begin // CSRRW
               // CSRRW and CSRRWI (and only those) do not read the CSR
               // if rd == 0 This matters [only] if the read has side
               // effects (I'm guilty of this part of RISC-V semantics).
@@ -3851,110 +3857,110 @@ module smolrv64(input wire        clock,
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'h0000707f) == 'h00002073) begin // CSRRS
+           else if ((ex_insn & 'h0000707f) == 'h00002073) begin // CSRRS
               csr_op = `CSR_OP_OR;
               csr_arg = s1;
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'h0000707f) == 'h00003073) begin // CSRRC
+           else if ((ex_insn & 'h0000707f) == 'h00003073) begin // CSRRC
               csr_op = `CSR_OP_ANDN;
               csr_arg = s1;
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'h0000707f) == 'h00005073) begin // CSRRWI
+           else if ((ex_insn & 'h0000707f) == 'h00005073) begin // CSRRWI
               csr_op = `CSR_OP_COPY;
               csr_arg = rs1;
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'h0000707f) == 'h00006073) begin // CSRRSI
+           else if ((ex_insn & 'h0000707f) == 'h00006073) begin // CSRRSI
               csr_op = `CSR_OP_OR;
               csr_arg = rs1;
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'h0000707f) == 'h00007073) begin // CSRRCI
+           else if ((ex_insn & 'h0000707f) == 'h00007073) begin // CSRRCI
               csr_op = `CSR_OP_ANDN;
               csr_arg = rs1;
               state <= `S_HANDLE_CSR;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02000033) begin // MUL
+           else if ((ex_insn & 'hfe00707f) == 'h02000033) begin // MUL
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_MUL;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02001033) begin // MULH
+           else if ((ex_insn & 'hfe00707f) == 'h02001033) begin // MULH
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_MULH;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02002033) begin // MULHSU
+           else if ((ex_insn & 'hfe00707f) == 'h02002033) begin // MULHSU
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_MULHSU;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02003033) begin // MULHU
+           else if ((ex_insn & 'hfe00707f) == 'h02003033) begin // MULHU
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_MULHU;
               state <= `S_MULDIV_START;
            end
 
 
-           else if ((insn & 'hfe00707f) == 'h02004033) begin // DIV
+           else if ((ex_insn & 'hfe00707f) == 'h02004033) begin // DIV
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_DIV;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02005033) begin // DIVU
+           else if ((ex_insn & 'hfe00707f) == 'h02005033) begin // DIVU
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_DIVU;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02006033) begin // REM
+           else if ((ex_insn & 'hfe00707f) == 'h02006033) begin // REM
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_REM;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h02007033) begin // REMU
+           else if ((ex_insn & 'hfe00707f) == 'h02007033) begin // REMU
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_REMU;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0200003b) begin // MULW
+           else if ((ex_insn & 'hfe00707f) == 'h0200003b) begin // MULW
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_MULW;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0200403b) begin // DIVW
+           else if ((ex_insn & 'hfe00707f) == 'h0200403b) begin // DIVW
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_DIVW;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
+           else if ((ex_insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_DIVUW;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0200603b) begin // REMW
+           else if ((ex_insn & 'hfe00707f) == 'h0200603b) begin // REMW
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_REMW;
               state <= `S_MULDIV_START;
            end
 
-           else if ((insn & 'hfe00707f) == 'h0200703b) begin // REMUW
+           else if ((ex_insn & 'hfe00707f) == 'h0200703b) begin // REMUW
               write_back_register = rd;
               muldiv_start_op <= `MULDIV_REMUW;
               state <= `S_MULDIV_START;
@@ -3962,7 +3968,7 @@ module smolrv64(input wire        clock,
 
            // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
 
-           else if ((insn & 'hffffffff) == 'h30200073) begin // MRET
+           else if ((ex_insn & 'hffffffff) == 'h30200073) begin // MRET
               fetch_buf_valid <= 0;
               if (mpp != 3) mprv = 0;
               prv = mpp;
@@ -3974,16 +3980,16 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH1;
            end
 
-           else if ((insn & 'hffffffff) == 'h10200073) begin // SRET
+           else if ((ex_insn & 'hffffffff) == 'h10200073) begin // SRET
               if (prv == 0 || prv == 1 && tsr) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
                  fetch_buf_valid <= 0;
 `ifdef SIMULATE
 `ifdef VERBOSE
-                 $display("SRET: pc %x prv %d->%d sepc %x time %0t", pc, prv, spp, csr_sepc, $time);
+                 $display("SRET: pc %x prv %d->%d sepc %x time %0t", ex_pc, prv, spp, csr_sepc, $time);
 `endif
 `endif
                  mprv = 0; // sret can only return to S or U, never M
@@ -3996,10 +4002,10 @@ module smolrv64(input wire        clock,
               end
            end
 
-           else if ((insn & 'hfe007fff) == 'h12000073) begin // SFENCE.VMA
+           else if ((ex_insn & 'hfe007fff) == 'h12000073) begin // SFENCE.VMA
               if (prv < 1 || prv == 1 && tvm) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
                  fetch_buf_valid <= 0;
@@ -4007,10 +4013,10 @@ module smolrv64(input wire        clock,
               end
            end
 
-           else if ((insn & 'hffffffff) == 'h10500073) begin // WFI
+           else if ((ex_insn & 'hffffffff) == 'h10500073) begin // WFI
               if (prv == 0 || prv == 1 && tw) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else
                 state <= `S_FETCH1; // treat as NOP (no real sleep in simulation)
@@ -4019,23 +4025,23 @@ module smolrv64(input wire        clock,
            // OP-FP (opcode 0x53) — arithmetic-free Phase 1 insns:
            // FMV.{W.X,X.W,D.X,X.D}, FSGNJ{,N,X}.{S,D}, FCLASS.{S,D}.
            // Everything else in this opcode falls through to illegal.
-           else if (insn[6:0] == 7'b1010011) begin
+           else if (ex_insn[6:0] == 7'b1010011) begin
               if (fs == 0) begin
-                 // FP state disabled by mstatus.FS — any FP insn traps.
+                 // FP state disabled by mstatus.FS: any FP instruction traps.
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
-                 // Reaching an FP insn dirties the FP state.
+                 // Reaching an FP instruction dirties the FP state.
                  fs = 3;
-                 case (insn[31:25])
+                 case (ex_insn[31:25])
                    // FADD.S / FSUB.S
                    7'b0000000,
                    7'b0000100: begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= 64'd0;
@@ -4043,7 +4049,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= f2;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
-                         cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
+                         cvfpu_op_mod   <= ex_insn[27]; // 0=add, 1=sub
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
@@ -4053,7 +4059,7 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
@@ -4063,7 +4069,7 @@ module smolrv64(input wire        clock,
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= 64'd0;
@@ -4071,7 +4077,7 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= f2;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
-                         cvfpu_op_mod   <= insn[27]; // 0=add, 1=sub
+                         cvfpu_op_mod   <= ex_insn[27]; // 0=add, 1=sub
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
@@ -4081,7 +4087,7 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
@@ -4090,7 +4096,7 @@ module smolrv64(input wire        clock,
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4108,7 +4114,7 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
@@ -4117,7 +4123,7 @@ module smolrv64(input wire        clock,
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4135,7 +4141,7 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
@@ -4144,7 +4150,7 @@ module smolrv64(input wire        clock,
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4162,7 +4168,7 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
@@ -4171,7 +4177,7 @@ module smolrv64(input wire        clock,
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4189,16 +4195,16 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
                    // FSQRT.S
-                   7'b0101100: if (insn[24:20] == 5'd0) begin
+                   7'b0101100: if (ex_insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4216,20 +4222,20 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FSQRT.D
-                   7'b0101101: if (insn[24:20] == 5'd0) begin
+                   7'b0101101: if (ex_insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4247,26 +4253,26 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FMIN.S / FMAX.S
                    7'b0010100: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] > 3'b001) begin
+                      if (ex_insn[14:12] > 3'b001) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= {2'b00, insn[12]}; // RNE=min, RTZ=max
+                         cvfpu_rnd_mode <= {2'b00, ex_insn[12]}; // RNE=min, RTZ=max
                          cvfpu_op       <= 4'd7; // fpnew_pkg::MINMAX
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
@@ -4278,22 +4284,22 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
                    // FMIN.D / FMAX.D
                    7'b0010101: begin
 `ifdef USE_CVFPU
-                      if (insn[14:12] > 3'b001) begin
+                      if (ex_insn[14:12] > 3'b001) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
                          cvfpu_operands[1] <= f2;
                          cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= {2'b00, insn[12]}; // RNE=min, RTZ=max
+                         cvfpu_rnd_mode <= {2'b00, ex_insn[12]}; // RNE=min, RTZ=max
                          cvfpu_op       <= 4'd7; // fpnew_pkg::MINMAX
                          cvfpu_op_mod   <= 1'b0;
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
@@ -4305,16 +4311,16 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end
                    // FCVT.S.D
-                   7'b0100000: if (insn[24:20] == 5'd1) begin
+                   7'b0100000: if (ex_insn[24:20] == 5'd1) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4332,20 +4338,20 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FCVT.D.S
-                   7'b0100001: if (insn[24:20] == 5'd0) begin
+                   7'b0100001: if (ex_insn[24:20] == 5'd0) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4363,78 +4369,78 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
                    7'b0010000: begin
                       write_back_fp_valid    = 1;
                       write_back_fp_register = rd;
-                      case (insn[14:12])
+                      case (ex_insn[14:12])
                         3'b000: write_back_fp_value <= {32'hffffffff, f2_s[31],             f1_s[30:0]};
                         3'b001: write_back_fp_value <= {32'hffffffff, ~f2_s[31],            f1_s[30:0]};
                         3'b010: write_back_fp_value <= {32'hffffffff, f2_s[31] ^ f1_s[31],  f1_s[30:0]};
                         default: begin
                            write_back_fp_valid = 0;
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
-                           tval = insn;
+                           tval = ex_insn;
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (insn[14:12] < 3) state <= `S_FETCH1;
+                      if (ex_insn[14:12] < 3) state <= `S_FETCH1;
                    end
                    // FSGNJ/N/X .D — no boxing check; 64-bit direct.
                    7'b0010001: begin
                       write_back_fp_valid    = 1;
                       write_back_fp_register = rd;
-                      case (insn[14:12])
+                      case (ex_insn[14:12])
                         3'b000: write_back_fp_value <= {f2[63],         f1[62:0]};
                         3'b001: write_back_fp_value <= {~f2[63],        f1[62:0]};
                         3'b010: write_back_fp_value <= {f2[63] ^ f1[63], f1[62:0]};
                         default: begin
                            write_back_fp_valid = 0;
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
-                           tval = insn;
+                           tval = ex_insn;
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (insn[14:12] < 3) state <= `S_FETCH1;
+                      if (ex_insn[14:12] < 3) state <= `S_FETCH1;
                    end
                    // FEQ.S / FLT.S / FLE.S — integer rd; NV flag on NaN per op.
-                   7'b1010000: if (insn[14:12] <= 3'b010) begin
-                      fcmp_result = fcmp_s(insn[14:12], f1_s, f2_s);
+                   7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
+                      fcmp_result = fcmp_s(ex_insn[14:12], f1_s, f2_s);
                       write_back_register = rd;
                       write_back_value    <= {63'd0, fcmp_result[0]};
                       if (fcmp_result[1]) fflags = fflags | 5'b10000;
                       state               <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FEQ.D / FLT.D / FLE.D
-                   7'b1010001: if (insn[14:12] <= 3'b010) begin
-                      fcmp_result = fcmp_d(insn[14:12], f1, f2);
+                   7'b1010001: if (ex_insn[14:12] <= 3'b010) begin
+                      fcmp_result = fcmp_d(ex_insn[14:12], f1, f2);
                       write_back_register = rd;
                       write_back_value    <= {63'd0, fcmp_result[0]};
                       if (fcmp_result[1]) fflags = fflags | 5'b10000;
                       state               <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FCVT.W[U].S / FCVT.L[U].S
-                   7'b1100000: if (insn[24:20] <= 5'd3) begin
+                   7'b1100000: if (ex_insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4442,10 +4448,10 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= 64'd0;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd11; // fpnew_pkg::F2I
-                         cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
+                         cvfpu_op_mod   <= ex_insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // unused
-                         cvfpu_int_fmt  <= insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
+                         cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
                          cvfpu_tag_in   <= {3'd0, rd};
                          cvfpu_write_fp <= 1'b0;
                          cvfpu_in_valid <= 1'b1;
@@ -4453,20 +4459,20 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FCVT.W[U].D / FCVT.L[U].D
-                   7'b1100001: if (insn[24:20] <= 5'd3) begin
+                   7'b1100001: if (ex_insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= f1;
@@ -4474,10 +4480,10 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= 64'd0;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd11; // fpnew_pkg::F2I
-                         cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
+                         cvfpu_op_mod   <= ex_insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd0; // unused
-                         cvfpu_int_fmt  <= insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
+                         cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
                          cvfpu_tag_in   <= {3'd0, rd};
                          cvfpu_write_fp <= 1'b0;
                          cvfpu_in_valid <= 1'b1;
@@ -4485,20 +4491,20 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FCVT.S.W[U] / FCVT.S.L[U]
-                   7'b1101000: if (insn[24:20] <= 5'd3) begin
+                   7'b1101000: if (ex_insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= s1;
@@ -4506,10 +4512,10 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= 64'd0;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd12; // fpnew_pkg::I2F
-                         cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
+                         cvfpu_op_mod   <= ex_insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // unused
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
+                         cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
                          cvfpu_tag_in   <= {3'd0, rd};
                          cvfpu_write_fp <= 1'b1;
                          cvfpu_in_valid <= 1'b1;
@@ -4517,20 +4523,20 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FCVT.D.W[U] / FCVT.D.L[U]
-                   7'b1101001: if (insn[24:20] <= 5'd3) begin
+                   7'b1101001: if (ex_insn[24:20] <= 5'd3) begin
 `ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
-                         tval = insn;
+                         tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
                          cvfpu_operands[0] <= s1;
@@ -4538,10 +4544,10 @@ module smolrv64(input wire        clock,
                          cvfpu_operands[2] <= 64'd0;
                          cvfpu_rnd_mode <= pre_fp_rnd_mode;
                          cvfpu_op       <= 4'd12; // fpnew_pkg::I2F
-                         cvfpu_op_mod   <= insn[20]; // 0=signed, 1=unsigned
+                         cvfpu_op_mod   <= ex_insn[20]; // 0=signed, 1=unsigned
                          cvfpu_src_fmt  <= 3'd0; // unused
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
+                         cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
                          cvfpu_tag_in   <= {3'd0, rd};
                          cvfpu_write_fp <= 1'b1;
                          cvfpu_in_valid <= 1'b1;
@@ -4549,67 +4555,67 @@ module smolrv64(input wire        clock,
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
 `endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
-                   7'b1110000: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                   7'b1110000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = rd;
                       write_back_value    <= {{32{f1[31]}}, f1[31:0]};
                       state               <= `S_FETCH1;
-                   end else if (insn[24:20] == 5'd0 && insn[14:12] == 3'b001) begin
+                   end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = rd;
                       write_back_value    <= fclass_s(f1);
                       state               <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
-                   7'b1110001: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                   7'b1110001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = rd;
                       write_back_value    <= f1;
                       state               <= `S_FETCH1;
-                   end else if (insn[24:20] == 5'd0 && insn[14:12] == 3'b001) begin
+                   end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = rd;
                       write_back_value    <= fclass_d(f1);
                       state               <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FMV.W.X (rs2=0, rm=0): NaN-box s1[31:0] into f[rd].
-                   7'b1111000: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                   7'b1111000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_fp_valid    = 1;
                       write_back_fp_register = rd;
                       write_back_fp_value    <= {32'hffffffff, s1[31:0]};
                       state                  <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    // FMV.D.X (rs2=0, rm=0): full 64-bit move.
-                   7'b1111001: if (insn[24:20] == 5'd0 && insn[14:12] == 3'b000) begin
+                   7'b1111001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_fp_valid    = 1;
                       write_back_fp_register = rd;
                       write_back_fp_value    <= s1;
                       state                  <= `S_FETCH1;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                    default: begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = insn;
+                      tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
                  endcase
@@ -4617,25 +4623,25 @@ module smolrv64(input wire        clock,
            end
 
            // R4 fused multiply-add/subtract family: FMADD/FMSUB/FNMSUB/FNMADD.
-           else if (insn[6:4] == 3'b100 && insn[1:0] == 2'b11) begin
+           else if (ex_insn[6:4] == 3'b100 && ex_insn[1:0] == 2'b11) begin
               if (fs == 0) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
                  fs = 3;
 `ifdef USE_CVFPU
-                 if (insn[26:25] > 2'b01 || !pre_fp_rmode_ok) begin
+                 if (ex_insn[26:25] > 2'b01 || !pre_fp_rmode_ok) begin
                     cause = `TRAP_ILLEGAL_INSTRUCTION;
-                    tval = insn;
+                    tval = ex_insn;
                     state <= `S_EXCEPTION;
                  end else begin
-                    rs1 <= insn[31:27]; // rs3; reuse FP read port 0
+                    rs1 <= ex_insn[31:27]; // rs3; reuse FP read port 0
                     state <= `S_CVFPU_FMA_RF2;
                  end
 `else
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = insn;
+                 tval = ex_insn;
                  state <= `S_EXCEPTION;
 `endif
               end
@@ -4644,16 +4650,16 @@ module smolrv64(input wire        clock,
            else begin
 `ifdef SIMULATE
 `ifdef VERBOSE
-              if (insn[1:0] == 3)
-                $display("%05d   %1d %x %x illegal unknown instruction", $time, prv, pc, insn);
+              if (ex_insn[1:0] == 3)
+                $display("%05d   %1d %x %x illegal unknown instruction", $time, prv, ex_pc, ex_insn);
               else
                 $display("%05d   %1d %x     %x illegal unknown instruction (%1d,%1d)",
-                         $time, prv, pc, insn[15:0], insn[15:13], insn[1:0]);
+                         $time, prv, ex_pc, ex_insn[15:0], ex_insn[15:13], ex_insn[1:0]);
               $finish;
 `endif
 `endif
               cause = `TRAP_ILLEGAL_INSTRUCTION;
-              tval = insn;
+              tval = ex_insn;
               state <= `S_EXCEPTION;
            end
 
@@ -6315,6 +6321,8 @@ module smolrv64(input wire        clock,
          rf_decode_insn <= 0;
          rf_decode_from_dram <= 0;
          execute_req_valid <= 0;
+         execute_req_pc <= `RESET_PC;
+         execute_req_insn <= 0;
          execute_res_valid <= 0;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
