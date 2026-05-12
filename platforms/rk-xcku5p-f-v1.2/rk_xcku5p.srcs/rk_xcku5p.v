@@ -274,6 +274,8 @@ module rk_xcku5p(
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
    wire [31:0] virtio_net_readdata;
+   wire        virtio_net_debug_sel = virtio_net_sel && mmio_address[11:8] == 4'hf;
+   reg  [31:0] virtio_net_debug_readdata;
    wire        virtio_blk_irq;
    wire        virtio_net_irq;
    wire        virtio_net_queue_notify_pulse;
@@ -285,6 +287,20 @@ module rk_xcku5p(
    wire [63:0] virtio_net_queue1_driver;
    wire [63:0] virtio_net_queue1_device;
    wire [ 7:0] virtio_net_device_status;
+   wire [31:0] virtio_net_debug_status;
+   wire [31:0] virtio_net_debug_notify_count;
+   wire [31:0] virtio_net_debug_read_avail_count;
+   wire [31:0] virtio_net_debug_empty_avail_count;
+   wire [31:0] virtio_net_debug_read_ring_count;
+   wire [31:0] virtio_net_debug_complete_count;
+   wire [31:0] virtio_net_debug_irq_count;
+   wire [31:0] virtio_net_debug_dma_error_count;
+   wire [31:0] virtio_net_debug_indices;
+   wire [31:0] virtio_net_debug_used_head;
+   wire [31:0] virtio_net_debug_last_avail_word_lo;
+   wire [31:0] virtio_net_debug_last_avail_word_hi;
+   wire [31:0] virtio_net_debug_last_ring_word_lo;
+   wire [31:0] virtio_net_debug_last_ring_word_hi;
    wire [ 2:0] virtio_net_axi_awid;
    wire [30:0] virtio_net_axi_awaddr;
    wire [ 7:0] virtio_net_axi_awlen;
@@ -348,7 +364,8 @@ module rk_xcku5p(
             else if (virtio_blk_sel)
                mmio_readdata_q <= virtio_blk_readdata;
             else if (virtio_net_sel)
-               mmio_readdata_q <= virtio_net_readdata;
+               mmio_readdata_q <= virtio_net_debug_sel ? virtio_net_debug_readdata :
+                                  virtio_net_readdata;
             else
                mmio_readdata_q <= 32'd0;
          end
@@ -381,6 +398,26 @@ module rk_xcku5p(
       .gpio_out     (sd_gpio),
       .read_data    (sd_gpio_readdata)
    );
+
+   always @* begin
+      case (mmio_address[7:2])
+        6'h00: virtio_net_debug_readdata = virtio_net_debug_status;
+        6'h01: virtio_net_debug_readdata = virtio_net_debug_notify_count;
+        6'h02: virtio_net_debug_readdata = virtio_net_debug_read_avail_count;
+        6'h03: virtio_net_debug_readdata = virtio_net_debug_empty_avail_count;
+        6'h04: virtio_net_debug_readdata = virtio_net_debug_read_ring_count;
+        6'h05: virtio_net_debug_readdata = virtio_net_debug_complete_count;
+        6'h06: virtio_net_debug_readdata = virtio_net_debug_irq_count;
+        6'h07: virtio_net_debug_readdata = virtio_net_debug_dma_error_count;
+        6'h08: virtio_net_debug_readdata = virtio_net_debug_indices;
+        6'h09: virtio_net_debug_readdata = virtio_net_debug_used_head;
+        6'h0a: virtio_net_debug_readdata = virtio_net_debug_last_avail_word_lo;
+        6'h0b: virtio_net_debug_readdata = virtio_net_debug_last_avail_word_hi;
+        6'h0c: virtio_net_debug_readdata = virtio_net_debug_last_ring_word_lo;
+        6'h0d: virtio_net_debug_readdata = virtio_net_debug_last_ring_word_hi;
+        default: virtio_net_debug_readdata = 32'd0;
+      endcase
+   end
 
    virtio_mmio #(
       .DEVICE_ID(32'd0), /* Dormant until a block backend can complete queues. */
@@ -459,6 +496,20 @@ module rk_xcku5p(
       .tx_queue_device         (virtio_net_queue1_device),
       .device_status           (virtio_net_device_status),
       .used_buffer_interrupt   (virtio_net_used_buffer_interrupt),
+      .debug_status            (virtio_net_debug_status),
+      .debug_notify_count      (virtio_net_debug_notify_count),
+      .debug_read_avail_count  (virtio_net_debug_read_avail_count),
+      .debug_empty_avail_count (virtio_net_debug_empty_avail_count),
+      .debug_read_ring_count   (virtio_net_debug_read_ring_count),
+      .debug_complete_count    (virtio_net_debug_complete_count),
+      .debug_irq_count         (virtio_net_debug_irq_count),
+      .debug_dma_error_count   (virtio_net_debug_dma_error_count),
+      .debug_indices           (virtio_net_debug_indices),
+      .debug_used_head         (virtio_net_debug_used_head),
+      .debug_last_avail_word_lo(virtio_net_debug_last_avail_word_lo),
+      .debug_last_avail_word_hi(virtio_net_debug_last_avail_word_hi),
+      .debug_last_ring_word_lo (virtio_net_debug_last_ring_word_lo),
+      .debug_last_ring_word_hi (virtio_net_debug_last_ring_word_hi),
 
       .m_axi_awid              (virtio_net_axi_awid),
       .m_axi_awaddr            (virtio_net_axi_awaddr),

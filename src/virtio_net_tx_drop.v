@@ -14,6 +14,20 @@ module virtio_net_tx_drop(
     input  wire [63:0] tx_queue_device,
     input  wire [ 7:0] device_status,
     output reg         used_buffer_interrupt,
+    output wire [31:0] debug_status,
+    output wire [31:0] debug_notify_count,
+    output wire [31:0] debug_read_avail_count,
+    output wire [31:0] debug_empty_avail_count,
+    output wire [31:0] debug_read_ring_count,
+    output wire [31:0] debug_complete_count,
+    output wire [31:0] debug_irq_count,
+    output wire [31:0] debug_dma_error_count,
+    output wire [31:0] debug_indices,
+    output wire [31:0] debug_used_head,
+    output wire [31:0] debug_last_avail_word_lo,
+    output wire [31:0] debug_last_avail_word_hi,
+    output wire [31:0] debug_last_ring_word_lo,
+    output wire [31:0] debug_last_ring_word_hi,
 
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
@@ -77,6 +91,15 @@ module virtio_net_tx_drop(
    reg        notify_pending;
    reg [ 7:0] empty_retry_count;
    reg [15:0] retry_delay;
+   reg [31:0] notify_count;
+   reg [31:0] read_avail_count;
+   reg [31:0] empty_avail_count;
+   reg [31:0] read_ring_count;
+   reg [31:0] complete_count;
+   reg [31:0] irq_count;
+   reg [31:0] dma_error_count;
+   reg [63:0] last_avail_word;
+   reg [63:0] last_ring_word;
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -124,6 +147,22 @@ module virtio_net_tx_drop(
    wire tx_notify = queue_notify_pulse && queue_notify_value == 32'd1;
    wire [15:0] next_avail_idx = last_avail_idx + 16'd1;
 
+   assign debug_status = {device_status, 16'd0, notify_pending,
+                          tx_queue_configured, driver_ok, state};
+   assign debug_notify_count = notify_count;
+   assign debug_read_avail_count = read_avail_count;
+   assign debug_empty_avail_count = empty_avail_count;
+   assign debug_read_ring_count = read_ring_count;
+   assign debug_complete_count = complete_count;
+   assign debug_irq_count = irq_count;
+   assign debug_dma_error_count = dma_error_count;
+   assign debug_indices = {last_avail_idx, avail_idx};
+   assign debug_used_head = {used_idx, head_desc};
+   assign debug_last_avail_word_lo = last_avail_word[31:0];
+   assign debug_last_avail_word_hi = last_avail_word[63:32];
+   assign debug_last_ring_word_lo = last_ring_word[31:0];
+   assign debug_last_ring_word_hi = last_ring_word[63:32];
+
    task start_read64;
       input [63:0] addr;
       begin
@@ -161,9 +200,20 @@ module virtio_net_tx_drop(
          notify_pending <= 1'b0;
          empty_retry_count <= 8'd0;
          retry_delay <= 16'd0;
+         notify_count <= 32'd0;
+         read_avail_count <= 32'd0;
+         empty_avail_count <= 32'd0;
+         read_ring_count <= 32'd0;
+         complete_count <= 32'd0;
+         irq_count <= 32'd0;
+         dma_error_count <= 32'd0;
+         last_avail_word <= 64'd0;
+         last_ring_word <= 64'd0;
       end else begin
-         if (tx_notify)
+         if (tx_notify) begin
             notify_pending <= 1'b1;
+            notify_count <= notify_count + 32'd1;
+         end
 
          case (state)
            S_IDLE: begin
@@ -184,10 +234,15 @@ module virtio_net_tx_drop(
            end
            S_WAIT_AVAIL: begin
               if (dma_rsp_valid) begin
+                 read_avail_count <= read_avail_count + 32'd1;
+                 last_avail_word <= dma_rsp_rdata;
+                 if (dma_rsp_error)
+                    dma_error_count <= dma_error_count + 32'd1;
                  avail_idx <= get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7);
                  if (dma_rsp_error)
                     state <= S_IDLE;
                  else if (get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx) begin
+                    empty_avail_count <= empty_avail_count + 32'd1;
                     if (empty_retry_count != 8'd0) begin
                        empty_retry_count <= empty_retry_count - 8'd1;
                        retry_delay <= EMPTY_RETRY_DELAY;
@@ -216,6 +271,10 @@ module virtio_net_tx_drop(
            end
            S_WAIT_RING: begin
               if (dma_rsp_valid) begin
+                 read_ring_count <= read_ring_count + 32'd1;
+                 last_ring_word <= dma_rsp_rdata;
+                 if (dma_rsp_error)
+                    dma_error_count <= dma_error_count + 32'd1;
                  head_desc <= get16(dma_rsp_rdata,
                                     (tx_queue_driver[2:0] + 3'd4 +
                                      {last_avail_idx[1:0], 1'b0}) & 3'h7);
@@ -232,8 +291,11 @@ module virtio_net_tx_drop(
               end
            end
            S_WAIT_USED_ID: begin
-              if (dma_rsp_valid)
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error)
+                    dma_error_count <= dma_error_count + 32'd1;
                  state <= S_WRITE_USED_LEN;
+              end
            end
 
            S_WRITE_USED_LEN: begin
@@ -245,8 +307,11 @@ module virtio_net_tx_drop(
               end
            end
            S_WAIT_USED_LEN: begin
-              if (dma_rsp_valid)
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error)
+                    dma_error_count <= dma_error_count + 32'd1;
                  state <= S_WRITE_USED_IDX;
+              end
            end
 
            S_WRITE_USED_IDX: begin
@@ -258,14 +323,19 @@ module virtio_net_tx_drop(
               end
            end
            S_WAIT_USED_IDX: begin
-              if (dma_rsp_valid)
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error)
+                    dma_error_count <= dma_error_count + 32'd1;
                  state <= S_COMPLETE;
+              end
            end
 
            S_COMPLETE: begin
               used_idx <= used_idx + 16'd1;
               last_avail_idx <= next_avail_idx;
               used_buffer_interrupt <= 1'b1;
+              complete_count <= complete_count + 32'd1;
+              irq_count <= irq_count + 32'd1;
               if (next_avail_idx != avail_idx)
                  state <= S_READ_RING;
               else if (notify_pending) begin
