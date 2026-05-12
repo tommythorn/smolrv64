@@ -162,6 +162,7 @@
 			reg = <0 0x10002000 0 0x1000>;
 			interrupts = <11>;
 			interrupt-parent = <&plic>;
+			dma-noncoherent;
 			status = "disabled";
 		};
 
@@ -170,6 +171,7 @@
 			reg = <0 0x10003000 0 0x1000>;
 			interrupts = <12>;
 			interrupt-parent = <&plic>;
+			dma-noncoherent;
 			status = "okay";
 		};
 	};
