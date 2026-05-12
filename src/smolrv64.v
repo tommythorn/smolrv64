@@ -1000,8 +1000,9 @@ module smolrv64(input wire        clock,
    reg          fetch_buf_latched_hit = 0;
    reg  [31:0]  fetch_buf_latched_insn = 0;
 
-   // Registered fetch request used by miss/translation paths.  S_FETCH1 now
-   // launches the common fetch path directly when retire has resolved npc.
+   // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
+   // instruction and captures the next PC/context; S_FETCH_REQ consumes this
+   // registered request and launches the existing fetch-buffer/miss path.
    reg          fetch_req_valid = 0;
    reg  [63:0]  fetch_req_pc = `RESET_PC;
    reg  [63:0]  fetch_req_satp = 0;
@@ -2362,62 +2363,6 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task launch_instruction_fetch;
-      input [63:0] launch_pc;
-      input [63:0] launch_satp;
-      input [ 1:0] launch_prv;
-      reg          launch_context_hit;
-      reg          launch_addr_same_hi, launch_addr_next_hi, launch_addr_hit;
-      reg  [ 3:0] launch_offset;
-      reg  [31:0] launch_insn;
-      reg          launch_full_hit, launch_hit;
-      begin
-         fetch_req_valid <= 1;
-         fetch_req_pc    <= launch_pc;
-         fetch_req_satp  <= launch_satp;
-         fetch_req_prv   <= launch_prv;
-         fetch_res_valid <= 0;
-
-         launch_context_hit = fetch_buf_valid &&
-                              fetch_buf_prv == launch_prv &&
-                              fetch_buf_satp == launch_satp;
-         launch_addr_same_hi = launch_pc[63:4] == fetch_buf_base_va[63:4];
-         launch_addr_next_hi = launch_pc[63:4] == fetch_buf_next_va_hi;
-         launch_addr_hit = launch_context_hit && !launch_pc[0] &&
-                           ((!fetch_buf_base_va[3] && launch_addr_same_hi) ||
-                            ( fetch_buf_base_va[3] &&
-                              ((launch_addr_same_hi &&  launch_pc[3]) ||
-                               (launch_addr_next_hi && !launch_pc[3]))));
-         launch_offset = fetch_buf_base_va[3] ?
-                         (launch_addr_same_hi ? {1'b0, launch_pc[2:0]} :
-                                                {1'b1, launch_pc[2:0]}) :
-                         launch_pc[3:0];
-         launch_insn = fetch_buf_pick_insn(fetch_buf_data, launch_offset);
-         launch_full_hit = launch_insn[1:0] != 2'b11 || launch_offset <= 4'd12;
-         launch_hit = launch_addr_hit && launch_full_hit;
-
-`ifdef SIMULATE
-         if (fetch_buf_summary_enabled) begin
-            if (launch_hit) begin
-               fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
-            end else begin
-               fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
-               if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
-                  $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
-                           $time,
-                           fetch_buf_stat_hits + (launch_hit ? 64'd1 : 64'd0),
-                           fetch_buf_stat_misses + 64'd1);
-            end
-         end
-`endif
-
-         if (launch_hit)
-            accept_instruction_fetch(launch_pc, launch_insn, 1'b0);
-         else
-            start_instruction_fetch_miss(launch_pc, launch_satp, launch_prv);
-      end
-   endtask
-
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -2819,7 +2764,10 @@ module smolrv64(input wire        clock,
 `endif
 
            pc <= npc;
-           fetch_req_valid <= 0;
+           fetch_req_valid <= 1;
+           fetch_req_pc    <= npc;
+           fetch_req_satp  <= csr_satp;
+           fetch_req_prv   <= prv;
            fetch_res_valid <= 0;
 
            state <= `S_FETCH_REQ;
@@ -2849,11 +2797,7 @@ module smolrv64(input wire        clock,
                  tval = 0;
                  fetch_req_valid <= 0;
                  state <= `S_EXCEPTION;
-              end else begin
-                 launch_instruction_fetch(npc, csr_satp, prv);
               end
-           end else begin
-              launch_instruction_fetch(npc, csr_satp, prv);
            end
         end
 
