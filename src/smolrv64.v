@@ -865,6 +865,10 @@ module smolrv64(input wire        clock,
    reg         pre_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
    reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 
+   // Execute request boundary. S_RF3 asserts this after registering operands
+   // and predecode outputs; S_EXECUTE clears it when accepted.
+   reg         execute_req_valid = 0;
+
    // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
    // FP bit-ops set pre_mem_fp=0; their result is already in write_back_fp_value.
    wire        fp_load_retiring   = write_back_fp_valid && pre_mem_fp;
@@ -2960,6 +2964,7 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
            pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
            rf_decode_valid <= 0;
+           execute_req_valid <= 1;
            state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
@@ -3393,6 +3398,10 @@ module smolrv64(input wire        clock,
         end
 
         `S_EXECUTE: begin
+           if (!execute_req_valid) begin
+              state <= `S_FETCH1;
+           end else begin
+           execute_req_valid <= 0;
            state <= `S_EXECUTE2; // Default: complete write_back_value
            prv_retire <= prv;    // snapshot pre-execution prv (MRET/SRET mutate prv below)
 
@@ -4677,6 +4686,7 @@ module smolrv64(input wire        clock,
            endcase
            exe_sext32 <= pre_exe_sxt;
 
+           end
         end
 
         `S_EXECUTE2: begin
@@ -6296,6 +6306,7 @@ module smolrv64(input wire        clock,
          rf_decode_pc <= `RESET_PC;
          rf_decode_insn <= 0;
          rf_decode_from_dram <= 0;
+         execute_req_valid <= 0;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
          pre_branch_target <= `RESET_PC;
