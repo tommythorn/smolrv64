@@ -870,8 +870,16 @@ module smolrv64(input wire        clock,
    reg         execute_req_valid = 0;
    reg  [63:0] execute_req_pc = `RESET_PC;
    reg  [31:0] execute_req_insn = 0;
+   reg  [ 4:0] execute_req_rd = 0;
+   reg  [ 4:0] execute_req_rs1 = 0;
+   reg  [ 4:0] execute_req_rs2 = 0;
+   reg  [ 5:0] execute_req_shamt = 0;
    wire [63:0] ex_pc = execute_req_pc;
    wire [31:0] ex_insn = execute_req_insn;
+   wire [ 4:0] ex_rd = execute_req_rd;
+   wire [ 4:0] ex_rs1 = execute_req_rs1;
+   wire [ 4:0] ex_rs2 = execute_req_rs2;
+   wire [ 5:0] ex_shamt = execute_req_shamt;
    reg         execute_res_valid = 0;
 
    // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
@@ -2974,6 +2982,10 @@ module smolrv64(input wire        clock,
            rf_decode_valid <= 0;
            execute_req_pc <= rf3_pc;
            execute_req_insn <= rf3_insn;
+           execute_req_rd <= rd;
+           execute_req_rs1 <= rs1;
+           execute_req_rs2 <= rs2;
+           execute_req_shamt <= shamt;
            execute_req_valid <= 1;
            state <= `S_EXECUTE;
 
@@ -3530,7 +3542,7 @@ module smolrv64(input wire        clock,
 
            // Quadrant 0
            else if ((ex_insn & 'he003) == 'h0000) begin // C.ADDI4SPN/illegal
-              write_back_register = rs2;
+              write_back_register = ex_rs2;
               if ((ex_insn & 'hffff) == 0) begin
                  write_back_register = 0;
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -3547,11 +3559,11 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'he003) == 'h0001) begin // C.ADDI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'he003) == 'h2001) begin // C.ADDIW
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'he003) == 'h4001) begin // C.LI
@@ -3559,47 +3571,47 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'hef83) == 'h6101) begin // C.ADDI16SP
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'he003) == 'h6001) begin // C.LUI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hec03) == 'h8001) begin // C.SRLI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hec03) == 'h8401) begin // C.SRAI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hec03) == 'h8801) begin // C.ANDI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c01) begin // C.SUB
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c21) begin // C.XOR
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c41) begin // C.OR
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c61) begin // C.AND
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h9c01) begin // C.SUBW
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hfc63) == 'h9c21) begin // C.ADDW
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'he003) == 'ha001) begin // C.J
@@ -3616,7 +3628,7 @@ module smolrv64(input wire        clock,
 
               // Quadrant 2
            else if ((ex_insn & 'he003) == 'h0002) begin // C.SLLI
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            // C.LWSP / C.LDSP / C.FLDSP handled by shared mem block above.
@@ -3626,7 +3638,7 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'hf003) == 'h8002) begin // C.MV
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            else if ((ex_insn & 'hffff) == 'h9002) begin // C.EBREAK
@@ -3641,26 +3653,26 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'hf003) == 'h9002) begin // C.ADD
-              write_back_register = rs1;
+              write_back_register = ex_rs1;
            end
 
            // C.SWSP / C.SDSP / C.FSDSP handled by shared mem block above.
 
            // Quadrant 3, uncompressed
            else if ((ex_insn & 'h0000007f) == 'h00000037) begin // LUI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000007f) == 'h00000017) begin // AUIPC
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
-              write_back_register = rd;
+              write_back_register = ex_rd;
               npc = pre_jalr_target;
            end
 
@@ -3691,67 +3703,67 @@ module smolrv64(input wire        clock,
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
 
            else if ((ex_insn & 'h0000707f) == 'h00000013) begin // ADDI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00002013) begin // SLTI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00003013) begin // SLTIU
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00004013) begin // XORI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006013) begin // ORI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007013) begin // ANDI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00000033) begin // ADD
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h40000033) begin // SUB
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00001033) begin // SLL
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00002033) begin // SLT
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00003033) begin // SLTU
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00004033) begin // XOR
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00005033) begin // SRL
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h40005033) begin // SRA
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00006033) begin // OR
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00007033) begin // AND
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
@@ -3791,57 +3803,57 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'hfc00707f) == 'h00001013) begin // SLLI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfc00707f) == 'h00005013) begin // SRLI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfc00707f) == 'h40005013) begin // SRAI
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h0000001b) begin // ADDIW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0000101b) begin // SLLIW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0000501b) begin // SRLIW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h4000501b) begin // SRAIW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0000003b) begin // ADDW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h4000003b) begin // SUBW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0000103b) begin // SLLW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0000503b) begin // SRLW
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h4000503b) begin // SRAW
               // NB: Yes, this is a crazy instruction with *two*
               // sign-extensions and it does _not_ behave like the MIPS
               // counterpart
-              write_back_register = rd;
+              write_back_register = ex_rd;
            end
 
            else if ((ex_insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
@@ -3871,97 +3883,97 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'h0000707f) == 'h00005073) begin // CSRRWI
               csr_op = `CSR_OP_COPY;
-              csr_arg = rs1;
+              csr_arg = ex_rs1;
               state <= `S_HANDLE_CSR;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006073) begin // CSRRSI
               csr_op = `CSR_OP_OR;
-              csr_arg = rs1;
+              csr_arg = ex_rs1;
               state <= `S_HANDLE_CSR;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007073) begin // CSRRCI
               csr_op = `CSR_OP_ANDN;
-              csr_arg = rs1;
+              csr_arg = ex_rs1;
               state <= `S_HANDLE_CSR;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02000033) begin // MUL
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_MUL;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02001033) begin // MULH
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_MULH;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02002033) begin // MULHSU
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_MULHSU;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02003033) begin // MULHU
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_MULHU;
               state <= `S_MULDIV_START;
            end
 
 
            else if ((ex_insn & 'hfe00707f) == 'h02004033) begin // DIV
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_DIV;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02005033) begin // DIVU
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_DIVU;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02006033) begin // REM
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_REM;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h02007033) begin // REMU
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_REMU;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0200003b) begin // MULW
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_MULW;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0200403b) begin // DIVW
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_DIVW;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0200503b) begin // DIVUW
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_DIVUW;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0200603b) begin // REMW
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_REMW;
               state <= `S_MULDIV_START;
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h0200703b) begin // REMUW
-              write_back_register = rd;
+              write_back_register = ex_rd;
               muldiv_start_op <= `MULDIV_REMUW;
               state <= `S_MULDIV_START;
            end
@@ -4053,7 +4065,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4081,7 +4093,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4108,7 +4120,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4135,7 +4147,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4162,7 +4174,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4189,7 +4201,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4216,7 +4228,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4247,7 +4259,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4278,7 +4290,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4305,7 +4317,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4332,7 +4344,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4363,7 +4375,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
                       end
@@ -4380,7 +4392,7 @@ module smolrv64(input wire        clock,
                    // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
                    7'b0010000: begin
                       write_back_fp_valid    = 1;
-                      write_back_fp_register = rd;
+                      write_back_fp_register = ex_rd;
                       case (ex_insn[14:12])
                         3'b000: write_back_fp_value <= {32'hffffffff, f2_s[31],             f1_s[30:0]};
                         3'b001: write_back_fp_value <= {32'hffffffff, ~f2_s[31],            f1_s[30:0]};
@@ -4397,7 +4409,7 @@ module smolrv64(input wire        clock,
                    // FSGNJ/N/X .D — no boxing check; 64-bit direct.
                    7'b0010001: begin
                       write_back_fp_valid    = 1;
-                      write_back_fp_register = rd;
+                      write_back_fp_register = ex_rd;
                       case (ex_insn[14:12])
                         3'b000: write_back_fp_value <= {f2[63],         f1[62:0]};
                         3'b001: write_back_fp_value <= {~f2[63],        f1[62:0]};
@@ -4411,10 +4423,10 @@ module smolrv64(input wire        clock,
                       endcase
                       if (ex_insn[14:12] < 3) state <= `S_FETCH1;
                    end
-                   // FEQ.S / FLT.S / FLE.S — integer rd; NV flag on NaN per op.
+                   // FEQ.S / FLT.S / FLE.S: integer rd; NV flag on NaN per op.
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_s(ex_insn[14:12], f1_s, f2_s);
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= {63'd0, fcmp_result[0]};
                       if (fcmp_result[1]) fflags = fflags | 5'b10000;
                       state               <= `S_FETCH1;
@@ -4426,7 +4438,7 @@ module smolrv64(input wire        clock,
                    // FEQ.D / FLT.D / FLE.D
                    7'b1010001: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_d(ex_insn[14:12], f1, f2);
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= {63'd0, fcmp_result[0]};
                       if (fcmp_result[1]) fflags = fflags | 5'b10000;
                       state               <= `S_FETCH1;
@@ -4452,7 +4464,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_dst_fmt  <= 3'd0; // unused
                          cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_write_fp <= 1'b0;
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
@@ -4484,7 +4496,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_dst_fmt  <= 3'd0; // unused
                          cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_write_fp <= 1'b0;
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
@@ -4516,7 +4528,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // unused
                          cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
                          cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_write_fp <= 1'b1;
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
@@ -4548,7 +4560,7 @@ module smolrv64(input wire        clock,
                          cvfpu_src_fmt  <= 3'd0; // unused
                          cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
                          cvfpu_int_fmt  <= ex_insn[21] ? 2'd3 : 2'd2; // INT64 : INT32
-                         cvfpu_tag_in   <= {3'd0, rd};
+                         cvfpu_tag_in   <= {3'd0, ex_rd};
                          cvfpu_write_fp <= 1'b1;
                          cvfpu_in_valid <= 1'b1;
                          state          <= `S_CVFPU_ISSUE;
@@ -4565,11 +4577,11 @@ module smolrv64(input wire        clock,
                    end
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
                    7'b1110000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= {{32{f1[31]}}, f1[31:0]};
                       state               <= `S_FETCH1;
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= fclass_s(f1);
                       state               <= `S_FETCH1;
                    end else begin
@@ -4579,11 +4591,11 @@ module smolrv64(input wire        clock,
                    end
                    // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
                    7'b1110001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= f1;
                       state               <= `S_FETCH1;
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
-                      write_back_register = rd;
+                      write_back_register = ex_rd;
                       write_back_value    <= fclass_d(f1);
                       state               <= `S_FETCH1;
                    end else begin
@@ -4594,7 +4606,7 @@ module smolrv64(input wire        clock,
                    // FMV.W.X (rs2=0, rm=0): NaN-box s1[31:0] into f[rd].
                    7'b1111000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_fp_valid    = 1;
-                      write_back_fp_register = rd;
+                      write_back_fp_register = ex_rd;
                       write_back_fp_value    <= {32'hffffffff, s1[31:0]};
                       state                  <= `S_FETCH1;
                    end else begin
@@ -4605,7 +4617,7 @@ module smolrv64(input wire        clock,
                    // FMV.D.X (rs2=0, rm=0): full 64-bit move.
                    7'b1111001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_fp_valid    = 1;
-                      write_back_fp_register = rd;
+                      write_back_fp_register = ex_rd;
                       write_back_fp_value    <= s1;
                       state                  <= `S_FETCH1;
                    end else begin
@@ -6323,6 +6335,10 @@ module smolrv64(input wire        clock,
          execute_req_valid <= 0;
          execute_req_pc <= `RESET_PC;
          execute_req_insn <= 0;
+         execute_req_rd <= 0;
+         execute_req_rs1 <= 0;
+         execute_req_rs2 <= 0;
+         execute_req_shamt <= 0;
          execute_res_valid <= 0;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
