@@ -598,7 +598,8 @@ module smolrv64(input wire        clock,
 `define S_FETCH_BUF_USE        47  // consume registered fetch-buffer hit or launch miss path
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
-`define S_LAST_STATE           49  // update state register width accordingly
+`define S_FETCH_REQ            50  // issue registered PC/context fetch request
+`define S_LAST_STATE           50  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -976,6 +977,14 @@ module smolrv64(input wire        clock,
    reg          fetch_buf_latched_hit = 0;
    reg  [31:0]  fetch_buf_latched_insn = 0;
 
+   // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
+   // instruction and captures the next PC/context; S_FETCH_REQ consumes this
+   // registered request and launches the existing fetch-buffer/miss path.
+   reg          fetch_req_valid = 0;
+   reg  [63:0]  fetch_req_pc = `RESET_PC;
+   reg  [63:0]  fetch_req_satp = 0;
+   reg  [ 1:0]  fetch_req_prv = 3;
+
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
    // 64-byte line as eight 64-bit beats from the AXI backing path.
@@ -1205,6 +1214,7 @@ module smolrv64(input wire        clock,
            `S_FETCH_BUF_USE:         state_name = "FETCH_BUF_USE";
            `S_MULDIV_START:          state_name = "MULDIV_START";
            `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
+           `S_FETCH_REQ:             state_name = "FETCH_REQ";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1683,25 +1693,25 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
-   wire        fetch_buf_context_hit = fetch_buf_valid &&
-                                       fetch_buf_prv == prv &&
-                                       fetch_buf_satp == csr_satp;
-   wire        fetch_buf_addr_same_hi = npc[63:4] == fetch_buf_base_va[63:4];
-   wire        fetch_buf_addr_next_hi = npc[63:4] == fetch_buf_next_va_hi;
-   wire        fetch_buf_addr_hit = fetch_buf_context_hit && !npc[0] &&
+   wire        fetch_buf_context_hit = fetch_req_valid && fetch_buf_valid &&
+                                       fetch_buf_prv == fetch_req_prv &&
+                                       fetch_buf_satp == fetch_req_satp;
+   wire        fetch_buf_addr_same_hi = fetch_req_pc[63:4] == fetch_buf_base_va[63:4];
+   wire        fetch_buf_addr_next_hi = fetch_req_pc[63:4] == fetch_buf_next_va_hi;
+   wire        fetch_buf_addr_hit = fetch_buf_context_hit && !fetch_req_pc[0] &&
                                     ((!fetch_buf_base_va[3] && fetch_buf_addr_same_hi) ||
                                      ( fetch_buf_base_va[3] &&
-                                       ((fetch_buf_addr_same_hi &&  npc[3]) ||
-                                        (fetch_buf_addr_next_hi && !npc[3]))));
+                                       ((fetch_buf_addr_same_hi &&  fetch_req_pc[3]) ||
+                                        (fetch_buf_addr_next_hi && !fetch_req_pc[3]))));
    wire [3:0]  fetch_buf_offset = fetch_buf_base_va[3] ?
-                                  (fetch_buf_addr_same_hi ? {1'b0, npc[2:0]} :
-                                                            {1'b1, npc[2:0]}) :
-                                  npc[3:0];
+                                  (fetch_buf_addr_same_hi ? {1'b0, fetch_req_pc[2:0]} :
+                                                            {1'b1, fetch_req_pc[2:0]}) :
+                                  fetch_req_pc[3:0];
    wire [31:0] fetch_buf_insn = fetch_buf_pick_insn(fetch_buf_data, fetch_buf_offset);
    wire        fetch_buf_full_insn_hit = fetch_buf_insn[1:0] != 2'b11 ||
                                          fetch_buf_offset <= 4'd12;
    wire        fetch_buf_hit = fetch_buf_addr_hit && fetch_buf_full_insn_hit;
-   wire [63:0] fetch_buf_fill_base_va = {pc[63:3], 3'b000};
+   wire [63:0] fetch_buf_fill_base_va = {fetch_req_pc[63:3], 3'b000};
    wire        fetch_buf_fill_page_ok = fetch_buf_fill_base_va[11:0] <= 12'hff0;
    reg [63:0]  hpm_wr_data = 0;
    integer     hpm_i, hpm_j;
@@ -2265,9 +2275,11 @@ module smolrv64(input wire        clock,
 
    task start_instruction_fetch_miss;
       input [63:0] fetch_va;
+      input [63:0] fetch_satp;
+      input [ 1:0] fetch_prv;
       reg [`MEM_SIZE_LG2-4:0] fetch_bram_addr0;
       begin
-         if (csr_satp[63:60] == 4'd8 && prv != 3) begin
+         if (fetch_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
             state <= `S_TLB_START_FETCH;
          end else begin
@@ -2691,24 +2703,12 @@ module smolrv64(input wire        clock,
 `endif
 
            pc <= npc;
+           fetch_req_valid <= 1;
+           fetch_req_pc    <= npc;
+           fetch_req_satp  <= csr_satp;
+           fetch_req_prv   <= prv;
 
-`ifdef SIMULATE
-           if (fetch_buf_summary_enabled) begin
-              if (!fetch_buf_context_hit) begin
-                 fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
-                 if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
-                    $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
-                             $time,
-                             fetch_buf_stat_hits,
-                             fetch_buf_stat_misses + 64'd1);
-              end
-           end
-`endif
-
-           if (fetch_buf_context_hit)
-              state <= `S_FETCH_BUF_CHECK;
-           else
-              start_instruction_fetch_miss(npc);
+           state <= `S_FETCH_REQ;
 
            // Use pre-registered interrupt check (computed previous cycle) for timing closure.
            // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
@@ -2717,6 +2717,7 @@ module smolrv64(input wire        clock,
            // instruction to retire before any newly-unmasked interrupt fires.
            cause_intr = 0;
            if (pre_intr_pending && !just_trapped && !just_xret) begin
+              fetch_req_valid <= 0;
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -2732,8 +2733,32 @@ module smolrv64(input wire        clock,
 `endif
                  cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                  tval = 0;
+                 fetch_req_valid <= 0;
                  state <= `S_EXCEPTION;
               end
+           end
+        end
+
+        `S_FETCH_REQ: begin
+`ifdef SIMULATE
+           if (fetch_buf_summary_enabled) begin
+              if (!fetch_buf_context_hit) begin
+                 fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
+                 if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
+                    $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
+                             $time,
+                             fetch_buf_stat_hits,
+                             fetch_buf_stat_misses + 64'd1);
+              end
+           end
+`endif
+
+           if (!fetch_req_valid) begin
+              state <= `S_FETCH1;
+           end else if (fetch_buf_context_hit) begin
+              state <= `S_FETCH_BUF_CHECK;
+           end else begin
+              start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
            end
         end
 
@@ -2766,7 +2791,7 @@ module smolrv64(input wire        clock,
               fetch_from_dram <= 0;
               state <= `S_RF;
            end else begin
-              start_instruction_fetch_miss(npc);
+              start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
            end
         end
 
@@ -5785,7 +5810,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_START_FETCH: begin
-           start_translation(pc, 2'd0, prv, `S_FETCH2);
+           start_translation(fetch_req_pc, 2'd0, fetch_req_prv, `S_FETCH2);
         end
 
         `S_TLB_START_FETCH_HALF: begin
@@ -6196,6 +6221,10 @@ module smolrv64(input wire        clock,
          clint_mtime <= 0;
          write_back_register <= 0;
          npc <= `RESET_PC;
+         fetch_req_valid <= 0;
+         fetch_req_pc <= `RESET_PC;
+         fetch_req_satp <= 0;
+         fetch_req_prv <= 3;
          pre_npc <= `RESET_PC;
          pre_jalr_target <= `RESET_PC;
          pre_branch_target <= `RESET_PC;

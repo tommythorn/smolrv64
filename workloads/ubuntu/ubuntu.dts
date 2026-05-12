@@ -172,7 +172,7 @@
 			interrupts = <12>;
 			interrupt-parent = <&plic>;
 			dma-noncoherent;
-			status = "okay";
+			status = "disabled";
 		};
 	};
 
