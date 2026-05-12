@@ -4836,6 +4836,7 @@ module smolrv64(input wire        clock,
            end else if (phys_region(mem_addr) == `REGION_UART) begin
               translated <= 0;
               state <= `S_FETCH1;
+              prepare_retire_fetch(npc, csr_satp, prv);
               reservation <= ~0;
 
               // Keep UART writes on the original store cycle; only BRAM writes
@@ -4952,6 +4953,7 @@ module smolrv64(input wire        clock,
                 default: begin end
               endcase
               mem_wr_mask = 0;
+              prepare_retire_fetch(npc, csr_satp, prv);
              end
              `REGION_CLINT: begin
               // CLINT: 0x02000000 msip, 0x02004000 mtimecmp, 0x0200BFF8 mtime
@@ -4970,6 +4972,7 @@ module smolrv64(input wire        clock,
                 default: begin end
               endcase
               mem_wr_mask = 0;
+              prepare_retire_fetch(npc, csr_satp, prv);
              end
              `REGION_PLIC: begin
               // PLIC write (base 0x0C000000)
@@ -4991,6 +4994,7 @@ module smolrv64(input wire        clock,
                     plic_in_service[store_value[5:0]] <= 0;
               end
               mem_wr_mask = 0;
+              prepare_retire_fetch(npc, csr_satp, prv);
              end
              `REGION_BRAM: begin
               // BRAM store: read the affected words now and merge/write full
@@ -5022,6 +5026,7 @@ module smolrv64(input wire        clock,
               mmio_byteenable = mem_wr_mask << (mem_addr % 4);
 
               mem_wr_mask = 0;
+              prepare_retire_fetch(npc, csr_satp, prv);
              end
              `REGION_DRAM: begin
               // DRAM store (0x80000000-0xFFFFFFFF)
@@ -5081,6 +5086,7 @@ module smolrv64(input wire        clock,
               mem1[mem_addr1] <= merge_store_bytes(mem_data1_q,
                                                    bram_store_aligned[127:64],
                                                    bram_store_mask[15:8]);
+           prepare_retire_fetch(npc, csr_satp, prv);
            state <= `S_FETCH1;
         end
 
@@ -5137,6 +5143,8 @@ module smolrv64(input wire        clock,
                     write_back_value = {{56{write_back_value[7]}}, write_back_value[7:0]};
                  else if (load_size_lg2 == 5) // LH
                     write_back_value = {{48{write_back_value[15]}}, write_back_value[15:0]};
+                 if (!do_atomic)
+                    prepare_retire_fetch(npc, csr_satp, prv);
                 end
                 `REGION_CLINT: begin
                  // CLINT read: return value directly, no MMIO bus
@@ -5153,6 +5161,8 @@ module smolrv64(input wire        clock,
                     write_back_value = write_back_value[31:0];
                  else if (load_size_lg2 == 6)
                     write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+                 if (!do_atomic)
+                    prepare_retire_fetch(npc, csr_satp, prv);
                 end
                 `REGION_PLIC: begin
                  // PLIC read (base 0x0C000000)
@@ -5177,9 +5187,13 @@ module smolrv64(input wire        clock,
                     write_back_value = write_back_value[31:0];
                  else if (load_size_lg2 == 6)
                     write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+                 if (!do_atomic)
+                    prepare_retire_fetch(npc, csr_satp, prv);
                 end
                 `REGION_BRAM: begin
                  // BRAM load: write_back_value already computed from speculative read above
+                 if (!do_atomic)
+                    prepare_retire_fetch(npc, csr_satp, prv);
                 end
                 `REGION_MMIO: begin
 `ifdef TRACE_MMIO
@@ -5248,6 +5262,8 @@ module smolrv64(input wire        clock,
               $finish;
 `endif
               state <= `S_AMO;
+           end else begin
+              prepare_retire_fetch(npc, csr_satp, prv);
            end
         end
 
@@ -6196,7 +6212,12 @@ module smolrv64(input wire        clock,
                    6: write_back_value = {{32{combo[31]}}, combo[31:0]};
                    default: write_back_value = 0;
                  endcase
-                 state <= do_atomic ? `S_AMO : `S_FETCH1;
+                 if (do_atomic)
+                    state <= `S_AMO;
+                 else begin
+                    prepare_retire_fetch(npc, csr_satp, prv);
+                    state <= `S_FETCH1;
+                 end
               end else begin
                  // Access crosses a cache-line boundary and the second line
                  // missed during the parallel lookup; request it only now.
@@ -6217,7 +6238,12 @@ module smolrv64(input wire        clock,
                 6: write_back_value = {{32{aligned[31]}}, aligned[31:0]};
                 default: write_back_value = 0;
               endcase
-              state <= do_atomic ? `S_AMO : `S_FETCH1;
+              if (do_atomic)
+                 state <= `S_AMO;
+              else begin
+                 prepare_retire_fetch(npc, csr_satp, prv);
+                 state <= `S_FETCH1;
+              end
            end
         end
 
@@ -6236,7 +6262,12 @@ module smolrv64(input wire        clock,
                 default: write_back_value = 0;
               endcase
            end
-           state <= do_atomic ? `S_AMO : `S_FETCH1;
+           if (do_atomic)
+              state <= `S_AMO;
+           else begin
+              prepare_retire_fetch(npc, csr_satp, prv);
+              state <= `S_FETCH1;
+           end
         end
 
         `S_DRAM_STORE_WAIT: if (dram_write_ready) begin
@@ -6259,7 +6290,12 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_STORE_RESP_WAIT: if (dram_write_done) begin
-           state <= dram_store_split ? `S_DRAM_STORE2 : `S_FETCH1;
+           if (dram_store_split) begin
+              state <= `S_DRAM_STORE2;
+           end else begin
+              prepare_retire_fetch(npc, csr_satp, prv);
+              state <= `S_FETCH1;
+           end
         end
 
       endcase
