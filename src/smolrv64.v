@@ -599,7 +599,7 @@ module smolrv64(input wire        clock,
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
-`define S_FETCH_RES            51  // accept registered fetch result before decode
+`define S_FETCH_RES            51  // fallback accept for a registered fetch result
 `define S_LAST_STATE           51  // update state register width accordingly
 
 `define FETCH_SRC_BUF          2'd0
@@ -1008,8 +1008,8 @@ module smolrv64(input wire        clock,
    reg  [63:0]  fetch_req_satp = 0;
    reg  [ 1:0]  fetch_req_prv = 3;
 
-   // Registered fetch result boundary.  Fetch-buffer, BRAM, and DRAM paths
-   // all produce this bundle; S_FETCH_RES is the single decode accept point.
+   // Registered fetch result boundary.  Kept for fallback/debug staging, while
+   // the normal front-end producer paths now accept directly into decode.
    reg          fetch_res_valid = 0;
    reg  [63:0]  fetch_res_pc = `RESET_PC;
    reg  [31:0]  fetch_res_insn = 0;
@@ -2345,6 +2345,24 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task accept_instruction_fetch;
+      input [63:0] accept_pc;
+      input [31:0] accept_insn;
+      input        accept_from_dram;
+      begin
+         pc <= accept_pc;
+         insn <= accept_insn;
+         fetch_from_dram <= accept_from_dram;
+         translated <= 0;
+         fetch_req_valid <= 0;
+         fetch_res_valid <= 0;
+         rf_decode_valid <= 0;
+         write_back_register = 0;
+         write_back_fp_valid = 0;
+         state <= `S_RF;
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -2828,15 +2846,7 @@ module smolrv64(input wire        clock,
            end
 `endif
            if (fetch_buf_latched_hit) begin
-              fetch_res_valid      <= 1;
-              fetch_res_pc         <= fetch_req_pc;
-              fetch_res_insn       <= fetch_buf_latched_insn;
-              fetch_res_from_dram  <= 0;
-              fetch_res_translated <= 0;
-              fetch_res_source     <= `FETCH_SRC_BUF;
-              write_back_register = 0;
-              write_back_fp_valid = 0;
-              state <= `S_FETCH_RES;
+              accept_instruction_fetch(fetch_req_pc, fetch_buf_latched_insn, 1'b0);
            end else begin
               start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
            end
@@ -2852,15 +2862,7 @@ module smolrv64(input wire        clock,
               fetch_buf_prv     <= fetch_req_prv;
               fetch_buf_data    <= aligned;
            end
-           fetch_res_valid      <= 1;
-           fetch_res_pc         <= fetch_req_pc;
-           fetch_res_insn       <= aligned >> (fetch_req_pc[2:1] * 16);
-           fetch_res_from_dram  <= 0;
-           fetch_res_translated <= translated;
-           fetch_res_source     <= translated ? `FETCH_SRC_XLATE : `FETCH_SRC_BRAM;
-           write_back_register = 0;
-           write_back_fp_valid = 0;
-           state <= `S_FETCH_RES;
+           accept_instruction_fetch(fetch_req_pc, aligned >> (fetch_req_pc[2:1] * 16), 1'b0);
         end
 
         `S_FETCH2_DRAM: begin
@@ -2876,15 +2878,7 @@ module smolrv64(input wire        clock,
               fetch_buf_prv     <= fetch_req_prv;
               fetch_buf_data    <= aligned;
            end
-           fetch_res_valid      <= 1;
-           fetch_res_pc         <= fetch_req_pc;
-           fetch_res_insn       <= aligned >> (fetch_req_pc[2:1] * 16);
-           fetch_res_from_dram  <= 1;
-           fetch_res_translated <= translated;
-           fetch_res_source     <= translated ? `FETCH_SRC_XLATE : `FETCH_SRC_DRAM;
-           write_back_register = 0;
-           write_back_fp_valid = 0;
-           state <= `S_FETCH_RES;
+           accept_instruction_fetch(fetch_req_pc, aligned >> (fetch_req_pc[2:1] * 16), 1'b1);
         end
 
         `S_FETCH_RES: begin
@@ -2903,7 +2897,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_RF: begin
-           // insn is registered (accepted at S_FETCH_RES clock edge).
+           // insn is registered (accepted from the fetch producer clock edge).
            // Cross-page instruction fetch: 32-bit insn at last halfword of a page
            // In VM mode, the next page may map to a different physical page
            if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
