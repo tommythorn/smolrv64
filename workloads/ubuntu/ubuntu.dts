@@ -34,7 +34,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		timebase-frequency = <1000000>; /* 1 MHz, a 10X lie */
+		timebase-frequency = <100000>; /* 100 kHz */
 
 		cpu-map {
 
