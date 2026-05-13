@@ -2422,6 +2422,21 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_prepared_fetch;
+      begin
+         execute_res_valid <= 0;
+         prepare_retire_fetch(npc, csr_satp, prv);
+         state <= `S_FETCH1;
+      end
+   endtask
+
+   task retire_pre_exe_b;
+      begin
+         write_back_value <= pre_exe_b;
+         retire_prepared_fetch();
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -3630,6 +3645,7 @@ module smolrv64(input wire        clock,
               // Quadrant 1
            else if (ex_insn == 1) begin // C.NOP
              // NOP
+             retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'h0001) begin // C.ADDI
@@ -3642,6 +3658,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = ex_insn[11:7];
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'hef83) == 'h6101) begin // C.ADDI16SP
@@ -3650,6 +3667,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'he003) == 'h6001) begin // C.LUI
               write_back_register = ex_rs1;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'hec03) == 'h8001) begin // C.SRLI
@@ -3689,14 +3707,17 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'he003) == 'ha001) begin // C.J
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
 
@@ -3709,10 +3730,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
               npc = pre_jalr_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'hf003) == 'h8002) begin // C.MV
               write_back_register = ex_rs1;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'hffff) == 'h9002) begin // C.EBREAK
@@ -3724,6 +3747,7 @@ module smolrv64(input wire        clock,
            else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
               npc = pre_jalr_target;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'hf003) == 'h9002) begin // C.ADD
@@ -3735,43 +3759,53 @@ module smolrv64(input wire        clock,
            // Quadrant 3, uncompressed
            else if ((ex_insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = ex_rd;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'h0000007f) == 'h00000017) begin // AUIPC
               write_back_register = ex_rd;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = ex_rd;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = ex_rd;
               npc = pre_jalr_target;
+              retire_pre_exe_b();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
               if (pre_branch_taken) npc = pre_branch_target;
+              retire_prepared_fetch();
            end
 
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
@@ -3842,10 +3876,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
               // Nothing to do here
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
               // Nothing to do here
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
@@ -3932,6 +3968,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
               fetch_buf_valid <= 0;
+              retire_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00001073) begin // CSRRW
@@ -4104,8 +4141,9 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = ex_insn;
                  state <= `S_EXCEPTION;
-              end else
-                state <= `S_FETCH1; // treat as NOP (no real sleep in simulation)
+              end else begin
+                 retire_prepared_fetch(); // treat as NOP (no real sleep in simulation)
+              end
            end
 
            // OP-FP (opcode 0x53) — arithmetic-free Phase 1 insns:
