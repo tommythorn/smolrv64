@@ -2384,30 +2384,47 @@ module smolrv64(input wire        clock,
                state <= `S_DRAM_FETCH_HALF_WAIT;
             end
          end else begin
-            rf_decode_valid <= 1;
-            rf_decode_pc <= accept_pc;
-            rf_decode_insn <= accept_insn;
-            rf_decode_from_dram <= accept_from_dram;
-            rd = accept_insn`insn_rd;
-            case (accept_insn[1:0])
-              0: {rs1,rs2} = {{2'd1,accept_insn[9:7]}, {2'd1,accept_insn[4:2]}};
-              1: {rs1,rs2} = {accept_insn[11:7],       {2'd1,accept_insn[4:2]}};
-              2: {rs1,rs2} = {accept_insn[11:7],       accept_insn[6:2]};
-              3: {rs1,rs2} = {accept_insn`insn_rs1,    accept_insn`insn_rs2};
-            endcase
-            // The exceptions
-            if (accept_insn[1:0] == 1 && accept_insn[15])
-              rs1 = {2'd1,accept_insn[9:7]};
-            if (accept_insn[1:0] == 2 && (accept_insn[15:13] == 3'b001 || accept_insn[15:14] == 2'b01))
-              rs1 = 2; // sp
-            if (accept_insn[1:0] == 2 && 5 <= accept_insn[15:13])
-              rs1 = 2; // sp
-            if ((accept_insn & 'he003) == 0)
-              rs1 = 2; // sp
-
-            shamt = accept_insn[25:20];
-            state <= `S_RF2;
+            enqueue_rf_decode(accept_pc, accept_insn, accept_from_dram);
          end
+      end
+   endtask
+
+   task decode_rf_sources;
+      input [31:0] decode_insn;
+      begin
+         rd = decode_insn`insn_rd;
+         case (decode_insn[1:0])
+           0: {rs1,rs2} = {{2'd1,decode_insn[9:7]}, {2'd1,decode_insn[4:2]}};
+           1: {rs1,rs2} = {decode_insn[11:7],       {2'd1,decode_insn[4:2]}};
+           2: {rs1,rs2} = {decode_insn[11:7],       decode_insn[6:2]};
+           3: {rs1,rs2} = {decode_insn`insn_rs1,    decode_insn`insn_rs2};
+         endcase
+         // The exceptions
+         if (decode_insn[1:0] == 1 && decode_insn[15])
+           rs1 = {2'd1,decode_insn[9:7]};
+         if (decode_insn[1:0] == 2 && (decode_insn[15:13] == 3'b001 || decode_insn[15:14] == 2'b01))
+           rs1 = 2; // sp
+         if (decode_insn[1:0] == 2 && 5 <= decode_insn[15:13])
+           rs1 = 2; // sp
+         if ((decode_insn & 'he003) == 0)
+           rs1 = 2; // sp
+
+         shamt = decode_insn[25:20];
+      end
+   endtask
+
+   task enqueue_rf_decode;
+      input [63:0] decode_pc;
+      input [31:0] decode_insn;
+      input        decode_from_dram;
+      begin
+         rf_decode_valid <= 1;
+         rf_decode_pc <= decode_pc;
+         rf_decode_insn <= decode_insn;
+         rf_decode_from_dram <= decode_from_dram;
+         decode_rf_sources(decode_insn);
+         write_back_register = 0;
+         state <= `S_RF2;
       end
    endtask
 
@@ -2999,31 +3016,7 @@ module smolrv64(input wire        clock,
                  state           <= `S_DRAM_FETCH_HALF_WAIT;
               end
            end else begin
-              rf_decode_valid <= 1;
-              rf_decode_pc <= pc;
-              rf_decode_insn <= insn;
-              rf_decode_from_dram <= fetch_from_dram;
-              rd = insn`insn_rd;
-              case (insn[1:0])
-                0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
-                1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
-                2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
-                3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
-              endcase
-              // The exceptions
-              if (insn[1:0] == 1 && insn[15])
-                rs1 = {2'd1,insn[9:7]};
-              if (insn[1:0] == 2 && (insn[15:13] == 3'b001 || insn[15:14] == 2'b01))
-                rs1 = 2; // sp
-              if (insn[1:0] == 2 && 5 <= insn[15:13])
-                rs1 = 2; // sp
-              if ((insn & 'he003) == 0)
-                rs1 = 2; // sp
-
-              shamt = insn[25:20];
-
-              write_back_register = 0;
-              state <= `S_RF2;
+              enqueue_rf_decode(pc, insn, fetch_from_dram);
            end
         end
 
@@ -6162,30 +6155,7 @@ module smolrv64(input wire        clock,
            else
               aligned = 128'd0;
            insn = {aligned[15:0], insn_half};
-           rd = insn`insn_rd;
-           case (insn[1:0])
-             0: {rs1,rs2} = {{2'd1,insn[9:7]}, {2'd1,insn[4:2]}};
-             1: {rs1,rs2} = {insn[11:7],       {2'd1,insn[4:2]}};
-             2: {rs1,rs2} = {insn[11:7],       insn[6:2]};
-             3: {rs1,rs2} = {insn`insn_rs1,    insn`insn_rs2};
-           endcase
-           if (insn[1:0] == 1 && insn[15])
-             rs1 = {2'd1,insn[9:7]};
-           if (insn[1:0] == 2 && (insn[15:13] == 3'b001 || insn[15:14] == 2'b01))
-             rs1 = 2; // sp
-           if (insn[1:0] == 2 && 5 <= insn[15:13])
-             rs1 = 2; // sp
-           if ((insn & 'he003) == 0)
-             rs1 = 2; // sp
-
-           shamt = insn[25:20];
-
-           write_back_register = 0;
-           rf_decode_valid <= 1;
-           rf_decode_pc <= pc;
-           rf_decode_insn <= insn;
-           rf_decode_from_dram <= fetch_from_dram;
-           state <= `S_RF2;  // rs1/rs2 already decoded here; skip S_RF
+           enqueue_rf_decode(pc, insn, fetch_from_dram);
         end
 
         `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
