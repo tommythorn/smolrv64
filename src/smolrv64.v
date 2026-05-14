@@ -2088,7 +2088,8 @@ module smolrv64(input wire        clock,
    reg         tlb_req_sum;
    reg         tlb_req_mxr;
    reg [ 4:0]  tlb_req_return;
-   reg [63:0]  tlb_hit_pa;
+   reg [63:0]  tlb_4k_hit_pa;
+   reg [63:0]  tlb_2m_hit_pa;
    reg         tlb_latched_4k_hit = 0;
    reg         tlb_latched_2m_hit = 0;
    reg         hpm_tlb_insert_4k_pulse = 0;
@@ -6090,11 +6091,8 @@ module smolrv64(input wire        clock,
         `S_TLB_CHECK: begin
            tlb_latched_4k_hit <= tlb_4k_hit;
            tlb_latched_2m_hit <= tlb_2m_hit;
-           if (tlb_4k_hit) begin
-              tlb_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
-           end else if (tlb_2m_hit) begin
-              tlb_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
-           end
+           tlb_4k_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
+           tlb_2m_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
            state <= `S_TLB_DECIDE;
         end
 
@@ -6107,7 +6105,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_HIT: begin
-           route_translated_addr(tlb_hit_pa, tlb_req_return);
+           route_translated_addr(tlb_latched_4k_hit ? tlb_4k_hit_pa : tlb_2m_hit_pa,
+                                 tlb_req_return);
         end
 
         `S_PTW_START: begin
@@ -6601,7 +6600,8 @@ module smolrv64(input wire        clock,
         tlb_2m_wr_en      <= 0;
         tlb_4k_wr_data    <= 0;
         tlb_2m_wr_data    <= 0;
-        tlb_hit_pa        <= 0;
+        tlb_4k_hit_pa     <= 0;
+        tlb_2m_hit_pa     <= 0;
         tlb_latched_4k_hit <= 0;
         tlb_latched_2m_hit <= 0;
         hpm_tlb_insert_4k_pulse <= 0;

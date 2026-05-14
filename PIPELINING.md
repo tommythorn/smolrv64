@@ -105,11 +105,12 @@ Every behavioral pipeline commit should pass:
 1. `make -C src smolrv64-tester`
 2. `make -C src testall`
 3. `make -C workloads/linux run` to `Unpacking initramfs...`
-4. FPGA timing before a performance-oriented commit is treated as hardware
-   ready.
+4. FPGA timing for timing-risk RTL changes before the commit is treated as
+   hardware ready.
 
 Hardware `perf stat sha256sum < /usr/bin/emacs` is the performance arbiter.
 Simulation and timing can prove "works"; hardware CPI proves "helped".
+When Vivado timing fails, fix or revert before stacking more pipeline changes.
 
 ## AI Workflow
 
