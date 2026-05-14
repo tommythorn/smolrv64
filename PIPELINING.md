@@ -16,6 +16,10 @@ The target is not out-of-order execution or multi-issue.  The target is:
   work;
 - every commit remains buildable and testable.
 
+This is a stepping stone toward a speculative superscalar out-of-order design.
+Prefer clean, concise, human-readable stage contracts over squeezing out every
+short-term cycle in the transitional in-order core.
+
 ## Pipeline Contract
 
 Use ready/valid boundaries:

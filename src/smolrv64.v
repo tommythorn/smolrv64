@@ -1019,8 +1019,16 @@ module smolrv64(input wire        clock,
    reg  [63:0]  rf_decode_pc = `RESET_PC;
    reg  [31:0]  rf_decode_insn = 0;
    reg          rf_decode_from_dram = 0;
+   reg  [ 4:0]  rf_decode_rd = 0;
+   reg  [ 4:0]  rf_decode_rs1 = 0;
+   reg  [ 4:0]  rf_decode_rs2 = 0;
+   reg  [ 5:0]  rf_decode_shamt = 0;
    wire [63:0]  rf3_pc = rf_decode_pc;
    wire [31:0]  rf3_insn = rf_decode_insn;
+   wire [ 4:0]  rf3_rd = rf_decode_rd;
+   wire [ 4:0]  rf3_rs1 = rf_decode_rs1;
+   wire [ 4:0]  rf3_rs2 = rf_decode_rs2;
+   wire [ 5:0]  rf3_shamt = rf_decode_shamt;
 
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
@@ -2423,6 +2431,10 @@ module smolrv64(input wire        clock,
          rf_decode_insn <= decode_insn;
          rf_decode_from_dram <= decode_from_dram;
          decode_rf_sources(decode_insn);
+         rf_decode_rd <= rd;
+         rf_decode_rs1 <= rs1;
+         rf_decode_rs2 <= rs2;
+         rf_decode_shamt <= shamt;
          write_back_register = 0;
          state <= `S_RF2;
       end
@@ -3042,10 +3054,10 @@ module smolrv64(input wire        clock,
            rf_decode_valid <= 0;
            execute_req_pc <= rf3_pc;
            execute_req_insn <= rf3_insn;
-           execute_req_rd <= rd;
-           execute_req_rs1 <= rs1;
-           execute_req_rs2 <= rs2;
-           execute_req_shamt <= shamt;
+           execute_req_rd <= rf3_rd;
+           execute_req_rs1 <= rf3_rs1;
+           execute_req_rs2 <= rf3_rs2;
+           execute_req_shamt <= rf3_shamt;
            execute_req_valid <= 1;
            state <= `S_EXECUTE;
 
@@ -4828,12 +4840,12 @@ module smolrv64(input wire        clock,
            cvfpu_operands[1] <= f2;
            cvfpu_operands[2] <= f1_bram;
            cvfpu_rnd_mode <= pre_fp_rnd_mode;
-           cvfpu_op       <= insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
-           cvfpu_op_mod   <= insn[2]; // add/sub variant
-           cvfpu_src_fmt  <= {2'd0, insn[25]}; // FP32/FP64
-           cvfpu_dst_fmt  <= {2'd0, insn[25]}; // FP32/FP64
+           cvfpu_op       <= ex_insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
+           cvfpu_op_mod   <= ex_insn[2]; // add/sub variant
+           cvfpu_src_fmt  <= {2'd0, ex_insn[25]}; // FP32/FP64
+           cvfpu_dst_fmt  <= {2'd0, ex_insn[25]}; // FP32/FP64
            cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-           cvfpu_tag_in   <= {3'd0, rd};
+           cvfpu_tag_in   <= {3'd0, ex_rd};
            cvfpu_write_fp <= 1'b1;
            cvfpu_in_valid <= 1'b1;
            state          <= `S_CVFPU_ISSUE;
@@ -5280,15 +5292,15 @@ module smolrv64(input wire        clock,
            // will skip re-translation and use the physical mem_addr directly.
            mem_wr_mask = 255;
            store_value = s2;
-           if (!insn[12]) begin
+           if (!ex_insn[12]) begin
               write_back_value = {{32{write_back_value[31]}},write_back_value[31:0]};
               store_value = {{32{s2[31]}},s2[31:0]};
               mem_wr_mask = 15;
            end
 
-           // insn[31:27]=funct5, insn[26]=aq, insn[25]=rl, insn[24]=rs2[4]
+           // ex_insn[31:27]=funct5, ex_insn[26]=aq, ex_insn[25]=rl, ex_insn[24]=rs2[4]
            // Mask aq/rl/rs2[4] so any register and any ordering variant is handled.
-           case ({insn[31:27], 3'b0})
+           case ({ex_insn[31:27], 3'b0})
              'h08: begin end // AMOSWAP
              'h00: store_value = store_value + write_back_value; // AMOADD
              'h20: store_value = store_value ^ write_back_value; // AMOXOR
@@ -5315,10 +5327,10 @@ module smolrv64(input wire        clock,
            state <= `S_EXECUTE2;
            csr_access_failure = 0;
            csr_write_failure = 0;
-           tval = insn;
-           write_back_register = rd;
+           tval = ex_insn;
+           write_back_register = ex_rd;
 
-           if (rd != 0 || csr_op != `CSR_OP_COPY) begin
+           if (ex_rd != 0 || csr_op != `CSR_OP_COPY) begin
               // read the CSR
 
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
@@ -5456,7 +5468,7 @@ module smolrv64(input wire        clock,
            end
 
            // Write priviledge check
-           if (rs1 != 0 || csr_op == `CSR_OP_COPY) begin
+           if (ex_rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               if (prv < csrno[9:8]) begin
                  csr_write_failure = 1;
 `ifdef SIMULATE
@@ -5481,7 +5493,7 @@ module smolrv64(input wire        clock,
 
 
            // CSRRS, CSRRC, CSRRSI, and CSRRCI don't write the CSR if rs1 == 0
-           if (!csr_write_failure && (rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
+           if (!csr_write_failure && (ex_rs1 != 0 || csr_op == `CSR_OP_COPY)) begin
               // write the CSR
 
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
@@ -5901,7 +5913,7 @@ module smolrv64(input wire        clock,
 
              default: begin
                 cause = `TRAP_ILLEGAL_INSTRUCTION;
-                tval = insn;
+                tval = ex_insn;
                 state <= `S_EXCEPTION;
              end
            endcase
@@ -6382,6 +6394,10 @@ module smolrv64(input wire        clock,
          rf_decode_pc <= `RESET_PC;
          rf_decode_insn <= 0;
          rf_decode_from_dram <= 0;
+         rf_decode_rd <= 0;
+         rf_decode_rs1 <= 0;
+         rf_decode_rs2 <= 0;
+         rf_decode_shamt <= 0;
          execute_req_valid <= 0;
          execute_req_pc <= `RESET_PC;
          execute_req_insn <= 0;
