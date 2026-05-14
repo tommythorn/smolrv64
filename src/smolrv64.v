@@ -864,13 +864,17 @@ module smolrv64(input wire        clock,
    // and predecode outputs; S_EXECUTE clears it when accepted.
    reg         execute_req_valid = 0;
    reg  [63:0] execute_req_pc = `RESET_PC;
+   reg  [63:0] execute_req_next_pc = `RESET_PC;
    reg  [31:0] execute_req_insn = 0;
+   reg  [ 3:0] execute_req_epoch = 0;
    reg  [ 4:0] execute_req_rd = 0;
    reg  [ 4:0] execute_req_rs1 = 0;
    reg  [ 4:0] execute_req_rs2 = 0;
    reg  [ 5:0] execute_req_shamt = 0;
    wire [63:0] ex_pc = execute_req_pc;
+   wire [63:0] ex_next_pc = execute_req_next_pc;
    wire [31:0] ex_insn = execute_req_insn;
+   wire [ 3:0] ex_epoch = execute_req_epoch;
    wire [ 4:0] ex_rd = execute_req_rd;
    wire [ 4:0] ex_rs1 = execute_req_rs1;
    wire [ 4:0] ex_rs2 = execute_req_rs2;
@@ -1035,6 +1039,7 @@ module smolrv64(input wire        clock,
    // this payload and launches the BRAM read; S_RF3 consumes it.
    reg          rf_read_valid = 0;
    reg  [63:0]  rf_read_pc = `RESET_PC;
+   reg  [63:0]  rf_read_next_pc = `RESET_PC;
    reg  [31:0]  rf_read_insn = 0;
    reg  [ 3:0]  rf_read_epoch = 0;
    reg  [ 4:0]  rf_read_rd = 0;
@@ -1042,7 +1047,9 @@ module smolrv64(input wire        clock,
    reg  [ 4:0]  rf_read_rs2 = 0;
    reg  [ 5:0]  rf_read_shamt = 0;
    wire [63:0]  rf3_pc = rf_read_pc;
+   wire [63:0]  rf3_next_pc = rf_read_next_pc;
    wire [31:0]  rf3_insn = rf_read_insn;
+   wire [ 3:0]  rf3_epoch = rf_read_epoch;
    wire [ 4:0]  rf3_rd = rf_read_rd;
    wire [ 4:0]  rf3_rs1 = rf_read_rs1;
    wire [ 4:0]  rf3_rs2 = rf_read_rs2;
@@ -2519,6 +2526,7 @@ module smolrv64(input wire        clock,
             rf_decode_valid <= 0;
             rf_read_valid <= 1;
             rf_read_pc <= rf_decode_pc;
+            rf_read_next_pc <= rf_decode_next_pc;
             rf_read_insn <= rf_decode_insn;
             rf_read_epoch <= rf_decode_epoch;
             rf_read_rd <= rf_decode_rd;
@@ -3197,7 +3205,9 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
            rf_read_valid <= 0;
            execute_req_pc <= rf3_pc;
+           execute_req_next_pc <= rf3_next_pc;
            execute_req_insn <= rf3_insn;
+           execute_req_epoch <= rf3_epoch;
            execute_req_rd <= rf3_rd;
            execute_req_rs1 <= rf3_rs1;
            execute_req_rs2 <= rf3_rs2;
@@ -3305,7 +3315,7 @@ module smolrv64(input wire        clock,
               end
               else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR (link = rf3_pc+2)
                  pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= rf3_pc + 2;
+                 pre_exe_b  <= rf3_next_pc;
               end
               else if ((rf3_insn & 'hf003) == 'h9002) begin // C.ADD
                  pre_exe_op <= `EXOP_ADD;
@@ -3325,11 +3335,11 @@ module smolrv64(input wire        clock,
                     end
                     5'b11011: begin // JAL (link = rf3_pc+4)
                        pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= rf3_pc + 4;
+                       pre_exe_b  <= rf3_next_pc;
                     end
                     5'b11001: begin // JALR (link = rf3_pc+4)
                        pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= rf3_pc + 4;
+                       pre_exe_b  <= rf3_next_pc;
                     end
                     5'b00100: begin // OP-IMM: funct3 selects operation
                        pre_exe_b <= d_imm_i; // default; shifts override below
@@ -3403,7 +3413,7 @@ module smolrv64(input wire        clock,
               d_c_b   = {{56{rf3_insn[12]}}, rf3_insn[6:5], rf3_insn[2], rf3_insn[11:10],
                          rf3_insn[4:3], 1'b0};
 
-              pre_npc <= rf3_pc + (rf3_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+              pre_npc <= rf3_next_pc;
               pre_jalr_target <= (s1_bram + d_imm_i) & ~64'd1;
               pre_branch_target <= rf3_pc + d_imm_b;
               pre_branch_taken <= 0;
@@ -6554,6 +6564,7 @@ module smolrv64(input wire        clock,
          rf_decode_shamt <= 0;
          rf_read_valid <= 0;
          rf_read_pc <= `RESET_PC;
+         rf_read_next_pc <= `RESET_PC;
          rf_read_insn <= 0;
          rf_read_epoch <= 0;
          rf_read_rd <= 0;
@@ -6562,7 +6573,9 @@ module smolrv64(input wire        clock,
          rf_read_shamt <= 0;
          execute_req_valid <= 0;
          execute_req_pc <= `RESET_PC;
+         execute_req_next_pc <= `RESET_PC;
          execute_req_insn <= 0;
+         execute_req_epoch <= 0;
          execute_req_rd <= 0;
          execute_req_rs1 <= 0;
          execute_req_rs2 <= 0;

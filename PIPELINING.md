@@ -71,6 +71,8 @@ than a larger instruction FIFO.
    - Split enqueue from register-file read launch.
    - Add an explicit `rf_read_*` payload for the instruction whose BRAM
      register-file read is in flight.
+   - Carry `pc`, `next_pc`, decoded register indexes, and frontend epoch in the
+     payload rather than recomputing frontend facts in later states.
    - Do not overwrite a valid decode slot until the backend accepts it.
    - Make `S_RF`/`S_RF2`/`S_RF3` the backend consumer side of that queue.
 
