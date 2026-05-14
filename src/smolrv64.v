@@ -639,7 +639,7 @@ module smolrv64(input wire        clock,
 
 // pre_mem_op: memory access class pre-decoded in S_RF3, consumed in S_EXECUTE.
 // Collapses the 22 per-insn load/store/AMO branches into one shared block
-// (single mem_addr adder, single mem_addr0/mem_addr1 splitter).
+// (single mem_addr adder).
 `define MEMOP_NONE  3'd0
 `define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U}, FLW/FLD, compressed integer/FP loads
 `define MEMOP_STORE 3'd2  // S{B,H,W,D}, FSW/FSD, compressed integer/FP stores
@@ -799,14 +799,9 @@ module smolrv64(input wire        clock,
    end
 
 
-   reg  [`MEM_SIZE_LG2-5:0] mem_addr0, mem_addr1;
    reg  [63:0] mem_addr;
    reg  [15:0] mem_wr_mask;
-   reg  [63:0] mem_data0_q = 0;  // registered copy latched in S_FETCH1B; used by S_FETCH2
-   reg  [63:0] mem_data1_q = 0;
    reg         fetch_latch_half = 0; // S_FETCH1B should continue to S_FETCH2_HALF
-   reg  [127:0] bram_store_aligned = 0;
-   reg  [ 15:0] bram_store_mask = 0;
 
    function [63:0] merge_store_bytes;
       input [63:0] old_word;
@@ -1042,7 +1037,9 @@ module smolrv64(input wire        clock,
    localparam [3:0] CACHE_CBO_TAG_READ  = 4'd9;
    localparam [3:0] CACHE_CBO_TAG_CHECK = 4'd10;
    localparam [3:0] CACHE_CBO_RESP      = 4'd11;
-   localparam [3:0] CACHE_LAST_STATE = CACHE_CBO_RESP;
+   localparam [3:0] CACHE_BRAM_FILL_READ = 4'd12;
+   localparam [3:0] CACHE_BRAM_WB_WRITE = 4'd13;
+   localparam [3:0] CACHE_LAST_STATE = CACHE_BRAM_WB_WRITE;
 
    reg [ 7:0] cache_bank_wr_en = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
@@ -1080,6 +1077,12 @@ module smolrv64(input wire        clock,
    reg        cache_cbo_flush = 0;
    reg [30:6] cache_cbo_line_addr = 0;
    reg        cache_cbo_done_r = 0;
+   reg        cache_bram_readdatavalid = 0;
+   reg [63:0] cache_bram_readdata = 0;
+   reg        cache_bram_write_done = 0;
+   reg [`MEM_SIZE_LG2-5:0] cache_bram_word_idx = 0;
+   reg        cache_bram_word_bank = 0;
+   reg [63:0] cache_bram_wb_data = 0;
    reg        dram_readdatavalid_r = 0;
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
@@ -1098,6 +1101,15 @@ module smolrv64(input wire        clock,
    reg [ 7:0] axi_write_strb = 0;
    wire       axi_write_ready;
    wire       axi_write_done;
+   wire       cache_fill_data_valid = axi_readdatavalid || cache_bram_readdatavalid;
+   wire [63:0] cache_fill_data = cache_bram_readdatavalid ? cache_bram_readdata
+                                                          : axi_readdata;
+   wire [63:0] cache_bram_base_addr = {33'd0, MEM_BASEADDR_VALUE[30:0]};
+   wire [63:0] cache_bram_window_mask = 64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2;
+   wire       cache_fill_from_bram =
+              ((cache_fill_base ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
+   wire       cache_wb_to_bram =
+              ((cache_wb_base ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
 
    reg        ar_busy = 0;
    reg        r_busy  = 0;
@@ -1122,10 +1134,10 @@ module smolrv64(input wire        clock,
    wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
    wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
-   wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && axi_readdatavalid;
+   wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && cache_fill_data_valid;
    wire       hpm_cache_fill_line_pulse = hpm_cache_fill_beat_pulse && cache_fill_beat == 3'd7;
    wire       cache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
-                                    axi_write_ready && !axi_read &&
+                                    (cache_wb_to_bram || (axi_write_ready && !axi_read)) &&
                                     cache_wb_beat == 3'd0;
    wire       hpm_axi_read_pulse = axi_read;
    wire       hpm_axi_write_pulse = axi_write && axi_write_ready;
@@ -1279,6 +1291,8 @@ module smolrv64(input wire        clock,
            CACHE_CBO_TAG_READ:  cache_state_name = "CBO_TAG_READ";
            CACHE_CBO_TAG_CHECK: cache_state_name = "CBO_TAG_CHECK";
            CACHE_CBO_RESP:      cache_state_name = "CBO_RESP";
+           CACHE_BRAM_FILL_READ: cache_state_name = "BRAM_FILL_READ";
+           CACHE_BRAM_WB_WRITE: cache_state_name = "BRAM_WB_WRITE";
            default:         cache_state_name = "UNKNOWN";
          endcase
       end
@@ -1511,14 +1525,14 @@ module smolrv64(input wire        clock,
    always @* begin
       cache_bank_wr_en = 8'd0;
       cache_bank_wr_idx = cache_fill_idx;
-      cache_bank_wr_data = axi_readdata;
+      cache_bank_wr_data = cache_fill_data;
 
-      if (cache_state == CACHE_FILL_WAIT && axi_readdatavalid) begin
+      if (cache_state == CACHE_FILL_WAIT && cache_fill_data_valid) begin
          cache_bank_wr_en = 8'd1 << cache_fill_beat;
          cache_bank_wr_idx = cache_fill_idx;
-         cache_bank_wr_data = axi_readdata;
+         cache_bank_wr_data = cache_fill_data;
          if (cache_req_write && cache_fill_beat == cache_req_bank)
-            cache_bank_wr_data = merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
+            cache_bank_wr_data = merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
       end
 
       if (cache_state == CACHE_HIT_RESP && cache_req_write && cache_lookup_hit) begin
@@ -2320,29 +2334,18 @@ module smolrv64(input wire        clock,
       input [63:0] fetch_va;
       input [63:0] fetch_satp;
       input [ 1:0] fetch_prv;
-      reg [`MEM_SIZE_LG2-4:0] fetch_bram_addr0;
       begin
          fetch_req_fast_ready <= 0;
          if (fetch_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
             state <= `S_TLB_START_FETCH;
          end else begin
-            if (fetch_va[63:31] == 1 &&
-                fetch_va[63:`MEM_SIZE_LG2] != MEM_BASEADDR_VALUE[63:`MEM_SIZE_LG2]) begin
-               // DRAM fetch physical (above BRAM: 0x80000000-0xFFFFFFFF)
-               fetch_from_dram  <= 1;
-               dram_addr        <= fetch_va[30:3];
-               dram_read        <= 1;
-               state            <= `S_DRAM_FETCH_WAIT;
-            end else begin
-               // BRAM fetch physical
-               fetch_bram_addr0 = fetch_va[`MEM_SIZE_LG2-1:4] +
-                                  {{(`MEM_SIZE_LG2-4){1'b0}}, fetch_va[3]};
-               fetch_from_dram  <= 0;
-               mem_addr0        <= fetch_bram_addr0[`MEM_SIZE_LG2-5:0];
-               mem_addr1        <= fetch_va[`MEM_SIZE_LG2-1:4];
-               state            <= `S_FETCH1B;
-            end
+            // Both local BRAM and external DRAM fetches use the cache response
+            // path.  The cache refill engine chooses BRAM or AXI by line address.
+            fetch_from_dram  <= 1;
+            dram_addr        <= fetch_va[30:3];
+            dram_read        <= 1;
+            state            <= `S_DRAM_FETCH_WAIT;
          end
       end
    endtask
@@ -2445,26 +2448,21 @@ module smolrv64(input wire        clock,
          mem_addr = req_pa;
          translated <= 1;
          if (req_return == `S_FETCH2 || req_return == `S_FETCH2_HALF) begin
-            if (mem_addr[31] && mem_addr[63:`MEM_SIZE_LG2] != MEM_BASEADDR_VALUE[63:`MEM_SIZE_LG2]) begin
-               // DRAM instruction fetch (above BRAM overlay)
+            if (phys_region(mem_addr) == `REGION_BRAM ||
+                phys_region(mem_addr) == `REGION_DRAM) begin
+               // Cacheable instruction fetch.  Local BRAM is a cache refill
+               // source now; it is no longer consumed directly by fetch.
                fetch_from_dram <= 1;
                dram_addr       <= mem_addr[30:3];
                dram_read       <= 1;
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
             end else begin
-               fetch_from_dram <= 0;
-               mem_addr0       <= mem_addr[`MEM_SIZE_LG2-1:4] +
-                                  {{(`MEM_SIZE_LG2-4){1'b0}}, mem_addr[3]};
-               mem_addr1       <= mem_addr[`MEM_SIZE_LG2-1:4];
-               // Route through S_FETCH1B to capture synchronous SRAM output.
-               fetch_latch_half <= req_return == `S_FETCH2_HALF;
-               state           <= `S_FETCH1B;
+               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+               tval = req_pa;
+               state <= `S_EXCEPTION;
             end
          end else begin
-            mem_addr0 <= mem_addr[`MEM_SIZE_LG2-1:4] +
-                         {{(`MEM_SIZE_LG2-4){1'b0}}, mem_addr[3]};
-            mem_addr1 <= mem_addr[`MEM_SIZE_LG2-1:4];
             state     <= {1'b0, req_return};
          end
       end
@@ -2870,24 +2868,14 @@ module smolrv64(input wire        clock,
                  fetch_req_fast_ready <= 0;
                  state <= `S_EXCEPTION;
               end else if (fetch_req_fast_ready && fetch_req_valid) begin
-`ifdef SIMULATE
-                 if (fetch_buf_summary_enabled && fetch_buf_hit)
-                    fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
-`endif
                  fetch_req_fast_ready <= 0;
-                 if (fetch_buf_hit)
-                    accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
+                 state <= `S_FETCH_BUF_CHECK;
               end else begin
                  prepare_retire_fetch(npc, csr_satp, prv);
               end
            end else if (fetch_req_fast_ready && fetch_req_valid) begin
-`ifdef SIMULATE
-              if (fetch_buf_summary_enabled && fetch_buf_hit)
-                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
-`endif
               fetch_req_fast_ready <= 0;
-              if (fetch_buf_hit)
-                 accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
+              state <= `S_FETCH_BUF_CHECK;
            end else begin
               prepare_retire_fetch(npc, csr_satp, prv);
            end
@@ -2912,10 +2900,8 @@ module smolrv64(input wire        clock,
            if (!fetch_req_valid) begin
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH1;
-           end else if (fetch_buf_hit) begin
-              accept_instruction_fetch(fetch_req_pc, fetch_buf_insn, 1'b0);
            end else begin
-              start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
+              state <= `S_FETCH_BUF_CHECK;
            end
         end
 
@@ -2948,16 +2934,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH2: begin
-           aligned = fetch_req_pc[3] == 0 ? {mem_data1_q,mem_data0_q} : {mem_data0_q,mem_data1_q};
-           if (fetch_buf_fill_page_ok) begin
-              fetch_buf_valid   <= 1;
-              fetch_buf_base_va <= fetch_buf_fill_base_va;
-              fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
-              fetch_buf_satp    <= fetch_req_satp;
-              fetch_buf_prv     <= fetch_req_prv;
-              fetch_buf_data    <= aligned;
-           end
-           accept_instruction_fetch(fetch_req_pc, aligned >> (fetch_req_pc[2:1] * 16), 1'b0);
+           // Cache-backed fetches arrive through S_FETCH2_DRAM.
+           state <= `S_FETCH1;
         end
 
         `S_FETCH2_DRAM: begin
@@ -3493,18 +3471,15 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH1B: begin
-           // Synchronous SRAM read.  mem_addr0/mem_addr1 were set in the
-           // preceding state; S_FETCH2/S_FETCH2_HALF consume the registered data.
-           mem_data0_q <= mem0[mem_addr0];
-           mem_data1_q <= mem1[mem_addr1];
-           state <= fetch_latch_half ? `S_FETCH2_HALF : `S_FETCH2;
+           // BRAM fetches now use the cache refill path.  This state is kept
+           // only as a defensive sink for stale encoded states.
+           state <= `S_FETCH1;
            fetch_latch_half <= 0;
         end
 
         `S_LOAD_LATCH: begin
-           // Synchronous SRAM read.  S_LOAD_ALIGN consumes the registered data.
-           mem_data0_q <= mem0[mem_addr0];
-           mem_data1_q <= mem1[mem_addr1];
+           // Legacy landing state after translation.  Cacheable memory is
+           // routed in S_LOAD_ALIGN; BRAM is only a cache refill source.
            state <= `S_LOAD_ALIGN;
         end
 
@@ -3553,9 +3528,8 @@ module smolrv64(input wire        clock,
 
            // Shared mem-access block — collapses all load/store/LR/SC/AMO
            // branches using the pre-decoded signals from rf3_mem_decode.
-           // One s1+pre_mem_offset adder and one mem_addr0/1 splitter
-           // replace 22 parallel copies, shrinking the mem_addr critical
-           // path from ~14 LUT levels to ~7.
+           // One s1+pre_mem_offset adder replaces 22 parallel copies,
+           // shrinking the mem_addr critical path from ~14 LUT levels to ~7.
            if (pre_mem_op != `MEMOP_NONE) begin
               if (pre_mem_fp && fs == 0) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -3568,8 +3542,6 @@ module smolrv64(input wire        clock,
               write_back_fp_register = pre_mem_wb_reg;
               mem_addr      = s1 + pre_mem_offset;
               load_size_lg2 = pre_load_size_lg2;
-              mem_addr0    <= mem_addr[63:4] + mem_addr[3];
-              mem_addr1    <= mem_addr[63:4];
               begin : mem_access_dispatch
                  reg [12:0] mem_access_bytes;
 
@@ -4912,7 +4884,8 @@ module smolrv64(input wire        clock,
 
         `S_CBO_EXEC: begin
            translated <= 0;
-           if (phys_region(mem_addr) == `REGION_DRAM) begin
+           if (phys_region(mem_addr) == `REGION_BRAM ||
+               phys_region(mem_addr) == `REGION_DRAM) begin
               if (cache_idle) begin
                  cache_cbo_line_addr <= mem_addr[30:6];
                  cache_cbo_flush <= 1;
@@ -4990,10 +4963,6 @@ module smolrv64(input wire        clock,
            translated <= 0;
            state <= `S_FETCH1;
            reservation <= ~0;
-           // Keep the mem_data*_q clock-enable independent of the address
-           // region decode; only REGION_BRAM consumes these latched words.
-           mem_data0_q <= mem0[mem_addr0];
-           mem_data1_q <= mem1[mem_addr1];
 
 `ifdef RISCV_TESTS
            // riscv-tests signal completion by storing gp to "tohost". In the
@@ -5092,40 +5061,11 @@ module smolrv64(input wire        clock,
               end
               mem_wr_mask = 0;
              end
-             `REGION_BRAM: begin
-              // BRAM store: read the affected words now and merge/write full
-              // 64-bit words in S_STORE_BRAM_WRITE.  This removes the old
-              // byte-wide write-enable fanout from the store commit state.
-              begin : bram_store_prepare
-                 reg [127:0] bram_aligned;
-                 reg [ 15:0] bram_mask;
-                 bram_aligned = {64'd0,store_value} << (8 * (mem_addr % 8));
-                 bram_mask = mem_wr_mask << (mem_addr % 8);
-                 if (mem_addr[3]) begin
-                    bram_aligned = {bram_aligned[63:0], bram_aligned[127:64]};
-                    bram_mask = {bram_mask[7:0], bram_mask[15:8]};
-                 end
-                 bram_store_aligned <= bram_aligned;
-                 bram_store_mask    <= bram_mask;
-                 mem_wr_mask = 0;
-                 state <= `S_STORE_BRAM_WRITE;
-              end
-             end
-             `REGION_MMIO: begin
-`ifdef TRACE_MMIO
-              $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
-`endif
-
-              mmio_address = mem_addr;
-              mmio_write = 1;
-              mmio_writedata = store_value << (8 * (mem_addr % 4));
-              mmio_byteenable = mem_wr_mask << (mem_addr % 4);
-
-              mem_wr_mask = 0;
-             end
+             `REGION_BRAM,
              `REGION_DRAM: begin
-              // DRAM store (0x80000000-0xFFFFFFFF)
-              begin : dram_store_calc
+              // Cacheable store.  The cache refill/writeback engine chooses
+              // BRAM or AXI backing by line address; MMIO never reaches here.
+              begin : cacheable_store_calc
                  reg [127:0] wide_data;
                  reg  [15:0] wide_mask;
                  wide_data = {64'd0, store_value} << (mem_addr[2:0] * 8);
@@ -5157,6 +5097,18 @@ module smolrv64(input wire        clock,
                  end
               end
              end
+             `REGION_MMIO: begin
+`ifdef TRACE_MMIO
+              $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
+`endif
+
+              mmio_address = mem_addr;
+              mmio_write = 1;
+              mmio_writedata = store_value << (8 * (mem_addr % 4));
+              mmio_byteenable = mem_wr_mask << (mem_addr % 4);
+
+              mem_wr_mask = 0;
+             end
              default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -5173,14 +5125,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_STORE_BRAM_WRITE: begin
-           if (|bram_store_mask[7:0])
-              mem0[mem_addr0] <= merge_store_bytes(mem_data0_q,
-                                                   bram_store_aligned[63:0],
-                                                   bram_store_mask[7:0]);
-           if (|bram_store_mask[15:8])
-              mem1[mem_addr1] <= merge_store_bytes(mem_data1_q,
-                                                   bram_store_aligned[127:64],
-                                                   bram_store_mask[15:8]);
+           // BRAM stores are cacheable stores now; stale entries retire.
            state <= `S_FETCH1;
         end
 
@@ -5190,20 +5135,6 @@ module smolrv64(input wire        clock,
               start_translation(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_LATCH);
            end else begin
               if (!do_atomic) translated <= 0;
-
-              aligned = mem_addr[3] ? {mem_data0_q, mem_data1_q} : {mem_data1_q, mem_data0_q};
-              aligned = aligned >> (mem_addr[2:0] * 8);
-
-              case (load_size_lg2)
-                0: write_back_value = aligned[ 7:0];
-                1: write_back_value = aligned[15:0];
-                2: write_back_value = aligned[31:0];
-                3: write_back_value = aligned;
-                4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
-                5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
-                6: write_back_value = {{32{aligned[31]}},aligned[31:0]};
-                7: write_back_value = 64'hx;
-              endcase
 
               state <= `S_FETCH1;
 
@@ -5278,9 +5209,6 @@ module smolrv64(input wire        clock,
                  else if (load_size_lg2 == 6)
                     write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
                 end
-                `REGION_BRAM: begin
-                 // BRAM load: write_back_value already computed from speculative read above
-                end
                 `REGION_MMIO: begin
 `ifdef TRACE_MMIO
                  $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
@@ -5290,8 +5218,10 @@ module smolrv64(input wire        clock,
                  mmio_address = mem_addr;
                  mmio_read = 1;
                 end
+                `REGION_BRAM,
                 `REGION_DRAM: begin
-                 // DRAM load (0x80000000-0xFFFFFFFF)
+                 // Cacheable load.  The cache refill engine chooses BRAM or
+                 // AXI by line address; MMIO stays on the explicit slow path.
                  dram_addr <= mem_addr[30:3];
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
@@ -6071,13 +6001,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_PTW_READ: begin
-           // Sv39 page table walk: latch PTE from memory; process in S_PTW_PROCESS.
-           // Registering here also gives the SRAM a synchronous read port.
-           if (ptw_from_dram)
-              pte_latch <= dram_latched;
-           else
-              pte_latch <= ptw_pte_addr[3] ? {mem0[mem_addr0], mem1[mem_addr1]}
-                                            : {mem1[mem_addr1], mem0[mem_addr0]};
+           // Sv39 page table walk: latch PTE from the cache response path.
+           pte_latch <= dram_latched;
            state <= `S_PTW_PROCESS;
         end
 
@@ -6211,16 +6136,18 @@ module smolrv64(input wire        clock,
         end
 
         `S_PTW_LAUNCH: begin
-           if (ptw_pte_addr[31] && ptw_pte_addr[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2) begin
+           if (phys_region(ptw_pte_addr) == `REGION_BRAM ||
+               phys_region(ptw_pte_addr) == `REGION_DRAM) begin
               ptw_from_dram <= 1;
               dram_addr     <= ptw_pte_addr[30:3];
               dram_read     <= 1;
               state         <= `S_DRAM_PTW_WAIT;
            end else begin
-              ptw_from_dram <= 0;
-              mem_addr0     <= ptw_pte_addr[`MEM_SIZE_LG2-1:4] + ptw_pte_addr[3];
-              mem_addr1     <= ptw_pte_addr[`MEM_SIZE_LG2-1:4];
-              state         <= `S_PTW_READ;
+              cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
+                      ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
+                                        `TRAP_STORE_PAGE_FAULT;
+              tval = ptw_va;
+              state <= `S_EXCEPTION;
            end
         end
 
@@ -6233,8 +6160,7 @@ module smolrv64(input wire        clock,
               // pc+2 is at byte 0 of the next 8B chunk (dram_latched was updated)
               aligned = {64'bx, dram_latched};
            else
-              // pc+2 is page-aligned (0x...000), so bit 3 is 0
-              aligned = {mem_data1_q, mem_data0_q};
+              aligned = 128'd0;
            insn = {aligned[15:0], insn_half};
            rd = insn`insn_rd;
            case (insn[1:0])
@@ -6620,6 +6546,8 @@ module smolrv64(input wire        clock,
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
       dram_write_done_r <= 0;
+      cache_bram_readdatavalid <= 0;
+      cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
       axi_read  <= 0;
       axi_write <= 0;
@@ -6723,7 +6651,17 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_WB_REQ: begin
-           if (axi_write_ready && !axi_read) begin
+           if (cache_wb_to_bram) begin
+              begin : cache_bram_wb_req
+                 reg [63:0] bram_beat_addr;
+                 bram_beat_addr = cache_wb_base + {58'd0, cache_wb_beat, 3'd0} -
+                                  cache_bram_base_addr;
+                 cache_bram_word_idx  <= bram_beat_addr[`MEM_SIZE_LG2-1:4];
+                 cache_bram_word_bank <= bram_beat_addr[3];
+                 cache_bram_wb_data   <= cache_selected_bank_data(cache_wb_beat);
+              end
+              cache_state <= CACHE_BRAM_WB_WRITE;
+           end else if (axi_write_ready && !axi_read) begin
 `ifdef SIMULATE
               if (cache_trace_enabled) begin
                  $display("%05d CACHE WBREQ beat=%0d addr=%016h data=%016h",
@@ -6741,8 +6679,17 @@ module smolrv64(input wire        clock,
            end
         end
 
+        CACHE_BRAM_WB_WRITE: begin
+           if (cache_bram_word_bank)
+              mem1[cache_bram_word_idx] <= cache_bram_wb_data;
+           else
+              mem0[cache_bram_word_idx] <= cache_bram_wb_data;
+           cache_bram_write_done <= 1;
+           cache_state <= CACHE_WB_WAIT;
+        end
+
         CACHE_WB_WAIT: begin
-           if (axi_write_done) begin
+           if (axi_write_done || cache_bram_write_done) begin
               if (cache_wb_beat == 3'd7) begin
                  cache_wb_beat <= 0;
                  if (cache_wb_after_cbo) begin
@@ -6803,21 +6750,39 @@ module smolrv64(input wire        clock,
                        cache_fill_base + (64'd8 * cache_fill_beat));
            end
 `endif
-           axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
-           axi_read      <= 1;
-           cache_state   <= CACHE_FILL_WAIT;
+           if (cache_fill_from_bram) begin
+              begin : cache_bram_fill_req
+                 reg [63:0] bram_beat_addr;
+                 bram_beat_addr = cache_fill_base + {58'd0, cache_fill_beat, 3'd0} -
+                                  cache_bram_base_addr;
+                 cache_bram_word_idx  <= bram_beat_addr[`MEM_SIZE_LG2-1:4];
+                 cache_bram_word_bank <= bram_beat_addr[3];
+              end
+              cache_state <= CACHE_BRAM_FILL_READ;
+           end else begin
+              axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
+              axi_read      <= 1;
+              cache_state   <= CACHE_FILL_WAIT;
+           end
+        end
+
+        CACHE_BRAM_FILL_READ: begin
+           cache_bram_readdata <= cache_bram_word_bank ? mem1[cache_bram_word_idx]
+                                                       : mem0[cache_bram_word_idx];
+           cache_bram_readdatavalid <= 1;
+           cache_state <= CACHE_FILL_WAIT;
         end
 
         CACHE_FILL_WAIT: begin
-           if (axi_readdatavalid) begin
+           if (cache_fill_data_valid) begin
               if (cache_fill_beat == cache_req_bank) begin
                  if (cache_req_write)
-                    cache_fill_return_data <= merge_store_bytes(axi_readdata, cache_store_data, cache_store_strb);
+                    cache_fill_return_data <= merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
                  else
-                    cache_fill_return_data <= axi_readdata;
+                    cache_fill_return_data <= cache_fill_data;
               end
               if (cache_fill_beat == cache_req_next_bank)
-                 cache_fill_next_data <= axi_readdata;
+                 cache_fill_next_data <= cache_fill_data;
               if (cache_fill_beat == 3'd7) begin
                  cache_tag_wr_en   <= 1;
                  cache_tag_wr_idx  <= cache_fill_idx;
@@ -6825,9 +6790,9 @@ module smolrv64(input wire        clock,
                  if (cache_req_write) begin
                     dram_write_done_r <= 1;
                  end else begin
-                    dram_readdata_r <= cache_req_bank == 3'd7 ? axi_readdata : cache_fill_return_data;
+                    dram_readdata_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
                     dram_readdata_next_r <= cache_req_same_line
-                                             ? (cache_req_next_bank == 3'd7 ? axi_readdata
+                                             ? (cache_req_next_bank == 3'd7 ? cache_fill_data
                                                                             : cache_fill_next_data)
                                              : cache_lookup_next_data;
                     dram_readdata_next_valid_r <= cache_req_same_line || cache_lookup_next_hit;
@@ -6849,6 +6814,8 @@ module smolrv64(input wire        clock,
          dram_readdatavalid_r <= 0;
          dram_readdata_next_valid_r <= 0;
          dram_write_done_r <= 0;
+         cache_bram_readdatavalid <= 0;
+         cache_bram_write_done <= 0;
          axi_read <= 0;
          axi_write <= 0;
          cache_tag_wr_en <= 0;
