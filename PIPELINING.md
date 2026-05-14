@@ -75,6 +75,9 @@ than a larger instruction FIFO.
 3. Let the frontend fetch while the backend is busy
    - After an instruction is enqueued, allow the frontend to start the next
      sequential fetch when the decode queue has space.
+   - First implementation is intentionally narrow: only consume a speculative
+     fetch-buffer hit when the retired instruction resolves to the same
+     `npc`, `satp`, and privilege context.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
