@@ -92,6 +92,10 @@ than a larger instruction FIFO.
    - When a queued speculative decode is validated at retire, launch its
      register-file read immediately instead of returning through an idle `S_RF`
      dispatch cycle.
+   - When a newly fetched instruction is immediately accepted by the backend,
+     bypass the one-entry decode slot and launch the register-file read in the
+     same cycle.  The slot remains the holding point for speculative younger
+     work that cannot be committed yet.
 
 4. Add hazards only as needed
    - Data hazards are expected once frontend and backend overlap.

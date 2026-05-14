@@ -2445,10 +2445,41 @@ module smolrv64(input wire        clock,
       reg   [ 4:0] decoded_rs1;
       reg   [ 4:0] decoded_rs2;
       reg   [ 5:0] decoded_shamt;
+      reg   [63:0] decoded_next_pc;
       begin
          decode_rf_sources(decode_insn, decoded_rd, decoded_rs1,
                            decoded_rs2, decoded_shamt);
-         if (rf_decode_valid) begin
+         decoded_next_pc = decode_pc + (decode_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+         if (decode_consume_now) begin
+            if (rf_read_valid) begin
+`ifdef SIMULATE
+               $display("%05d BUG: direct launch into busy rf_read stage", $time);
+               $finish;
+`endif
+               state <= `S_FETCH1;
+            end else begin
+               write_back_register = 0;
+               rf_read_valid <= 1;
+               rf_read_pc <= decode_pc;
+               rf_read_next_pc <= decoded_next_pc;
+               rf_read_insn <= decode_insn;
+               rf_read_epoch <= decode_epoch;
+               rf_read_rd <= decoded_rd;
+               rf_read_rs1 <= decoded_rs1;
+               rf_read_rs2 <= decoded_rs2;
+               rf_read_shamt <= decoded_shamt;
+               rs1 <= decoded_rs1;
+               rs2 <= decoded_rs2;
+               fetch_req_valid <= 1;
+               fetch_req_pc <= decoded_next_pc;
+               fetch_req_satp <= decode_satp;
+               fetch_req_prv <= decode_prv;
+               fetch_req_epoch <= decode_epoch;
+               fetch_req_fast_ready <= 0;
+               fetch_req_speculative <= 1;
+               state <= `S_RF2;
+            end
+         end else if (rf_decode_valid) begin
 `ifdef SIMULATE
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
@@ -2456,7 +2487,7 @@ module smolrv64(input wire        clock,
          end else begin
             rf_decode_valid <= 1;
             rf_decode_pc <= decode_pc;
-            rf_decode_next_pc <= decode_pc + (decode_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+            rf_decode_next_pc <= decoded_next_pc;
             rf_decode_satp <= decode_satp;
             rf_decode_insn <= decode_insn;
             rf_decode_prv <= decode_prv;
@@ -2466,10 +2497,6 @@ module smolrv64(input wire        clock,
             rf_decode_rs1 <= decoded_rs1;
             rf_decode_rs2 <= decoded_rs2;
             rf_decode_shamt <= decoded_shamt;
-         end
-         if (decode_consume_now) begin
-            write_back_register = 0;
-            state <= `S_RF;
          end
       end
    endtask
