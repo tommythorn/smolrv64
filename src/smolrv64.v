@@ -1023,12 +1023,22 @@ module smolrv64(input wire        clock,
    reg  [ 4:0]  rf_decode_rs1 = 0;
    reg  [ 4:0]  rf_decode_rs2 = 0;
    reg  [ 5:0]  rf_decode_shamt = 0;
-   wire [63:0]  rf3_pc = rf_decode_pc;
-   wire [31:0]  rf3_insn = rf_decode_insn;
-   wire [ 4:0]  rf3_rd = rf_decode_rd;
-   wire [ 4:0]  rf3_rs1 = rf_decode_rs1;
-   wire [ 4:0]  rf3_rs2 = rf_decode_rs2;
-   wire [ 5:0]  rf3_shamt = rf_decode_shamt;
+
+   // Register-file read boundary. S_RF accepts one decode queue entry into
+   // this payload and launches the BRAM read; S_RF3 consumes it.
+   reg          rf_read_valid = 0;
+   reg  [63:0]  rf_read_pc = `RESET_PC;
+   reg  [31:0]  rf_read_insn = 0;
+   reg  [ 4:0]  rf_read_rd = 0;
+   reg  [ 4:0]  rf_read_rs1 = 0;
+   reg  [ 4:0]  rf_read_rs2 = 0;
+   reg  [ 5:0]  rf_read_shamt = 0;
+   wire [63:0]  rf3_pc = rf_read_pc;
+   wire [31:0]  rf3_insn = rf_read_insn;
+   wire [ 4:0]  rf3_rd = rf_read_rd;
+   wire [ 4:0]  rf3_rs1 = rf_read_rs1;
+   wire [ 4:0]  rf3_rs2 = rf_read_rs2;
+   wire [ 5:0]  rf3_shamt = rf_read_shamt;
 
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
@@ -2456,9 +2466,25 @@ module smolrv64(input wire        clock,
 
    task launch_rf_decode_read;
       begin
-         rs1 <= rf_decode_rs1;
-         rs2 <= rf_decode_rs2;
-         state <= `S_RF2;
+         if (rf_read_valid) begin
+`ifdef SIMULATE
+            $display("%05d BUG: launch into busy rf_read stage", $time);
+            $finish;
+`endif
+            state <= `S_FETCH1;
+         end else begin
+            rf_decode_valid <= 0;
+            rf_read_valid <= 1;
+            rf_read_pc <= rf_decode_pc;
+            rf_read_insn <= rf_decode_insn;
+            rf_read_rd <= rf_decode_rd;
+            rf_read_rs1 <= rf_decode_rs1;
+            rf_read_rs2 <= rf_decode_rs2;
+            rf_read_shamt <= rf_decode_shamt;
+            rs1 <= rf_decode_rs1;
+            rs2 <= rf_decode_rs2;
+            state <= `S_RF2;
+         end
       end
    endtask
 
@@ -3031,7 +3057,7 @@ module smolrv64(input wire        clock,
         `S_RF2: begin
            // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output
            // settles in S_RF3.
-           state <= rf_decode_valid ? `S_RF3 : `S_FETCH1;
+           state <= rf_read_valid ? `S_RF3 : `S_FETCH1;
         end
 
         `S_RF3: begin
@@ -3048,7 +3074,7 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s2  <= s2_bram[63] ? -s2_bram : s2_bram;
            pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
            pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
-           rf_decode_valid <= 0;
+           rf_read_valid <= 0;
            execute_req_pc <= rf3_pc;
            execute_req_insn <= rf3_insn;
            execute_req_rd <= rf3_rd;
@@ -6395,6 +6421,13 @@ module smolrv64(input wire        clock,
          rf_decode_rs1 <= 0;
          rf_decode_rs2 <= 0;
          rf_decode_shamt <= 0;
+         rf_read_valid <= 0;
+         rf_read_pc <= `RESET_PC;
+         rf_read_insn <= 0;
+         rf_read_rd <= 0;
+         rf_read_rs1 <= 0;
+         rf_read_rs2 <= 0;
+         rf_read_shamt <= 0;
          execute_req_valid <= 0;
          execute_req_pc <= `RESET_PC;
          execute_req_insn <= 0;

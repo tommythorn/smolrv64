@@ -67,6 +67,8 @@ than a larger instruction FIFO.
 
 2. Turn `rf_decode_valid` into a real one-entry queue
    - Split enqueue from register-file read launch.
+   - Add an explicit `rf_read_*` payload for the instruction whose BRAM
+     register-file read is in flight.
    - Do not overwrite a valid decode slot until the backend accepts it.
    - Make `S_RF`/`S_RF2`/`S_RF3` the backend consumer side of that queue.
 
