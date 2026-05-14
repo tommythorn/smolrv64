@@ -2882,26 +2882,13 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH_REQ: begin
-`ifdef SIMULATE
-           if (fetch_buf_summary_enabled) begin
-              if (fetch_buf_hit) begin
-                 fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
-              end else begin
-                 fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
-                 if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
-                    $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
-                             $time,
-                             fetch_buf_stat_hits + (fetch_buf_hit ? 64'd1 : 64'd0),
-                             fetch_buf_stat_misses + 64'd1);
-              end
-           end
-`endif
-
            if (!fetch_req_valid) begin
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH1;
            end else begin
-              state <= `S_FETCH_BUF_CHECK;
+              fetch_buf_latched_hit  <= fetch_buf_hit;
+              fetch_buf_latched_insn <= fetch_buf_insn;
+              state                  <= `S_FETCH_BUF_USE;
            end
         end
 
