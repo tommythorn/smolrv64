@@ -66,6 +66,8 @@ than a larger instruction FIFO.
      and `shamt` with one helper.
    - This is not expected to improve CPI by itself.
    - It creates a single point that can become the frontend/backend queue.
+   - Remove dead fallback boundaries once producer paths feed that queue
+     directly; there should be one visible frontend/backend handoff.
 
 2. Turn `rf_decode_valid` into a real one-entry queue
    - Split enqueue from register-file read launch.

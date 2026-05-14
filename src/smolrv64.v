@@ -599,13 +599,7 @@ module smolrv64(input wire        clock,
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
-`define S_FETCH_RES            51  // fallback accept for a registered fetch result
-`define S_LAST_STATE           51  // update state register width accordingly
-
-`define FETCH_SRC_BUF          2'd0
-`define FETCH_SRC_BRAM         2'd1
-`define FETCH_SRC_DRAM         2'd2
-`define FETCH_SRC_XLATE        2'd3
+`define S_LAST_STATE           50  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -1011,15 +1005,6 @@ module smolrv64(input wire        clock,
    reg  [ 3:0]  fetch_req_epoch = 0;
    reg  [ 3:0]  fetch_epoch = 0;
 
-   // Registered fetch result boundary.  Kept for fallback/debug staging, while
-   // the normal front-end producer paths now accept directly into decode.
-   reg          fetch_res_valid = 0;
-   reg  [63:0]  fetch_res_pc = `RESET_PC;
-   reg  [31:0]  fetch_res_insn = 0;
-   reg          fetch_res_from_dram = 0;
-   reg          fetch_res_translated = 0;
-   reg  [ 1:0]  fetch_res_source = `FETCH_SRC_BRAM;
-
    // Register/decode request boundary. The frontend fills this one-entry
    // queue; S_RF consumes it and launches the BRAM register-file read.
    reg          rf_decode_valid = 0;
@@ -1302,7 +1287,6 @@ module smolrv64(input wire        clock,
            `S_MULDIV_START:          state_name = "MULDIV_START";
            `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
            `S_FETCH_REQ:             state_name = "FETCH_REQ";
-           `S_FETCH_RES:             state_name = "FETCH_RES";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -2394,7 +2378,6 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
-         fetch_res_valid <= 0;
          rf_decode_valid <= 0;
          write_back_register <= 0;
          write_back_fp_valid <= 0;
@@ -2574,7 +2557,6 @@ module smolrv64(input wire        clock,
          fetch_req_epoch <= prepare_epoch;
          fetch_req_fast_ready <= 1;
          fetch_req_speculative <= 0;
-         fetch_res_valid <= 0;
       end
    endtask
 
@@ -3033,7 +3015,6 @@ module smolrv64(input wire        clock,
 `endif
 
            pc <= npc;
-           fetch_res_valid <= 0;
 
            state <= `S_FETCH_REQ;
 
@@ -3157,21 +3138,6 @@ module smolrv64(input wire        clock,
               fetch_buf_data    <= aligned;
            end
            accept_instruction_fetch(fetch_req_pc, aligned >> (fetch_req_pc[2:1] * 16), 1'b1);
-        end
-
-        `S_FETCH_RES: begin
-           if (fetch_res_valid) begin
-              pc <= fetch_res_pc;
-              insn <= fetch_res_insn;
-              fetch_from_dram <= fetch_res_from_dram;
-              translated <= 0;
-              fetch_req_valid <= 0;
-              fetch_res_valid <= 0;
-              rf_decode_valid <= 0;
-              state <= `S_RF;
-           end else begin
-              state <= `S_FETCH1;
-           end
         end
 
         `S_RF: begin
@@ -6544,12 +6510,6 @@ module smolrv64(input wire        clock,
          fetch_req_pc <= `RESET_PC;
          fetch_req_satp <= 0;
          fetch_req_prv <= 3;
-         fetch_res_valid <= 0;
-         fetch_res_pc <= `RESET_PC;
-         fetch_res_insn <= 0;
-         fetch_res_from_dram <= 0;
-         fetch_res_translated <= 0;
-         fetch_res_source <= `FETCH_SRC_BRAM;
          rf_decode_valid <= 0;
          rf_decode_pc <= `RESET_PC;
          rf_decode_next_pc <= `RESET_PC;
