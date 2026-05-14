@@ -89,6 +89,9 @@ than a larger instruction FIFO.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
      redirecting event, flush the queued younger instruction and restart fetch
      at the resolved target.
+   - When a queued speculative decode is validated at retire, launch its
+     register-file read immediately instead of returning through an idle `S_RF`
+     dispatch cycle.
 
 4. Add hazards only as needed
    - Data hazards are expected once frontend and backend overlap.
