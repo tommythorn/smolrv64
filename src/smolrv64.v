@@ -1004,6 +1004,8 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  fetch_req_prv = 3;
    reg          fetch_req_fast_ready = 0;
    reg          fetch_req_speculative = 0;
+   reg  [ 3:0]  fetch_req_epoch = 0;
+   reg  [ 3:0]  fetch_epoch = 0;
 
    // Registered fetch result boundary.  Kept for fallback/debug staging, while
    // the normal front-end producer paths now accept directly into decode.
@@ -1018,9 +1020,11 @@ module smolrv64(input wire        clock,
    // queue; S_RF consumes it and launches the BRAM register-file read.
    reg          rf_decode_valid = 0;
    reg  [63:0]  rf_decode_pc = `RESET_PC;
+   reg  [63:0]  rf_decode_next_pc = `RESET_PC;
    reg  [63:0]  rf_decode_satp = 0;
    reg  [31:0]  rf_decode_insn = 0;
    reg  [ 1:0]  rf_decode_prv = 3;
+   reg  [ 3:0]  rf_decode_epoch = 0;
    reg          rf_decode_from_dram = 0;
    reg  [ 4:0]  rf_decode_rd = 0;
    reg  [ 4:0]  rf_decode_rs1 = 0;
@@ -1032,6 +1036,7 @@ module smolrv64(input wire        clock,
    reg          rf_read_valid = 0;
    reg  [63:0]  rf_read_pc = `RESET_PC;
    reg  [31:0]  rf_read_insn = 0;
+   reg  [ 3:0]  rf_read_epoch = 0;
    reg  [ 4:0]  rf_read_rd = 0;
    reg  [ 4:0]  rf_read_rs1 = 0;
    reg  [ 4:0]  rf_read_rs2 = 0;
@@ -2443,6 +2448,7 @@ module smolrv64(input wire        clock,
       input [63:0] decode_satp;
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
+      input [ 3:0] decode_epoch;
       input        decode_from_dram;
       input        decode_consume_now;
       reg   [ 4:0] decoded_rd;
@@ -2460,9 +2466,11 @@ module smolrv64(input wire        clock,
          end else begin
             rf_decode_valid <= 1;
             rf_decode_pc <= decode_pc;
+            rf_decode_next_pc <= decode_pc + (decode_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
             rf_decode_satp <= decode_satp;
             rf_decode_insn <= decode_insn;
             rf_decode_prv <= decode_prv;
+            rf_decode_epoch <= decode_epoch;
             rf_decode_from_dram <= decode_from_dram;
             rf_decode_rd <= decoded_rd;
             rf_decode_rs1 <= decoded_rs1;
@@ -2481,7 +2489,7 @@ module smolrv64(input wire        clock,
       input [31:0] decode_insn;
       input        decode_from_dram;
       begin
-         enqueue_rf_decode(decode_pc, csr_satp, decode_insn, prv,
+         enqueue_rf_decode(decode_pc, csr_satp, decode_insn, prv, fetch_req_epoch,
                            decode_from_dram, 1'b1);
       end
    endtask
@@ -2491,8 +2499,10 @@ module smolrv64(input wire        clock,
       input [63:0] decode_satp;
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
+      input [ 3:0] decode_epoch;
       begin
          enqueue_rf_decode(decode_pc, decode_satp, decode_insn, decode_prv,
+                           decode_epoch,
                            1'b0, 1'b0);
       end
    endtask
@@ -2510,6 +2520,7 @@ module smolrv64(input wire        clock,
             rf_read_valid <= 1;
             rf_read_pc <= rf_decode_pc;
             rf_read_insn <= rf_decode_insn;
+            rf_read_epoch <= rf_decode_epoch;
             rf_read_rd <= rf_decode_rd;
             rf_read_rs1 <= rf_decode_rs1;
             rf_read_rs2 <= rf_decode_rs2;
@@ -2517,9 +2528,10 @@ module smolrv64(input wire        clock,
             rs1 <= rf_decode_rs1;
             rs2 <= rf_decode_rs2;
             fetch_req_valid <= 1;
-            fetch_req_pc <= rf_decode_pc + (rf_decode_insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+            fetch_req_pc <= rf_decode_next_pc;
             fetch_req_satp <= rf_decode_satp;
             fetch_req_prv <= rf_decode_prv;
+            fetch_req_epoch <= rf_decode_epoch;
             fetch_req_fast_ready <= 0;
             fetch_req_speculative <= 1;
             state <= `S_RF2;
@@ -2532,7 +2544,8 @@ module smolrv64(input wire        clock,
          if (fetch_req_speculative) begin
             if (!rf_decode_valid && fetch_buf_hit)
                enqueue_rf_decode_speculative(fetch_req_pc, fetch_req_satp,
-                                             fetch_buf_insn, fetch_req_prv);
+                                             fetch_buf_insn, fetch_req_prv,
+                                             fetch_req_epoch);
             fetch_req_valid <= 0;
             fetch_req_fast_ready <= 0;
             fetch_req_speculative <= 0;
@@ -2544,14 +2557,39 @@ module smolrv64(input wire        clock,
       input [63:0] prepare_pc;
       input [63:0] prepare_satp;
       input [ 1:0] prepare_prv;
+      input [ 3:0] prepare_epoch;
       begin
          fetch_req_valid <= 1;
          fetch_req_pc <= prepare_pc;
          fetch_req_satp <= prepare_satp;
          fetch_req_prv <= prepare_prv;
+         fetch_req_epoch <= prepare_epoch;
          fetch_req_fast_ready <= 1;
          fetch_req_speculative <= 0;
          fetch_res_valid <= 0;
+      end
+   endtask
+
+   task prepare_current_epoch_fetch;
+      input [63:0] prepare_pc;
+      input [63:0] prepare_satp;
+      input [ 1:0] prepare_prv;
+      begin
+         prepare_retire_fetch(prepare_pc, prepare_satp, prepare_prv, fetch_epoch);
+      end
+   endtask
+
+   task redirect_retire_fetch;
+      input [63:0] redirect_pc;
+      input [63:0] redirect_satp;
+      input [ 1:0] redirect_prv;
+      reg   [ 3:0] redirect_epoch;
+      begin
+         redirect_epoch = fetch_epoch + 4'd1;
+         fetch_epoch <= redirect_epoch;
+         rf_decode_valid <= 0;
+         prepare_retire_fetch(redirect_pc, redirect_satp, redirect_prv,
+                              redirect_epoch);
       end
    endtask
 
@@ -2560,7 +2598,8 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
-         if (rf_decode_pc == npc &&
+         if (rf_decode_epoch == fetch_epoch &&
+             rf_decode_pc == npc &&
              rf_decode_satp == csr_satp &&
              rf_decode_prv == prv) begin
             insn <= rf_decode_insn;
@@ -2570,8 +2609,7 @@ module smolrv64(input wire        clock,
             write_back_fp_valid <= 0;
             state <= `S_RF;
          end else begin
-            rf_decode_valid <= 0;
-            prepare_retire_fetch(npc, csr_satp, prv);
+            redirect_retire_fetch(npc, csr_satp, prv);
          end
       end
    endtask
@@ -2579,7 +2617,7 @@ module smolrv64(input wire        clock,
    task retire_prepared_fetch;
       begin
          execute_res_valid <= 0;
-         prepare_retire_fetch(npc, csr_satp, prv);
+         prepare_current_epoch_fetch(npc, csr_satp, prv);
          state <= `S_FETCH1;
       end
    endtask
@@ -3028,7 +3066,7 @@ module smolrv64(input wire        clock,
                  fetch_req_fast_ready <= 0;
                  state <= `S_FETCH_BUF_CHECK;
               end else begin
-                 prepare_retire_fetch(npc, csr_satp, prv);
+                 prepare_current_epoch_fetch(npc, csr_satp, prv);
               end
            end else if (rf_decode_valid) begin
               retire_queued_decode_or_refetch();
@@ -3036,7 +3074,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH_BUF_CHECK;
            end else begin
-              prepare_retire_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, csr_satp, prv);
            end
         end
 
@@ -4932,7 +4970,7 @@ module smolrv64(input wire        clock,
               write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
            end
-           prepare_retire_fetch(npc, csr_satp, prv);
+           prepare_current_epoch_fetch(npc, csr_satp, prv);
            state <= `S_FETCH1;
         end
 
@@ -5878,6 +5916,7 @@ module smolrv64(input wire        clock,
 `endif
            just_trapped <= 1;
            fetch_buf_valid <= 0;
+           fetch_epoch <= fetch_epoch + 4'd1;
            fetch_req_valid <= 0;
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
@@ -6315,7 +6354,7 @@ module smolrv64(input wire        clock,
                  if (do_atomic)
                     state <= `S_AMO;
                  else begin
-                    prepare_retire_fetch(npc, csr_satp, prv);
+                    prepare_current_epoch_fetch(npc, csr_satp, prv);
                     state <= `S_FETCH1;
                  end
               end else begin
@@ -6341,7 +6380,7 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                  state <= `S_AMO;
               else begin
-                 prepare_retire_fetch(npc, csr_satp, prv);
+                 prepare_current_epoch_fetch(npc, csr_satp, prv);
                  state <= `S_FETCH1;
               end
            end
@@ -6365,7 +6404,7 @@ module smolrv64(input wire        clock,
            if (do_atomic)
               state <= `S_AMO;
            else begin
-              prepare_retire_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, csr_satp, prv);
               state <= `S_FETCH1;
            end
         end
@@ -6393,7 +6432,7 @@ module smolrv64(input wire        clock,
            if (dram_store_split) begin
               state <= `S_DRAM_STORE2;
            end else begin
-              prepare_retire_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, csr_satp, prv);
               state <= `S_FETCH1;
            end
         end
@@ -6490,6 +6529,8 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
+         fetch_req_epoch <= 0;
+         fetch_epoch <= 0;
          fetch_req_pc <= `RESET_PC;
          fetch_req_satp <= 0;
          fetch_req_prv <= 3;
@@ -6501,9 +6542,11 @@ module smolrv64(input wire        clock,
          fetch_res_source <= `FETCH_SRC_BRAM;
          rf_decode_valid <= 0;
          rf_decode_pc <= `RESET_PC;
+         rf_decode_next_pc <= `RESET_PC;
          rf_decode_satp <= 0;
          rf_decode_insn <= 0;
          rf_decode_prv <= 3;
+         rf_decode_epoch <= 0;
          rf_decode_from_dram <= 0;
          rf_decode_rd <= 0;
          rf_decode_rs1 <= 0;
@@ -6512,6 +6555,7 @@ module smolrv64(input wire        clock,
          rf_read_valid <= 0;
          rf_read_pc <= `RESET_PC;
          rf_read_insn <= 0;
+         rf_read_epoch <= 0;
          rf_read_rd <= 0;
          rf_read_rs1 <= 0;
          rf_read_rs2 <= 0;

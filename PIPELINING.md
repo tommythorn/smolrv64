@@ -30,6 +30,8 @@ Use ready/valid boundaries:
 - A consumer may read a stage only when `valid` is set.
 - If a stage is valid and not accepted, its payload stays stable.
 - Redirects invalidate younger stages.
+- Each speculative stage payload carries a frontend epoch; redirects advance the
+  epoch so stale payloads are easy to reject as the pipeline deepens.
 - Retirement remains in order at the backend.
 
 Do not protect the old FSM shape for its own sake.  Preserve architectural
@@ -77,7 +79,7 @@ than a larger instruction FIFO.
      sequential fetch when the decode queue has space.
    - First implementation is intentionally narrow: only consume a speculative
      fetch-buffer hit when the retired instruction resolves to the same
-     `npc`, `satp`, and privilege context.
+     frontend epoch, `npc`, `satp`, and privilege context.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
