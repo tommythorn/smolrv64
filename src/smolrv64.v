@@ -1013,8 +1013,8 @@ module smolrv64(input wire        clock,
    reg          fetch_res_translated = 0;
    reg  [ 1:0]  fetch_res_source = `FETCH_SRC_BRAM;
 
-   // Register/decode request boundary. S_RF produces this valid bit when it
-   // has decoded rs1/rs2/rd/shamt and launched the BRAM register-file read.
+   // Register/decode request boundary. The frontend fills this one-entry
+   // queue; S_RF consumes it and launches the BRAM register-file read.
    reg          rf_decode_valid = 0;
    reg  [63:0]  rf_decode_pc = `RESET_PC;
    reg  [31:0]  rf_decode_insn = 0;
@@ -1699,8 +1699,6 @@ module smolrv64(input wire        clock,
 `ifdef SIMULATE
    reg  [127:0] tmp128;
 `endif
-   reg  [ 4:0] rd;
-   reg  [ 5:0] shamt;
    (* max_fanout = 16 *) reg [11:0] csrno;
    (* max_fanout = 32 *) reg [31:0] insn = 0; // XXX We should set this on reset
    reg  [ 1:0] csr_op;
@@ -2399,25 +2397,29 @@ module smolrv64(input wire        clock,
 
    task decode_rf_sources;
       input [31:0] decode_insn;
+      output [ 4:0] decode_rd;
+      output [ 4:0] decode_rs1;
+      output [ 4:0] decode_rs2;
+      output [ 5:0] decode_shamt;
       begin
-         rd = decode_insn`insn_rd;
+         decode_rd = decode_insn`insn_rd;
          case (decode_insn[1:0])
-           0: {rs1,rs2} = {{2'd1,decode_insn[9:7]}, {2'd1,decode_insn[4:2]}};
-           1: {rs1,rs2} = {decode_insn[11:7],       {2'd1,decode_insn[4:2]}};
-           2: {rs1,rs2} = {decode_insn[11:7],       decode_insn[6:2]};
-           3: {rs1,rs2} = {decode_insn`insn_rs1,    decode_insn`insn_rs2};
+           0: {decode_rs1,decode_rs2} = {{2'd1,decode_insn[9:7]}, {2'd1,decode_insn[4:2]}};
+           1: {decode_rs1,decode_rs2} = {decode_insn[11:7],       {2'd1,decode_insn[4:2]}};
+           2: {decode_rs1,decode_rs2} = {decode_insn[11:7],       decode_insn[6:2]};
+           3: {decode_rs1,decode_rs2} = {decode_insn`insn_rs1,    decode_insn`insn_rs2};
          endcase
          // The exceptions
          if (decode_insn[1:0] == 1 && decode_insn[15])
-           rs1 = {2'd1,decode_insn[9:7]};
+           decode_rs1 = {2'd1,decode_insn[9:7]};
          if (decode_insn[1:0] == 2 && (decode_insn[15:13] == 3'b001 || decode_insn[15:14] == 2'b01))
-           rs1 = 2; // sp
+           decode_rs1 = 2; // sp
          if (decode_insn[1:0] == 2 && 5 <= decode_insn[15:13])
-           rs1 = 2; // sp
+           decode_rs1 = 2; // sp
          if ((decode_insn & 'he003) == 0)
-           rs1 = 2; // sp
+           decode_rs1 = 2; // sp
 
-         shamt = decode_insn[25:20];
+         decode_shamt = decode_insn[25:20];
       end
    endtask
 
@@ -2425,17 +2427,37 @@ module smolrv64(input wire        clock,
       input [63:0] decode_pc;
       input [31:0] decode_insn;
       input        decode_from_dram;
+      reg   [ 4:0] decoded_rd;
+      reg   [ 4:0] decoded_rs1;
+      reg   [ 4:0] decoded_rs2;
+      reg   [ 5:0] decoded_shamt;
       begin
-         rf_decode_valid <= 1;
-         rf_decode_pc <= decode_pc;
-         rf_decode_insn <= decode_insn;
-         rf_decode_from_dram <= decode_from_dram;
-         decode_rf_sources(decode_insn);
-         rf_decode_rd <= rd;
-         rf_decode_rs1 <= rs1;
-         rf_decode_rs2 <= rs2;
-         rf_decode_shamt <= shamt;
+         decode_rf_sources(decode_insn, decoded_rd, decoded_rs1,
+                           decoded_rs2, decoded_shamt);
+         if (rf_decode_valid) begin
+`ifdef SIMULATE
+            $display("%05d BUG: enqueue into full rf_decode queue", $time);
+            $finish;
+`endif
+         end else begin
+            rf_decode_valid <= 1;
+            rf_decode_pc <= decode_pc;
+            rf_decode_insn <= decode_insn;
+            rf_decode_from_dram <= decode_from_dram;
+            rf_decode_rd <= decoded_rd;
+            rf_decode_rs1 <= decoded_rs1;
+            rf_decode_rs2 <= decoded_rs2;
+            rf_decode_shamt <= decoded_shamt;
+         end
          write_back_register = 0;
+         state <= `S_RF;
+      end
+   endtask
+
+   task launch_rf_decode_read;
+      begin
+         rs1 <= rf_decode_rs1;
+         rs2 <= rf_decode_rs2;
          state <= `S_RF2;
       end
    endtask
@@ -2999,41 +3021,16 @@ module smolrv64(input wire        clock,
         end
 
         `S_RF: begin
-           // insn is registered (accepted from the fetch producer clock edge).
-           // Cross-page instruction fetch: 32-bit insn at last halfword of a page
-           // In VM mode, the next page may map to a different physical page
-           if (pc[11:0] == 12'hFFE && insn[1:0] == 2'b11 &&
-               csr_satp[63:60] == 4'd8 && prv != 3) begin
-              insn_half <= insn[15:0];
-              rf_decode_valid <= 0;
-              state <= `S_TLB_START_FETCH_HALF;
-           // Cross-doubleword DRAM fetch: refill the next 8-byte chunk whenever the
-           // instruction starts in the last halfword of the current chunk. Even for a
-           // 16-bit compressed insn, cosim/debug expect the upper 16 bits to reflect
-           // the following halfword rather than zero/X.
-           end else if (fetch_from_dram && pc[2:1] == 2'b11) begin
-              insn_half       <= insn[15:0];
-              if (dram_latched_next_valid) begin
-                 dram_latched <= dram_latched_next;
-                 rf_decode_valid <= 0;
-                 state        <= `S_FETCH2_HALF;
-              end else begin
-                 // For translated fetches, mem_addr still holds the physical
-                 // address of the current fetch chunk from the PTW result.
-                 dram_addr <= (csr_satp[63:60] == 4'd8 && prv != 3)
-                              ? mem_addr[30:3] + 1
-                              : pc[30:3] + 1;
-                 dram_read       <= 1;
-                 rf_decode_valid <= 0;
-                 state           <= `S_DRAM_FETCH_HALF_WAIT;
-              end
+           if (rf_decode_valid) begin
+              launch_rf_decode_read();
            end else begin
-              enqueue_rf_decode(pc, insn, fetch_from_dram);
+              state <= `S_FETCH1;
            end
         end
 
         `S_RF2: begin
-           // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output settles in S_RF3.
+           // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output
+           // settles in S_RF3.
            state <= rf_decode_valid ? `S_RF3 : `S_FETCH1;
         end
 

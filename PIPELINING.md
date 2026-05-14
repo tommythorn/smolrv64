@@ -66,9 +66,9 @@ than a larger instruction FIFO.
    - It creates a single point that can become the frontend/backend queue.
 
 2. Turn `rf_decode_valid` into a real one-entry queue
-   - Add explicit enqueue/accept conditions.
+   - Split enqueue from register-file read launch.
    - Do not overwrite a valid decode slot until the backend accepts it.
-   - Make `S_RF2`/`S_RF3` the backend consumer side of that queue.
+   - Make `S_RF`/`S_RF2`/`S_RF3` the backend consumer side of that queue.
 
 3. Let the frontend fetch while the backend is busy
    - After an instruction is enqueued, allow the frontend to start the next
