@@ -2344,6 +2344,7 @@ module smolrv64(input wire        clock,
            `S_MMIO_ALIGN,
            `S_AMO,
            `S_STORE,
+           `S_STORE_COMMIT,
            `S_MUL_RUNNING,
            `S_DIV_RUNNING,
            `S_EXECUTE,
@@ -2777,6 +2778,14 @@ module smolrv64(input wire        clock,
       begin
          execute_res_valid <= 0;
          prepare_current_epoch_fetch(npc, csr_satp, prv);
+         state <= `S_FETCH1;
+      end
+   endtask
+
+   task retire_redirect_fetch;
+      begin
+         execute_res_valid <= 0;
+         redirect_retire_fetch(npc, csr_satp, prv);
          state <= `S_FETCH1;
       end
    endtask
@@ -4293,7 +4302,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hffffffff) == 'h0000100f) begin // FENCE.I
               fetch_buf_valid <= 0;
-              retire_prepared_fetch();
+              retire_redirect_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00001073) begin // CSRRW
@@ -4458,6 +4467,7 @@ module smolrv64(input wire        clock,
               end else begin
                  fetch_buf_valid <= 0;
                  flush_tlb;
+                 retire_redirect_fetch();
               end
            end
 

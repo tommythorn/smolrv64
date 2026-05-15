@@ -90,11 +90,16 @@ than a larger instruction FIFO.
    - The hit-only path may also run during execute itself; the retire-time
      epoch/context/PC check is the architectural boundary that accepts or
      discards the queued younger instruction.
+   - Store commit can participate in the same hit-only path because it does not
+     grant the younger instruction access to the cache or external bus.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
      redirecting event, flush the queued younger instruction and restart fetch
      at the resolved target.
+   - Any event that invalidates the frontend without changing PC/context
+     (`fence.i`, legal `sfence.vma`) must also advance the frontend epoch, so a
+     same-PC queued younger instruction cannot survive the flush.
    - When a queued speculative decode is validated at retire, launch its
      register-file read immediately instead of returning through an idle `S_RF`
      dispatch cycle.
