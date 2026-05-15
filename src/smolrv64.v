@@ -605,7 +605,8 @@ module smolrv64(input wire        clock,
 `define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
 `define S_BRANCH_RESOLVE       56  // resolve branch/JALR from registered RF operands
-`define S_LAST_STATE           56  // update state register width accordingly
+`define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
+`define S_LAST_STATE           57  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -704,19 +705,23 @@ module smolrv64(input wire        clock,
    localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
    localparam TLB_CTX_BITS = 6;
    localparam TLB_ASID_BITS = 10;
+   localparam CACHE_PERM_BITS = 5; // {physical, U, X, W, R}
    localparam TLB_PPN_BITS = 44;
    localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS + TLB_PPN_BITS;
    localparam FRONTEND_EPOCH_BITS = 2;
    localparam TLB_2M_TAG_BITS = 18;
    localparam TLB_2M_PBASE_BITS = 43;
    localparam TLB_2M_DATA_BITS = TLB_2M_TAG_BITS + TLB_2M_PBASE_BITS +
-                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS;
+                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS +
+                                 CACHE_PERM_BITS;
    localparam TLB_4K_TAG_BITS = 27;
    localparam TLB_4K_PBASE_BITS = 52;
    localparam TLB_4K_DATA_BITS = TLB_4K_TAG_BITS + TLB_4K_PBASE_BITS +
-                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS;
+                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS +
+                                 CACHE_PERM_BITS;
    localparam TLB_CTX_LSB = 0;
-   localparam TLB_SATP_KEY_LSB = TLB_CTX_LSB + TLB_CTX_BITS;
+   localparam TLB_PERM_LSB = TLB_CTX_LSB + TLB_CTX_BITS;
+   localparam TLB_SATP_KEY_LSB = TLB_PERM_LSB + CACHE_PERM_BITS;
    localparam TLB_2M_PBASE_LSB = TLB_SATP_KEY_LSB + TLB_SATP_KEY_BITS;
    localparam TLB_2M_TAG_LSB = TLB_2M_PBASE_LSB + TLB_2M_PBASE_BITS;
    localparam TLB_4K_PBASE_LSB = TLB_SATP_KEY_LSB + TLB_SATP_KEY_BITS;
@@ -746,7 +751,8 @@ module smolrv64(input wire        clock,
 `define CACHE_PTAG_LSB 0
 `define CACHE_VTAG_LSB (`CACHE_PTAG_LSB + `CACHE_PHYS_TAG_BITS)
 `define CACHE_ASID_LSB (`CACHE_VTAG_LSB + `CACHE_VTAG_BITS)
-`define CACHE_VALID_BIT (`CACHE_ASID_LSB + TLB_ASID_BITS)
+`define CACHE_PERM_LSB (`CACHE_ASID_LSB + TLB_ASID_BITS)
+`define CACHE_VALID_BIT (`CACHE_PERM_LSB + CACHE_PERM_BITS)
 `define CACHE_DIRTY_BIT (`CACHE_VALID_BIT + 1)
 `define CACHE_META_BITS (`CACHE_DIRTY_BIT + 1)
 `ifndef RESET_PC
@@ -815,6 +821,8 @@ module smolrv64(input wire        clock,
    reg  [63:0] mem_addr;
    reg  [63:0] mem_va;
    reg  [TLB_ASID_BITS-1:0] mem_asid;
+   reg  [CACHE_PERM_BITS-1:0] mem_perm;
+   reg  [TLB_CTX_BITS-1:0] mem_ctx;
    reg  [15:0] mem_wr_mask;
    reg         fetch_latch_half = 0; // S_FETCH1B should continue to S_FETCH2_HALF
 
@@ -999,6 +1007,8 @@ module smolrv64(input wire        clock,
    reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
    reg  [63:0]  dram2_va;            // virtual address for split-store second beat
    reg  [TLB_ASID_BITS-1:0] dram2_asid;
+   reg  [CACHE_PERM_BITS-1:0] dram2_perm;
+   reg  [TLB_CTX_BITS-1:0] dram2_ctx;
    reg  [63:0]  dram2_data_part;     // overflow bytes for split store
    reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
    reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
@@ -1109,10 +1119,14 @@ module smolrv64(input wire        clock,
    reg                         cache_bank_wr_way = 0;
    reg [63:0] cache_bank_wr_data = 0;
 
+   localparam [CACHE_PERM_BITS-1:0] CACHE_PERM_PHYS = 5'b1_1111;
+
    reg [ 4:0] cache_state = CACHE_IDLE;
    reg [63:0] cache_addr = 0;
    reg [63:0] cache_req_va = 0;
    reg [TLB_ASID_BITS-1:0] cache_req_asid = 0;
+   reg [CACHE_PERM_BITS-1:0] cache_req_perm = CACHE_PERM_PHYS;
+   reg [TLB_CTX_BITS-1:0] cache_req_ctx = 0;
    reg [63:0] cache_fill_base = 0;
    reg [63:0] cache_wb_base = 0;
    reg [ 2:0] cache_fill_beat = 0;
@@ -1173,6 +1187,8 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_bram_wb_data = 0;
    reg [63:0] dram_va = 0;
    reg [TLB_ASID_BITS-1:0] dram_asid = 0;
+   reg [CACHE_PERM_BITS-1:0] dram_perm = CACHE_PERM_PHYS;
+   reg [TLB_CTX_BITS-1:0] dram_ctx = 0;
    reg        dram_readdatavalid_r = 0;
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
@@ -1596,10 +1612,58 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [CACHE_PERM_BITS-1:0] cache_meta_perm;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_perm = meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS];
+      end
+   endfunction
+
+   function cache_perm_allows_ctx;
+      input [CACHE_PERM_BITS-1:0] perm;
+      input [TLB_CTX_BITS-1:0] ctx;
+      reg [1:0] access;
+      reg [1:0] access_prv;
+      reg       access_sum;
+      reg       access_mxr;
+      reg       pte_r;
+      reg       pte_w;
+      reg       pte_x;
+      reg       pte_u;
+      reg       data_read_ok;
+      reg       user_ok;
+      begin
+         access     = ctx[5:4];
+         access_prv = ctx[3:2];
+         access_sum = ctx[1];
+         access_mxr = ctx[0];
+         pte_r      = perm[0];
+         pte_w      = perm[1];
+         pte_x      = perm[2];
+         pte_u      = perm[3];
+
+         if (perm[4]) begin
+            cache_perm_allows_ctx = 1'b1;
+         end else begin
+            data_read_ok = pte_r || (access_mxr && pte_x);
+            user_ok = access_prv == 0 ? pte_u :
+                      access_prv == 1 ? (!pte_u || (access != 2'd0 && access_sum)) :
+                                        1'b1;
+            case (access)
+              2'd0: cache_perm_allows_ctx = pte_x && user_ok;
+              2'd1: cache_perm_allows_ctx = data_read_ok && user_ok;
+              2'd2: cache_perm_allows_ctx = pte_w && user_ok;
+              default: cache_perm_allows_ctx = data_read_ok && pte_w && user_ok;
+            endcase
+         end
+      end
+   endfunction
+
    function [`CACHE_META_BITS-1:0] cache_make_meta;
       input dirty;
       input valid;
       input [TLB_ASID_BITS-1:0] asid;
+      input [CACHE_PERM_BITS-1:0] perm;
       input [`CACHE_VTAG_BITS-1:0] vtag;
       input [`CACHE_PHYS_TAG_BITS-1:0] ptag;
       begin
@@ -1607,6 +1671,7 @@ module smolrv64(input wire        clock,
          cache_make_meta[`CACHE_DIRTY_BIT] = dirty;
          cache_make_meta[`CACHE_VALID_BIT] = valid;
          cache_make_meta[`CACHE_ASID_LSB +: TLB_ASID_BITS] = asid;
+         cache_make_meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS] = perm;
          cache_make_meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS] = vtag;
          cache_make_meta[`CACHE_PTAG_LSB +: `CACHE_PHYS_TAG_BITS] = ptag;
       end
@@ -2258,6 +2323,7 @@ module smolrv64(input wire        clock,
    reg [TLB_4K_DATA_BITS-1:0]  tlb_insert_4k_data = 0;
    reg [TLB_2M_DATA_BITS-1:0]  tlb_insert_2m_data = 0;
    reg [63:0]                  ptw_route_pa = 0;
+   reg [CACHE_PERM_BITS-1:0]   ptw_route_perm = 0;
    reg [ 4:0]                  ptw_route_return = 0;
    wire [TLB_4K_DATA_BITS-1:0] tlb_4k_rd_data;
    wire [TLB_2M_DATA_BITS-1:0] tlb_2m_rd_data;
@@ -2341,6 +2407,8 @@ module smolrv64(input wire        clock,
       tlb_4k_rd_data[TLB_4K_PBASE_LSB +: TLB_4K_PBASE_BITS];
    wire [TLB_SATP_KEY_BITS-1:0]  tlb_4k_rd_satp_key =
       tlb_4k_rd_data[TLB_SATP_KEY_LSB +: TLB_SATP_KEY_BITS];
+   wire [CACHE_PERM_BITS-1:0]    tlb_4k_rd_perm =
+      tlb_4k_rd_data[TLB_PERM_LSB +: CACHE_PERM_BITS];
    wire [TLB_CTX_BITS-1:0]       tlb_4k_rd_ctx =
       tlb_4k_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
    wire [TLB_2M_TAG_BITS-1:0]    tlb_2m_rd_tag =
@@ -2349,6 +2417,8 @@ module smolrv64(input wire        clock,
       tlb_2m_rd_data[TLB_2M_PBASE_LSB +: TLB_2M_PBASE_BITS];
    wire [TLB_SATP_KEY_BITS-1:0]  tlb_2m_rd_satp_key =
       tlb_2m_rd_data[TLB_SATP_KEY_LSB +: TLB_SATP_KEY_BITS];
+   wire [CACHE_PERM_BITS-1:0]    tlb_2m_rd_perm =
+      tlb_2m_rd_data[TLB_PERM_LSB +: CACHE_PERM_BITS];
    wire [TLB_CTX_BITS-1:0]       tlb_2m_rd_ctx =
       tlb_2m_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
    wire tlb_4k_hit = state == `S_TLB_CHECK &&
@@ -2619,6 +2689,8 @@ module smolrv64(input wire        clock,
             dram_addr        <= fetch_va[30:3];
             dram_va          <= fetch_va;
             dram_asid        <= {TLB_ASID_BITS{1'b0}};
+            dram_perm        <= CACHE_PERM_PHYS;
+            dram_ctx         <= {2'd0, fetch_prv, sum, mxr};
             dram_read        <= 1;
             state            <= `S_DRAM_FETCH_WAIT;
          end
@@ -2659,6 +2731,10 @@ module smolrv64(input wire        clock,
                dram_asid <= (csr_satp[63:60] == 4'd8 && prv != 3)
                             ? current_cache_asid
                             : {TLB_ASID_BITS{1'b0}};
+               dram_perm <= (csr_satp[63:60] == 4'd8 && prv != 3)
+                            ? mem_perm
+                            : CACHE_PERM_PHYS;
+               dram_ctx  <= {2'd0, prv, sum, mxr};
                dram_read <= 1;
                state <= `S_DRAM_FETCH_HALF_WAIT;
             end
@@ -2883,6 +2959,8 @@ module smolrv64(input wire        clock,
             dram_addr                <= fetch_req_pc[30:3];
             dram_va                  <= fetch_req_pc;
             dram_asid                <= {TLB_ASID_BITS{1'b0}};
+            dram_perm                <= CACHE_PERM_PHYS;
+            dram_ctx                 <= {2'd0, fetch_req_prv, sum, mxr};
             dram_read                <= 1;
          end
       end
@@ -2997,11 +3075,14 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
+      input [CACHE_PERM_BITS-1:0] req_perm;
       input [ 4:0] req_return;
       begin
          mem_addr = req_pa;
          mem_va = tlb_req_va;
          mem_asid <= current_cache_asid;
+         mem_perm <= req_perm;
+         mem_ctx <= tlb_req_ctx;
          translated <= 1;
          if (req_return == `S_FETCH2 || req_return == `S_FETCH2_HALF) begin
             if (phys_region(mem_addr) == `REGION_BRAM ||
@@ -3012,6 +3093,8 @@ module smolrv64(input wire        clock,
                dram_addr       <= mem_addr[30:3];
                dram_va         <= tlb_req_va;
                dram_asid       <= current_cache_asid;
+               dram_perm       <= req_perm;
+               dram_ctx        <= tlb_req_ctx;
                dram_read       <= 1;
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
@@ -3070,6 +3153,7 @@ module smolrv64(input wire        clock,
       input [ 1:0] req_level;
       input [ 1:0] req_access;
       input [ 1:0] req_prv;
+      input [CACHE_PERM_BITS-1:0] req_perm;
       input [63:0] req_satp;
       input        req_sum;
       input        req_mxr;
@@ -3081,9 +3165,11 @@ module smolrv64(input wire        clock,
                                            req_sum, req_mxr);
          tlb_insert_4k_data <= {req_va[38:12], req_pa[63:12],
                                 satp_tlb_key(req_satp),
+                                req_perm,
                                 {req_access, req_prv, req_sum, req_mxr}};
          tlb_insert_2m_data <= {req_va[38:21], req_pa[63:21],
                                 satp_tlb_key(req_satp),
+                                req_perm,
                                 {req_access, req_prv, req_sum, req_mxr}};
       end
    endtask
@@ -4094,6 +4180,10 @@ module smolrv64(input wire        clock,
               mem_addr      = s1 + pre_mem_offset;
               mem_va        = s1 + pre_mem_offset;
               mem_asid      <= {TLB_ASID_BITS{1'b0}};
+              mem_perm      <= CACHE_PERM_PHYS;
+              mem_ctx       <= {((pre_mem_op == `MEMOP_STORE || pre_mem_op == `MEMOP_SC) ? 2'd2 :
+                                 (pre_mem_op == `MEMOP_AMO ? 2'd3 : 2'd1)),
+                                (mprv ? mpp : prv), sum, mxr};
               load_size_lg2 = pre_load_size_lg2;
               begin : mem_access_dispatch
                  reg [12:0] mem_access_bytes;
@@ -4435,6 +4525,8 @@ module smolrv64(input wire        clock,
               mem_addr = s1;
               mem_va = s1;
               mem_asid <= {TLB_ASID_BITS{1'b0}};
+              mem_perm <= CACHE_PERM_PHYS;
+              mem_ctx <= {2'd2, (mprv ? mpp : prv), sum, mxr};
               translated <= 0;
               if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3)
                  start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_CBO_EXEC);
@@ -5645,6 +5737,8 @@ module smolrv64(input wire        clock,
                  dram_addr       <= mem_addr[30:3];
                  dram_va         <= mem_va;
                  dram_asid       <= mem_asid;
+                 dram_perm       <= mem_perm;
+                 dram_ctx        <= mem_ctx;
                  dram_writedata  <= wide_data[63:0];
                  dram_wstrb      <= wide_mask[7:0];
                  mem_wr_mask     = 0;
@@ -5653,6 +5747,8 @@ module smolrv64(input wire        clock,
                     dram2_addr        <= mem_addr[30:3] + 1;
                     dram2_va          <= {mem_va[63:3], 3'b000} + 64'd8;
                     dram2_asid        <= mem_asid;
+                    dram2_perm        <= mem_perm;
+                    dram2_ctx         <= mem_ctx;
                     dram2_data_part   <= wide_data[127:64];
                     dram2_wstrb       <= wide_mask[15:8];
                     dram_store_split  <= 1;
@@ -5736,6 +5832,8 @@ module smolrv64(input wire        clock,
                  dram_addr <= mem_addr[30:3];
                  dram_va   <= mem_va;
                  dram_asid <= mem_asid;
+                 dram_perm <= mem_perm;
+                 dram_ctx  <= mem_ctx;
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
                 end
@@ -6605,7 +6703,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_HIT: begin
-           route_translated_addr(tlb_hit_pa, tlb_req_return);
+           route_translated_addr(tlb_hit_pa,
+                                 tlb_latched_4k_hit ? tlb_4k_rd_perm : tlb_2m_rd_perm,
+                                 tlb_req_return);
         end
 
         `S_PTW_START: begin
@@ -6725,14 +6825,16 @@ module smolrv64(input wire        clock,
 
                   if (ptw_level == 0 && aligned[63]) begin
                      hpm_tlb_uncached_napot_pulse <= 1;
-                     route_translated_addr(mem_addr, ptw_return);
+                     route_translated_addr(mem_addr, {1'b0, aligned[4:1]}, ptw_return);
                   end else if (ptw_level == 2) begin
                      hpm_tlb_uncached_1g_pulse <= 1;
-                     route_translated_addr(mem_addr, ptw_return);
+                     route_translated_addr(mem_addr, {1'b0, aligned[4:1]}, ptw_return);
                   end else begin
                      stage_tlb_insert(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
+                                      {1'b0, aligned[4:1]},
                                       ptw_satp, ptw_sum, ptw_mxr);
                      ptw_route_pa <= mem_addr;
+                     ptw_route_perm <= {1'b0, aligned[4:1]};
                      ptw_route_return <= ptw_return;
                      state <= `S_TLB_INSERT;
                   end
@@ -6756,7 +6858,7 @@ module smolrv64(input wire        clock,
 
         `S_TLB_INSERT: begin
            commit_staged_tlb_insert;
-           route_translated_addr(ptw_route_pa, ptw_route_return);
+           route_translated_addr(ptw_route_pa, ptw_route_perm, ptw_route_return);
         end
 
         `S_PTW_LAUNCH: begin
@@ -6766,6 +6868,8 @@ module smolrv64(input wire        clock,
               dram_addr     <= ptw_pte_addr[30:3];
               dram_va       <= ptw_pte_addr;
               dram_asid     <= {TLB_ASID_BITS{1'b0}};
+              dram_perm     <= CACHE_PERM_PHYS;
+              dram_ctx      <= {2'd1, 2'd1, 1'b0, 1'b0};
               dram_read     <= 1;
               state         <= `S_DRAM_PTW_WAIT;
            end else begin
@@ -6838,6 +6942,8 @@ module smolrv64(input wire        clock,
                  dram_addr <= mem_addr[30:3] + 1;
                  dram_va   <= {mem_va[63:3], 3'b000} + 64'd8;
                  dram_asid <= mem_asid;
+                 dram_perm <= mem_perm;
+                 dram_ctx  <= mem_ctx;
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD2_WAIT;
               end
@@ -6895,6 +7001,8 @@ module smolrv64(input wire        clock,
            dram_addr       <= dram2_addr;
            dram_va         <= dram2_va;
            dram_asid       <= dram2_asid;
+           dram_perm       <= dram2_perm;
+           dram_ctx        <= dram2_ctx;
            dram_writedata  <= dram2_data_part;
            dram_wstrb      <= dram2_wstrb;
            dram_write      <= 1;
@@ -6913,6 +7021,14 @@ module smolrv64(input wire        clock,
               prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
            end
+        end
+
+        `S_BUS_TIMEOUT: begin
+           cause_intr = 0;
+           cause = bus_timeout_cause;
+           tval = bus_timeout_tval;
+           write_back_register = 0;
+           state <= `S_EXCEPTION;
         end
 
       endcase
@@ -6972,9 +7088,6 @@ module smolrv64(input wire        clock,
                // Late R beats from an abandoned read are silently swallowed by
                // the AXI master (it gates dram_readdatavalid on bus_waiting), so
                // no separate "abandon" handshake is needed.
-               cause_intr = 0;
-               cause = bus_timeout_cause;
-               tval = bus_timeout_tval;
                // Latch context of the FIRST timeout in this measurement
                // window (don't overwrite on aftershock faults in the trap
                // handler).  Cleared when csr_mig_timeouts is cleared.
@@ -6990,10 +7103,9 @@ module smolrv64(input wire        clock,
                $display("%05d  ** Bus timeout in state %0d, cause %0d, tval %x", $time, state, cause, tval);
 `endif
 `endif
-               write_back_register = 0;
                frontend_miss_valid <= 0;
                frontend_miss_done <= 0;
-               state <= `S_EXCEPTION;
+               state <= `S_BUS_TIMEOUT;
             end
          end else
             bus_timeout_ctr <= 0;
@@ -7133,10 +7245,16 @@ module smolrv64(input wire        clock,
          dram_write       <= 0;
          dram_va          <= 0;
          dram_asid        <= 0;
+         dram_perm        <= CACHE_PERM_PHYS;
+         dram_ctx         <= 0;
          mem_va           <= 0;
          mem_asid         <= 0;
+         mem_perm         <= CACHE_PERM_PHYS;
+         mem_ctx          <= 0;
          dram2_va         <= 0;
          dram2_asid       <= 0;
+         dram2_perm       <= CACHE_PERM_PHYS;
+         dram2_ctx        <= 0;
          dram_store_split <= 0;
          cache_flush_req  <= 0;
          ptw_from_dram    <= 0;
@@ -7248,6 +7366,8 @@ module smolrv64(input wire        clock,
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
               cache_req_asid      <= dram_asid;
+              cache_req_perm      <= dram_perm;
+              cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 0;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(dram_va);
@@ -7271,6 +7391,8 @@ module smolrv64(input wire        clock,
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
               cache_req_asid      <= dram_asid;
+              cache_req_perm      <= dram_perm;
+              cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 1;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(dram_va);
@@ -7306,16 +7428,24 @@ module smolrv64(input wire        clock,
 
            way0_hit = cache_meta_valid(cache_way0_tag_rd_data) &&
                       cache_meta_asid(cache_way0_tag_rd_data) == cache_req_asid &&
-                      cache_meta_vtag(cache_way0_tag_rd_data) == cache_req_vtag;
+                      cache_meta_vtag(cache_way0_tag_rd_data) == cache_req_vtag &&
+                      cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_rd_data),
+                                            cache_req_ctx);
            way1_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
                       cache_meta_asid(cache_way1_tag_rd_data) == cache_req_asid &&
-                      cache_meta_vtag(cache_way1_tag_rd_data) == cache_req_vtag;
+                      cache_meta_vtag(cache_way1_tag_rd_data) == cache_req_vtag &&
+                      cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_rd_data),
+                                            cache_req_ctx);
            way0_next_hit = cache_meta_valid(cache_way0_tag_next_rd_data) &&
                            cache_meta_asid(cache_way0_tag_next_rd_data) == cache_req_asid &&
-                           cache_meta_vtag(cache_way0_tag_next_rd_data) == cache_req_next_vtag;
+                           cache_meta_vtag(cache_way0_tag_next_rd_data) == cache_req_next_vtag &&
+                           cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_next_rd_data),
+                                                 cache_req_ctx);
            way1_next_hit = cache_meta_valid(cache_way1_tag_next_rd_data) &&
                            cache_meta_asid(cache_way1_tag_next_rd_data) == cache_req_asid &&
-                           cache_meta_vtag(cache_way1_tag_next_rd_data) == cache_req_next_vtag;
+                           cache_meta_vtag(cache_way1_tag_next_rd_data) == cache_req_next_vtag &&
+                           cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_next_rd_data),
+                                                 cache_req_ctx);
 
            cache_lookup_hit <= way0_hit || way1_hit;
            cache_lookup_hit_way <= way1_hit;
@@ -7378,6 +7508,7 @@ module smolrv64(input wire        clock,
            cache_way1_tag_wr_en <= cache_lookup_hit_way;
            cache_tag_wr_idx     <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
            cache_tag_wr_data    <= cache_make_meta(1'b1, 1'b1, cache_req_asid,
+                                                    cache_req_perm,
                                                     cache_req_vtag, cache_req_ptag);
            dram_write_done_r <= 1;
            cache_state <= CACHE_IDLE;
@@ -7665,6 +7796,7 @@ module smolrv64(input wire        clock,
                  cache_tag_wr_idx  <= cache_target_idx;
                  cache_tag_wr_data <= cache_make_meta(cache_req_write, 1'b1,
                                                        cache_req_asid,
+                                                       cache_req_perm,
                                                        cache_req_vtag,
                                                        cache_req_ptag);
                  if (cache_req_write) begin
@@ -7700,6 +7832,8 @@ module smolrv64(input wire        clock,
          cache_way0_tag_wr_en <= 0;
          cache_way1_tag_wr_en <= 0;
          cache_cbo_done_r <= 0;
+         cache_req_perm <= CACHE_PERM_PHYS;
+         cache_req_ctx <= 0;
          cache_flush_ack <= cache_flush_req;
          cache_wb_after_cbo <= 0;
          cache_wb_then_fill <= 0;
