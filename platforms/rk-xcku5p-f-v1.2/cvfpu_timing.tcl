@@ -4,6 +4,14 @@
 # Tcl control flow. The hook runs after the implementation design is opened.
 
 set core_clocks [get_clocks -quiet -of_objects [get_nets -quiet ui_clk]]
+set fpu_clk_src_pins [get_pins -quiet fpu_clk_buf/I]
+set fpu_clk_out_pins [get_pins -quiet fpu_clk_buf/O]
+if {[llength $fpu_clk_src_pins] && [llength $fpu_clk_out_pins] &&
+    ![llength [get_clocks -quiet -of_objects $fpu_clk_out_pins]]} {
+   create_generated_clock -name fpu_clk_div4 -divide_by 4 \
+      -source $fpu_clk_src_pins $fpu_clk_out_pins
+}
+
 set fpu_clocks  [get_clocks -quiet -of_objects [get_nets -quiet fpu_clk]]
 if {[llength $core_clocks] && [llength $fpu_clocks]} {
    set_clock_groups -asynchronous -group $core_clocks -group $fpu_clocks

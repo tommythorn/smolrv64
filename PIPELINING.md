@@ -5,128 +5,271 @@ a constraint: when it conflicts with getting to a real pipeline, rewrite it.
 
 ## Goal
 
-Move SmolRV64 from a mostly single-instruction FSM toward a simple in-order
-pipeline that overlaps frontend and backend work.
+Move SmolRV64 from a mostly single-instruction FSM to a simple in-order pipeline
+with an independent frontend and a retiring backend.
 
-The target is not out-of-order execution or multi-issue.  The target is:
+The target is not out-of-order execution or multi-issue yet.  The target is:
 
 - one instruction retires in order;
-- frontend fetch/decode can run while an older instruction is in later stages;
-- redirects from branches, jumps, traps, interrupts, and xRET flush younger
-  work;
-- every commit remains buildable and testable.
+- frontend fetch/decode runs ahead of backend execution on the common path;
+- the common path is aggressively speculative;
+- wrong speculation is cheap to discard and restart;
+- redirects from branches, jumps, traps, interrupts, xRET, fences, and address
+  space changes flush younger work through one explicit protocol;
+- every commit remains buildable, testable, and timing-accounted.
 
 This is a stepping stone toward a speculative superscalar out-of-order design.
-Prefer clean, concise, human-readable stage contracts over squeezing out every
-short-term cycle in the transitional in-order core.
+The work should bias toward clean stage contracts and short timing paths, not
+toward preserving the old FSM state structure.
+
+## Current Baseline
+
+The current kept work is a transitional overlap mechanism inside the old FSM:
+
+- `rf_decode_valid` is now a one-entry frontend/backend handoff candidate.
+- Register-file read launch is split from decode enqueue with an `rf_read_*`
+  payload.
+- `next_pc` and frontend epoch travel with the queued instruction.
+- A validated queued decode can launch RF read immediately.
+- A direct non-speculative fetch can bypass the decode slot and launch RF read
+  in the same cycle.
+- Speculative fetch-buffer hits can be consumed while selected backend states
+  are busy.
+- A conservative speculative frontend miss path exists for physical,
+  cacheable, non-cross-doubleword cases.
+
+This proved useful as preparation, but it is not the final pipeline shape.  Do
+not keep widening broad FSM predicates indefinitely.  The CSR-state speculation
+attempt failed timing with only a small logical change, which is evidence that
+the old control structure is now the bottleneck.
 
 ## Pipeline Contract
 
-Use ready/valid boundaries:
+Use ready/valid boundaries and registered payloads:
 
-- A stage owns a `valid` bit and a registered payload.
-- A producer may write a stage only when the stage is not valid or the consumer
+- A stage owns a `valid` bit and its payload.
+- A producer may write a stage only when the stage is empty or the consumer
   accepts it in the same cycle.
 - A consumer may read a stage only when `valid` is set.
 - If a stage is valid and not accepted, its payload stays stable.
 - Redirects invalidate younger stages.
-- Each speculative stage payload carries a frontend epoch; redirects advance the
-  epoch so stale payloads are easy to reject as the pipeline deepens.
+- Each speculative frontend payload carries an epoch.
+- Frontend-invalidating events advance the epoch.
 - Retirement remains in order at the backend.
 
-Do not protect the old FSM shape for its own sake.  Preserve architectural
-behavior, not state names.
+Do not protect old state names.  Preserve architectural behavior and timing
+discipline.
 
-## Near-Term Architecture
+## Architecture Direction
 
-Split the core into two conceptual halves before trying to make everything
-overlap:
+Build two real halves.
 
-1. Frontend
-   - owns PC generation for the fetch stream;
-   - fetches instruction bytes through the existing fetch buffer, cache, TLB,
-     PTW, and DRAM paths;
-   - expands cross-page and cross-doubleword instructions;
-   - enqueues a decoded register-read request.
+### Frontend
 
-2. Backend
-   - consumes one decoded register-read request;
-   - reads integer/FP register files;
-   - executes, accesses memory, writes back, and retires in order;
-   - sends redirects and flushes to the frontend.
+The frontend owns:
 
-Initially the queues can be one entry deep.  A one-entry queue is enough to
-break the current "fetch only after retire" structure and is easier to verify
-than a larger instruction FIFO.
+- sequential PC generation and simple prediction;
+- instruction cache lookup and fill;
+- TLB/PTW interaction for instruction fetch;
+- fetch alignment, compressed-instruction length handling, and slow-path
+  cross-boundary cases;
+- decode of register indexes and immediate frontend metadata;
+- a one-entry or small decode queue for the backend.
 
-## Immediate Steps
+The frontend should be able to run without consulting the backend FSM on the
+fast path.  Backend events should arrive as redirects, flushes, and epoch
+increments, not as ad hoc state exemptions.
 
-1. Centralize fetch-to-decode enqueue
-   - Replace the duplicated direct writes to `rf_decode_*`, `rs1`, `rs2`, `rd`,
-     and `shamt` with one helper.
-   - This is not expected to improve CPI by itself.
-   - It creates a single point that can become the frontend/backend queue.
-   - Remove dead fallback boundaries once producer paths feed that queue
-     directly; there should be one visible frontend/backend handoff.
+### Backend
 
-2. Turn `rf_decode_valid` into a real one-entry queue
-   - Split enqueue from register-file read launch.
-   - Add an explicit `rf_read_*` payload for the instruction whose BRAM
-     register-file read is in flight.
-   - Carry `pc`, `next_pc`, decoded register indexes, and frontend epoch in the
-     payload rather than recomputing frontend facts in later states.
-   - Do not overwrite a valid decode slot until the backend accepts it.
-   - Make `S_RF`/`S_RF2`/`S_RF3` the backend consumer side of that queue.
+The backend owns:
 
-3. Let the frontend fetch while the backend is busy
-   - After an instruction is enqueued, allow the frontend to start the next
-     sequential fetch when the decode queue has space.
-   - First implementation is intentionally narrow: only consume a speculative
-     fetch-buffer hit when the retired instruction resolves to the same
-     frontend epoch, `npc`, `satp`, and privilege context.
-   - That hit-only speculative enqueue should run from backend-owned states,
-     not only from the RF wait state, so the frontend/decode handoff can fill
-     while older instructions execute, complete ALU work, or wait on memory.
-   - The hit-only path may also run during execute itself; the retire-time
-     epoch/context/PC check is the architectural boundary that accepts or
-     discards the queued younger instruction.
-   - Store commit can participate in the same hit-only path because it does not
-     grant the younger instruction access to the cache or external bus.
-   - Use conservative prediction first: next halfword/word based on the fetched
-     instruction length.
-   - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
-     redirecting event, flush the queued younger instruction and restart fetch
-     at the resolved target.
-   - Any event that invalidates the frontend without changing PC/context
-     (`fence.i`, legal `sfence.vma`) must also advance the frontend epoch, so a
-     same-PC queued younger instruction cannot survive the flush.
-   - When a queued speculative decode is validated at retire, launch its
-     register-file read immediately instead of returning through an idle `S_RF`
-     dispatch cycle.
-   - When a newly fetched instruction is immediately accepted by the backend,
-     bypass the one-entry decode slot and launch the register-file read in the
-     same cycle.  The slot remains the holding point for speculative younger
-     work that cannot be committed yet.
-   - Start decoupling miss handling conservatively: allow a physical,
-     cacheable, non-cross-doubleword frontend miss to run during long
-     non-memory backend states, then validate the captured response at retire
-     before it enters decode.
-   - Keep widening that conservative miss path before adding a separate fetch
-     engine: cover backend wait states that do not own the cache.
+- consuming decoded work in order;
+- integer/FP register-file reads;
+- execution, load/store, CSR, trap, and retirement state machines;
+- redirect generation;
+- cache/data-side ownership where required;
+- commit-time validation of speculation.
 
-4. Add hazards only as needed
-   - Data hazards are expected once frontend and backend overlap.
-   - Start with a stall policy rather than bypassing:
-     if a queued younger instruction reads a pending destination, hold it until
-     the older instruction retires or the result is available.
-   - Add bypasses later only where perf data justifies the extra timing risk.
+Backend complexity is allowed to remain state-machine based for rare cases.
+The common frontend path should not wait for that state machine unless a real
+resource or ordering rule requires it.
 
-5. Reassess the instruction cache
-   - A real frontend will otherwise fight the data/cache path.
-   - The intended I-cache line size is 64 bytes to match the rest of the memory
-     system.
-   - Keep awkward unaligned/cross-page cases correct; handle the rare page
-     crossing case with a slow path.
+## Instruction Cache
+
+Add an instruction cache as part of the pipeline, not as a later polish item.
+
+Rationale:
+
+- A real frontend otherwise fights the data/cache path.
+- The current fetch buffer can hide some latency, but it is too entangled with
+  backend control and fetch request selection.
+- A 64-byte I-cache line matches the memory system and gives the frontend a
+  natural unit for sequential fetch.
+- The I-cache creates a clean timing boundary: PC/index/tag lookup, registered
+  hit/miss result, and a separate refill path.
+
+Initial I-cache policy:
+
+- direct-mapped or very small set-associative, whichever is simpler and closes
+  timing;
+- physically indexed/tagged after translation for the first implementation;
+- 64-byte lines;
+- no coherence beyond explicit `fence.i` invalidation;
+- flush or invalidate on frontend epoch changes that require it;
+- slow path for page crossing and awkward unaligned/cross-doubleword cases.
+
+The first I-cache does not need to be clever.  It needs to move the common
+sequential instruction stream out of the backend FSM.
+
+## Speculation Policy
+
+Speculate for the common fast path and restart on deviations unless a stall is
+clearly cheaper in measured hardware.
+
+Default policy:
+
+- predict fall-through by instruction length;
+- let frontend fetch/decode younger sequential work;
+- carry only the per-instruction data needed to validate/retire the payload;
+- keep slow-changing context as shared architectural state when updates can be
+  made serializing;
+- at backend retirement, accept the younger work only if the resolved next PC
+  and context match;
+- otherwise flush younger work, advance epoch as needed, and restart frontend at
+  the resolved target.
+
+Restart-first is the default because it keeps timing local.  Stalling requires
+hazard checks, wakeup conditions, and muxing that can easily cost more timing
+than the occasional restart costs CPI.
+
+Use stalls when:
+
+- the condition is common enough that repeated restart burns measurable CPI;
+- the stall check is local and cheap;
+- timing reports show the stall machinery is not on a critical path.
+
+Use bypasses only after stall cost is measured.  Bypasses are performance
+features, not correctness scaffolding.
+
+## Deviations And Slow Paths
+
+The common path should be straight-line, cached, translated, aligned, and
+non-trapping.  Everything else gets a clear recovery strategy:
+
+- taken branch/jump: backend redirect, flush younger work, restart frontend;
+- trap/interrupt/xRET: backend redirect/flush, epoch advance where needed;
+- `fence.i`: invalidate I-cache/fetch buffer, advance frontend epoch, restart;
+- `sfence.vma`: flush relevant translation/frontend state, advance epoch,
+  restart;
+- SATP write: flush translation/frontend state, advance epoch, restart;
+- I-cache miss: frontend refill state machine, then resume;
+- page crossing or cross-doubleword instruction: slow frontend state machine;
+- data cache conflict with frontend refill: arbitrate explicitly or make the
+  frontend wait at the refill boundary, not in the hit path;
+- illegal fetch/access fault: frontend reports fault payload, backend retires
+  it in order.
+
+The important rule is that deviations are explicit state-machine paths at stage
+boundaries.  They should not leak into the fast-path PC and fetch muxes.
+
+## Pipeline-Carried State Policy
+
+Do not automatically copy every global register into every pipeline payload.
+For each piece of state that crosses a stage boundary, classify it first:
+
+- **Per-instruction data:** must travel with the instruction because different
+  in-flight instructions can legitimately need different values.
+- **Slow context:** should have one shared current copy, plus an epoch/checkpoint
+  if needed.  Updates are serializing barriers: flush younger frontend work,
+  wait for outstanding slow-path work to drain or explicitly kill it, update the
+  shared copy, then restart.
+- **Derived data:** should be recomputed locally from compact state, or carried
+  only after it has been narrowed to the exact bits used by later stages.
+
+Current candidates:
+
+- `satp`: slow context.  The TLB needs only address-space identity, not the
+  entire CSR.  For Sv39 this is implemented ASID bits plus root PPN; `MODE` is
+  implicit because Bare bypasses translation.  SATP writes are serializing and
+  flush frontend/TLB state.
+- ASID width: implement 10 ASID bits unless measurements show pressure.  WARL
+  zero the unused upper ASID bits so the TLB key does not carry them.
+- `sum`/`mxr`: slow context for translation permission checks.  A future pass
+  should evaluate whether SSTATUS writes can be made serializing for outstanding
+  translation, letting TLB/PTW use shared context instead of carrying these bits
+  everywhere.
+- privilege and MPRV/MMP context: mixed.  Retired architectural privilege is
+  slow context, but effective access privilege for a load/store/fetch may be
+  per-operation and must be captured once the operation is issued.
+- `frm`/`fflags`/`fs`: FP context.  `frm` is slow unless dynamic rounding mode
+  is used; `fflags` is retire/side-effect state and should not sit on common
+  integer timing paths.
+- frontend epoch: per-speculation metadata, currently 2 bits.  It exists only
+  to distinguish stale frontend work in this in-order core, so do not widen it
+  unless there are enough independently-live stale payloads to justify the
+  extra state.
+
+This review should happen before adding new pipeline fields.  A wide copied
+field is a timing smell unless there is a clear per-instruction correctness
+reason for it.
+
+## Timing Strategy
+
+Timing is now a design constraint, not a final check.
+
+Rules:
+
+- run FPGA timing for Verilog changes before treating a commit as hardware
+  ready;
+- when timing fails, fix or revert before stacking more pipeline work;
+- do not keep adding cases to broad combinational predicates as a substitute for
+  a pipeline boundary;
+- prefer registered redirect/flush signals over reading backend state directly
+  in frontend selection logic;
+- keep PC, epoch, SATP, and privilege muxing shallow;
+- use Vivado worst-path reports to choose the next structural cleanup;
+- record surprising timing failures in this document when they change the plan.
+
+Known pressure points:
+
+- `fetch_req_pc` selection;
+- frontend epoch control;
+- broad state predicates;
+- cache/fetch buffer hit logic;
+- paths that combine backend retirement with next frontend request generation.
+
+## Near-Term Work
+
+1. Clean warning and constraint noise
+   - Fix project/XDC warnings that affect timing confidence.
+   - Classify generated DDR4-IP warnings separately from repo-owned warnings.
+   - Keep timing reports actionable.
+
+2. Introduce explicit frontend command/result records
+   - Replace scattered `fetch_req_*` writes with a registered frontend command.
+   - Backend sends redirect/restart commands.
+   - Frontend produces decode/fault payloads.
+
+3. Add the first I-cache
+   - Keep it small and timing-friendly.
+   - Make hit lookup the common path.
+   - Put refill, page crossing, and invalidation in explicit slow states.
+
+4. Move sequential prediction into the frontend
+   - Predict next PC from fetched instruction length.
+   - Let backend validate or redirect.
+   - Stop growing `frontend_spec_fetch_state` as the main mechanism.
+
+5. Decide restart vs stall with counters
+   - Count accepted speculation, flushed speculation, hazard restarts, and
+     frontend stalls.
+   - Use hardware perf plus counters to decide whether a stall is worth its
+     timing cost.
+
+6. Add minimal hazards
+   - Start with restart or local stall for true data hazards.
+   - Add bypasses only where counters show repeated loss and timing permits.
 
 ## Testing Ladder
 
@@ -140,7 +283,6 @@ Every behavioral pipeline commit should pass:
 
 Hardware `perf stat sha256sum < /usr/bin/emacs` is the performance arbiter.
 Simulation and timing can prove "works"; hardware CPI proves "helped".
-When Vivado timing fails, fix or revert before stacking more pipeline changes.
 
 ## AI Workflow
 
@@ -149,7 +291,8 @@ Use AI for small, falsifiable steps:
 - define the stage boundary being changed;
 - state whether the patch is structural or expected to improve CPI;
 - keep generated Vivado/sim files out of commits;
-- revert quickly when hardware perf contradicts the hypothesis;
+- inspect timing paths before widening speculation;
+- revert quickly when hardware timing or perf contradicts the hypothesis;
 - rewrite this plan when it starts defending yesterday's implementation.
 
 Subagents are useful only for independent, checkable tasks: running a fixed test

@@ -35,6 +35,7 @@ module rk_xcku5p(
    wire fpu_clk;
    wire ui_rst;           // c0_ddr4_ui_clk_sync_rst (active high)
    wire init_calib_complete;
+   wire halted;
 
    // CPU is held in reset until calibration completes.
    // key[1] is a soft-reset button (active low): pulses the CPU reset without
@@ -223,7 +224,6 @@ module rk_xcku5p(
       .dbg_bus                        (dbg_bus)
    );
 
-   wire halted;
    wire       uart_tx_valid;
    wire [7:0] uart_tx_data;
    wire       rx_valid;
@@ -443,6 +443,16 @@ module rk_xcku5p(
       .queue_desc              (),
       .queue_driver            (),
       .queue_device            (),
+      .queue0_num              (),
+      .queue0_ready            (),
+      .queue0_desc             (),
+      .queue0_driver           (),
+      .queue0_device           (),
+      .queue1_num              (),
+      .queue1_ready            (),
+      .queue1_desc             (),
+      .queue1_driver           (),
+      .queue1_device           (),
       .device_status           ()
    );
 
@@ -786,7 +796,7 @@ module rk_xcku5p(
    rs232rx #(.CLK_FREQ(333_333_333), .BAUD(3_000_000)) rs232rx_inst
      (.clk(ui_clk), .rst_n(~ui_rst),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
-      .rxd(rxd));
+      .rxd(rxd), .overflow());
 endmodule
 
 `ifndef SYNTHESIS

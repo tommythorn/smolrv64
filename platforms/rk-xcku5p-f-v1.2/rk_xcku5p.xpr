@@ -4,7 +4,7 @@
 <!-- Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.                   -->
 <!-- Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.   -->
 
-<Project Product="Vivado" Version="7" Minor="70" Path="/home/tommy/smolrv64-cache/platforms/rk-xcku5p-f-v1.2/rk_xcku5p.xpr">
+<Project Product="Vivado" Version="7" Minor="70" Path="/home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2/rk_xcku5p.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
     <Option Name="Id" Val="367ced742f76478f8cc9da84ff39fa87"/>
@@ -89,6 +89,20 @@
   <FileSets Version="1" Minor="32">
     <FileSet Name="sources_1" Type="DesignSrcs" RelSrcDir="$PSRCDIR/sources_1" RelGenDir="$PGENDIR/sources_1">
       <Filter Type="Srcs"/>
+      <File Path="$PPRDIR/../../src/axi_single_beat_master.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../../src/axi_two_master_arbiter.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/../../third_party/cvfpu/vendor/openc910/C910_RTL_FACTORY/gen_rtl/vfdsu/rtl/ct_vfdsu_ctrl.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
@@ -264,6 +278,20 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PPRDIR/../../src/virtio_mmio.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../../src/virtio_net_tx_drop.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/../../third_party/cvfpu/src/common_cells/src/cf_math_pkg.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
@@ -410,8 +438,8 @@
         <Option Name="TopAutoSet" Val="TRUE"/>
         <Option Name="VerilogDir" Val="$PPRDIR/../../third_party/cvfpu/src/common_cells/include"/>
         <Verilog_Define Name="MEM_BASEADDR" Val="64&apos;h70000000"/>
-        <Verilog_Define Name="SRAM_EVENHEX" Val="&quot;/home/tommy/smolrv64-cache/src/mem.even&quot;"/>
-        <Verilog_Define Name="SRAM_ODDHEX" Val="&quot;/home/tommy/smolrv64-cache/src/mem.odd&quot;"/>
+        <Verilog_Define Name="SRAM_EVENHEX" Val="&quot;/home/tommy/smolrv64/src/mem.even&quot;"/>
+        <Verilog_Define Name="SRAM_ODDHEX" Val="&quot;/home/tommy/smolrv64/src/mem.odd&quot;"/>
         <Verilog_Define Name="USE_CVFPU"/>
         <Verilog_Define Name="SMOLRV64_USE_XPM"/>
       </Config>
@@ -534,14 +562,14 @@
         </Step>
         <Step Id="post_place_power_opt_design"/>
         <Step Id="phys_opt_design">
-          <Option Id="Directive">0</Option>
+          <Option Id="Directive">2</Option>
         </Step>
         <Step Id="route_design">
           <Option Id="Directive">0</Option>
           <Option Id="MoreOptsStr"><![CDATA[-tns_cleanup]]></Option>
         </Step>
         <Step Id="post_route_phys_opt_design" EnableStepBool="1">
-          <Option Id="Directive">0</Option>
+          <Option Id="Directive">1</Option>
         </Step>
         <Step Id="write_bitstream"/>
       </Strategy>

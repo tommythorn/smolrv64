@@ -10,7 +10,7 @@ set_property PACKAGE_PIN T24 [ get_ports "sys_clk_p" ]
 set_property PACKAGE_PIN U24 [ get_ports "sys_clk_n" ]
 set_property IOSTANDARD DIFF_SSTL12 [ get_ports "sys_clk_p" ]
 set_property IOSTANDARD DIFF_SSTL12 [ get_ports "sys_clk_n" ]
-create_clock -period 5.0 [get_ports "sys_clk_p"]
+# The DDR4 IP XDC creates the 200 MHz input clock on this port.
 
 # QSFP28 CLK 156.25 MHz
 # create_clock -period 6.05 [get_ports "gt_clk156p25_p"]
@@ -155,14 +155,8 @@ set_property PACKAGE_PIN P19  [ get_ports "c0_ddr4_reset_n" ]
 # Timing waiver for DDR4 calibration IP internal signal
 create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-17} -description "Ignore the TIMING-17 Critical Warning for sl_iport_i" -objects [get_pins -quiet -leaf -of [get_nets -quiet u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/u_ddr_cal/U_XSDB_SLAVE/sl_iport_i*] -filter {DIRECTION==IN}]
 
-# CVFPU runs from a BUFGCE_DIV /4 clock and crosses to the 333 MHz core
-# through a one-request CDC bridge.
-create_generated_clock -add -name fpu_clk_div4 -divide_by 4 -source [get_pins fpu_clk_buf/I] [get_pins fpu_clk_buf/O]
-set core_clk [get_clocks -quiet mmcm_clkout0]
-set cvfpu_clk [get_clocks -quiet fpu_clk_div4]
-if {[llength $core_clk] && [llength $cvfpu_clk]} {
-    set_clock_groups -asynchronous -group $core_clk -group $cvfpu_clk
-}
+# CVFPU generated-clock and CDC constraints live in cvfpu_timing.tcl.  They
+# need normal Tcl conditionals, which Vivado's XDC parser rejects.
 
 # Bitstream configuration
 set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]

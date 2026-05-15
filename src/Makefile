@@ -125,7 +125,11 @@ smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefi
 	cp obj_dir_cvfpu_tester/$@ $@
 
 lint:
-	verilator  -Wall --cc --top-module smolrv64 $(SRCS)
+	verilator -Wall --lint-only --timing --top-module smolrv64_tb \
+		$(TESTER_VDEFS) -DRISCV_TESTS \
+		-Wno-DECLFILENAME -Wno-BLKSEQ -Wno-PROCASSINIT \
+		-Wno-UNUSEDSIGNAL \
+		$(SRCS)
 
 cvfpu-lint: $(CVFPU_SRCS) cvfpu_sources.f Makefile
 	verilator -sv --lint-only -Wno-fatal \

@@ -600,7 +600,11 @@ module smolrv64(input wire        clock,
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
 `define S_FRONTEND_MISS_WAIT   51  // wait for speculative frontend cache miss after backend retire
-`define S_LAST_STATE           51  // update state register width accordingly
+`define S_HANDLE_CSR_COMMIT    52  // retire registered CSR readback after CSR side effects
+`define S_FP_INT_COMMIT        53  // retire staged FP result for integer register writes
+`define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
+`define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
+`define S_LAST_STATE           55  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -698,20 +702,23 @@ module smolrv64(input wire        clock,
 `define MEM_SIZE        (1 << `MEM_SIZE_LG2)
    localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
    localparam TLB_CTX_BITS = 6;
-   localparam TLB_SATP_BITS = 64;
+   localparam TLB_ASID_BITS = 10;
+   localparam TLB_PPN_BITS = 44;
+   localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS + TLB_PPN_BITS;
+   localparam FRONTEND_EPOCH_BITS = 2;
    localparam TLB_2M_TAG_BITS = 18;
    localparam TLB_2M_PBASE_BITS = 43;
    localparam TLB_2M_DATA_BITS = TLB_2M_TAG_BITS + TLB_2M_PBASE_BITS +
-                                 TLB_SATP_BITS + TLB_CTX_BITS;
+                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS;
    localparam TLB_4K_TAG_BITS = 27;
    localparam TLB_4K_PBASE_BITS = 52;
    localparam TLB_4K_DATA_BITS = TLB_4K_TAG_BITS + TLB_4K_PBASE_BITS +
-                                 TLB_SATP_BITS + TLB_CTX_BITS;
+                                 TLB_SATP_KEY_BITS + TLB_CTX_BITS;
    localparam TLB_CTX_LSB = 0;
-   localparam TLB_SATP_LSB = TLB_CTX_LSB + TLB_CTX_BITS;
-   localparam TLB_2M_PBASE_LSB = TLB_SATP_LSB + TLB_SATP_BITS;
+   localparam TLB_SATP_KEY_LSB = TLB_CTX_LSB + TLB_CTX_BITS;
+   localparam TLB_2M_PBASE_LSB = TLB_SATP_KEY_LSB + TLB_SATP_KEY_BITS;
    localparam TLB_2M_TAG_LSB = TLB_2M_PBASE_LSB + TLB_2M_PBASE_BITS;
-   localparam TLB_4K_PBASE_LSB = TLB_SATP_LSB + TLB_SATP_BITS;
+   localparam TLB_4K_PBASE_LSB = TLB_SATP_KEY_LSB + TLB_SATP_KEY_BITS;
    localparam TLB_4K_TAG_LSB = TLB_4K_PBASE_LSB + TLB_4K_PBASE_BITS;
 `ifndef CACHE_INDEX_BITS
 `define CACHE_INDEX_BITS 14 // 1 MiB: 16k direct-mapped 64-byte lines
@@ -861,7 +868,6 @@ module smolrv64(input wire        clock,
    reg  [63:0] execute_req_pc = `RESET_PC;
    reg  [63:0] execute_req_next_pc = `RESET_PC;
    reg  [31:0] execute_req_insn = 0;
-   reg  [ 3:0] execute_req_epoch = 0;
    reg  [ 4:0] execute_req_rd = 0;
    reg  [ 4:0] execute_req_rs1 = 0;
    reg  [ 4:0] execute_req_rs2 = 0;
@@ -869,7 +875,6 @@ module smolrv64(input wire        clock,
    wire [63:0] ex_pc = execute_req_pc;
    wire [63:0] ex_next_pc = execute_req_next_pc;
    wire [31:0] ex_insn = execute_req_insn;
-   wire [ 3:0] ex_epoch = execute_req_epoch;
    wire [ 4:0] ex_rd = execute_req_rd;
    wire [ 4:0] ex_rs1 = execute_req_rs1;
    wire [ 4:0] ex_rs2 = execute_req_rs2;
@@ -988,7 +993,6 @@ module smolrv64(input wire        clock,
    reg          fetch_buf_valid = 0;
    reg  [63:0]  fetch_buf_base_va = 0; // 8-byte aligned VA of fetch_buf_data[63:0]
    reg  [59:0]  fetch_buf_next_va_hi = 0;
-   reg  [63:0]  fetch_buf_satp = 0;
    reg  [ 1:0]  fetch_buf_prv = 0;
    reg  [127:0] fetch_buf_data = 0;
    reg          fetch_buf_latched_hit = 0;
@@ -999,27 +1003,25 @@ module smolrv64(input wire        clock,
    // registered request and launches the existing fetch-buffer/miss path.
    reg          fetch_req_valid = 0;
    reg  [63:0]  fetch_req_pc = `RESET_PC;
-   reg  [63:0]  fetch_req_satp = 0;
    reg  [ 1:0]  fetch_req_prv = 3;
    reg          fetch_req_fast_ready = 0;
    reg          fetch_req_speculative = 0;
-   reg  [ 3:0]  fetch_req_epoch = 0;
-   reg  [ 3:0]  fetch_epoch = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] fetch_req_epoch = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] fetch_epoch = 0;
 
    // Speculative frontend cache miss.  The single global FSM still owns TLB
    // and ordinary fetch misses; this side buffer only overlaps physical
    // cacheable misses with long non-memory backend states.
    reg          frontend_miss_valid = 0;
    reg          frontend_miss_done = 0;
+   reg          frontend_flush_this_cycle = 0;
    reg  [63:0]  frontend_miss_pc = `RESET_PC;
-   reg  [63:0]  frontend_miss_satp = 0;
    reg  [ 1:0]  frontend_miss_prv = 3;
-   reg  [ 3:0]  frontend_miss_epoch = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_miss_epoch = 0;
    reg  [63:0]  frontend_miss_data = 0;
    reg  [63:0]  frontend_miss_next_data = 0;
    reg          frontend_miss_next_valid = 0;
    localparam [1:0] FRONTEND_MISS_WAIT_CONSUME  = 2'd0,
-                    FRONTEND_MISS_WAIT_REDIRECT = 2'd1,
                     FRONTEND_MISS_WAIT_EXCEPTION = 2'd2;
    reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
 
@@ -1028,10 +1030,9 @@ module smolrv64(input wire        clock,
    reg          rf_decode_valid = 0;
    reg  [63:0]  rf_decode_pc = `RESET_PC;
    reg  [63:0]  rf_decode_next_pc = `RESET_PC;
-   reg  [63:0]  rf_decode_satp = 0;
    reg  [31:0]  rf_decode_insn = 0;
    reg  [ 1:0]  rf_decode_prv = 3;
-   reg  [ 3:0]  rf_decode_epoch = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch = 0;
    reg          rf_decode_from_dram = 0;
    reg  [ 4:0]  rf_decode_rd = 0;
    reg  [ 4:0]  rf_decode_rs1 = 0;
@@ -1044,7 +1045,6 @@ module smolrv64(input wire        clock,
    reg  [63:0]  rf_read_pc = `RESET_PC;
    reg  [63:0]  rf_read_next_pc = `RESET_PC;
    reg  [31:0]  rf_read_insn = 0;
-   reg  [ 3:0]  rf_read_epoch = 0;
    reg  [ 4:0]  rf_read_rd = 0;
    reg  [ 4:0]  rf_read_rs1 = 0;
    reg  [ 4:0]  rf_read_rs2 = 0;
@@ -1052,7 +1052,6 @@ module smolrv64(input wire        clock,
    wire [63:0]  rf3_pc = rf_read_pc;
    wire [63:0]  rf3_next_pc = rf_read_next_pc;
    wire [31:0]  rf3_insn = rf_read_insn;
-   wire [ 3:0]  rf3_epoch = rf_read_epoch;
    wire [ 4:0]  rf3_rd = rf_read_rd;
    wire [ 4:0]  rf3_rs1 = rf_read_rs1;
    wire [ 4:0]  rf3_rs2 = rf_read_rs2;
@@ -1061,21 +1060,27 @@ module smolrv64(input wire        clock,
    // Physical direct-mapped write-back cache for external DRAM.
    // The core-side granularity stays 64-bit; misses fill the surrounding
    // 64-byte line as eight 64-bit beats from the AXI backing path.
-   localparam [3:0] CACHE_IDLE      = 4'd0;
-   localparam [3:0] CACHE_TAG_READ  = 4'd1;
-   localparam [3:0] CACHE_TAG_CHECK = 4'd2;
-   localparam [3:0] CACHE_FILL_REQ  = 4'd3;
-   localparam [3:0] CACHE_FILL_WAIT = 4'd4;
-   localparam [3:0] CACHE_HIT_RESP  = 4'd5;
-   localparam [3:0] CACHE_WB_REQ    = 4'd6;
-   localparam [3:0] CACHE_WB_WAIT   = 4'd7;
-   localparam [3:0] CACHE_WB_PREP   = 4'd8;
-   localparam [3:0] CACHE_CBO_TAG_READ  = 4'd9;
-   localparam [3:0] CACHE_CBO_TAG_CHECK = 4'd10;
-   localparam [3:0] CACHE_CBO_RESP      = 4'd11;
-   localparam [3:0] CACHE_BRAM_FILL_READ = 4'd12;
-   localparam [3:0] CACHE_BRAM_WB_WRITE = 4'd13;
-   localparam [3:0] CACHE_LAST_STATE = CACHE_BRAM_WB_WRITE;
+   localparam [4:0] CACHE_IDLE      = 5'd0;
+   localparam [4:0] CACHE_TAG_READ  = 5'd1;
+   localparam [4:0] CACHE_TAG_CHECK = 5'd2;
+   localparam [4:0] CACHE_FILL_REQ  = 5'd3;
+   localparam [4:0] CACHE_FILL_WAIT = 5'd4;
+   localparam [4:0] CACHE_HIT_RESP  = 5'd5;
+   localparam [4:0] CACHE_WB_REQ    = 5'd6;
+   localparam [4:0] CACHE_WB_WAIT   = 5'd7;
+   localparam [4:0] CACHE_WB_PREP   = 5'd8;
+   localparam [4:0] CACHE_CBO_TAG_READ  = 5'd9;
+   localparam [4:0] CACHE_CBO_TAG_CHECK = 5'd10;
+   localparam [4:0] CACHE_CBO_RESP      = 5'd11;
+   localparam [4:0] CACHE_BRAM_FILL_READ = 5'd12;
+   localparam [4:0] CACHE_BRAM_WB_WRITE = 5'd13;
+   localparam [4:0] CACHE_BRAM_FILL_CAPTURE = 5'd14;
+   localparam [4:0] CACHE_BRAM_FILL_COMMIT = 5'd15;
+   localparam [4:0] CACHE_HIT_WRITE = 5'd16;
+   localparam [4:0] CACHE_TAG_WAIT = 5'd17;
+   localparam [4:0] CACHE_CBO_TAG_WAIT = 5'd18;
+   localparam [4:0] CACHE_WB_READ_WAIT = 5'd19;
+   localparam [4:0] CACHE_LAST_STATE = CACHE_WB_READ_WAIT;
 
    reg [ 7:0] cache_bank_wr_en = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
@@ -1086,7 +1091,7 @@ module smolrv64(input wire        clock,
    // lines start invalid and clean. Soft reset waits for this cache to go idle
    // and does not flush it.
 
-   reg [ 3:0] cache_state = CACHE_IDLE;
+   reg [ 4:0] cache_state = CACHE_IDLE;
    reg [63:0] cache_addr = 0;
    reg [63:0] cache_fill_base = 0;
    reg [63:0] cache_wb_base = 0;
@@ -1113,8 +1118,8 @@ module smolrv64(input wire        clock,
    reg        cache_cbo_flush = 0;
    reg [30:6] cache_cbo_line_addr = 0;
    reg        cache_cbo_done_r = 0;
-   reg        cache_bram_readdatavalid = 0;
-   reg [63:0] cache_bram_readdata = 0;
+   reg [63:0] cache_bram_read_data_stage = 0;
+   reg [63:0] cache_bram_fill_data = 0;
    reg        cache_bram_write_done = 0;
    reg [`MEM_SIZE_LG2-5:0] cache_bram_word_idx = 0;
    reg        cache_bram_word_bank = 0;
@@ -1137,9 +1142,10 @@ module smolrv64(input wire        clock,
    reg [ 7:0] axi_write_strb = 0;
    wire       axi_write_ready;
    wire       axi_write_done;
-   wire       cache_fill_data_valid = axi_readdatavalid || cache_bram_readdatavalid;
-   wire [63:0] cache_fill_data = cache_bram_readdatavalid ? cache_bram_readdata
-                                                          : axi_readdata;
+   wire       cache_bram_fill_commit = cache_state == CACHE_BRAM_FILL_COMMIT;
+   wire       cache_fill_data_valid = axi_readdatavalid || cache_bram_fill_commit;
+   wire [63:0] cache_fill_data = cache_bram_fill_commit ? cache_bram_fill_data
+                                                        : axi_readdata;
    wire [63:0] cache_bram_base_addr = {33'd0, MEM_BASEADDR_VALUE[30:0]};
    wire [63:0] cache_bram_window_mask = 64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2;
    wire       cache_fill_from_bram =
@@ -1306,13 +1312,17 @@ module smolrv64(input wire        clock,
            `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
            `S_FETCH_REQ:             state_name = "FETCH_REQ";
            `S_FRONTEND_MISS_WAIT:    state_name = "FRONTEND_MISS_WAIT";
+           `S_HANDLE_CSR_COMMIT:     state_name = "HANDLE_CSR_COMMIT";
+           `S_FP_INT_COMMIT:         state_name = "FP_INT_COMMIT";
+           `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
+           `S_TLB_INSERT:            state_name = "TLB_INSERT";
            default:                  state_name = "UNKNOWN";
          endcase
       end
    endfunction
 
    function [8*16-1:0] cache_state_name;
-      input [3:0] s;
+      input [4:0] s;
       begin
          case (s)
            CACHE_IDLE:      cache_state_name = "IDLE";
@@ -1329,30 +1339,36 @@ module smolrv64(input wire        clock,
            CACHE_CBO_RESP:      cache_state_name = "CBO_RESP";
            CACHE_BRAM_FILL_READ: cache_state_name = "BRAM_FILL_READ";
            CACHE_BRAM_WB_WRITE: cache_state_name = "BRAM_WB_WRITE";
+           CACHE_BRAM_FILL_CAPTURE: cache_state_name = "BRAM_FILL_CAP";
+           CACHE_BRAM_FILL_COMMIT: cache_state_name = "BRAM_FILL_COMMIT";
+           CACHE_HIT_WRITE: cache_state_name = "HIT_WRITE";
+           CACHE_TAG_WAIT: cache_state_name = "TAG_WAIT";
+           CACHE_CBO_TAG_WAIT: cache_state_name = "CBO_TAG_WAIT";
+           CACHE_WB_READ_WAIT: cache_state_name = "WB_READ_WAIT";
            default:         cache_state_name = "UNKNOWN";
          endcase
       end
    endfunction
 
    task dump_state_summary;
-      integer i;
+      integer summary_i;
       integer tlb_entries_total;
       reg [63:0] ptw_leaf_total;
       begin
          $display("%05d STATE SUMMARY cycles=%0d instret=%0d",
                   $time, state_stat_total_cycles, state_stat_instret);
-         for (i = 0; i <= `S_LAST_STATE; i = i + 1) begin
-            if (state_stat_cycles[i] != 0) begin
+         for (summary_i = 0; summary_i <= `S_LAST_STATE; summary_i = summary_i + 1) begin
+            if (state_stat_cycles[summary_i] != 0) begin
                $display("%05d STATE %0d %-24s cycles=%0d pct_x100=%0d",
-                        $time, i, state_name(i[5:0]), state_stat_cycles[i],
+                        $time, summary_i, state_name(summary_i[5:0]), state_stat_cycles[summary_i],
                         state_stat_total_cycles == 0 ? 64'd0 :
-                        (state_stat_cycles[i] * 64'd10000) / state_stat_total_cycles);
+                        (state_stat_cycles[summary_i] * 64'd10000) / state_stat_total_cycles);
             end
          end
          for (i = 0; i <= CACHE_LAST_STATE; i = i + 1) begin
             if (cache_state_stat_cycles[i] != 0) begin
                $display("%05d CACHE_STATE %0d %-16s cycles=%0d pct_x100=%0d",
-                        $time, i, cache_state_name(i[3:0]), cache_state_stat_cycles[i],
+                        $time, i, cache_state_name(i[4:0]), cache_state_stat_cycles[i],
                         state_stat_total_cycles == 0 ? 64'd0 :
                         (cache_state_stat_cycles[i] * 64'd10000) / state_stat_total_cycles);
             end
@@ -1548,7 +1564,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS)
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
    ) cache_tag_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1563,7 +1580,8 @@ module smolrv64(input wire        clock,
       cache_bank_wr_idx = cache_fill_idx;
       cache_bank_wr_data = cache_fill_data;
 
-      if (cache_state == CACHE_FILL_WAIT && cache_fill_data_valid) begin
+      if ((cache_state == CACHE_FILL_WAIT || cache_state == CACHE_BRAM_FILL_COMMIT) &&
+          cache_fill_data_valid) begin
          cache_bank_wr_en = 8'd1 << cache_fill_beat;
          cache_bank_wr_idx = cache_fill_idx;
          cache_bank_wr_data = cache_fill_data;
@@ -1571,7 +1589,7 @@ module smolrv64(input wire        clock,
             cache_bank_wr_data = merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
       end
 
-      if (cache_state == CACHE_HIT_RESP && cache_req_write && cache_lookup_hit) begin
+      if (cache_state == CACHE_HIT_WRITE) begin
          cache_bank_wr_en = 8'd1 << cache_req_bank;
          cache_bank_wr_idx = cache_rd_idx;
          cache_bank_wr_data = merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
@@ -1580,7 +1598,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank0_ram (
       .clock   ( clock ),
       .rd_addr ( cache_bank0_rd_idx ),
@@ -1592,7 +1611,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank1_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1604,7 +1624,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank2_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1616,7 +1637,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank3_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1628,7 +1650,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank4_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1640,7 +1663,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank5_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1652,7 +1676,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank6_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1664,7 +1689,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(64)
+      .DATA_WIDTH(64),
+      .READ_LATENCY(2)
    ) cache_bank7_ram (
       .clock   ( clock ),
       .rd_addr ( cache_rd_idx ),
@@ -1676,7 +1702,8 @@ module smolrv64(input wire        clock,
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS)
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
    ) cache_tag_next_ram (
       .clock   ( clock ),
       .rd_addr ( cache_next_rd_idx ),
@@ -1715,6 +1742,9 @@ module smolrv64(input wire        clock,
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_satp_write_val;
+   reg  [63:0] csr_read_result = 0;
+   reg  [63:0] fp_int_result = 0;
+   reg  [ 4:0] fp_int_fflags = 0;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
@@ -1785,8 +1815,7 @@ module smolrv64(input wire        clock,
    endfunction
 
    wire        fetch_buf_context_hit = fetch_req_valid && fetch_buf_valid &&
-                                       fetch_buf_prv == fetch_req_prv &&
-                                       fetch_buf_satp == fetch_req_satp;
+                                       fetch_buf_prv == fetch_req_prv;
    wire        fetch_buf_addr_same_hi = fetch_req_pc[63:4] == fetch_buf_base_va[63:4];
    wire        fetch_buf_addr_next_hi = fetch_req_pc[63:4] == fetch_buf_next_va_hi;
    wire        fetch_buf_addr_hit = fetch_buf_context_hit && !fetch_req_pc[0] &&
@@ -2094,10 +2123,16 @@ module smolrv64(input wire        clock,
    reg                         tlb_2m_wr_en = 0;
    reg [TLB_4K_DATA_BITS-1:0]  tlb_4k_wr_data = 0;
    reg [TLB_2M_DATA_BITS-1:0]  tlb_2m_wr_data = 0;
+   reg [ 1:0]                  tlb_insert_level = 0;
+   reg [`TLB_4K_INDEX_BITS-1:0] tlb_insert_4k_idx = 0;
+   reg [`TLB_2M_INDEX_BITS-1:0] tlb_insert_2m_idx = 0;
+   reg [TLB_4K_DATA_BITS-1:0]  tlb_insert_4k_data = 0;
+   reg [TLB_2M_DATA_BITS-1:0]  tlb_insert_2m_data = 0;
+   reg [63:0]                  ptw_route_pa = 0;
+   reg [ 4:0]                  ptw_route_return = 0;
    wire [TLB_4K_DATA_BITS-1:0] tlb_4k_rd_data;
    wire [TLB_2M_DATA_BITS-1:0] tlb_2m_rd_data;
    reg [63:0]  tlb_req_va;
-   reg [63:0]  tlb_req_satp;
    reg [ 1:0]  tlb_req_access;
    reg [ 1:0]  tlb_req_prv;
    reg         tlb_req_sum;
@@ -2105,6 +2140,7 @@ module smolrv64(input wire        clock,
    reg [ 4:0]  tlb_req_return;
    reg [63:0]  tlb_4k_hit_pa;
    reg [63:0]  tlb_2m_hit_pa;
+   reg [63:0]  tlb_hit_pa;
    reg         tlb_latched_4k_hit = 0;
    reg         tlb_latched_2m_hit = 0;
    reg         hpm_tlb_insert_4k_pulse = 0;
@@ -2121,12 +2157,12 @@ module smolrv64(input wire        clock,
    function [`TLB_2M_INDEX_BITS-1:0] tlb_2m_index;
       input [63:0] va;
       input [ 1:0] access;
-      input [ 1:0] prv;
-      input        sum;
-      input        mxr;
+      input [ 1:0] idx_prv;
+      input        idx_sum;
+      input        idx_mxr;
       reg [TLB_CTX_BITS-1:0] ctx;
       begin
-         ctx = {access, prv, sum, mxr};
+         ctx = {access, idx_prv, idx_sum, idx_mxr};
          tlb_2m_index = va[28:21] ^ va[36:29] ^ {6'd0, va[38:37]} ^
                         {2'd0, ctx};
       end
@@ -2135,44 +2171,64 @@ module smolrv64(input wire        clock,
    function [`TLB_4K_INDEX_BITS-1:0] tlb_4k_index;
       input [63:0] va;
       input [ 1:0] access;
-      input [ 1:0] prv;
-      input        sum;
-      input        mxr;
+      input [ 1:0] idx_prv;
+      input        idx_sum;
+      input        idx_mxr;
       reg [TLB_CTX_BITS-1:0] ctx;
       begin
-         ctx = {access, prv, sum, mxr};
+         ctx = {access, idx_prv, idx_sum, idx_mxr};
          tlb_4k_index = va[21:12] ^ {1'b0, va[30:22]} ^
                         {8'd0, va[38:37]} ^ {4'd0, ctx};
       end
    endfunction
 
+   function [TLB_SATP_KEY_BITS-1:0] satp_tlb_key;
+      input [63:0] satp;
+      begin
+         // TLB identity is ASID plus root PPN. MODE is implicit because Bare
+         // never probes the TLB, and this core implements 10 ASID bits.
+         satp_tlb_key = {satp[53:44], satp[43:0]};
+      end
+   endfunction
+
+   function [63:0] satp_warl_value;
+      input [63:0] satp;
+      begin
+         satp_warl_value = satp;
+         // RV64 Sv39 permits up to 16 ASID bits; this core implements 10.
+         satp_warl_value[59:54] = 6'd0;
+      end
+   endfunction
+
    wire [TLB_CTX_BITS-1:0] tlb_req_ctx = {tlb_req_access, tlb_req_prv,
                                           tlb_req_sum, tlb_req_mxr};
+   wire [TLB_SATP_KEY_BITS-1:0] tlb_current_satp_key =
+      satp_tlb_key(csr_satp);
    wire [TLB_4K_TAG_BITS-1:0]    tlb_4k_rd_tag =
       tlb_4k_rd_data[TLB_4K_TAG_LSB +: TLB_4K_TAG_BITS];
    wire [TLB_4K_PBASE_BITS-1:0]  tlb_4k_rd_pbase =
       tlb_4k_rd_data[TLB_4K_PBASE_LSB +: TLB_4K_PBASE_BITS];
-   wire [TLB_SATP_BITS-1:0]      tlb_4k_rd_satp =
-      tlb_4k_rd_data[TLB_SATP_LSB +: TLB_SATP_BITS];
+   wire [TLB_SATP_KEY_BITS-1:0]  tlb_4k_rd_satp_key =
+      tlb_4k_rd_data[TLB_SATP_KEY_LSB +: TLB_SATP_KEY_BITS];
    wire [TLB_CTX_BITS-1:0]       tlb_4k_rd_ctx =
       tlb_4k_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
    wire [TLB_2M_TAG_BITS-1:0]    tlb_2m_rd_tag =
       tlb_2m_rd_data[TLB_2M_TAG_LSB +: TLB_2M_TAG_BITS];
    wire [TLB_2M_PBASE_BITS-1:0]  tlb_2m_rd_pbase =
       tlb_2m_rd_data[TLB_2M_PBASE_LSB +: TLB_2M_PBASE_BITS];
-   wire [TLB_SATP_BITS-1:0]      tlb_2m_rd_satp =
-      tlb_2m_rd_data[TLB_SATP_LSB +: TLB_SATP_BITS];
+   wire [TLB_SATP_KEY_BITS-1:0]  tlb_2m_rd_satp_key =
+      tlb_2m_rd_data[TLB_SATP_KEY_LSB +: TLB_SATP_KEY_BITS];
    wire [TLB_CTX_BITS-1:0]       tlb_2m_rd_ctx =
       tlb_2m_rd_data[TLB_CTX_LSB +: TLB_CTX_BITS];
    wire tlb_4k_hit = state == `S_TLB_CHECK &&
                      tlb_4k_valid[tlb_4k_rd_idx] &&
                      tlb_4k_rd_tag == tlb_req_va[38:12] &&
-                     tlb_4k_rd_satp == tlb_req_satp &&
+                     tlb_4k_rd_satp_key == tlb_current_satp_key &&
                      tlb_4k_rd_ctx == tlb_req_ctx;
    wire tlb_2m_hit = state == `S_TLB_CHECK &&
                      tlb_2m_valid[tlb_2m_rd_idx] &&
                      tlb_2m_rd_tag == tlb_req_va[38:21] &&
-                     tlb_2m_rd_satp == tlb_req_satp &&
+                     tlb_2m_rd_satp_key == tlb_current_satp_key &&
                      tlb_2m_rd_ctx == tlb_req_ctx;
    wire hpm_tlb_lookup_pulse = state == `S_TLB_LOOKUP;
    wire hpm_tlb_hit_pulse = state == `S_TLB_DECIDE && (tlb_latched_4k_hit || tlb_latched_2m_hit);
@@ -2402,13 +2458,26 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task flush_frontend_speculation;
+      begin
+         frontend_flush_this_cycle = 1;
+         fetch_buf_valid <= 0;
+         fetch_req_valid <= 0;
+         fetch_req_fast_ready <= 0;
+         fetch_req_speculative <= 0;
+         rf_decode_valid <= 0;
+         frontend_miss_valid <= 0;
+         frontend_miss_done <= 0;
+         frontend_miss_next_valid <= 0;
+      end
+   endtask
+
    task start_instruction_fetch_miss;
       input [63:0] fetch_va;
-      input [63:0] fetch_satp;
       input [ 1:0] fetch_prv;
       begin
          fetch_req_fast_ready <= 0;
-         if (fetch_satp[63:60] == 4'd8 && fetch_prv != 3) begin
+         if (csr_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
             state <= `S_TLB_START_FETCH;
          end else begin
@@ -2491,10 +2560,9 @@ module smolrv64(input wire        clock,
 
    task enqueue_rf_decode;
       input [63:0] decode_pc;
-      input [63:0] decode_satp;
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
-      input [ 3:0] decode_epoch;
+      input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       input        decode_from_dram;
       input        decode_consume_now;
       reg   [ 4:0] decoded_rd;
@@ -2519,8 +2587,7 @@ module smolrv64(input wire        clock,
                rf_read_pc <= decode_pc;
                rf_read_next_pc <= decoded_next_pc;
                rf_read_insn <= decode_insn;
-               rf_read_epoch <= decode_epoch;
-               rf_read_rd <= decoded_rd;
+              rf_read_rd <= decoded_rd;
                rf_read_rs1 <= decoded_rs1;
                rf_read_rs2 <= decoded_rs2;
                rf_read_shamt <= decoded_shamt;
@@ -2528,7 +2595,6 @@ module smolrv64(input wire        clock,
                rs2 <= decoded_rs2;
                fetch_req_valid <= 1;
                fetch_req_pc <= decoded_next_pc;
-               fetch_req_satp <= decode_satp;
                fetch_req_prv <= decode_prv;
                fetch_req_epoch <= decode_epoch;
                fetch_req_fast_ready <= 0;
@@ -2544,7 +2610,6 @@ module smolrv64(input wire        clock,
             rf_decode_valid <= 1;
             rf_decode_pc <= decode_pc;
             rf_decode_next_pc <= decoded_next_pc;
-            rf_decode_satp <= decode_satp;
             rf_decode_insn <= decode_insn;
             rf_decode_prv <= decode_prv;
             rf_decode_epoch <= decode_epoch;
@@ -2562,20 +2627,18 @@ module smolrv64(input wire        clock,
       input [31:0] decode_insn;
       input        decode_from_dram;
       begin
-         enqueue_rf_decode(decode_pc, csr_satp, decode_insn, prv, fetch_req_epoch,
+         enqueue_rf_decode(decode_pc, decode_insn, prv, fetch_req_epoch,
                            decode_from_dram, 1'b1);
       end
    endtask
 
    task enqueue_rf_decode_speculative;
       input [63:0] decode_pc;
-      input [63:0] decode_satp;
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
-      input [ 3:0] decode_epoch;
+      input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       begin
-         enqueue_rf_decode(decode_pc, decode_satp, decode_insn, decode_prv,
-                           decode_epoch,
+         enqueue_rf_decode(decode_pc, decode_insn, decode_prv, decode_epoch,
                            1'b0, 1'b0);
       end
    endtask
@@ -2594,7 +2657,6 @@ module smolrv64(input wire        clock,
             rf_read_pc <= rf_decode_pc;
             rf_read_next_pc <= rf_decode_next_pc;
             rf_read_insn <= rf_decode_insn;
-            rf_read_epoch <= rf_decode_epoch;
             rf_read_rd <= rf_decode_rd;
             rf_read_rs1 <= rf_decode_rs1;
             rf_read_rs2 <= rf_decode_rs2;
@@ -2603,7 +2665,6 @@ module smolrv64(input wire        clock,
             rs2 <= rf_decode_rs2;
             fetch_req_valid <= 1;
             fetch_req_pc <= rf_decode_next_pc;
-            fetch_req_satp <= rf_decode_satp;
             fetch_req_prv <= rf_decode_prv;
             fetch_req_epoch <= rf_decode_epoch;
             fetch_req_fast_ready <= 0;
@@ -2617,8 +2678,8 @@ module smolrv64(input wire        clock,
       begin
          if (fetch_req_speculative && !rf_decode_valid &&
              !frontend_miss_valid && !frontend_miss_done && fetch_buf_hit) begin
-            enqueue_rf_decode_speculative(fetch_req_pc, fetch_req_satp,
-                                          fetch_buf_insn, fetch_req_prv,
+            enqueue_rf_decode_speculative(fetch_req_pc, fetch_buf_insn,
+                                          fetch_req_prv,
                                           fetch_req_epoch);
             fetch_req_valid <= 0;
             fetch_req_fast_ready <= 0;
@@ -2639,14 +2700,12 @@ module smolrv64(input wire        clock,
 
    function frontend_miss_matches_retire;
       input [63:0] retire_pc;
-      input [63:0] retire_satp;
       input [ 1:0] retire_prv;
-      input [ 3:0] retire_epoch;
+      input [FRONTEND_EPOCH_BITS-1:0] retire_epoch;
       begin
          frontend_miss_matches_retire =
             frontend_miss_epoch == retire_epoch &&
             frontend_miss_pc == retire_pc &&
-            frontend_miss_satp == retire_satp &&
             frontend_miss_prv == retire_prv;
       end
    endfunction
@@ -2674,13 +2733,12 @@ module smolrv64(input wire        clock,
          if (fetch_req_speculative && fetch_req_valid &&
              !rf_decode_valid && !frontend_miss_valid && !frontend_miss_done &&
              !fetch_buf_hit && cache_idle &&
-             (fetch_req_satp[63:60] != 4'd8 || fetch_req_prv == 3) &&
+             (csr_satp[63:60] != 4'd8 || fetch_req_prv == 3) &&
              frontend_physical_fetch_ok(fetch_req_pc) &&
              fetch_req_pc[2:1] != 2'b11) begin
             frontend_miss_valid      <= 1;
             frontend_miss_done       <= 0;
             frontend_miss_pc         <= fetch_req_pc;
-            frontend_miss_satp       <= fetch_req_satp;
             frontend_miss_prv        <= fetch_req_prv;
             frontend_miss_epoch      <= fetch_req_epoch;
             frontend_miss_next_valid <= 0;
@@ -2704,7 +2762,6 @@ module smolrv64(input wire        clock,
             fetch_buf_valid      <= 1;
             fetch_buf_base_va    <= fill_base;
             fetch_buf_next_va_hi <= fill_base[63:4] + 60'd1;
-            fetch_buf_satp       <= frontend_miss_satp;
             fetch_buf_prv        <= frontend_miss_prv;
             fetch_buf_data       <= miss_aligned;
          end
@@ -2716,13 +2773,11 @@ module smolrv64(input wire        clock,
 
    task prepare_retire_fetch;
       input [63:0] prepare_pc;
-      input [63:0] prepare_satp;
       input [ 1:0] prepare_prv;
-      input [ 3:0] prepare_epoch;
+      input [FRONTEND_EPOCH_BITS-1:0] prepare_epoch;
       begin
          fetch_req_valid <= 1;
          fetch_req_pc <= prepare_pc;
-         fetch_req_satp <= prepare_satp;
          fetch_req_prv <= prepare_prv;
          fetch_req_epoch <= prepare_epoch;
          fetch_req_fast_ready <= 1;
@@ -2732,24 +2787,24 @@ module smolrv64(input wire        clock,
 
    task prepare_current_epoch_fetch;
       input [63:0] prepare_pc;
-      input [63:0] prepare_satp;
       input [ 1:0] prepare_prv;
       begin
-         prepare_retire_fetch(prepare_pc, prepare_satp, prepare_prv, fetch_epoch);
+         prepare_retire_fetch(prepare_pc, prepare_prv, fetch_epoch);
       end
    endtask
 
    task redirect_retire_fetch;
       input [63:0] redirect_pc;
-      input [63:0] redirect_satp;
       input [ 1:0] redirect_prv;
-      reg   [ 3:0] redirect_epoch;
+      reg   [FRONTEND_EPOCH_BITS-1:0] redirect_epoch;
       begin
-         redirect_epoch = fetch_epoch + 4'd1;
+         redirect_epoch = fetch_epoch + 1'b1;
          fetch_epoch <= redirect_epoch;
          rf_decode_valid <= 0;
-         prepare_retire_fetch(redirect_pc, redirect_satp, redirect_prv,
-                              redirect_epoch);
+         fetch_req_valid <= 0;
+         fetch_req_fast_ready <= 0;
+         fetch_req_speculative <= 0;
+         prepare_retire_fetch(redirect_pc, redirect_prv, redirect_epoch);
       end
    endtask
 
@@ -2760,7 +2815,6 @@ module smolrv64(input wire        clock,
          fetch_req_speculative <= 0;
          if (rf_decode_epoch == fetch_epoch &&
              rf_decode_pc == npc &&
-             rf_decode_satp == csr_satp &&
              rf_decode_prv == prv) begin
             insn <= rf_decode_insn;
             fetch_from_dram <= rf_decode_from_dram;
@@ -2769,7 +2823,7 @@ module smolrv64(input wire        clock,
             write_back_fp_valid <= 0;
             launch_rf_decode_read();
          end else begin
-            redirect_retire_fetch(npc, csr_satp, prv);
+            redirect_retire_fetch(npc, prv);
          end
       end
    endtask
@@ -2777,7 +2831,10 @@ module smolrv64(input wire        clock,
    task retire_prepared_fetch;
       begin
          execute_res_valid <= 0;
-         prepare_current_epoch_fetch(npc, csr_satp, prv);
+         if (npc == ex_next_pc)
+            prepare_current_epoch_fetch(npc, prv);
+         else
+            redirect_retire_fetch(npc, prv);
          state <= `S_FETCH1;
       end
    endtask
@@ -2785,7 +2842,7 @@ module smolrv64(input wire        clock,
    task retire_redirect_fetch;
       begin
          execute_res_valid <= 0;
-         redirect_retire_fetch(npc, csr_satp, prv);
+         redirect_retire_fetch(npc, prv);
          state <= `S_FETCH1;
       end
    endtask
@@ -2852,7 +2909,6 @@ module smolrv64(input wire        clock,
       input [ 4:0] req_return;
       begin
          tlb_req_va     <= req_va;
-         tlb_req_satp   <= csr_satp;
          tlb_req_access <= req_access;
          tlb_req_prv    <= req_prv;
          tlb_req_sum    <= sum;
@@ -2864,7 +2920,7 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task insert_tlb;
+   task stage_tlb_insert;
       input [63:0] req_va;
       input [63:0] req_pa;
       input [ 1:0] req_level;
@@ -2873,39 +2929,47 @@ module smolrv64(input wire        clock,
       input [63:0] req_satp;
       input        req_sum;
       input        req_mxr;
-      reg [`TLB_4K_INDEX_BITS-1:0] req_4k_idx;
-      reg [`TLB_2M_INDEX_BITS-1:0] req_2m_idx;
       begin
-         req_4k_idx = tlb_4k_index(req_va, req_access, req_prv,
-                                   req_sum, req_mxr);
-         req_2m_idx = tlb_2m_index(req_va, req_access, req_prv,
-                                   req_sum, req_mxr);
-         if (req_level == 1) begin
+         tlb_insert_level <= req_level;
+         tlb_insert_4k_idx <= tlb_4k_index(req_va, req_access, req_prv,
+                                           req_sum, req_mxr);
+         tlb_insert_2m_idx <= tlb_2m_index(req_va, req_access, req_prv,
+                                           req_sum, req_mxr);
+         tlb_insert_4k_data <= {req_va[38:12], req_pa[63:12],
+                                satp_tlb_key(req_satp),
+                                {req_access, req_prv, req_sum, req_mxr}};
+         tlb_insert_2m_data <= {req_va[38:21], req_pa[63:21],
+                                satp_tlb_key(req_satp),
+                                {req_access, req_prv, req_sum, req_mxr}};
+      end
+   endtask
+
+   task commit_staged_tlb_insert;
+      begin
+         if (tlb_insert_level == 1) begin
 `ifdef SIMULATE
-            if (!tlb_2m_valid[req_2m_idx])
+            if (!tlb_2m_valid[tlb_insert_2m_idx])
                tlb_stat_entries_2m = tlb_stat_entries_2m + 1;
 `endif
             hpm_tlb_insert_2m_pulse <= 1;
-            if (tlb_2m_valid[req_2m_idx])
+            if (tlb_2m_valid[tlb_insert_2m_idx])
                hpm_tlb_evict_2m_pulse <= 1;
-            tlb_2m_valid[req_2m_idx] <= 1;
+            tlb_2m_valid[tlb_insert_2m_idx] <= 1;
             tlb_2m_wr_en <= 1;
-            tlb_2m_wr_idx <= req_2m_idx;
-            tlb_2m_wr_data <= {req_va[38:21], req_pa[63:21], req_satp,
-                               {req_access, req_prv, req_sum, req_mxr}};
-         end else if (req_level == 0) begin
+            tlb_2m_wr_idx <= tlb_insert_2m_idx;
+            tlb_2m_wr_data <= tlb_insert_2m_data;
+         end else if (tlb_insert_level == 0) begin
 `ifdef SIMULATE
-            if (!tlb_4k_valid[req_4k_idx])
+            if (!tlb_4k_valid[tlb_insert_4k_idx])
                tlb_stat_entries_4k = tlb_stat_entries_4k + 1;
 `endif
             hpm_tlb_insert_4k_pulse <= 1;
-            if (tlb_4k_valid[req_4k_idx])
+            if (tlb_4k_valid[tlb_insert_4k_idx])
                hpm_tlb_evict_4k_pulse <= 1;
-            tlb_4k_valid[req_4k_idx] <= 1;
+            tlb_4k_valid[tlb_insert_4k_idx] <= 1;
             tlb_4k_wr_en <= 1;
-            tlb_4k_wr_idx <= req_4k_idx;
-            tlb_4k_wr_data <= {req_va[38:12], req_pa[63:12], req_satp,
-                               {req_access, req_prv, req_sum, req_mxr}};
+            tlb_4k_wr_idx <= tlb_insert_4k_idx;
+            tlb_4k_wr_data <= tlb_insert_4k_data;
          end else begin
             hpm_tlb_uncached_1g_pulse <= 1;
          end
@@ -3053,6 +3117,7 @@ module smolrv64(input wire        clock,
 
       mmio_write = 0;
       mmio_read = 0;
+      frontend_flush_this_cycle = 0;
       dram_read  <= 0;
       dram_write <= 0;
       cache_cbo_flush <= 0;
@@ -3238,9 +3303,7 @@ module smolrv64(input wire        clock,
                     state <= `S_EXCEPTION;
                  end
               end else if (frontend_miss_valid || frontend_miss_done) begin
-                 frontend_miss_wait_action <=
-                    frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch) ?
-                    FRONTEND_MISS_WAIT_CONSUME : FRONTEND_MISS_WAIT_REDIRECT;
+                 frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
                  state <= `S_FRONTEND_MISS_WAIT;
               end else if (rf_decode_valid) begin
                  retire_queued_decode_or_refetch();
@@ -3248,12 +3311,10 @@ module smolrv64(input wire        clock,
                  fetch_req_fast_ready <= 0;
                  state <= `S_FETCH_BUF_CHECK;
               end else begin
-                 prepare_current_epoch_fetch(npc, csr_satp, prv);
+                 prepare_current_epoch_fetch(npc, prv);
               end
            end else if (frontend_miss_valid || frontend_miss_done) begin
-              frontend_miss_wait_action <=
-                 frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch) ?
-                 FRONTEND_MISS_WAIT_CONSUME : FRONTEND_MISS_WAIT_REDIRECT;
+              frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
            end else if (rf_decode_valid) begin
               retire_queued_decode_or_refetch();
@@ -3261,7 +3322,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH_BUF_CHECK;
            end else begin
-              prepare_current_epoch_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, prv);
            end
         end
 
@@ -3315,7 +3376,7 @@ module smolrv64(input wire        clock,
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
            end else begin
-              start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
+              start_instruction_fetch_miss(fetch_req_pc, fetch_req_prv);
            end
         end
 
@@ -3326,12 +3387,12 @@ module smolrv64(input wire        clock,
                  frontend_miss_done  <= 0;
                  state <= `S_EXCEPTION;
               end else if (frontend_miss_wait_action == FRONTEND_MISS_WAIT_CONSUME &&
-                           frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch)) begin
+                           frontend_miss_matches_retire(npc, prv, fetch_epoch)) begin
                  consume_frontend_miss();
               end else begin
                  frontend_miss_valid <= 0;
                  frontend_miss_done  <= 0;
-                 redirect_retire_fetch(npc, csr_satp, prv);
+                 redirect_retire_fetch(npc, prv);
                  state <= `S_FETCH_REQ;
               end
            end
@@ -3351,7 +3412,6 @@ module smolrv64(input wire        clock,
               fetch_buf_valid   <= 1;
               fetch_buf_base_va <= fetch_buf_fill_base_va;
               fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
-              fetch_buf_satp    <= fetch_req_satp;
               fetch_buf_prv     <= fetch_req_prv;
               fetch_buf_data    <= aligned;
            end
@@ -3390,7 +3450,6 @@ module smolrv64(input wire        clock,
            execute_req_pc <= rf3_pc;
            execute_req_next_pc <= rf3_next_pc;
            execute_req_insn <= rf3_insn;
-           execute_req_epoch <= rf3_epoch;
            execute_req_rd <= rf3_rd;
            execute_req_rs1 <= rf3_rs1;
            execute_req_rs2 <= rf3_rs2;
@@ -4464,7 +4523,7 @@ module smolrv64(input wire        clock,
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = ex_insn;
                  state <= `S_EXCEPTION;
-              end else begin
+             end else begin
                  fetch_buf_valid <= 0;
                  flush_tlb;
                  retire_redirect_fetch();
@@ -4874,9 +4933,9 @@ module smolrv64(input wire        clock,
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_s(ex_insn[14:12], f1_s, f2_s);
                       write_back_register = ex_rd;
-                      write_back_value    <= {63'd0, fcmp_result[0]};
-                      if (fcmp_result[1]) fflags = fflags | 5'b10000;
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= {63'd0, fcmp_result[0]};
+                      fp_int_fflags       <= fcmp_result[1] ? 5'b10000 : 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -4886,9 +4945,9 @@ module smolrv64(input wire        clock,
                    7'b1010001: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_d(ex_insn[14:12], f1, f2);
                       write_back_register = ex_rd;
-                      write_back_value    <= {63'd0, fcmp_result[0]};
-                      if (fcmp_result[1]) fflags = fflags | 5'b10000;
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= {63'd0, fcmp_result[0]};
+                      fp_int_fflags       <= fcmp_result[1] ? 5'b10000 : 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -5025,12 +5084,14 @@ module smolrv64(input wire        clock,
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
                    7'b1110000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      write_back_value    <= {{32{f1[31]}}, f1[31:0]};
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= {{32{f1[31]}}, f1[31:0]};
+                      fp_int_fflags       <= 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      write_back_value    <= fclass_s(f1);
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= fclass_s(f1);
+                      fp_int_fflags       <= 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -5039,12 +5100,14 @@ module smolrv64(input wire        clock,
                    // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
                    7'b1110001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      write_back_value    <= f1;
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= f1;
+                      fp_int_fflags       <= 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      write_back_value    <= fclass_d(f1);
-                      state               <= `S_FETCH1;
+                      fp_int_result       <= fclass_d(f1);
+                      fp_int_fflags       <= 5'd0;
+                      state               <= `S_FP_INT_COMMIT;
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -5164,7 +5227,13 @@ module smolrv64(input wire        clock,
               write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
            end
-           prepare_current_epoch_fetch(npc, csr_satp, prv);
+           prepare_current_epoch_fetch(npc, prv);
+           state <= `S_FETCH1;
+        end
+
+        `S_FP_INT_COMMIT: begin
+           write_back_value <= fp_int_result;
+           fflags = fflags | fp_int_fflags;
            state <= `S_FETCH1;
         end
 
@@ -5442,14 +5511,12 @@ module smolrv64(input wire        clock,
              end
              `REGION_MMIO: begin
 `ifdef TRACE_MMIO
-              $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
+             $display("%05d  MMIO WRITE %x/%x <- %x", $time, mem_addr, mem_wr_mask, store_value);
 `endif
-
               mmio_address = mem_addr;
               mmio_write = 1;
               mmio_writedata = store_value << (8 * (mem_addr % 4));
               mmio_byteenable = mem_wr_mask << (mem_addr % 4);
-
               mem_wr_mask = 0;
              end
              default: begin
@@ -5485,79 +5552,16 @@ module smolrv64(input wire        clock,
                 state <= `S_AMO;
 
               case (phys_region(mem_addr))
-                `REGION_UART: begin
-                 // NS16550A UART read (0x10000000-0x1000000F)
-                 case (mem_addr[2:0])
-                   0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
-                         write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head];
-                         if (!uart_rx_empty) uart_rx_head <= uart_rx_head + 1;
-                      end else
-                         write_back_value = 0; // DLL (divisor, ignored)
-                   1: write_back_value = uart_lcr[7] ? 0 : {4'd0, uart_ier[3:0]};
-                   2: begin
-                      write_back_value = uart_iir;
-                      if (uart_iir_thre)
-                         uart_thre_pending <= 0;
-                   end
-                   3: write_back_value = uart_lcr;
-                   4: write_back_value = uart_mcr;
-                   5: write_back_value = uart_lsr;
-                   6: write_back_value = 8'hB0; // MSR: CTS+DSR+CD asserted
-                   7: write_back_value = uart_scr;
-                   default: write_back_value = 0;
-                 endcase
-                 // Byte/half sign extension for LB/LH (load_size_lg2 = {sxt, size}).
-                 if (load_size_lg2 == 4) // LB
-                    write_back_value = {{56{write_back_value[7]}}, write_back_value[7:0]};
-                 else if (load_size_lg2 == 5) // LH
-                    write_back_value = {{48{write_back_value[15]}}, write_back_value[15:0]};
-                end
-                `REGION_CLINT: begin
-                 // CLINT read: return value directly, no MMIO bus
-                 case (mem_addr[15:0])
-                   16'h0000: write_back_value = {63'd0, clint_msip};
-                   16'h4000: write_back_value = clint_mtimecmp;
-                   16'h4004: write_back_value = clint_mtimecmp[63:32];
-                   16'hBFF8: write_back_value = clint_mtime;
-                   16'hBFFC: write_back_value = clint_mtime[63:32];
-                   default:  write_back_value = 0;
-                 endcase
-                 // 32-bit loads need sign/zero extension
-                 if (load_size_lg2 == 2)
-                    write_back_value = write_back_value[31:0];
-                 else if (load_size_lg2 == 6)
-                    write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
-                end
+                `REGION_UART,
+                `REGION_CLINT,
                 `REGION_PLIC: begin
-                 // PLIC read (base 0x0C000000)
-                 if (mem_addr[23:0] <= 24'h0000FF)
-                    write_back_value = plic_priority[mem_addr[7:2]];
-                 else if (mem_addr[23:0] >= 24'h001000 && mem_addr[23:0] <= 24'h00107F)
-                    write_back_value = plic_pending >> ((mem_addr[6:0] - 7'h00) * 8);
-                 else if (mem_addr[23:0] >= 24'h002080 && mem_addr[23:0] <= 24'h002087)
-                    write_back_value = plic_enabled;
-                 else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
-                    write_back_value = plic_threshold;
-                 else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
-                    write_back_value = plic_best_irq;
-                    if (plic_best_irq != 0) begin
-                       plic_pending[plic_best_irq] <= 0;
-                       plic_in_service[plic_best_irq] <= 1;
-                    end
-                 end
-                 else
-                    write_back_value = 0;
-                 if (load_size_lg2 == 2)
-                    write_back_value = write_back_value[31:0];
-                 else if (load_size_lg2 == 6)
-                    write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+                 state <= `S_LOCAL_LOAD;
                 end
                 `REGION_MMIO: begin
 `ifdef TRACE_MMIO
                  $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
 `endif
                  state <= `S_MMIO_READ;
-
                  mmio_address = mem_addr;
                  mmio_read = 1;
                 end
@@ -5581,7 +5585,89 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
                 end
               endcase
-           end
+          end
+        end
+
+        `S_LOCAL_LOAD: begin
+           state <= `S_FETCH1;
+           if (do_atomic)
+              state <= `S_AMO;
+
+           case (phys_region(mem_addr))
+             `REGION_UART: begin
+              // NS16550A UART read (0x10000000-0x1000000F)
+              case (mem_addr[2:0])
+                0: if (!uart_lcr[7]) begin // RBR (when DLAB=0)
+                      write_back_value = uart_rx_empty ? 0 : uart_rx_fifo[uart_rx_head];
+                      if (!uart_rx_empty) uart_rx_head <= uart_rx_head + 1;
+                   end else
+                      write_back_value = 0; // DLL (divisor, ignored)
+                1: write_back_value = uart_lcr[7] ? 0 : {4'd0, uart_ier[3:0]};
+                2: begin
+                   write_back_value = uart_iir;
+                   if (uart_iir_thre)
+                      uart_thre_pending <= 0;
+                end
+                3: write_back_value = uart_lcr;
+                4: write_back_value = uart_mcr;
+                5: write_back_value = uart_lsr;
+                6: write_back_value = 8'hB0; // MSR: CTS+DSR+CD asserted
+                7: write_back_value = uart_scr;
+                default: write_back_value = 0;
+              endcase
+              // Byte/half sign extension for LB/LH (load_size_lg2 = {sxt, size}).
+              if (load_size_lg2 == 4) // LB
+                 write_back_value = {{56{write_back_value[7]}}, write_back_value[7:0]};
+              else if (load_size_lg2 == 5) // LH
+                 write_back_value = {{48{write_back_value[15]}}, write_back_value[15:0]};
+             end
+             `REGION_CLINT: begin
+              // CLINT read: return value directly, no MMIO bus
+              case (mem_addr[15:0])
+                16'h0000: write_back_value = {63'd0, clint_msip};
+                16'h4000: write_back_value = clint_mtimecmp;
+                16'h4004: write_back_value = clint_mtimecmp[63:32];
+                16'hBFF8: write_back_value = clint_mtime;
+                16'hBFFC: write_back_value = clint_mtime[63:32];
+                default:  write_back_value = 0;
+              endcase
+              // 32-bit loads need sign/zero extension
+              if (load_size_lg2 == 2)
+                 write_back_value = write_back_value[31:0];
+              else if (load_size_lg2 == 6)
+                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+             end
+             `REGION_PLIC: begin
+              // PLIC read (base 0x0C000000)
+              if (mem_addr[23:0] <= 24'h0000FF)
+                 write_back_value = plic_priority[mem_addr[7:2]];
+              else if (mem_addr[23:0] >= 24'h001000 && mem_addr[23:0] <= 24'h00107F)
+                 write_back_value = plic_pending >> ((mem_addr[6:0] - 7'h00) * 8);
+              else if (mem_addr[23:0] >= 24'h002080 && mem_addr[23:0] <= 24'h002087)
+                 write_back_value = plic_enabled;
+              else if (mem_addr[23:0] >= 24'h201000 && mem_addr[23:0] <= 24'h201003)
+                 write_back_value = plic_threshold;
+              else if (mem_addr[23:0] >= 24'h201004 && mem_addr[23:0] <= 24'h201007) begin
+                 write_back_value = plic_best_irq;
+                 if (plic_best_irq != 0) begin
+                    plic_pending[plic_best_irq] <= 0;
+                    plic_in_service[plic_best_irq] <= 1;
+                 end
+              end
+              else
+                 write_back_value = 0;
+              if (load_size_lg2 == 2)
+                 write_back_value = write_back_value[31:0];
+              else if (load_size_lg2 == 6)
+                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
+             end
+             default: begin
+              write_back_register = 0;
+              cause = `TRAP_LOAD_ACCESS_FAULT;
+              tval = mem_addr;
+              state <= `S_EXCEPTION;
+             end
+           endcase
         end
 
         `S_MMIO_READ: state <= `S_MMIO_ALIGN;
@@ -5662,9 +5748,10 @@ module smolrv64(input wire        clock,
 
         `S_HANDLE_CSR: begin : handle_csr_state
            reg csr_write_failure;
-           state <= `S_EXECUTE2;
+           state <= `S_HANDLE_CSR_COMMIT;
            csr_access_failure = 0;
            csr_write_failure = 0;
+           csr_read_val = 0;
            tval = ex_insn;
            write_back_register = ex_rd;
 
@@ -5922,12 +6009,16 @@ module smolrv64(input wire        clock,
                        default:      csr_satp_write_val = csr_satp & ~csr_arg;
                      endcase
 
+                     csr_satp_write_val = satp_warl_value(csr_satp_write_val);
                      if (csr_satp_write_val[63:60] == 4'd0 ||
                          csr_satp_write_val[63:60] == 4'd8) begin
                        // WARL: only Bare and Sv39 are supported; unsupported
                        // MODE values cause the entire write to have no effect.
+                       // SATP updates are serializing for this core: all
+                       // frontend speculation is invalid once the address-space
+                       // key changes, so later stages use the single CSR copy.
                        csr_satp = csr_satp_write_val;
-                       fetch_buf_valid <= 0;
+                       flush_frontend_speculation;
                        flush_tlb;
                      end
                    end
@@ -6012,8 +6103,7 @@ module smolrv64(input wire        clock,
               endcase
            end
 
-           exe_add <= csr_read_val;
-           exe_sext32 <= 0;
+           csr_read_result <= csr_read_val;
            if (csr_access_failure || csr_write_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               state <= `S_EXCEPTION;
@@ -6025,6 +6115,12 @@ module smolrv64(input wire        clock,
            // FF values, so it is stale for one cycle after any CSR write.
            // Reuse just_xret as a generic one-cycle suppress flag.
            just_xret <= 1;
+        end
+
+        `S_HANDLE_CSR_COMMIT: begin
+           write_back_value <= csr_read_result;
+           execute_res_valid <= 0;
+           retire_prepared_fetch();
         end
 
         `S_EXCEPTION: begin
@@ -6110,7 +6206,7 @@ module smolrv64(input wire        clock,
 `endif
            just_trapped <= 1;
            fetch_buf_valid <= 0;
-           fetch_epoch <= fetch_epoch + 4'd1;
+           fetch_epoch <= fetch_epoch + 1'b1;
            fetch_req_valid <= 0;
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
@@ -6333,6 +6429,7 @@ module smolrv64(input wire        clock,
 
         `S_TLB_DECIDE: begin
            if (tlb_latched_4k_hit || tlb_latched_2m_hit) begin
+              tlb_hit_pa <= tlb_latched_4k_hit ? tlb_4k_hit_pa : tlb_2m_hit_pa;
               state <= `S_TLB_HIT;
            end else begin
               state <= `S_PTW_START;
@@ -6340,8 +6437,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_HIT: begin
-           route_translated_addr(tlb_latched_4k_hit ? tlb_4k_hit_pa : tlb_2m_hit_pa,
-                                 tlb_req_return);
+           route_translated_addr(tlb_hit_pa, tlb_req_return);
         end
 
         `S_PTW_START: begin
@@ -6459,12 +6555,19 @@ module smolrv64(input wire        clock,
                     end
                   endcase
 
-                  if (!(ptw_level == 0 && aligned[63]))
-                     insert_tlb(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
-                                ptw_satp, ptw_sum, ptw_mxr);
-                  else
+                  if (ptw_level == 0 && aligned[63]) begin
                      hpm_tlb_uncached_napot_pulse <= 1;
-                  route_translated_addr(mem_addr, ptw_return);
+                     route_translated_addr(mem_addr, ptw_return);
+                  end else if (ptw_level == 2) begin
+                     hpm_tlb_uncached_1g_pulse <= 1;
+                     route_translated_addr(mem_addr, ptw_return);
+                  end else begin
+                     stage_tlb_insert(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
+                                      ptw_satp, ptw_sum, ptw_mxr);
+                     ptw_route_pa <= mem_addr;
+                     ptw_route_return <= ptw_return;
+                     state <= `S_TLB_INSERT;
+                  end
               end
            end else if (ptw_level == 0) begin
               // Non-leaf at level 0: invalid
@@ -6481,6 +6584,11 @@ module smolrv64(input wire        clock,
               endcase
               state <= `S_PTW_LAUNCH;
            end
+        end
+
+        `S_TLB_INSERT: begin
+           commit_staged_tlb_insert;
+           route_translated_addr(ptw_route_pa, ptw_route_return);
         end
 
         `S_PTW_LAUNCH: begin
@@ -6550,7 +6658,7 @@ module smolrv64(input wire        clock,
                  if (do_atomic)
                     state <= `S_AMO;
                  else begin
-                    prepare_current_epoch_fetch(npc, csr_satp, prv);
+                    prepare_current_epoch_fetch(npc, prv);
                     state <= `S_FETCH1;
                  end
               end else begin
@@ -6576,7 +6684,7 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                  state <= `S_AMO;
               else begin
-                 prepare_current_epoch_fetch(npc, csr_satp, prv);
+                 prepare_current_epoch_fetch(npc, prv);
                  state <= `S_FETCH1;
               end
            end
@@ -6600,7 +6708,7 @@ module smolrv64(input wire        clock,
            if (do_atomic)
               state <= `S_AMO;
            else begin
-              prepare_current_epoch_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
            end
         end
@@ -6628,7 +6736,7 @@ module smolrv64(input wire        clock,
            if (dram_store_split) begin
               state <= `S_DRAM_STORE2;
            end else begin
-              prepare_current_epoch_fetch(npc, csr_satp, prv);
+              prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
            end
         end
@@ -6641,7 +6749,8 @@ module smolrv64(input wire        clock,
       if (!core_reset_now && frontend_spec_miss_state(state))
          try_frontend_speculative_miss_start();
 
-      if (!core_reset_now && frontend_miss_valid && dram_readdatavalid) begin
+      if (!core_reset_now && !frontend_flush_this_cycle &&
+          frontend_miss_valid && dram_readdatavalid) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
          frontend_miss_data       <= dram_readdata;
@@ -6738,6 +6847,9 @@ module smolrv64(input wire        clock,
          csr_mcycle <= 0;
          clint_mtime <= 0;
          write_back_register <= 0;
+         fp_int_result <= 0;
+         fp_int_fflags <= 0;
+         csr_read_result <= 0;
          npc <= `RESET_PC;
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
@@ -6745,12 +6857,10 @@ module smolrv64(input wire        clock,
          fetch_req_epoch <= 0;
          fetch_epoch <= 0;
          fetch_req_pc <= `RESET_PC;
-         fetch_req_satp <= 0;
          fetch_req_prv <= 3;
          frontend_miss_valid <= 0;
          frontend_miss_done <= 0;
          frontend_miss_pc <= `RESET_PC;
-         frontend_miss_satp <= 0;
          frontend_miss_prv <= 3;
          frontend_miss_epoch <= 0;
          frontend_miss_data <= 0;
@@ -6760,7 +6870,6 @@ module smolrv64(input wire        clock,
          rf_decode_valid <= 0;
          rf_decode_pc <= `RESET_PC;
          rf_decode_next_pc <= `RESET_PC;
-         rf_decode_satp <= 0;
          rf_decode_insn <= 0;
          rf_decode_prv <= 3;
          rf_decode_epoch <= 0;
@@ -6773,7 +6882,6 @@ module smolrv64(input wire        clock,
          rf_read_pc <= `RESET_PC;
          rf_read_next_pc <= `RESET_PC;
          rf_read_insn <= 0;
-         rf_read_epoch <= 0;
          rf_read_rd <= 0;
          rf_read_rs1 <= 0;
          rf_read_rs2 <= 0;
@@ -6782,7 +6890,6 @@ module smolrv64(input wire        clock,
          execute_req_pc <= `RESET_PC;
          execute_req_next_pc <= `RESET_PC;
          execute_req_insn <= 0;
-         execute_req_epoch <= 0;
          execute_req_rd <= 0;
          execute_req_rs1 <= 0;
          execute_req_rs2 <= 0;
@@ -6860,15 +6967,23 @@ module smolrv64(input wire        clock,
          tlb_2m_rd_idx     <= 0;
          tlb_4k_wr_idx     <= 0;
          tlb_2m_wr_idx     <= 0;
-        tlb_4k_wr_en      <= 0;
-        tlb_2m_wr_en      <= 0;
-        tlb_4k_wr_data    <= 0;
-        tlb_2m_wr_data    <= 0;
-        tlb_4k_hit_pa     <= 0;
-        tlb_2m_hit_pa     <= 0;
-        tlb_latched_4k_hit <= 0;
-        tlb_latched_2m_hit <= 0;
-        hpm_tlb_insert_4k_pulse <= 0;
+         tlb_4k_wr_en      <= 0;
+         tlb_2m_wr_en      <= 0;
+         tlb_4k_wr_data    <= 0;
+         tlb_2m_wr_data    <= 0;
+         tlb_insert_level  <= 0;
+         tlb_insert_4k_idx <= 0;
+         tlb_insert_2m_idx <= 0;
+         tlb_insert_4k_data <= 0;
+         tlb_insert_2m_data <= 0;
+         ptw_route_pa      <= 0;
+         ptw_route_return  <= 0;
+         tlb_4k_hit_pa     <= 0;
+         tlb_2m_hit_pa     <= 0;
+         tlb_hit_pa        <= 0;
+         tlb_latched_4k_hit <= 0;
+         tlb_latched_2m_hit <= 0;
+         hpm_tlb_insert_4k_pulse <= 0;
          hpm_tlb_insert_2m_pulse <= 0;
          hpm_tlb_evict_4k_pulse <= 0;
          hpm_tlb_evict_2m_pulse <= 0;
@@ -6915,7 +7030,6 @@ module smolrv64(input wire        clock,
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
       dram_write_done_r <= 0;
-      cache_bram_readdatavalid <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
       axi_read  <= 0;
@@ -6961,6 +7075,10 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_TAG_READ: begin
+           cache_state <= CACHE_TAG_WAIT;
+        end
+
+        CACHE_TAG_WAIT: begin
            cache_state <= CACHE_TAG_CHECK;
         end
 
@@ -6986,11 +7104,7 @@ module smolrv64(input wire        clock,
         CACHE_HIT_RESP: begin
            if (cache_lookup_hit) begin
               if (cache_req_write) begin
-                 cache_tag_wr_en   <= 1;
-                 cache_tag_wr_idx  <= cache_rd_idx;
-                 cache_tag_wr_data <= {1'b1, 1'b1, cache_req_tag};
-                 dram_write_done_r <= 1;
-                 cache_state <= CACHE_IDLE;
+                 cache_state <= CACHE_HIT_WRITE;
               end else begin
                  dram_readdata_r <= cache_lookup_data;
                  dram_readdata_next_r <= cache_lookup_next_data;
@@ -7015,7 +7129,19 @@ module smolrv64(input wire        clock,
            end
         end
 
+        CACHE_HIT_WRITE: begin
+           cache_tag_wr_en   <= 1;
+           cache_tag_wr_idx  <= cache_rd_idx;
+           cache_tag_wr_data <= {1'b1, 1'b1, cache_req_tag};
+           dram_write_done_r <= 1;
+           cache_state <= CACHE_IDLE;
+        end
+
         CACHE_WB_PREP: begin
+           cache_state <= CACHE_WB_READ_WAIT;
+        end
+
+        CACHE_WB_READ_WAIT: begin
            cache_state <= CACHE_WB_REQ;
         end
 
@@ -7079,6 +7205,10 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_CBO_TAG_READ: begin
+           cache_state <= CACHE_CBO_TAG_WAIT;
+        end
+
+        CACHE_CBO_TAG_WAIT: begin
            cache_state <= CACHE_CBO_TAG_CHECK;
         end
 
@@ -7136,12 +7266,17 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_BRAM_FILL_READ: begin
-           cache_bram_readdata <= cache_bram_word_bank ? mem1[cache_bram_word_idx]
-                                                       : mem0[cache_bram_word_idx];
-           cache_bram_readdatavalid <= 1;
-           cache_state <= CACHE_FILL_WAIT;
+           cache_bram_read_data_stage <= cache_bram_word_bank ? mem1[cache_bram_word_idx]
+                                                              : mem0[cache_bram_word_idx];
+           cache_state <= CACHE_BRAM_FILL_CAPTURE;
         end
 
+        CACHE_BRAM_FILL_CAPTURE: begin
+           cache_bram_fill_data <= cache_bram_read_data_stage;
+           cache_state <= CACHE_BRAM_FILL_COMMIT;
+        end
+
+        CACHE_BRAM_FILL_COMMIT,
         CACHE_FILL_WAIT: begin
            if (cache_fill_data_valid) begin
               if (cache_fill_beat == cache_req_bank) begin
@@ -7183,7 +7318,6 @@ module smolrv64(input wire        clock,
          dram_readdatavalid_r <= 0;
          dram_readdata_next_valid_r <= 0;
          dram_write_done_r <= 0;
-         cache_bram_readdatavalid <= 0;
          cache_bram_write_done <= 0;
          axi_read <= 0;
          axi_write <= 0;
@@ -7201,8 +7335,7 @@ module smolrv64(input wire        clock,
             state_stat_instret <= state_stat_instret + 1;
          if (state <= `S_LAST_STATE)
             state_stat_cycles[state] <= state_stat_cycles[state] + 1;
-         if (cache_state <= CACHE_LAST_STATE)
-            cache_state_stat_cycles[cache_state] <= cache_state_stat_cycles[cache_state] + 1;
+         cache_state_stat_cycles[cache_state] <= cache_state_stat_cycles[cache_state] + 1;
          if (state_summary_interval != 0 &&
              state_stat_total_cycles + 1 >= state_summary_next) begin
             dump_state_summary;
@@ -7369,7 +7502,8 @@ endmodule
 
 module smolrv64_sdpram #(
    parameter ADDR_WIDTH = 14,
-   parameter DATA_WIDTH = 64
+   parameter DATA_WIDTH = 64,
+   parameter READ_LATENCY = 1
 ) (
    input  wire                  clock,
    input  wire [ADDR_WIDTH-1:0] rd_addr,
@@ -7396,7 +7530,7 @@ module smolrv64_sdpram #(
       .MEMORY_SIZE         ( DATA_WIDTH * (1 << ADDR_WIDTH) ),
       .MESSAGE_CONTROL     ( 0 ),
       .READ_DATA_WIDTH_B   ( DATA_WIDTH ),
-      .READ_LATENCY_B      ( 1 ),
+      .READ_LATENCY_B      ( READ_LATENCY ),
       .READ_RESET_VALUE_B  ( "0" ),
       .RST_MODE_A          ( "SYNC" ),
       .RST_MODE_B          ( "SYNC" ),
@@ -7442,7 +7576,7 @@ module smolrv64_sdpram #(
       .MEMORY_SIZE         ( DATA_WIDTH * (1 << ADDR_WIDTH) ),
       .MESSAGE_CONTROL     ( 0 ),
       .READ_DATA_WIDTH_B   ( DATA_WIDTH ),
-      .READ_LATENCY_B      ( 1 ),
+      .READ_LATENCY_B      ( READ_LATENCY ),
       .READ_RESET_VALUE_B  ( "0" ),
       .RST_MODE_A          ( "SYNC" ),
       .RST_MODE_B          ( "SYNC" ),
@@ -7473,6 +7607,7 @@ module smolrv64_sdpram #(
 `else
    (* ram_style = "block" *) reg [DATA_WIDTH-1:0] ram[0:(1 << ADDR_WIDTH)-1];
    reg [DATA_WIDTH-1:0] rd_data_r = 0;
+   reg [DATA_WIDTH-1:0] rd_data_rr = 0;
    integer ram_init_i;
 
    initial begin
@@ -7480,10 +7615,11 @@ module smolrv64_sdpram #(
          ram[ram_init_i] = 0;
    end
 
-   assign rd_data = rd_data_r;
+   assign rd_data = READ_LATENCY == 1 ? rd_data_r : rd_data_rr;
 
    always @(posedge clock) begin
       rd_data_r <= ram[rd_addr];
+      rd_data_rr <= rd_data_r;
       if (wr_en)
          ram[wr_addr] <= wr_data;
    end
@@ -7516,9 +7652,11 @@ module regfile(input wire         clock,
    reg  [63:0] regfile[31:0];
    reg [8*200:0] rf_path;
    initial begin
+`ifndef SYNTHESIS
       if ($value$plusargs("rf=%s", rf_path))
          $readmemh(rf_path, regfile, 0, 31);
       else
+`endif
          $readmemh("rf.hex", regfile, 0, 31);
    end
 
