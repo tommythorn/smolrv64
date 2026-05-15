@@ -2333,9 +2333,8 @@ module smolrv64(input wire        clock,
                                           tlb_req_sum, tlb_req_mxr};
    wire [TLB_SATP_KEY_BITS-1:0] tlb_current_satp_key =
       satp_tlb_key(csr_satp);
-   // Experiment: keep ASID-aware TLB keys, but make the VHPR cache effectively
-   // non-ASID-tagged. SATP, SFENCE.VMA, and FENCE.I still flush all cache lines.
-   wire [TLB_ASID_BITS-1:0] current_cache_asid = {TLB_ASID_BITS{1'b0}};
+   wire [TLB_ASID_BITS-1:0] current_cache_asid =
+      csr_satp[63:60] == 4'd8 ? csr_satp[53:44] : {TLB_ASID_BITS{1'b0}};
    wire [TLB_4K_TAG_BITS-1:0]    tlb_4k_rd_tag =
       tlb_4k_rd_data[TLB_4K_TAG_LSB +: TLB_4K_TAG_BITS];
    wire [TLB_4K_PBASE_BITS-1:0]  tlb_4k_rd_pbase =
