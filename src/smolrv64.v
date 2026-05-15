@@ -2349,7 +2349,6 @@ module smolrv64(input wire        clock,
            `S_DIV_RUNNING,
            `S_EXECUTE,
            `S_EXECUTE2,
-           `S_HANDLE_CSR,
            `S_DRAM_LOAD_WAIT,
            `S_DRAM_LOAD2_WAIT,
            `S_DRAM_STORE_WAIT,
@@ -2751,18 +2750,6 @@ module smolrv64(input wire        clock,
          rf_decode_valid <= 0;
          prepare_retire_fetch(redirect_pc, redirect_satp, redirect_prv,
                               redirect_epoch);
-      end
-   endtask
-
-   task invalidate_frontend_epoch;
-      begin
-         fetch_epoch <= fetch_epoch + 4'd1;
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         frontend_miss_valid <= 0;
-         frontend_miss_done <= 0;
-         rf_decode_valid <= 0;
       end
    endtask
 
@@ -5942,7 +5929,6 @@ module smolrv64(input wire        clock,
                        csr_satp = csr_satp_write_val;
                        fetch_buf_valid <= 0;
                        flush_tlb;
-                       invalidate_frontend_epoch();
                      end
                    end
                 end
