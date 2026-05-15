@@ -2314,6 +2314,40 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function frontend_spec_fetch_state;
+      input [5:0] s;
+      begin
+         case (s)
+           `S_RF2,
+           `S_RF3,
+           `S_LOAD_ALIGN,
+           `S_MMIO_READ,
+           `S_MMIO_ALIGN,
+           `S_AMO,
+           `S_STORE,
+           `S_MUL_RUNNING,
+           `S_DIV_RUNNING,
+           `S_DRAM_LOAD_WAIT,
+           `S_DRAM_LOAD2_WAIT,
+           `S_DRAM_STORE_WAIT,
+           `S_DRAM_STORE2,
+           `S_DRAM_STORE_RESP_WAIT,
+           `S_DRAM_STORE_RESP_ARM,
+           `S_LOAD_LATCH,
+           `S_CBO_EXEC,
+           `S_CBO_WAIT,
+           `S_CVFPU_ISSUE,
+           `S_CVFPU_WAIT,
+           `S_CVFPU_FMA_RF2,
+           `S_CVFPU_FMA_RF3,
+           `S_MULDIV_START:
+             frontend_spec_fetch_state = 1'b1;
+           default:
+             frontend_spec_fetch_state = 1'b0;
+         endcase
+      end
+   endfunction
+
    function [2:0] phys_region;
       input [63:0] addr;
       begin
@@ -2557,13 +2591,12 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task try_speculative_fetch_buf_enqueue;
+   task try_frontend_speculative_fetch_buf_enqueue;
       begin
-         if (fetch_req_speculative) begin
-            if (!rf_decode_valid && fetch_buf_hit)
-               enqueue_rf_decode_speculative(fetch_req_pc, fetch_req_satp,
-                                             fetch_buf_insn, fetch_req_prv,
-                                             fetch_req_epoch);
+         if (fetch_req_speculative && !rf_decode_valid && fetch_buf_hit) begin
+            enqueue_rf_decode_speculative(fetch_req_pc, fetch_req_satp,
+                                          fetch_buf_insn, fetch_req_prv,
+                                          fetch_req_epoch);
             fetch_req_valid <= 0;
             fetch_req_fast_ready <= 0;
             fetch_req_speculative <= 0;
@@ -3178,7 +3211,6 @@ module smolrv64(input wire        clock,
         `S_RF2: begin
            // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output
            // settles in S_RF3.
-           try_speculative_fetch_buf_enqueue();
            state <= rf_read_valid ? `S_RF3 : `S_FETCH1;
         end
 
@@ -6441,6 +6473,9 @@ module smolrv64(input wire        clock,
         end
 
       endcase
+
+      if (!core_reset_now && frontend_spec_fetch_state(state))
+         try_frontend_speculative_fetch_buf_enqueue();
 
       // Bus timeout: fault if an external bus access doesn't respond
       begin : bus_timeout_logic

@@ -84,6 +84,9 @@ than a larger instruction FIFO.
    - First implementation is intentionally narrow: only consume a speculative
      fetch-buffer hit when the retired instruction resolves to the same
      frontend epoch, `npc`, `satp`, and privilege context.
+   - That hit-only speculative enqueue should run from backend-owned states,
+     not only from the RF wait state, so the frontend/decode handoff can fill
+     while older instructions execute or wait on memory.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
