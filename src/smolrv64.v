@@ -2653,8 +2653,13 @@ module smolrv64(input wire        clock,
       input [5:0] s;
       begin
          case (s)
+           `S_MULDIV_START,
            `S_MUL_RUNNING,
-           `S_DIV_RUNNING:
+           `S_DIV_RUNNING,
+           `S_CVFPU_ISSUE,
+           `S_CVFPU_WAIT,
+           `S_CVFPU_FMA_RF2,
+           `S_CVFPU_FMA_RF3:
              frontend_spec_miss_state = 1'b1;
            default:
              frontend_spec_miss_state = 1'b0;

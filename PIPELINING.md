@@ -103,6 +103,8 @@ than a larger instruction FIFO.
      cacheable, non-cross-doubleword frontend miss to run during long
      non-memory backend states, then validate the captured response at retire
      before it enters decode.
+   - Keep widening that conservative miss path before adding a separate fetch
+     engine: cover backend wait states that do not own the cache.
 
 4. Add hazards only as needed
    - Data hazards are expected once frontend and backend overlap.
