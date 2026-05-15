@@ -92,6 +92,9 @@ than a larger instruction FIFO.
      discards the queued younger instruction.
    - Store commit can participate in the same hit-only path because it does not
      grant the younger instruction access to the cache or external bus.
+   - CSR handling can participate in the same hit-only path; SATP writes that
+     invalidate frontend/TLB state must advance the frontend epoch before the
+     queued younger instruction can be accepted.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
