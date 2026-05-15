@@ -99,6 +99,10 @@ than a larger instruction FIFO.
      bypass the one-entry decode slot and launch the register-file read in the
      same cycle.  The slot remains the holding point for speculative younger
      work that cannot be committed yet.
+   - Start decoupling miss handling conservatively: allow a physical,
+     cacheable, non-cross-doubleword frontend miss to run during long
+     non-memory backend states, then validate the captured response at retire
+     before it enters decode.
 
 4. Add hazards only as needed
    - Data hazards are expected once frontend and backend overlap.

@@ -599,7 +599,8 @@ module smolrv64(input wire        clock,
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
-`define S_LAST_STATE           50  // update state register width accordingly
+`define S_FRONTEND_MISS_WAIT   51  // wait for speculative frontend cache miss after backend retire
+`define S_LAST_STATE           51  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -1005,6 +1006,23 @@ module smolrv64(input wire        clock,
    reg  [ 3:0]  fetch_req_epoch = 0;
    reg  [ 3:0]  fetch_epoch = 0;
 
+   // Speculative frontend cache miss.  The single global FSM still owns TLB
+   // and ordinary fetch misses; this side buffer only overlaps physical
+   // cacheable misses with long non-memory backend states.
+   reg          frontend_miss_valid = 0;
+   reg          frontend_miss_done = 0;
+   reg  [63:0]  frontend_miss_pc = `RESET_PC;
+   reg  [63:0]  frontend_miss_satp = 0;
+   reg  [ 1:0]  frontend_miss_prv = 3;
+   reg  [ 3:0]  frontend_miss_epoch = 0;
+   reg  [63:0]  frontend_miss_data = 0;
+   reg  [63:0]  frontend_miss_next_data = 0;
+   reg          frontend_miss_next_valid = 0;
+   localparam [1:0] FRONTEND_MISS_WAIT_CONSUME  = 2'd0,
+                    FRONTEND_MISS_WAIT_REDIRECT = 2'd1,
+                    FRONTEND_MISS_WAIT_EXCEPTION = 2'd2;
+   reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
+
    // Register/decode request boundary. The frontend fills this one-entry
    // queue; S_RF consumes it and launches the BRAM register-file read.
    reg          rf_decode_valid = 0;
@@ -1287,6 +1305,7 @@ module smolrv64(input wire        clock,
            `S_MULDIV_START:          state_name = "MULDIV_START";
            `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
            `S_FETCH_REQ:             state_name = "FETCH_REQ";
+           `S_FRONTEND_MISS_WAIT:    state_name = "FRONTEND_MISS_WAIT";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -2594,7 +2613,8 @@ module smolrv64(input wire        clock,
 
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
-         if (fetch_req_speculative && !rf_decode_valid && fetch_buf_hit) begin
+         if (fetch_req_speculative && !rf_decode_valid &&
+             !frontend_miss_valid && !frontend_miss_done && fetch_buf_hit) begin
             enqueue_rf_decode_speculative(fetch_req_pc, fetch_req_satp,
                                           fetch_buf_insn, fetch_req_prv,
                                           fetch_req_epoch);
@@ -2602,6 +2622,88 @@ module smolrv64(input wire        clock,
             fetch_req_fast_ready <= 0;
             fetch_req_speculative <= 0;
          end
+      end
+   endtask
+
+   function frontend_physical_fetch_ok;
+      input [63:0] fetch_pc;
+      begin
+         frontend_physical_fetch_ok =
+            (((fetch_pc ^ `MEM_BASEADDR) &
+              (64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2)) == 0) ||
+            fetch_pc[63:31] == 1;
+      end
+   endfunction
+
+   function frontend_miss_matches_retire;
+      input [63:0] retire_pc;
+      input [63:0] retire_satp;
+      input [ 1:0] retire_prv;
+      input [ 3:0] retire_epoch;
+      begin
+         frontend_miss_matches_retire =
+            frontend_miss_epoch == retire_epoch &&
+            frontend_miss_pc == retire_pc &&
+            frontend_miss_satp == retire_satp &&
+            frontend_miss_prv == retire_prv;
+      end
+   endfunction
+
+   function frontend_spec_miss_state;
+      input [5:0] s;
+      begin
+         case (s)
+           `S_MUL_RUNNING,
+           `S_DIV_RUNNING:
+             frontend_spec_miss_state = 1'b1;
+           default:
+             frontend_spec_miss_state = 1'b0;
+         endcase
+      end
+   endfunction
+
+   task try_frontend_speculative_miss_start;
+      begin
+         if (fetch_req_speculative && fetch_req_valid &&
+             !rf_decode_valid && !frontend_miss_valid && !frontend_miss_done &&
+             !fetch_buf_hit && cache_idle &&
+             (fetch_req_satp[63:60] != 4'd8 || fetch_req_prv == 3) &&
+             frontend_physical_fetch_ok(fetch_req_pc) &&
+             fetch_req_pc[2:1] != 2'b11) begin
+            frontend_miss_valid      <= 1;
+            frontend_miss_done       <= 0;
+            frontend_miss_pc         <= fetch_req_pc;
+            frontend_miss_satp       <= fetch_req_satp;
+            frontend_miss_prv        <= fetch_req_prv;
+            frontend_miss_epoch      <= fetch_req_epoch;
+            frontend_miss_next_valid <= 0;
+            dram_addr                <= fetch_req_pc[30:3];
+            dram_read                <= 1;
+         end
+      end
+   endtask
+
+   task consume_frontend_miss;
+      reg [63:0]  fill_base;
+      reg [127:0] miss_aligned;
+      reg [31:0]  miss_insn;
+      begin
+         fill_base = {frontend_miss_pc[63:3], 3'b000};
+         miss_aligned = frontend_miss_next_valid ?
+                        {frontend_miss_next_data, frontend_miss_data} :
+                        {64'bx, frontend_miss_data};
+         miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
+         if (fill_base[11:0] <= 12'hff0 && frontend_miss_next_valid) begin
+            fetch_buf_valid      <= 1;
+            fetch_buf_base_va    <= fill_base;
+            fetch_buf_next_va_hi <= fill_base[63:4] + 60'd1;
+            fetch_buf_satp       <= frontend_miss_satp;
+            fetch_buf_prv        <= frontend_miss_prv;
+            fetch_buf_data       <= miss_aligned;
+         end
+         frontend_miss_valid <= 0;
+         frontend_miss_done  <= 0;
+         accept_instruction_fetch(frontend_miss_pc, miss_insn, 1'b1);
       end
    endtask
 
@@ -3093,7 +3195,12 @@ module smolrv64(input wire        clock,
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
-              state <= `S_EXCEPTION;
+              if (frontend_miss_valid || frontend_miss_done) begin
+                 frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
+                 state <= `S_FRONTEND_MISS_WAIT;
+              end else begin
+                 state <= `S_EXCEPTION;
+              end
            end else if (csr_satp[63:60] != 4'd8 || prv == 3) begin
               // Physical address check only when VM is off
               if (npc[63:`MEM_SIZE_LG2] != `MEM_BASEADDR >> `MEM_SIZE_LG2 &&
@@ -3109,7 +3216,17 @@ module smolrv64(input wire        clock,
                  fetch_req_fast_ready <= 0;
                  fetch_req_speculative <= 0;
                  rf_decode_valid <= 0;
-                 state <= `S_EXCEPTION;
+                 if (frontend_miss_valid || frontend_miss_done) begin
+                    frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
+                    state <= `S_FRONTEND_MISS_WAIT;
+                 end else begin
+                    state <= `S_EXCEPTION;
+                 end
+              end else if (frontend_miss_valid || frontend_miss_done) begin
+                 frontend_miss_wait_action <=
+                    frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch) ?
+                    FRONTEND_MISS_WAIT_CONSUME : FRONTEND_MISS_WAIT_REDIRECT;
+                 state <= `S_FRONTEND_MISS_WAIT;
               end else if (rf_decode_valid) begin
                  retire_queued_decode_or_refetch();
               end else if (fetch_req_fast_ready && fetch_req_valid) begin
@@ -3118,6 +3235,11 @@ module smolrv64(input wire        clock,
               end else begin
                  prepare_current_epoch_fetch(npc, csr_satp, prv);
               end
+           end else if (frontend_miss_valid || frontend_miss_done) begin
+              frontend_miss_wait_action <=
+                 frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch) ?
+                 FRONTEND_MISS_WAIT_CONSUME : FRONTEND_MISS_WAIT_REDIRECT;
+              state <= `S_FRONTEND_MISS_WAIT;
            end else if (rf_decode_valid) begin
               retire_queued_decode_or_refetch();
            end else if (fetch_req_fast_ready && fetch_req_valid) begin
@@ -3175,8 +3297,28 @@ module smolrv64(input wire        clock,
 `endif
            if (fetch_buf_latched_hit) begin
               accept_instruction_fetch(fetch_req_pc, fetch_buf_latched_insn, 1'b0);
+           end else if (!cache_idle) begin
+              state <= `S_FETCH_BUF_USE;
            end else begin
               start_instruction_fetch_miss(fetch_req_pc, fetch_req_satp, fetch_req_prv);
+           end
+        end
+
+        `S_FRONTEND_MISS_WAIT: begin
+           if (frontend_miss_done) begin
+              if (frontend_miss_wait_action == FRONTEND_MISS_WAIT_EXCEPTION) begin
+                 frontend_miss_valid <= 0;
+                 frontend_miss_done  <= 0;
+                 state <= `S_EXCEPTION;
+              end else if (frontend_miss_wait_action == FRONTEND_MISS_WAIT_CONSUME &&
+                           frontend_miss_matches_retire(npc, csr_satp, prv, fetch_epoch)) begin
+                 consume_frontend_miss();
+              end else begin
+                 frontend_miss_valid <= 0;
+                 frontend_miss_done  <= 0;
+                 redirect_retire_fetch(npc, csr_satp, prv);
+                 state <= `S_FETCH_REQ;
+              end
            end
         end
 
@@ -5956,6 +6098,8 @@ module smolrv64(input wire        clock,
            fetch_req_valid <= 0;
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
+           frontend_miss_valid <= 0;
+           frontend_miss_done <= 0;
            rf_decode_valid <= 0;
 
            state <= `S_FETCH1;
@@ -6478,6 +6622,17 @@ module smolrv64(input wire        clock,
       if (!core_reset_now && frontend_spec_fetch_state(state))
          try_frontend_speculative_fetch_buf_enqueue();
 
+      if (!core_reset_now && frontend_spec_miss_state(state))
+         try_frontend_speculative_miss_start();
+
+      if (!core_reset_now && frontend_miss_valid && dram_readdatavalid) begin
+         frontend_miss_valid      <= 0;
+         frontend_miss_done       <= 1;
+         frontend_miss_data       <= dram_readdata;
+         frontend_miss_next_data  <= dram_readdata_next;
+         frontend_miss_next_valid <= dram_readdata_next_valid;
+      end
+
       // Bus timeout: fault if an external bus access doesn't respond
       begin : bus_timeout_logic
          reg bus_waiting;
@@ -6486,14 +6641,15 @@ module smolrv64(input wire        clock,
                        state == `S_DRAM_PTW_WAIT   ||
                        state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
                        state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
-                       state == `S_MMIO_ALIGN;
+                       state == `S_MMIO_ALIGN ||
+                       (state == `S_FRONTEND_MISS_WAIT && frontend_miss_valid);
          bus_timeout_expired <= bus_waiting && &bus_timeout_ctr;
          if (bus_waiting) begin
             bus_timeout_ctr <= bus_timeout_ctr + 1;
             case (state)
-              `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT: begin
+              `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT, `S_FRONTEND_MISS_WAIT: begin
                  bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
-                 bus_timeout_tval  <= pc;
+                 bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : pc;
               end
               `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
                  bus_timeout_cause <= `TRAP_STORE_ACCESS_FAULT;
@@ -6536,6 +6692,8 @@ module smolrv64(input wire        clock,
 `endif
 `endif
                write_back_register = 0;
+               frontend_miss_valid <= 0;
+               frontend_miss_done <= 0;
                state <= `S_EXCEPTION;
             end
          end else
@@ -6573,6 +6731,16 @@ module smolrv64(input wire        clock,
          fetch_req_pc <= `RESET_PC;
          fetch_req_satp <= 0;
          fetch_req_prv <= 3;
+         frontend_miss_valid <= 0;
+         frontend_miss_done <= 0;
+         frontend_miss_pc <= `RESET_PC;
+         frontend_miss_satp <= 0;
+         frontend_miss_prv <= 3;
+         frontend_miss_epoch <= 0;
+         frontend_miss_data <= 0;
+         frontend_miss_next_data <= 0;
+         frontend_miss_next_valid <= 0;
+         frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
          rf_decode_valid <= 0;
          rf_decode_pc <= `RESET_PC;
          rf_decode_next_pc <= `RESET_PC;
