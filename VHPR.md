@@ -13,6 +13,7 @@ The L1 is backed by a physically indexed, physically tagged L2.
 - Keep a single resident L1 copy for each physical cache line.
 - Support write-back L1 behavior without duplicate dirty aliases.
 - Move synonym handling and translation cost off the hit path.
+- Accept extra physical-tag metadata as the price of the virtual-hit path.
 - Keep the first RTL implementation small enough to reason about and test.
 
 ## Configuration
@@ -73,6 +74,10 @@ physical coherence probes
 DMA-related cache maintenance
 single-copy invariant checks
 ```
+
+The physical tags are the main metadata overhead of VHPR.  They are not on the
+ordinary virtual-hit compare path, but they must be stored per line and read by
+miss, coherence, DMA, and writeback machinery.
 
 ## Core Invariant
 
@@ -137,8 +142,8 @@ The first implementation can keep all lines ASID-qualified.
 Each way may use a different index function:
 
 ```text
-way0_index = hash0(VA)
-way1_index = hash1(VA)
+way0_index = hash0(VA, ASID)
+way1_index = hash1(VA, ASID)
 ```
 
 The hash functions choose the two hit-path candidate locations for the request
@@ -148,11 +153,16 @@ whose line-within-page component is `PA[11:6]`.
 The implementation should treat the index as:
 
 ```text
-virtual color + line-within-page offset
+ASID-mixed virtual color + line-within-page offset
 ```
 
 possibly with skewing or permutation inside each way, as long as the same-offset
 candidate set remains directly enumerable.
+
+Hashing ASID into the virtual color improves mixing between address spaces and
+reduces avoidable conflicts.  It does not change the physical synonym search
+size: the miss path still enumerates all eight color positions for the
+line-within-page offset in each way.
 
 ## Miss Path
 
@@ -207,7 +217,21 @@ If a matching physical line is resident and dirty, the L1 line is the newest
 copy.  L2 data for the same PA must be treated as stale until the dirty line is
 written back or migrated.
 
-Preferred policy:
+Initial policy:
+
+```text
+write back dirty synonym to L2
+invalidate old synonym
+fill target line from L2
+```
+
+This is slower than migration, but it keeps the first implementation simple and
+keeps all line movement through the existing physical writeback/fill path.
+
+The implementation should count dirty alias evictions so the cost of this
+policy is measured under real workloads.
+
+Future optimization:
 
 ```text
 evict target victim if needed
@@ -217,17 +241,8 @@ preserve dirty state
 invalidate old synonym
 ```
 
-This synonym migration avoids writeback followed by refill.
-
-Simpler fallback policy:
-
-```text
-write back dirty synonym to L2
-invalidate old synonym
-fill target line from L2
-```
-
-The fallback is slower but easier to implement.
+This synonym migration avoids writeback followed by refill, but adds more data
+movement and corner cases.
 
 ## Overlapped Miss Pipeline
 
@@ -258,13 +273,17 @@ Safe sequence:
 
 7. If a dirty synonym is found:
    discard or ignore provisional L2 fill data.
-   migrate the dirty synonym into the target location.
+   write back the dirty synonym to L2.
+   invalidate the old synonym.
+   refill the target location from L2.
 
 8. Release reservations after the single-copy invariant is restored.
 ```
 
 The L2 fill must not become architecturally visible until the synonym probe is
-resolved.
+resolved.  If the dirty-synonym case is detected after a provisional fill has
+started, the fill data must be discarded or replayed after the dirty writeback
+updates L2.
 
 ## L2 Role
 
@@ -390,7 +409,9 @@ L1 virtual misses
 synonym probes
 synonym hits
 clean synonym invalidations
-dirty synonym migrations
+alias evictions
+dirty alias evictions
+dirty alias writebacks
 target dirty victim evictions
 provisional L2 fills discarded due to dirty synonym
 full L1 flushes
