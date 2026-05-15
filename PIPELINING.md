@@ -87,6 +87,9 @@ than a larger instruction FIFO.
    - That hit-only speculative enqueue should run from backend-owned states,
      not only from the RF wait state, so the frontend/decode handoff can fill
      while older instructions execute, complete ALU work, or wait on memory.
+   - The hit-only path may also run during execute itself; the retire-time
+     epoch/context/PC check is the architectural boundary that accepts or
+     discards the queued younger instruction.
    - Use conservative prediction first: next halfword/word based on the fetched
      instruction length.
    - On any taken branch, jump, trap, interrupt, xRET, `sfence.vma`, or other
