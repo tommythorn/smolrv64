@@ -13,6 +13,7 @@
 //   S [sector]       - probe SD card, or dump 512-byte sector in hex
 //   SL<sector> <count> <addr> - read SD sectors into memory
 //   X<addr> [a0 [a1]] - jump to address and execute
+//   P                - dump core debug counters; Pc clears them
 //   ?                - help
 
 typedef unsigned char      uint8_t;
@@ -918,7 +919,8 @@ int main(void)
             puts_("returned\n");
 
         } else if (*p == 'P' || *p == 'p') {
-            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad, last_pc;
+            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
+            uint64_t vhpr_faults, vhpr_pc, vhpr_va, vhpr_pa, vhpr_stored_pa, vhpr_info;
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
@@ -930,7 +932,12 @@ int main(void)
             asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
             asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
             asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
-            asm volatile ("csrr %0, 0xfca" : "=r"(last_pc));
+            asm volatile ("csrr %0, 0xfca" : "=r"(vhpr_faults));
+            asm volatile ("csrr %0, 0xfcb" : "=r"(vhpr_pc));
+            asm volatile ("csrr %0, 0xfcc" : "=r"(vhpr_va));
+            asm volatile ("csrr %0, 0xfcd" : "=r"(vhpr_pa));
+            asm volatile ("csrr %0, 0xfce" : "=r"(vhpr_stored_pa));
+            asm volatile ("csrr %0, 0xfcf" : "=r"(vhpr_info));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
             asm volatile ("csrr %0, mtval"  : "=r"(mtval));
             asm volatile ("csrr %0, mepc"   : "=r"(mepc));
@@ -939,6 +946,7 @@ int main(void)
             asm volatile ("csrr %0, sepc"   : "=r"(sepc));
             if (p[1] == 'c' || p[1] == 'C') {
                 asm volatile ("csrw 0xfc3, zero");
+                asm volatile ("csrw 0xfca, zero");
                 puts_("cleared\n");
             } else {
                 puts_("mig min="); puthex64(mn);
@@ -951,7 +959,6 @@ int main(void)
                     puthex64(tot / cnt);
                 }
                 putc_('\n');
-                puts_("last_pc="); puthex64(last_pc); putc_('\n');
                 puts_("scause="); puthex64(scause);
                 puts_(" stval="); puthex64(stval);
                 puts_(" sepc=");  puthex64(sepc);
@@ -966,6 +973,20 @@ int main(void)
                     puts_(" state="); puthex64(to_st);
                     puts_(" cause="); puthex64(to_ca);
                     puts_(" addr=");  puthex64(to_ad);
+                    putc_('\n');
+                }
+                puts_("vhpr faults="); puthex64(vhpr_faults);
+                if (vhpr_faults) {
+                    puts_(" kind="); puthex8((uint32_t)(vhpr_info >> 56));
+                    puts_(" info="); puthex64(vhpr_info);
+                    putc_('\n');
+                    puts_("vhpr pc="); puthex64(vhpr_pc);
+                    puts_(" va="); puthex64(vhpr_va);
+                    putc_('\n');
+                    puts_("vhpr pa="); puthex64(vhpr_pa);
+                    puts_(" stored_pa="); puthex64(vhpr_stored_pa);
+                    putc_('\n');
+                } else {
                     putc_('\n');
                 }
             }
@@ -984,7 +1005,7 @@ int main(void)
             puts_("S [sector]       probe SD card, or dump 512-byte sector\n");
             puts_("SL<sec> <n> <addr> read n SD sectors into memory\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
-            puts_("P                dump MIG latency stats; Pc clears them\n");
+            puts_("P                dump core debug counters; Pc clears them\n");
 
         } else if (*p != 0) {
             puts_("unknown command (? for help)\n");
