@@ -523,6 +523,12 @@ module smolrv64(input wire        clock,
 `define CSR_MIG_TO_STATE 12'hfc7
 `define CSR_MIG_TO_CAUSE 12'hfc8
 `define CSR_MIG_TO_ADDR  12'hfc9
+`define CSR_VHPR_FAULTS  12'hfca
+`define CSR_VHPR_FIRST_PC 12'hfcb
+`define CSR_VHPR_FIRST_VA 12'hfcc
+`define CSR_VHPR_FIRST_PA 12'hfcd
+`define CSR_VHPR_FIRST_STORED_PA 12'hfce
+`define CSR_VHPR_FIRST_INFO 12'hfcf
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -606,7 +612,8 @@ module smolrv64(input wire        clock,
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
 `define S_BRANCH_RESOLVE       56  // resolve branch/JALR from registered RF operands
 `define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
-`define S_LAST_STATE           57  // update state register width accordingly
+`define S_HANDLE_CSR_FLUSH_WAIT 58 // wait for SATP-triggered VHPR flush before CSR retirement
+`define S_LAST_STATE           58  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -1139,6 +1146,7 @@ module smolrv64(input wire        clock,
    reg [`CACHE_VTAG_BITS-1:0] cache_req_vtag = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_next_vtag = 0;
    reg [`CACHE_PHYS_TAG_BITS-1:0] cache_req_ptag = 0;
+   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_req_next_ptag = 0;
    reg [`CACHE_PHYS_TAG_BITS-1:0] cache_victim_ptag = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_victim_idx = 0;
    reg                         cache_victim_way = 0;
@@ -1154,6 +1162,8 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_next_hit = 0;
    reg        cache_lookup_next_hit_way = 0;
    reg        cache_lookup_next_valid = 0;
+   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_lookup_ptag = 0;
+   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_lookup_next_ptag = 0;
    reg        cache_lookup_dirty = 0;
    reg        cache_target_dirty = 0;
    reg        cache_target_valid = 0;
@@ -1382,6 +1392,7 @@ module smolrv64(input wire        clock,
            `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
            `S_TLB_INSERT:            state_name = "TLB_INSERT";
            `S_BRANCH_RESOLVE:        state_name = "BRANCH_RESOLVE";
+           `S_HANDLE_CSR_FLUSH_WAIT: state_name = "CSR_FLUSH_WAIT";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1916,6 +1927,35 @@ module smolrv64(input wire        clock,
          end
       end
    endtask
+
+   reg [63:0] csr_vhpr_faults = 0;
+   reg [63:0] csr_vhpr_first_pc = 0;
+   reg [63:0] csr_vhpr_first_va = 0;
+   reg [63:0] csr_vhpr_first_pa = 0;
+   reg [63:0] csr_vhpr_first_stored_pa = 0;
+   reg [63:0] csr_vhpr_first_info = 0;
+   reg        vhpr_clear_req = 0;
+   reg        vhpr_clear_ack = 0;
+   wire       vhpr_clear_pending = vhpr_clear_req != vhpr_clear_ack;
+
+   task vhpr_record_fault;
+      input [7:0]  fault_kind;
+      input [63:0] fault_va;
+      input [63:0] fault_pa;
+      input [63:0] fault_stored_pa;
+      input [63:0] fault_info;
+      begin
+         csr_vhpr_faults <= csr_vhpr_faults + 1;
+         if (csr_vhpr_faults == 0) begin
+            csr_vhpr_first_pc <= pc;
+            csr_vhpr_first_va <= fault_va;
+            csr_vhpr_first_pa <= fault_pa;
+            csr_vhpr_first_stored_pa <= fault_stored_pa;
+            csr_vhpr_first_info <= {fault_kind, fault_info[55:0]};
+         end
+      end
+   endtask
+
    reg [63:0] bus_timeout_tval = 0;
    reg [11:0] bus_timeout_cause = 0;
 
@@ -6012,9 +6052,11 @@ module smolrv64(input wire        clock,
 
         `S_HANDLE_CSR: begin : handle_csr_state
            reg csr_write_failure;
+           reg csr_needs_flush_wait;
            state <= `S_HANDLE_CSR_COMMIT;
            csr_access_failure = 0;
            csr_write_failure = 0;
+           csr_needs_flush_wait = 0;
            csr_read_val = 0;
            tval = ex_insn;
            write_back_register = ex_rd;
@@ -6121,6 +6163,12 @@ module smolrv64(input wire        clock,
                 `CSR_MIG_TO_STATE:csr_read_val = csr_mig_to_state;
                 `CSR_MIG_TO_CAUSE:csr_read_val = csr_mig_to_cause;
                 `CSR_MIG_TO_ADDR: csr_read_val = csr_mig_to_addr;
+                `CSR_VHPR_FAULTS: csr_read_val = csr_vhpr_faults;
+                `CSR_VHPR_FIRST_PC: csr_read_val = csr_vhpr_first_pc;
+                `CSR_VHPR_FIRST_VA: csr_read_val = csr_vhpr_first_va;
+                `CSR_VHPR_FIRST_PA: csr_read_val = csr_vhpr_first_pa;
+                `CSR_VHPR_FIRST_STORED_PA: csr_read_val = csr_vhpr_first_stored_pa;
+                `CSR_VHPR_FIRST_INFO: csr_read_val = csr_vhpr_first_info;
                 default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -6286,6 +6334,7 @@ module smolrv64(input wire        clock,
                        fetch_epoch <= fetch_epoch + 1'b1;
                        flush_tlb;
                        cache_flush_req <= ~cache_flush_ack;
+                       csr_needs_flush_wait = 1;
                      end
                    end
                 end
@@ -6358,6 +6407,14 @@ module smolrv64(input wire        clock,
                    csr_mig_to_cause <= 0;
                    csr_mig_to_addr  <= 0;
                 end
+                `CSR_VHPR_FAULTS,
+                `CSR_VHPR_FIRST_PC,
+                `CSR_VHPR_FIRST_VA,
+                `CSR_VHPR_FIRST_PA,
+                `CSR_VHPR_FIRST_STORED_PA,
+                `CSR_VHPR_FIRST_INFO: begin
+                   vhpr_clear_req <= ~vhpr_clear_ack;
+                end
                 default: begin
                  csr_write_failure = 1;
 `ifdef SIMULATE
@@ -6373,6 +6430,8 @@ module smolrv64(input wire        clock,
            if (csr_access_failure || csr_write_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               state <= `S_EXCEPTION;
+           end else if (csr_needs_flush_wait) begin
+              state <= `S_HANDLE_CSR_FLUSH_WAIT;
            end
 
            // Any CSR write may change interrupt-enable/pending state
@@ -6381,6 +6440,11 @@ module smolrv64(input wire        clock,
            // FF values, so it is stale for one cycle after any CSR write.
            // Reuse just_xret as a generic one-cycle suppress flag.
            just_xret <= 1;
+        end
+
+        `S_HANDLE_CSR_FLUSH_WAIT: begin
+           if (cache_cbo_done)
+              state <= `S_HANDLE_CSR_COMMIT;
         end
 
         `S_HANDLE_CSR_COMMIT: begin
@@ -7336,6 +7400,16 @@ module smolrv64(input wire        clock,
       cache_way0_tag_wr_en <= 0;
       cache_way1_tag_wr_en <= 0;
 
+      if (vhpr_clear_pending) begin
+         csr_vhpr_faults <= 0;
+         csr_vhpr_first_pc <= 0;
+         csr_vhpr_first_va <= 0;
+         csr_vhpr_first_pa <= 0;
+         csr_vhpr_first_stored_pa <= 0;
+         csr_vhpr_first_info <= 0;
+         vhpr_clear_ack <= vhpr_clear_req;
+      end
+
       case (cache_state)
         CACHE_IDLE: begin
            if (cache_flush_all) begin
@@ -7373,6 +7447,7 @@ module smolrv64(input wire        clock,
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
               cache_req_ptag      <= cache_dram_ptag;
+              cache_req_next_ptag <= cache_dram_next_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
               cache_req_bank      <= dram_addr[2:0];
               cache_req_next_bank <= dram_addr[2:0] + 3'd1;
               cache_req_same_line <= dram_addr[2:0] != 3'd7;
@@ -7398,6 +7473,7 @@ module smolrv64(input wire        clock,
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
               cache_req_ptag      <= cache_dram_ptag;
+              cache_req_next_ptag <= cache_dram_next_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
               cache_req_bank      <= dram_addr[2:0];
               cache_req_next_bank <= dram_addr[2:0] + 3'd1;
               cache_req_same_line <= 1;
@@ -7456,6 +7532,10 @@ module smolrv64(input wire        clock,
                                     ? cache_selected_bank_data(way1_hit, cache_req_next_bank)
                                     : cache_selected_bank_data(way1_next_hit, 3'd0);
            cache_lookup_next_valid <= cache_req_same_line || way0_next_hit || way1_next_hit;
+           cache_lookup_ptag <= way1_hit ? cache_meta_ptag(cache_way1_tag_rd_data)
+                                          : cache_meta_ptag(cache_way0_tag_rd_data);
+           cache_lookup_next_ptag <= way1_next_hit ? cache_meta_ptag(cache_way1_tag_next_rd_data)
+                                                    : cache_meta_ptag(cache_way0_tag_next_rd_data);
            target_way = !cache_meta_valid(cache_way0_tag_rd_data) ? 1'b0 :
                         !cache_meta_valid(cache_way1_tag_rd_data) ? 1'b1 :
                         cache_replace_way;
@@ -7472,7 +7552,27 @@ module smolrv64(input wire        clock,
            cache_state <= CACHE_HIT_RESP;
         end
 
-        CACHE_HIT_RESP: begin
+        CACHE_HIT_RESP: begin : cache_hit_resp
+           reg [63:0] next_pa;
+
+           next_pa = cache_addr + 64'd8;
+           if (cache_lookup_hit && cache_lookup_ptag != cache_req_ptag) begin
+              vhpr_record_fault(8'd1,
+                                cache_req_va,
+                                cache_addr,
+                                {33'd0, cache_lookup_ptag, cache_addr[11:0]},
+                                {45'd0, cache_req_write, cache_lookup_hit_way,
+                                 cache_req_asid});
+           end else if (!cache_req_same_line && cache_lookup_next_hit &&
+                        cache_lookup_next_ptag != cache_req_next_ptag) begin
+              vhpr_record_fault(8'd2,
+                                cache_req_va + 64'd8,
+                                next_pa,
+                                {33'd0, cache_lookup_next_ptag, next_pa[11:0]},
+                                {45'd0, cache_req_write, cache_lookup_next_hit_way,
+                                 cache_req_asid});
+           end
+
            if (cache_lookup_hit) begin
               if (cache_req_write) begin
                  cache_state <= CACHE_HIT_WRITE;
@@ -7572,6 +7672,21 @@ module smolrv64(input wire        clock,
                            cache_meta_ptag(cache_way0_tag_rd_data) == cache_req_ptag;
            way1_phys_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
                            cache_meta_ptag(cache_way1_tag_rd_data) == cache_req_ptag;
+
+           if ((way0_phys_hit && way1_phys_hit) ||
+               (cache_probe_found && (way0_phys_hit || way1_phys_hit))) begin
+              vhpr_record_fault(8'd3,
+                                cache_req_cbo ? {33'd0, cache_cbo_line_addr, 6'd0}
+                                              : cache_req_va,
+                                {33'd0, cache_req_ptag,
+                                 cache_req_cbo ? {cache_cbo_line_addr[11:6], 6'd0}
+                                               : cache_addr[11:0]},
+                                {33'd0, cache_req_ptag,
+                                 cache_req_cbo ? {cache_cbo_line_addr[11:6], 6'd0}
+                                               : cache_addr[11:0]},
+                                {46'd0, cache_req_cbo, cache_probe_found,
+                                 way1_phys_hit, way0_phys_hit, cache_probe_color});
+           end
 
            found = cache_probe_found || way0_phys_hit || way1_phys_hit;
            found_way = cache_probe_found ? cache_probe_found_way : way1_phys_hit;
@@ -7839,6 +7954,7 @@ module smolrv64(input wire        clock,
          cache_wb_then_fill <= 0;
          cache_wb_after_flush <= 0;
          cache_need_target_wb <= 0;
+         vhpr_clear_ack <= vhpr_clear_req;
       end
    end
 
