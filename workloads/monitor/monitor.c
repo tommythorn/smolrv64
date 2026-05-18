@@ -961,6 +961,7 @@ int main(void)
             uint64_t vhpr_first_flush_done_count, vhpr_last_sfence_pc;
             uint64_t vhpr_last_sfence_va, vhpr_last_sfence_info;
             uint64_t vhpr_first_last_sfence_va, vhpr_first_last_sfence_info;
+            uint64_t vhpr_epoch, vhpr_epoch_rollovers;
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
@@ -989,6 +990,8 @@ int main(void)
             asm volatile ("csrr %0, 0xfd8" : "=r"(vhpr_last_sfence_info));
             asm volatile ("csrr %0, 0xfd9" : "=r"(vhpr_first_last_sfence_va));
             asm volatile ("csrr %0, 0xfda" : "=r"(vhpr_first_last_sfence_info));
+            asm volatile ("csrr %0, 0xfdb" : "=r"(vhpr_epoch));
+            asm volatile ("csrr %0, 0xfdd" : "=r"(vhpr_epoch_rollovers));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
             asm volatile ("csrr %0, mtval"  : "=r"(mtval));
             asm volatile ("csrr %0, mepc"   : "=r"(mepc));
@@ -1030,6 +1033,8 @@ int main(void)
                 puts_(" sfence="); puthex64(vhpr_sfence_count);
                 puts_(" flush_start="); puthex64(vhpr_flush_start_count);
                 puts_(" flush_done="); puthex64(vhpr_flush_done_count);
+                puts_(" epoch="); puthex64(vhpr_epoch);
+                puts_(" rollovers="); puthex64(vhpr_epoch_rollovers);
                 if (vhpr_faults) {
                     uint32_t vhpr_kind = (uint32_t)(vhpr_info >> 56);
                     uint32_t vhpr_asid = (uint32_t)(vhpr_info & 0x3ff);

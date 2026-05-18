@@ -540,6 +540,8 @@ module smolrv64(input wire        clock,
 `define CSR_VHPR_LAST_SFENCE_INFO 12'hfd8
 `define CSR_VHPR_FIRST_LAST_SFENCE_VA 12'hfd9
 `define CSR_VHPR_FIRST_LAST_SFENCE_INFO 12'hfda
+`define CSR_VHPR_EPOCH 12'hfdb
+`define CSR_VHPR_EPOCH_ROLLOVERS 12'hfdd
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -727,6 +729,7 @@ module smolrv64(input wire        clock,
    localparam TLB_PPN_BITS = 44;
    localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS + TLB_PPN_BITS;
    localparam FRONTEND_EPOCH_BITS = 2;
+   localparam VHPR_EPOCH_BITS = 2;
    localparam TLB_2M_TAG_BITS = 18;
    localparam TLB_2M_PBASE_BITS = 43;
    localparam TLB_2M_DATA_BITS = TLB_2M_TAG_BITS + TLB_2M_PBASE_BITS +
@@ -1929,10 +1932,17 @@ module smolrv64(input wire        clock,
    reg [63:0] csr_vhpr_last_sfence_info = 0;
    reg [63:0] csr_vhpr_first_last_sfence_va = 0;
    reg [63:0] csr_vhpr_first_last_sfence_info = 0;
+   reg [63:0] csr_vhpr_epoch_rollovers = 0;
    reg        vhpr_clear_req = 0;
    reg        vhpr_clear_ack = 0;
    wire       vhpr_clear_pending = vhpr_clear_req != vhpr_clear_ack;
 
+   reg [VHPR_EPOCH_BITS-1:0] vhpr_epoch = 0;
+   reg [VHPR_EPOCH_BITS-1:0] vhpr_next_epoch = 0;
+   reg                       vhpr_epoch_update_pending = 0;
+   reg                       vhpr_epoch_bump_req = 0;
+   reg                       vhpr_epoch_bump_ack = 0;
+   wire                      vhpr_epoch_bump_pending = vhpr_epoch_bump_req != vhpr_epoch_bump_ack;
    reg        vhpr_fault_event = 0;
    reg [7:0]  vhpr_fault_kind = 0;
    reg [63:0] vhpr_fault_pc = 0;
@@ -1946,6 +1956,7 @@ module smolrv64(input wire        clock,
    reg [63:0] vhpr_sfence_info = 0;
    reg        vhpr_flush_start_event = 0;
    reg        vhpr_flush_done_event = 0;
+   reg        vhpr_epoch_rollover_event = 0;
 
    always @(posedge clock) begin
       if (vhpr_clear_pending) begin
@@ -1966,12 +1977,15 @@ module smolrv64(input wire        clock,
          csr_vhpr_last_sfence_info <= 0;
          csr_vhpr_first_last_sfence_va <= 0;
          csr_vhpr_first_last_sfence_info <= 0;
+         csr_vhpr_epoch_rollovers <= 0;
          vhpr_clear_ack <= vhpr_clear_req;
       end else begin
          if (vhpr_flush_start_event)
             csr_vhpr_flush_start_count <= csr_vhpr_flush_start_count + 1;
          if (vhpr_flush_done_event)
             csr_vhpr_flush_done_count <= csr_vhpr_flush_done_count + 1;
+         if (vhpr_epoch_rollover_event)
+            csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
          if (vhpr_sfence_event) begin
             csr_vhpr_sfence_count <= csr_vhpr_sfence_count + 1;
             csr_vhpr_last_sfence_pc <= vhpr_sfence_pc;
@@ -2011,6 +2025,10 @@ module smolrv64(input wire        clock,
             cache_flush_ack <= cache_flush_req;
             cache_cbo_done_r <= 1;
             vhpr_flush_done_event <= 1'b1;
+            if (vhpr_epoch_update_pending) begin
+               vhpr_epoch <= vhpr_next_epoch;
+               vhpr_epoch_update_pending <= 1'b0;
+            end
             cache_state <= CACHE_IDLE;
          end else begin
             next_idx = cache_flush_idx + 1'b1;
@@ -2050,6 +2068,7 @@ module smolrv64(input wire        clock,
       input [7:0] reason;
       begin
          cache_flush_req <= ~cache_flush_ack;
+         vhpr_epoch_bump_req <= ~vhpr_epoch_bump_ack;
          vhpr_flush_start_event <= 1'b1;
       end
    endtask
@@ -6373,6 +6392,8 @@ module smolrv64(input wire        clock,
                 `CSR_VHPR_LAST_SFENCE_INFO: csr_read_val = csr_vhpr_last_sfence_info;
                 `CSR_VHPR_FIRST_LAST_SFENCE_VA: csr_read_val = csr_vhpr_first_last_sfence_va;
                 `CSR_VHPR_FIRST_LAST_SFENCE_INFO: csr_read_val = csr_vhpr_first_last_sfence_info;
+                `CSR_VHPR_EPOCH: csr_read_val = {{64-VHPR_EPOCH_BITS{1'b0}}, vhpr_epoch};
+                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = csr_vhpr_epoch_rollovers;
                 default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -6627,7 +6648,8 @@ module smolrv64(input wire        clock,
                 `CSR_VHPR_LAST_SFENCE_VA,
                 `CSR_VHPR_LAST_SFENCE_INFO,
                 `CSR_VHPR_FIRST_LAST_SFENCE_VA,
-                `CSR_VHPR_FIRST_LAST_SFENCE_INFO: begin
+                `CSR_VHPR_FIRST_LAST_SFENCE_INFO,
+                `CSR_VHPR_EPOCH_ROLLOVERS: begin
                    vhpr_clear_req <= ~vhpr_clear_ack;
                 end
                 default: begin
@@ -7538,6 +7560,7 @@ module smolrv64(input wire        clock,
          dram2_ctx        <= 0;
          dram_store_split <= 0;
          cache_flush_req  <= 0;
+         vhpr_epoch_bump_req <= 0;
          ptw_from_dram    <= 0;
          mig_latency_ctr  <= 0;
          mig_prev_waiting <= 0;
@@ -7618,10 +7641,19 @@ module smolrv64(input wire        clock,
       cache_way1_tag_wr_en <= 0;
       vhpr_fault_event <= 0;
       vhpr_flush_done_event <= 0;
+      vhpr_epoch_rollover_event <= 0;
 
       case (cache_state)
         CACHE_IDLE: begin
            if (cache_flush_all) begin
+              if (vhpr_epoch_bump_pending) begin : vhpr_epoch_bump_start
+                 reg [VHPR_EPOCH_BITS-1:0] next_epoch;
+                 next_epoch = vhpr_epoch + {{VHPR_EPOCH_BITS-1{1'b0}}, 1'b1};
+                 vhpr_next_epoch <= next_epoch;
+                 vhpr_epoch_update_pending <= 1'b1;
+                 vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
+                 vhpr_epoch_rollover_event <= next_epoch == {VHPR_EPOCH_BITS{1'b0}};
+              end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
               cache_way0_rd_idx <= 0;
@@ -8135,7 +8167,8 @@ module smolrv64(input wire        clock,
                                              ? (cache_req_next_bank == 3'd7 ? cache_fill_data
                                                                             : cache_fill_next_data)
                                              : cache_lookup_next_data;
-                    dram_readdata_next_valid_r <= (cache_req_same_line || cache_lookup_next_hit) &&
+                    dram_readdata_next_valid_r <= (cache_req_same_line ||
+                                                   cache_lookup_next_hit) &&
                                                    (cache_req_same_line ||
                                                     cache_req_va[11:3] != 9'h1ff);
                     dram_readdatavalid_r <= 1;
@@ -8169,8 +8202,13 @@ module smolrv64(input wire        clock,
          cache_wb_then_fill <= 0;
          cache_wb_after_flush <= 0;
          cache_need_target_wb <= 0;
+         vhpr_epoch <= 0;
+         vhpr_next_epoch <= 0;
+         vhpr_epoch_update_pending <= 0;
+         vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
          vhpr_fault_event <= 0;
          vhpr_flush_done_event <= 0;
+         vhpr_epoch_rollover_event <= 0;
       end
    end
 
