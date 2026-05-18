@@ -138,6 +138,23 @@ static void put_vhpr_kind(uint32_t kind)
     }
 }
 
+static void put_sfence_info(uint64_t info)
+{
+    uint32_t rs1_va = (uint32_t)(info & 1);
+    uint32_t rs2_asid = (uint32_t)((info >> 1) & 1);
+    uint32_t asid = (uint32_t)((info >> 2) & 0x3ff);
+    uint32_t current_asid = (uint32_t)((info >> 12) & 0x3ff);
+
+    puts_(" rs1=");
+    puts_(rs1_va ? "va" : "all");
+    puts_(" rs2=");
+    puts_(rs2_asid ? "asid" : "all");
+    puts_(" asid=");
+    puthex32(asid);
+    puts_(" current_asid=");
+    puthex32(current_asid);
+}
+
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
 static const char *parse_hex(const char *s, uint64_t *out)
 {
@@ -939,6 +956,11 @@ int main(void)
         } else if (*p == 'P' || *p == 'p') {
             uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
             uint64_t vhpr_faults, vhpr_pc, vhpr_va, vhpr_pa, vhpr_stored_pa, vhpr_info;
+            uint64_t vhpr_sfence_count, vhpr_flush_start_count, vhpr_flush_done_count;
+            uint64_t vhpr_first_sfence_count, vhpr_first_flush_start_count;
+            uint64_t vhpr_first_flush_done_count, vhpr_last_sfence_pc;
+            uint64_t vhpr_last_sfence_va, vhpr_last_sfence_info;
+            uint64_t vhpr_first_last_sfence_va, vhpr_first_last_sfence_info;
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
@@ -956,6 +978,17 @@ int main(void)
             asm volatile ("csrr %0, 0xfcd" : "=r"(vhpr_pa));
             asm volatile ("csrr %0, 0xfce" : "=r"(vhpr_stored_pa));
             asm volatile ("csrr %0, 0xfcf" : "=r"(vhpr_info));
+            asm volatile ("csrr %0, 0xfd0" : "=r"(vhpr_sfence_count));
+            asm volatile ("csrr %0, 0xfd1" : "=r"(vhpr_flush_start_count));
+            asm volatile ("csrr %0, 0xfd2" : "=r"(vhpr_flush_done_count));
+            asm volatile ("csrr %0, 0xfd3" : "=r"(vhpr_first_sfence_count));
+            asm volatile ("csrr %0, 0xfd4" : "=r"(vhpr_first_flush_start_count));
+            asm volatile ("csrr %0, 0xfd5" : "=r"(vhpr_first_flush_done_count));
+            asm volatile ("csrr %0, 0xfd6" : "=r"(vhpr_last_sfence_pc));
+            asm volatile ("csrr %0, 0xfd7" : "=r"(vhpr_last_sfence_va));
+            asm volatile ("csrr %0, 0xfd8" : "=r"(vhpr_last_sfence_info));
+            asm volatile ("csrr %0, 0xfd9" : "=r"(vhpr_first_last_sfence_va));
+            asm volatile ("csrr %0, 0xfda" : "=r"(vhpr_first_last_sfence_info));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
             asm volatile ("csrr %0, mtval"  : "=r"(mtval));
             asm volatile ("csrr %0, mepc"   : "=r"(mepc));
@@ -994,8 +1027,12 @@ int main(void)
                     putc_('\n');
                 }
                 puts_("vhpr faults="); puthex64(vhpr_faults);
+                puts_(" sfence="); puthex64(vhpr_sfence_count);
+                puts_(" flush_start="); puthex64(vhpr_flush_start_count);
+                puts_(" flush_done="); puthex64(vhpr_flush_done_count);
                 if (vhpr_faults) {
                     uint32_t vhpr_kind = (uint32_t)(vhpr_info >> 56);
+                    uint32_t vhpr_asid = (uint32_t)(vhpr_info & 0x3ff);
                     puts_(" kind="); puthex8(vhpr_kind);
                     putc_('('); put_vhpr_kind(vhpr_kind); putc_(')');
                     puts_(" info="); puthex64(vhpr_info);
@@ -1019,7 +1056,38 @@ int main(void)
                     puts_("vhpr pa="); puthex64(vhpr_pa);
                     puts_(" stored_pa="); puthex64(vhpr_stored_pa);
                     putc_('\n');
+                    puts_("vhpr first sfence="); puthex64(vhpr_first_sfence_count);
+                    puts_(" flush_start="); puthex64(vhpr_first_flush_start_count);
+                    puts_(" flush_done="); puthex64(vhpr_first_flush_done_count);
+                    putc_('\n');
+                    puts_("vhpr last_sfence pc="); puthex64(vhpr_last_sfence_pc);
+                    puts_(" va="); puthex64(vhpr_last_sfence_va);
+                    puts_(" info="); puthex64(vhpr_last_sfence_info);
+                    put_sfence_info(vhpr_last_sfence_info);
+                    putc_('\n');
+                    puts_("vhpr first_last_sfence va="); puthex64(vhpr_first_last_sfence_va);
+                    puts_(" info="); puthex64(vhpr_first_last_sfence_info);
+                    put_sfence_info(vhpr_first_last_sfence_info);
+                    putc_('\n');
+                    {
+                        uint32_t rs1_va = (uint32_t)(vhpr_first_last_sfence_info & 1);
+                        uint32_t rs2_asid = (uint32_t)((vhpr_first_last_sfence_info >> 1) & 1);
+                        uint32_t sfence_asid = (uint32_t)((vhpr_first_last_sfence_info >> 2) & 0x3ff);
+                        uint32_t va_match = !rs1_va ||
+                            ((vhpr_first_last_sfence_va >> 12) == (vhpr_va >> 12));
+                        uint32_t asid_match = !rs2_asid || (sfence_asid == vhpr_asid);
+                        puts_("vhpr first_last_sfence covers=");
+                        puts_((va_match && asid_match) ? "yes" : "no");
+                        puts_(" va_match="); puthex8(va_match);
+                        puts_(" asid_match="); puthex8(asid_match);
+                        putc_('\n');
+                    }
                 } else {
+                    putc_('\n');
+                    puts_("vhpr last_sfence pc="); puthex64(vhpr_last_sfence_pc);
+                    puts_(" va="); puthex64(vhpr_last_sfence_va);
+                    puts_(" info="); puthex64(vhpr_last_sfence_info);
+                    put_sfence_info(vhpr_last_sfence_info);
                     putc_('\n');
                 }
             }
