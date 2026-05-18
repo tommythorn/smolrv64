@@ -127,6 +127,9 @@ set vdefines [list \
     "MEM_BASEADDR=64'h70000000" \
     [format {SRAM_EVENHEX="%s"} $sram_even] \
     [format {SRAM_ODDHEX="%s"} $sram_odd]]
+set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]
+puts "Build stamp: $build_stamp"
+lappend vdefines "SMOLRV64_BUILD_STAMP=64'h$build_stamp"
 if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"} {
     puts "Enabling PC_TRACE debug tracer."
     lappend vdefines "PC_TRACE"

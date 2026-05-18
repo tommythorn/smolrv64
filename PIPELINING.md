@@ -189,10 +189,11 @@ For each piece of state that crosses a stage boundary, classify it first:
 
 Current candidates:
 
-- `satp`: slow context.  The TLB needs only address-space identity, not the
-  entire CSR.  For Sv39 this is implemented ASID bits plus root PPN; `MODE` is
-  implicit because Bare bypasses translation.  SATP writes are serializing and
-  flush frontend/TLB state.
+- `satp`: slow context.  The active root PPN is a single global value guarded by
+  serializing SATP writes, not per-entry TLB state.  TLB entries carry only the
+  implemented ASID bits as their address-space key; `MODE` is implicit because
+  Bare bypasses translation.  SATP writes flush frontend/TLB/VHPR state before
+  the new root can be used.
 - ASID width: implement 10 ASID bits unless measurements show pressure.  WARL
   zero the unused upper ASID bits so the TLB key does not carry them.
 - `sum`/`mxr`: slow context for translation permission checks.  A future pass

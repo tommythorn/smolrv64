@@ -310,6 +310,10 @@ module smolrv64_tb;
 endmodule
 `endif
 
+`ifndef SMOLRV64_BUILD_STAMP
+`define SMOLRV64_BUILD_STAMP 64'h0
+`endif
+
 module smolrv64(input wire        clock,
                 input wire        fpu_clock,
                 input wire        reset,
@@ -542,6 +546,7 @@ module smolrv64(input wire        clock,
 `define CSR_VHPR_FIRST_LAST_SFENCE_INFO 12'hfda
 `define CSR_VHPR_EPOCH 12'hfdb
 `define CSR_VHPR_EPOCH_ROLLOVERS 12'hfdd
+`define CSR_BUILD_STAMP 12'hfde
 
 `define CSR_OP_COPY 0
 `define CSR_OP_OR   1
@@ -726,8 +731,7 @@ module smolrv64(input wire        clock,
    localparam TLB_CTX_BITS = 6;
    localparam TLB_ASID_BITS = 10;
    localparam CACHE_PERM_BITS = 5; // {physical, U, X, W, R}
-   localparam TLB_PPN_BITS = 44;
-   localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS + TLB_PPN_BITS;
+   localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS;
    localparam FRONTEND_EPOCH_BITS = 2;
    localparam VHPR_EPOCH_BITS = 2;
    localparam TLB_2M_TAG_BITS = 18;
@@ -2582,9 +2586,9 @@ module smolrv64(input wire        clock,
    function [TLB_SATP_KEY_BITS-1:0] satp_tlb_key;
       input [63:0] satp;
       begin
-         // TLB identity is ASID plus root PPN. MODE is implicit because Bare
-         // never probes the TLB, and this core implements 10 ASID bits.
-         satp_tlb_key = {satp[53:44], satp[43:0]};
+         // SATP writes are serializing and flush the TLB, so root PPN is
+         // global slow context.  Retained TLB entries are keyed by ASID only.
+         satp_tlb_key = satp[53:44];
       end
    endfunction
 
@@ -6394,6 +6398,7 @@ module smolrv64(input wire        clock,
                 `CSR_VHPR_FIRST_LAST_SFENCE_INFO: csr_read_val = csr_vhpr_first_last_sfence_info;
                 `CSR_VHPR_EPOCH: csr_read_val = {{64-VHPR_EPOCH_BITS{1'b0}}, vhpr_epoch};
                 `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = csr_vhpr_epoch_rollovers;
+                `CSR_BUILD_STAMP: csr_read_val = `SMOLRV64_BUILD_STAMP;
                 default: begin
 `ifdef SIMULATE
 `ifdef VERBOSE

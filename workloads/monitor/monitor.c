@@ -962,6 +962,7 @@ int main(void)
             uint64_t vhpr_last_sfence_va, vhpr_last_sfence_info;
             uint64_t vhpr_first_last_sfence_va, vhpr_first_last_sfence_info;
             uint64_t vhpr_epoch, vhpr_epoch_rollovers;
+            uint64_t build_stamp;
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
@@ -992,6 +993,7 @@ int main(void)
             asm volatile ("csrr %0, 0xfda" : "=r"(vhpr_first_last_sfence_info));
             asm volatile ("csrr %0, 0xfdb" : "=r"(vhpr_epoch));
             asm volatile ("csrr %0, 0xfdd" : "=r"(vhpr_epoch_rollovers));
+            asm volatile ("csrr %0, 0xfde" : "=r"(build_stamp));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
             asm volatile ("csrr %0, mtval"  : "=r"(mtval));
             asm volatile ("csrr %0, mepc"   : "=r"(mepc));
@@ -1003,6 +1005,8 @@ int main(void)
                 asm volatile ("csrw 0xfca, zero");
                 puts_("cleared\n");
             } else {
+                puts_("build stamp="); puthex64(build_stamp);
+                putc_('\n');
                 puts_("mig min="); puthex64(mn);
                 puts_(" max=");    puthex64(mx);
                 puts_(" total=");  puthex64(tot);
