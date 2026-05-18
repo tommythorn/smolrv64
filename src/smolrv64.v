@@ -7563,7 +7563,9 @@ module smolrv64(input wire        clock,
                                 {33'd0, cache_lookup_ptag, cache_addr[11:0]},
                                 {45'd0, cache_req_write, cache_lookup_hit_way,
                                  cache_req_asid});
-           end else if (!cache_req_same_line && cache_lookup_next_hit &&
+           end else if (!cache_req_same_line &&
+                        cache_req_va[11:3] != 9'h1ff &&
+                        cache_lookup_next_hit &&
                         cache_lookup_next_ptag != cache_req_next_ptag) begin
               vhpr_record_fault(8'd2,
                                 cache_req_va + 64'd8,

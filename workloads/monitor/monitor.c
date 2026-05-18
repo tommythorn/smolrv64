@@ -120,6 +120,24 @@ static void puthex64(uint64_t v)
     puthex32((uint32_t)v);
 }
 
+static void put_vhpr_kind(uint32_t kind)
+{
+    switch (kind) {
+    case 1:
+        puts_("hit-ptag");
+        break;
+    case 2:
+        puts_("next-ptag");
+        break;
+    case 3:
+        puts_("dup-phys");
+        break;
+    default:
+        puts_("unknown");
+        break;
+    }
+}
+
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
 static const char *parse_hex(const char *s, uint64_t *out)
 {
@@ -977,9 +995,24 @@ int main(void)
                 }
                 puts_("vhpr faults="); puthex64(vhpr_faults);
                 if (vhpr_faults) {
-                    puts_(" kind="); puthex8((uint32_t)(vhpr_info >> 56));
+                    uint32_t vhpr_kind = (uint32_t)(vhpr_info >> 56);
+                    puts_(" kind="); puthex8(vhpr_kind);
+                    putc_('('); put_vhpr_kind(vhpr_kind); putc_(')');
                     puts_(" info="); puthex64(vhpr_info);
                     putc_('\n');
+                    if (vhpr_kind == 1 || vhpr_kind == 2) {
+                        puts_("vhpr asid="); puthex32((uint32_t)(vhpr_info & 0x3ff));
+                        puts_(" way="); puthex8((uint32_t)((vhpr_info >> 10) & 1));
+                        puts_(" write="); puthex8((uint32_t)((vhpr_info >> 11) & 1));
+                        putc_('\n');
+                    } else if (vhpr_kind == 3) {
+                        puts_("vhpr probe_color="); puthex8((uint32_t)(vhpr_info & 7));
+                        puts_(" way0="); puthex8((uint32_t)((vhpr_info >> 3) & 1));
+                        puts_(" way1="); puthex8((uint32_t)((vhpr_info >> 4) & 1));
+                        puts_(" prev_found="); puthex8((uint32_t)((vhpr_info >> 5) & 1));
+                        puts_(" cbo="); puthex8((uint32_t)((vhpr_info >> 6) & 1));
+                        putc_('\n');
+                    }
                     puts_("vhpr pc="); puthex64(vhpr_pc);
                     puts_(" va="); puthex64(vhpr_va);
                     putc_('\n');
