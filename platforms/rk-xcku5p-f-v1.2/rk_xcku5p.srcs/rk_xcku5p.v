@@ -44,21 +44,8 @@ module rk_xcku5p(
    // soft reset. Press key[1] to return to the monitor from a hung workload.
    wire cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
 
-   // Heartbeat counter driven by UI clock
-   reg [34:0] count = 0;
-   reg        toggle = 0;
-   always @(posedge ui_clk)
-     if (count == 'd 333_333_333) begin  // 0.5 Hz at 333.33 MHz
-        toggle <= !toggle;
-        count <= 0;
-     end else
-       count <= count + 1;
-
-   // LED assignments
-   assign led[0] = init_calib_complete; // goes high ~1s after power-on
-   assign led[1] = toggle;              // heartbeat (UI clock domain)
-   assign led[2] = halted;
-   assign led[3] = key[3];
+   // Keep board LEDs dark by default; status is available through the monitor.
+   assign led = 4'b0000;
 
    // CVFPU is throughput-capable but much deeper than the integer core.  The
    // core issues one FP operation at a time and waits, so run the FPU island at
