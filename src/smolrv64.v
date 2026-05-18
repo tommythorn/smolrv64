@@ -1928,6 +1928,27 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task cache_start_fill_request;
+      begin
+         cache_fill_base <= {cache_addr[63:6], 6'd0};
+         cache_fill_beat <= 0;
+         cache_fill_return_data <= 0;
+         cache_fill_next_data <= 0;
+         cache_replace_way <= ~cache_replace_way;
+         cache_probe_color <= 0;
+         cache_probe_found <= 0;
+         cache_probe_found_way <= 0;
+         cache_probe_found_idx <= 0;
+         cache_probe_found_dirty <= 0;
+         cache_probe_active <= 1;
+         cache_way0_rd_idx <= {3'd0, cache_addr[11:6]};
+         cache_way1_rd_idx <= {3'd0, cache_addr[11:6]};
+         cache_way0_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
+         cache_way1_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
+         cache_state <= CACHE_PROBE_READ;
+      end
+   endtask
+
    reg [63:0] csr_vhpr_faults = 0;
    reg [63:0] csr_vhpr_first_pc = 0;
    reg [63:0] csr_vhpr_first_va = 0;
@@ -7554,19 +7575,27 @@ module smolrv64(input wire        clock,
 
         CACHE_HIT_RESP: begin : cache_hit_resp
            reg [63:0] next_pa;
+           reg        hit_ptag_mismatch;
+           reg        next_ptag_mismatch;
+           reg        next_line_safe;
 
            next_pa = cache_addr + 64'd8;
-           if (cache_lookup_hit && cache_lookup_ptag != cache_req_ptag) begin
+           hit_ptag_mismatch = cache_lookup_hit &&
+                                cache_lookup_ptag != cache_req_ptag;
+           next_line_safe = cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
+           next_ptag_mismatch = !cache_req_same_line &&
+                                 next_line_safe &&
+                                 cache_lookup_next_hit &&
+                                 cache_lookup_next_ptag != cache_req_next_ptag;
+
+           if (hit_ptag_mismatch) begin
               vhpr_record_fault(8'd1,
                                 cache_req_va,
                                 cache_addr,
                                 {33'd0, cache_lookup_ptag, cache_addr[11:0]},
                                 {45'd0, cache_req_write, cache_lookup_hit_way,
                                  cache_req_asid});
-           end else if (!cache_req_same_line &&
-                        cache_req_va[11:3] != 9'h1ff &&
-                        cache_lookup_next_hit &&
-                        cache_lookup_next_ptag != cache_req_next_ptag) begin
+           end else if (next_ptag_mismatch) begin
               vhpr_record_fault(8'd2,
                                 cache_req_va + 64'd8,
                                 next_pa,
@@ -7575,33 +7604,27 @@ module smolrv64(input wire        clock,
                                  cache_req_asid});
            end
 
-           if (cache_lookup_hit) begin
+           if (hit_ptag_mismatch) begin
+              cache_target_way <= cache_lookup_hit_way;
+              cache_target_idx <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+              cache_target_valid <= 1'b1;
+              cache_target_dirty <= cache_lookup_dirty;
+              cache_target_ptag <= cache_lookup_ptag;
+              cache_start_fill_request();
+           end else if (cache_lookup_hit) begin
               if (cache_req_write) begin
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  dram_readdata_r <= cache_lookup_data;
                  dram_readdata_next_r <= cache_lookup_next_data;
-                 dram_readdata_next_valid_r <= cache_lookup_next_valid;
+                 dram_readdata_next_valid_r <= cache_lookup_next_valid &&
+                                                next_line_safe &&
+                                                !next_ptag_mismatch;
                  dram_readdatavalid_r <= 1;
                  cache_state <= CACHE_IDLE;
               end
            end else begin
-              cache_fill_base <= {cache_addr[63:6], 6'd0};
-              cache_fill_beat <= 0;
-              cache_fill_return_data <= 0;
-              cache_fill_next_data <= 0;
-              cache_replace_way <= ~cache_replace_way;
-              cache_probe_color <= 0;
-              cache_probe_found <= 0;
-              cache_probe_found_way <= 0;
-              cache_probe_found_idx <= 0;
-              cache_probe_found_dirty <= 0;
-              cache_probe_active <= 1;
-              cache_way0_rd_idx <= {3'd0, cache_addr[11:6]};
-              cache_way1_rd_idx <= {3'd0, cache_addr[11:6]};
-              cache_way0_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
-              cache_way1_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
-              cache_state <= CACHE_PROBE_READ;
+              cache_start_fill_request();
            end
         end
 
@@ -7924,7 +7947,9 @@ module smolrv64(input wire        clock,
                                              ? (cache_req_next_bank == 3'd7 ? cache_fill_data
                                                                             : cache_fill_next_data)
                                              : cache_lookup_next_data;
-                    dram_readdata_next_valid_r <= cache_req_same_line || cache_lookup_next_hit;
+                    dram_readdata_next_valid_r <= (cache_req_same_line || cache_lookup_next_hit) &&
+                                                   (cache_req_same_line ||
+                                                    cache_req_va[11:3] != 9'h1ff);
                     dram_readdatavalid_r <= 1;
                  end
                  cache_state      <= CACHE_IDLE;
