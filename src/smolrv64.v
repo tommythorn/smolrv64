@@ -1948,7 +1948,7 @@ module smolrv64(input wire        clock,
    reg        vhpr_flush_done_event = 0;
 
    always @(posedge clock) begin
-      if (core_reset_now || vhpr_clear_pending) begin
+      if (vhpr_clear_pending) begin
          csr_vhpr_faults <= 0;
          csr_vhpr_first_pc <= 0;
          csr_vhpr_first_va <= 0;
