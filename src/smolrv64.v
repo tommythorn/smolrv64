@@ -1933,6 +1933,69 @@ module smolrv64(input wire        clock,
    reg        vhpr_clear_ack = 0;
    wire       vhpr_clear_pending = vhpr_clear_req != vhpr_clear_ack;
 
+   reg        vhpr_fault_event = 0;
+   reg [7:0]  vhpr_fault_kind = 0;
+   reg [63:0] vhpr_fault_pc = 0;
+   reg [63:0] vhpr_fault_va = 0;
+   reg [63:0] vhpr_fault_pa = 0;
+   reg [63:0] vhpr_fault_stored_pa = 0;
+   reg [63:0] vhpr_fault_info = 0;
+   reg        vhpr_sfence_event = 0;
+   reg [63:0] vhpr_sfence_pc = 0;
+   reg [63:0] vhpr_sfence_va = 0;
+   reg [63:0] vhpr_sfence_info = 0;
+   reg        vhpr_flush_start_event = 0;
+   reg        vhpr_flush_done_event = 0;
+
+   always @(posedge clock) begin
+      if (core_reset_now || vhpr_clear_pending) begin
+         csr_vhpr_faults <= 0;
+         csr_vhpr_first_pc <= 0;
+         csr_vhpr_first_va <= 0;
+         csr_vhpr_first_pa <= 0;
+         csr_vhpr_first_stored_pa <= 0;
+         csr_vhpr_first_info <= 0;
+         csr_vhpr_sfence_count <= 0;
+         csr_vhpr_flush_start_count <= 0;
+         csr_vhpr_flush_done_count <= 0;
+         csr_vhpr_first_sfence_count <= 0;
+         csr_vhpr_first_flush_start_count <= 0;
+         csr_vhpr_first_flush_done_count <= 0;
+         csr_vhpr_last_sfence_pc <= 0;
+         csr_vhpr_last_sfence_va <= 0;
+         csr_vhpr_last_sfence_info <= 0;
+         csr_vhpr_first_last_sfence_va <= 0;
+         csr_vhpr_first_last_sfence_info <= 0;
+         vhpr_clear_ack <= vhpr_clear_req;
+      end else begin
+         if (vhpr_flush_start_event)
+            csr_vhpr_flush_start_count <= csr_vhpr_flush_start_count + 1;
+         if (vhpr_flush_done_event)
+            csr_vhpr_flush_done_count <= csr_vhpr_flush_done_count + 1;
+         if (vhpr_sfence_event) begin
+            csr_vhpr_sfence_count <= csr_vhpr_sfence_count + 1;
+            csr_vhpr_last_sfence_pc <= vhpr_sfence_pc;
+            csr_vhpr_last_sfence_va <= vhpr_sfence_va;
+            csr_vhpr_last_sfence_info <= vhpr_sfence_info;
+         end
+         if (vhpr_fault_event) begin
+            csr_vhpr_faults <= csr_vhpr_faults + 1;
+            if (csr_vhpr_faults == 0) begin
+               csr_vhpr_first_pc <= vhpr_fault_pc;
+               csr_vhpr_first_va <= vhpr_fault_va;
+               csr_vhpr_first_pa <= vhpr_fault_pa;
+               csr_vhpr_first_stored_pa <= vhpr_fault_stored_pa;
+               csr_vhpr_first_info <= {vhpr_fault_kind, vhpr_fault_info[55:0]};
+               csr_vhpr_first_sfence_count <= csr_vhpr_sfence_count;
+               csr_vhpr_first_flush_start_count <= csr_vhpr_flush_start_count;
+               csr_vhpr_first_flush_done_count <= csr_vhpr_flush_done_count;
+               csr_vhpr_first_last_sfence_va <= csr_vhpr_last_sfence_va;
+               csr_vhpr_first_last_sfence_info <= csr_vhpr_last_sfence_info;
+            end
+         end
+      end
+   end
+
    task cache_flush_next_line;
       reg [`CACHE_INDEX_BITS-1:0] next_idx;
       begin
@@ -1947,7 +2010,7 @@ module smolrv64(input wire        clock,
          end else if (cache_flush_idx == {`CACHE_INDEX_BITS{1'b1}}) begin
             cache_flush_ack <= cache_flush_req;
             cache_cbo_done_r <= 1;
-            csr_vhpr_flush_done_count <= csr_vhpr_flush_done_count + 1;
+            vhpr_flush_done_event <= 1'b1;
             cache_state <= CACHE_IDLE;
          end else begin
             next_idx = cache_flush_idx + 1'b1;
@@ -1987,19 +2050,19 @@ module smolrv64(input wire        clock,
       input [7:0] reason;
       begin
          cache_flush_req <= ~cache_flush_ack;
-         csr_vhpr_flush_start_count <= csr_vhpr_flush_start_count + 1;
+         vhpr_flush_start_event <= 1'b1;
       end
    endtask
 
    task vhpr_record_sfence;
       input [TLB_ASID_BITS-1:0] sfence_current_asid;
       begin
-         csr_vhpr_sfence_count <= csr_vhpr_sfence_count + 1;
-         csr_vhpr_last_sfence_pc <= ex_pc;
-         csr_vhpr_last_sfence_va <= ex_insn[19:15] == 5'd0 ? 64'd0 : s1;
-         csr_vhpr_last_sfence_info <= {42'd0, sfence_current_asid, s2[9:0],
-                                        ex_insn[24:20] != 5'd0,
-                                        ex_insn[19:15] != 5'd0};
+         vhpr_sfence_event <= 1'b1;
+         vhpr_sfence_pc <= ex_pc;
+         vhpr_sfence_va <= ex_insn[19:15] == 5'd0 ? 64'd0 : s1;
+         vhpr_sfence_info <= {42'd0, sfence_current_asid, s2[9:0],
+                              ex_insn[24:20] != 5'd0,
+                              ex_insn[19:15] != 5'd0};
       end
    endtask
 
@@ -2010,19 +2073,13 @@ module smolrv64(input wire        clock,
       input [63:0] fault_stored_pa;
       input [63:0] fault_info;
       begin
-         csr_vhpr_faults <= csr_vhpr_faults + 1;
-         if (csr_vhpr_faults == 0) begin
-            csr_vhpr_first_pc <= pc;
-            csr_vhpr_first_va <= fault_va;
-            csr_vhpr_first_pa <= fault_pa;
-            csr_vhpr_first_stored_pa <= fault_stored_pa;
-            csr_vhpr_first_info <= {fault_kind, fault_info[55:0]};
-            csr_vhpr_first_sfence_count <= csr_vhpr_sfence_count;
-            csr_vhpr_first_flush_start_count <= csr_vhpr_flush_start_count;
-            csr_vhpr_first_flush_done_count <= csr_vhpr_flush_done_count;
-            csr_vhpr_first_last_sfence_va <= csr_vhpr_last_sfence_va;
-            csr_vhpr_first_last_sfence_info <= csr_vhpr_last_sfence_info;
-         end
+         vhpr_fault_event <= 1'b1;
+         vhpr_fault_kind <= fault_kind;
+         vhpr_fault_pc <= pc;
+         vhpr_fault_va <= fault_va;
+         vhpr_fault_pa <= fault_pa;
+         vhpr_fault_stored_pa <= fault_stored_pa;
+         vhpr_fault_info <= fault_info;
       end
    endtask
 
@@ -3490,6 +3547,8 @@ module smolrv64(input wire        clock,
       hpm_ptw_leaf_2m_pulse <= 0;
       hpm_ptw_leaf_1g_pulse <= 0;
       hpm_ptw_leaf_napot_pulse <= 0;
+      vhpr_sfence_event <= 0;
+      vhpr_flush_start_event <= 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -7511,27 +7570,8 @@ module smolrv64(input wire        clock,
       axi_write <= 0;
       cache_way0_tag_wr_en <= 0;
       cache_way1_tag_wr_en <= 0;
-
-      if (vhpr_clear_pending) begin
-         csr_vhpr_faults <= 0;
-         csr_vhpr_first_pc <= 0;
-         csr_vhpr_first_va <= 0;
-         csr_vhpr_first_pa <= 0;
-         csr_vhpr_first_stored_pa <= 0;
-         csr_vhpr_first_info <= 0;
-         csr_vhpr_sfence_count <= 0;
-         csr_vhpr_flush_start_count <= 0;
-         csr_vhpr_flush_done_count <= 0;
-         csr_vhpr_first_sfence_count <= 0;
-         csr_vhpr_first_flush_start_count <= 0;
-         csr_vhpr_first_flush_done_count <= 0;
-         csr_vhpr_last_sfence_pc <= 0;
-         csr_vhpr_last_sfence_va <= 0;
-         csr_vhpr_last_sfence_info <= 0;
-         csr_vhpr_first_last_sfence_va <= 0;
-         csr_vhpr_first_last_sfence_info <= 0;
-         vhpr_clear_ack <= vhpr_clear_req;
-      end
+      vhpr_fault_event <= 0;
+      vhpr_flush_done_event <= 0;
 
       case (cache_state)
         CACHE_IDLE: begin
@@ -8083,7 +8123,8 @@ module smolrv64(input wire        clock,
          cache_wb_then_fill <= 0;
          cache_wb_after_flush <= 0;
          cache_need_target_wb <= 0;
-         vhpr_clear_ack <= vhpr_clear_req;
+         vhpr_fault_event <= 0;
+         vhpr_flush_done_event <= 0;
       end
    end
 
