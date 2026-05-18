@@ -6240,7 +6240,7 @@ module smolrv64(input wire        clock,
                 `CSR_MHARTID:  csr_read_val = 0;
                 `CSR_MVENDORID:csr_read_val = 0;
                 `CSR_MARCHID:  csr_read_val = 9; // YARVI, Smolrv64 = YARVI4
-                `CSR_MIMPID:   csr_read_val = 'h20250907;
+                `CSR_MIMPID:   csr_read_val = 'h20260518;
                 `CSR_MIG_MIN:  csr_read_val = {32'd0, csr_mig_min};
                 `CSR_MIG_MAX:  csr_read_val = {32'd0, csr_mig_max};
                 `CSR_MIG_TOTAL:csr_read_val = csr_mig_total;
