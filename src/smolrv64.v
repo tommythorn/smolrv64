@@ -1077,6 +1077,39 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
+   wire [63:0] icache_way0_bank0_rd_data;
+   wire [63:0] icache_way0_bank1_rd_data;
+   wire [63:0] icache_way0_bank2_rd_data;
+   wire [63:0] icache_way0_bank3_rd_data;
+   wire [63:0] icache_way0_bank4_rd_data;
+   wire [63:0] icache_way0_bank5_rd_data;
+   wire [63:0] icache_way0_bank6_rd_data;
+   wire [63:0] icache_way0_bank7_rd_data;
+   wire [63:0] icache_way1_bank0_rd_data;
+   wire [63:0] icache_way1_bank1_rd_data;
+   wire [63:0] icache_way1_bank2_rd_data;
+   wire [63:0] icache_way1_bank3_rd_data;
+   wire [63:0] icache_way1_bank4_rd_data;
+   wire [63:0] icache_way1_bank5_rd_data;
+   wire [63:0] icache_way1_bank6_rd_data;
+   wire [63:0] icache_way1_bank7_rd_data;
+
+   assign icache_way0_bank_rd_data[0] = icache_way0_bank0_rd_data;
+   assign icache_way0_bank_rd_data[1] = icache_way0_bank1_rd_data;
+   assign icache_way0_bank_rd_data[2] = icache_way0_bank2_rd_data;
+   assign icache_way0_bank_rd_data[3] = icache_way0_bank3_rd_data;
+   assign icache_way0_bank_rd_data[4] = icache_way0_bank4_rd_data;
+   assign icache_way0_bank_rd_data[5] = icache_way0_bank5_rd_data;
+   assign icache_way0_bank_rd_data[6] = icache_way0_bank6_rd_data;
+   assign icache_way0_bank_rd_data[7] = icache_way0_bank7_rd_data;
+   assign icache_way1_bank_rd_data[0] = icache_way1_bank0_rd_data;
+   assign icache_way1_bank_rd_data[1] = icache_way1_bank1_rd_data;
+   assign icache_way1_bank_rd_data[2] = icache_way1_bank2_rd_data;
+   assign icache_way1_bank_rd_data[3] = icache_way1_bank3_rd_data;
+   assign icache_way1_bank_rd_data[4] = icache_way1_bank4_rd_data;
+   assign icache_way1_bank_rd_data[5] = icache_way1_bank5_rd_data;
+   assign icache_way1_bank_rd_data[6] = icache_way1_bank6_rd_data;
+   assign icache_way1_bank_rd_data[7] = icache_way1_bank7_rd_data;
 
    // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
    // instruction and captures the next PC/context; S_FETCH_REQ consumes this
@@ -1862,22 +1895,22 @@ module smolrv64(input wire        clock,
       .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
       .icache_way0_tag_next_rd_data(icache_way0_tag_next_rd_data),
       .icache_way1_tag_next_rd_data(icache_way1_tag_next_rd_data),
-      .icache_way0_bank0_rd_data(icache_way0_bank_rd_data[0]),
-      .icache_way0_bank1_rd_data(icache_way0_bank_rd_data[1]),
-      .icache_way0_bank2_rd_data(icache_way0_bank_rd_data[2]),
-      .icache_way0_bank3_rd_data(icache_way0_bank_rd_data[3]),
-      .icache_way0_bank4_rd_data(icache_way0_bank_rd_data[4]),
-      .icache_way0_bank5_rd_data(icache_way0_bank_rd_data[5]),
-      .icache_way0_bank6_rd_data(icache_way0_bank_rd_data[6]),
-      .icache_way0_bank7_rd_data(icache_way0_bank_rd_data[7]),
-      .icache_way1_bank0_rd_data(icache_way1_bank_rd_data[0]),
-      .icache_way1_bank1_rd_data(icache_way1_bank_rd_data[1]),
-      .icache_way1_bank2_rd_data(icache_way1_bank_rd_data[2]),
-      .icache_way1_bank3_rd_data(icache_way1_bank_rd_data[3]),
-      .icache_way1_bank4_rd_data(icache_way1_bank_rd_data[4]),
-      .icache_way1_bank5_rd_data(icache_way1_bank_rd_data[5]),
-      .icache_way1_bank6_rd_data(icache_way1_bank_rd_data[6]),
-      .icache_way1_bank7_rd_data(icache_way1_bank_rd_data[7])
+      .icache_way0_bank0_rd_data(icache_way0_bank0_rd_data),
+      .icache_way0_bank1_rd_data(icache_way0_bank1_rd_data),
+      .icache_way0_bank2_rd_data(icache_way0_bank2_rd_data),
+      .icache_way0_bank3_rd_data(icache_way0_bank3_rd_data),
+      .icache_way0_bank4_rd_data(icache_way0_bank4_rd_data),
+      .icache_way0_bank5_rd_data(icache_way0_bank5_rd_data),
+      .icache_way0_bank6_rd_data(icache_way0_bank6_rd_data),
+      .icache_way0_bank7_rd_data(icache_way0_bank7_rd_data),
+      .icache_way1_bank0_rd_data(icache_way1_bank0_rd_data),
+      .icache_way1_bank1_rd_data(icache_way1_bank1_rd_data),
+      .icache_way1_bank2_rd_data(icache_way1_bank2_rd_data),
+      .icache_way1_bank3_rd_data(icache_way1_bank3_rd_data),
+      .icache_way1_bank4_rd_data(icache_way1_bank4_rd_data),
+      .icache_way1_bank5_rd_data(icache_way1_bank5_rd_data),
+      .icache_way1_bank6_rd_data(icache_way1_bank6_rd_data),
+      .icache_way1_bank7_rd_data(icache_way1_bank7_rd_data)
    );
 
    function hpm_event_active;

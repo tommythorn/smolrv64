@@ -127,6 +127,11 @@ static uint64_t read_build_stamp(void)
     return build_stamp;
 }
 
+static void sync_cache_for_exec(void)
+{
+    asm volatile (".word 0x0000100f" ::: "memory"); /* fence.i */
+}
+
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
 static const char *parse_hex(const char *s, uint64_t *out)
 {
@@ -924,6 +929,7 @@ int main(void)
             if (*p == ' ') { const char *q = parse_hex(p + 1, &a0); if (q) p = q; }
             if (*p == ' ') { const char *q = parse_hex(p + 1, &a1); if (q) p = q; }
             puts_("jumping...\n");
+            sync_cache_for_exec();
             ((fn_t2)addr)(a0, a1);
             puts_("returned\n");
 
