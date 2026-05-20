@@ -59,6 +59,7 @@ dirty
 ASID
 virtual tag
 physical tag
+valid epoch
 cached permission/state bits
 replacement/coherence state as needed
 ```
@@ -78,6 +79,11 @@ single-copy invariant checks
 The physical tags are the main metadata overhead of VHPR.  They are not on the
 ordinary virtual-hit compare path, but they must be stored per line and read by
 miss, coherence, DMA, and writeback machinery.
+
+The valid epoch is a compact generation tag for conservative invalidation.  A
+flush can advance the current epoch instead of clearing every clean line
+immediately.  Dirty lines still require physical writeback before their old
+contents may be discarded.
 
 ## Core Invariant
 
@@ -129,13 +135,23 @@ Hit condition:
 
 ```text
 valid &&
+line.epoch == current_epoch &&
 line.ASID == request.ASID &&
 line.virtual_tag == request.virtual_tag &&
 permissions_allow_access
 ```
 
+The physical tag is not part of the ordinary hit condition.  Comparing the
+stored physical tag against a freshly translated physical address on every hit
+is useful as temporary debug instrumentation, but it puts translation back into
+the hit path and defeats the point of VHPR.
+
 Global mappings may later relax the ASID comparison with a per-line global bit.
 The first implementation can keep all lines ASID-qualified.
+
+The SATP root PPN is also not part of the hit tag.  Translation visibility is
+controlled by `SFENCE.VMA`; a SATP CSR write by itself does not invalidate VHPR
+or TLB state.
 
 ## Indexing And Skewing
 
@@ -301,6 +317,16 @@ The L1 is optimized for virtual hit latency.  The L2 is the physical authority.
 All L1 writebacks use physical address information from the L1 physical tag and
 index/offset state.
 
+Page-table walker reads should use the physical L2 path, not the virtual-hit L1
+path.  The PTW is a producer of translation information; letting it consume the
+VHPR hit path makes the translation mechanism depend on translation-derived
+state and obscures ordering bugs.  If the L1 holds dirty page-table data, the
+physical PTW path must first reconcile that L1 line before reading the backing
+store.  A simple implementation can perform a physical probe for the PTE line,
+write back and invalidate any matching dirty line, and only then issue the L2 or
+backing-memory read.  This is ordinary physical coherence for a PTW read that
+intentionally bypasses the virtual-hit L1 lookup.
+
 ## Physical Residency Lookup
 
 A separate physical directory is not required for the first implementation.
@@ -357,6 +383,34 @@ page table changes.
 
 Later optimizations may add ASID-selective or VA-selective L1 invalidation.
 
+The hardware requirement is to honor the same `SFENCE.VMA` invalidation contract
+for both TLB entries and VHPR virtual-hit lines.
+
+## Epoch Roll-Over
+
+Epoch invalidation only works while an old line's epoch cannot be confused with
+the current epoch.  With a small epoch, roll-over must be handled explicitly.
+
+Required behavior:
+
+```text
+advance epoch:
+  if next_epoch != 0:
+    publish next_epoch
+  else:
+    flush/write back the full L1
+    publish epoch 0 only after the flush completes
+```
+
+The current RTL uses a 2-bit VHPR epoch.  That keeps the hit metadata small, but
+means roll-over is normal under long Linux runs.  Roll-over is correct only if
+the cache performs a full walk of both ways, writes back dirty lines, invalidates
+old clean lines, and delays publishing the wrapped epoch until that walk is
+complete.
+
+The monitor may expose the current functional epoch, but production builds
+should not keep hot-path debug counters or physical-tag mismatch checks enabled.
+
 ## Coherence And DMA
 
 External physical probes do not have a useful VA.  They should use the same
@@ -384,6 +438,8 @@ no two valid L1 lines have the same physical line address
 dirty synonym data is never overwritten by stale L2 fill data
 L2 fill data is not committed until synonym probing resolves
 SFENCE.VMA invalidates stale virtual-hit state
+PTW reads use the physical L2 path rather than the VHPR hit path
+epoch roll-over cannot make an old line valid in the new epoch
 permission hits are rechecked against current privilege/control state
 ```
 
@@ -398,6 +454,7 @@ ASID changes
 global mappings
 SUM/MXR/MPRV transitions
 permission downgrades followed by SFENCE.VMA
+long runs with repeated epoch roll-over
 coherence or DMA probes while aliases are present
 ```
 

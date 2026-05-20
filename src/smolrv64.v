@@ -630,11 +630,7 @@ module smolrv64(input wire        clock,
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
 `define S_BRANCH_RESOLVE       56  // resolve branch/JALR from registered RF operands
 `define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
-`define S_HANDLE_CSR_FLUSH_WAIT 58 // wait for SATP-triggered VHPR flush before CSR retirement
-`define S_STORE_PTE_CHECK      59  // check whether a cacheable store touched a known page-table page
-`define S_PTW_FILTER_LOOKUP    60  // stage PTW page-filter RAM lookup for timing
-`define S_PTW_FILTER_UPDATE    61  // update PTW page filter and launch PTE fetch
-`define S_LAST_STATE           61  // update state register width accordingly
+`define S_LAST_STATE           57  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -784,9 +780,6 @@ module smolrv64(input wire        clock,
 `define CACHE_VALID_BIT (`CACHE_EPOCH_LSB + VHPR_EPOCH_BITS)
 `define CACHE_DIRTY_BIT (`CACHE_VALID_BIT + 1)
 `define CACHE_META_BITS (`CACHE_DIRTY_BIT + 1)
-`define PTW_PAGE_FILTER_BITS 256
-`define PTW_PAGE_FILTER_INDEX_BITS 8
-`define PTW_PAGE_FILTER_TAG_BITS 40
 `ifndef RESET_PC
 `define RESET_PC        `MEM_BASEADDR  // override with -DRESET_PC=64'hXXXXXXXX
 `endif
@@ -1035,7 +1028,6 @@ module smolrv64(input wire        clock,
    reg  [63:0]  dram_latched_next;   // holds ADDR+8 chunk for misaligned access
    reg          dram_latched_next_valid;
    reg          fetch_from_dram;     // set when current fetch came from DRAM
-   reg          ptw_from_dram;       // set when current PTW PTE came from DRAM
    reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
    reg  [63:0]  dram2_va;            // virtual address for split-store second beat
    reg  [TLB_ASID_BITS-1:0] dram2_asid;
@@ -1044,20 +1036,17 @@ module smolrv64(input wire        clock,
    reg  [63:0]  dram2_data_part;     // overflow bytes for split store
    reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
    reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
-   reg          pte_store_flush_pending = 0;
-   reg [`PTW_PAGE_FILTER_INDEX_BITS-1:0] pte_store_filter_index = 0;
-   reg [`PTW_PAGE_FILTER_INDEX_BITS-1:0] pte_store_filter_next_index = 0;
-   reg [`PTW_PAGE_FILTER_TAG_BITS-1:0] pte_store_filter_tag = 0;
-   reg [`PTW_PAGE_FILTER_TAG_BITS-1:0] pte_store_filter_next_tag = 0;
-   reg          pte_store_filter_check_next = 0;
-   reg [`PTW_PAGE_FILTER_INDEX_BITS-1:0] ptw_filter_index = 0;
-   reg [`PTW_PAGE_FILTER_TAG_BITS-1:0] ptw_filter_tag = 0;
-   reg [`PTW_PAGE_FILTER_TAG_BITS-1:0] ptw_filter_stored_tag = 0;
-   reg          ptw_filter_valid_latched = 0;
-   reg          ptw_filter_wildcard_latched = 0;
-   reg [`PTW_PAGE_FILTER_BITS-1:0] ptw_page_filter_valid = 0;
-   reg [`PTW_PAGE_FILTER_BITS-1:0] ptw_page_filter_wildcard = 0;
-   reg [`PTW_PAGE_FILTER_TAG_BITS-1:0] ptw_page_filter_tag [0:`PTW_PAGE_FILTER_BITS-1];
+   reg          ptw_direct_read = 0; // physical PTW read bypasses VHPR L1
+   reg  [27:0]  ptw_direct_addr = 0;
+   reg          ptw_direct_probe_pending = 0;
+   reg          ptw_direct_wait_probe = 0;
+   reg          ptw_direct_pending = 0;
+   reg          ptw_direct_wait_bram = 0;
+   reg          ptw_direct_wait_axi = 0;
+   reg [`MEM_SIZE_LG2-5:0] ptw_direct_bram_word_idx = 0;
+   reg          ptw_direct_bram_word_bank = 0;
+   reg          ptw_direct_readdatavalid_r = 0;
+   reg  [63:0]  ptw_direct_readdata_r = 0;
 
    // Small raw instruction fetch window.  This is intentionally not
    // speculative: it only supplies the already-resolved npc in S_FETCH1.
@@ -1184,21 +1173,10 @@ module smolrv64(input wire        clock,
    reg        cache_req_same_line = 0;
    reg        cache_req_write = 0;
    reg        cache_req_cbo = 0;
-   localparam [2:0] CACHE_SRC_NONE = 3'd0;
-   localparam [2:0] CACHE_SRC_FETCH = 3'd1;
-   localparam [2:0] CACHE_SRC_FETCH_HALF = 3'd2;
-   localparam [2:0] CACHE_SRC_FRONTEND_SPEC = 3'd3;
-   localparam [2:0] CACHE_SRC_PTW = 3'd4;
-   localparam [2:0] CACHE_SRC_LOAD = 3'd5;
-   localparam [2:0] CACHE_SRC_STORE = 3'd6;
-   localparam [2:0] CACHE_SRC_CBO = 3'd7;
-   reg [2:0]  dram_source = CACHE_SRC_NONE;
-   reg [2:0]  cache_req_source = CACHE_SRC_NONE;
-   reg [5:0]  cache_req_core_state = `S_FETCH1;
+   reg [30:6] cache_req_line_addr = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_vtag = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_next_vtag = 0;
    reg [`CACHE_PHYS_TAG_BITS-1:0] cache_req_ptag = 0;
-   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_req_next_ptag = 0;
    reg [`CACHE_PHYS_TAG_BITS-1:0] cache_victim_ptag = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_victim_idx = 0;
    reg                         cache_victim_way = 0;
@@ -1214,9 +1192,6 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_next_hit = 0;
    reg        cache_lookup_next_hit_way = 0;
    reg        cache_lookup_next_valid = 0;
-   reg        cache_lookup_next_ptag_ok = 0;
-   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_lookup_ptag = 0;
-   reg [`CACHE_PHYS_TAG_BITS-1:0] cache_lookup_next_ptag = 0;
    reg        cache_lookup_dirty = 0;
    reg        cache_target_dirty = 0;
    reg        cache_target_valid = 0;
@@ -1237,7 +1212,6 @@ module smolrv64(input wire        clock,
    reg        cache_flush_req = 0;
    reg        cache_flush_ack = 0;
    wire       cache_flush_all = cache_flush_req != cache_flush_ack;
-   reg        vhpr_rollover_flush_active = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_flush_idx = 0;
    reg        cache_flush_way = 0;
    reg        cache_wb_after_flush = 0;
@@ -1281,6 +1255,9 @@ module smolrv64(input wire        clock,
               ((cache_fill_base ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
    wire       cache_wb_to_bram =
               ((cache_wb_base ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
+   wire [63:0] ptw_direct_addr64 = {33'd0, ptw_direct_addr, 3'b000};
+   wire        ptw_direct_from_bram =
+              ((ptw_direct_addr64 ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
 
    reg        ar_busy = 0;
    reg        r_busy  = 0;
@@ -1297,6 +1274,9 @@ module smolrv64(input wire        clock,
    wire       axi_master_idle = !ar_busy && !r_busy && !aw_busy && !w_busy && !b_busy;
    assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
                                 !dram_read && !dram_write && !axi_read && !axi_write &&
+                                !ptw_direct_read && !ptw_direct_probe_pending &&
+                                !ptw_direct_wait_probe && !ptw_direct_pending &&
+                                !ptw_direct_wait_bram && !ptw_direct_wait_axi &&
                                 axi_master_idle;
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
@@ -1446,10 +1426,6 @@ module smolrv64(input wire        clock,
            `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
            `S_TLB_INSERT:            state_name = "TLB_INSERT";
            `S_BRANCH_RESOLVE:        state_name = "BRANCH_RESOLVE";
-           `S_HANDLE_CSR_FLUSH_WAIT: state_name = "CSR_FLUSH_WAIT";
-           `S_STORE_PTE_CHECK:       state_name = "STORE_PTE_CHECK";
-           `S_PTW_FILTER_LOOKUP:     state_name = "PTW_FILTER_LOOKUP";
-           `S_PTW_FILTER_UPDATE:     state_name = "PTW_FILTER_UPDATE";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -1603,8 +1579,8 @@ module smolrv64(input wire        clock,
         cache_cbo_line_addr[30:12];
    wire [`CACHE_INDEX_BITS-1:0] cache_probe_line_index =
         {cache_probe_color, cache_addr[11:6]};
-   wire [`CACHE_INDEX_BITS-1:0] cache_cbo_probe_line_index =
-        {cache_probe_color, cache_cbo_line_addr[11:6]};
+   wire [`CACHE_INDEX_BITS-1:0] cache_req_probe_line_index =
+        {cache_probe_color, cache_req_line_addr[11:6]};
 
    function [2:0] cache_asid_color_mix;
       input [TLB_ASID_BITS-1:0] asid;
@@ -1642,21 +1618,6 @@ module smolrv64(input wire        clock,
       input [63:0] pa;
       begin
          cache_ptag = pa[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
-      end
-   endfunction
-
-   function [`PTW_PAGE_FILTER_INDEX_BITS-1:0] ptw_page_filter_index;
-      input [63:0] pa;
-      begin
-         ptw_page_filter_index = pa[19:12] ^ pa[27:20] ^ pa[35:28] ^
-                                 pa[43:36] ^ pa[51:44];
-      end
-   endfunction
-
-   function [`PTW_PAGE_FILTER_TAG_BITS-1:0] ptw_page_filter_page_tag;
-      input [63:0] pa;
-      begin
-         ptw_page_filter_page_tag = pa[51:12];
       end
    endfunction
 
@@ -1981,100 +1942,12 @@ module smolrv64(input wire        clock,
    // 16M-cycle threshold, but critical for timing closure.
    reg        bus_timeout_expired = 0;
 
-   reg [63:0] csr_vhpr_faults = 0;
-   reg [63:0] csr_vhpr_first_pc = 0;
-   reg [63:0] csr_vhpr_first_va = 0;
-   reg [63:0] csr_vhpr_first_pa = 0;
-   reg [63:0] csr_vhpr_first_stored_pa = 0;
-   reg [63:0] csr_vhpr_first_info = 0;
-   reg [63:0] csr_vhpr_sfence_count = 0;
-   reg [63:0] csr_vhpr_flush_start_count = 0;
-   reg [63:0] csr_vhpr_flush_done_count = 0;
-   reg [63:0] csr_vhpr_first_sfence_count = 0;
-   reg [63:0] csr_vhpr_first_flush_start_count = 0;
-   reg [63:0] csr_vhpr_first_flush_done_count = 0;
-   reg [63:0] csr_vhpr_last_sfence_pc = 0;
-   reg [63:0] csr_vhpr_last_sfence_va = 0;
-   reg [63:0] csr_vhpr_last_sfence_info = 0;
-   reg [63:0] csr_vhpr_first_last_sfence_va = 0;
-   reg [63:0] csr_vhpr_first_last_sfence_info = 0;
-   reg [63:0] csr_vhpr_epoch_rollovers = 0;
-   reg        vhpr_clear_req = 0;
-   reg        vhpr_clear_ack = 0;
-   wire       vhpr_clear_pending = vhpr_clear_req != vhpr_clear_ack;
-
    reg [VHPR_EPOCH_BITS-1:0] vhpr_epoch = 0;
    reg [VHPR_EPOCH_BITS-1:0] vhpr_next_epoch = 0;
    reg                       vhpr_epoch_update_pending = 0;
    reg                       vhpr_epoch_bump_req = 0;
    reg                       vhpr_epoch_bump_ack = 0;
    wire                      vhpr_epoch_bump_pending = vhpr_epoch_bump_req != vhpr_epoch_bump_ack;
-   reg        vhpr_fault_event = 0;
-   reg [7:0]  vhpr_fault_kind = 0;
-   reg [63:0] vhpr_fault_pc = 0;
-   reg [63:0] vhpr_fault_va = 0;
-   reg [63:0] vhpr_fault_pa = 0;
-   reg [63:0] vhpr_fault_stored_pa = 0;
-   reg [63:0] vhpr_fault_info = 0;
-   reg        vhpr_sfence_event = 0;
-   reg [63:0] vhpr_sfence_pc = 0;
-   reg [63:0] vhpr_sfence_va = 0;
-   reg [63:0] vhpr_sfence_info = 0;
-   reg        vhpr_flush_start_event = 0;
-   reg        vhpr_flush_done_event = 0;
-   reg        vhpr_epoch_rollover_event = 0;
-
-   always @(posedge clock) begin
-      if (vhpr_clear_pending) begin
-         csr_vhpr_faults <= 0;
-         csr_vhpr_first_pc <= 0;
-         csr_vhpr_first_va <= 0;
-         csr_vhpr_first_pa <= 0;
-         csr_vhpr_first_stored_pa <= 0;
-         csr_vhpr_first_info <= 0;
-         csr_vhpr_sfence_count <= 0;
-         csr_vhpr_flush_start_count <= 0;
-         csr_vhpr_flush_done_count <= 0;
-         csr_vhpr_first_sfence_count <= 0;
-         csr_vhpr_first_flush_start_count <= 0;
-         csr_vhpr_first_flush_done_count <= 0;
-         csr_vhpr_last_sfence_pc <= 0;
-         csr_vhpr_last_sfence_va <= 0;
-         csr_vhpr_last_sfence_info <= 0;
-         csr_vhpr_first_last_sfence_va <= 0;
-         csr_vhpr_first_last_sfence_info <= 0;
-         csr_vhpr_epoch_rollovers <= 0;
-         vhpr_clear_ack <= vhpr_clear_req;
-      end else begin
-         if (vhpr_flush_start_event)
-            csr_vhpr_flush_start_count <= csr_vhpr_flush_start_count + 1;
-         if (vhpr_flush_done_event)
-            csr_vhpr_flush_done_count <= csr_vhpr_flush_done_count + 1;
-         if (vhpr_epoch_rollover_event)
-            csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
-         if (vhpr_sfence_event) begin
-            csr_vhpr_sfence_count <= csr_vhpr_sfence_count + 1;
-            csr_vhpr_last_sfence_pc <= vhpr_sfence_pc;
-            csr_vhpr_last_sfence_va <= vhpr_sfence_va;
-            csr_vhpr_last_sfence_info <= vhpr_sfence_info;
-         end
-         if (vhpr_fault_event) begin
-            csr_vhpr_faults <= csr_vhpr_faults + 1;
-            if (csr_vhpr_faults == 0) begin
-               csr_vhpr_first_pc <= vhpr_fault_pc;
-               csr_vhpr_first_va <= vhpr_fault_va;
-               csr_vhpr_first_pa <= vhpr_fault_pa;
-               csr_vhpr_first_stored_pa <= vhpr_fault_stored_pa;
-               csr_vhpr_first_info <= {vhpr_fault_kind, vhpr_fault_info[55:0]};
-               csr_vhpr_first_sfence_count <= csr_vhpr_sfence_count;
-               csr_vhpr_first_flush_start_count <= csr_vhpr_flush_start_count;
-               csr_vhpr_first_flush_done_count <= csr_vhpr_flush_done_count;
-               csr_vhpr_first_last_sfence_va <= csr_vhpr_last_sfence_va;
-               csr_vhpr_first_last_sfence_info <= csr_vhpr_last_sfence_info;
-            end
-         end
-      end
-   end
 
    task cache_flush_next_line;
       reg [`CACHE_INDEX_BITS-1:0] next_idx;
@@ -2090,8 +1963,6 @@ module smolrv64(input wire        clock,
         end else if (cache_flush_idx == {`CACHE_INDEX_BITS{1'b1}}) begin
             cache_flush_ack <= cache_flush_req;
             cache_cbo_done_r <= 1;
-            vhpr_rollover_flush_active <= 1'b0;
-            vhpr_flush_done_event <= 1'b1;
             if (vhpr_epoch_update_pending) begin
                vhpr_epoch <= vhpr_next_epoch;
                vhpr_epoch_update_pending <= 1'b0;
@@ -2136,40 +2007,6 @@ module smolrv64(input wire        clock,
       begin
          cache_flush_req <= ~cache_flush_ack;
          vhpr_epoch_bump_req <= ~vhpr_epoch_bump_ack;
-         if (reason != 8'd1) begin
-            ptw_page_filter_valid <= 0;
-            ptw_page_filter_wildcard <= 0;
-         end
-         vhpr_flush_start_event <= 1'b1;
-      end
-   endtask
-
-   task vhpr_record_sfence;
-      input [TLB_ASID_BITS-1:0] sfence_current_asid;
-      begin
-         vhpr_sfence_event <= 1'b1;
-         vhpr_sfence_pc <= ex_pc;
-         vhpr_sfence_va <= ex_insn[19:15] == 5'd0 ? 64'd0 : s1;
-         vhpr_sfence_info <= {42'd0, sfence_current_asid, s2[9:0],
-                              ex_insn[24:20] != 5'd0,
-                              ex_insn[19:15] != 5'd0};
-      end
-   endtask
-
-   task vhpr_record_fault;
-      input [7:0]  fault_kind;
-      input [63:0] fault_va;
-      input [63:0] fault_pa;
-      input [63:0] fault_stored_pa;
-      input [63:0] fault_info;
-      begin
-         vhpr_fault_event <= 1'b1;
-         vhpr_fault_kind <= fault_kind;
-         vhpr_fault_pc <= pc;
-         vhpr_fault_va <= fault_va;
-         vhpr_fault_pa <= fault_pa;
-         vhpr_fault_stored_pa <= fault_stored_pa;
-         vhpr_fault_info <= fault_info;
       end
    endtask
 
@@ -2656,8 +2493,8 @@ module smolrv64(input wire        clock,
    function [TLB_SATP_KEY_BITS-1:0] satp_tlb_key;
       input [63:0] satp;
       begin
-         // SATP writes are serializing and flush the TLB, so root PPN is
-         // global slow context.  Retained TLB entries are keyed by ASID only.
+         // TLB entries are keyed by ASID only.  Translation invalidation is
+         // driven by SFENCE.VMA, not by the SATP CSR write itself.
          satp_tlb_key = satp[53:44];
       end
    endfunction
@@ -2928,9 +2765,6 @@ module smolrv64(input wire        clock,
       begin
          tlb_4k_valid <= 0;
          tlb_2m_valid <= 0;
-         // Plain TLB invalidation alone does not prove that all derived VHPR
-         // state has been retired; full translation/VHPR flush requests clear
-         // the PTW page filter separately.
 `ifdef SIMULATE
          tlb_stat_entries_4k = 0;
          tlb_stat_entries_2m = 0;
@@ -2972,7 +2806,6 @@ module smolrv64(input wire        clock,
             dram_asid        <= {TLB_ASID_BITS{1'b0}};
             dram_perm        <= CACHE_PERM_PHYS;
             dram_ctx         <= {2'd0, fetch_prv, sum, mxr};
-            dram_source      <= CACHE_SRC_FETCH;
             dram_read        <= 1;
             state            <= `S_DRAM_FETCH_WAIT;
          end
@@ -3017,7 +2850,6 @@ module smolrv64(input wire        clock,
                   dram_asid <= {TLB_ASID_BITS{1'b0}};
                   dram_perm <= CACHE_PERM_PHYS;
                   dram_ctx  <= {2'd0, prv, sum, mxr};
-                  dram_source <= CACHE_SRC_FETCH_HALF;
                   dram_read <= 1;
                   state <= `S_DRAM_FETCH_HALF_WAIT;
                end
@@ -3255,7 +3087,6 @@ module smolrv64(input wire        clock,
             dram_asid                <= {TLB_ASID_BITS{1'b0}};
             dram_perm                <= CACHE_PERM_PHYS;
             dram_ctx                 <= {2'd0, fetch_req_prv, sum, mxr};
-            dram_source              <= CACHE_SRC_FRONTEND_SPEC;
             dram_read                <= 1;
          end
       end
@@ -3392,8 +3223,6 @@ module smolrv64(input wire        clock,
                dram_asid       <= current_cache_asid;
                dram_perm       <= req_perm;
                dram_ctx        <= tlb_req_ctx;
-               dram_source     <= req_return == `S_FETCH2 ?
-                                  CACHE_SRC_FETCH : CACHE_SRC_FETCH_HALF;
                dram_read       <= 1;
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
@@ -3676,6 +3505,7 @@ module smolrv64(input wire        clock,
       frontend_flush_this_cycle = 0;
       dram_read  <= 0;
       dram_write <= 0;
+      ptw_direct_read <= 0;
       cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
       hpm_event_wr_en <= 0;
@@ -3691,8 +3521,6 @@ module smolrv64(input wire        clock,
       hpm_ptw_leaf_2m_pulse <= 0;
       hpm_ptw_leaf_1g_pulse <= 0;
       hpm_ptw_leaf_napot_pulse <= 0;
-      vhpr_sfence_event <= 0;
-      vhpr_flush_start_event <= 0;
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -5125,7 +4953,6 @@ module smolrv64(input wire        clock,
                  flush_frontend_speculation;
                  fetch_epoch <= fetch_epoch + 1'b1;
                  flush_tlb;
-                 vhpr_record_sfence(current_cache_asid);
                  vhpr_request_full_flush(8'd2);
                  execute_res_valid <= 0;
                  state <= `S_CBO_WAIT;
@@ -5982,7 +5809,6 @@ module smolrv64(input wire        clock,
            translated <= 0;
            state <= `S_FETCH1;
            reservation <= ~0;
-           pte_store_flush_pending <= 0;
 
 `ifdef RISCV_TESTS
            // riscv-tests signal completion by storing gp to "tohost". In the
@@ -6095,17 +5921,11 @@ module smolrv64(input wire        clock,
                  reg  [15:0] wide_mask;
                  wide_data = {64'd0, store_value} << (mem_addr[2:0] * 8);
                  wide_mask = {8'd0, mem_wr_mask[7:0]} << mem_addr[2:0];
-                 pte_store_filter_index <= ptw_page_filter_index(mem_addr);
-                 pte_store_filter_next_index <= ptw_page_filter_index(mem_addr + 64'd8);
-                 pte_store_filter_tag <= ptw_page_filter_page_tag(mem_addr);
-                 pte_store_filter_next_tag <= ptw_page_filter_page_tag(mem_addr + 64'd8);
-                 pte_store_filter_check_next <= |wide_mask[15:8] && mem_addr[11:3] == 9'h1ff;
                  dram_addr       <= mem_addr[30:3];
                  dram_va         <= mem_va;
                  dram_asid       <= mem_asid;
                  dram_perm       <= mem_perm;
                  dram_ctx        <= mem_ctx;
-                 dram_source     <= CACHE_SRC_STORE;
                  dram_writedata  <= wide_data[63:0];
                  dram_wstrb      <= wide_mask[7:0];
                  mem_wr_mask     = 0;
@@ -6119,10 +5939,20 @@ module smolrv64(input wire        clock,
                     dram2_data_part   <= wide_data[127:64];
                     dram2_wstrb       <= wide_mask[15:8];
                     dram_store_split  <= 1;
-                    state             <= `S_STORE_PTE_CHECK;
+                    if (dram_write_ready) begin
+                       dram_write <= 1;
+                       state      <= `S_DRAM_STORE_RESP_ARM;
+                    end else begin
+                       state      <= `S_DRAM_STORE_WAIT;
+                    end
                  end else begin
                     dram_store_split  <= 0;
-                    state             <= `S_STORE_PTE_CHECK;
+                    if (dram_write_ready) begin
+                       dram_write <= 1;
+                       state      <= `S_DRAM_STORE_RESP_ARM;
+                    end else begin
+                       state      <= `S_DRAM_STORE_WAIT;
+                    end
                  end
               end
              end
@@ -6154,31 +5984,6 @@ module smolrv64(input wire        clock,
         `S_STORE_BRAM_WRITE: begin
            // BRAM stores are cacheable stores now; stale entries retire.
            state <= `S_FETCH1;
-        end
-
-        `S_STORE_PTE_CHECK: begin
-           begin : store_pte_filter_lookup
-              reg pte_store_hit;
-              reg pte_store_next_hit;
-              pte_store_hit =
-                 ptw_page_filter_wildcard[pte_store_filter_index] ||
-                 (ptw_page_filter_valid[pte_store_filter_index] &&
-                  ptw_page_filter_tag[pte_store_filter_index] == pte_store_filter_tag);
-              pte_store_next_hit =
-                 ptw_page_filter_wildcard[pte_store_filter_next_index] ||
-                 (ptw_page_filter_valid[pte_store_filter_next_index] &&
-                  ptw_page_filter_tag[pte_store_filter_next_index] == pte_store_filter_next_tag);
-              if (pte_store_filter_check_next)
-                 pte_store_hit = pte_store_hit | pte_store_next_hit;
-              pte_store_flush_pending <= pte_store_hit;
-           end
-
-           if (dram_write_ready) begin
-              dram_write <= 1;
-              state      <= `S_DRAM_STORE_RESP_ARM;
-           end else begin
-              state      <= `S_DRAM_STORE_WAIT;
-           end
         end
 
         `S_LOAD_ALIGN: begin
@@ -6216,7 +6021,6 @@ module smolrv64(input wire        clock,
                  dram_asid <= mem_asid;
                  dram_perm <= mem_perm;
                  dram_ctx  <= mem_ctx;
-                 dram_source <= CACHE_SRC_LOAD;
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
                 end
@@ -6404,11 +6208,9 @@ module smolrv64(input wire        clock,
 
         `S_HANDLE_CSR: begin : handle_csr_state
            reg csr_write_failure;
-           reg csr_needs_flush_wait;
            state <= `S_HANDLE_CSR_COMMIT;
            csr_access_failure = 0;
            csr_write_failure = 0;
-           csr_needs_flush_wait = 0;
            csr_read_val = 0;
            tval = ex_insn;
            write_back_register = ex_rd;
@@ -6515,25 +6317,25 @@ module smolrv64(input wire        clock,
                 `CSR_MIG_TO_STATE:csr_read_val = csr_mig_to_state;
                 `CSR_MIG_TO_CAUSE:csr_read_val = csr_mig_to_cause;
                 `CSR_MIG_TO_ADDR: csr_read_val = csr_mig_to_addr;
-                `CSR_VHPR_FAULTS: csr_read_val = csr_vhpr_faults;
-                `CSR_VHPR_FIRST_PC: csr_read_val = csr_vhpr_first_pc;
-                `CSR_VHPR_FIRST_VA: csr_read_val = csr_vhpr_first_va;
-                `CSR_VHPR_FIRST_PA: csr_read_val = csr_vhpr_first_pa;
-                `CSR_VHPR_FIRST_STORED_PA: csr_read_val = csr_vhpr_first_stored_pa;
-                `CSR_VHPR_FIRST_INFO: csr_read_val = csr_vhpr_first_info;
-                `CSR_VHPR_SFENCE_COUNT: csr_read_val = csr_vhpr_sfence_count;
-                `CSR_VHPR_FLUSH_START_COUNT: csr_read_val = csr_vhpr_flush_start_count;
-                `CSR_VHPR_FLUSH_DONE_COUNT: csr_read_val = csr_vhpr_flush_done_count;
-                `CSR_VHPR_FIRST_SFENCE_COUNT: csr_read_val = csr_vhpr_first_sfence_count;
-                `CSR_VHPR_FIRST_FLUSH_START_COUNT: csr_read_val = csr_vhpr_first_flush_start_count;
-                `CSR_VHPR_FIRST_FLUSH_DONE_COUNT: csr_read_val = csr_vhpr_first_flush_done_count;
-                `CSR_VHPR_LAST_SFENCE_PC: csr_read_val = csr_vhpr_last_sfence_pc;
-                `CSR_VHPR_LAST_SFENCE_VA: csr_read_val = csr_vhpr_last_sfence_va;
-                `CSR_VHPR_LAST_SFENCE_INFO: csr_read_val = csr_vhpr_last_sfence_info;
-                `CSR_VHPR_FIRST_LAST_SFENCE_VA: csr_read_val = csr_vhpr_first_last_sfence_va;
-                `CSR_VHPR_FIRST_LAST_SFENCE_INFO: csr_read_val = csr_vhpr_first_last_sfence_info;
+                `CSR_VHPR_FAULTS,
+                `CSR_VHPR_FIRST_PC,
+                `CSR_VHPR_FIRST_VA,
+                `CSR_VHPR_FIRST_PA,
+                `CSR_VHPR_FIRST_STORED_PA,
+                `CSR_VHPR_FIRST_INFO,
+                `CSR_VHPR_SFENCE_COUNT,
+                `CSR_VHPR_FLUSH_START_COUNT,
+                `CSR_VHPR_FLUSH_DONE_COUNT,
+                `CSR_VHPR_FIRST_SFENCE_COUNT,
+                `CSR_VHPR_FIRST_FLUSH_START_COUNT,
+                `CSR_VHPR_FIRST_FLUSH_DONE_COUNT,
+                `CSR_VHPR_LAST_SFENCE_PC,
+                `CSR_VHPR_LAST_SFENCE_VA,
+                `CSR_VHPR_LAST_SFENCE_INFO,
+                `CSR_VHPR_FIRST_LAST_SFENCE_VA,
+                `CSR_VHPR_FIRST_LAST_SFENCE_INFO,
+                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = 0;
                 `CSR_VHPR_EPOCH: csr_read_val = {{64-VHPR_EPOCH_BITS{1'b0}}, vhpr_epoch};
-                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = csr_vhpr_epoch_rollovers;
                 `CSR_BUILD_STAMP: csr_read_val = `SMOLRV64_BUILD_STAMP;
                 default: begin
 `ifdef SIMULATE
@@ -6692,15 +6494,7 @@ module smolrv64(input wire        clock,
                          csr_satp_write_val[63:60] == 4'd8) begin
                        // WARL: only Bare and Sv39 are supported; unsupported
                        // MODE values cause the entire write to have no effect.
-                       // SATP updates are serializing for this core: all
-                       // frontend speculation is invalid once the address-space
-                       // key changes, so later stages use the single CSR copy.
                        csr_satp = csr_satp_write_val;
-                       flush_frontend_speculation;
-                       fetch_epoch <= fetch_epoch + 1'b1;
-                       flush_tlb;
-                       vhpr_request_full_flush(8'd3);
-                       csr_needs_flush_wait = 1;
                      end
                    end
                 end
@@ -6790,9 +6584,7 @@ module smolrv64(input wire        clock,
                 `CSR_VHPR_LAST_SFENCE_INFO,
                 `CSR_VHPR_FIRST_LAST_SFENCE_VA,
                 `CSR_VHPR_FIRST_LAST_SFENCE_INFO,
-                `CSR_VHPR_EPOCH_ROLLOVERS: begin
-                   vhpr_clear_req <= ~vhpr_clear_ack;
-                end
+                `CSR_VHPR_EPOCH_ROLLOVERS: begin end
                 default: begin
                  csr_write_failure = 1;
 `ifdef SIMULATE
@@ -6808,8 +6600,6 @@ module smolrv64(input wire        clock,
            if (csr_access_failure || csr_write_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               state <= `S_EXCEPTION;
-           end else if (csr_needs_flush_wait) begin
-              state <= `S_HANDLE_CSR_FLUSH_WAIT;
            end
 
            // Any CSR write may change interrupt-enable/pending state
@@ -6818,11 +6608,6 @@ module smolrv64(input wire        clock,
            // FF values, so it is stale for one cycle after any CSR write.
            // Reuse just_xret as a generic one-cycle suppress flag.
            just_xret <= 1;
-        end
-
-        `S_HANDLE_CSR_FLUSH_WAIT: begin
-           if (cache_cbo_done)
-              state <= `S_HANDLE_CSR_COMMIT;
         end
 
         `S_HANDLE_CSR_COMMIT: begin
@@ -7307,44 +7092,10 @@ module smolrv64(input wire        clock,
         `S_PTW_LAUNCH: begin
            if (phys_region(ptw_pte_addr) == `REGION_BRAM ||
                phys_region(ptw_pte_addr) == `REGION_DRAM) begin
-              ptw_filter_index <= ptw_page_filter_index(ptw_pte_addr);
-              ptw_filter_tag   <= ptw_page_filter_page_tag(ptw_pte_addr);
-              state            <= `S_PTW_FILTER_LOOKUP;
-           end else begin
-              cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
-                      ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
-                                        `TRAP_STORE_PAGE_FAULT;
-              tval = ptw_va;
-              state <= `S_EXCEPTION;
-           end
-        end
-
-        `S_PTW_FILTER_LOOKUP: begin
-           ptw_filter_valid_latched <= ptw_page_filter_valid[ptw_filter_index];
-           ptw_filter_wildcard_latched <= ptw_page_filter_wildcard[ptw_filter_index];
-           ptw_filter_stored_tag <= ptw_page_filter_tag[ptw_filter_index];
-           state <= `S_PTW_FILTER_UPDATE;
-        end
-
-        `S_PTW_FILTER_UPDATE: begin
-           if (ptw_filter_valid_latched && ptw_filter_stored_tag != ptw_filter_tag)
-              ptw_page_filter_wildcard[ptw_filter_index] <= 1'b1;
-           else if (!ptw_filter_wildcard_latched) begin
-              ptw_page_filter_valid[ptw_filter_index] <= 1'b1;
-              ptw_page_filter_tag[ptw_filter_index] <= ptw_filter_tag;
-           end
-
-           if (phys_region(ptw_pte_addr) == `REGION_BRAM ||
-               phys_region(ptw_pte_addr) == `REGION_DRAM) begin
-              ptw_from_dram <= 1;
-              dram_addr     <= ptw_pte_addr[30:3];
-              dram_va       <= ptw_pte_addr;
-              dram_asid     <= {TLB_ASID_BITS{1'b0}};
-              dram_perm     <= CACHE_PERM_PHYS;
-              dram_ctx      <= {2'd1, 2'd1, 1'b0, 1'b0};
-              dram_source   <= CACHE_SRC_PTW;
-              dram_read     <= 1;
-              state         <= `S_DRAM_PTW_WAIT;
+              ptw_direct_addr  <= ptw_pte_addr[30:3];
+              ptw_direct_read  <= 1;
+              dram_addr        <= ptw_pte_addr[30:3];
+              state            <= `S_DRAM_PTW_WAIT;
            end else begin
               cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                       ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
@@ -7382,8 +7133,8 @@ module smolrv64(input wire        clock,
            state                   <= `S_FETCH2_HALF;
         end
 
-        `S_DRAM_PTW_WAIT: if (dram_readdatavalid) begin
-           dram_latched <= dram_readdata;
+        `S_DRAM_PTW_WAIT: if (ptw_direct_readdatavalid_r) begin
+           dram_latched <= ptw_direct_readdata_r;
            state        <= `S_PTW_READ;
         end
 
@@ -7417,7 +7168,6 @@ module smolrv64(input wire        clock,
                  dram_asid <= mem_asid;
                  dram_perm <= mem_perm;
                  dram_ctx  <= mem_ctx;
-                 dram_source <= CACHE_SRC_LOAD;
                  dram_read       <= 1;
                  state           <= `S_DRAM_LOAD2_WAIT;
               end
@@ -7477,7 +7227,6 @@ module smolrv64(input wire        clock,
            dram_asid       <= dram2_asid;
            dram_perm       <= dram2_perm;
            dram_ctx        <= dram2_ctx;
-           dram_source     <= CACHE_SRC_STORE;
            dram_writedata  <= dram2_data_part;
            dram_wstrb      <= dram2_wstrb;
            dram_write      <= 1;
@@ -7492,13 +7241,6 @@ module smolrv64(input wire        clock,
         `S_DRAM_STORE_RESP_WAIT: if (dram_write_done) begin
            if (dram_store_split) begin
               state <= `S_DRAM_STORE2;
-           end else if (pte_store_flush_pending) begin
-              pte_store_flush_pending <= 0;
-              flush_frontend_speculation;
-              fetch_epoch <= fetch_epoch + 1'b1;
-              flush_tlb;
-              vhpr_request_full_flush(8'd4);
-              state <= `S_CBO_WAIT;
            end else begin
               prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
@@ -7736,7 +7478,6 @@ module smolrv64(input wire        clock,
          dram_asid        <= 0;
          dram_perm        <= CACHE_PERM_PHYS;
          dram_ctx         <= 0;
-         dram_source      <= CACHE_SRC_NONE;
          mem_va           <= 0;
          mem_asid         <= 0;
          mem_perm         <= CACHE_PERM_PHYS;
@@ -7746,22 +7487,10 @@ module smolrv64(input wire        clock,
          dram2_perm       <= CACHE_PERM_PHYS;
          dram2_ctx        <= 0;
          dram_store_split <= 0;
-         pte_store_flush_pending <= 0;
-         pte_store_filter_index <= 0;
-         pte_store_filter_next_index <= 0;
-         pte_store_filter_tag <= 0;
-         pte_store_filter_next_tag <= 0;
-         pte_store_filter_check_next <= 0;
-         ptw_filter_index <= 0;
-         ptw_filter_tag <= 0;
-         ptw_filter_stored_tag <= 0;
-         ptw_filter_valid_latched <= 0;
-         ptw_filter_wildcard_latched <= 0;
-         ptw_page_filter_valid <= 0;
-         ptw_page_filter_wildcard <= 0;
+         ptw_direct_read <= 0;
+         ptw_direct_addr <= 0;
          cache_flush_req  <= 0;
          vhpr_epoch_bump_req <= 0;
-         ptw_from_dram    <= 0;
          mig_latency_ctr  <= 0;
          mig_prev_waiting <= 0;
          hpm_counter_wr_en <= 0;
@@ -7832,6 +7561,7 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
+      ptw_direct_readdatavalid_r <= 0;
       dram_write_done_r <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
@@ -7839,9 +7569,28 @@ module smolrv64(input wire        clock,
       axi_write <= 0;
       cache_way0_tag_wr_en <= 0;
       cache_way1_tag_wr_en <= 0;
-      vhpr_fault_event <= 0;
-      vhpr_flush_done_event <= 0;
-      vhpr_epoch_rollover_event <= 0;
+
+      if (ptw_direct_read)
+         ptw_direct_probe_pending <= 1;
+
+      if (ptw_direct_wait_probe && cache_cbo_done_r) begin
+         ptw_direct_wait_probe <= 0;
+         ptw_direct_pending <= 1;
+      end
+
+      if (ptw_direct_wait_bram) begin
+         ptw_direct_readdata_r <= ptw_direct_bram_word_bank
+                                  ? mem1[ptw_direct_bram_word_idx]
+                                  : mem0[ptw_direct_bram_word_idx];
+         ptw_direct_readdatavalid_r <= 1;
+         ptw_direct_wait_bram <= 0;
+      end
+
+      if (ptw_direct_wait_axi && axi_readdatavalid) begin
+         ptw_direct_readdata_r <= axi_readdata;
+         ptw_direct_readdatavalid_r <= 1;
+         ptw_direct_wait_axi <= 0;
+      end
 
       case (cache_state)
         CACHE_IDLE: begin
@@ -7852,7 +7601,6 @@ module smolrv64(input wire        clock,
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
                  vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
-                 vhpr_epoch_rollover_event <= next_epoch == {VHPR_EPOCH_BITS{1'b0}};
               end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
@@ -7866,10 +7614,8 @@ module smolrv64(input wire        clock,
               next_epoch = vhpr_epoch + {{VHPR_EPOCH_BITS-1{1'b0}}, 1'b1};
               vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
               if (next_epoch == {VHPR_EPOCH_BITS{1'b0}}) begin
-                 vhpr_rollover_flush_active <= 1'b1;
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
-                 vhpr_epoch_rollover_event <= 1'b1;
                  cache_flush_idx <= 0;
                  cache_flush_way <= 0;
                  cache_way0_rd_idx <= 0;
@@ -7880,24 +7626,59 @@ module smolrv64(input wire        clock,
               end else begin
                  vhpr_epoch <= next_epoch;
               end
-           end else if (cache_cbo_flush) begin
-              cache_addr              <= {33'd0, cache_cbo_line_addr, 6'd0};
-              cache_req_ptag          <= cache_cbo_ptag;
-              cache_req_cbo           <= 1;
-              cache_req_write         <= 0;
-              cache_req_source        <= CACHE_SRC_CBO;
-              cache_req_core_state    <= state;
-              cache_probe_color       <= 0;
-              cache_probe_found       <= 0;
-              cache_probe_found_way   <= 0;
-              cache_probe_found_idx   <= 0;
-              cache_probe_found_dirty <= 0;
+	   end else if (cache_cbo_flush) begin
+	      cache_addr              <= {33'd0, cache_cbo_line_addr, 6'd0};
+	      cache_req_ptag          <= cache_cbo_ptag;
+	      cache_req_cbo           <= 1;
+	      cache_req_write         <= 0;
+	      cache_req_line_addr     <= cache_cbo_line_addr;
+	      cache_probe_color       <= 0;
+	      cache_probe_found       <= 0;
+	      cache_probe_found_way   <= 0;
+	      cache_probe_found_idx   <= 0;
+	      cache_probe_found_dirty <= 0;
               cache_probe_active      <= 1;
               cache_way0_rd_idx       <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_way1_rd_idx       <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_way0_bank0_rd_idx <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_way1_bank0_rd_idx <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_state             <= CACHE_PROBE_READ;
+	   end else if (ptw_direct_probe_pending) begin
+	      cache_addr              <= {33'd0, ptw_direct_addr[27:3], 6'd0};
+	      cache_req_ptag          <= ptw_direct_addr[27:9];
+	      cache_req_cbo           <= 1;
+	      cache_req_write         <= 0;
+	      cache_req_line_addr     <= ptw_direct_addr[27:3];
+	      cache_probe_color       <= 0;
+	      cache_probe_found       <= 0;
+	      cache_probe_found_way   <= 0;
+	      cache_probe_found_idx   <= 0;
+	      cache_probe_found_dirty <= 0;
+              cache_probe_active      <= 1;
+              cache_way0_rd_idx       <= {3'd0, ptw_direct_addr[8:3]};
+              cache_way1_rd_idx       <= {3'd0, ptw_direct_addr[8:3]};
+              cache_way0_bank0_rd_idx <= {3'd0, ptw_direct_addr[8:3]};
+              cache_way1_bank0_rd_idx <= {3'd0, ptw_direct_addr[8:3]};
+              ptw_direct_probe_pending <= 0;
+              ptw_direct_wait_probe    <= 1;
+              cache_state             <= CACHE_PROBE_READ;
+           end else if (ptw_direct_pending && !ptw_direct_wait_bram &&
+                        !ptw_direct_wait_axi) begin
+              if (ptw_direct_from_bram) begin
+                 begin : ptw_direct_bram_req
+                    reg [63:0] bram_addr;
+                    bram_addr = ptw_direct_addr64 - cache_bram_base_addr;
+                    ptw_direct_bram_word_idx  <= bram_addr[`MEM_SIZE_LG2-1:4];
+                    ptw_direct_bram_word_bank <= bram_addr[3];
+                 end
+                 ptw_direct_wait_bram <= 1;
+                 ptw_direct_pending <= 0;
+              end else if (!ar_busy && !r_busy) begin
+                 axi_read_addr <= ptw_direct_addr;
+                 axi_read <= 1;
+                 ptw_direct_wait_axi <= 1;
+                 ptw_direct_pending <= 0;
+              end
            end else if (dram_read) begin
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
@@ -7906,12 +7687,9 @@ module smolrv64(input wire        clock,
               cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 0;
               cache_req_cbo       <= 0;
-              cache_req_source    <= dram_source;
-              cache_req_core_state <= state;
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
               cache_req_ptag      <= cache_dram_ptag;
-              cache_req_next_ptag <= cache_dram_next_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
               cache_req_bank      <= dram_addr[2:0];
               cache_req_next_bank <= dram_addr[2:0] + 3'd1;
               cache_req_same_line <= dram_addr[2:0] != 3'd7;
@@ -7934,12 +7712,9 @@ module smolrv64(input wire        clock,
               cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 1;
               cache_req_cbo       <= 0;
-              cache_req_source    <= dram_source;
-              cache_req_core_state <= state;
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
               cache_req_ptag      <= cache_dram_ptag;
-              cache_req_next_ptag <= cache_dram_next_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
               cache_req_bank      <= dram_addr[2:0];
               cache_req_next_bank <= dram_addr[2:0] + 3'd1;
               cache_req_same_line <= 1;
@@ -8002,16 +7777,6 @@ module smolrv64(input wire        clock,
                                     ? cache_selected_bank_data(way1_hit, cache_req_next_bank)
                                     : cache_selected_bank_data(way1_next_hit, 3'd0);
            cache_lookup_next_valid <= cache_req_same_line || way0_next_hit || way1_next_hit;
-           cache_lookup_ptag <= way1_hit ? cache_meta_ptag(cache_way1_tag_rd_data)
-                                          : cache_meta_ptag(cache_way0_tag_rd_data);
-           cache_lookup_next_ptag <= way1_next_hit ? cache_meta_ptag(cache_way1_tag_next_rd_data)
-                                                    : cache_meta_ptag(cache_way0_tag_next_rd_data);
-           cache_lookup_next_ptag_ok <= cache_req_same_line ||
-                                        !(way0_next_hit || way1_next_hit) ||
-                                        ((way1_next_hit
-                                          ? cache_meta_ptag(cache_way1_tag_next_rd_data)
-                                          : cache_meta_ptag(cache_way0_tag_next_rd_data)) ==
-                                         cache_req_next_ptag);
            target_way = !cache_meta_valid(cache_way0_tag_rd_data) ? 1'b0 :
                         !cache_meta_valid(cache_way1_tag_rd_data) ? 1'b1 :
                         cache_meta_epoch(cache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
@@ -8031,62 +7796,18 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_HIT_RESP: begin : cache_hit_resp
-           reg [63:0] next_pa;
-           reg        hit_ptag_mismatch;
-           reg        next_ptag_mismatch;
            reg        next_line_safe;
 
-           next_pa = cache_addr + 64'd8;
-           hit_ptag_mismatch = cache_lookup_hit &&
-                                cache_lookup_ptag != cache_req_ptag;
            next_line_safe = cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
-           next_ptag_mismatch = !cache_req_same_line &&
-                                 next_line_safe &&
-                                 cache_lookup_next_hit &&
-                                 !cache_lookup_next_ptag_ok;
 
-           if (hit_ptag_mismatch) begin
-              vhpr_record_fault(8'd1,
-                                cache_req_va,
-                                cache_addr,
-                                {33'd0, cache_lookup_ptag, cache_addr[11:0]},
-                                 {15'd0, cache_req_core_state,
-                                 frontend_miss_valid,
-                                 {{(16-VHPR_EPOCH_BITS){1'b0}}, vhpr_epoch},
-                                 vhpr_epoch_update_pending,
-                                 vhpr_epoch_bump_pending, cache_flush_all,
-                                 cache_req_source, cache_req_write,
-                                 cache_lookup_hit_way, cache_req_asid});
-           end else if (next_ptag_mismatch) begin
-              vhpr_record_fault(8'd2,
-                                cache_req_va + 64'd8,
-                                next_pa,
-                                {33'd0, cache_lookup_next_ptag, next_pa[11:0]},
-                                 {15'd0, cache_req_core_state,
-                                 frontend_miss_valid,
-                                 {{(16-VHPR_EPOCH_BITS){1'b0}}, vhpr_epoch},
-                                 vhpr_epoch_update_pending,
-                                 vhpr_epoch_bump_pending, cache_flush_all,
-                                 cache_req_source, cache_req_write,
-                                 cache_lookup_next_hit_way, cache_req_asid});
-           end
-
-           if (hit_ptag_mismatch) begin
-              cache_target_way <= cache_lookup_hit_way;
-              cache_target_idx <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-              cache_target_valid <= 1'b1;
-              cache_target_dirty <= cache_lookup_dirty;
-              cache_target_ptag <= cache_lookup_ptag;
-              cache_start_fill_request();
-           end else if (cache_lookup_hit) begin
+           if (cache_lookup_hit) begin
               if (cache_req_write) begin
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  dram_readdata_r <= cache_lookup_data;
                  dram_readdata_next_r <= cache_lookup_next_data;
                  dram_readdata_next_valid_r <= cache_lookup_next_valid &&
-                                                next_line_safe &&
-                                                cache_lookup_next_ptag_ok;
+                                                next_line_safe;
                  dram_readdatavalid_r <= 1;
                  cache_state <= CACHE_IDLE;
               end
@@ -8166,25 +7887,10 @@ module smolrv64(input wire        clock,
            way1_phys_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
                            cache_meta_ptag(cache_way1_tag_rd_data) == cache_req_ptag;
 
-           if ((way0_phys_hit && way1_phys_hit) ||
-               (cache_probe_found && (way0_phys_hit || way1_phys_hit))) begin
-              vhpr_record_fault(8'd3,
-                                cache_req_cbo ? {33'd0, cache_cbo_line_addr, 6'd0}
-                                              : cache_req_va,
-                                {33'd0, cache_req_ptag,
-                                 cache_req_cbo ? {cache_cbo_line_addr[11:6], 6'd0}
-                                               : cache_addr[11:0]},
-                                {33'd0, cache_req_ptag,
-                                 cache_req_cbo ? {cache_cbo_line_addr[11:6], 6'd0}
-                                               : cache_addr[11:0]},
-                                {46'd0, cache_req_cbo, cache_probe_found,
-                                 way1_phys_hit, way0_phys_hit, cache_probe_color});
-           end
-
            found = cache_probe_found || way0_phys_hit || way1_phys_hit;
            found_way = cache_probe_found ? cache_probe_found_way : way1_phys_hit;
-           found_idx = cache_probe_found ? cache_probe_found_idx :
-                       (cache_req_cbo ? cache_cbo_probe_line_index : cache_probe_line_index);
+	   found_idx = cache_probe_found ? cache_probe_found_idx :
+		       (cache_req_cbo ? cache_req_probe_line_index : cache_probe_line_index);
            found_dirty = cache_probe_found ? cache_probe_found_dirty :
                          (way1_phys_hit ? cache_meta_dirty(cache_way1_tag_rd_data)
                                         : cache_meta_dirty(cache_way0_tag_rd_data));
@@ -8192,14 +7898,14 @@ module smolrv64(input wire        clock,
            if (!cache_probe_found && (way0_phys_hit || way1_phys_hit)) begin
               cache_probe_found <= 1;
               cache_probe_found_way <= way1_phys_hit;
-              cache_probe_found_idx <= cache_req_cbo ? cache_cbo_probe_line_index : cache_probe_line_index;
+	      cache_probe_found_idx <= cache_req_cbo ? cache_req_probe_line_index : cache_probe_line_index;
               cache_probe_found_dirty <= found_dirty;
            end
 
            if (cache_probe_color != 3'd7) begin
-              cache_probe_color <= cache_probe_color + 1;
-              next_probe_idx = {cache_probe_color + 1'b1,
-                                cache_req_cbo ? cache_cbo_line_addr[11:6] : cache_addr[11:6]};
+	      cache_probe_color <= cache_probe_color + 1;
+	      next_probe_idx = {cache_probe_color + 1'b1,
+				cache_req_cbo ? cache_req_line_addr[11:6] : cache_addr[11:6]};
               cache_way0_rd_idx <= next_probe_idx;
               cache_way1_rd_idx <= next_probe_idx;
               cache_way0_bank0_rd_idx <= next_probe_idx;
@@ -8417,8 +8123,7 @@ module smolrv64(input wire        clock,
                                                                             : cache_fill_next_data)
                                              : cache_lookup_next_data;
                     dram_readdata_next_valid_r <= (cache_req_same_line ||
-                                                   (cache_lookup_next_hit &&
-                                                    cache_lookup_next_ptag_ok)) &&
+                                                   cache_lookup_next_hit) &&
                                                    (cache_req_same_line ||
                                                     cache_req_va[11:3] != 9'h1ff);
                     dram_readdatavalid_r <= 1;
@@ -8444,25 +8149,26 @@ module smolrv64(input wire        clock,
          axi_write <= 0;
          cache_way0_tag_wr_en <= 0;
          cache_way1_tag_wr_en <= 0;
-         cache_cbo_done_r <= 0;
-         cache_req_perm <= CACHE_PERM_PHYS;
-         cache_req_ctx <= 0;
-         cache_req_source <= CACHE_SRC_NONE;
-         cache_req_core_state <= `S_FETCH1;
-         cache_lookup_next_ptag_ok <= 0;
-         cache_flush_ack <= cache_flush_req;
+	 cache_cbo_done_r <= 0;
+	 cache_req_perm <= CACHE_PERM_PHYS;
+	 cache_req_ctx <= 0;
+	 cache_req_line_addr <= 0;
+	 cache_flush_ack <= cache_flush_req;
          cache_wb_after_cbo <= 0;
          cache_wb_then_fill <= 0;
          cache_wb_after_flush <= 0;
          cache_need_target_wb <= 0;
-         vhpr_rollover_flush_active <= 0;
+         ptw_direct_probe_pending <= 0;
+         ptw_direct_wait_probe <= 0;
+         ptw_direct_pending <= 0;
+         ptw_direct_wait_bram <= 0;
+         ptw_direct_wait_axi <= 0;
+         ptw_direct_readdatavalid_r <= 0;
+         ptw_direct_readdata_r <= 0;
          vhpr_epoch <= 0;
          vhpr_next_epoch <= 0;
          vhpr_epoch_update_pending <= 0;
          vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
-         vhpr_fault_event <= 0;
-         vhpr_flush_done_event <= 0;
-         vhpr_epoch_rollover_event <= 0;
       end
    end
 
