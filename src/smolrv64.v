@@ -527,25 +527,24 @@ module smolrv64(input wire        clock,
 `define CSR_MIG_TO_STATE 12'hfc7
 `define CSR_MIG_TO_CAUSE 12'hfc8
 `define CSR_MIG_TO_ADDR  12'hfc9
-`define CSR_VHPR_FAULTS  12'hfca
-`define CSR_VHPR_FIRST_PC 12'hfcb
-`define CSR_VHPR_FIRST_VA 12'hfcc
-`define CSR_VHPR_FIRST_PA 12'hfcd
-`define CSR_VHPR_FIRST_STORED_PA 12'hfce
-`define CSR_VHPR_FIRST_INFO 12'hfcf
-`define CSR_VHPR_SFENCE_COUNT 12'hfd0
-`define CSR_VHPR_FLUSH_START_COUNT 12'hfd1
-`define CSR_VHPR_FLUSH_DONE_COUNT 12'hfd2
-`define CSR_VHPR_FIRST_SFENCE_COUNT 12'hfd3
-`define CSR_VHPR_FIRST_FLUSH_START_COUNT 12'hfd4
-`define CSR_VHPR_FIRST_FLUSH_DONE_COUNT 12'hfd5
-`define CSR_VHPR_LAST_SFENCE_PC 12'hfd6
-`define CSR_VHPR_LAST_SFENCE_VA 12'hfd7
-`define CSR_VHPR_LAST_SFENCE_INFO 12'hfd8
-`define CSR_VHPR_FIRST_LAST_SFENCE_VA 12'hfd9
-`define CSR_VHPR_FIRST_LAST_SFENCE_INFO 12'hfda
+`define CSR_VHPR_READS 12'hfca
+`define CSR_VHPR_WRITES 12'hfcb
+`define CSR_VHPR_READ_HITS 12'hfcc
+`define CSR_VHPR_READ_MISSES 12'hfcd
+`define CSR_VHPR_WRITE_HITS 12'hfce
+`define CSR_VHPR_WRITE_MISSES 12'hfcf
+`define CSR_VHPR_FILLS 12'hfd0
+`define CSR_VHPR_VICTIM_EVICTS 12'hfd1
+`define CSR_VHPR_DIRTY_VICTIM_EVICTS 12'hfd2
+`define CSR_VHPR_ALIAS_EVICTS 12'hfd3
+`define CSR_VHPR_DIRTY_ALIAS_EVICTS 12'hfd4
+`define CSR_VHPR_FLUSH_EVICTS 12'hfd5
+`define CSR_VHPR_DIRTY_FLUSH_EVICTS 12'hfd6
+`define CSR_VHPR_CBO_PROBES 12'hfd7
+`define CSR_VHPR_PTW_PROBES 12'hfd8
+`define CSR_VHPR_EPOCH_BUMPS 12'hfd9
+`define CSR_VHPR_EPOCH_ROLLOVERS 12'hfda
 `define CSR_VHPR_EPOCH 12'hfdb
-`define CSR_VHPR_EPOCH_ROLLOVERS 12'hfdd
 `define CSR_BUILD_STAMP 12'hfde
 
 `define CSR_OP_COPY 0
@@ -1948,6 +1947,48 @@ module smolrv64(input wire        clock,
    reg                       vhpr_epoch_bump_req = 0;
    reg                       vhpr_epoch_bump_ack = 0;
    wire                      vhpr_epoch_bump_pending = vhpr_epoch_bump_req != vhpr_epoch_bump_ack;
+   reg [63:0] csr_vhpr_reads = 0;
+   reg [63:0] csr_vhpr_writes = 0;
+   reg [63:0] csr_vhpr_read_hits = 0;
+   reg [63:0] csr_vhpr_read_misses = 0;
+   reg [63:0] csr_vhpr_write_hits = 0;
+   reg [63:0] csr_vhpr_write_misses = 0;
+   reg [63:0] csr_vhpr_fills = 0;
+   reg [63:0] csr_vhpr_victim_evicts = 0;
+   reg [63:0] csr_vhpr_dirty_victim_evicts = 0;
+   reg [63:0] csr_vhpr_alias_evicts = 0;
+   reg [63:0] csr_vhpr_dirty_alias_evicts = 0;
+   reg [63:0] csr_vhpr_flush_evicts = 0;
+   reg [63:0] csr_vhpr_dirty_flush_evicts = 0;
+   reg [63:0] csr_vhpr_cbo_probes = 0;
+   reg [63:0] csr_vhpr_ptw_probes = 0;
+   reg [63:0] csr_vhpr_epoch_bumps = 0;
+   reg [63:0] csr_vhpr_epoch_rollovers = 0;
+   reg        vhpr_stats_clear_req = 0;
+   reg        vhpr_stats_clear_ack = 0;
+   wire       vhpr_stats_clear_pending = vhpr_stats_clear_req != vhpr_stats_clear_ack;
+
+   task vhpr_clear_stats;
+      begin
+         csr_vhpr_reads <= 0;
+         csr_vhpr_writes <= 0;
+         csr_vhpr_read_hits <= 0;
+         csr_vhpr_read_misses <= 0;
+         csr_vhpr_write_hits <= 0;
+         csr_vhpr_write_misses <= 0;
+         csr_vhpr_fills <= 0;
+         csr_vhpr_victim_evicts <= 0;
+         csr_vhpr_dirty_victim_evicts <= 0;
+         csr_vhpr_alias_evicts <= 0;
+         csr_vhpr_dirty_alias_evicts <= 0;
+         csr_vhpr_flush_evicts <= 0;
+         csr_vhpr_dirty_flush_evicts <= 0;
+         csr_vhpr_cbo_probes <= 0;
+         csr_vhpr_ptw_probes <= 0;
+         csr_vhpr_epoch_bumps <= 0;
+         csr_vhpr_epoch_rollovers <= 0;
+      end
+   endtask
 
    task cache_flush_next_line;
       reg [`CACHE_INDEX_BITS-1:0] next_idx;
@@ -6317,24 +6358,23 @@ module smolrv64(input wire        clock,
                 `CSR_MIG_TO_STATE:csr_read_val = csr_mig_to_state;
                 `CSR_MIG_TO_CAUSE:csr_read_val = csr_mig_to_cause;
                 `CSR_MIG_TO_ADDR: csr_read_val = csr_mig_to_addr;
-                `CSR_VHPR_FAULTS,
-                `CSR_VHPR_FIRST_PC,
-                `CSR_VHPR_FIRST_VA,
-                `CSR_VHPR_FIRST_PA,
-                `CSR_VHPR_FIRST_STORED_PA,
-                `CSR_VHPR_FIRST_INFO,
-                `CSR_VHPR_SFENCE_COUNT,
-                `CSR_VHPR_FLUSH_START_COUNT,
-                `CSR_VHPR_FLUSH_DONE_COUNT,
-                `CSR_VHPR_FIRST_SFENCE_COUNT,
-                `CSR_VHPR_FIRST_FLUSH_START_COUNT,
-                `CSR_VHPR_FIRST_FLUSH_DONE_COUNT,
-                `CSR_VHPR_LAST_SFENCE_PC,
-                `CSR_VHPR_LAST_SFENCE_VA,
-                `CSR_VHPR_LAST_SFENCE_INFO,
-                `CSR_VHPR_FIRST_LAST_SFENCE_VA,
-                `CSR_VHPR_FIRST_LAST_SFENCE_INFO,
-                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = 0;
+                `CSR_VHPR_READS: csr_read_val = csr_vhpr_reads;
+                `CSR_VHPR_WRITES: csr_read_val = csr_vhpr_writes;
+                `CSR_VHPR_READ_HITS: csr_read_val = csr_vhpr_read_hits;
+                `CSR_VHPR_READ_MISSES: csr_read_val = csr_vhpr_read_misses;
+                `CSR_VHPR_WRITE_HITS: csr_read_val = csr_vhpr_write_hits;
+                `CSR_VHPR_WRITE_MISSES: csr_read_val = csr_vhpr_write_misses;
+                `CSR_VHPR_FILLS: csr_read_val = csr_vhpr_fills;
+                `CSR_VHPR_VICTIM_EVICTS: csr_read_val = csr_vhpr_victim_evicts;
+                `CSR_VHPR_DIRTY_VICTIM_EVICTS: csr_read_val = csr_vhpr_dirty_victim_evicts;
+                `CSR_VHPR_ALIAS_EVICTS: csr_read_val = csr_vhpr_alias_evicts;
+                `CSR_VHPR_DIRTY_ALIAS_EVICTS: csr_read_val = csr_vhpr_dirty_alias_evicts;
+                `CSR_VHPR_FLUSH_EVICTS: csr_read_val = csr_vhpr_flush_evicts;
+                `CSR_VHPR_DIRTY_FLUSH_EVICTS: csr_read_val = csr_vhpr_dirty_flush_evicts;
+                `CSR_VHPR_CBO_PROBES: csr_read_val = csr_vhpr_cbo_probes;
+                `CSR_VHPR_PTW_PROBES: csr_read_val = csr_vhpr_ptw_probes;
+                `CSR_VHPR_EPOCH_BUMPS: csr_read_val = csr_vhpr_epoch_bumps;
+                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = csr_vhpr_epoch_rollovers;
                 `CSR_VHPR_EPOCH: csr_read_val = {{64-VHPR_EPOCH_BITS{1'b0}}, vhpr_epoch};
                 `CSR_BUILD_STAMP: csr_read_val = `SMOLRV64_BUILD_STAMP;
                 default: begin
@@ -6567,24 +6607,25 @@ module smolrv64(input wire        clock,
                    csr_mig_to_cause <= 0;
                    csr_mig_to_addr  <= 0;
                 end
-                `CSR_VHPR_FAULTS,
-                `CSR_VHPR_FIRST_PC,
-                `CSR_VHPR_FIRST_VA,
-                `CSR_VHPR_FIRST_PA,
-                `CSR_VHPR_FIRST_STORED_PA,
-                `CSR_VHPR_FIRST_INFO,
-                `CSR_VHPR_SFENCE_COUNT,
-                `CSR_VHPR_FLUSH_START_COUNT,
-                `CSR_VHPR_FLUSH_DONE_COUNT,
-                `CSR_VHPR_FIRST_SFENCE_COUNT,
-                `CSR_VHPR_FIRST_FLUSH_START_COUNT,
-                `CSR_VHPR_FIRST_FLUSH_DONE_COUNT,
-                `CSR_VHPR_LAST_SFENCE_PC,
-                `CSR_VHPR_LAST_SFENCE_VA,
-                `CSR_VHPR_LAST_SFENCE_INFO,
-                `CSR_VHPR_FIRST_LAST_SFENCE_VA,
-                `CSR_VHPR_FIRST_LAST_SFENCE_INFO,
-                `CSR_VHPR_EPOCH_ROLLOVERS: begin end
+                `CSR_VHPR_READS,
+                `CSR_VHPR_WRITES,
+                `CSR_VHPR_READ_HITS,
+                `CSR_VHPR_READ_MISSES,
+                `CSR_VHPR_WRITE_HITS,
+                `CSR_VHPR_WRITE_MISSES,
+                `CSR_VHPR_FILLS,
+                `CSR_VHPR_VICTIM_EVICTS,
+                `CSR_VHPR_DIRTY_VICTIM_EVICTS,
+                `CSR_VHPR_ALIAS_EVICTS,
+                `CSR_VHPR_DIRTY_ALIAS_EVICTS,
+                `CSR_VHPR_FLUSH_EVICTS,
+                `CSR_VHPR_DIRTY_FLUSH_EVICTS,
+                `CSR_VHPR_CBO_PROBES,
+                `CSR_VHPR_PTW_PROBES,
+                `CSR_VHPR_EPOCH_BUMPS,
+                `CSR_VHPR_EPOCH_ROLLOVERS: begin
+                   vhpr_stats_clear_req <= ~vhpr_stats_clear_ack;
+                end
                 default: begin
                  csr_write_failure = 1;
 `ifdef SIMULATE
@@ -7601,6 +7642,9 @@ module smolrv64(input wire        clock,
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
                  vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
+                 csr_vhpr_epoch_bumps <= csr_vhpr_epoch_bumps + 1;
+                 if (next_epoch == {VHPR_EPOCH_BITS{1'b0}})
+                    csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
               end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
@@ -7613,7 +7657,9 @@ module smolrv64(input wire        clock,
               reg [VHPR_EPOCH_BITS-1:0] next_epoch;
               next_epoch = vhpr_epoch + {{VHPR_EPOCH_BITS-1{1'b0}}, 1'b1};
               vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
+              csr_vhpr_epoch_bumps <= csr_vhpr_epoch_bumps + 1;
               if (next_epoch == {VHPR_EPOCH_BITS{1'b0}}) begin
+                 csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
                  cache_flush_idx <= 0;
@@ -7627,6 +7673,7 @@ module smolrv64(input wire        clock,
                  vhpr_epoch <= next_epoch;
               end
 	   end else if (cache_cbo_flush) begin
+              csr_vhpr_cbo_probes <= csr_vhpr_cbo_probes + 1;
 	      cache_addr              <= {33'd0, cache_cbo_line_addr, 6'd0};
 	      cache_req_ptag          <= cache_cbo_ptag;
 	      cache_req_cbo           <= 1;
@@ -7644,6 +7691,7 @@ module smolrv64(input wire        clock,
               cache_way1_bank0_rd_idx <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_state             <= CACHE_PROBE_READ;
 	   end else if (ptw_direct_probe_pending) begin
+              csr_vhpr_ptw_probes <= csr_vhpr_ptw_probes + 1;
 	      cache_addr              <= {33'd0, ptw_direct_addr[27:3], 6'd0};
 	      cache_req_ptag          <= ptw_direct_addr[27:9];
 	      cache_req_cbo           <= 1;
@@ -7680,6 +7728,7 @@ module smolrv64(input wire        clock,
                  ptw_direct_pending <= 0;
               end
            end else if (dram_read) begin
+              csr_vhpr_reads <= csr_vhpr_reads + 1;
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
               cache_req_asid      <= dram_asid;
@@ -7705,6 +7754,7 @@ module smolrv64(input wire        clock,
               cache_way1_next_rd_idx <= cache_way1_index(cache_dram_next_va, dram_asid);
               cache_state         <= CACHE_TAG_READ;
            end else if (dram_write) begin
+              csr_vhpr_writes <= csr_vhpr_writes + 1;
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
               cache_req_asid      <= dram_asid;
@@ -7802,8 +7852,10 @@ module smolrv64(input wire        clock,
 
            if (cache_lookup_hit) begin
               if (cache_req_write) begin
+                 csr_vhpr_write_hits <= csr_vhpr_write_hits + 1;
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
+                 csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
                  dram_readdata_r <= cache_lookup_data;
                  dram_readdata_next_r <= cache_lookup_next_data;
                  dram_readdata_next_valid_r <= cache_lookup_next_valid &&
@@ -7812,6 +7864,10 @@ module smolrv64(input wire        clock,
                  cache_state <= CACHE_IDLE;
               end
            end else begin
+              if (cache_req_write)
+                 csr_vhpr_write_misses <= csr_vhpr_write_misses + 1;
+              else
+                 csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
               cache_start_fill_request();
            end
         end
@@ -7841,6 +7897,8 @@ module smolrv64(input wire        clock,
 
            flush_meta = cache_flush_way ? cache_way1_tag_rd_data : cache_way0_tag_rd_data;
            if (cache_meta_valid(flush_meta) && cache_meta_dirty(flush_meta)) begin
+              csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
+              csr_vhpr_dirty_flush_evicts <= csr_vhpr_dirty_flush_evicts + 1;
               cache_victim_way <= cache_flush_way;
               cache_victim_idx <= cache_flush_idx;
               cache_victim_ptag <= cache_meta_ptag(flush_meta);
@@ -7856,6 +7914,7 @@ module smolrv64(input wire        clock,
               cache_state <= CACHE_WB_PREP;
            end else begin
               if (cache_meta_valid(flush_meta)) begin
+                 csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
                  cache_way0_tag_wr_en <= !cache_flush_way;
                  cache_way1_tag_wr_en <= cache_flush_way;
                  cache_tag_wr_idx <= cache_flush_idx;
@@ -7917,6 +7976,11 @@ module smolrv64(input wire        clock,
               cache_victim_idx <= found_idx;
               cache_victim_ptag <= cache_req_ptag;
               same_as_target = found && found_way == cache_target_way && found_idx == cache_target_idx;
+              if (found && !cache_req_cbo) begin
+                 csr_vhpr_alias_evicts <= csr_vhpr_alias_evicts + 1;
+                 if (found_dirty)
+                    csr_vhpr_dirty_alias_evicts <= csr_vhpr_dirty_alias_evicts + 1;
+              end
               cache_need_target_wb <= !cache_req_cbo && cache_target_dirty && !same_as_target;
               if (found && found_dirty) begin
                  cache_wb_base <= {33'd0, cache_req_ptag, found_idx[5:0], 6'd0};
@@ -7934,6 +7998,8 @@ module smolrv64(input wire        clock,
                  cache_cbo_done_r <= 1;
                  cache_state <= CACHE_IDLE;
               end else if (cache_target_dirty) begin
+                 csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
+                 csr_vhpr_dirty_victim_evicts <= csr_vhpr_dirty_victim_evicts + 1;
                  cache_victim_way <= cache_target_way;
                  cache_victim_idx <= cache_target_idx;
                  cache_victim_ptag <= cache_target_ptag;
@@ -7962,6 +8028,8 @@ module smolrv64(input wire        clock,
               cache_state <= CACHE_IDLE;
            end else if (cache_need_target_wb) begin
               cache_need_target_wb <= 0;
+              csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
+              csr_vhpr_dirty_victim_evicts <= csr_vhpr_dirty_victim_evicts + 1;
               cache_victim_way <= cache_target_way;
               cache_victim_idx <= cache_target_idx;
               cache_victim_ptag <= cache_target_ptag;
@@ -8105,6 +8173,9 @@ module smolrv64(input wire        clock,
               if (cache_fill_beat == cache_req_next_bank)
                  cache_fill_next_data <= cache_fill_data;
               if (cache_fill_beat == 3'd7) begin
+                 csr_vhpr_fills <= csr_vhpr_fills + 1;
+                 if (cache_target_valid && !cache_target_dirty)
+                    csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
                  cache_way0_tag_wr_en <= !cache_target_way;
                  cache_way1_tag_wr_en <= cache_target_way;
                  cache_tag_wr_idx  <= cache_target_idx;
@@ -8138,6 +8209,11 @@ module smolrv64(input wire        clock,
 
         default: cache_state <= CACHE_IDLE;
       endcase
+
+      if (vhpr_stats_clear_pending) begin
+         vhpr_clear_stats();
+         vhpr_stats_clear_ack <= vhpr_stats_clear_req;
+      end
 
       if (core_reset_now) begin
          cache_state <= CACHE_IDLE;

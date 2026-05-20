@@ -920,6 +920,13 @@ int main(void)
 
         } else if (*p == 'P' || *p == 'p') {
             uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
+            uint64_t vhpr_reads, vhpr_writes, vhpr_read_hits, vhpr_read_misses;
+            uint64_t vhpr_write_hits, vhpr_write_misses, vhpr_fills;
+            uint64_t vhpr_victim_evicts, vhpr_dirty_victim_evicts;
+            uint64_t vhpr_alias_evicts, vhpr_dirty_alias_evicts;
+            uint64_t vhpr_flush_evicts, vhpr_dirty_flush_evicts;
+            uint64_t vhpr_cbo_probes, vhpr_ptw_probes;
+            uint64_t vhpr_epoch_bumps, vhpr_epoch_rollovers;
             uint64_t vhpr_epoch;
             uint64_t build_stamp;
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
@@ -933,6 +940,23 @@ int main(void)
             asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
             asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
             asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
+            asm volatile ("csrr %0, 0xfca" : "=r"(vhpr_reads));
+            asm volatile ("csrr %0, 0xfcb" : "=r"(vhpr_writes));
+            asm volatile ("csrr %0, 0xfcc" : "=r"(vhpr_read_hits));
+            asm volatile ("csrr %0, 0xfcd" : "=r"(vhpr_read_misses));
+            asm volatile ("csrr %0, 0xfce" : "=r"(vhpr_write_hits));
+            asm volatile ("csrr %0, 0xfcf" : "=r"(vhpr_write_misses));
+            asm volatile ("csrr %0, 0xfd0" : "=r"(vhpr_fills));
+            asm volatile ("csrr %0, 0xfd1" : "=r"(vhpr_victim_evicts));
+            asm volatile ("csrr %0, 0xfd2" : "=r"(vhpr_dirty_victim_evicts));
+            asm volatile ("csrr %0, 0xfd3" : "=r"(vhpr_alias_evicts));
+            asm volatile ("csrr %0, 0xfd4" : "=r"(vhpr_dirty_alias_evicts));
+            asm volatile ("csrr %0, 0xfd5" : "=r"(vhpr_flush_evicts));
+            asm volatile ("csrr %0, 0xfd6" : "=r"(vhpr_dirty_flush_evicts));
+            asm volatile ("csrr %0, 0xfd7" : "=r"(vhpr_cbo_probes));
+            asm volatile ("csrr %0, 0xfd8" : "=r"(vhpr_ptw_probes));
+            asm volatile ("csrr %0, 0xfd9" : "=r"(vhpr_epoch_bumps));
+            asm volatile ("csrr %0, 0xfda" : "=r"(vhpr_epoch_rollovers));
             asm volatile ("csrr %0, 0xfdb" : "=r"(vhpr_epoch));
             asm volatile ("csrr %0, 0xfde" : "=r"(build_stamp));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
@@ -943,6 +967,7 @@ int main(void)
             asm volatile ("csrr %0, sepc"   : "=r"(sepc));
             if (p[1] == 'c' || p[1] == 'C') {
                 asm volatile ("csrw 0xfc3, zero");
+                asm volatile ("csrw 0xfca, zero");
                 puts_("cleared\n");
             } else {
                 puts_("build stamp="); puthex64(build_stamp);
@@ -973,7 +998,28 @@ int main(void)
                     puts_(" addr=");  puthex64(to_ad);
                     putc_('\n');
                 }
-                puts_("vhpr epoch="); puthex64(vhpr_epoch);
+                puts_("vhpr reads="); puthex64(vhpr_reads);
+                puts_(" writes="); puthex64(vhpr_writes);
+                puts_(" fills="); puthex64(vhpr_fills);
+                puts_(" epoch="); puthex64(vhpr_epoch);
+                putc_('\n');
+                puts_("vhpr rhit="); puthex64(vhpr_read_hits);
+                puts_(" rmiss="); puthex64(vhpr_read_misses);
+                puts_(" whit="); puthex64(vhpr_write_hits);
+                puts_(" wmiss="); puthex64(vhpr_write_misses);
+                putc_('\n');
+                puts_("vhpr victim_evict="); puthex64(vhpr_victim_evicts);
+                puts_(" dirty="); puthex64(vhpr_dirty_victim_evicts);
+                puts_(" alias_evict="); puthex64(vhpr_alias_evicts);
+                puts_(" dirty_alias="); puthex64(vhpr_dirty_alias_evicts);
+                putc_('\n');
+                puts_("vhpr flush_evict="); puthex64(vhpr_flush_evicts);
+                puts_(" dirty_flush="); puthex64(vhpr_dirty_flush_evicts);
+                puts_(" cbo_probe="); puthex64(vhpr_cbo_probes);
+                puts_(" ptw_probe="); puthex64(vhpr_ptw_probes);
+                putc_('\n');
+                puts_("vhpr epoch_bumps="); puthex64(vhpr_epoch_bumps);
+                puts_(" rollovers="); puthex64(vhpr_epoch_rollovers);
                 putc_('\n');
             }
 
