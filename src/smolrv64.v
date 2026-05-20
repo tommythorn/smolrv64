@@ -1071,6 +1071,12 @@ module smolrv64(input wire        clock,
    wire [FRONTEND_EPOCH_BITS-1:0] fetch_buf_active_epoch;
    wire [63:0]  fetch_buf_predicted_next_pc;
    wire [ 1:0]  fetch_buf_prediction_kind;
+   wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
+   wire [63:0] icache_way0_bank_rd_data [0:7];
+   wire [63:0] icache_way1_bank_rd_data [0:7];
 
    // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
    // instruction and captures the next PC/context; S_FETCH_REQ consumes this
@@ -1099,32 +1105,6 @@ module smolrv64(input wire        clock,
    localparam [1:0] FRONTEND_MISS_WAIT_CONSUME  = 2'd0,
                     FRONTEND_MISS_WAIT_EXCEPTION = 2'd2;
    reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
-
-   smolrv64_frontend #(
-      .EPOCH_BITS(FRONTEND_EPOCH_BITS)
-   ) frontend_inst (
-      .clock(clock),
-      .reset(core_reset_now),
-      .flush(frontend_buf_flush),
-      .fill(frontend_buf_fill),
-      .fill_base_va(frontend_buf_fill_base_va),
-      .fill_prv(frontend_buf_fill_prv),
-      .fill_data(frontend_buf_fill_data),
-      .req_valid(fetch_req_valid),
-      .req_pc(fetch_req_pc),
-      .req_prv(fetch_req_prv),
-      .req_epoch(fetch_req_epoch),
-      .hit(fetch_buf_hit),
-      .addr_hit(fetch_buf_addr_hit),
-      .full_insn_hit(fetch_buf_full_insn_hit),
-      .insn(fetch_buf_insn),
-      .offset(fetch_buf_offset),
-      .predicted_next_pc(fetch_buf_predicted_next_pc),
-      .prediction_kind(fetch_buf_prediction_kind),
-      .active_epoch(fetch_buf_active_epoch),
-      .fill_base_va_for_req(fetch_buf_fill_base_va),
-      .fill_page_ok(fetch_buf_fill_page_ok)
-   );
 
    // Register/decode request boundary. The frontend fills this one-entry
    // queue; S_RF consumes it and launches the BRAM register-file read.
@@ -1790,14 +1770,8 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] dcache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] dcache_way0_tag_next_rd_data;
    wire [`CACHE_META_BITS-1:0] dcache_way1_tag_next_rd_data;
-   wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
-   wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
-   wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
-   wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
    wire [63:0] dcache_way0_bank_rd_data [0:7];
    wire [63:0] dcache_way1_bank_rd_data [0:7];
-   wire [63:0] icache_way0_bank_rd_data [0:7];
-   wire [63:0] icache_way1_bank_rd_data [0:7];
 
    assign cache_way0_tag_rd_data = cache_req_instr ? icache_way0_tag_rd_data :
                                                      dcache_way0_tag_rd_data;
@@ -1841,6 +1815,70 @@ module smolrv64(input wire        clock,
          endcase
       end
    endfunction
+
+   smolrv64_frontend #(
+      .EPOCH_BITS(FRONTEND_EPOCH_BITS),
+      .TLB_ASID_BITS(TLB_ASID_BITS),
+      .CACHE_PERM_BITS(CACHE_PERM_BITS),
+      .VHPR_EPOCH_BITS(VHPR_EPOCH_BITS)
+   ) frontend_inst (
+      .clock(clock),
+      .reset(core_reset_now),
+      .flush(frontend_buf_flush),
+      .fill(frontend_buf_fill),
+      .fill_base_va(frontend_buf_fill_base_va),
+      .fill_prv(frontend_buf_fill_prv),
+      .fill_data(frontend_buf_fill_data),
+      .req_valid(fetch_req_valid),
+      .req_pc(fetch_req_pc),
+      .req_prv(fetch_req_prv),
+      .req_epoch(fetch_req_epoch),
+      .hit(fetch_buf_hit),
+      .addr_hit(fetch_buf_addr_hit),
+      .full_insn_hit(fetch_buf_full_insn_hit),
+      .insn(fetch_buf_insn),
+      .offset(fetch_buf_offset),
+      .predicted_next_pc(fetch_buf_predicted_next_pc),
+      .prediction_kind(fetch_buf_prediction_kind),
+      .active_epoch(fetch_buf_active_epoch),
+      .fill_base_va_for_req(fetch_buf_fill_base_va),
+      .fill_page_ok(fetch_buf_fill_page_ok),
+
+      .icache_way0_rd_idx(cache_way0_rd_idx),
+      .icache_way1_rd_idx(cache_way1_rd_idx),
+      .icache_way0_bank0_rd_idx(cache_way0_bank0_rd_idx),
+      .icache_way1_bank0_rd_idx(cache_way1_bank0_rd_idx),
+      .icache_way0_next_rd_idx(cache_way0_next_rd_idx),
+      .icache_way1_next_rd_idx(cache_way1_next_rd_idx),
+      .icache_way0_tag_wr_en(cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all)),
+      .icache_way1_tag_wr_en(cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all)),
+      .icache_tag_wr_idx(cache_tag_wr_idx),
+      .icache_tag_wr_data(cache_tag_wr_data),
+      .icache_bank_wr_en(cache_req_instr ? cache_bank_wr_en : 8'd0),
+      .icache_bank_wr_idx(cache_bank_wr_idx),
+      .icache_bank_wr_way(cache_bank_wr_way),
+      .icache_bank_wr_data(cache_bank_wr_data),
+      .icache_way0_tag_rd_data(icache_way0_tag_rd_data),
+      .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
+      .icache_way0_tag_next_rd_data(icache_way0_tag_next_rd_data),
+      .icache_way1_tag_next_rd_data(icache_way1_tag_next_rd_data),
+      .icache_way0_bank0_rd_data(icache_way0_bank_rd_data[0]),
+      .icache_way0_bank1_rd_data(icache_way0_bank_rd_data[1]),
+      .icache_way0_bank2_rd_data(icache_way0_bank_rd_data[2]),
+      .icache_way0_bank3_rd_data(icache_way0_bank_rd_data[3]),
+      .icache_way0_bank4_rd_data(icache_way0_bank_rd_data[4]),
+      .icache_way0_bank5_rd_data(icache_way0_bank_rd_data[5]),
+      .icache_way0_bank6_rd_data(icache_way0_bank_rd_data[6]),
+      .icache_way0_bank7_rd_data(icache_way0_bank_rd_data[7]),
+      .icache_way1_bank0_rd_data(icache_way1_bank_rd_data[0]),
+      .icache_way1_bank1_rd_data(icache_way1_bank_rd_data[1]),
+      .icache_way1_bank2_rd_data(icache_way1_bank_rd_data[2]),
+      .icache_way1_bank3_rd_data(icache_way1_bank_rd_data[3]),
+      .icache_way1_bank4_rd_data(icache_way1_bank_rd_data[4]),
+      .icache_way1_bank5_rd_data(icache_way1_bank_rd_data[5]),
+      .icache_way1_bank6_rd_data(icache_way1_bank_rd_data[6]),
+      .icache_way1_bank7_rd_data(icache_way1_bank_rd_data[7])
+   );
 
    function hpm_event_active;
       input [15:0] event_code;
@@ -1928,32 +1966,6 @@ module smolrv64(input wire        clock,
       .wr_data ( cache_tag_wr_data )
    );
 
-   smolrv64_sdpram #(
-      .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS),
-      .READ_LATENCY(2)
-   ) icache_way0_tag_ram (
-      .clock   ( clock ),
-      .rd_addr ( cache_way0_rd_idx ),
-      .rd_data ( icache_way0_tag_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
-   );
-
-   smolrv64_sdpram #(
-      .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS),
-      .READ_LATENCY(2)
-   ) icache_way1_tag_ram (
-      .clock   ( clock ),
-      .rd_addr ( cache_way1_rd_idx ),
-      .rd_data ( icache_way1_tag_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
-   );
-
    always @* begin
       cache_bank_wr_en = 8'd0;
       cache_bank_wr_idx = cache_target_idx;
@@ -2007,31 +2019,6 @@ module smolrv64(input wire        clock,
             .wr_data ( cache_bank_wr_data )
          );
 
-         smolrv64_sdpram #(
-            .ADDR_WIDTH(`CACHE_INDEX_BITS),
-            .DATA_WIDTH(64),
-            .READ_LATENCY(2)
-         ) icache_way0_bank_ram (
-            .clock   ( clock ),
-            .rd_addr ( cache_bank_gen == 0 ? cache_way0_bank0_rd_idx : cache_way0_rd_idx ),
-            .rd_data ( icache_way0_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && !cache_bank_wr_way && cache_req_instr ),
-            .wr_addr ( cache_bank_wr_idx ),
-            .wr_data ( cache_bank_wr_data )
-         );
-
-         smolrv64_sdpram #(
-            .ADDR_WIDTH(`CACHE_INDEX_BITS),
-            .DATA_WIDTH(64),
-            .READ_LATENCY(2)
-         ) icache_way1_bank_ram (
-            .clock   ( clock ),
-            .rd_addr ( cache_bank_gen == 0 ? cache_way1_bank0_rd_idx : cache_way1_rd_idx ),
-            .rd_data ( icache_way1_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && cache_bank_wr_way && cache_req_instr ),
-            .wr_addr ( cache_bank_wr_idx ),
-            .wr_data ( cache_bank_wr_data )
-         );
       end
    endgenerate
 
@@ -2057,32 +2044,6 @@ module smolrv64(input wire        clock,
       .rd_addr ( cache_way1_next_rd_idx ),
       .rd_data ( dcache_way1_tag_next_rd_data ),
       .wr_en   ( cache_way1_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
-   );
-
-   smolrv64_sdpram #(
-      .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS),
-      .READ_LATENCY(2)
-   ) icache_way0_tag_next_ram (
-      .clock   ( clock ),
-      .rd_addr ( cache_way0_next_rd_idx ),
-      .rd_data ( icache_way0_tag_next_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
-   );
-
-   smolrv64_sdpram #(
-      .ADDR_WIDTH(`CACHE_INDEX_BITS),
-      .DATA_WIDTH(`CACHE_META_BITS),
-      .READ_LATENCY(2)
-   ) icache_way1_tag_next_ram (
-      .clock   ( clock ),
-      .rd_addr ( cache_way1_next_rd_idx ),
-      .rd_data ( icache_way1_tag_next_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
       .wr_addr ( cache_tag_wr_idx ),
       .wr_data ( cache_tag_wr_data )
    );
@@ -2209,6 +2170,7 @@ module smolrv64(input wire        clock,
 
    reg [63:0] bus_timeout_tval = 0;
    reg [11:0] bus_timeout_cause = 0;
+   reg [63:0] mmio_timeout_tval = 0;
 
    // DDR4 transaction latency stats (cycles spent in S_DRAM_* wait states)
    reg [31:0] mig_latency_ctr = 0;
@@ -6188,6 +6150,7 @@ module smolrv64(input wire        clock,
                  state <= `S_MMIO_READ;
                  mmio_address = mem_addr;
                  mmio_read = 1;
+                 mmio_timeout_tval <= mem_va;
                 end
                 `REGION_BRAM,
                 `REGION_DRAM: begin
@@ -7465,11 +7428,11 @@ module smolrv64(input wire        clock,
             case (state)
               `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT, `S_FRONTEND_MISS_WAIT: begin
                  bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
-                 bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : pc;
+                 bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : dram_va;
               end
               `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
                  bus_timeout_cause <= `TRAP_STORE_ACCESS_FAULT;
-                 bus_timeout_tval  <= mem_addr;
+                 bus_timeout_tval  <= dram_va;
               end
               `S_DRAM_PTW_WAIT: begin
                  bus_timeout_cause <= ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
@@ -7479,7 +7442,7 @@ module smolrv64(input wire        clock,
               end
               default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
                  bus_timeout_cause <= `TRAP_LOAD_ACCESS_FAULT;
-                 bus_timeout_tval  <= mem_addr;
+                 bus_timeout_tval  <= state == `S_MMIO_ALIGN ? mmio_timeout_tval : dram_va;
               end
             endcase
             if (bus_timeout_expired) begin
@@ -7660,6 +7623,7 @@ module smolrv64(input wire        clock,
          mem_asid         <= 0;
          mem_perm         <= CACHE_PERM_PHYS;
          mem_ctx          <= 0;
+         mmio_timeout_tval <= 0;
          dram2_va         <= 0;
          dram2_asid       <= 0;
          dram2_perm       <= CACHE_PERM_PHYS;
@@ -8569,7 +8533,10 @@ endmodule
 
 
 module smolrv64_frontend #(
-   parameter EPOCH_BITS = 2
+   parameter EPOCH_BITS = 2,
+   parameter TLB_ASID_BITS = 10,
+   parameter CACHE_PERM_BITS = 5,
+   parameter VHPR_EPOCH_BITS = 2
 ) (
    input  wire                  clock,
    input  wire                  reset,
@@ -8593,7 +8560,42 @@ module smolrv64_frontend #(
    output wire [ 1:0]           prediction_kind,
    output wire [EPOCH_BITS-1:0] active_epoch,
    output wire [63:0]           fill_base_va_for_req,
-   output wire                  fill_page_ok
+   output wire                  fill_page_ok,
+
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_rd_idx,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_bank0_rd_idx,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_bank0_rd_idx,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_next_rd_idx,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_next_rd_idx,
+   input  wire                         icache_way0_tag_wr_en,
+   input  wire                         icache_way1_tag_wr_en,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_tag_wr_idx,
+   input  wire [`CACHE_META_BITS-1:0]  icache_tag_wr_data,
+   input  wire [7:0]                   icache_bank_wr_en,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_bank_wr_idx,
+   input  wire                         icache_bank_wr_way,
+   input  wire [63:0]                  icache_bank_wr_data,
+   output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_rd_data,
+   output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_rd_data,
+   output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_next_rd_data,
+   output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_next_rd_data,
+   output wire [63:0]                  icache_way0_bank0_rd_data,
+   output wire [63:0]                  icache_way0_bank1_rd_data,
+   output wire [63:0]                  icache_way0_bank2_rd_data,
+   output wire [63:0]                  icache_way0_bank3_rd_data,
+   output wire [63:0]                  icache_way0_bank4_rd_data,
+   output wire [63:0]                  icache_way0_bank5_rd_data,
+   output wire [63:0]                  icache_way0_bank6_rd_data,
+   output wire [63:0]                  icache_way0_bank7_rd_data,
+   output wire [63:0]                  icache_way1_bank0_rd_data,
+   output wire [63:0]                  icache_way1_bank1_rd_data,
+   output wire [63:0]                  icache_way1_bank2_rd_data,
+   output wire [63:0]                  icache_way1_bank3_rd_data,
+   output wire [63:0]                  icache_way1_bank4_rd_data,
+   output wire [63:0]                  icache_way1_bank5_rd_data,
+   output wire [63:0]                  icache_way1_bank6_rd_data,
+   output wire [63:0]                  icache_way1_bank7_rd_data
 );
    localparam [1:0] PRED_FALLTHROUGH = 2'd0;
 
@@ -8641,6 +8643,25 @@ module smolrv64_frontend #(
    assign active_epoch = req_epoch;
    assign fill_base_va_for_req = {req_pc[63:3], 3'b000};
    assign fill_page_ok = fill_base_va_for_req[11:0] <= 12'hff0;
+   wire [63:0] icache_way0_bank_rd_data [0:7];
+   wire [63:0] icache_way1_bank_rd_data [0:7];
+
+   assign icache_way0_bank0_rd_data = icache_way0_bank_rd_data[0];
+   assign icache_way0_bank1_rd_data = icache_way0_bank_rd_data[1];
+   assign icache_way0_bank2_rd_data = icache_way0_bank_rd_data[2];
+   assign icache_way0_bank3_rd_data = icache_way0_bank_rd_data[3];
+   assign icache_way0_bank4_rd_data = icache_way0_bank_rd_data[4];
+   assign icache_way0_bank5_rd_data = icache_way0_bank_rd_data[5];
+   assign icache_way0_bank6_rd_data = icache_way0_bank_rd_data[6];
+   assign icache_way0_bank7_rd_data = icache_way0_bank_rd_data[7];
+   assign icache_way1_bank0_rd_data = icache_way1_bank_rd_data[0];
+   assign icache_way1_bank1_rd_data = icache_way1_bank_rd_data[1];
+   assign icache_way1_bank2_rd_data = icache_way1_bank_rd_data[2];
+   assign icache_way1_bank3_rd_data = icache_way1_bank_rd_data[3];
+   assign icache_way1_bank4_rd_data = icache_way1_bank_rd_data[4];
+   assign icache_way1_bank5_rd_data = icache_way1_bank_rd_data[5];
+   assign icache_way1_bank6_rd_data = icache_way1_bank_rd_data[6];
+   assign icache_way1_bank7_rd_data = icache_way1_bank_rd_data[7];
 
    always @(posedge clock) begin
       if (reset || flush) begin
@@ -8653,6 +8674,95 @@ module smolrv64_frontend #(
          buf_data       <= fill_data;
       end
    end
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way0_tag_ram (
+      .clock   ( clock ),
+      .rd_addr ( icache_way0_rd_idx ),
+      .rd_data ( icache_way0_tag_rd_data ),
+      .wr_en   ( icache_way0_tag_wr_en ),
+      .wr_addr ( icache_tag_wr_idx ),
+      .wr_data ( icache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way1_tag_ram (
+      .clock   ( clock ),
+      .rd_addr ( icache_way1_rd_idx ),
+      .rd_data ( icache_way1_tag_rd_data ),
+      .wr_en   ( icache_way1_tag_wr_en ),
+      .wr_addr ( icache_tag_wr_idx ),
+      .wr_data ( icache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way0_tag_next_ram (
+      .clock   ( clock ),
+      .rd_addr ( icache_way0_next_rd_idx ),
+      .rd_data ( icache_way0_tag_next_rd_data ),
+      .wr_en   ( icache_way0_tag_wr_en ),
+      .wr_addr ( icache_tag_wr_idx ),
+      .wr_data ( icache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way1_tag_next_ram (
+      .clock   ( clock ),
+      .rd_addr ( icache_way1_next_rd_idx ),
+      .rd_data ( icache_way1_tag_next_rd_data ),
+      .wr_en   ( icache_way1_tag_wr_en ),
+      .wr_addr ( icache_tag_wr_idx ),
+      .wr_data ( icache_tag_wr_data )
+   );
+
+   genvar icache_bank_gen;
+   generate
+      for (icache_bank_gen = 0; icache_bank_gen < 8; icache_bank_gen = icache_bank_gen + 1) begin : frontend_icache_banks
+         wire [63:0] way0_rd_data;
+         wire [63:0] way1_rd_data;
+
+         smolrv64_sdpram #(
+            .ADDR_WIDTH(`CACHE_INDEX_BITS),
+            .DATA_WIDTH(64),
+            .READ_LATENCY(2)
+         ) icache_way0_bank_ram (
+            .clock   ( clock ),
+            .rd_addr ( icache_bank_gen == 0 ? icache_way0_bank0_rd_idx : icache_way0_rd_idx ),
+            .rd_data ( way0_rd_data ),
+            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && !icache_bank_wr_way ),
+            .wr_addr ( icache_bank_wr_idx ),
+            .wr_data ( icache_bank_wr_data )
+         );
+
+         smolrv64_sdpram #(
+            .ADDR_WIDTH(`CACHE_INDEX_BITS),
+            .DATA_WIDTH(64),
+            .READ_LATENCY(2)
+         ) icache_way1_bank_ram (
+            .clock   ( clock ),
+            .rd_addr ( icache_bank_gen == 0 ? icache_way1_bank0_rd_idx : icache_way1_rd_idx ),
+            .rd_data ( way1_rd_data ),
+            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && icache_bank_wr_way ),
+            .wr_addr ( icache_bank_wr_idx ),
+            .wr_data ( icache_bank_wr_data )
+         );
+
+         assign icache_way0_bank_rd_data[icache_bank_gen] = way0_rd_data;
+         assign icache_way1_bank_rd_data[icache_bank_gen] = way1_rd_data;
+      end
+   endgenerate
 endmodule
 
 
