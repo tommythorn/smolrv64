@@ -1171,6 +1171,7 @@ module smolrv64(input wire        clock,
    reg [ 2:0] cache_req_next_bank = 0;
    reg        cache_req_same_line = 0;
    reg        cache_req_write = 0;
+   reg        cache_req_instr = 0;
    reg        cache_req_cbo = 0;
    reg [30:6] cache_req_line_addr = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_vtag = 0;
@@ -1231,6 +1232,7 @@ module smolrv64(input wire        clock,
    reg [63:0] dram_readdata_next_r = 0;
    reg        dram_readdata_next_valid_r = 0;
    reg        dram_write_done_r = 0;
+   reg        dram_instr = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
 
@@ -1741,24 +1743,60 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] cache_way1_tag_next_rd_data;
    reg                         cache_way0_tag_wr_en = 0;
    reg                         cache_way1_tag_wr_en = 0;
+   reg                         cache_tag_wr_all = 0;
    reg  [`CACHE_INDEX_BITS-1:0] cache_tag_wr_idx = 0;
    reg  [`CACHE_META_BITS-1:0]  cache_tag_wr_data = 0;
-   wire [63:0] cache_way0_bank_rd_data [0:7];
-   wire [63:0] cache_way1_bank_rd_data [0:7];
+   wire [`CACHE_META_BITS-1:0] dcache_way0_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] dcache_way1_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] dcache_way0_tag_next_rd_data;
+   wire [`CACHE_META_BITS-1:0] dcache_way1_tag_next_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
+   wire [63:0] dcache_way0_bank_rd_data [0:7];
+   wire [63:0] dcache_way1_bank_rd_data [0:7];
+   wire [63:0] icache_way0_bank_rd_data [0:7];
+   wire [63:0] icache_way1_bank_rd_data [0:7];
+
+   assign cache_way0_tag_rd_data = cache_req_instr ? icache_way0_tag_rd_data :
+                                                     dcache_way0_tag_rd_data;
+   assign cache_way1_tag_rd_data = cache_req_instr ? icache_way1_tag_rd_data :
+                                                     dcache_way1_tag_rd_data;
+   assign cache_way0_tag_next_rd_data = cache_req_instr ? icache_way0_tag_next_rd_data :
+                                                          dcache_way0_tag_next_rd_data;
+   assign cache_way1_tag_next_rd_data = cache_req_instr ? icache_way1_tag_next_rd_data :
+                                                          dcache_way1_tag_next_rd_data;
 
    function [63:0] cache_selected_bank_data;
       input       way;
       input [2:0] bank;
       begin
          case (bank)
-           3'd0: cache_selected_bank_data = way ? cache_way1_bank_rd_data[0] : cache_way0_bank_rd_data[0];
-           3'd1: cache_selected_bank_data = way ? cache_way1_bank_rd_data[1] : cache_way0_bank_rd_data[1];
-           3'd2: cache_selected_bank_data = way ? cache_way1_bank_rd_data[2] : cache_way0_bank_rd_data[2];
-           3'd3: cache_selected_bank_data = way ? cache_way1_bank_rd_data[3] : cache_way0_bank_rd_data[3];
-           3'd4: cache_selected_bank_data = way ? cache_way1_bank_rd_data[4] : cache_way0_bank_rd_data[4];
-           3'd5: cache_selected_bank_data = way ? cache_way1_bank_rd_data[5] : cache_way0_bank_rd_data[5];
-           3'd6: cache_selected_bank_data = way ? cache_way1_bank_rd_data[6] : cache_way0_bank_rd_data[6];
-           3'd7: cache_selected_bank_data = way ? cache_way1_bank_rd_data[7] : cache_way0_bank_rd_data[7];
+           3'd0: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[0] : icache_way0_bank_rd_data[0]) :
+                                            (way ? dcache_way1_bank_rd_data[0] : dcache_way0_bank_rd_data[0]);
+           3'd1: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[1] : icache_way0_bank_rd_data[1]) :
+                                            (way ? dcache_way1_bank_rd_data[1] : dcache_way0_bank_rd_data[1]);
+           3'd2: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[2] : icache_way0_bank_rd_data[2]) :
+                                            (way ? dcache_way1_bank_rd_data[2] : dcache_way0_bank_rd_data[2]);
+           3'd3: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[3] : icache_way0_bank_rd_data[3]) :
+                                            (way ? dcache_way1_bank_rd_data[3] : dcache_way0_bank_rd_data[3]);
+           3'd4: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[4] : icache_way0_bank_rd_data[4]) :
+                                            (way ? dcache_way1_bank_rd_data[4] : dcache_way0_bank_rd_data[4]);
+           3'd5: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[5] : icache_way0_bank_rd_data[5]) :
+                                            (way ? dcache_way1_bank_rd_data[5] : dcache_way0_bank_rd_data[5]);
+           3'd6: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[6] : icache_way0_bank_rd_data[6]) :
+                                            (way ? dcache_way1_bank_rd_data[6] : dcache_way0_bank_rd_data[6]);
+           3'd7: cache_selected_bank_data = cache_req_instr ?
+                                            (way ? icache_way1_bank_rd_data[7] : icache_way0_bank_rd_data[7]) :
+                                            (way ? dcache_way1_bank_rd_data[7] : dcache_way0_bank_rd_data[7]);
            default: cache_selected_bank_data = 64'd0;
          endcase
       end
@@ -1831,8 +1869,8 @@ module smolrv64(input wire        clock,
    ) cache_way0_tag_ram (
       .clock   ( clock ),
       .rd_addr ( cache_way0_rd_idx ),
-      .rd_data ( cache_way0_tag_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en ),
+      .rd_data ( dcache_way0_tag_rd_data ),
+      .wr_en   ( cache_way0_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
       .wr_addr ( cache_tag_wr_idx ),
       .wr_data ( cache_tag_wr_data )
    );
@@ -1844,8 +1882,34 @@ module smolrv64(input wire        clock,
    ) cache_way1_tag_ram (
       .clock   ( clock ),
       .rd_addr ( cache_way1_rd_idx ),
-      .rd_data ( cache_way1_tag_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en ),
+      .rd_data ( dcache_way1_tag_rd_data ),
+      .wr_en   ( cache_way1_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
+      .wr_addr ( cache_tag_wr_idx ),
+      .wr_data ( cache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way0_tag_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_way0_rd_idx ),
+      .rd_data ( icache_way0_tag_rd_data ),
+      .wr_en   ( cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
+      .wr_addr ( cache_tag_wr_idx ),
+      .wr_data ( cache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way1_tag_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_way1_rd_idx ),
+      .rd_data ( icache_way1_tag_rd_data ),
+      .wr_en   ( cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
       .wr_addr ( cache_tag_wr_idx ),
       .wr_data ( cache_tag_wr_data )
    );
@@ -1881,11 +1945,11 @@ module smolrv64(input wire        clock,
             .ADDR_WIDTH(`CACHE_INDEX_BITS),
             .DATA_WIDTH(64),
             .READ_LATENCY(2)
-         ) way0_bank_ram (
+         ) dcache_way0_bank_ram (
             .clock   ( clock ),
             .rd_addr ( cache_bank_gen == 0 ? cache_way0_bank0_rd_idx : cache_way0_rd_idx ),
-            .rd_data ( cache_way0_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && !cache_bank_wr_way ),
+            .rd_data ( dcache_way0_bank_rd_data[cache_bank_gen] ),
+            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && !cache_bank_wr_way && !cache_req_instr ),
             .wr_addr ( cache_bank_wr_idx ),
             .wr_data ( cache_bank_wr_data )
          );
@@ -1894,11 +1958,37 @@ module smolrv64(input wire        clock,
             .ADDR_WIDTH(`CACHE_INDEX_BITS),
             .DATA_WIDTH(64),
             .READ_LATENCY(2)
-         ) way1_bank_ram (
+         ) dcache_way1_bank_ram (
             .clock   ( clock ),
             .rd_addr ( cache_bank_gen == 0 ? cache_way1_bank0_rd_idx : cache_way1_rd_idx ),
-            .rd_data ( cache_way1_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && cache_bank_wr_way ),
+            .rd_data ( dcache_way1_bank_rd_data[cache_bank_gen] ),
+            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && cache_bank_wr_way && !cache_req_instr ),
+            .wr_addr ( cache_bank_wr_idx ),
+            .wr_data ( cache_bank_wr_data )
+         );
+
+         smolrv64_sdpram #(
+            .ADDR_WIDTH(`CACHE_INDEX_BITS),
+            .DATA_WIDTH(64),
+            .READ_LATENCY(2)
+         ) icache_way0_bank_ram (
+            .clock   ( clock ),
+            .rd_addr ( cache_bank_gen == 0 ? cache_way0_bank0_rd_idx : cache_way0_rd_idx ),
+            .rd_data ( icache_way0_bank_rd_data[cache_bank_gen] ),
+            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && !cache_bank_wr_way && cache_req_instr ),
+            .wr_addr ( cache_bank_wr_idx ),
+            .wr_data ( cache_bank_wr_data )
+         );
+
+         smolrv64_sdpram #(
+            .ADDR_WIDTH(`CACHE_INDEX_BITS),
+            .DATA_WIDTH(64),
+            .READ_LATENCY(2)
+         ) icache_way1_bank_ram (
+            .clock   ( clock ),
+            .rd_addr ( cache_bank_gen == 0 ? cache_way1_bank0_rd_idx : cache_way1_rd_idx ),
+            .rd_data ( icache_way1_bank_rd_data[cache_bank_gen] ),
+            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && cache_bank_wr_way && cache_req_instr ),
             .wr_addr ( cache_bank_wr_idx ),
             .wr_data ( cache_bank_wr_data )
          );
@@ -1912,8 +2002,8 @@ module smolrv64(input wire        clock,
    ) cache_way0_tag_next_ram (
       .clock   ( clock ),
       .rd_addr ( cache_way0_next_rd_idx ),
-      .rd_data ( cache_way0_tag_next_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en ),
+      .rd_data ( dcache_way0_tag_next_rd_data ),
+      .wr_en   ( cache_way0_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
       .wr_addr ( cache_tag_wr_idx ),
       .wr_data ( cache_tag_wr_data )
    );
@@ -1925,8 +2015,34 @@ module smolrv64(input wire        clock,
    ) cache_way1_tag_next_ram (
       .clock   ( clock ),
       .rd_addr ( cache_way1_next_rd_idx ),
-      .rd_data ( cache_way1_tag_next_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en ),
+      .rd_data ( dcache_way1_tag_next_rd_data ),
+      .wr_en   ( cache_way1_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
+      .wr_addr ( cache_tag_wr_idx ),
+      .wr_data ( cache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way0_tag_next_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_way0_next_rd_idx ),
+      .rd_data ( icache_way0_tag_next_rd_data ),
+      .wr_en   ( cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
+      .wr_addr ( cache_tag_wr_idx ),
+      .wr_data ( cache_tag_wr_data )
+   );
+
+   smolrv64_sdpram #(
+      .ADDR_WIDTH(`CACHE_INDEX_BITS),
+      .DATA_WIDTH(`CACHE_META_BITS),
+      .READ_LATENCY(2)
+   ) icache_way1_tag_next_ram (
+      .clock   ( clock ),
+      .rd_addr ( cache_way1_next_rd_idx ),
+      .rd_data ( icache_way1_tag_next_rd_data ),
+      .wr_en   ( cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all) ),
       .wr_addr ( cache_tag_wr_idx ),
       .wr_data ( cache_tag_wr_data )
    );
@@ -2847,6 +2963,7 @@ module smolrv64(input wire        clock,
             dram_asid        <= {TLB_ASID_BITS{1'b0}};
             dram_perm        <= CACHE_PERM_PHYS;
             dram_ctx         <= {2'd0, fetch_prv, sum, mxr};
+            dram_instr       <= 1;
             dram_read        <= 1;
             state            <= `S_DRAM_FETCH_WAIT;
          end
@@ -2891,6 +3008,7 @@ module smolrv64(input wire        clock,
                   dram_asid <= {TLB_ASID_BITS{1'b0}};
                   dram_perm <= CACHE_PERM_PHYS;
                   dram_ctx  <= {2'd0, prv, sum, mxr};
+                  dram_instr <= 1;
                   dram_read <= 1;
                   state <= `S_DRAM_FETCH_HALF_WAIT;
                end
@@ -3128,6 +3246,7 @@ module smolrv64(input wire        clock,
             dram_asid                <= {TLB_ASID_BITS{1'b0}};
             dram_perm                <= CACHE_PERM_PHYS;
             dram_ctx                 <= {2'd0, fetch_req_prv, sum, mxr};
+            dram_instr               <= 1;
             dram_read                <= 1;
          end
       end
@@ -3264,6 +3383,7 @@ module smolrv64(input wire        clock,
                dram_asid       <= current_cache_asid;
                dram_perm       <= req_perm;
                dram_ctx        <= tlb_req_ctx;
+               dram_instr      <= 1;
                dram_read       <= 1;
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
@@ -3546,6 +3666,7 @@ module smolrv64(input wire        clock,
       frontend_flush_this_cycle = 0;
       dram_read  <= 0;
       dram_write <= 0;
+      dram_instr <= 0;
       ptw_direct_read <= 0;
       cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
@@ -7515,6 +7636,7 @@ module smolrv64(input wire        clock,
          translated       <= 0;
          dram_read        <= 0;
          dram_write       <= 0;
+         dram_instr       <= 0;
          dram_va          <= 0;
          dram_asid        <= 0;
          dram_perm        <= CACHE_PERM_PHYS;
@@ -7610,6 +7732,7 @@ module smolrv64(input wire        clock,
       axi_write <= 0;
       cache_way0_tag_wr_en <= 0;
       cache_way1_tag_wr_en <= 0;
+      cache_tag_wr_all <= 0;
 
       if (ptw_direct_read)
          ptw_direct_probe_pending <= 1;
@@ -7648,6 +7771,7 @@ module smolrv64(input wire        clock,
               end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
+              cache_req_instr <= 0;
               cache_way0_rd_idx <= 0;
               cache_way1_rd_idx <= 0;
               cache_way0_bank0_rd_idx <= 0;
@@ -7664,6 +7788,7 @@ module smolrv64(input wire        clock,
                  vhpr_epoch_update_pending <= 1'b1;
                  cache_flush_idx <= 0;
                  cache_flush_way <= 0;
+                 cache_req_instr <= 0;
                  cache_way0_rd_idx <= 0;
                  cache_way1_rd_idx <= 0;
                  cache_way0_bank0_rd_idx <= 0;
@@ -7678,6 +7803,7 @@ module smolrv64(input wire        clock,
 	      cache_req_ptag          <= cache_cbo_ptag;
 	      cache_req_cbo           <= 1;
 	      cache_req_write         <= 0;
+	      cache_req_instr         <= 0;
 	      cache_req_line_addr     <= cache_cbo_line_addr;
 	      cache_probe_color       <= 0;
 	      cache_probe_found       <= 0;
@@ -7696,6 +7822,7 @@ module smolrv64(input wire        clock,
 	      cache_req_ptag          <= ptw_direct_addr[27:9];
 	      cache_req_cbo           <= 1;
 	      cache_req_write         <= 0;
+	      cache_req_instr         <= 0;
 	      cache_req_line_addr     <= ptw_direct_addr[27:3];
 	      cache_probe_color       <= 0;
 	      cache_probe_found       <= 0;
@@ -7735,6 +7862,7 @@ module smolrv64(input wire        clock,
               cache_req_perm      <= dram_perm;
               cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 0;
+              cache_req_instr     <= dram_instr;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
@@ -7761,6 +7889,7 @@ module smolrv64(input wire        clock,
               cache_req_perm      <= dram_perm;
               cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 1;
+              cache_req_instr     <= 0;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
@@ -7896,6 +8025,11 @@ module smolrv64(input wire        clock,
            reg [`CACHE_META_BITS-1:0] flush_meta;
 
            flush_meta = cache_flush_way ? cache_way1_tag_rd_data : cache_way0_tag_rd_data;
+           cache_way0_tag_wr_en <= !cache_flush_way;
+           cache_way1_tag_wr_en <= cache_flush_way;
+           cache_tag_wr_idx <= cache_flush_idx;
+           cache_tag_wr_data <= 0;
+           cache_tag_wr_all <= 1;
            if (cache_meta_valid(flush_meta) && cache_meta_dirty(flush_meta)) begin
               csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
               csr_vhpr_dirty_flush_evicts <= csr_vhpr_dirty_flush_evicts + 1;
@@ -7915,10 +8049,6 @@ module smolrv64(input wire        clock,
            end else begin
               if (cache_meta_valid(flush_meta)) begin
                  csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
-                 cache_way0_tag_wr_en <= !cache_flush_way;
-                 cache_way1_tag_wr_en <= cache_flush_way;
-                 cache_tag_wr_idx <= cache_flush_idx;
-                 cache_tag_wr_data <= 0;
               end
               cache_flush_next_line();
            end
@@ -8225,7 +8355,9 @@ module smolrv64(input wire        clock,
          axi_write <= 0;
          cache_way0_tag_wr_en <= 0;
          cache_way1_tag_wr_en <= 0;
+         cache_tag_wr_all <= 0;
 	 cache_cbo_done_r <= 0;
+	 cache_req_instr <= 0;
 	 cache_req_perm <= CACHE_PERM_PHYS;
 	 cache_req_ctx <= 0;
 	 cache_req_line_addr <= 0;

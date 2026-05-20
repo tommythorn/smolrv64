@@ -1,8 +1,8 @@
 # VHPR L1 Cache
 
-VHPR means "virtually hit, physically reconciled".  It is a 64 KiB L1 cache
-design that removes TLB lookup from the ordinary L1 hit path while preserving
-physical correctness on misses, writeback, and coherence operations.
+VHPR means "virtually hit, physically reconciled".  It is an L1 cache design
+that removes TLB lookup from the ordinary L1 hit path while preserving physical
+correctness on misses, writeback, and coherence operations.
 
 The L1 is backed by a physically indexed, physically tagged L2.
 
@@ -21,7 +21,7 @@ The L1 is backed by a physically indexed, physically tagged L2.
 Initial fixed target:
 
 ```text
-capacity       = 64 KiB
+capacity       = 64 KiB instruction + 64 KiB data
 line size      = 64 bytes
 associativity  = 2-way skew associative
 indices per way = 512
@@ -40,7 +40,11 @@ virtual color           = VA[14:12]
 Aliases of the same physical line share `VA[11:6] == PA[11:6]`, but may have
 different virtual colors.
 
-The synonym search domain is therefore:
+Each cache is independently VHPR-indexed and VHPR-tagged.  The data cache is
+write-back.  The instruction cache never holds dirty lines, but otherwise uses
+the same virtual-hit, physical-reconcile rules.
+
+The synonym search domain per cache is therefore:
 
 ```text
 2 ways * 8 virtual colors = 16 physical tags
@@ -87,14 +91,16 @@ contents may be discarded.
 
 ## Core Invariant
 
-The L1 must maintain:
+Each VHPR L1 must maintain:
 
 ```text
-At most one valid L1 line may exist for any physical cache line.
+At most one valid line may exist for any physical cache line within that L1.
 ```
 
-This is the central correctness rule.  It prevents duplicate dirty ownership
-and keeps physical visibility unambiguous.
+This is the central correctness rule for a VHPR cache.  In the data cache it
+prevents duplicate dirty ownership and keeps physical visibility unambiguous.
+In the instruction cache it prevents stale virtual aliases from silently
+surviving synonym movement.
 
 The invariant must hold after every:
 
@@ -423,8 +429,14 @@ physical probe PA
   -> respond with hit/miss, dirty state, and data or invalidation as required
 ```
 
-The L2 should be the main physical coherence and DMA integration point.  The L1
-must still respond correctly when it holds the newest dirty copy.
+The L2 should be the main physical coherence and DMA integration point.  The
+data L1 must still respond correctly when it holds the newest dirty copy.
+
+The split instruction cache is coherent through the architectural instruction
+synchronization path.  `FENCE.I` flushes frontend speculation and invalidates
+instruction-cache state after any required data-cache writeback, so later
+fetches refill from the physical backing hierarchy.  Ordinary instruction
+fills do not probe the data-cache virtual-hit path.
 
 ## Simulator Prototype
 
