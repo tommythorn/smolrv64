@@ -120,6 +120,13 @@ static void puthex64(uint64_t v)
     puthex32((uint32_t)v);
 }
 
+static uint64_t read_build_stamp(void)
+{
+    uint64_t build_stamp;
+    asm volatile ("csrr %0, 0xfde" : "=r"(build_stamp));
+    return build_stamp;
+}
+
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
 static const char *parse_hex(const char *s, uint64_t *out)
 {
@@ -767,7 +774,9 @@ int main(void)
     // Flush any spurious chars received during init or terminal connect
     while (UART0_BASE[UART_LSR] & LSR_DR)
         (void)UART0_BASE[UART_RBR];
-    puts_("\nsmolrv64 monitor\n");
+    puts_("\nsmolrv64 monitor build stamp=");
+    puthex64(read_build_stamp());
+    putc_('\n');
 
     for (;;) {
         uint64_t addr, val;
@@ -928,7 +937,7 @@ int main(void)
             uint64_t vhpr_cbo_probes, vhpr_ptw_probes;
             uint64_t vhpr_epoch_bumps, vhpr_epoch_rollovers;
             uint64_t vhpr_epoch;
-            uint64_t build_stamp;
+            uint64_t build_stamp = read_build_stamp();
             uint64_t mcause, mtval, mepc, scause, stval, sepc;
             asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
             asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
@@ -958,7 +967,6 @@ int main(void)
             asm volatile ("csrr %0, 0xfd9" : "=r"(vhpr_epoch_bumps));
             asm volatile ("csrr %0, 0xfda" : "=r"(vhpr_epoch_rollovers));
             asm volatile ("csrr %0, 0xfdb" : "=r"(vhpr_epoch));
-            asm volatile ("csrr %0, 0xfde" : "=r"(build_stamp));
             asm volatile ("csrr %0, mcause" : "=r"(mcause));
             asm volatile ("csrr %0, mtval"  : "=r"(mtval));
             asm volatile ("csrr %0, mepc"   : "=r"(mepc));
