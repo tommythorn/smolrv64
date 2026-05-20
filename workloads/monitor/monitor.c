@@ -106,6 +106,13 @@ static void puthex8(uint32_t v)
     puthex4(v);
 }
 
+static void puthex16(uint32_t v)
+{
+    v &= 0xffff;
+    puthex8(v >> 8);
+    puthex8(v);
+}
+
 static void puthex32(uint32_t v)
 {
     puthex8(v >> 24);
@@ -134,6 +141,36 @@ static void put_vhpr_kind(uint32_t kind)
         break;
     default:
         puts_("unknown");
+        break;
+    }
+}
+
+static void put_vhpr_source(uint32_t source)
+{
+    switch (source) {
+    case 1:
+        puts_("fetch");
+        break;
+    case 2:
+        puts_("fetch-half");
+        break;
+    case 3:
+        puts_("frontend-spec");
+        break;
+    case 4:
+        puts_("ptw");
+        break;
+    case 5:
+        puts_("load");
+        break;
+    case 6:
+        puts_("store");
+        break;
+    case 7:
+        puts_("cbo");
+        break;
+    default:
+        puts_("none");
         break;
     }
 }
@@ -1050,6 +1087,13 @@ int main(void)
                         puts_("vhpr asid="); puthex32((uint32_t)(vhpr_info & 0x3ff));
                         puts_(" way="); puthex8((uint32_t)((vhpr_info >> 10) & 1));
                         puts_(" write="); puthex8((uint32_t)((vhpr_info >> 11) & 1));
+                        puts_(" src="); put_vhpr_source((uint32_t)((vhpr_info >> 12) & 7));
+                        puts_(" flush="); puthex8((uint32_t)((vhpr_info >> 15) & 1));
+                        puts_(" bump="); puthex8((uint32_t)((vhpr_info >> 16) & 1));
+                        puts_(" epoch_update="); puthex8((uint32_t)((vhpr_info >> 17) & 1));
+                        puts_(" epoch="); puthex16((uint32_t)((vhpr_info >> 18) & 0xffff));
+                        puts_(" frontend_miss="); puthex8((uint32_t)((vhpr_info >> 34) & 1));
+                        puts_(" state="); puthex8((uint32_t)((vhpr_info >> 35) & 0x3f));
                         putc_('\n');
                     } else if (vhpr_kind == 3) {
                         puts_("vhpr probe_color="); puthex8((uint32_t)(vhpr_info & 7));
