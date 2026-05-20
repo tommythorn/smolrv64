@@ -1047,16 +1047,30 @@ module smolrv64(input wire        clock,
    reg          ptw_direct_readdatavalid_r = 0;
    reg  [63:0]  ptw_direct_readdata_r = 0;
 
-   // Small raw instruction fetch window.  This is intentionally not
-   // speculative: it only supplies the already-resolved npc in S_FETCH1.
-   reg          fetch_buf_valid = 0;
-   reg  [63:0]  fetch_buf_base_va = 0; // 8-byte aligned VA of fetch_buf_data[63:0]
-   reg  [59:0]  fetch_buf_next_va_hi = 0;
-   reg  [ 1:0]  fetch_buf_prv = 0;
-   reg  [127:0] fetch_buf_data = 0;
+   // Frontend instruction fetch window.  The old global FSM still launches
+   // TLB/cache slow paths; the frontend module owns instruction alignment,
+   // the small fetch window, and the registered hit result.
+   reg          frontend_buf_flush = 0;
+   reg          frontend_buf_fill = 0;
+   reg  [63:0]  frontend_buf_fill_base_va = 0;
+   reg  [ 1:0]  frontend_buf_fill_prv = 0;
+   reg  [127:0] frontend_buf_fill_data = 0;
+   wire         fetch_buf_addr_hit;
+   wire         fetch_buf_full_insn_hit;
+   wire         fetch_buf_hit;
+   wire [31:0]  fetch_buf_insn;
+   wire [ 3:0]  fetch_buf_offset;
    reg          fetch_buf_latched_hit = 0;
    reg  [31:0]  fetch_buf_latched_insn = 0;
    reg  [ 3:0]  fetch_buf_latched_offset = 0;
+   wire         fetch_buf_latched_full_insn_hit =
+      fetch_buf_latched_insn[1:0] != 2'b11 ||
+      fetch_buf_latched_offset <= 4'd12;
+   wire [63:0]  fetch_buf_fill_base_va;
+   wire         fetch_buf_fill_page_ok;
+   wire [FRONTEND_EPOCH_BITS-1:0] fetch_buf_active_epoch;
+   wire [63:0]  fetch_buf_predicted_next_pc;
+   wire [ 1:0]  fetch_buf_prediction_kind;
 
    // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
    // instruction and captures the next PC/context; S_FETCH_REQ consumes this
@@ -1085,6 +1099,32 @@ module smolrv64(input wire        clock,
    localparam [1:0] FRONTEND_MISS_WAIT_CONSUME  = 2'd0,
                     FRONTEND_MISS_WAIT_EXCEPTION = 2'd2;
    reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
+
+   smolrv64_frontend #(
+      .EPOCH_BITS(FRONTEND_EPOCH_BITS)
+   ) frontend_inst (
+      .clock(clock),
+      .reset(core_reset_now),
+      .flush(frontend_buf_flush),
+      .fill(frontend_buf_fill),
+      .fill_base_va(frontend_buf_fill_base_va),
+      .fill_prv(frontend_buf_fill_prv),
+      .fill_data(frontend_buf_fill_data),
+      .req_valid(fetch_req_valid),
+      .req_pc(fetch_req_pc),
+      .req_prv(fetch_req_prv),
+      .req_epoch(fetch_req_epoch),
+      .hit(fetch_buf_hit),
+      .addr_hit(fetch_buf_addr_hit),
+      .full_insn_hit(fetch_buf_full_insn_hit),
+      .insn(fetch_buf_insn),
+      .offset(fetch_buf_offset),
+      .predicted_next_pc(fetch_buf_predicted_next_pc),
+      .prediction_kind(fetch_buf_prediction_kind),
+      .active_epoch(fetch_buf_active_epoch),
+      .fill_base_va_for_req(fetch_buf_fill_base_va),
+      .fill_page_ok(fetch_buf_fill_page_ok)
+   );
 
    // Register/decode request boundary. The frontend fills this one-entry
    // queue; S_RF consumes it and launches the BRAM register-file read.
@@ -2259,25 +2299,6 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
-   wire        fetch_buf_context_hit = fetch_req_valid && fetch_buf_valid &&
-                                       fetch_buf_prv == fetch_req_prv;
-   wire        fetch_buf_addr_same_hi = fetch_req_pc[63:4] == fetch_buf_base_va[63:4];
-   wire        fetch_buf_addr_next_hi = fetch_req_pc[63:4] == fetch_buf_next_va_hi;
-   wire        fetch_buf_addr_hit = fetch_buf_context_hit && !fetch_req_pc[0] &&
-                                    ((!fetch_buf_base_va[3] && fetch_buf_addr_same_hi) ||
-                                     ( fetch_buf_base_va[3] &&
-                                       ((fetch_buf_addr_same_hi &&  fetch_req_pc[3]) ||
-                                        (fetch_buf_addr_next_hi && !fetch_req_pc[3]))));
-   wire [3:0]  fetch_buf_offset = fetch_buf_base_va[3] ?
-                                  (fetch_buf_addr_same_hi ? {1'b0, fetch_req_pc[2:0]} :
-                                                            {1'b1, fetch_req_pc[2:0]}) :
-                                  fetch_req_pc[3:0];
-   wire [31:0] fetch_buf_insn = fetch_buf_pick_insn(fetch_buf_data, fetch_buf_offset);
-   wire        fetch_buf_full_insn_hit = fetch_buf_insn[1:0] != 2'b11 ||
-                                         fetch_buf_offset <= 4'd12;
-   wire        fetch_buf_hit = fetch_buf_addr_hit && fetch_buf_full_insn_hit;
-   wire [63:0] fetch_buf_fill_base_va = {fetch_req_pc[63:3], 3'b000};
-   wire        fetch_buf_fill_page_ok = fetch_buf_fill_base_va[11:0] <= 12'hff0;
    reg [63:0]  hpm_wr_data = 0;
    integer     hpm_i, hpm_j;
 
@@ -2933,7 +2954,7 @@ module smolrv64(input wire        clock,
    task flush_frontend_speculation;
       begin
          frontend_flush_this_cycle = 1;
-         fetch_buf_valid <= 0;
+         frontend_buf_flush <= 1'b1;
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
@@ -3263,11 +3284,10 @@ module smolrv64(input wire        clock,
                         {64'bx, frontend_miss_data};
          miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
          if (fill_base[11:0] <= 12'hff0 && frontend_miss_next_valid) begin
-            fetch_buf_valid      <= 1;
-            fetch_buf_base_va    <= fill_base;
-            fetch_buf_next_va_hi <= fill_base[63:4] + 60'd1;
-            fetch_buf_prv        <= frontend_miss_prv;
-            fetch_buf_data       <= miss_aligned;
+            frontend_buf_fill         <= 1'b1;
+            frontend_buf_fill_base_va <= fill_base;
+            frontend_buf_fill_prv     <= frontend_miss_prv;
+            frontend_buf_fill_data    <= miss_aligned;
          end
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
@@ -3664,6 +3684,8 @@ module smolrv64(input wire        clock,
       mmio_write = 0;
       mmio_read = 0;
       frontend_flush_this_cycle = 0;
+      frontend_buf_flush <= 1'b0;
+      frontend_buf_fill <= 1'b0;
       dram_read  <= 0;
       dram_write <= 0;
       dram_instr <= 0;
@@ -3919,11 +3941,6 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH_BUF_USE: begin
-           begin : fetch_buf_latched_check
-              reg fetch_buf_latched_full_insn_hit;
-              fetch_buf_latched_full_insn_hit =
-                 fetch_buf_latched_insn[1:0] != 2'b11 ||
-                 fetch_buf_latched_offset <= 4'd12;
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
               if (fetch_buf_latched_hit && fetch_buf_latched_full_insn_hit)
@@ -3945,7 +3962,6 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH_BUF_USE;
            end else begin
               start_instruction_fetch_miss(fetch_req_pc, fetch_req_prv);
-           end
            end
         end
 
@@ -3978,11 +3994,10 @@ module smolrv64(input wire        clock,
            aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
                                               : {64'bx, dram_latched};
            if (fetch_buf_fill_page_ok && dram_latched_next_valid) begin
-              fetch_buf_valid   <= 1;
-              fetch_buf_base_va <= fetch_buf_fill_base_va;
-              fetch_buf_next_va_hi <= fetch_buf_fill_base_va[63:4] + 60'd1;
-              fetch_buf_prv     <= fetch_req_prv;
-              fetch_buf_data    <= aligned;
+              frontend_buf_fill         <= 1'b1;
+              frontend_buf_fill_base_va <= fetch_buf_fill_base_va;
+              frontend_buf_fill_prv     <= fetch_req_prv;
+              frontend_buf_fill_data    <= aligned;
            end
            accept_instruction_fetch(fetch_req_pc, aligned >> (fetch_req_pc[2:1] * 16), 1'b1);
         end
@@ -5073,7 +5088,7 @@ module smolrv64(input wire        clock,
            // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
 
            else if ((ex_insn & 'hffffffff) == 'h30200073) begin // MRET
-              fetch_buf_valid <= 0;
+              frontend_buf_flush <= 1'b1;
               if (mpp != 3) mprv = 0;
               prv = mpp;
               mpp = 0;
@@ -5090,7 +5105,7 @@ module smolrv64(input wire        clock,
                  tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
-                 fetch_buf_valid <= 0;
+                 frontend_buf_flush <= 1'b1;
 `ifdef SIMULATE
 `ifdef VERBOSE
                  $display("SRET: pc %x prv %d->%d sepc %x time %0t", ex_pc, prv, spp, csr_sepc, $time);
@@ -6860,7 +6875,7 @@ module smolrv64(input wire        clock,
            end
 `endif
            just_trapped <= 1;
-           fetch_buf_valid <= 0;
+           frontend_buf_flush <= 1'b1;
            fetch_epoch <= fetch_epoch + 1'b1;
            fetch_req_valid <= 0;
            fetch_req_fast_ready <= 0;
@@ -7614,7 +7629,7 @@ module smolrv64(input wire        clock,
 `endif
          just_trapped     <= 0;
          just_xret        <= 0;
-         fetch_buf_valid  <= 0;
+         frontend_buf_flush <= 1'b1;
          fetch_buf_latched_hit <= 0;
          fetch_buf_latched_insn <= 0;
          fetch_buf_latched_offset <= 0;
@@ -8550,6 +8565,94 @@ module smolrv64(input wire        clock,
    assign m_axi_wlast   = 1'b1;
    assign m_axi_bready  = 1'b1;
 
+endmodule
+
+
+module smolrv64_frontend #(
+   parameter EPOCH_BITS = 2
+) (
+   input  wire                  clock,
+   input  wire                  reset,
+   input  wire                  flush,
+   input  wire                  fill,
+   input  wire [63:0]           fill_base_va,
+   input  wire [ 1:0]           fill_prv,
+   input  wire [127:0]          fill_data,
+
+   input  wire                  req_valid,
+   input  wire [63:0]           req_pc,
+   input  wire [ 1:0]           req_prv,
+   input  wire [EPOCH_BITS-1:0] req_epoch,
+
+   output wire                  hit,
+   output wire                  addr_hit,
+   output wire                  full_insn_hit,
+   output wire [31:0]           insn,
+   output wire [ 3:0]           offset,
+   output wire [63:0]           predicted_next_pc,
+   output wire [ 1:0]           prediction_kind,
+   output wire [EPOCH_BITS-1:0] active_epoch,
+   output wire [63:0]           fill_base_va_for_req,
+   output wire                  fill_page_ok
+);
+   localparam [1:0] PRED_FALLTHROUGH = 2'd0;
+
+   reg          buf_valid = 0;
+   reg  [63:0]  buf_base_va = 0;
+   reg  [59:0]  buf_next_va_hi = 0;
+   reg  [ 1:0]  buf_prv = 0;
+   reg  [127:0] buf_data = 0;
+
+   function [31:0] pick_insn;
+      input [127:0] data;
+      input [3:0]   byte_offset;
+      begin
+         case (byte_offset[3:1])
+           3'd0:    pick_insn = data[31:0];
+           3'd1:    pick_insn = data[47:16];
+           3'd2:    pick_insn = data[63:32];
+           3'd3:    pick_insn = data[79:48];
+           3'd4:    pick_insn = data[95:64];
+           3'd5:    pick_insn = data[111:80];
+           3'd6:    pick_insn = data[127:96];
+           default: pick_insn = {16'd0, data[127:112]};
+         endcase
+      end
+   endfunction
+
+   wire        context_hit = req_valid && buf_valid && buf_prv == req_prv;
+   wire        addr_same_hi = req_pc[63:4] == buf_base_va[63:4];
+   wire        addr_next_hi = req_pc[63:4] == buf_next_va_hi;
+
+   assign addr_hit = context_hit && !req_pc[0] &&
+                     ((!buf_base_va[3] && addr_same_hi) ||
+                      ( buf_base_va[3] &&
+                        ((addr_same_hi &&  req_pc[3]) ||
+                         (addr_next_hi && !req_pc[3]))));
+   assign offset = buf_base_va[3] ?
+                   (addr_same_hi ? {1'b0, req_pc[2:0]} :
+                                   {1'b1, req_pc[2:0]}) :
+                   req_pc[3:0];
+   assign insn = pick_insn(buf_data, offset);
+   assign full_insn_hit = insn[1:0] != 2'b11 || offset <= 4'd12;
+   assign hit = addr_hit && full_insn_hit;
+   assign predicted_next_pc = req_pc + (insn[1:0] == 2'b11 ? 64'd4 : 64'd2);
+   assign prediction_kind = PRED_FALLTHROUGH;
+   assign active_epoch = req_epoch;
+   assign fill_base_va_for_req = {req_pc[63:3], 3'b000};
+   assign fill_page_ok = fill_base_va_for_req[11:0] <= 12'hff0;
+
+   always @(posedge clock) begin
+      if (reset || flush) begin
+         buf_valid <= 1'b0;
+      end else if (fill) begin
+         buf_valid      <= 1'b1;
+         buf_base_va    <= fill_base_va;
+         buf_next_va_hi <= fill_base_va[63:4] + 60'd1;
+         buf_prv        <= fill_prv;
+         buf_data       <= fill_data;
+      end
+   end
 endmodule
 
 
