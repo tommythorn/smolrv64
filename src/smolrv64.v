@@ -1182,8 +1182,18 @@ module smolrv64(input wire        clock,
    wire [ 4:0]  rf_decode_rs2 = rf_decode_rs2_q[rf_decode_head];
    wire [ 5:0]  rf_decode_shamt = rf_decode_shamt_q[rf_decode_head];
    reg          rf_decode_pop_this_cycle = 0;
+   reg          rf_decode_enqueue_this_cycle = 0;
    reg          rf_decode_prearm_block = 0;
    reg          rf_decode_prearmed = 0;
+   reg          frontend_decode_pending_valid = 0;
+   reg          frontend_decode_pending_drain = 0;
+   reg  [63:0]  frontend_decode_pending_pc = `RESET_PC;
+   reg  [63:0]  frontend_decode_pending_next_pc = `RESET_PC;
+   reg  [63:0]  frontend_decode_pending_predicted_pc = `RESET_PC;
+   reg  [31:0]  frontend_decode_pending_insn = 0;
+   reg  [ 1:0]  frontend_decode_pending_prv = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_decode_pending_epoch = 0;
+   reg  [ 1:0]  frontend_decode_pending_prediction_kind = 0;
 
    // Register-file read boundary. Dispatch accepts one decoded instruction
    // into this payload and launches the BRAM read; S_RF3 consumes it.
@@ -3027,6 +3037,8 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         frontend_decode_pending_valid <= 0;
+         frontend_decode_pending_drain = 0;
          frontend_miss_valid <= 0;
          frontend_miss_done <= 0;
          frontend_miss_next_valid <= 0;
@@ -3076,6 +3088,8 @@ module smolrv64(input wire        clock,
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
+         frontend_decode_pending_valid <= 0;
+         frontend_decode_pending_drain = 0;
          write_back_register <= 0;
          write_back_fp_valid <= 0;
          if (accept_pc[11:0] == 12'hFFE && accept_insn[1:0] == 2'b11 &&
@@ -3159,12 +3173,13 @@ module smolrv64(input wire        clock,
       begin
          decode_rf_sources(decode_insn, decoded_rd, decoded_rs1,
                            decoded_rs2, decoded_shamt);
-         if (rf_decode_full && !rf_decode_pop_this_cycle) begin
+         if (rf_decode_full) begin
 `ifdef SIMULATE
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
 `endif
          end else begin
+            rf_decode_enqueue_this_cycle = 1'b1;
             rf_decode_pc_q[rf_decode_tail] <= decode_pc;
             rf_decode_next_pc_q[rf_decode_tail] <= decode_next_pc;
             rf_decode_predicted_pc_q[rf_decode_tail] <= decode_predicted_pc;
@@ -3178,13 +3193,12 @@ module smolrv64(input wire        clock,
             rf_decode_rs2_q[rf_decode_tail] <= decoded_rs2;
             rf_decode_shamt_q[rf_decode_tail] <= decoded_shamt;
             rf_decode_tail <= rf_decode_tail + 1'b1;
-            rf_decode_count <= rf_decode_pop_this_cycle ?
-                               rf_decode_count : rf_decode_count + 1'b1;
+            rf_decode_count <= rf_decode_count + 1'b1;
          end
       end
    endtask
 
-   task enqueue_rf_decode_speculative_hit;
+   task latch_frontend_decode_pending;
       input [63:0] decode_pc;
       input [63:0] decode_next_pc;
       input [63:0] decode_predicted_pc;
@@ -3193,24 +3207,41 @@ module smolrv64(input wire        clock,
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       input [ 1:0] decode_prediction_kind;
       begin
-         enqueue_rf_decode(decode_pc, decode_next_pc, decode_predicted_pc,
-                           decode_insn, decode_prv,
-                           decode_epoch, decode_prediction_kind, 1'b0);
+         frontend_decode_pending_valid <= 1;
+         frontend_decode_pending_pc <= decode_pc;
+         frontend_decode_pending_next_pc <= decode_next_pc;
+         frontend_decode_pending_predicted_pc <= decode_predicted_pc;
+         frontend_decode_pending_insn <= decode_insn;
+         frontend_decode_pending_prv <= decode_prv;
+         frontend_decode_pending_epoch <= decode_epoch;
+         frontend_decode_pending_prediction_kind <= decode_prediction_kind;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
          fetch_req_pc <= decode_predicted_pc;
          fetch_req_fast_ready <= 0;
          fetch_req_spec_miss_ready <= 0;
-         if ((rf_decode_pop_this_cycle &&
-              rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) ||
-             (!rf_decode_pop_this_cycle &&
-              rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1)) begin
+         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
             fetch_req_valid <= 0;
             fetch_req_speculative <= 0;
          end else begin
             fetch_req_valid <= 1;
             fetch_req_speculative <= 1;
          end
+      end
+   endtask
+
+   task enqueue_frontend_decode_pending;
+      begin
+         enqueue_rf_decode(frontend_decode_pending_pc,
+                           frontend_decode_pending_next_pc,
+                           frontend_decode_pending_predicted_pc,
+                           frontend_decode_pending_insn,
+                           frontend_decode_pending_prv,
+                           frontend_decode_pending_epoch,
+                           frontend_decode_pending_prediction_kind,
+                           1'b0);
+         frontend_decode_pending_valid <= 0;
+         frontend_decode_pending_drain = 1'b1;
       end
    endtask
 
@@ -3242,6 +3273,8 @@ module smolrv64(input wire        clock,
             rf_decode_count <= 0;
             rf_decode_prearmed <= 0;
             rf_decode_prearm_block = 1;
+            frontend_decode_pending_valid <= 0;
+            frontend_decode_pending_drain = 0;
             rf_read_valid <= 1;
             rf_read_pc <= decode_pc;
             rf_read_next_pc <= decode_next_pc;
@@ -3303,10 +3336,12 @@ module smolrv64(input wire        clock,
            rs2 <= rf_decode_rs2;
             rf_decode_pop_this_cycle = 1'b1;
             rf_decode_head <= rf_decode_head + 1'b1;
-            rf_decode_count <= rf_decode_count - 1'b1;
+            rf_decode_count <= rf_decode_enqueue_this_cycle ?
+                               rf_decode_count : rf_decode_count - 1'b1;
             rf_decode_prearmed <= 0;
             rf_decode_prearm_block = 1;
-            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) begin
+            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
+                rf_decode_enqueue_this_cycle) begin
                fetch_req_valid <= 1;
                fetch_req_fast_ready <= 0;
                fetch_req_speculative <= 1;
@@ -3339,10 +3374,12 @@ module smolrv64(input wire        clock,
             rs2 <= rf_decode_rs2;
             rf_decode_pop_this_cycle = 1'b1;
             rf_decode_head <= rf_decode_head + 1'b1;
-            rf_decode_count <= rf_decode_count - 1'b1;
+            rf_decode_count <= rf_decode_enqueue_this_cycle ?
+                               rf_decode_count : rf_decode_count - 1'b1;
             rf_decode_prearmed <= 0;
             rf_decode_prearm_block = 1;
-            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) begin
+            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
+                rf_decode_enqueue_this_cycle) begin
                fetch_req_valid <= 1;
                fetch_req_fast_ready <= 0;
                fetch_req_speculative <= 1;
@@ -3386,22 +3423,26 @@ module smolrv64(input wire        clock,
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
          if (fetch_req_speculative &&
-             (!rf_decode_full || rf_decode_pop_this_cycle) &&
+             !rf_decode_full &&
+             (!frontend_decode_pending_valid ||
+              frontend_decode_pending_drain) &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready &&
              frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv) &&
              fetch_buf_hit) begin
-            enqueue_rf_decode_speculative_hit(fetch_req_pc,
-                                              frontend_fallthrough_pc(
-                                                 fetch_req_pc,
-                                                 fetch_buf_insn),
-                                              fetch_buf_predicted_next_pc,
-                                              fetch_buf_insn,
-                                              fetch_req_prv,
-                                              fetch_req_epoch,
-                                              fetch_buf_prediction_kind);
+            latch_frontend_decode_pending(fetch_req_pc,
+                                           frontend_fallthrough_pc(
+                                              fetch_req_pc,
+                                              fetch_buf_insn),
+                                           fetch_buf_predicted_next_pc,
+                                           fetch_buf_insn,
+                                           fetch_req_prv,
+                                           fetch_req_epoch,
+                                           fetch_buf_prediction_kind);
          end else if (fetch_req_speculative && fetch_req_valid &&
-                      (!rf_decode_full || rf_decode_pop_this_cycle) &&
+                      !rf_decode_full &&
+                      (!frontend_decode_pending_valid ||
+                       frontend_decode_pending_drain) &&
                       !frontend_miss_valid && !frontend_miss_done &&
                       !fetch_req_spec_miss_ready &&
                       frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv)) begin
@@ -3530,6 +3571,8 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         frontend_decode_pending_valid <= 0;
+         frontend_decode_pending_drain = 0;
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
@@ -3937,7 +3980,9 @@ module smolrv64(input wire        clock,
       mmio_read = 0;
       frontend_flush_this_cycle = 0;
       rf_decode_pop_this_cycle = 0;
+      rf_decode_enqueue_this_cycle = 0;
       rf_decode_prearm_block = 0;
+      frontend_decode_pending_drain = 0;
       frontend_buf_flush <= 1'b0;
       frontend_buf_fill <= 1'b0;
       dram_read  <= 0;
@@ -3959,6 +4004,11 @@ module smolrv64(input wire        clock,
       hpm_ptw_leaf_2m_pulse <= 0;
       hpm_ptw_leaf_1g_pulse <= 0;
       hpm_ptw_leaf_napot_pulse <= 0;
+
+      if (!core_reset_now && frontend_decode_pending_valid &&
+          !rf_decode_full) begin
+         enqueue_frontend_decode_pending();
+      end
 
       // Pre-register interrupt pending for S_FETCH1 timing closure.
       // Computed from current FFs so the result is available as a stable FF in
@@ -4102,6 +4152,8 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              frontend_decode_pending_valid <= 0;
+              frontend_decode_pending_drain = 0;
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -4168,6 +4220,8 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              frontend_decode_pending_valid <= 0;
+              frontend_decode_pending_drain = 0;
               if (frontend_miss_valid || frontend_miss_done) begin
                  frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
                  state <= `S_FRONTEND_MISS_WAIT;
@@ -4199,6 +4253,8 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              frontend_decode_pending_valid <= 0;
+              frontend_decode_pending_drain = 0;
               if (frontend_miss_valid || frontend_miss_done) begin
                  frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
                  state <= `S_FRONTEND_MISS_WAIT;
@@ -7180,6 +7236,8 @@ module smolrv64(input wire        clock,
            rf_decode_count <= 0;
            rf_decode_prearmed <= 0;
            rf_decode_prearm_block = 1;
+           frontend_decode_pending_valid <= 0;
+           frontend_decode_pending_drain = 0;
 
            state <= `S_FETCH1;
         end
@@ -7872,6 +7930,8 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         frontend_decode_pending_valid <= 0;
+         frontend_decode_pending_drain = 0;
          rf_read_valid <= 0;
          rf_read_pc <= `RESET_PC;
          rf_read_next_pc <= `RESET_PC;
