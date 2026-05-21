@@ -6179,9 +6179,11 @@ module smolrv64(input wire        clock,
               end else begin
                  write_back_register = cvfpu_tag_out[4:0];
                  write_back_value    <= cvfpu_result;
-             end
-             fflags = fflags | cvfpu_fflags;
+              end
+              fflags = fflags | cvfpu_fflags;
               retire_linear_fetch();
+           end else begin
+              try_issue_queued_decode_preserve_state();
            end
         end
 `endif
