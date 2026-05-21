@@ -6022,12 +6022,17 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_EXECUTE2: begin
+        `S_EXECUTE2: begin : execute2_stage
+           reg early_launched;
+
+           early_launched = 1'b0;
            if (execute_res_valid) begin
               write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
+              try_early_launch_queued_decode(npc, prv, early_launched);
            end
-           prepare_current_epoch_fetch(npc, prv);
+           if (!early_launched)
+              prepare_current_epoch_fetch(npc, prv);
            state <= `S_FETCH1;
         end
 

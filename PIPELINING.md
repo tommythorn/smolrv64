@@ -71,6 +71,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   `S_RF3` unless an interrupt flushes the younger read.
 - `S_RF3` has an explicit same-cycle writeback bypass for integer and FP
   register reads, so the pre-launch path can also overlap writeback retirees.
+- The common `S_EXECUTE2` ALU completion state now uses the same pre-launch
+  path, overlapping result finalization with the next matching RF read.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
   in the same cycle.
 - Speculative fetch-buffer hits can be consumed while selected backend states
