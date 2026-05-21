@@ -4588,6 +4588,8 @@ module smolrv64(input wire        clock,
            if (!execute_req_valid) begin
               state <= `S_FETCH1;
            end else begin
+           pc <= ex_pc;
+           insn <= ex_insn;
            execute_req_valid <= 0;
            execute_res_valid <= 1;
            state <= `S_EXECUTE2; // Default: complete write_back_value
