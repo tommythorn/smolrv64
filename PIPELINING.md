@@ -73,6 +73,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   register reads, so the pre-launch path can also overlap writeback retirees.
 - The common `S_EXECUTE2` ALU completion state now uses the same pre-launch
   path, overlapping result finalization with the next matching RF read.
+- FP integer-commit and CVFPU result-return states also use the helper, relying
+  on the existing integer/FP writeback bypass at `S_RF3`.
 - Cache-backed store completions use the same linear-retire helper, so hits can
   launch the next matching RF read without re-entering fetch setup.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read

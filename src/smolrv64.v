@@ -6046,7 +6046,7 @@ module smolrv64(input wire        clock,
         `S_FP_INT_COMMIT: begin
            write_back_value <= fp_int_result;
            fflags = fflags | fp_int_fflags;
-           state <= `S_FETCH1;
+           retire_linear_fetch();
         end
 
 `ifdef USE_CVFPU
@@ -6083,7 +6083,7 @@ module smolrv64(input wire        clock,
                     write_back_value    <= cvfpu_result;
                  end
                  fflags = fflags | cvfpu_fflags;
-                 state  <= `S_FETCH1;
+                 retire_linear_fetch();
               end else begin
                  state <= `S_CVFPU_WAIT;
               end
@@ -6099,9 +6099,9 @@ module smolrv64(input wire        clock,
               end else begin
                  write_back_register = cvfpu_tag_out[4:0];
                  write_back_value    <= cvfpu_result;
-              end
-              fflags = fflags | cvfpu_fflags;
-              state  <= `S_FETCH1;
+             end
+             fflags = fflags | cvfpu_fflags;
+              retire_linear_fetch();
            end
         end
 `endif
