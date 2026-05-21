@@ -1177,6 +1177,7 @@ module smolrv64(input wire        clock,
    wire [ 4:0]  rf_decode_rs2 = rf_decode_rs2_q[rf_decode_head];
    wire [ 5:0]  rf_decode_shamt = rf_decode_shamt_q[rf_decode_head];
    reg          rf_decode_match_q = 0;
+   reg          rf_decode_pop_this_cycle = 0;
 
    // Register-file read boundary. S_RF accepts one decode queue entry into
    // this payload and launches the BRAM read; S_RF3 consumes it.
@@ -3108,7 +3109,7 @@ module smolrv64(input wire        clock,
       begin
          decode_rf_sources(decode_insn, decoded_rd, decoded_rs1,
                            decoded_rs2, decoded_shamt);
-         if (rf_decode_full) begin
+         if (rf_decode_full && !rf_decode_pop_this_cycle) begin
 `ifdef SIMULATE
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
@@ -3124,7 +3125,8 @@ module smolrv64(input wire        clock,
             rf_decode_rs2_q[rf_decode_tail] <= decoded_rs2;
             rf_decode_shamt_q[rf_decode_tail] <= decoded_shamt;
             rf_decode_tail <= rf_decode_tail + 1'b1;
-            rf_decode_count <= rf_decode_count + 1'b1;
+            rf_decode_count <= rf_decode_pop_this_cycle ?
+                               rf_decode_count : rf_decode_count + 1'b1;
          end
       end
    endtask
@@ -3142,7 +3144,10 @@ module smolrv64(input wire        clock,
          fetch_req_pc <= decoded_next_pc;
          fetch_req_fast_ready <= 0;
          fetch_req_spec_miss_ready <= 0;
-         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
+         if ((rf_decode_pop_this_cycle &&
+              rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) ||
+             (!rf_decode_pop_this_cycle &&
+              rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1)) begin
             fetch_req_valid <= 0;
             fetch_req_speculative <= 0;
          end else begin
@@ -3228,6 +3233,7 @@ module smolrv64(input wire        clock,
             rf_read_shamt <= rf_decode_shamt;
             rs1 <= rf_decode_rs1;
             rs2 <= rf_decode_rs2;
+            rf_decode_pop_this_cycle = 1'b1;
             rf_decode_head <= rf_decode_head + 1'b1;
             rf_decode_count <= rf_decode_count - 1'b1;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) begin
@@ -3245,8 +3251,8 @@ module smolrv64(input wire        clock,
       begin
          if (frontend_spec_hit_valid && frontend_spec_hit_epoch != fetch_epoch) begin
             frontend_spec_hit_valid <= 0;
-         end else if (frontend_spec_hit_valid && state != `S_RF &&
-             !rf_decode_full &&
+         end else if (frontend_spec_hit_valid &&
+             (!rf_decode_full || rf_decode_pop_this_cycle) &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready) begin
             enqueue_rf_decode_speculative_hit(frontend_spec_hit_pc,
@@ -3254,7 +3260,8 @@ module smolrv64(input wire        clock,
                                               frontend_spec_hit_prv,
                                               frontend_spec_hit_epoch);
             frontend_spec_hit_valid <= 0;
-         end else if (fetch_req_speculative && !rf_decode_full &&
+         end else if (fetch_req_speculative &&
+             (!rf_decode_full || rf_decode_pop_this_cycle) &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready && fetch_buf_hit) begin
             frontend_spec_hit_valid <= 1;
@@ -3263,7 +3270,7 @@ module smolrv64(input wire        clock,
             frontend_spec_hit_prv   <= fetch_req_prv;
             frontend_spec_hit_epoch <= fetch_req_epoch;
          end else if (fetch_req_speculative && fetch_req_valid &&
-                      !rf_decode_full &&
+                      (!rf_decode_full || rf_decode_pop_this_cycle) &&
                       !frontend_spec_hit_valid &&
                       !frontend_miss_valid && !frontend_miss_done &&
                       !fetch_req_spec_miss_ready) begin
@@ -3760,6 +3767,7 @@ module smolrv64(input wire        clock,
       mmio_write = 0;
       mmio_read = 0;
       frontend_flush_this_cycle = 0;
+      rf_decode_pop_this_cycle = 0;
       frontend_buf_flush <= 1'b0;
       frontend_buf_fill <= 1'b0;
       dram_read  <= 0;
