@@ -3493,13 +3493,34 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_early_launch_queued_decode;
+      input [63:0] retire_pc;
+      input [ 1:0] retire_prv;
+      output       launched;
+      begin
+         launched = 1'b0;
+         if (!rf_read_valid && rf_decode_valid && !frontend_miss_valid &&
+             write_back_register == 0 && !write_back_fp_valid &&
+             rf_decode_epoch == fetch_epoch &&
+             rf_decode_pc == retire_pc &&
+             rf_decode_prv == retire_prv) begin
+            launch_rf_decode_read();
+            launched = 1'b1;
+         end
+      end
+   endtask
+
    task retire_prepared_fetch;
+      reg early_launched;
       begin
          execute_res_valid <= 0;
-         if (npc == ex_predicted_pc)
-            prepare_current_epoch_fetch(npc, prv);
-         else
+         if (npc == ex_predicted_pc) begin
+            try_early_launch_queued_decode(npc, prv, early_launched);
+            if (!early_launched)
+               prepare_current_epoch_fetch(npc, prv);
+         end else begin
             redirect_retire_fetch(npc, prv);
+         end
          state <= `S_FETCH1;
       end
    endtask
@@ -3982,6 +4003,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
+              rf_read_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -3998,6 +4020,8 @@ module smolrv64(input wire        clock,
                         frontend_miss_matches_retire(npc, prv, fetch_epoch)) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
+           end else if (rf_read_valid) begin
+              state <= `S_RF3;
            end else if (rf_decode_valid && !frontend_miss_valid) begin
               retire_queued_decode_or_refetch();
            end else if (frontend_miss_valid || frontend_miss_done) begin

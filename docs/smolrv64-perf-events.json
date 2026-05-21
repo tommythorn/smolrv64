@@ -1,0 +1,132 @@
+[
+  {
+    "EventName": "CYCLES",
+    "EventCode": "0x0001",
+    "BriefDescription": "Clock cycles (always counts when event is selected)"
+  },
+  {
+    "EventName": "INSTRUCTIONS",
+    "EventCode": "0x0002",
+    "BriefDescription": "Instructions retired"
+  },
+  {
+    "EventName": "CACHE_READ",
+    "EventCode": "0x0100",
+    "BriefDescription": "L1 cache read accesses"
+  },
+  {
+    "EventName": "CACHE_HIT",
+    "EventCode": "0x0101",
+    "BriefDescription": "L1 cache read hits"
+  },
+  {
+    "EventName": "CACHE_MISS",
+    "EventCode": "0x0102",
+    "BriefDescription": "L1 cache read misses"
+  },
+  {
+    "EventName": "CACHE_FILL_LINE",
+    "EventCode": "0x0103",
+    "BriefDescription": "L1 cache lines filled from memory"
+  },
+  {
+    "EventName": "CACHE_FILL_BEAT",
+    "EventCode": "0x0104",
+    "BriefDescription": "AXI beats consumed during L1 cache line fill"
+  },
+  {
+    "EventName": "CACHE_WRITE",
+    "EventCode": "0x0105",
+    "BriefDescription": "L1 cache write accesses"
+  },
+  {
+    "EventName": "AXI_READ",
+    "EventCode": "0x0200",
+    "BriefDescription": "AXI read transactions issued"
+  },
+  {
+    "EventName": "AXI_WRITE",
+    "EventCode": "0x0201",
+    "BriefDescription": "AXI write transactions issued"
+  },
+  {
+    "EventName": "BUS_WAIT_CYCLE",
+    "EventCode": "0x0202",
+    "BriefDescription": "Cycles stalled waiting on the AXI bus"
+  },
+  {
+    "EventName": "TLB_LOOKUP",
+    "EventCode": "0x0300",
+    "BriefDescription": "TLB lookups"
+  },
+  {
+    "EventName": "TLB_HIT",
+    "EventCode": "0x0301",
+    "BriefDescription": "TLB hits (any page size)"
+  },
+  {
+    "EventName": "TLB_MISS",
+    "EventCode": "0x0302",
+    "BriefDescription": "TLB misses (triggers page table walk)"
+  },
+  {
+    "EventName": "TLB_HIT_4K",
+    "EventCode": "0x0303",
+    "BriefDescription": "TLB hits on 4 KiB pages"
+  },
+  {
+    "EventName": "TLB_HIT_2M",
+    "EventCode": "0x0304",
+    "BriefDescription": "TLB hits on 2 MiB megapages"
+  },
+  {
+    "EventName": "TLB_INSERT_4K",
+    "EventCode": "0x0305",
+    "BriefDescription": "4 KiB entries inserted into the TLB"
+  },
+  {
+    "EventName": "TLB_INSERT_2M",
+    "EventCode": "0x0306",
+    "BriefDescription": "2 MiB entries inserted into the TLB"
+  },
+  {
+    "EventName": "TLB_EVICT_4K",
+    "EventCode": "0x0307",
+    "BriefDescription": "4 KiB entries evicted from the TLB"
+  },
+  {
+    "EventName": "TLB_EVICT_2M",
+    "EventCode": "0x0308",
+    "BriefDescription": "2 MiB entries evicted from the TLB"
+  },
+  {
+    "EventName": "TLB_UNCACHED_1G",
+    "EventCode": "0x0309",
+    "BriefDescription": "Accesses to 1 GiB pages (not cached in TLB; walked each time)"
+  },
+  {
+    "EventName": "TLB_UNCACHED_NAPOT",
+    "EventCode": "0x030a",
+    "BriefDescription": "Accesses to NAPOT pages (not cached in TLB; walked each time)"
+  },
+  {
+    "EventName": "PTW_LEAF_4K",
+    "EventCode": "0x0310",
+    "BriefDescription": "Page table walks completing at a 4 KiB leaf"
+  },
+  {
+    "EventName": "PTW_LEAF_2M",
+    "EventCode": "0x0311",
+    "BriefDescription": "Page table walks completing at a 2 MiB leaf"
+  },
+  {
+    "EventName": "PTW_LEAF_1G",
+    "EventCode": "0x0312",
+    "BriefDescription": "Page table walks completing at a 1 GiB leaf"
+  },
+  {
+    "EventName": "PTW_LEAF_NAPOT",
+    "EventCode": "0x0313",
+    "BriefDescription": "Page table walks completing at a NAPOT leaf"
+  }
+]
