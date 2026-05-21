@@ -77,6 +77,9 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   on the existing integer/FP writeback bypass at `S_RF3`.
 - Direct FP move/sign-inject result paths use the same helper.
 - Multiply/divide completion paths use the same helper.
+- While multiply/divide is still running, a matching queued decode can be popped
+  into the RF-read boundary early; RF3 and execution still wait for the older
+  instruction to retire.
 - The delayed FMA `rs3` read now has the same FP writeback bypass as RF3.
 - FP load completions latch boxed FP writeback data before using the helper.
 - The RF read ports prearm to the queued decode head, allowing a retire-stage

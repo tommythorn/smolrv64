@@ -3317,6 +3317,52 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task launch_rf_decode_read_preserve_state;
+      begin
+         if (rf_read_valid) begin
+`ifdef SIMULATE
+            $display("%05d BUG: background launch into busy rf_read stage", $time);
+            $finish;
+`endif
+         end else begin
+            rf_read_valid <= 1;
+            rf_read_pc <= rf_decode_pc;
+            rf_read_next_pc <= rf_decode_next_pc;
+            rf_read_predicted_pc <= rf_decode_predicted_pc;
+            rf_read_insn <= rf_decode_insn;
+            rf_read_prediction_kind <= rf_decode_prediction_kind;
+            rf_read_rd <= rf_decode_rd;
+            rf_read_rs1 <= rf_decode_rs1;
+            rf_read_rs2 <= rf_decode_rs2;
+            rf_read_shamt <= rf_decode_shamt;
+            rs1 <= rf_decode_rs1;
+            rs2 <= rf_decode_rs2;
+            rf_decode_pop_this_cycle = 1'b1;
+            rf_decode_head <= rf_decode_head + 1'b1;
+            rf_decode_count <= rf_decode_count - 1'b1;
+            rf_decode_prearmed <= 0;
+            rf_decode_prearm_block = 1;
+            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT) begin
+               fetch_req_valid <= 1;
+               fetch_req_fast_ready <= 0;
+               fetch_req_speculative <= 1;
+               fetch_req_spec_miss_ready <= 0;
+            end
+         end
+      end
+   endtask
+
+   task try_issue_queued_decode_preserve_state;
+      begin
+         if (!rf_read_valid && rf_decode_valid && !frontend_miss_valid &&
+             rf_decode_epoch == fetch_epoch &&
+             rf_decode_pc == npc &&
+             rf_decode_prv == prv) begin
+            launch_rf_decode_read_preserve_state();
+         end
+      end
+   endtask
+
    function frontend_physical_fetch_ok;
       input [63:0] fetch_pc;
       begin
@@ -3551,9 +3597,13 @@ module smolrv64(input wire        clock,
    task retire_linear_fetch;
       reg early_launched;
       begin
-         try_early_launch_queued_decode(npc, prv, early_launched);
-         if (!early_launched)
-            prepare_current_epoch_fetch(npc, prv);
+         if (rf_read_valid && rf_read_pc == npc) begin
+            fetch_req_fast_ready <= 0;
+         end else begin
+            try_early_launch_queued_decode(npc, prv, early_launched);
+            if (!early_launched)
+               prepare_current_epoch_fetch(npc, prv);
+         end
          state <= `S_FETCH1;
       end
    endtask
@@ -7281,6 +7331,7 @@ module smolrv64(input wire        clock,
                 muldiv_p = muldiv_p + mul_a;
               mul_a = mul_a << 1;
               mul_b = mul_b >> 1;
+              try_issue_queued_decode_preserve_state();
            end else begin
               if (muldiv_output_sext32)
                 write_back_value = {{32{muldiv_p[31]}}, muldiv_p[31:0]};
@@ -7309,6 +7360,7 @@ module smolrv64(input wire        clock,
               end
               mul_a = mul_a >> 1;
               div_count = div_count  - 1;
+              try_issue_queued_decode_preserve_state();
            end else begin
               write_back_value = muldiv_output_negate ? -mul_b : mul_b;
               if (muldiv_output_high_part)
