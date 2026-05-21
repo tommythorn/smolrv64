@@ -3536,6 +3536,16 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_linear_fetch;
+      reg early_launched;
+      begin
+         try_early_launch_queued_decode(npc, prv, early_launched);
+         if (!early_launched)
+            prepare_current_epoch_fetch(npc, prv);
+         state <= `S_FETCH1;
+      end
+   endtask
+
    task retire_redirect_fetch;
       begin
          execute_res_valid <= 0;
@@ -6023,17 +6033,14 @@ module smolrv64(input wire        clock,
         end
 
         `S_EXECUTE2: begin : execute2_stage
-           reg early_launched;
-
-           early_launched = 1'b0;
            if (execute_res_valid) begin
               write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
-              try_early_launch_queued_decode(npc, prv, early_launched);
-           end
-           if (!early_launched)
+              retire_linear_fetch();
+           end else begin
               prepare_current_epoch_fetch(npc, prv);
-           state <= `S_FETCH1;
+              state <= `S_FETCH1;
+           end
         end
 
         `S_FP_INT_COMMIT: begin
@@ -7623,8 +7630,7 @@ module smolrv64(input wire        clock,
            if (dram_store_split) begin
               state <= `S_DRAM_STORE2;
            end else begin
-              prepare_current_epoch_fetch(npc, prv);
-              state <= `S_FETCH1;
+              retire_linear_fetch();
            end
         end
 
