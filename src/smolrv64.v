@@ -6424,7 +6424,10 @@ module smolrv64(input wire        clock,
         end
 
         `S_LOCAL_LOAD: begin
-           state <= `S_FETCH1;
+           if (write_back_fp_valid)
+              state <= `S_FETCH1;
+           else
+              retire_linear_fetch();
            if (do_atomic)
               state <= `S_AMO;
 
@@ -6543,7 +6546,11 @@ module smolrv64(input wire        clock,
            $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
 `endif
 
-           state <= `S_FETCH1;
+           if (write_back_fp_valid) begin
+              prepare_current_epoch_fetch(npc, prv);
+              state <= `S_FETCH1;
+           end else
+              retire_linear_fetch();
 
            if (do_atomic) begin
 `ifdef SIMULATE
@@ -7541,12 +7548,13 @@ module smolrv64(input wire        clock,
                    6: write_back_value = {{32{combo[31]}}, combo[31:0]};
                    default: write_back_value = 0;
                  endcase
-                 if (do_atomic)
-                    state <= `S_AMO;
-                 else begin
+              if (do_atomic)
+                 state <= `S_AMO;
+                 else if (write_back_fp_valid) begin
                     prepare_current_epoch_fetch(npc, prv);
                     state <= `S_FETCH1;
-                 end
+                 end else
+                    retire_linear_fetch();
               end else begin
                  // Access crosses a cache-line boundary and the second line
                  // missed during the parallel lookup; request it only now.
@@ -7573,10 +7581,11 @@ module smolrv64(input wire        clock,
               endcase
               if (do_atomic)
                  state <= `S_AMO;
-              else begin
+              else if (write_back_fp_valid) begin
                  prepare_current_epoch_fetch(npc, prv);
                  state <= `S_FETCH1;
-              end
+              end else
+                 retire_linear_fetch();
            end
         end
 
@@ -7597,10 +7606,11 @@ module smolrv64(input wire        clock,
            end
            if (do_atomic)
               state <= `S_AMO;
-           else begin
+           else if (write_back_fp_valid) begin
               prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
-           end
+           end else
+              retire_linear_fetch();
         end
 
         `S_DRAM_STORE_WAIT: if (dram_write_ready) begin
