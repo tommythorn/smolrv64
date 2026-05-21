@@ -47,6 +47,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   retirement against that payload instead of re-deriving the prediction.
 - The frontend fetch window is keyed by ASID as well as VA and privilege, so
   widening the frontend cannot reuse a virtual line from another address space.
+- Redirects now suppress same-cycle post-case speculative frontend enqueue/miss
+  launch, so younger fallthrough work cannot be recreated after a backend flush.
 - `next_pc` and frontend epoch travel with the queued instruction.
 - A validated queued decode can launch RF read immediately.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read

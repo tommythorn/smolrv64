@@ -3464,6 +3464,7 @@ module smolrv64(input wire        clock,
       input [ 1:0] redirect_prv;
       reg   [FRONTEND_EPOCH_BITS-1:0] redirect_epoch;
       begin
+         frontend_flush_this_cycle = 1;
          redirect_epoch = fetch_epoch + 1'b1;
          fetch_epoch <= redirect_epoch;
          rf_decode_head <= 0;
@@ -7618,10 +7619,12 @@ module smolrv64(input wire        clock,
 
       endcase
 
-      if (!core_reset_now && frontend_spec_fetch_state(state))
+      if (!core_reset_now && !frontend_flush_this_cycle &&
+          frontend_spec_fetch_state(state))
          try_frontend_speculative_fetch_buf_enqueue();
 
-      if (!core_reset_now && frontend_spec_miss_state(state))
+      if (!core_reset_now && !frontend_flush_this_cycle &&
+          frontend_spec_miss_state(state))
          try_frontend_speculative_miss_start();
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
