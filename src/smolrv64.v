@@ -1128,6 +1128,10 @@ module smolrv64(input wire        clock,
    reg          fetch_req_spec_miss_ready = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_req_epoch = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_epoch = 0;
+   reg          frontend_redirect_valid = 0;
+   reg  [63:0] frontend_redirect_pc = `RESET_PC;
+   reg  [ 1:0] frontend_redirect_prv = 3;
+   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_redirect_epoch = 0;
    // Speculative frontend cache miss.  The single global FSM still owns TLB
    // and ordinary fetch misses; this side buffer only overlaps physical
    // cacheable misses with long non-memory backend states.
@@ -3032,6 +3036,7 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
+         frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3085,6 +3090,7 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
+         frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3558,6 +3564,15 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task issue_frontend_redirect;
+      begin
+         prepare_retire_fetch(frontend_redirect_pc,
+                              frontend_redirect_prv,
+                              frontend_redirect_epoch);
+         frontend_redirect_valid <= 0;
+      end
+   endtask
+
    task redirect_retire_fetch;
       input [63:0] redirect_pc;
       input [ 1:0] redirect_prv;
@@ -3576,7 +3591,11 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
-         prepare_retire_fetch(redirect_pc, redirect_prv, redirect_epoch);
+         fetch_req_spec_miss_ready <= 0;
+         frontend_redirect_valid <= 1;
+         frontend_redirect_pc <= redirect_pc;
+         frontend_redirect_prv <= redirect_prv;
+         frontend_redirect_epoch <= redirect_epoch;
       end
    endtask
 
@@ -4154,6 +4173,7 @@ module smolrv64(input wire        clock,
               rf_decode_prearm_block = 1;
               frontend_decode_pending_valid <= 0;
               frontend_decode_pending_drain = 0;
+              frontend_redirect_valid <= 0;
               cause = pre_intr_cause;
               cause_intr = 1;
               tval = 0;
@@ -4174,6 +4194,12 @@ module smolrv64(input wire        clock,
            end else if (frontend_miss_valid || frontend_miss_done) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
+           end else if (frontend_redirect_valid) begin
+              fetch_req_valid <= 0;
+              fetch_req_fast_ready <= 0;
+              fetch_req_speculative <= 0;
+              fetch_req_spec_miss_ready <= 0;
+              state <= `S_FETCH_REQ;
            end else if (fetch_req_fast_ready && fetch_req_valid) begin
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH_BUF_CHECK;
@@ -4198,7 +4224,10 @@ module smolrv64(input wire        clock,
            end
 `endif
 
-           if (!fetch_req_valid) begin
+           if (frontend_redirect_valid) begin
+              issue_frontend_redirect();
+              state <= `S_FETCH_REQ;
+           end else if (!fetch_req_valid) begin
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH1;
            end else if ((csr_satp[63:60] != 4'd8 || fetch_req_prv == 2'd3) &&
@@ -7229,6 +7258,7 @@ module smolrv64(input wire        clock,
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
            fetch_req_spec_miss_ready <= 0;
+           frontend_redirect_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
            rf_decode_head <= 0;
@@ -7910,6 +7940,10 @@ module smolrv64(input wire        clock,
          fetch_req_pc <= `RESET_PC;
          fetch_req_prv <= 3;
          fetch_req_asid <= 0;
+         frontend_redirect_valid <= 0;
+         frontend_redirect_pc <= `RESET_PC;
+         frontend_redirect_prv <= 3;
+         frontend_redirect_epoch <= 0;
          fetch_buf_latched_hit <= 0;
          fetch_buf_latched_insn <= 0;
          fetch_buf_latched_offset <= 0;
