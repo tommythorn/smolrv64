@@ -1148,7 +1148,7 @@ module smolrv64(input wire        clock,
    // Register/decode request boundary. The frontend can now run a little
    // ahead of retirement on fetch-window hits; retirement consumes the oldest
    // matching entry and launches the BRAM register-file read.
-   localparam RF_DECODE_QUEUE_BITS = 2;
+   localparam RF_DECODE_QUEUE_BITS = 3;
    localparam RF_DECODE_QUEUE_DEPTH = 1 << RF_DECODE_QUEUE_BITS;
    localparam [RF_DECODE_QUEUE_BITS:0] RF_DECODE_QUEUE_DEPTH_COUNT =
       (1 << RF_DECODE_QUEUE_BITS);

@@ -26,7 +26,7 @@ toward preserving the old FSM state structure.
 
 The current kept work is a transitional overlap mechanism inside the old FSM:
 
-- `rf_decode_valid` is now backed by a four-entry frontend/backend handoff
+- `rf_decode_valid` is now backed by an eight-entry frontend/backend handoff
   queue.
 - The frontend/decode handoff now carries decoded register indexes and shift
   amount, so backend queue consumption launches the register-file read from
