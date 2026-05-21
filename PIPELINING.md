@@ -44,8 +44,12 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   backend execute request, so backend traps are no longer coupled to the most
   recent frontend fetch accept.
 - The frontend's predicted next PC and prediction kind now travel with each
-  fetched instruction through decode, RF, and execute; the backend compares
-  retirement against that payload instead of re-deriving the prediction.
+  fetched instruction through decode, RF, and execute as a separate payload
+  from the architectural fallthrough PC; the backend compares retirement
+  against the predicted PC without corrupting link/fallthrough semantics.
+- The frontend now predicts direct JAL/C.J targets and backward conditional
+  branches; the backend keeps the same epoch/redirect recovery contract for
+  misses and mispredictions.
 - The frontend fetch window is keyed by ASID as well as VA and privilege, so
   widening the frontend cannot reuse a virtual line from another address space.
 - Redirects now suppress same-cycle post-case speculative frontend enqueue/miss
