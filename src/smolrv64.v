@@ -7268,7 +7268,7 @@ module smolrv64(input wire        clock,
                    write_back_value = muldiv_p[63:0];
               end
 
-              state <= `S_FETCH1;
+              retire_linear_fetch();
            end
         end
 
@@ -7290,7 +7290,7 @@ module smolrv64(input wire        clock,
               if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
 
-              state <= `S_FETCH1;
+              retire_linear_fetch();
            end
         end
 
