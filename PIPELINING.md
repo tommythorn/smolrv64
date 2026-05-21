@@ -45,6 +45,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
 - The frontend's predicted next PC and prediction kind now travel with each
   fetched instruction through decode, RF, and execute; the backend compares
   retirement against that payload instead of re-deriving the prediction.
+- The frontend fetch window is keyed by ASID as well as VA and privilege, so
+  widening the frontend cannot reuse a virtual line from another address space.
 - `next_pc` and frontend epoch travel with the queued instruction.
 - A validated queued decode can launch RF read immediately.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read

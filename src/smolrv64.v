@@ -1056,6 +1056,7 @@ module smolrv64(input wire        clock,
    reg          frontend_buf_fill = 0;
    reg  [63:0]  frontend_buf_fill_base_va = 0;
    reg  [ 1:0]  frontend_buf_fill_prv = 0;
+   reg  [TLB_ASID_BITS-1:0] frontend_buf_fill_asid = 0;
    reg  [127:0] frontend_buf_fill_data = 0;
    wire         fetch_buf_addr_hit;
    wire         fetch_buf_full_insn_hit;
@@ -1121,6 +1122,7 @@ module smolrv64(input wire        clock,
    reg          fetch_req_valid = 0;
    reg  [63:0]  fetch_req_pc = `RESET_PC;
    reg  [ 1:0]  fetch_req_prv = 3;
+   reg  [TLB_ASID_BITS-1:0] fetch_req_asid = 0;
    reg          fetch_req_fast_ready = 0;
    reg          fetch_req_speculative = 0;
    reg          fetch_req_spec_miss_ready = 0;
@@ -1142,6 +1144,7 @@ module smolrv64(input wire        clock,
    reg          frontend_flush_this_cycle = 0;
    reg  [63:0]  frontend_miss_pc = `RESET_PC;
    reg  [ 1:0]  frontend_miss_prv = 3;
+   reg  [TLB_ASID_BITS-1:0] frontend_miss_asid = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] frontend_miss_epoch = 0;
    reg  [63:0]  frontend_miss_data = 0;
    reg  [63:0]  frontend_miss_next_data = 0;
@@ -1897,10 +1900,12 @@ module smolrv64(input wire        clock,
       .fill(frontend_buf_fill),
       .fill_base_va(frontend_buf_fill_base_va),
       .fill_prv(frontend_buf_fill_prv),
+      .fill_asid(frontend_buf_fill_asid),
       .fill_data(frontend_buf_fill_data),
       .req_valid(fetch_req_valid),
       .req_pc(fetch_req_pc),
       .req_prv(fetch_req_prv),
+      .req_asid(fetch_req_asid),
       .req_epoch(fetch_req_epoch),
       .hit(fetch_buf_hit),
       .addr_hit(fetch_buf_addr_hit),
@@ -2732,6 +2737,16 @@ module smolrv64(input wire        clock,
       satp_tlb_key(csr_satp);
    wire [TLB_ASID_BITS-1:0] current_cache_asid =
       csr_satp[63:60] == 4'd8 ? csr_satp[53:44] : {TLB_ASID_BITS{1'b0}};
+
+   function [TLB_ASID_BITS-1:0] fetch_asid_for_context;
+      input [1:0] fetch_prv;
+      begin
+         fetch_asid_for_context =
+            (csr_satp[63:60] == 4'd8 && fetch_prv != 2'd3) ?
+            csr_satp[53:44] : {TLB_ASID_BITS{1'b0}};
+      end
+   endfunction
+
    wire [TLB_4K_TAG_BITS-1:0]    tlb_4k_rd_tag =
       tlb_4k_rd_data[TLB_4K_TAG_LSB +: TLB_4K_TAG_BITS];
    wire [TLB_4K_PBASE_BITS-1:0]  tlb_4k_rd_pbase =
@@ -3379,6 +3394,7 @@ module smolrv64(input wire        clock,
             frontend_miss_done       <= 0;
             frontend_miss_pc         <= fetch_req_pc;
             frontend_miss_prv        <= fetch_req_prv;
+            frontend_miss_asid       <= fetch_req_asid;
             frontend_miss_epoch      <= fetch_req_epoch;
             frontend_miss_next_valid <= 0;
             fetch_req_spec_miss_ready <= 0;
@@ -3404,10 +3420,11 @@ module smolrv64(input wire        clock,
                         {64'bx, frontend_miss_data};
          miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
          if (fill_base[11:0] <= 12'hff0 && frontend_miss_next_valid) begin
-            frontend_buf_fill         <= 1'b1;
-            frontend_buf_fill_base_va <= fill_base;
-            frontend_buf_fill_prv     <= frontend_miss_prv;
-            frontend_buf_fill_data    <= miss_aligned;
+         frontend_buf_fill         <= 1'b1;
+         frontend_buf_fill_base_va <= fill_base;
+         frontend_buf_fill_prv     <= frontend_miss_prv;
+         frontend_buf_fill_asid    <= frontend_miss_asid;
+         frontend_buf_fill_data    <= miss_aligned;
          end
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
@@ -3426,6 +3443,7 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 1;
          fetch_req_pc <= prepare_pc;
          fetch_req_prv <= prepare_prv;
+         fetch_req_asid <= fetch_asid_for_context(prepare_prv);
          fetch_req_epoch <= prepare_epoch;
          fetch_req_fast_ready <= 1;
          fetch_req_speculative <= 0;
@@ -4151,6 +4169,7 @@ module smolrv64(input wire        clock,
               frontend_buf_fill         <= 1'b1;
               frontend_buf_fill_base_va <= fetch_buf_fill_base_va;
               frontend_buf_fill_prv     <= fetch_req_prv;
+              frontend_buf_fill_asid    <= fetch_req_asid;
               frontend_buf_fill_data    <= aligned;
            end
            insn = aligned >> (fetch_req_pc[2:1] * 16);
@@ -7711,6 +7730,7 @@ module smolrv64(input wire        clock,
          fetch_epoch <= 0;
          fetch_req_pc <= `RESET_PC;
          fetch_req_prv <= 3;
+         fetch_req_asid <= 0;
          frontend_spec_hit_valid <= 0;
          frontend_spec_hit_pc <= `RESET_PC;
          frontend_spec_hit_next_pc <= `RESET_PC;
@@ -7727,6 +7747,7 @@ module smolrv64(input wire        clock,
          frontend_miss_done <= 0;
          frontend_miss_pc <= `RESET_PC;
          frontend_miss_prv <= 3;
+         frontend_miss_asid <= 0;
          frontend_miss_epoch <= 0;
          frontend_miss_data <= 0;
          frontend_miss_next_data <= 0;
@@ -8752,11 +8773,13 @@ module smolrv64_frontend #(
    input  wire                  fill,
    input  wire [63:0]           fill_base_va,
    input  wire [ 1:0]           fill_prv,
+   input  wire [TLB_ASID_BITS-1:0] fill_asid,
    input  wire [127:0]          fill_data,
 
    input  wire                  req_valid,
    input  wire [63:0]           req_pc,
    input  wire [ 1:0]           req_prv,
+   input  wire [TLB_ASID_BITS-1:0] req_asid,
    input  wire [EPOCH_BITS-1:0] req_epoch,
 
    output wire                  hit,
@@ -8811,6 +8834,7 @@ module smolrv64_frontend #(
    reg  [63:0]  buf_base_va = 0;
    reg  [59:0]  buf_next_va_hi = 0;
    reg  [ 1:0]  buf_prv = 0;
+   reg  [TLB_ASID_BITS-1:0] buf_asid = 0;
    reg  [127:0] buf_data = 0;
 
    function [31:0] pick_insn;
@@ -8830,7 +8854,8 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   wire        context_hit = req_valid && buf_valid && buf_prv == req_prv;
+   wire        context_hit = req_valid && buf_valid &&
+                              buf_prv == req_prv && buf_asid == req_asid;
    wire        addr_same_hi = req_pc[63:4] == buf_base_va[63:4];
    wire        addr_next_hi = req_pc[63:4] == buf_next_va_hi;
 
@@ -8879,6 +8904,7 @@ module smolrv64_frontend #(
          buf_base_va    <= fill_base_va;
          buf_next_va_hi <= fill_base_va[63:4] + 60'd1;
          buf_prv        <= fill_prv;
+         buf_asid       <= fill_asid;
          buf_data       <= fill_data;
       end
    end
