@@ -77,6 +77,7 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   on the existing integer/FP writeback bypass at `S_RF3`.
 - Cache-backed store completions use the same linear-retire helper, so hits can
   launch the next matching RF read without re-entering fetch setup.
+- Local/MMIO store exits also use the helper after side effects are issued.
 - CBO completion/non-cacheable no-op exits use the same no-writeback helper.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
   in the same cycle.

@@ -6132,7 +6132,7 @@ module smolrv64(input wire        clock,
               start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
            end else if (phys_region(mem_addr) == `REGION_UART) begin
               translated <= 0;
-              state <= `S_FETCH1;
+              retire_linear_fetch();
               reservation <= ~0;
 
               // Keep UART writes on the original store cycle; only BRAM writes
@@ -6190,7 +6190,7 @@ module smolrv64(input wire        clock,
 
         `S_STORE_COMMIT: begin
            translated <= 0;
-           state <= `S_FETCH1;
+           retire_linear_fetch();
            reservation <= ~0;
 
 `ifdef RISCV_TESTS
