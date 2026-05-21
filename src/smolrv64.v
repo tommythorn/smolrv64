@@ -3356,13 +3356,15 @@ module smolrv64(input wire        clock,
              !fetch_req_spec_miss_ready &&
              frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv) &&
              fetch_buf_hit) begin
-            frontend_spec_hit_valid <= 1;
-            frontend_spec_hit_pc    <= fetch_req_pc;
-            frontend_spec_hit_next_pc <= fetch_buf_predicted_next_pc;
-            frontend_spec_hit_insn  <= fetch_buf_insn;
-            frontend_spec_hit_prv   <= fetch_req_prv;
-            frontend_spec_hit_epoch <= fetch_req_epoch;
-            frontend_spec_hit_prediction_kind <= fetch_buf_prediction_kind;
+            enqueue_rf_decode_speculative_hit(fetch_req_pc,
+                                              frontend_fallthrough_pc(
+                                                 fetch_req_pc,
+                                                 fetch_buf_insn),
+                                              fetch_buf_predicted_next_pc,
+                                              fetch_buf_insn,
+                                              fetch_req_prv,
+                                              fetch_req_epoch,
+                                              fetch_buf_prediction_kind);
          end else if (fetch_req_speculative && fetch_req_valid &&
                       (!rf_decode_full || rf_decode_pop_this_cycle) &&
                       !frontend_spec_hit_valid &&

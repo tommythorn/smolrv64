@@ -35,6 +35,9 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   instead of bypassing directly into register-file read.
 - The decode queue now handles same-cycle backend pop plus frontend push, so
   frontend hits can enqueue while RF dispatch consumes the oldest entry.
+- Speculative frontend hit enqueues now happen directly from the fetch-window
+  hit result, letting the frontend advance on consecutive hit cycles until the
+  backend handoff queue fills.
 - Speculative frontend fetch probing is gated to addresses that are safe to
   touch speculatively; bare physical access faults stay on the in-order retire
   path.
