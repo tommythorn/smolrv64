@@ -1206,6 +1206,18 @@ module smolrv64(input wire        clock,
    wire [ 4:0]  rf3_rs1 = rf_read_rs1;
    wire [ 4:0]  rf3_rs2 = rf_read_rs2;
    wire [ 5:0]  rf3_shamt = rf_read_shamt;
+   wire [63:0]  rf3_s1_value =
+      (write_back_register != 0 && rf3_rs1 == write_back_register) ?
+      write_back_value : s1_bram;
+   wire [63:0]  rf3_s2_value =
+      (write_back_register != 0 && rf3_rs2 == write_back_register) ?
+      write_back_value : s2_bram;
+   wire [63:0]  rf3_f1_value =
+      (write_back_fp_valid && rf3_rs1 == write_back_fp_register) ?
+      fp_writeback_data : f1_bram;
+   wire [63:0]  rf3_f2_value =
+      (write_back_fp_valid && rf3_rs2 == write_back_fp_register) ?
+      fp_writeback_data : f2_bram;
 
    // VHPR write-back L1 for BRAM/DRAM.  The hit lookup is virtual
    // (ASID + virtual tag) while miss, writeback, and CBO reconciliation use
@@ -3500,7 +3512,6 @@ module smolrv64(input wire        clock,
       begin
          launched = 1'b0;
          if (!rf_read_valid && rf_decode_valid && !frontend_miss_valid &&
-             write_back_register == 0 && !write_back_fp_valid &&
              rf_decode_epoch == fetch_epoch &&
              rf_decode_pc == retire_pc &&
              rf_decode_prv == retire_prv) begin
@@ -4194,19 +4205,20 @@ module smolrv64(input wire        clock,
         end
 
         `S_RF3: begin
-           // Register BRAM output into s1/s2 flip-flops.
-           // s1_bram/s2_bram are now valid (BRAM read with new rs1/rs2 completed in S_RF2).
-           s1 <= s1_bram;
-           s2 <= s2_bram;
-           f1 <= f1_bram;
-           f2 <= f2_bram;
+           // Register RF output into s1/s2/f1/f2 flip-flops.  Early launch can
+           // overlap this read with the previous retire's writeback, so use the
+           // local writeback bypass before latching operands.
+           s1 <= rf3_s1_value;
+           s2 <= rf3_s2_value;
+           f1 <= rf3_f1_value;
+           f2 <= rf3_f2_value;
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
-           reservation_match <= (reservation == s1_bram);
-           pre_mul_abs_s1  <= s1_bram[63] ? -s1_bram : s1_bram;
-           pre_mul_abs_s2  <= s2_bram[63] ? -s2_bram : s2_bram;
-           pre_mul_abs_s1w <= s1_bram[31] ? -s1_bram[31:0] : s1_bram[31:0];
-           pre_mul_abs_s2w <= s2_bram[31] ? -s2_bram[31:0] : s2_bram[31:0];
+           reservation_match <= (reservation == rf3_s1_value);
+           pre_mul_abs_s1  <= rf3_s1_value[63] ? -rf3_s1_value : rf3_s1_value;
+           pre_mul_abs_s2  <= rf3_s2_value[63] ? -rf3_s2_value : rf3_s2_value;
+           pre_mul_abs_s1w <= rf3_s1_value[31] ? -rf3_s1_value[31:0] : rf3_s1_value[31:0];
+           pre_mul_abs_s2w <= rf3_s2_value[31] ? -rf3_s2_value[31:0] : rf3_s2_value[31:0];
            rf_read_valid <= 0;
            execute_req_pc <= rf3_pc;
            execute_req_next_pc <= rf3_next_pc;
@@ -4221,7 +4233,8 @@ module smolrv64(input wire        clock,
            state <= `S_BRANCH_RESOLVE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
-           // rf3_insn, rf3_pc are registered FFs; s2_bram is the BRAM combinational output.
+           // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
+           // after same-cycle writeback bypass.
            // All assignments use <= so they register into pre_exe_op/pre_exe_b/pre_exe_sxt.
            // Immediates are computed inline (1-3 LUT from insn_reg) rather than read from
            // the imm_i/imm_u registers (which are only updated with = inside S_EXECUTE).
@@ -4281,28 +4294,28 @@ module smolrv64(input wire        clock,
               end
               else if ((rf3_insn & 'hfc63) == 'h8c01) begin // C.SUB
                  pre_exe_op <= `EXOP_SUB;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c21) begin // C.XOR
                  pre_exe_op <= `EXOP_XOR;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c41) begin // C.OR
                  pre_exe_op <= `EXOP_OR;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c61) begin // C.AND
                  pre_exe_op <= `EXOP_AND;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h9c01) begin // C.SUBW
                  pre_exe_op  <= `EXOP_SUB;
-                 pre_exe_b   <= s2_bram;
+                 pre_exe_b   <= rf3_s2_value;
                  pre_exe_sxt <= 1;
               end
               else if ((rf3_insn & 'hfc63) == 'h9c21) begin // C.ADDW
                  pre_exe_op  <= `EXOP_ADD;
-                 pre_exe_b   <= s2_bram;
+                 pre_exe_b   <= rf3_s2_value;
                  pre_exe_sxt <= 1;
               end
 
@@ -4316,7 +4329,7 @@ module smolrv64(input wire        clock,
               end
               else if ((rf3_insn & 'hf003) == 'h8002) begin // C.MV
                  pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR (link = rf3_pc+2)
                  pre_exe_op <= `EXOP_OPB;
@@ -4324,7 +4337,7 @@ module smolrv64(input wire        clock,
               end
               else if ((rf3_insn & 'hf003) == 'h9002) begin // C.ADD
                  pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= s2_bram;
+                 pre_exe_b  <= rf3_s2_value;
               end
 
               // ---- 32-bit instructions (rf3_insn[1:0] == 2'b11) ----
@@ -4363,7 +4376,7 @@ module smolrv64(input wire        clock,
                        endcase
                     end
                     5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
-                       pre_exe_b <= s2_bram;
+                       pre_exe_b <= rf3_s2_value;
                        case (rf3_insn[14:12])
                           3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
                           3'b001: pre_exe_op <= `EXOP_SHL;  // SLL
@@ -4390,7 +4403,7 @@ module smolrv64(input wire        clock,
                     end
                     5'b01110: begin // OP-REG-32 (W-type register)
                        pre_exe_sxt <= 1;
-                       pre_exe_b <= s2_bram;
+                       pre_exe_b <= rf3_s2_value;
                        case (rf3_insn[14:12])
                           3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
                           3'b001: pre_exe_op <= `EXOP_SHL;  // SLLW

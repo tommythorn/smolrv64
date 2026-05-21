@@ -66,9 +66,11 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   validation cycle.
 - The legacy `S_RF` dispatch state has no producer left; decode queue dispatch
   and current fetch accept both launch directly into the `rf_read_*` boundary.
-- Retiring instructions with no integer/FP writeback can pre-launch a matching
-  queued decode into `rf_read_*`; the following retire bookkeeping cycle can
-  advance straight to `S_RF3` unless an interrupt flushes the younger read.
+- Retiring instructions can pre-launch a matching queued decode into
+  `rf_read_*`; the following retire bookkeeping cycle can advance straight to
+  `S_RF3` unless an interrupt flushes the younger read.
+- `S_RF3` has an explicit same-cycle writeback bypass for integer and FP
+  register reads, so the pre-launch path can also overlap writeback retirees.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
   in the same cycle.
 - Speculative fetch-buffer hits can be consumed while selected backend states
