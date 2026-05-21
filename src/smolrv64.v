@@ -6116,13 +6116,13 @@ module smolrv64(input wire        clock,
                  state <= `S_CBO_WAIT;
               end
            end else begin
-              state <= `S_FETCH1;
+              retire_linear_fetch();
            end
         end
 
         `S_CBO_WAIT: begin
            if (cache_cbo_done)
-              state <= `S_FETCH1;
+              retire_linear_fetch();
         end
 
         `S_STORE: begin
