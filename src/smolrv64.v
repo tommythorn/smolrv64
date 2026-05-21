@@ -2905,6 +2905,7 @@ module smolrv64(input wire        clock,
       input [5:0] s;
       begin
          case (s)
+           `S_RF,
            `S_RF2,
            `S_RF3,
            `S_LOAD_ALIGN,
@@ -3244,7 +3245,8 @@ module smolrv64(input wire        clock,
       begin
          if (frontend_spec_hit_valid && frontend_spec_hit_epoch != fetch_epoch) begin
             frontend_spec_hit_valid <= 0;
-         end else if (frontend_spec_hit_valid && !rf_decode_full &&
+         end else if (frontend_spec_hit_valid && state != `S_RF &&
+             !rf_decode_full &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready) begin
             enqueue_rf_decode_speculative_hit(frontend_spec_hit_pc,

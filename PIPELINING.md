@@ -32,6 +32,10 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   registered payload fields instead of re-decoding the instruction.
 - The ordinary fetched-instruction path now stages through that handoff queue
   instead of bypassing directly into register-file read.
+- The backend RF dispatch state can now probe the frontend fetch buffer and
+  latch a speculative hit while the queue entry is being consumed; the latched
+  hit is enqueued in the following RF wait stage to avoid same-cycle queue
+  pop/push counter hazards.
 - Register-file read launch is split from decode enqueue with an `rf_read_*`
   payload.
 - `next_pc` and frontend epoch travel with the queued instruction.
