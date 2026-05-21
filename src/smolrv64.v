@@ -6057,7 +6057,9 @@ module smolrv64(input wire        clock,
         `S_CVFPU_FMA_RF3: begin
            cvfpu_operands[0] <= f1;
            cvfpu_operands[1] <= f2;
-           cvfpu_operands[2] <= f1_bram;
+           cvfpu_operands[2] <= (write_back_fp_valid &&
+                                 ex_insn[31:27] == write_back_fp_register) ?
+                                fp_writeback_data : f1_bram;
            cvfpu_rnd_mode <= pre_fp_rnd_mode;
            cvfpu_op       <= ex_insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
            cvfpu_op_mod   <= ex_insn[2]; // add/sub variant
