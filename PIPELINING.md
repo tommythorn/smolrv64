@@ -79,6 +79,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
 - Multiply/divide completion paths use the same helper.
 - The delayed FMA `rs3` read now has the same FP writeback bypass as RF3.
 - FP load completions latch boxed FP writeback data before using the helper.
+- Queued decodes consumed from the retire stage now advance directly to RF3
+  after launching the register-file read.
 - Cache-backed store completions use the same linear-retire helper, so hits can
   launch the next matching RF read without re-entering fetch setup.
 - Local/MMIO store exits also use the helper after side effects are issued.
