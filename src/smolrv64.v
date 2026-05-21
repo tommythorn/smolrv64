@@ -930,13 +930,11 @@ module smolrv64(input wire        clock,
    wire [ 5:0] ex_shamt = execute_req_shamt;
    reg         execute_res_valid = 0;
 
-   // FP load retiring: data came through write_back_value (integer path). NaN-box FLW (size=010).
-   // FP bit-ops set pre_mem_fp=0; their result is already in write_back_fp_value.
-   wire        fp_load_retiring   = write_back_fp_valid && pre_mem_fp;
-   wire [63:0] fp_writeback_data  = fp_load_retiring
-                                    ? (load_size_lg2[0] ? write_back_value
-                                                        : {32'hffffffff, write_back_value[31:0]})
-                                    : write_back_fp_value;
+   // FP load completions latch their boxed result into write_back_fp_value
+   // before retire. Keeping writeback data independent of pre_mem_fp lets an
+   // early-launched next instruction predecode without changing the bypassed
+   // value from the retiring FP load.
+   wire [63:0] fp_writeback_data = write_back_fp_value;
 
    // Pre-registered interrupt check: computed every cycle, consumed in S_FETCH1.
    // Breaks the mtip_reg → cause_priority_encode → state_reg path (~10 LUT levels)
@@ -3543,6 +3541,15 @@ module smolrv64(input wire        clock,
          if (!early_launched)
             prepare_current_epoch_fetch(npc, prv);
          state <= `S_FETCH1;
+      end
+   endtask
+
+   task finish_load_writeback;
+      begin
+         if (write_back_fp_valid)
+            write_back_fp_value = load_size_lg2[0] ?
+                                  write_back_value :
+                                  {32'hffffffff, write_back_value[31:0]};
       end
    endtask
 
@@ -6426,9 +6433,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_LOCAL_LOAD: begin
-           if (write_back_fp_valid)
-              state <= `S_FETCH1;
-           else
+           if (!do_atomic)
               retire_linear_fetch();
            if (do_atomic)
               state <= `S_AMO;
@@ -6517,6 +6522,7 @@ module smolrv64(input wire        clock,
               state <= `S_EXCEPTION;
              end
            endcase
+           finish_load_writeback();
         end
 
         `S_MMIO_READ: state <= `S_MMIO_ALIGN;
@@ -6548,11 +6554,8 @@ module smolrv64(input wire        clock,
            $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
 `endif
 
-           if (write_back_fp_valid) begin
-              prepare_current_epoch_fetch(npc, prv);
-              state <= `S_FETCH1;
-           end else
-              retire_linear_fetch();
+           finish_load_writeback();
+           retire_linear_fetch();
 
            if (do_atomic) begin
 `ifdef SIMULATE
@@ -7550,12 +7553,10 @@ module smolrv64(input wire        clock,
                    6: write_back_value = {{32{combo[31]}}, combo[31:0]};
                    default: write_back_value = 0;
                  endcase
+              finish_load_writeback();
               if (do_atomic)
                  state <= `S_AMO;
-                 else if (write_back_fp_valid) begin
-                    prepare_current_epoch_fetch(npc, prv);
-                    state <= `S_FETCH1;
-                 end else
+                 else
                     retire_linear_fetch();
               end else begin
                  // Access crosses a cache-line boundary and the second line
@@ -7581,12 +7582,10 @@ module smolrv64(input wire        clock,
                 6: write_back_value = {{32{aligned[31]}}, aligned[31:0]};
                 default: write_back_value = 0;
               endcase
+              finish_load_writeback();
               if (do_atomic)
                  state <= `S_AMO;
-              else if (write_back_fp_valid) begin
-                 prepare_current_epoch_fetch(npc, prv);
-                 state <= `S_FETCH1;
-              end else
+              else
                  retire_linear_fetch();
            end
         end
@@ -7606,12 +7605,10 @@ module smolrv64(input wire        clock,
                 default: write_back_value = 0;
               endcase
            end
+           finish_load_writeback();
            if (do_atomic)
               state <= `S_AMO;
-           else if (write_back_fp_valid) begin
-              prepare_current_epoch_fetch(npc, prv);
-              state <= `S_FETCH1;
-           end else
+           else
               retire_linear_fetch();
         end
 
