@@ -55,7 +55,9 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
 - Redirects now suppress same-cycle post-case speculative frontend enqueue/miss
   launch, so younger fallthrough work cannot be recreated after a backend flush.
 - `next_pc` and frontend epoch travel with the queued instruction.
-- A validated queued decode can launch RF read immediately.
+- A validated queued decode can launch RF read directly from the retire cycle;
+  matching speculative frontend work no longer bounces through an extra `S_RF`
+  validation cycle.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
   in the same cycle.
 - Speculative fetch-buffer hits can be consumed while selected backend states

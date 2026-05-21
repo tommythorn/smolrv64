@@ -3297,6 +3297,7 @@ module smolrv64(input wire        clock,
             rf_read_shamt <= rf_decode_shamt;
             rs1 <= rf_decode_rs1;
             rs2 <= rf_decode_rs2;
+            rf_decode_match_q <= 1'b0;
             rf_decode_pop_this_cycle = 1'b1;
             rf_decode_head <= rf_decode_head + 1'b1;
             rf_decode_count <= rf_decode_count - 1'b1;
@@ -3499,22 +3500,19 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task prepare_queued_decode_or_refetch;
+   task retire_queued_decode_or_refetch;
+      input forced_match;
+      reg   queued_match;
       begin
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
-         rf_decode_match_q <= (rf_decode_epoch == fetch_epoch &&
-                               rf_decode_pc == npc &&
-                               rf_decode_prv == prv);
-         state <= `S_RF;
-      end
-   endtask
-
-   task retire_queued_decode_or_refetch;
-      begin
-         if (rf_decode_match_q) begin
+         queued_match = forced_match ||
+                        (rf_decode_epoch == fetch_epoch &&
+                         rf_decode_pc == npc &&
+                         rf_decode_prv == prv);
+         if (queued_match) begin
             insn <= rf_decode_insn;
             fetch_from_dram <= rf_decode_from_dram;
             translated <= 0;
@@ -4035,7 +4033,7 @@ module smolrv64(input wire        clock,
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
            end else if (rf_decode_valid && !frontend_miss_valid) begin
-              prepare_queued_decode_or_refetch();
+              retire_queued_decode_or_refetch(1'b0);
            end else if (frontend_miss_valid || frontend_miss_done) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
@@ -4202,7 +4200,7 @@ module smolrv64(input wire        clock,
 
         `S_RF: begin
            if (rf_decode_valid) begin
-              retire_queued_decode_or_refetch();
+              retire_queued_decode_or_refetch(rf_decode_match_q);
            end else begin
               state <= `S_FETCH1;
            end
