@@ -629,7 +629,8 @@ module smolrv64(input wire        clock,
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
 `define S_BRANCH_RESOLVE       56  // resolve branch/JALR from registered RF operands
 `define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
-`define S_LAST_STATE           57  // update state register width accordingly
+`define S_RF_DECODE_ISSUE      58  // consume registered decode-queue issue decision
+`define S_LAST_STATE           58  // update state register width accordingly
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -1189,6 +1190,18 @@ module smolrv64(input wire        clock,
    reg          rf_decode_enqueue_this_cycle = 0;
    reg          rf_decode_prearm_block = 0;
    reg          rf_decode_prearmed = 0;
+   reg          rf_issue_valid = 0;
+   reg          rf_issue_match = 0;
+   reg  [63:0]  rf_issue_pc = `RESET_PC;
+   reg  [63:0]  rf_issue_next_pc = `RESET_PC;
+   reg  [63:0]  rf_issue_predicted_pc = `RESET_PC;
+   reg  [31:0]  rf_issue_insn = 0;
+   reg  [ 1:0]  rf_issue_prediction_kind = 0;
+   reg          rf_issue_from_dram = 0;
+   reg  [ 4:0]  rf_issue_rd = 0;
+   reg  [ 4:0]  rf_issue_rs1 = 0;
+   reg  [ 4:0]  rf_issue_rs2 = 0;
+   reg  [ 5:0]  rf_issue_shamt = 0;
    reg          frontend_decode_pending_valid = 0;
    reg          frontend_decode_pending_drain = 0;
    reg  [63:0]  frontend_decode_pending_pc = `RESET_PC;
@@ -1541,6 +1554,7 @@ module smolrv64(input wire        clock,
            `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
            `S_TLB_INSERT:            state_name = "TLB_INSERT";
            `S_BRANCH_RESOLVE:        state_name = "BRANCH_RESOLVE";
+           `S_RF_DECODE_ISSUE:       state_name = "RF_DECODE_ISSUE";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -3042,6 +3056,18 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         rf_issue_valid <= 0;
+         rf_issue_match <= 0;
+         rf_issue_pc <= `RESET_PC;
+         rf_issue_next_pc <= `RESET_PC;
+         rf_issue_predicted_pc <= `RESET_PC;
+         rf_issue_insn <= 0;
+         rf_issue_prediction_kind <= 0;
+         rf_issue_from_dram <= 0;
+         rf_issue_rd <= 0;
+         rf_issue_rs1 <= 0;
+         rf_issue_rs2 <= 0;
+         rf_issue_shamt <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
          frontend_miss_valid <= 0;
@@ -3094,6 +3120,7 @@ module smolrv64(input wire        clock,
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
+         rf_issue_valid <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
          write_back_register <= 0;
@@ -3279,6 +3306,7 @@ module smolrv64(input wire        clock,
             rf_decode_count <= 0;
             rf_decode_prearmed <= 0;
             rf_decode_prearm_block = 1;
+            rf_issue_valid <= 0;
             frontend_decode_pending_valid <= 0;
             frontend_decode_pending_drain = 0;
             rf_read_valid <= 1;
@@ -3391,6 +3419,78 @@ module smolrv64(input wire        clock,
                fetch_req_speculative <= 1;
                fetch_req_spec_miss_ready <= 0;
             end
+         end
+      end
+   endtask
+
+   task capture_rf_decode_issue;
+      input [63:0] retire_pc;
+      input [ 1:0] retire_prv;
+      begin
+         if (!rf_decode_valid) begin
+`ifdef SIMULATE
+            $display("%05d BUG: capture empty rf_decode queue", $time);
+            $finish;
+`endif
+         end else begin
+            fetch_req_valid <= 0;
+            fetch_req_fast_ready <= 0;
+            fetch_req_speculative <= 0;
+            fetch_req_spec_miss_ready <= 0;
+            rf_issue_valid <= 1;
+            rf_issue_match <= (rf_decode_epoch == fetch_epoch &&
+                               rf_decode_pc == retire_pc &&
+                               rf_decode_prv == retire_prv);
+            rf_issue_pc <= rf_decode_pc;
+            rf_issue_next_pc <= rf_decode_next_pc;
+            rf_issue_predicted_pc <= rf_decode_predicted_pc;
+            rf_issue_insn <= rf_decode_insn;
+            rf_issue_prediction_kind <= rf_decode_prediction_kind;
+            rf_issue_from_dram <= rf_decode_from_dram;
+            rf_issue_rd <= rf_decode_rd;
+            rf_issue_rs1 <= rf_decode_rs1;
+            rf_issue_rs2 <= rf_decode_rs2;
+            rf_issue_shamt <= rf_decode_shamt;
+         end
+      end
+   endtask
+
+   task launch_rf_issue_read;
+      begin
+         if (rf_read_valid) begin
+`ifdef SIMULATE
+            $display("%05d BUG: issue launch into busy rf_read stage", $time);
+            $finish;
+`endif
+            state <= `S_FETCH1;
+         end else begin
+            rf_read_valid <= 1;
+            rf_read_pc <= rf_issue_pc;
+            rf_read_next_pc <= rf_issue_next_pc;
+            rf_read_predicted_pc <= rf_issue_predicted_pc;
+            rf_read_insn <= rf_issue_insn;
+            rf_read_prediction_kind <= rf_issue_prediction_kind;
+            rf_read_rd <= rf_issue_rd;
+            rf_read_rs1 <= rf_issue_rs1;
+            rf_read_rs2 <= rf_issue_rs2;
+            rf_read_shamt <= rf_issue_shamt;
+            rs1 <= rf_issue_rs1;
+            rs2 <= rf_issue_rs2;
+            rf_decode_pop_this_cycle = 1'b1;
+            rf_decode_head <= rf_decode_head + 1'b1;
+            rf_decode_count <= rf_decode_enqueue_this_cycle ?
+                               rf_decode_count : rf_decode_count - 1'b1;
+            rf_decode_prearmed <= 0;
+            rf_decode_prearm_block = 1;
+            rf_issue_valid <= 0;
+            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
+                rf_decode_enqueue_this_cycle) begin
+               fetch_req_valid <= 1;
+               fetch_req_fast_ready <= 0;
+               fetch_req_speculative <= 1;
+               fetch_req_spec_miss_ready <= 0;
+            end
+            state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
          end
       end
    endtask
@@ -3586,6 +3686,18 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         rf_issue_valid <= 0;
+         rf_issue_match <= 0;
+         rf_issue_pc <= `RESET_PC;
+         rf_issue_next_pc <= `RESET_PC;
+         rf_issue_predicted_pc <= `RESET_PC;
+         rf_issue_insn <= 0;
+         rf_issue_prediction_kind <= 0;
+         rf_issue_from_dram <= 0;
+         rf_issue_rd <= 0;
+         rf_issue_rs1 <= 0;
+         rf_issue_rs2 <= 0;
+         rf_issue_shamt <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
          fetch_req_valid <= 0;
@@ -3600,28 +3712,9 @@ module smolrv64(input wire        clock,
    endtask
 
    task retire_queued_decode_or_refetch;
-      reg   queued_match;
       begin
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
-         queued_match = (rf_decode_epoch == fetch_epoch &&
-                         rf_decode_pc == npc &&
-                         rf_decode_prv == prv);
-         if (queued_match) begin
-            insn <= rf_decode_insn;
-            fetch_from_dram <= rf_decode_from_dram;
-            translated <= 0;
-            write_back_register <= 0;
-            write_back_fp_valid <= 0;
-            launch_rf_decode_read();
-            if (rf_decode_prearmed)
-               state <= `S_RF3;
-         end else begin
-            redirect_retire_fetch(npc, prv);
-            state <= `S_FETCH_REQ;
-         end
+         capture_rf_decode_issue(npc, prv);
+         state <= `S_RF_DECODE_ISSUE;
       end
    endtask
 
@@ -3631,11 +3724,9 @@ module smolrv64(input wire        clock,
       output       launched;
       begin
          launched = 1'b0;
-         if (!rf_read_valid && rf_decode_valid && !frontend_miss_valid &&
-             rf_decode_epoch == fetch_epoch &&
-             rf_decode_pc == retire_pc &&
-             rf_decode_prv == retire_prv) begin
-            launch_rf_decode_read();
+         if (!rf_read_valid && !rf_issue_valid && rf_decode_valid &&
+             !frontend_miss_valid) begin
+            capture_rf_decode_issue(retire_pc, retire_prv);
             launched = 1'b1;
          end
       end
@@ -4171,6 +4262,7 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              rf_issue_valid <= 0;
               frontend_decode_pending_valid <= 0;
               frontend_decode_pending_drain = 0;
               frontend_redirect_valid <= 0;
@@ -4187,6 +4279,8 @@ module smolrv64(input wire        clock,
                         frontend_miss_matches_retire(npc, prv, fetch_epoch)) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
+           end else if (rf_issue_valid) begin
+              state <= `S_RF_DECODE_ISSUE;
            end else if (rf_read_valid) begin
               state <= `S_RF3;
            end else if (rf_decode_valid && !frontend_miss_valid) begin
@@ -4249,6 +4343,7 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              rf_issue_valid <= 0;
               frontend_decode_pending_valid <= 0;
               frontend_decode_pending_drain = 0;
               if (frontend_miss_valid || frontend_miss_done) begin
@@ -4282,6 +4377,7 @@ module smolrv64(input wire        clock,
               rf_decode_count <= 0;
               rf_decode_prearmed <= 0;
               rf_decode_prearm_block = 1;
+              rf_issue_valid <= 0;
               frontend_decode_pending_valid <= 0;
               frontend_decode_pending_drain = 0;
               if (frontend_miss_valid || frontend_miss_done) begin
@@ -4344,6 +4440,23 @@ module smolrv64(input wire        clock,
                  redirect_retire_fetch(npc, prv);
                  state <= `S_FETCH_REQ;
               end
+           end
+        end
+
+        `S_RF_DECODE_ISSUE: begin
+           if (!rf_issue_valid) begin
+              state <= `S_FETCH1;
+           end else if (rf_issue_match) begin
+              insn <= rf_issue_insn;
+              fetch_from_dram <= rf_issue_from_dram;
+              translated <= 0;
+              write_back_register <= 0;
+              write_back_fp_valid <= 0;
+              launch_rf_issue_read();
+           end else begin
+              rf_issue_valid <= 0;
+              redirect_retire_fetch(npc, prv);
+              state <= `S_FETCH_REQ;
            end
         end
 
@@ -7266,6 +7379,7 @@ module smolrv64(input wire        clock,
            rf_decode_count <= 0;
            rf_decode_prearmed <= 0;
            rf_decode_prearm_block = 1;
+           rf_issue_valid <= 0;
            frontend_decode_pending_valid <= 0;
            frontend_decode_pending_drain = 0;
 
@@ -7964,6 +8078,18 @@ module smolrv64(input wire        clock,
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
+         rf_issue_valid <= 0;
+         rf_issue_match <= 0;
+         rf_issue_pc <= `RESET_PC;
+         rf_issue_next_pc <= `RESET_PC;
+         rf_issue_predicted_pc <= `RESET_PC;
+         rf_issue_insn <= 0;
+         rf_issue_prediction_kind <= 0;
+         rf_issue_from_dram <= 0;
+         rf_issue_rd <= 0;
+         rf_issue_rs1 <= 0;
+         rf_issue_rs2 <= 0;
+         rf_issue_shamt <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
          rf_read_valid <= 0;
