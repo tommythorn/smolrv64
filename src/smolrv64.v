@@ -3496,7 +3496,6 @@ module smolrv64(input wire        clock,
             write_back_register <= 0;
             write_back_fp_valid <= 0;
             launch_rf_decode_read();
-            state <= `S_RF3;
          end else begin
             redirect_retire_fetch(npc, prv);
             state <= `S_FETCH_REQ;
