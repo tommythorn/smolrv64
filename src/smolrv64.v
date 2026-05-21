@@ -1130,14 +1130,6 @@ module smolrv64(input wire        clock,
    reg          fetch_req_spec_miss_ready = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_req_epoch = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_epoch = 0;
-   reg          frontend_spec_hit_valid = 0;
-   reg  [63:0] frontend_spec_hit_pc = `RESET_PC;
-   reg  [63:0] frontend_spec_hit_next_pc = `RESET_PC;
-   reg  [31:0] frontend_spec_hit_insn = 0;
-   reg  [ 1:0] frontend_spec_hit_prv = 3;
-   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_spec_hit_epoch = 0;
-   reg  [ 1:0] frontend_spec_hit_prediction_kind = 0;
-
    // Speculative frontend cache miss.  The single global FSM still owns TLB
    // and ordinary fetch misses; this side buffer only overlaps physical
    // cacheable misses with long non-memory backend states.
@@ -3021,7 +3013,6 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
-         frontend_spec_hit_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3071,7 +3062,6 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
-         frontend_spec_hit_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3334,23 +3324,7 @@ module smolrv64(input wire        clock,
 
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
-         if (frontend_spec_hit_valid && frontend_spec_hit_epoch != fetch_epoch) begin
-            frontend_spec_hit_valid <= 0;
-         end else if (frontend_spec_hit_valid &&
-             (!rf_decode_full || rf_decode_pop_this_cycle) &&
-             !frontend_miss_valid && !frontend_miss_done &&
-             !fetch_req_spec_miss_ready) begin
-            enqueue_rf_decode_speculative_hit(frontend_spec_hit_pc,
-                                              frontend_fallthrough_pc(
-                                                 frontend_spec_hit_pc,
-                                                 frontend_spec_hit_insn),
-                                              frontend_spec_hit_next_pc,
-                                              frontend_spec_hit_insn,
-                                              frontend_spec_hit_prv,
-                                              frontend_spec_hit_epoch,
-                                              frontend_spec_hit_prediction_kind);
-            frontend_spec_hit_valid <= 0;
-         end else if (fetch_req_speculative &&
+         if (fetch_req_speculative &&
              (!rf_decode_full || rf_decode_pop_this_cycle) &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready &&
@@ -3367,7 +3341,6 @@ module smolrv64(input wire        clock,
                                               fetch_buf_prediction_kind);
          end else if (fetch_req_speculative && fetch_req_valid &&
                       (!rf_decode_full || rf_decode_pop_this_cycle) &&
-                      !frontend_spec_hit_valid &&
                       !frontend_miss_valid && !frontend_miss_done &&
                       !fetch_req_spec_miss_ready &&
                       frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv)) begin
@@ -3497,7 +3470,6 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
-         frontend_spec_hit_valid <= 0;
          prepare_retire_fetch(redirect_pc, redirect_prv, redirect_epoch);
       end
    endtask
@@ -4017,7 +3989,6 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
-              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4080,7 +4051,6 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
-              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4110,7 +4080,6 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
-              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -7084,7 +7053,6 @@ module smolrv64(input wire        clock,
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
            fetch_req_spec_miss_ready <= 0;
-           frontend_spec_hit_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
            rf_decode_head <= 0;
@@ -7757,13 +7725,6 @@ module smolrv64(input wire        clock,
          fetch_req_pc <= `RESET_PC;
          fetch_req_prv <= 3;
          fetch_req_asid <= 0;
-         frontend_spec_hit_valid <= 0;
-         frontend_spec_hit_pc <= `RESET_PC;
-         frontend_spec_hit_next_pc <= `RESET_PC;
-         frontend_spec_hit_insn <= 0;
-         frontend_spec_hit_prv <= 3;
-         frontend_spec_hit_epoch <= 0;
-         frontend_spec_hit_prediction_kind <= 0;
          fetch_buf_latched_hit <= 0;
          fetch_buf_latched_insn <= 0;
          fetch_buf_latched_offset <= 0;
