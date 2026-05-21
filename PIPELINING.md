@@ -27,6 +27,11 @@ toward preserving the old FSM state structure.
 The current kept work is a transitional overlap mechanism inside the old FSM:
 
 - `rf_decode_valid` is now a one-entry frontend/backend handoff candidate.
+- The frontend/decode handoff now carries decoded register indexes and shift
+  amount, so backend queue consumption launches the register-file read from
+  registered payload fields instead of re-decoding the instruction.
+- The ordinary fetched-instruction path now stages through that handoff queue
+  instead of bypassing directly into register-file read.
 - Register-file read launch is split from decode enqueue with an `rf_read_*`
   payload.
 - `next_pc` and frontend epoch travel with the queued instruction.
@@ -221,8 +226,11 @@ Timing is now a design constraint, not a final check.
 
 Rules:
 
-- run FPGA timing for Verilog changes before treating a commit as hardware
-  ready;
+- while materializing the pipeline, treat simulator correctness as the per-step
+  gate and defer FPGA timing/programming checkpoints unless hardware testing is
+  explicitly needed;
+- run FPGA timing before treating a checkpoint as hardware-ready or before
+  making timing-sensitive performance claims;
 - when timing fails, fix or revert before stacking more pipeline work;
 - do not keep adding cases to broad combinational predicates as a substitute for
   a pipeline boundary;
