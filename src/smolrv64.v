@@ -1122,6 +1122,11 @@ module smolrv64(input wire        clock,
    reg          fetch_req_spec_miss_ready = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_req_epoch = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_epoch = 0;
+   reg          frontend_spec_hit_valid = 0;
+   reg  [63:0] frontend_spec_hit_pc = `RESET_PC;
+   reg  [31:0] frontend_spec_hit_insn = 0;
+   reg  [ 1:0] frontend_spec_hit_prv = 3;
+   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_spec_hit_epoch = 0;
 
    // Speculative frontend cache miss.  The single global FSM still owns TLB
    // and ordinary fetch misses; this side buffer only overlaps physical
@@ -1163,6 +1168,7 @@ module smolrv64(input wire        clock,
    wire [ 1:0]  rf_decode_prv = rf_decode_prv_q[rf_decode_head];
    wire [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch = rf_decode_epoch_q[rf_decode_head];
    wire         rf_decode_from_dram = rf_decode_from_dram_q[rf_decode_head];
+   reg          rf_decode_match_q = 0;
 
    // Register-file read boundary. S_RF accepts one decode queue entry into
    // this payload and launches the BRAM read; S_RF3 consumes it.
@@ -2965,6 +2971,7 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
+         frontend_spec_hit_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3012,6 +3019,7 @@ module smolrv64(input wire        clock,
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
+         frontend_spec_hit_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
@@ -3223,14 +3231,27 @@ module smolrv64(input wire        clock,
 
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
-         if (fetch_req_speculative && !rf_decode_full &&
+         if (frontend_spec_hit_valid && frontend_spec_hit_epoch != fetch_epoch) begin
+            frontend_spec_hit_valid <= 0;
+         end else if (frontend_spec_hit_valid && !rf_decode_full &&
+             !frontend_miss_valid && !frontend_miss_done &&
+             !fetch_req_spec_miss_ready) begin
+            enqueue_rf_decode_speculative_hit(frontend_spec_hit_pc,
+                                              frontend_spec_hit_insn,
+                                              frontend_spec_hit_prv,
+                                              frontend_spec_hit_epoch);
+            frontend_spec_hit_valid <= 0;
+         end else if (fetch_req_speculative && !rf_decode_full &&
              !frontend_miss_valid && !frontend_miss_done &&
              !fetch_req_spec_miss_ready && fetch_buf_hit) begin
-            enqueue_rf_decode_speculative_hit(fetch_req_pc, fetch_buf_insn,
-                                              fetch_req_prv,
-                                              fetch_req_epoch);
+            frontend_spec_hit_valid <= 1;
+            frontend_spec_hit_pc    <= fetch_req_pc;
+            frontend_spec_hit_insn  <= fetch_buf_insn;
+            frontend_spec_hit_prv   <= fetch_req_prv;
+            frontend_spec_hit_epoch <= fetch_req_epoch;
          end else if (fetch_req_speculative && fetch_req_valid &&
                       !rf_decode_full &&
+                      !frontend_spec_hit_valid &&
                       !frontend_miss_valid && !frontend_miss_done &&
                       !fetch_req_spec_miss_ready) begin
             fetch_req_spec_miss_ready <= 1;
@@ -3281,7 +3302,7 @@ module smolrv64(input wire        clock,
    task try_frontend_speculative_miss_start;
       begin
          if (fetch_req_speculative && fetch_req_valid &&
-             !rf_decode_valid && !frontend_miss_valid && !frontend_miss_done &&
+             !frontend_miss_valid && !frontend_miss_done &&
              fetch_req_spec_miss_ready && cache_idle &&
              (csr_satp[63:60] != 4'd8 || fetch_req_prv == 3) &&
              frontend_physical_fetch_ok(fetch_req_pc) &&
@@ -3362,19 +3383,27 @@ module smolrv64(input wire        clock,
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
+         frontend_spec_hit_valid <= 0;
          prepare_retire_fetch(redirect_pc, redirect_prv, redirect_epoch);
       end
    endtask
 
-   task retire_queued_decode_or_refetch;
+   task prepare_queued_decode_or_refetch;
       begin
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
-         if (rf_decode_epoch == fetch_epoch &&
-             rf_decode_pc == npc &&
-             rf_decode_prv == prv) begin
+         rf_decode_match_q <= (rf_decode_epoch == fetch_epoch &&
+                               rf_decode_pc == npc &&
+                               rf_decode_prv == prv);
+         state <= `S_RF;
+      end
+   endtask
+
+   task retire_queued_decode_or_refetch;
+      begin
+         if (rf_decode_match_q) begin
             insn <= rf_decode_insn;
             fetch_from_dram <= rf_decode_from_dram;
             translated <= 0;
@@ -3383,6 +3412,7 @@ module smolrv64(input wire        clock,
             launch_rf_decode_read();
          end else begin
             redirect_retire_fetch(npc, prv);
+            state <= `S_FETCH_REQ;
          end
       end
    endtask
@@ -3875,6 +3905,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
+              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -3887,11 +3918,15 @@ module smolrv64(input wire        clock,
               end else begin
                  state <= `S_EXCEPTION;
               end
+           end else if (frontend_miss_done &&
+                        frontend_miss_matches_retire(npc, prv, fetch_epoch)) begin
+              frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
+              consume_frontend_miss();
+           end else if (rf_decode_valid && !frontend_miss_valid) begin
+              prepare_queued_decode_or_refetch();
            end else if (frontend_miss_valid || frontend_miss_done) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
-           end else if (rf_decode_valid) begin
-              retire_queued_decode_or_refetch();
            end else if (fetch_req_fast_ready && fetch_req_valid) begin
               fetch_req_fast_ready <= 0;
               state <= `S_FETCH_BUF_CHECK;
@@ -3933,6 +3968,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
+              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -3962,6 +3998,7 @@ module smolrv64(input wire        clock,
               fetch_req_fast_ready <= 0;
               fetch_req_speculative <= 0;
               fetch_req_spec_miss_ready <= 0;
+              frontend_spec_hit_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4043,7 +4080,7 @@ module smolrv64(input wire        clock,
 
         `S_RF: begin
            if (rf_decode_valid) begin
-              launch_rf_decode_read();
+              retire_queued_decode_or_refetch();
            end else begin
               state <= `S_FETCH1;
            end
@@ -6921,6 +6958,7 @@ module smolrv64(input wire        clock,
            fetch_req_fast_ready <= 0;
            fetch_req_speculative <= 0;
            fetch_req_spec_miss_ready <= 0;
+           frontend_spec_hit_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
            rf_decode_head <= 0;
@@ -7588,6 +7626,11 @@ module smolrv64(input wire        clock,
          fetch_epoch <= 0;
          fetch_req_pc <= `RESET_PC;
          fetch_req_prv <= 3;
+         frontend_spec_hit_valid <= 0;
+         frontend_spec_hit_pc <= `RESET_PC;
+         frontend_spec_hit_insn <= 0;
+         frontend_spec_hit_prv <= 3;
+         frontend_spec_hit_epoch <= 0;
          frontend_miss_valid <= 0;
          frontend_miss_done <= 0;
          frontend_miss_pc <= `RESET_PC;
