@@ -42,6 +42,9 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
 - Execute now stamps the architectural retire/trap `pc` and `insn` from the
   backend execute request, so backend traps are no longer coupled to the most
   recent frontend fetch accept.
+- The frontend's predicted next PC and prediction kind now travel with each
+  fetched instruction through decode, RF, and execute; the backend compares
+  retirement against that payload instead of re-deriving the prediction.
 - `next_pc` and frontend epoch travel with the queued instruction.
 - A validated queued decode can launch RF read immediately.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
