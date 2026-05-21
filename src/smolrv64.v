@@ -3225,28 +3225,27 @@ module smolrv64(input wire        clock,
             write_back_register = 0;
             write_back_fp_valid = 0;
             rf_decode_head <= 0;
-            rf_decode_tail <= 1;
-            rf_decode_count <= 1;
-            rf_decode_pc_q[0] <= decode_pc;
-            rf_decode_next_pc_q[0] <= decode_next_pc;
-            rf_decode_predicted_pc_q[0] <= decode_predicted_pc;
-            rf_decode_insn_q[0] <= decode_insn;
-            rf_decode_prv_q[0] <= prv;
-            rf_decode_epoch_q[0] <= fetch_req_epoch;
-            rf_decode_prediction_kind_q[0] <= decode_prediction_kind;
-            rf_decode_from_dram_q[0] <= decode_from_dram;
-            rf_decode_rd_q[0] <= decoded_rd;
-            rf_decode_rs1_q[0] <= decoded_rs1;
-            rf_decode_rs2_q[0] <= decoded_rs2;
-            rf_decode_shamt_q[0] <= decoded_shamt;
-            rf_decode_match_q <= 1'b1;
+            rf_decode_tail <= 0;
+            rf_decode_count <= 0;
+            rf_read_valid <= 1;
+            rf_read_pc <= decode_pc;
+            rf_read_next_pc <= decode_next_pc;
+            rf_read_predicted_pc <= decode_predicted_pc;
+            rf_read_insn <= decode_insn;
+            rf_read_prediction_kind <= decode_prediction_kind;
+            rf_read_rd <= decoded_rd;
+            rf_read_rs1 <= decoded_rs1;
+            rf_read_rs2 <= decoded_rs2;
+            rf_read_shamt <= decoded_shamt;
+            rs1 <= decoded_rs1;
+            rs2 <= decoded_rs2;
             fetch_req_valid <= 1;
             fetch_req_pc <= decode_predicted_pc;
             fetch_req_prv <= prv;
             fetch_req_fast_ready <= 0;
             fetch_req_speculative <= 1;
             fetch_req_spec_miss_ready <= 0;
-            state <= `S_RF;
+            state <= `S_RF2;
          end
       end
    endtask

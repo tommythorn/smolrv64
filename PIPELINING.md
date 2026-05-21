@@ -43,6 +43,9 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   path.
 - Register-file read launch is split from decode enqueue with an `rf_read_*`
   payload.
+- The ordinary in-order fetch accept path now writes the `rf_read_*` payload
+  directly when the RF-read stage is free; the decode queue is reserved for
+  frontend runahead rather than as a mandatory bounce for current fetches.
 - Execute now stamps the architectural retire/trap `pc` and `insn` from the
   backend execute request, so backend traps are no longer coupled to the most
   recent frontend fetch accept.
