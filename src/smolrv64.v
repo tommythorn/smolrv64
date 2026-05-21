@@ -565,7 +565,7 @@ module smolrv64(input wire        clock,
 //
 `define S_FETCH1         0
 `define S_FETCH2         1
-`define S_RF             2
+`define S_RF             2  // legacy unused encoding
 `define S_EXECUTE        3
 
 `define S_EXCEPTION      4
@@ -594,7 +594,7 @@ module smolrv64(input wire        clock,
 `define S_DRAM_FETCH_HALF_WAIT 20  // wait for 2nd burst of cross-burst fetch
 `define S_DRAM_LOAD2_WAIT      21  // wait for 2nd burst of cross-burst load
 `define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
-`define S_RF2                  23  // wait for BRAM regfile read (rs1/rs2 set in S_RF)
+`define S_RF2                  23  // wait for BRAM regfile read after rs1/rs2 launch
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
@@ -1148,8 +1148,8 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
 
    // Register/decode request boundary. The frontend can now run a little
-   // ahead of retirement on fetch-window hits; S_RF consumes the oldest entry
-   // and launches the BRAM register-file read.
+   // ahead of retirement on fetch-window hits; retirement consumes the oldest
+   // matching entry and launches the BRAM register-file read.
    localparam RF_DECODE_QUEUE_BITS = 2;
    localparam RF_DECODE_QUEUE_DEPTH = 1 << RF_DECODE_QUEUE_BITS;
    localparam [RF_DECODE_QUEUE_BITS:0] RF_DECODE_QUEUE_DEPTH_COUNT =
@@ -1183,11 +1183,10 @@ module smolrv64(input wire        clock,
    wire [ 4:0]  rf_decode_rs1 = rf_decode_rs1_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rs2 = rf_decode_rs2_q[rf_decode_head];
    wire [ 5:0]  rf_decode_shamt = rf_decode_shamt_q[rf_decode_head];
-   reg          rf_decode_match_q = 0;
    reg          rf_decode_pop_this_cycle = 0;
 
-   // Register-file read boundary. S_RF accepts one decode queue entry into
-   // this payload and launches the BRAM read; S_RF3 consumes it.
+   // Register-file read boundary. Dispatch accepts one decoded instruction
+   // into this payload and launches the BRAM read; S_RF3 consumes it.
    reg          rf_read_valid = 0;
    reg  [63:0]  rf_read_pc = `RESET_PC;
    reg  [63:0]  rf_read_next_pc = `RESET_PC;
@@ -1462,7 +1461,6 @@ module smolrv64(input wire        clock,
          case (s)
            `S_FETCH1:                state_name = "FETCH1";
            `S_FETCH2:                state_name = "FETCH2";
-           `S_RF:                    state_name = "RF";
            `S_EXECUTE:               state_name = "EXECUTE";
            `S_EXCEPTION:             state_name = "EXCEPTION";
            `S_LOAD_ALIGN:            state_name = "LOAD_ALIGN";
@@ -2938,7 +2936,6 @@ module smolrv64(input wire        clock,
       input [5:0] s;
       begin
          case (s)
-           `S_RF,
            `S_RF2,
            `S_RF3,
            `S_LOAD_ALIGN,
@@ -3284,9 +3281,8 @@ module smolrv64(input wire        clock,
             rf_read_rs1 <= rf_decode_rs1;
             rf_read_rs2 <= rf_decode_rs2;
             rf_read_shamt <= rf_decode_shamt;
-            rs1 <= rf_decode_rs1;
-            rs2 <= rf_decode_rs2;
-            rf_decode_match_q <= 1'b0;
+           rs1 <= rf_decode_rs1;
+           rs2 <= rf_decode_rs2;
             rf_decode_pop_this_cycle = 1'b1;
             rf_decode_head <= rf_decode_head + 1'b1;
             rf_decode_count <= rf_decode_count - 1'b1;
@@ -3474,15 +3470,13 @@ module smolrv64(input wire        clock,
    endtask
 
    task retire_queued_decode_or_refetch;
-      input forced_match;
       reg   queued_match;
       begin
          fetch_req_valid <= 0;
          fetch_req_fast_ready <= 0;
          fetch_req_speculative <= 0;
          fetch_req_spec_miss_ready <= 0;
-         queued_match = forced_match ||
-                        (rf_decode_epoch == fetch_epoch &&
+         queued_match = (rf_decode_epoch == fetch_epoch &&
                          rf_decode_pc == npc &&
                          rf_decode_prv == prv);
          if (queued_match) begin
@@ -4005,7 +3999,7 @@ module smolrv64(input wire        clock,
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
            end else if (rf_decode_valid && !frontend_miss_valid) begin
-              retire_queued_decode_or_refetch(1'b0);
+              retire_queued_decode_or_refetch();
            end else if (frontend_miss_valid || frontend_miss_done) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
@@ -4152,7 +4146,8 @@ module smolrv64(input wire        clock,
 
         `S_FETCH2_DRAM: begin
            // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
-           // detected and re-fetched in S_RF; the upper 64 bits are don't-care.
+           // detected before RF launch and re-fetched on the slow path; the
+           // upper 64 bits are don't-care.
            aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
                                               : {64'bx, dram_latched};
            if (fetch_buf_fill_page_ok && dram_latched_next_valid) begin
@@ -4168,16 +4163,8 @@ module smolrv64(input wire        clock,
                                     insn, 2'd0, 1'b1);
         end
 
-        `S_RF: begin
-           if (rf_decode_valid) begin
-              retire_queued_decode_or_refetch(rf_decode_match_q);
-           end else begin
-              state <= `S_FETCH1;
-           end
-        end
-
         `S_RF2: begin
-           // One-cycle wait: BRAM samples new rs1/rs2 (set in S_RF); output
+           // One-cycle wait: BRAM samples new rs1/rs2 from dispatch; output
            // settles in S_RF3.
            state <= rf_read_valid ? `S_RF3 : `S_FETCH1;
         end

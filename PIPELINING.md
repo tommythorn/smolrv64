@@ -64,6 +64,8 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
 - A validated queued decode can launch RF read directly from the retire cycle;
   matching speculative frontend work no longer bounces through an extra `S_RF`
   validation cycle.
+- The legacy `S_RF` dispatch state has no producer left; decode queue dispatch
+  and current fetch accept both launch directly into the `rf_read_*` boundary.
 - A direct non-speculative fetch can bypass the decode slot and launch RF read
   in the same cycle.
 - Speculative fetch-buffer hits can be consumed while selected backend states
