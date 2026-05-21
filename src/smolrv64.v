@@ -3247,6 +3247,26 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   function frontend_physical_fetch_ok;
+      input [63:0] fetch_pc;
+      begin
+         frontend_physical_fetch_ok =
+            (((fetch_pc ^ `MEM_BASEADDR) &
+              (64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2)) == 0) ||
+            fetch_pc[63:31] == 1;
+      end
+   endfunction
+
+   function frontend_speculative_fetch_ok;
+      input [63:0] fetch_pc;
+      input [ 1:0] fetch_prv;
+      begin
+         frontend_speculative_fetch_ok =
+            (csr_satp[63:60] == 4'd8 && fetch_prv != 3) ||
+            frontend_physical_fetch_ok(fetch_pc);
+      end
+   endfunction
+
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
          if (frontend_spec_hit_valid && frontend_spec_hit_epoch != fetch_epoch) begin
@@ -3263,7 +3283,9 @@ module smolrv64(input wire        clock,
          end else if (fetch_req_speculative &&
              (!rf_decode_full || rf_decode_pop_this_cycle) &&
              !frontend_miss_valid && !frontend_miss_done &&
-             !fetch_req_spec_miss_ready && fetch_buf_hit) begin
+             !fetch_req_spec_miss_ready &&
+             frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv) &&
+             fetch_buf_hit) begin
             frontend_spec_hit_valid <= 1;
             frontend_spec_hit_pc    <= fetch_req_pc;
             frontend_spec_hit_insn  <= fetch_buf_insn;
@@ -3273,21 +3295,12 @@ module smolrv64(input wire        clock,
                       (!rf_decode_full || rf_decode_pop_this_cycle) &&
                       !frontend_spec_hit_valid &&
                       !frontend_miss_valid && !frontend_miss_done &&
-                      !fetch_req_spec_miss_ready) begin
+                      !fetch_req_spec_miss_ready &&
+                      frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv)) begin
             fetch_req_spec_miss_ready <= 1;
          end
       end
    endtask
-
-   function frontend_physical_fetch_ok;
-      input [63:0] fetch_pc;
-      begin
-         frontend_physical_fetch_ok =
-            (((fetch_pc ^ `MEM_BASEADDR) &
-              (64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2)) == 0) ||
-            fetch_pc[63:31] == 1;
-      end
-   endfunction
 
    function frontend_miss_matches_retire;
       input [63:0] retire_pc;
