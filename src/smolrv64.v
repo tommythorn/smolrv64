@@ -9311,8 +9311,8 @@ module smolrv64_frontend #(
    assign insn = pick_insn(buf_data, offset);
    assign full_insn_hit = insn[1:0] != 2'b11 || offset <= 4'd12;
    assign hit = addr_hit && full_insn_hit;
-   assign predicted_next_pc = predict_next_pc(req_pc, insn);
-   assign prediction_kind = predict_kind(insn);
+   assign predicted_next_pc = fallthrough_pc(req_pc, insn);
+   assign prediction_kind = PRED_FALLTHROUGH;
    assign active_epoch = req_epoch;
    assign fill_base_va_for_req = {req_pc[63:3], 3'b000};
    assign fill_page_ok = fill_base_va_for_req[11:0] <= 12'hff0;
