@@ -9193,9 +9193,9 @@ module smolrv64_async_fifo #(
       .RD_DATA_COUNT_WIDTH  ( ADDR_BITS + 1 ),
       .READ_DATA_WIDTH      ( WIDTH ),
       .READ_MODE            ( "fwft" ),
-      .RELATED_CLOCKS       ( 0 ),
+      .RELATED_CLOCKS       ( 1 ),
       .SIM_ASSERT_CHK       ( 0 ),
-      .USE_ADV_FEATURES     ( "0707" ),
+      .USE_ADV_FEATURES     ( "0000" ),
       .WAKEUP_TIME          ( 0 ),
       .WRITE_DATA_WIDTH     ( WIDTH ),
       .WR_DATA_COUNT_WIDTH  ( ADDR_BITS + 1 )
@@ -9348,34 +9348,38 @@ module smolrv64_mem_engine(
    wire        read_rsp_wr_ready;
    reg  [63:0] read_rsp_wr_data = 0;
 
-   smolrv64_async_fifo #(.WIDTH(25), .ADDR_BITS(2)) fill_req_fifo (
-      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+   // The core only raises reset for this engine after the memory side and all
+   // queues are idle.  Configuration-time initial values are enough here; avoid
+   // feeding the complex core-reset-home expression into XPM FIFO reset logic in
+   // the 333 MHz memory clock domain.
+   smolrv64_async_fifo #(.WIDTH(25), .ADDR_BITS(4)) fill_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(fill_req_valid), .wr_ready(fill_req_ready), .wr_data(fill_req_line_addr),
       .rd_valid(fill_cmd_valid), .rd_ready(fill_cmd_ready), .rd_data(fill_cmd_line_addr)
    );
-   smolrv64_async_fifo #(.WIDTH(512), .ADDR_BITS(2)) fill_rsp_fifo (
-      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+   smolrv64_async_fifo #(.WIDTH(512), .ADDR_BITS(4)) fill_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(fill_rsp_wr_valid), .wr_ready(fill_rsp_wr_ready), .wr_data(fill_rsp_wr_data),
       .rd_valid(fill_rsp_valid), .rd_ready(fill_rsp_ready), .rd_data(fill_rsp_data)
    );
-   smolrv64_async_fifo #(.WIDTH(537), .ADDR_BITS(2)) wb_req_fifo (
-      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+   smolrv64_async_fifo #(.WIDTH(537), .ADDR_BITS(4)) wb_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(wb_req_valid), .wr_ready(wb_req_ready),
       .wr_data({wb_req_line_addr, wb_req_line_data}),
       .rd_valid(wb_cmd_valid), .rd_ready(wb_cmd_ready), .rd_data(wb_cmd_data)
    );
-   smolrv64_async_fifo #(.WIDTH(1), .ADDR_BITS(2)) wb_rsp_fifo (
-      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+   smolrv64_async_fifo #(.WIDTH(1), .ADDR_BITS(4)) wb_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(wb_rsp_wr_valid), .wr_ready(wb_rsp_wr_ready), .wr_data(1'b1),
       .rd_valid(wb_rsp_valid), .rd_ready(wb_rsp_ready), .rd_data()
    );
-   smolrv64_async_fifo #(.WIDTH(28), .ADDR_BITS(2)) read_req_fifo (
-      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+   smolrv64_async_fifo #(.WIDTH(28), .ADDR_BITS(4)) read_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(read_req_valid), .wr_ready(read_req_ready), .wr_data(read_req_addr),
       .rd_valid(read_cmd_valid), .rd_ready(read_cmd_ready), .rd_data(read_cmd_addr)
    );
-   smolrv64_async_fifo #(.WIDTH(64), .ADDR_BITS(2)) read_rsp_fifo (
-      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+   smolrv64_async_fifo #(.WIDTH(64), .ADDR_BITS(4)) read_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(read_rsp_wr_valid), .wr_ready(read_rsp_wr_ready), .wr_data(read_rsp_wr_data),
       .rd_valid(read_rsp_valid), .rd_ready(read_rsp_ready), .rd_data(read_rsp_data)
    );
@@ -9563,22 +9567,6 @@ module smolrv64_mem_engine(
         end
       endcase
 
-      if (reset) begin
-         mem_state <= MEM_IDLE;
-         wb_substate <= MEM_WB_WAIT;
-         ar_busy <= 0;
-         r_busy <= 0;
-         aw_busy <= 0;
-         w_busy <= 0;
-         b_busy <= 0;
-         mem_busy <= 0;
-         fill_cmd_ready <= 0;
-         fill_rsp_wr_valid <= 0;
-         wb_cmd_ready <= 0;
-         wb_rsp_wr_valid <= 0;
-         read_cmd_ready <= 0;
-         read_rsp_wr_valid <= 0;
-      end
    end
 
    assign m_axi_arvalid = ar_busy;

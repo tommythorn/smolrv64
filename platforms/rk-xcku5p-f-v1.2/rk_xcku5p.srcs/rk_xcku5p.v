@@ -32,6 +32,7 @@ module rk_xcku5p(
 
    // DDR4 UI clock (333.33 MHz) and reset from the IP
    wire ui_clk;
+   wire core_clk;
    wire fpu_clk;
    wire ui_rst;           // c0_ddr4_ui_clk_sync_rst (active high)
    wire init_calib_complete;
@@ -42,10 +43,31 @@ module rk_xcku5p(
    // touching the DDR4 MIG, so calibration is preserved and mig_* latency
    // stats CSRs (which aren't in the CPU's reset block) survive across a
    // soft reset. Press key[1] to return to the monitor from a hung workload.
-   wire cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
+   wire ui_cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
+   reg  [1:0] cpu_reset_core_sync = 2'b11;
+   wire cpu_reset = cpu_reset_core_sync[1];
 
    // Keep board LEDs dark by default; status is available through the monitor.
    assign led = 4'b0000;
+
+   // Run the CPU-side pipeline and hit path at half the DDR4 UI clock.  The
+   // cache refill/writeback engine inside smolrv64 still uses ui_clk through
+   // the separate mem_clock port.
+   BUFGCE_DIV #(
+      .BUFGCE_DIVIDE(2)
+   ) core_clk_buf (
+      .I  (ui_clk),
+      .CE (1'b1),
+      .CLR(ui_rst),
+      .O  (core_clk)
+   );
+
+   always @(posedge core_clk or posedge ui_cpu_reset) begin
+      if (ui_cpu_reset)
+         cpu_reset_core_sync <= 2'b11;
+      else
+         cpu_reset_core_sync <= {cpu_reset_core_sync[0], 1'b0};
+   end
 
    // CVFPU is throughput-capable but much deeper than the integer core.  The
    // core issues one FP operation at a time and waits, so run the FPU island at
@@ -215,13 +237,20 @@ module rk_xcku5p(
    wire [7:0] uart_tx_data;
    wire       rx_valid;
    wire [7:0] rx_data;
-   wire [19:0] mmio_address;
-   wire       mmio_read;
-   wire       mmio_write;
-   wire [31:0] mmio_writedata;
-   wire [ 3:0] mmio_byteenable;
-   wire        mmio_readdatavalid;
-   wire [31:0] mmio_readdata;
+   wire [19:0] core_mmio_address;
+   wire        core_mmio_read;
+   wire        core_mmio_write;
+   wire [31:0] core_mmio_writedata;
+   wire [ 3:0] core_mmio_byteenable;
+   wire        core_mmio_readdatavalid;
+   wire [31:0] core_mmio_readdata;
+   wire [19:0] ui_mmio_address;
+   wire        ui_mmio_read;
+   wire        ui_mmio_write;
+   wire [31:0] ui_mmio_writedata;
+   wire [ 3:0] ui_mmio_byteenable;
+   wire        ui_mmio_readdatavalid;
+   wire [31:0] ui_mmio_readdata;
 
    wire        spi_sd_clk;
    wire        spi_sd_mosi;
@@ -251,20 +280,24 @@ module rk_xcku5p(
       end
    endgenerate
 
-   wire        sd_spi_sel    = mmio_address[19:8] == 12'h010;
-   wire        sd_gpio_sel   = mmio_address[19:8] == 12'h011;
-   wire        sd_cd_gpio_sel = mmio_address[19:8] == 12'h012;
-   wire        virtio_blk_sel = mmio_address[19:12] == 8'h02;
-   wire        virtio_net_sel = mmio_address[19:12] == 8'h03;
+   wire        sd_spi_sel    = ui_mmio_address[19:8] == 12'h010;
+   wire        sd_gpio_sel   = ui_mmio_address[19:8] == 12'h011;
+   wire        sd_cd_gpio_sel = ui_mmio_address[19:8] == 12'h012;
+   wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
+   wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire [31:0] sd_spi_readdata;
    wire [31:0] sd_gpio_readdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
    wire [31:0] virtio_net_readdata;
-   wire        virtio_net_debug_sel = virtio_net_sel && mmio_address[11:8] == 4'hf;
+   wire        virtio_net_debug_sel = virtio_net_sel && ui_mmio_address[11:8] == 4'hf;
    reg  [31:0] virtio_net_debug_readdata;
    wire        virtio_blk_irq;
    wire        virtio_net_irq;
+   reg         virtio_blk_irq_meta = 1'b0;
+   reg         virtio_blk_irq_core = 1'b0;
+   reg         virtio_net_irq_meta = 1'b0;
+   reg         virtio_net_irq_core = 1'b0;
    wire        virtio_net_queue_notify_pulse;
    wire [31:0] virtio_net_queue_notify_value;
    wire        virtio_net_used_buffer_interrupt;
@@ -329,8 +362,22 @@ module rk_xcku5p(
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
 
-   always @(posedge ui_clk) begin
+   always @(posedge core_clk) begin
       if (cpu_reset) begin
+         virtio_blk_irq_meta <= 1'b0;
+         virtio_blk_irq_core <= 1'b0;
+         virtio_net_irq_meta <= 1'b0;
+         virtio_net_irq_core <= 1'b0;
+      end else begin
+         virtio_blk_irq_meta <= virtio_blk_irq;
+         virtio_blk_irq_core <= virtio_blk_irq_meta;
+         virtio_net_irq_meta <= virtio_net_irq;
+         virtio_net_irq_core <= virtio_net_irq_meta;
+      end
+   end
+
+   always @(posedge ui_clk) begin
+      if (ui_cpu_reset) begin
          sd_cd_meta <= 1'b1;
          sd_cd_sync <= 1'b1;
          mmio_read_d1 <= 1'b0;
@@ -339,9 +386,9 @@ module rk_xcku5p(
       end else begin
          sd_cd_meta <= sd_cd;
          sd_cd_sync <= sd_cd_meta;
-         mmio_read_d1 <= mmio_read;
+         mmio_read_d1 <= ui_mmio_read;
          mmio_read_d2 <= mmio_read_d1;
-         if (mmio_read) begin
+         if (ui_mmio_read) begin
             if (sd_spi_sel)
                mmio_readdata_q <= sd_spi_readdata;
             else if (sd_gpio_sel)
@@ -359,18 +406,39 @@ module rk_xcku5p(
       end
    end
 
-   assign mmio_readdatavalid = mmio_read_d2;
-   assign mmio_readdata = mmio_readdata_q;
+   assign ui_mmio_readdatavalid = mmio_read_d2;
+   assign ui_mmio_readdata = mmio_readdata_q;
+
+   smolrv64_mmio_clock_bridge mmio_clock_bridge_inst(
+      .core_clock          (core_clk),
+      .core_reset          (cpu_reset),
+      .core_address        (core_mmio_address),
+      .core_read           (core_mmio_read),
+      .core_write          (core_mmio_write),
+      .core_writedata      (core_mmio_writedata),
+      .core_byteenable     (core_mmio_byteenable),
+      .core_readdatavalid  (core_mmio_readdatavalid),
+      .core_readdata       (core_mmio_readdata),
+      .ui_clock            (ui_clk),
+      .ui_reset            (ui_cpu_reset),
+      .ui_address          (ui_mmio_address),
+      .ui_read             (ui_mmio_read),
+      .ui_write            (ui_mmio_write),
+      .ui_writedata        (ui_mmio_writedata),
+      .ui_byteenable       (ui_mmio_byteenable),
+      .ui_readdatavalid    (ui_mmio_readdatavalid),
+      .ui_readdata         (ui_mmio_readdata)
+   );
 
    sd_spi_oc_tiny sd_spi_inst(
       .clock        (ui_clk),
-      .reset        (cpu_reset),
-      .address      (mmio_address[7:0]),
+      .reset        (ui_cpu_reset),
+      .address      (ui_mmio_address[7:0]),
       .read_data    (sd_spi_readdata),
-      .read         (mmio_read && sd_spi_sel),
-      .write        (mmio_write && sd_spi_sel),
-      .write_data   (mmio_writedata),
-      .byteenable   (mmio_byteenable),
+      .read         (ui_mmio_read && sd_spi_sel),
+      .write        (ui_mmio_write && sd_spi_sel),
+      .write_data   (ui_mmio_writedata),
+      .byteenable   (ui_mmio_byteenable),
       .spi_clk      (spi_sd_clk),
       .spi_mosi     (spi_sd_mosi),
       .spi_miso     (spi_sd_miso)
@@ -378,16 +446,16 @@ module rk_xcku5p(
 
    sd_gpio_dat sd_gpio_inst(
       .clock        (ui_clk),
-      .reset        (cpu_reset),
-      .write        (mmio_write && sd_gpio_sel),
-      .write_data   (mmio_writedata),
-      .byteenable   (mmio_byteenable),
+      .reset        (ui_cpu_reset),
+      .write        (ui_mmio_write && sd_gpio_sel),
+      .write_data   (ui_mmio_writedata),
+      .byteenable   (ui_mmio_byteenable),
       .gpio_out     (sd_gpio),
       .read_data    (sd_gpio_readdata)
    );
 
    always @* begin
-      case (mmio_address[7:2])
+      case (ui_mmio_address[7:2])
         6'h00: virtio_net_debug_readdata = virtio_net_debug_status;
         6'h01: virtio_net_debug_readdata = virtio_net_debug_notify_count;
         6'h02: virtio_net_debug_readdata = virtio_net_debug_read_avail_count;
@@ -411,13 +479,13 @@ module rk_xcku5p(
       .QUEUE_NUM_MAX(32'd8)
    ) virtio_blk_inst(
       .clock                   (ui_clk),
-      .reset                   (cpu_reset),
-      .address                 (mmio_address[11:0]),
-      .read                    (mmio_read && virtio_blk_sel),
+      .reset                   (ui_cpu_reset),
+      .address                 (ui_mmio_address[11:0]),
+      .read                    (ui_mmio_read && virtio_blk_sel),
       .read_data               (virtio_blk_readdata),
-      .write                   (mmio_write && virtio_blk_sel),
-      .write_data              (mmio_writedata),
-      .byteenable              (mmio_byteenable),
+      .write                   (ui_mmio_write && virtio_blk_sel),
+      .write_data              (ui_mmio_writedata),
+      .byteenable              (ui_mmio_byteenable),
       .irq                     (virtio_blk_irq),
       .queue_notify_pulse      (),
       .queue_notify_value      (),
@@ -449,13 +517,13 @@ module rk_xcku5p(
       .QUEUE_COUNT(32'd2)
    ) virtio_net_inst(
       .clock                   (ui_clk),
-      .reset                   (cpu_reset),
-      .address                 (mmio_address[11:0]),
-      .read                    (mmio_read && virtio_net_sel),
+      .reset                   (ui_cpu_reset),
+      .address                 (ui_mmio_address[11:0]),
+      .read                    (ui_mmio_read && virtio_net_sel),
       .read_data               (virtio_net_readdata),
-      .write                   (mmio_write && virtio_net_sel),
-      .write_data              (mmio_writedata),
-      .byteenable              (mmio_byteenable),
+      .write                   (ui_mmio_write && virtio_net_sel),
+      .write_data              (ui_mmio_writedata),
+      .byteenable              (ui_mmio_byteenable),
       .irq                     (virtio_net_irq),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),
       .queue_notify_value      (virtio_net_queue_notify_value),
@@ -483,7 +551,7 @@ module rk_xcku5p(
 
    virtio_net_tx_drop virtio_net_tx_drop_inst(
       .clock                   (ui_clk),
-      .reset                   (cpu_reset),
+      .reset                   (ui_cpu_reset),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),
       .queue_notify_value      (virtio_net_queue_notify_value),
       .tx_queue_num            (virtio_net_queue1_num),
@@ -551,7 +619,7 @@ module rk_xcku5p(
    if (USE_DDR_ARB) begin : gen_ddr_arbiter
    axi_two_master_arbiter ddr4_arbiter_inst(
       .clock          (ui_clk),
-      .reset          (cpu_reset),
+      .reset          (ui_cpu_reset),
 
       .s0_axi_awid    (core_axi_awid),
       .s0_axi_awaddr  (core_axi_awaddr),
@@ -713,19 +781,19 @@ module rk_xcku5p(
    endgenerate
 
    smolrv64 smolrv64_inst(
-      .clock                (ui_clk),
+      .clock                (core_clk),
       .mem_clock            (ui_clk),
       .fpu_clock            (fpu_clk),
       .reset                (cpu_reset),
-      .mmio_address         (mmio_address),
-      .mmio_read            (mmio_read),
-      .mmio_write           (mmio_write),
-      .mmio_writedata       (mmio_writedata),
-      .mmio_byteenable      (mmio_byteenable),
-      .mmio_readdatavalid   (mmio_readdatavalid),
-      .mmio_readdata        (mmio_readdata),
+      .mmio_address         (core_mmio_address),
+      .mmio_read            (core_mmio_read),
+      .mmio_write           (core_mmio_write),
+      .mmio_writedata       (core_mmio_writedata),
+      .mmio_byteenable      (core_mmio_byteenable),
+      .mmio_readdatavalid   (core_mmio_readdatavalid),
+      .mmio_readdata        (core_mmio_readdata),
 
-      .ext_irq              ({51'd0, virtio_net_irq, virtio_blk_irq, 10'd0}),
+      .ext_irq              ({51'd0, virtio_net_irq_core, virtio_blk_irq_core, 10'd0}),
 
       .m_axi_awid           (core_axi_awid),
       .m_axi_awaddr         (core_axi_awaddr),
@@ -774,17 +842,146 @@ module rk_xcku5p(
       .halted_o             (halted)
    );
 
-   // UI clock is ~333.33 MHz; keep UART at 3 Mbaud
+   // Core clock is half of the ~333.33 MHz UI clock; keep UART at 3 Mbaud.
    wire tx_ready;
-   rs232tx #(.CLK_FREQ(333_333_333), .BAUD(3_000_000)) rs232tx_inst
-     (.clk(ui_clk), .rst_n(~ui_rst),
+   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232tx_inst
+     (.clk(core_clk), .rst_n(~cpu_reset),
       .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
       .tx(txd));
 
-   rs232rx #(.CLK_FREQ(333_333_333), .BAUD(3_000_000)) rs232rx_inst
-     (.clk(ui_clk), .rst_n(~ui_rst),
+   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232rx_inst
+     (.clk(core_clk), .rst_n(~cpu_reset),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd), .overflow());
+endmodule
+
+module smolrv64_mmio_clock_bridge(
+   input  wire        core_clock,
+   input  wire        core_reset,
+   input  wire [19:0] core_address,
+   input  wire        core_read,
+   input  wire        core_write,
+   input  wire [31:0] core_writedata,
+   input  wire [ 3:0] core_byteenable,
+   output wire        core_readdatavalid,
+   output wire [31:0] core_readdata,
+
+   input  wire        ui_clock,
+   input  wire        ui_reset,
+   output reg  [19:0] ui_address = 20'd0,
+   output reg         ui_read = 1'b0,
+   output reg         ui_write = 1'b0,
+   output reg  [31:0] ui_writedata = 32'd0,
+   output reg  [ 3:0] ui_byteenable = 4'd0,
+   input  wire        ui_readdatavalid,
+   input  wire [31:0] ui_readdata
+);
+   localparam CMD_WIDTH = 58;
+   localparam [1:0] UI_IDLE = 2'd0;
+   localparam [1:0] UI_WAIT_RSP = 2'd1;
+   localparam [1:0] UI_SEND_RSP = 2'd2;
+
+   wire                  cmd_wr_ready;
+   wire [CMD_WIDTH-1:0] cmd_wr_data =
+      {core_write, core_read, core_address, core_writedata, core_byteenable};
+   wire                  cmd_wr_valid = core_read || core_write;
+   wire                  cmd_rd_valid;
+   wire                  cmd_rd_ready;
+   wire [CMD_WIDTH-1:0] cmd_rd_data;
+
+   smolrv64_async_fifo #(
+      .WIDTH(CMD_WIDTH),
+      .ADDR_BITS(4)
+   ) mmio_cmd_fifo (
+      .wr_clock(core_clock),
+      .rd_clock(ui_clock),
+      .reset(core_reset | ui_reset),
+      .wr_valid(cmd_wr_valid),
+      .wr_ready(cmd_wr_ready),
+      .wr_data(cmd_wr_data),
+      .rd_valid(cmd_rd_valid),
+      .rd_ready(cmd_rd_ready),
+      .rd_data(cmd_rd_data)
+   );
+
+   wire        cmd_is_write = cmd_rd_data[57];
+   wire        cmd_is_read = cmd_rd_data[56];
+   wire [19:0] cmd_address = cmd_rd_data[55:36];
+   wire [31:0] cmd_writedata = cmd_rd_data[35:4];
+   wire [ 3:0] cmd_byteenable = cmd_rd_data[3:0];
+
+   reg  [1:0] ui_state = UI_IDLE;
+   reg  [31:0] rsp_data_q = 32'd0;
+   wire        rsp_wr_ready;
+   wire        rsp_wr_valid = ui_state == UI_SEND_RSP;
+   wire        rsp_rd_valid;
+
+   assign cmd_rd_ready = cmd_rd_valid && ui_state == UI_IDLE &&
+                         (cmd_is_write || cmd_is_read);
+
+   smolrv64_async_fifo #(
+      .WIDTH(32),
+      .ADDR_BITS(4)
+   ) mmio_rsp_fifo (
+      .wr_clock(ui_clock),
+      .rd_clock(core_clock),
+      .reset(core_reset | ui_reset),
+      .wr_valid(rsp_wr_valid),
+      .wr_ready(rsp_wr_ready),
+      .wr_data(rsp_data_q),
+      .rd_valid(rsp_rd_valid),
+      .rd_ready(rsp_rd_valid),
+      .rd_data(core_readdata)
+   );
+
+   assign core_readdatavalid = rsp_rd_valid;
+
+`ifndef SYNTHESIS
+   always @(posedge core_clock) begin
+      if (!core_reset && cmd_wr_valid && !cmd_wr_ready)
+         $display("%05d MMIO clock bridge command FIFO overflow", $time);
+   end
+`endif
+
+   always @(posedge ui_clock) begin
+      if (ui_reset) begin
+         ui_address <= 20'd0;
+         ui_read <= 1'b0;
+         ui_write <= 1'b0;
+         ui_writedata <= 32'd0;
+         ui_byteenable <= 4'd0;
+         ui_state <= UI_IDLE;
+         rsp_data_q <= 32'd0;
+      end else begin
+         ui_read <= 1'b0;
+         ui_write <= 1'b0;
+
+         case (ui_state)
+           UI_IDLE: begin
+              if (cmd_rd_valid) begin
+                 ui_address <= cmd_address;
+                 ui_writedata <= cmd_writedata;
+                 ui_byteenable <= cmd_byteenable;
+                 ui_write <= cmd_is_write;
+                 ui_read <= cmd_is_read;
+                 if (cmd_is_read)
+                    ui_state <= UI_WAIT_RSP;
+              end
+           end
+           UI_WAIT_RSP: begin
+              if (ui_readdatavalid) begin
+                 rsp_data_q <= ui_readdata;
+                 ui_state <= UI_SEND_RSP;
+              end
+           end
+           UI_SEND_RSP: begin
+              if (rsp_wr_ready)
+                 ui_state <= UI_IDLE;
+           end
+           default: ui_state <= UI_IDLE;
+         endcase
+      end
+   end
 endmodule
 
 `ifndef SYNTHESIS

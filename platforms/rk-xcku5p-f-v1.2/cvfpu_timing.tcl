@@ -3,7 +3,15 @@
 # This is a Tcl hook rather than XDC because Vivado's XDC parser rejects normal
 # Tcl control flow. The hook runs after the implementation design is opened.
 
-set core_clocks [get_clocks -quiet -of_objects [get_nets -quiet ui_clk]]
+set core_clk_src_pins [get_pins -quiet core_clk_buf/I]
+set core_clk_out_pins [get_pins -quiet core_clk_buf/O]
+if {[llength $core_clk_src_pins] && [llength $core_clk_out_pins] &&
+    ![llength [get_clocks -quiet -of_objects $core_clk_out_pins]]} {
+   create_generated_clock -name core_clk_div2 -divide_by 2 \
+      -source $core_clk_src_pins $core_clk_out_pins
+}
+
+set core_clocks [get_clocks -quiet -of_objects [get_nets -quiet core_clk]]
 set fpu_clk_src_pins [get_pins -quiet fpu_clk_buf/I]
 set fpu_clk_out_pins [get_pins -quiet fpu_clk_buf/O]
 if {[llength $fpu_clk_src_pins] && [llength $fpu_clk_out_pins] &&
