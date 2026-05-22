@@ -203,6 +203,7 @@ module smolrv64_tb;
    end
 
    smolrv64 smolrv64_inst(.clock                (clock),
+                          .mem_clock            (clock),
                           .fpu_clock            (clock),
                           .reset                (!reset_n),
 
@@ -315,6 +316,7 @@ endmodule
 `endif
 
 module smolrv64(input wire        clock,
+                input wire        mem_clock,
                 input wire        fpu_clock,
                 input wire        reset,
 /*
@@ -1276,7 +1278,9 @@ module smolrv64(input wire        clock,
    localparam [4:0] CACHE_FLUSH_READ = 5'd24;
    localparam [4:0] CACHE_FLUSH_WAIT = 5'd25;
    localparam [4:0] CACHE_FLUSH_CHECK = 5'd26;
-   localparam [4:0] CACHE_LAST_STATE = CACHE_FLUSH_CHECK;
+   localparam [4:0] CACHE_FILL_LINE_WAIT = 5'd27;
+   localparam [4:0] CACHE_FILL_LINE_INSTALL = 5'd28;
+   localparam [4:0] CACHE_LAST_STATE = CACHE_FILL_LINE_INSTALL;
 
    reg [ 7:0] cache_bank_wr_en = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
@@ -1364,20 +1368,35 @@ module smolrv64(input wire        clock,
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
 
-   reg        axi_read = 0;
-   reg [27:0] axi_read_addr = 0;
-   wire       axi_readdatavalid;
-   wire [63:0] axi_readdata;
-   reg        axi_write = 0;
-   reg [27:0] axi_write_addr = 0;
-   reg [63:0] axi_write_data = 0;
-   reg [ 7:0] axi_write_strb = 0;
-   wire       axi_write_ready;
-   wire       axi_write_done;
+   reg        mem_fill_req_valid = 0;
+   wire       mem_fill_req_ready;
+   reg [24:0] mem_fill_req_line_addr = 0;
+   wire       mem_fill_rsp_valid;
+   reg        mem_fill_rsp_ready = 0;
+   wire [511:0] mem_fill_rsp_data;
+   reg        mem_wb_req_valid = 0;
+   wire       mem_wb_req_ready;
+   reg [24:0] mem_wb_req_line_addr = 0;
+   reg [511:0] mem_wb_req_line_data = 0;
+   wire       mem_wb_rsp_valid;
+   reg        mem_wb_rsp_ready = 0;
+   reg        mem_read_req_valid = 0;
+   wire       mem_read_req_ready;
+   reg [27:0] mem_read_req_addr = 0;
+   wire       mem_read_rsp_valid;
+   reg        mem_read_rsp_ready = 0;
+   wire [63:0] mem_read_rsp_data;
+   wire       mem_engine_idle;
+   wire       mem_fill_req_fire = mem_fill_req_valid && mem_fill_req_ready;
+   wire       mem_wb_req_fire = mem_wb_req_valid && mem_wb_req_ready;
+   wire       mem_read_req_fire = mem_read_req_valid && mem_read_req_ready;
    wire       cache_bram_fill_commit = cache_state == CACHE_BRAM_FILL_COMMIT;
-   wire       cache_fill_data_valid = axi_readdatavalid || cache_bram_fill_commit;
+   reg [511:0] cache_fill_line_data = 0;
+   wire       cache_line_install = cache_state == CACHE_FILL_LINE_INSTALL;
+   wire       cache_fill_data_valid = cache_line_install || cache_bram_fill_commit;
+   wire [63:0] cache_fill_line_word = cache_fill_line_data[cache_fill_beat * 64 +: 64];
    wire [63:0] cache_fill_data = cache_bram_fill_commit ? cache_bram_fill_data
-                                                        : axi_readdata;
+                                                        : cache_fill_line_word;
    wire [63:0] cache_bram_base_addr = {33'd0, MEM_BASEADDR_VALUE[30:0]};
    wire [63:0] cache_bram_window_mask = 64'hffff_ffff_ffff_ffff << `MEM_SIZE_LG2;
    wire       cache_fill_from_bram =
@@ -1388,25 +1407,14 @@ module smolrv64(input wire        clock,
    wire        ptw_direct_from_bram =
               ((ptw_direct_addr64 ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
 
-   reg        ar_busy = 0;
-   reg        r_busy  = 0;
-   reg [27:0] ar_addr_r;
-   reg [63:0] rdata_r;
-   reg        aw_busy = 0;
-   reg        w_busy  = 0;
-   reg        b_busy  = 0;
-   reg [27:0] aw_addr_r;
-   reg [63:0] w_data_r;
-   reg [ 7:0] w_strb_r;
-   reg        axi_readdatavalid_r = 0;
-
-   wire       axi_master_idle = !ar_busy && !r_busy && !aw_busy && !w_busy && !b_busy;
    assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
-                                !dram_read && !dram_write && !axi_read && !axi_write &&
+                                !dram_read && !dram_write &&
+                                !mem_fill_req_valid && !mem_wb_req_valid &&
+                                !mem_read_req_valid &&
                                 !ptw_direct_read && !ptw_direct_probe_pending &&
                                 !ptw_direct_wait_probe && !ptw_direct_pending &&
                                 !ptw_direct_wait_bram && !ptw_direct_wait_axi &&
-                                axi_master_idle;
+                                mem_engine_idle;
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
    wire       hpm_instret_pulse = state == `S_FETCH1;
@@ -1414,13 +1422,13 @@ module smolrv64(input wire        clock,
    wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
    wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
-   wire       hpm_cache_fill_beat_pulse = cache_state == CACHE_FILL_WAIT && cache_fill_data_valid;
+   wire       hpm_cache_fill_beat_pulse = cache_fill_data_valid;
    wire       hpm_cache_fill_line_pulse = hpm_cache_fill_beat_pulse && cache_fill_beat == 3'd7;
    wire       cache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
-                                    (cache_wb_to_bram || (axi_write_ready && !axi_read)) &&
+                                    (cache_wb_to_bram || mem_wb_req_ready) &&
                                     cache_wb_beat == 3'd0;
-   wire       hpm_axi_read_pulse = axi_read;
-   wire       hpm_axi_write_pulse = axi_write && axi_write_ready;
+   wire       hpm_axi_read_pulse = mem_fill_req_fire || mem_read_req_fire;
+   wire       hpm_axi_write_pulse = mem_wb_req_fire;
    wire       hpm_bus_wait_cycle = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
                                    state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
                                    state == `S_DRAM_PTW_WAIT   ||
@@ -1591,6 +1599,8 @@ module smolrv64(input wire        clock,
            CACHE_FLUSH_READ: cache_state_name = "FLUSH_READ";
            CACHE_FLUSH_WAIT: cache_state_name = "FLUSH_WAIT";
            CACHE_FLUSH_CHECK: cache_state_name = "FLUSH_CHECK";
+           CACHE_FILL_LINE_WAIT: cache_state_name = "FILL_LINE_WAIT";
+           CACHE_FILL_LINE_INSTALL: cache_state_name = "FILL_LINE_INST";
            default:         cache_state_name = "UNKNOWN";
          endcase
       end
@@ -1924,6 +1934,22 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [511:0] cache_selected_line_data;
+      input way;
+      begin
+         cache_selected_line_data = {
+            cache_selected_bank_data(way, 3'd7),
+            cache_selected_bank_data(way, 3'd6),
+            cache_selected_bank_data(way, 3'd5),
+            cache_selected_bank_data(way, 3'd4),
+            cache_selected_bank_data(way, 3'd3),
+            cache_selected_bank_data(way, 3'd2),
+            cache_selected_bank_data(way, 3'd1),
+            cache_selected_bank_data(way, 3'd0)
+         };
+      end
+   endfunction
+
    smolrv64_frontend #(
       .EPOCH_BITS(FRONTEND_EPOCH_BITS),
       .TLB_ASID_BITS(TLB_ASID_BITS),
@@ -2082,7 +2108,7 @@ module smolrv64(input wire        clock,
       cache_bank_wr_way = cache_target_way;
       cache_bank_wr_data = cache_fill_data;
 
-      if ((cache_state == CACHE_FILL_WAIT || cache_state == CACHE_BRAM_FILL_COMMIT) &&
+      if ((cache_state == CACHE_FILL_LINE_INSTALL || cache_state == CACHE_BRAM_FILL_COMMIT) &&
           cache_fill_data_valid) begin
          cache_bank_wr_en = 8'd1 << cache_fill_beat;
          cache_bank_wr_idx = cache_target_idx;
@@ -2267,6 +2293,33 @@ module smolrv64(input wire        clock,
          cache_way0_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
          cache_way1_bank0_rd_idx <= {3'd0, cache_addr[11:6]};
          cache_state <= CACHE_PROBE_READ;
+      end
+   endtask
+
+   task cache_finish_writeback_line;
+      begin
+         cache_wb_beat <= 0;
+         if (cache_wb_after_cbo) begin
+            cache_way0_tag_wr_en <= !cache_victim_way;
+            cache_way1_tag_wr_en <= cache_victim_way;
+            cache_tag_wr_idx <= cache_victim_idx;
+            cache_tag_wr_data <= 0;
+            cache_wb_after_cbo <= 1'b0;
+            cache_cbo_done_r <= 1;
+            cache_state <= CACHE_IDLE;
+         end else if (cache_wb_after_flush) begin
+            cache_way0_tag_wr_en <= !cache_victim_way;
+            cache_way1_tag_wr_en <= cache_victim_way;
+            cache_tag_wr_idx <= cache_victim_idx;
+            cache_tag_wr_data <= 0;
+            cache_wb_after_flush <= 1'b0;
+            cache_flush_next_line();
+         end else if (cache_wb_then_fill) begin
+            cache_wb_then_fill <= 1'b0;
+            cache_state <= CACHE_INVALIDATE;
+         end else begin
+            cache_state <= CACHE_FILL_REQ;
+         end
       end
    endtask
 
@@ -8274,8 +8327,6 @@ module smolrv64(input wire        clock,
       dram_write_done_r <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
-      axi_read  <= 0;
-      axi_write <= 0;
       cache_way0_tag_wr_en <= 0;
       cache_way1_tag_wr_en <= 0;
       cache_tag_wr_all <= 0;
@@ -8296,9 +8347,12 @@ module smolrv64(input wire        clock,
          ptw_direct_wait_bram <= 0;
       end
 
-      if (ptw_direct_wait_axi && axi_readdatavalid) begin
-         ptw_direct_readdata_r <= axi_readdata;
+      if (ptw_direct_wait_axi)
+         mem_read_rsp_ready <= 1;
+      if (ptw_direct_wait_axi && mem_read_rsp_valid && mem_read_rsp_ready) begin
+         ptw_direct_readdata_r <= mem_read_rsp_data;
          ptw_direct_readdatavalid_r <= 1;
+         mem_read_rsp_ready <= 0;
          ptw_direct_wait_axi <= 0;
       end
 
@@ -8394,11 +8448,15 @@ module smolrv64(input wire        clock,
                  end
                  ptw_direct_wait_bram <= 1;
                  ptw_direct_pending <= 0;
-              end else if (!ar_busy && !r_busy) begin
-                 axi_read_addr <= ptw_direct_addr;
-                 axi_read <= 1;
-                 ptw_direct_wait_axi <= 1;
-                 ptw_direct_pending <= 0;
+              end else begin
+                 if (!mem_read_req_valid) begin
+                    mem_read_req_addr <= ptw_direct_addr;
+                    mem_read_req_valid <= 1;
+                 end else if (mem_read_req_ready) begin
+                    mem_read_req_valid <= 0;
+                    ptw_direct_wait_axi <= 1;
+                    ptw_direct_pending <= 0;
+                 end
               end
            end else if (dram_read) begin
               csr_vhpr_reads <= csr_vhpr_reads + 1;
@@ -8742,21 +8800,23 @@ module smolrv64(input wire        clock,
                  cache_bram_wb_data   <= cache_selected_bank_data(cache_victim_way, cache_wb_beat);
               end
               cache_state <= CACHE_BRAM_WB_WRITE;
-           end else if (axi_write_ready && !axi_read) begin
+           end else begin
 `ifdef SIMULATE
-              if (cache_trace_enabled) begin
-                 $display("%05d CACHE WBREQ beat=%0d addr=%016h data=%016h",
+              if (cache_trace_enabled && !mem_wb_req_valid) begin
+                 $display("%05d CACHE WBREQ line addr=%016h data0=%016h",
                           $time,
-                          cache_wb_beat,
-                          cache_wb_base + (64'd8 * cache_wb_beat),
-                          cache_selected_bank_data(cache_victim_way, cache_wb_beat));
+                          cache_wb_base,
+                          cache_selected_bank_data(cache_victim_way, 3'd0));
               end
 `endif
-              axi_write_addr <= cache_wb_base[30:3] + {25'd0, cache_wb_beat};
-              axi_write_data <= cache_selected_bank_data(cache_victim_way, cache_wb_beat);
-              axi_write_strb <= 8'hff;
-              axi_write      <= 1;
-              cache_state    <= CACHE_WB_WAIT;
+              if (!mem_wb_req_valid) begin
+                 mem_wb_req_line_addr <= cache_wb_base[30:6];
+                 mem_wb_req_line_data <= cache_selected_line_data(cache_victim_way);
+                 mem_wb_req_valid     <= 1;
+              end else if (mem_wb_req_ready) begin
+                 mem_wb_req_valid <= 0;
+                 cache_state <= CACHE_WB_WAIT;
+              end
            end
         end
 
@@ -8770,44 +8830,28 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_WB_WAIT: begin
-           if (axi_write_done || cache_bram_write_done) begin
+           if (cache_wb_to_bram && cache_bram_write_done) begin
               if (cache_wb_beat == 3'd7) begin
-                 cache_wb_beat <= 0;
-                 if (cache_wb_after_cbo) begin
-                    cache_way0_tag_wr_en <= !cache_victim_way;
-                    cache_way1_tag_wr_en <= cache_victim_way;
-                    cache_tag_wr_idx <= cache_victim_idx;
-                    cache_tag_wr_data <= 0;
-                    cache_wb_after_cbo <= 1'b0;
-                    cache_cbo_done_r <= 1;
-                    cache_state <= CACHE_IDLE;
-                 end else if (cache_wb_after_flush) begin
-                    cache_way0_tag_wr_en <= !cache_victim_way;
-                    cache_way1_tag_wr_en <= cache_victim_way;
-                    cache_tag_wr_idx <= cache_victim_idx;
-                    cache_tag_wr_data <= 0;
-                    cache_wb_after_flush <= 1'b0;
-                    cache_flush_next_line();
-                 end else if (cache_wb_then_fill) begin
-                    cache_wb_then_fill <= 1'b0;
-                    cache_state <= CACHE_INVALIDATE;
-                 end else begin
-                    cache_state <= CACHE_FILL_REQ;
-                 end
+                 cache_finish_writeback_line();
               end else begin
                  cache_wb_beat <= cache_wb_beat + 1;
                  cache_state <= CACHE_WB_REQ;
+              end
+           end else if (!cache_wb_to_bram) begin
+              mem_wb_rsp_ready <= 1;
+              if (mem_wb_rsp_valid && mem_wb_rsp_ready) begin
+                 mem_wb_rsp_ready <= 0;
+                 cache_finish_writeback_line();
               end
            end
         end
 
         CACHE_FILL_REQ: begin
 `ifdef SIMULATE
-           if (cache_trace_enabled) begin
-              $display("%05d CACHE FILLREQ beat=%0d addr=%016h",
+           if (cache_trace_enabled && !cache_fill_from_bram && !mem_fill_req_valid) begin
+              $display("%05d CACHE FILLREQ line addr=%016h",
                        $time,
-                       cache_fill_beat,
-                       cache_fill_base + (64'd8 * cache_fill_beat));
+                       cache_fill_base);
            end
 `endif
            if (cache_fill_from_bram) begin
@@ -8820,9 +8864,23 @@ module smolrv64(input wire        clock,
               end
               cache_state <= CACHE_BRAM_FILL_READ;
            end else begin
-              axi_read_addr <= cache_fill_base[30:3] + {25'd0, cache_fill_beat};
-              axi_read      <= 1;
-              cache_state   <= CACHE_FILL_WAIT;
+              if (!mem_fill_req_valid) begin
+                 mem_fill_req_line_addr <= cache_fill_base[30:6];
+                 mem_fill_req_valid <= 1;
+              end else if (mem_fill_req_ready) begin
+                 mem_fill_req_valid <= 0;
+                 cache_state <= CACHE_FILL_LINE_WAIT;
+              end
+           end
+        end
+
+        CACHE_FILL_LINE_WAIT: begin
+           mem_fill_rsp_ready <= 1;
+           if (mem_fill_rsp_valid && mem_fill_rsp_ready) begin
+              cache_fill_line_data <= mem_fill_rsp_data;
+              mem_fill_rsp_ready <= 0;
+              cache_fill_beat <= 0;
+              cache_state <= CACHE_FILL_LINE_INSTALL;
            end
         end
 
@@ -8838,7 +8896,7 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_BRAM_FILL_COMMIT,
-        CACHE_FILL_WAIT: begin
+        CACHE_FILL_LINE_INSTALL: begin
            if (cache_fill_data_valid) begin
               if (cache_fill_beat == cache_req_bank) begin
                  if (cache_req_write)
@@ -8878,7 +8936,8 @@ module smolrv64(input wire        clock,
                  cache_state      <= CACHE_IDLE;
               end else begin
                  cache_fill_beat <= cache_fill_beat + 1;
-                 cache_state     <= CACHE_FILL_REQ;
+                 cache_state     <= cache_bram_fill_commit ? CACHE_FILL_REQ :
+                                                            CACHE_FILL_LINE_INSTALL;
               end
            end
         end
@@ -8897,8 +8956,12 @@ module smolrv64(input wire        clock,
          dram_readdata_next_valid_r <= 0;
          dram_write_done_r <= 0;
          cache_bram_write_done <= 0;
-         axi_read <= 0;
-         axi_write <= 0;
+         mem_fill_req_valid <= 0;
+         mem_fill_rsp_ready <= 0;
+         mem_wb_req_valid <= 0;
+         mem_wb_rsp_ready <= 0;
+         mem_read_req_valid <= 0;
+         mem_read_rsp_ready <= 0;
          cache_way0_tag_wr_en <= 0;
          cache_way1_tag_wr_en <= 0;
          cache_tag_wr_all <= 0;
@@ -9011,7 +9074,7 @@ module smolrv64(input wire        clock,
                      $time,
                      cache_fill_beat,
                      cache_fill_base + (64'd8 * cache_fill_beat),
-                     axi_readdata);
+                     cache_fill_data);
          end
          if (hpm_cache_fill_line_pulse) begin
             $display("%05d CACHE FILLDONE addr=%016h write=%0d",
@@ -9023,56 +9086,506 @@ module smolrv64(input wire        clock,
    end
 `endif
 
-   // ----- AXI4 master to DDR4 -----
-   // Single read in flight, single write in flight.  arsize/awsize fixed at
-   // 8B; arlen/awlen=0 (one beat).  The physical cache above this block
-   // emits axi_read/axi_write pulses for line fills and dirty-line writeback.
-   assign axi_readdatavalid = axi_readdatavalid_r;
-   assign axi_readdata      = rdata_r;
-   assign axi_write_ready   = !aw_busy && !w_busy && !b_busy;
-   assign axi_write_done    = b_busy && m_axi_bvalid;
+   // ----- Memory-clocked refill/writeback engine -----
+   // L1 tag/data hits stay in the core clock domain.  Only slow-path
+   // non-BRAM line fills, dirty writebacks, and direct PTW reads cross to the
+   // memory clock domain.
+   smolrv64_mem_engine mem_engine_inst (
+      .core_clock          (clock),
+      .mem_clock           (mem_clock),
+      .reset               (core_reset_now),
+      .idle                (mem_engine_idle),
 
-   always @(posedge clock) begin
-      axi_readdatavalid_r <= 0;
+      .fill_req_valid      (mem_fill_req_valid),
+      .fill_req_ready      (mem_fill_req_ready),
+      .fill_req_line_addr  (mem_fill_req_line_addr),
+      .fill_rsp_valid      (mem_fill_rsp_valid),
+      .fill_rsp_ready      (mem_fill_rsp_ready),
+      .fill_rsp_data       (mem_fill_rsp_data),
 
-      // AR / R
-      if (axi_read) begin
-         ar_addr_r <= axi_read_addr;
-         ar_busy   <= 1;
-         r_busy    <= 1;
+      .wb_req_valid        (mem_wb_req_valid),
+      .wb_req_ready        (mem_wb_req_ready),
+      .wb_req_line_addr    (mem_wb_req_line_addr),
+      .wb_req_line_data    (mem_wb_req_line_data),
+      .wb_rsp_valid        (mem_wb_rsp_valid),
+      .wb_rsp_ready        (mem_wb_rsp_ready),
+
+      .read_req_valid      (mem_read_req_valid),
+      .read_req_ready      (mem_read_req_ready),
+      .read_req_addr       (mem_read_req_addr),
+      .read_rsp_valid      (mem_read_rsp_valid),
+      .read_rsp_ready      (mem_read_rsp_ready),
+      .read_rsp_data       (mem_read_rsp_data),
+
+      .m_axi_awid          (m_axi_awid),
+      .m_axi_awaddr        (m_axi_awaddr),
+      .m_axi_awlen         (m_axi_awlen),
+      .m_axi_awsize        (m_axi_awsize),
+      .m_axi_awburst       (m_axi_awburst),
+      .m_axi_awlock        (m_axi_awlock),
+      .m_axi_awcache       (m_axi_awcache),
+      .m_axi_awprot        (m_axi_awprot),
+      .m_axi_awqos         (m_axi_awqos),
+      .m_axi_awvalid       (m_axi_awvalid),
+      .m_axi_awready       (m_axi_awready),
+      .m_axi_wdata         (m_axi_wdata),
+      .m_axi_wstrb         (m_axi_wstrb),
+      .m_axi_wlast         (m_axi_wlast),
+      .m_axi_wvalid        (m_axi_wvalid),
+      .m_axi_wready        (m_axi_wready),
+      .m_axi_bid           (m_axi_bid),
+      .m_axi_bresp         (m_axi_bresp),
+      .m_axi_bvalid        (m_axi_bvalid),
+      .m_axi_bready        (m_axi_bready),
+      .m_axi_arid          (m_axi_arid),
+      .m_axi_araddr        (m_axi_araddr),
+      .m_axi_arlen         (m_axi_arlen),
+      .m_axi_arsize        (m_axi_arsize),
+      .m_axi_arburst       (m_axi_arburst),
+      .m_axi_arlock        (m_axi_arlock),
+      .m_axi_arcache       (m_axi_arcache),
+      .m_axi_arprot        (m_axi_arprot),
+      .m_axi_arqos         (m_axi_arqos),
+      .m_axi_arvalid       (m_axi_arvalid),
+      .m_axi_arready       (m_axi_arready),
+      .m_axi_rid           (m_axi_rid),
+      .m_axi_rdata         (m_axi_rdata),
+      .m_axi_rresp         (m_axi_rresp),
+      .m_axi_rlast         (m_axi_rlast),
+      .m_axi_rvalid        (m_axi_rvalid),
+      .m_axi_rready        (m_axi_rready)
+   );
+
+endmodule
+
+
+module smolrv64_async_fifo #(
+   parameter WIDTH = 64,
+   parameter ADDR_BITS = 2
+) (
+   input  wire             wr_clock,
+   input  wire             rd_clock,
+   input  wire             reset,
+   input  wire             wr_valid,
+   output wire             wr_ready,
+   input  wire [WIDTH-1:0] wr_data,
+   output wire             rd_valid,
+   input  wire             rd_ready,
+   output wire [WIDTH-1:0] rd_data
+);
+`ifdef SYNTHESIS
+   wire full;
+   wire empty;
+
+   assign wr_ready = !full;
+   assign rd_valid = !empty;
+
+   xpm_fifo_async #(
+      .CDC_SYNC_STAGES      ( 2 ),
+      .DOUT_RESET_VALUE     ( "0" ),
+      .ECC_MODE             ( "no_ecc" ),
+      .FIFO_MEMORY_TYPE     ( "auto" ),
+      .FIFO_READ_LATENCY    ( 0 ),
+      .FIFO_WRITE_DEPTH     ( 1 << ADDR_BITS ),
+      .FULL_RESET_VALUE     ( 0 ),
+      .PROG_EMPTY_THRESH    ( 3 ),
+      .PROG_FULL_THRESH     ( (1 << ADDR_BITS) - 2 ),
+      .RD_DATA_COUNT_WIDTH  ( ADDR_BITS + 1 ),
+      .READ_DATA_WIDTH      ( WIDTH ),
+      .READ_MODE            ( "fwft" ),
+      .RELATED_CLOCKS       ( 0 ),
+      .SIM_ASSERT_CHK       ( 0 ),
+      .USE_ADV_FEATURES     ( "0707" ),
+      .WAKEUP_TIME          ( 0 ),
+      .WRITE_DATA_WIDTH     ( WIDTH ),
+      .WR_DATA_COUNT_WIDTH  ( ADDR_BITS + 1 )
+   ) xpm_fifo_async_inst (
+      .almost_empty  ( ),
+      .almost_full   ( ),
+      .data_valid    ( ),
+      .dbiterr       ( ),
+      .dout          ( rd_data ),
+      .empty         ( empty ),
+      .full          ( full ),
+      .overflow      ( ),
+      .prog_empty    ( ),
+      .prog_full     ( ),
+      .rd_data_count ( ),
+      .rd_rst_busy   ( ),
+      .sbiterr       ( ),
+      .underflow     ( ),
+      .wr_ack        ( ),
+      .wr_data_count ( ),
+      .wr_rst_busy   ( ),
+      .din           ( wr_data ),
+      .injectdbiterr ( 1'b0 ),
+      .injectsbiterr ( 1'b0 ),
+      .rd_clk        ( rd_clock ),
+      .rd_en         ( rd_valid && rd_ready ),
+      .rst           ( reset ),
+      .sleep         ( 1'b0 ),
+      .wr_clk        ( wr_clock ),
+      .wr_en         ( wr_valid && wr_ready )
+   );
+`else
+   localparam DEPTH = 1 << ADDR_BITS;
+   reg [WIDTH-1:0] fifo_mem [0:DEPTH-1];
+   reg [ADDR_BITS-1:0] wr_ptr = 0;
+   reg [ADDR_BITS-1:0] rd_ptr = 0;
+   reg [ADDR_BITS:0] count = 0;
+   wire wr_fire = wr_valid && wr_ready;
+   wire rd_fire = rd_valid && rd_ready;
+
+   assign wr_ready = count != {1'b1, {ADDR_BITS{1'b0}}};
+   assign rd_valid = count != 0;
+   assign rd_data = fifo_mem[rd_ptr];
+
+   always @(posedge wr_clock) begin
+      if (reset) begin
+         wr_ptr <= 0;
+         rd_ptr <= 0;
+         count <= 0;
+      end else begin
+         if (wr_fire) begin
+            fifo_mem[wr_ptr] <= wr_data;
+            wr_ptr <= wr_ptr + 1'b1;
+         end
+         if (rd_fire)
+            rd_ptr <= rd_ptr + 1'b1;
+         case ({wr_fire, rd_fire})
+           2'b10: count <= count + 1'b1;
+           2'b01: count <= count - 1'b1;
+           default: count <= count;
+         endcase
       end
-      if (ar_busy && m_axi_arready) ar_busy <= 0;
-      if (r_busy && m_axi_rvalid) begin
-         rdata_r              <= m_axi_rdata;
-         r_busy               <= 0;
-         axi_readdatavalid_r  <= 1;
-      end
+   end
+`endif
+endmodule
 
-      // AW / W / B
-      if (axi_write && axi_write_ready) begin
-         aw_addr_r <= axi_write_addr;
-         w_data_r  <= axi_write_data;
-         w_strb_r  <= axi_write_strb;
-         aw_busy   <= 1;
-         w_busy    <= 1;
-         b_busy    <= 1;
-      end
-      if (aw_busy && m_axi_awready) aw_busy <= 0;
-      if (w_busy  && m_axi_wready ) w_busy  <= 0;
-      if (b_busy  && m_axi_bvalid ) b_busy  <= 0;
 
-      if (core_reset_now) begin
-         ar_busy <= 0; r_busy <= 0;
-         aw_busy <= 0; w_busy <= 0; b_busy <= 0;
-         axi_readdatavalid_r <= 0;
+module smolrv64_mem_engine(
+   input  wire        core_clock,
+   input  wire        mem_clock,
+   input  wire        reset,
+   output wire        idle,
+
+   input  wire        fill_req_valid,
+   output wire        fill_req_ready,
+   input  wire [24:0] fill_req_line_addr,
+   output wire        fill_rsp_valid,
+   input  wire        fill_rsp_ready,
+   output wire [511:0] fill_rsp_data,
+
+   input  wire        wb_req_valid,
+   output wire        wb_req_ready,
+   input  wire [24:0] wb_req_line_addr,
+   input  wire [511:0] wb_req_line_data,
+   output wire        wb_rsp_valid,
+   input  wire        wb_rsp_ready,
+
+   input  wire        read_req_valid,
+   output wire        read_req_ready,
+   input  wire [27:0] read_req_addr,
+   output wire        read_rsp_valid,
+   input  wire        read_rsp_ready,
+   output wire [63:0] read_rsp_data,
+
+   output wire [ 2:0] m_axi_awid,
+   output wire [30:0] m_axi_awaddr,
+   output wire [ 7:0] m_axi_awlen,
+   output wire [ 2:0] m_axi_awsize,
+   output wire [ 1:0] m_axi_awburst,
+   output wire        m_axi_awlock,
+   output wire [ 3:0] m_axi_awcache,
+   output wire [ 2:0] m_axi_awprot,
+   output wire [ 3:0] m_axi_awqos,
+   output wire        m_axi_awvalid,
+   input  wire        m_axi_awready,
+   output wire [63:0] m_axi_wdata,
+   output wire [ 7:0] m_axi_wstrb,
+   output wire        m_axi_wlast,
+   output wire        m_axi_wvalid,
+   input  wire        m_axi_wready,
+   input  wire [ 2:0] m_axi_bid,
+   input  wire [ 1:0] m_axi_bresp,
+   input  wire        m_axi_bvalid,
+   output wire        m_axi_bready,
+   output wire [ 2:0] m_axi_arid,
+   output wire [30:0] m_axi_araddr,
+   output wire [ 7:0] m_axi_arlen,
+   output wire [ 2:0] m_axi_arsize,
+   output wire [ 1:0] m_axi_arburst,
+   output wire        m_axi_arlock,
+   output wire [ 3:0] m_axi_arcache,
+   output wire [ 2:0] m_axi_arprot,
+   output wire [ 3:0] m_axi_arqos,
+   output wire        m_axi_arvalid,
+   input  wire        m_axi_arready,
+   input  wire [ 2:0] m_axi_rid,
+   input  wire [63:0] m_axi_rdata,
+   input  wire [ 1:0] m_axi_rresp,
+   input  wire        m_axi_rlast,
+   input  wire        m_axi_rvalid,
+   output wire        m_axi_rready
+);
+   wire        fill_cmd_valid;
+   reg         fill_cmd_ready = 0;
+   wire [24:0] fill_cmd_line_addr;
+   reg         fill_rsp_wr_valid = 0;
+   wire        fill_rsp_wr_ready;
+   reg  [511:0] fill_rsp_wr_data = 0;
+
+   wire        wb_cmd_valid;
+   reg         wb_cmd_ready = 0;
+   wire [536:0] wb_cmd_data;
+   reg         wb_rsp_wr_valid = 0;
+   wire        wb_rsp_wr_ready;
+
+   wire        read_cmd_valid;
+   reg         read_cmd_ready = 0;
+   wire [27:0] read_cmd_addr;
+   reg         read_rsp_wr_valid = 0;
+   wire        read_rsp_wr_ready;
+   reg  [63:0] read_rsp_wr_data = 0;
+
+   smolrv64_async_fifo #(.WIDTH(25), .ADDR_BITS(2)) fill_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+      .wr_valid(fill_req_valid), .wr_ready(fill_req_ready), .wr_data(fill_req_line_addr),
+      .rd_valid(fill_cmd_valid), .rd_ready(fill_cmd_ready), .rd_data(fill_cmd_line_addr)
+   );
+   smolrv64_async_fifo #(.WIDTH(512), .ADDR_BITS(2)) fill_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+      .wr_valid(fill_rsp_wr_valid), .wr_ready(fill_rsp_wr_ready), .wr_data(fill_rsp_wr_data),
+      .rd_valid(fill_rsp_valid), .rd_ready(fill_rsp_ready), .rd_data(fill_rsp_data)
+   );
+   smolrv64_async_fifo #(.WIDTH(537), .ADDR_BITS(2)) wb_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+      .wr_valid(wb_req_valid), .wr_ready(wb_req_ready),
+      .wr_data({wb_req_line_addr, wb_req_line_data}),
+      .rd_valid(wb_cmd_valid), .rd_ready(wb_cmd_ready), .rd_data(wb_cmd_data)
+   );
+   smolrv64_async_fifo #(.WIDTH(1), .ADDR_BITS(2)) wb_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+      .wr_valid(wb_rsp_wr_valid), .wr_ready(wb_rsp_wr_ready), .wr_data(1'b1),
+      .rd_valid(wb_rsp_valid), .rd_ready(wb_rsp_ready), .rd_data()
+   );
+   smolrv64_async_fifo #(.WIDTH(28), .ADDR_BITS(2)) read_req_fifo (
+      .wr_clock(core_clock), .rd_clock(mem_clock), .reset(reset),
+      .wr_valid(read_req_valid), .wr_ready(read_req_ready), .wr_data(read_req_addr),
+      .rd_valid(read_cmd_valid), .rd_ready(read_cmd_ready), .rd_data(read_cmd_addr)
+   );
+   smolrv64_async_fifo #(.WIDTH(64), .ADDR_BITS(2)) read_rsp_fifo (
+      .wr_clock(mem_clock), .rd_clock(core_clock), .reset(reset),
+      .wr_valid(read_rsp_wr_valid), .wr_ready(read_rsp_wr_ready), .wr_data(read_rsp_wr_data),
+      .rd_valid(read_rsp_valid), .rd_ready(read_rsp_ready), .rd_data(read_rsp_data)
+   );
+
+   localparam [2:0] MEM_IDLE       = 3'd0,
+                    MEM_READ_REQ   = 3'd1,
+                    MEM_READ_WAIT  = 3'd2,
+                    MEM_READ_RESP  = 3'd3,
+                    MEM_FILL_REQ   = 3'd4,
+                    MEM_FILL_WAIT  = 3'd5,
+                    MEM_FILL_RESP  = 3'd6,
+                    MEM_WB_REQ     = 3'd7;
+   localparam [1:0] MEM_WB_WAIT = 2'd0,
+                    MEM_WB_RESP = 2'd1;
+
+   reg [2:0] mem_state = MEM_IDLE;
+   reg [1:0] wb_substate = MEM_WB_WAIT;
+   reg [27:0] op_addr = 0;
+   reg [24:0] op_line_addr = 0;
+   reg [511:0] op_line_data = 0;
+   reg [2:0] op_beat = 0;
+   reg [511:0] fill_line_data = 0;
+
+   reg        ar_busy = 0;
+   reg        r_busy  = 0;
+   reg [27:0] ar_addr_r = 0;
+   reg        aw_busy = 0;
+   reg        w_busy  = 0;
+   reg        b_busy  = 0;
+   reg [27:0] aw_addr_r = 0;
+   reg [63:0] w_data_r = 0;
+   reg [7:0]  w_strb_r = 0;
+
+   reg mem_busy = 0;
+   reg mem_busy_meta = 0;
+   reg mem_busy_sync = 0;
+   assign idle = !mem_busy_sync &&
+                 fill_req_ready && !fill_rsp_valid &&
+                 wb_req_ready && !wb_rsp_valid &&
+                 read_req_ready && !read_rsp_valid;
+
+   always @(posedge core_clock) begin
+      if (reset) begin
+         mem_busy_meta <= 0;
+         mem_busy_sync <= 0;
+      end else begin
+         mem_busy_meta <= mem_busy;
+         mem_busy_sync <= mem_busy_meta;
+      end
+   end
+
+   always @(posedge mem_clock) begin
+      if (ar_busy && m_axi_arready)
+         ar_busy <= 0;
+      if (aw_busy && m_axi_awready)
+         aw_busy <= 0;
+      if (w_busy && m_axi_wready)
+         w_busy <= 0;
+
+      case (mem_state)
+        MEM_IDLE: begin
+           mem_busy <= 0;
+           wb_substate <= MEM_WB_WAIT;
+           fill_cmd_ready <= 0;
+           wb_cmd_ready <= 0;
+           read_cmd_ready <= 0;
+           if (read_cmd_valid) begin
+              read_cmd_ready <= 1;
+              if (read_cmd_ready) begin
+                 read_cmd_ready <= 0;
+                 op_addr <= read_cmd_addr;
+                 mem_busy <= 1;
+                 mem_state <= MEM_READ_REQ;
+              end
+           end else if (fill_cmd_valid) begin
+              fill_cmd_ready <= 1;
+              if (fill_cmd_ready) begin
+                 fill_cmd_ready <= 0;
+                 op_line_addr <= fill_cmd_line_addr;
+                 op_beat <= 0;
+                 fill_line_data <= 0;
+                 mem_busy <= 1;
+                 mem_state <= MEM_FILL_REQ;
+              end
+           end else if (wb_cmd_valid) begin
+              wb_cmd_ready <= 1;
+              if (wb_cmd_ready) begin
+                 wb_cmd_ready <= 0;
+                 op_line_addr <= wb_cmd_data[536:512];
+                 op_line_data <= wb_cmd_data[511:0];
+                 op_beat <= 0;
+                 mem_busy <= 1;
+                 mem_state <= MEM_WB_REQ;
+              end
+           end
+        end
+
+        MEM_READ_REQ: begin
+           if (!ar_busy && !r_busy) begin
+              ar_addr_r <= op_addr;
+              ar_busy <= 1;
+              r_busy <= 1;
+              mem_state <= MEM_READ_WAIT;
+           end
+        end
+
+        MEM_READ_WAIT: begin
+           if (r_busy && m_axi_rvalid) begin
+              r_busy <= 0;
+              read_rsp_wr_data <= m_axi_rdata;
+              mem_state <= MEM_READ_RESP;
+           end
+        end
+
+        MEM_READ_RESP: begin
+           read_rsp_wr_valid <= 1;
+           if (read_rsp_wr_valid && read_rsp_wr_ready) begin
+              read_rsp_wr_valid <= 0;
+              mem_state <= MEM_IDLE;
+           end
+        end
+
+        MEM_FILL_REQ: begin
+           if (!ar_busy && !r_busy) begin
+              ar_addr_r <= {op_line_addr, op_beat};
+              ar_busy <= 1;
+              r_busy <= 1;
+              mem_state <= MEM_FILL_WAIT;
+           end
+        end
+
+        MEM_FILL_WAIT: begin
+           if (r_busy && m_axi_rvalid) begin
+              r_busy <= 0;
+              fill_line_data[op_beat * 64 +: 64] <= m_axi_rdata;
+              if (op_beat == 3'd7) begin
+                 mem_state <= MEM_FILL_RESP;
+              end else begin
+                 op_beat <= op_beat + 1'b1;
+                 mem_state <= MEM_FILL_REQ;
+              end
+           end
+        end
+
+        MEM_FILL_RESP: begin
+           fill_rsp_wr_data <= fill_line_data;
+           fill_rsp_wr_valid <= 1;
+           if (fill_rsp_wr_valid && fill_rsp_wr_ready) begin
+              fill_rsp_wr_valid <= 0;
+              mem_state <= MEM_IDLE;
+           end
+        end
+
+        MEM_WB_REQ: begin
+           case (wb_substate)
+             MEM_WB_WAIT: begin
+                if (!aw_busy && !w_busy && !b_busy) begin
+                   aw_addr_r <= {op_line_addr, op_beat};
+                   w_data_r <= op_line_data[op_beat * 64 +: 64];
+                   w_strb_r <= 8'hff;
+                   aw_busy <= 1;
+                   w_busy <= 1;
+                   b_busy <= 1;
+                   wb_substate <= MEM_WB_RESP;
+                end
+             end
+             MEM_WB_RESP: begin
+                if (!b_busy && op_beat == 3'd7) begin
+                   wb_rsp_wr_valid <= 1;
+                   if (wb_rsp_wr_valid && wb_rsp_wr_ready) begin
+                      wb_rsp_wr_valid <= 0;
+                      mem_state <= MEM_IDLE;
+                   end
+                end else if (b_busy && m_axi_bvalid) begin
+                   b_busy <= 0;
+                   if (op_beat == 3'd7) begin
+                      wb_substate <= MEM_WB_RESP;
+                   end else begin
+                      op_beat <= op_beat + 1'b1;
+                      wb_substate <= MEM_WB_WAIT;
+                   end
+                end
+             end
+           endcase
+        end
+      endcase
+
+      if (reset) begin
+         mem_state <= MEM_IDLE;
+         wb_substate <= MEM_WB_WAIT;
+         ar_busy <= 0;
+         r_busy <= 0;
+         aw_busy <= 0;
+         w_busy <= 0;
+         b_busy <= 0;
+         mem_busy <= 0;
+         fill_cmd_ready <= 0;
+         fill_rsp_wr_valid <= 0;
+         wb_cmd_ready <= 0;
+         wb_rsp_wr_valid <= 0;
+         read_cmd_ready <= 0;
+         read_rsp_wr_valid <= 0;
       end
    end
 
    assign m_axi_arvalid = ar_busy;
    assign m_axi_araddr  = {ar_addr_r, 3'b000};
    assign m_axi_arlen   = 8'd0;
-   assign m_axi_arsize  = 3'b011;       // 8 bytes
-   assign m_axi_arburst = 2'b01;        // INCR
+   assign m_axi_arsize  = 3'b011;
+   assign m_axi_arburst = 2'b01;
    assign m_axi_arid    = 3'b000;
    assign m_axi_arlock  = 1'b0;
    assign m_axi_arcache = 4'b0011;
@@ -9095,7 +9608,6 @@ module smolrv64(input wire        clock,
    assign m_axi_wstrb   = w_strb_r;
    assign m_axi_wlast   = 1'b1;
    assign m_axi_bready  = 1'b1;
-
 endmodule
 
 

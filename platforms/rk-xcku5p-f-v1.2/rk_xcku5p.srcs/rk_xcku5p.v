@@ -714,6 +714,7 @@ module rk_xcku5p(
 
    smolrv64 smolrv64_inst(
       .clock                (ui_clk),
+      .mem_clock            (ui_clk),
       .fpu_clock            (fpu_clk),
       .reset                (cpu_reset),
       .mmio_address         (mmio_address),

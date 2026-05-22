@@ -288,6 +288,9 @@ Rules:
   explicitly needed;
 - run FPGA timing before treating a checkpoint as hardware-ready or before
   making timing-sensitive performance claims;
+- split the design into a slower core/cache-hit clock domain and the fixed
+  333.333 MHz memory-interface domain instead of relaxing constraints only in
+  the build scripts;
 - when timing fails, fix or revert before stacking more pipeline work;
 - do not keep adding cases to broad combinational predicates as a substitute for
   a pipeline boundary;
@@ -304,6 +307,39 @@ Known pressure points:
 - broad state predicates;
 - cache/fetch buffer hit logic;
 - paths that combine backend retirement with next frontend request generation.
+
+### Clock Split
+
+The intended timing architecture is:
+
+- core clock domain: frontend, backend, register files, TLB, I-cache/D-cache
+  tag and data lookup, VHPR hit/miss decision, and cache line install;
+- memory clock domain: DDR4/MIG AXI master, non-BRAM line fills, dirty line
+  writebacks, and direct PTW reads that intentionally bypass VHPR;
+- CDC boundary: command FIFOs from core to memory and response FIFOs from
+  memory to core.
+
+The L1 hit path must not cross a FIFO.  Crossing on every hit would turn the L1
+into a slow asynchronous peripheral and erase the point of VHPR and the I-cache.
+The boundary is therefore miss/refill/writeback traffic only.
+
+Implemented so far:
+
+- `smolrv64` has a separate `mem_clock` input;
+- non-BRAM 64-byte fills are requested once, fetched by the memory-clocked
+  engine, returned as a line, and installed by the core/cache side;
+- dirty non-BRAM writebacks send a full cache line to the memory-clocked engine;
+- direct PTW AXI reads cross the same engine instead of sharing core-clock AXI
+  pulses.
+
+Still required before the FPGA actually runs the core slower:
+
+- generate and use a divided `core_clk` at the board top level;
+- move or bridge all CPU-side MMIO, UART, and debug/monitor-visible signals to
+  that core clock;
+- keep the DDR arbiter, MIG-facing AXI, and any independent DMA master in the
+  333.333 MHz domain, with explicit bridges where a slow MMIO control plane
+  configures a fast DMA datapath.
 
 ## Near-Term Work
 
