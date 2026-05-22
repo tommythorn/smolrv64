@@ -107,9 +107,11 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   and `frontend_rsp_*` carries the hit/alignment/prediction result back out.
 
 This proved useful as preparation, but it is not the final pipeline shape.  Do
-not keep widening broad FSM predicates indefinitely.  The CSR-state speculation
-attempt failed timing with only a small logical change, which is evidence that
-the old control structure is now the bottleneck.
+not keep widening broad FSM predicates indefinitely.  The post-baseline overlap
+stack after `b1c0bdd` was reverted because it did not create a real pipeline
+boundary and eventually broke Linux boot.  Treat that as a failed branch, not as
+work to resurrect piecemeal.  Future changes should make explicit stage
+ownership or frontend autonomy visible in the RTL at each checkpoint.
 
 ## Pipeline Contract
 
@@ -387,6 +389,10 @@ Every behavioral pipeline commit should pass:
 3. `make -C workloads/linux run` to `Unpacking initramfs...`
 4. FPGA timing for timing-risk RTL changes before the commit is treated as
    hardware ready.
+
+The `src` simulation targets above are Verilator targets.  Icarus/VPI targets
+are intentionally disabled so a familiar make target cannot silently take the
+slow simulator path.
 
 Hardware `perf stat sha256sum < /usr/bin/emacs` is the performance arbiter.
 Simulation and timing can prove "works"; hardware CPI proves "helped".

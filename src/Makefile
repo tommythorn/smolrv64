@@ -20,11 +20,6 @@ else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
 
-# Icarus VPI support
-CFLAGS = -fPIC -shared -O2 -Wall
-VPI_CFLAGS = $(shell iverilog-vpi --cflags)
-VPI_LDFLAGS = $(shell iverilog-vpi --ldflags)
-
 SRCS=smolrv64.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
 CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
@@ -38,20 +33,34 @@ run: $(P).even $(P).odd smolrv64-run
 verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
-smolrv64-verbose: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DDISASS -DVERBOSE $(SRCS)
+smolrv64-verbose: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_run_verbose -o $@ \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_run_verbose/$@ $@
 
-smolrv64-run: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DNO_TIMEOUT -DVPI $(SRCS)
+smolrv64-run: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		$(SIM_VDEFS) -DNO_TIMEOUT \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_run -o $@ \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_run/$@ $@
 
-smolrv64-sim: $(SRCS) Makefile
-	iverilog $(IVOPTS) -o $@ $(SRCS)
+smolrv64-sim: smolrv64-run
+	cp smolrv64-run $@
 
-smolrv64-linux-sim: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS) -DVPI -DNO_TIMEOUT -o $@ $(SRCS)
+smolrv64-linux-sim: smolrv64-linux-vl
+	cp smolrv64-linux-vl $@
 
-smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS) -DDISASS -DVERBOSE -DNO_TIMEOUT -o $@ $(SRCS)
+smolrv64-linux-verbose: smolrv64-linux-verbose-vl
+	cp smolrv64-linux-verbose-vl $@
 
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
@@ -59,7 +68,7 @@ smolrv64-linux-verbose: $(SRCS) tty_vpi.vpi Makefile
 smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 	verilator --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
-		$(SIM_VDEFS) -DDISASS -DVERBOSE -DNO_TIMEOUT \
+		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
 		-O3 -CFLAGS "-O3" \
 		-Mdir obj_dir_verbose -o $@ \
@@ -106,11 +115,25 @@ smolrv64-linux-cosim: $(SRCS) sim_main.cpp Makefile \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_cosim/smolrv64-linux-cosim $@
 
-smolrv64-trace: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(IVOPTS) -o $@ -DTRACE -DRISCV_TESTS $(SRCS)
+smolrv64-trace: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 --timing \
+		--top-module smolrv64_tb \
+		$(TESTER_VDEFS) -DRISCV_TESTS -DTRACE \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_trace -o $@ \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_trace/$@ $@
 
-smolrv64-tester: $(SRCS) tty_vpi.vpi Makefile
-	iverilog $(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(TESTER_VDEFS) -o $@ -DRISCV_TESTS $(SRCS)
+smolrv64-tester: $(SRCS) sim_main.cpp Makefile
+	verilator --cc --exe --build -j 0 --timing \
+		--top-module smolrv64_tb \
+		$(TESTER_VDEFS) -DRISCV_TESTS \
+		-Wno-fatal \
+		-O3 -CFLAGS "-O3" \
+		-Mdir obj_dir_tester -o $@ \
+		$(SRCS) sim_main.cpp
+	cp obj_dir_tester/$@ $@
 
 smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile
 	verilator -sv --cc --exe --build -j 0 --timing \
@@ -173,5 +196,6 @@ cvfpu-smoke: $(CVFPU_SRCS) $(CVFPU_SMOKE_TB) cvfpu_sources.f Makefile
 %.dis: %
 	$(RV)objdump -Mmax,no-aliases,numeric -d $^ > $@
 
-tty_vpi.vpi: tty_vpi.c
-	iverilog-vpi $^
+tty_vpi.vpi:
+	@echo "Icarus/VPI simulation is intentionally disabled; use the Verilator targets." >&2
+	@exit 1

@@ -9794,8 +9794,8 @@ module smolrv64_frontend #(
    assign rsp_insn = pick_insn(buf_data, rsp_offset);
    assign rsp_full_insn_hit = rsp_insn[1:0] != 2'b11 || rsp_offset <= 4'd12;
    assign rsp_hit = rsp_addr_hit && rsp_full_insn_hit;
-   assign rsp_predicted_next_pc = fallthrough_pc(cmd_pc, rsp_insn);
-   assign rsp_prediction_kind = PRED_FALLTHROUGH;
+   assign rsp_predicted_next_pc = predict_next_pc(cmd_pc, rsp_insn);
+   assign rsp_prediction_kind = predict_kind(rsp_insn);
    assign rsp_active_epoch = cmd_epoch;
    assign rsp_fill_base_va = {cmd_pc[63:3], 3'b000};
    assign rsp_fill_page_ok = rsp_fill_base_va[11:0] <= 12'hff0;
