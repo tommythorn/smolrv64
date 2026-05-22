@@ -3447,7 +3447,7 @@ module smolrv64(input wire        clock,
                 rf_decode_enqueue_this_cycle) begin
                arm_frontend_spec_cmd();
             end
-            state <= `S_RF2;
+            state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
          end
       end
    endtask
@@ -3767,8 +3767,19 @@ module smolrv64(input wire        clock,
 
    task retire_queued_decode_or_refetch;
       begin
-         capture_rf_decode_issue(npc, prv);
-         state <= `S_RF_DECODE_ISSUE;
+         if (rf_decode_epoch == fetch_epoch &&
+             rf_decode_pc == npc &&
+             rf_decode_prv == prv) begin
+            insn <= rf_decode_insn;
+            fetch_from_dram <= rf_decode_from_dram;
+            translated <= 0;
+            write_back_register = 0;
+            write_back_fp_valid = 0;
+            launch_rf_decode_read();
+         end else begin
+            redirect_retire_fetch(npc, prv);
+            state <= `S_FETCH_REQ;
+         end
       end
    endtask
 
