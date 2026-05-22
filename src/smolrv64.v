@@ -3096,14 +3096,35 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task flush_frontend_speculation;
+   task clear_frontend_cmd;
       begin
-         frontend_flush_this_cycle = 1;
-         frontend_buf_flush <= 1'b1;
          frontend_cmd_valid <= 0;
          frontend_cmd_fast_ready <= 0;
          frontend_cmd_speculative <= 0;
          frontend_cmd_spec_miss_ready <= 0;
+      end
+   endtask
+
+   task arm_frontend_spec_cmd;
+      begin
+         frontend_cmd_valid <= 1;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_speculative <= 1;
+         frontend_cmd_spec_miss_ready <= 0;
+      end
+   endtask
+
+   task clear_frontend_fast_cmd;
+      begin
+         frontend_cmd_fast_ready <= 0;
+      end
+   endtask
+
+   task flush_frontend_speculation;
+      begin
+         frontend_flush_this_cycle = 1;
+         frontend_buf_flush <= 1'b1;
+         clear_frontend_cmd();
          frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
@@ -3134,7 +3155,7 @@ module smolrv64(input wire        clock,
       input [63:0] fetch_va;
       input [ 1:0] fetch_prv;
       begin
-         frontend_cmd_fast_ready <= 0;
+         clear_frontend_fast_cmd();
          frontend_cmd_spec_miss_ready <= 0;
          if (csr_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
@@ -3166,10 +3187,7 @@ module smolrv64(input wire        clock,
          insn <= accept_insn;
          fetch_from_dram <= accept_from_dram;
          translated <= 0;
-         frontend_cmd_valid <= 0;
-         frontend_cmd_fast_ready <= 0;
-         frontend_cmd_speculative <= 0;
-         frontend_cmd_spec_miss_ready <= 0;
+         clear_frontend_cmd();
          frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
@@ -3305,7 +3323,7 @@ module smolrv64(input wire        clock,
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
          frontend_cmd_pc <= decode_predicted_pc;
-         frontend_cmd_fast_ready <= 0;
+         clear_frontend_fast_cmd();
          frontend_cmd_spec_miss_ready <= 0;
          if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
             frontend_cmd_valid <= 0;
@@ -3375,12 +3393,9 @@ module smolrv64(input wire        clock,
             rf_read_shamt <= decoded_shamt;
             rs1 <= decoded_rs1;
             rs2 <= decoded_rs2;
-            frontend_cmd_valid <= 1;
             frontend_cmd_pc <= decode_predicted_pc;
             frontend_cmd_prv <= prv;
-            frontend_cmd_fast_ready <= 0;
-            frontend_cmd_speculative <= 1;
-            frontend_cmd_spec_miss_ready <= 0;
+            arm_frontend_spec_cmd();
             state <= `S_RF2;
          end
       end
@@ -3430,10 +3445,7 @@ module smolrv64(input wire        clock,
             rf_decode_prearm_block = 1;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               frontend_cmd_valid <= 1;
-               frontend_cmd_fast_ready <= 0;
-               frontend_cmd_speculative <= 1;
-               frontend_cmd_spec_miss_ready <= 0;
+               arm_frontend_spec_cmd();
             end
             state <= `S_RF2;
          end
@@ -3468,10 +3480,7 @@ module smolrv64(input wire        clock,
             rf_decode_prearm_block = 1;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               frontend_cmd_valid <= 1;
-               frontend_cmd_fast_ready <= 0;
-               frontend_cmd_speculative <= 1;
-               frontend_cmd_spec_miss_ready <= 0;
+               arm_frontend_spec_cmd();
             end
          end
       end
@@ -3487,10 +3496,7 @@ module smolrv64(input wire        clock,
             $finish;
 `endif
          end else begin
-            frontend_cmd_valid <= 0;
-            frontend_cmd_fast_ready <= 0;
-            frontend_cmd_speculative <= 0;
-            frontend_cmd_spec_miss_ready <= 0;
+            clear_frontend_cmd();
             rf_issue_valid <= 1;
             rf_issue_match <= (rf_decode_epoch == fetch_epoch &&
                                rf_decode_pc == retire_pc &&
@@ -3539,10 +3545,7 @@ module smolrv64(input wire        clock,
             rf_issue_valid <= 0;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               frontend_cmd_valid <= 1;
-               frontend_cmd_fast_ready <= 0;
-               frontend_cmd_speculative <= 1;
-               frontend_cmd_spec_miss_ready <= 0;
+               arm_frontend_spec_cmd();
             end
             state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
          end
@@ -3754,10 +3757,7 @@ module smolrv64(input wire        clock,
          rf_issue_shamt <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
-         frontend_cmd_valid <= 0;
-         frontend_cmd_fast_ready <= 0;
-         frontend_cmd_speculative <= 0;
-         frontend_cmd_spec_miss_ready <= 0;
+         clear_frontend_cmd();
          frontend_redirect_valid <= 1;
          frontend_redirect_pc <= redirect_pc;
          frontend_redirect_prv <= redirect_prv;
@@ -3805,7 +3805,7 @@ module smolrv64(input wire        clock,
       reg early_launched;
       begin
          if (rf_read_valid && rf_read_pc == npc) begin
-            frontend_cmd_fast_ready <= 0;
+            clear_frontend_fast_cmd();
          end else begin
             try_early_launch_queued_decode(npc, prv, early_launched);
             if (!early_launched)
@@ -4306,10 +4306,7 @@ module smolrv64(input wire        clock,
            // instruction to retire before any newly-unmasked interrupt fires.
            cause_intr = 0;
            if (pre_intr_pending && !just_trapped && !just_xret) begin
-              frontend_cmd_valid <= 0;
-              frontend_cmd_fast_ready <= 0;
-              frontend_cmd_speculative <= 0;
-              frontend_cmd_spec_miss_ready <= 0;
+              clear_frontend_cmd();
               rf_read_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
@@ -4343,13 +4340,10 @@ module smolrv64(input wire        clock,
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
            end else if (frontend_redirect_valid) begin
-              frontend_cmd_valid <= 0;
-              frontend_cmd_fast_ready <= 0;
-              frontend_cmd_speculative <= 0;
-              frontend_cmd_spec_miss_ready <= 0;
+              clear_frontend_cmd();
               state <= `S_FETCH_REQ;
            end else if (frontend_cmd_fast_ready && frontend_cmd_valid) begin
-              frontend_cmd_fast_ready <= 0;
+              clear_frontend_fast_cmd();
               state <= `S_FETCH_BUF_CHECK;
            end else begin
               prepare_current_epoch_fetch(npc, prv);
@@ -4376,7 +4370,7 @@ module smolrv64(input wire        clock,
               issue_frontend_redirect();
               state <= `S_FETCH_REQ;
            end else if (!frontend_cmd_valid) begin
-              frontend_cmd_fast_ready <= 0;
+              clear_frontend_fast_cmd();
               state <= `S_FETCH1;
            end else if ((csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 2'd3) &&
                         !frontend_physical_fetch_ok(frontend_cmd_pc)) begin
@@ -4388,10 +4382,7 @@ module smolrv64(input wire        clock,
 `endif
               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
               tval = 0;
-              frontend_cmd_valid <= 0;
-              frontend_cmd_fast_ready <= 0;
-              frontend_cmd_speculative <= 0;
-              frontend_cmd_spec_miss_ready <= 0;
+              clear_frontend_cmd();
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4422,10 +4413,7 @@ module smolrv64(input wire        clock,
 `endif
               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
               tval = 0;
-              frontend_cmd_valid <= 0;
-              frontend_cmd_fast_ready <= 0;
-              frontend_cmd_speculative <= 0;
-              frontend_cmd_spec_miss_ready <= 0;
+              clear_frontend_cmd();
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -7421,10 +7409,7 @@ module smolrv64(input wire        clock,
            just_trapped <= 1;
            frontend_buf_flush <= 1'b1;
            fetch_epoch <= fetch_epoch + 1'b1;
-           frontend_cmd_valid <= 0;
-           frontend_cmd_fast_ready <= 0;
-           frontend_cmd_speculative <= 0;
-           frontend_cmd_spec_miss_ready <= 0;
+           clear_frontend_cmd();
            frontend_redirect_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
@@ -8099,10 +8084,7 @@ module smolrv64(input wire        clock,
          fp_int_fflags <= 0;
          csr_read_result <= 0;
          npc <= `RESET_PC;
-         frontend_cmd_valid <= 0;
-         frontend_cmd_fast_ready <= 0;
-         frontend_cmd_speculative <= 0;
-         frontend_cmd_spec_miss_ready <= 0;
+         clear_frontend_cmd();
          frontend_cmd_epoch <= 0;
          fetch_epoch <= 0;
          frontend_cmd_pc <= `RESET_PC;
