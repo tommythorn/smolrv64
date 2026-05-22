@@ -99,6 +99,12 @@ The current kept work is a transitional overlap mechanism inside the old FSM:
   are busy.
 - A conservative speculative frontend miss path exists for physical,
   cacheable, non-cross-doubleword cases.
+- The board-level clock split is in place: the core/cache-hit domain runs from
+  a divided core clock while DDR4/MIG refill and writeback traffic remains in
+  the 333.333 MHz memory-clock domain.
+- The frontend/backend boundary now has explicit command/result naming in RTL:
+  `frontend_cmd_*` carries backend probe/restart requests into the frontend,
+  and `frontend_rsp_*` carries the hit/alignment/prediction result back out.
 
 This proved useful as preparation, but it is not the final pipeline shape.  Do
 not keep widening broad FSM predicates indefinitely.  The CSR-state speculation
@@ -302,7 +308,7 @@ Rules:
 
 Known pressure points:
 
-- `fetch_req_pc` selection;
+- `frontend_cmd_pc` selection;
 - frontend epoch control;
 - broad state predicates;
 - cache/fetch buffer hit logic;
@@ -330,10 +336,7 @@ Implemented so far:
   engine, returned as a line, and installed by the core/cache side;
 - dirty non-BRAM writebacks send a full cache line to the memory-clocked engine;
 - direct PTW AXI reads cross the same engine instead of sharing core-clock AXI
-  pulses.
-
-Still required before the FPGA actually runs the core slower:
-
+  pulses;
 - generate and use a divided `core_clk` at the board top level;
 - move or bridge all CPU-side MMIO, UART, and debug/monitor-visible signals to
   that core clock;
@@ -349,9 +352,11 @@ Still required before the FPGA actually runs the core slower:
    - Keep timing reports actionable.
 
 2. Introduce explicit frontend command/result records
-   - Replace scattered `fetch_req_*` writes with a registered frontend command.
-   - Backend sends redirect/restart commands.
-   - Frontend produces decode/fault payloads.
+   - Initial RTL naming boundary exists as `frontend_cmd_*` and
+     `frontend_rsp_*`.
+   - Next, collapse direct command field writes behind a small set of helpers.
+   - Then make backend redirect/restart commands and frontend decode/fault
+     payloads real records instead of ad hoc state fields.
 
 3. Add the first I-cache
    - Keep it small and timing-friendly.

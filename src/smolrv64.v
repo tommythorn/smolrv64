@@ -1061,11 +1061,11 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  frontend_buf_fill_prv = 0;
    reg  [TLB_ASID_BITS-1:0] frontend_buf_fill_asid = 0;
    reg  [127:0] frontend_buf_fill_data = 0;
-   wire         fetch_buf_addr_hit;
-   wire         fetch_buf_full_insn_hit;
-   wire         fetch_buf_hit;
-   wire [31:0]  fetch_buf_insn;
-   wire [ 3:0]  fetch_buf_offset;
+   wire         frontend_rsp_addr_hit;
+   wire         frontend_rsp_full_insn_hit;
+   wire         frontend_rsp_hit;
+   wire [31:0]  frontend_rsp_insn;
+   wire [ 3:0]  frontend_rsp_offset;
    reg          fetch_buf_latched_hit = 0;
    reg  [31:0]  fetch_buf_latched_insn = 0;
    reg  [ 3:0]  fetch_buf_latched_offset = 0;
@@ -1076,9 +1076,9 @@ module smolrv64(input wire        clock,
       fetch_buf_latched_offset <= 4'd12;
    wire [63:0]  fetch_buf_fill_base_va;
    wire         fetch_buf_fill_page_ok;
-   wire [FRONTEND_EPOCH_BITS-1:0] fetch_buf_active_epoch;
-   wire [63:0]  fetch_buf_predicted_next_pc;
-   wire [ 1:0]  fetch_buf_prediction_kind;
+   wire [FRONTEND_EPOCH_BITS-1:0] frontend_rsp_active_epoch;
+   wire [63:0]  frontend_rsp_predicted_next_pc;
+   wire [ 1:0]  frontend_rsp_prediction_kind;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
@@ -1119,17 +1119,18 @@ module smolrv64(input wire        clock,
    assign icache_way1_bank_rd_data[6] = icache_way1_bank6_rd_data;
    assign icache_way1_bank_rd_data[7] = icache_way1_bank7_rd_data;
 
-   // First explicit fetch pipeline boundary.  S_FETCH1 retires the previous
-   // instruction and captures the next PC/context; S_FETCH_REQ consumes this
-   // registered request and launches the existing fetch-buffer/miss path.
-   reg          fetch_req_valid = 0;
-   reg  [63:0]  fetch_req_pc = `RESET_PC;
-   reg  [ 1:0]  fetch_req_prv = 3;
-   reg  [TLB_ASID_BITS-1:0] fetch_req_asid = 0;
-   reg          fetch_req_fast_ready = 0;
-   reg          fetch_req_speculative = 0;
-   reg          fetch_req_spec_miss_ready = 0;
-   reg  [FRONTEND_EPOCH_BITS-1:0] fetch_req_epoch = 0;
+   // Frontend command/result boundary.  The backend writes frontend_cmd_* when
+   // it wants the frontend to probe or restart at a PC/context; the frontend
+   // returns frontend_rsp_* for the registered command while the old FSM still
+   // owns slow-path translation and refill sequencing.
+   reg          frontend_cmd_valid = 0;
+   reg  [63:0]  frontend_cmd_pc = `RESET_PC;
+   reg  [ 1:0]  frontend_cmd_prv = 3;
+   reg  [TLB_ASID_BITS-1:0] frontend_cmd_asid = 0;
+   reg          frontend_cmd_fast_ready = 0;
+   reg          frontend_cmd_speculative = 0;
+   reg          frontend_cmd_spec_miss_ready = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] frontend_cmd_epoch = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] fetch_epoch = 0;
    reg          frontend_redirect_valid = 0;
    reg  [63:0] frontend_redirect_pc = `RESET_PC;
@@ -1964,21 +1965,21 @@ module smolrv64(input wire        clock,
       .fill_prv(frontend_buf_fill_prv),
       .fill_asid(frontend_buf_fill_asid),
       .fill_data(frontend_buf_fill_data),
-      .req_valid(fetch_req_valid),
-      .req_pc(fetch_req_pc),
-      .req_prv(fetch_req_prv),
-      .req_asid(fetch_req_asid),
-      .req_epoch(fetch_req_epoch),
-      .hit(fetch_buf_hit),
-      .addr_hit(fetch_buf_addr_hit),
-      .full_insn_hit(fetch_buf_full_insn_hit),
-      .insn(fetch_buf_insn),
-      .offset(fetch_buf_offset),
-      .predicted_next_pc(fetch_buf_predicted_next_pc),
-      .prediction_kind(fetch_buf_prediction_kind),
-      .active_epoch(fetch_buf_active_epoch),
-      .fill_base_va_for_req(fetch_buf_fill_base_va),
-      .fill_page_ok(fetch_buf_fill_page_ok),
+      .cmd_valid(frontend_cmd_valid),
+      .cmd_pc(frontend_cmd_pc),
+      .cmd_prv(frontend_cmd_prv),
+      .cmd_asid(frontend_cmd_asid),
+      .cmd_epoch(frontend_cmd_epoch),
+      .rsp_hit(frontend_rsp_hit),
+      .rsp_addr_hit(frontend_rsp_addr_hit),
+      .rsp_full_insn_hit(frontend_rsp_full_insn_hit),
+      .rsp_insn(frontend_rsp_insn),
+      .rsp_offset(frontend_rsp_offset),
+      .rsp_predicted_next_pc(frontend_rsp_predicted_next_pc),
+      .rsp_prediction_kind(frontend_rsp_prediction_kind),
+      .rsp_active_epoch(frontend_rsp_active_epoch),
+      .rsp_fill_base_va(fetch_buf_fill_base_va),
+      .rsp_fill_page_ok(fetch_buf_fill_page_ok),
 
       .icache_way0_rd_idx(cache_way0_rd_idx),
       .icache_way1_rd_idx(cache_way1_rd_idx),
@@ -3099,10 +3100,10 @@ module smolrv64(input wire        clock,
       begin
          frontend_flush_this_cycle = 1;
          frontend_buf_flush <= 1'b1;
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_valid <= 0;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_speculative <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
          frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
@@ -3133,8 +3134,8 @@ module smolrv64(input wire        clock,
       input [63:0] fetch_va;
       input [ 1:0] fetch_prv;
       begin
-         fetch_req_fast_ready <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
          if (csr_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
             state <= `S_TLB_START_FETCH;
@@ -3165,10 +3166,10 @@ module smolrv64(input wire        clock,
          insn <= accept_insn;
          fetch_from_dram <= accept_from_dram;
          translated <= 0;
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_valid <= 0;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_speculative <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
          frontend_redirect_valid <= 0;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
@@ -3303,15 +3304,15 @@ module smolrv64(input wire        clock,
          frontend_decode_pending_prediction_kind <= decode_prediction_kind;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
-         fetch_req_pc <= decode_predicted_pc;
-         fetch_req_fast_ready <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_pc <= decode_predicted_pc;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
          if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
-            fetch_req_valid <= 0;
-            fetch_req_speculative <= 0;
+            frontend_cmd_valid <= 0;
+            frontend_cmd_speculative <= 0;
          end else begin
-            fetch_req_valid <= 1;
-            fetch_req_speculative <= 1;
+            frontend_cmd_valid <= 1;
+            frontend_cmd_speculative <= 1;
          end
       end
    endtask
@@ -3374,12 +3375,12 @@ module smolrv64(input wire        clock,
             rf_read_shamt <= decoded_shamt;
             rs1 <= decoded_rs1;
             rs2 <= decoded_rs2;
-            fetch_req_valid <= 1;
-            fetch_req_pc <= decode_predicted_pc;
-            fetch_req_prv <= prv;
-            fetch_req_fast_ready <= 0;
-            fetch_req_speculative <= 1;
-            fetch_req_spec_miss_ready <= 0;
+            frontend_cmd_valid <= 1;
+            frontend_cmd_pc <= decode_predicted_pc;
+            frontend_cmd_prv <= prv;
+            frontend_cmd_fast_ready <= 0;
+            frontend_cmd_speculative <= 1;
+            frontend_cmd_spec_miss_ready <= 0;
             state <= `S_RF2;
          end
       end
@@ -3429,10 +3430,10 @@ module smolrv64(input wire        clock,
             rf_decode_prearm_block = 1;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               fetch_req_valid <= 1;
-               fetch_req_fast_ready <= 0;
-               fetch_req_speculative <= 1;
-               fetch_req_spec_miss_ready <= 0;
+               frontend_cmd_valid <= 1;
+               frontend_cmd_fast_ready <= 0;
+               frontend_cmd_speculative <= 1;
+               frontend_cmd_spec_miss_ready <= 0;
             end
             state <= `S_RF2;
          end
@@ -3467,10 +3468,10 @@ module smolrv64(input wire        clock,
             rf_decode_prearm_block = 1;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               fetch_req_valid <= 1;
-               fetch_req_fast_ready <= 0;
-               fetch_req_speculative <= 1;
-               fetch_req_spec_miss_ready <= 0;
+               frontend_cmd_valid <= 1;
+               frontend_cmd_fast_ready <= 0;
+               frontend_cmd_speculative <= 1;
+               frontend_cmd_spec_miss_ready <= 0;
             end
          end
       end
@@ -3486,10 +3487,10 @@ module smolrv64(input wire        clock,
             $finish;
 `endif
          end else begin
-            fetch_req_valid <= 0;
-            fetch_req_fast_ready <= 0;
-            fetch_req_speculative <= 0;
-            fetch_req_spec_miss_ready <= 0;
+            frontend_cmd_valid <= 0;
+            frontend_cmd_fast_ready <= 0;
+            frontend_cmd_speculative <= 0;
+            frontend_cmd_spec_miss_ready <= 0;
             rf_issue_valid <= 1;
             rf_issue_match <= (rf_decode_epoch == fetch_epoch &&
                                rf_decode_pc == retire_pc &&
@@ -3538,10 +3539,10 @@ module smolrv64(input wire        clock,
             rf_issue_valid <= 0;
             if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
                 rf_decode_enqueue_this_cycle) begin
-               fetch_req_valid <= 1;
-               fetch_req_fast_ready <= 0;
-               fetch_req_speculative <= 1;
-               fetch_req_spec_miss_ready <= 0;
+               frontend_cmd_valid <= 1;
+               frontend_cmd_fast_ready <= 0;
+               frontend_cmd_speculative <= 1;
+               frontend_cmd_spec_miss_ready <= 0;
             end
             state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
          end
@@ -3581,31 +3582,31 @@ module smolrv64(input wire        clock,
 
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
-         if (fetch_req_speculative &&
+         if (frontend_cmd_speculative &&
              !rf_decode_full &&
              (!frontend_decode_pending_valid ||
               frontend_decode_pending_drain) &&
              !frontend_miss_valid && !frontend_miss_done &&
-             !fetch_req_spec_miss_ready &&
-             frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv) &&
-             fetch_buf_hit) begin
-            latch_frontend_decode_pending(fetch_req_pc,
+             !frontend_cmd_spec_miss_ready &&
+             frontend_speculative_fetch_ok(frontend_cmd_pc, frontend_cmd_prv) &&
+             frontend_rsp_hit) begin
+            latch_frontend_decode_pending(frontend_cmd_pc,
                                            frontend_fallthrough_pc(
-                                              fetch_req_pc,
-                                              fetch_buf_insn),
-                                           fetch_buf_predicted_next_pc,
-                                           fetch_buf_insn,
-                                           fetch_req_prv,
-                                           fetch_req_epoch,
-                                           fetch_buf_prediction_kind);
-         end else if (fetch_req_speculative && fetch_req_valid &&
+                                              frontend_cmd_pc,
+                                              frontend_rsp_insn),
+                                           frontend_rsp_predicted_next_pc,
+                                           frontend_rsp_insn,
+                                           frontend_cmd_prv,
+                                           frontend_cmd_epoch,
+                                           frontend_rsp_prediction_kind);
+         end else if (frontend_cmd_speculative && frontend_cmd_valid &&
                       !rf_decode_full &&
                       (!frontend_decode_pending_valid ||
                        frontend_decode_pending_drain) &&
                       !frontend_miss_valid && !frontend_miss_done &&
-                      !fetch_req_spec_miss_ready &&
-                      frontend_speculative_fetch_ok(fetch_req_pc, fetch_req_prv)) begin
-            fetch_req_spec_miss_ready <= 1;
+                      !frontend_cmd_spec_miss_ready &&
+                      frontend_speculative_fetch_ok(frontend_cmd_pc, frontend_cmd_prv)) begin
+            frontend_cmd_spec_miss_ready <= 1;
          end
       end
    endtask
@@ -3642,25 +3643,25 @@ module smolrv64(input wire        clock,
 
    task try_frontend_speculative_miss_start;
       begin
-         if (fetch_req_speculative && fetch_req_valid &&
+         if (frontend_cmd_speculative && frontend_cmd_valid &&
              !frontend_miss_valid && !frontend_miss_done &&
-             fetch_req_spec_miss_ready && cache_idle &&
-             (csr_satp[63:60] != 4'd8 || fetch_req_prv == 3) &&
-             frontend_physical_fetch_ok(fetch_req_pc) &&
-             fetch_req_pc[2:1] != 2'b11) begin
+             frontend_cmd_spec_miss_ready && cache_idle &&
+             (csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 3) &&
+             frontend_physical_fetch_ok(frontend_cmd_pc) &&
+             frontend_cmd_pc[2:1] != 2'b11) begin
             frontend_miss_valid      <= 1;
             frontend_miss_done       <= 0;
-            frontend_miss_pc         <= fetch_req_pc;
-            frontend_miss_prv        <= fetch_req_prv;
-            frontend_miss_asid       <= fetch_req_asid;
-            frontend_miss_epoch      <= fetch_req_epoch;
+            frontend_miss_pc         <= frontend_cmd_pc;
+            frontend_miss_prv        <= frontend_cmd_prv;
+            frontend_miss_asid       <= frontend_cmd_asid;
+            frontend_miss_epoch      <= frontend_cmd_epoch;
             frontend_miss_next_valid <= 0;
-            fetch_req_spec_miss_ready <= 0;
-            dram_addr                <= fetch_req_pc[30:3];
-            dram_va                  <= fetch_req_pc;
+            frontend_cmd_spec_miss_ready <= 0;
+            dram_addr                <= frontend_cmd_pc[30:3];
+            dram_va                  <= frontend_cmd_pc;
             dram_asid                <= {TLB_ASID_BITS{1'b0}};
             dram_perm                <= CACHE_PERM_PHYS;
-            dram_ctx                 <= {2'd0, fetch_req_prv, sum, mxr};
+            dram_ctx                 <= {2'd0, frontend_cmd_prv, sum, mxr};
             dram_instr               <= 1;
             dram_read                <= 1;
          end
@@ -3698,14 +3699,14 @@ module smolrv64(input wire        clock,
       input [ 1:0] prepare_prv;
       input [FRONTEND_EPOCH_BITS-1:0] prepare_epoch;
       begin
-         fetch_req_valid <= 1;
-         fetch_req_pc <= prepare_pc;
-         fetch_req_prv <= prepare_prv;
-         fetch_req_asid <= fetch_asid_for_context(prepare_prv);
-         fetch_req_epoch <= prepare_epoch;
-         fetch_req_fast_ready <= 1;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_valid <= 1;
+         frontend_cmd_pc <= prepare_pc;
+         frontend_cmd_prv <= prepare_prv;
+         frontend_cmd_asid <= fetch_asid_for_context(prepare_prv);
+         frontend_cmd_epoch <= prepare_epoch;
+         frontend_cmd_fast_ready <= 1;
+         frontend_cmd_speculative <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
       end
    endtask
 
@@ -3753,10 +3754,10 @@ module smolrv64(input wire        clock,
          rf_issue_shamt <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
+         frontend_cmd_valid <= 0;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_speculative <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
          frontend_redirect_valid <= 1;
          frontend_redirect_pc <= redirect_pc;
          frontend_redirect_prv <= redirect_prv;
@@ -3804,7 +3805,7 @@ module smolrv64(input wire        clock,
       reg early_launched;
       begin
          if (rf_read_valid && rf_read_pc == npc) begin
-            fetch_req_fast_ready <= 0;
+            frontend_cmd_fast_ready <= 0;
          end else begin
             try_early_launch_queued_decode(npc, prv, early_launched);
             if (!early_launched)
@@ -4305,10 +4306,10 @@ module smolrv64(input wire        clock,
            // instruction to retire before any newly-unmasked interrupt fires.
            cause_intr = 0;
            if (pre_intr_pending && !just_trapped && !just_xret) begin
-              fetch_req_valid <= 0;
-              fetch_req_fast_ready <= 0;
-              fetch_req_speculative <= 0;
-              fetch_req_spec_miss_ready <= 0;
+              frontend_cmd_valid <= 0;
+              frontend_cmd_fast_ready <= 0;
+              frontend_cmd_speculative <= 0;
+              frontend_cmd_spec_miss_ready <= 0;
               rf_read_valid <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
@@ -4342,13 +4343,13 @@ module smolrv64(input wire        clock,
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               state <= `S_FRONTEND_MISS_WAIT;
            end else if (frontend_redirect_valid) begin
-              fetch_req_valid <= 0;
-              fetch_req_fast_ready <= 0;
-              fetch_req_speculative <= 0;
-              fetch_req_spec_miss_ready <= 0;
+              frontend_cmd_valid <= 0;
+              frontend_cmd_fast_ready <= 0;
+              frontend_cmd_speculative <= 0;
+              frontend_cmd_spec_miss_ready <= 0;
               state <= `S_FETCH_REQ;
-           end else if (fetch_req_fast_ready && fetch_req_valid) begin
-              fetch_req_fast_ready <= 0;
+           end else if (frontend_cmd_fast_ready && frontend_cmd_valid) begin
+              frontend_cmd_fast_ready <= 0;
               state <= `S_FETCH_BUF_CHECK;
            end else begin
               prepare_current_epoch_fetch(npc, prv);
@@ -4358,14 +4359,14 @@ module smolrv64(input wire        clock,
         `S_FETCH_REQ: begin
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
-              if (fetch_buf_hit) begin
+              if (frontend_rsp_hit) begin
                  fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
               end else begin
                  fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
                  if (fetch_buf_stat_misses[17:0] == 18'h3ffff)
                     $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
                              $time,
-                             fetch_buf_stat_hits + (fetch_buf_hit ? 64'd1 : 64'd0),
+                             fetch_buf_stat_hits + (frontend_rsp_hit ? 64'd1 : 64'd0),
                              fetch_buf_stat_misses + 64'd1);
               end
            end
@@ -4374,23 +4375,23 @@ module smolrv64(input wire        clock,
            if (frontend_redirect_valid) begin
               issue_frontend_redirect();
               state <= `S_FETCH_REQ;
-           end else if (!fetch_req_valid) begin
-              fetch_req_fast_ready <= 0;
+           end else if (!frontend_cmd_valid) begin
+              frontend_cmd_fast_ready <= 0;
               state <= `S_FETCH1;
-           end else if ((csr_satp[63:60] != 4'd8 || fetch_req_prv == 2'd3) &&
-                        !frontend_physical_fetch_ok(fetch_req_pc)) begin
+           end else if ((csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 2'd3) &&
+                        !frontend_physical_fetch_ok(frontend_cmd_pc)) begin
 `ifdef SIMULATE
 `ifdef VERBOSE
               $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d",
-                       $time, fetch_req_prv, fetch_req_pc, csr_satp[63:60]);
+                       $time, frontend_cmd_prv, frontend_cmd_pc, csr_satp[63:60]);
 `endif
 `endif
               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
               tval = 0;
-              fetch_req_valid <= 0;
-              fetch_req_fast_ready <= 0;
-              fetch_req_speculative <= 0;
-              fetch_req_spec_miss_ready <= 0;
+              frontend_cmd_valid <= 0;
+              frontend_cmd_fast_ready <= 0;
+              frontend_cmd_speculative <= 0;
+              frontend_cmd_spec_miss_ready <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4411,20 +4412,20 @@ module smolrv64(input wire        clock,
         end
 
         `S_FETCH_BUF_CHECK: begin
-           if ((csr_satp[63:60] != 4'd8 || fetch_req_prv == 2'd3) &&
-               !frontend_physical_fetch_ok(fetch_req_pc)) begin
+           if ((csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 2'd3) &&
+               !frontend_physical_fetch_ok(frontend_cmd_pc)) begin
 `ifdef SIMULATE
 `ifdef VERBOSE
               $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d",
-                       $time, fetch_req_prv, fetch_req_pc, csr_satp[63:60]);
+                       $time, frontend_cmd_prv, frontend_cmd_pc, csr_satp[63:60]);
 `endif
 `endif
               cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
               tval = 0;
-              fetch_req_valid <= 0;
-              fetch_req_fast_ready <= 0;
-              fetch_req_speculative <= 0;
-              fetch_req_spec_miss_ready <= 0;
+              frontend_cmd_valid <= 0;
+              frontend_cmd_fast_ready <= 0;
+              frontend_cmd_speculative <= 0;
+              frontend_cmd_spec_miss_ready <= 0;
               rf_decode_head <= 0;
               rf_decode_tail <= 0;
               rf_decode_count <= 0;
@@ -4440,11 +4441,11 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end
            end else begin
-              fetch_buf_latched_hit    <= fetch_buf_addr_hit;
-              fetch_buf_latched_insn   <= fetch_buf_insn;
-              fetch_buf_latched_offset <= fetch_buf_offset;
-              fetch_buf_latched_next_pc <= fetch_buf_predicted_next_pc;
-              fetch_buf_latched_prediction_kind <= fetch_buf_prediction_kind;
+              fetch_buf_latched_hit    <= frontend_rsp_addr_hit;
+              fetch_buf_latched_insn   <= frontend_rsp_insn;
+              fetch_buf_latched_offset <= frontend_rsp_offset;
+              fetch_buf_latched_next_pc <= frontend_rsp_predicted_next_pc;
+              fetch_buf_latched_prediction_kind <= frontend_rsp_prediction_kind;
               state                    <= `S_FETCH_BUF_USE;
            end
         end
@@ -4466,7 +4467,7 @@ module smolrv64(input wire        clock,
            end
 `endif
            if (fetch_buf_latched_hit && fetch_buf_latched_full_insn_hit) begin
-              accept_instruction_fetch(fetch_req_pc,
+              accept_instruction_fetch(frontend_cmd_pc,
                                        fetch_buf_latched_next_pc,
                                        fetch_buf_latched_insn,
                                        fetch_buf_latched_prediction_kind,
@@ -4474,7 +4475,7 @@ module smolrv64(input wire        clock,
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
            end else begin
-              start_instruction_fetch_miss(fetch_req_pc, fetch_req_prv);
+              start_instruction_fetch_miss(frontend_cmd_pc, frontend_cmd_prv);
            end
         end
 
@@ -4527,13 +4528,13 @@ module smolrv64(input wire        clock,
            if (fetch_buf_fill_page_ok && dram_latched_next_valid) begin
               frontend_buf_fill         <= 1'b1;
               frontend_buf_fill_base_va <= fetch_buf_fill_base_va;
-              frontend_buf_fill_prv     <= fetch_req_prv;
-              frontend_buf_fill_asid    <= fetch_req_asid;
+              frontend_buf_fill_prv     <= frontend_cmd_prv;
+              frontend_buf_fill_asid    <= frontend_cmd_asid;
               frontend_buf_fill_data    <= aligned;
            end
-           insn = aligned >> (fetch_req_pc[2:1] * 16);
-           accept_instruction_fetch(fetch_req_pc,
-                                    frontend_fallthrough_pc(fetch_req_pc, insn),
+           insn = aligned >> (frontend_cmd_pc[2:1] * 16);
+           accept_instruction_fetch(frontend_cmd_pc,
+                                    frontend_fallthrough_pc(frontend_cmd_pc, insn),
                                     insn, 2'd0, 1'b1);
         end
 
@@ -7420,10 +7421,10 @@ module smolrv64(input wire        clock,
            just_trapped <= 1;
            frontend_buf_flush <= 1'b1;
            fetch_epoch <= fetch_epoch + 1'b1;
-           fetch_req_valid <= 0;
-           fetch_req_fast_ready <= 0;
-           fetch_req_speculative <= 0;
-           fetch_req_spec_miss_ready <= 0;
+           frontend_cmd_valid <= 0;
+           frontend_cmd_fast_ready <= 0;
+           frontend_cmd_speculative <= 0;
+           frontend_cmd_spec_miss_ready <= 0;
            frontend_redirect_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
@@ -7636,7 +7637,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_START_FETCH: begin
-           start_translation(fetch_req_pc, 2'd0, fetch_req_prv, `S_FETCH2);
+           start_translation(frontend_cmd_pc, 2'd0, frontend_cmd_prv, `S_FETCH2);
         end
 
         `S_TLB_START_FETCH_HALF: begin
@@ -8098,15 +8099,15 @@ module smolrv64(input wire        clock,
          fp_int_fflags <= 0;
          csr_read_result <= 0;
          npc <= `RESET_PC;
-         fetch_req_valid <= 0;
-         fetch_req_fast_ready <= 0;
-         fetch_req_speculative <= 0;
-         fetch_req_spec_miss_ready <= 0;
-         fetch_req_epoch <= 0;
+         frontend_cmd_valid <= 0;
+         frontend_cmd_fast_ready <= 0;
+         frontend_cmd_speculative <= 0;
+         frontend_cmd_spec_miss_ready <= 0;
+         frontend_cmd_epoch <= 0;
          fetch_epoch <= 0;
-         fetch_req_pc <= `RESET_PC;
-         fetch_req_prv <= 3;
-         fetch_req_asid <= 0;
+         frontend_cmd_pc <= `RESET_PC;
+         frontend_cmd_prv <= 3;
+         frontend_cmd_asid <= 0;
          frontend_redirect_valid <= 0;
          frontend_redirect_pc <= `RESET_PC;
          frontend_redirect_prv <= 3;
@@ -9614,22 +9615,22 @@ module smolrv64_frontend #(
    input  wire [TLB_ASID_BITS-1:0] fill_asid,
    input  wire [127:0]          fill_data,
 
-   input  wire                  req_valid,
-   input  wire [63:0]           req_pc,
-   input  wire [ 1:0]           req_prv,
-   input  wire [TLB_ASID_BITS-1:0] req_asid,
-   input  wire [EPOCH_BITS-1:0] req_epoch,
+   input  wire                  cmd_valid,
+   input  wire [63:0]           cmd_pc,
+   input  wire [ 1:0]           cmd_prv,
+   input  wire [TLB_ASID_BITS-1:0] cmd_asid,
+   input  wire [EPOCH_BITS-1:0] cmd_epoch,
 
-   output wire                  hit,
-   output wire                  addr_hit,
-   output wire                  full_insn_hit,
-   output wire [31:0]           insn,
-   output wire [ 3:0]           offset,
-   output wire [63:0]           predicted_next_pc,
-   output wire [ 1:0]           prediction_kind,
-   output wire [EPOCH_BITS-1:0] active_epoch,
-   output wire [63:0]           fill_base_va_for_req,
-   output wire                  fill_page_ok,
+   output wire                  rsp_hit,
+   output wire                  rsp_addr_hit,
+   output wire                  rsp_full_insn_hit,
+   output wire [31:0]           rsp_insn,
+   output wire [ 3:0]           rsp_offset,
+   output wire [63:0]           rsp_predicted_next_pc,
+   output wire [ 1:0]           rsp_prediction_kind,
+   output wire [EPOCH_BITS-1:0] rsp_active_epoch,
+   output wire [63:0]           rsp_fill_base_va,
+   output wire                  rsp_fill_page_ok,
 
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx,
@@ -9794,28 +9795,28 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   wire        context_hit = req_valid && buf_valid &&
-                              buf_prv == req_prv && buf_asid == req_asid;
-   wire        addr_same_hi = req_pc[63:4] == buf_base_va[63:4];
-   wire        addr_next_hi = req_pc[63:4] == buf_next_va_hi;
+   wire        context_hit = cmd_valid && buf_valid &&
+                              buf_prv == cmd_prv && buf_asid == cmd_asid;
+   wire        addr_same_hi = cmd_pc[63:4] == buf_base_va[63:4];
+   wire        addr_next_hi = cmd_pc[63:4] == buf_next_va_hi;
 
-   assign addr_hit = context_hit && !req_pc[0] &&
+   assign rsp_addr_hit = context_hit && !cmd_pc[0] &&
                      ((!buf_base_va[3] && addr_same_hi) ||
                       ( buf_base_va[3] &&
-                        ((addr_same_hi &&  req_pc[3]) ||
-                         (addr_next_hi && !req_pc[3]))));
-   assign offset = buf_base_va[3] ?
-                   (addr_same_hi ? {1'b0, req_pc[2:0]} :
-                                   {1'b1, req_pc[2:0]}) :
-                   req_pc[3:0];
-   assign insn = pick_insn(buf_data, offset);
-   assign full_insn_hit = insn[1:0] != 2'b11 || offset <= 4'd12;
-   assign hit = addr_hit && full_insn_hit;
-   assign predicted_next_pc = fallthrough_pc(req_pc, insn);
-   assign prediction_kind = PRED_FALLTHROUGH;
-   assign active_epoch = req_epoch;
-   assign fill_base_va_for_req = {req_pc[63:3], 3'b000};
-   assign fill_page_ok = fill_base_va_for_req[11:0] <= 12'hff0;
+                        ((addr_same_hi &&  cmd_pc[3]) ||
+                         (addr_next_hi && !cmd_pc[3]))));
+   assign rsp_offset = buf_base_va[3] ?
+                   (addr_same_hi ? {1'b0, cmd_pc[2:0]} :
+                                   {1'b1, cmd_pc[2:0]}) :
+                   cmd_pc[3:0];
+   assign rsp_insn = pick_insn(buf_data, rsp_offset);
+   assign rsp_full_insn_hit = rsp_insn[1:0] != 2'b11 || rsp_offset <= 4'd12;
+   assign rsp_hit = rsp_addr_hit && rsp_full_insn_hit;
+   assign rsp_predicted_next_pc = fallthrough_pc(cmd_pc, rsp_insn);
+   assign rsp_prediction_kind = PRED_FALLTHROUGH;
+   assign rsp_active_epoch = cmd_epoch;
+   assign rsp_fill_base_va = {cmd_pc[63:3], 3'b000};
+   assign rsp_fill_page_ok = rsp_fill_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
 
