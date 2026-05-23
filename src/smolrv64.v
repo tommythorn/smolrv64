@@ -652,8 +652,9 @@ module smolrv64(input wire        clock,
 // S_EXECUTE / S_EXECUTE2 / S_BRANCH_RESOLVE (and the various memory/EX
 // states) so an instruction can be in EX while the next is in RF.
 // Currently EX_IDLE only — no arms migrated yet.
-`define EX_IDLE                 0  // EX stage empty; backend FSM still owns EX work
-`define EX_LAST_STATE           0
+`define EX_IDLE                 0  // EX stage empty; nothing in flight
+`define EX_BRANCH_RESOLVE       1  // compute pre_npc / pre_jalr_target / branch taken
+`define EX_LAST_STATE           1
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -739,7 +740,7 @@ module smolrv64(input wire        clock,
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
    reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
-   reg [0:0]   ex_state = `EX_IDLE; // back-half EX FSM (scaffold; no arms migrated yet)
+   reg [0:0]   ex_state = `EX_IDLE; // back-half EX FSM; see EX_* defines
    reg         f_consumed_hit;    // 1-cycle pulse: F_FETCH_BUF_USE took the hit
    // Set by retire_linear_fetch / retire_prepared_fetch / retire_redirect_fetch
    // (and other real retires) before transitioning to S_FETCH1. Gates retire
@@ -4354,12 +4355,60 @@ module smolrv64(input wire        clock,
         default: f_state <= `F_IDLE;
       endcase
 
-      // Back-half EX FSM scaffold. No arms migrated yet — ex_state stays
-      // EX_IDLE always and the legacy case(state) S_EXECUTE/S_EXECUTE2/
-      // S_BRANCH_RESOLVE arms still own EX. Placed lexically before
-      // case(state) so future blocking-write signals propagate.
+      // Back-half EX FSM. Currently owns branch-target/taken precompute
+      // (EX_BRANCH_RESOLVE arm). Kicked from S_RF3 alongside state <=
+      // S_BRANCH_RESOLVE. Backend's S_BRANCH_RESOLVE arm is now a 1-cycle
+      // transition-only stub. Placed lexically before case(state) so
+      // future blocking-write signals propagate.
       case (ex_state)
         `EX_IDLE: ;
+        `EX_BRANCH_RESOLVE: begin : ex_branch_resolve
+           reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
+
+           d_imm_i = {{52{ex_insn[31]}}, ex_insn[31:20]};
+           d_imm_j = {{44{ex_insn[31]}}, ex_insn[19:12], ex_insn[20], ex_insn[30:21], 1'b0};
+           d_imm_b = {{52{ex_insn[31]}}, ex_insn[7], ex_insn[30:25], ex_insn[11:8], 1'b0};
+           d_c_j   = {{53{ex_insn[12]}}, ex_insn[8], ex_insn[10:9], ex_insn[6], ex_insn[7],
+                      ex_insn[2], ex_insn[11], ex_insn[5:3], 1'b0};
+           d_c_b   = {{56{ex_insn[12]}}, ex_insn[6:5], ex_insn[2], ex_insn[11:10],
+                      ex_insn[4:3], 1'b0};
+
+           pre_npc <= ex_next_pc;
+           pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
+           pre_branch_target <= ex_pc + d_imm_b;
+           pre_branch_taken <= 0;
+
+           if ((ex_insn & 'he003) == 'ha001) begin // C.J
+              pre_npc <= ex_pc + d_c_j;
+           end else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
+              pre_branch_target <= ex_pc + d_c_b;
+              pre_branch_taken <= s1 == 0;
+           end else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
+              pre_branch_target <= ex_pc + d_c_b;
+              pre_branch_taken <= s1 != 0;
+           end else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
+              pre_jalr_target <= s1 & ~64'd1;
+           end else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
+              pre_jalr_target <= s1 & ~64'd1;
+           end else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
+              pre_npc <= ex_pc + d_imm_j;
+           end else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
+              pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
+           end else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
+              pre_branch_taken <= s1 == s2;
+           end else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
+              pre_branch_taken <= s1 != s2;
+           end else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
+              pre_branch_taken <= $signed(s1) < $signed(s2);
+           end else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
+              pre_branch_taken <= $signed(s1) >= $signed(s2);
+           end else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
+              pre_branch_taken <= s1 < s2;
+           end else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
+              pre_branch_taken <= s1 >= s2;
+           end
+           ex_state <= `EX_IDLE;
+        end
         default: ex_state <= `EX_IDLE;
       endcase
 
@@ -4712,6 +4761,7 @@ module smolrv64(input wire        clock,
            execute_req_shamt <= rf3_shamt;
            execute_req_valid <= 1;
            state <= `S_BRANCH_RESOLVE;
+           ex_state <= `EX_BRANCH_RESOLVE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
            // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
@@ -5095,56 +5145,12 @@ module smolrv64(input wire        clock,
         end
 
         `S_BRANCH_RESOLVE: begin
-           if (!execute_req_valid) begin
+           // Branch-target precompute work moved to case(ex_state)
+           // EX_BRANCH_RESOLVE arm. This arm now just transitions.
+           if (!execute_req_valid)
               state <= `S_FETCH1;
-           end else begin : branch_resolve
-              reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
-
-              d_imm_i = {{52{ex_insn[31]}}, ex_insn[31:20]};
-              d_imm_j = {{44{ex_insn[31]}}, ex_insn[19:12], ex_insn[20], ex_insn[30:21], 1'b0};
-              d_imm_b = {{52{ex_insn[31]}}, ex_insn[7], ex_insn[30:25], ex_insn[11:8], 1'b0};
-              d_c_j   = {{53{ex_insn[12]}}, ex_insn[8], ex_insn[10:9], ex_insn[6], ex_insn[7],
-                         ex_insn[2], ex_insn[11], ex_insn[5:3], 1'b0};
-              d_c_b   = {{56{ex_insn[12]}}, ex_insn[6:5], ex_insn[2], ex_insn[11:10],
-                         ex_insn[4:3], 1'b0};
-
-              pre_npc <= ex_next_pc;
-              pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
-              pre_branch_target <= ex_pc + d_imm_b;
-              pre_branch_taken <= 0;
-
-              if ((ex_insn & 'he003) == 'ha001) begin // C.J
-                 pre_npc <= ex_pc + d_c_j;
-              end else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
-                 pre_branch_target <= ex_pc + d_c_b;
-                 pre_branch_taken <= s1 == 0;
-              end else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
-                 pre_branch_target <= ex_pc + d_c_b;
-                 pre_branch_taken <= s1 != 0;
-              end else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
-                 pre_jalr_target <= s1 & ~64'd1;
-              end else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
-                 pre_jalr_target <= s1 & ~64'd1;
-              end else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
-                 pre_npc <= ex_pc + d_imm_j;
-              end else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
-                 pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
-              end else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
-                 pre_branch_taken <= s1 == s2;
-              end else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
-                 pre_branch_taken <= s1 != s2;
-              end else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
-                 pre_branch_taken <= $signed(s1) < $signed(s2);
-              end else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
-                 pre_branch_taken <= $signed(s1) >= $signed(s2);
-              end else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
-                 pre_branch_taken <= s1 < s2;
-              end else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
-                 pre_branch_taken <= s1 >= s2;
-              end
-
+           else
               state <= `S_EXECUTE;
-           end
         end
 
         `S_EXECUTE: begin
