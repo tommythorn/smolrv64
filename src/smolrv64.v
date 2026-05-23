@@ -5711,6 +5711,7 @@ module smolrv64(input wire        clock,
               mpie = 1;
               npc = csr_mepc;
               just_xret <= 1;
+              retire_now_q <= 1; // MRET retires; bypasses retire helpers
               state <= `S_FETCH1;
            end
 

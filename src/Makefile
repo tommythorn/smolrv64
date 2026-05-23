@@ -147,6 +147,23 @@ smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefi
 		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_tester/$@ $@
 
+# Cosim build with CVFPU enabled, in riscv-tests mode. Same DPI lockstep
+# as smolrv64-linux-cosim but with FP support so rv64uf/rv64ud tests can
+# be driven through cosim for divergence analysis.
+smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile \
+		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
+	verilator -sv --cc --exe --build -j 0 --timing \
+		--top-module smolrv64_tb \
+		-DUSE_CVFPU $(TESTER_VDEFS) -DRISCV_TESTS -DVERILATOR_COSIM \
+		-Wno-fatal \
+		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
+		-O3 -CFLAGS "-O3 -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
+		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-Mdir obj_dir_cvfpu_cosim -o $@ \
+		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
+	cp obj_dir_cvfpu_cosim/$@ $@
+
 lint:
 	verilator -Wall --lint-only --timing --top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
