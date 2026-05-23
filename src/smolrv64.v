@@ -4430,13 +4430,7 @@ module smolrv64(input wire        clock,
 
            if (retire_now_q) pc <= npc;
 
-           // Default: stay in S_FETCH1 waiting for the queue. With the
-           // free-running frontend (case(f_state)), the queue is typically
-           // filling concurrently; bouncing to S_FETCH_REQ as the old
-           // default did just adds a ping-pong cycle that S_FETCH_REQ
-           // bounces back to S_FETCH1 anyway when !frontend_cmd_valid.
-           // Branches below explicitly set state when they have work.
-           state <= `S_FETCH1;
+           state <= `S_FETCH_REQ;
 
            // Use pre-registered interrupt check (computed previous cycle) for timing closure.
            // pre_intr_pending/pre_intr_cause are stable FFs; the path to state_reg is short.
