@@ -3252,11 +3252,27 @@ module smolrv64(input wire        clock,
                end
             end
          end else begin
-            stage_rf_decode_current(accept_pc,
-                                    frontend_fallthrough_pc(accept_pc,
-                                                            accept_insn),
-                                    accept_predicted_pc, accept_insn,
-                                    accept_prediction_kind, accept_from_dram);
+            // Queue-only path (no fast-path bypass via stage_rf_decode_current).
+            // Arbitrate against pending/queue pressure:
+            //   - pending empty, queue has room: latch + drain to queue
+            //   - queue full: bail to S_FETCH1 so backend can pop
+            //   - pending occupied, queue has room: drain fires this cycle,
+            //     wait one cycle and try again from S_FETCH_BUF_USE
+            if (!frontend_decode_pending_valid && !rf_decode_full) begin
+               latch_frontend_decode_pending(
+                   accept_pc,
+                   frontend_fallthrough_pc(accept_pc, accept_insn),
+                   accept_predicted_pc,
+                   accept_insn,
+                   prv,
+                   frontend_cmd_epoch,
+                   accept_prediction_kind);
+               state <= `S_FETCH1;
+            end else if (rf_decode_full) begin
+               state <= `S_FETCH1;
+            end else begin
+               state <= `S_FETCH_BUF_USE;
+            end
          end
       end
    endtask
@@ -8068,8 +8084,14 @@ module smolrv64(input wire        clock,
       end
 `endif
 
+      // Pre-arm BRAM rs1/rs2 reads for the next queued decode. Only when
+      // state == S_FETCH1: in any other state, the current instruction may
+      // be repurposing rs1/rs2 (e.g. S_EXECUTE for FMA writes rs1 with the
+      // rs3 register index before transitioning to S_CVFPU_FMA_RF2 — the
+      // pre-arm would clobber it).
       if (!core_reset_now && !rf_read_valid && rf_decode_valid &&
-          !rf_decode_prearmed && !rf_decode_prearm_block) begin
+          !rf_decode_prearmed && !rf_decode_prearm_block &&
+          state == `S_FETCH1) begin
          rs1 <= rf_decode_rs1;
          rs2 <= rf_decode_rs2;
          rf_decode_prearmed <= 1;
