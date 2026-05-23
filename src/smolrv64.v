@@ -634,6 +634,20 @@ module smolrv64(input wire        clock,
 `define S_RF_DECODE_ISSUE      58  // consume registered decode-queue issue decision
 `define S_LAST_STATE           58  // update state register width accordingly
 
+// f_state: the free-running frontend FSM. Drives the cache-hit fetch path
+// (FETCH_REQ -> FETCH_BUF_CHECK -> FETCH_BUF_USE -> enqueue to rf_decode_*)
+// independently of the backend `state` register, so frontend work overlaps
+// with backend long-latency states (CVFPU, MULDIV, AMO, DRAM, etc).
+//
+// Cache miss / TLB miss / DRAM fetch / cross-doubleword fetch still escalate
+// to the backend FSM for this patch — those resources are shared with the
+// load/store path and require arbitration that is out of scope here.
+`define F_IDLE                  0  // no fetch in flight
+`define F_FETCH_REQ             1  // frontend command armed; advance to buf check
+`define F_FETCH_BUF_CHECK       2  // latch frontend_rsp_* into f_latched_*
+`define F_FETCH_BUF_USE         3  // on hit, enqueue rf_decode; on miss, hand to backend
+`define F_LAST_STATE            3
+
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
 `define MULDIV_MULHSU          4'd2
@@ -717,6 +731,17 @@ module smolrv64(input wire        clock,
 `define REGION_ILLEGAL 3'd6
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
+   reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
+   reg         f_consumed_hit;    // 1-cycle pulse: F_FETCH_BUF_USE took the hit
+   // Set by retire_linear_fetch / retire_prepared_fetch / retire_redirect_fetch
+   // (and other real retires) before transitioning to S_FETCH1. Gates retire
+   // bookkeeping (csr_minstret, cosim, pc<=npc) so it only fires on real
+   // retires, not the extra S_FETCH1 visits introduced by F_FETCH_BUF_USE
+   // routing fetches through the queue.
+   reg         retire_now_q = 0;
+`ifdef SIMULATE
+   reg [63:0]  f_consumed_hit_count = 0; // sanity: counts cycles f_consumed_hit fired
+`endif
    reg         core_reset_pending = 0;
    wire        core_reset_home;
    wire        core_reset_now;
@@ -1066,14 +1091,17 @@ module smolrv64(input wire        clock,
    wire         frontend_rsp_hit;
    wire [31:0]  frontend_rsp_insn;
    wire [ 3:0]  frontend_rsp_offset;
-   reg          fetch_buf_latched_hit = 0;
-   reg  [31:0]  fetch_buf_latched_insn = 0;
-   reg  [ 3:0]  fetch_buf_latched_offset = 0;
-   reg  [63:0]  fetch_buf_latched_next_pc = `RESET_PC;
-   reg  [ 1:0]  fetch_buf_latched_prediction_kind = 0;
-   wire         fetch_buf_latched_full_insn_hit =
-      fetch_buf_latched_insn[1:0] != 2'b11 ||
-      fetch_buf_latched_offset <= 4'd12;
+   // Free-running frontend's fetch-buffer latch. Written by case(f_state)
+   // when f_state == F_FETCH_BUF_CHECK; read by backend's S_FETCH_BUF_USE.
+   // Replaces the old backend-owned fetch_buf_latched_* set.
+   reg          f_latched_hit = 0;
+   reg  [31:0]  f_latched_insn = 0;
+   reg  [ 3:0]  f_latched_offset = 0;
+   reg  [63:0]  f_latched_next_pc = `RESET_PC;
+   reg  [ 1:0]  f_latched_prediction_kind = 0;
+   wire         f_latched_full_insn_hit =
+      f_latched_insn[1:0] != 2'b11 ||
+      f_latched_offset <= 4'd12;
    wire [63:0]  fetch_buf_fill_base_va;
    wire         fetch_buf_fill_page_ok;
    wire [FRONTEND_EPOCH_BITS-1:0] frontend_rsp_active_epoch;
@@ -1418,7 +1446,7 @@ module smolrv64(input wire        clock,
                                 mem_engine_idle;
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
-   wire       hpm_instret_pulse = state == `S_FETCH1;
+   wire       hpm_instret_pulse = state == `S_FETCH1 && retire_now_q;
    wire       hpm_cache_read_pulse = cache_state == CACHE_IDLE && dram_read;
    wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
@@ -3189,9 +3217,8 @@ module smolrv64(input wire        clock,
          translated <= 0;
          clear_frontend_cmd();
          frontend_redirect_valid <= 0;
-         rf_decode_head <= 0;
-         rf_decode_tail <= 0;
-         rf_decode_count <= 0;
+         // (rf_decode_head/tail/count resets removed: stage_rf_decode_current
+         //  in case 3 still resets the queue; case 1/2 slow paths no longer do.)
          rf_issue_valid <= 0;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
@@ -3801,6 +3828,7 @@ module smolrv64(input wire        clock,
       reg early_launched;
       begin
          execute_res_valid <= 0;
+         retire_now_q <= 1;
          if (npc == ex_predicted_pc) begin
             try_early_launch_queued_decode(npc, prv, early_launched);
             if (!early_launched)
@@ -3815,6 +3843,7 @@ module smolrv64(input wire        clock,
    task retire_linear_fetch;
       reg early_launched;
       begin
+         retire_now_q <= 1;
          if (rf_read_valid && rf_read_pc == npc) begin
             clear_frontend_fast_cmd();
          end else begin
@@ -3838,6 +3867,7 @@ module smolrv64(input wire        clock,
    task retire_redirect_fetch;
       begin
          execute_res_valid <= 0;
+         retire_now_q <= 1;
          redirect_retire_fetch(npc, prv);
          state <= `S_FETCH1;
       end
@@ -4154,6 +4184,7 @@ module smolrv64(input wire        clock,
       mmio_write = 0;
       mmio_read = 0;
       frontend_flush_this_cycle = 0;
+      f_consumed_hit = 0;
       rf_decode_pop_this_cycle = 0;
       rf_decode_enqueue_this_cycle = 0;
       rf_decode_prearm_block = 0;
@@ -4224,12 +4255,59 @@ module smolrv64(input wire        clock,
             if (dbg_pos == (dbg_is_trap ? 6'd23 : 6'd18))
                dbg_busy <= 0;
          end
-      end else
+      end else begin
 `endif
+
+      // Free-running frontend FSM. Runs BEFORE case(state) so f_consumed_hit
+      // (blocking assign) propagates to the backend's S_FETCH_BUF_USE arm in
+      // the same cycle. F_FETCH_BUF_USE owns the simple cache-hit path:
+      // latches the just-fetched instruction into frontend_decode_pending_*,
+      // which the unconditional drain at the top of this always block then
+      // pushes into rf_decode_*. Backend just retires from the queue.
+      case (f_state)
+        `F_IDLE: ;  // kicked from backend's S_FETCH1 / S_FETCH_REQ paths (self-kick reverted; caused hangs)
+        `F_FETCH_REQ: ;  // unused until task #3 migration
+        `F_FETCH_BUF_CHECK: begin
+           // Authoritative latch of the frontend's cache-buffer response.
+           f_latched_hit             <= frontend_rsp_addr_hit;
+           f_latched_insn            <= frontend_rsp_insn;
+           f_latched_offset          <= frontend_rsp_offset;
+           f_latched_next_pc         <= frontend_rsp_predicted_next_pc;
+           f_latched_prediction_kind <= frontend_rsp_prediction_kind;
+           f_state                   <= `F_FETCH_BUF_USE;
+        end
+        `F_FETCH_BUF_USE: begin
+           // Simple hit: page-boundary translated case and queue/pending
+           // pressure conditions all fall through to the backend's arm.
+           if (frontend_rsp_hit && f_latched_hit && f_latched_full_insn_hit &&
+               !(frontend_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
+                 csr_satp[63:60] == 4'd8 && frontend_cmd_prv != 3) &&
+               !frontend_decode_pending_valid &&
+               !rf_decode_full &&
+               !rf_read_valid) begin
+              f_consumed_hit = 1;
+`ifdef SIMULATE
+              f_consumed_hit_count <= f_consumed_hit_count + 1;
+`endif
+              latch_frontend_decode_pending(
+                  frontend_cmd_pc,
+                  frontend_fallthrough_pc(frontend_cmd_pc, f_latched_insn),
+                  f_latched_next_pc,
+                  f_latched_insn,
+                  frontend_cmd_prv,
+                  frontend_cmd_epoch,
+                  f_latched_prediction_kind);
+           end
+           f_state <= `F_IDLE;
+        end
+        default: f_state <= `F_IDLE;
+      endcase
+
       case (state)
         `S_FETCH1: begin
-           if (!csr_mcountinhibit[2] && hpm_mode_enabled(csr_minstretcfg))
+           if (retire_now_q && !csr_mcountinhibit[2] && hpm_mode_enabled(csr_minstretcfg))
               csr_minstret <= csr_minstret + 1;
+           retire_now_q <= 0;
 
            // Reset to default values
            muldiv_p = 0;
@@ -4246,8 +4324,9 @@ module smolrv64(input wire        clock,
            // Normal retire: pc/insn/write_back_* still hold the just-completed
            // instruction's data; npc is its post-retire pc. Skip the first
            // fetch (csr_mcycle == 0) and the dummy fetch right after a trap
-           // (just_trapped set by S_EXCEPTION).
-           if (csr_mcycle != 0 && !just_trapped) begin
+           // (just_trapped set by S_EXCEPTION). retire_now_q gates out extra
+           // S_FETCH1 visits introduced by F_FETCH_BUF_USE's queue path.
+           if (retire_now_q && csr_mcycle != 0 && !just_trapped) begin
               cosim_retire(
                   pc,
                   npc,
@@ -4272,7 +4351,7 @@ module smolrv64(input wire        clock,
            end
 `endif
 `ifdef PC_TRACE
-           if (csr_mcycle != 0 && !just_trapped) begin
+           if (retire_now_q && csr_mcycle != 0 && !just_trapped) begin
               // Arm on first M→S transition (OpenSBI's mret into Linux).
               if (!dbg_armed && prv_retire == 2'd3 && prv != 2'd3) begin
                  dbg_armed <= 1;
@@ -4294,7 +4373,7 @@ module smolrv64(input wire        clock,
 `include "disass.vh"
 `endif
 `ifdef TRACE
-           if (csr_mcycle) begin
+           if (retire_now_q && csr_mcycle) begin
               if ((insn & 3) == 3)
                 $write("%0d %0d %016x %08x", csr_minstret - 1, prv, pc, insn);
               else
@@ -4306,7 +4385,7 @@ module smolrv64(input wire        clock,
            end
 `endif
 
-           pc <= npc;
+           if (retire_now_q) pc <= npc;
 
            state <= `S_FETCH_REQ;
 
@@ -4356,6 +4435,7 @@ module smolrv64(input wire        clock,
            end else if (frontend_cmd_fast_ready && frontend_cmd_valid) begin
               clear_frontend_fast_cmd();
               state <= `S_FETCH_BUF_CHECK;
+              f_state <= `F_FETCH_BUF_CHECK;
            end else begin
               prepare_current_epoch_fetch(npc, prv);
            end
@@ -4410,6 +4490,7 @@ module smolrv64(input wire        clock,
               end
            end else begin
               state <= `S_FETCH_BUF_CHECK;
+              f_state <= `F_FETCH_BUF_CHECK;
            end
         end
 
@@ -4440,11 +4521,7 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end
            end else begin
-              fetch_buf_latched_hit    <= frontend_rsp_addr_hit;
-              fetch_buf_latched_insn   <= frontend_rsp_insn;
-              fetch_buf_latched_offset <= frontend_rsp_offset;
-              fetch_buf_latched_next_pc <= frontend_rsp_predicted_next_pc;
-              fetch_buf_latched_prediction_kind <= frontend_rsp_prediction_kind;
+              // Latching now happens in case(f_state) F_FETCH_BUF_CHECK arm.
               state                    <= `S_FETCH_BUF_USE;
            end
         end
@@ -4452,7 +4529,7 @@ module smolrv64(input wire        clock,
         `S_FETCH_BUF_USE: begin
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
-              if (fetch_buf_latched_hit && fetch_buf_latched_full_insn_hit)
+              if (f_latched_hit && f_latched_full_insn_hit)
                  fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
               else begin
                  fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
@@ -4460,16 +4537,21 @@ module smolrv64(input wire        clock,
                     $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
                              $time,
                              fetch_buf_stat_hits +
-                             ((fetch_buf_latched_hit && fetch_buf_latched_full_insn_hit) ? 64'd1 : 64'd0),
+                             ((f_latched_hit && f_latched_full_insn_hit) ? 64'd1 : 64'd0),
                              fetch_buf_stat_misses + 64'd1);
               end
            end
 `endif
-           if (fetch_buf_latched_hit && fetch_buf_latched_full_insn_hit) begin
+           if (f_consumed_hit) begin
+              // Frontend just latched this fetch into frontend_decode_pending_*
+              // via case(f_state) earlier in the cycle. Queue drain happens at
+              // the top of this always block; backend returns to retire.
+              state <= `S_FETCH1;
+           end else if (f_latched_hit && f_latched_full_insn_hit) begin
               accept_instruction_fetch(frontend_cmd_pc,
-                                       fetch_buf_latched_next_pc,
-                                       fetch_buf_latched_insn,
-                                       fetch_buf_latched_prediction_kind,
+                                       f_latched_next_pc,
+                                       f_latched_insn,
+                                       f_latched_prediction_kind,
                                        1'b0);
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
@@ -7981,6 +8063,9 @@ module smolrv64(input wire        clock,
         end
 
       endcase
+`ifdef PC_TRACE
+      end
+`endif
 
       if (!core_reset_now && !rf_read_valid && rf_decode_valid &&
           !rf_decode_prearmed && !rf_decode_prearm_block) begin
@@ -8105,11 +8190,13 @@ module smolrv64(input wire        clock,
          frontend_redirect_pc <= `RESET_PC;
          frontend_redirect_prv <= 3;
          frontend_redirect_epoch <= 0;
-         fetch_buf_latched_hit <= 0;
-         fetch_buf_latched_insn <= 0;
-         fetch_buf_latched_offset <= 0;
-         fetch_buf_latched_next_pc <= `RESET_PC;
-         fetch_buf_latched_prediction_kind <= 0;
+         f_latched_hit <= 0;
+         f_latched_insn <= 0;
+         f_latched_offset <= 0;
+         f_latched_next_pc <= `RESET_PC;
+         f_latched_prediction_kind <= 0;
+         f_state <= `F_IDLE;
+         retire_now_q <= 0;
          frontend_miss_valid <= 0;
          frontend_miss_done <= 0;
          frontend_miss_pc <= `RESET_PC;
@@ -8207,9 +8294,10 @@ module smolrv64(input wire        clock,
          just_trapped     <= 0;
          just_xret        <= 0;
          frontend_buf_flush <= 1'b1;
-         fetch_buf_latched_hit <= 0;
-         fetch_buf_latched_insn <= 0;
-         fetch_buf_latched_offset <= 0;
+         f_latched_hit <= 0;
+         f_latched_insn <= 0;
+         f_latched_offset <= 0;
+         f_state <= `F_IDLE;
          muldiv_start_op <= `MULDIV_MUL;
          uart_tx_head     <= 0;
          uart_tx_tail     <= 0;
