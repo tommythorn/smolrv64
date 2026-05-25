@@ -648,13 +648,6 @@ module smolrv64(input wire        clock,
 `define F_FETCH_BUF_USE         3  // on hit, enqueue rf_decode; on miss, hand to backend
 `define F_LAST_STATE            3
 
-// ex_state: scaffolding for the back-half pipeline split. Eventually owns
-// S_EXECUTE / S_EXECUTE2 / S_BRANCH_RESOLVE (and the various memory/EX
-// states) so an instruction can be in EX while the next is in RF.
-// Currently EX_IDLE only — no arms migrated yet.
-`define EX_IDLE                 0  // EX stage empty; backend FSM still owns EX work
-`define EX_LAST_STATE           0
-
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
 `define MULDIV_MULHSU          4'd2
@@ -739,7 +732,6 @@ module smolrv64(input wire        clock,
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
    reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
-   reg [0:0]   ex_state = `EX_IDLE; // back-half EX FSM (scaffold; no arms migrated yet)
    reg         f_consumed_hit;    // 1-cycle pulse: F_FETCH_BUF_USE took the hit
    // Set by retire_linear_fetch / retire_prepared_fetch / retire_redirect_fetch
    // (and other real retires) before transitioning to S_FETCH1. Gates retire
@@ -4352,15 +4344,6 @@ module smolrv64(input wire        clock,
            f_state <= `F_IDLE;
         end
         default: f_state <= `F_IDLE;
-      endcase
-
-      // Back-half EX FSM scaffold. No arms migrated yet — ex_state stays
-      // EX_IDLE always and the legacy case(state) S_EXECUTE/S_EXECUTE2/
-      // S_BRANCH_RESOLVE arms still own EX. Placed lexically before
-      // case(state) so future blocking-write signals propagate.
-      case (ex_state)
-        `EX_IDLE: ;
-        default: ex_state <= `EX_IDLE;
       endcase
 
       case (state)
@@ -8266,7 +8249,6 @@ module smolrv64(input wire        clock,
          f_latched_cmd_prv <= 3;
          f_latched_cmd_epoch <= 0;
          f_state <= `F_IDLE;
-         ex_state <= `EX_IDLE;
          retire_now_q <= 0;
          frontend_miss_valid <= 0;
          frontend_miss_done <= 0;
@@ -8369,7 +8351,6 @@ module smolrv64(input wire        clock,
          f_latched_insn <= 0;
          f_latched_offset <= 0;
          f_state <= `F_IDLE;
-         ex_state <= `EX_IDLE;
          muldiv_start_op <= `MULDIV_MUL;
          uart_tx_head     <= 0;
          uart_tx_tail     <= 0;
