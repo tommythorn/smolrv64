@@ -654,8 +654,7 @@ module smolrv64(input wire        clock,
 // Currently EX_IDLE only — no arms migrated yet.
 `define EX_IDLE                 0  // EX stage empty; nothing in flight
 `define EX_BRANCH_RESOLVE       1  // compute pre_npc / pre_jalr_target / branch taken
-`define EX_EXECUTE2             2  // compute write_back_value from exe_add / exe_sext32
-`define EX_LAST_STATE           2
+`define EX_LAST_STATE           1
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -741,7 +740,7 @@ module smolrv64(input wire        clock,
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
    reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
-   reg [1:0]   ex_state = `EX_IDLE; // back-half EX FSM; see EX_* defines
+   reg [0:0]   ex_state = `EX_IDLE; // back-half EX FSM; see EX_* defines
    reg         f_consumed_hit;    // 1-cycle pulse: F_FETCH_BUF_USE took the hit
    // Set by retire_linear_fetch / retire_prepared_fetch / retire_redirect_fetch
    // (and other real retires) before transitioning to S_FETCH1. Gates retire
@@ -4410,18 +4409,6 @@ module smolrv64(input wire        clock,
            end
            ex_state <= `EX_IDLE;
         end
-        `EX_EXECUTE2: begin
-           // Compute the integer-ALU writeback value from the pre-decoded
-           // exe_add / exe_sext32 set in S_EXECUTE. Kicked at the same
-           // cycle as state <= S_EXECUTE2 (default at top of S_EXECUTE).
-           // Gate on state == S_EXECUTE2 so we don't clobber write_back_value
-           // for branches whose S_EXECUTE arm overrode state to something
-           // else (e.g. SC.W/D sets state to a memory path and writes its
-           // own reservation-based result).
-           if (state == `S_EXECUTE2 && execute_res_valid)
-              write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
-           ex_state <= `EX_IDLE;
-        end
         default: ex_state <= `EX_IDLE;
       endcase
 
@@ -5175,7 +5162,6 @@ module smolrv64(input wire        clock,
            execute_req_valid <= 0;
            execute_res_valid <= 1;
            state <= `S_EXECUTE2; // Default: complete write_back_value
-           ex_state <= `EX_EXECUTE2; // case(ex_state) owns write_back_value compute
            prv_retire <= prv;    // snapshot pre-execution prv (MRET/SRET mutate prv below)
 
            imm_i = {{52{ex_insn[31]}},ex_insn[31:20]};
@@ -6526,7 +6512,7 @@ module smolrv64(input wire        clock,
 
         `S_EXECUTE2: begin : execute2_stage
            if (execute_res_valid) begin
-              // write_back_value compute moved to case(ex_state) EX_EXECUTE2.
+              write_back_value <= exe_sext32 ? {{32{exe_add[31]}}, exe_add[31:0]} : exe_add;
               execute_res_valid <= 0;
               retire_linear_fetch();
            end else begin
