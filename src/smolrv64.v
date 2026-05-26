@@ -956,6 +956,7 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] execute_req_rs1 = 0;
    reg  [ 4:0] execute_req_rs2 = 0;
    reg  [ 5:0] execute_req_shamt = 0;
+   wire        ex_accept_ready = !execute_req_valid;
    wire [63:0] ex_pc = execute_req_pc;
    wire [63:0] ex_next_pc = execute_req_next_pc;
    wire [63:0] ex_predicted_pc = execute_req_predicted_pc;
@@ -1252,6 +1253,7 @@ module smolrv64(input wire        clock,
    // ID/RF stage boundary. Dispatch accepts one decoded instruction into this
    // payload and launches the BRAM read; S_RF3 consumes it into EX.
    reg          id_valid = 0;
+   reg          id_rf_ready = 0;
    reg  [63:0]  id_pc = `RESET_PC;
    reg  [63:0]  id_next_pc = `RESET_PC;
    reg  [63:0]  id_predicted_pc = `RESET_PC;
@@ -3169,6 +3171,7 @@ module smolrv64(input wire        clock,
       begin
          clear_decode_queue();
          id_valid <= 0;
+         id_rf_ready <= 0;
          execute_req_valid <= 0;
       end
    endtask
@@ -3430,6 +3433,7 @@ module smolrv64(input wire        clock,
             frontend_decode_pending_valid <= 0;
             frontend_decode_pending_drain = 0;
             id_valid <= 1;
+            id_rf_ready <= 0;
             id_pc <= decode_pc;
             id_next_pc <= decode_next_pc;
             id_predicted_pc <= decode_predicted_pc;
@@ -3474,6 +3478,7 @@ module smolrv64(input wire        clock,
             state <= `S_FETCH1;
          end else begin
             id_valid <= 1;
+            id_rf_ready <= rf_decode_prearmed;
             id_pc <= rf_decode_pc;
             id_next_pc <= rf_decode_next_pc;
             id_predicted_pc <= rf_decode_predicted_pc;
@@ -3509,6 +3514,7 @@ module smolrv64(input wire        clock,
 `endif
          end else begin
             id_valid <= 1;
+            id_rf_ready <= rf_decode_prearmed;
             id_pc <= rf_decode_pc;
             id_next_pc <= rf_decode_next_pc;
             id_predicted_pc <= rf_decode_predicted_pc;
@@ -4610,10 +4616,24 @@ module smolrv64(input wire        clock,
         `S_RF2: begin
            // One-cycle wait: BRAM samples new rs1/rs2 from dispatch; output
            // settles in S_RF3.
-           state <= id_valid ? `S_RF3 : `S_FETCH1;
+           if (id_valid) begin
+              id_rf_ready <= 1;
+              state <= `S_RF3;
+           end else begin
+              id_rf_ready <= 0;
+              state <= `S_FETCH1;
+           end
         end
 
         `S_RF3: begin
+           if (!id_valid) begin
+              state <= `S_FETCH1;
+           end else if (!id_rf_ready) begin
+              id_rf_ready <= 1;
+              state <= `S_RF3;
+           end else if (!ex_accept_ready) begin
+              state <= `S_RF3;
+           end else begin
            // Register RF output into s1/s2/f1/f2 flip-flops.  Early launch can
            // overlap this read with the previous retire's writeback, so use the
            // local writeback bypass before latching operands.
@@ -4629,6 +4649,7 @@ module smolrv64(input wire        clock,
            pre_mul_abs_s1w <= rf3_s1_value[31] ? -rf3_s1_value[31:0] : rf3_s1_value[31:0];
            pre_mul_abs_s2w <= rf3_s2_value[31] ? -rf3_s2_value[31:0] : rf3_s2_value[31:0];
            id_valid <= 0;
+           id_rf_ready <= 0;
            execute_req_pc <= rf3_pc;
            execute_req_next_pc <= rf3_next_pc;
            execute_req_predicted_pc <= rf3_predicted_pc;
@@ -5008,6 +5029,7 @@ module smolrv64(input wire        clock,
                  endcase
               end
            end // rf3_mem_decode
+           end
         end
 
         `S_FETCH1B: begin
@@ -8007,6 +8029,12 @@ module smolrv64(input wire        clock,
       end
 `endif
 
+      // RF BRAM data is available one cycle after ID drives rs1/rs2.  This
+      // readiness advances even while the backend FSM remains in a long
+      // execute/wait state after a background decode launch.
+      if (!core_reset_now && id_valid && !id_rf_ready)
+         id_rf_ready <= 1;
+
       // Pre-arm BRAM rs1/rs2 reads for the next queued decode. Only when
       // state == S_FETCH1: in any other state, the current instruction may
       // be repurposing rs1/rs2 (e.g. S_EXECUTE for FMA writes rs1 with the
@@ -8165,6 +8193,7 @@ module smolrv64(input wire        clock,
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
          id_valid <= 0;
+         id_rf_ready <= 0;
          id_pc <= `RESET_PC;
          id_next_pc <= `RESET_PC;
          id_predicted_pc <= `RESET_PC;
