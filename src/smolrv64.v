@@ -1263,6 +1263,7 @@ module smolrv64(input wire        clock,
    reg  [ 4:0]  id_rs1 = 0;
    reg  [ 4:0]  id_rs2 = 0;
    reg  [ 5:0]  id_shamt = 0;
+   wire         id_ex_fire = id_valid && id_rf_ready && ex_accept_ready;
    wire [63:0]  rf3_pc = id_pc;
    wire [63:0]  rf3_next_pc = id_next_pc;
    wire [63:0]  rf3_predicted_pc = id_predicted_pc;
@@ -4631,7 +4632,7 @@ module smolrv64(input wire        clock,
            end else if (!id_rf_ready) begin
               id_rf_ready <= 1;
               state <= `S_RF3;
-           end else if (!ex_accept_ready) begin
+           end else if (!id_ex_fire) begin
               state <= `S_RF3;
            end else begin
            // Register RF output into s1/s2/f1/f2 flip-flops.  Early launch can
