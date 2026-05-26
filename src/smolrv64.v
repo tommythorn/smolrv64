@@ -9490,33 +9490,38 @@ module smolrv64_mem_engine(
    // queues are idle.  Configuration-time initial values are enough here; avoid
    // feeding the complex core-reset-home expression into XPM FIFO reset logic in
    // the 333 MHz memory clock domain.
-   smolrv64_async_fifo #(.WIDTH(25), .ADDR_BITS(4)) fill_req_fifo (
+   // All mem_engine CDC FIFOs forced to BRAM (MEMORY_TYPE="block"): same
+   // rationale as the MMIO bridge FIFOs in rk_xcku5p.v — distributed RAM
+   // implementation in SLICEM cells gets placed across multiple clock
+   // regions, the cross-region skew on doutb_reg paths kills timing.
+   // BRAM hard blocks have constrained, predictable placement.
+   smolrv64_async_fifo #(.WIDTH(25), .ADDR_BITS(4), .MEMORY_TYPE("block")) fill_req_fifo (
       .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(fill_req_valid), .wr_ready(fill_req_ready), .wr_data(fill_req_line_addr),
       .rd_valid(fill_cmd_valid), .rd_ready(fill_cmd_ready), .rd_data(fill_cmd_line_addr)
    );
-   smolrv64_async_fifo #(.WIDTH(512), .ADDR_BITS(4)) fill_rsp_fifo (
+   smolrv64_async_fifo #(.WIDTH(512), .ADDR_BITS(4), .MEMORY_TYPE("block")) fill_rsp_fifo (
       .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(fill_rsp_wr_valid), .wr_ready(fill_rsp_wr_ready), .wr_data(fill_rsp_wr_data),
       .rd_valid(fill_rsp_valid), .rd_ready(fill_rsp_ready), .rd_data(fill_rsp_data)
    );
-   smolrv64_async_fifo #(.WIDTH(537), .ADDR_BITS(4)) wb_req_fifo (
+   smolrv64_async_fifo #(.WIDTH(537), .ADDR_BITS(4), .MEMORY_TYPE("block")) wb_req_fifo (
       .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(wb_req_valid), .wr_ready(wb_req_ready),
       .wr_data({wb_req_line_addr, wb_req_line_data}),
       .rd_valid(wb_cmd_valid), .rd_ready(wb_cmd_ready), .rd_data(wb_cmd_data)
    );
-   smolrv64_async_fifo #(.WIDTH(1), .ADDR_BITS(4)) wb_rsp_fifo (
+   smolrv64_async_fifo #(.WIDTH(1), .ADDR_BITS(4), .MEMORY_TYPE("block")) wb_rsp_fifo (
       .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(wb_rsp_wr_valid), .wr_ready(wb_rsp_wr_ready), .wr_data(1'b1),
       .rd_valid(wb_rsp_valid), .rd_ready(wb_rsp_ready), .rd_data()
    );
-   smolrv64_async_fifo #(.WIDTH(28), .ADDR_BITS(4)) read_req_fifo (
+   smolrv64_async_fifo #(.WIDTH(28), .ADDR_BITS(4), .MEMORY_TYPE("block")) read_req_fifo (
       .wr_clock(core_clock), .rd_clock(mem_clock), .reset(1'b0),
       .wr_valid(read_req_valid), .wr_ready(read_req_ready), .wr_data(read_req_addr),
       .rd_valid(read_cmd_valid), .rd_ready(read_cmd_ready), .rd_data(read_cmd_addr)
    );
-   smolrv64_async_fifo #(.WIDTH(64), .ADDR_BITS(4)) read_rsp_fifo (
+   smolrv64_async_fifo #(.WIDTH(64), .ADDR_BITS(4), .MEMORY_TYPE("block")) read_rsp_fifo (
       .wr_clock(mem_clock), .rd_clock(core_clock), .reset(1'b0),
       .wr_valid(read_rsp_wr_valid), .wr_ready(read_rsp_wr_ready), .wr_data(read_rsp_wr_data),
       .rd_valid(read_rsp_valid), .rd_ready(read_rsp_ready), .rd_data(read_rsp_data)
