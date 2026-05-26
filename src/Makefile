@@ -91,7 +91,7 @@ smolrv64-linux-vl: $(SRCS) sim_main.cpp Makefile
 # Cosim build: smolrv64 under Verilator + simmerv (via C ABI) in lockstep.
 # Every retired instruction is sent to simmerv via a DPI callback and the
 # two architectural states are compared.  Fails loudly on divergence.
-SIMMERV_DIR     ?= $(HOME)/github/simmerv
+SIMMERV_DIR     ?= $(HOME)/simmerv
 SIMMERV_LIB_DIR := $(SIMMERV_DIR)/target/release
 SIMMERV_INCLUDE := $(SIMMERV_DIR)/cosim
 
