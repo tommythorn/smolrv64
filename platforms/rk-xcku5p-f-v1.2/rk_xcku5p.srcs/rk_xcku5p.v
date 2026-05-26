@@ -884,6 +884,14 @@ module smolrv64_mmio_clock_bridge(
    (* max_fanout = 16 *) reg ui_reset_q = 1'b1;
    always @(posedge ui_clock) ui_reset_q <= ui_reset;
 
+   // Registered FIFO reset with bounded fanout. The two MMIO CDC FIFOs
+   // take `core_reset | ui_reset` as their .reset() — combinational
+   // signals routing from cpu_reset_core_sync (core_clk domain) through
+   // an OR into the BRAM-located FIFOs' internal reset FSMs were the new
+   // worst paths after the BRAM forcing. Register here, gate fanout.
+   (* max_fanout = 8 *) reg fifo_reset_q = 1'b1;
+   always @(posedge ui_clock) fifo_reset_q <= core_reset | ui_reset;
+
    localparam CMD_WIDTH = 58;
    localparam [1:0] UI_IDLE = 2'd0;
    localparam [1:0] UI_WAIT_RSP = 2'd1;
@@ -907,7 +915,7 @@ module smolrv64_mmio_clock_bridge(
    ) mmio_cmd_fifo (
       .wr_clock(core_clock),
       .rd_clock(ui_clock),
-      .reset(core_reset | ui_reset),
+      .reset(fifo_reset_q),
       .wr_valid(cmd_wr_valid),
       .wr_ready(cmd_wr_ready),
       .wr_data(cmd_wr_data),
@@ -939,7 +947,7 @@ module smolrv64_mmio_clock_bridge(
    ) mmio_rsp_fifo (
       .wr_clock(ui_clock),
       .rd_clock(core_clock),
-      .reset(core_reset | ui_reset),
+      .reset(fifo_reset_q),
       .wr_valid(rsp_wr_valid),
       .wr_ready(rsp_wr_ready),
       .wr_data(rsp_data_q),
