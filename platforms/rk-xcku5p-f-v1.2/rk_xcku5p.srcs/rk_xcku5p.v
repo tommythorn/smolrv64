@@ -876,6 +876,14 @@ module smolrv64_mmio_clock_bridge(
    input  wire        ui_readdatavalid,
    input  wire [31:0] ui_readdata
 );
+   // Local replica of ui_reset with bounded fanout. The MIG-driven
+   // c0_ddr4_ui_clk_sync_rst was fanning out to 425+ registers via auto-
+   // replication, with a 2.5 ns route into mmio_bridge eating timing.
+   // Capped fanout forces Vivado to replicate into smaller groups near
+   // each consumer, cutting the route delay.
+   (* max_fanout = 16 *) reg ui_reset_q = 1'b1;
+   always @(posedge ui_clock) ui_reset_q <= ui_reset;
+
    localparam CMD_WIDTH = 58;
    localparam [1:0] UI_IDLE = 2'd0;
    localparam [1:0] UI_WAIT_RSP = 2'd1;
@@ -950,7 +958,7 @@ module smolrv64_mmio_clock_bridge(
 `endif
 
    always @(posedge ui_clock) begin
-      if (ui_reset) begin
+      if (ui_reset_q) begin
          ui_address <= 20'd0;
          ui_read <= 1'b0;
          ui_write <= 1'b0;
