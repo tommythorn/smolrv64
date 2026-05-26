@@ -3779,9 +3779,13 @@ module smolrv64(input wire        clock,
          execute_res_valid <= 0;
          retire_now_q <= 1;
          if (npc == ex_predicted_pc) begin
-            try_early_launch_queued_decode(npc, prv, early_launched);
-            if (!early_launched)
-               prepare_current_epoch_fetch(npc, prv);
+            if (execute_req_valid && execute_req_pc == npc) begin
+               clear_frontend_fast_cmd();
+            end else begin
+               try_early_launch_queued_decode(npc, prv, early_launched);
+               if (!early_launched)
+                  prepare_current_epoch_fetch(npc, prv);
+            end
          end else begin
             redirect_retire_fetch(npc, prv);
          end
@@ -3793,7 +3797,9 @@ module smolrv64(input wire        clock,
       reg early_launched;
       begin
          retire_now_q <= 1;
-         if (id_valid && id_pc == npc) begin
+         if (execute_req_valid && execute_req_pc == npc) begin
+            clear_frontend_fast_cmd();
+         end else if (id_valid && id_pc == npc) begin
             clear_frontend_fast_cmd();
          end else begin
             try_early_launch_queued_decode(npc, prv, early_launched);
@@ -4448,6 +4454,8 @@ module smolrv64(input wire        clock,
                         frontend_miss_matches_retire(npc, prv, fetch_epoch)) begin
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
+           end else if (execute_req_valid) begin
+              state <= `S_BRANCH_RESOLVE;
            end else if (id_valid) begin
               state <= `S_RF3;
            end else if (rf_decode_valid && !frontend_miss_valid) begin
