@@ -9296,7 +9296,10 @@ endmodule
 
 module smolrv64_async_fifo #(
    parameter WIDTH = 64,
-   parameter ADDR_BITS = 2
+   parameter ADDR_BITS = 2,
+   // "auto" (Vivado picks), "block" (force BRAM — better timing for
+   // CDC paths under congestion), "distributed" (SLICEM LUTRAM)
+   parameter MEMORY_TYPE = "auto"
 ) (
    input  wire             wr_clock,
    input  wire             rd_clock,
@@ -9319,7 +9322,7 @@ module smolrv64_async_fifo #(
       .CDC_SYNC_STAGES      ( 2 ),
       .DOUT_RESET_VALUE     ( "0" ),
       .ECC_MODE             ( "no_ecc" ),
-      .FIFO_MEMORY_TYPE     ( "auto" ),
+      .FIFO_MEMORY_TYPE     ( MEMORY_TYPE ),
       .FIFO_READ_LATENCY    ( 0 ),
       .FIFO_WRITE_DEPTH     ( 1 << ADDR_BITS ),
       .FULL_RESET_VALUE     ( 0 ),

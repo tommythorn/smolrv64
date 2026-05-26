@@ -891,7 +891,11 @@ module smolrv64_mmio_clock_bridge(
 
    smolrv64_async_fifo #(
       .WIDTH(CMD_WIDTH),
-      .ADDR_BITS(4)
+      .ADDR_BITS(4),
+      // Force BRAM: timing on this FIFO's RAMD32-to-doutb path failed at
+      // -0.090 ns with auto (SLICEM distributed RAM) due to write/read
+      // clock-root skew. BRAM placement is more predictable.
+      .MEMORY_TYPE("block")
    ) mmio_cmd_fifo (
       .wr_clock(core_clock),
       .rd_clock(ui_clock),
@@ -921,7 +925,9 @@ module smolrv64_mmio_clock_bridge(
 
    smolrv64_async_fifo #(
       .WIDTH(32),
-      .ADDR_BITS(4)
+      .ADDR_BITS(4),
+      // Same BRAM-forcing rationale as mmio_cmd_fifo above.
+      .MEMORY_TYPE("block")
    ) mmio_rsp_fifo (
       .wr_clock(ui_clock),
       .rd_clock(core_clock),
