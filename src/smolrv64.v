@@ -567,7 +567,6 @@ module smolrv64(input wire        clock,
 //
 `define S_FETCH1         0
 `define S_FETCH2         1
-`define S_RF             2  // legacy unused encoding
 `define S_EXECUTE        3
 
 `define S_EXCEPTION      4
