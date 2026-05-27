@@ -646,11 +646,9 @@ module smolrv64(input wire        clock,
 `define F_FETCH_BUF_USE         2  // on hit, enqueue rf_decode; on miss, hand to backend
 
 // ex_state: scaffolding for the back-half pipeline split. Eventually owns
-// S_EXECUTE / S_EXECUTE2 / S_BRANCH_RESOLVE (and the various memory/EX
-// states) so an instruction can be in EX while the next is in RF.
-// Currently EX_IDLE only — no arms migrated yet.
+// S_EXECUTE / S_EXECUTE2 (and the various memory/EX states) so an instruction
+// can be in EX while the next is in RF.
 `define EX_IDLE                 0  // EX stage empty; nothing in flight
-`define EX_BRANCH_RESOLVE       1  // compute pre_npc / pre_jalr_target / branch taken
 `define EX_EXECUTE2             2  // compute write_back_value from exe_add / exe_sext32
 
 `define MULDIV_MUL             4'd0
@@ -3654,7 +3652,6 @@ module smolrv64(input wire        clock,
                                    rf3_s1_value, rf3_s2_value);
            if (!preserve_state)
               state <= `S_BRANCH_RESOLVE;
-           ex_state <= `EX_BRANCH_RESOLVE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
            // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
@@ -4791,17 +4788,10 @@ module smolrv64(input wire        clock,
         default: f_state <= `F_IDLE;
       endcase
 
-      // Back-half EX FSM. Currently owns branch-target/taken precompute
-      // (EX_BRANCH_RESOLVE arm). Kicked from S_RF3 alongside state <=
-      // S_BRANCH_RESOLVE. Backend's S_BRANCH_RESOLVE arm is now a 1-cycle
-      // transition-only stub. Placed lexically before case(state) so
-      // future blocking-write signals propagate.
+      // Back-half EX FSM. Placed lexically before case(state) so future
+      // blocking-write signals propagate.
       case (ex_state)
         `EX_IDLE: ;
-        `EX_BRANCH_RESOLVE: begin
-           prepare_branch_metadata(ex_pc, ex_next_pc, ex_insn, s1, s2);
-           ex_state <= `EX_IDLE;
-        end
         `EX_EXECUTE2: begin
            // Compute the integer-ALU writeback value from the pre-decoded
            // exe_add / exe_sext32 set in S_EXECUTE. Kicked at the same
@@ -5142,8 +5132,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_BRANCH_RESOLVE: begin
-           // Branch-target precompute work moved to case(ex_state)
-           // EX_BRANCH_RESOLVE arm. This arm now just transitions.
+           // Branch metadata is prepared at the RF->EX boundary. This arm is
+           // now only a transition point before S_EXECUTE.
            if (!execute_req_valid)
               state <= `S_FETCH1;
            else
