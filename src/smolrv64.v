@@ -4363,6 +4363,15 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_no_wb_prepared_fetch;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              1'b0, 5'd0,
+                                              1'b0, 5'd0);
+         retire_prepared_fetch();
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -5274,7 +5283,7 @@ module smolrv64(input wire        clock,
               // Quadrant 1
            else if (ex_insn == 1) begin // C.NOP
              // NOP
-             retire_prepared_fetch();
+             retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'h0001) begin // C.ADDI
@@ -5344,17 +5353,17 @@ module smolrv64(input wire        clock,
            end
 
            else if ((ex_insn & 'he003) == 'ha001) begin // C.J
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
 
@@ -5367,7 +5376,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
               npc = pre_jalr_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'hf003) == 'h8002) begin // C.MV
@@ -5417,32 +5426,32 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
               if (pre_branch_taken) npc = pre_branch_target;
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            // LB/LH/LW/LD/LBU/LHU/LWU and SB/SH/SW/SD handled by shared mem block above.
@@ -5525,12 +5534,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
               // Nothing to do here
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'hf000707f) == 'h8000000f) begin // FENCE.TSO
               // Nothing to do here
-              retire_prepared_fetch();
+              retire_no_wb_prepared_fetch();
            end
 
            else if ((ex_insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
@@ -5803,7 +5812,7 @@ module smolrv64(input wire        clock,
                  tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
-                 retire_prepared_fetch(); // treat as NOP (no real sleep in simulation)
+                 retire_no_wb_prepared_fetch(); // treat as NOP (no real sleep in simulation)
               end
            end
 
