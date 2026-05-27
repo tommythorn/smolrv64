@@ -4033,6 +4033,24 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_prepare_retire_id_preserve_state;
+      input [63:0] retire_pc;
+      input [ 1:0] retire_prv;
+      input [FRONTEND_EPOCH_BITS-1:0] retire_epoch;
+      input       pending_int_valid;
+      input [4:0] pending_int_rd;
+      input       pending_fp_valid;
+      input [4:0] pending_fp_rd;
+      begin
+         if (id_matches_retire(retire_pc, retire_prv, retire_epoch) &&
+             id_rf_ready && ex_accept_ready &&
+             id_no_pending_wb_hazard(pending_int_valid, pending_int_rd,
+                                     pending_fp_valid, pending_fp_rd)) begin
+            prepare_execute_req_from_id(1'b1);
+         end
+      end
+   endtask
+
    function frontend_physical_fetch_ok;
       input [63:0] fetch_pc;
       begin
@@ -6471,6 +6489,9 @@ module smolrv64(input wire        clock,
         `S_EXECUTE2: begin : execute2_stage
            if (execute_res_valid) begin
               // write_back_value compute moved to case(ex_state) EX_EXECUTE2.
+              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                   !write_back_fp_valid, write_back_register,
+                                                   write_back_fp_valid, write_back_fp_register);
               execute_res_valid <= 0;
               retire_linear_fetch();
            end else begin
