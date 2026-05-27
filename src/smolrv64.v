@@ -4051,6 +4051,14 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_prepare_retire_id_no_pending;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              1'b0, 5'd0,
+                                              1'b0, 5'd0);
+      end
+   endtask
+
    function frontend_physical_fetch_ok;
       input [63:0] fetch_pc;
       begin
@@ -4372,9 +4380,7 @@ module smolrv64(input wire        clock,
 
    task retire_no_wb_prepared_fetch;
       begin
-         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                              1'b0, 5'd0,
-                                              1'b0, 5'd0);
+         try_prepare_retire_id_no_pending();
          retire_prepared_fetch();
       end
    endtask
@@ -6692,9 +6698,7 @@ module smolrv64(input wire        clock,
 
         `S_STORE_COMMIT: begin
            translated <= 0;
-           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                1'b0, 5'd0,
-                                                1'b0, 5'd0);
+           try_prepare_retire_id_no_pending();
            retire_linear_fetch();
            reservation <= ~0;
 
@@ -8199,9 +8203,7 @@ module smolrv64(input wire        clock,
               if (dram_store_split) begin
                  state <= `S_DRAM_STORE2;
               end else begin
-                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                      1'b0, 5'd0,
-                                                      1'b0, 5'd0);
+                 try_prepare_retire_id_no_pending();
                  retire_linear_fetch();
               end
            end else begin
