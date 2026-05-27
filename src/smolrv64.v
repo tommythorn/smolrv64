@@ -5073,6 +5073,10 @@ module smolrv64(input wire        clock,
                  redirect_retire_fetch(npc, prv);
                  state <= `S_FETCH_REQ;
               end
+           end else begin
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     1'b0, 5'd0,
+                                                     1'b0, 5'd0);
            end
         end
 
