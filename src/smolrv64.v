@@ -3650,6 +3650,8 @@ module smolrv64(input wire        clock,
            execute_req_rs2 <= rf3_rs2;
            execute_req_shamt <= rf3_shamt;
            execute_req_valid <= 1;
+           prepare_branch_metadata(rf3_pc, rf3_next_pc, rf3_insn,
+                                   rf3_s1_value, rf3_s2_value);
            if (!preserve_state)
               state <= `S_BRANCH_RESOLVE;
            ex_state <= `EX_BRANCH_RESOLVE;
