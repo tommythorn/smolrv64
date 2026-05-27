@@ -600,7 +600,6 @@ module smolrv64(input wire        clock,
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
-`define S_STORE_BRAM_WRITE     32  // full-word writeback after BRAM store read/modify
 `define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
 `define S_CVFPU_WAIT           34  // wait for a CVFPU result
 `define S_CVFPU_FMA_RF2        35  // wait for rs3 FP regfile read
@@ -1559,7 +1558,6 @@ module smolrv64(input wire        clock,
            `S_DRAM_STORE_RESP_WAIT:  state_name = "DRAM_STORE_RESP_WAIT";
            `S_DRAM_STORE_RESP_ARM:   state_name = "DRAM_STORE_RESP_ARM";
            `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
-           `S_STORE_BRAM_WRITE:      state_name = "STORE_BRAM_WRITE";
            `S_CVFPU_ISSUE:           state_name = "CVFPU_ISSUE";
            `S_CVFPU_WAIT:            state_name = "CVFPU_WAIT";
            `S_CVFPU_FMA_RF2:         state_name = "CVFPU_FMA_RF2";
@@ -6917,11 +6915,6 @@ module smolrv64(input wire        clock,
              end
            endcase
 
-        end
-
-        `S_STORE_BRAM_WRITE: begin
-           // BRAM stores are cacheable stores now; stale entries retire.
-           state <= `S_FETCH1;
         end
 
         `S_LOAD_ALIGN: begin
