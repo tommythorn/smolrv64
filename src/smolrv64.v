@@ -644,7 +644,6 @@ module smolrv64(input wire        clock,
 `define F_IDLE                  0  // no fetch in flight
 `define F_FETCH_BUF_CHECK       1  // latch frontend_rsp_* into f_latched_*
 `define F_FETCH_BUF_USE         2  // on hit, enqueue rf_decode; on miss, hand to backend
-`define F_LAST_STATE            2
 
 // ex_state: scaffolding for the back-half pipeline split. Eventually owns
 // S_EXECUTE / S_EXECUTE2 / S_BRANCH_RESOLVE (and the various memory/EX
@@ -653,7 +652,6 @@ module smolrv64(input wire        clock,
 `define EX_IDLE                 0  // EX stage empty; nothing in flight
 `define EX_BRANCH_RESOLVE       1  // compute pre_npc / pre_jalr_target / branch taken
 `define EX_EXECUTE2             2  // compute write_back_value from exe_add / exe_sext32
-`define EX_LAST_STATE           2
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
