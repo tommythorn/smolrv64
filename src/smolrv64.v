@@ -607,8 +607,6 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
-`define S_TLB_START_FETCH      40  // start instruction-fetch translation after fetch miss decision
-`define S_TLB_START_FETCH_HALF 41  // start cross-page instruction-fetch translation
 `define S_PTW_START            42  // start PTW after TLB miss decision
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
@@ -1569,8 +1567,6 @@ module smolrv64(input wire        clock,
            `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
-           `S_TLB_START_FETCH:       state_name = "TLB_START_FETCH";
-           `S_TLB_START_FETCH_HALF:  state_name = "TLB_START_FETCH_HALF";
            `S_PTW_START:             state_name = "PTW_START";
            `S_CBO_EXEC:              state_name = "CBO_EXEC";
            `S_CBO_WAIT:              state_name = "CBO_WAIT";
@@ -3175,7 +3171,7 @@ module smolrv64(input wire        clock,
          frontend_cmd_spec_miss_ready <= 0;
          if (csr_satp[63:60] == 4'd8 && fetch_prv != 3) begin
             // Sv39 instruction fetch translation
-            state <= `S_TLB_START_FETCH;
+            start_translation(fetch_va, 2'd0, fetch_prv, `S_FETCH2);
          end else begin
             // Both local BRAM and external DRAM fetches use the cache response
             // path.  The cache refill engine chooses BRAM or AXI by line address.
@@ -3214,7 +3210,7 @@ module smolrv64(input wire        clock,
          if (accept_pc[11:0] == 12'hFFE && accept_insn[1:0] == 2'b11 &&
              csr_satp[63:60] == 4'd8 && prv != 3) begin
             insn_half <= accept_insn[15:0];
-            state <= `S_TLB_START_FETCH_HALF;
+            start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
          end else if (accept_from_dram && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
             if (dram_latched_next_valid) begin
@@ -3226,7 +3222,7 @@ module smolrv64(input wire        clock,
                // avoids the TLB, so translate the second half instead of
                // deriving it from potentially stale mem_addr state.
                if (csr_satp[63:60] == 4'd8 && prv != 3) begin
-                  state <= `S_TLB_START_FETCH_HALF;
+                  start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
                end else begin
                   dram_addr <= accept_pc[30:3] + 1;
                   dram_va   <= accept_pc + 64'd2;
@@ -7860,14 +7856,6 @@ module smolrv64(input wire        clock,
 
         `S_TLB_LOOKUP: begin
            state <= `S_TLB_CHECK;
-        end
-
-        `S_TLB_START_FETCH: begin
-           start_translation(frontend_cmd_pc, 2'd0, frontend_cmd_prv, `S_FETCH2);
-        end
-
-        `S_TLB_START_FETCH_HALF: begin
-           start_translation(pc + 2, 2'd0, prv, `S_FETCH2_HALF);
         end
 
         `S_TLB_CHECK: begin
