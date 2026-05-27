@@ -3556,12 +3556,17 @@ module smolrv64(input wire        clock,
    endtask
 
 
-   function id_no_pending_int_wb_hazard;
+   function id_no_pending_wb_hazard;
+      input       pending_int_valid;
       input [4:0] pending_rd;
+      input       pending_fp_valid;
+      input [4:0] pending_fp_rd;
       begin
-         id_no_pending_int_wb_hazard =
-            pending_rd == 0 ||
-            (id_rs1 != pending_rd && id_rs2 != pending_rd);
+         id_no_pending_wb_hazard =
+            (!pending_int_valid || pending_rd == 0 ||
+             (id_rs1 != pending_rd && id_rs2 != pending_rd)) &&
+            (!pending_fp_valid ||
+             (id_rs1 != pending_fp_rd && id_rs2 != pending_fp_rd));
       end
    endfunction
 
@@ -3971,10 +3976,14 @@ module smolrv64(input wire        clock,
 
    task try_issue_queued_decode_preserve_state;
       input       allow_ex_prepare;
+      input       pending_int_valid;
       input [4:0] pending_int_rd;
+      input       pending_fp_valid;
+      input [4:0] pending_fp_rd;
       begin
          if (allow_ex_prepare && id_valid && id_rf_ready && ex_accept_ready &&
-             id_no_pending_int_wb_hazard(pending_int_rd)) begin
+             id_no_pending_wb_hazard(pending_int_valid, pending_int_rd,
+                                     pending_fp_valid, pending_fp_rd)) begin
             prepare_execute_req_from_id(1'b1);
          end else if (!id_valid && rf_decode_valid && !frontend_miss_valid &&
              rf_decode_epoch == fetch_epoch &&
@@ -6565,7 +6574,9 @@ module smolrv64(input wire        clock,
               fflags = fflags | cvfpu_fflags;
               retire_linear_fetch();
            end else begin
-              try_issue_queued_decode_preserve_state(1'b0, 5'd0);
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     !cvfpu_write_fp, cvfpu_tag_in[4:0],
+                                                     cvfpu_write_fp, cvfpu_tag_in[4:0]);
            end
         end
 `endif
@@ -7709,7 +7720,9 @@ module smolrv64(input wire        clock,
                 muldiv_p = muldiv_p + mul_a;
               mul_a = mul_a << 1;
               mul_b = mul_b >> 1;
-              try_issue_queued_decode_preserve_state(1'b1, write_back_register);
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     1'b1, write_back_register,
+                                                     1'b0, 5'd0);
            end else begin
               if (muldiv_output_sext32)
                 write_back_value = {{32{muldiv_p[31]}}, muldiv_p[31:0]};
@@ -7738,7 +7751,9 @@ module smolrv64(input wire        clock,
               end
               mul_a = mul_a >> 1;
               div_count = div_count  - 1;
-              try_issue_queued_decode_preserve_state(1'b1, write_back_register);
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     1'b1, write_back_register,
+                                                     1'b0, 5'd0);
            end else begin
               write_back_value = muldiv_output_negate ? -mul_b : mul_b;
               if (muldiv_output_high_part)
