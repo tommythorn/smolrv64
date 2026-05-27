@@ -8096,34 +8096,55 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_DRAM_STORE_WAIT: if (dram_write_ready) begin
-           // Issue the first write now that the master is idle
-           dram_write <= 1;
-           state      <= `S_DRAM_STORE_RESP_ARM;
+        `S_DRAM_STORE_WAIT: begin
+           if (dram_write_ready) begin
+              // Issue the first write now that the master is idle
+              dram_write <= 1;
+              state      <= `S_DRAM_STORE_RESP_ARM;
+           end else begin
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
+           end
         end
 
-        `S_DRAM_STORE2: if (dram_write_ready) begin
-           dram_addr       <= dram2_addr;
-           dram_va         <= dram2_va;
-           dram_asid       <= dram2_asid;
-           dram_perm       <= dram2_perm;
-           dram_ctx        <= dram2_ctx;
-           dram_writedata  <= dram2_data_part;
-           dram_wstrb      <= dram2_wstrb;
-           dram_write      <= 1;
-           dram_store_split <= 0;
-           state           <= `S_DRAM_STORE_RESP_ARM;
+        `S_DRAM_STORE2: begin
+           if (dram_write_ready) begin
+              dram_addr       <= dram2_addr;
+              dram_va         <= dram2_va;
+              dram_asid       <= dram2_asid;
+              dram_perm       <= dram2_perm;
+              dram_ctx        <= dram2_ctx;
+              dram_writedata  <= dram2_data_part;
+              dram_wstrb      <= dram2_wstrb;
+              dram_write      <= 1;
+              dram_store_split <= 0;
+              state           <= `S_DRAM_STORE_RESP_ARM;
+           end else begin
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
+           end
         end
 
         `S_DRAM_STORE_RESP_ARM: begin
+           try_issue_queued_decode_preserve_state(1'b1,
+                                                  !write_back_fp_valid, write_back_register,
+                                                  write_back_fp_valid, write_back_fp_register);
            state <= `S_DRAM_STORE_RESP_WAIT;
         end
 
-        `S_DRAM_STORE_RESP_WAIT: if (dram_write_done) begin
-           if (dram_store_split) begin
-              state <= `S_DRAM_STORE2;
+        `S_DRAM_STORE_RESP_WAIT: begin
+           if (dram_write_done) begin
+              if (dram_store_split) begin
+                 state <= `S_DRAM_STORE2;
+              end else begin
+                 retire_linear_fetch();
+              end
            end else begin
-              retire_linear_fetch();
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
            end
         end
 
