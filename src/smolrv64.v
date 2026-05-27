@@ -3155,6 +3155,27 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task trap_frontend_instruction_access_fault;
+      begin
+`ifdef SIMULATE
+`ifdef VERBOSE
+         $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d",
+                  $time, frontend_cmd_prv, frontend_cmd_pc, csr_satp[63:60]);
+`endif
+`endif
+         cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
+         tval = 0;
+         clear_frontend_cmd();
+         squash_decode_execute();
+         if (frontend_miss_valid || frontend_miss_done) begin
+            frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
+            state <= `S_FRONTEND_MISS_WAIT;
+         end else begin
+            state <= `S_EXCEPTION;
+         end
+      end
+   endtask
+
    task start_instruction_fetch_miss;
       input [63:0] fetch_va;
       input [ 1:0] fetch_prv;
@@ -5096,22 +5117,7 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH1;
            end else if ((csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 2'd3) &&
                         !frontend_physical_fetch_ok(frontend_cmd_pc)) begin
-`ifdef SIMULATE
-`ifdef VERBOSE
-              $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d",
-                       $time, frontend_cmd_prv, frontend_cmd_pc, csr_satp[63:60]);
-`endif
-`endif
-              cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-              tval = 0;
-              clear_frontend_cmd();
-              squash_decode_execute();
-              if (frontend_miss_valid || frontend_miss_done) begin
-                 frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
-                 state <= `S_FRONTEND_MISS_WAIT;
-              end else begin
-                 state <= `S_EXCEPTION;
-              end
+              trap_frontend_instruction_access_fault();
            end else begin
               state <= `S_FETCH_BUF_CHECK;
               f_state <= `F_FETCH_BUF_CHECK;
@@ -5121,22 +5127,7 @@ module smolrv64(input wire        clock,
         `S_FETCH_BUF_CHECK: begin
            if ((csr_satp[63:60] != 4'd8 || frontend_cmd_prv == 2'd3) &&
                !frontend_physical_fetch_ok(frontend_cmd_pc)) begin
-`ifdef SIMULATE
-`ifdef VERBOSE
-              $display("%05d   %1d %x illegal fetch address csr_satp[63:60] = %d",
-                       $time, frontend_cmd_prv, frontend_cmd_pc, csr_satp[63:60]);
-`endif
-`endif
-              cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
-              tval = 0;
-              clear_frontend_cmd();
-              squash_decode_execute();
-              if (frontend_miss_valid || frontend_miss_done) begin
-                 frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
-                 state <= `S_FRONTEND_MISS_WAIT;
-              end else begin
-                 state <= `S_EXCEPTION;
-              end
+              trap_frontend_instruction_access_fault();
            end else begin
               // Latching now happens in case(f_state) F_FETCH_BUF_CHECK arm.
               state                    <= `S_FETCH_BUF_USE;
