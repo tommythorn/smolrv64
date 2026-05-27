@@ -6545,6 +6545,9 @@ module smolrv64(input wire        clock,
                     write_back_value    <= cvfpu_result;
                  end
                  fflags = fflags | cvfpu_fflags;
+                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                      !cvfpu_write_fp, cvfpu_tag_out[4:0],
+                                                      cvfpu_write_fp, cvfpu_tag_out[4:0]);
                  retire_linear_fetch();
               end else begin
                  state <= `S_CVFPU_WAIT;
@@ -6563,6 +6566,9 @@ module smolrv64(input wire        clock,
                  write_back_value    <= cvfpu_result;
               end
               fflags = fflags | cvfpu_fflags;
+              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                   !cvfpu_write_fp, cvfpu_tag_out[4:0],
+                                                   cvfpu_write_fp, cvfpu_tag_out[4:0]);
               retire_linear_fetch();
            end else begin
               try_issue_queued_decode_preserve_state(1'b1,
