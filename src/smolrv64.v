@@ -583,8 +583,6 @@ module smolrv64(input wire        clock,
 `define S_MUL_RUNNING   11
 `define S_DIV_RUNNING   12
 
-`define S_PTW_READ      13
-
 `define S_PTW_LAUNCH    14  // launch PTW PTE fetch after ptw_* request fields are registered
 `define S_FETCH2_HALF   15
 
@@ -597,7 +595,7 @@ module smolrv64(input wire        clock,
 `define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
 `define S_RF2                  23  // wait for BRAM regfile read after rs1/rs2 launch
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
-`define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
+`define S_PTW_PROCESS          25  // process PTE latched from the PTW response
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
@@ -1548,7 +1546,6 @@ module smolrv64(input wire        clock,
            `S_HANDLE_CSR:            state_name = "HANDLE_CSR";
            `S_MUL_RUNNING:           state_name = "MUL_RUNNING";
            `S_DIV_RUNNING:           state_name = "DIV_RUNNING";
-           `S_PTW_READ:              state_name = "PTW_READ";
            `S_PTW_LAUNCH:            state_name = "PTW_LAUNCH";
            `S_FETCH2_HALF:           state_name = "FETCH2_HALF";
            `S_DRAM_FETCH_WAIT:       state_name = "DRAM_FETCH_WAIT";
@@ -2374,7 +2371,7 @@ module smolrv64(input wire        clock,
    reg [63:0] csr_mig_to_cause = 0;
    reg [63:0] csr_mig_to_addr  = 0;
    reg  [127:0] aligned;
-   reg  [127:0] pte_latch = 0;    // registered copy of PTE data; set in S_PTW_READ, used in S_PTW_PROCESS
+   reg  [127:0] pte_latch = 0;    // registered copy of PTE data used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_satp_write_val;
    reg  [63:0] csr_read_result = 0;
    reg  [63:0] fp_int_result = 0;
@@ -2753,7 +2750,7 @@ module smolrv64(input wire        clock,
    reg         ptw_sum;         // SUM value used for permission check
    reg         ptw_mxr;         // MXR value used for permission check
    reg         translated = 0;  // Set by PTW, cleared by consumer
-   reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_READ
+   reg [11:0]  ptw_fault_cause; // Computed at top of S_PTW_PROCESS
    reg [15:0]  insn_half;       // Saved lower half for cross-page instruction fetch
 
    reg [`TLB_4K_ENTRIES-1:0] tlb_4k_valid = 0;
@@ -7888,14 +7885,8 @@ module smolrv64(input wire        clock,
            start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
         end
 
-        `S_PTW_READ: begin
-           // Sv39 page table walk: latch PTE from the cache response path.
-           pte_latch <= dram_latched;
-           state <= `S_PTW_PROCESS;
-        end
-
         `S_PTW_PROCESS: begin
-           // Sv39 page table walk: process PTE latched in S_PTW_READ.
+           // Sv39 page table walk: process the latched PTE.
            // PTE is pte_latch[63:0]; use aligned as a local alias for readability.
            aligned = pte_latch;
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
@@ -8085,8 +8076,8 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_PTW_WAIT: begin
            if (ptw_direct_readdatavalid_r) begin
-              dram_latched <= ptw_direct_readdata_r;
-              state        <= `S_PTW_READ;
+              pte_latch <= ptw_direct_readdata_r;
+              state     <= `S_PTW_PROCESS;
            end else begin
               try_issue_queued_decode_current_wb(ptw_access == 2'd1 &&
                                                  ptw_return == `S_LOAD_ALIGN);
