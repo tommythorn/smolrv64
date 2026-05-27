@@ -3547,6 +3547,59 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task prepare_branch_metadata;
+      input [63:0] b_pc;
+      input [63:0] b_next_pc;
+      input [31:0] b_insn;
+      input [63:0] b_s1;
+      input [63:0] b_s2;
+      reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
+      begin
+         d_imm_i = {{52{b_insn[31]}}, b_insn[31:20]};
+         d_imm_j = {{44{b_insn[31]}}, b_insn[19:12], b_insn[20], b_insn[30:21], 1'b0};
+         d_imm_b = {{52{b_insn[31]}}, b_insn[7], b_insn[30:25], b_insn[11:8], 1'b0};
+         d_c_j   = {{53{b_insn[12]}}, b_insn[8], b_insn[10:9], b_insn[6], b_insn[7],
+                    b_insn[2], b_insn[11], b_insn[5:3], 1'b0};
+         d_c_b   = {{56{b_insn[12]}}, b_insn[6:5], b_insn[2], b_insn[11:10],
+                    b_insn[4:3], 1'b0};
+
+         pre_npc <= b_next_pc;
+         pre_jalr_target <= (b_s1 + d_imm_i) & ~64'd1;
+         pre_branch_target <= b_pc + d_imm_b;
+         pre_branch_taken <= 0;
+
+         if ((b_insn & 'he003) == 'ha001) begin // C.J
+            pre_npc <= b_pc + d_c_j;
+         end else if ((b_insn & 'he003) == 'hc001) begin // C.BEQZ
+            pre_branch_target <= b_pc + d_c_b;
+            pre_branch_taken <= b_s1 == 0;
+         end else if ((b_insn & 'he003) == 'he001) begin // C.BNEZ
+            pre_branch_target <= b_pc + d_c_b;
+            pre_branch_taken <= b_s1 != 0;
+         end else if ((b_insn & 'hf07f) == 'h8002) begin // C.JR
+            pre_jalr_target <= b_s1 & ~64'd1;
+         end else if ((b_insn & 'hf07f) == 'h9002) begin // C.JALR
+            pre_jalr_target <= b_s1 & ~64'd1;
+         end else if ((b_insn & 'h0000007f) == 'h0000006f) begin // JAL
+            pre_npc <= b_pc + d_imm_j;
+         end else if ((b_insn & 'h0000707f) == 'h00000067) begin // JALR
+            pre_jalr_target <= (b_s1 + d_imm_i) & ~64'd1;
+         end else if ((b_insn & 'h0000707f) == 'h00000063) begin // BEQ
+            pre_branch_taken <= b_s1 == b_s2;
+         end else if ((b_insn & 'h0000707f) == 'h00001063) begin // BNE
+            pre_branch_taken <= b_s1 != b_s2;
+         end else if ((b_insn & 'h0000707f) == 'h00004063) begin // BLT
+            pre_branch_taken <= $signed(b_s1) < $signed(b_s2);
+         end else if ((b_insn & 'h0000707f) == 'h00005063) begin // BGE
+            pre_branch_taken <= $signed(b_s1) >= $signed(b_s2);
+         end else if ((b_insn & 'h0000707f) == 'h00006063) begin // BLTU
+            pre_branch_taken <= b_s1 < b_s2;
+         end else if ((b_insn & 'h0000707f) == 'h00007063) begin // BGEU
+            pre_branch_taken <= b_s1 >= b_s2;
+         end
+      end
+   endtask
+
 
    function id_no_pending_wb_hazard;
       input       pending_int_valid;
@@ -4743,51 +4796,8 @@ module smolrv64(input wire        clock,
       // future blocking-write signals propagate.
       case (ex_state)
         `EX_IDLE: ;
-        `EX_BRANCH_RESOLVE: begin : ex_branch_resolve
-           reg [63:0] d_imm_i, d_imm_j, d_imm_b, d_c_j, d_c_b;
-
-           d_imm_i = {{52{ex_insn[31]}}, ex_insn[31:20]};
-           d_imm_j = {{44{ex_insn[31]}}, ex_insn[19:12], ex_insn[20], ex_insn[30:21], 1'b0};
-           d_imm_b = {{52{ex_insn[31]}}, ex_insn[7], ex_insn[30:25], ex_insn[11:8], 1'b0};
-           d_c_j   = {{53{ex_insn[12]}}, ex_insn[8], ex_insn[10:9], ex_insn[6], ex_insn[7],
-                      ex_insn[2], ex_insn[11], ex_insn[5:3], 1'b0};
-           d_c_b   = {{56{ex_insn[12]}}, ex_insn[6:5], ex_insn[2], ex_insn[11:10],
-                      ex_insn[4:3], 1'b0};
-
-           pre_npc <= ex_next_pc;
-           pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
-           pre_branch_target <= ex_pc + d_imm_b;
-           pre_branch_taken <= 0;
-
-           if ((ex_insn & 'he003) == 'ha001) begin // C.J
-              pre_npc <= ex_pc + d_c_j;
-           end else if ((ex_insn & 'he003) == 'hc001) begin // C.BEQZ
-              pre_branch_target <= ex_pc + d_c_b;
-              pre_branch_taken <= s1 == 0;
-           end else if ((ex_insn & 'he003) == 'he001) begin // C.BNEZ
-              pre_branch_target <= ex_pc + d_c_b;
-              pre_branch_taken <= s1 != 0;
-           end else if ((ex_insn & 'hf07f) == 'h8002) begin // C.JR
-              pre_jalr_target <= s1 & ~64'd1;
-           end else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
-              pre_jalr_target <= s1 & ~64'd1;
-           end else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
-              pre_npc <= ex_pc + d_imm_j;
-           end else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
-              pre_jalr_target <= (s1 + d_imm_i) & ~64'd1;
-           end else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
-              pre_branch_taken <= s1 == s2;
-           end else if ((ex_insn & 'h0000707f) == 'h00001063) begin // BNE
-              pre_branch_taken <= s1 != s2;
-           end else if ((ex_insn & 'h0000707f) == 'h00004063) begin // BLT
-              pre_branch_taken <= $signed(s1) < $signed(s2);
-           end else if ((ex_insn & 'h0000707f) == 'h00005063) begin // BGE
-              pre_branch_taken <= $signed(s1) >= $signed(s2);
-           end else if ((ex_insn & 'h0000707f) == 'h00006063) begin // BLTU
-              pre_branch_taken <= s1 < s2;
-           end else if ((ex_insn & 'h0000707f) == 'h00007063) begin // BGEU
-              pre_branch_taken <= s1 >= s2;
-           end
+        `EX_BRANCH_RESOLVE: begin
+           prepare_branch_metadata(ex_pc, ex_next_pc, ex_insn, s1, s2);
            ex_state <= `EX_IDLE;
         end
         `EX_EXECUTE2: begin
