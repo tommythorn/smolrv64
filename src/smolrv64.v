@@ -5999,18 +5999,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd3; // fpnew_pkg::MUL
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                                           4'd3, 1'b0,
+                                           3'd0, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6026,18 +6018,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd3; // fpnew_pkg::MUL
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                                           4'd3, 1'b0,
+                                           3'd1, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6053,18 +6037,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd4; // fpnew_pkg::DIV
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                                           4'd4, 1'b0,
+                                           3'd0, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6080,18 +6056,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd4; // fpnew_pkg::DIV
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                                           4'd4, 1'b0,
+                                           3'd1, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6107,18 +6075,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= 64'd0;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd5; // fpnew_pkg::SQRT
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                                           4'd5, 1'b0,
+                                           3'd0, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6138,18 +6098,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= 64'd0;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd5; // fpnew_pkg::SQRT
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                                           4'd5, 1'b0,
+                                           3'd1, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6169,18 +6121,11 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= {2'b00, ex_insn[12]}; // RNE=min, RTZ=max
-                         cvfpu_op       <= 4'd7; // fpnew_pkg::MINMAX
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0,
+                                           {2'b00, ex_insn[12]},
+                                           4'd7, 1'b0,
+                                           3'd0, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6196,18 +6141,11 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= f2;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= {2'b00, ex_insn[12]}; // RNE=min, RTZ=max
-                         cvfpu_op       <= 4'd7; // fpnew_pkg::MINMAX
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, f2, 64'd0,
+                                           {2'b00, ex_insn[12]},
+                                           4'd7, 1'b0,
+                                           3'd1, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6223,18 +6161,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= 64'd0;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                                           4'd10, 1'b0,
+                                           3'd1, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6254,18 +6184,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= f1;
-                         cvfpu_operands[1] <= 64'd0;
-                         cvfpu_operands[2] <= 64'd0;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd10; // fpnew_pkg::F2F
-                         cvfpu_op_mod   <= 1'b0;
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                                           4'd10, 1'b0,
+                                           3'd0, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
