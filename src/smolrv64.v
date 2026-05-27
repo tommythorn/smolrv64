@@ -884,8 +884,6 @@ module smolrv64(input wire        clock,
    reg  [CACHE_PERM_BITS-1:0] mem_perm;
    reg  [TLB_CTX_BITS-1:0] mem_ctx;
    reg  [15:0] mem_wr_mask;
-   reg         fetch_latch_half = 0; // S_FETCH1B should continue to S_FETCH2_HALF
-
    function [63:0] merge_store_bytes;
       input [63:0] old_word;
       input [63:0] new_word;
@@ -5131,7 +5129,6 @@ module smolrv64(input wire        clock,
            // BRAM fetches now use the cache refill path.  This state is kept
            // only as a defensive sink for stale encoded states.
            state <= `S_FETCH1;
-           fetch_latch_half <= 0;
         end
 
         `S_LOAD_LATCH: begin
