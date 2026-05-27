@@ -607,7 +607,6 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
-`define S_PTW_START            42  // start PTW after TLB miss decision
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
 `define S_FETCH2_DRAM          45  // latch instruction from DRAM fetch without fetch-source mux
@@ -1567,7 +1566,6 @@ module smolrv64(input wire        clock,
            `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
-           `S_PTW_START:             state_name = "PTW_START";
            `S_CBO_EXEC:              state_name = "CBO_EXEC";
            `S_CBO_WAIT:              state_name = "CBO_WAIT";
            `S_FETCH2_DRAM:           state_name = "FETCH2_DRAM";
@@ -7865,12 +7863,8 @@ module smolrv64(input wire        clock,
                                     tlb_4k_hit ? tlb_4k_rd_perm : tlb_2m_rd_perm,
                                     tlb_req_return);
            end else begin
-              state <= `S_PTW_START;
+              start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
            end
-        end
-
-        `S_PTW_START: begin
-           start_ptw(tlb_req_va, tlb_req_access, tlb_req_prv, tlb_req_return);
         end
 
         `S_PTW_PROCESS: begin
