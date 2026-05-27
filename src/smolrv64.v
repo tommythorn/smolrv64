@@ -4051,6 +4051,45 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_issue_queued_decode_no_pending;
+      input allow_ex_prepare;
+      begin
+         try_issue_queued_decode_preserve_state(allow_ex_prepare,
+                                                1'b0, 5'd0,
+                                                1'b0, 5'd0);
+      end
+   endtask
+
+   task try_issue_queued_decode_int_pending;
+      input       allow_ex_prepare;
+      input [4:0] pending_rd;
+      begin
+         try_issue_queued_decode_preserve_state(allow_ex_prepare,
+                                                1'b1, pending_rd,
+                                                1'b0, 5'd0);
+      end
+   endtask
+
+   task try_issue_queued_decode_current_wb;
+      input allow_ex_prepare;
+      begin
+         try_issue_queued_decode_preserve_state(allow_ex_prepare,
+                                                !write_back_fp_valid, write_back_register,
+                                                write_back_fp_valid, write_back_fp_register);
+      end
+   endtask
+
+   task try_issue_queued_decode_tagged_wb;
+      input       allow_ex_prepare;
+      input       pending_fp_valid;
+      input [4:0] pending_rd;
+      begin
+         try_issue_queued_decode_preserve_state(allow_ex_prepare,
+                                                !pending_fp_valid, pending_rd,
+                                                pending_fp_valid, pending_rd);
+      end
+   endtask
+
    task try_prepare_retire_id_no_pending;
       begin
          try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
@@ -5139,9 +5178,7 @@ module smolrv64(input wire        clock,
                  state <= `S_FETCH_REQ;
               end
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     1'b0, 5'd0,
-                                                     1'b0, 5'd0);
+              try_issue_queued_decode_no_pending(1'b1);
            end
         end
 
@@ -6627,9 +6664,7 @@ module smolrv64(input wire        clock,
               try_prepare_retire_id_tagged_wb(cvfpu_write_fp, cvfpu_tag_out[4:0]);
               retire_linear_fetch();
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     !cvfpu_write_fp, cvfpu_tag_in[4:0],
-                                                     cvfpu_write_fp, cvfpu_tag_in[4:0]);
+              try_issue_queued_decode_tagged_wb(1'b1, cvfpu_write_fp, cvfpu_tag_in[4:0]);
            end
         end
 `endif
@@ -6652,9 +6687,7 @@ module smolrv64(input wire        clock,
            if (cache_cbo_done) begin
               retire_no_wb_linear_fetch();
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     1'b0, 5'd0,
-                                                     1'b0, 5'd0);
+              try_issue_queued_decode_no_pending(1'b1);
            end
         end
 
@@ -7090,9 +7123,7 @@ module smolrv64(input wire        clock,
                  state <= `S_AMO;
               end
            end else begin
-              try_issue_queued_decode_preserve_state(!do_atomic,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(!do_atomic);
            end
         end
 
@@ -7785,9 +7816,7 @@ module smolrv64(input wire        clock,
                 muldiv_p = muldiv_p + mul_a;
               mul_a = mul_a << 1;
               mul_b = mul_b >> 1;
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     1'b1, write_back_register,
-                                                     1'b0, 5'd0);
+              try_issue_queued_decode_int_pending(1'b1, write_back_register);
            end else begin
               if (muldiv_output_sext32)
                 write_back_value = {{32{muldiv_p[31]}}, muldiv_p[31:0]};
@@ -7817,9 +7846,7 @@ module smolrv64(input wire        clock,
               end
               mul_a = mul_a >> 1;
               div_count = div_count  - 1;
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     1'b1, write_back_register,
-                                                     1'b0, 5'd0);
+              try_issue_queued_decode_int_pending(1'b1, write_back_register);
            end else begin
               write_back_value = muldiv_output_negate ? -mul_b : mul_b;
               if (muldiv_output_high_part)
@@ -8073,10 +8100,8 @@ module smolrv64(input wire        clock,
               dram_latched <= ptw_direct_readdata_r;
               state        <= `S_PTW_READ;
            end else begin
-              try_issue_queued_decode_preserve_state(ptw_access == 2'd1 &&
-                                                     ptw_return == `S_LOAD_ALIGN,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(ptw_access == 2'd1 &&
+                                                 ptw_return == `S_LOAD_ALIGN);
            end
         end
 
@@ -8136,9 +8161,7 @@ module smolrv64(input wire        clock,
                  end
               end
            end else begin
-              try_issue_queued_decode_preserve_state(!do_atomic,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(!do_atomic);
            end
         end
 
@@ -8166,9 +8189,7 @@ module smolrv64(input wire        clock,
                  retire_linear_fetch();
               end
            end else begin
-              try_issue_queued_decode_preserve_state(!do_atomic,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(!do_atomic);
            end
         end
 
@@ -8178,9 +8199,7 @@ module smolrv64(input wire        clock,
               dram_write <= 1;
               state      <= `S_DRAM_STORE_RESP_ARM;
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(1'b1);
            end
         end
 
@@ -8197,16 +8216,12 @@ module smolrv64(input wire        clock,
               dram_store_split <= 0;
               state           <= `S_DRAM_STORE_RESP_ARM;
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(1'b1);
            end
         end
 
         `S_DRAM_STORE_RESP_ARM: begin
-           try_issue_queued_decode_preserve_state(1'b1,
-                                                  !write_back_fp_valid, write_back_register,
-                                                  write_back_fp_valid, write_back_fp_register);
+           try_issue_queued_decode_current_wb(1'b1);
            state <= `S_DRAM_STORE_RESP_WAIT;
         end
 
@@ -8218,9 +8233,7 @@ module smolrv64(input wire        clock,
                  retire_no_wb_linear_fetch();
               end
            end else begin
-              try_issue_queued_decode_preserve_state(1'b1,
-                                                     !write_back_fp_valid, write_back_register,
-                                                     write_back_fp_valid, write_back_fp_register);
+              try_issue_queued_decode_current_wb(1'b1);
            end
         end
 
