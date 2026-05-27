@@ -7108,16 +7108,15 @@ module smolrv64(input wire        clock,
 `endif
 
               finish_load_writeback();
-              if (!do_atomic)
-                 try_prepare_retire_id_current_wb();
-              retire_linear_fetch();
-
               if (do_atomic) begin
+                 retire_linear_fetch();
 `ifdef SIMULATE
                  $display("Sorry, atomics to MMIO aren't supported yet");
                  $finish;
 `endif
                  state <= `S_AMO;
+              end else begin
+                 retire_current_wb_linear_fetch();
               end
            end else begin
               try_issue_queued_decode_current_wb(!do_atomic);
