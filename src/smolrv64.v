@@ -4434,6 +4434,13 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_current_wb_prepared_fetch;
+      begin
+         try_prepare_retire_id_current_wb();
+         retire_prepared_fetch();
+      end
+   endtask
+
    task retire_no_wb_linear_fetch;
       begin
          try_prepare_retire_id_no_pending();
@@ -4444,6 +4451,31 @@ module smolrv64(input wire        clock,
    task retire_current_wb_linear_fetch;
       begin
          try_prepare_retire_id_current_wb();
+         retire_linear_fetch();
+      end
+   endtask
+
+   task retire_int_pending_linear_fetch;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_int_pending(pending_rd);
+         retire_linear_fetch();
+      end
+   endtask
+
+   task retire_fp_pending_linear_fetch;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_fp_pending(pending_rd);
+         retire_linear_fetch();
+      end
+   endtask
+
+   task retire_tagged_wb_linear_fetch;
+      input       pending_fp_valid;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_tagged_wb(pending_fp_valid, pending_rd);
          retire_linear_fetch();
       end
    endtask
@@ -6246,8 +6278,7 @@ module smolrv64(input wire        clock,
                         end
                       endcase
                       if (ex_insn[14:12] < 3) begin
-                         try_prepare_retire_id_fp_pending(write_back_fp_register);
-                         retire_linear_fetch();
+                         retire_fp_pending_linear_fetch(write_back_fp_register);
                       end
                    end
                    // FSGNJ/N/X .D — no boxing check; 64-bit direct.
@@ -6266,8 +6297,7 @@ module smolrv64(input wire        clock,
                         end
                       endcase
                       if (ex_insn[14:12] < 3) begin
-                         try_prepare_retire_id_fp_pending(write_back_fp_register);
-                         retire_linear_fetch();
+                         retire_fp_pending_linear_fetch(write_back_fp_register);
                       end
                    end
                    // FEQ.S / FLT.S / FLE.S: integer rd; NV flag on NaN per op.
@@ -6459,8 +6489,7 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= {32'hffffffff, s1[31:0]};
-                      try_prepare_retire_id_fp_pending(write_back_fp_register);
-                      retire_linear_fetch();
+                      retire_fp_pending_linear_fetch(write_back_fp_register);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6471,8 +6500,7 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= s1;
-                      try_prepare_retire_id_fp_pending(write_back_fp_register);
-                      retire_linear_fetch();
+                      retire_fp_pending_linear_fetch(write_back_fp_register);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6568,9 +6596,8 @@ module smolrv64(input wire        clock,
         `S_EXECUTE2: begin : execute2_stage
            if (execute_res_valid) begin
               // write_back_value compute moved to case(ex_state) EX_EXECUTE2.
-              try_prepare_retire_id_current_wb();
               execute_res_valid <= 0;
-              retire_linear_fetch();
+              retire_current_wb_linear_fetch();
            end else begin
               prepare_current_epoch_fetch(npc, prv);
               state <= `S_FETCH1;
@@ -6578,10 +6605,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_FP_INT_COMMIT: begin
-           try_prepare_retire_id_current_wb();
            write_back_value <= fp_int_result;
            fflags = fflags | fp_int_fflags;
-           retire_linear_fetch();
+           retire_current_wb_linear_fetch();
         end
 
 `ifdef USE_CVFPU
@@ -6620,8 +6646,7 @@ module smolrv64(input wire        clock,
                     write_back_value    <= cvfpu_result;
                  end
                  fflags = fflags | cvfpu_fflags;
-                 try_prepare_retire_id_tagged_wb(cvfpu_write_fp, cvfpu_tag_out[4:0]);
-                 retire_linear_fetch();
+                 retire_tagged_wb_linear_fetch(cvfpu_write_fp, cvfpu_tag_out[4:0]);
               end else begin
                  state <= `S_CVFPU_WAIT;
               end
@@ -6639,8 +6664,7 @@ module smolrv64(input wire        clock,
                  write_back_value    <= cvfpu_result;
               end
               fflags = fflags | cvfpu_fflags;
-              try_prepare_retire_id_tagged_wb(cvfpu_write_fp, cvfpu_tag_out[4:0]);
-              retire_linear_fetch();
+              retire_tagged_wb_linear_fetch(cvfpu_write_fp, cvfpu_tag_out[4:0]);
            end else begin
               try_issue_queued_decode_tagged_wb(1'b1, cvfpu_write_fp, cvfpu_tag_in[4:0]);
            end
@@ -7541,10 +7565,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_HANDLE_CSR_COMMIT: begin
-           try_prepare_retire_id_current_wb();
            write_back_value <= csr_read_result;
            execute_res_valid <= 0;
-           retire_prepared_fetch();
+           retire_current_wb_prepared_fetch();
         end
 
         `S_EXCEPTION: begin
@@ -7805,8 +7828,7 @@ module smolrv64(input wire        clock,
                    write_back_value = muldiv_p[63:0];
               end
 
-              try_prepare_retire_id_int_pending(write_back_register);
-              retire_linear_fetch();
+              retire_int_pending_linear_fetch(write_back_register);
            end
         end
 
@@ -7829,8 +7851,7 @@ module smolrv64(input wire        clock,
               if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
 
-              try_prepare_retire_id_int_pending(write_back_register);
-              retire_linear_fetch();
+              retire_int_pending_linear_fetch(write_back_register);
            end
         end
 
