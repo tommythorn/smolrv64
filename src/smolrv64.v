@@ -7006,42 +7006,48 @@ module smolrv64(input wire        clock,
 
         `S_MMIO_READ: state <= `S_MMIO_ALIGN;
 
-        `S_MMIO_ALIGN: if (mmio_readdatavalid) begin
+        `S_MMIO_ALIGN: begin
+           if (mmio_readdatavalid) begin
 
-           aligned = mmio_readdata >> (mem_addr[1:0] * 8);
+              aligned = mmio_readdata >> (mem_addr[1:0] * 8);
 
 /*
-           $display("%x >> %d = %x ==? %x",
-                    mmio_readdata,
-                    (mem_addr[1:0] * 8),
-                    mmio_readdata >> (mem_addr[1:0] * 8),
-                    aligned);
+              $display("%x >> %d = %x ==? %x",
+                       mmio_readdata,
+                       (mem_addr[1:0] * 8),
+                       mmio_readdata >> (mem_addr[1:0] * 8),
+                       aligned);
 */
 
-           case (load_size_lg2)
-             0: write_back_value = aligned[ 7:0];
-             1: write_back_value = aligned[15:0];
-             2: write_back_value = mmio_readdata;
-             3: write_back_value = 64'h 6464DEADDEAD6464;
-             4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
-             5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
-             6: write_back_value = {{32{mmio_readdata[31]}},mmio_readdata[31:0]};
-             7: write_back_value = 64'h DEAD_BEEF_C0DE_CAFE;
-           endcase
+              case (load_size_lg2)
+                0: write_back_value = aligned[ 7:0];
+                1: write_back_value = aligned[15:0];
+                2: write_back_value = mmio_readdata;
+                3: write_back_value = 64'h 6464DEADDEAD6464;
+                4: write_back_value = {{56{aligned[ 7]}},aligned[ 7:0]};
+                5: write_back_value = {{48{aligned[15]}},aligned[15:0]};
+                6: write_back_value = {{32{mmio_readdata[31]}},mmio_readdata[31:0]};
+                7: write_back_value = 64'h DEAD_BEEF_C0DE_CAFE;
+              endcase
 
 `ifdef TRACE_MMIO
-           $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
+              $display("%05d  MMIO READ GOT %x (aligned %x)", $time, mmio_readdata, write_back_value);
 `endif
 
-           finish_load_writeback();
-           retire_linear_fetch();
+              finish_load_writeback();
+              retire_linear_fetch();
 
-           if (do_atomic) begin
+              if (do_atomic) begin
 `ifdef SIMULATE
-              $display("Sorry, atomics to MMIO aren't supported yet");
-              $finish;
+                 $display("Sorry, atomics to MMIO aren't supported yet");
+                 $finish;
 `endif
-              state <= `S_AMO;
+                 state <= `S_AMO;
+              end
+           end else begin
+              try_issue_queued_decode_preserve_state(!do_atomic,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
            end
         end
 
