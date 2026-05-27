@@ -8049,8 +8049,12 @@ module smolrv64(input wire        clock,
                     finish_load_writeback();
                     if (do_atomic)
                        state <= `S_AMO;
-                    else
+                    else begin
+                       try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                            !write_back_fp_valid, write_back_register,
+                                                            write_back_fp_valid, write_back_fp_register);
                        retire_linear_fetch();
+                    end
                  end else begin
                     // Access crosses a cache-line boundary and the second line
                     // missed during the parallel lookup; request it only now.
@@ -8078,8 +8082,12 @@ module smolrv64(input wire        clock,
                  finish_load_writeback();
                  if (do_atomic)
                     state <= `S_AMO;
-                 else
+                 else begin
+                    try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                         !write_back_fp_valid, write_back_register,
+                                                         write_back_fp_valid, write_back_fp_register);
                     retire_linear_fetch();
+                 end
               end
            end else begin
               try_issue_queued_decode_preserve_state(!do_atomic,
@@ -8107,8 +8115,12 @@ module smolrv64(input wire        clock,
               finish_load_writeback();
               if (do_atomic)
                  state <= `S_AMO;
-              else
+              else begin
+                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                      !write_back_fp_valid, write_back_register,
+                                                      write_back_fp_valid, write_back_fp_register);
                  retire_linear_fetch();
+              end
            end else begin
               try_issue_queued_decode_preserve_state(!do_atomic,
                                                      !write_back_fp_valid, write_back_register,
