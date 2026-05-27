@@ -642,10 +642,9 @@ module smolrv64(input wire        clock,
 // to the backend FSM for this patch — those resources are shared with the
 // load/store path and require arbitration that is out of scope here.
 `define F_IDLE                  0  // no fetch in flight
-`define F_FETCH_REQ             1  // frontend command armed; advance to buf check
-`define F_FETCH_BUF_CHECK       2  // latch frontend_rsp_* into f_latched_*
-`define F_FETCH_BUF_USE         3  // on hit, enqueue rf_decode; on miss, hand to backend
-`define F_LAST_STATE            3
+`define F_FETCH_BUF_CHECK       1  // latch frontend_rsp_* into f_latched_*
+`define F_FETCH_BUF_USE         2  // on hit, enqueue rf_decode; on miss, hand to backend
+`define F_LAST_STATE            2
 
 // ex_state: scaffolding for the back-half pipeline split. Eventually owns
 // S_EXECUTE / S_EXECUTE2 / S_BRANCH_RESOLVE (and the various memory/EX
@@ -4705,7 +4704,6 @@ module smolrv64(input wire        clock,
               f_state <= `F_FETCH_BUF_CHECK;
            end
         end
-        `F_FETCH_REQ: ;  // unused
         `F_FETCH_BUF_CHECK: begin
            // Latch the frontend's cache-buffer response AND the cmd context
            // it corresponds to. Backend may mutate frontend_cmd_* in any
