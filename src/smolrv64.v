@@ -4489,6 +4489,17 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_fp_value_linear_fetch;
+      input [ 4:0] retire_rd;
+      input [63:0] retire_value;
+      begin
+         write_back_fp_valid    = 1;
+         write_back_fp_register = retire_rd;
+         write_back_fp_value    <= retire_value;
+         retire_fp_pending_linear_fetch(retire_rd);
+      end
+   endtask
+
    task retire_tagged_wb_linear_fetch;
       input       pending_fp_valid;
       input [4:0] pending_rd;
@@ -6216,41 +6227,35 @@ module smolrv64(input wire        clock,
                    end
                    // FSGNJ/N/X .S — NaN-box-check operands; NaN-box result.
                    7'b0010000: begin
-                      write_back_fp_valid    = 1;
-                      write_back_fp_register = ex_rd;
                       case (ex_insn[14:12])
-                        3'b000: write_back_fp_value <= {32'hffffffff, f2_s[31],             f1_s[30:0]};
-                        3'b001: write_back_fp_value <= {32'hffffffff, ~f2_s[31],            f1_s[30:0]};
-                        3'b010: write_back_fp_value <= {32'hffffffff, f2_s[31] ^ f1_s[31],  f1_s[30:0]};
+                        3'b000: retire_fp_value_linear_fetch(
+                           ex_rd, {32'hffffffff, f2_s[31], f1_s[30:0]});
+                        3'b001: retire_fp_value_linear_fetch(
+                           ex_rd, {32'hffffffff, ~f2_s[31], f1_s[30:0]});
+                        3'b010: retire_fp_value_linear_fetch(
+                           ex_rd, {32'hffffffff, f2_s[31] ^ f1_s[31], f1_s[30:0]});
                         default: begin
-                           write_back_fp_valid = 0;
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
                            tval = ex_insn;
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (ex_insn[14:12] < 3) begin
-                         retire_fp_pending_linear_fetch(write_back_fp_register);
-                      end
                    end
                    // FSGNJ/N/X .D — no boxing check; 64-bit direct.
                    7'b0010001: begin
-                      write_back_fp_valid    = 1;
-                      write_back_fp_register = ex_rd;
                       case (ex_insn[14:12])
-                        3'b000: write_back_fp_value <= {f2[63],         f1[62:0]};
-                        3'b001: write_back_fp_value <= {~f2[63],        f1[62:0]};
-                        3'b010: write_back_fp_value <= {f2[63] ^ f1[63], f1[62:0]};
+                        3'b000: retire_fp_value_linear_fetch(
+                           ex_rd, {f2[63], f1[62:0]});
+                        3'b001: retire_fp_value_linear_fetch(
+                           ex_rd, {~f2[63], f1[62:0]});
+                        3'b010: retire_fp_value_linear_fetch(
+                           ex_rd, {f2[63] ^ f1[63], f1[62:0]});
                         default: begin
-                           write_back_fp_valid = 0;
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
                            tval = ex_insn;
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (ex_insn[14:12] < 3) begin
-                         retire_fp_pending_linear_fetch(write_back_fp_register);
-                      end
                    end
                    // FEQ.S / FLT.S / FLE.S: integer rd; NV flag on NaN per op.
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
@@ -6398,10 +6403,7 @@ module smolrv64(input wire        clock,
                    end
                    // FMV.W.X (rs2=0, rm=0): NaN-box s1[31:0] into f[rd].
                    7'b1111000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      write_back_fp_valid    = 1;
-                      write_back_fp_register = ex_rd;
-                      write_back_fp_value    <= {32'hffffffff, s1[31:0]};
-                      retire_fp_pending_linear_fetch(write_back_fp_register);
+                      retire_fp_value_linear_fetch(ex_rd, {32'hffffffff, s1[31:0]});
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6409,10 +6411,7 @@ module smolrv64(input wire        clock,
                    end
                    // FMV.D.X (rs2=0, rm=0): full 64-bit move.
                    7'b1111001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      write_back_fp_valid    = 1;
-                      write_back_fp_register = ex_rd;
-                      write_back_fp_value    <= s1;
-                      retire_fp_pending_linear_fetch(write_back_fp_register);
+                      retire_fp_value_linear_fetch(ex_rd, s1);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
