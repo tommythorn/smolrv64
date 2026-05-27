@@ -609,7 +609,6 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
-`define S_TLB_HIT              39  // route the registered TLB hit result
 `define S_TLB_START_FETCH      40  // start instruction-fetch translation after fetch miss decision
 `define S_TLB_START_FETCH_HALF 41  // start cross-page instruction-fetch translation
 `define S_PTW_START            42  // start PTW after TLB miss decision
@@ -619,7 +618,6 @@ module smolrv64(input wire        clock,
 `define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
 `define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
-`define S_TLB_DECIDE           49  // consume registered TLB hit decision
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
 `define S_FRONTEND_MISS_WAIT   51  // wait for speculative frontend cache miss after backend retire
 `define S_HANDLE_CSR_COMMIT    52  // retire registered CSR readback after CSR side effects
@@ -1574,7 +1572,6 @@ module smolrv64(input wire        clock,
            `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
-           `S_TLB_HIT:               state_name = "TLB_HIT";
            `S_TLB_START_FETCH:       state_name = "TLB_START_FETCH";
            `S_TLB_START_FETCH_HALF:  state_name = "TLB_START_FETCH_HALF";
            `S_PTW_START:             state_name = "PTW_START";
@@ -1584,7 +1581,6 @@ module smolrv64(input wire        clock,
            `S_FETCH_BUF_CHECK:       state_name = "FETCH_BUF_CHECK";
            `S_FETCH_BUF_USE:         state_name = "FETCH_BUF_USE";
            `S_MULDIV_START:          state_name = "MULDIV_START";
-           `S_TLB_DECIDE:            state_name = "TLB_DECIDE";
            `S_FETCH_REQ:             state_name = "FETCH_REQ";
            `S_FRONTEND_MISS_WAIT:    state_name = "FRONTEND_MISS_WAIT";
            `S_HANDLE_CSR_COMMIT:     state_name = "HANDLE_CSR_COMMIT";
@@ -2786,11 +2782,6 @@ module smolrv64(input wire        clock,
    reg         tlb_req_sum;
    reg         tlb_req_mxr;
    reg [ 4:0]  tlb_req_return;
-   reg [63:0]  tlb_4k_hit_pa;
-   reg [63:0]  tlb_2m_hit_pa;
-   reg [63:0]  tlb_hit_pa;
-   reg         tlb_latched_4k_hit = 0;
-   reg         tlb_latched_2m_hit = 0;
    reg         hpm_tlb_insert_4k_pulse = 0;
    reg         hpm_tlb_insert_2m_pulse = 0;
    reg         hpm_tlb_evict_4k_pulse = 0;
@@ -2895,10 +2886,10 @@ module smolrv64(input wire        clock,
                      tlb_2m_rd_satp_key == tlb_current_satp_key &&
                      tlb_2m_rd_ctx == tlb_req_ctx;
    wire hpm_tlb_lookup_pulse = state == `S_TLB_LOOKUP;
-   wire hpm_tlb_hit_pulse = state == `S_TLB_DECIDE && (tlb_latched_4k_hit || tlb_latched_2m_hit);
-   wire hpm_tlb_miss_pulse = state == `S_TLB_DECIDE && !(tlb_latched_4k_hit || tlb_latched_2m_hit);
-   wire hpm_tlb_hit_4k_pulse = state == `S_TLB_DECIDE && tlb_latched_4k_hit;
-   wire hpm_tlb_hit_2m_pulse = state == `S_TLB_DECIDE && !tlb_latched_4k_hit && tlb_latched_2m_hit;
+   wire hpm_tlb_hit_pulse = state == `S_TLB_CHECK && (tlb_4k_hit || tlb_2m_hit);
+   wire hpm_tlb_miss_pulse = state == `S_TLB_CHECK && !(tlb_4k_hit || tlb_2m_hit);
+   wire hpm_tlb_hit_4k_pulse = state == `S_TLB_CHECK && tlb_4k_hit;
+   wire hpm_tlb_hit_2m_pulse = state == `S_TLB_CHECK && !tlb_4k_hit && tlb_2m_hit;
 
    smolrv64_sdpram #(
       .ADDR_WIDTH(`TLB_4K_INDEX_BITS),
@@ -7883,26 +7874,14 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_CHECK: begin
-           tlb_latched_4k_hit <= tlb_4k_hit;
-           tlb_latched_2m_hit <= tlb_2m_hit;
-           tlb_4k_hit_pa <= {tlb_4k_rd_pbase, tlb_req_va[11:0]};
-           tlb_2m_hit_pa <= {tlb_2m_rd_pbase, tlb_req_va[20:0]};
-           state <= `S_TLB_DECIDE;
-        end
-
-        `S_TLB_DECIDE: begin
-           if (tlb_latched_4k_hit || tlb_latched_2m_hit) begin
-              tlb_hit_pa <= tlb_latched_4k_hit ? tlb_4k_hit_pa : tlb_2m_hit_pa;
-              state <= `S_TLB_HIT;
+           if (tlb_4k_hit || tlb_2m_hit) begin
+              route_translated_addr(tlb_4k_hit ? {tlb_4k_rd_pbase, tlb_req_va[11:0]} :
+                                                 {tlb_2m_rd_pbase, tlb_req_va[20:0]},
+                                    tlb_4k_hit ? tlb_4k_rd_perm : tlb_2m_rd_perm,
+                                    tlb_req_return);
            end else begin
               state <= `S_PTW_START;
            end
-        end
-
-        `S_TLB_HIT: begin
-           route_translated_addr(tlb_hit_pa,
-                                 tlb_latched_4k_hit ? tlb_4k_rd_perm : tlb_2m_rd_perm,
-                                 tlb_req_return);
         end
 
         `S_PTW_START: begin
@@ -8553,11 +8532,6 @@ module smolrv64(input wire        clock,
          tlb_insert_2m_data <= 0;
          ptw_route_pa      <= 0;
          ptw_route_return  <= 0;
-         tlb_4k_hit_pa     <= 0;
-         tlb_2m_hit_pa     <= 0;
-         tlb_hit_pa        <= 0;
-         tlb_latched_4k_hit <= 0;
-         tlb_latched_2m_hit <= 0;
          hpm_tlb_insert_4k_pulse <= 0;
          hpm_tlb_insert_2m_pulse <= 0;
          hpm_tlb_evict_4k_pulse <= 0;
