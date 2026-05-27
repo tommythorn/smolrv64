@@ -559,7 +559,7 @@ module smolrv64(input wire        clock,
 // overlapped with FETCH1 (a very modest consession to performance).
 //
 // All traps and interrupt go to EXCEPTION.  Loads go to LOAD_ALIGN,
-// and possibly to MMIO_READ and MMIO_ALIGN.  AMOs go through
+// and possibly to MMIO_ALIGN.  AMOs go through
 // LOAD_ALIGN, AMO, and STORE.
 //
 // CSR handling is factored out of EXECUTE into its own state, as are
@@ -572,7 +572,6 @@ module smolrv64(input wire        clock,
 `define S_EXCEPTION      4
 
 `define S_LOAD_ALIGN     5
-`define S_MMIO_READ      6
 `define S_MMIO_ALIGN     7
 `define S_AMO            8
 
@@ -1534,7 +1533,6 @@ module smolrv64(input wire        clock,
            `S_EXECUTE:               state_name = "EXECUTE";
            `S_EXCEPTION:             state_name = "EXCEPTION";
            `S_LOAD_ALIGN:            state_name = "LOAD_ALIGN";
-           `S_MMIO_READ:             state_name = "MMIO_READ";
            `S_MMIO_ALIGN:            state_name = "MMIO_ALIGN";
            `S_AMO:                   state_name = "AMO";
            `S_STORE:                 state_name = "STORE";
@@ -3039,7 +3037,6 @@ module smolrv64(input wire        clock,
            `S_RF2,
            `S_RF3,
            `S_LOAD_ALIGN,
-           `S_MMIO_READ,
            `S_MMIO_ALIGN,
            `S_AMO,
            `S_STORE,
@@ -6933,7 +6930,7 @@ module smolrv64(input wire        clock,
 `ifdef TRACE_MMIO
                  $display("%05d  MMIO READ FROM %x/%x", $time, mem_addr, load_size_lg2);
 `endif
-                 state <= `S_MMIO_READ;
+                 state <= `S_MMIO_ALIGN;
                  mmio_address = mem_addr;
                  mmio_read = 1;
                  mmio_timeout_tval <= mem_va;
@@ -7057,8 +7054,6 @@ module smolrv64(input wire        clock,
            endcase
            finish_load_writeback();
         end
-
-        `S_MMIO_READ: state <= `S_MMIO_ALIGN;
 
         `S_MMIO_ALIGN: begin
            if (mmio_readdatavalid) begin
