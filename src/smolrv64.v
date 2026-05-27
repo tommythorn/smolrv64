@@ -4419,6 +4419,13 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_no_wb_linear_fetch;
+      begin
+         try_prepare_retire_id_no_pending();
+         retire_linear_fetch();
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -6637,13 +6644,13 @@ module smolrv64(input wire        clock,
                  state <= `S_CBO_WAIT;
               end
            end else begin
-              retire_linear_fetch();
+              retire_no_wb_linear_fetch();
            end
         end
 
         `S_CBO_WAIT: begin
            if (cache_cbo_done) begin
-              retire_linear_fetch();
+              retire_no_wb_linear_fetch();
            end else begin
               try_issue_queued_decode_preserve_state(1'b1,
                                                      1'b0, 5'd0,
@@ -6658,7 +6665,7 @@ module smolrv64(input wire        clock,
               start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_STORE);
            end else if (phys_region(mem_addr) == `REGION_UART) begin
               translated <= 0;
-              retire_linear_fetch();
+              retire_no_wb_linear_fetch();
               reservation <= ~0;
 
               // Keep UART writes on the original store cycle; only BRAM writes
@@ -6716,8 +6723,7 @@ module smolrv64(input wire        clock,
 
         `S_STORE_COMMIT: begin
            translated <= 0;
-           try_prepare_retire_id_no_pending();
-           retire_linear_fetch();
+           retire_no_wb_linear_fetch();
            reservation <= ~0;
 
 `ifdef RISCV_TESTS
@@ -8209,8 +8215,7 @@ module smolrv64(input wire        clock,
               if (dram_store_split) begin
                  state <= `S_DRAM_STORE2;
               end else begin
-                 try_prepare_retire_id_no_pending();
-                 retire_linear_fetch();
+                 retire_no_wb_linear_fetch();
               end
            end else begin
               try_issue_queued_decode_preserve_state(1'b1,
