@@ -4059,6 +4059,42 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_prepare_retire_id_int_pending;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              1'b1, pending_rd,
+                                              1'b0, 5'd0);
+      end
+   endtask
+
+   task try_prepare_retire_id_fp_pending;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              1'b0, 5'd0,
+                                              1'b1, pending_rd);
+      end
+   endtask
+
+   task try_prepare_retire_id_current_wb;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              !write_back_fp_valid, write_back_register,
+                                              write_back_fp_valid, write_back_fp_register);
+      end
+   endtask
+
+   task try_prepare_retire_id_tagged_wb;
+      input       pending_fp_valid;
+      input [4:0] pending_rd;
+      begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              !pending_fp_valid, pending_rd,
+                                              pending_fp_valid, pending_rd);
+      end
+   endtask
+
    function frontend_physical_fetch_ok;
       input [63:0] fetch_pc;
       begin
@@ -4364,9 +4400,7 @@ module smolrv64(input wire        clock,
    task retire_int_value_prepared_fetch;
       input [63:0] retire_value;
       begin
-         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                              1'b1, write_back_register,
-                                              1'b0, 5'd0);
+         try_prepare_retire_id_int_pending(write_back_register);
          write_back_value <= retire_value;
          retire_prepared_fetch();
       end
@@ -6190,9 +6224,7 @@ module smolrv64(input wire        clock,
                         end
                       endcase
                       if (ex_insn[14:12] < 3) begin
-                         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                              1'b0, 5'd0,
-                                                              1'b1, write_back_fp_register);
+                         try_prepare_retire_id_fp_pending(write_back_fp_register);
                          retire_linear_fetch();
                       end
                    end
@@ -6212,9 +6244,7 @@ module smolrv64(input wire        clock,
                         end
                       endcase
                       if (ex_insn[14:12] < 3) begin
-                         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                              1'b0, 5'd0,
-                                                              1'b1, write_back_fp_register);
+                         try_prepare_retire_id_fp_pending(write_back_fp_register);
                          retire_linear_fetch();
                       end
                    end
@@ -6407,9 +6437,7 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= {32'hffffffff, s1[31:0]};
-                      try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                           1'b0, 5'd0,
-                                                           1'b1, write_back_fp_register);
+                      try_prepare_retire_id_fp_pending(write_back_fp_register);
                       retire_linear_fetch();
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6421,9 +6449,7 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= s1;
-                      try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                           1'b0, 5'd0,
-                                                           1'b1, write_back_fp_register);
+                      try_prepare_retire_id_fp_pending(write_back_fp_register);
                       retire_linear_fetch();
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6520,9 +6546,7 @@ module smolrv64(input wire        clock,
         `S_EXECUTE2: begin : execute2_stage
            if (execute_res_valid) begin
               // write_back_value compute moved to case(ex_state) EX_EXECUTE2.
-              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                   !write_back_fp_valid, write_back_register,
-                                                   write_back_fp_valid, write_back_fp_register);
+              try_prepare_retire_id_current_wb();
               execute_res_valid <= 0;
               retire_linear_fetch();
            end else begin
@@ -6532,9 +6556,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_FP_INT_COMMIT: begin
-           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                !write_back_fp_valid, write_back_register,
-                                                write_back_fp_valid, write_back_fp_register);
+           try_prepare_retire_id_current_wb();
            write_back_value <= fp_int_result;
            fflags = fflags | fp_int_fflags;
            retire_linear_fetch();
@@ -6576,9 +6598,7 @@ module smolrv64(input wire        clock,
                     write_back_value    <= cvfpu_result;
                  end
                  fflags = fflags | cvfpu_fflags;
-                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                      !cvfpu_write_fp, cvfpu_tag_out[4:0],
-                                                      cvfpu_write_fp, cvfpu_tag_out[4:0]);
+                 try_prepare_retire_id_tagged_wb(cvfpu_write_fp, cvfpu_tag_out[4:0]);
                  retire_linear_fetch();
               end else begin
                  state <= `S_CVFPU_WAIT;
@@ -6597,9 +6617,7 @@ module smolrv64(input wire        clock,
                  write_back_value    <= cvfpu_result;
               end
               fflags = fflags | cvfpu_fflags;
-              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                   !cvfpu_write_fp, cvfpu_tag_out[4:0],
-                                                   cvfpu_write_fp, cvfpu_tag_out[4:0]);
+              try_prepare_retire_id_tagged_wb(cvfpu_write_fp, cvfpu_tag_out[4:0]);
               retire_linear_fetch();
            end else begin
               try_issue_queued_decode_preserve_state(1'b1,
@@ -7513,9 +7531,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_HANDLE_CSR_COMMIT: begin
-           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                !write_back_fp_valid, write_back_register,
-                                                write_back_fp_valid, write_back_fp_register);
+           try_prepare_retire_id_current_wb();
            write_back_value <= csr_read_result;
            execute_res_valid <= 0;
            retire_prepared_fetch();
@@ -7781,9 +7797,7 @@ module smolrv64(input wire        clock,
                    write_back_value = muldiv_p[63:0];
               end
 
-              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                   1'b1, write_back_register,
-                                                   1'b0, 5'd0);
+              try_prepare_retire_id_int_pending(write_back_register);
               retire_linear_fetch();
            end
         end
@@ -7809,9 +7823,7 @@ module smolrv64(input wire        clock,
               if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
 
-              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                   1'b1, write_back_register,
-                                                   1'b0, 5'd0);
+              try_prepare_retire_id_int_pending(write_back_register);
               retire_linear_fetch();
            end
         end
@@ -8082,9 +8094,7 @@ module smolrv64(input wire        clock,
                     if (do_atomic)
                        state <= `S_AMO;
                     else begin
-                       try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                            !write_back_fp_valid, write_back_register,
-                                                            write_back_fp_valid, write_back_fp_register);
+                       try_prepare_retire_id_current_wb();
                        retire_linear_fetch();
                     end
                  end else begin
@@ -8115,9 +8125,7 @@ module smolrv64(input wire        clock,
                  if (do_atomic)
                     state <= `S_AMO;
                  else begin
-                    try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                         !write_back_fp_valid, write_back_register,
-                                                         write_back_fp_valid, write_back_fp_register);
+                    try_prepare_retire_id_current_wb();
                     retire_linear_fetch();
                  end
               end
@@ -8148,9 +8156,7 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                  state <= `S_AMO;
               else begin
-                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
-                                                      !write_back_fp_valid, write_back_register,
-                                                      write_back_fp_valid, write_back_fp_register);
+                 try_prepare_retire_id_current_wb();
                  retire_linear_fetch();
               end
            end else begin
