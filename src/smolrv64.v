@@ -3558,15 +3558,19 @@ module smolrv64(input wire        clock,
 
    function id_no_pending_wb_hazard;
       input       pending_int_valid;
-      input [4:0] pending_rd;
+      input [4:0] pending_int_rd;
       input       pending_fp_valid;
       input [4:0] pending_fp_rd;
+      reg         id_uses_fp_rs3;
       begin
+         id_uses_fp_rs3 = id_insn[6:4] == 3'b100 && id_insn[1:0] == 2'b11;
          id_no_pending_wb_hazard =
-            (!pending_int_valid || pending_rd == 0 ||
-             (id_rs1 != pending_rd && id_rs2 != pending_rd)) &&
+            (!pending_int_valid || pending_int_rd == 0 ||
+             (id_rs1 != pending_int_rd && id_rs2 != pending_int_rd)) &&
             (!pending_fp_valid ||
-             (id_rs1 != pending_fp_rd && id_rs2 != pending_fp_rd));
+             (id_rs1 != pending_fp_rd &&
+              id_rs2 != pending_fp_rd &&
+              (!id_uses_fp_rs3 || id_insn[31:27] != pending_fp_rd)));
       end
    endfunction
 
@@ -8006,11 +8010,69 @@ module smolrv64(input wire        clock,
            state        <= `S_PTW_READ;
         end
 
-        `S_DRAM_LOAD_WAIT: if (dram_readdatavalid) begin
-           if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
-              if (dram_readdata_next_valid) begin : dram_load_cross_cached
+        `S_DRAM_LOAD_WAIT: begin
+           if (dram_readdatavalid) begin
+              if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
+                 if (dram_readdata_next_valid) begin : dram_load_cross_cached
+                    reg [127:0] combo;
+                    combo = {dram_readdata_next, dram_readdata} >> (mem_addr[2:0] * 8);
+                    case (load_size_lg2)
+                      0: write_back_value = combo[7:0];
+                      1: write_back_value = combo[15:0];
+                      2: write_back_value = combo[31:0];
+                      3: write_back_value = combo[63:0];
+                      4: write_back_value = {{56{combo[7]}},  combo[7:0]};
+                      5: write_back_value = {{48{combo[15]}}, combo[15:0]};
+                      6: write_back_value = {{32{combo[31]}}, combo[31:0]};
+                      default: write_back_value = 0;
+                    endcase
+                    finish_load_writeback();
+                    if (do_atomic)
+                       state <= `S_AMO;
+                    else
+                       retire_linear_fetch();
+                 end else begin
+                    // Access crosses a cache-line boundary and the second line
+                    // missed during the parallel lookup; request it only now.
+                    dram_latched    <= dram_readdata;
+                    dram_addr <= mem_addr[30:3] + 1;
+                    dram_va   <= {mem_va[63:3], 3'b000} + 64'd8;
+                    dram_asid <= mem_asid;
+                    dram_perm <= mem_perm;
+                    dram_ctx  <= mem_ctx;
+                    dram_read       <= 1;
+                    state           <= `S_DRAM_LOAD2_WAIT;
+                 end
+              end else begin
+                 aligned = dram_readdata >> (mem_addr[2:0] * 8);
+                 case (load_size_lg2)
+                   0: write_back_value = aligned[7:0];
+                   1: write_back_value = aligned[15:0];
+                   2: write_back_value = aligned[31:0];
+                   3: write_back_value = aligned[63:0];
+                   4: write_back_value = {{56{aligned[7]}},  aligned[7:0]};
+                   5: write_back_value = {{48{aligned[15]}}, aligned[15:0]};
+                   6: write_back_value = {{32{aligned[31]}}, aligned[31:0]};
+                   default: write_back_value = 0;
+                 endcase
+                 finish_load_writeback();
+                 if (do_atomic)
+                    state <= `S_AMO;
+                 else
+                    retire_linear_fetch();
+              end
+           end else begin
+              try_issue_queued_decode_preserve_state(!do_atomic,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
+           end
+        end
+
+        `S_DRAM_LOAD2_WAIT: begin
+           if (dram_readdatavalid) begin
+              begin : dram_load2
                  reg [127:0] combo;
-                 combo = {dram_readdata_next, dram_readdata} >> (mem_addr[2:0] * 8);
+                 combo = {dram_readdata, dram_latched} >> (mem_addr[2:0] * 8);
                  case (load_size_lg2)
                    0: write_back_value = combo[7:0];
                    1: write_back_value = combo[15:0];
@@ -8021,63 +8083,17 @@ module smolrv64(input wire        clock,
                    6: write_back_value = {{32{combo[31]}}, combo[31:0]};
                    default: write_back_value = 0;
                  endcase
-              finish_load_writeback();
-              if (do_atomic)
-                 state <= `S_AMO;
-                 else
-                    retire_linear_fetch();
-              end else begin
-                 // Access crosses a cache-line boundary and the second line
-                 // missed during the parallel lookup; request it only now.
-                 dram_latched    <= dram_readdata;
-                 dram_addr <= mem_addr[30:3] + 1;
-                 dram_va   <= {mem_va[63:3], 3'b000} + 64'd8;
-                 dram_asid <= mem_asid;
-                 dram_perm <= mem_perm;
-                 dram_ctx  <= mem_ctx;
-                 dram_read       <= 1;
-                 state           <= `S_DRAM_LOAD2_WAIT;
               end
-           end else begin
-              aligned = dram_readdata >> (mem_addr[2:0] * 8);
-              case (load_size_lg2)
-                0: write_back_value = aligned[7:0];
-                1: write_back_value = aligned[15:0];
-                2: write_back_value = aligned[31:0];
-                3: write_back_value = aligned[63:0];
-                4: write_back_value = {{56{aligned[7]}},  aligned[7:0]};
-                5: write_back_value = {{48{aligned[15]}}, aligned[15:0]};
-                6: write_back_value = {{32{aligned[31]}}, aligned[31:0]};
-                default: write_back_value = 0;
-              endcase
               finish_load_writeback();
               if (do_atomic)
                  state <= `S_AMO;
               else
                  retire_linear_fetch();
+           end else begin
+              try_issue_queued_decode_preserve_state(!do_atomic,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
            end
-        end
-
-        `S_DRAM_LOAD2_WAIT: if (dram_readdatavalid) begin
-           begin : dram_load2
-              reg [127:0] combo;
-              combo = {dram_readdata, dram_latched} >> (mem_addr[2:0] * 8);
-              case (load_size_lg2)
-                0: write_back_value = combo[7:0];
-                1: write_back_value = combo[15:0];
-                2: write_back_value = combo[31:0];
-                3: write_back_value = combo[63:0];
-                4: write_back_value = {{56{combo[7]}},  combo[7:0]};
-                5: write_back_value = {{48{combo[15]}}, combo[15:0]};
-                6: write_back_value = {{32{combo[31]}}, combo[31:0]};
-                default: write_back_value = 0;
-              endcase
-           end
-           finish_load_writeback();
-           if (do_atomic)
-              state <= `S_AMO;
-           else
-              retire_linear_fetch();
         end
 
         `S_DRAM_STORE_WAIT: if (dram_write_ready) begin
