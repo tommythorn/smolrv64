@@ -617,8 +617,7 @@ module smolrv64(input wire        clock,
 `define S_FP_INT_COMMIT        53  // retire staged FP result for integer register writes
 `define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
-`define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
-`define S_LAST_STATE           57  // update state register width accordingly
+`define S_LAST_STATE           55  // update state register width accordingly
 
 // f_state: the free-running frontend FSM. Drives the cache-hit fetch path
 // (FETCH_REQ -> FETCH_BUF_CHECK -> FETCH_BUF_USE -> enqueue to rf_decode_*)
@@ -8188,14 +8187,6 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_BUS_TIMEOUT: begin
-           cause_intr = 0;
-           cause = bus_timeout_cause;
-           tval = bus_timeout_tval;
-           write_back_register = 0;
-           state <= `S_EXCEPTION;
-        end
-
       endcase
 `ifdef PC_TRACE
       end
@@ -8294,7 +8285,11 @@ module smolrv64(input wire        clock,
 `endif
                frontend_miss_valid <= 0;
                frontend_miss_done <= 0;
-               state <= `S_BUS_TIMEOUT;
+               cause_intr = 0;
+               cause = bus_timeout_cause;
+               tval = bus_timeout_tval;
+               write_back_register = 0;
+               state <= `S_EXCEPTION;
             end
          end else
             bus_timeout_ctr <= 0;
