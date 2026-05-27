@@ -747,9 +747,6 @@ module smolrv64(input wire        clock,
    // retires, not the extra S_FETCH1 visits introduced by F_FETCH_BUF_USE
    // routing fetches through the queue.
    reg         retire_now_q = 0;
-`ifdef SIMULATE
-   reg [63:0]  f_consumed_hit_count = 0; // sanity: counts cycles f_consumed_hit fired
-`endif
    reg         core_reset_pending = 0;
    wire        core_reset_home;
    wire        core_reset_now;
@@ -4727,9 +4724,6 @@ module smolrv64(input wire        clock,
                !rf_decode_full &&
                !id_valid) begin
               f_consumed_hit = 1;
-`ifdef SIMULATE
-              f_consumed_hit_count <= f_consumed_hit_count + 1;
-`endif
               latch_frontend_decode_pending(
                   f_latched_cmd_pc,
                   frontend_fallthrough_pc(f_latched_cmd_pc, f_latched_insn),
