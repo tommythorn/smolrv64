@@ -4353,13 +4353,20 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task retire_pre_exe_b;
+   task retire_int_value_prepared_fetch;
+      input [63:0] retire_value;
       begin
          try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
                                               1'b1, write_back_register,
                                               1'b0, 5'd0);
-         write_back_value <= pre_exe_b;
+         write_back_value <= retire_value;
          retire_prepared_fetch();
+      end
+   endtask
+
+   task retire_pre_exe_b;
+      begin
+         retire_int_value_prepared_fetch(pre_exe_b);
       end
    endtask
 
@@ -5318,8 +5325,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = ex_rs1;
-              write_back_value <= s1 & pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 & pre_exe_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c01) begin // C.SUB
@@ -5328,20 +5334,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = ex_rs1;
-              write_back_value <= s1 ^ pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = ex_rs1;
-              write_back_value <= s1 | pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 | pre_exe_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = ex_rs1;
-              write_back_value <= s1 & pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 & pre_exe_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h9c01) begin // C.SUBW
@@ -5470,20 +5473,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = ex_rd;
-              write_back_value <= s1 ^ pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = ex_rd;
-              write_back_value <= s1 | pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 | pre_exe_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = ex_rd;
-              write_back_value <= s1 & pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 & pre_exe_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00000033) begin // ADD
@@ -5508,8 +5508,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = ex_rd;
-              write_back_value <= s1 ^ pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00005033) begin // SRL
@@ -5522,14 +5521,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = ex_rd;
-              write_back_value <= s1 | pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 | pre_exe_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = ex_rd;
-              write_back_value <= s1 & pre_exe_b;
-              retire_prepared_fetch();
+              retire_int_value_prepared_fetch(s1 & pre_exe_b);
            end
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
