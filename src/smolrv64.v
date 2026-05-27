@@ -4510,6 +4510,37 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+`ifdef USE_CVFPU
+   task start_cvfpu_issue;
+      input [63:0] operand0;
+      input [63:0] operand1;
+      input [63:0] operand2;
+      input [ 2:0] rnd_mode;
+      input [ 3:0] op;
+      input        op_mod;
+      input [ 2:0] src_fmt;
+      input [ 2:0] dst_fmt;
+      input [ 1:0] int_fmt;
+      input [ 7:0] tag;
+      input        write_fp;
+      begin
+         cvfpu_operands[0] <= operand0;
+         cvfpu_operands[1] <= operand1;
+         cvfpu_operands[2] <= operand2;
+         cvfpu_rnd_mode    <= rnd_mode;
+         cvfpu_op          <= op;
+         cvfpu_op_mod      <= op_mod;
+         cvfpu_src_fmt     <= src_fmt;
+         cvfpu_dst_fmt     <= dst_fmt;
+         cvfpu_int_fmt     <= int_fmt;
+         cvfpu_tag_in      <= tag;
+         cvfpu_write_fp    <= write_fp;
+         cvfpu_in_valid    <= 1'b1;
+         state             <= `S_CVFPU_ISSUE;
+      end
+   endtask
+`endif
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -5929,18 +5960,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= 64'd0;
-                         cvfpu_operands[1] <= f1;
-                         cvfpu_operands[2] <= f2;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
-                         cvfpu_op_mod   <= ex_insn[27]; // 0=add, 1=sub
-                         cvfpu_src_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_dst_fmt  <= 3'd0; // fpnew_pkg::FP32
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(64'd0, f1, f2, pre_fp_rnd_mode,
+                                           4'd2, ex_insn[27],
+                                           3'd0, 3'd0, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -5957,18 +5980,10 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         cvfpu_operands[0] <= 64'd0;
-                         cvfpu_operands[1] <= f1;
-                         cvfpu_operands[2] <= f2;
-                         cvfpu_rnd_mode <= pre_fp_rnd_mode;
-                         cvfpu_op       <= 4'd2; // fpnew_pkg::ADD
-                         cvfpu_op_mod   <= ex_insn[27]; // 0=add, 1=sub
-                         cvfpu_src_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_dst_fmt  <= 3'd1; // fpnew_pkg::FP64
-                         cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-                         cvfpu_tag_in   <= {3'd0, ex_rd};
-                         cvfpu_in_valid <= 1'b1;
-                         state          <= `S_CVFPU_ISSUE;
+                         start_cvfpu_issue(64'd0, f1, f2, pre_fp_rnd_mode,
+                                           4'd2, ex_insn[27],
+                                           3'd1, 3'd1, 2'd3,
+                                           {3'd0, ex_rd}, 1'b1);
                       end
 `else
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6613,21 +6628,19 @@ module smolrv64(input wire        clock,
         end
 
         `S_CVFPU_FMA_RF3: begin
-           cvfpu_operands[0] <= f1;
-           cvfpu_operands[1] <= f2;
-           cvfpu_operands[2] <= (write_back_fp_valid &&
-                                 ex_insn[31:27] == write_back_fp_register) ?
-                                fp_writeback_data : f1_bram;
-           cvfpu_rnd_mode <= pre_fp_rnd_mode;
-           cvfpu_op       <= ex_insn[3] ? 4'd1 : 4'd0; // FNMSUB : FMADD
-           cvfpu_op_mod   <= ex_insn[2]; // add/sub variant
-           cvfpu_src_fmt  <= {2'd0, ex_insn[25]}; // FP32/FP64
-           cvfpu_dst_fmt  <= {2'd0, ex_insn[25]}; // FP32/FP64
-           cvfpu_int_fmt  <= 2'd3; // fpnew_pkg::INT64 (unused)
-           cvfpu_tag_in   <= {3'd0, ex_rd};
-           cvfpu_write_fp <= 1'b1;
-           cvfpu_in_valid <= 1'b1;
-           state          <= `S_CVFPU_ISSUE;
+           start_cvfpu_issue(f1,
+                             f2,
+                             (write_back_fp_valid &&
+                              ex_insn[31:27] == write_back_fp_register) ?
+                             fp_writeback_data : f1_bram,
+                             pre_fp_rnd_mode,
+                             ex_insn[3] ? 4'd1 : 4'd0,
+                             ex_insn[2],
+                             {2'd0, ex_insn[25]},
+                             {2'd0, ex_insn[25]},
+                             2'd3,
+                             {3'd0, ex_rd},
+                             1'b1);
         end
 
         `S_CVFPU_ISSUE: begin
