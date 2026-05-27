@@ -629,7 +629,7 @@ module smolrv64(input wire        clock,
 `define S_FP_INT_COMMIT        53  // retire staged FP result for integer register writes
 `define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
-`define S_BRANCH_RESOLVE       56  // resolve branch/JALR from registered RF operands
+`define S_BRANCH_RESOLVE       56  // legacy branch transition state
 `define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
 `define S_LAST_STATE           57  // update state register width accordingly
 
@@ -3651,7 +3651,7 @@ module smolrv64(input wire        clock,
            prepare_branch_metadata(rf3_pc, rf3_next_pc, rf3_insn,
                                    rf3_s1_value, rf3_s2_value);
            if (!preserve_state)
-              state <= `S_BRANCH_RESOLVE;
+              state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
            // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
@@ -4917,7 +4917,7 @@ module smolrv64(input wire        clock,
               frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
               consume_frontend_miss();
            end else if (execute_req_matches_retire(npc, prv, fetch_epoch)) begin
-              state <= `S_BRANCH_RESOLVE;
+              state <= `S_EXECUTE;
            end else if (execute_req_valid) begin
               redirect_retire_fetch(npc, prv);
               state <= `S_FETCH_REQ;
