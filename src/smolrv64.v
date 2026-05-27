@@ -6501,6 +6501,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_FP_INT_COMMIT: begin
+           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                !write_back_fp_valid, write_back_register,
+                                                write_back_fp_valid, write_back_fp_register);
            write_back_value <= fp_int_result;
            fflags = fflags | fp_int_fflags;
            retire_linear_fetch();
