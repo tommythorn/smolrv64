@@ -7743,6 +7743,9 @@ module smolrv64(input wire        clock,
                    write_back_value = muldiv_p[63:0];
               end
 
+              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                   1'b1, write_back_register,
+                                                   1'b0, 5'd0);
               retire_linear_fetch();
            end
         end
@@ -7768,6 +7771,9 @@ module smolrv64(input wire        clock,
               if (muldiv_output_sext32)
                 write_back_value = {{32{write_back_value[31]}}, write_back_value[31:0]};
 
+              try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                   1'b1, write_back_register,
+                                                   1'b0, 5'd0);
               retire_linear_fetch();
            end
         end
