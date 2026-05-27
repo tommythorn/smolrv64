@@ -644,8 +644,8 @@ module smolrv64(input wire        clock,
 // ex_state: scaffolding for the back-half pipeline split. Eventually owns
 // S_EXECUTE / S_EXECUTE2 (and the various memory/EX states) so an instruction
 // can be in EX while the next is in RF.
-`define EX_IDLE                 0  // EX stage empty; nothing in flight
-`define EX_EXECUTE2             2  // compute write_back_value from exe_add / exe_sext32
+`define EX_IDLE              1'b0  // EX stage empty; nothing in flight
+`define EX_EXECUTE2          1'b1  // compute write_back_value from exe_add / exe_sext32
 
 `define MULDIV_MUL             4'd0
 `define MULDIV_MULH            4'd1
@@ -731,7 +731,7 @@ module smolrv64(input wire        clock,
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
    reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
-   reg [1:0]   ex_state = `EX_IDLE; // back-half EX FSM; see EX_* defines
+   reg         ex_state = `EX_IDLE; // back-half EX FSM; see EX_* defines
    reg         f_consumed_hit;    // 1-cycle pulse: F_FETCH_BUF_USE took the hit
    // Set by retire_linear_fetch / retire_prepared_fetch / retire_redirect_fetch
    // (and other real retires) before transitioning to S_FETCH1. Gates retire
