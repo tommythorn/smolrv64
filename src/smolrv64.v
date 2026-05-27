@@ -7475,6 +7475,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_HANDLE_CSR_COMMIT: begin
+           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                !write_back_fp_valid, write_back_register,
+                                                write_back_fp_valid, write_back_fp_register);
            write_back_value <= csr_read_result;
            execute_res_valid <= 0;
            retire_prepared_fetch();
