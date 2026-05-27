@@ -613,8 +613,7 @@ module smolrv64(input wire        clock,
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
 `define S_FETCH_REQ            50  // issue registered PC/context fetch request
 `define S_FRONTEND_MISS_WAIT   51  // wait for speculative frontend cache miss after backend retire
-`define S_HANDLE_CSR_COMMIT    52  // retire registered CSR readback after CSR side effects
-`define S_FP_INT_COMMIT        53  // retire staged FP result for integer register writes
+`define S_INT_COMMIT           52  // retire staged integer result after side effects
 `define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
 `define S_LAST_STATE           55  // update state register width accordingly
@@ -1568,8 +1567,7 @@ module smolrv64(input wire        clock,
            `S_MULDIV_START:          state_name = "MULDIV_START";
            `S_FETCH_REQ:             state_name = "FETCH_REQ";
            `S_FRONTEND_MISS_WAIT:    state_name = "FRONTEND_MISS_WAIT";
-           `S_HANDLE_CSR_COMMIT:     state_name = "HANDLE_CSR_COMMIT";
-           `S_FP_INT_COMMIT:         state_name = "FP_INT_COMMIT";
+           `S_INT_COMMIT:            state_name = "INT_COMMIT";
            `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
            `S_TLB_INSERT:            state_name = "TLB_INSERT";
            default:                  state_name = "UNKNOWN";
@@ -2361,9 +2359,9 @@ module smolrv64(input wire        clock,
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data used in S_PTW_PROCESS
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_satp_write_val;
-   reg  [63:0] csr_read_result = 0;
-   reg  [63:0] fp_int_result = 0;
-   reg  [ 4:0] fp_int_fflags = 0;
+   reg  [63:0] int_commit_result = 0;
+   reg  [ 4:0] int_commit_fflags = 0;
+   reg         int_commit_prepared_fetch = 0;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
@@ -4500,6 +4498,18 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task stage_int_commit_result;
+      input [63:0] result;
+      input [ 4:0] result_fflags;
+      input        use_prepared_fetch;
+      begin
+         int_commit_result <= result;
+         int_commit_fflags <= result_fflags;
+         int_commit_prepared_fetch <= use_prepared_fetch;
+         state <= `S_INT_COMMIT;
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -6294,9 +6304,9 @@ module smolrv64(input wire        clock,
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_s(ex_insn[14:12], f1_s, f2_s);
                       write_back_register = ex_rd;
-                      fp_int_result       <= {63'd0, fcmp_result[0]};
-                      fp_int_fflags       <= fcmp_result[1] ? 5'b10000 : 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result({63'd0, fcmp_result[0]},
+                                              fcmp_result[1] ? 5'b10000 : 5'd0,
+                                              1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6306,9 +6316,9 @@ module smolrv64(input wire        clock,
                    7'b1010001: if (ex_insn[14:12] <= 3'b010) begin
                       fcmp_result = fcmp_d(ex_insn[14:12], f1, f2);
                       write_back_register = ex_rd;
-                      fp_int_result       <= {63'd0, fcmp_result[0]};
-                      fp_int_fflags       <= fcmp_result[1] ? 5'b10000 : 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result({63'd0, fcmp_result[0]},
+                                              fcmp_result[1] ? 5'b10000 : 5'd0,
+                                              1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6445,14 +6455,10 @@ module smolrv64(input wire        clock,
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
                    7'b1110000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      fp_int_result       <= {{32{f1[31]}}, f1[31:0]};
-                      fp_int_fflags       <= 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result({{32{f1[31]}}, f1[31:0]}, 5'd0, 1'b0);
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      fp_int_result       <= fclass_s(f1);
-                      fp_int_fflags       <= 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result(fclass_s(f1), 5'd0, 1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6461,14 +6467,10 @@ module smolrv64(input wire        clock,
                    // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
                    7'b1110001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      fp_int_result       <= f1;
-                      fp_int_fflags       <= 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result(f1, 5'd0, 1'b0);
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      fp_int_result       <= fclass_d(f1);
-                      fp_int_fflags       <= 5'd0;
-                      state               <= `S_FP_INT_COMMIT;
+                      stage_int_commit_result(fclass_d(f1), 5'd0, 1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6594,10 +6596,15 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_FP_INT_COMMIT: begin
-           write_back_value <= fp_int_result;
-           fflags = fflags | fp_int_fflags;
-           retire_current_wb_linear_fetch();
+        `S_INT_COMMIT: begin
+           write_back_value <= int_commit_result;
+           fflags = fflags | int_commit_fflags;
+           if (int_commit_prepared_fetch) begin
+              execute_res_valid <= 0;
+              retire_current_wb_prepared_fetch();
+           end else begin
+              retire_current_wb_linear_fetch();
+           end
         end
 
 `ifdef USE_CVFPU
@@ -7151,7 +7158,9 @@ module smolrv64(input wire        clock,
 
         `S_HANDLE_CSR: begin : handle_csr_state
            reg csr_write_failure;
-           state <= `S_HANDLE_CSR_COMMIT;
+           state <= `S_INT_COMMIT;
+           int_commit_fflags <= 5'd0;
+           int_commit_prepared_fetch <= 1'b1;
            csr_access_failure = 0;
            csr_write_failure = 0;
            csr_read_val = 0;
@@ -7539,7 +7548,7 @@ module smolrv64(input wire        clock,
               endcase
            end
 
-           csr_read_result <= csr_read_val;
+           int_commit_result <= csr_read_val;
            if (csr_access_failure || csr_write_failure) begin
               cause = `TRAP_ILLEGAL_INSTRUCTION;
               state <= `S_EXCEPTION;
@@ -7551,12 +7560,6 @@ module smolrv64(input wire        clock,
            // FF values, so it is stale for one cycle after any CSR write.
            // Reuse just_xret as a generic one-cycle suppress flag.
            just_xret <= 1;
-        end
-
-        `S_HANDLE_CSR_COMMIT: begin
-           write_back_value <= csr_read_result;
-           execute_res_valid <= 0;
-           retire_current_wb_prepared_fetch();
         end
 
         `S_EXCEPTION: begin
@@ -8317,9 +8320,9 @@ module smolrv64(input wire        clock,
          csr_mcycle <= 0;
          clint_mtime <= 0;
          write_back_register <= 0;
-         fp_int_result <= 0;
-         fp_int_fflags <= 0;
-         csr_read_result <= 0;
+         int_commit_result <= 0;
+         int_commit_fflags <= 0;
+         int_commit_prepared_fetch <= 0;
          npc <= `RESET_PC;
          clear_frontend_cmd();
          frontend_cmd_epoch <= 0;
