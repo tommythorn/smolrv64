@@ -8020,9 +8020,16 @@ module smolrv64(input wire        clock,
            state                   <= `S_FETCH2_HALF;
         end
 
-        `S_DRAM_PTW_WAIT: if (ptw_direct_readdatavalid_r) begin
-           dram_latched <= ptw_direct_readdata_r;
-           state        <= `S_PTW_READ;
+        `S_DRAM_PTW_WAIT: begin
+           if (ptw_direct_readdatavalid_r) begin
+              dram_latched <= ptw_direct_readdata_r;
+              state        <= `S_PTW_READ;
+           end else begin
+              try_issue_queued_decode_preserve_state(ptw_access == 2'd1 &&
+                                                     ptw_return == `S_LOAD_ALIGN,
+                                                     !write_back_fp_valid, write_back_register,
+                                                     write_back_fp_valid, write_back_fp_register);
+           end
         end
 
         `S_DRAM_LOAD_WAIT: begin
