@@ -629,7 +629,6 @@ module smolrv64(input wire        clock,
 `define S_FP_INT_COMMIT        53  // retire staged FP result for integer register writes
 `define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
 `define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
-`define S_BRANCH_RESOLVE       56  // legacy branch transition state
 `define S_BUS_TIMEOUT          57  // enter a bus-timeout exception after timeout context is registered
 `define S_LAST_STATE           57  // update state register width accordingly
 
@@ -1597,7 +1596,6 @@ module smolrv64(input wire        clock,
            `S_FP_INT_COMMIT:         state_name = "FP_INT_COMMIT";
            `S_LOCAL_LOAD:            state_name = "LOCAL_LOAD";
            `S_TLB_INSERT:            state_name = "TLB_INSERT";
-           `S_BRANCH_RESOLVE:        state_name = "BRANCH_RESOLVE";
            default:                  state_name = "UNKNOWN";
          endcase
       end
@@ -3074,7 +3072,6 @@ module smolrv64(input wire        clock,
            `S_STORE_COMMIT,
            `S_MUL_RUNNING,
            `S_DIV_RUNNING,
-           `S_BRANCH_RESOLVE,
            `S_EXECUTE,
            `S_EXECUTE2,
            `S_DRAM_LOAD_WAIT,
@@ -5129,15 +5126,6 @@ module smolrv64(input wire        clock,
            // Legacy landing state. New load/AMO paths go directly to
            // S_LOAD_ALIGN; keep this as a defensive sink for stale states.
            state <= `S_LOAD_ALIGN;
-        end
-
-        `S_BRANCH_RESOLVE: begin
-           // Branch metadata is prepared at the RF->EX boundary. This arm is
-           // now only a transition point before S_EXECUTE.
-           if (!execute_req_valid)
-              state <= `S_FETCH1;
-           else
-              state <= `S_EXECUTE;
         end
 
         `S_EXECUTE: begin
