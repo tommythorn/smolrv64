@@ -4465,6 +4465,13 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_current_wb_linear_fetch;
+      begin
+         try_prepare_retire_id_current_wb();
+         retire_linear_fetch();
+      end
+   endtask
+
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
       input [63:0] req_pa;
@@ -6991,7 +6998,7 @@ module smolrv64(input wire        clock,
 
         `S_LOCAL_LOAD: begin
            if (!do_atomic)
-              retire_linear_fetch();
+              retire_current_wb_linear_fetch();
            if (do_atomic)
               state <= `S_AMO;
 
@@ -7113,6 +7120,8 @@ module smolrv64(input wire        clock,
 `endif
 
               finish_load_writeback();
+              if (!do_atomic)
+                 try_prepare_retire_id_current_wb();
               retire_linear_fetch();
 
               if (do_atomic) begin
@@ -8125,8 +8134,7 @@ module smolrv64(input wire        clock,
                     if (do_atomic)
                        state <= `S_AMO;
                     else begin
-                       try_prepare_retire_id_current_wb();
-                       retire_linear_fetch();
+                       retire_current_wb_linear_fetch();
                     end
                  end else begin
                     // Access crosses a cache-line boundary and the second line
@@ -8156,8 +8164,7 @@ module smolrv64(input wire        clock,
                  if (do_atomic)
                     state <= `S_AMO;
                  else begin
-                    try_prepare_retire_id_current_wb();
-                    retire_linear_fetch();
+                    retire_current_wb_linear_fetch();
                  end
               end
            end else begin
@@ -8185,8 +8192,7 @@ module smolrv64(input wire        clock,
               if (do_atomic)
                  state <= `S_AMO;
               else begin
-                 try_prepare_retire_id_current_wb();
-                 retire_linear_fetch();
+                 retire_current_wb_linear_fetch();
               end
            end else begin
               try_issue_queued_decode_current_wb(!do_atomic);
