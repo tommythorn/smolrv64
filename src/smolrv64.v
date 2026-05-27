@@ -600,8 +600,6 @@ module smolrv64(input wire        clock,
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
-`define S_FETCH1B              27  // register SRAM mem0/mem1 output before S_FETCH2 reads insn
-`define S_LOAD_LATCH           28  // legacy load-align landing state
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
@@ -1567,8 +1565,6 @@ module smolrv64(input wire        clock,
            `S_EXECUTE2:              state_name = "EXECUTE2";
            `S_PTW_PROCESS:           state_name = "PTW_PROCESS";
            `S_RF3:                   state_name = "RF3";
-           `S_FETCH1B:               state_name = "FETCH1B";
-           `S_LOAD_LATCH:            state_name = "LOAD_LATCH";
            `S_DRAM_STORE_RESP_WAIT:  state_name = "DRAM_STORE_RESP_WAIT";
            `S_DRAM_STORE_RESP_ARM:   state_name = "DRAM_STORE_RESP_ARM";
            `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
@@ -3080,7 +3076,6 @@ module smolrv64(input wire        clock,
            `S_DRAM_STORE2,
            `S_DRAM_STORE_RESP_WAIT,
            `S_DRAM_STORE_RESP_ARM,
-           `S_LOAD_LATCH,
            `S_CBO_EXEC,
            `S_CBO_WAIT,
            `S_CVFPU_ISSUE,
@@ -5114,18 +5109,6 @@ module smolrv64(input wire        clock,
            end else begin
               prepare_execute_req_from_id(1'b0);
            end
-        end
-
-        `S_FETCH1B: begin
-           // BRAM fetches now use the cache refill path.  This state is kept
-           // only as a defensive sink for stale encoded states.
-           state <= `S_FETCH1;
-        end
-
-        `S_LOAD_LATCH: begin
-           // Legacy landing state. New load/AMO paths go directly to
-           // S_LOAD_ALIGN; keep this as a defensive sink for stale states.
-           state <= `S_LOAD_ALIGN;
         end
 
         `S_EXECUTE: begin
