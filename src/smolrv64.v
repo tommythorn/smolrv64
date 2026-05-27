@@ -6600,8 +6600,13 @@ module smolrv64(input wire        clock,
         end
 
         `S_CBO_WAIT: begin
-           if (cache_cbo_done)
+           if (cache_cbo_done) begin
               retire_linear_fetch();
+           end else begin
+              try_issue_queued_decode_preserve_state(1'b1,
+                                                     1'b0, 5'd0,
+                                                     1'b0, 5'd0);
+           end
         end
 
         `S_STORE: begin
