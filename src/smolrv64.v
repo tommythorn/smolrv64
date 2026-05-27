@@ -6667,6 +6667,9 @@ module smolrv64(input wire        clock,
 
         `S_STORE_COMMIT: begin
            translated <= 0;
+           try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                1'b0, 5'd0,
+                                                1'b0, 5'd0);
            retire_linear_fetch();
            reservation <= ~0;
 
@@ -8171,6 +8174,9 @@ module smolrv64(input wire        clock,
               if (dram_store_split) begin
                  state <= `S_DRAM_STORE2;
               end else begin
+                 try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                      1'b0, 5'd0,
+                                                      1'b0, 5'd0);
                  retire_linear_fetch();
               end
            end else begin
