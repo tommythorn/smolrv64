@@ -601,7 +601,7 @@ module smolrv64(input wire        clock,
 `define S_PTW_PROCESS          25  // process PTE latched from mem1 in S_PTW_READ
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_FETCH1B              27  // register SRAM mem0/mem1 output before S_FETCH2 reads insn
-`define S_LOAD_LATCH           28  // register SRAM mem0/mem1 output before S_LOAD_ALIGN reads data
+`define S_LOAD_LATCH           28  // legacy load-align landing state
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
@@ -5137,8 +5137,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_LOAD_LATCH: begin
-           // Legacy landing state after translation.  Cacheable memory is
-           // routed in S_LOAD_ALIGN; BRAM is only a cache refill source.
+           // Legacy landing state. New load/AMO paths go directly to
+           // S_LOAD_ALIGN; keep this as a defensive sink for stale states.
            state <= `S_LOAD_ALIGN;
         end
 
@@ -5247,7 +5247,7 @@ module smolrv64(input wire        clock,
                     state <= `S_EXCEPTION;
                  end else begin
                     case (pre_mem_op)
-                       `MEMOP_LOAD: state <= `S_LOAD_LATCH;
+                       `MEMOP_LOAD: state <= `S_LOAD_ALIGN;
                        `MEMOP_STORE: begin
                           mem_wr_mask = pre_mem_wr_mask;
                           store_value = pre_mem_fp ? f2 : s2;
@@ -5255,7 +5255,7 @@ module smolrv64(input wire        clock,
                        end
                        `MEMOP_LR: begin
                           reservation <= s1;
-                          state <= `S_LOAD_LATCH;
+                          state <= `S_LOAD_ALIGN;
                        end
                        `MEMOP_SC: begin
                           if (reservation_match) begin
@@ -5269,7 +5269,7 @@ module smolrv64(input wire        clock,
                        end
                        `MEMOP_AMO: begin
                           do_atomic <= 1;
-                          state <= `S_LOAD_LATCH;
+                          state <= `S_LOAD_ALIGN;
                        end
                        default: ;
                     endcase
@@ -6860,7 +6860,7 @@ module smolrv64(input wire        clock,
         `S_LOAD_ALIGN: begin
            if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 && !translated) begin
               // Sv39 load/AMO address translation
-              start_translation(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_LATCH);
+              start_translation(mem_addr, do_atomic ? 2'd3 : 2'd1, mprv ? mpp : prv, `S_LOAD_ALIGN);
            end else begin
               if (!do_atomic) translated <= 0;
 
