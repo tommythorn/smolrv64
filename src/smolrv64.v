@@ -4355,6 +4355,9 @@ module smolrv64(input wire        clock,
 
    task retire_pre_exe_b;
       begin
+         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                              1'b1, write_back_register,
+                                              1'b0, 5'd0);
          write_back_value <= pre_exe_b;
          retire_prepared_fetch();
       end
