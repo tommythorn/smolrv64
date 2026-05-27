@@ -6183,7 +6183,12 @@ module smolrv64(input wire        clock,
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (ex_insn[14:12] < 3) retire_linear_fetch();
+                      if (ex_insn[14:12] < 3) begin
+                         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                              1'b0, 5'd0,
+                                                              1'b1, write_back_fp_register);
+                         retire_linear_fetch();
+                      end
                    end
                    // FSGNJ/N/X .D — no boxing check; 64-bit direct.
                    7'b0010001: begin
@@ -6200,7 +6205,12 @@ module smolrv64(input wire        clock,
                            state <= `S_EXCEPTION;
                         end
                       endcase
-                      if (ex_insn[14:12] < 3) retire_linear_fetch();
+                      if (ex_insn[14:12] < 3) begin
+                         try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                              1'b0, 5'd0,
+                                                              1'b1, write_back_fp_register);
+                         retire_linear_fetch();
+                      end
                    end
                    // FEQ.S / FLT.S / FLE.S: integer rd; NV flag on NaN per op.
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
@@ -6391,6 +6401,9 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= {32'hffffffff, s1[31:0]};
+                      try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                           1'b0, 5'd0,
+                                                           1'b1, write_back_fp_register);
                       retire_linear_fetch();
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -6402,6 +6415,9 @@ module smolrv64(input wire        clock,
                       write_back_fp_valid    = 1;
                       write_back_fp_register = ex_rd;
                       write_back_fp_value    <= s1;
+                      try_prepare_retire_id_preserve_state(npc, prv, fetch_epoch,
+                                                           1'b0, 5'd0,
+                                                           1'b1, write_back_fp_register);
                       retire_linear_fetch();
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
