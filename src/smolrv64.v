@@ -566,7 +566,7 @@ module smolrv64(input wire        clock,
 // multiplication and divisions.
 //
 `define S_FETCH1         0
-`define S_FETCH2         1
+`define S_FETCH2         1  // fetch translation return token; not a live FSM state
 `define S_EXECUTE        3
 
 `define S_EXCEPTION      4
@@ -1531,7 +1531,6 @@ module smolrv64(input wire        clock,
       begin
          case (s)
            `S_FETCH1:                state_name = "FETCH1";
-           `S_FETCH2:                state_name = "FETCH2";
            `S_EXECUTE:               state_name = "EXECUTE";
            `S_EXCEPTION:             state_name = "EXCEPTION";
            `S_LOAD_ALIGN:            state_name = "LOAD_ALIGN";
@@ -5167,11 +5166,6 @@ module smolrv64(input wire        clock,
            end else begin
               try_issue_queued_decode_no_pending(1'b1);
            end
-        end
-
-        `S_FETCH2: begin
-           // Cache-backed fetches arrive through S_FETCH2_DRAM.
-           state <= `S_FETCH1;
         end
 
         `S_FETCH2_DRAM: begin
