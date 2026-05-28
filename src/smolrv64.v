@@ -1965,8 +1965,6 @@ module smolrv64(input wire        clock,
 
       .icache_way0_rd_idx(cache_way0_rd_idx),
       .icache_way1_rd_idx(cache_way1_rd_idx),
-      .icache_way0_bank0_rd_idx(cache_way0_bank0_rd_idx),
-      .icache_way1_bank0_rd_idx(cache_way1_bank0_rd_idx),
       .icache_way0_next_rd_idx(cache_way0_next_rd_idx),
       .icache_way1_next_rd_idx(cache_way1_next_rd_idx),
       .icache_way0_tag_wr_en(cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all)),
@@ -9701,8 +9699,6 @@ module smolrv64_frontend #(
 
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_bank0_rd_idx,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_bank0_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_next_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_next_rd_idx,
    input  wire                         icache_way0_tag_wr_en,
@@ -9899,6 +9895,13 @@ module smolrv64_frontend #(
       select_icache_bank_data(icache_select_way, icache_select_bank);
    assign icache_selected_next_bank_rd_data =
       select_icache_bank_data(icache_select_next_way, icache_select_next_bank);
+
+   wire icache_bank0_reads_next_line =
+      icache_select_bank == 3'd7 && icache_select_next_bank == 3'd0;
+   wire [`CACHE_INDEX_BITS-1:0] icache_way0_bank0_rd_idx =
+      icache_bank0_reads_next_line ? icache_way0_next_rd_idx : icache_way0_rd_idx;
+   wire [`CACHE_INDEX_BITS-1:0] icache_way1_bank0_rd_idx =
+      icache_bank0_reads_next_line ? icache_way1_next_rd_idx : icache_way1_rd_idx;
 
    always @(posedge clock) begin
       if (reset || flush) begin
