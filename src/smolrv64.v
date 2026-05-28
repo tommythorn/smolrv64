@@ -1110,7 +1110,6 @@ module smolrv64(input wire        clock,
    wire         icache_fetch_hit;
    wire         icache_fetch_next_line_hit;
    wire [127:0] icache_fetch_window;
-   reg          icache_fetch_buf_fill = 0;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
@@ -2069,7 +2068,6 @@ module smolrv64(input wire        clock,
       .icache_req_same_line(cache_req_same_line),
       .icache_replace_way(cache_replace_way),
       .icache_vhpr_epoch(vhpr_epoch),
-      .icache_fetch_buf_fill(icache_fetch_buf_fill),
       .icache_fetch_hit(icache_fetch_hit),
       .icache_fetch_next_line_hit(icache_fetch_next_line_hit),
       .icache_fetch_window(icache_fetch_window),
@@ -8591,7 +8589,6 @@ module smolrv64(input wire        clock,
       dcache_way0_tag_wr_en <= 0;
       dcache_way1_tag_wr_en <= 0;
       icache_invalidate_valid <= 0;
-      icache_fetch_buf_fill <= 0;
 
       if (ptw_direct_read)
          ptw_direct_probe_pending <= 1;
@@ -8827,7 +8824,6 @@ module smolrv64(input wire        clock,
                  ifetch_window_r <= icache_fetch_window_q;
                  ifetch_next_valid_r <= fetch_next_valid;
                  ifetch_prediction_valid_r <= 0;
-                 icache_fetch_buf_fill <= fetch_next_valid;
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
@@ -10120,7 +10116,6 @@ module smolrv64_frontend #(
    input  wire                         icache_req_same_line,
    input  wire                         icache_replace_way,
    input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
-   input  wire                         icache_fetch_buf_fill,
    output wire                         icache_fetch_hit,
    output wire                         icache_fetch_next_line_hit,
    output wire [127:0]                 icache_fetch_window,
@@ -10297,8 +10292,6 @@ module smolrv64_frontend #(
    assign rsp_prediction_kind = predict_kind(rsp_insn);
    wire [63:0] fill_base_va = {fill_pc[63:3], 3'b000};
    wire        fill_page_ok = fill_base_va[11:0] <= 12'hff0;
-   wire [63:0] icache_fetch_base_va = {icache_req_va[63:3], 3'b000};
-   wire        icache_fetch_page_ok = icache_fetch_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
 
@@ -10562,13 +10555,6 @@ module smolrv64_frontend #(
          buf_prv        <= fill_prv;
          buf_asid       <= fill_asid;
          buf_data       <= fill_data;
-      end else if (icache_fetch_buf_fill && icache_fetch_page_ok) begin
-         buf_valid      <= 1'b1;
-         buf_base_va    <= icache_fetch_base_va;
-         buf_next_va_hi <= icache_fetch_base_va[63:4] + 60'd1;
-         buf_prv        <= icache_req_ctx[3:2];
-         buf_asid       <= icache_req_asid;
-         buf_data       <= icache_fetch_window;
       end
    end
 
