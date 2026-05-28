@@ -1784,6 +1784,26 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [`CACHE_META_BITS-1:0] cache_make_meta;
+      input dirty;
+      input valid;
+      input [TLB_ASID_BITS-1:0] asid;
+      input [CACHE_PERM_BITS-1:0] perm;
+      input [`CACHE_VTAG_BITS-1:0] vtag;
+      input [`CACHE_PHYS_TAG_BITS-1:0] ptag;
+      input [VHPR_EPOCH_BITS-1:0] epoch;
+      begin
+         cache_make_meta = 0;
+         cache_make_meta[`CACHE_DIRTY_BIT] = dirty;
+         cache_make_meta[`CACHE_VALID_BIT] = valid;
+         cache_make_meta[`CACHE_ASID_LSB +: TLB_ASID_BITS] = asid;
+         cache_make_meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS] = perm;
+         cache_make_meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS] = vtag;
+         cache_make_meta[`CACHE_PTAG_LSB +: `CACHE_PHYS_TAG_BITS] = ptag;
+         cache_make_meta[`CACHE_EPOCH_LSB +: VHPR_EPOCH_BITS] = epoch;
+      end
+   endfunction
+
    function cache_perm_allows_ctx;
       input [CACHE_PERM_BITS-1:0] perm;
       input [TLB_CTX_BITS-1:0] ctx;
@@ -1821,26 +1841,6 @@ module smolrv64(input wire        clock,
               default: cache_perm_allows_ctx = data_read_ok && pte_w && user_ok;
             endcase
          end
-      end
-   endfunction
-
-   function [`CACHE_META_BITS-1:0] cache_make_meta;
-      input dirty;
-      input valid;
-      input [TLB_ASID_BITS-1:0] asid;
-      input [CACHE_PERM_BITS-1:0] perm;
-      input [`CACHE_VTAG_BITS-1:0] vtag;
-      input [`CACHE_PHYS_TAG_BITS-1:0] ptag;
-      input [VHPR_EPOCH_BITS-1:0] epoch;
-      begin
-         cache_make_meta = 0;
-         cache_make_meta[`CACHE_DIRTY_BIT] = dirty;
-         cache_make_meta[`CACHE_VALID_BIT] = valid;
-         cache_make_meta[`CACHE_ASID_LSB +: TLB_ASID_BITS] = asid;
-         cache_make_meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS] = perm;
-         cache_make_meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS] = vtag;
-         cache_make_meta[`CACHE_PTAG_LSB +: `CACHE_PHYS_TAG_BITS] = ptag;
-         cache_make_meta[`CACHE_EPOCH_LSB +: VHPR_EPOCH_BITS] = epoch;
       end
    endfunction
 
@@ -1950,14 +1950,20 @@ module smolrv64(input wire        clock,
       .icache_way1_rd_idx(cache_way1_rd_idx),
       .icache_way0_next_rd_idx(cache_way0_next_rd_idx),
       .icache_way1_next_rd_idx(cache_way1_next_rd_idx),
-      .icache_way0_tag_wr_en(cache_way0_tag_wr_en && (cache_req_instr || cache_tag_wr_all)),
-      .icache_way1_tag_wr_en(cache_way1_tag_wr_en && (cache_req_instr || cache_tag_wr_all)),
-      .icache_tag_wr_idx(cache_tag_wr_idx),
-      .icache_tag_wr_data(cache_tag_wr_data),
-      .icache_bank_wr_en(cache_req_instr ? cache_bank_wr_en : 8'd0),
-      .icache_bank_wr_idx(cache_bank_wr_idx),
-      .icache_bank_wr_way(cache_bank_wr_way),
-      .icache_bank_wr_data(cache_bank_wr_data),
+      .icache_invalidate_valid(cache_tag_wr_all && (cache_way0_tag_wr_en || cache_way1_tag_wr_en)),
+      .icache_invalidate_way(cache_way1_tag_wr_en),
+      .icache_invalidate_idx(cache_tag_wr_idx),
+      .icache_fill_valid(cache_req_instr && cache_fill_data_valid),
+      .icache_fill_done(cache_req_instr && cache_fill_data_valid && cache_fill_beat == 3'd7),
+      .icache_fill_beat(cache_fill_beat),
+      .icache_fill_idx(cache_target_idx),
+      .icache_fill_way(cache_target_way),
+      .icache_fill_data(cache_fill_data),
+      .icache_fill_asid(cache_req_asid),
+      .icache_fill_perm(cache_req_perm),
+      .icache_fill_vtag(cache_req_vtag),
+      .icache_fill_ptag(cache_req_ptag),
+      .icache_fill_epoch(vhpr_epoch),
       .icache_req_asid(cache_req_asid),
       .icache_req_vtag(cache_req_vtag),
       .icache_req_next_vtag(cache_req_next_vtag),
@@ -9718,14 +9724,20 @@ module smolrv64_frontend #(
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_next_rd_idx,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_next_rd_idx,
-   input  wire                         icache_way0_tag_wr_en,
-   input  wire                         icache_way1_tag_wr_en,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_tag_wr_idx,
-   input  wire [`CACHE_META_BITS-1:0]  icache_tag_wr_data,
-   input  wire [7:0]                   icache_bank_wr_en,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_bank_wr_idx,
-   input  wire                         icache_bank_wr_way,
-   input  wire [63:0]                  icache_bank_wr_data,
+   input  wire                         icache_invalidate_valid,
+   input  wire                         icache_invalidate_way,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_invalidate_idx,
+   input  wire                         icache_fill_valid,
+   input  wire                         icache_fill_done,
+   input  wire [2:0]                   icache_fill_beat,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_fill_idx,
+   input  wire                         icache_fill_way,
+   input  wire [63:0]                  icache_fill_data,
+   input  wire [TLB_ASID_BITS-1:0]     icache_fill_asid,
+   input  wire [CACHE_PERM_BITS-1:0]   icache_fill_perm,
+   input  wire [`CACHE_VTAG_BITS-1:0]  icache_fill_vtag,
+   input  wire [`CACHE_PHYS_TAG_BITS-1:0] icache_fill_ptag,
+   input  wire [VHPR_EPOCH_BITS-1:0]   icache_fill_epoch,
    input  wire [TLB_ASID_BITS-1:0]     icache_req_asid,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_vtag,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_next_vtag,
@@ -9961,6 +9973,26 @@ module smolrv64_frontend #(
       end
    endfunction
 
+   function [`CACHE_META_BITS-1:0] cache_make_meta;
+      input dirty;
+      input valid;
+      input [TLB_ASID_BITS-1:0] asid;
+      input [CACHE_PERM_BITS-1:0] perm;
+      input [`CACHE_VTAG_BITS-1:0] vtag;
+      input [`CACHE_PHYS_TAG_BITS-1:0] ptag;
+      input [VHPR_EPOCH_BITS-1:0] epoch;
+      begin
+         cache_make_meta = 0;
+         cache_make_meta[`CACHE_DIRTY_BIT] = dirty;
+         cache_make_meta[`CACHE_VALID_BIT] = valid;
+         cache_make_meta[`CACHE_ASID_LSB +: TLB_ASID_BITS] = asid;
+         cache_make_meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS] = perm;
+         cache_make_meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS] = vtag;
+         cache_make_meta[`CACHE_PTAG_LSB +: `CACHE_PHYS_TAG_BITS] = ptag;
+         cache_make_meta[`CACHE_EPOCH_LSB +: VHPR_EPOCH_BITS] = epoch;
+      end
+   endfunction
+
    function cache_perm_allows_ctx;
       input [CACHE_PERM_BITS-1:0] perm;
       input [TLB_CTX_BITS-1:0] ctx;
@@ -10081,6 +10113,22 @@ module smolrv64_frontend #(
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
 
+   wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_done;
+   wire        icache_tag_wr_way = icache_invalidate_valid ? icache_invalidate_way :
+                                                            icache_fill_way;
+   wire [`CACHE_INDEX_BITS-1:0] icache_tag_wr_idx =
+      icache_invalidate_valid ? icache_invalidate_idx : icache_fill_idx;
+   wire [`CACHE_META_BITS-1:0] icache_tag_wr_data =
+      icache_invalidate_valid ? {`CACHE_META_BITS{1'b0}} :
+         cache_make_meta(1'b0, 1'b1,
+                         icache_fill_asid,
+                         icache_fill_perm,
+                         icache_fill_vtag,
+                         icache_fill_ptag,
+                         icache_fill_epoch);
+   wire [7:0] icache_bank_wr_en =
+      icache_fill_valid ? (8'd1 << icache_fill_beat) : 8'd0;
+
    wire icache_bank0_reads_next_line =
       icache_req_bank == 3'd7 && !icache_req_same_line;
    wire [`CACHE_INDEX_BITS-1:0] icache_way0_bank0_rd_idx =
@@ -10109,7 +10157,7 @@ module smolrv64_frontend #(
       .clock   ( clock ),
       .rd_addr ( icache_way0_rd_idx ),
       .rd_data ( icache_way0_tag_rd_data ),
-      .wr_en   ( icache_way0_tag_wr_en ),
+      .wr_en   ( icache_tag_wr_en && !icache_tag_wr_way ),
       .wr_addr ( icache_tag_wr_idx ),
       .wr_data ( icache_tag_wr_data )
    );
@@ -10122,7 +10170,7 @@ module smolrv64_frontend #(
       .clock   ( clock ),
       .rd_addr ( icache_way1_rd_idx ),
       .rd_data ( icache_way1_tag_rd_data ),
-      .wr_en   ( icache_way1_tag_wr_en ),
+      .wr_en   ( icache_tag_wr_en && icache_tag_wr_way ),
       .wr_addr ( icache_tag_wr_idx ),
       .wr_data ( icache_tag_wr_data )
    );
@@ -10135,7 +10183,7 @@ module smolrv64_frontend #(
       .clock   ( clock ),
       .rd_addr ( icache_way0_next_rd_idx ),
       .rd_data ( icache_way0_tag_next_rd_data ),
-      .wr_en   ( icache_way0_tag_wr_en ),
+      .wr_en   ( icache_tag_wr_en && !icache_tag_wr_way ),
       .wr_addr ( icache_tag_wr_idx ),
       .wr_data ( icache_tag_wr_data )
    );
@@ -10148,7 +10196,7 @@ module smolrv64_frontend #(
       .clock   ( clock ),
       .rd_addr ( icache_way1_next_rd_idx ),
       .rd_data ( icache_way1_tag_next_rd_data ),
-      .wr_en   ( icache_way1_tag_wr_en ),
+      .wr_en   ( icache_tag_wr_en && icache_tag_wr_way ),
       .wr_addr ( icache_tag_wr_idx ),
       .wr_data ( icache_tag_wr_data )
    );
@@ -10167,9 +10215,9 @@ module smolrv64_frontend #(
             .clock   ( clock ),
             .rd_addr ( icache_bank_gen == 0 ? icache_way0_bank0_rd_idx : icache_way0_rd_idx ),
             .rd_data ( way0_rd_data ),
-            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && !icache_bank_wr_way ),
-            .wr_addr ( icache_bank_wr_idx ),
-            .wr_data ( icache_bank_wr_data )
+            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && !icache_fill_way ),
+            .wr_addr ( icache_fill_idx ),
+            .wr_data ( icache_fill_data )
          );
 
          smolrv64_sdpram #(
@@ -10180,9 +10228,9 @@ module smolrv64_frontend #(
             .clock   ( clock ),
             .rd_addr ( icache_bank_gen == 0 ? icache_way1_bank0_rd_idx : icache_way1_rd_idx ),
             .rd_data ( way1_rd_data ),
-            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && icache_bank_wr_way ),
-            .wr_addr ( icache_bank_wr_idx ),
-            .wr_data ( icache_bank_wr_data )
+            .wr_en   ( icache_bank_wr_en[icache_bank_gen] && icache_fill_way ),
+            .wr_addr ( icache_fill_idx ),
+            .wr_data ( icache_fill_data )
          );
 
          assign icache_way0_bank_rd_data[icache_bank_gen] = way0_rd_data;
