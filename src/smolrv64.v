@@ -1110,6 +1110,12 @@ module smolrv64(input wire        clock,
    wire [63:0]  icache_lookup_data;
    wire [63:0]  icache_lookup_next_data;
    wire         icache_lookup_next_valid;
+   wire         icache_lookup_dirty;
+   wire         icache_target_way;
+   wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
+   wire         icache_target_valid;
+   wire         icache_target_dirty;
+   wire [`CACHE_PHYS_TAG_BITS-1:0] icache_target_ptag;
 
    // Frontend command/result boundary.  The backend writes frontend_cmd_* when
    // it wants the frontend to probe or restart at a PC/context; the frontend
@@ -1850,8 +1856,6 @@ module smolrv64(input wire        clock,
    reg [`CACHE_INDEX_BITS-1:0] cache_way1_next_rd_idx = 0;
    wire [`CACHE_META_BITS-1:0] cache_way0_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] cache_way1_tag_rd_data;
-   wire [`CACHE_META_BITS-1:0] cache_way0_tag_next_rd_data;
-   wire [`CACHE_META_BITS-1:0] cache_way1_tag_next_rd_data;
    reg                         cache_way0_tag_wr_en = 0;
    reg                         cache_way1_tag_wr_en = 0;
    reg                         cache_tag_wr_all = 0;
@@ -1868,10 +1872,6 @@ module smolrv64(input wire        clock,
                                                      dcache_way0_tag_rd_data;
    assign cache_way1_tag_rd_data = cache_req_instr ? icache_way1_tag_rd_data :
                                                      dcache_way1_tag_rd_data;
-   assign cache_way0_tag_next_rd_data = cache_req_instr ? icache_way0_tag_next_rd_data :
-                                                          dcache_way0_tag_next_rd_data;
-   assign cache_way1_tag_next_rd_data = cache_req_instr ? icache_way1_tag_next_rd_data :
-                                                          dcache_way1_tag_next_rd_data;
 
    wire dcache_way0_tag_hit = cache_meta_valid(dcache_way0_tag_rd_data) &&
                               cache_meta_epoch(dcache_way0_tag_rd_data) == vhpr_epoch &&
@@ -1897,13 +1897,6 @@ module smolrv64(input wire        clock,
                                    cache_meta_vtag(dcache_way1_tag_next_rd_data) == cache_req_next_vtag &&
                                    cache_perm_allows_ctx(cache_meta_perm(dcache_way1_tag_next_rd_data),
                                                          cache_req_ctx);
-
-   wire cache_way0_tag_hit = cache_req_instr ? icache_way0_tag_hit : dcache_way0_tag_hit;
-   wire cache_way1_tag_hit = cache_req_instr ? icache_way1_tag_hit : dcache_way1_tag_hit;
-   wire cache_way0_next_tag_hit = cache_req_instr ? icache_way0_next_tag_hit :
-                                                    dcache_way0_next_tag_hit;
-   wire cache_way1_next_tag_hit = cache_req_instr ? icache_way1_next_tag_hit :
-                                                    dcache_way1_next_tag_hit;
 
    function [63:0] dcache_selected_bank_data;
       input       way;
@@ -1983,6 +1976,7 @@ module smolrv64(input wire        clock,
       .icache_req_bank(cache_req_bank),
       .icache_req_next_bank(cache_req_next_bank),
       .icache_req_same_line(cache_req_same_line),
+      .icache_replace_way(cache_replace_way),
       .icache_vhpr_epoch(vhpr_epoch),
       .icache_way0_tag_rd_data(icache_way0_tag_rd_data),
       .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
@@ -1998,7 +1992,13 @@ module smolrv64(input wire        clock,
       .icache_lookup_next_hit_way(icache_lookup_next_hit_way),
       .icache_lookup_data(icache_lookup_data),
       .icache_lookup_next_data(icache_lookup_next_data),
-      .icache_lookup_next_valid(icache_lookup_next_valid)
+      .icache_lookup_next_valid(icache_lookup_next_valid),
+      .icache_lookup_dirty(icache_lookup_dirty),
+      .icache_target_way(icache_target_way),
+      .icache_target_idx(icache_target_idx),
+      .icache_target_valid(icache_target_valid),
+      .icache_target_dirty(icache_target_dirty),
+      .icache_target_ptag(icache_target_ptag)
    );
 
    function hpm_event_active;
@@ -8611,6 +8611,10 @@ module smolrv64(input wire        clock,
         CACHE_TAG_CHECK: begin : cache_tag_check
            reg target_way;
            reg [`CACHE_META_BITS-1:0] target_meta;
+           reg target_valid;
+           reg target_dirty;
+           reg [`CACHE_INDEX_BITS-1:0] target_idx;
+           reg [`CACHE_PHYS_TAG_BITS-1:0] target_ptag;
 
            cache_lookup_hit <= cache_req_instr
                               ? icache_lookup_hit
@@ -8638,21 +8642,34 @@ module smolrv64(input wire        clock,
                                      ? icache_lookup_next_valid
                                      : (cache_req_same_line ||
                                         dcache_way0_next_tag_hit || dcache_way1_next_tag_hit);
-           target_way = !cache_meta_valid(cache_way0_tag_rd_data) ? 1'b0 :
-                        !cache_meta_valid(cache_way1_tag_rd_data) ? 1'b1 :
-                        cache_meta_epoch(cache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
-                        cache_meta_epoch(cache_way1_tag_rd_data) != vhpr_epoch ? 1'b1 :
-                        cache_replace_way;
-           target_meta = target_way ? cache_way1_tag_rd_data : cache_way0_tag_rd_data;
-           cache_lookup_dirty <= (cache_way0_tag_hit || cache_way1_tag_hit)
-                                 ? (cache_way1_tag_hit ? cache_meta_dirty(cache_way1_tag_rd_data)
-                                                       : cache_meta_dirty(cache_way0_tag_rd_data))
-                                 : (cache_meta_valid(target_meta) && cache_meta_dirty(target_meta));
+           if (cache_req_instr) begin
+              target_way = icache_target_way;
+              target_valid = icache_target_valid;
+              target_dirty = icache_target_dirty;
+              target_idx = icache_target_idx;
+              target_ptag = icache_target_ptag;
+              cache_lookup_dirty <= icache_lookup_dirty;
+           end else begin
+              target_way = !cache_meta_valid(dcache_way0_tag_rd_data) ? 1'b0 :
+                           !cache_meta_valid(dcache_way1_tag_rd_data) ? 1'b1 :
+                           cache_meta_epoch(dcache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
+                           cache_meta_epoch(dcache_way1_tag_rd_data) != vhpr_epoch ? 1'b1 :
+                           cache_replace_way;
+              target_meta = target_way ? dcache_way1_tag_rd_data : dcache_way0_tag_rd_data;
+              target_valid = cache_meta_valid(target_meta);
+              target_dirty = target_valid && cache_meta_dirty(target_meta);
+              target_idx = target_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+              target_ptag = cache_meta_ptag(target_meta);
+              cache_lookup_dirty <= (dcache_way0_tag_hit || dcache_way1_tag_hit)
+                                    ? (dcache_way1_tag_hit ? cache_meta_dirty(dcache_way1_tag_rd_data)
+                                                           : cache_meta_dirty(dcache_way0_tag_rd_data))
+                                    : target_dirty;
+           end
            cache_target_way <= target_way;
-           cache_target_idx <= target_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-           cache_target_valid <= cache_meta_valid(target_meta);
-           cache_target_dirty <= cache_meta_valid(target_meta) && cache_meta_dirty(target_meta);
-           cache_target_ptag <= cache_meta_ptag(target_meta);
+           cache_target_idx <= target_idx;
+           cache_target_valid <= target_valid;
+           cache_target_dirty <= target_dirty;
+           cache_target_ptag <= target_ptag;
            cache_state <= CACHE_HIT_RESP;
         end
 
@@ -9731,6 +9748,7 @@ module smolrv64_frontend #(
    input  wire [2:0]                   icache_req_bank,
    input  wire [2:0]                   icache_req_next_bank,
    input  wire                         icache_req_same_line,
+   input  wire                         icache_replace_way,
    input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
    output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_rd_data,
@@ -9746,7 +9764,13 @@ module smolrv64_frontend #(
    output wire                         icache_lookup_next_hit_way,
    output wire [63:0]                  icache_lookup_data,
    output wire [63:0]                  icache_lookup_next_data,
-   output wire                         icache_lookup_next_valid
+   output wire                         icache_lookup_next_valid,
+   output wire                         icache_lookup_dirty,
+   output wire                         icache_target_way,
+   output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
+   output wire                         icache_target_valid,
+   output wire                         icache_target_dirty,
+   output wire [`CACHE_PHYS_TAG_BITS-1:0] icache_target_ptag
 );
    localparam [1:0] PRED_FALLTHROUGH = 2'd0;
    localparam [1:0] PRED_DIRECT      = 2'd1;
@@ -9910,6 +9934,13 @@ module smolrv64_frontend #(
       end
    endfunction
 
+   function cache_meta_dirty;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_dirty = meta[`CACHE_DIRTY_BIT];
+      end
+   endfunction
+
    function [TLB_ASID_BITS-1:0] cache_meta_asid;
       input [`CACHE_META_BITS-1:0] meta;
       begin
@@ -9921,6 +9952,13 @@ module smolrv64_frontend #(
       input [`CACHE_META_BITS-1:0] meta;
       begin
          cache_meta_vtag = meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS];
+      end
+   endfunction
+
+   function [`CACHE_PHYS_TAG_BITS-1:0] cache_meta_ptag;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_ptag = meta[`CACHE_PTAG_LSB +: `CACHE_PHYS_TAG_BITS];
       end
    endfunction
 
@@ -10012,6 +10050,26 @@ module smolrv64_frontend #(
    assign icache_lookup_next_hit = icache_way0_next_tag_hit || icache_way1_next_tag_hit;
    assign icache_lookup_next_hit_way = icache_way1_next_tag_hit;
    assign icache_lookup_next_valid = icache_req_same_line || icache_lookup_next_hit;
+
+   assign icache_target_way =
+      !cache_meta_valid(icache_way0_tag_rd_data) ? 1'b0 :
+      !cache_meta_valid(icache_way1_tag_rd_data) ? 1'b1 :
+      cache_meta_epoch(icache_way0_tag_rd_data) != icache_vhpr_epoch ? 1'b0 :
+      cache_meta_epoch(icache_way1_tag_rd_data) != icache_vhpr_epoch ? 1'b1 :
+      icache_replace_way;
+   wire [`CACHE_META_BITS-1:0] icache_target_meta =
+      icache_target_way ? icache_way1_tag_rd_data : icache_way0_tag_rd_data;
+   wire [`CACHE_META_BITS-1:0] icache_lookup_meta =
+      icache_lookup_hit_way ? icache_way1_tag_rd_data : icache_way0_tag_rd_data;
+   assign icache_lookup_dirty =
+      icache_lookup_hit ? cache_meta_dirty(icache_lookup_meta) :
+                          (icache_target_valid && icache_target_dirty);
+   assign icache_target_idx =
+      icache_target_way ? icache_way1_rd_idx : icache_way0_rd_idx;
+   assign icache_target_valid = cache_meta_valid(icache_target_meta);
+   assign icache_target_dirty =
+      icache_target_valid && cache_meta_dirty(icache_target_meta);
+   assign icache_target_ptag = cache_meta_ptag(icache_target_meta);
 
    function [63:0] select_icache_bank_data;
       input       way;
