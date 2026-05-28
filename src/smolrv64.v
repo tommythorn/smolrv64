@@ -4148,10 +4148,8 @@ module smolrv64(input wire        clock,
              id_no_pending_wb_hazard(pending_int_valid, pending_int_rd,
                                      pending_fp_valid, pending_fp_rd)) begin
             prepare_execute_req_from_id(1'b1);
-         end else if (!id_valid && rf_decode_valid && !frontend_miss_valid &&
-             rf_decode_epoch == fetch_epoch &&
-             rf_decode_pc == npc &&
-             rf_decode_prv == prv) begin
+         end else if (!id_valid && !frontend_miss_valid &&
+                      rf_decode_matches_retire(npc, prv, fetch_epoch)) begin
             launch_rf_decode_read_preserve_state();
          end
       end
@@ -4334,6 +4332,19 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function rf_decode_matches_retire;
+      input [63:0] retire_pc;
+      input [ 1:0] retire_prv;
+      input [FRONTEND_EPOCH_BITS-1:0] retire_epoch;
+      begin
+         rf_decode_matches_retire =
+            rf_decode_valid &&
+            rf_decode_pc == retire_pc &&
+            rf_decode_prv == retire_prv &&
+            rf_decode_epoch == retire_epoch;
+      end
+   endfunction
+
    function execute_req_matches_retire;
       input [63:0] retire_pc;
       input [ 1:0] retire_prv;
@@ -4477,9 +4488,7 @@ module smolrv64(input wire        clock,
 
    task retire_queued_decode_or_refetch;
       begin
-         if (rf_decode_epoch == fetch_epoch &&
-             rf_decode_pc == npc &&
-             rf_decode_prv == prv) begin
+         if (rf_decode_matches_retire(npc, prv, fetch_epoch)) begin
             insn <= rf_decode_insn;
             fetch_from_ifetch_rsp <= rf_decode_from_ifetch_rsp;
             translated <= 0;
@@ -4499,10 +4508,8 @@ module smolrv64(input wire        clock,
       output       launched;
       begin
          launched = 1'b0;
-         if (!id_valid && rf_decode_valid && !frontend_miss_valid &&
-             rf_decode_epoch == fetch_epoch &&
-             rf_decode_pc == retire_pc &&
-             rf_decode_prv == retire_prv) begin
+         if (!id_valid && !frontend_miss_valid &&
+             rf_decode_matches_retire(retire_pc, retire_prv, fetch_epoch)) begin
             launch_rf_decode_read_preserve_state();
             launched = 1'b1;
          end else if (!id_valid && rf_decode_valid && !frontend_miss_valid) begin
