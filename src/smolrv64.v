@@ -1039,15 +1039,15 @@ module smolrv64(input wire        clock,
    reg  [27:0]  cache_issue_dw_addr;
    reg          ifetch_read = 0;
    reg          dmem_read = 0;
-   reg          dram_write = 0;
-   reg  [63:0]  dram_writedata;
-   reg  [ 7:0]  dram_wstrb;          // AXI convention: 1 = write byte
+   reg          dmem_write = 0;
+   reg  [63:0]  dmem_write_data;
+   reg  [ 7:0]  dmem_write_strb;     // 1 = write byte
    wire         dmem_rsp_valid;
    wire [63:0]  dmem_rsp_data;
    wire [63:0]  dmem_rsp_next_data;
    wire         dmem_rsp_next_valid;
-   wire         dram_write_ready;    // master idle (no AW/W/B in flight)
-   wire         dram_write_done;     // write response observed for issued write
+   wire         dmem_write_ready;    // L1 cache is ready to accept a store
+   wire         dmem_write_done;     // store hit or refill/install completed
 
    reg  [63:0]  load_latched_data;        // holds first 8B chunk across states
    reg  [127:0] ifetch_latched_window = 0;
@@ -1371,7 +1371,7 @@ module smolrv64(input wire        clock,
    reg [31:0] ifetch_insn_r = 0;
    reg [63:0] ifetch_predicted_next_pc_r = `RESET_PC;
    reg [ 1:0] ifetch_prediction_kind_r = 0;
-   reg        dram_write_done_r = 0;
+   reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
    wire       cache_read_req = ifetch_read || dmem_read;
@@ -1439,7 +1439,7 @@ module smolrv64(input wire        clock,
               ((ptw_direct_addr64 ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
 
    assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
-                                !cache_read_req && !dram_write &&
+                                !cache_read_req && !dmem_write &&
                                 !mem_fill_req_valid && !mem_wb_req_valid &&
                                 !mem_read_req_valid &&
                                 !ptw_direct_read && !ptw_direct_probe_pending &&
@@ -1451,7 +1451,7 @@ module smolrv64(input wire        clock,
    wire       hpm_instret_pulse = state == `S_FETCH1 && retire_now_q;
    wire       hpm_icache_read_pulse = cache_state == CACHE_IDLE && ifetch_read;
    wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dmem_read;
-   wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dram_write;
+   wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dmem_write;
    wire       hpm_icache_hit_pulse =
               cache_state == CACHE_HIT_RESP && cache_req_instr &&
               icache_fetch_hit_q;
@@ -5010,7 +5010,7 @@ module smolrv64(input wire        clock,
       frontend_buf_fill <= 1'b0;
       ifetch_read <= 0;
       dmem_read   <= 0;
-      dram_write <= 0;
+      dmem_write <= 0;
       ptw_direct_read <= 0;
       cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
@@ -6913,9 +6913,9 @@ module smolrv64(input wire        clock,
                  cache_issue_asid    <= mem_asid;
                  cache_issue_perm    <= mem_perm;
                  cache_issue_ctx     <= mem_ctx;
-                 dram_writedata      <= wide_data[63:0];
-                 dram_wstrb          <= wide_mask[7:0];
-                 mem_wr_mask         = 0;
+                 dmem_write_data    <= wide_data[63:0];
+                 dmem_write_strb    <= wide_mask[7:0];
+                 mem_wr_mask        = 0;
                  if (|wide_mask[15:8]) begin
                     // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
                     dram2_addr        <= mem_addr[30:3] + 1;
@@ -6926,16 +6926,16 @@ module smolrv64(input wire        clock,
                     dram2_data_part   <= wide_data[127:64];
                     dram2_wstrb       <= wide_mask[15:8];
                     dram_store_split  <= 1;
-                    if (dram_write_ready) begin
-                       dram_write <= 1;
+                    if (dmem_write_ready) begin
+                       dmem_write <= 1;
                        state      <= `S_DRAM_STORE_RESP_ARM;
                     end else begin
                        state      <= `S_DRAM_STORE_WAIT;
                     end
                  end else begin
                     dram_store_split  <= 0;
-                    if (dram_write_ready) begin
-                       dram_write <= 1;
+                    if (dmem_write_ready) begin
+                       dmem_write <= 1;
                        state      <= `S_DRAM_STORE_RESP_ARM;
                     end else begin
                        state      <= `S_DRAM_STORE_WAIT;
@@ -8180,9 +8180,9 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_STORE_WAIT: begin
-           if (dram_write_ready) begin
+           if (dmem_write_ready) begin
               // Issue the first write now that the master is idle
-              dram_write <= 1;
+              dmem_write <= 1;
               state      <= `S_DRAM_STORE_RESP_ARM;
            end else begin
               try_issue_queued_decode_current_wb(1'b1);
@@ -8190,15 +8190,15 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_STORE2: begin
-           if (dram_write_ready) begin
+           if (dmem_write_ready) begin
               cache_issue_dw_addr <= dram2_addr;
               cache_issue_va      <= dram2_va;
               cache_issue_asid    <= dram2_asid;
               cache_issue_perm    <= dram2_perm;
               cache_issue_ctx     <= dram2_ctx;
-              dram_writedata      <= dram2_data_part;
-              dram_wstrb          <= dram2_wstrb;
-              dram_write          <= 1;
+              dmem_write_data    <= dram2_data_part;
+              dmem_write_strb    <= dram2_wstrb;
+              dmem_write         <= 1;
               dram_store_split    <= 0;
               state               <= `S_DRAM_STORE_RESP_ARM;
            end else begin
@@ -8212,7 +8212,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_STORE_RESP_WAIT: begin
-           if (dram_write_done) begin
+           if (dmem_write_done) begin
               if (dram_store_split) begin
                  state <= `S_DRAM_STORE2;
               end else begin
@@ -8503,7 +8503,7 @@ module smolrv64(input wire        clock,
          translated       <= 0;
          ifetch_read      <= 0;
          dmem_read        <= 0;
-         dram_write       <= 0;
+         dmem_write       <= 0;
          cache_issue_va   <= 0;
          cache_issue_asid <= 0;
          cache_issue_perm <= CACHE_PERM_PHYS;
@@ -8581,8 +8581,8 @@ module smolrv64(input wire        clock,
    assign dmem_rsp_data      = dmem_rsp_data_r;
    assign dmem_rsp_next_data = dmem_rsp_next_data_r;
    assign dmem_rsp_next_valid = dmem_rsp_next_valid_r;
-   assign dram_write_ready   = cache_idle;
-   assign dram_write_done    = dram_write_done_r;
+   assign dmem_write_ready   = cache_idle;
+   assign dmem_write_done    = dmem_write_done_r;
 
    always @(posedge clock) begin
       dmem_rsp_valid_r <= 0;
@@ -8591,7 +8591,7 @@ module smolrv64(input wire        clock,
       ifetch_next_valid_r <= 0;
       ifetch_prediction_valid_r <= 0;
       ptw_direct_readdatavalid_r <= 0;
-      dram_write_done_r <= 0;
+      dmem_write_done_r <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
       dcache_way0_tag_wr_en <= 0;
@@ -8753,7 +8753,7 @@ module smolrv64(input wire        clock,
               cache_way0_next_rd_idx <= cache_way0_index(cache_issue_next_va, cache_issue_asid);
               cache_way1_next_rd_idx <= cache_way1_index(cache_issue_next_va, cache_issue_asid);
               cache_state         <= CACHE_TAG_READ;
-           end else if (dram_write) begin
+           end else if (dmem_write) begin
               csr_vhpr_writes <= csr_vhpr_writes + 1;
               cache_addr          <= cache_issue_addr;
               cache_req_va        <= cache_issue_va;
@@ -8769,8 +8769,8 @@ module smolrv64(input wire        clock,
               cache_req_bank      <= cache_issue_dw_addr[2:0];
               cache_req_next_bank <= cache_issue_dw_addr[2:0] + 3'd1;
               cache_req_same_line <= 1;
-              cache_store_data    <= dram_writedata;
-              cache_store_strb    <= dram_wstrb;
+              cache_store_data    <= dmem_write_data;
+              cache_store_strb    <= dmem_write_strb;
               cache_way0_rd_idx   <= cache_way0_index(cache_issue_va, cache_issue_asid);
               cache_way1_rd_idx   <= cache_way1_index(cache_issue_va, cache_issue_asid);
               cache_way0_bank0_rd_idx <= cache_way0_index(cache_issue_va, cache_issue_asid);
@@ -8876,7 +8876,7 @@ module smolrv64(input wire        clock,
                                                     cache_req_perm,
                                                     cache_req_vtag, cache_req_ptag,
                                                     vhpr_epoch);
-           dram_write_done_r <= 1;
+           dmem_write_done_r <= 1;
            cache_state <= CACHE_IDLE;
         end
 
@@ -9188,7 +9188,7 @@ module smolrv64(input wire        clock,
                                                           vhpr_epoch);
                  end
                  if (cache_req_write) begin
-                    dram_write_done_r <= 1;
+                    dmem_write_done_r <= 1;
                  end else if (cache_req_instr) begin
                     ifetch_readdatavalid_r <= 1;
                     ifetch_window_r[63:0] <= cache_req_bank == 3'd7
@@ -9239,7 +9239,7 @@ module smolrv64(input wire        clock,
          cache_state <= CACHE_IDLE;
          dmem_rsp_valid_r <= 0;
          dmem_rsp_next_valid_r <= 0;
-         dram_write_done_r <= 0;
+         dmem_write_done_r <= 0;
          cache_bram_write_done <= 0;
          mem_fill_req_valid <= 0;
          mem_fill_rsp_ready <= 0;
