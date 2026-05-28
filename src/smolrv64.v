@@ -1037,7 +1037,8 @@ module smolrv64(input wire        clock,
    // CPU<->AXI master signalling (master block lives at the bottom of this module).
    // dram_addr is the 8B-aligned doubleword address (= phys[30:3]).
    reg  [27:0]  dram_addr;
-   reg          dram_read = 0;
+   reg          ifetch_read = 0;
+   reg          dmem_read = 0;
    reg          dram_write = 0;
    reg  [63:0]  dram_writedata;
    reg  [ 7:0]  dram_wstrb;          // AXI convention: 1 = write byte
@@ -1371,9 +1372,9 @@ module smolrv64(input wire        clock,
    reg [63:0] ifetch_predicted_next_pc_r = `RESET_PC;
    reg [ 1:0] ifetch_prediction_kind_r = 0;
    reg        dram_write_done_r = 0;
-   reg        dram_instr = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
+   wire       cache_read_req = ifetch_read || dmem_read;
 
    reg        mem_fill_req_valid = 0;
    wire       mem_fill_req_ready;
@@ -1438,7 +1439,7 @@ module smolrv64(input wire        clock,
               ((ptw_direct_addr64 ^ cache_bram_base_addr) & cache_bram_window_mask) == 0;
 
    assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
-                                !dram_read && !dram_write &&
+                                !cache_read_req && !dram_write &&
                                 !mem_fill_req_valid && !mem_wb_req_valid &&
                                 !mem_read_req_valid &&
                                 !ptw_direct_read && !ptw_direct_probe_pending &&
@@ -1448,8 +1449,8 @@ module smolrv64(input wire        clock,
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
    wire       hpm_instret_pulse = state == `S_FETCH1 && retire_now_q;
-   wire       hpm_icache_read_pulse = cache_state == CACHE_IDLE && dram_read && dram_instr;
-   wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dram_read && !dram_instr;
+   wire       hpm_icache_read_pulse = cache_state == CACHE_IDLE && ifetch_read;
+   wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dmem_read;
    wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_icache_hit_pulse =
               cache_state == CACHE_HIT_RESP && cache_req_instr &&
@@ -3266,8 +3267,7 @@ module smolrv64(input wire        clock,
             dram_asid        <= {TLB_ASID_BITS{1'b0}};
             dram_perm        <= CACHE_PERM_PHYS;
             dram_ctx         <= {2'd0, fetch_prv, sum, mxr};
-            dram_instr       <= 1;
-            dram_read        <= 1;
+            ifetch_read      <= 1;
             state            <= `S_DRAM_FETCH_WAIT;
          end
       end
@@ -3321,8 +3321,7 @@ module smolrv64(input wire        clock,
                   dram_asid <= {TLB_ASID_BITS{1'b0}};
                   dram_perm <= CACHE_PERM_PHYS;
                   dram_ctx  <= {2'd0, prv, sum, mxr};
-                  dram_instr <= 1;
-                  dram_read <= 1;
+                  ifetch_read <= 1;
                   state <= `S_DRAM_FETCH_HALF_WAIT;
                end
             end
@@ -4339,8 +4338,7 @@ module smolrv64(input wire        clock,
             dram_asid                <= {TLB_ASID_BITS{1'b0}};
             dram_perm                <= CACHE_PERM_PHYS;
             dram_ctx                 <= {2'd0, frontend_cmd_prv, sum, mxr};
-            dram_instr               <= 1;
-            dram_read                <= 1;
+            ifetch_read              <= 1;
          end
       end
    endtask
@@ -4681,8 +4679,7 @@ module smolrv64(input wire        clock,
                dram_asid       <= current_cache_asid;
                dram_perm       <= req_perm;
                dram_ctx        <= tlb_req_ctx;
-               dram_instr      <= 1;
-               dram_read       <= 1;
+               ifetch_read     <= 1;
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
             end else begin
@@ -4987,9 +4984,9 @@ module smolrv64(input wire        clock,
       frontend_decode_pending_drain = 0;
       frontend_buf_flush <= 1'b0;
       frontend_buf_fill <= 1'b0;
-      dram_read  <= 0;
+      ifetch_read <= 0;
+      dmem_read   <= 0;
       dram_write <= 0;
-      dram_instr <= 0;
       ptw_direct_read <= 0;
       cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
@@ -6983,7 +6980,7 @@ module smolrv64(input wire        clock,
                  dram_asid <= mem_asid;
                  dram_perm <= mem_perm;
                  dram_ctx  <= mem_ctx;
-                 dram_read       <= 1;
+                 dmem_read <= 1;
                  state           <= `S_DRAM_LOAD_WAIT;
                 end
                 default: begin
@@ -8115,7 +8112,7 @@ module smolrv64(input wire        clock,
                     dram_asid <= mem_asid;
                     dram_perm <= mem_perm;
                     dram_ctx  <= mem_ctx;
-                    dram_read       <= 1;
+                    dmem_read <= 1;
                     state           <= `S_DRAM_LOAD2_WAIT;
                  end
               end else begin
@@ -8487,9 +8484,9 @@ module smolrv64(input wire        clock,
          ifetch_latched_predicted_next_pc <= `RESET_PC;
          ifetch_latched_prediction_kind <= 0;
          translated       <= 0;
-         dram_read        <= 0;
+         ifetch_read      <= 0;
+         dmem_read        <= 0;
          dram_write       <= 0;
-         dram_instr       <= 0;
          dram_va          <= 0;
          dram_asid        <= 0;
          dram_perm        <= CACHE_PERM_PHYS;
@@ -8712,7 +8709,7 @@ module smolrv64(input wire        clock,
                     ptw_direct_pending <= 0;
                  end
               end
-           end else if (dram_read) begin
+           end else if (cache_read_req) begin
               csr_vhpr_reads <= csr_vhpr_reads + 1;
               cache_addr          <= cache_dram_addr;
               cache_req_va        <= dram_va;
@@ -8720,7 +8717,7 @@ module smolrv64(input wire        clock,
               cache_req_perm      <= dram_perm;
               cache_req_ctx       <= dram_ctx;
               cache_req_write     <= 0;
-              cache_req_instr     <= dram_instr;
+              cache_req_instr     <= ifetch_read;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(dram_va);
               cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
