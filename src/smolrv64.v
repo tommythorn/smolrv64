@@ -518,7 +518,8 @@ module smolrv64(input wire        clock,
 `define CSR_MARCHID    12'hf12
 `define CSR_MIMPID     12'hf13
 
-// Custom MRO CSRs: DDR4 transaction latency stats (cycles spent in S_DRAM_* waits)
+// Custom MRO CSRs: memory transaction latency stats (cycles spent in
+// I-fetch/D-memory/PTW wait states).
 `define CSR_MIG_MIN      12'hfc0
 `define CSR_MIG_MAX      12'hfc1
 `define CSR_MIG_TOTAL    12'hfc2
@@ -586,12 +587,12 @@ module smolrv64(input wire        clock,
 `define S_FETCH2_HALF   15
 
 `define S_IFETCH_WAIT           16  // wait for I-cache instruction response
-`define S_DRAM_LOAD_WAIT       17  // wait for DRAM load
-`define S_DRAM_PTW_WAIT        18  // wait for DRAM page-table-walk PTE
-`define S_DRAM_STORE_WAIT      19  // backpressure wait before first store burst
+`define S_DMEM_LOAD_WAIT       17  // wait for D-cache load response
+`define S_PTW_DIRECT_WAIT      18  // wait for direct page-table-walk PTE read
+`define S_DMEM_STORE_WAIT      19  // backpressure wait before first store beat
 `define S_IFETCH_HALF_WAIT      20  // wait for 2nd I-cache response of cross-line fetch
-`define S_DRAM_LOAD2_WAIT      21  // wait for 2nd burst of cross-burst load
-`define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
+`define S_DMEM_LOAD2_WAIT      21  // wait for 2nd D-cache response of cross-line load
+`define S_DMEM_STORE2          22  // issue 2nd beat of cross-line store
 `define S_RF2                  23  // wait for BRAM regfile read after rs1/rs2 launch
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from the PTW response
@@ -605,8 +606,8 @@ module smolrv64(input wire        clock,
 `define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
-`define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
-`define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
+`define S_DMEM_STORE_RESP_WAIT 43  // wait for an issued D-cache store to complete
+`define S_DMEM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
 `define S_IFETCH_RESP          45  // latch instruction from I-fetch response without fetch-source mux
 `define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
 `define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
@@ -1065,7 +1066,7 @@ module smolrv64(input wire        clock,
    reg  [TLB_CTX_BITS-1:0] dmem_store2_ctx;
    reg  [63:0]  dmem_store2_data;    // overflow bytes for split store
    reg  [ 7:0]  dmem_store2_strb;    // byte write mask for split-store second beat
-   reg          dmem_store_split;    // 1 = second beat pending after S_DRAM_STORE_WAIT
+   reg          dmem_store_split;    // 1 = second beat pending after S_DMEM_STORE_WAIT
    reg          ptw_direct_read = 0; // physical PTW read bypasses VHPR L1
    reg  [27:0]  ptw_direct_addr = 0;
    reg          ptw_direct_probe_pending = 0;
@@ -1478,10 +1479,10 @@ module smolrv64(input wire        clock,
    wire       hpm_axi_read_pulse = mem_fill_req_fire || mem_read_req_fire;
    wire       hpm_axi_write_pulse = mem_wb_req_fire;
    wire       hpm_bus_wait_cycle = state == `S_IFETCH_WAIT || state == `S_IFETCH_HALF_WAIT ||
-                                   state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
-                                   state == `S_DRAM_PTW_WAIT   ||
-                                   state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
-                                   state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
+                                   state == `S_DMEM_LOAD_WAIT  || state == `S_DMEM_LOAD2_WAIT ||
+                                   state == `S_PTW_DIRECT_WAIT   ||
+                                   state == `S_DMEM_STORE_WAIT || state == `S_DMEM_STORE2 ||
+                                   state == `S_DMEM_STORE_RESP_WAIT || state == `S_DMEM_STORE_RESP_ARM ||
                                    state == `S_MMIO_ALIGN;
    reg        hpm_instret_q = 0;
    reg        hpm_icache_read_q = 0;
@@ -1577,18 +1578,18 @@ module smolrv64(input wire        clock,
            `S_PTW_LAUNCH:            state_name = "PTW_LAUNCH";
            `S_FETCH2_HALF:           state_name = "FETCH2_HALF";
            `S_IFETCH_WAIT:           state_name = "IFETCH_WAIT";
-           `S_DRAM_LOAD_WAIT:        state_name = "DRAM_LOAD_WAIT";
-           `S_DRAM_PTW_WAIT:         state_name = "DRAM_PTW_WAIT";
-           `S_DRAM_STORE_WAIT:       state_name = "DRAM_STORE_WAIT";
+           `S_DMEM_LOAD_WAIT:        state_name = "DMEM_LOAD_WAIT";
+           `S_PTW_DIRECT_WAIT:       state_name = "PTW_DIRECT_WAIT";
+           `S_DMEM_STORE_WAIT:       state_name = "DMEM_STORE_WAIT";
            `S_IFETCH_HALF_WAIT:      state_name = "IFETCH_HALF_WAIT";
-           `S_DRAM_LOAD2_WAIT:       state_name = "DRAM_LOAD2_WAIT";
-           `S_DRAM_STORE2:           state_name = "DRAM_STORE2";
+           `S_DMEM_LOAD2_WAIT:       state_name = "DMEM_LOAD2_WAIT";
+           `S_DMEM_STORE2:           state_name = "DMEM_STORE2";
            `S_RF2:                   state_name = "RF2";
            `S_EXECUTE2:              state_name = "EXECUTE2";
            `S_PTW_PROCESS:           state_name = "PTW_PROCESS";
            `S_RF3:                   state_name = "RF3";
-           `S_DRAM_STORE_RESP_WAIT:  state_name = "DRAM_STORE_RESP_WAIT";
-           `S_DRAM_STORE_RESP_ARM:   state_name = "DRAM_STORE_RESP_ARM";
+           `S_DMEM_STORE_RESP_WAIT:  state_name = "DMEM_STORE_RESP_WAIT";
+           `S_DMEM_STORE_RESP_ARM:   state_name = "DMEM_STORE_RESP_ARM";
            `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
            `S_CVFPU_ISSUE:           state_name = "CVFPU_ISSUE";
            `S_CVFPU_WAIT:            state_name = "CVFPU_WAIT";
@@ -2419,7 +2420,8 @@ module smolrv64(input wire        clock,
    reg [11:0] bus_timeout_cause = 0;
    reg [63:0] mmio_timeout_tval = 0;
 
-   // DDR4 transaction latency stats (cycles spent in S_DRAM_* wait states)
+   // Memory transaction latency stats (cycles spent in the long-latency
+   // fetch, D-memory, PTW, MMIO, and store-response wait states).
    reg [31:0] mig_latency_ctr = 0;
    reg        mig_prev_waiting = 0;
    reg [31:0] csr_mig_min    = 32'hFFFFFFFF;
@@ -3119,12 +3121,12 @@ module smolrv64(input wire        clock,
            `S_DIV_RUNNING,
            `S_EXECUTE,
            `S_EXECUTE2,
-           `S_DRAM_LOAD_WAIT,
-           `S_DRAM_LOAD2_WAIT,
-           `S_DRAM_STORE_WAIT,
-           `S_DRAM_STORE2,
-           `S_DRAM_STORE_RESP_WAIT,
-           `S_DRAM_STORE_RESP_ARM,
+           `S_DMEM_LOAD_WAIT,
+           `S_DMEM_LOAD2_WAIT,
+           `S_DMEM_STORE_WAIT,
+           `S_DMEM_STORE2,
+           `S_DMEM_STORE_RESP_WAIT,
+           `S_DMEM_STORE_RESP_ARM,
            `S_CBO_EXEC,
            `S_CBO_WAIT,
            `S_CVFPU_ISSUE,
@@ -6919,7 +6921,7 @@ module smolrv64(input wire        clock,
                  dmem_write_strb    <= wide_mask[7:0];
                  mem_wr_mask        = 0;
                  if (|wide_mask[15:8]) begin
-                    // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
+                    // Overflow into next 8-byte chunk: save for S_DMEM_STORE2
                     dmem_store2_dw_addr <= mem_addr[30:3] + 1;
                     dmem_store2_va      <= {mem_va[63:3], 3'b000} + 64'd8;
                     dmem_store2_asid    <= mem_asid;
@@ -6930,17 +6932,17 @@ module smolrv64(input wire        clock,
                     dmem_store_split    <= 1;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
-                       state      <= `S_DRAM_STORE_RESP_ARM;
+                       state      <= `S_DMEM_STORE_RESP_ARM;
                     end else begin
-                       state      <= `S_DRAM_STORE_WAIT;
+                       state      <= `S_DMEM_STORE_WAIT;
                     end
                  end else begin
                     dmem_store_split  <= 0;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
-                       state      <= `S_DRAM_STORE_RESP_ARM;
+                       state      <= `S_DMEM_STORE_RESP_ARM;
                     end else begin
-                       state      <= `S_DRAM_STORE_WAIT;
+                       state      <= `S_DMEM_STORE_WAIT;
                     end
                  end
               end
@@ -7003,7 +7005,7 @@ module smolrv64(input wire        clock,
                  // AXI by line address; MMIO stays on the explicit slow path.
                  issue_dmem_cache_read(mem_addr[30:3], mem_va, mem_asid,
                                        mem_perm, mem_ctx);
-                 state           <= `S_DRAM_LOAD_WAIT;
+                 state           <= `S_DMEM_LOAD_WAIT;
                 end
                 default: begin
 `ifdef SIMULATE
@@ -8048,7 +8050,7 @@ module smolrv64(input wire        clock,
               ptw_direct_addr  <= ptw_pte_addr[30:3];
               ptw_direct_read  <= 1;
               cache_issue_dw_addr <= ptw_pte_addr[30:3];
-              state               <= `S_DRAM_PTW_WAIT;
+              state               <= `S_PTW_DIRECT_WAIT;
            end else begin
               cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                       ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
@@ -8093,7 +8095,7 @@ module smolrv64(input wire        clock,
            state                                <= `S_FETCH2_HALF;
         end
 
-        `S_DRAM_PTW_WAIT: begin
+        `S_PTW_DIRECT_WAIT: begin
            if (ptw_direct_readdatavalid_r) begin
               pte_latch <= ptw_direct_readdata_r;
               state     <= `S_PTW_PROCESS;
@@ -8103,7 +8105,7 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_DRAM_LOAD_WAIT: begin
+        `S_DMEM_LOAD_WAIT: begin
            if (dmem_rsp_valid) begin
               if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
                  if (dmem_rsp_next_valid) begin : dmem_load_cross_cached
@@ -8132,7 +8134,7 @@ module smolrv64(input wire        clock,
                     issue_dmem_cache_read(mem_addr[30:3] + 1,
                                           {mem_va[63:3], 3'b000} + 64'd8,
                                           mem_asid, mem_perm, mem_ctx);
-                    state           <= `S_DRAM_LOAD2_WAIT;
+                    state           <= `S_DMEM_LOAD2_WAIT;
                  end
               end else begin
                  aligned = dmem_rsp_data >> (mem_addr[2:0] * 8);
@@ -8156,7 +8158,7 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_DRAM_LOAD2_WAIT: begin
+        `S_DMEM_LOAD2_WAIT: begin
            if (dmem_rsp_valid) begin
               begin : dmem_load2
                  reg [127:0] combo;
@@ -8181,17 +8183,17 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_DRAM_STORE_WAIT: begin
+        `S_DMEM_STORE_WAIT: begin
            if (dmem_write_ready) begin
               // Issue the first write now that the master is idle
               dmem_write <= 1;
-              state      <= `S_DRAM_STORE_RESP_ARM;
+              state      <= `S_DMEM_STORE_RESP_ARM;
            end else begin
               try_issue_queued_decode_current_wb(1'b1);
            end
         end
 
-        `S_DRAM_STORE2: begin
+        `S_DMEM_STORE2: begin
            if (dmem_write_ready) begin
               cache_issue_dw_addr <= dmem_store2_dw_addr;
               cache_issue_va      <= dmem_store2_va;
@@ -8202,21 +8204,21 @@ module smolrv64(input wire        clock,
               dmem_write_strb    <= dmem_store2_strb;
               dmem_write         <= 1;
               dmem_store_split   <= 0;
-              state              <= `S_DRAM_STORE_RESP_ARM;
+              state              <= `S_DMEM_STORE_RESP_ARM;
            end else begin
               try_issue_queued_decode_current_wb(1'b1);
            end
         end
 
-        `S_DRAM_STORE_RESP_ARM: begin
+        `S_DMEM_STORE_RESP_ARM: begin
            try_issue_queued_decode_current_wb(1'b1);
-           state <= `S_DRAM_STORE_RESP_WAIT;
+           state <= `S_DMEM_STORE_RESP_WAIT;
         end
 
-        `S_DRAM_STORE_RESP_WAIT: begin
+        `S_DMEM_STORE_RESP_WAIT: begin
            if (dmem_write_done) begin
               if (dmem_store_split) begin
-                 state <= `S_DRAM_STORE2;
+                 state <= `S_DMEM_STORE2;
               end else begin
                  retire_no_wb_linear_fetch();
               end
@@ -8280,10 +8282,10 @@ module smolrv64(input wire        clock,
       begin : bus_timeout_logic
          reg bus_waiting;
          bus_waiting = state == `S_IFETCH_WAIT || state == `S_IFETCH_HALF_WAIT ||
-                       state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
-                       state == `S_DRAM_PTW_WAIT   ||
-                       state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
-                       state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
+                       state == `S_DMEM_LOAD_WAIT  || state == `S_DMEM_LOAD2_WAIT ||
+                       state == `S_PTW_DIRECT_WAIT   ||
+                       state == `S_DMEM_STORE_WAIT || state == `S_DMEM_STORE2 ||
+                       state == `S_DMEM_STORE_RESP_WAIT || state == `S_DMEM_STORE_RESP_ARM ||
                        state == `S_MMIO_ALIGN ||
                        (state == `S_FRONTEND_MISS_WAIT && frontend_miss_valid);
          bus_timeout_expired <= bus_waiting && &bus_timeout_ctr;
@@ -8294,17 +8296,17 @@ module smolrv64(input wire        clock,
                  bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
                  bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : cache_issue_va;
               end
-              `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
+              `S_DMEM_STORE_WAIT, `S_DMEM_STORE2, `S_DMEM_STORE_RESP_WAIT, `S_DMEM_STORE_RESP_ARM: begin
                  bus_timeout_cause <= `TRAP_STORE_ACCESS_FAULT;
                  bus_timeout_tval  <= cache_issue_va;
               end
-              `S_DRAM_PTW_WAIT: begin
+              `S_PTW_DIRECT_WAIT: begin
                  bus_timeout_cause <= ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
                                       ptw_access == 2 || ptw_access == 3 ? `TRAP_STORE_ACCESS_FAULT :
                                       `TRAP_LOAD_ACCESS_FAULT;
                  bus_timeout_tval <= ptw_va;
               end
-              default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
+              default: begin // S_DMEM_LOAD_WAIT, S_DMEM_LOAD2_WAIT, S_MMIO_ALIGN
                  bus_timeout_cause <= `TRAP_LOAD_ACCESS_FAULT;
                  bus_timeout_tval  <= state == `S_MMIO_ALIGN ? mmio_timeout_tval : cache_issue_va;
               end
@@ -8342,7 +8344,7 @@ module smolrv64(input wire        clock,
          end else
             bus_timeout_ctr <= 0;
 
-         // MIG latency stats: measure cycles in any S_DRAM_* wait state.
+         // Memory latency stats: measure cycles in any long-latency wait state.
          // Counter runs while bus_waiting; on falling edge, fold into stats.
          mig_prev_waiting <= bus_waiting;
          if (bus_waiting) begin
