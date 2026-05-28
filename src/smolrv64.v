@@ -3316,6 +3316,8 @@ module smolrv64(input wire        clock,
       input [63:0] accept_pc;
       input [63:0] accept_predicted_pc;
       input [31:0] accept_insn;
+      input [ 1:0] accept_prv;
+      input [FRONTEND_EPOCH_BITS-1:0] accept_epoch;
       input        accept_from_ifetch_rsp;
       begin
          pc <= accept_pc;
@@ -3331,9 +3333,9 @@ module smolrv64(input wire        clock,
          write_back_register <= 0;
          write_back_fp_valid <= 0;
          if (accept_pc[11:0] == 12'hFFE && accept_insn[1:0] == 2'b11 &&
-             csr_satp[63:60] == 4'd8 && prv != 3) begin
+             csr_satp[63:60] == 4'd8 && accept_prv != 3) begin
             insn_half <= accept_insn[15:0];
-            start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
+            start_translation(accept_pc + 64'd2, 2'd0, accept_prv, `S_FETCH2_HALF);
          end else if (accept_from_ifetch_rsp && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
             if (ifetch_latched_insn_valid && ifetch_latched_next_valid) begin
@@ -3341,6 +3343,8 @@ module smolrv64(input wire        clock,
                                        accept_predicted_pc,
                                        accept_predicted_pc,
                                        accept_insn,
+                                       accept_prv,
+                                       accept_epoch,
                                        accept_from_ifetch_rsp);
             end else if (ifetch_latched_next_valid) begin
                ifetch_latched_half_data <= ifetch_latched_window[127:64];
@@ -3350,14 +3354,14 @@ module smolrv64(input wire        clock,
                // address only after a TLB translation.  A VHPR hit deliberately
                // avoids the TLB, so translate the second half instead of
                // deriving it from potentially stale mem_addr state.
-               if (csr_satp[63:60] == 4'd8 && prv != 3) begin
-                  start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
+               if (csr_satp[63:60] == 4'd8 && accept_prv != 3) begin
+                  start_translation(accept_pc + 64'd2, 2'd0, accept_prv, `S_FETCH2_HALF);
                end else begin
                   issue_ifetch_cache_read(accept_pc[30:3] + 1,
                                           accept_pc + 64'd2,
                                           {TLB_ASID_BITS{1'b0}},
                                           CACHE_PERM_PHYS,
-                                          {2'd0, prv, sum, mxr});
+                                          {2'd0, accept_prv, sum, mxr});
                   state <= `S_IFETCH_HALF_WAIT;
                end
             end
@@ -3374,8 +3378,8 @@ module smolrv64(input wire        clock,
                    frontend_fallthrough_pc(accept_pc, accept_insn),
                    accept_predicted_pc,
                    accept_insn,
-                   prv,
-                   frontend_cmd_epoch);
+                   accept_prv,
+                   accept_epoch);
                state <= `S_FETCH1;
             end else if (rf_decode_full) begin
                state <= `S_FETCH1;
@@ -3502,6 +3506,8 @@ module smolrv64(input wire        clock,
       input [63:0] decode_next_pc;
       input [63:0] decode_predicted_pc;
       input [31:0] decode_insn;
+      input [ 1:0] decode_prv;
+      input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       input        decode_from_ifetch_rsp;
       reg   [ 4:0] decoded_rd;
       reg   [ 4:0] decoded_rs1;
@@ -3531,8 +3537,8 @@ module smolrv64(input wire        clock,
             id_pc <= decode_pc;
             id_next_pc <= decode_next_pc;
             id_predicted_pc <= decode_predicted_pc;
-            id_prv <= prv;
-            id_epoch <= fetch_epoch;
+            id_prv <= decode_prv;
+            id_epoch <= decode_epoch;
             id_insn <= decode_insn;
             id_rd <= decoded_rd;
             id_rs1 <= decoded_rs1;
@@ -3541,7 +3547,7 @@ module smolrv64(input wire        clock,
             rs1 <= decoded_rs1;
             rs2 <= decoded_rs2;
             frontend_cmd_pc <= decode_predicted_pc;
-            frontend_cmd_prv <= prv;
+            frontend_cmd_prv <= decode_prv;
             arm_frontend_spec_cmd();
             state <= `S_RF2;
          end
@@ -4397,6 +4403,8 @@ module smolrv64(input wire        clock,
                                   frontend_fallthrough_pc(frontend_miss_pc,
                                                           miss_insn),
                                   miss_insn,
+                                  frontend_miss_prv,
+                                  frontend_miss_epoch,
                                   1'b1);
       end
    endtask
@@ -5345,6 +5353,8 @@ module smolrv64(input wire        clock,
               accept_instruction_fetch(frontend_cmd_pc,
                                        f_latched_next_pc,
                                        f_latched_insn,
+                                       frontend_cmd_prv,
+                                       frontend_cmd_epoch,
                                        1'b0);
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
@@ -5393,6 +5403,8 @@ module smolrv64(input wire        clock,
                                     frontend_fallthrough_pc(frontend_cmd_pc,
                                                             insn),
                                     insn,
+                                    frontend_cmd_prv,
+                                    frontend_cmd_epoch,
                                     1'b1);
         end
 
@@ -8052,7 +8064,8 @@ module smolrv64(input wire        clock,
            insn = {aligned[15:0], insn_half};
            stage_rf_decode_current(pc, frontend_fallthrough_pc(pc, insn),
                                    frontend_fallthrough_pc(pc, insn),
-                                   insn, fetch_from_ifetch_rsp);
+                                   insn, prv, fetch_epoch,
+                                   fetch_from_ifetch_rsp);
         end
 
         `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
