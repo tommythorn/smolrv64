@@ -1097,11 +1097,13 @@ module smolrv64(input wire        clock,
    // f_latched_insn (different PCs) — a hang.
    reg          f_latched_hit = 0;
    reg  [31:0]  f_latched_insn = 0;
+   reg  [63:0]  f_latched_decode_next_pc = `RESET_PC;
    reg  [63:0]  f_latched_next_pc = `RESET_PC;
    reg  [63:0]  f_latched_cmd_pc = `RESET_PC;
    reg  [ 1:0]  f_latched_cmd_prv = 3;
    reg  [TLB_ASID_BITS-1:0] f_latched_cmd_asid = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
+   wire [63:0]  frontend_rsp_next_pc;
    wire [63:0]  frontend_rsp_predicted_next_pc;
    wire         icache_fetch_hit;
    wire         icache_fetch_next_valid;
@@ -2031,6 +2033,7 @@ module smolrv64(input wire        clock,
       .cmd_epoch(frontend_cmd_epoch),
       .rsp_hit(frontend_rsp_hit),
       .rsp_insn(frontend_rsp_insn),
+      .rsp_next_pc(frontend_rsp_next_pc),
       .rsp_predicted_next_pc(frontend_rsp_predicted_next_pc),
 
       .icache_invalidate_valid(icache_invalidate_valid),
@@ -3315,6 +3318,7 @@ module smolrv64(input wire        clock,
 
    task accept_instruction_fetch;
       input [63:0] accept_pc;
+      input [63:0] accept_next_pc;
       input [63:0] accept_predicted_pc;
       input [31:0] accept_insn;
       input [ 1:0] accept_prv;
@@ -3341,7 +3345,7 @@ module smolrv64(input wire        clock,
             insn_half <= accept_insn[15:0];
             if (ifetch_latched_insn_valid && ifetch_latched_next_valid) begin
                stage_rf_decode_current(accept_pc,
-                                       accept_predicted_pc,
+                                       accept_next_pc,
                                        accept_predicted_pc,
                                        accept_insn,
                                        accept_prv,
@@ -3376,7 +3380,7 @@ module smolrv64(input wire        clock,
             if (!frontend_decode_pending_valid && !rf_decode_full) begin
                latch_frontend_decode_pending(
                    accept_pc,
-                   frontend_fallthrough_pc(accept_pc, accept_insn),
+                   accept_next_pc,
                    accept_predicted_pc,
                    accept_insn,
                    accept_prv,
@@ -4267,9 +4271,7 @@ module smolrv64(input wire        clock,
              frontend_speculative_fetch_ok(frontend_cmd_pc, frontend_cmd_prv) &&
              frontend_rsp_hit) begin
             latch_frontend_decode_pending(frontend_cmd_pc,
-                                           frontend_fallthrough_pc(
-                                              frontend_cmd_pc,
-                                              frontend_rsp_insn),
+                                           frontend_rsp_next_pc,
                                            frontend_rsp_predicted_next_pc,
                                            frontend_rsp_insn,
                                            frontend_cmd_prv,
@@ -4401,6 +4403,8 @@ module smolrv64(input wire        clock,
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
          accept_instruction_fetch(frontend_miss_pc,
+                                  frontend_fallthrough_pc(frontend_miss_pc,
+                                                          miss_insn),
                                   frontend_fallthrough_pc(frontend_miss_pc,
                                                           miss_insn),
                                   miss_insn,
@@ -5103,6 +5107,7 @@ module smolrv64(input wire        clock,
            // subsequent cycle; F_FETCH_BUF_USE consumes only f_latched_*.
            f_latched_hit             <= frontend_rsp_hit;
            f_latched_insn            <= frontend_rsp_insn;
+           f_latched_decode_next_pc  <= frontend_rsp_next_pc;
            f_latched_next_pc         <= frontend_rsp_predicted_next_pc;
            f_latched_cmd_pc          <= frontend_cmd_pc;
            f_latched_cmd_prv         <= frontend_cmd_prv;
@@ -5123,7 +5128,7 @@ module smolrv64(input wire        clock,
               f_consumed_hit = 1;
               latch_frontend_decode_pending(
                   f_latched_cmd_pc,
-                  frontend_fallthrough_pc(f_latched_cmd_pc, f_latched_insn),
+                  f_latched_decode_next_pc,
                   f_latched_next_pc,
                   f_latched_insn,
                   f_latched_cmd_prv,
@@ -5353,6 +5358,7 @@ module smolrv64(input wire        clock,
               state <= `S_FETCH1;
            end else if (f_latched_hit) begin
               accept_instruction_fetch(f_latched_cmd_pc,
+                                       f_latched_decode_next_pc,
                                        f_latched_next_pc,
                                        f_latched_insn,
                                        f_latched_cmd_prv,
@@ -5409,6 +5415,8 @@ module smolrv64(input wire        clock,
                 ? ifetch_latched_insn
                 : fetch_buf_pick_insn(aligned, {1'b0, frontend_cmd_pc[2:0]});
            accept_instruction_fetch(frontend_cmd_pc,
+                                    frontend_fallthrough_pc(frontend_cmd_pc,
+                                                            insn),
                                     frontend_fallthrough_pc(frontend_cmd_pc,
                                                             insn),
                                     insn,
@@ -8377,6 +8385,7 @@ module smolrv64(input wire        clock,
          frontend_redirect_epoch <= 0;
          f_latched_hit <= 0;
          f_latched_insn <= 0;
+         f_latched_decode_next_pc <= `RESET_PC;
          f_latched_next_pc <= `RESET_PC;
          f_latched_cmd_pc <= `RESET_PC;
          f_latched_cmd_prv <= 3;
@@ -10080,6 +10089,7 @@ module smolrv64_frontend #(
 
    output wire                  rsp_hit,
    output wire [31:0]           rsp_insn,
+   output wire [63:0]           rsp_next_pc,
    output wire [63:0]           rsp_predicted_next_pc,
 
    input  wire                         icache_invalidate_valid,
@@ -10259,6 +10269,7 @@ module smolrv64_frontend #(
    assign rsp_insn = pick_insn(buf_data, rsp_offset);
    assign rsp_full_insn_hit = rsp_insn[1:0] != 2'b11 || rsp_offset <= 4'd12;
    assign rsp_hit = rsp_addr_hit && rsp_full_insn_hit;
+   assign rsp_next_pc = fallthrough_pc(cmd_pc, rsp_insn);
    assign rsp_predicted_next_pc = predict_next_pc(cmd_pc, rsp_insn);
    wire [63:0] fill_base_va = {fill_pc[63:3], 3'b000};
    wire        fill_page_ok = fill_base_va[11:0] <= 12'hff0;
