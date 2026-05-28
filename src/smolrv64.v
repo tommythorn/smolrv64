@@ -1953,10 +1953,6 @@ module smolrv64(input wire        clock,
       .rsp_predicted_next_pc(frontend_rsp_predicted_next_pc),
       .rsp_prediction_kind(frontend_rsp_prediction_kind),
 
-      .icache_way0_rd_idx(cache_way0_rd_idx),
-      .icache_way1_rd_idx(cache_way1_rd_idx),
-      .icache_way0_next_rd_idx(cache_way0_next_rd_idx),
-      .icache_way1_next_rd_idx(cache_way1_next_rd_idx),
       .icache_invalidate_valid(icache_invalidate_valid),
       .icache_invalidate_way(icache_invalidate_way),
       .icache_invalidate_idx(icache_invalidate_idx),
@@ -1971,6 +1967,8 @@ module smolrv64(input wire        clock,
       .icache_fill_valid(cache_req_instr && cache_fill_data_valid),
       .icache_fill_beat(cache_fill_beat),
       .icache_fill_data(cache_fill_data),
+      .icache_req_va(cache_req_va),
+      .icache_req_next_va(cache_req_va + 64'd8),
       .icache_req_asid(cache_req_asid),
       .icache_req_vtag(cache_req_vtag),
       .icache_req_next_vtag(cache_req_next_vtag),
@@ -9731,10 +9729,6 @@ module smolrv64_frontend #(
    output wire [63:0]           rsp_predicted_next_pc,
    output wire [ 1:0]           rsp_prediction_kind,
 
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_rd_idx,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way0_next_rd_idx,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_way1_next_rd_idx,
    input  wire                         icache_invalidate_valid,
    input  wire                         icache_invalidate_way,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_invalidate_idx,
@@ -9749,6 +9743,8 @@ module smolrv64_frontend #(
    input  wire                         icache_fill_valid,
    input  wire [2:0]                   icache_fill_beat,
    input  wire [63:0]                  icache_fill_data,
+   input  wire [63:0]                  icache_req_va,
+   input  wire [63:0]                  icache_req_next_va,
    input  wire [TLB_ASID_BITS-1:0]     icache_req_asid,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_vtag,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_next_vtag,
@@ -9941,6 +9937,31 @@ module smolrv64_frontend #(
    wire        fill_page_ok = fill_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
+
+   function [2:0] cache_asid_color_mix;
+      input [TLB_ASID_BITS-1:0] asid;
+      begin
+         cache_asid_color_mix = asid[2:0] ^ asid[5:3] ^ {2'd0, asid[6]} ^
+                                {1'b0, asid[8:7]} ^ {2'd0, asid[9]};
+      end
+   endfunction
+
+   function [`CACHE_INDEX_BITS-1:0] cache_way0_index;
+      input [63:0] va;
+      input [TLB_ASID_BITS-1:0] asid;
+      begin
+         cache_way0_index = {va[14:12] ^ cache_asid_color_mix(asid), va[11:6]};
+      end
+   endfunction
+
+   function [`CACHE_INDEX_BITS-1:0] cache_way1_index;
+      input [63:0] va;
+      input [TLB_ASID_BITS-1:0] asid;
+      begin
+         cache_way1_index = {va[14:12] ^ cache_asid_color_mix(asid) ^
+                             va[17:15] ^ va[23:21], va[11:6]};
+      end
+   endfunction
 
    function cache_meta_valid;
       input [`CACHE_META_BITS-1:0] meta;
@@ -10148,6 +10169,14 @@ module smolrv64_frontend #(
    wire [7:0] icache_bank_wr_en =
       icache_fill_valid ? (8'd1 << icache_fill_beat) : 8'd0;
 
+   wire [`CACHE_INDEX_BITS-1:0] icache_way0_rd_idx =
+      cache_way0_index(icache_req_va, icache_req_asid);
+   wire [`CACHE_INDEX_BITS-1:0] icache_way1_rd_idx =
+      cache_way1_index(icache_req_va, icache_req_asid);
+   wire [`CACHE_INDEX_BITS-1:0] icache_way0_next_rd_idx =
+      cache_way0_index(icache_req_next_va, icache_req_asid);
+   wire [`CACHE_INDEX_BITS-1:0] icache_way1_next_rd_idx =
+      cache_way1_index(icache_req_next_va, icache_req_asid);
    wire icache_bank0_reads_next_line =
       icache_req_bank == 3'd7 && !icache_req_same_line;
    wire [`CACHE_INDEX_BITS-1:0] icache_way0_bank0_rd_idx =
