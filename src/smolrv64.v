@@ -1109,8 +1109,8 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
-   wire [511:0] icache_way0_line_rd_data;
-   wire [511:0] icache_way1_line_rd_data;
+   wire [63:0]  icache_selected_bank_rd_data;
+   wire [63:0]  icache_selected_next_bank_rd_data;
 
    // Frontend command/result boundary.  The backend writes frontend_cmd_* when
    // it wants the frontend to probe or restart at a PC/context; the frontend
@@ -1874,23 +1874,30 @@ module smolrv64(input wire        clock,
    assign cache_way1_tag_next_rd_data = cache_req_instr ? icache_way1_tag_next_rd_data :
                                                           dcache_way1_tag_next_rd_data;
 
-   function [63:0] icache_selected_bank_data;
-      input       way;
-      input [2:0] bank;
-      begin
-         case (bank)
-           3'd0: icache_selected_bank_data = way ? icache_way1_line_rd_data[ 63:  0] : icache_way0_line_rd_data[ 63:  0];
-           3'd1: icache_selected_bank_data = way ? icache_way1_line_rd_data[127: 64] : icache_way0_line_rd_data[127: 64];
-           3'd2: icache_selected_bank_data = way ? icache_way1_line_rd_data[191:128] : icache_way0_line_rd_data[191:128];
-           3'd3: icache_selected_bank_data = way ? icache_way1_line_rd_data[255:192] : icache_way0_line_rd_data[255:192];
-           3'd4: icache_selected_bank_data = way ? icache_way1_line_rd_data[319:256] : icache_way0_line_rd_data[319:256];
-           3'd5: icache_selected_bank_data = way ? icache_way1_line_rd_data[383:320] : icache_way0_line_rd_data[383:320];
-           3'd6: icache_selected_bank_data = way ? icache_way1_line_rd_data[447:384] : icache_way0_line_rd_data[447:384];
-           3'd7: icache_selected_bank_data = way ? icache_way1_line_rd_data[511:448] : icache_way0_line_rd_data[511:448];
-           default: icache_selected_bank_data = 64'd0;
-         endcase
-      end
-   endfunction
+   wire cache_way0_tag_hit = cache_meta_valid(cache_way0_tag_rd_data) &&
+                             cache_meta_epoch(cache_way0_tag_rd_data) == vhpr_epoch &&
+                             cache_meta_asid(cache_way0_tag_rd_data) == cache_req_asid &&
+                             cache_meta_vtag(cache_way0_tag_rd_data) == cache_req_vtag &&
+                             cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_rd_data),
+                                                   cache_req_ctx);
+   wire cache_way1_tag_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
+                             cache_meta_epoch(cache_way1_tag_rd_data) == vhpr_epoch &&
+                             cache_meta_asid(cache_way1_tag_rd_data) == cache_req_asid &&
+                             cache_meta_vtag(cache_way1_tag_rd_data) == cache_req_vtag &&
+                             cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_rd_data),
+                                                   cache_req_ctx);
+   wire cache_way0_next_tag_hit = cache_meta_valid(cache_way0_tag_next_rd_data) &&
+                                  cache_meta_epoch(cache_way0_tag_next_rd_data) == vhpr_epoch &&
+                                  cache_meta_asid(cache_way0_tag_next_rd_data) == cache_req_asid &&
+                                  cache_meta_vtag(cache_way0_tag_next_rd_data) == cache_req_next_vtag &&
+                                  cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_next_rd_data),
+                                                        cache_req_ctx);
+   wire cache_way1_next_tag_hit = cache_meta_valid(cache_way1_tag_next_rd_data) &&
+                                  cache_meta_epoch(cache_way1_tag_next_rd_data) == vhpr_epoch &&
+                                  cache_meta_asid(cache_way1_tag_next_rd_data) == cache_req_asid &&
+                                  cache_meta_vtag(cache_way1_tag_next_rd_data) == cache_req_next_vtag &&
+                                  cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_next_rd_data),
+                                                        cache_req_ctx);
 
    function [63:0] dcache_selected_bank_data;
       input       way;
@@ -1907,16 +1914,6 @@ module smolrv64(input wire        clock,
            3'd7: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[7] : dcache_way0_bank_rd_data[7];
            default: dcache_selected_bank_data = 64'd0;
          endcase
-      end
-   endfunction
-
-   function [63:0] cache_read_selected_bank_data;
-      input       way;
-      input [2:0] bank;
-      begin
-         cache_read_selected_bank_data = cache_req_instr
-                                      ? icache_selected_bank_data(way, bank)
-                                      : dcache_selected_bank_data(way, bank);
       end
    endfunction
 
@@ -1984,8 +1981,12 @@ module smolrv64(input wire        clock,
       .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
       .icache_way0_tag_next_rd_data(icache_way0_tag_next_rd_data),
       .icache_way1_tag_next_rd_data(icache_way1_tag_next_rd_data),
-      .icache_way0_line_rd_data(icache_way0_line_rd_data),
-      .icache_way1_line_rd_data(icache_way1_line_rd_data)
+      .icache_select_way(cache_way1_tag_hit),
+      .icache_select_bank(cache_req_bank),
+      .icache_select_next_way(cache_req_same_line ? cache_way1_tag_hit : cache_way1_next_tag_hit),
+      .icache_select_next_bank(cache_req_same_line ? cache_req_next_bank : 3'd0),
+      .icache_selected_bank_rd_data(icache_selected_bank_rd_data),
+      .icache_selected_next_bank_rd_data(icache_selected_next_bank_rd_data)
    );
 
    function hpm_event_active;
@@ -8601,53 +8602,33 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_TAG_CHECK: begin : cache_tag_check
-           reg way0_hit, way1_hit, way0_next_hit, way1_next_hit;
            reg target_way;
            reg [`CACHE_META_BITS-1:0] target_meta;
 
-           way0_hit = cache_meta_valid(cache_way0_tag_rd_data) &&
-                      cache_meta_epoch(cache_way0_tag_rd_data) == vhpr_epoch &&
-                      cache_meta_asid(cache_way0_tag_rd_data) == cache_req_asid &&
-                      cache_meta_vtag(cache_way0_tag_rd_data) == cache_req_vtag &&
-                      cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_rd_data),
-                                            cache_req_ctx);
-           way1_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
-                      cache_meta_epoch(cache_way1_tag_rd_data) == vhpr_epoch &&
-                      cache_meta_asid(cache_way1_tag_rd_data) == cache_req_asid &&
-                      cache_meta_vtag(cache_way1_tag_rd_data) == cache_req_vtag &&
-                      cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_rd_data),
-                                            cache_req_ctx);
-           way0_next_hit = cache_meta_valid(cache_way0_tag_next_rd_data) &&
-                           cache_meta_epoch(cache_way0_tag_next_rd_data) == vhpr_epoch &&
-                           cache_meta_asid(cache_way0_tag_next_rd_data) == cache_req_asid &&
-                           cache_meta_vtag(cache_way0_tag_next_rd_data) == cache_req_next_vtag &&
-                           cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_next_rd_data),
-                                                 cache_req_ctx);
-           way1_next_hit = cache_meta_valid(cache_way1_tag_next_rd_data) &&
-                           cache_meta_epoch(cache_way1_tag_next_rd_data) == vhpr_epoch &&
-                           cache_meta_asid(cache_way1_tag_next_rd_data) == cache_req_asid &&
-                           cache_meta_vtag(cache_way1_tag_next_rd_data) == cache_req_next_vtag &&
-                           cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_next_rd_data),
-                                                 cache_req_ctx);
-
-           cache_lookup_hit <= way0_hit || way1_hit;
-           cache_lookup_hit_way <= way1_hit;
-           cache_lookup_next_hit <= way0_next_hit || way1_next_hit;
-           cache_lookup_next_hit_way <= way1_next_hit;
-           cache_lookup_data <= cache_read_selected_bank_data(way1_hit, cache_req_bank);
+           cache_lookup_hit <= cache_way0_tag_hit || cache_way1_tag_hit;
+           cache_lookup_hit_way <= cache_way1_tag_hit;
+           cache_lookup_next_hit <= cache_way0_next_tag_hit || cache_way1_next_tag_hit;
+           cache_lookup_next_hit_way <= cache_way1_next_tag_hit;
+           cache_lookup_data <= cache_req_instr
+                              ? icache_selected_bank_rd_data
+                              : dcache_selected_bank_data(cache_way1_tag_hit, cache_req_bank);
            cache_lookup_next_data <= cache_req_same_line
-                                    ? cache_read_selected_bank_data(way1_hit, cache_req_next_bank)
-                                    : cache_read_selected_bank_data(way1_next_hit, 3'd0);
-           cache_lookup_next_valid <= cache_req_same_line || way0_next_hit || way1_next_hit;
+                                    ? (cache_req_instr
+                                       ? icache_selected_next_bank_rd_data
+                                       : dcache_selected_bank_data(cache_way1_tag_hit, cache_req_next_bank))
+                                    : (cache_req_instr
+                                       ? icache_selected_next_bank_rd_data
+                                       : dcache_selected_bank_data(cache_way1_next_tag_hit, 3'd0));
+           cache_lookup_next_valid <= cache_req_same_line || cache_way0_next_tag_hit || cache_way1_next_tag_hit;
            target_way = !cache_meta_valid(cache_way0_tag_rd_data) ? 1'b0 :
                         !cache_meta_valid(cache_way1_tag_rd_data) ? 1'b1 :
                         cache_meta_epoch(cache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
                         cache_meta_epoch(cache_way1_tag_rd_data) != vhpr_epoch ? 1'b1 :
                         cache_replace_way;
            target_meta = target_way ? cache_way1_tag_rd_data : cache_way0_tag_rd_data;
-           cache_lookup_dirty <= (way0_hit || way1_hit)
-                                 ? (way1_hit ? cache_meta_dirty(cache_way1_tag_rd_data)
-                                             : cache_meta_dirty(cache_way0_tag_rd_data))
+           cache_lookup_dirty <= (cache_way0_tag_hit || cache_way1_tag_hit)
+                                 ? (cache_way1_tag_hit ? cache_meta_dirty(cache_way1_tag_rd_data)
+                                                       : cache_meta_dirty(cache_way0_tag_rd_data))
                                  : (cache_meta_valid(target_meta) && cache_meta_dirty(target_meta));
            cache_target_way <= target_way;
            cache_target_idx <= target_way ? cache_way1_rd_idx : cache_way0_rd_idx;
@@ -9736,8 +9717,12 @@ module smolrv64_frontend #(
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_next_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_next_rd_data,
-   output wire [511:0]                 icache_way0_line_rd_data,
-   output wire [511:0]                 icache_way1_line_rd_data
+   input  wire                         icache_select_way,
+   input  wire [2:0]                   icache_select_bank,
+   input  wire                         icache_select_next_way,
+   input  wire [2:0]                   icache_select_next_bank,
+   output wire [63:0]                  icache_selected_bank_rd_data,
+   output wire [63:0]                  icache_selected_next_bank_rd_data
 );
    localparam [1:0] PRED_FALLTHROUGH = 2'd0;
    localparam [1:0] PRED_DIRECT      = 2'd1;
@@ -9892,26 +9877,28 @@ module smolrv64_frontend #(
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
 
-   assign icache_way0_line_rd_data = {
-      icache_way0_bank_rd_data[7],
-      icache_way0_bank_rd_data[6],
-      icache_way0_bank_rd_data[5],
-      icache_way0_bank_rd_data[4],
-      icache_way0_bank_rd_data[3],
-      icache_way0_bank_rd_data[2],
-      icache_way0_bank_rd_data[1],
-      icache_way0_bank_rd_data[0]
-   };
-   assign icache_way1_line_rd_data = {
-      icache_way1_bank_rd_data[7],
-      icache_way1_bank_rd_data[6],
-      icache_way1_bank_rd_data[5],
-      icache_way1_bank_rd_data[4],
-      icache_way1_bank_rd_data[3],
-      icache_way1_bank_rd_data[2],
-      icache_way1_bank_rd_data[1],
-      icache_way1_bank_rd_data[0]
-   };
+   function [63:0] select_icache_bank_data;
+      input       way;
+      input [2:0] bank;
+      begin
+         case (bank)
+           3'd0: select_icache_bank_data = way ? icache_way1_bank_rd_data[0] : icache_way0_bank_rd_data[0];
+           3'd1: select_icache_bank_data = way ? icache_way1_bank_rd_data[1] : icache_way0_bank_rd_data[1];
+           3'd2: select_icache_bank_data = way ? icache_way1_bank_rd_data[2] : icache_way0_bank_rd_data[2];
+           3'd3: select_icache_bank_data = way ? icache_way1_bank_rd_data[3] : icache_way0_bank_rd_data[3];
+           3'd4: select_icache_bank_data = way ? icache_way1_bank_rd_data[4] : icache_way0_bank_rd_data[4];
+           3'd5: select_icache_bank_data = way ? icache_way1_bank_rd_data[5] : icache_way0_bank_rd_data[5];
+           3'd6: select_icache_bank_data = way ? icache_way1_bank_rd_data[6] : icache_way0_bank_rd_data[6];
+           3'd7: select_icache_bank_data = way ? icache_way1_bank_rd_data[7] : icache_way0_bank_rd_data[7];
+           default: select_icache_bank_data = 64'd0;
+         endcase
+      end
+   endfunction
+
+   assign icache_selected_bank_rd_data =
+      select_icache_bank_data(icache_select_way, icache_select_bank);
+   assign icache_selected_next_bank_rd_data =
+      select_icache_bank_data(icache_select_next_way, icache_select_next_bank);
 
    always @(posedge clock) begin
       if (reset || flush) begin
