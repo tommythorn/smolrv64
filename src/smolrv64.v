@@ -1109,41 +1109,8 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
-   wire [63:0] icache_way0_bank_rd_data [0:7];
-   wire [63:0] icache_way1_bank_rd_data [0:7];
-   wire [63:0] icache_way0_bank0_rd_data;
-   wire [63:0] icache_way0_bank1_rd_data;
-   wire [63:0] icache_way0_bank2_rd_data;
-   wire [63:0] icache_way0_bank3_rd_data;
-   wire [63:0] icache_way0_bank4_rd_data;
-   wire [63:0] icache_way0_bank5_rd_data;
-   wire [63:0] icache_way0_bank6_rd_data;
-   wire [63:0] icache_way0_bank7_rd_data;
-   wire [63:0] icache_way1_bank0_rd_data;
-   wire [63:0] icache_way1_bank1_rd_data;
-   wire [63:0] icache_way1_bank2_rd_data;
-   wire [63:0] icache_way1_bank3_rd_data;
-   wire [63:0] icache_way1_bank4_rd_data;
-   wire [63:0] icache_way1_bank5_rd_data;
-   wire [63:0] icache_way1_bank6_rd_data;
-   wire [63:0] icache_way1_bank7_rd_data;
-
-   assign icache_way0_bank_rd_data[0] = icache_way0_bank0_rd_data;
-   assign icache_way0_bank_rd_data[1] = icache_way0_bank1_rd_data;
-   assign icache_way0_bank_rd_data[2] = icache_way0_bank2_rd_data;
-   assign icache_way0_bank_rd_data[3] = icache_way0_bank3_rd_data;
-   assign icache_way0_bank_rd_data[4] = icache_way0_bank4_rd_data;
-   assign icache_way0_bank_rd_data[5] = icache_way0_bank5_rd_data;
-   assign icache_way0_bank_rd_data[6] = icache_way0_bank6_rd_data;
-   assign icache_way0_bank_rd_data[7] = icache_way0_bank7_rd_data;
-   assign icache_way1_bank_rd_data[0] = icache_way1_bank0_rd_data;
-   assign icache_way1_bank_rd_data[1] = icache_way1_bank1_rd_data;
-   assign icache_way1_bank_rd_data[2] = icache_way1_bank2_rd_data;
-   assign icache_way1_bank_rd_data[3] = icache_way1_bank3_rd_data;
-   assign icache_way1_bank_rd_data[4] = icache_way1_bank4_rd_data;
-   assign icache_way1_bank_rd_data[5] = icache_way1_bank5_rd_data;
-   assign icache_way1_bank_rd_data[6] = icache_way1_bank6_rd_data;
-   assign icache_way1_bank_rd_data[7] = icache_way1_bank7_rd_data;
+   wire [511:0] icache_way0_line_rd_data;
+   wire [511:0] icache_way1_line_rd_data;
 
    // Frontend command/result boundary.  The backend writes frontend_cmd_* when
    // it wants the frontend to probe or restart at a PC/context; the frontend
@@ -1907,52 +1874,64 @@ module smolrv64(input wire        clock,
    assign cache_way1_tag_next_rd_data = cache_req_instr ? icache_way1_tag_next_rd_data :
                                                           dcache_way1_tag_next_rd_data;
 
-   function [63:0] cache_selected_bank_data;
+   function [63:0] icache_selected_bank_data;
       input       way;
       input [2:0] bank;
       begin
          case (bank)
-           3'd0: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[0] : icache_way0_bank_rd_data[0]) :
-                                            (way ? dcache_way1_bank_rd_data[0] : dcache_way0_bank_rd_data[0]);
-           3'd1: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[1] : icache_way0_bank_rd_data[1]) :
-                                            (way ? dcache_way1_bank_rd_data[1] : dcache_way0_bank_rd_data[1]);
-           3'd2: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[2] : icache_way0_bank_rd_data[2]) :
-                                            (way ? dcache_way1_bank_rd_data[2] : dcache_way0_bank_rd_data[2]);
-           3'd3: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[3] : icache_way0_bank_rd_data[3]) :
-                                            (way ? dcache_way1_bank_rd_data[3] : dcache_way0_bank_rd_data[3]);
-           3'd4: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[4] : icache_way0_bank_rd_data[4]) :
-                                            (way ? dcache_way1_bank_rd_data[4] : dcache_way0_bank_rd_data[4]);
-           3'd5: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[5] : icache_way0_bank_rd_data[5]) :
-                                            (way ? dcache_way1_bank_rd_data[5] : dcache_way0_bank_rd_data[5]);
-           3'd6: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[6] : icache_way0_bank_rd_data[6]) :
-                                            (way ? dcache_way1_bank_rd_data[6] : dcache_way0_bank_rd_data[6]);
-           3'd7: cache_selected_bank_data = cache_req_instr ?
-                                            (way ? icache_way1_bank_rd_data[7] : icache_way0_bank_rd_data[7]) :
-                                            (way ? dcache_way1_bank_rd_data[7] : dcache_way0_bank_rd_data[7]);
-           default: cache_selected_bank_data = 64'd0;
+           3'd0: icache_selected_bank_data = way ? icache_way1_line_rd_data[ 63:  0] : icache_way0_line_rd_data[ 63:  0];
+           3'd1: icache_selected_bank_data = way ? icache_way1_line_rd_data[127: 64] : icache_way0_line_rd_data[127: 64];
+           3'd2: icache_selected_bank_data = way ? icache_way1_line_rd_data[191:128] : icache_way0_line_rd_data[191:128];
+           3'd3: icache_selected_bank_data = way ? icache_way1_line_rd_data[255:192] : icache_way0_line_rd_data[255:192];
+           3'd4: icache_selected_bank_data = way ? icache_way1_line_rd_data[319:256] : icache_way0_line_rd_data[319:256];
+           3'd5: icache_selected_bank_data = way ? icache_way1_line_rd_data[383:320] : icache_way0_line_rd_data[383:320];
+           3'd6: icache_selected_bank_data = way ? icache_way1_line_rd_data[447:384] : icache_way0_line_rd_data[447:384];
+           3'd7: icache_selected_bank_data = way ? icache_way1_line_rd_data[511:448] : icache_way0_line_rd_data[511:448];
+           default: icache_selected_bank_data = 64'd0;
          endcase
       end
    endfunction
 
-   function [511:0] cache_selected_line_data;
+   function [63:0] dcache_selected_bank_data;
+      input       way;
+      input [2:0] bank;
+      begin
+         case (bank)
+           3'd0: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[0] : dcache_way0_bank_rd_data[0];
+           3'd1: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[1] : dcache_way0_bank_rd_data[1];
+           3'd2: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[2] : dcache_way0_bank_rd_data[2];
+           3'd3: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[3] : dcache_way0_bank_rd_data[3];
+           3'd4: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[4] : dcache_way0_bank_rd_data[4];
+           3'd5: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[5] : dcache_way0_bank_rd_data[5];
+           3'd6: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[6] : dcache_way0_bank_rd_data[6];
+           3'd7: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[7] : dcache_way0_bank_rd_data[7];
+           default: dcache_selected_bank_data = 64'd0;
+         endcase
+      end
+   endfunction
+
+   function [63:0] cache_read_selected_bank_data;
+      input       way;
+      input [2:0] bank;
+      begin
+         cache_read_selected_bank_data = cache_req_instr
+                                      ? icache_selected_bank_data(way, bank)
+                                      : dcache_selected_bank_data(way, bank);
+      end
+   endfunction
+
+   function [511:0] dcache_selected_line_data;
       input way;
       begin
-         cache_selected_line_data = {
-            cache_selected_bank_data(way, 3'd7),
-            cache_selected_bank_data(way, 3'd6),
-            cache_selected_bank_data(way, 3'd5),
-            cache_selected_bank_data(way, 3'd4),
-            cache_selected_bank_data(way, 3'd3),
-            cache_selected_bank_data(way, 3'd2),
-            cache_selected_bank_data(way, 3'd1),
-            cache_selected_bank_data(way, 3'd0)
+         dcache_selected_line_data = {
+            dcache_selected_bank_data(way, 3'd7),
+            dcache_selected_bank_data(way, 3'd6),
+            dcache_selected_bank_data(way, 3'd5),
+            dcache_selected_bank_data(way, 3'd4),
+            dcache_selected_bank_data(way, 3'd3),
+            dcache_selected_bank_data(way, 3'd2),
+            dcache_selected_bank_data(way, 3'd1),
+            dcache_selected_bank_data(way, 3'd0)
          };
       end
    endfunction
@@ -2005,22 +1984,8 @@ module smolrv64(input wire        clock,
       .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
       .icache_way0_tag_next_rd_data(icache_way0_tag_next_rd_data),
       .icache_way1_tag_next_rd_data(icache_way1_tag_next_rd_data),
-      .icache_way0_bank0_rd_data(icache_way0_bank0_rd_data),
-      .icache_way0_bank1_rd_data(icache_way0_bank1_rd_data),
-      .icache_way0_bank2_rd_data(icache_way0_bank2_rd_data),
-      .icache_way0_bank3_rd_data(icache_way0_bank3_rd_data),
-      .icache_way0_bank4_rd_data(icache_way0_bank4_rd_data),
-      .icache_way0_bank5_rd_data(icache_way0_bank5_rd_data),
-      .icache_way0_bank6_rd_data(icache_way0_bank6_rd_data),
-      .icache_way0_bank7_rd_data(icache_way0_bank7_rd_data),
-      .icache_way1_bank0_rd_data(icache_way1_bank0_rd_data),
-      .icache_way1_bank1_rd_data(icache_way1_bank1_rd_data),
-      .icache_way1_bank2_rd_data(icache_way1_bank2_rd_data),
-      .icache_way1_bank3_rd_data(icache_way1_bank3_rd_data),
-      .icache_way1_bank4_rd_data(icache_way1_bank4_rd_data),
-      .icache_way1_bank5_rd_data(icache_way1_bank5_rd_data),
-      .icache_way1_bank6_rd_data(icache_way1_bank6_rd_data),
-      .icache_way1_bank7_rd_data(icache_way1_bank7_rd_data)
+      .icache_way0_line_rd_data(icache_way0_line_rd_data),
+      .icache_way1_line_rd_data(icache_way1_line_rd_data)
    );
 
    function hpm_event_active;
@@ -8669,10 +8634,10 @@ module smolrv64(input wire        clock,
            cache_lookup_hit_way <= way1_hit;
            cache_lookup_next_hit <= way0_next_hit || way1_next_hit;
            cache_lookup_next_hit_way <= way1_next_hit;
-           cache_lookup_data <= cache_selected_bank_data(way1_hit, cache_req_bank);
+           cache_lookup_data <= cache_read_selected_bank_data(way1_hit, cache_req_bank);
            cache_lookup_next_data <= cache_req_same_line
-                                    ? cache_selected_bank_data(way1_hit, cache_req_next_bank)
-                                    : cache_selected_bank_data(way1_next_hit, 3'd0);
+                                    ? cache_read_selected_bank_data(way1_hit, cache_req_next_bank)
+                                    : cache_read_selected_bank_data(way1_next_hit, 3'd0);
            cache_lookup_next_valid <= cache_req_same_line || way0_next_hit || way1_next_hit;
            target_way = !cache_meta_valid(cache_way0_tag_rd_data) ? 1'b0 :
                         !cache_meta_valid(cache_way1_tag_rd_data) ? 1'b1 :
@@ -8911,7 +8876,7 @@ module smolrv64(input wire        clock,
                                   cache_bram_base_addr;
                  cache_bram_word_idx  <= bram_beat_addr[`MEM_SIZE_LG2-1:4];
                  cache_bram_word_bank <= bram_beat_addr[3];
-                 cache_bram_wb_data   <= cache_selected_bank_data(cache_victim_way, cache_wb_beat);
+                 cache_bram_wb_data   <= dcache_selected_bank_data(cache_victim_way, cache_wb_beat);
               end
               cache_state <= CACHE_BRAM_WB_WRITE;
            end else begin
@@ -8920,12 +8885,12 @@ module smolrv64(input wire        clock,
                  $display("%05d CACHE WBREQ line addr=%016h data0=%016h",
                           $time,
                           cache_wb_base,
-                          cache_selected_bank_data(cache_victim_way, 3'd0));
+                          dcache_selected_bank_data(cache_victim_way, 3'd0));
               end
 `endif
               if (!mem_wb_req_valid) begin
                  mem_wb_req_line_addr <= cache_wb_base[30:6];
-                 mem_wb_req_line_data <= cache_selected_line_data(cache_victim_way);
+                 mem_wb_req_line_data <= dcache_selected_line_data(cache_victim_way);
                  mem_wb_req_valid     <= 1;
               end else if (mem_wb_req_ready) begin
                  mem_wb_req_valid <= 0;
@@ -9771,22 +9736,8 @@ module smolrv64_frontend #(
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_next_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_next_rd_data,
-   output wire [63:0]                  icache_way0_bank0_rd_data,
-   output wire [63:0]                  icache_way0_bank1_rd_data,
-   output wire [63:0]                  icache_way0_bank2_rd_data,
-   output wire [63:0]                  icache_way0_bank3_rd_data,
-   output wire [63:0]                  icache_way0_bank4_rd_data,
-   output wire [63:0]                  icache_way0_bank5_rd_data,
-   output wire [63:0]                  icache_way0_bank6_rd_data,
-   output wire [63:0]                  icache_way0_bank7_rd_data,
-   output wire [63:0]                  icache_way1_bank0_rd_data,
-   output wire [63:0]                  icache_way1_bank1_rd_data,
-   output wire [63:0]                  icache_way1_bank2_rd_data,
-   output wire [63:0]                  icache_way1_bank3_rd_data,
-   output wire [63:0]                  icache_way1_bank4_rd_data,
-   output wire [63:0]                  icache_way1_bank5_rd_data,
-   output wire [63:0]                  icache_way1_bank6_rd_data,
-   output wire [63:0]                  icache_way1_bank7_rd_data
+   output wire [511:0]                 icache_way0_line_rd_data,
+   output wire [511:0]                 icache_way1_line_rd_data
 );
    localparam [1:0] PRED_FALLTHROUGH = 2'd0;
    localparam [1:0] PRED_DIRECT      = 2'd1;
@@ -9941,22 +9892,26 @@ module smolrv64_frontend #(
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
 
-   assign icache_way0_bank0_rd_data = icache_way0_bank_rd_data[0];
-   assign icache_way0_bank1_rd_data = icache_way0_bank_rd_data[1];
-   assign icache_way0_bank2_rd_data = icache_way0_bank_rd_data[2];
-   assign icache_way0_bank3_rd_data = icache_way0_bank_rd_data[3];
-   assign icache_way0_bank4_rd_data = icache_way0_bank_rd_data[4];
-   assign icache_way0_bank5_rd_data = icache_way0_bank_rd_data[5];
-   assign icache_way0_bank6_rd_data = icache_way0_bank_rd_data[6];
-   assign icache_way0_bank7_rd_data = icache_way0_bank_rd_data[7];
-   assign icache_way1_bank0_rd_data = icache_way1_bank_rd_data[0];
-   assign icache_way1_bank1_rd_data = icache_way1_bank_rd_data[1];
-   assign icache_way1_bank2_rd_data = icache_way1_bank_rd_data[2];
-   assign icache_way1_bank3_rd_data = icache_way1_bank_rd_data[3];
-   assign icache_way1_bank4_rd_data = icache_way1_bank_rd_data[4];
-   assign icache_way1_bank5_rd_data = icache_way1_bank_rd_data[5];
-   assign icache_way1_bank6_rd_data = icache_way1_bank_rd_data[6];
-   assign icache_way1_bank7_rd_data = icache_way1_bank_rd_data[7];
+   assign icache_way0_line_rd_data = {
+      icache_way0_bank_rd_data[7],
+      icache_way0_bank_rd_data[6],
+      icache_way0_bank_rd_data[5],
+      icache_way0_bank_rd_data[4],
+      icache_way0_bank_rd_data[3],
+      icache_way0_bank_rd_data[2],
+      icache_way0_bank_rd_data[1],
+      icache_way0_bank_rd_data[0]
+   };
+   assign icache_way1_line_rd_data = {
+      icache_way1_bank_rd_data[7],
+      icache_way1_bank_rd_data[6],
+      icache_way1_bank_rd_data[5],
+      icache_way1_bank_rd_data[4],
+      icache_way1_bank_rd_data[3],
+      icache_way1_bank_rd_data[2],
+      icache_way1_bank_rd_data[1],
+      icache_way1_bank_rd_data[0]
+   };
 
    always @(posedge clock) begin
       if (reset || flush) begin
