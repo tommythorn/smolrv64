@@ -1105,10 +1105,6 @@ module smolrv64(input wire        clock,
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
    wire [63:0]  frontend_rsp_predicted_next_pc;
    wire [ 1:0]  frontend_rsp_prediction_kind;
-   wire         icache_way0_tag_hit;
-   wire         icache_way1_tag_hit;
-   wire         icache_way0_next_tag_hit;
-   wire         icache_way1_next_tag_hit;
    wire         icache_lookup_hit;
    wire         icache_lookup_hit_way;
    wire         icache_lookup_next_hit;
@@ -2064,10 +2060,6 @@ module smolrv64(input wire        clock,
       .icache_req_same_line(cache_req_same_line),
       .icache_replace_way(cache_replace_way),
       .icache_vhpr_epoch(vhpr_epoch),
-      .icache_way0_tag_hit(icache_way0_tag_hit),
-      .icache_way1_tag_hit(icache_way1_tag_hit),
-      .icache_way0_next_tag_hit(icache_way0_next_tag_hit),
-      .icache_way1_next_tag_hit(icache_way1_next_tag_hit),
       .icache_lookup_hit(icache_lookup_hit),
       .icache_lookup_hit_way(icache_lookup_hit_way),
       .icache_lookup_next_hit(icache_lookup_next_hit),
@@ -10073,10 +10065,6 @@ module smolrv64_frontend #(
    input  wire                         icache_req_same_line,
    input  wire                         icache_replace_way,
    input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
-   output wire                         icache_way0_tag_hit,
-   output wire                         icache_way1_tag_hit,
-   output wire                         icache_way0_next_tag_hit,
-   output wire                         icache_way1_next_tag_hit,
    output wire                         icache_lookup_hit,
    output wire                         icache_lookup_hit_way,
    output wire                         icache_lookup_next_hit,
@@ -10111,6 +10099,10 @@ module smolrv64_frontend #(
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
+   wire                        icache_way0_tag_hit;
+   wire                        icache_way1_tag_hit;
+   wire                        icache_way0_next_tag_hit;
+   wire                        icache_way1_next_tag_hit;
 
    function [31:0] pick_insn;
       input [127:0] data;
