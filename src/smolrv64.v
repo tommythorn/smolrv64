@@ -1051,6 +1051,10 @@ module smolrv64(input wire        clock,
    reg  [63:0]  dram_latched;        // holds first 8B chunk across states
    reg  [63:0]  dram_latched_next;   // holds ADDR+8 chunk for misaligned access
    reg          dram_latched_next_valid;
+   reg          dram_latched_ifetch_valid = 0;
+   reg  [31:0]  dram_latched_ifetch_insn = 0;
+   reg  [63:0]  dram_latched_ifetch_predicted_next_pc = `RESET_PC;
+   reg  [ 1:0]  dram_latched_ifetch_prediction_kind = 0;
    reg          fetch_from_dram;     // set when current fetch came from DRAM
    reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
    reg  [63:0]  dram2_va;            // virtual address for split-store second beat
@@ -1112,6 +1116,9 @@ module smolrv64(input wire        clock,
    wire [63:0]  icache_lookup_data;
    wire [63:0]  icache_lookup_next_data;
    wire         icache_lookup_next_valid;
+   wire [31:0]  icache_fetch_insn;
+   wire [63:0]  icache_fetch_predicted_next_pc;
+   wire [ 1:0]  icache_fetch_prediction_kind;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
@@ -1355,6 +1362,10 @@ module smolrv64(input wire        clock,
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
    reg        dram_readdata_next_valid_r = 0;
+   reg        icache_fetch_resp_valid = 0;
+   reg [31:0] icache_fetch_resp_insn = 0;
+   reg [63:0] icache_fetch_resp_predicted_next_pc = `RESET_PC;
+   reg [ 1:0] icache_fetch_resp_prediction_kind = 0;
    reg        dram_write_done_r = 0;
    reg        dram_instr = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
@@ -2065,6 +2076,9 @@ module smolrv64(input wire        clock,
       .icache_lookup_data(icache_lookup_data),
       .icache_lookup_next_data(icache_lookup_next_data),
       .icache_lookup_next_valid(icache_lookup_next_valid),
+      .icache_fetch_insn(icache_fetch_insn),
+      .icache_fetch_predicted_next_pc(icache_fetch_predicted_next_pc),
+      .icache_fetch_prediction_kind(icache_fetch_prediction_kind),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
       .icache_target_valid(icache_target_valid)
@@ -5341,10 +5355,19 @@ module smolrv64(input wire        clock,
               frontend_buf_fill_asid <= frontend_cmd_asid;
               frontend_buf_fill_data <= aligned;
            end
-           insn = aligned >> (frontend_cmd_pc[2:1] * 16);
+           insn = dram_latched_ifetch_valid
+                ? dram_latched_ifetch_insn
+                : aligned >> (frontend_cmd_pc[2:1] * 16);
            accept_instruction_fetch(frontend_cmd_pc,
-                                    frontend_fallthrough_pc(frontend_cmd_pc, insn),
-                                    insn, 2'd0, 1'b1);
+                                    dram_latched_ifetch_valid
+                                    ? dram_latched_ifetch_predicted_next_pc
+                                    : frontend_fallthrough_pc(frontend_cmd_pc,
+                                                              insn),
+                                    insn,
+                                    dram_latched_ifetch_valid
+                                    ? dram_latched_ifetch_prediction_kind
+                                    : 2'd0,
+                                    1'b1);
         end
 
         `S_RF2: begin
@@ -8011,17 +8034,24 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
-           dram_latched            <= dram_readdata;
-           dram_latched_next       <= dram_readdata_next;
-           dram_latched_next_valid <= dram_readdata_next_valid;
-           state                   <= `S_FETCH2_DRAM;
+           dram_latched                         <= dram_readdata;
+           dram_latched_next                    <= dram_readdata_next;
+           dram_latched_next_valid              <= dram_readdata_next_valid;
+           dram_latched_ifetch_valid            <= icache_fetch_resp_valid;
+           dram_latched_ifetch_insn             <= icache_fetch_resp_insn;
+           dram_latched_ifetch_predicted_next_pc <=
+              icache_fetch_resp_predicted_next_pc;
+           dram_latched_ifetch_prediction_kind  <=
+              icache_fetch_resp_prediction_kind;
+           state                                <= `S_FETCH2_DRAM;
         end
 
         `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin
-           dram_latched            <= dram_readdata;
-           dram_latched_next       <= dram_readdata_next;
-           dram_latched_next_valid <= dram_readdata_next_valid;
-           state                   <= `S_FETCH2_HALF;
+           dram_latched                         <= dram_readdata;
+           dram_latched_next                    <= dram_readdata_next;
+           dram_latched_next_valid              <= dram_readdata_next_valid;
+           dram_latched_ifetch_valid            <= 0;
+           state                                <= `S_FETCH2_HALF;
         end
 
         `S_DRAM_PTW_WAIT: begin
@@ -8422,6 +8452,10 @@ module smolrv64(input wire        clock,
          plic_threshold   <= 0;
          fetch_from_dram  <= 0;
          dram_latched_next_valid <= 0;
+         dram_latched_ifetch_valid <= 0;
+         dram_latched_ifetch_insn <= 0;
+         dram_latched_ifetch_predicted_next_pc <= `RESET_PC;
+         dram_latched_ifetch_prediction_kind <= 0;
          translated       <= 0;
          dram_read        <= 0;
          dram_write       <= 0;
@@ -8509,6 +8543,7 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
+      icache_fetch_resp_valid <= 0;
       ptw_direct_readdatavalid_r <= 0;
       dram_write_done_r <= 0;
       cache_bram_write_done <= 0;
@@ -8766,6 +8801,14 @@ module smolrv64(input wire        clock,
                  dram_readdata_next_valid_r <= cache_lookup_next_valid &&
                                                 next_line_safe;
                  dram_readdatavalid_r <= 1;
+                 if (cache_req_instr) begin
+                    icache_fetch_resp_valid <= 1;
+                    icache_fetch_resp_insn <= icache_fetch_insn;
+                    icache_fetch_resp_predicted_next_pc <=
+                       icache_fetch_predicted_next_pc;
+                    icache_fetch_resp_prediction_kind <=
+                       icache_fetch_prediction_kind;
+                 end
                  cache_state <= CACHE_IDLE;
               end
            end else begin
@@ -10043,6 +10086,9 @@ module smolrv64_frontend #(
    output wire [63:0]                  icache_lookup_data,
    output wire [63:0]                  icache_lookup_next_data,
    output wire                         icache_lookup_next_valid,
+   output wire [31:0]                  icache_fetch_insn,
+   output wire [63:0]                  icache_fetch_predicted_next_pc,
+   output wire [ 1:0]                  icache_fetch_prediction_kind,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
    output wire                         icache_target_valid
@@ -10411,6 +10457,13 @@ module smolrv64_frontend #(
       select_icache_bank_data(icache_req_same_line ? icache_lookup_hit_way :
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
+   wire [127:0] icache_fetch_window =
+      {icache_lookup_next_data, icache_lookup_data};
+   assign icache_fetch_insn =
+      pick_insn(icache_fetch_window, {1'b0, icache_req_va[2:0]});
+   assign icache_fetch_predicted_next_pc =
+      predict_next_pc(icache_req_va, icache_fetch_insn);
+   assign icache_fetch_prediction_kind = predict_kind(icache_fetch_insn);
 
    wire        icache_fill_finish = icache_fill_valid && icache_fill_beat == 3'd7;
    wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_finish;
