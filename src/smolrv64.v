@@ -1056,8 +1056,6 @@ module smolrv64(input wire        clock,
    reg          ifetch_latched_next_valid = 0;
    reg          ifetch_latched_insn_valid = 0;
    reg  [31:0]  ifetch_latched_insn = 0;
-   reg  [63:0]  ifetch_latched_predicted_next_pc = `RESET_PC;
-   reg  [ 1:0]  ifetch_latched_prediction_kind = 0;
    reg          fetch_from_ifetch_rsp; // current fetch came from I-fetch response
    reg  [27:0]  dmem_store2_dw_addr; // 8B-doubleword addr for split-store second beat
    reg  [63:0]  dmem_store2_va;      // virtual address for split-store second beat
@@ -1112,8 +1110,6 @@ module smolrv64(input wire        clock,
    wire         icache_fetch_next_valid;
    wire [127:0] icache_fetch_window;
    wire [31:0]  icache_fetch_insn;
-   wire [63:0]  icache_fetch_predicted_next_pc;
-   wire [ 1:0]  icache_fetch_prediction_kind;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
@@ -1149,8 +1145,6 @@ module smolrv64(input wire        clock,
    reg          frontend_miss_next_valid = 0;
    reg          frontend_miss_insn_valid = 0;
    reg  [31:0]  frontend_miss_insn = 0;
-   reg  [63:0]  frontend_miss_predicted_next_pc = `RESET_PC;
-   reg  [ 1:0]  frontend_miss_prediction_kind = 0;
    localparam [1:0] FRONTEND_MISS_WAIT_CONSUME  = 2'd0,
                     FRONTEND_MISS_WAIT_EXCEPTION = 2'd2;
    reg  [ 1:0]  frontend_miss_wait_action = FRONTEND_MISS_WAIT_CONSUME;
@@ -1316,8 +1310,6 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_fill_next_data = 0;
    reg [127:0] icache_fetch_window_q = 0;
    reg [31:0]  icache_fetch_insn_q = 0;
-   reg [63:0]  icache_fetch_predicted_next_pc_q = `RESET_PC;
-   reg [ 1:0]  icache_fetch_prediction_kind_q = 0;
    reg         icache_fetch_hit_q = 0;
    reg         icache_fetch_next_valid_q = 0;
    reg [63:0]  dcache_rsp_data = 0;
@@ -1370,8 +1362,6 @@ module smolrv64(input wire        clock,
    reg        ifetch_rsp_next_valid_r = 0;
    reg        ifetch_rsp_insn_valid_r = 0;
    reg [31:0] ifetch_rsp_insn_r = 0;
-   reg [63:0] ifetch_rsp_predicted_next_pc_r = `RESET_PC;
-   reg [ 1:0] ifetch_rsp_prediction_kind_r = 0;
    reg        ifetch_refill_retry_valid = 0;
    reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
@@ -2079,8 +2069,6 @@ module smolrv64(input wire        clock,
       .icache_fetch_next_valid(icache_fetch_next_valid),
       .icache_fetch_window(icache_fetch_window),
       .icache_fetch_insn(icache_fetch_insn),
-      .icache_fetch_predicted_next_pc(icache_fetch_predicted_next_pc),
-      .icache_fetch_prediction_kind(icache_fetch_prediction_kind),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
       .icache_target_valid(icache_target_valid)
@@ -3272,16 +3260,12 @@ module smolrv64(input wire        clock,
       input         rsp_next_valid;
       input         rsp_insn_valid;
       input [31:0]  rsp_insn;
-      input [63:0]  rsp_predicted_next_pc;
-      input [ 1:0]  rsp_prediction_kind;
       begin
          ifetch_rsp_valid_r <= 1;
          ifetch_rsp_window_r <= rsp_window;
          ifetch_rsp_next_valid_r <= rsp_next_valid;
          ifetch_rsp_insn_valid_r <= rsp_insn_valid;
          ifetch_rsp_insn_r <= rsp_insn;
-         ifetch_rsp_predicted_next_pc_r <= rsp_predicted_next_pc;
-         ifetch_rsp_prediction_kind_r <= rsp_prediction_kind;
       end
    endtask
 
@@ -8102,8 +8086,6 @@ module smolrv64(input wire        clock,
            ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
            ifetch_latched_insn_valid            <= ifetch_rsp_insn_valid_r;
            ifetch_latched_insn                  <= ifetch_rsp_insn_r;
-           ifetch_latched_predicted_next_pc     <= ifetch_rsp_predicted_next_pc_r;
-           ifetch_latched_prediction_kind       <= ifetch_rsp_prediction_kind_r;
            state                                <= `S_IFETCH_RESP;
         end
 
@@ -8292,8 +8274,6 @@ module smolrv64(input wire        clock,
          frontend_miss_next_valid <= ifetch_rsp_next_valid_r;
          frontend_miss_insn_valid <= ifetch_rsp_insn_valid_r;
          frontend_miss_insn <= ifetch_rsp_insn_r;
-         frontend_miss_predicted_next_pc <= ifetch_rsp_predicted_next_pc_r;
-         frontend_miss_prediction_kind <= ifetch_rsp_prediction_kind_r;
       end
 
       // Bus timeout: fault if an external bus access doesn't respond
@@ -8419,8 +8399,6 @@ module smolrv64(input wire        clock,
          frontend_miss_next_valid <= 0;
          frontend_miss_insn_valid <= 0;
          frontend_miss_insn <= 0;
-         frontend_miss_predicted_next_pc <= `RESET_PC;
-         frontend_miss_prediction_kind <= 0;
          frontend_miss_wait_action <= FRONTEND_MISS_WAIT_CONSUME;
          rf_decode_head <= 0;
          rf_decode_tail <= 0;
@@ -8525,8 +8503,6 @@ module smolrv64(input wire        clock,
          ifetch_latched_next_valid <= 0;
          ifetch_latched_insn_valid <= 0;
          ifetch_latched_insn <= 0;
-         ifetch_latched_predicted_next_pc <= `RESET_PC;
-         ifetch_latched_prediction_kind <= 0;
          translated       <= 0;
          ifetch_read      <= 0;
          dmem_read        <= 0;
@@ -8821,8 +8797,6 @@ module smolrv64(input wire        clock,
            icache_fetch_next_valid_q <= icache_fetch_next_valid;
            icache_fetch_window_q <= icache_fetch_window;
            icache_fetch_insn_q <= icache_fetch_insn;
-           icache_fetch_predicted_next_pc_q <= icache_fetch_predicted_next_pc;
-           icache_fetch_prediction_kind_q <= icache_fetch_prediction_kind;
            dcache_rsp_hit <= dcache_lookup_hit;
            dcache_rsp_hit_way <= dcache_lookup_hit_way;
            dcache_rsp_next_hit <= dcache_lookup_next_hit;
@@ -8858,9 +8832,7 @@ module smolrv64(input wire        clock,
                  emit_ifetch_rsp(icache_fetch_window_q,
                                   icache_fetch_next_valid_q,
                                   cache_req_va[2:1] != 2'b11,
-                                  icache_fetch_insn_q,
-                                  icache_fetch_predicted_next_pc_q,
-                                  icache_fetch_prediction_kind_q);
+                                  icache_fetch_insn_q);
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
@@ -10145,8 +10117,6 @@ module smolrv64_frontend #(
    output wire                         icache_fetch_next_valid,
    output wire [127:0]                 icache_fetch_window,
    output wire [31:0]                  icache_fetch_insn,
-   output wire [63:0]                  icache_fetch_predicted_next_pc,
-   output wire [ 1:0]                  icache_fetch_prediction_kind,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
    output wire                         icache_target_valid
@@ -10525,9 +10495,6 @@ module smolrv64_frontend #(
    assign icache_fetch_window = {icache_fetch_next_data, icache_fetch_data};
    assign icache_fetch_insn =
       pick_insn(icache_fetch_window, {1'b0, icache_req_va[2:0]});
-   assign icache_fetch_predicted_next_pc =
-      predict_next_pc(icache_req_va, icache_fetch_insn);
-   assign icache_fetch_prediction_kind = predict_kind(icache_fetch_insn);
 
    wire        icache_fill_finish = icache_fill_valid && icache_fill_beat == 3'd7;
    wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_finish;
