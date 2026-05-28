@@ -607,7 +607,7 @@ module smolrv64(input wire        clock,
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
-`define S_FETCH2_DRAM          45  // latch instruction from DRAM fetch without fetch-source mux
+`define S_FETCH2_DRAM          45  // latch instruction from I-fetch response without fetch-source mux
 `define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
 `define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
@@ -623,7 +623,7 @@ module smolrv64(input wire        clock,
 // independently of the backend `state` register, so frontend work overlaps
 // with backend long-latency states (CVFPU, MULDIV, AMO, DRAM, etc).
 //
-// Cache miss / TLB miss / DRAM fetch / cross-doubleword fetch still escalate
+// I-cache miss / TLB miss / cross-doubleword fetch still escalate
 // to the backend FSM for this patch — those resources are shared with the
 // load/store path and require arbitration that is out of scope here.
 `define F_IDLE                  0  // no fetch in flight
@@ -1057,7 +1057,7 @@ module smolrv64(input wire        clock,
    reg  [31:0]  ifetch_latched_insn = 0;
    reg  [63:0]  ifetch_latched_predicted_next_pc = `RESET_PC;
    reg  [ 1:0]  ifetch_latched_prediction_kind = 0;
-   reg          fetch_from_dram;     // set when current fetch came from DRAM
+   reg          fetch_from_ifetch_rsp; // current fetch came from I-fetch response
    reg  [27:0]  dmem_store2_dw_addr; // 8B-doubleword addr for split-store second beat
    reg  [63:0]  dmem_store2_va;      // virtual address for split-store second beat
    reg  [TLB_ASID_BITS-1:0] dmem_store2_asid;
@@ -1172,7 +1172,7 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  rf_decode_prv_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 1:0]  rf_decode_prediction_kind_q [0:RF_DECODE_QUEUE_DEPTH-1];
-   reg          rf_decode_from_dram_q [0:RF_DECODE_QUEUE_DEPTH-1];
+   reg          rf_decode_from_ifetch_rsp_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 4:0]  rf_decode_rd_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 4:0]  rf_decode_rs1_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 4:0]  rf_decode_rs2_q [0:RF_DECODE_QUEUE_DEPTH-1];
@@ -1186,7 +1186,7 @@ module smolrv64(input wire        clock,
    wire [ 1:0]  rf_decode_prv = rf_decode_prv_q[rf_decode_head];
    wire [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch = rf_decode_epoch_q[rf_decode_head];
    wire [ 1:0]  rf_decode_prediction_kind = rf_decode_prediction_kind_q[rf_decode_head];
-   wire         rf_decode_from_dram = rf_decode_from_dram_q[rf_decode_head];
+   wire         rf_decode_from_ifetch_rsp = rf_decode_from_ifetch_rsp_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rd = rf_decode_rd_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rs1 = rf_decode_rs1_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rs2 = rf_decode_rs2_q[rf_decode_head];
@@ -3290,9 +3290,9 @@ module smolrv64(input wire        clock,
             // Sv39 instruction fetch translation
             start_translation(fetch_va, 2'd0, fetch_prv, `S_FETCH2);
          end else begin
-            // Both local BRAM and external DRAM fetches use the cache response
+            // Both local BRAM and external memory fetches use the cache response
             // path.  The cache refill engine chooses BRAM or AXI by line address.
-            fetch_from_dram  <= 1;
+            fetch_from_ifetch_rsp <= 1;
             issue_ifetch_cache_read(fetch_va[30:3], fetch_va,
                                     {TLB_ASID_BITS{1'b0}},
                                     CACHE_PERM_PHYS,
@@ -3307,11 +3307,11 @@ module smolrv64(input wire        clock,
       input [63:0] accept_predicted_pc;
       input [31:0] accept_insn;
       input [ 1:0] accept_prediction_kind;
-      input        accept_from_dram;
+      input        accept_from_ifetch_rsp;
       begin
          pc <= accept_pc;
          insn <= accept_insn;
-         fetch_from_dram <= accept_from_dram;
+         fetch_from_ifetch_rsp <= accept_from_ifetch_rsp;
          translated <= 0;
          clear_frontend_cmd();
          frontend_redirect_valid <= 0;
@@ -3325,7 +3325,7 @@ module smolrv64(input wire        clock,
              csr_satp[63:60] == 4'd8 && prv != 3) begin
             insn_half <= accept_insn[15:0];
             start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
-         end else if (accept_from_dram && accept_pc[2:1] == 2'b11) begin
+         end else if (accept_from_ifetch_rsp && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
             if (ifetch_latched_prediction_valid && ifetch_latched_next_valid) begin
                stage_rf_decode_current(accept_pc,
@@ -3333,7 +3333,7 @@ module smolrv64(input wire        clock,
                                        accept_predicted_pc,
                                        accept_insn,
                                        accept_prediction_kind,
-                                       accept_from_dram);
+                                       accept_from_ifetch_rsp);
             end else if (ifetch_latched_next_valid) begin
                ifetch_latched_half_data <= ifetch_latched_window[127:64];
                state <= `S_FETCH2_HALF;
@@ -3415,7 +3415,7 @@ module smolrv64(input wire        clock,
       input [ 1:0] decode_prv;
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       input [ 1:0] decode_prediction_kind;
-      input        decode_from_dram;
+      input        decode_from_ifetch_rsp;
       reg   [ 4:0] decoded_rd;
       reg   [ 4:0] decoded_rs1;
       reg   [ 4:0] decoded_rs2;
@@ -3437,7 +3437,7 @@ module smolrv64(input wire        clock,
             rf_decode_prv_q[rf_decode_tail] <= decode_prv;
             rf_decode_epoch_q[rf_decode_tail] <= decode_epoch;
             rf_decode_prediction_kind_q[rf_decode_tail] <= decode_prediction_kind;
-            rf_decode_from_dram_q[rf_decode_tail] <= decode_from_dram;
+            rf_decode_from_ifetch_rsp_q[rf_decode_tail] <= decode_from_ifetch_rsp;
             rf_decode_rd_q[rf_decode_tail] <= decoded_rd;
             rf_decode_rs1_q[rf_decode_tail] <= decoded_rs1;
             rf_decode_rs2_q[rf_decode_tail] <= decoded_rs2;
@@ -3501,7 +3501,7 @@ module smolrv64(input wire        clock,
       input [63:0] decode_predicted_pc;
       input [31:0] decode_insn;
       input [ 1:0] decode_prediction_kind;
-      input        decode_from_dram;
+      input        decode_from_ifetch_rsp;
       reg   [ 4:0] decoded_rd;
       reg   [ 4:0] decoded_rs1;
       reg   [ 4:0] decoded_rs2;
@@ -4460,7 +4460,7 @@ module smolrv64(input wire        clock,
              rf_decode_pc == npc &&
              rf_decode_prv == prv) begin
             insn <= rf_decode_insn;
-            fetch_from_dram <= rf_decode_from_dram;
+            fetch_from_ifetch_rsp <= rf_decode_from_ifetch_rsp;
             translated <= 0;
             write_back_register = 0;
             write_back_fp_valid = 0;
@@ -4700,7 +4700,7 @@ module smolrv64(input wire        clock,
                 phys_region(mem_addr) == `REGION_DRAM) begin
                // Cacheable instruction fetch.  Local BRAM is a cache refill
                // source now; it is no longer consumed directly by fetch.
-               fetch_from_dram <= 1;
+               fetch_from_ifetch_rsp <= 1;
                issue_ifetch_cache_read(mem_addr[30:3], tlb_req_va,
                                        current_cache_asid, req_perm,
                                        tlb_req_ctx);
@@ -8061,7 +8061,7 @@ module smolrv64(input wire        clock,
            // Reassemble the 32-bit fetch word and then decode based on its actual
            // low 2 bits, so both compressed and uncompressed cases work.
            translated <= 0;
-           if (fetch_from_dram)
+           if (fetch_from_ifetch_rsp)
               // pc+2 is at byte 0 of the fetched 8B chunk.
               aligned = {64'bx, ifetch_latched_half_data};
            else
@@ -8069,7 +8069,7 @@ module smolrv64(input wire        clock,
            insn = {aligned[15:0], insn_half};
            stage_rf_decode_current(pc, frontend_fallthrough_pc(pc, insn),
                                    frontend_fallthrough_pc(pc, insn),
-                                   insn, 2'd0, fetch_from_dram);
+                                   insn, 2'd0, fetch_from_ifetch_rsp);
         end
 
         `S_DRAM_FETCH_WAIT: if (ifetch_readdatavalid_r) begin
@@ -8492,7 +8492,7 @@ module smolrv64(input wire        clock,
          plic_in_service  <= 0;
          plic_enabled     <= 0;
          plic_threshold   <= 0;
-         fetch_from_dram  <= 0;
+         fetch_from_ifetch_rsp <= 0;
          ifetch_latched_window <= 0;
          ifetch_latched_half_data <= 0;
          ifetch_latched_next_valid <= 0;
