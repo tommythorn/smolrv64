@@ -1106,10 +1106,7 @@ module smolrv64(input wire        clock,
    wire [63:0]  frontend_rsp_predicted_next_pc;
    wire [ 1:0]  frontend_rsp_prediction_kind;
    wire         icache_lookup_hit;
-   wire         icache_lookup_hit_way;
    wire         icache_lookup_next_hit;
-   wire         icache_lookup_next_hit_way;
-   wire         icache_lookup_next_valid;
    wire [127:0] icache_fetch_window;
    wire [31:0]  icache_fetch_insn;
    wire [63:0]  icache_fetch_predicted_next_pc;
@@ -1316,7 +1313,6 @@ module smolrv64(input wire        clock,
    reg        cache_lookup_hit = 0;
    reg        cache_lookup_hit_way = 0;
    reg        cache_lookup_next_hit = 0;
-   reg        cache_lookup_next_hit_way = 0;
    reg        cache_lookup_next_valid = 0;
    reg        cache_lookup_dirty = 0;
    reg        cache_target_dirty = 0;
@@ -2061,10 +2057,7 @@ module smolrv64(input wire        clock,
       .icache_replace_way(cache_replace_way),
       .icache_vhpr_epoch(vhpr_epoch),
       .icache_lookup_hit(icache_lookup_hit),
-      .icache_lookup_hit_way(icache_lookup_hit_way),
       .icache_lookup_next_hit(icache_lookup_next_hit),
-      .icache_lookup_next_hit_way(icache_lookup_next_hit_way),
-      .icache_lookup_next_valid(icache_lookup_next_valid),
       .icache_fetch_window(icache_fetch_window),
       .icache_fetch_insn(icache_fetch_insn),
       .icache_fetch_predicted_next_pc(icache_fetch_predicted_next_pc),
@@ -8737,14 +8730,11 @@ module smolrv64(input wire        clock,
                               ? icache_lookup_hit
                               : dcache_lookup_hit;
            cache_lookup_hit_way <= cache_req_instr
-                                  ? icache_lookup_hit_way
+                                  ? 1'b0
                                   : dcache_lookup_hit_way;
            cache_lookup_next_hit <= cache_req_instr
                                    ? icache_lookup_next_hit
                                    : dcache_lookup_next_hit;
-           cache_lookup_next_hit_way <= cache_req_instr
-                                       ? icache_lookup_next_hit_way
-                                       : dcache_lookup_next_hit_way;
            cache_lookup_data <= cache_req_instr
                               ? icache_fetch_window[63:0]
                               : dcache_lookup_data;
@@ -8752,7 +8742,7 @@ module smolrv64(input wire        clock,
                                     ? icache_fetch_window[127:64]
                                     : dcache_lookup_next_data;
            cache_lookup_next_valid <= cache_req_instr
-                                     ? icache_lookup_next_valid
+                                     ? cache_req_same_line || icache_lookup_next_hit
                                      : dcache_lookup_next_valid;
            cache_lookup_dirty <= cache_req_instr
                                 ? 1'b0
@@ -10066,10 +10056,7 @@ module smolrv64_frontend #(
    input  wire                         icache_replace_way,
    input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
    output wire                         icache_lookup_hit,
-   output wire                         icache_lookup_hit_way,
    output wire                         icache_lookup_next_hit,
-   output wire                         icache_lookup_next_hit_way,
-   output wire                         icache_lookup_next_valid,
    output wire [127:0]                 icache_fetch_window,
    output wire [31:0]                  icache_fetch_insn,
    output wire [63:0]                  icache_fetch_predicted_next_pc,
@@ -10103,6 +10090,8 @@ module smolrv64_frontend #(
    wire                        icache_way1_tag_hit;
    wire                        icache_way0_next_tag_hit;
    wire                        icache_way1_next_tag_hit;
+   wire                        icache_lookup_hit_way;
+   wire                        icache_lookup_next_hit_way;
 
    function [31:0] pick_insn;
       input [127:0] data;
@@ -10408,7 +10397,6 @@ module smolrv64_frontend #(
    assign icache_lookup_hit_way = icache_way1_tag_hit;
    assign icache_lookup_next_hit = icache_way0_next_tag_hit || icache_way1_next_tag_hit;
    assign icache_lookup_next_hit_way = icache_way1_next_tag_hit;
-   assign icache_lookup_next_valid = icache_req_same_line || icache_lookup_next_hit;
 
    assign icache_target_way =
       !cache_meta_valid(icache_way0_tag_rd_data) ? 1'b0 :
