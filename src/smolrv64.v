@@ -1271,10 +1271,10 @@ module smolrv64(input wire        clock,
    localparam [4:0] CACHE_FILL_LINE_INSTALL = 5'd28;
    localparam [4:0] CACHE_LAST_STATE = CACHE_FILL_LINE_INSTALL;
 
-   reg [ 7:0] cache_bank_wr_en = 0;
-   reg [`CACHE_INDEX_BITS-1:0] cache_bank_wr_idx = 0;
-   reg                         cache_bank_wr_way = 0;
-   reg [63:0] cache_bank_wr_data = 0;
+   reg [ 7:0] dcache_bank_wr_en = 0;
+   reg [`CACHE_INDEX_BITS-1:0] dcache_bank_wr_idx = 0;
+   reg                         dcache_bank_wr_way = 0;
+   reg [63:0] dcache_bank_wr_data = 0;
 
    localparam [CACHE_PERM_BITS-1:0] CACHE_PERM_PHYS = 5'b1_1111;
 
@@ -1855,11 +1855,13 @@ module smolrv64(input wire        clock,
    reg [`CACHE_INDEX_BITS-1:0] cache_way1_bank0_rd_idx = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_way0_next_rd_idx = 0;
    reg [`CACHE_INDEX_BITS-1:0] cache_way1_next_rd_idx = 0;
-   reg                         cache_way0_tag_wr_en = 0;
-   reg                         cache_way1_tag_wr_en = 0;
-   reg                         cache_tag_wr_all = 0;
-   reg  [`CACHE_INDEX_BITS-1:0] cache_tag_wr_idx = 0;
-   reg  [`CACHE_META_BITS-1:0]  cache_tag_wr_data = 0;
+   reg                         dcache_way0_tag_wr_en = 0;
+   reg                         dcache_way1_tag_wr_en = 0;
+   reg  [`CACHE_INDEX_BITS-1:0] dcache_tag_wr_idx = 0;
+   reg  [`CACHE_META_BITS-1:0]  dcache_tag_wr_data = 0;
+   reg                         icache_invalidate_valid = 0;
+   reg                         icache_invalidate_way = 0;
+   reg  [`CACHE_INDEX_BITS-1:0] icache_invalidate_idx = 0;
    wire [`CACHE_META_BITS-1:0] dcache_way0_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] dcache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] dcache_way0_tag_next_rd_data;
@@ -1955,9 +1957,9 @@ module smolrv64(input wire        clock,
       .icache_way1_rd_idx(cache_way1_rd_idx),
       .icache_way0_next_rd_idx(cache_way0_next_rd_idx),
       .icache_way1_next_rd_idx(cache_way1_next_rd_idx),
-      .icache_invalidate_valid(cache_tag_wr_all && (cache_way0_tag_wr_en || cache_way1_tag_wr_en)),
-      .icache_invalidate_way(cache_way1_tag_wr_en),
-      .icache_invalidate_idx(cache_tag_wr_idx),
+      .icache_invalidate_valid(icache_invalidate_valid),
+      .icache_invalidate_way(icache_invalidate_way),
+      .icache_invalidate_idx(icache_invalidate_idx),
       .icache_fill_begin(icache_fill_begin),
       .icache_fill_begin_idx(cache_target_idx),
       .icache_fill_begin_way(cache_target_way),
@@ -2065,9 +2067,9 @@ module smolrv64(input wire        clock,
       .clock   ( clock ),
       .rd_addr ( cache_way0_rd_idx ),
       .rd_data ( dcache_way0_tag_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
+      .wr_en   ( dcache_way0_tag_wr_en ),
+      .wr_addr ( dcache_tag_wr_idx ),
+      .wr_data ( dcache_tag_wr_data )
    );
 
    smolrv64_sdpram #(
@@ -2078,32 +2080,32 @@ module smolrv64(input wire        clock,
       .clock   ( clock ),
       .rd_addr ( cache_way1_rd_idx ),
       .rd_data ( dcache_way1_tag_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
+      .wr_en   ( dcache_way1_tag_wr_en ),
+      .wr_addr ( dcache_tag_wr_idx ),
+      .wr_data ( dcache_tag_wr_data )
    );
 
    always @* begin
-      cache_bank_wr_en = 8'd0;
-      cache_bank_wr_idx = cache_target_idx;
-      cache_bank_wr_way = cache_target_way;
-      cache_bank_wr_data = cache_fill_data;
+      dcache_bank_wr_en = 8'd0;
+      dcache_bank_wr_idx = cache_target_idx;
+      dcache_bank_wr_way = cache_target_way;
+      dcache_bank_wr_data = cache_fill_data;
 
       if ((cache_state == CACHE_FILL_LINE_INSTALL || cache_state == CACHE_BRAM_FILL_COMMIT) &&
-          cache_fill_data_valid) begin
-         cache_bank_wr_en = 8'd1 << cache_fill_beat;
-         cache_bank_wr_idx = cache_target_idx;
-         cache_bank_wr_way = cache_target_way;
-         cache_bank_wr_data = cache_fill_data;
+          cache_fill_data_valid && !cache_req_instr) begin
+         dcache_bank_wr_en = 8'd1 << cache_fill_beat;
+         dcache_bank_wr_idx = cache_target_idx;
+         dcache_bank_wr_way = cache_target_way;
+         dcache_bank_wr_data = cache_fill_data;
          if (cache_req_write && cache_fill_beat == cache_req_bank)
-            cache_bank_wr_data = merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
+            dcache_bank_wr_data = merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
       end
 
       if (cache_state == CACHE_HIT_WRITE) begin
-         cache_bank_wr_en = 8'd1 << cache_req_bank;
-         cache_bank_wr_idx = cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-         cache_bank_wr_way = cache_lookup_hit_way;
-         cache_bank_wr_data = merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+         dcache_bank_wr_en = 8'd1 << cache_req_bank;
+         dcache_bank_wr_idx = cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+         dcache_bank_wr_way = cache_lookup_hit_way;
+         dcache_bank_wr_data = merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
       end
    end
 
@@ -2118,9 +2120,9 @@ module smolrv64(input wire        clock,
             .clock   ( clock ),
             .rd_addr ( cache_bank_gen == 0 ? cache_way0_bank0_rd_idx : cache_way0_rd_idx ),
             .rd_data ( dcache_way0_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && !cache_bank_wr_way && !cache_req_instr ),
-            .wr_addr ( cache_bank_wr_idx ),
-            .wr_data ( cache_bank_wr_data )
+            .wr_en   ( dcache_bank_wr_en[cache_bank_gen] && !dcache_bank_wr_way ),
+            .wr_addr ( dcache_bank_wr_idx ),
+            .wr_data ( dcache_bank_wr_data )
          );
 
          smolrv64_sdpram #(
@@ -2131,9 +2133,9 @@ module smolrv64(input wire        clock,
             .clock   ( clock ),
             .rd_addr ( cache_bank_gen == 0 ? cache_way1_bank0_rd_idx : cache_way1_rd_idx ),
             .rd_data ( dcache_way1_bank_rd_data[cache_bank_gen] ),
-            .wr_en   ( cache_bank_wr_en[cache_bank_gen] && cache_bank_wr_way && !cache_req_instr ),
-            .wr_addr ( cache_bank_wr_idx ),
-            .wr_data ( cache_bank_wr_data )
+            .wr_en   ( dcache_bank_wr_en[cache_bank_gen] && dcache_bank_wr_way ),
+            .wr_addr ( dcache_bank_wr_idx ),
+            .wr_data ( dcache_bank_wr_data )
          );
 
       end
@@ -2147,9 +2149,9 @@ module smolrv64(input wire        clock,
       .clock   ( clock ),
       .rd_addr ( cache_way0_next_rd_idx ),
       .rd_data ( dcache_way0_tag_next_rd_data ),
-      .wr_en   ( cache_way0_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
+      .wr_en   ( dcache_way0_tag_wr_en ),
+      .wr_addr ( dcache_tag_wr_idx ),
+      .wr_data ( dcache_tag_wr_data )
    );
 
    smolrv64_sdpram #(
@@ -2160,9 +2162,9 @@ module smolrv64(input wire        clock,
       .clock   ( clock ),
       .rd_addr ( cache_way1_next_rd_idx ),
       .rd_data ( dcache_way1_tag_next_rd_data ),
-      .wr_en   ( cache_way1_tag_wr_en && (!cache_req_instr || cache_tag_wr_all) ),
-      .wr_addr ( cache_tag_wr_idx ),
-      .wr_data ( cache_tag_wr_data )
+      .wr_en   ( dcache_way1_tag_wr_en ),
+      .wr_addr ( dcache_tag_wr_idx ),
+      .wr_data ( dcache_tag_wr_data )
    );
 
 `ifndef BUS_TIMEOUT_LG2
@@ -2281,18 +2283,18 @@ module smolrv64(input wire        clock,
       begin
          cache_wb_beat <= 0;
          if (cache_wb_after_cbo) begin
-            cache_way0_tag_wr_en <= !cache_victim_way;
-            cache_way1_tag_wr_en <= cache_victim_way;
-            cache_tag_wr_idx <= cache_victim_idx;
-            cache_tag_wr_data <= 0;
+            dcache_way0_tag_wr_en <= !cache_victim_way;
+            dcache_way1_tag_wr_en <= cache_victim_way;
+            dcache_tag_wr_idx <= cache_victim_idx;
+            dcache_tag_wr_data <= 0;
             cache_wb_after_cbo <= 1'b0;
             cache_cbo_done_r <= 1;
             cache_state <= CACHE_IDLE;
          end else if (cache_wb_after_flush) begin
-            cache_way0_tag_wr_en <= !cache_victim_way;
-            cache_way1_tag_wr_en <= cache_victim_way;
-            cache_tag_wr_idx <= cache_victim_idx;
-            cache_tag_wr_data <= 0;
+            dcache_way0_tag_wr_en <= !cache_victim_way;
+            dcache_way1_tag_wr_en <= cache_victim_way;
+            dcache_tag_wr_idx <= cache_victim_idx;
+            dcache_tag_wr_data <= 0;
             cache_wb_after_flush <= 1'b0;
             cache_flush_next_line();
          end else if (cache_wb_then_fill) begin
@@ -8410,9 +8412,9 @@ module smolrv64(input wire        clock,
       dram_write_done_r <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
-      cache_way0_tag_wr_en <= 0;
-      cache_way1_tag_wr_en <= 0;
-      cache_tag_wr_all <= 0;
+      dcache_way0_tag_wr_en <= 0;
+      dcache_way1_tag_wr_en <= 0;
+      icache_invalidate_valid <= 0;
 
       if (ptw_direct_read)
          ptw_direct_probe_pending <= 1;
@@ -8697,10 +8699,10 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_HIT_WRITE: begin
-           cache_way0_tag_wr_en <= !cache_lookup_hit_way;
-           cache_way1_tag_wr_en <= cache_lookup_hit_way;
-           cache_tag_wr_idx     <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-           cache_tag_wr_data    <= cache_make_meta(1'b1, 1'b1, cache_req_asid,
+           dcache_way0_tag_wr_en <= !cache_lookup_hit_way;
+           dcache_way1_tag_wr_en <= cache_lookup_hit_way;
+           dcache_tag_wr_idx     <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+           dcache_tag_wr_data    <= cache_make_meta(1'b1, 1'b1, cache_req_asid,
                                                     cache_req_perm,
                                                     cache_req_vtag, cache_req_ptag,
                                                     vhpr_epoch);
@@ -8720,11 +8722,13 @@ module smolrv64(input wire        clock,
            reg [`CACHE_META_BITS-1:0] flush_meta;
 
            flush_meta = cache_flush_way ? dcache_way1_tag_rd_data : dcache_way0_tag_rd_data;
-           cache_way0_tag_wr_en <= !cache_flush_way;
-           cache_way1_tag_wr_en <= cache_flush_way;
-           cache_tag_wr_idx <= cache_flush_idx;
-           cache_tag_wr_data <= 0;
-           cache_tag_wr_all <= 1;
+           dcache_way0_tag_wr_en <= !cache_flush_way;
+           dcache_way1_tag_wr_en <= cache_flush_way;
+           dcache_tag_wr_idx <= cache_flush_idx;
+           dcache_tag_wr_data <= 0;
+           icache_invalidate_valid <= 1'b1;
+           icache_invalidate_way <= cache_flush_way;
+           icache_invalidate_idx <= cache_flush_idx;
            if (cache_meta_valid(flush_meta) && cache_meta_dirty(flush_meta)) begin
               csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
               csr_vhpr_dirty_flush_evicts <= csr_vhpr_dirty_flush_evicts + 1;
@@ -8844,10 +8848,10 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_INVALIDATE: begin
-           cache_way0_tag_wr_en <= !cache_victim_way;
-           cache_way1_tag_wr_en <= cache_victim_way;
-           cache_tag_wr_idx <= cache_victim_idx;
-           cache_tag_wr_data <= 0;
+           dcache_way0_tag_wr_en <= !cache_victim_way;
+           dcache_way1_tag_wr_en <= cache_victim_way;
+           dcache_tag_wr_idx <= cache_victim_idx;
+           dcache_tag_wr_data <= 0;
            if (cache_req_cbo) begin
               cache_cbo_done_r <= 1;
               cache_state <= CACHE_IDLE;
@@ -9001,15 +9005,17 @@ module smolrv64(input wire        clock,
                  csr_vhpr_fills <= csr_vhpr_fills + 1;
                  if (cache_target_valid && !cache_target_dirty)
                     csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
-                 cache_way0_tag_wr_en <= !cache_target_way;
-                 cache_way1_tag_wr_en <= cache_target_way;
-                 cache_tag_wr_idx  <= cache_target_idx;
-                 cache_tag_wr_data <= cache_make_meta(cache_req_write, 1'b1,
-                                                       cache_req_asid,
-                                                       cache_req_perm,
-                                                       cache_req_vtag,
-                                                       cache_req_ptag,
-                                                       vhpr_epoch);
+                 if (!cache_req_instr) begin
+                    dcache_way0_tag_wr_en <= !cache_target_way;
+                    dcache_way1_tag_wr_en <= cache_target_way;
+                    dcache_tag_wr_idx  <= cache_target_idx;
+                    dcache_tag_wr_data <= cache_make_meta(cache_req_write, 1'b1,
+                                                          cache_req_asid,
+                                                          cache_req_perm,
+                                                          cache_req_vtag,
+                                                          cache_req_ptag,
+                                                          vhpr_epoch);
+                 end
                  if (cache_req_write) begin
                     dram_write_done_r <= 1;
                  end else begin
@@ -9053,9 +9059,9 @@ module smolrv64(input wire        clock,
          mem_wb_rsp_ready <= 0;
          mem_read_req_valid <= 0;
          mem_read_rsp_ready <= 0;
-         cache_way0_tag_wr_en <= 0;
-         cache_way1_tag_wr_en <= 0;
-         cache_tag_wr_all <= 0;
+         dcache_way0_tag_wr_en <= 0;
+         dcache_way1_tag_wr_en <= 0;
+         icache_invalidate_valid <= 0;
 	 cache_cbo_done_r <= 0;
 	 cache_req_instr <= 0;
 	 cache_req_perm <= CACHE_PERM_PHYS;
