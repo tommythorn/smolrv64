@@ -1928,6 +1928,40 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   wire dcache_lookup_hit = dcache_way0_tag_hit || dcache_way1_tag_hit;
+   wire dcache_lookup_hit_way = dcache_way1_tag_hit;
+   wire dcache_lookup_next_hit =
+        dcache_way0_next_tag_hit || dcache_way1_next_tag_hit;
+   wire dcache_lookup_next_hit_way = dcache_way1_next_tag_hit;
+   wire [63:0] dcache_lookup_data =
+        dcache_selected_bank_data(dcache_lookup_hit_way, cache_req_bank);
+   wire [63:0] dcache_lookup_next_data =
+        cache_req_same_line
+        ? dcache_selected_bank_data(dcache_lookup_hit_way, cache_req_next_bank)
+        : dcache_selected_bank_data(dcache_lookup_next_hit_way, 3'd0);
+   wire dcache_lookup_next_valid =
+        cache_req_same_line || dcache_lookup_next_hit;
+   wire dcache_target_way =
+        !cache_meta_valid(dcache_way0_tag_rd_data) ? 1'b0 :
+        !cache_meta_valid(dcache_way1_tag_rd_data) ? 1'b1 :
+        cache_meta_epoch(dcache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
+        cache_meta_epoch(dcache_way1_tag_rd_data) != vhpr_epoch ? 1'b1 :
+        cache_replace_way;
+   wire [`CACHE_META_BITS-1:0] dcache_target_meta =
+        dcache_target_way ? dcache_way1_tag_rd_data : dcache_way0_tag_rd_data;
+   wire dcache_target_valid = cache_meta_valid(dcache_target_meta);
+   wire dcache_target_dirty =
+        dcache_target_valid && cache_meta_dirty(dcache_target_meta);
+   wire [`CACHE_INDEX_BITS-1:0] dcache_target_idx =
+        dcache_target_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+   wire [`CACHE_PHYS_TAG_BITS-1:0] dcache_target_ptag =
+        cache_meta_ptag(dcache_target_meta);
+   wire [`CACHE_META_BITS-1:0] dcache_lookup_meta =
+        dcache_lookup_hit_way ? dcache_way1_tag_rd_data : dcache_way0_tag_rd_data;
+   wire dcache_lookup_dirty =
+        dcache_lookup_hit ? cache_meta_dirty(dcache_lookup_meta) :
+                            dcache_target_dirty;
+
    smolrv64_frontend #(
       .EPOCH_BITS(FRONTEND_EPOCH_BITS),
       .TLB_ASID_BITS(TLB_ASID_BITS),
@@ -8604,68 +8638,46 @@ module smolrv64(input wire        clock,
            cache_state <= CACHE_TAG_CHECK;
         end
 
-        CACHE_TAG_CHECK: begin : cache_tag_check
-           reg target_way;
-           reg [`CACHE_META_BITS-1:0] target_meta;
-           reg target_valid;
-           reg target_dirty;
-           reg [`CACHE_INDEX_BITS-1:0] target_idx;
-           reg [`CACHE_PHYS_TAG_BITS-1:0] target_ptag;
-
+        CACHE_TAG_CHECK: begin
            cache_lookup_hit <= cache_req_instr
                               ? icache_lookup_hit
-                              : (dcache_way0_tag_hit || dcache_way1_tag_hit);
+                              : dcache_lookup_hit;
            cache_lookup_hit_way <= cache_req_instr
                                   ? icache_lookup_hit_way
-                                  : dcache_way1_tag_hit;
+                                  : dcache_lookup_hit_way;
            cache_lookup_next_hit <= cache_req_instr
                                    ? icache_lookup_next_hit
-                                   : (dcache_way0_next_tag_hit || dcache_way1_next_tag_hit);
+                                   : dcache_lookup_next_hit;
            cache_lookup_next_hit_way <= cache_req_instr
                                        ? icache_lookup_next_hit_way
-                                       : dcache_way1_next_tag_hit;
+                                       : dcache_lookup_next_hit_way;
            cache_lookup_data <= cache_req_instr
                               ? icache_lookup_data
-                              : dcache_selected_bank_data(dcache_way1_tag_hit, cache_req_bank);
-           cache_lookup_next_data <= cache_req_same_line
-                                    ? (cache_req_instr
-                                       ? icache_lookup_next_data
-                                       : dcache_selected_bank_data(dcache_way1_tag_hit, cache_req_next_bank))
-                                    : (cache_req_instr
-                                       ? icache_lookup_next_data
-                                       : dcache_selected_bank_data(dcache_way1_next_tag_hit, 3'd0));
+                              : dcache_lookup_data;
+           cache_lookup_next_data <= cache_req_instr
+                                    ? icache_lookup_next_data
+                                    : dcache_lookup_next_data;
            cache_lookup_next_valid <= cache_req_instr
                                      ? icache_lookup_next_valid
-                                     : (cache_req_same_line ||
-                                        dcache_way0_next_tag_hit || dcache_way1_next_tag_hit);
-           if (cache_req_instr) begin
-              target_way = icache_target_way;
-              target_valid = icache_target_valid;
-              target_dirty = icache_target_dirty;
-              target_idx = icache_target_idx;
-              target_ptag = icache_target_ptag;
-              cache_lookup_dirty <= icache_lookup_dirty;
-           end else begin
-              target_way = !cache_meta_valid(dcache_way0_tag_rd_data) ? 1'b0 :
-                           !cache_meta_valid(dcache_way1_tag_rd_data) ? 1'b1 :
-                           cache_meta_epoch(dcache_way0_tag_rd_data) != vhpr_epoch ? 1'b0 :
-                           cache_meta_epoch(dcache_way1_tag_rd_data) != vhpr_epoch ? 1'b1 :
-                           cache_replace_way;
-              target_meta = target_way ? dcache_way1_tag_rd_data : dcache_way0_tag_rd_data;
-              target_valid = cache_meta_valid(target_meta);
-              target_dirty = target_valid && cache_meta_dirty(target_meta);
-              target_idx = target_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-              target_ptag = cache_meta_ptag(target_meta);
-              cache_lookup_dirty <= (dcache_way0_tag_hit || dcache_way1_tag_hit)
-                                    ? (dcache_way1_tag_hit ? cache_meta_dirty(dcache_way1_tag_rd_data)
-                                                           : cache_meta_dirty(dcache_way0_tag_rd_data))
-                                    : target_dirty;
-           end
-           cache_target_way <= target_way;
-           cache_target_idx <= target_idx;
-           cache_target_valid <= target_valid;
-           cache_target_dirty <= target_dirty;
-           cache_target_ptag <= target_ptag;
+                                     : dcache_lookup_next_valid;
+           cache_lookup_dirty <= cache_req_instr
+                                ? icache_lookup_dirty
+                                : dcache_lookup_dirty;
+           cache_target_way <= cache_req_instr
+                              ? icache_target_way
+                              : dcache_target_way;
+           cache_target_idx <= cache_req_instr
+                              ? icache_target_idx
+                              : dcache_target_idx;
+           cache_target_valid <= cache_req_instr
+                                ? icache_target_valid
+                                : dcache_target_valid;
+           cache_target_dirty <= cache_req_instr
+                                ? icache_target_dirty
+                                : dcache_target_dirty;
+           cache_target_ptag <= cache_req_instr
+                               ? icache_target_ptag
+                               : dcache_target_ptag;
            cache_state <= CACHE_HIT_RESP;
         end
 
