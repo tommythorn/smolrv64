@@ -1378,12 +1378,12 @@ module smolrv64(input wire        clock,
    wire       cache_cbo_done = cache_cbo_done_r;
    wire       cache_read_req = ifetch_read || dmem_read;
 
-   reg        mem_fill_req_valid = 0;
-   wire       mem_fill_req_ready;
-   reg [24:0] mem_fill_req_line_addr = 0;
-   wire       mem_fill_rsp_valid;
-   reg        mem_fill_rsp_ready = 0;
-   wire [511:0] mem_fill_rsp_data;
+   reg        l2_fill_req_valid = 0;
+   wire       l2_fill_req_ready;
+   reg [24:0] l2_fill_req_line_addr = 0;
+   wire       l2_fill_rsp_valid;
+   reg        l2_fill_rsp_ready = 0;
+   wire [511:0] l2_fill_rsp_data;
    wire       icache_l2_fill_req_ready;
    wire       dcache_l2_fill_req_ready;
    wire       icache_l2_fill_rsp_valid;
@@ -1405,24 +1405,24 @@ module smolrv64(input wire        clock,
    reg        mem_read_rsp_ready = 0;
    wire [63:0] mem_read_rsp_data;
    wire       mem_engine_idle;
-   wire       icache_l2_fill_req_valid = mem_fill_req_valid && cache_req_ifetch;
-   wire       dcache_l2_fill_req_valid = mem_fill_req_valid && !cache_req_ifetch;
-   assign mem_fill_req_ready = cache_req_ifetch ? icache_l2_fill_req_ready :
+   wire       icache_l2_fill_req_valid = l2_fill_req_valid && cache_req_ifetch;
+   wire       dcache_l2_fill_req_valid = l2_fill_req_valid && !cache_req_ifetch;
+   assign l2_fill_req_ready = cache_req_ifetch ? icache_l2_fill_req_ready :
                                                  dcache_l2_fill_req_ready;
-   assign mem_fill_rsp_valid = cache_req_ifetch ? icache_l2_fill_rsp_valid :
+   assign l2_fill_rsp_valid = cache_req_ifetch ? icache_l2_fill_rsp_valid :
                                                  dcache_l2_fill_rsp_valid;
-   assign mem_fill_rsp_data = cache_req_ifetch ? icache_l2_fill_rsp_data :
+   assign l2_fill_rsp_data = cache_req_ifetch ? icache_l2_fill_rsp_data :
                                                 dcache_l2_fill_rsp_data;
-   assign icache_l2_fill_rsp_ready = mem_fill_rsp_ready && cache_req_ifetch;
-   assign dcache_l2_fill_rsp_ready = mem_fill_rsp_ready && !cache_req_ifetch;
-   wire       mem_fill_req_fire = mem_fill_req_valid && mem_fill_req_ready;
+   assign icache_l2_fill_rsp_ready = l2_fill_rsp_ready && cache_req_ifetch;
+   assign dcache_l2_fill_rsp_ready = l2_fill_rsp_ready && !cache_req_ifetch;
+   wire       l2_fill_req_fire = l2_fill_req_valid && l2_fill_req_ready;
    wire       mem_wb_req_fire = mem_wb_req_valid && mem_wb_req_ready;
    wire       mem_read_req_fire = mem_read_req_valid && mem_read_req_ready;
    wire       icache_fill_begin =
               cache_req_ifetch &&
               ((cache_state == CACHE_FILL_REQ && cache_fill_from_bram &&
                 cache_fill_beat == 3'd0) ||
-               mem_fill_req_fire);
+               l2_fill_req_fire);
    wire       cache_bram_fill_commit = cache_state == CACHE_BRAM_FILL_COMMIT;
    reg [511:0] cache_fill_line_data = 0;
    wire       cache_line_install = cache_state == CACHE_FILL_LINE_INSTALL;
@@ -1442,7 +1442,7 @@ module smolrv64(input wire        clock,
 
    assign     core_reset_home = state == `S_FETCH1 && cache_state == CACHE_IDLE &&
                                 !cache_read_req && !dmem_write &&
-                                !mem_fill_req_valid && !mem_wb_req_valid &&
+                                !l2_fill_req_valid && !mem_wb_req_valid &&
                                 !mem_read_req_valid &&
                                 !ptw_direct_read && !ptw_direct_probe_pending &&
                                 !ptw_direct_wait_probe && !ptw_direct_pending &&
@@ -1475,7 +1475,7 @@ module smolrv64(input wire        clock,
    wire       hpm_dcache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
                                          (cache_wb_to_bram || mem_wb_req_ready) &&
                                          cache_wb_beat == 3'd0;
-   wire       hpm_axi_read_pulse = mem_fill_req_fire || mem_read_req_fire;
+   wire       hpm_axi_read_pulse = l2_fill_req_fire || mem_read_req_fire;
    wire       hpm_axi_write_pulse = mem_wb_req_fire;
    wire       hpm_bus_wait_cycle = state == `S_IFETCH_WAIT || state == `S_IFETCH_HALF_WAIT ||
                                    state == `S_DMEM_LOAD_WAIT  || state == `S_DMEM_LOAD2_WAIT ||
@@ -9117,7 +9117,7 @@ module smolrv64(input wire        clock,
 
         CACHE_FILL_REQ: begin
 `ifdef SIMULATE
-           if (cache_trace_enabled && !cache_fill_from_bram && !mem_fill_req_valid) begin
+           if (cache_trace_enabled && !cache_fill_from_bram && !l2_fill_req_valid) begin
               $display("%05d %s FILLREQ line addr=%016h",
                        $time,
                        cache_req_ifetch ? "ICACHE" : "DCACHE",
@@ -9134,21 +9134,21 @@ module smolrv64(input wire        clock,
               end
               cache_state <= CACHE_BRAM_FILL_READ;
            end else begin
-              if (!mem_fill_req_valid) begin
-                 mem_fill_req_line_addr <= cache_fill_base[30:6];
-                 mem_fill_req_valid <= 1;
-              end else if (mem_fill_req_ready) begin
-                 mem_fill_req_valid <= 0;
+              if (!l2_fill_req_valid) begin
+                 l2_fill_req_line_addr <= cache_fill_base[30:6];
+                 l2_fill_req_valid <= 1;
+              end else if (l2_fill_req_ready) begin
+                 l2_fill_req_valid <= 0;
                  cache_state <= CACHE_FILL_LINE_WAIT;
               end
            end
         end
 
         CACHE_FILL_LINE_WAIT: begin
-           mem_fill_rsp_ready <= 1;
-           if (mem_fill_rsp_valid && mem_fill_rsp_ready) begin
-              cache_fill_line_data <= mem_fill_rsp_data;
-              mem_fill_rsp_ready <= 0;
+           l2_fill_rsp_ready <= 1;
+           if (l2_fill_rsp_valid && l2_fill_rsp_ready) begin
+              cache_fill_line_data <= l2_fill_rsp_data;
+              l2_fill_rsp_ready <= 0;
               cache_fill_beat <= 0;
               cache_state <= CACHE_FILL_LINE_INSTALL;
            end
@@ -9232,8 +9232,8 @@ module smolrv64(input wire        clock,
          dmem_rsp_next_valid_r <= 0;
          dmem_write_done_r <= 0;
          cache_bram_write_done <= 0;
-         mem_fill_req_valid <= 0;
-         mem_fill_rsp_ready <= 0;
+         l2_fill_req_valid <= 0;
+         l2_fill_rsp_ready <= 0;
          mem_wb_req_valid <= 0;
          mem_wb_rsp_ready <= 0;
          mem_read_req_valid <= 0;
@@ -9394,14 +9394,14 @@ module smolrv64(input wire        clock,
 
       .icache_fill_req_valid     (icache_l2_fill_req_valid),
       .icache_fill_req_ready     (icache_l2_fill_req_ready),
-      .icache_fill_req_line_addr (mem_fill_req_line_addr),
+      .icache_fill_req_line_addr (l2_fill_req_line_addr),
       .icache_fill_rsp_valid     (icache_l2_fill_rsp_valid),
       .icache_fill_rsp_ready     (icache_l2_fill_rsp_ready),
       .icache_fill_rsp_data      (icache_l2_fill_rsp_data),
 
       .dcache_fill_req_valid     (dcache_l2_fill_req_valid),
       .dcache_fill_req_ready     (dcache_l2_fill_req_ready),
-      .dcache_fill_req_line_addr (mem_fill_req_line_addr),
+      .dcache_fill_req_line_addr (l2_fill_req_line_addr),
       .dcache_fill_rsp_valid     (dcache_l2_fill_rsp_valid),
       .dcache_fill_rsp_ready     (dcache_l2_fill_rsp_ready),
       .dcache_fill_rsp_data      (dcache_l2_fill_rsp_data),
