@@ -935,7 +935,6 @@ module smolrv64(input wire        clock,
    reg  [ 1:0] execute_req_prv = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] execute_req_epoch = 0;
    (* max_fanout = 16 *) reg [31:0] execute_req_insn = 0;
-   reg  [ 1:0] execute_req_prediction_kind = 0;
    reg  [ 4:0] execute_req_rd = 0;
    reg  [ 4:0] execute_req_rs1 = 0;
    reg  [ 4:0] execute_req_rs2 = 0;
@@ -947,7 +946,6 @@ module smolrv64(input wire        clock,
    wire [ 1:0] ex_prv = execute_req_prv;
    wire [FRONTEND_EPOCH_BITS-1:0] ex_epoch = execute_req_epoch;
    wire [31:0] ex_insn = execute_req_insn;
-   wire [ 1:0] ex_prediction_kind = execute_req_prediction_kind;
    wire [ 4:0] ex_rd = execute_req_rd;
    wire [ 4:0] ex_rs1 = execute_req_rs1;
    wire [ 4:0] ex_rs2 = execute_req_rs2;
@@ -1100,12 +1098,10 @@ module smolrv64(input wire        clock,
    reg          f_latched_hit = 0;
    reg  [31:0]  f_latched_insn = 0;
    reg  [63:0]  f_latched_next_pc = `RESET_PC;
-   reg  [ 1:0]  f_latched_prediction_kind = 0;
    reg  [63:0]  f_latched_cmd_pc = `RESET_PC;
    reg  [ 1:0]  f_latched_cmd_prv = 3;
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
    wire [63:0]  frontend_rsp_predicted_next_pc;
-   wire [ 1:0]  frontend_rsp_prediction_kind;
    wire         icache_fetch_hit;
    wire         icache_fetch_next_valid;
    wire [127:0] icache_fetch_window;
@@ -1166,7 +1162,6 @@ module smolrv64(input wire        clock,
    reg  [31:0]  rf_decode_insn_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 1:0]  rf_decode_prv_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch_q [0:RF_DECODE_QUEUE_DEPTH-1];
-   reg  [ 1:0]  rf_decode_prediction_kind_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg          rf_decode_from_ifetch_rsp_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 4:0]  rf_decode_rd_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [ 4:0]  rf_decode_rs1_q [0:RF_DECODE_QUEUE_DEPTH-1];
@@ -1180,7 +1175,6 @@ module smolrv64(input wire        clock,
    wire [31:0]  rf_decode_insn = rf_decode_insn_q[rf_decode_head];
    wire [ 1:0]  rf_decode_prv = rf_decode_prv_q[rf_decode_head];
    wire [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch = rf_decode_epoch_q[rf_decode_head];
-   wire [ 1:0]  rf_decode_prediction_kind = rf_decode_prediction_kind_q[rf_decode_head];
    wire         rf_decode_from_ifetch_rsp = rf_decode_from_ifetch_rsp_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rd = rf_decode_rd_q[rf_decode_head];
    wire [ 4:0]  rf_decode_rs1 = rf_decode_rs1_q[rf_decode_head];
@@ -1198,7 +1192,6 @@ module smolrv64(input wire        clock,
    reg  [31:0]  frontend_decode_pending_insn = 0;
    reg  [ 1:0]  frontend_decode_pending_prv = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] frontend_decode_pending_epoch = 0;
-   reg  [ 1:0]  frontend_decode_pending_prediction_kind = 0;
 
    // ID/RF stage boundary. Dispatch accepts one decoded instruction into this
    // payload and launches the BRAM read; S_RF3 consumes it into EX.
@@ -1210,7 +1203,6 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  id_prv = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] id_epoch = 0;
    reg  [31:0]  id_insn = 0;
-   reg  [ 1:0]  id_prediction_kind = 0;
    reg  [ 4:0]  id_rd = 0;
    reg  [ 4:0]  id_rs1 = 0;
    reg  [ 4:0]  id_rs2 = 0;
@@ -1222,7 +1214,6 @@ module smolrv64(input wire        clock,
    wire [ 1:0]  rf3_prv = id_prv;
    wire [FRONTEND_EPOCH_BITS-1:0] rf3_epoch = id_epoch;
    wire [31:0]  rf3_insn = id_insn;
-   wire [ 1:0]  rf3_prediction_kind = id_prediction_kind;
    wire [ 4:0]  rf3_rd = id_rd;
    wire [ 4:0]  rf3_rs1 = id_rs1;
    wire [ 4:0]  rf3_rs2 = id_rs2;
@@ -2040,7 +2031,6 @@ module smolrv64(input wire        clock,
       .rsp_hit(frontend_rsp_hit),
       .rsp_insn(frontend_rsp_insn),
       .rsp_predicted_next_pc(frontend_rsp_predicted_next_pc),
-      .rsp_prediction_kind(frontend_rsp_prediction_kind),
 
       .icache_invalidate_valid(icache_invalidate_valid),
       .icache_invalidate_way(icache_invalidate_way),
@@ -3326,7 +3316,6 @@ module smolrv64(input wire        clock,
       input [63:0] accept_pc;
       input [63:0] accept_predicted_pc;
       input [31:0] accept_insn;
-      input [ 1:0] accept_prediction_kind;
       input        accept_from_ifetch_rsp;
       begin
          pc <= accept_pc;
@@ -3352,7 +3341,6 @@ module smolrv64(input wire        clock,
                                        accept_predicted_pc,
                                        accept_predicted_pc,
                                        accept_insn,
-                                       accept_prediction_kind,
                                        accept_from_ifetch_rsp);
             end else if (ifetch_latched_next_valid) begin
                ifetch_latched_half_data <= ifetch_latched_window[127:64];
@@ -3387,8 +3375,7 @@ module smolrv64(input wire        clock,
                    accept_predicted_pc,
                    accept_insn,
                    prv,
-                   frontend_cmd_epoch,
-                   accept_prediction_kind);
+                   frontend_cmd_epoch);
                state <= `S_FETCH1;
             end else if (rf_decode_full) begin
                state <= `S_FETCH1;
@@ -3434,7 +3421,6 @@ module smolrv64(input wire        clock,
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
-      input [ 1:0] decode_prediction_kind;
       input        decode_from_ifetch_rsp;
       reg   [ 4:0] decoded_rd;
       reg   [ 4:0] decoded_rs1;
@@ -3456,7 +3442,6 @@ module smolrv64(input wire        clock,
             rf_decode_insn_q[rf_decode_tail] <= decode_insn;
             rf_decode_prv_q[rf_decode_tail] <= decode_prv;
             rf_decode_epoch_q[rf_decode_tail] <= decode_epoch;
-            rf_decode_prediction_kind_q[rf_decode_tail] <= decode_prediction_kind;
             rf_decode_from_ifetch_rsp_q[rf_decode_tail] <= decode_from_ifetch_rsp;
             rf_decode_rd_q[rf_decode_tail] <= decoded_rd;
             rf_decode_rs1_q[rf_decode_tail] <= decoded_rs1;
@@ -3475,7 +3460,6 @@ module smolrv64(input wire        clock,
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
-      input [ 1:0] decode_prediction_kind;
       begin
          frontend_decode_pending_valid <= 1;
          frontend_decode_pending_pc <= decode_pc;
@@ -3484,7 +3468,6 @@ module smolrv64(input wire        clock,
          frontend_decode_pending_insn <= decode_insn;
          frontend_decode_pending_prv <= decode_prv;
          frontend_decode_pending_epoch <= decode_epoch;
-         frontend_decode_pending_prediction_kind <= decode_prediction_kind;
          rf_decode_prearmed <= 0;
          rf_decode_prearm_block = 1;
          frontend_cmd_pc <= decode_predicted_pc;
@@ -3508,7 +3491,6 @@ module smolrv64(input wire        clock,
                            frontend_decode_pending_insn,
                            frontend_decode_pending_prv,
                            frontend_decode_pending_epoch,
-                           frontend_decode_pending_prediction_kind,
                            1'b0);
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 1'b1;
@@ -3520,7 +3502,6 @@ module smolrv64(input wire        clock,
       input [63:0] decode_next_pc;
       input [63:0] decode_predicted_pc;
       input [31:0] decode_insn;
-      input [ 1:0] decode_prediction_kind;
       input        decode_from_ifetch_rsp;
       reg   [ 4:0] decoded_rd;
       reg   [ 4:0] decoded_rs1;
@@ -3553,7 +3534,6 @@ module smolrv64(input wire        clock,
             id_prv <= prv;
             id_epoch <= fetch_epoch;
             id_insn <= decode_insn;
-            id_prediction_kind <= decode_prediction_kind;
             id_rd <= decoded_rd;
             id_rs1 <= decoded_rs1;
             id_rs2 <= decoded_rs2;
@@ -3575,11 +3555,10 @@ module smolrv64(input wire        clock,
       input [31:0] decode_insn;
       input [ 1:0] decode_prv;
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
-      input [ 1:0] decode_prediction_kind;
       begin
          enqueue_rf_decode(decode_pc, decode_next_pc, decode_predicted_pc,
                            decode_insn, decode_prv,
-                           decode_epoch, decode_prediction_kind, 1'b0);
+                           decode_epoch, 1'b0);
       end
    endtask
 
@@ -3593,7 +3572,6 @@ module smolrv64(input wire        clock,
          id_prv <= rf_decode_prv;
          id_epoch <= rf_decode_epoch;
          id_insn <= rf_decode_insn;
-         id_prediction_kind <= rf_decode_prediction_kind;
          id_rd <= rf_decode_rd;
          id_rs1 <= rf_decode_rs1;
          id_rs2 <= rf_decode_rs2;
@@ -3753,7 +3731,6 @@ module smolrv64(input wire        clock,
            execute_req_prv <= rf3_prv;
            execute_req_epoch <= rf3_epoch;
            execute_req_insn <= rf3_insn;
-           execute_req_prediction_kind <= rf3_prediction_kind;
            execute_req_rd <= rf3_rd;
            execute_req_rs1 <= rf3_rs1;
            execute_req_rs2 <= rf3_rs2;
@@ -4289,8 +4266,7 @@ module smolrv64(input wire        clock,
                                            frontend_rsp_predicted_next_pc,
                                            frontend_rsp_insn,
                                            frontend_cmd_prv,
-                                           frontend_cmd_epoch,
-                                           frontend_rsp_prediction_kind);
+                                           frontend_cmd_epoch);
          end else if (frontend_cmd_speculative && frontend_cmd_valid &&
                       !rf_decode_full &&
                       (!frontend_decode_pending_valid ||
@@ -4421,7 +4397,6 @@ module smolrv64(input wire        clock,
                                   frontend_fallthrough_pc(frontend_miss_pc,
                                                           miss_insn),
                                   miss_insn,
-                                  2'd0,
                                   1'b1);
       end
    endtask
@@ -5120,7 +5095,6 @@ module smolrv64(input wire        clock,
            f_latched_hit             <= frontend_rsp_hit;
            f_latched_insn            <= frontend_rsp_insn;
            f_latched_next_pc         <= frontend_rsp_predicted_next_pc;
-           f_latched_prediction_kind <= frontend_rsp_prediction_kind;
            f_latched_cmd_pc          <= frontend_cmd_pc;
            f_latched_cmd_prv         <= frontend_cmd_prv;
            f_latched_cmd_epoch       <= frontend_cmd_epoch;
@@ -5143,8 +5117,7 @@ module smolrv64(input wire        clock,
                   f_latched_next_pc,
                   f_latched_insn,
                   f_latched_cmd_prv,
-                  f_latched_cmd_epoch,
-                  f_latched_prediction_kind);
+                  f_latched_cmd_epoch);
            end
            f_state <= `F_IDLE;
         end
@@ -5372,7 +5345,6 @@ module smolrv64(input wire        clock,
               accept_instruction_fetch(frontend_cmd_pc,
                                        f_latched_next_pc,
                                        f_latched_insn,
-                                       f_latched_prediction_kind,
                                        1'b0);
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
@@ -5421,7 +5393,6 @@ module smolrv64(input wire        clock,
                                     frontend_fallthrough_pc(frontend_cmd_pc,
                                                             insn),
                                     insn,
-                                    2'd0,
                                     1'b1);
         end
 
@@ -8081,7 +8052,7 @@ module smolrv64(input wire        clock,
            insn = {aligned[15:0], insn_half};
            stage_rf_decode_current(pc, frontend_fallthrough_pc(pc, insn),
                                    frontend_fallthrough_pc(pc, insn),
-                                   insn, 2'd0, fetch_from_ifetch_rsp);
+                                   insn, fetch_from_ifetch_rsp);
         end
 
         `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
@@ -8385,7 +8356,6 @@ module smolrv64(input wire        clock,
          f_latched_hit <= 0;
          f_latched_insn <= 0;
          f_latched_next_pc <= `RESET_PC;
-         f_latched_prediction_kind <= 0;
          f_latched_cmd_pc <= `RESET_PC;
          f_latched_cmd_prv <= 3;
          f_latched_cmd_epoch <= 0;
@@ -8418,7 +8388,6 @@ module smolrv64(input wire        clock,
          id_prv <= 0;
          id_epoch <= 0;
          id_insn <= 0;
-         id_prediction_kind <= 0;
          id_rd <= 0;
          id_rs1 <= 0;
          id_rs2 <= 0;
@@ -8430,7 +8399,6 @@ module smolrv64(input wire        clock,
          execute_req_prv <= 0;
          execute_req_epoch <= 0;
          execute_req_insn <= 0;
-         execute_req_prediction_kind <= 0;
          execute_req_rd <= 0;
          execute_req_rs1 <= 0;
          execute_req_rs2 <= 0;
@@ -10090,7 +10058,6 @@ module smolrv64_frontend #(
    output wire                  rsp_hit,
    output wire [31:0]           rsp_insn,
    output wire [63:0]           rsp_predicted_next_pc,
-   output wire [ 1:0]           rsp_prediction_kind,
 
    input  wire                         icache_invalidate_valid,
    input  wire                         icache_invalidate_way,
@@ -10126,10 +10093,6 @@ module smolrv64_frontend #(
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
    output wire                         icache_target_valid
 );
-   localparam [1:0] PRED_FALLTHROUGH = 2'd0;
-   localparam [1:0] PRED_DIRECT      = 2'd1;
-   localparam [1:0] PRED_BRANCH      = 2'd2;
-
    reg          buf_valid = 0;
    reg  [63:0]  buf_base_va = 0;
    reg  [59:0]  buf_next_va_hi = 0;
@@ -10253,24 +10216,6 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   function [1:0] predict_kind;
-      input [31:0] fetch_insn;
-      begin
-         if ((fetch_insn & 32'h0000007f) == 32'h0000006f ||
-             (fetch_insn & 32'he003) == 32'ha001) begin
-            predict_kind = PRED_DIRECT;
-         end else if (((fetch_insn & 32'h0000007f) == 32'h00000063 &&
-                       branch_is_backward(fetch_insn)) ||
-                      (((fetch_insn & 32'he003) == 32'hc001 ||
-                        (fetch_insn & 32'he003) == 32'he001) &&
-                       c_branch_is_backward(fetch_insn))) begin
-            predict_kind = PRED_BRANCH;
-         end else begin
-            predict_kind = PRED_FALLTHROUGH;
-         end
-      end
-   endfunction
-
    wire        context_hit = cmd_valid && buf_valid &&
                               buf_prv == cmd_prv && buf_asid == cmd_asid;
    wire        addr_same_hi = cmd_pc[63:4] == buf_base_va[63:4];
@@ -10292,7 +10237,6 @@ module smolrv64_frontend #(
    assign rsp_full_insn_hit = rsp_insn[1:0] != 2'b11 || rsp_offset <= 4'd12;
    assign rsp_hit = rsp_addr_hit && rsp_full_insn_hit;
    assign rsp_predicted_next_pc = predict_next_pc(cmd_pc, rsp_insn);
-   assign rsp_prediction_kind = predict_kind(rsp_insn);
    wire [63:0] fill_base_va = {fill_pc[63:3], 3'b000};
    wire        fill_page_ok = fill_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
