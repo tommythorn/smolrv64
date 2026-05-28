@@ -1308,13 +1308,19 @@ module smolrv64(input wire        clock,
    reg [ 7:0] cache_store_strb = 0;
    reg [63:0] cache_fill_return_data = 0;
    reg [63:0] cache_fill_next_data = 0;
-   reg [63:0] cache_lookup_data = 0;
-   reg [63:0] cache_lookup_next_data = 0;
-   reg        cache_lookup_hit = 0;
-   reg        cache_lookup_hit_way = 0;
-   reg        cache_lookup_next_hit = 0;
-   reg        cache_lookup_next_valid = 0;
-   reg        cache_lookup_dirty = 0;
+   reg [127:0] icache_fetch_window_q = 0;
+   reg [31:0]  icache_fetch_insn_q = 0;
+   reg [63:0]  icache_fetch_predicted_next_pc_q = `RESET_PC;
+   reg [ 1:0]  icache_fetch_prediction_kind_q = 0;
+   reg         icache_fetch_hit_q = 0;
+   reg         icache_fetch_next_line_hit_q = 0;
+   reg [63:0]  dcache_rsp_data = 0;
+   reg [63:0]  dcache_rsp_next_data = 0;
+   reg         dcache_rsp_hit = 0;
+   reg         dcache_rsp_hit_way = 0;
+   reg         dcache_rsp_next_hit = 0;
+   reg         dcache_rsp_next_valid = 0;
+   reg         dcache_rsp_dirty = 0;
    reg        cache_target_dirty = 0;
    reg        cache_target_valid = 0;
    reg [`CACHE_PHYS_TAG_BITS-1:0] cache_target_ptag = 0;
@@ -1439,13 +1445,17 @@ module smolrv64(input wire        clock,
    wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dram_read && !dram_instr;
    wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dram_write;
    wire       hpm_icache_hit_pulse =
-              cache_state == CACHE_HIT_RESP && cache_req_instr && cache_lookup_hit;
+              cache_state == CACHE_HIT_RESP && cache_req_instr &&
+              icache_fetch_hit_q;
    wire       hpm_dcache_hit_pulse =
-              cache_state == CACHE_HIT_RESP && !cache_req_instr && cache_lookup_hit;
+              cache_state == CACHE_HIT_RESP && !cache_req_instr &&
+              dcache_rsp_hit;
    wire       hpm_icache_miss_pulse =
-              cache_state == CACHE_HIT_RESP && cache_req_instr && !cache_lookup_hit;
+              cache_state == CACHE_HIT_RESP && cache_req_instr &&
+              !icache_fetch_hit_q;
    wire       hpm_dcache_miss_pulse =
-              cache_state == CACHE_HIT_RESP && !cache_req_instr && !cache_lookup_hit;
+              cache_state == CACHE_HIT_RESP && !cache_req_instr &&
+              !dcache_rsp_hit;
    wire       hpm_icache_fill_beat_pulse = cache_fill_data_valid && cache_req_instr;
    wire       hpm_dcache_fill_beat_pulse = cache_fill_data_valid && !cache_req_instr;
    wire       hpm_icache_fill_line_pulse =
@@ -2183,9 +2193,11 @@ module smolrv64(input wire        clock,
 
       if (cache_state == CACHE_HIT_WRITE) begin
          dcache_bank_wr_en = 8'd1 << cache_req_bank;
-         dcache_bank_wr_idx = cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
-         dcache_bank_wr_way = cache_lookup_hit_way;
-         dcache_bank_wr_data = merge_store_bytes(cache_lookup_data, cache_store_data, cache_store_strb);
+         dcache_bank_wr_idx = dcache_rsp_hit_way ? cache_way1_rd_idx :
+                                                   cache_way0_rd_idx;
+         dcache_bank_wr_way = dcache_rsp_hit_way;
+         dcache_bank_wr_data =
+            merge_store_bytes(dcache_rsp_data, cache_store_data, cache_store_strb);
       end
    end
 
@@ -8726,28 +8738,19 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_TAG_CHECK: begin
-           cache_lookup_hit <= cache_req_instr
-                              ? icache_fetch_hit
-                              : dcache_lookup_hit;
-           cache_lookup_hit_way <= cache_req_instr
-                                  ? 1'b0
-                                  : dcache_lookup_hit_way;
-           cache_lookup_next_hit <= cache_req_instr
-                                   ? icache_fetch_next_line_hit
-                                   : dcache_lookup_next_hit;
-           cache_lookup_data <= cache_req_instr
-                              ? icache_fetch_window[63:0]
-                              : dcache_lookup_data;
-           cache_lookup_next_data <= cache_req_instr
-                                    ? icache_fetch_window[127:64]
-                                    : dcache_lookup_next_data;
-           cache_lookup_next_valid <= cache_req_instr
-                                     ? cache_req_same_line ||
-                                       icache_fetch_next_line_hit
-                                     : dcache_lookup_next_valid;
-           cache_lookup_dirty <= cache_req_instr
-                                ? 1'b0
-                                : dcache_lookup_dirty;
+           icache_fetch_hit_q <= icache_fetch_hit;
+           icache_fetch_next_line_hit_q <= icache_fetch_next_line_hit;
+           icache_fetch_window_q <= icache_fetch_window;
+           icache_fetch_insn_q <= icache_fetch_insn;
+           icache_fetch_predicted_next_pc_q <= icache_fetch_predicted_next_pc;
+           icache_fetch_prediction_kind_q <= icache_fetch_prediction_kind;
+           dcache_rsp_hit <= dcache_lookup_hit;
+           dcache_rsp_hit_way <= dcache_lookup_hit_way;
+           dcache_rsp_next_hit <= dcache_lookup_next_hit;
+           dcache_rsp_data <= dcache_lookup_data;
+           dcache_rsp_next_data <= dcache_lookup_next_data;
+           dcache_rsp_next_valid <= dcache_lookup_next_valid;
+           dcache_rsp_dirty <= dcache_lookup_dirty;
            cache_target_way <= cache_req_instr
                               ? icache_target_way
                               : dcache_target_way;
@@ -8771,25 +8774,37 @@ module smolrv64(input wire        clock,
 
            next_line_safe = cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
 
-           if (cache_lookup_hit) begin
+           if (cache_req_instr) begin
+              if (icache_fetch_hit_q) begin
+                 csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
+                 dram_readdata_r <= icache_fetch_window_q[63:0];
+                 dram_readdata_next_r <= icache_fetch_window_q[127:64];
+                 dram_readdata_next_valid_r <=
+                    (cache_req_same_line || icache_fetch_next_line_hit_q) &&
+                    next_line_safe;
+                 dram_readdatavalid_r <= 1;
+                 icache_fetch_resp_valid <= 1;
+                 icache_fetch_resp_insn <= icache_fetch_insn_q;
+                 icache_fetch_resp_predicted_next_pc <=
+                    icache_fetch_predicted_next_pc_q;
+                 icache_fetch_resp_prediction_kind <=
+                    icache_fetch_prediction_kind_q;
+                 cache_state <= CACHE_IDLE;
+              end else begin
+                 csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
+                 cache_start_fill_request();
+              end
+           end else if (dcache_rsp_hit) begin
               if (cache_req_write) begin
                  csr_vhpr_write_hits <= csr_vhpr_write_hits + 1;
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 dram_readdata_r <= cache_lookup_data;
-                 dram_readdata_next_r <= cache_lookup_next_data;
-                 dram_readdata_next_valid_r <= cache_lookup_next_valid &&
+                 dram_readdata_r <= dcache_rsp_data;
+                 dram_readdata_next_r <= dcache_rsp_next_data;
+                 dram_readdata_next_valid_r <= dcache_rsp_next_valid &&
                                                 next_line_safe;
                  dram_readdatavalid_r <= 1;
-                 if (cache_req_instr) begin
-                    icache_fetch_resp_valid <= 1;
-                    icache_fetch_resp_insn <= icache_fetch_insn;
-                    icache_fetch_resp_predicted_next_pc <=
-                       icache_fetch_predicted_next_pc;
-                    icache_fetch_resp_prediction_kind <=
-                       icache_fetch_prediction_kind;
-                 end
                  cache_state <= CACHE_IDLE;
               end
            end else begin
@@ -8802,9 +8817,10 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_HIT_WRITE: begin
-           dcache_way0_tag_wr_en <= !cache_lookup_hit_way;
-           dcache_way1_tag_wr_en <= cache_lookup_hit_way;
-           dcache_tag_wr_idx     <= cache_lookup_hit_way ? cache_way1_rd_idx : cache_way0_rd_idx;
+           dcache_way0_tag_wr_en <= !dcache_rsp_hit_way;
+           dcache_way1_tag_wr_en <= dcache_rsp_hit_way;
+           dcache_tag_wr_idx     <= dcache_rsp_hit_way ? cache_way1_rd_idx :
+                                                          cache_way0_rd_idx;
            dcache_tag_wr_data    <= cache_make_meta(1'b1, 1'b1, cache_req_asid,
                                                     cache_req_perm,
                                                     cache_req_vtag, cache_req_ptag,
@@ -9124,14 +9140,21 @@ module smolrv64(input wire        clock,
                     dram_write_done_r <= 1;
                  end else begin
                     dram_readdata_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
-                    dram_readdata_next_r <= cache_req_same_line
-                                             ? (cache_req_next_bank == 3'd7 ? cache_fill_data
-                                                                            : cache_fill_next_data)
-                                             : cache_lookup_next_data;
-                    dram_readdata_next_valid_r <= (cache_req_same_line ||
-                                                   cache_lookup_next_hit) &&
-                                                   (cache_req_same_line ||
-                                                    cache_req_va[11:3] != 9'h1ff);
+                    if (cache_req_same_line) begin
+                       dram_readdata_next_r <= cache_req_next_bank == 3'd7
+                                             ? cache_fill_data
+                                             : cache_fill_next_data;
+                       dram_readdata_next_valid_r <= 1'b1;
+                    end else if (cache_req_instr) begin
+                       dram_readdata_next_r <= icache_fetch_window_q[127:64];
+                       dram_readdata_next_valid_r <=
+                          icache_fetch_next_line_hit_q &&
+                          cache_req_va[11:3] != 9'h1ff;
+                    end else begin
+                       dram_readdata_next_r <= dcache_rsp_next_data;
+                       dram_readdata_next_valid_r <=
+                          dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff;
+                    end
                     dram_readdatavalid_r <= 1;
                  end
                  cache_state      <= CACHE_IDLE;
@@ -9224,7 +9247,7 @@ module smolrv64(input wire        clock,
             dcache_stat_hits <= dcache_stat_hits + 1;
          if (hpm_dcache_miss_pulse) begin
             dcache_stat_misses <= dcache_stat_misses + 1;
-            if (cache_lookup_dirty)
+            if (dcache_rsp_dirty)
                dcache_stat_dirty_misses <= dcache_stat_dirty_misses + 1;
          end
          if (hpm_dcache_fill_line_pulse)
@@ -9245,7 +9268,7 @@ module smolrv64(input wire        clock,
                         dcache_stat_hits + (hpm_dcache_hit_pulse ? 64'd1 : 64'd0),
                         dcache_stat_misses + (hpm_dcache_miss_pulse ? 64'd1 : 64'd0),
                         dcache_stat_dirty_misses +
-                           (hpm_dcache_miss_pulse && cache_lookup_dirty ? 64'd1 : 64'd0),
+                           (hpm_dcache_miss_pulse && dcache_rsp_dirty ? 64'd1 : 64'd0),
                         dcache_stat_fill_lines + (hpm_dcache_fill_line_pulse ? 64'd1 : 64'd0),
                         dcache_stat_wb_lines + (hpm_dcache_wb_line_pulse ? 64'd1 : 64'd0));
          end
@@ -9284,7 +9307,7 @@ module smolrv64(input wire        clock,
                      cache_req_bank,
                      cache_req_next_bank,
                      cache_req_same_line,
-                     cache_lookup_dirty,
+                     cache_req_instr ? 1'b0 : dcache_rsp_dirty,
                      {33'd0, cache_victim_ptag, cache_victim_idx[5:0], 6'd0});
          end
          if (hpm_icache_fill_beat_pulse || hpm_dcache_fill_beat_pulse) begin
