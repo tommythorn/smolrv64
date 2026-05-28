@@ -3595,6 +3595,41 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task load_id_from_rf_decode_head;
+      begin
+         id_valid <= 1;
+         id_rf_ready <= rf_decode_prearmed;
+         id_pc <= rf_decode_pc;
+         id_next_pc <= rf_decode_next_pc;
+         id_predicted_pc <= rf_decode_predicted_pc;
+         id_prv <= rf_decode_prv;
+         id_epoch <= rf_decode_epoch;
+         id_insn <= rf_decode_insn;
+         id_prediction_kind <= rf_decode_prediction_kind;
+         id_rd <= rf_decode_rd;
+         id_rs1 <= rf_decode_rs1;
+         id_rs2 <= rf_decode_rs2;
+         id_shamt <= rf_decode_shamt;
+         rs1 <= rf_decode_rs1;
+         rs2 <= rf_decode_rs2;
+      end
+   endtask
+
+   task pop_rf_decode_head;
+      begin
+         rf_decode_pop_this_cycle = 1'b1;
+         rf_decode_head <= rf_decode_head + 1'b1;
+         rf_decode_count <= rf_decode_enqueue_this_cycle ?
+                            rf_decode_count : rf_decode_count - 1'b1;
+         rf_decode_prearmed <= 0;
+         rf_decode_prearm_block = 1;
+         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
+             rf_decode_enqueue_this_cycle) begin
+            arm_frontend_spec_cmd();
+         end
+      end
+   endtask
+
    task launch_rf_decode_read;
       begin
          if (id_valid) begin
@@ -3604,31 +3639,8 @@ module smolrv64(input wire        clock,
 `endif
             state <= `S_FETCH1;
          end else begin
-            id_valid <= 1;
-            id_rf_ready <= rf_decode_prearmed;
-            id_pc <= rf_decode_pc;
-            id_next_pc <= rf_decode_next_pc;
-            id_predicted_pc <= rf_decode_predicted_pc;
-            id_prv <= rf_decode_prv;
-            id_epoch <= rf_decode_epoch;
-            id_insn <= rf_decode_insn;
-            id_prediction_kind <= rf_decode_prediction_kind;
-            id_rd <= rf_decode_rd;
-            id_rs1 <= rf_decode_rs1;
-            id_rs2 <= rf_decode_rs2;
-            id_shamt <= rf_decode_shamt;
-           rs1 <= rf_decode_rs1;
-           rs2 <= rf_decode_rs2;
-            rf_decode_pop_this_cycle = 1'b1;
-            rf_decode_head <= rf_decode_head + 1'b1;
-            rf_decode_count <= rf_decode_enqueue_this_cycle ?
-                               rf_decode_count : rf_decode_count - 1'b1;
-            rf_decode_prearmed <= 0;
-            rf_decode_prearm_block = 1;
-            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
-                rf_decode_enqueue_this_cycle) begin
-               arm_frontend_spec_cmd();
-            end
+            load_id_from_rf_decode_head();
+            pop_rf_decode_head();
             state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
          end
       end
@@ -3642,31 +3654,8 @@ module smolrv64(input wire        clock,
             $finish;
 `endif
          end else begin
-            id_valid <= 1;
-            id_rf_ready <= rf_decode_prearmed;
-            id_pc <= rf_decode_pc;
-            id_next_pc <= rf_decode_next_pc;
-            id_predicted_pc <= rf_decode_predicted_pc;
-            id_prv <= rf_decode_prv;
-            id_epoch <= rf_decode_epoch;
-            id_insn <= rf_decode_insn;
-            id_prediction_kind <= rf_decode_prediction_kind;
-            id_rd <= rf_decode_rd;
-            id_rs1 <= rf_decode_rs1;
-            id_rs2 <= rf_decode_rs2;
-            id_shamt <= rf_decode_shamt;
-            rs1 <= rf_decode_rs1;
-            rs2 <= rf_decode_rs2;
-            rf_decode_pop_this_cycle = 1'b1;
-            rf_decode_head <= rf_decode_head + 1'b1;
-            rf_decode_count <= rf_decode_enqueue_this_cycle ?
-                               rf_decode_count : rf_decode_count - 1'b1;
-            rf_decode_prearmed <= 0;
-            rf_decode_prearm_block = 1;
-            if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
-                rf_decode_enqueue_this_cycle) begin
-               arm_frontend_spec_cmd();
-            end
+            load_id_from_rf_decode_head();
+            pop_rf_decode_head();
          end
       end
    endtask
