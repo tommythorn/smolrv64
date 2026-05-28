@@ -1058,14 +1058,14 @@ module smolrv64(input wire        clock,
    reg  [63:0]  ifetch_latched_predicted_next_pc = `RESET_PC;
    reg  [ 1:0]  ifetch_latched_prediction_kind = 0;
    reg          fetch_from_dram;     // set when current fetch came from DRAM
-   reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
-   reg  [63:0]  dram2_va;            // virtual address for split-store second beat
-   reg  [TLB_ASID_BITS-1:0] dram2_asid;
-   reg  [CACHE_PERM_BITS-1:0] dram2_perm;
-   reg  [TLB_CTX_BITS-1:0] dram2_ctx;
-   reg  [63:0]  dram2_data_part;     // overflow bytes for split store
-   reg  [ 7:0]  dram2_wstrb;         // AXI wstrb for split-store second beat
-   reg          dram_store_split;    // 1 = second beat pending after DRAM_STORE_WAIT
+   reg  [27:0]  dmem_store2_dw_addr; // 8B-doubleword addr for split-store second beat
+   reg  [63:0]  dmem_store2_va;      // virtual address for split-store second beat
+   reg  [TLB_ASID_BITS-1:0] dmem_store2_asid;
+   reg  [CACHE_PERM_BITS-1:0] dmem_store2_perm;
+   reg  [TLB_CTX_BITS-1:0] dmem_store2_ctx;
+   reg  [63:0]  dmem_store2_data;    // overflow bytes for split store
+   reg  [ 7:0]  dmem_store2_strb;    // byte write mask for split-store second beat
+   reg          dmem_store_split;    // 1 = second beat pending after S_DRAM_STORE_WAIT
    reg          ptw_direct_read = 0; // physical PTW read bypasses VHPR L1
    reg  [27:0]  ptw_direct_addr = 0;
    reg          ptw_direct_probe_pending = 0;
@@ -6918,14 +6918,14 @@ module smolrv64(input wire        clock,
                  mem_wr_mask        = 0;
                  if (|wide_mask[15:8]) begin
                     // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
-                    dram2_addr        <= mem_addr[30:3] + 1;
-                    dram2_va          <= {mem_va[63:3], 3'b000} + 64'd8;
-                    dram2_asid        <= mem_asid;
-                    dram2_perm        <= mem_perm;
-                    dram2_ctx         <= mem_ctx;
-                    dram2_data_part   <= wide_data[127:64];
-                    dram2_wstrb       <= wide_mask[15:8];
-                    dram_store_split  <= 1;
+                    dmem_store2_dw_addr <= mem_addr[30:3] + 1;
+                    dmem_store2_va      <= {mem_va[63:3], 3'b000} + 64'd8;
+                    dmem_store2_asid    <= mem_asid;
+                    dmem_store2_perm    <= mem_perm;
+                    dmem_store2_ctx     <= mem_ctx;
+                    dmem_store2_data    <= wide_data[127:64];
+                    dmem_store2_strb    <= wide_mask[15:8];
+                    dmem_store_split    <= 1;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
                        state      <= `S_DRAM_STORE_RESP_ARM;
@@ -6933,7 +6933,7 @@ module smolrv64(input wire        clock,
                        state      <= `S_DRAM_STORE_WAIT;
                     end
                  end else begin
-                    dram_store_split  <= 0;
+                    dmem_store_split  <= 0;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
                        state      <= `S_DRAM_STORE_RESP_ARM;
@@ -8191,16 +8191,16 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_STORE2: begin
            if (dmem_write_ready) begin
-              cache_issue_dw_addr <= dram2_addr;
-              cache_issue_va      <= dram2_va;
-              cache_issue_asid    <= dram2_asid;
-              cache_issue_perm    <= dram2_perm;
-              cache_issue_ctx     <= dram2_ctx;
-              dmem_write_data    <= dram2_data_part;
-              dmem_write_strb    <= dram2_wstrb;
+              cache_issue_dw_addr <= dmem_store2_dw_addr;
+              cache_issue_va      <= dmem_store2_va;
+              cache_issue_asid    <= dmem_store2_asid;
+              cache_issue_perm    <= dmem_store2_perm;
+              cache_issue_ctx     <= dmem_store2_ctx;
+              dmem_write_data    <= dmem_store2_data;
+              dmem_write_strb    <= dmem_store2_strb;
               dmem_write         <= 1;
-              dram_store_split    <= 0;
-              state               <= `S_DRAM_STORE_RESP_ARM;
+              dmem_store_split   <= 0;
+              state              <= `S_DRAM_STORE_RESP_ARM;
            end else begin
               try_issue_queued_decode_current_wb(1'b1);
            end
@@ -8213,7 +8213,7 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_STORE_RESP_WAIT: begin
            if (dmem_write_done) begin
-              if (dram_store_split) begin
+              if (dmem_store_split) begin
                  state <= `S_DRAM_STORE2;
               end else begin
                  retire_no_wb_linear_fetch();
@@ -8513,11 +8513,11 @@ module smolrv64(input wire        clock,
          mem_perm         <= CACHE_PERM_PHYS;
          mem_ctx          <= 0;
          mmio_timeout_tval <= 0;
-         dram2_va         <= 0;
-         dram2_asid       <= 0;
-         dram2_perm       <= CACHE_PERM_PHYS;
-         dram2_ctx        <= 0;
-         dram_store_split <= 0;
+         dmem_store2_va   <= 0;
+         dmem_store2_asid <= 0;
+         dmem_store2_perm <= CACHE_PERM_PHYS;
+         dmem_store2_ctx  <= 0;
+         dmem_store_split <= 0;
          ptw_direct_read <= 0;
          ptw_direct_addr <= 0;
          cache_flush_req  <= 0;
