@@ -9190,20 +9190,12 @@ module smolrv64(input wire        clock,
                  if (cache_req_write) begin
                     dmem_write_done_r <= 1;
                  end else if (cache_req_instr) begin
-                    ifetch_readdatavalid_r <= 1;
-                    ifetch_window_r[63:0] <= cache_req_bank == 3'd7
-                                           ? cache_fill_data
-                                           : cache_fill_return_data;
-                    if (cache_req_same_line) begin
-                       ifetch_window_r[127:64] <= cache_req_next_bank == 3'd7
-                                                ? cache_fill_data
-                                                : cache_fill_next_data;
-                       ifetch_next_valid_r <= 1'b1;
-                    end else begin
-                       ifetch_window_r[127:64] <= 64'd0;
-                       ifetch_next_valid_r <= 1'b0;
-                    end
-                    ifetch_prediction_valid_r <= 0;
+                    cache_issue_dw_addr <= cache_addr[30:3];
+                    cache_issue_va      <= cache_req_va;
+                    cache_issue_asid    <= cache_req_asid;
+                    cache_issue_perm    <= cache_req_perm;
+                    cache_issue_ctx     <= cache_req_ctx;
+                    ifetch_read         <= 1;
                  end else begin
                     dmem_rsp_data_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
                     if (cache_req_same_line) begin
