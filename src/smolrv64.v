@@ -1109,6 +1109,7 @@ module smolrv64(input wire        clock,
    wire         icache_fetch_hit;
    wire         icache_fetch_next_valid;
    wire [127:0] icache_fetch_window;
+   wire         icache_fetch_insn_valid;
    wire [31:0]  icache_fetch_insn;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
@@ -1309,6 +1310,7 @@ module smolrv64(input wire        clock,
    reg [63:0] cache_fill_return_data = 0;
    reg [63:0] cache_fill_next_data = 0;
    reg [127:0] icache_fetch_window_q = 0;
+   reg         icache_fetch_insn_valid_q = 0;
    reg [31:0]  icache_fetch_insn_q = 0;
    reg         icache_fetch_hit_q = 0;
    reg         icache_fetch_next_valid_q = 0;
@@ -2068,6 +2070,7 @@ module smolrv64(input wire        clock,
       .icache_fetch_hit(icache_fetch_hit),
       .icache_fetch_next_valid(icache_fetch_next_valid),
       .icache_fetch_window(icache_fetch_window),
+      .icache_fetch_insn_valid(icache_fetch_insn_valid),
       .icache_fetch_insn(icache_fetch_insn),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
@@ -8796,6 +8799,7 @@ module smolrv64(input wire        clock,
            icache_fetch_hit_q <= icache_fetch_hit;
            icache_fetch_next_valid_q <= icache_fetch_next_valid;
            icache_fetch_window_q <= icache_fetch_window;
+           icache_fetch_insn_valid_q <= icache_fetch_insn_valid;
            icache_fetch_insn_q <= icache_fetch_insn;
            dcache_rsp_hit <= dcache_lookup_hit;
            dcache_rsp_hit_way <= dcache_lookup_hit_way;
@@ -8831,7 +8835,7 @@ module smolrv64(input wire        clock,
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
                  emit_ifetch_rsp(icache_fetch_window_q,
                                   icache_fetch_next_valid_q,
-                                  cache_req_va[2:1] != 2'b11,
+                                  icache_fetch_insn_valid_q,
                                   icache_fetch_insn_q);
                  cache_state <= CACHE_IDLE;
               end else begin
@@ -10116,6 +10120,7 @@ module smolrv64_frontend #(
    output wire                         icache_fetch_hit,
    output wire                         icache_fetch_next_valid,
    output wire [127:0]                 icache_fetch_window,
+   output wire                         icache_fetch_insn_valid,
    output wire [31:0]                  icache_fetch_insn,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
@@ -10493,6 +10498,7 @@ module smolrv64_frontend #(
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
    assign icache_fetch_window = {icache_fetch_next_data, icache_fetch_data};
+   assign icache_fetch_insn_valid = icache_req_va[2:1] != 2'b11;
    assign icache_fetch_insn =
       pick_insn(icache_fetch_window, {1'b0, icache_req_va[2:0]});
 
