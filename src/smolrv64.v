@@ -4152,7 +4152,7 @@ module smolrv64(input wire        clock,
       input       pending_fp_valid;
       input [4:0] pending_fp_rd;
       begin
-         if (allow_ex_prepare && id_valid && id_rf_ready && ex_accept_ready &&
+         if (allow_ex_prepare && id_ex_fire &&
              id_no_pending_wb_hazard(pending_int_valid, pending_int_rd,
                                      pending_fp_valid, pending_fp_rd)) begin
             prepare_execute_req_from_id(1'b1);
@@ -4172,8 +4172,8 @@ module smolrv64(input wire        clock,
       input       pending_fp_valid;
       input [4:0] pending_fp_rd;
       begin
-         if (id_matches_retire(retire_pc, retire_prv, retire_epoch) &&
-             id_rf_ready && ex_accept_ready &&
+         if (id_ex_fire &&
+             id_matches_retire(retire_pc, retire_prv, retire_epoch) &&
              id_no_pending_wb_hazard(pending_int_valid, pending_int_rd,
                                      pending_fp_valid, pending_fp_rd)) begin
             prepare_execute_req_from_id(1'b1);
