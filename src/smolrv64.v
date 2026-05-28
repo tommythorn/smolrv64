@@ -1075,11 +1075,8 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  frontend_buf_fill_prv = 0;
    reg  [TLB_ASID_BITS-1:0] frontend_buf_fill_asid = 0;
    reg  [127:0] frontend_buf_fill_data = 0;
-   wire         frontend_rsp_addr_hit;
-   wire         frontend_rsp_full_insn_hit;
    wire         frontend_rsp_hit;
    wire [31:0]  frontend_rsp_insn;
-   wire [ 3:0]  frontend_rsp_offset;
    // Free-running frontend's fetch-buffer latch. Written by case(f_state)
    // when f_state == F_FETCH_BUF_CHECK; read by backend's S_FETCH_BUF_USE.
    // Replaces the old backend-owned fetch_buf_latched_* set.
@@ -1091,18 +1088,13 @@ module smolrv64(input wire        clock,
    // f_latched_insn (different PCs) — a hang.
    reg          f_latched_hit = 0;
    reg  [31:0]  f_latched_insn = 0;
-   reg  [ 3:0]  f_latched_offset = 0;
    reg  [63:0]  f_latched_next_pc = `RESET_PC;
    reg  [ 1:0]  f_latched_prediction_kind = 0;
    reg  [63:0]  f_latched_cmd_pc = `RESET_PC;
    reg  [ 1:0]  f_latched_cmd_prv = 3;
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
-   wire         f_latched_full_insn_hit =
-      f_latched_insn[1:0] != 2'b11 ||
-      f_latched_offset <= 4'd12;
    wire [63:0]  fetch_buf_fill_base_va;
    wire         fetch_buf_fill_page_ok;
-   wire [FRONTEND_EPOCH_BITS-1:0] frontend_rsp_active_epoch;
    wire [63:0]  frontend_rsp_predicted_next_pc;
    wire [ 1:0]  frontend_rsp_prediction_kind;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
@@ -1953,13 +1945,9 @@ module smolrv64(input wire        clock,
       .cmd_asid(frontend_cmd_asid),
       .cmd_epoch(frontend_cmd_epoch),
       .rsp_hit(frontend_rsp_hit),
-      .rsp_addr_hit(frontend_rsp_addr_hit),
-      .rsp_full_insn_hit(frontend_rsp_full_insn_hit),
       .rsp_insn(frontend_rsp_insn),
-      .rsp_offset(frontend_rsp_offset),
       .rsp_predicted_next_pc(frontend_rsp_predicted_next_pc),
       .rsp_prediction_kind(frontend_rsp_prediction_kind),
-      .rsp_active_epoch(frontend_rsp_active_epoch),
       .rsp_fill_base_va(fetch_buf_fill_base_va),
       .rsp_fill_page_ok(fetch_buf_fill_page_ok),
 
@@ -4933,9 +4921,8 @@ module smolrv64(input wire        clock,
            // Latch the frontend's cache-buffer response AND the cmd context
            // it corresponds to. Backend may mutate frontend_cmd_* in any
            // subsequent cycle; F_FETCH_BUF_USE consumes only f_latched_*.
-           f_latched_hit             <= frontend_rsp_addr_hit;
+           f_latched_hit             <= frontend_rsp_hit;
            f_latched_insn            <= frontend_rsp_insn;
-           f_latched_offset          <= frontend_rsp_offset;
            f_latched_next_pc         <= frontend_rsp_predicted_next_pc;
            f_latched_prediction_kind <= frontend_rsp_prediction_kind;
            f_latched_cmd_pc          <= frontend_cmd_pc;
@@ -4947,7 +4934,7 @@ module smolrv64(input wire        clock,
            // Simple hit, using only the latched data — page-boundary
            // translated case and queue/pending pressure fall through to the
            // backend's arm.
-           if (f_latched_hit && f_latched_full_insn_hit &&
+           if (f_latched_hit &&
                !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
                  csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
                !frontend_decode_pending_valid &&
@@ -5167,7 +5154,7 @@ module smolrv64(input wire        clock,
         `S_FETCH_BUF_USE: begin
 `ifdef SIMULATE
            if (fetch_buf_summary_enabled) begin
-              if (f_latched_hit && f_latched_full_insn_hit)
+              if (f_latched_hit)
                  fetch_buf_stat_hits <= fetch_buf_stat_hits + 1;
               else begin
                  fetch_buf_stat_misses <= fetch_buf_stat_misses + 1;
@@ -5175,7 +5162,7 @@ module smolrv64(input wire        clock,
                     $display("%05d FETCHBUF SUMMARY hits=%0d misses=%0d",
                              $time,
                              fetch_buf_stat_hits +
-                             ((f_latched_hit && f_latched_full_insn_hit) ? 64'd1 : 64'd0),
+                             (f_latched_hit ? 64'd1 : 64'd0),
                              fetch_buf_stat_misses + 64'd1);
               end
            end
@@ -5185,7 +5172,7 @@ module smolrv64(input wire        clock,
               // via case(f_state) earlier in the cycle. Queue drain happens at
               // the top of this always block; backend returns to retire.
               state <= `S_FETCH1;
-           end else if (f_latched_hit && f_latched_full_insn_hit) begin
+           end else if (f_latched_hit) begin
               accept_instruction_fetch(frontend_cmd_pc,
                                        f_latched_next_pc,
                                        f_latched_insn,
@@ -8195,7 +8182,6 @@ module smolrv64(input wire        clock,
          frontend_redirect_epoch <= 0;
          f_latched_hit <= 0;
          f_latched_insn <= 0;
-         f_latched_offset <= 0;
          f_latched_next_pc <= `RESET_PC;
          f_latched_prediction_kind <= 0;
          f_latched_cmd_pc <= `RESET_PC;
@@ -8296,7 +8282,6 @@ module smolrv64(input wire        clock,
          frontend_buf_flush <= 1'b1;
          f_latched_hit <= 0;
          f_latched_insn <= 0;
-         f_latched_offset <= 0;
          f_state <= `F_IDLE;
          ex_state <= `EX_IDLE;
          muldiv_start_op <= `MULDIV_MUL;
@@ -9687,13 +9672,9 @@ module smolrv64_frontend #(
    input  wire [EPOCH_BITS-1:0] cmd_epoch,
 
    output wire                  rsp_hit,
-   output wire                  rsp_addr_hit,
-   output wire                  rsp_full_insn_hit,
    output wire [31:0]           rsp_insn,
-   output wire [ 3:0]           rsp_offset,
    output wire [63:0]           rsp_predicted_next_pc,
    output wire [ 1:0]           rsp_prediction_kind,
-   output wire [EPOCH_BITS-1:0] rsp_active_epoch,
    output wire [63:0]           rsp_fill_base_va,
    output wire                  rsp_fill_page_ok,
 
@@ -9852,6 +9833,9 @@ module smolrv64_frontend #(
                               buf_prv == cmd_prv && buf_asid == cmd_asid;
    wire        addr_same_hi = cmd_pc[63:4] == buf_base_va[63:4];
    wire        addr_next_hi = cmd_pc[63:4] == buf_next_va_hi;
+   wire        rsp_addr_hit;
+   wire        rsp_full_insn_hit;
+   wire [ 3:0] rsp_offset;
 
    assign rsp_addr_hit = context_hit && !cmd_pc[0] &&
                      ((!buf_base_va[3] && addr_same_hi) ||
@@ -9867,7 +9851,6 @@ module smolrv64_frontend #(
    assign rsp_hit = rsp_addr_hit && rsp_full_insn_hit;
    assign rsp_predicted_next_pc = predict_next_pc(cmd_pc, rsp_insn);
    assign rsp_prediction_kind = predict_kind(rsp_insn);
-   assign rsp_active_epoch = cmd_epoch;
    assign rsp_fill_base_va = {cmd_pc[63:3], 3'b000};
    assign rsp_fill_page_ok = rsp_fill_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
