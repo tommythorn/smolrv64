@@ -1366,6 +1366,7 @@ module smolrv64(input wire        clock,
    reg [31:0] ifetch_insn_r = 0;
    reg [63:0] ifetch_predicted_next_pc_r = `RESET_PC;
    reg [ 1:0] ifetch_prediction_kind_r = 0;
+   reg        ifetch_refill_retry_valid = 0;
    reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
@@ -8247,6 +8248,12 @@ module smolrv64(input wire        clock,
           frontend_spec_miss_state(state))
          try_frontend_speculative_miss_start();
 
+      if (!core_reset_now && ifetch_refill_retry_valid) begin
+         issue_ifetch_cache_read(cache_addr[30:3], cache_req_va,
+                                 cache_req_asid, cache_req_perm,
+                                 cache_req_ctx);
+      end
+
       if (!core_reset_now && !frontend_flush_this_cycle &&
           frontend_miss_valid && ifetch_readdatavalid_r) begin
          frontend_miss_valid      <= 0;
@@ -8582,6 +8589,7 @@ module smolrv64(input wire        clock,
       ifetch_readdatavalid_r <= 0;
       ifetch_next_valid_r <= 0;
       ifetch_prediction_valid_r <= 0;
+      ifetch_refill_retry_valid <= 0;
       ptw_direct_readdatavalid_r <= 0;
       dmem_write_done_r <= 0;
       cache_bram_write_done <= 0;
@@ -9174,12 +9182,7 @@ module smolrv64(input wire        clock,
                  if (cache_req_write) begin
                     dmem_write_done_r <= 1;
                  end else if (cache_req_instr) begin
-                    cache_issue_dw_addr <= cache_addr[30:3];
-                    cache_issue_va      <= cache_req_va;
-                    cache_issue_asid    <= cache_req_asid;
-                    cache_issue_perm    <= cache_req_perm;
-                    cache_issue_ctx     <= cache_req_ctx;
-                    ifetch_read         <= 1;
+                    ifetch_refill_retry_valid <= 1;
                  end else begin
                     dmem_rsp_data_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
                     if (cache_req_same_line) begin
