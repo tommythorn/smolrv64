@@ -1106,12 +1106,9 @@ module smolrv64(input wire        clock,
    wire [63:0]  icache_lookup_data;
    wire [63:0]  icache_lookup_next_data;
    wire         icache_lookup_next_valid;
-   wire         icache_lookup_dirty;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
-   wire         icache_target_dirty;
-   wire [`CACHE_PHYS_TAG_BITS-1:0] icache_target_ptag;
 
    // Frontend command/result boundary.  The backend writes frontend_cmd_* when
    // it wants the frontend to probe or restart at a PC/context; the frontend
@@ -2023,12 +2020,9 @@ module smolrv64(input wire        clock,
       .icache_lookup_data(icache_lookup_data),
       .icache_lookup_next_data(icache_lookup_next_data),
       .icache_lookup_next_valid(icache_lookup_next_valid),
-      .icache_lookup_dirty(icache_lookup_dirty),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
-      .icache_target_valid(icache_target_valid),
-      .icache_target_dirty(icache_target_dirty),
-      .icache_target_ptag(icache_target_ptag)
+      .icache_target_valid(icache_target_valid)
    );
 
    function hpm_event_active;
@@ -8661,7 +8655,7 @@ module smolrv64(input wire        clock,
                                      ? icache_lookup_next_valid
                                      : dcache_lookup_next_valid;
            cache_lookup_dirty <= cache_req_instr
-                                ? icache_lookup_dirty
+                                ? 1'b0
                                 : dcache_lookup_dirty;
            cache_target_way <= cache_req_instr
                               ? icache_target_way
@@ -8673,10 +8667,10 @@ module smolrv64(input wire        clock,
                                 ? icache_target_valid
                                 : dcache_target_valid;
            cache_target_dirty <= cache_req_instr
-                                ? icache_target_dirty
+                                ? 1'b0
                                 : dcache_target_dirty;
            cache_target_ptag <= cache_req_instr
-                               ? icache_target_ptag
+                               ? {`CACHE_PHYS_TAG_BITS{1'b0}}
                                : dcache_target_ptag;
            cache_state <= CACHE_HIT_RESP;
         end
@@ -9777,12 +9771,9 @@ module smolrv64_frontend #(
    output wire [63:0]                  icache_lookup_data,
    output wire [63:0]                  icache_lookup_next_data,
    output wire                         icache_lookup_next_valid,
-   output wire                         icache_lookup_dirty,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
-   output wire                         icache_target_valid,
-   output wire                         icache_target_dirty,
-   output wire [`CACHE_PHYS_TAG_BITS-1:0] icache_target_ptag
+   output wire                         icache_target_valid
 );
    localparam [1:0] PRED_FALLTHROUGH = 2'd0;
    localparam [1:0] PRED_DIRECT      = 2'd1;
@@ -9982,13 +9973,6 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   function cache_meta_dirty;
-      input [`CACHE_META_BITS-1:0] meta;
-      begin
-         cache_meta_dirty = meta[`CACHE_DIRTY_BIT];
-      end
-   endfunction
-
    function [TLB_ASID_BITS-1:0] cache_meta_asid;
       input [`CACHE_META_BITS-1:0] meta;
       begin
@@ -10127,17 +10111,9 @@ module smolrv64_frontend #(
       icache_replace_way;
    wire [`CACHE_META_BITS-1:0] icache_target_meta =
       icache_target_way ? icache_way1_tag_rd_data : icache_way0_tag_rd_data;
-   wire [`CACHE_META_BITS-1:0] icache_lookup_meta =
-      icache_lookup_hit_way ? icache_way1_tag_rd_data : icache_way0_tag_rd_data;
-   assign icache_lookup_dirty =
-      icache_lookup_hit ? cache_meta_dirty(icache_lookup_meta) :
-                          (icache_target_valid && icache_target_dirty);
    assign icache_target_idx =
       icache_target_way ? icache_way1_rd_idx : icache_way0_rd_idx;
    assign icache_target_valid = cache_meta_valid(icache_target_meta);
-   assign icache_target_dirty =
-      icache_target_valid && cache_meta_dirty(icache_target_meta);
-   assign icache_target_ptag = cache_meta_ptag(icache_target_meta);
 
    function [63:0] select_icache_bank_data;
       input       way;
