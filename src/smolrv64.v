@@ -3630,6 +3630,14 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task prearm_rf_decode_head;
+      begin
+         rs1 <= rf_decode_rs1;
+         rs2 <= rf_decode_rs2;
+         rf_decode_prearmed <= 1;
+      end
+   endtask
+
    task launch_rf_decode_read;
       begin
          if (id_valid) begin
@@ -8269,11 +8277,8 @@ module smolrv64(input wire        clock,
       // pre-arm would clobber it).
       if (!core_reset_now && !id_valid && rf_decode_valid &&
           !rf_decode_prearmed && !rf_decode_prearm_block &&
-          state == `S_FETCH1) begin
-         rs1 <= rf_decode_rs1;
-         rs2 <= rf_decode_rs2;
-         rf_decode_prearmed <= 1;
-      end
+          state == `S_FETCH1)
+         prearm_rf_decode_head();
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
           frontend_spec_fetch_state(state))
