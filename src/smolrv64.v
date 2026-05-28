@@ -585,11 +585,11 @@ module smolrv64(input wire        clock,
 `define S_PTW_LAUNCH    14  // launch PTW PTE fetch after ptw_* request fields are registered
 `define S_FETCH2_HALF   15
 
-`define S_DRAM_FETCH_WAIT      16  // wait for DRAM instruction fetch
+`define S_IFETCH_WAIT           16  // wait for I-cache instruction response
 `define S_DRAM_LOAD_WAIT       17  // wait for DRAM load
 `define S_DRAM_PTW_WAIT        18  // wait for DRAM page-table-walk PTE
 `define S_DRAM_STORE_WAIT      19  // backpressure wait before first store burst
-`define S_DRAM_FETCH_HALF_WAIT 20  // wait for 2nd burst of cross-burst fetch
+`define S_IFETCH_HALF_WAIT      20  // wait for 2nd I-cache response of cross-line fetch
 `define S_DRAM_LOAD2_WAIT      21  // wait for 2nd burst of cross-burst load
 `define S_DRAM_STORE2          22  // issue 2nd burst of cross-burst store
 `define S_RF2                  23  // wait for BRAM regfile read after rs1/rs2 launch
@@ -607,7 +607,7 @@ module smolrv64(input wire        clock,
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
 `define S_DRAM_STORE_RESP_WAIT 43  // wait for an issued DRAM store to fully drain
 `define S_DRAM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
-`define S_FETCH2_DRAM          45  // latch instruction from I-fetch response without fetch-source mux
+`define S_IFETCH_RESP          45  // latch instruction from I-fetch response without fetch-source mux
 `define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
 `define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
 `define S_MULDIV_START         48  // initialize iterative M-extension datapath
@@ -1471,7 +1471,7 @@ module smolrv64(input wire        clock,
                                          cache_wb_beat == 3'd0;
    wire       hpm_axi_read_pulse = mem_fill_req_fire || mem_read_req_fire;
    wire       hpm_axi_write_pulse = mem_wb_req_fire;
-   wire       hpm_bus_wait_cycle = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
+   wire       hpm_bus_wait_cycle = state == `S_IFETCH_WAIT || state == `S_IFETCH_HALF_WAIT ||
                                    state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
                                    state == `S_DRAM_PTW_WAIT   ||
                                    state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
@@ -1570,11 +1570,11 @@ module smolrv64(input wire        clock,
            `S_DIV_RUNNING:           state_name = "DIV_RUNNING";
            `S_PTW_LAUNCH:            state_name = "PTW_LAUNCH";
            `S_FETCH2_HALF:           state_name = "FETCH2_HALF";
-           `S_DRAM_FETCH_WAIT:       state_name = "DRAM_FETCH_WAIT";
+           `S_IFETCH_WAIT:           state_name = "IFETCH_WAIT";
            `S_DRAM_LOAD_WAIT:        state_name = "DRAM_LOAD_WAIT";
            `S_DRAM_PTW_WAIT:         state_name = "DRAM_PTW_WAIT";
            `S_DRAM_STORE_WAIT:       state_name = "DRAM_STORE_WAIT";
-           `S_DRAM_FETCH_HALF_WAIT:  state_name = "DRAM_FETCH_HALF_WAIT";
+           `S_IFETCH_HALF_WAIT:      state_name = "IFETCH_HALF_WAIT";
            `S_DRAM_LOAD2_WAIT:       state_name = "DRAM_LOAD2_WAIT";
            `S_DRAM_STORE2:           state_name = "DRAM_STORE2";
            `S_RF2:                   state_name = "RF2";
@@ -1592,7 +1592,7 @@ module smolrv64(input wire        clock,
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
            `S_CBO_EXEC:              state_name = "CBO_EXEC";
            `S_CBO_WAIT:              state_name = "CBO_WAIT";
-           `S_FETCH2_DRAM:           state_name = "FETCH2_DRAM";
+           `S_IFETCH_RESP:           state_name = "IFETCH_RESP";
            `S_FETCH_BUF_CHECK:       state_name = "FETCH_BUF_CHECK";
            `S_FETCH_BUF_USE:         state_name = "FETCH_BUF_USE";
            `S_MULDIV_START:          state_name = "MULDIV_START";
@@ -3290,7 +3290,7 @@ module smolrv64(input wire        clock,
                                     {TLB_ASID_BITS{1'b0}},
                                     CACHE_PERM_PHYS,
                                     {2'd0, fetch_prv, sum, mxr});
-            state            <= `S_DRAM_FETCH_WAIT;
+            state            <= `S_IFETCH_WAIT;
          end
       end
    endtask
@@ -3343,7 +3343,7 @@ module smolrv64(input wire        clock,
                                           {TLB_ASID_BITS{1'b0}},
                                           CACHE_PERM_PHYS,
                                           {2'd0, prv, sum, mxr});
-                  state <= `S_DRAM_FETCH_HALF_WAIT;
+                  state <= `S_IFETCH_HALF_WAIT;
                end
             end
          end else begin
@@ -4698,7 +4698,7 @@ module smolrv64(input wire        clock,
                                        current_cache_asid, req_perm,
                                        tlb_req_ctx);
                state           <= (req_return == `S_FETCH2) ?
-                                  `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
+                                  `S_IFETCH_WAIT : `S_IFETCH_HALF_WAIT;
             end else begin
                cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
                tval = req_pa;
@@ -5376,7 +5376,7 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_FETCH2_DRAM: begin
+        `S_IFETCH_RESP: begin
            // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
            // detected before RF launch and re-fetched on the slow path; the
            // upper 64 bits are don't-care.
@@ -8065,17 +8065,17 @@ module smolrv64(input wire        clock,
                                    insn, 2'd0, fetch_from_ifetch_rsp);
         end
 
-        `S_DRAM_FETCH_WAIT: if (ifetch_readdatavalid_r) begin
+        `S_IFETCH_WAIT: if (ifetch_readdatavalid_r) begin
            ifetch_latched_window                <= ifetch_window_r;
            ifetch_latched_next_valid            <= ifetch_next_valid_r;
            ifetch_latched_prediction_valid      <= ifetch_prediction_valid_r;
            ifetch_latched_insn                  <= ifetch_insn_r;
            ifetch_latched_predicted_next_pc     <= ifetch_predicted_next_pc_r;
            ifetch_latched_prediction_kind       <= ifetch_prediction_kind_r;
-           state                                <= `S_FETCH2_DRAM;
+           state                                <= `S_IFETCH_RESP;
         end
 
-        `S_DRAM_FETCH_HALF_WAIT: if (ifetch_readdatavalid_r) begin
+        `S_IFETCH_HALF_WAIT: if (ifetch_readdatavalid_r) begin
            ifetch_latched_half_data             <= ifetch_prediction_valid_r
                                                    ? {32'd0, ifetch_insn_r}
                                                    : ifetch_window_r[63:0];
@@ -8270,7 +8270,7 @@ module smolrv64(input wire        clock,
       // Bus timeout: fault if an external bus access doesn't respond
       begin : bus_timeout_logic
          reg bus_waiting;
-         bus_waiting = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
+         bus_waiting = state == `S_IFETCH_WAIT || state == `S_IFETCH_HALF_WAIT ||
                        state == `S_DRAM_LOAD_WAIT  || state == `S_DRAM_LOAD2_WAIT ||
                        state == `S_DRAM_PTW_WAIT   ||
                        state == `S_DRAM_STORE_WAIT || state == `S_DRAM_STORE2 ||
@@ -8281,7 +8281,7 @@ module smolrv64(input wire        clock,
          if (bus_waiting) begin
             bus_timeout_ctr <= bus_timeout_ctr + 1;
             case (state)
-              `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT, `S_FRONTEND_MISS_WAIT: begin
+              `S_IFETCH_WAIT, `S_IFETCH_HALF_WAIT, `S_FRONTEND_MISS_WAIT: begin
                  bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
                  bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : cache_issue_va;
               end
