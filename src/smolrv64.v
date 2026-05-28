@@ -685,12 +685,18 @@ module smolrv64(input wire        clock,
 `define HPM_EVENT_NONE             16'h0000
 `define HPM_EVENT_CYCLES           16'h0001
 `define HPM_EVENT_INSTRUCTIONS     16'h0002
-`define HPM_EVENT_CACHE_READ       16'h0100
-`define HPM_EVENT_CACHE_HIT        16'h0101
-`define HPM_EVENT_CACHE_MISS       16'h0102
-`define HPM_EVENT_CACHE_FILL_LINE  16'h0103
-`define HPM_EVENT_CACHE_FILL_BEAT  16'h0104
-`define HPM_EVENT_CACHE_WRITE      16'h0105
+`define HPM_EVENT_ICACHE_READ      16'h0100
+`define HPM_EVENT_ICACHE_HIT       16'h0101
+`define HPM_EVENT_ICACHE_MISS      16'h0102
+`define HPM_EVENT_ICACHE_FILL_LINE 16'h0103
+`define HPM_EVENT_ICACHE_FILL_BEAT 16'h0104
+`define HPM_EVENT_DCACHE_READ      16'h0110
+`define HPM_EVENT_DCACHE_WRITE     16'h0111
+`define HPM_EVENT_DCACHE_HIT       16'h0112
+`define HPM_EVENT_DCACHE_MISS      16'h0113
+`define HPM_EVENT_DCACHE_FILL_LINE 16'h0114
+`define HPM_EVENT_DCACHE_FILL_BEAT 16'h0115
+`define HPM_EVENT_DCACHE_WB_LINE   16'h0116
 `define HPM_EVENT_AXI_READ         16'h0200
 `define HPM_EVENT_AXI_WRITE        16'h0201
 `define HPM_EVENT_BUS_WAIT_CYCLE   16'h0202
@@ -1427,15 +1433,26 @@ module smolrv64(input wire        clock,
    assign     core_reset_now  = (reset || core_reset_pending) && core_reset_home;
 
    wire       hpm_instret_pulse = state == `S_FETCH1 && retire_now_q;
-   wire       hpm_cache_read_pulse = cache_state == CACHE_IDLE && dram_read;
-   wire       hpm_cache_write_pulse = cache_state == CACHE_IDLE && dram_write;
-   wire       hpm_cache_hit_pulse = cache_state == CACHE_HIT_RESP && cache_lookup_hit;
-   wire       hpm_cache_miss_pulse = cache_state == CACHE_HIT_RESP && !cache_lookup_hit;
-   wire       hpm_cache_fill_beat_pulse = cache_fill_data_valid;
-   wire       hpm_cache_fill_line_pulse = hpm_cache_fill_beat_pulse && cache_fill_beat == 3'd7;
-   wire       cache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
-                                    (cache_wb_to_bram || mem_wb_req_ready) &&
-                                    cache_wb_beat == 3'd0;
+   wire       hpm_icache_read_pulse = cache_state == CACHE_IDLE && dram_read && dram_instr;
+   wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dram_read && !dram_instr;
+   wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dram_write;
+   wire       hpm_icache_hit_pulse =
+              cache_state == CACHE_HIT_RESP && cache_req_instr && cache_lookup_hit;
+   wire       hpm_dcache_hit_pulse =
+              cache_state == CACHE_HIT_RESP && !cache_req_instr && cache_lookup_hit;
+   wire       hpm_icache_miss_pulse =
+              cache_state == CACHE_HIT_RESP && cache_req_instr && !cache_lookup_hit;
+   wire       hpm_dcache_miss_pulse =
+              cache_state == CACHE_HIT_RESP && !cache_req_instr && !cache_lookup_hit;
+   wire       hpm_icache_fill_beat_pulse = cache_fill_data_valid && cache_req_instr;
+   wire       hpm_dcache_fill_beat_pulse = cache_fill_data_valid && !cache_req_instr;
+   wire       hpm_icache_fill_line_pulse =
+              hpm_icache_fill_beat_pulse && cache_fill_beat == 3'd7;
+   wire       hpm_dcache_fill_line_pulse =
+              hpm_dcache_fill_beat_pulse && cache_fill_beat == 3'd7;
+   wire       hpm_dcache_wb_line_pulse = cache_state == CACHE_WB_REQ &&
+                                         (cache_wb_to_bram || mem_wb_req_ready) &&
+                                         cache_wb_beat == 3'd0;
    wire       hpm_axi_read_pulse = mem_fill_req_fire || mem_read_req_fire;
    wire       hpm_axi_write_pulse = mem_wb_req_fire;
    wire       hpm_bus_wait_cycle = state == `S_DRAM_FETCH_WAIT || state == `S_DRAM_FETCH_HALF_WAIT ||
@@ -1445,12 +1462,18 @@ module smolrv64(input wire        clock,
                                    state == `S_DRAM_STORE_RESP_WAIT || state == `S_DRAM_STORE_RESP_ARM ||
                                    state == `S_MMIO_ALIGN;
    reg        hpm_instret_q = 0;
-   reg        hpm_cache_read_q = 0;
-   reg        hpm_cache_hit_q = 0;
-   reg        hpm_cache_miss_q = 0;
-   reg        hpm_cache_fill_line_q = 0;
-   reg        hpm_cache_fill_beat_q = 0;
-   reg        hpm_cache_write_q = 0;
+   reg        hpm_icache_read_q = 0;
+   reg        hpm_icache_hit_q = 0;
+   reg        hpm_icache_miss_q = 0;
+   reg        hpm_icache_fill_line_q = 0;
+   reg        hpm_icache_fill_beat_q = 0;
+   reg        hpm_dcache_read_q = 0;
+   reg        hpm_dcache_write_q = 0;
+   reg        hpm_dcache_hit_q = 0;
+   reg        hpm_dcache_miss_q = 0;
+   reg        hpm_dcache_fill_line_q = 0;
+   reg        hpm_dcache_fill_beat_q = 0;
+   reg        hpm_dcache_wb_line_q = 0;
    reg        hpm_axi_read_q = 0;
    reg        hpm_axi_write_q = 0;
    reg        hpm_bus_wait_q = 0;
@@ -1482,13 +1505,17 @@ module smolrv64(input wire        clock,
    reg [63:0] state_stat_instret = 0;
    reg [63:0] state_stat_cycles [0:`S_LAST_STATE];
    reg [63:0] cache_state_stat_cycles [0:CACHE_LAST_STATE];
-   reg [63:0] cache_stat_reads = 0;
-   reg [63:0] cache_stat_writes = 0;
-   reg [63:0] cache_stat_hits = 0;
-   reg [63:0] cache_stat_misses = 0;
-   reg [63:0] cache_stat_dirty_misses = 0;
-   reg [63:0] cache_stat_fill_lines = 0;
-   reg [63:0] cache_stat_wb_lines = 0;
+   reg [63:0] icache_stat_reads = 0;
+   reg [63:0] icache_stat_hits = 0;
+   reg [63:0] icache_stat_misses = 0;
+   reg [63:0] icache_stat_fill_lines = 0;
+   reg [63:0] dcache_stat_reads = 0;
+   reg [63:0] dcache_stat_writes = 0;
+   reg [63:0] dcache_stat_hits = 0;
+   reg [63:0] dcache_stat_misses = 0;
+   reg [63:0] dcache_stat_dirty_misses = 0;
+   reg [63:0] dcache_stat_fill_lines = 0;
+   reg [63:0] dcache_stat_wb_lines = 0;
    reg [63:0] fetch_buf_stat_hits = 0;
    reg [63:0] fetch_buf_stat_misses = 0;
    reg [63:0] ptw_stat_leaf_4k = 0;
@@ -1692,7 +1719,7 @@ module smolrv64(input wire        clock,
       if (cache_trace_enabled)
          $display("CACHE TRACE ENABLED");
       if (cache_summary_enabled)
-         $display("CACHE SUMMARY ENABLED");
+         $display("L1 SUMMARY ENABLED");
       if (fetch_buf_summary_enabled)
          $display("FETCH BUFFER SUMMARY ENABLED");
       if (state_summary_enabled) begin
@@ -2046,12 +2073,18 @@ module smolrv64(input wire        clock,
    function hpm_event_active;
       input [15:0] event_code;
       input        instret_pulse;
-      input        cache_read_pulse;
-      input        cache_hit_pulse;
-      input        cache_miss_pulse;
-      input        cache_fill_line_pulse;
-      input        cache_fill_beat_pulse;
-      input        cache_write_pulse;
+      input        icache_read_pulse;
+      input        icache_hit_pulse;
+      input        icache_miss_pulse;
+      input        icache_fill_line_pulse;
+      input        icache_fill_beat_pulse;
+      input        dcache_read_pulse;
+      input        dcache_write_pulse;
+      input        dcache_hit_pulse;
+      input        dcache_miss_pulse;
+      input        dcache_fill_line_pulse;
+      input        dcache_fill_beat_pulse;
+      input        dcache_wb_line_pulse;
       input        axi_read_pulse;
       input        axi_write_pulse;
       input        bus_wait_cycle;
@@ -2074,12 +2107,18 @@ module smolrv64(input wire        clock,
          case (event_code)
            `HPM_EVENT_CYCLES:          hpm_event_active = 1'b1;
            `HPM_EVENT_INSTRUCTIONS:    hpm_event_active = instret_pulse;
-           `HPM_EVENT_CACHE_READ:      hpm_event_active = cache_read_pulse;
-           `HPM_EVENT_CACHE_HIT:       hpm_event_active = cache_hit_pulse;
-           `HPM_EVENT_CACHE_MISS:      hpm_event_active = cache_miss_pulse;
-           `HPM_EVENT_CACHE_FILL_LINE: hpm_event_active = cache_fill_line_pulse;
-           `HPM_EVENT_CACHE_FILL_BEAT: hpm_event_active = cache_fill_beat_pulse;
-           `HPM_EVENT_CACHE_WRITE:     hpm_event_active = cache_write_pulse;
+           `HPM_EVENT_ICACHE_READ:     hpm_event_active = icache_read_pulse;
+           `HPM_EVENT_ICACHE_HIT:      hpm_event_active = icache_hit_pulse;
+           `HPM_EVENT_ICACHE_MISS:     hpm_event_active = icache_miss_pulse;
+           `HPM_EVENT_ICACHE_FILL_LINE: hpm_event_active = icache_fill_line_pulse;
+           `HPM_EVENT_ICACHE_FILL_BEAT: hpm_event_active = icache_fill_beat_pulse;
+           `HPM_EVENT_DCACHE_READ:     hpm_event_active = dcache_read_pulse;
+           `HPM_EVENT_DCACHE_WRITE:    hpm_event_active = dcache_write_pulse;
+           `HPM_EVENT_DCACHE_HIT:      hpm_event_active = dcache_hit_pulse;
+           `HPM_EVENT_DCACHE_MISS:     hpm_event_active = dcache_miss_pulse;
+           `HPM_EVENT_DCACHE_FILL_LINE: hpm_event_active = dcache_fill_line_pulse;
+           `HPM_EVENT_DCACHE_FILL_BEAT: hpm_event_active = dcache_fill_beat_pulse;
+           `HPM_EVENT_DCACHE_WB_LINE:  hpm_event_active = dcache_wb_line_pulse;
            `HPM_EVENT_AXI_READ:        hpm_event_active = axi_read_pulse;
            `HPM_EVENT_AXI_WRITE:       hpm_event_active = axi_write_pulse;
            `HPM_EVENT_BUS_WAIT_CYCLE:  hpm_event_active = bus_wait_cycle;
@@ -4727,12 +4766,18 @@ module smolrv64(input wire        clock,
          csr_mcycle <= csr_mcycle + 1;
       if (core_reset_now) begin
          hpm_instret_q <= 0;
-         hpm_cache_read_q <= 0;
-         hpm_cache_hit_q <= 0;
-         hpm_cache_miss_q <= 0;
-         hpm_cache_fill_line_q <= 0;
-         hpm_cache_fill_beat_q <= 0;
-         hpm_cache_write_q <= 0;
+         hpm_icache_read_q <= 0;
+         hpm_icache_hit_q <= 0;
+         hpm_icache_miss_q <= 0;
+         hpm_icache_fill_line_q <= 0;
+         hpm_icache_fill_beat_q <= 0;
+         hpm_dcache_read_q <= 0;
+         hpm_dcache_write_q <= 0;
+         hpm_dcache_hit_q <= 0;
+         hpm_dcache_miss_q <= 0;
+         hpm_dcache_fill_line_q <= 0;
+         hpm_dcache_fill_beat_q <= 0;
+         hpm_dcache_wb_line_q <= 0;
          hpm_axi_read_q <= 0;
          hpm_axi_write_q <= 0;
          hpm_bus_wait_q <= 0;
@@ -4753,12 +4798,18 @@ module smolrv64(input wire        clock,
          hpm_ptw_leaf_napot_q <= 0;
       end else begin
          hpm_instret_q <= hpm_instret_pulse;
-         hpm_cache_read_q <= hpm_cache_read_pulse;
-         hpm_cache_hit_q <= hpm_cache_hit_pulse;
-         hpm_cache_miss_q <= hpm_cache_miss_pulse;
-         hpm_cache_fill_line_q <= hpm_cache_fill_line_pulse;
-         hpm_cache_fill_beat_q <= hpm_cache_fill_beat_pulse;
-         hpm_cache_write_q <= hpm_cache_write_pulse;
+         hpm_icache_read_q <= hpm_icache_read_pulse;
+         hpm_icache_hit_q <= hpm_icache_hit_pulse;
+         hpm_icache_miss_q <= hpm_icache_miss_pulse;
+         hpm_icache_fill_line_q <= hpm_icache_fill_line_pulse;
+         hpm_icache_fill_beat_q <= hpm_icache_fill_beat_pulse;
+         hpm_dcache_read_q <= hpm_dcache_read_pulse;
+         hpm_dcache_write_q <= hpm_dcache_write_pulse;
+         hpm_dcache_hit_q <= hpm_dcache_hit_pulse;
+         hpm_dcache_miss_q <= hpm_dcache_miss_pulse;
+         hpm_dcache_fill_line_q <= hpm_dcache_fill_line_pulse;
+         hpm_dcache_fill_beat_q <= hpm_dcache_fill_beat_pulse;
+         hpm_dcache_wb_line_q <= hpm_dcache_wb_line_pulse;
          hpm_axi_read_q <= hpm_axi_read_pulse;
          hpm_axi_write_q <= hpm_axi_write_pulse;
          hpm_bus_wait_q <= hpm_bus_wait_cycle;
@@ -4792,12 +4843,18 @@ module smolrv64(input wire        clock,
                          hpm_mode_enabled(csr_mhpmevent[hpm_i]) &&
                          hpm_event_active(csr_mhpmevent[hpm_i][15:0],
                                           hpm_instret_q,
-                                          hpm_cache_read_q,
-                                          hpm_cache_hit_q,
-                                          hpm_cache_miss_q,
-                                          hpm_cache_fill_line_q,
-                                          hpm_cache_fill_beat_q,
-                                          hpm_cache_write_q,
+                                          hpm_icache_read_q,
+                                          hpm_icache_hit_q,
+                                          hpm_icache_miss_q,
+                                          hpm_icache_fill_line_q,
+                                          hpm_icache_fill_beat_q,
+                                          hpm_dcache_read_q,
+                                          hpm_dcache_write_q,
+                                          hpm_dcache_hit_q,
+                                          hpm_dcache_miss_q,
+                                          hpm_dcache_fill_line_q,
+                                          hpm_dcache_fill_beat_q,
+                                          hpm_dcache_wb_line_q,
                                           hpm_axi_read_q,
                                           hpm_axi_write_q,
                                           hpm_bus_wait_q,
@@ -8966,8 +9023,9 @@ module smolrv64(input wire        clock,
         CACHE_FILL_REQ: begin
 `ifdef SIMULATE
            if (cache_trace_enabled && !cache_fill_from_bram && !mem_fill_req_valid) begin
-              $display("%05d CACHE FILLREQ line addr=%016h",
+              $display("%05d %s FILLREQ line addr=%016h",
                        $time,
+                       cache_req_instr ? "ICACHE" : "DCACHE",
                        cache_fill_base);
            end
 `endif
@@ -9125,32 +9183,48 @@ module smolrv64(input wire        clock,
       end
 
       if (cache_summary_enabled) begin
-         if (hpm_cache_read_pulse)
-            cache_stat_reads <= cache_stat_reads + 1;
-         if (hpm_cache_write_pulse)
-            cache_stat_writes <= cache_stat_writes + 1;
-         if (hpm_cache_hit_pulse)
-            cache_stat_hits <= cache_stat_hits + 1;
-         if (hpm_cache_miss_pulse) begin
-            cache_stat_misses <= cache_stat_misses + 1;
+         if (hpm_icache_read_pulse)
+            icache_stat_reads <= icache_stat_reads + 1;
+         if (hpm_icache_hit_pulse)
+            icache_stat_hits <= icache_stat_hits + 1;
+         if (hpm_icache_miss_pulse)
+            icache_stat_misses <= icache_stat_misses + 1;
+         if (hpm_icache_fill_line_pulse)
+            icache_stat_fill_lines <= icache_stat_fill_lines + 1;
+
+         if (hpm_dcache_read_pulse)
+            dcache_stat_reads <= dcache_stat_reads + 1;
+         if (hpm_dcache_write_pulse)
+            dcache_stat_writes <= dcache_stat_writes + 1;
+         if (hpm_dcache_hit_pulse)
+            dcache_stat_hits <= dcache_stat_hits + 1;
+         if (hpm_dcache_miss_pulse) begin
+            dcache_stat_misses <= dcache_stat_misses + 1;
             if (cache_lookup_dirty)
-               cache_stat_dirty_misses <= cache_stat_dirty_misses + 1;
-            if (cache_stat_misses[12:0] == 13'h1fff) begin
-               $display("%05d CACHE SUMMARY reads=%0d writes=%0d hits=%0d misses=%0d dirty_misses=%0d fill_lines=%0d wb_lines=%0d",
-                        $time,
-                        cache_stat_reads + (hpm_cache_read_pulse ? 64'd1 : 64'd0),
-                        cache_stat_writes + (hpm_cache_write_pulse ? 64'd1 : 64'd0),
-                        cache_stat_hits + (hpm_cache_hit_pulse ? 64'd1 : 64'd0),
-                        cache_stat_misses + 64'd1,
-                        cache_stat_dirty_misses + (cache_lookup_dirty ? 64'd1 : 64'd0),
-                        cache_stat_fill_lines + (hpm_cache_fill_line_pulse ? 64'd1 : 64'd0),
-                        cache_stat_wb_lines + (cache_wb_line_pulse ? 64'd1 : 64'd0));
-            end
+               dcache_stat_dirty_misses <= dcache_stat_dirty_misses + 1;
          end
-         if (hpm_cache_fill_line_pulse)
-            cache_stat_fill_lines <= cache_stat_fill_lines + 1;
-         if (cache_wb_line_pulse)
-            cache_stat_wb_lines <= cache_stat_wb_lines + 1;
+         if (hpm_dcache_fill_line_pulse)
+            dcache_stat_fill_lines <= dcache_stat_fill_lines + 1;
+         if (hpm_dcache_wb_line_pulse)
+            dcache_stat_wb_lines <= dcache_stat_wb_lines + 1;
+
+         if ((hpm_icache_miss_pulse && icache_stat_misses[12:0] == 13'h1fff) ||
+             (hpm_dcache_miss_pulse && dcache_stat_misses[12:0] == 13'h1fff)) begin
+            $display("%05d L1 SUMMARY icache_reads=%0d icache_hits=%0d icache_misses=%0d icache_fill_lines=%0d dcache_reads=%0d dcache_writes=%0d dcache_hits=%0d dcache_misses=%0d dcache_dirty_misses=%0d dcache_fill_lines=%0d dcache_wb_lines=%0d",
+                        $time,
+                        icache_stat_reads + (hpm_icache_read_pulse ? 64'd1 : 64'd0),
+                        icache_stat_hits + (hpm_icache_hit_pulse ? 64'd1 : 64'd0),
+                        icache_stat_misses + (hpm_icache_miss_pulse ? 64'd1 : 64'd0),
+                        icache_stat_fill_lines + (hpm_icache_fill_line_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_reads + (hpm_dcache_read_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_writes + (hpm_dcache_write_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_hits + (hpm_dcache_hit_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_misses + (hpm_dcache_miss_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_dirty_misses +
+                           (hpm_dcache_miss_pulse && cache_lookup_dirty ? 64'd1 : 64'd0),
+                        dcache_stat_fill_lines + (hpm_dcache_fill_line_pulse ? 64'd1 : 64'd0),
+                        dcache_stat_wb_lines + (hpm_dcache_wb_line_pulse ? 64'd1 : 64'd0));
+         end
       end
 
       if (hpm_tlb_lookup_pulse)
@@ -9177,9 +9251,10 @@ module smolrv64(input wire        clock,
          tlb_stat_uncached_napot <= tlb_stat_uncached_napot + 1;
 
       if (cache_trace_enabled) begin
-         if (hpm_cache_miss_pulse) begin
-            $display("%05d CACHE MISS  op=%0d addr=%016h bank=%0d next_bank=%0d same_line=%0d dirty=%0d victim=%016h",
+         if (hpm_icache_miss_pulse || hpm_dcache_miss_pulse) begin
+            $display("%05d %s MISS  op=%0d addr=%016h bank=%0d next_bank=%0d same_line=%0d dirty=%0d victim=%016h",
                      $time,
+                     cache_req_instr ? "ICACHE" : "DCACHE",
                      cache_req_write,
                      cache_addr,
                      cache_req_bank,
@@ -9188,16 +9263,18 @@ module smolrv64(input wire        clock,
                      cache_lookup_dirty,
                      {33'd0, cache_victim_ptag, cache_victim_idx[5:0], 6'd0});
          end
-         if (hpm_cache_fill_beat_pulse) begin
-            $display("%05d CACHE FILLD beat=%0d addr=%016h data=%016h",
+         if (hpm_icache_fill_beat_pulse || hpm_dcache_fill_beat_pulse) begin
+            $display("%05d %s FILLD beat=%0d addr=%016h data=%016h",
                      $time,
+                     cache_req_instr ? "ICACHE" : "DCACHE",
                      cache_fill_beat,
                      cache_fill_base + (64'd8 * cache_fill_beat),
                      cache_fill_data);
          end
-         if (hpm_cache_fill_line_pulse) begin
-            $display("%05d CACHE FILLDONE addr=%016h write=%0d",
+         if (hpm_icache_fill_line_pulse || hpm_dcache_fill_line_pulse) begin
+            $display("%05d %s FILLDONE addr=%016h write=%0d",
                      $time,
+                     cache_req_instr ? "ICACHE" : "DCACHE",
                      cache_fill_base,
                      cache_req_write);
          end
