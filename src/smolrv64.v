@@ -1145,8 +1145,7 @@ module smolrv64(input wire        clock,
    reg  [ 1:0]  frontend_miss_prv = 3;
    reg  [TLB_ASID_BITS-1:0] frontend_miss_asid = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] frontend_miss_epoch = 0;
-   reg  [63:0]  frontend_miss_data = 0;
-   reg  [63:0]  frontend_miss_next_data = 0;
+   reg  [127:0] frontend_miss_window = 0;
    reg          frontend_miss_next_valid = 0;
    reg          frontend_miss_prediction_valid = 0;
    reg  [31:0]  frontend_miss_insn = 0;
@@ -4383,8 +4382,8 @@ module smolrv64(input wire        clock,
             miss_insn = frontend_miss_insn;
          end else begin
             miss_aligned = frontend_miss_next_valid ?
-                           {frontend_miss_next_data, frontend_miss_data} :
-                           {64'bx, frontend_miss_data};
+                           frontend_miss_window :
+                           {64'bx, frontend_miss_window[63:0]};
             miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
          end
          if (frontend_miss_next_valid && !frontend_miss_prediction_valid) begin
@@ -8269,8 +8268,7 @@ module smolrv64(input wire        clock,
           frontend_miss_valid && ifetch_rsp_valid_r) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
-         frontend_miss_data       <= ifetch_rsp_window_r[63:0];
-         frontend_miss_next_data  <= ifetch_rsp_window_r[127:64];
+         frontend_miss_window     <= ifetch_rsp_window_r;
          frontend_miss_next_valid <= ifetch_rsp_next_valid_r;
          frontend_miss_prediction_valid <= ifetch_rsp_prediction_valid_r;
          frontend_miss_insn <= ifetch_rsp_insn_r;
@@ -8397,8 +8395,7 @@ module smolrv64(input wire        clock,
          frontend_miss_prv <= 3;
          frontend_miss_asid <= 0;
          frontend_miss_epoch <= 0;
-         frontend_miss_data <= 0;
-         frontend_miss_next_data <= 0;
+         frontend_miss_window <= 0;
          frontend_miss_next_valid <= 0;
          frontend_miss_prediction_valid <= 0;
          frontend_miss_insn <= 0;
