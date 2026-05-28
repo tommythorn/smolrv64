@@ -1041,14 +1041,14 @@ module smolrv64(input wire        clock,
    reg          dram_write = 0;
    reg  [63:0]  dram_writedata;
    reg  [ 7:0]  dram_wstrb;          // AXI convention: 1 = write byte
-   wire         dram_readdatavalid;
-   wire [63:0]  dram_readdata;
-   wire [63:0]  dram_readdata_next;
-   wire         dram_readdata_next_valid;
+   wire         dmem_rsp_valid;
+   wire [63:0]  dmem_rsp_data;
+   wire [63:0]  dmem_rsp_next_data;
+   wire         dmem_rsp_next_valid;
    wire         dram_write_ready;    // master idle (no AW/W/B in flight)
    wire         dram_write_done;     // write response observed for issued write
 
-   reg  [63:0]  dram_latched;        // holds first 8B chunk across states
+   reg  [63:0]  load_latched_data;        // holds first 8B chunk across states
    reg  [127:0] ifetch_latched_window = 0;
    reg  [ 63:0] ifetch_latched_half_data = 0;
    reg          ifetch_latched_next_valid = 0;
@@ -1359,10 +1359,10 @@ module smolrv64(input wire        clock,
    reg [TLB_ASID_BITS-1:0] dram_asid = 0;
    reg [CACHE_PERM_BITS-1:0] dram_perm = CACHE_PERM_PHYS;
    reg [TLB_CTX_BITS-1:0] dram_ctx = 0;
-   reg        dram_readdatavalid_r = 0;
-   reg [63:0] dram_readdata_r = 0;
-   reg [63:0] dram_readdata_next_r = 0;
-   reg        dram_readdata_next_valid_r = 0;
+   reg        dmem_rsp_valid_r = 0;
+   reg [63:0] dmem_rsp_data_r = 0;
+   reg [63:0] dmem_rsp_next_data_r = 0;
+   reg        dmem_rsp_next_valid_r = 0;
    reg        ifetch_readdatavalid_r = 0;
    reg [127:0] ifetch_window_r = 0;
    reg        ifetch_next_valid_r = 0;
@@ -8085,11 +8085,11 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_LOAD_WAIT: begin
-           if (dram_readdatavalid) begin
+           if (dmem_rsp_valid) begin
               if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
-                 if (dram_readdata_next_valid) begin : dram_load_cross_cached
+                 if (dmem_rsp_next_valid) begin : dmem_load_cross_cached
                     reg [127:0] combo;
-                    combo = {dram_readdata_next, dram_readdata} >> (mem_addr[2:0] * 8);
+                    combo = {dmem_rsp_next_data, dmem_rsp_data} >> (mem_addr[2:0] * 8);
                     case (load_size_lg2)
                       0: write_back_value = combo[7:0];
                       1: write_back_value = combo[15:0];
@@ -8109,7 +8109,7 @@ module smolrv64(input wire        clock,
                  end else begin
                     // Access crosses a cache-line boundary and the second line
                     // missed during the parallel lookup; request it only now.
-                    dram_latched    <= dram_readdata;
+                    load_latched_data    <= dmem_rsp_data;
                     dram_addr <= mem_addr[30:3] + 1;
                     dram_va   <= {mem_va[63:3], 3'b000} + 64'd8;
                     dram_asid <= mem_asid;
@@ -8119,7 +8119,7 @@ module smolrv64(input wire        clock,
                     state           <= `S_DRAM_LOAD2_WAIT;
                  end
               end else begin
-                 aligned = dram_readdata >> (mem_addr[2:0] * 8);
+                 aligned = dmem_rsp_data >> (mem_addr[2:0] * 8);
                  case (load_size_lg2)
                    0: write_back_value = aligned[7:0];
                    1: write_back_value = aligned[15:0];
@@ -8141,10 +8141,10 @@ module smolrv64(input wire        clock,
         end
 
         `S_DRAM_LOAD2_WAIT: begin
-           if (dram_readdatavalid) begin
-              begin : dram_load2
+           if (dmem_rsp_valid) begin
+              begin : dmem_load2
                  reg [127:0] combo;
-                 combo = {dram_readdata, dram_latched} >> (mem_addr[2:0] * 8);
+                 combo = {dmem_rsp_data, load_latched_data} >> (mem_addr[2:0] * 8);
                  case (load_size_lg2)
                    0: write_back_value = combo[7:0];
                    1: write_back_value = combo[15:0];
@@ -8292,7 +8292,7 @@ module smolrv64(input wire        clock,
                bus_timeout_expired <= 0;
                csr_mig_timeouts <= csr_mig_timeouts + 1;
                // Late R beats from an abandoned read are silently swallowed by
-               // the AXI master (it gates dram_readdatavalid on bus_waiting), so
+               // the AXI master (it gates dmem_rsp_valid on bus_waiting), so
                // no separate "abandon" handshake is needed.
                // Latch context of the FIRST timeout in this measurement
                // window (don't overwrite on aftershock faults in the trap
@@ -8563,16 +8563,16 @@ module smolrv64(input wire        clock,
       end
    end
 
-   assign dram_readdatavalid = dram_readdatavalid_r;
-   assign dram_readdata      = dram_readdata_r;
-   assign dram_readdata_next = dram_readdata_next_r;
-   assign dram_readdata_next_valid = dram_readdata_next_valid_r;
+   assign dmem_rsp_valid = dmem_rsp_valid_r;
+   assign dmem_rsp_data      = dmem_rsp_data_r;
+   assign dmem_rsp_next_data = dmem_rsp_next_data_r;
+   assign dmem_rsp_next_valid = dmem_rsp_next_valid_r;
    assign dram_write_ready   = cache_idle;
    assign dram_write_done    = dram_write_done_r;
 
    always @(posedge clock) begin
-      dram_readdatavalid_r <= 0;
-      dram_readdata_next_valid_r <= 0;
+      dmem_rsp_valid_r <= 0;
+      dmem_rsp_next_valid_r <= 0;
       ifetch_readdatavalid_r <= 0;
       ifetch_next_valid_r <= 0;
       ifetch_prediction_valid_r <= 0;
@@ -8837,11 +8837,11 @@ module smolrv64(input wire        clock,
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 dram_readdata_r <= dcache_rsp_data;
-                 dram_readdata_next_r <= dcache_rsp_next_data;
-                 dram_readdata_next_valid_r <= dcache_rsp_next_valid &&
+                 dmem_rsp_data_r <= dcache_rsp_data;
+                 dmem_rsp_next_data_r <= dcache_rsp_next_data;
+                 dmem_rsp_next_valid_r <= dcache_rsp_next_valid &&
                                                 next_line_safe;
-                 dram_readdatavalid_r <= 1;
+                 dmem_rsp_valid_r <= 1;
                  cache_state <= CACHE_IDLE;
               end
            end else begin
@@ -9191,18 +9191,18 @@ module smolrv64(input wire        clock,
                     end
                     ifetch_prediction_valid_r <= 0;
                  end else begin
-                    dram_readdata_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
+                    dmem_rsp_data_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
                     if (cache_req_same_line) begin
-                       dram_readdata_next_r <= cache_req_next_bank == 3'd7
+                       dmem_rsp_next_data_r <= cache_req_next_bank == 3'd7
                                              ? cache_fill_data
                                              : cache_fill_next_data;
-                       dram_readdata_next_valid_r <= 1'b1;
+                       dmem_rsp_next_valid_r <= 1'b1;
                     end else begin
-                       dram_readdata_next_r <= dcache_rsp_next_data;
-                       dram_readdata_next_valid_r <=
+                       dmem_rsp_next_data_r <= dcache_rsp_next_data;
+                       dmem_rsp_next_valid_r <=
                           dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff;
                     end
-                    dram_readdatavalid_r <= 1;
+                    dmem_rsp_valid_r <= 1;
                  end
                  cache_state      <= CACHE_IDLE;
               end else begin
@@ -9223,8 +9223,8 @@ module smolrv64(input wire        clock,
 
       if (core_reset_now) begin
          cache_state <= CACHE_IDLE;
-         dram_readdatavalid_r <= 0;
-         dram_readdata_next_valid_r <= 0;
+         dmem_rsp_valid_r <= 0;
+         dmem_rsp_next_valid_r <= 0;
          dram_write_done_r <= 0;
          cache_bram_write_done <= 0;
          mem_fill_req_valid <= 0;
