@@ -1100,6 +1100,7 @@ module smolrv64(input wire        clock,
    reg  [63:0]  f_latched_next_pc = `RESET_PC;
    reg  [63:0]  f_latched_cmd_pc = `RESET_PC;
    reg  [ 1:0]  f_latched_cmd_prv = 3;
+   reg  [TLB_ASID_BITS-1:0] f_latched_cmd_asid = 0;
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
    wire [63:0]  frontend_rsp_predicted_next_pc;
    wire         icache_fetch_hit;
@@ -5105,6 +5106,7 @@ module smolrv64(input wire        clock,
            f_latched_next_pc         <= frontend_rsp_predicted_next_pc;
            f_latched_cmd_pc          <= frontend_cmd_pc;
            f_latched_cmd_prv         <= frontend_cmd_prv;
+           f_latched_cmd_asid        <= frontend_cmd_asid;
            f_latched_cmd_epoch       <= frontend_cmd_epoch;
            f_state                   <= `F_FETCH_BUF_USE;
         end
@@ -5350,16 +5352,23 @@ module smolrv64(input wire        clock,
               // the top of this always block; backend returns to retire.
               state <= `S_FETCH1;
            end else if (f_latched_hit) begin
-              accept_instruction_fetch(frontend_cmd_pc,
+              accept_instruction_fetch(f_latched_cmd_pc,
                                        f_latched_next_pc,
                                        f_latched_insn,
-                                       frontend_cmd_prv,
-                                       frontend_cmd_epoch,
+                                       f_latched_cmd_prv,
+                                       f_latched_cmd_epoch,
                                        1'b0);
            end else if (!cache_idle) begin
               state <= `S_FETCH_BUF_USE;
            end else begin
-              start_instruction_fetch_miss(frontend_cmd_pc, frontend_cmd_prv);
+              // The miss response path still packages through frontend_cmd_*.
+              // Restore the exact command observed by F_FETCH_BUF_CHECK before
+              // launching the slow path.
+              frontend_cmd_pc <= f_latched_cmd_pc;
+              frontend_cmd_prv <= f_latched_cmd_prv;
+              frontend_cmd_asid <= f_latched_cmd_asid;
+              frontend_cmd_epoch <= f_latched_cmd_epoch;
+              start_instruction_fetch_miss(f_latched_cmd_pc, f_latched_cmd_prv);
            end
         end
 
@@ -8371,6 +8380,7 @@ module smolrv64(input wire        clock,
          f_latched_next_pc <= `RESET_PC;
          f_latched_cmd_pc <= `RESET_PC;
          f_latched_cmd_prv <= 3;
+         f_latched_cmd_asid <= 0;
          f_latched_cmd_epoch <= 0;
          f_state <= `F_IDLE;
          ex_state <= `EX_IDLE;
