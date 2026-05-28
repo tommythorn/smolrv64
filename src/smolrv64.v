@@ -783,7 +783,7 @@ module smolrv64(input wire        clock,
 `define TLB_2M_ENTRIES (1 << `TLB_2M_INDEX_BITS)
 `define TLB_4K_ENTRIES (1 << `TLB_4K_INDEX_BITS)
 `define TLB_ENTRIES (`TLB_2M_ENTRIES + `TLB_4K_ENTRIES)
-`define CACHE_PHYS_BITS 31 // Cached DRAM addresses are {33'd0, dram_addr[27:0], 3'b000}.
+`define CACHE_PHYS_BITS 31 // Cached physical addresses are {33'd0, cache_issue_dw_addr[27:0], 3'b000}.
 `define CACHE_LINE_OFFSET_BITS 6
 `define CACHE_LINE_WORDS 8
 `define CACHE_PAGE_OFFSET_BITS 12
@@ -1034,9 +1034,9 @@ module smolrv64(input wire        clock,
    reg  [63:0] pre_branch_target = `RESET_PC;
    reg         pre_branch_taken = 0;
 
-   // CPU<->AXI master signalling (master block lives at the bottom of this module).
-   // dram_addr is the 8B-aligned doubleword address (= phys[30:3]).
-   reg  [27:0]  dram_addr;
+   // Pending L1 cache operation signalling.
+   // cache_issue_dw_addr is the 8B-aligned doubleword address (= phys[30:3]).
+   reg  [27:0]  cache_issue_dw_addr;
    reg          ifetch_read = 0;
    reg          dmem_read = 0;
    reg          dram_write = 0;
@@ -1356,10 +1356,10 @@ module smolrv64(input wire        clock,
    reg [`MEM_SIZE_LG2-5:0] cache_bram_word_idx = 0;
    reg        cache_bram_word_bank = 0;
    reg [63:0] cache_bram_wb_data = 0;
-   reg [63:0] dram_va = 0;
-   reg [TLB_ASID_BITS-1:0] dram_asid = 0;
-   reg [CACHE_PERM_BITS-1:0] dram_perm = CACHE_PERM_PHYS;
-   reg [TLB_CTX_BITS-1:0] dram_ctx = 0;
+   reg [63:0] cache_issue_va = 0;
+   reg [TLB_ASID_BITS-1:0] cache_issue_asid = 0;
+   reg [CACHE_PERM_BITS-1:0] cache_issue_perm = CACHE_PERM_PHYS;
+   reg [TLB_CTX_BITS-1:0] cache_issue_ctx = 0;
    reg        dmem_rsp_valid_r = 0;
    reg [63:0] dmem_rsp_data_r = 0;
    reg [63:0] dmem_rsp_next_data_r = 0;
@@ -1751,11 +1751,10 @@ module smolrv64(input wire        clock,
    end
 `endif
 
-   wire [63:0] cache_dram_addr = {33'd0, dram_addr, 3'b000};
-   wire [63:0] cache_dram_next_addr = cache_dram_addr + 64'd8;
-   wire [63:0] cache_dram_next_va = dram_va + 64'd8;
-   wire [`CACHE_PHYS_TAG_BITS-1:0] cache_dram_ptag =
-        cache_dram_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
+   wire [63:0] cache_issue_addr = {33'd0, cache_issue_dw_addr, 3'b000};
+   wire [63:0] cache_issue_next_va = cache_issue_va + 64'd8;
+   wire [`CACHE_PHYS_TAG_BITS-1:0] cache_issue_ptag =
+        cache_issue_addr[`CACHE_PHYS_BITS-1:`CACHE_PAGE_OFFSET_BITS];
    wire [`CACHE_PHYS_TAG_BITS-1:0] cache_cbo_ptag =
         cache_cbo_line_addr[30:12];
    wire [`CACHE_INDEX_BITS-1:0] cache_probe_line_index =
@@ -3256,12 +3255,12 @@ module smolrv64(input wire        clock,
       input [CACHE_PERM_BITS-1:0] read_perm;
       input [TLB_CTX_BITS-1:0] read_ctx;
       begin
-         dram_addr   <= read_addr;
-         dram_va     <= read_va;
-         dram_asid   <= read_asid;
-         dram_perm   <= read_perm;
-         dram_ctx    <= read_ctx;
-         ifetch_read <= 1;
+         cache_issue_dw_addr <= read_addr;
+         cache_issue_va      <= read_va;
+         cache_issue_asid    <= read_asid;
+         cache_issue_perm    <= read_perm;
+         cache_issue_ctx     <= read_ctx;
+         ifetch_read         <= 1;
       end
    endtask
 
@@ -3272,12 +3271,12 @@ module smolrv64(input wire        clock,
       input [CACHE_PERM_BITS-1:0] read_perm;
       input [TLB_CTX_BITS-1:0] read_ctx;
       begin
-         dram_addr <= read_addr;
-         dram_va   <= read_va;
-         dram_asid <= read_asid;
-         dram_perm <= read_perm;
-         dram_ctx  <= read_ctx;
-         dmem_read <= 1;
+         cache_issue_dw_addr <= read_addr;
+         cache_issue_va      <= read_va;
+         cache_issue_asid    <= read_asid;
+         cache_issue_perm    <= read_perm;
+         cache_issue_ctx     <= read_ctx;
+         dmem_read           <= 1;
       end
    endtask
 
@@ -6909,14 +6908,14 @@ module smolrv64(input wire        clock,
                  reg  [15:0] wide_mask;
                  wide_data = {64'd0, store_value} << (mem_addr[2:0] * 8);
                  wide_mask = {8'd0, mem_wr_mask[7:0]} << mem_addr[2:0];
-                 dram_addr       <= mem_addr[30:3];
-                 dram_va         <= mem_va;
-                 dram_asid       <= mem_asid;
-                 dram_perm       <= mem_perm;
-                 dram_ctx        <= mem_ctx;
-                 dram_writedata  <= wide_data[63:0];
-                 dram_wstrb      <= wide_mask[7:0];
-                 mem_wr_mask     = 0;
+                 cache_issue_dw_addr <= mem_addr[30:3];
+                 cache_issue_va      <= mem_va;
+                 cache_issue_asid    <= mem_asid;
+                 cache_issue_perm    <= mem_perm;
+                 cache_issue_ctx     <= mem_ctx;
+                 dram_writedata      <= wide_data[63:0];
+                 dram_wstrb          <= wide_mask[7:0];
+                 mem_wr_mask         = 0;
                  if (|wide_mask[15:8]) begin
                     // Overflow into next 8-byte chunk: save for S_DRAM_STORE2
                     dram2_addr        <= mem_addr[30:3] + 1;
@@ -8046,8 +8045,8 @@ module smolrv64(input wire        clock,
                phys_region(ptw_pte_addr) == `REGION_DRAM) begin
               ptw_direct_addr  <= ptw_pte_addr[30:3];
               ptw_direct_read  <= 1;
-              dram_addr        <= ptw_pte_addr[30:3];
-              state            <= `S_DRAM_PTW_WAIT;
+              cache_issue_dw_addr <= ptw_pte_addr[30:3];
+              state               <= `S_DRAM_PTW_WAIT;
            end else begin
               cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                       ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
@@ -8192,16 +8191,16 @@ module smolrv64(input wire        clock,
 
         `S_DRAM_STORE2: begin
            if (dram_write_ready) begin
-              dram_addr       <= dram2_addr;
-              dram_va         <= dram2_va;
-              dram_asid       <= dram2_asid;
-              dram_perm       <= dram2_perm;
-              dram_ctx        <= dram2_ctx;
-              dram_writedata  <= dram2_data_part;
-              dram_wstrb      <= dram2_wstrb;
-              dram_write      <= 1;
-              dram_store_split <= 0;
-              state           <= `S_DRAM_STORE_RESP_ARM;
+              cache_issue_dw_addr <= dram2_addr;
+              cache_issue_va      <= dram2_va;
+              cache_issue_asid    <= dram2_asid;
+              cache_issue_perm    <= dram2_perm;
+              cache_issue_ctx     <= dram2_ctx;
+              dram_writedata      <= dram2_data_part;
+              dram_wstrb          <= dram2_wstrb;
+              dram_write          <= 1;
+              dram_store_split    <= 0;
+              state               <= `S_DRAM_STORE_RESP_ARM;
            end else begin
               try_issue_queued_decode_current_wb(1'b1);
            end
@@ -8285,11 +8284,11 @@ module smolrv64(input wire        clock,
             case (state)
               `S_DRAM_FETCH_WAIT, `S_DRAM_FETCH_HALF_WAIT, `S_FRONTEND_MISS_WAIT: begin
                  bus_timeout_cause <= `TRAP_INSTRUCTION_ACCESS_FAULT;
-                 bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : dram_va;
+                 bus_timeout_tval  <= state == `S_FRONTEND_MISS_WAIT ? frontend_miss_pc : cache_issue_va;
               end
               `S_DRAM_STORE_WAIT, `S_DRAM_STORE2, `S_DRAM_STORE_RESP_WAIT, `S_DRAM_STORE_RESP_ARM: begin
                  bus_timeout_cause <= `TRAP_STORE_ACCESS_FAULT;
-                 bus_timeout_tval  <= dram_va;
+                 bus_timeout_tval  <= cache_issue_va;
               end
               `S_DRAM_PTW_WAIT: begin
                  bus_timeout_cause <= ptw_access == 0 ? `TRAP_INSTRUCTION_ACCESS_FAULT :
@@ -8299,7 +8298,7 @@ module smolrv64(input wire        clock,
               end
               default: begin // S_DRAM_LOAD_WAIT, S_DRAM_LOAD2_WAIT, S_MMIO_ALIGN
                  bus_timeout_cause <= `TRAP_LOAD_ACCESS_FAULT;
-                 bus_timeout_tval  <= state == `S_MMIO_ALIGN ? mmio_timeout_tval : dram_va;
+                 bus_timeout_tval  <= state == `S_MMIO_ALIGN ? mmio_timeout_tval : cache_issue_va;
               end
             endcase
             if (bus_timeout_expired) begin
@@ -8317,7 +8316,7 @@ module smolrv64(input wire        clock,
                   csr_mig_to_tval  <= bus_timeout_tval;
                   csr_mig_to_state <= {59'd0, state};
                   csr_mig_to_cause <= {52'd0, bus_timeout_cause};
-                  csr_mig_to_addr  <= {33'd0, dram_addr, 3'd0};
+                  csr_mig_to_addr  <= {33'd0, cache_issue_dw_addr, 3'd0};
                end
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -8505,10 +8504,10 @@ module smolrv64(input wire        clock,
          ifetch_read      <= 0;
          dmem_read        <= 0;
          dram_write       <= 0;
-         dram_va          <= 0;
-         dram_asid        <= 0;
-         dram_perm        <= CACHE_PERM_PHYS;
-         dram_ctx         <= 0;
+         cache_issue_va   <= 0;
+         cache_issue_asid <= 0;
+         cache_issue_perm <= CACHE_PERM_PHYS;
+         cache_issue_ctx  <= 0;
          mem_va           <= 0;
          mem_asid         <= 0;
          mem_perm         <= CACHE_PERM_PHYS;
@@ -8729,55 +8728,55 @@ module smolrv64(input wire        clock,
               end
            end else if (cache_read_req) begin
               csr_vhpr_reads <= csr_vhpr_reads + 1;
-              cache_addr          <= cache_dram_addr;
-              cache_req_va        <= dram_va;
-              cache_req_asid      <= dram_asid;
-              cache_req_perm      <= dram_perm;
-              cache_req_ctx       <= dram_ctx;
+              cache_addr          <= cache_issue_addr;
+              cache_req_va        <= cache_issue_va;
+              cache_req_asid      <= cache_issue_asid;
+              cache_req_perm      <= cache_issue_perm;
+              cache_req_ctx       <= cache_issue_ctx;
               cache_req_write     <= 0;
               cache_req_instr     <= ifetch_read;
               cache_req_cbo       <= 0;
-              cache_req_vtag      <= cache_vtag(dram_va);
-              cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
-              cache_req_ptag      <= cache_dram_ptag;
-              cache_req_bank      <= dram_addr[2:0];
-              cache_req_next_bank <= dram_addr[2:0] + 3'd1;
-              cache_req_same_line <= dram_addr[2:0] != 3'd7;
-              cache_way0_rd_idx   <= cache_way0_index(dram_va, dram_asid);
-              cache_way1_rd_idx   <= cache_way1_index(dram_va, dram_asid);
-              cache_way0_bank0_rd_idx <= dram_addr[2:0] == 3'd7
-                                      ? cache_way0_index(cache_dram_next_va, dram_asid)
-                                      : cache_way0_index(dram_va, dram_asid);
-              cache_way1_bank0_rd_idx <= dram_addr[2:0] == 3'd7
-                                      ? cache_way1_index(cache_dram_next_va, dram_asid)
-                                      : cache_way1_index(dram_va, dram_asid);
-              cache_way0_next_rd_idx <= cache_way0_index(cache_dram_next_va, dram_asid);
-              cache_way1_next_rd_idx <= cache_way1_index(cache_dram_next_va, dram_asid);
+              cache_req_vtag      <= cache_vtag(cache_issue_va);
+              cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
+              cache_req_ptag      <= cache_issue_ptag;
+              cache_req_bank      <= cache_issue_dw_addr[2:0];
+              cache_req_next_bank <= cache_issue_dw_addr[2:0] + 3'd1;
+              cache_req_same_line <= cache_issue_dw_addr[2:0] != 3'd7;
+              cache_way0_rd_idx   <= cache_way0_index(cache_issue_va, cache_issue_asid);
+              cache_way1_rd_idx   <= cache_way1_index(cache_issue_va, cache_issue_asid);
+              cache_way0_bank0_rd_idx <= cache_issue_dw_addr[2:0] == 3'd7
+                                      ? cache_way0_index(cache_issue_next_va, cache_issue_asid)
+                                      : cache_way0_index(cache_issue_va, cache_issue_asid);
+              cache_way1_bank0_rd_idx <= cache_issue_dw_addr[2:0] == 3'd7
+                                      ? cache_way1_index(cache_issue_next_va, cache_issue_asid)
+                                      : cache_way1_index(cache_issue_va, cache_issue_asid);
+              cache_way0_next_rd_idx <= cache_way0_index(cache_issue_next_va, cache_issue_asid);
+              cache_way1_next_rd_idx <= cache_way1_index(cache_issue_next_va, cache_issue_asid);
               cache_state         <= CACHE_TAG_READ;
            end else if (dram_write) begin
               csr_vhpr_writes <= csr_vhpr_writes + 1;
-              cache_addr          <= cache_dram_addr;
-              cache_req_va        <= dram_va;
-              cache_req_asid      <= dram_asid;
-              cache_req_perm      <= dram_perm;
-              cache_req_ctx       <= dram_ctx;
+              cache_addr          <= cache_issue_addr;
+              cache_req_va        <= cache_issue_va;
+              cache_req_asid      <= cache_issue_asid;
+              cache_req_perm      <= cache_issue_perm;
+              cache_req_ctx       <= cache_issue_ctx;
               cache_req_write     <= 1;
               cache_req_instr     <= 0;
               cache_req_cbo       <= 0;
-              cache_req_vtag      <= cache_vtag(dram_va);
-              cache_req_next_vtag <= cache_vtag(cache_dram_next_va);
-              cache_req_ptag      <= cache_dram_ptag;
-              cache_req_bank      <= dram_addr[2:0];
-              cache_req_next_bank <= dram_addr[2:0] + 3'd1;
+              cache_req_vtag      <= cache_vtag(cache_issue_va);
+              cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
+              cache_req_ptag      <= cache_issue_ptag;
+              cache_req_bank      <= cache_issue_dw_addr[2:0];
+              cache_req_next_bank <= cache_issue_dw_addr[2:0] + 3'd1;
               cache_req_same_line <= 1;
               cache_store_data    <= dram_writedata;
               cache_store_strb    <= dram_wstrb;
-              cache_way0_rd_idx   <= cache_way0_index(dram_va, dram_asid);
-              cache_way1_rd_idx   <= cache_way1_index(dram_va, dram_asid);
-              cache_way0_bank0_rd_idx <= cache_way0_index(dram_va, dram_asid);
-              cache_way1_bank0_rd_idx <= cache_way1_index(dram_va, dram_asid);
-              cache_way0_next_rd_idx <= cache_way0_index(cache_dram_next_va, dram_asid);
-              cache_way1_next_rd_idx <= cache_way1_index(cache_dram_next_va, dram_asid);
+              cache_way0_rd_idx   <= cache_way0_index(cache_issue_va, cache_issue_asid);
+              cache_way1_rd_idx   <= cache_way1_index(cache_issue_va, cache_issue_asid);
+              cache_way0_bank0_rd_idx <= cache_way0_index(cache_issue_va, cache_issue_asid);
+              cache_way1_bank0_rd_idx <= cache_way1_index(cache_issue_va, cache_issue_asid);
+              cache_way0_next_rd_idx <= cache_way0_index(cache_issue_next_va, cache_issue_asid);
+              cache_way1_next_rd_idx <= cache_way1_index(cache_issue_next_va, cache_issue_asid);
               cache_state         <= CACHE_TAG_READ;
            end
         end
