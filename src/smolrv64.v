@@ -1049,12 +1049,13 @@ module smolrv64(input wire        clock,
    wire         dram_write_done;     // write response observed for issued write
 
    reg  [63:0]  dram_latched;        // holds first 8B chunk across states
-   reg  [63:0]  dram_latched_next;   // holds ADDR+8 chunk for misaligned access
-   reg          dram_latched_next_valid;
-   reg          dram_latched_ifetch_valid = 0;
-   reg  [31:0]  dram_latched_ifetch_insn = 0;
-   reg  [63:0]  dram_latched_ifetch_predicted_next_pc = `RESET_PC;
-   reg  [ 1:0]  dram_latched_ifetch_prediction_kind = 0;
+   reg  [127:0] ifetch_latched_window = 0;
+   reg  [ 63:0] ifetch_latched_half_data = 0;
+   reg          ifetch_latched_next_valid = 0;
+   reg          ifetch_latched_prediction_valid = 0;
+   reg  [31:0]  ifetch_latched_insn = 0;
+   reg  [63:0]  ifetch_latched_predicted_next_pc = `RESET_PC;
+   reg  [ 1:0]  ifetch_latched_prediction_kind = 0;
    reg          fetch_from_dram;     // set when current fetch came from DRAM
    reg  [27:0]  dram2_addr;          // 8B-doubleword addr for 2nd half of split store
    reg  [63:0]  dram2_va;            // virtual address for split-store second beat
@@ -1359,10 +1360,13 @@ module smolrv64(input wire        clock,
    reg [63:0] dram_readdata_r = 0;
    reg [63:0] dram_readdata_next_r = 0;
    reg        dram_readdata_next_valid_r = 0;
-   reg        icache_fetch_resp_valid = 0;
-   reg [31:0] icache_fetch_resp_insn = 0;
-   reg [63:0] icache_fetch_resp_predicted_next_pc = `RESET_PC;
-   reg [ 1:0] icache_fetch_resp_prediction_kind = 0;
+   reg        ifetch_readdatavalid_r = 0;
+   reg [127:0] ifetch_window_r = 0;
+   reg        ifetch_next_valid_r = 0;
+   reg        ifetch_prediction_valid_r = 0;
+   reg [31:0] ifetch_insn_r = 0;
+   reg [63:0] ifetch_predicted_next_pc_r = `RESET_PC;
+   reg [ 1:0] ifetch_prediction_kind_r = 0;
    reg        dram_write_done_r = 0;
    reg        dram_instr = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
@@ -3291,8 +3295,8 @@ module smolrv64(input wire        clock,
             start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
          end else if (accept_from_dram && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
-            if (dram_latched_next_valid) begin
-               dram_latched <= dram_latched_next;
+            if (ifetch_latched_next_valid) begin
+               ifetch_latched_half_data <= ifetch_latched_window[127:64];
                state <= `S_FETCH2_HALF;
             end else begin
                // For translated fetches, mem_addr still holds the physical
@@ -5341,26 +5345,27 @@ module smolrv64(input wire        clock,
            // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
            // detected before RF launch and re-fetched on the slow path; the
            // upper 64 bits are don't-care.
-           aligned = dram_latched_next_valid ? {dram_latched_next, dram_latched}
-                                              : {64'bx, dram_latched};
-           if (dram_latched_next_valid) begin
+           aligned = ifetch_latched_next_valid
+                   ? ifetch_latched_window
+                   : {64'bx, ifetch_latched_window[63:0]};
+           if (ifetch_latched_next_valid) begin
               frontend_buf_fill      <= 1'b1;
               frontend_buf_fill_pc   <= frontend_cmd_pc;
               frontend_buf_fill_prv  <= frontend_cmd_prv;
               frontend_buf_fill_asid <= frontend_cmd_asid;
               frontend_buf_fill_data <= aligned;
            end
-           insn = dram_latched_ifetch_valid
-                ? dram_latched_ifetch_insn
-                : aligned >> (frontend_cmd_pc[2:1] * 16);
+           insn = ifetch_latched_prediction_valid
+                ? ifetch_latched_insn
+                : fetch_buf_pick_insn(aligned, {1'b0, frontend_cmd_pc[2:0]});
            accept_instruction_fetch(frontend_cmd_pc,
-                                    dram_latched_ifetch_valid
-                                    ? dram_latched_ifetch_predicted_next_pc
+                                    ifetch_latched_prediction_valid
+                                    ? ifetch_latched_predicted_next_pc
                                     : frontend_fallthrough_pc(frontend_cmd_pc,
                                                               insn),
                                     insn,
-                                    dram_latched_ifetch_valid
-                                    ? dram_latched_ifetch_prediction_kind
+                                    ifetch_latched_prediction_valid
+                                    ? ifetch_latched_prediction_kind
                                     : 2'd0,
                                     1'b1);
         end
@@ -8018,8 +8023,8 @@ module smolrv64(input wire        clock,
            // low 2 bits, so both compressed and uncompressed cases work.
            translated <= 0;
            if (fetch_from_dram)
-              // pc+2 is at byte 0 of the next 8B chunk (dram_latched was updated)
-              aligned = {64'bx, dram_latched};
+              // pc+2 is at byte 0 of the fetched 8B chunk.
+              aligned = {64'bx, ifetch_latched_half_data};
            else
               aligned = 128'd0;
            insn = {aligned[15:0], insn_half};
@@ -8028,24 +8033,20 @@ module smolrv64(input wire        clock,
                                    insn, 2'd0, fetch_from_dram);
         end
 
-        `S_DRAM_FETCH_WAIT: if (dram_readdatavalid) begin
-           dram_latched                         <= dram_readdata;
-           dram_latched_next                    <= dram_readdata_next;
-           dram_latched_next_valid              <= dram_readdata_next_valid;
-           dram_latched_ifetch_valid            <= icache_fetch_resp_valid;
-           dram_latched_ifetch_insn             <= icache_fetch_resp_insn;
-           dram_latched_ifetch_predicted_next_pc <=
-              icache_fetch_resp_predicted_next_pc;
-           dram_latched_ifetch_prediction_kind  <=
-              icache_fetch_resp_prediction_kind;
+        `S_DRAM_FETCH_WAIT: if (ifetch_readdatavalid_r) begin
+           ifetch_latched_window                <= ifetch_window_r;
+           ifetch_latched_next_valid            <= ifetch_next_valid_r;
+           ifetch_latched_prediction_valid      <= ifetch_prediction_valid_r;
+           ifetch_latched_insn                  <= ifetch_insn_r;
+           ifetch_latched_predicted_next_pc     <= ifetch_predicted_next_pc_r;
+           ifetch_latched_prediction_kind       <= ifetch_prediction_kind_r;
            state                                <= `S_FETCH2_DRAM;
         end
 
-        `S_DRAM_FETCH_HALF_WAIT: if (dram_readdatavalid) begin
-           dram_latched                         <= dram_readdata;
-           dram_latched_next                    <= dram_readdata_next;
-           dram_latched_next_valid              <= dram_readdata_next_valid;
-           dram_latched_ifetch_valid            <= 0;
+        `S_DRAM_FETCH_HALF_WAIT: if (ifetch_readdatavalid_r) begin
+           ifetch_latched_half_data             <= ifetch_window_r[63:0];
+           ifetch_latched_next_valid            <= ifetch_next_valid_r;
+           ifetch_latched_prediction_valid      <= 0;
            state                                <= `S_FETCH2_HALF;
         end
 
@@ -8217,12 +8218,12 @@ module smolrv64(input wire        clock,
          try_frontend_speculative_miss_start();
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
-          frontend_miss_valid && dram_readdatavalid) begin
+          frontend_miss_valid && ifetch_readdatavalid_r) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
-         frontend_miss_data       <= dram_readdata;
-         frontend_miss_next_data  <= dram_readdata_next;
-         frontend_miss_next_valid <= dram_readdata_next_valid;
+         frontend_miss_data       <= ifetch_window_r[63:0];
+         frontend_miss_next_data  <= ifetch_window_r[127:64];
+         frontend_miss_next_valid <= ifetch_next_valid_r;
       end
 
       // Bus timeout: fault if an external bus access doesn't respond
@@ -8446,11 +8447,13 @@ module smolrv64(input wire        clock,
          plic_enabled     <= 0;
          plic_threshold   <= 0;
          fetch_from_dram  <= 0;
-         dram_latched_next_valid <= 0;
-         dram_latched_ifetch_valid <= 0;
-         dram_latched_ifetch_insn <= 0;
-         dram_latched_ifetch_predicted_next_pc <= `RESET_PC;
-         dram_latched_ifetch_prediction_kind <= 0;
+         ifetch_latched_window <= 0;
+         ifetch_latched_half_data <= 0;
+         ifetch_latched_next_valid <= 0;
+         ifetch_latched_prediction_valid <= 0;
+         ifetch_latched_insn <= 0;
+         ifetch_latched_predicted_next_pc <= `RESET_PC;
+         ifetch_latched_prediction_kind <= 0;
          translated       <= 0;
          dram_read        <= 0;
          dram_write       <= 0;
@@ -8538,7 +8541,9 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dram_readdatavalid_r <= 0;
       dram_readdata_next_valid_r <= 0;
-      icache_fetch_resp_valid <= 0;
+      ifetch_readdatavalid_r <= 0;
+      ifetch_next_valid_r <= 0;
+      ifetch_prediction_valid_r <= 0;
       ptw_direct_readdatavalid_r <= 0;
       dram_write_done_r <= 0;
       cache_bram_write_done <= 0;
@@ -8777,17 +8782,16 @@ module smolrv64(input wire        clock,
            if (cache_req_instr) begin
               if (icache_fetch_hit_q) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 dram_readdata_r <= icache_fetch_window_q[63:0];
-                 dram_readdata_next_r <= icache_fetch_window_q[127:64];
-                 dram_readdata_next_valid_r <=
+                 ifetch_readdatavalid_r <= 1;
+                 ifetch_window_r <= icache_fetch_window_q;
+                 ifetch_next_valid_r <=
                     (cache_req_same_line || icache_fetch_next_line_hit_q) &&
                     next_line_safe;
-                 dram_readdatavalid_r <= 1;
-                 icache_fetch_resp_valid <= 1;
-                 icache_fetch_resp_insn <= icache_fetch_insn_q;
-                 icache_fetch_resp_predicted_next_pc <=
+                 ifetch_prediction_valid_r <= 1;
+                 ifetch_insn_r <= icache_fetch_insn_q;
+                 ifetch_predicted_next_pc_r <=
                     icache_fetch_predicted_next_pc_q;
-                 icache_fetch_resp_prediction_kind <=
+                 ifetch_prediction_kind_r <=
                     icache_fetch_prediction_kind_q;
                  cache_state <= CACHE_IDLE;
               end else begin
@@ -9138,6 +9142,23 @@ module smolrv64(input wire        clock,
                  end
                  if (cache_req_write) begin
                     dram_write_done_r <= 1;
+                 end else if (cache_req_instr) begin
+                    ifetch_readdatavalid_r <= 1;
+                    ifetch_window_r[63:0] <= cache_req_bank == 3'd7
+                                           ? cache_fill_data
+                                           : cache_fill_return_data;
+                    if (cache_req_same_line) begin
+                       ifetch_window_r[127:64] <= cache_req_next_bank == 3'd7
+                                                ? cache_fill_data
+                                                : cache_fill_next_data;
+                       ifetch_next_valid_r <= 1'b1;
+                    end else begin
+                       ifetch_window_r[127:64] <= icache_fetch_window_q[127:64];
+                       ifetch_next_valid_r <=
+                          icache_fetch_next_line_hit_q &&
+                          cache_req_va[11:3] != 9'h1ff;
+                    end
+                    ifetch_prediction_valid_r <= 0;
                  end else begin
                     dram_readdata_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
                     if (cache_req_same_line) begin
@@ -9145,11 +9166,6 @@ module smolrv64(input wire        clock,
                                              ? cache_fill_data
                                              : cache_fill_next_data;
                        dram_readdata_next_valid_r <= 1'b1;
-                    end else if (cache_req_instr) begin
-                       dram_readdata_next_r <= icache_fetch_window_q[127:64];
-                       dram_readdata_next_valid_r <=
-                          icache_fetch_next_line_hit_q &&
-                          cache_req_va[11:3] != 9'h1ff;
                     end else begin
                        dram_readdata_next_r <= dcache_rsp_next_data;
                        dram_readdata_next_valid_r <=
