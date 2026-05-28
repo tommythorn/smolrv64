@@ -3283,6 +3283,18 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task emit_dmem_load_rsp;
+      input [63:0] rsp_data;
+      input [63:0] rsp_next_data;
+      input        rsp_next_valid;
+      begin
+         dmem_rsp_data_r <= rsp_data;
+         dmem_rsp_next_data_r <= rsp_next_data;
+         dmem_rsp_next_valid_r <= rsp_next_valid;
+         dmem_rsp_valid_r <= 1;
+      end
+   endtask
+
    task start_instruction_fetch_miss;
       input [63:0] fetch_va;
       input [ 1:0] fetch_prv;
@@ -8855,11 +8867,9 @@ module smolrv64(input wire        clock,
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 dmem_rsp_data_r <= dcache_rsp_data;
-                 dmem_rsp_next_data_r <= dcache_rsp_next_data;
-                 dmem_rsp_next_valid_r <= dcache_rsp_next_valid &&
-                                                next_line_safe;
-                 dmem_rsp_valid_r <= 1;
+                 emit_dmem_load_rsp(dcache_rsp_data,
+                                    dcache_rsp_next_data,
+                                    dcache_rsp_next_valid && next_line_safe);
                  cache_state <= CACHE_IDLE;
               end
            end else begin
@@ -9196,18 +9206,13 @@ module smolrv64(input wire        clock,
                  end else if (cache_req_ifetch) begin
                     ifetch_refill_retry_valid <= 1;
                  end else begin
-                    dmem_rsp_data_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
-                    if (cache_req_same_line) begin
-                       dmem_rsp_next_data_r <= cache_req_next_bank == 3'd7
-                                             ? cache_fill_data
-                                             : cache_fill_next_data;
-                       dmem_rsp_next_valid_r <= 1'b1;
-                    end else begin
-                       dmem_rsp_next_data_r <= dcache_rsp_next_data;
-                       dmem_rsp_next_valid_r <=
-                          dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff;
-                    end
-                    dmem_rsp_valid_r <= 1;
+                    emit_dmem_load_rsp(
+                       cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data,
+                       cache_req_same_line
+                       ? (cache_req_next_bank == 3'd7 ? cache_fill_data : cache_fill_next_data)
+                       : dcache_rsp_next_data,
+                       cache_req_same_line ||
+                          (dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff));
                  end
                  cache_state      <= CACHE_IDLE;
               end else begin
