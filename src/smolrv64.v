@@ -1113,9 +1113,8 @@ module smolrv64(input wire        clock,
    wire         icache_lookup_hit_way;
    wire         icache_lookup_next_hit;
    wire         icache_lookup_next_hit_way;
-   wire [63:0]  icache_lookup_data;
-   wire [63:0]  icache_lookup_next_data;
    wire         icache_lookup_next_valid;
+   wire [127:0] icache_fetch_window;
    wire [31:0]  icache_fetch_insn;
    wire [63:0]  icache_fetch_predicted_next_pc;
    wire [ 1:0]  icache_fetch_prediction_kind;
@@ -2073,9 +2072,8 @@ module smolrv64(input wire        clock,
       .icache_lookup_hit_way(icache_lookup_hit_way),
       .icache_lookup_next_hit(icache_lookup_next_hit),
       .icache_lookup_next_hit_way(icache_lookup_next_hit_way),
-      .icache_lookup_data(icache_lookup_data),
-      .icache_lookup_next_data(icache_lookup_next_data),
       .icache_lookup_next_valid(icache_lookup_next_valid),
+      .icache_fetch_window(icache_fetch_window),
       .icache_fetch_insn(icache_fetch_insn),
       .icache_fetch_predicted_next_pc(icache_fetch_predicted_next_pc),
       .icache_fetch_prediction_kind(icache_fetch_prediction_kind),
@@ -8756,10 +8754,10 @@ module smolrv64(input wire        clock,
                                        ? icache_lookup_next_hit_way
                                        : dcache_lookup_next_hit_way;
            cache_lookup_data <= cache_req_instr
-                              ? icache_lookup_data
+                              ? icache_fetch_window[63:0]
                               : dcache_lookup_data;
            cache_lookup_next_data <= cache_req_instr
-                                    ? icache_lookup_next_data
+                                    ? icache_fetch_window[127:64]
                                     : dcache_lookup_next_data;
            cache_lookup_next_valid <= cache_req_instr
                                      ? icache_lookup_next_valid
@@ -10083,9 +10081,8 @@ module smolrv64_frontend #(
    output wire                         icache_lookup_hit_way,
    output wire                         icache_lookup_next_hit,
    output wire                         icache_lookup_next_hit_way,
-   output wire [63:0]                  icache_lookup_data,
-   output wire [63:0]                  icache_lookup_next_data,
    output wire                         icache_lookup_next_valid,
+   output wire [127:0]                 icache_fetch_window,
    output wire [31:0]                  icache_fetch_insn,
    output wire [63:0]                  icache_fetch_predicted_next_pc,
    output wire [ 1:0]                  icache_fetch_prediction_kind,
@@ -10451,14 +10448,13 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   assign icache_lookup_data =
+   wire [63:0] icache_fetch_data =
       select_icache_bank_data(icache_lookup_hit_way, icache_req_bank);
-   assign icache_lookup_next_data =
+   wire [63:0] icache_fetch_next_data =
       select_icache_bank_data(icache_req_same_line ? icache_lookup_hit_way :
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
-   wire [127:0] icache_fetch_window =
-      {icache_lookup_next_data, icache_lookup_data};
+   assign icache_fetch_window = {icache_fetch_next_data, icache_fetch_data};
    assign icache_fetch_insn =
       pick_insn(icache_fetch_window, {1'b0, icache_req_va[2:0]});
    assign icache_fetch_predicted_next_pc =
