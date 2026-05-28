@@ -3249,6 +3249,38 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task issue_ifetch_cache_read;
+      input [27:0] read_addr;
+      input [63:0] read_va;
+      input [TLB_ASID_BITS-1:0] read_asid;
+      input [CACHE_PERM_BITS-1:0] read_perm;
+      input [TLB_CTX_BITS-1:0] read_ctx;
+      begin
+         dram_addr   <= read_addr;
+         dram_va     <= read_va;
+         dram_asid   <= read_asid;
+         dram_perm   <= read_perm;
+         dram_ctx    <= read_ctx;
+         ifetch_read <= 1;
+      end
+   endtask
+
+   task issue_dmem_cache_read;
+      input [27:0] read_addr;
+      input [63:0] read_va;
+      input [TLB_ASID_BITS-1:0] read_asid;
+      input [CACHE_PERM_BITS-1:0] read_perm;
+      input [TLB_CTX_BITS-1:0] read_ctx;
+      begin
+         dram_addr <= read_addr;
+         dram_va   <= read_va;
+         dram_asid <= read_asid;
+         dram_perm <= read_perm;
+         dram_ctx  <= read_ctx;
+         dmem_read <= 1;
+      end
+   endtask
+
    task start_instruction_fetch_miss;
       input [63:0] fetch_va;
       input [ 1:0] fetch_prv;
@@ -3262,12 +3294,10 @@ module smolrv64(input wire        clock,
             // Both local BRAM and external DRAM fetches use the cache response
             // path.  The cache refill engine chooses BRAM or AXI by line address.
             fetch_from_dram  <= 1;
-            dram_addr        <= fetch_va[30:3];
-            dram_va          <= fetch_va;
-            dram_asid        <= {TLB_ASID_BITS{1'b0}};
-            dram_perm        <= CACHE_PERM_PHYS;
-            dram_ctx         <= {2'd0, fetch_prv, sum, mxr};
-            ifetch_read      <= 1;
+            issue_ifetch_cache_read(fetch_va[30:3], fetch_va,
+                                    {TLB_ASID_BITS{1'b0}},
+                                    CACHE_PERM_PHYS,
+                                    {2'd0, fetch_prv, sum, mxr});
             state            <= `S_DRAM_FETCH_WAIT;
          end
       end
@@ -3316,12 +3346,11 @@ module smolrv64(input wire        clock,
                if (csr_satp[63:60] == 4'd8 && prv != 3) begin
                   start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
                end else begin
-                  dram_addr <= accept_pc[30:3] + 1;
-                  dram_va   <= accept_pc + 64'd2;
-                  dram_asid <= {TLB_ASID_BITS{1'b0}};
-                  dram_perm <= CACHE_PERM_PHYS;
-                  dram_ctx  <= {2'd0, prv, sum, mxr};
-                  ifetch_read <= 1;
+                  issue_ifetch_cache_read(accept_pc[30:3] + 1,
+                                          accept_pc + 64'd2,
+                                          {TLB_ASID_BITS{1'b0}},
+                                          CACHE_PERM_PHYS,
+                                          {2'd0, prv, sum, mxr});
                   state <= `S_DRAM_FETCH_HALF_WAIT;
                end
             end
@@ -4333,12 +4362,11 @@ module smolrv64(input wire        clock,
             frontend_miss_next_valid <= 0;
             frontend_miss_prediction_valid <= 0;
             frontend_cmd_spec_miss_ready <= 0;
-            dram_addr                <= frontend_cmd_pc[30:3];
-            dram_va                  <= frontend_cmd_pc;
-            dram_asid                <= {TLB_ASID_BITS{1'b0}};
-            dram_perm                <= CACHE_PERM_PHYS;
-            dram_ctx                 <= {2'd0, frontend_cmd_prv, sum, mxr};
-            ifetch_read              <= 1;
+            issue_ifetch_cache_read(frontend_cmd_pc[30:3],
+                                    frontend_cmd_pc,
+                                    {TLB_ASID_BITS{1'b0}},
+                                    CACHE_PERM_PHYS,
+                                    {2'd0, frontend_cmd_prv, sum, mxr});
          end
       end
    endtask
@@ -4674,12 +4702,9 @@ module smolrv64(input wire        clock,
                // Cacheable instruction fetch.  Local BRAM is a cache refill
                // source now; it is no longer consumed directly by fetch.
                fetch_from_dram <= 1;
-               dram_addr       <= mem_addr[30:3];
-               dram_va         <= tlb_req_va;
-               dram_asid       <= current_cache_asid;
-               dram_perm       <= req_perm;
-               dram_ctx        <= tlb_req_ctx;
-               ifetch_read     <= 1;
+               issue_ifetch_cache_read(mem_addr[30:3], tlb_req_va,
+                                       current_cache_asid, req_perm,
+                                       tlb_req_ctx);
                state           <= (req_return == `S_FETCH2) ?
                                   `S_DRAM_FETCH_WAIT : `S_DRAM_FETCH_HALF_WAIT;
             end else begin
@@ -6975,12 +7000,8 @@ module smolrv64(input wire        clock,
                 `REGION_DRAM: begin
                  // Cacheable load.  The cache refill engine chooses BRAM or
                  // AXI by line address; MMIO stays on the explicit slow path.
-                 dram_addr <= mem_addr[30:3];
-                 dram_va   <= mem_va;
-                 dram_asid <= mem_asid;
-                 dram_perm <= mem_perm;
-                 dram_ctx  <= mem_ctx;
-                 dmem_read <= 1;
+                 issue_dmem_cache_read(mem_addr[30:3], mem_va, mem_asid,
+                                       mem_perm, mem_ctx);
                  state           <= `S_DRAM_LOAD_WAIT;
                 end
                 default: begin
@@ -8107,12 +8128,9 @@ module smolrv64(input wire        clock,
                     // Access crosses a cache-line boundary and the second line
                     // missed during the parallel lookup; request it only now.
                     load_latched_data    <= dmem_rsp_data;
-                    dram_addr <= mem_addr[30:3] + 1;
-                    dram_va   <= {mem_va[63:3], 3'b000} + 64'd8;
-                    dram_asid <= mem_asid;
-                    dram_perm <= mem_perm;
-                    dram_ctx  <= mem_ctx;
-                    dmem_read <= 1;
+                    issue_dmem_cache_read(mem_addr[30:3] + 1,
+                                          {mem_va[63:3], 3'b000} + 64'd8,
+                                          mem_asid, mem_perm, mem_ctx);
                     state           <= `S_DRAM_LOAD2_WAIT;
                  end
               end else begin
