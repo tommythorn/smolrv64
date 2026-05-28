@@ -1054,7 +1054,7 @@ module smolrv64(input wire        clock,
    reg  [127:0] ifetch_latched_window = 0;
    reg  [ 63:0] ifetch_latched_half_data = 0;
    reg          ifetch_latched_next_valid = 0;
-   reg          ifetch_latched_prediction_valid = 0;
+   reg          ifetch_latched_insn_valid = 0;
    reg  [31:0]  ifetch_latched_insn = 0;
    reg  [63:0]  ifetch_latched_predicted_next_pc = `RESET_PC;
    reg  [ 1:0]  ifetch_latched_prediction_kind = 0;
@@ -1147,7 +1147,7 @@ module smolrv64(input wire        clock,
    reg  [FRONTEND_EPOCH_BITS-1:0] frontend_miss_epoch = 0;
    reg  [127:0] frontend_miss_window = 0;
    reg          frontend_miss_next_valid = 0;
-   reg          frontend_miss_prediction_valid = 0;
+   reg          frontend_miss_insn_valid = 0;
    reg  [31:0]  frontend_miss_insn = 0;
    reg  [63:0]  frontend_miss_predicted_next_pc = `RESET_PC;
    reg  [ 1:0]  frontend_miss_prediction_kind = 0;
@@ -1368,7 +1368,7 @@ module smolrv64(input wire        clock,
    reg        ifetch_rsp_valid_r = 0;
    reg [127:0] ifetch_rsp_window_r = 0;
    reg        ifetch_rsp_next_valid_r = 0;
-   reg        ifetch_rsp_prediction_valid_r = 0;
+   reg        ifetch_rsp_insn_valid_r = 0;
    reg [31:0] ifetch_rsp_insn_r = 0;
    reg [63:0] ifetch_rsp_predicted_next_pc_r = `RESET_PC;
    reg [ 1:0] ifetch_rsp_prediction_kind_r = 0;
@@ -3270,6 +3270,7 @@ module smolrv64(input wire        clock,
    task emit_ifetch_rsp;
       input [127:0] rsp_window;
       input         rsp_next_valid;
+      input         rsp_insn_valid;
       input [31:0]  rsp_insn;
       input [63:0]  rsp_predicted_next_pc;
       input [ 1:0]  rsp_prediction_kind;
@@ -3277,7 +3278,7 @@ module smolrv64(input wire        clock,
          ifetch_rsp_valid_r <= 1;
          ifetch_rsp_window_r <= rsp_window;
          ifetch_rsp_next_valid_r <= rsp_next_valid;
-         ifetch_rsp_prediction_valid_r <= 0;
+         ifetch_rsp_insn_valid_r <= rsp_insn_valid;
          ifetch_rsp_insn_r <= rsp_insn;
          ifetch_rsp_predicted_next_pc_r <= rsp_predicted_next_pc;
          ifetch_rsp_prediction_kind_r <= rsp_prediction_kind;
@@ -3359,7 +3360,7 @@ module smolrv64(input wire        clock,
             start_translation(accept_pc + 64'd2, 2'd0, prv, `S_FETCH2_HALF);
          end else if (accept_from_ifetch_rsp && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
-            if (ifetch_latched_prediction_valid && ifetch_latched_next_valid) begin
+            if (ifetch_latched_insn_valid && ifetch_latched_next_valid) begin
                stage_rf_decode_current(accept_pc,
                                        accept_predicted_pc,
                                        accept_predicted_pc,
@@ -4399,7 +4400,7 @@ module smolrv64(input wire        clock,
             frontend_miss_asid       <= frontend_cmd_asid;
             frontend_miss_epoch      <= frontend_cmd_epoch;
             frontend_miss_next_valid <= 0;
-            frontend_miss_prediction_valid <= 0;
+            frontend_miss_insn_valid <= 0;
             frontend_cmd_spec_miss_ready <= 0;
             issue_ifetch_cache_read(frontend_cmd_pc[30:3],
                                     frontend_cmd_pc,
@@ -4414,32 +4415,26 @@ module smolrv64(input wire        clock,
       reg [127:0] miss_aligned;
       reg [31:0]  miss_insn;
       begin
-         if (frontend_miss_prediction_valid) begin
-            miss_aligned = 128'd0;
-            miss_insn = frontend_miss_insn;
-         end else begin
-            miss_aligned = frontend_miss_next_valid ?
-                           frontend_miss_window :
-                           {64'bx, frontend_miss_window[63:0]};
-            miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
-         end
-         if (frontend_miss_next_valid && !frontend_miss_prediction_valid) begin
+         miss_aligned = frontend_miss_next_valid ?
+                        frontend_miss_window :
+                        {64'bx, frontend_miss_window[63:0]};
+         miss_insn = frontend_miss_insn;
+         if (frontend_miss_next_valid) begin
             frontend_buf_fill      <= 1'b1;
             frontend_buf_fill_pc   <= frontend_miss_pc;
             frontend_buf_fill_prv  <= frontend_miss_prv;
             frontend_buf_fill_asid <= frontend_miss_asid;
             frontend_buf_fill_data <= miss_aligned;
          end
+         if (!frontend_miss_insn_valid)
+            miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
          accept_instruction_fetch(frontend_miss_pc,
-                                  frontend_miss_prediction_valid
-                                  ? frontend_miss_predicted_next_pc
-                                  : frontend_fallthrough_pc(frontend_miss_pc,
-                                                            miss_insn),
+                                  frontend_fallthrough_pc(frontend_miss_pc,
+                                                          miss_insn),
                                   miss_insn,
-                                  frontend_miss_prediction_valid
-                                  ? frontend_miss_prediction_kind : 2'd0,
+                                  2'd0,
                                   1'b1);
       end
    endtask
@@ -5420,32 +5415,26 @@ module smolrv64(input wire        clock,
         end
 
         `S_IFETCH_RESP: begin
-           // Cross-doubleword case (pc[2:1]==2'b11 && insn[1:0]==2'b11) is
-           // detected before RF launch and re-fetched on the slow path; the
-           // upper 64 bits are don't-care.
-           aligned = ifetch_latched_prediction_valid ? 128'd0 :
-                     ifetch_latched_next_valid
+           // Cross-doubleword responses keep the old second-half path for now;
+           // within-doubleword hits may use the frontend-produced instruction.
+           aligned = ifetch_latched_next_valid
                      ? ifetch_latched_window
                      : {64'bx, ifetch_latched_window[63:0]};
-           if (ifetch_latched_next_valid && !ifetch_latched_prediction_valid) begin
+           if (ifetch_latched_next_valid) begin
               frontend_buf_fill      <= 1'b1;
               frontend_buf_fill_pc   <= frontend_cmd_pc;
               frontend_buf_fill_prv  <= frontend_cmd_prv;
               frontend_buf_fill_asid <= frontend_cmd_asid;
               frontend_buf_fill_data <= aligned;
            end
-           insn = ifetch_latched_prediction_valid
+           insn = ifetch_latched_insn_valid
                 ? ifetch_latched_insn
                 : fetch_buf_pick_insn(aligned, {1'b0, frontend_cmd_pc[2:0]});
            accept_instruction_fetch(frontend_cmd_pc,
-                                    ifetch_latched_prediction_valid
-                                    ? ifetch_latched_predicted_next_pc
-                                    : frontend_fallthrough_pc(frontend_cmd_pc,
-                                                              insn),
+                                    frontend_fallthrough_pc(frontend_cmd_pc,
+                                                            insn),
                                     insn,
-                                    ifetch_latched_prediction_valid
-                                    ? ifetch_latched_prediction_kind
-                                    : 2'd0,
+                                    2'd0,
                                     1'b1);
         end
 
@@ -8111,7 +8100,7 @@ module smolrv64(input wire        clock,
         `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
            ifetch_latched_window                <= ifetch_rsp_window_r;
            ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
-           ifetch_latched_prediction_valid      <= ifetch_rsp_prediction_valid_r;
+           ifetch_latched_insn_valid            <= ifetch_rsp_insn_valid_r;
            ifetch_latched_insn                  <= ifetch_rsp_insn_r;
            ifetch_latched_predicted_next_pc     <= ifetch_rsp_predicted_next_pc_r;
            ifetch_latched_prediction_kind       <= ifetch_rsp_prediction_kind_r;
@@ -8119,11 +8108,12 @@ module smolrv64(input wire        clock,
         end
 
         `S_IFETCH_HALF_WAIT: if (ifetch_rsp_valid_r) begin
-           ifetch_latched_half_data             <= ifetch_rsp_prediction_valid_r
-                                                   ? {32'd0, ifetch_rsp_insn_r}
-                                                   : ifetch_rsp_window_r[63:0];
+           // Second-half fetches consume the raw 64-bit chunk at pc+2.  The
+           // frontend instruction view is only valid for whole-instruction
+           // fetch responses.
+           ifetch_latched_half_data             <= ifetch_rsp_window_r[63:0];
            ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
-           ifetch_latched_prediction_valid      <= 0;
+           ifetch_latched_insn_valid            <= 0;
            state                                <= `S_FETCH2_HALF;
         end
 
@@ -8300,7 +8290,7 @@ module smolrv64(input wire        clock,
          frontend_miss_done       <= 1;
          frontend_miss_window     <= ifetch_rsp_window_r;
          frontend_miss_next_valid <= ifetch_rsp_next_valid_r;
-         frontend_miss_prediction_valid <= ifetch_rsp_prediction_valid_r;
+         frontend_miss_insn_valid <= ifetch_rsp_insn_valid_r;
          frontend_miss_insn <= ifetch_rsp_insn_r;
          frontend_miss_predicted_next_pc <= ifetch_rsp_predicted_next_pc_r;
          frontend_miss_prediction_kind <= ifetch_rsp_prediction_kind_r;
@@ -8427,7 +8417,7 @@ module smolrv64(input wire        clock,
          frontend_miss_epoch <= 0;
          frontend_miss_window <= 0;
          frontend_miss_next_valid <= 0;
-         frontend_miss_prediction_valid <= 0;
+         frontend_miss_insn_valid <= 0;
          frontend_miss_insn <= 0;
          frontend_miss_predicted_next_pc <= `RESET_PC;
          frontend_miss_prediction_kind <= 0;
@@ -8533,7 +8523,7 @@ module smolrv64(input wire        clock,
          ifetch_latched_window <= 0;
          ifetch_latched_half_data <= 0;
          ifetch_latched_next_valid <= 0;
-         ifetch_latched_prediction_valid <= 0;
+         ifetch_latched_insn_valid <= 0;
          ifetch_latched_insn <= 0;
          ifetch_latched_predicted_next_pc <= `RESET_PC;
          ifetch_latched_prediction_kind <= 0;
@@ -8626,7 +8616,7 @@ module smolrv64(input wire        clock,
       dmem_rsp_next_valid_r <= 0;
       ifetch_rsp_valid_r <= 0;
       ifetch_rsp_next_valid_r <= 0;
-      ifetch_rsp_prediction_valid_r <= 0;
+      ifetch_rsp_insn_valid_r <= 0;
       ifetch_refill_retry_valid <= 0;
       ptw_direct_rsp_valid_r <= 0;
       dmem_write_done_r <= 0;
@@ -8867,6 +8857,7 @@ module smolrv64(input wire        clock,
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
                  emit_ifetch_rsp(icache_fetch_window_q,
                                   icache_fetch_next_valid_q,
+                                  cache_req_va[2:1] != 2'b11,
                                   icache_fetch_insn_q,
                                   icache_fetch_predicted_next_pc_q,
                                   icache_fetch_prediction_kind_q);
