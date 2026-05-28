@@ -1359,13 +1359,13 @@ module smolrv64(input wire        clock,
    reg [63:0] dmem_rsp_data_r = 0;
    reg [63:0] dmem_rsp_next_data_r = 0;
    reg        dmem_rsp_next_valid_r = 0;
-   reg        ifetch_readdatavalid_r = 0;
-   reg [127:0] ifetch_window_r = 0;
-   reg        ifetch_next_valid_r = 0;
-   reg        ifetch_prediction_valid_r = 0;
-   reg [31:0] ifetch_insn_r = 0;
-   reg [63:0] ifetch_predicted_next_pc_r = `RESET_PC;
-   reg [ 1:0] ifetch_prediction_kind_r = 0;
+   reg        ifetch_rsp_valid_r = 0;
+   reg [127:0] ifetch_rsp_window_r = 0;
+   reg        ifetch_rsp_next_valid_r = 0;
+   reg        ifetch_rsp_prediction_valid_r = 0;
+   reg [31:0] ifetch_rsp_insn_r = 0;
+   reg [63:0] ifetch_rsp_predicted_next_pc_r = `RESET_PC;
+   reg [ 1:0] ifetch_rsp_prediction_kind_r = 0;
    reg        ifetch_refill_retry_valid = 0;
    reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
@@ -8065,21 +8065,21 @@ module smolrv64(input wire        clock,
                                    insn, 2'd0, fetch_from_ifetch_rsp);
         end
 
-        `S_IFETCH_WAIT: if (ifetch_readdatavalid_r) begin
-           ifetch_latched_window                <= ifetch_window_r;
-           ifetch_latched_next_valid            <= ifetch_next_valid_r;
-           ifetch_latched_prediction_valid      <= ifetch_prediction_valid_r;
-           ifetch_latched_insn                  <= ifetch_insn_r;
-           ifetch_latched_predicted_next_pc     <= ifetch_predicted_next_pc_r;
-           ifetch_latched_prediction_kind       <= ifetch_prediction_kind_r;
+        `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
+           ifetch_latched_window                <= ifetch_rsp_window_r;
+           ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
+           ifetch_latched_prediction_valid      <= ifetch_rsp_prediction_valid_r;
+           ifetch_latched_insn                  <= ifetch_rsp_insn_r;
+           ifetch_latched_predicted_next_pc     <= ifetch_rsp_predicted_next_pc_r;
+           ifetch_latched_prediction_kind       <= ifetch_rsp_prediction_kind_r;
            state                                <= `S_IFETCH_RESP;
         end
 
-        `S_IFETCH_HALF_WAIT: if (ifetch_readdatavalid_r) begin
-           ifetch_latched_half_data             <= ifetch_prediction_valid_r
-                                                   ? {32'd0, ifetch_insn_r}
-                                                   : ifetch_window_r[63:0];
-           ifetch_latched_next_valid            <= ifetch_next_valid_r;
+        `S_IFETCH_HALF_WAIT: if (ifetch_rsp_valid_r) begin
+           ifetch_latched_half_data             <= ifetch_rsp_prediction_valid_r
+                                                   ? {32'd0, ifetch_rsp_insn_r}
+                                                   : ifetch_rsp_window_r[63:0];
+           ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
            ifetch_latched_prediction_valid      <= 0;
            state                                <= `S_FETCH2_HALF;
         end
@@ -8255,16 +8255,16 @@ module smolrv64(input wire        clock,
       end
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
-          frontend_miss_valid && ifetch_readdatavalid_r) begin
+          frontend_miss_valid && ifetch_rsp_valid_r) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
-         frontend_miss_data       <= ifetch_window_r[63:0];
-         frontend_miss_next_data  <= ifetch_window_r[127:64];
-         frontend_miss_next_valid <= ifetch_next_valid_r;
-         frontend_miss_prediction_valid <= ifetch_prediction_valid_r;
-         frontend_miss_insn <= ifetch_insn_r;
-         frontend_miss_predicted_next_pc <= ifetch_predicted_next_pc_r;
-         frontend_miss_prediction_kind <= ifetch_prediction_kind_r;
+         frontend_miss_data       <= ifetch_rsp_window_r[63:0];
+         frontend_miss_next_data  <= ifetch_rsp_window_r[127:64];
+         frontend_miss_next_valid <= ifetch_rsp_next_valid_r;
+         frontend_miss_prediction_valid <= ifetch_rsp_prediction_valid_r;
+         frontend_miss_insn <= ifetch_rsp_insn_r;
+         frontend_miss_predicted_next_pc <= ifetch_rsp_predicted_next_pc_r;
+         frontend_miss_prediction_kind <= ifetch_rsp_prediction_kind_r;
       end
 
       // Bus timeout: fault if an external bus access doesn't respond
@@ -8586,9 +8586,9 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dmem_rsp_valid_r <= 0;
       dmem_rsp_next_valid_r <= 0;
-      ifetch_readdatavalid_r <= 0;
-      ifetch_next_valid_r <= 0;
-      ifetch_prediction_valid_r <= 0;
+      ifetch_rsp_valid_r <= 0;
+      ifetch_rsp_next_valid_r <= 0;
+      ifetch_rsp_prediction_valid_r <= 0;
       ifetch_refill_retry_valid <= 0;
       ptw_direct_readdatavalid_r <= 0;
       dmem_write_done_r <= 0;
@@ -8828,10 +8828,10 @@ module smolrv64(input wire        clock,
            if (cache_req_instr) begin
               if (icache_fetch_hit_q) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 ifetch_readdatavalid_r <= 1;
-                 ifetch_window_r <= icache_fetch_window_q;
-                 ifetch_next_valid_r <= fetch_next_valid;
-                 ifetch_prediction_valid_r <= 0;
+                 ifetch_rsp_valid_r <= 1;
+                 ifetch_rsp_window_r <= icache_fetch_window_q;
+                 ifetch_rsp_next_valid_r <= fetch_next_valid;
+                 ifetch_rsp_prediction_valid_r <= 0;
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
