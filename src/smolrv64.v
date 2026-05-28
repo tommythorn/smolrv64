@@ -1379,6 +1379,11 @@ module smolrv64(input wire        clock,
    wire       mem_fill_req_fire = mem_fill_req_valid && mem_fill_req_ready;
    wire       mem_wb_req_fire = mem_wb_req_valid && mem_wb_req_ready;
    wire       mem_read_req_fire = mem_read_req_valid && mem_read_req_ready;
+   wire       icache_fill_begin =
+              cache_req_instr &&
+              ((cache_state == CACHE_FILL_REQ && cache_fill_from_bram &&
+                cache_fill_beat == 3'd0) ||
+               mem_fill_req_fire);
    wire       cache_bram_fill_commit = cache_state == CACHE_BRAM_FILL_COMMIT;
    reg [511:0] cache_fill_line_data = 0;
    wire       cache_line_install = cache_state == CACHE_FILL_LINE_INSTALL;
@@ -1953,17 +1958,17 @@ module smolrv64(input wire        clock,
       .icache_invalidate_valid(cache_tag_wr_all && (cache_way0_tag_wr_en || cache_way1_tag_wr_en)),
       .icache_invalidate_way(cache_way1_tag_wr_en),
       .icache_invalidate_idx(cache_tag_wr_idx),
+      .icache_fill_begin(icache_fill_begin),
+      .icache_fill_begin_idx(cache_target_idx),
+      .icache_fill_begin_way(cache_target_way),
+      .icache_fill_begin_asid(cache_req_asid),
+      .icache_fill_begin_perm(cache_req_perm),
+      .icache_fill_begin_vtag(cache_req_vtag),
+      .icache_fill_begin_ptag(cache_req_ptag),
+      .icache_fill_begin_epoch(vhpr_epoch),
       .icache_fill_valid(cache_req_instr && cache_fill_data_valid),
-      .icache_fill_done(cache_req_instr && cache_fill_data_valid && cache_fill_beat == 3'd7),
       .icache_fill_beat(cache_fill_beat),
-      .icache_fill_idx(cache_target_idx),
-      .icache_fill_way(cache_target_way),
       .icache_fill_data(cache_fill_data),
-      .icache_fill_asid(cache_req_asid),
-      .icache_fill_perm(cache_req_perm),
-      .icache_fill_vtag(cache_req_vtag),
-      .icache_fill_ptag(cache_req_ptag),
-      .icache_fill_epoch(vhpr_epoch),
       .icache_req_asid(cache_req_asid),
       .icache_req_vtag(cache_req_vtag),
       .icache_req_next_vtag(cache_req_next_vtag),
@@ -9727,17 +9732,17 @@ module smolrv64_frontend #(
    input  wire                         icache_invalidate_valid,
    input  wire                         icache_invalidate_way,
    input  wire [`CACHE_INDEX_BITS-1:0] icache_invalidate_idx,
+   input  wire                         icache_fill_begin,
+   input  wire [`CACHE_INDEX_BITS-1:0] icache_fill_begin_idx,
+   input  wire                         icache_fill_begin_way,
+   input  wire [TLB_ASID_BITS-1:0]     icache_fill_begin_asid,
+   input  wire [CACHE_PERM_BITS-1:0]   icache_fill_begin_perm,
+   input  wire [`CACHE_VTAG_BITS-1:0]  icache_fill_begin_vtag,
+   input  wire [`CACHE_PHYS_TAG_BITS-1:0] icache_fill_begin_ptag,
+   input  wire [VHPR_EPOCH_BITS-1:0]   icache_fill_begin_epoch,
    input  wire                         icache_fill_valid,
-   input  wire                         icache_fill_done,
    input  wire [2:0]                   icache_fill_beat,
-   input  wire [`CACHE_INDEX_BITS-1:0] icache_fill_idx,
-   input  wire                         icache_fill_way,
    input  wire [63:0]                  icache_fill_data,
-   input  wire [TLB_ASID_BITS-1:0]     icache_fill_asid,
-   input  wire [CACHE_PERM_BITS-1:0]   icache_fill_perm,
-   input  wire [`CACHE_VTAG_BITS-1:0]  icache_fill_vtag,
-   input  wire [`CACHE_PHYS_TAG_BITS-1:0] icache_fill_ptag,
-   input  wire [VHPR_EPOCH_BITS-1:0]   icache_fill_epoch,
    input  wire [TLB_ASID_BITS-1:0]     icache_req_asid,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_vtag,
    input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_next_vtag,
@@ -9775,6 +9780,13 @@ module smolrv64_frontend #(
    reg  [ 1:0]  buf_prv = 0;
    reg  [TLB_ASID_BITS-1:0] buf_asid = 0;
    reg  [127:0] buf_data = 0;
+   reg [`CACHE_INDEX_BITS-1:0] icache_fill_idx = 0;
+   reg                         icache_fill_way = 0;
+   reg [TLB_ASID_BITS-1:0]     icache_fill_asid = 0;
+   reg [CACHE_PERM_BITS-1:0]   icache_fill_perm = 0;
+   reg [`CACHE_VTAG_BITS-1:0]  icache_fill_vtag = 0;
+   reg [`CACHE_PHYS_TAG_BITS-1:0] icache_fill_ptag = 0;
+   reg [VHPR_EPOCH_BITS-1:0]   icache_fill_epoch = 0;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
@@ -10113,7 +10125,8 @@ module smolrv64_frontend #(
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
 
-   wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_done;
+   wire        icache_fill_finish = icache_fill_valid && icache_fill_beat == 3'd7;
+   wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_finish;
    wire        icache_tag_wr_way = icache_invalidate_valid ? icache_invalidate_way :
                                                             icache_fill_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_tag_wr_idx =
@@ -10137,6 +10150,24 @@ module smolrv64_frontend #(
       icache_bank0_reads_next_line ? icache_way1_next_rd_idx : icache_way1_rd_idx;
 
    always @(posedge clock) begin
+      if (reset) begin
+         icache_fill_idx   <= 0;
+         icache_fill_way   <= 0;
+         icache_fill_asid  <= 0;
+         icache_fill_perm  <= 0;
+         icache_fill_vtag  <= 0;
+         icache_fill_ptag  <= 0;
+         icache_fill_epoch <= 0;
+      end else if (icache_fill_begin) begin
+         icache_fill_idx   <= icache_fill_begin_idx;
+         icache_fill_way   <= icache_fill_begin_way;
+         icache_fill_asid  <= icache_fill_begin_asid;
+         icache_fill_perm  <= icache_fill_begin_perm;
+         icache_fill_vtag  <= icache_fill_begin_vtag;
+         icache_fill_ptag  <= icache_fill_begin_ptag;
+         icache_fill_epoch <= icache_fill_begin_epoch;
+      end
+
       if (reset || flush) begin
          buf_valid <= 1'b0;
       end else if (fill && fill_page_ok) begin
