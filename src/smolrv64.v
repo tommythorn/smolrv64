@@ -1101,6 +1101,10 @@ module smolrv64(input wire        clock,
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way0_tag_next_rd_data;
    wire [`CACHE_META_BITS-1:0] icache_way1_tag_next_rd_data;
+   wire         icache_way0_tag_hit;
+   wire         icache_way1_tag_hit;
+   wire         icache_way0_next_tag_hit;
+   wire         icache_way1_next_tag_hit;
    wire [63:0]  icache_selected_bank_rd_data;
    wire [63:0]  icache_selected_next_bank_rd_data;
 
@@ -1866,30 +1870,37 @@ module smolrv64(input wire        clock,
    assign cache_way1_tag_next_rd_data = cache_req_instr ? icache_way1_tag_next_rd_data :
                                                           dcache_way1_tag_next_rd_data;
 
-   wire cache_way0_tag_hit = cache_meta_valid(cache_way0_tag_rd_data) &&
-                             cache_meta_epoch(cache_way0_tag_rd_data) == vhpr_epoch &&
-                             cache_meta_asid(cache_way0_tag_rd_data) == cache_req_asid &&
-                             cache_meta_vtag(cache_way0_tag_rd_data) == cache_req_vtag &&
-                             cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_rd_data),
-                                                   cache_req_ctx);
-   wire cache_way1_tag_hit = cache_meta_valid(cache_way1_tag_rd_data) &&
-                             cache_meta_epoch(cache_way1_tag_rd_data) == vhpr_epoch &&
-                             cache_meta_asid(cache_way1_tag_rd_data) == cache_req_asid &&
-                             cache_meta_vtag(cache_way1_tag_rd_data) == cache_req_vtag &&
-                             cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_rd_data),
-                                                   cache_req_ctx);
-   wire cache_way0_next_tag_hit = cache_meta_valid(cache_way0_tag_next_rd_data) &&
-                                  cache_meta_epoch(cache_way0_tag_next_rd_data) == vhpr_epoch &&
-                                  cache_meta_asid(cache_way0_tag_next_rd_data) == cache_req_asid &&
-                                  cache_meta_vtag(cache_way0_tag_next_rd_data) == cache_req_next_vtag &&
-                                  cache_perm_allows_ctx(cache_meta_perm(cache_way0_tag_next_rd_data),
-                                                        cache_req_ctx);
-   wire cache_way1_next_tag_hit = cache_meta_valid(cache_way1_tag_next_rd_data) &&
-                                  cache_meta_epoch(cache_way1_tag_next_rd_data) == vhpr_epoch &&
-                                  cache_meta_asid(cache_way1_tag_next_rd_data) == cache_req_asid &&
-                                  cache_meta_vtag(cache_way1_tag_next_rd_data) == cache_req_next_vtag &&
-                                  cache_perm_allows_ctx(cache_meta_perm(cache_way1_tag_next_rd_data),
-                                                        cache_req_ctx);
+   wire dcache_way0_tag_hit = cache_meta_valid(dcache_way0_tag_rd_data) &&
+                              cache_meta_epoch(dcache_way0_tag_rd_data) == vhpr_epoch &&
+                              cache_meta_asid(dcache_way0_tag_rd_data) == cache_req_asid &&
+                              cache_meta_vtag(dcache_way0_tag_rd_data) == cache_req_vtag &&
+                              cache_perm_allows_ctx(cache_meta_perm(dcache_way0_tag_rd_data),
+                                                    cache_req_ctx);
+   wire dcache_way1_tag_hit = cache_meta_valid(dcache_way1_tag_rd_data) &&
+                              cache_meta_epoch(dcache_way1_tag_rd_data) == vhpr_epoch &&
+                              cache_meta_asid(dcache_way1_tag_rd_data) == cache_req_asid &&
+                              cache_meta_vtag(dcache_way1_tag_rd_data) == cache_req_vtag &&
+                              cache_perm_allows_ctx(cache_meta_perm(dcache_way1_tag_rd_data),
+                                                    cache_req_ctx);
+   wire dcache_way0_next_tag_hit = cache_meta_valid(dcache_way0_tag_next_rd_data) &&
+                                   cache_meta_epoch(dcache_way0_tag_next_rd_data) == vhpr_epoch &&
+                                   cache_meta_asid(dcache_way0_tag_next_rd_data) == cache_req_asid &&
+                                   cache_meta_vtag(dcache_way0_tag_next_rd_data) == cache_req_next_vtag &&
+                                   cache_perm_allows_ctx(cache_meta_perm(dcache_way0_tag_next_rd_data),
+                                                         cache_req_ctx);
+   wire dcache_way1_next_tag_hit = cache_meta_valid(dcache_way1_tag_next_rd_data) &&
+                                   cache_meta_epoch(dcache_way1_tag_next_rd_data) == vhpr_epoch &&
+                                   cache_meta_asid(dcache_way1_tag_next_rd_data) == cache_req_asid &&
+                                   cache_meta_vtag(dcache_way1_tag_next_rd_data) == cache_req_next_vtag &&
+                                   cache_perm_allows_ctx(cache_meta_perm(dcache_way1_tag_next_rd_data),
+                                                         cache_req_ctx);
+
+   wire cache_way0_tag_hit = cache_req_instr ? icache_way0_tag_hit : dcache_way0_tag_hit;
+   wire cache_way1_tag_hit = cache_req_instr ? icache_way1_tag_hit : dcache_way1_tag_hit;
+   wire cache_way0_next_tag_hit = cache_req_instr ? icache_way0_next_tag_hit :
+                                                    dcache_way0_next_tag_hit;
+   wire cache_way1_next_tag_hit = cache_req_instr ? icache_way1_next_tag_hit :
+                                                    dcache_way1_next_tag_hit;
 
    function [63:0] dcache_selected_bank_data;
       input       way;
@@ -1928,6 +1939,7 @@ module smolrv64(input wire        clock,
    smolrv64_frontend #(
       .EPOCH_BITS(FRONTEND_EPOCH_BITS),
       .TLB_ASID_BITS(TLB_ASID_BITS),
+      .TLB_CTX_BITS(TLB_CTX_BITS),
       .CACHE_PERM_BITS(CACHE_PERM_BITS),
       .VHPR_EPOCH_BITS(VHPR_EPOCH_BITS)
    ) frontend_inst (
@@ -1963,10 +1975,19 @@ module smolrv64(input wire        clock,
       .icache_bank_wr_idx(cache_bank_wr_idx),
       .icache_bank_wr_way(cache_bank_wr_way),
       .icache_bank_wr_data(cache_bank_wr_data),
+      .icache_req_asid(cache_req_asid),
+      .icache_req_vtag(cache_req_vtag),
+      .icache_req_next_vtag(cache_req_next_vtag),
+      .icache_req_ctx(cache_req_ctx),
+      .icache_vhpr_epoch(vhpr_epoch),
       .icache_way0_tag_rd_data(icache_way0_tag_rd_data),
       .icache_way1_tag_rd_data(icache_way1_tag_rd_data),
       .icache_way0_tag_next_rd_data(icache_way0_tag_next_rd_data),
       .icache_way1_tag_next_rd_data(icache_way1_tag_next_rd_data),
+      .icache_way0_tag_hit(icache_way0_tag_hit),
+      .icache_way1_tag_hit(icache_way1_tag_hit),
+      .icache_way0_next_tag_hit(icache_way0_next_tag_hit),
+      .icache_way1_next_tag_hit(icache_way1_next_tag_hit),
       .icache_select_way(cache_way1_tag_hit),
       .icache_select_bank(cache_req_bank),
       .icache_select_next_way(cache_req_same_line ? cache_way1_tag_hit : cache_way1_next_tag_hit),
@@ -9653,6 +9674,7 @@ endmodule
 module smolrv64_frontend #(
    parameter EPOCH_BITS = 2,
    parameter TLB_ASID_BITS = 10,
+   parameter TLB_CTX_BITS = 6,
    parameter CACHE_PERM_BITS = 5,
    parameter VHPR_EPOCH_BITS = 2
 ) (
@@ -9690,10 +9712,19 @@ module smolrv64_frontend #(
    input  wire [`CACHE_INDEX_BITS-1:0] icache_bank_wr_idx,
    input  wire                         icache_bank_wr_way,
    input  wire [63:0]                  icache_bank_wr_data,
+   input  wire [TLB_ASID_BITS-1:0]     icache_req_asid,
+   input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_vtag,
+   input  wire [`CACHE_VTAG_BITS-1:0]  icache_req_next_vtag,
+   input  wire [TLB_CTX_BITS-1:0]      icache_req_ctx,
+   input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
    output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way0_tag_next_rd_data,
    output wire [`CACHE_META_BITS-1:0]  icache_way1_tag_next_rd_data,
+   output wire                         icache_way0_tag_hit,
+   output wire                         icache_way1_tag_hit,
+   output wire                         icache_way0_next_tag_hit,
+   output wire                         icache_way1_next_tag_hit,
    input  wire                         icache_select_way,
    input  wire [2:0]                   icache_select_bank,
    input  wire                         icache_select_next_way,
@@ -9855,6 +9886,110 @@ module smolrv64_frontend #(
    assign rsp_fill_page_ok = rsp_fill_base_va[11:0] <= 12'hff0;
    wire [63:0] icache_way0_bank_rd_data [0:7];
    wire [63:0] icache_way1_bank_rd_data [0:7];
+
+   function cache_meta_valid;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_valid = meta[`CACHE_VALID_BIT];
+      end
+   endfunction
+
+   function [TLB_ASID_BITS-1:0] cache_meta_asid;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_asid = meta[`CACHE_ASID_LSB +: TLB_ASID_BITS];
+      end
+   endfunction
+
+   function [`CACHE_VTAG_BITS-1:0] cache_meta_vtag;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_vtag = meta[`CACHE_VTAG_LSB +: `CACHE_VTAG_BITS];
+      end
+   endfunction
+
+   function [CACHE_PERM_BITS-1:0] cache_meta_perm;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_perm = meta[`CACHE_PERM_LSB +: CACHE_PERM_BITS];
+      end
+   endfunction
+
+   function [VHPR_EPOCH_BITS-1:0] cache_meta_epoch;
+      input [`CACHE_META_BITS-1:0] meta;
+      begin
+         cache_meta_epoch = meta[`CACHE_EPOCH_LSB +: VHPR_EPOCH_BITS];
+      end
+   endfunction
+
+   function cache_perm_allows_ctx;
+      input [CACHE_PERM_BITS-1:0] perm;
+      input [TLB_CTX_BITS-1:0] ctx;
+      reg [1:0] access;
+      reg [1:0] access_prv;
+      reg       access_sum;
+      reg       access_mxr;
+      reg       pte_r;
+      reg       pte_w;
+      reg       pte_x;
+      reg       pte_u;
+      reg       data_read_ok;
+      reg       user_ok;
+      begin
+         access     = ctx[5:4];
+         access_prv = ctx[3:2];
+         access_sum = ctx[1];
+         access_mxr = ctx[0];
+         pte_r      = perm[0];
+         pte_w      = perm[1];
+         pte_x      = perm[2];
+         pte_u      = perm[3];
+
+         if (perm[4]) begin
+            cache_perm_allows_ctx = 1'b1;
+         end else begin
+            data_read_ok = pte_r || (access_mxr && pte_x);
+            user_ok = access_prv == 0 ? pte_u :
+                      access_prv == 1 ? (!pte_u || (access != 2'd0 && access_sum)) :
+                                        1'b1;
+            case (access)
+              2'd0: cache_perm_allows_ctx = pte_x && user_ok;
+              2'd1: cache_perm_allows_ctx = data_read_ok && user_ok;
+              2'd2: cache_perm_allows_ctx = pte_w && user_ok;
+              default: cache_perm_allows_ctx = data_read_ok && pte_w && user_ok;
+            endcase
+         end
+      end
+   endfunction
+
+   assign icache_way0_tag_hit =
+      cache_meta_valid(icache_way0_tag_rd_data) &&
+      cache_meta_epoch(icache_way0_tag_rd_data) == icache_vhpr_epoch &&
+      cache_meta_asid(icache_way0_tag_rd_data) == icache_req_asid &&
+      cache_meta_vtag(icache_way0_tag_rd_data) == icache_req_vtag &&
+      cache_perm_allows_ctx(cache_meta_perm(icache_way0_tag_rd_data),
+                            icache_req_ctx);
+   assign icache_way1_tag_hit =
+      cache_meta_valid(icache_way1_tag_rd_data) &&
+      cache_meta_epoch(icache_way1_tag_rd_data) == icache_vhpr_epoch &&
+      cache_meta_asid(icache_way1_tag_rd_data) == icache_req_asid &&
+      cache_meta_vtag(icache_way1_tag_rd_data) == icache_req_vtag &&
+      cache_perm_allows_ctx(cache_meta_perm(icache_way1_tag_rd_data),
+                            icache_req_ctx);
+   assign icache_way0_next_tag_hit =
+      cache_meta_valid(icache_way0_tag_next_rd_data) &&
+      cache_meta_epoch(icache_way0_tag_next_rd_data) == icache_vhpr_epoch &&
+      cache_meta_asid(icache_way0_tag_next_rd_data) == icache_req_asid &&
+      cache_meta_vtag(icache_way0_tag_next_rd_data) == icache_req_next_vtag &&
+      cache_perm_allows_ctx(cache_meta_perm(icache_way0_tag_next_rd_data),
+                            icache_req_ctx);
+   assign icache_way1_next_tag_hit =
+      cache_meta_valid(icache_way1_tag_next_rd_data) &&
+      cache_meta_epoch(icache_way1_tag_next_rd_data) == icache_vhpr_epoch &&
+      cache_meta_asid(icache_way1_tag_next_rd_data) == icache_req_asid &&
+      cache_meta_vtag(icache_way1_tag_next_rd_data) == icache_req_next_vtag &&
+      cache_perm_allows_ctx(cache_meta_perm(icache_way1_tag_next_rd_data),
+                            icache_req_ctx);
 
    function [63:0] select_icache_bank_data;
       input       way;
