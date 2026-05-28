@@ -1300,7 +1300,7 @@ module smolrv64(input wire        clock,
    reg [ 2:0] cache_req_next_bank = 0;
    reg        cache_req_same_line = 0;
    reg        cache_req_write = 0;
-   reg        cache_req_instr = 0;
+   reg        cache_req_ifetch = 0;
    reg        cache_req_cbo = 0;
    reg [30:6] cache_req_line_addr = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_vtag = 0;
@@ -1405,21 +1405,21 @@ module smolrv64(input wire        clock,
    reg        mem_read_rsp_ready = 0;
    wire [63:0] mem_read_rsp_data;
    wire       mem_engine_idle;
-   wire       icache_l2_fill_req_valid = mem_fill_req_valid && cache_req_instr;
-   wire       dcache_l2_fill_req_valid = mem_fill_req_valid && !cache_req_instr;
-   assign mem_fill_req_ready = cache_req_instr ? icache_l2_fill_req_ready :
+   wire       icache_l2_fill_req_valid = mem_fill_req_valid && cache_req_ifetch;
+   wire       dcache_l2_fill_req_valid = mem_fill_req_valid && !cache_req_ifetch;
+   assign mem_fill_req_ready = cache_req_ifetch ? icache_l2_fill_req_ready :
                                                  dcache_l2_fill_req_ready;
-   assign mem_fill_rsp_valid = cache_req_instr ? icache_l2_fill_rsp_valid :
+   assign mem_fill_rsp_valid = cache_req_ifetch ? icache_l2_fill_rsp_valid :
                                                  dcache_l2_fill_rsp_valid;
-   assign mem_fill_rsp_data = cache_req_instr ? icache_l2_fill_rsp_data :
+   assign mem_fill_rsp_data = cache_req_ifetch ? icache_l2_fill_rsp_data :
                                                 dcache_l2_fill_rsp_data;
-   assign icache_l2_fill_rsp_ready = mem_fill_rsp_ready && cache_req_instr;
-   assign dcache_l2_fill_rsp_ready = mem_fill_rsp_ready && !cache_req_instr;
+   assign icache_l2_fill_rsp_ready = mem_fill_rsp_ready && cache_req_ifetch;
+   assign dcache_l2_fill_rsp_ready = mem_fill_rsp_ready && !cache_req_ifetch;
    wire       mem_fill_req_fire = mem_fill_req_valid && mem_fill_req_ready;
    wire       mem_wb_req_fire = mem_wb_req_valid && mem_wb_req_ready;
    wire       mem_read_req_fire = mem_read_req_valid && mem_read_req_ready;
    wire       icache_fill_begin =
-              cache_req_instr &&
+              cache_req_ifetch &&
               ((cache_state == CACHE_FILL_REQ && cache_fill_from_bram &&
                 cache_fill_beat == 3'd0) ||
                mem_fill_req_fire);
@@ -1455,19 +1455,19 @@ module smolrv64(input wire        clock,
    wire       hpm_dcache_read_pulse = cache_state == CACHE_IDLE && dmem_read;
    wire       hpm_dcache_write_pulse = cache_state == CACHE_IDLE && dmem_write;
    wire       hpm_icache_hit_pulse =
-              cache_state == CACHE_HIT_RESP && cache_req_instr &&
+              cache_state == CACHE_HIT_RESP && cache_req_ifetch &&
               icache_fetch_hit_q;
    wire       hpm_dcache_hit_pulse =
-              cache_state == CACHE_HIT_RESP && !cache_req_instr &&
+              cache_state == CACHE_HIT_RESP && !cache_req_ifetch &&
               dcache_rsp_hit;
    wire       hpm_icache_miss_pulse =
-              cache_state == CACHE_HIT_RESP && cache_req_instr &&
+              cache_state == CACHE_HIT_RESP && cache_req_ifetch &&
               !icache_fetch_hit_q;
    wire       hpm_dcache_miss_pulse =
-              cache_state == CACHE_HIT_RESP && !cache_req_instr &&
+              cache_state == CACHE_HIT_RESP && !cache_req_ifetch &&
               !dcache_rsp_hit;
-   wire       hpm_icache_fill_beat_pulse = cache_fill_data_valid && cache_req_instr;
-   wire       hpm_dcache_fill_beat_pulse = cache_fill_data_valid && !cache_req_instr;
+   wire       hpm_icache_fill_beat_pulse = cache_fill_data_valid && cache_req_ifetch;
+   wire       hpm_dcache_fill_beat_pulse = cache_fill_data_valid && !cache_req_ifetch;
    wire       hpm_icache_fill_line_pulse =
               hpm_icache_fill_beat_pulse && cache_fill_beat == 3'd7;
    wire       hpm_dcache_fill_line_pulse =
@@ -2061,7 +2061,7 @@ module smolrv64(input wire        clock,
       .icache_fill_begin_vtag(cache_req_vtag),
       .icache_fill_begin_ptag(cache_req_ptag),
       .icache_fill_begin_epoch(vhpr_epoch),
-      .icache_fill_valid(cache_req_instr && cache_fill_data_valid),
+      .icache_fill_valid(cache_req_ifetch && cache_fill_data_valid),
       .icache_fill_beat(cache_fill_beat),
       .icache_fill_data(cache_fill_data),
       .icache_req_va(cache_req_va),
@@ -2191,7 +2191,7 @@ module smolrv64(input wire        clock,
       dcache_bank_wr_data = cache_fill_data;
 
       if ((cache_state == CACHE_FILL_LINE_INSTALL || cache_state == CACHE_BRAM_FILL_COMMIT) &&
-          cache_fill_data_valid && !cache_req_instr) begin
+          cache_fill_data_valid && !cache_req_ifetch) begin
          dcache_bank_wr_en = 8'd1 << cache_fill_beat;
          dcache_bank_wr_idx = cache_target_idx;
          dcache_bank_wr_way = cache_target_way;
@@ -8646,7 +8646,7 @@ module smolrv64(input wire        clock,
               end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
-              cache_req_instr <= 0;
+              cache_req_ifetch <= 0;
               cache_way0_rd_idx <= 0;
               cache_way1_rd_idx <= 0;
               cache_way0_bank0_rd_idx <= 0;
@@ -8663,7 +8663,7 @@ module smolrv64(input wire        clock,
                  vhpr_epoch_update_pending <= 1'b1;
                  cache_flush_idx <= 0;
                  cache_flush_way <= 0;
-                 cache_req_instr <= 0;
+                 cache_req_ifetch <= 0;
                  cache_way0_rd_idx <= 0;
                  cache_way1_rd_idx <= 0;
                  cache_way0_bank0_rd_idx <= 0;
@@ -8678,7 +8678,7 @@ module smolrv64(input wire        clock,
 	      cache_req_ptag          <= cache_cbo_ptag;
 	      cache_req_cbo           <= 1;
 	      cache_req_write         <= 0;
-	      cache_req_instr         <= 0;
+	      cache_req_ifetch         <= 0;
 	      cache_req_line_addr     <= cache_cbo_line_addr;
 	      cache_probe_color       <= 0;
 	      cache_probe_found       <= 0;
@@ -8697,7 +8697,7 @@ module smolrv64(input wire        clock,
 	      cache_req_ptag          <= ptw_direct_addr[27:9];
 	      cache_req_cbo           <= 1;
 	      cache_req_write         <= 0;
-	      cache_req_instr         <= 0;
+	      cache_req_ifetch         <= 0;
 	      cache_req_line_addr     <= ptw_direct_addr[27:3];
 	      cache_probe_color       <= 0;
 	      cache_probe_found       <= 0;
@@ -8741,7 +8741,7 @@ module smolrv64(input wire        clock,
               cache_req_perm      <= cache_issue_perm;
               cache_req_ctx       <= cache_issue_ctx;
               cache_req_write     <= 0;
-              cache_req_instr     <= ifetch_read;
+              cache_req_ifetch     <= ifetch_read;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(cache_issue_va);
               cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
@@ -8768,7 +8768,7 @@ module smolrv64(input wire        clock,
               cache_req_perm      <= cache_issue_perm;
               cache_req_ctx       <= cache_issue_ctx;
               cache_req_write     <= 1;
-              cache_req_instr     <= 0;
+              cache_req_ifetch     <= 0;
               cache_req_cbo       <= 0;
               cache_req_vtag      <= cache_vtag(cache_issue_va);
               cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
@@ -8810,19 +8810,19 @@ module smolrv64(input wire        clock,
            dcache_rsp_next_data <= dcache_lookup_next_data;
            dcache_rsp_next_valid <= dcache_lookup_next_valid;
            dcache_rsp_dirty <= dcache_lookup_dirty;
-           cache_target_way <= cache_req_instr
+           cache_target_way <= cache_req_ifetch
                               ? icache_target_way
                               : dcache_target_way;
-           cache_target_idx <= cache_req_instr
+           cache_target_idx <= cache_req_ifetch
                               ? icache_target_idx
                               : dcache_target_idx;
-           cache_target_valid <= cache_req_instr
+           cache_target_valid <= cache_req_ifetch
                                 ? icache_target_valid
                                 : dcache_target_valid;
-           cache_target_dirty <= cache_req_instr
+           cache_target_dirty <= cache_req_ifetch
                                 ? 1'b0
                                 : dcache_target_dirty;
-           cache_target_ptag <= cache_req_instr
+           cache_target_ptag <= cache_req_ifetch
                                ? {`CACHE_PHYS_TAG_BITS{1'b0}}
                                : dcache_target_ptag;
            cache_state <= CACHE_HIT_RESP;
@@ -8832,7 +8832,7 @@ module smolrv64(input wire        clock,
            reg        next_line_safe;
            next_line_safe = cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
 
-           if (cache_req_instr) begin
+           if (cache_req_ifetch) begin
               if (icache_fetch_hit_q) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
                  ifetch_rsp_valid_r <= 1;
@@ -9120,7 +9120,7 @@ module smolrv64(input wire        clock,
            if (cache_trace_enabled && !cache_fill_from_bram && !mem_fill_req_valid) begin
               $display("%05d %s FILLREQ line addr=%016h",
                        $time,
-                       cache_req_instr ? "ICACHE" : "DCACHE",
+                       cache_req_ifetch ? "ICACHE" : "DCACHE",
                        cache_fill_base);
            end
 `endif
@@ -9180,7 +9180,7 @@ module smolrv64(input wire        clock,
                  csr_vhpr_fills <= csr_vhpr_fills + 1;
                  if (cache_target_valid && !cache_target_dirty)
                     csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
-                 if (!cache_req_instr) begin
+                 if (!cache_req_ifetch) begin
                     dcache_way0_tag_wr_en <= !cache_target_way;
                     dcache_way1_tag_wr_en <= cache_target_way;
                     dcache_tag_wr_idx  <= cache_target_idx;
@@ -9193,7 +9193,7 @@ module smolrv64(input wire        clock,
                  end
                  if (cache_req_write) begin
                     dmem_write_done_r <= 1;
-                 end else if (cache_req_instr) begin
+                 end else if (cache_req_ifetch) begin
                     ifetch_refill_retry_valid <= 1;
                  end else begin
                     dmem_rsp_data_r <= cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data;
@@ -9242,7 +9242,7 @@ module smolrv64(input wire        clock,
          dcache_way1_tag_wr_en <= 0;
          icache_invalidate_valid <= 0;
 	 cache_cbo_done_r <= 0;
-	 cache_req_instr <= 0;
+	 cache_req_ifetch <= 0;
 	 cache_req_perm <= CACHE_PERM_PHYS;
 	 cache_req_ctx <= 0;
 	 cache_req_line_addr <= 0;
@@ -9353,19 +9353,19 @@ module smolrv64(input wire        clock,
          if (hpm_icache_miss_pulse || hpm_dcache_miss_pulse) begin
             $display("%05d %s MISS  op=%0d addr=%016h bank=%0d next_bank=%0d same_line=%0d dirty=%0d victim=%016h",
                      $time,
-                     cache_req_instr ? "ICACHE" : "DCACHE",
+                     cache_req_ifetch ? "ICACHE" : "DCACHE",
                      cache_req_write,
                      cache_addr,
                      cache_req_bank,
                      cache_req_next_bank,
                      cache_req_same_line,
-                     cache_req_instr ? 1'b0 : dcache_rsp_dirty,
+                     cache_req_ifetch ? 1'b0 : dcache_rsp_dirty,
                      {33'd0, cache_victim_ptag, cache_victim_idx[5:0], 6'd0});
          end
          if (hpm_icache_fill_beat_pulse || hpm_dcache_fill_beat_pulse) begin
             $display("%05d %s FILLD beat=%0d addr=%016h data=%016h",
                      $time,
-                     cache_req_instr ? "ICACHE" : "DCACHE",
+                     cache_req_ifetch ? "ICACHE" : "DCACHE",
                      cache_fill_beat,
                      cache_fill_base + (64'd8 * cache_fill_beat),
                      cache_fill_data);
@@ -9373,7 +9373,7 @@ module smolrv64(input wire        clock,
          if (hpm_icache_fill_line_pulse || hpm_dcache_fill_line_pulse) begin
             $display("%05d %s FILLDONE addr=%016h write=%0d",
                      $time,
-                     cache_req_instr ? "ICACHE" : "DCACHE",
+                     cache_req_ifetch ? "ICACHE" : "DCACHE",
                      cache_fill_base,
                      cache_req_write);
          end
