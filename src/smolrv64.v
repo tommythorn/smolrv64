@@ -1076,8 +1076,8 @@ module smolrv64(input wire        clock,
    reg          ptw_direct_wait_axi = 0;
    reg [`MEM_SIZE_LG2-5:0] ptw_direct_bram_word_idx = 0;
    reg          ptw_direct_bram_word_bank = 0;
-   reg          ptw_direct_readdatavalid_r = 0;
-   reg  [63:0]  ptw_direct_readdata_r = 0;
+   reg          ptw_direct_rsp_valid_r = 0;
+   reg  [63:0]  ptw_direct_rsp_data_r = 0;
 
    // Frontend instruction fetch window.  The old global FSM still launches
    // TLB/cache slow paths; the frontend module owns instruction alignment,
@@ -8095,8 +8095,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_PTW_DIRECT_WAIT: begin
-           if (ptw_direct_readdatavalid_r) begin
-              pte_latch <= ptw_direct_readdata_r;
+           if (ptw_direct_rsp_valid_r) begin
+              pte_latch <= ptw_direct_rsp_data_r;
               state     <= `S_PTW_PROCESS;
            end else begin
               try_issue_queued_decode_current_wb(ptw_access == 2'd1 &&
@@ -8598,7 +8598,7 @@ module smolrv64(input wire        clock,
       ifetch_rsp_next_valid_r <= 0;
       ifetch_rsp_prediction_valid_r <= 0;
       ifetch_refill_retry_valid <= 0;
-      ptw_direct_readdatavalid_r <= 0;
+      ptw_direct_rsp_valid_r <= 0;
       dmem_write_done_r <= 0;
       cache_bram_write_done <= 0;
       cache_cbo_done_r <= 0;
@@ -8615,18 +8615,18 @@ module smolrv64(input wire        clock,
       end
 
       if (ptw_direct_wait_bram) begin
-         ptw_direct_readdata_r <= ptw_direct_bram_word_bank
+         ptw_direct_rsp_data_r <= ptw_direct_bram_word_bank
                                   ? mem1[ptw_direct_bram_word_idx]
                                   : mem0[ptw_direct_bram_word_idx];
-         ptw_direct_readdatavalid_r <= 1;
+         ptw_direct_rsp_valid_r <= 1;
          ptw_direct_wait_bram <= 0;
       end
 
       if (ptw_direct_wait_axi)
          mem_read_rsp_ready <= 1;
       if (ptw_direct_wait_axi && mem_read_rsp_valid && mem_read_rsp_ready) begin
-         ptw_direct_readdata_r <= mem_read_rsp_data;
-         ptw_direct_readdatavalid_r <= 1;
+         ptw_direct_rsp_data_r <= mem_read_rsp_data;
+         ptw_direct_rsp_valid_r <= 1;
          mem_read_rsp_ready <= 0;
          ptw_direct_wait_axi <= 0;
       end
@@ -9260,8 +9260,8 @@ module smolrv64(input wire        clock,
          ptw_direct_pending <= 0;
          ptw_direct_wait_bram <= 0;
          ptw_direct_wait_axi <= 0;
-         ptw_direct_readdatavalid_r <= 0;
-         ptw_direct_readdata_r <= 0;
+         ptw_direct_rsp_valid_r <= 0;
+         ptw_direct_rsp_data_r <= 0;
          vhpr_epoch <= 0;
          vhpr_next_epoch <= 0;
          vhpr_epoch_update_pending <= 0;
