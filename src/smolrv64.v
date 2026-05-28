@@ -3267,6 +3267,23 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task emit_ifetch_rsp;
+      input [127:0] rsp_window;
+      input         rsp_next_valid;
+      input [31:0]  rsp_insn;
+      input [63:0]  rsp_predicted_next_pc;
+      input [ 1:0]  rsp_prediction_kind;
+      begin
+         ifetch_rsp_valid_r <= 1;
+         ifetch_rsp_window_r <= rsp_window;
+         ifetch_rsp_next_valid_r <= rsp_next_valid;
+         ifetch_rsp_prediction_valid_r <= 0;
+         ifetch_rsp_insn_r <= rsp_insn;
+         ifetch_rsp_predicted_next_pc_r <= rsp_predicted_next_pc;
+         ifetch_rsp_prediction_kind_r <= rsp_prediction_kind;
+      end
+   endtask
+
    task issue_dmem_cache_read;
       input [27:0] read_addr;
       input [63:0] read_va;
@@ -8847,15 +8864,11 @@ module smolrv64(input wire        clock,
            if (cache_req_ifetch) begin
               if (icache_fetch_hit_q) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 ifetch_rsp_valid_r <= 1;
-                 ifetch_rsp_window_r <= icache_fetch_window_q;
-                 ifetch_rsp_next_valid_r <= icache_fetch_next_valid_q;
-                 ifetch_rsp_prediction_valid_r <= 0;
-                 ifetch_rsp_insn_r <= icache_fetch_insn_q;
-                 ifetch_rsp_predicted_next_pc_r <=
-                    icache_fetch_predicted_next_pc_q;
-                 ifetch_rsp_prediction_kind_r <=
-                    icache_fetch_prediction_kind_q;
+                 emit_ifetch_rsp(icache_fetch_window_q,
+                                  icache_fetch_next_valid_q,
+                                  icache_fetch_insn_q,
+                                  icache_fetch_predicted_next_pc_q,
+                                  icache_fetch_prediction_kind_q);
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
