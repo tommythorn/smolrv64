@@ -1114,11 +1114,11 @@ module smolrv64(input wire        clock,
    reg  [FRONTEND_EPOCH_BITS-1:0] f_latched_cmd_epoch = 0;
    wire [63:0]  frontend_rsp_next_pc;
    wire [63:0]  frontend_rsp_predicted_next_pc;
-   wire         icache_fetch_hit;
-   wire         icache_fetch_next_valid;
-   wire [127:0] icache_fetch_window;
-   wire         icache_fetch_insn_valid;
-   wire [31:0]  icache_fetch_insn;
+   wire         icache_rsp_hit;
+   wire         icache_rsp_next_valid;
+   wire [127:0] icache_rsp_window;
+   wire         icache_rsp_insn_valid;
+   wire [31:0]  icache_rsp_insn;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
@@ -2070,11 +2070,11 @@ module smolrv64(input wire        clock,
       .icache_req_same_line(cache_req_same_line),
       .icache_replace_way(cache_replace_way),
       .icache_vhpr_epoch(vhpr_epoch),
-      .icache_fetch_hit(icache_fetch_hit),
-      .icache_fetch_next_valid(icache_fetch_next_valid),
-      .icache_fetch_window(icache_fetch_window),
-      .icache_fetch_insn_valid(icache_fetch_insn_valid),
-      .icache_fetch_insn(icache_fetch_insn),
+      .icache_rsp_hit(icache_rsp_hit),
+      .icache_rsp_next_valid(icache_rsp_next_valid),
+      .icache_rsp_window(icache_rsp_window),
+      .icache_rsp_insn_valid(icache_rsp_insn_valid),
+      .icache_rsp_insn(icache_rsp_insn),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
       .icache_target_valid(icache_target_valid)
@@ -8710,11 +8710,11 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_TAG_CHECK: begin
-           ifetch_hit_valid_q <= icache_fetch_hit;
-           ifetch_hit_next_valid_q <= icache_fetch_next_valid;
-           ifetch_hit_window_q <= icache_fetch_window;
-           ifetch_hit_insn_valid_q <= icache_fetch_insn_valid;
-           ifetch_hit_insn_q <= icache_fetch_insn;
+           ifetch_hit_valid_q <= icache_rsp_hit;
+           ifetch_hit_next_valid_q <= icache_rsp_next_valid;
+           ifetch_hit_window_q <= icache_rsp_window;
+           ifetch_hit_insn_valid_q <= icache_rsp_insn_valid;
+           ifetch_hit_insn_q <= icache_rsp_insn;
            dcache_rsp_hit <= dcache_lookup_hit;
            dcache_rsp_hit_way <= dcache_lookup_hit_way;
            dcache_rsp_next_hit <= dcache_lookup_next_hit;
@@ -10034,11 +10034,11 @@ module smolrv64_frontend #(
    input  wire                         icache_req_same_line,
    input  wire                         icache_replace_way,
    input  wire [VHPR_EPOCH_BITS-1:0]   icache_vhpr_epoch,
-   output wire                         icache_fetch_hit,
-   output wire                         icache_fetch_next_valid,
-   output wire [127:0]                 icache_fetch_window,
-   output wire                         icache_fetch_insn_valid,
-   output wire [31:0]                  icache_fetch_insn,
+   output wire                         icache_rsp_hit,
+   output wire                         icache_rsp_next_valid,
+   output wire [127:0]                 icache_rsp_window,
+   output wire                         icache_rsp_insn_valid,
+   output wire [31:0]                  icache_rsp_insn,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
    output wire                         icache_target_valid
@@ -10349,9 +10349,9 @@ module smolrv64_frontend #(
       cache_perm_allows_ctx(cache_meta_perm(icache_way1_tag_next_rd_data),
                             icache_req_ctx);
 
-   assign icache_fetch_hit = icache_way0_tag_hit || icache_way1_tag_hit;
+   assign icache_rsp_hit = icache_way0_tag_hit || icache_way1_tag_hit;
    assign icache_lookup_hit_way = icache_way1_tag_hit;
-   assign icache_fetch_next_valid =
+   assign icache_rsp_next_valid =
       (icache_req_same_line || icache_way0_next_tag_hit || icache_way1_next_tag_hit) &&
       (icache_req_same_line || icache_req_va[11:3] != 9'h1ff);
    assign icache_lookup_next_hit_way = icache_way1_next_tag_hit;
@@ -10386,16 +10386,16 @@ module smolrv64_frontend #(
       end
    endfunction
 
-   wire [63:0] icache_fetch_data =
+   wire [63:0] icache_rsp_data =
       select_icache_bank_data(icache_lookup_hit_way, icache_req_bank);
-   wire [63:0] icache_fetch_next_data =
+   wire [63:0] icache_rsp_next_data =
       select_icache_bank_data(icache_req_same_line ? icache_lookup_hit_way :
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
-   assign icache_fetch_window = {icache_fetch_next_data, icache_fetch_data};
-   assign icache_fetch_insn_valid = icache_req_va[2:1] != 2'b11;
-   assign icache_fetch_insn =
-      pick_insn(icache_fetch_window, {1'b0, icache_req_va[2:0]});
+   assign icache_rsp_window = {icache_rsp_next_data, icache_rsp_data};
+   assign icache_rsp_insn_valid = icache_req_va[2:1] != 2'b11;
+   assign icache_rsp_insn =
+      pick_insn(icache_rsp_window, {1'b0, icache_req_va[2:0]});
 
    wire        icache_fill_finish = icache_fill_valid && icache_fill_beat == 3'd7;
    wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_finish;
