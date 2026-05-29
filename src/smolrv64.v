@@ -4351,8 +4351,31 @@ module smolrv64(input wire        clock,
            `S_CVFPU_FMA_RF2,
            `S_CVFPU_FMA_RF3:
              frontend_spec_miss_state = 1'b1;
+         default:
+           frontend_spec_miss_state = 1'b0;
+      endcase
+      end
+   endfunction
+
+   function rf_prearm_safe_state;
+      input [5:0] s;
+      begin
+         case (s)
+           `S_FETCH1,
+           `S_FRONTEND_MISS_WAIT,
+           `S_DMEM_LOAD_WAIT,
+           `S_DMEM_LOAD2_WAIT,
+           `S_DMEM_STORE_WAIT,
+           `S_DMEM_STORE2,
+           `S_DMEM_STORE_RESP_WAIT,
+           `S_DMEM_STORE_RESP_ARM,
+           `S_MUL_RUNNING,
+           `S_DIV_RUNNING,
+           `S_CVFPU_ISSUE,
+           `S_CVFPU_WAIT:
+             rf_prearm_safe_state = 1'b1;
            default:
-             frontend_spec_miss_state = 1'b0;
+             rf_prearm_safe_state = 1'b0;
          endcase
       end
    endfunction
@@ -8245,14 +8268,12 @@ module smolrv64(input wire        clock,
       if (!core_reset_now && id_valid && !id_rf_ready)
          id_rf_ready <= 1;
 
-      // Pre-arm BRAM rs1/rs2 reads for the next queued decode. Only when
-      // state == S_FETCH1: in any other state, the current instruction may
-      // be repurposing rs1/rs2 (e.g. S_EXECUTE for FMA writes rs1 with the
-      // rs3 register index before transitioning to S_CVFPU_FMA_RF2 — the
-      // pre-arm would clobber it).
+      // Pre-arm BRAM rs1/rs2 reads for the next queued decode once the current
+      // state's operands have already been latched. Keep EX/RF/FMA-rs3 states
+      // excluded because they still own or repurpose the read address ports.
       if (!core_reset_now && !id_valid && rf_decode_valid &&
           !rf_decode_prearmed && !rf_decode_prearm_block &&
-          state == `S_FETCH1)
+          rf_prearm_safe_state(state))
          prearm_rf_decode_head();
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
