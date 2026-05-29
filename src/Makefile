@@ -13,6 +13,11 @@ TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$
 IVOPTS=$(OPTS) -Wall -m ./tty_vpi.vpi -s smolrv64_tb $(SIM_VDEFS)
 platform=$(shell uname -o)
 
+# Shared Verilator speed flags: -O3 model optimization + fast X-handling,
+# and host-native codegen for the generated C++ model.
+VL_OPT=-O3 --x-assign fast --x-initial fast
+VL_CFLAGS=-O3 -march=native -mtune=native
+
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-
   CC=clang
@@ -38,7 +43,7 @@ smolrv64-verbose: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_run_verbose -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_run_verbose/$@ $@
@@ -48,7 +53,7 @@ smolrv64-run: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_run -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_run/$@ $@
@@ -70,7 +75,7 @@ smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_verbose -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
@@ -83,7 +88,7 @@ smolrv64-linux-vl: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_verbose -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
@@ -109,7 +114,7 @@ smolrv64-linux-cosim: $(SRCS) sim_main.cpp Makefile \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3 -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
 		-Mdir obj_dir_cosim -o smolrv64-linux-cosim \
 		$(SRCS) sim_main.cpp
@@ -120,7 +125,7 @@ smolrv64-trace: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS -DTRACE \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_trace -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_trace/$@ $@
@@ -130,7 +135,7 @@ smolrv64-tester: $(SRCS) sim_main.cpp Makefile
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-fatal \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_tester -o $@ \
 		$(SRCS) sim_main.cpp
 	cp obj_dir_tester/$@ $@
@@ -142,7 +147,7 @@ smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefi
 		-Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
-		-O3 -CFLAGS "-O3" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_cvfpu_tester -o $@ \
 		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_tester/$@ $@
@@ -158,7 +163,7 @@ smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefil
 		-Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
-		-O3 -CFLAGS "-O3 -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
 		-Mdir obj_dir_cvfpu_cosim -o $@ \
 		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
