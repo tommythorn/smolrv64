@@ -10051,6 +10051,9 @@ module smolrv64_mem_engine(
                    end
                 end
              end
+             default: begin
+                wb_substate <= MEM_WB_WAIT;
+             end
            endcase
         end
       endcase
