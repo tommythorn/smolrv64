@@ -11,7 +11,10 @@
 
 - Always verify before committing that of riscv-test in passing as
   passing as expeced (currently `(make)|&grep 'Test Passed'|wc -l`
-  returning 209 is success).
+  returning 240 is success). On macOS the `run-riscv-tests.sh` script
+  needs a `flock` shim (it isn't present); count passes with
+  `PATH=/tmp/flockshim:$PATH ./run-riscv-tests.sh passes 2>/dev/null |
+  grep -c 'Test Passed'`.
 
 ## Code Change Conventions
 
