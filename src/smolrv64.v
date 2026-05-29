@@ -8155,8 +8155,8 @@ module smolrv64(input wire        clock,
            end
         end
 
-	        `S_DMEM_LOAD_WAIT: begin
-	           if (dmem_rsp_valid) begin
+        `S_DMEM_LOAD_WAIT: begin
+           if (dmem_rsp_valid) begin
               if ({1'b0, mem_addr[2:0]} + (1 << (load_size_lg2 & 3)) > 8) begin
                  if (dmem_rsp_next_valid) begin : dmem_load_cross_cached
                     reg [127:0] combo;
@@ -8186,14 +8186,14 @@ module smolrv64(input wire        clock,
                  else begin
                     retire_current_wb_linear_fetch();
                  end
-	              end
-	           end else begin
-	              try_issue_queued_decode_current_wb(1'b1);
-	           end
-	        end
+              end
+           end else begin
+              try_issue_queued_decode_current_wb(!do_atomic);
+           end
+        end
 
-	        `S_DMEM_LOAD2_WAIT: begin
-	           if (dmem_rsp_valid) begin
+        `S_DMEM_LOAD2_WAIT: begin
+           if (dmem_rsp_valid) begin
               begin : dmem_load2
                  reg [127:0] combo;
                  combo = {dmem_rsp_data, load_latched_data} >> (mem_addr[2:0] * 8);
@@ -8202,13 +8202,13 @@ module smolrv64(input wire        clock,
               finish_load_writeback();
               if (do_atomic)
                  state <= `S_AMO;
-	              else begin
-	                 retire_current_wb_linear_fetch();
-	              end
-	           end else begin
-	              try_issue_queued_decode_current_wb(1'b1);
-	           end
-	        end
+              else begin
+                 retire_current_wb_linear_fetch();
+              end
+           end else begin
+              try_issue_queued_decode_current_wb(!do_atomic);
+           end
+        end
 
         `S_DMEM_STORE_WAIT: begin
            if (dmem_write_ready) begin
