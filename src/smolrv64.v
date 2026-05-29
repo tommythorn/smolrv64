@@ -8741,9 +8741,6 @@ module smolrv64(input wire        clock,
         end
 
         CACHE_HIT_RESP: begin : cache_hit_resp
-           reg        next_line_safe;
-           next_line_safe = cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
-
            if (cache_req_ifetch) begin
               if (ifetch_hit_valid_q) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
@@ -8761,10 +8758,15 @@ module smolrv64(input wire        clock,
                  csr_vhpr_write_hits <= csr_vhpr_write_hits + 1;
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
+                 reg dcache_next_line_safe;
+
+                 dcache_next_line_safe =
+                    cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
                  emit_dmem_load_rsp(dcache_rsp_data,
                                     dcache_rsp_next_data,
-                                    dcache_rsp_next_valid && next_line_safe);
+                                    dcache_rsp_next_valid &&
+                                    dcache_next_line_safe);
                  cache_state <= CACHE_IDLE;
               end
            end else begin
