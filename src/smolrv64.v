@@ -5123,8 +5123,7 @@ module smolrv64(input wire        clock,
                !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
                  csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
                !frontend_decode_pending_valid &&
-               !rf_decode_full &&
-               !id_valid) begin
+               !rf_decode_full) begin
               f_consumed_hit = 1;
               latch_frontend_decode_pending(
                   f_latched_cmd_pc,
