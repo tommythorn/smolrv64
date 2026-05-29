@@ -27,6 +27,11 @@ endif
 
 SRCS=smolrv64.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
+CVFPU_DEPS=$(CVFPU_SRCS) cvfpu_sources.f
+CVFPU_VL_FLAGS=-sv \
+	-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
+	-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE
+CVFPU_VL_SRCS=-f cvfpu_sources.f $(CVFPU_SRCS)
 CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 
 testall:
@@ -38,24 +43,24 @@ run: $(P).even $(P).odd smolrv64-run
 verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
-smolrv64-verbose: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 \
+smolrv64-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_run_verbose -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_run_verbose/$@ $@
 
-smolrv64-run: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 \
+smolrv64-run: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_run -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_run/$@ $@
 
 smolrv64-sim: smolrv64-run
@@ -70,27 +75,27 @@ smolrv64-linux-verbose: smolrv64-linux-verbose-vl
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
 # is needed.
-smolrv64-linux-verbose-vl: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 \
+smolrv64-linux-verbose-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_verbose -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
 
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
 # is needed.
-smolrv64-linux-vl: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 \
+smolrv64-linux-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_verbose -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
 
 # Cosim build: smolrv64 under Verilator + simmerv (via C ABI) in lockstep.
@@ -108,88 +113,82 @@ $(SIMMERV_LIB_DIR)/libsimmerv_cosim.a: \
 		$(SIMMERV_DIR)/cosim/Cargo.toml
 	cd $(SIMMERV_DIR) && cargo build --release -p simmerv-cosim
 
-smolrv64-linux-cosim: $(SRCS) sim_main.cpp Makefile \
+smolrv64-linux-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
-	verilator --cc --exe --build -j 0 \
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
 		-Mdir obj_dir_cosim -o smolrv64-linux-cosim \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cosim/smolrv64-linux-cosim $@
 
-smolrv64-trace: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 --timing \
+smolrv64-trace: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS -DTRACE \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_trace -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_trace/$@ $@
 
-smolrv64-tester: $(SRCS) sim_main.cpp Makefile
-	verilator --cc --exe --build -j 0 --timing \
+smolrv64-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_tester -o $@ \
-		$(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_tester/$@ $@
 
-smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile
-	verilator -sv --cc --exe --build -j 0 --timing \
+smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-fatal \
-		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
-		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
 		-Mdir obj_dir_cvfpu_tester -o $@ \
-		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_tester/$@ $@
 
 # Cosim build with CVFPU enabled, in riscv-tests mode. Same DPI lockstep
 # as smolrv64-linux-cosim but with FP support so rv64uf/rv64ud tests can
 # be driven through cosim for divergence analysis.
-smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile \
+smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
-	verilator -sv --cc --exe --build -j 0 --timing \
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS -DVERILATOR_COSIM \
 		-Wno-fatal \
-		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
-		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
 		-Mdir obj_dir_cvfpu_cosim -o $@ \
-		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS) sim_main.cpp
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_cosim/$@ $@
 
 lint:
-	verilator -Wall --lint-only --timing --top-module smolrv64_tb \
+	verilator $(CVFPU_VL_FLAGS) -Wall --lint-only --timing --top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-DECLFILENAME -Wno-BLKSEQ -Wno-PROCASSINIT \
 		-Wno-UNUSEDSIGNAL \
-		$(SRCS)
+		$(CVFPU_VL_SRCS) $(SRCS)
 
-cvfpu-lint: $(CVFPU_SRCS) cvfpu_sources.f Makefile
+cvfpu-lint: $(CVFPU_DEPS) Makefile
 	verilator -sv --lint-only -Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		--top-module smolrv64_cvfpu \
 		-f cvfpu_sources.f $(CVFPU_SRCS)
 
-smolrv64-cvfpu-lint: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f Makefile
-	verilator -sv --lint-only -Wno-fatal \
-		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
-		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
+smolrv64-cvfpu-lint: $(SRCS) $(CVFPU_DEPS) Makefile
+	verilator $(CVFPU_VL_FLAGS) --lint-only -Wno-fatal \
 		--top-module smolrv64 \
-		-f cvfpu_sources.f $(CVFPU_SRCS) $(SRCS)
+		$(CVFPU_VL_SRCS) $(SRCS)
 
-cvfpu-smoke: $(CVFPU_SRCS) $(CVFPU_SMOKE_TB) cvfpu_sources.f Makefile
+cvfpu-smoke: $(CVFPU_DEPS) $(CVFPU_SMOKE_TB) Makefile
 	verilator -sv --binary --timing -Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		--top-module cvfpu_smoke_tb \
