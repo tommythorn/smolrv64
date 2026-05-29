@@ -1,6 +1,13 @@
 SRC_DIR  = ../../src
 SIMMERV = $(HOME)/simmerv
 
+ifeq ($(shell uname -o),Darwin)
+  RV=riscv64-elf-
+  CC=clang
+else # Assume Linux
+  RV=riscv64-linux-gnu-
+endif
+
 # XXX The offsets should be computed automatically from the starting address
 # It's printf "%x" $((addr-base)/16), eg. (0x87f00000-0x80000000)/16 = 0x7f0000
 # (0x8752c000-0x80000000)/16 = 0x752c00
@@ -59,7 +66,7 @@ tiny128.dtb: tiny128.dts
 	dtc -I dts -O dtb < $^ > $@
 
 fw_payload.elf-6.15.0.bin: fw_payload.elf-6.15.0
-	riscv64-linux-gnu-objcopy -O binary $^ $@
+	$(RV)objcopy -O binary $^ $@
 
 ref:
 	(cd $(SIMMERV); cargo b -rq)
