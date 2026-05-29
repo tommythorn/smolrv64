@@ -515,7 +515,7 @@ module smolrv64(input wire        clock,
 
 `define CSR_DCSR       12'h7b0
 `define CSR_DSCRATCH   12'h7b2
-`define CSR_MNSTATUS   12'h744 // Don't know what that is
+`define CSR_MNSTATUS   12'h744 // mnstatus: resumable-NMI status (Smrnmi)
 `define CSR_MCYCLE     12'hb00
 `define CSR_MTIME      12'hb01
 `define CSR_MINSTRET   12'hb02
@@ -568,7 +568,7 @@ module smolrv64(input wire        clock,
 // Smolrv64's state machine: Every instruction (unless an interrupt is
 // pending) cycles through the first four: FETCH1, FETCH2, RF, and
 // EXECUTE, and most return back to FETCH1.  The register writeback is
-// overlapped with FETCH1 (a very modest consession to performance).
+// overlapped with FETCH1 (a very modest concession to performance).
 //
 // All traps and interrupt go to EXCEPTION.  Loads go to LOAD_ALIGN,
 // and possibly to MMIO_ALIGN.  AMOs go through
@@ -636,8 +636,8 @@ module smolrv64(input wire        clock,
 // with backend long-latency states (CVFPU, MULDIV, AMO, DRAM, etc).
 //
 // I-cache miss / TLB miss / cross-doubleword fetch still escalate
-// to the backend FSM for this patch — those resources are shared with the
-// load/store path and require arbitration that is out of scope here.
+// to the backend FSM — those resources are shared with the
+// load/store path and require arbitration the frontend can't do alone.
 `define F_IDLE                  0  // no fetch in flight
 `define F_FETCH_BUF_CHECK       1  // latch frontend_rsp_* into f_latched_*
 `define F_FETCH_BUF_USE         2  // on hit, enqueue rf_decode; on miss, hand to backend
@@ -993,7 +993,6 @@ module smolrv64(input wire        clock,
                       .read_data_0(f1_bram),
                       .read_data_1(f2_bram));
 
-`ifdef USE_CVFPU
    reg         cvfpu_in_valid = 0;
    reg  [2:0][63:0] cvfpu_operands = '0;
    reg  [ 2:0] cvfpu_rnd_mode = 0;
@@ -1035,7 +1034,6 @@ module smolrv64(input wire        clock,
       .flush     ( 1'b0 ),
       .busy      ( cvfpu_busy )
    );
-`endif
 
 
    (* max_fanout = 32 *) reg [63:0] npc = `RESET_PC; // XXX We should set this on reset
@@ -2567,8 +2565,8 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
-   // fcsr: fflags[4:0] (NV|DZ|OF|UF|NX) + frm[2:0]. Phase 1 has no arithmetic
-   // producers of fflags, so it stays at whatever software wrote.
+   // fcsr: fflags[4:0] (NV|DZ|OF|UF|NX) + frm[2:0].  FP arithmetic and
+   // conversions OR their IEEE exception flags into fflags as they retire.
    reg [ 4:0]  fflags = 0;
    reg [ 2:0]  frm = 0;
 
@@ -3969,11 +3967,9 @@ module smolrv64(input wire        clock,
               end
            end // rf3_pre_decode
 
-`ifdef USE_CVFPU
            pre_fp_rnd_mode <= rf3_insn[14:12] == 3'b111 ? frm : rf3_insn[14:12];
            pre_fp_rmode_ok <= !(rf3_insn[14:12] == 3'b101 || rf3_insn[14:12] == 3'b110 ||
                                 (rf3_insn[14:12] == 3'b111 && frm > 3'b100));
-`endif
 
            // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
            // early so S_EXECUTE can share a single s1+offset adder instead of
@@ -4695,7 +4691,6 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-`ifdef USE_CVFPU
    task start_cvfpu_issue;
       input [63:0] operand0;
       input [63:0] operand1;
@@ -4739,7 +4734,6 @@ module smolrv64(input wire        clock,
          retire_tagged_wb_linear_fetch(cvfpu_write_fp, cvfpu_tag_out[4:0]);
       end
    endtask
-`endif
 
 /* verilator lint_off WIDTHTRUNC */
    task route_translated_addr;
@@ -5221,10 +5215,8 @@ module smolrv64(input wire        clock,
            muldiv_output_high_part = 0;
            muldiv_output_sext32 = 0;
            do_atomic = 0;
-`ifdef USE_CVFPU
            cvfpu_in_valid <= 0;
            cvfpu_write_fp <= 1'b1;
-`endif
 
 `ifdef VERILATOR_COSIM
            // Normal retire: pc/insn/write_back_* still hold the just-completed
@@ -6167,9 +6159,9 @@ module smolrv64(input wire        clock,
               end
            end
 
-           // OP-FP (opcode 0x53) — arithmetic-free Phase 1 insns:
-           // FMV.{W.X,X.W,D.X,X.D}, FSGNJ{,N,X}.{S,D}, FCLASS.{S,D}.
-           // Everything else in this opcode falls through to illegal.
+           // OP-FP (opcode 0x53): full F/D — arithmetic, conversions,
+           // sign-injection, compares, classify, and FMV, via the CV-FPU.
+           // Unrecognized funct7/rm encodings fall through to illegal.
            else if (ex_insn[6:0] == 7'b1010011) begin
               if (fs == 0) begin
                  // FP state disabled by mstatus.FS: any FP instruction traps.
@@ -6183,7 +6175,6 @@ module smolrv64(input wire        clock,
                    // FADD.S / FSUB.S
                    7'b0000000,
                    7'b0000100: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6194,16 +6185,10 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FADD.D / FSUB.D
                    7'b0000001,
                    7'b0000101: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6214,15 +6199,9 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FMUL.S
                    7'b0001000: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6233,15 +6212,9 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FMUL.D
                    7'b0001001: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6252,15 +6225,9 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FDIV.S
                    7'b0001100: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6271,15 +6238,9 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FDIV.D
                    7'b0001101: begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6290,15 +6251,9 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FSQRT.S
                    7'b0101100: if (ex_insn[24:20] == 5'd0) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6309,11 +6264,6 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6321,7 +6271,6 @@ module smolrv64(input wire        clock,
                    end
                    // FSQRT.D
                    7'b0101101: if (ex_insn[24:20] == 5'd0) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6332,11 +6281,6 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6344,7 +6288,6 @@ module smolrv64(input wire        clock,
                    end
                    // FMIN.S / FMAX.S
                    7'b0010100: begin
-`ifdef USE_CVFPU
                       if (ex_insn[14:12] > 3'b001) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6356,15 +6299,9 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FMIN.D / FMAX.D
                    7'b0010101: begin
-`ifdef USE_CVFPU
                       if (ex_insn[14:12] > 3'b001) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6376,15 +6313,9 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end
                    // FCVT.S.D
                    7'b0100000: if (ex_insn[24:20] == 5'd1) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6395,11 +6326,6 @@ module smolrv64(input wire        clock,
                                            3'd1, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6407,7 +6333,6 @@ module smolrv64(input wire        clock,
                    end
                    // FCVT.D.S
                    7'b0100001: if (ex_insn[24:20] == 5'd0) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6418,11 +6343,6 @@ module smolrv64(input wire        clock,
                                            3'd0, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6486,7 +6406,6 @@ module smolrv64(input wire        clock,
                    end
                    // FCVT.W[U].S / FCVT.L[U].S
                    7'b1100000: if (ex_insn[24:20] <= 5'd3) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6498,11 +6417,6 @@ module smolrv64(input wire        clock,
                                            ex_insn[21] ? 2'd3 : 2'd2,
                                            {3'd0, ex_rd}, 1'b0);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6510,7 +6424,6 @@ module smolrv64(input wire        clock,
                    end
                    // FCVT.W[U].D / FCVT.L[U].D
                    7'b1100001: if (ex_insn[24:20] <= 5'd3) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6522,11 +6435,6 @@ module smolrv64(input wire        clock,
                                            ex_insn[21] ? 2'd3 : 2'd2,
                                            {3'd0, ex_rd}, 1'b0);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6534,7 +6442,6 @@ module smolrv64(input wire        clock,
                    end
                    // FCVT.S.W[U] / FCVT.S.L[U]
                    7'b1101000: if (ex_insn[24:20] <= 5'd3) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6546,11 +6453,6 @@ module smolrv64(input wire        clock,
                                            ex_insn[21] ? 2'd3 : 2'd2,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6558,7 +6460,6 @@ module smolrv64(input wire        clock,
                    end
                    // FCVT.D.W[U] / FCVT.D.L[U]
                    7'b1101001: if (ex_insn[24:20] <= 5'd3) begin
-`ifdef USE_CVFPU
                       if (!pre_fp_rmode_ok) begin
                          cause = `TRAP_ILLEGAL_INSTRUCTION;
                          tval = ex_insn;
@@ -6570,11 +6471,6 @@ module smolrv64(input wire        clock,
                                            ex_insn[21] ? 2'd3 : 2'd2,
                                            {3'd0, ex_rd}, 1'b1);
                       end
-`else
-                      cause = `TRAP_ILLEGAL_INSTRUCTION;
-                      tval = ex_insn;
-                      state <= `S_EXCEPTION;
-`endif
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6637,7 +6533,6 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end else begin
                  fs = 3;
-`ifdef USE_CVFPU
                  if (ex_insn[26:25] > 2'b01 || !pre_fp_rmode_ok) begin
                     cause = `TRAP_ILLEGAL_INSTRUCTION;
                     tval = ex_insn;
@@ -6646,11 +6541,6 @@ module smolrv64(input wire        clock,
                     rs1 <= ex_insn[31:27]; // rs3; reuse FP read port 0
                     state <= `S_CVFPU_FMA_RF2;
                  end
-`else
-                 cause = `TRAP_ILLEGAL_INSTRUCTION;
-                 tval = ex_insn;
-                 state <= `S_EXCEPTION;
-`endif
               end
            end
 
@@ -6729,7 +6619,6 @@ module smolrv64(input wire        clock,
            end
         end
 
-`ifdef USE_CVFPU
         `S_CVFPU_FMA_RF2: begin
            state <= `S_CVFPU_FMA_RF3;
         end
@@ -6768,7 +6657,6 @@ module smolrv64(input wire        clock,
               try_issue_queued_decode_tagged_wb(1'b1, cvfpu_write_fp, cvfpu_tag_in[4:0]);
            end
         end
-`endif
 
         `S_CBO_EXEC: begin
            translated <= 0;
@@ -7319,11 +7207,8 @@ module smolrv64(input wire        clock,
                                               tsr,  tw,   tvm, mxr, sum, mprv,  // 22:17
                                   xs,         fs,         mpp, 2'd0,      spp,  // 16: 8
                                   mpie, 1'd0, spie, upie, mie, 1'd0, sie, uie}; //  7: 0
-                // F/D are NOT implemented yet — advertising them causes OS/test
-                // F/D bits ON since FP Phase 2 (regfile + bit-ops + FL*/FS*).
-                // Arithmetic FP insns (FADD/FMUL/FCVT/FEQ/...) will still trap
-                // illegal until Phase 4 lands. Accepted: OpenSBI/Linux/riscv-tests
-                // that issue arithmetic will break temporarily.
+                // RV64GC = I M A F D C, plus S and U.  F and D are fully
+                // implemented via the CV-FPU.
                 `CSR_MISA:     csr_read_val = 64'h800000000014112d;
                 // Hardwired 1 0100 0001 0001 0010 1101
                 //    ZY XWV U TSRQ PONM LKJI HGFE DCBA
@@ -7348,10 +7233,10 @@ module smolrv64(input wire        clock,
                 `CSR_TDATA3:   csr_read_val = 0;
                 `CSR_TINFO:    csr_read_val = 0;
                 `CSR_MCYCLE:   csr_read_val = csr_mcycle;
-                `CSR_MTIME:    csr_read_val = clint_mtime; // XXX I'm not sure this is what we want
+                `CSR_MTIME:    csr_read_val = clint_mtime; // mtime mirrored as a CSR (non-standard)
                 `CSR_MINSTRET: csr_read_val = csr_minstret;
                 `CSR_CYCLE:    csr_read_val = csr_mcycle;
-                `CSR_TIME:     csr_read_val = clint_mtime; // XXX I'm not sure this is what we want
+                `CSR_TIME:     csr_read_val = clint_mtime; // time: the CLINT mtime (rdtime source)
                 `CSR_INSTRET:  csr_read_val = csr_minstret;
                 `CSR_MHARTID:  csr_read_val = 0;
                 `CSR_MVENDORID:csr_read_val = 0;
@@ -7397,8 +7282,8 @@ module smolrv64(input wire        clock,
                 end
               endcase
 
-              // As no side effects (beside exception have happend, we
-              // can postpone the priviledge check to here
+              // As there are no side effects (besides exceptions) yet, we
+              // can postpone the privilege check to here
               if (prv < csrno[9:8]) begin
 `ifdef SIMULATE
 `ifdef VERBOSE
@@ -7421,7 +7306,7 @@ module smolrv64(input wire        clock,
               end
            end
 
-           // Write priviledge check
+           // Write privilege check
            if (ex_rs1 != 0 || csr_op == `CSR_OP_COPY) begin
               if (prv < csrno[9:8]) begin
                  csr_write_failure = 1;
@@ -7673,7 +7558,7 @@ module smolrv64(input wire        clock,
            write_back_register = 0;
 
            // XXX We would probably save gates by factoring the deleg
-           // calculation out to where cause is set as it's unually a
+           // calculation out to where cause is set as it's usually a
            // constant.
            deleg = prv <= 1 && (cause_intr ? csr_mideleg[cause[3:0]] : csr_medeleg[cause[3:0]]);
            if (deleg) begin
@@ -8498,10 +8383,8 @@ module smolrv64(input wire        clock,
          spp              <= 0;
          mprv             <= 0;
          pre_intr_pending <= 0;
-`ifdef USE_CVFPU
          pre_fp_rnd_mode  <= 0;
          pre_fp_rmode_ok  <= 1'b1;
-`endif
          just_trapped     <= 0;
          just_xret        <= 0;
          frontend_buf_flush <= 1'b1;

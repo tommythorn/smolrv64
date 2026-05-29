@@ -1,7 +1,7 @@
 # SmolRV64
 
-SmolRV64 is a single-file, single `always @(posedge clock)`
-micro-stepped RV64IMAC implementation which aspires to run Ubuntu.
+SmolRV64 is a single `always @(posedge clock)`
+RV64GC (IMAFDC) implementation which aspires to run Ubuntu.
 
 The first goal was functionality, so the RTL still has a simulator-like
 shape in many places.  The current work is shifting toward performance
@@ -12,8 +12,9 @@ a 3 Mbaud serial console.
 
 # Status
 
-RV64IMAC with Sv39 virtual memory and Ssvnapot is implemented.  Basic
-F/D register and CSR plumbing exists, with CVFPU integration in progress.
+RV64GC (IMAFDC) with Sv39 virtual memory and Ssvnapot is implemented.
+Floating point (F/D) is implemented via the CV-FPU, which is now always
+built in.
 The core has a direct-mapped physical write-back cache, a small fetch
 buffer, and split direct-mapped TLBs for 4 KiB and 2 MiB pages.
 
@@ -56,7 +57,7 @@ What's needed:
 - [x] Cross-page instruction fetch
 - [x] CLINT (mtime, mtimecmp, msip) — timer interrupts
 - [x] PLIC — external interrupt routing (UART RX at minimum)
-- [x] UART — Linux console (extend existing uart5.v or replace)
+- [x] UART — Linux console (NS16550A model)
 - [x] DDR4 support on RK-XCKU5P-F
 - [x] Cosim harness against Simmerv for lockstep debugging
       ([docs/cosim.md](docs/cosim.md) — Phase 1 landed)
@@ -66,7 +67,7 @@ What's needed:
 ## M2: Run Ubuntu
 
 - [x] SDcard interface for permanent storage
-- [ ] Full Compliant Floating point (F+D)
+- [x] Full Compliant Floating point (F+D)
 - [x] Split direct-mapped TLBs for 4 KiB and 2 MiB pages
 - [x] Direct-mapped physical write-back cache (64-byte lines)
 - [x] Close timing with cache, TLB, fetch buffer, and CVFPU enabled

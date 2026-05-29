@@ -86,7 +86,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_net_tx_drop.v] Verilog
 
-    # USE_CVFPU exposes SystemVerilog syntax inside smolrv64.v.
+    # smolrv64.v uses SystemVerilog (the always-on CV-FPU interface).
     add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog
     update_compile_order -fileset $fileset
 }
@@ -148,7 +148,6 @@ if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"
     puts "Enabling PC_TRACE debug tracer."
     lappend vdefines "PC_TRACE"
 }
-lappend vdefines "USE_CVFPU"
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir

@@ -143,7 +143,7 @@ smolrv64-tester: $(SRCS) sim_main.cpp Makefile
 smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefile
 	verilator -sv --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
-		-DUSE_CVFPU $(TESTER_VDEFS) -DRISCV_TESTS \
+		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
@@ -159,7 +159,7 @@ smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f sim_main.cpp Makefil
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator -sv --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
-		-DUSE_CVFPU $(TESTER_VDEFS) -DRISCV_TESTS -DVERILATOR_COSIM \
+		$(TESTER_VDEFS) -DRISCV_TESTS -DVERILATOR_COSIM \
 		-Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
@@ -183,7 +183,7 @@ cvfpu-lint: $(CVFPU_SRCS) cvfpu_sources.f Makefile
 		-f cvfpu_sources.f $(CVFPU_SRCS)
 
 smolrv64-cvfpu-lint: $(SRCS) $(CVFPU_SRCS) cvfpu_sources.f Makefile
-	verilator -sv --lint-only -Wno-fatal -DUSE_CVFPU \
+	verilator -sv --lint-only -Wno-fatal \
 		-Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED \
 		-Wno-TIMESCALEMOD -Wno-CASEINCOMPLETE \
 		--top-module smolrv64 \
