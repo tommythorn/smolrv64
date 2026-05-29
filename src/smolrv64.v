@@ -20,6 +20,15 @@ module smolrv64_tb;
 `endif
    wire       halted;
 
+   // Host-stdin -> modeled UART RX. Under Icarus this links in tty_vpi.c
+   // ($tty_read); under Verilator the equivalent DPI-C import (sim_main.cpp).
+`ifdef VERILATOR
+   import "DPI-C" function int tty_read();
+   `define TTY_READ tty_read()
+`elsif VPI
+   `define TTY_READ $tty_read
+`endif
+
    wire [19:0]          mmio_address;
    wire                 mmio_read;
    wire                 mmio_write;
@@ -277,10 +286,10 @@ module smolrv64_tb;
 `endif
       end
 
-`ifdef VPI
+`ifdef TTY_READ
       begin : rx_poll
          integer ch;
-         ch = $tty_read;
+         ch = `TTY_READ;
          if (ch >= 0) begin
             uart_rx_valid_tb <= 1;
             uart_rx_data_tb  <= ch[7:0];

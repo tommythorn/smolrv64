@@ -269,6 +269,61 @@ static uint64_t parse_plusarg_hex(int argc, char** argv, const char* key, uint64
 }
 #endif // VERILATOR_COSIM
 
+// ---- Interactive UART RX -----------------------------------------------
+// DPI-C counterpart of Icarus' tty_vpi.c $tty_read: hands host stdin bytes
+// to the modeled UART. Returns the next byte (0..255) or -1 when none is
+// available. The testbench imports this only when built under Verilator.
+#include <termios.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+bool           g_tty_inited = false;
+struct termios g_tty_orig;
+
+void tty_restore() {
+    if (g_tty_inited) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_orig);
+        g_tty_inited = false;
+    }
+}
+
+void tty_init() {
+    // Non-blocking so read() never stalls the simulation.
+    int flags = fcntl(STDIN_FILENO, F_GETFL);
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    // Raw mode (no canonical line buffering / echo) for interactive use;
+    // harmlessly skipped when stdin is a pipe or file.
+    if (tcgetattr(STDIN_FILENO, &g_tty_orig) == 0) {
+        struct termios raw = g_tty_orig;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN]  = 0;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        std::atexit(tty_restore);
+    }
+    g_tty_inited = true;
+}
+} // namespace
+
+extern "C" int tty_read() {
+    // Dispense buffered bytes one per clock so pasted input flows quickly...
+    static unsigned char buf[256];
+    static int have = 0, pos = 0;
+    if (pos < have) return buf[pos++];
+    // ...but only hit the read() syscall occasionally: human typing is
+    // glacial next to simulated time, and polling every clock would swamp
+    // Verilator with syscalls and gut its throughput.
+    static unsigned throttle = 0;
+    if (throttle++ & 0xfff) return -1;
+    if (!g_tty_inited) tty_init();
+    int n = read(STDIN_FILENO, buf, sizeof buf);
+    if (n <= 0) return -1;   // EAGAIN (no data) or EOF
+    have = n;
+    pos  = 0;
+    return buf[pos++];
+}
+
 int main(int argc, char** argv) {
     // Force stdout line-buffered so UART bytes from Verilog $write survive
     // SIGTERM / timeout when piped (e.g. `make run | tee …`).
