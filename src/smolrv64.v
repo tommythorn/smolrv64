@@ -3718,6 +3718,23 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [63:0] align_dmem_load_value;
+      input [127:0] load_data;
+      input [ 2:0]  load_size;
+      begin
+         case (load_size)
+           3'd0: align_dmem_load_value = {56'd0, load_data[7:0]};
+           3'd1: align_dmem_load_value = {48'd0, load_data[15:0]};
+           3'd2: align_dmem_load_value = {32'd0, load_data[31:0]};
+           3'd3: align_dmem_load_value = load_data[63:0];
+           3'd4: align_dmem_load_value = {{56{load_data[7]}},  load_data[7:0]};
+           3'd5: align_dmem_load_value = {{48{load_data[15]}}, load_data[15:0]};
+           3'd6: align_dmem_load_value = {{32{load_data[31]}}, load_data[31:0]};
+           default: align_dmem_load_value = 64'd0;
+         endcase
+      end
+   endfunction
+
    task prepare_execute_req_from_id;
       input preserve_state;
       begin
@@ -8144,16 +8161,7 @@ module smolrv64(input wire        clock,
                  if (dmem_rsp_next_valid) begin : dmem_load_cross_cached
                     reg [127:0] combo;
                     combo = {dmem_rsp_next_data, dmem_rsp_data} >> (mem_addr[2:0] * 8);
-                    case (load_size_lg2)
-                      0: write_back_value = combo[7:0];
-                      1: write_back_value = combo[15:0];
-                      2: write_back_value = combo[31:0];
-                      3: write_back_value = combo[63:0];
-                      4: write_back_value = {{56{combo[7]}},  combo[7:0]};
-                      5: write_back_value = {{48{combo[15]}}, combo[15:0]};
-                      6: write_back_value = {{32{combo[31]}}, combo[31:0]};
-                      default: write_back_value = 0;
-                    endcase
+                    write_back_value = align_dmem_load_value(combo, load_size_lg2);
                     finish_load_writeback();
                     if (do_atomic)
                        state <= `S_AMO;
@@ -8171,16 +8179,7 @@ module smolrv64(input wire        clock,
                  end
               end else begin
                  aligned = dmem_rsp_data >> (mem_addr[2:0] * 8);
-                 case (load_size_lg2)
-                   0: write_back_value = aligned[7:0];
-                   1: write_back_value = aligned[15:0];
-                   2: write_back_value = aligned[31:0];
-                   3: write_back_value = aligned[63:0];
-                   4: write_back_value = {{56{aligned[7]}},  aligned[7:0]};
-                   5: write_back_value = {{48{aligned[15]}}, aligned[15:0]};
-                   6: write_back_value = {{32{aligned[31]}}, aligned[31:0]};
-                   default: write_back_value = 0;
-                 endcase
+                 write_back_value = align_dmem_load_value(aligned, load_size_lg2);
                  finish_load_writeback();
                  if (do_atomic)
                     state <= `S_AMO;
@@ -8198,16 +8197,7 @@ module smolrv64(input wire        clock,
               begin : dmem_load2
                  reg [127:0] combo;
                  combo = {dmem_rsp_data, load_latched_data} >> (mem_addr[2:0] * 8);
-                 case (load_size_lg2)
-                   0: write_back_value = combo[7:0];
-                   1: write_back_value = combo[15:0];
-                   2: write_back_value = combo[31:0];
-                   3: write_back_value = combo[63:0];
-                   4: write_back_value = {{56{combo[7]}},  combo[7:0]};
-                   5: write_back_value = {{48{combo[15]}}, combo[15:0]};
-                   6: write_back_value = {{32{combo[31]}}, combo[31:0]};
-                   default: write_back_value = 0;
-                 endcase
+                 write_back_value = align_dmem_load_value(combo, load_size_lg2);
               end
               finish_load_writeback();
               if (do_atomic)
