@@ -130,6 +130,20 @@ set vdefines [list \
 set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]
 puts "Build stamp: $build_stamp"
 lappend vdefines "SMOLRV64_BUILD_STAMP=64'h$build_stamp"
+set git_commit 00000000
+if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
+    set git_commit $git_result
+}
+set source_dirty 0
+set source_paths [list src platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
+if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
+    [string trim $git_status] ne ""} {
+    set source_dirty 1
+}
+puts "Git commit: $git_commit"
+puts "Source dirty: $source_dirty"
+lappend vdefines "SMOLRV64_GIT_COMMIT=32'h$git_commit"
+lappend vdefines "SMOLRV64_GIT_DIRTY=1'b$source_dirty"
 if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"} {
     puts "Enabling PC_TRACE debug tracer."
     lappend vdefines "PC_TRACE"

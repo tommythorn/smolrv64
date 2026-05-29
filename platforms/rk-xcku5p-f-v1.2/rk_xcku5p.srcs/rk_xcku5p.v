@@ -1,5 +1,16 @@
 `timescale 1ns / 1ps
 `default_nettype none
+
+`ifndef SMOLRV64_BUILD_STAMP
+`define SMOLRV64_BUILD_STAMP 64'h0
+`endif
+`ifndef SMOLRV64_GIT_COMMIT
+`define SMOLRV64_GIT_COMMIT 32'h0
+`endif
+`ifndef SMOLRV64_GIT_DIRTY
+`define SMOLRV64_GIT_DIRTY 1'b0
+`endif
+
 module rk_xcku5p(
     // Differential 200 MHz system clock (fed directly to DDR4 IP)
     input  wire       sys_clk_p,
@@ -285,11 +296,16 @@ module rk_xcku5p(
    wire        sd_cd_gpio_sel = ui_mmio_address[19:8] == 12'h012;
    wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
+   wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
    wire [31:0] sd_spi_readdata;
    wire [31:0] sd_gpio_readdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
    wire [31:0] virtio_net_readdata;
+   localparam [63:0] BUILD_ID_STAMP = `SMOLRV64_BUILD_STAMP;
+   localparam [31:0] BUILD_ID_GIT_COMMIT = `SMOLRV64_GIT_COMMIT;
+   localparam        BUILD_ID_GIT_DIRTY = `SMOLRV64_GIT_DIRTY;
+   reg  [31:0] build_id_readdata;
    wire        virtio_net_debug_sel = virtio_net_sel && ui_mmio_address[11:8] == 4'hf;
    reg  [31:0] virtio_net_debug_readdata;
    wire        virtio_blk_irq;
@@ -400,10 +416,24 @@ module rk_xcku5p(
             else if (virtio_net_sel)
                mmio_readdata_q <= virtio_net_debug_sel ? virtio_net_debug_readdata :
                                   virtio_net_readdata;
+            else if (build_id_sel)
+               mmio_readdata_q <= build_id_readdata;
             else
                mmio_readdata_q <= 32'd0;
          end
       end
+   end
+
+   always @* begin
+      case (ui_mmio_address[5:2])
+        4'h0: build_id_readdata = 32'h534d4f4c; // "SMOL"
+        4'h1: build_id_readdata = 32'h00000001;
+        4'h2: build_id_readdata = BUILD_ID_STAMP[31:0];
+        4'h3: build_id_readdata = BUILD_ID_STAMP[63:32];
+        4'h4: build_id_readdata = BUILD_ID_GIT_COMMIT;
+        4'h5: build_id_readdata = {31'd0, BUILD_ID_GIT_DIRTY};
+        default: build_id_readdata = 32'd0;
+      endcase
    end
 
    assign ui_mmio_readdatavalid = mmio_read_d2;
