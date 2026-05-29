@@ -440,7 +440,9 @@
         <Verilog_Define Name="MEM_BASEADDR" Val="64&apos;h70000000"/>
         <Verilog_Define Name="SRAM_EVENHEX" Val="&quot;/home/tommy/smolrv64/src/mem.even&quot;"/>
         <Verilog_Define Name="SRAM_ODDHEX" Val="&quot;/home/tommy/smolrv64/src/mem.odd&quot;"/>
-        <Verilog_Define Name="USE_CVFPU"/>
+        <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260529103224"/>
+        <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;hdfd4b4be"/>
+        <Verilog_Define Name="SMOLRV64_GIT_DIRTY" Val="1&apos;b1"/>
         <Verilog_Define Name="SMOLRV64_USE_XPM"/>
       </Config>
     </FileSet>
@@ -549,7 +551,7 @@
       <Report Name="ROUTE_DESIGN.REPORT_METHODOLOGY" Enabled="1"/>
       <RQSFiles/>
     </Run>
-    <Run Id="impl_1" Type="Ft2:EntireDesign" Part="xcku5p-ffvb676-2-i" ConstrsSet="constrs_1" Description="Similar to Peformance_Explore, but enables the physical optimization step (phys_opt_design) with the Explore directive after routing." AutoIncrementalCheckpoint="false" WriteIncrSynthDcp="false" State="current" Dir="$PRUNDIR/impl_1" SynthRun="synth_1" IncludeInArchive="true" IsChild="false" GenFullBitstream="true" AutoIncrementalDir="$PSRCDIR/utils_1/imports/impl_1" LaunchOptions="-jobs 12 " AutoRQSDir="$PSRCDIR/utils_1/imports/impl_1" ParallelReportGen="true">
+    <Run Id="impl_1" Type="Ft2:EntireDesign" Part="xcku5p-ffvb676-2-i" ConstrsSet="constrs_1" Description="Similar to Peformance_Explore, but enables the physical optimization step (phys_opt_design) with the Explore directive after routing." AutoIncrementalCheckpoint="false" WriteIncrSynthDcp="false" State="current" SynthRun="synth_1" IncludeInArchive="true" IsChild="false" GenFullBitstream="true" AutoIncrementalDir="$PSRCDIR/utils_1/imports/impl_1" LaunchOptions="-jobs 12 " AutoRQSDir="$PSRCDIR/utils_1/imports/impl_1" ParallelReportGen="true">
       <Strategy Version="1" Minor="2">
         <StratHandle Name="Performance_ExplorePostRoutePhysOpt" Flow="Vivado Implementation 2025"/>
         <Step Id="init_design"/>
@@ -573,7 +575,6 @@
         </Step>
         <Step Id="write_bitstream"/>
       </Strategy>
-      <GeneratedRun Dir="$PRUNDIR" File="gen_run.xml"/>
       <ReportStrategy Name="Vivado Implementation Default Reports" Flow="Vivado Implementation 2025"/>
       <Report Name="ROUTE_DESIGN.REPORT_METHODOLOGY" Enabled="1"/>
       <RQSFiles/>
