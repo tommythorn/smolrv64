@@ -8187,8 +8187,6 @@ module smolrv64(input wire        clock,
                     retire_current_wb_linear_fetch();
                  end
               end
-           end else begin
-              try_issue_queued_decode_current_wb(!do_atomic);
            end
         end
 
@@ -8205,8 +8203,6 @@ module smolrv64(input wire        clock,
               else begin
                  retire_current_wb_linear_fetch();
               end
-           end else begin
-              try_issue_queued_decode_current_wb(!do_atomic);
            end
         end
 
