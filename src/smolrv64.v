@@ -2565,6 +2565,14 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function [2:0] legal_frm_value;
+      input [2:0] requested_frm;
+      begin
+         // frm is WARL; coerce reserved rounding modes to the reset mode.
+         legal_frm_value = requested_frm <= 3'b100 ? requested_frm : 3'b000;
+      end
+   endfunction
+
    // fcsr: fflags[4:0] (NV|DZ|OF|UF|NX) + frm[2:0].  FP arithmetic and
    // conversions OR their IEEE exception flags into fflags as they retire.
    reg [ 4:0]  fflags = 0;
@@ -7366,13 +7374,14 @@ module smolrv64(input wire        clock,
                 `CSR_FRM: begin : csr_write_frm
                    reg [63:0] csr_next;
                    csr_next = csr_modify_value({61'd0, frm}, csr_arg, csr_op);
-                   frm = csr_next[2:0];
+                   frm = legal_frm_value(csr_next[2:0]);
                    fs = 3;
                 end
                 `CSR_FCSR: begin : csr_write_fcsr
                    reg [63:0] csr_next;
                    csr_next = csr_modify_value({56'd0, frm, fflags}, csr_arg, csr_op);
-                   {frm, fflags} = csr_next[7:0];
+                   frm = legal_frm_value(csr_next[7:5]);
+                   fflags = csr_next[4:0];
                    fs = 3;
                 end
                 `CSR_SSTATUS: begin : csr_write_sstatus
