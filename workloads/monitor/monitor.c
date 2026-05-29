@@ -6,7 +6,6 @@
 //   WH<addr> <val>   - write 16-bit half-word to address
 //   WB<addr> <val>   - write 8-bit byte to address
 //   T<addr>          - hexdump 256 bytes starting at address
-//   L<addr>          - load base64-encoded binary to address (end with empty line)
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
@@ -22,6 +21,12 @@ typedef unsigned int       uint32_t;
 typedef unsigned long      uint64_t;
 
 #include "blake3.h"
+
+// Firmware build stamp (YYYYMMDDHHMMSS as hex digits, like the RTL stamp).
+// Injected by the Makefile; 0 when built without it.
+#ifndef MONITOR_BUILD_STAMP
+#define MONITOR_BUILD_STAMP 0
+#endif
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
@@ -155,15 +160,62 @@ static const char *parse_hex(const char *s, uint64_t *out)
 
 #define LINE_MAX 128
 
+// Poor-man's readline command history (ring buffer of recent lines).
+#define HIST_N 8
+static char hist[HIST_N][LINE_MAX];
+static int  hist_head = 0;   // next slot to write
+static int  hist_count = 0;  // valid entries, 0..HIST_N
+
+// The k-th most recent history line (k = 1..hist_count).
+static const char *hist_get(int k)
+{
+    return hist[(hist_head - k + HIST_N) % HIST_N];
+}
+
+static void hist_add(const char *line)
+{
+    char *dst = hist[hist_head];
+    int i = 0;
+    while (line[i] && i < LINE_MAX - 1) { dst[i] = line[i]; i++; }
+    dst[i] = 0;
+    hist_head = (hist_head + 1) % HIST_N;
+    if (hist_count < HIST_N)
+        hist_count++;
+}
+
 static void readline(char *buf)
 {
     int n = 0;
+    int browse = 0;   // 0 = fresh line, 1..hist_count = how far back in history
     for (;;) {
         char c = uart_getc(UART0_BASE);
         if (c == '\r' || c == '\n') {
             putc_('\n');
             buf[n] = 0;
+            if (n > 0)
+                hist_add(buf);
             return;
+        } else if (c == 27) {           // ESC: handle CSI arrow keys (ESC [ A/B)
+            if (uart_getc(UART0_BASE) != '[')
+                continue;
+            char arrow = uart_getc(UART0_BASE);
+            int want = browse;
+            if (arrow == 'A') want = browse + 1;        // up: older
+            else if (arrow == 'B') want = browse - 1;   // down: newer
+            if (want < 0) want = 0;
+            if (want > hist_count) want = hist_count;
+            if (want == browse)
+                continue;
+            browse = want;
+            while (n > 0) { puts_("\b \b"); n--; }       // erase current line
+            if (browse > 0) {
+                const char *h = hist_get(browse);
+                while (h[n] && n < LINE_MAX - 1) {
+                    buf[n] = h[n];
+                    putc_(h[n]);
+                    n++;
+                }
+            }
         } else if (c == '\b' || c == 0x7f) {
             if (n > 0) {
                 n--;
@@ -225,63 +277,6 @@ static void hexdump_bytes(const uint8_t *data, uint64_t base, int len)
         putc_('|');
         putc_('\n');
     }
-}
-
-// Base64 decode table: -1=invalid, -2=padding
-static int b64val(char c)
-{
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    if (c == '=') return -2;
-    return -1;
-}
-
-// Load base64-encoded data to addr.
-// Reads lines until an empty line is received.
-// Returns number of bytes written.
-static uint64_t load_base64(uint64_t addr)
-{
-    char buf[LINE_MAX];
-    uint64_t total = 0;
-    volatile uint8_t *dst = (volatile uint8_t *)addr;
-
-    for (;;) {
-        int i, v0, v1, v2, v3;
-        const char *p;
-
-        readline(buf);
-        if (buf[0] == 0)
-            break;  // empty line = end of data
-
-        p = buf;
-        while (*p) {
-            // skip whitespace
-            while (*p == ' ' || *p == '\t') p++;
-            if (!*p) break;
-
-            v0 = b64val(*p++);
-            v1 = *p ? b64val(*p++) : -1;
-            v2 = *p ? b64val(*p++) : -1;
-            v3 = *p ? b64val(*p++) : -1;
-
-            if (v0 < 0 || v1 < 0) break;  // bad input
-
-            *dst++ = (v0 << 2) | (v1 >> 4);
-            total++;
-
-            if (v2 == -2 || v2 < 0) break;  // padding or end
-            *dst++ = ((v1 & 0xf) << 4) | (v2 >> 2);
-            total++;
-
-            if (v3 == -2 || v3 < 0) break;
-            *dst++ = ((v2 & 0x3) << 6) | v3;
-            total++;
-        }
-    }
-    return total;
 }
 
 /* ── XMODEM-1K receive ───────────────────────────────────────────────── */
@@ -779,8 +774,10 @@ int main(void)
     // Flush any spurious chars received during init or terminal connect
     while (UART0_BASE[UART_LSR] & LSR_DR)
         (void)UART0_BASE[UART_RBR];
-    puts_("\nsmolrv64 monitor build stamp=");
+    puts_("\nsmolrv64 monitor  rtl=");
     puthex64(read_build_stamp());
+    puts_(" fw=");
+    puthex64(MONITOR_BUILD_STAMP);
     putc_('\n');
 
     for (;;) {
@@ -840,14 +837,6 @@ int main(void)
             p = parse_hex(p + 1, &addr);
             if (!p) { puts_("usage: T<addr>\n"); continue; }
             hexdump(addr, 256);
-
-        } else if (*p == 'L' || *p == 'l') {
-            uint64_t n;
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: L<addr> (then base64 lines, empty to end)\n"); continue; }
-            puts_("send base64, empty line to finish:\n");
-            n = load_base64(addr);
-            puthex64(n); puts_(" bytes loaded\n");
 
         } else if (*p == 'Y' || *p == 'y') {
             p = parse_hex(p + 1, &addr);
@@ -1044,7 +1033,6 @@ int main(void)
             puts_("WH<addr> <val>   write 16-bit half-word\n");
             puts_("WB<addr> <val>   write 8-bit byte\n");
             puts_("T<addr>          hexdump 256 bytes\n");
-            puts_("L<addr>          load base64 blob (empty line ends)\n");
             puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
             puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
             puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");

@@ -22,7 +22,9 @@ module smolrv64_tb;
 
    // Host-stdin -> modeled UART RX. Under Icarus this links in tty_vpi.c
    // ($tty_read); under Verilator the equivalent DPI-C import (sim_main.cpp).
-`ifdef VERILATOR
+`ifdef RISCV_TESTS
+   // Non-interactive test harness: no stdin polling (would grab the tty).
+`elsif VERILATOR
    import "DPI-C" function int tty_read();
    `define TTY_READ tty_read()
 `elsif VPI
