@@ -1358,10 +1358,6 @@ module smolrv64(input wire        clock,
    reg [63:0] dmem_rsp_next_data_r = 0;
    reg        dmem_rsp_next_valid_r = 0;
    reg        ifetch_rsp_valid_r = 0;
-   reg [127:0] ifetch_rsp_window_r = 0;
-   reg        ifetch_rsp_next_valid_r = 0;
-   reg        ifetch_rsp_insn_valid_r = 0;
-   reg [31:0] ifetch_rsp_insn_r = 0;
    reg        ifetch_refill_retry_valid = 0;
    reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
@@ -3263,20 +3259,6 @@ module smolrv64(input wire        clock,
          cache_issue_perm    <= read_perm;
          cache_issue_ctx     <= read_ctx;
          ifetch_read         <= 1;
-      end
-   endtask
-
-   task emit_ifetch_rsp;
-      input [127:0] rsp_window;
-      input         rsp_next_valid;
-      input         rsp_insn_valid;
-      input [31:0]  rsp_insn;
-      begin
-         ifetch_rsp_valid_r <= 1;
-         ifetch_rsp_window_r <= rsp_window;
-         ifetch_rsp_next_valid_r <= rsp_next_valid;
-         ifetch_rsp_insn_valid_r <= rsp_insn_valid;
-         ifetch_rsp_insn_r <= rsp_insn;
       end
    endtask
 
@@ -8027,10 +8009,10 @@ module smolrv64(input wire        clock,
         end
 
         `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
-           ifetch_latched_window                <= ifetch_rsp_window_r;
-           ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
-           ifetch_latched_insn_valid            <= ifetch_rsp_insn_valid_r;
-           ifetch_latched_insn                  <= ifetch_rsp_insn_r;
+           ifetch_latched_window                <= icache_rsp_window;
+           ifetch_latched_next_valid            <= icache_rsp_next_valid;
+           ifetch_latched_insn_valid            <= icache_rsp_insn_valid;
+           ifetch_latched_insn                  <= icache_rsp_insn;
            state                                <= `S_IFETCH_RESP;
         end
 
@@ -8038,8 +8020,8 @@ module smolrv64(input wire        clock,
            // Second-half fetches consume the raw 64-bit chunk at pc+2.  The
            // frontend instruction view is only valid for whole-instruction
            // fetch responses.
-           ifetch_latched_half_data             <= ifetch_rsp_window_r[63:0];
-           ifetch_latched_next_valid            <= ifetch_rsp_next_valid_r;
+           ifetch_latched_half_data             <= icache_rsp_window[63:0];
+           ifetch_latched_next_valid            <= icache_rsp_next_valid;
            ifetch_latched_insn_valid            <= 0;
            state                                <= `S_FETCH2_HALF;
         end
@@ -8186,10 +8168,10 @@ module smolrv64(input wire        clock,
           frontend_miss_valid && ifetch_rsp_valid_r) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
-         frontend_miss_window     <= ifetch_rsp_window_r;
-         frontend_miss_next_valid <= ifetch_rsp_next_valid_r;
-         frontend_miss_insn_valid <= ifetch_rsp_insn_valid_r;
-         frontend_miss_insn <= ifetch_rsp_insn_r;
+         frontend_miss_window     <= icache_rsp_window;
+         frontend_miss_next_valid <= icache_rsp_next_valid;
+         frontend_miss_insn_valid <= icache_rsp_insn_valid;
+         frontend_miss_insn <= icache_rsp_insn;
       end
 
       // Bus timeout: fault if an external bus access doesn't respond
@@ -8504,8 +8486,6 @@ module smolrv64(input wire        clock,
       dmem_rsp_valid_r <= 0;
       dmem_rsp_next_valid_r <= 0;
       ifetch_rsp_valid_r <= 0;
-      ifetch_rsp_next_valid_r <= 0;
-      ifetch_rsp_insn_valid_r <= 0;
       ifetch_refill_retry_valid <= 0;
       ptw_direct_rsp_valid_r <= 0;
       dmem_write_done_r <= 0;
@@ -8735,10 +8715,7 @@ module smolrv64(input wire        clock,
            if (cache_req_ifetch) begin
               if (icache_rsp_hit) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 emit_ifetch_rsp(icache_rsp_window,
-                                  icache_rsp_next_valid,
-                                  icache_rsp_insn_valid,
-                                  icache_rsp_insn);
+                 ifetch_rsp_valid_r <= 1;
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
