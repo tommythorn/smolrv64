@@ -3216,11 +3216,19 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task kill_frontend_lookup;
+      begin
+         f_state <= `F_IDLE;
+         f_latched_hit <= 0;
+      end
+   endtask
+
    task flush_frontend_speculation;
       begin
          frontend_flush_this_cycle = 1;
          frontend_buf_flush <= 1'b1;
          clear_frontend_cmd();
+         kill_frontend_lookup();
          frontend_redirect_valid <= 0;
          squash_decode_execute();
          frontend_miss_valid <= 0;
@@ -3240,6 +3248,7 @@ module smolrv64(input wire        clock,
          cause = `TRAP_INSTRUCTION_ACCESS_FAULT;
          tval = 0;
          clear_frontend_cmd();
+         kill_frontend_lookup();
          squash_decode_execute();
          if (frontend_miss_valid || frontend_miss_done) begin
             frontend_miss_wait_action <= FRONTEND_MISS_WAIT_EXCEPTION;
@@ -4605,6 +4614,7 @@ module smolrv64(input wire        clock,
          fetch_epoch <= redirect_epoch;
          squash_decode_execute();
          clear_frontend_cmd();
+         kill_frontend_lookup();
          frontend_redirect_valid <= 1;
          frontend_redirect_pc <= redirect_pc;
          frontend_redirect_prv <= redirect_prv;
@@ -5405,6 +5415,7 @@ module smolrv64(input wire        clock,
            cause_intr = 0;
            if (pre_intr_pending && !just_trapped && !just_xret) begin
               clear_frontend_cmd();
+              kill_frontend_lookup();
               squash_decode_execute();
               frontend_redirect_valid <= 0;
               cause = pre_intr_cause;
@@ -6191,6 +6202,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hffffffff) == 'h30200073) begin // MRET
               frontend_buf_flush <= 1'b1;
+              kill_frontend_lookup();
               if (mpp != 3) mprv = 0;
               prv = mpp;
               mpp = 0;
@@ -6209,6 +6221,7 @@ module smolrv64(input wire        clock,
                  state <= `S_EXCEPTION;
               end else begin
                  frontend_buf_flush <= 1'b1;
+                 kill_frontend_lookup();
 `ifdef SIMULATE
 `ifdef VERBOSE
                  $display("SRET: pc %x prv %d->%d sepc %x time %0t", ex_pc, prv, spp, csr_sepc, $time);
@@ -7721,6 +7734,7 @@ module smolrv64(input wire        clock,
            frontend_buf_flush <= 1'b1;
            fetch_epoch <= fetch_epoch + 1'b1;
            clear_frontend_cmd();
+           kill_frontend_lookup();
            frontend_redirect_valid <= 0;
            frontend_miss_valid <= 0;
            frontend_miss_done <= 0;
