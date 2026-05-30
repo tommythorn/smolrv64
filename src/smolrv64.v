@@ -4491,13 +4491,40 @@ module smolrv64(input wire        clock,
          miss_next_pc = frontend_fallthrough_pc(frontend_miss_pc, miss_insn);
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
-         accept_instruction_fetch(frontend_miss_pc,
-                                  miss_next_pc,
-                                  miss_next_pc,
-                                  miss_insn,
-                                  frontend_miss_prv,
-                                  frontend_miss_epoch,
-                                  1'b1);
+         pc <= frontend_miss_pc;
+         insn <= miss_insn;
+         fetch_from_ifetch_rsp <= 1;
+         translated <= 0;
+         frontend_redirect_valid <= 0;
+         write_back_register <= 0;
+         write_back_fp_valid <= 0;
+         if (!frontend_decode_pending_valid &&
+             !rf_decode_full && !rf_decode_enqueue_this_cycle) begin
+            enqueue_frontend_decode_hit(frontend_miss_pc,
+                                        miss_next_pc,
+                                        miss_next_pc,
+                                        miss_insn,
+                                        frontend_miss_prv,
+                                        frontend_miss_epoch);
+            state <= `S_FETCH1;
+         end else if (!frontend_decode_pending_valid ||
+                      frontend_decode_pending_drain) begin
+            latch_frontend_decode_pending(frontend_miss_pc,
+                                          miss_next_pc,
+                                          miss_next_pc,
+                                          miss_insn,
+                                          frontend_miss_prv,
+                                          frontend_miss_epoch);
+            state <= `S_FETCH1;
+         end else begin
+            accept_instruction_fetch(frontend_miss_pc,
+                                     miss_next_pc,
+                                     miss_next_pc,
+                                     miss_insn,
+                                     frontend_miss_prv,
+                                     frontend_miss_epoch,
+                                     1'b1);
+         end
       end
    endtask
 
