@@ -5241,29 +5241,26 @@ module smolrv64(input wire        clock,
            if (f_latched_hit &&
                !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
                  csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
-               !frontend_decode_pending_valid &&
-               !rf_decode_full) begin
+               (!frontend_decode_pending_valid ||
+                frontend_decode_pending_drain)) begin
               f_consumed_hit = 1;
-              enqueue_frontend_decode_hit(
-                  f_latched_cmd_pc,
-                  f_latched_decode_next_pc,
-                  f_latched_next_pc,
-                  f_latched_insn,
-                  f_latched_cmd_prv,
-                  f_latched_cmd_epoch);
-           end else if (f_latched_hit &&
-                        !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
-                          csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
-                        !frontend_decode_pending_valid &&
-                        rf_decode_full) begin
-              f_consumed_hit = 1;
-              latch_frontend_decode_pending(
-                  f_latched_cmd_pc,
-                  f_latched_decode_next_pc,
-                  f_latched_next_pc,
-                  f_latched_insn,
-                  f_latched_cmd_prv,
-                  f_latched_cmd_epoch);
+              if (!rf_decode_full && !rf_decode_enqueue_this_cycle) begin
+                 enqueue_frontend_decode_hit(
+                     f_latched_cmd_pc,
+                     f_latched_decode_next_pc,
+                     f_latched_next_pc,
+                     f_latched_insn,
+                     f_latched_cmd_prv,
+                     f_latched_cmd_epoch);
+              end else begin
+                 latch_frontend_decode_pending(
+                     f_latched_cmd_pc,
+                     f_latched_decode_next_pc,
+                     f_latched_next_pc,
+                     f_latched_insn,
+                     f_latched_cmd_prv,
+                     f_latched_cmd_epoch);
+              end
            end
            f_state <= `F_IDLE;
         end
