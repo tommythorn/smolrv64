@@ -1119,6 +1119,7 @@ module smolrv64(input wire        clock,
    wire [127:0] icache_rsp_window;
    wire         icache_rsp_insn_valid;
    wire [31:0]  icache_rsp_insn;
+   wire [63:0]  icache_rsp_next_pc;
    wire         icache_target_way;
    wire [`CACHE_INDEX_BITS-1:0] icache_target_idx;
    wire         icache_target_valid;
@@ -2068,6 +2069,7 @@ module smolrv64(input wire        clock,
       .icache_rsp_window(icache_rsp_window),
       .icache_rsp_insn_valid(icache_rsp_insn_valid),
       .icache_rsp_insn(icache_rsp_insn),
+      .icache_rsp_next_pc(icache_rsp_next_pc),
       .icache_target_way(icache_target_way),
       .icache_target_idx(icache_target_idx),
       .icache_target_valid(icache_target_valid)
@@ -4452,6 +4454,7 @@ module smolrv64(input wire        clock,
    task consume_latched_ifetch_response;
       reg [127:0] rsp_aligned;
       reg [31:0]  rsp_insn;
+      reg [63:0]  rsp_next_pc;
       begin
          // Cross-doubleword responses keep the old second-half path for now;
          // within-doubleword hits may use the frontend-produced instruction.
@@ -4469,11 +4472,12 @@ module smolrv64(input wire        clock,
                   ? ifetch_latched_insn
                   : fetch_buf_pick_insn(rsp_aligned,
                                         {1'b0, frontend_cmd_pc[2:0]});
+         rsp_next_pc = ifetch_latched_insn_valid
+                     ? icache_rsp_next_pc
+                     : frontend_fallthrough_pc(frontend_cmd_pc, rsp_insn);
          accept_instruction_fetch(frontend_cmd_pc,
-                                  frontend_fallthrough_pc(frontend_cmd_pc,
-                                                          rsp_insn),
-                                  frontend_fallthrough_pc(frontend_cmd_pc,
-                                                          rsp_insn),
+                                  rsp_next_pc,
+                                  rsp_next_pc,
                                   rsp_insn,
                                   frontend_cmd_prv,
                                   frontend_cmd_epoch,
@@ -10016,6 +10020,7 @@ module smolrv64_frontend #(
    output reg [127:0]                  icache_rsp_window = 0,
    output reg                          icache_rsp_insn_valid = 0,
    output reg [31:0]                   icache_rsp_insn = 0,
+   output reg [63:0]                   icache_rsp_next_pc = 0,
    output wire                         icache_target_way,
    output wire [`CACHE_INDEX_BITS-1:0] icache_target_idx,
    output wire                         icache_target_valid
@@ -10048,6 +10053,7 @@ module smolrv64_frontend #(
    wire [127:0]                icache_rsp_window_comb;
    wire                        icache_rsp_insn_valid_comb;
    wire [31:0]                 icache_rsp_insn_comb;
+   wire [63:0]                 icache_rsp_next_pc_comb;
 
    function [31:0] pick_insn;
       input [127:0] data;
@@ -10378,6 +10384,8 @@ module smolrv64_frontend #(
    assign icache_rsp_insn_valid_comb = icache_req_va[2:1] != 2'b11;
    assign icache_rsp_insn_comb =
       pick_insn(icache_rsp_window_comb, {1'b0, icache_req_va[2:0]});
+   assign icache_rsp_next_pc_comb =
+      fallthrough_pc(icache_req_va, icache_rsp_insn_comb);
 
    wire        icache_fill_finish = icache_fill_valid && icache_fill_beat == 3'd7;
    wire        icache_tag_wr_en = icache_invalidate_valid || icache_fill_finish;
@@ -10418,6 +10426,7 @@ module smolrv64_frontend #(
          icache_rsp_window <= icache_rsp_window_comb;
          icache_rsp_insn_valid <= icache_rsp_insn_valid_comb;
          icache_rsp_insn <= icache_rsp_insn_comb;
+         icache_rsp_next_pc <= icache_rsp_next_pc_comb;
       end
 
       if (reset) begin
