@@ -3438,7 +3438,12 @@ module smolrv64(input wire        clock,
       begin
          decode_rf_sources(decode_insn, decoded_rd, decoded_rs1,
                            decoded_rs2, decoded_shamt);
-         if (rf_decode_full) begin
+         if (rf_decode_enqueue_this_cycle) begin
+`ifdef SIMULATE
+            $display("%05d BUG: multiple rf_decode enqueues in one cycle", $time);
+            $finish;
+`endif
+         end else if (rf_decode_full && !rf_decode_pop_this_cycle) begin
 `ifdef SIMULATE
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
@@ -3457,7 +3462,8 @@ module smolrv64(input wire        clock,
             rf_decode_rs2_q[rf_decode_tail] <= decoded_rs2;
             rf_decode_shamt_q[rf_decode_tail] <= decoded_shamt;
             rf_decode_tail <= rf_decode_tail + 1'b1;
-            rf_decode_count <= rf_decode_count + 1'b1;
+            rf_decode_count <= rf_decode_pop_this_cycle ?
+                               rf_decode_count : rf_decode_count + 1'b1;
          end
       end
    endtask
@@ -4303,7 +4309,7 @@ module smolrv64(input wire        clock,
    task try_frontend_speculative_fetch_buf_enqueue;
       begin
          if (frontend_cmd_speculative &&
-             !rf_decode_full &&
+             (!rf_decode_full || rf_decode_pop_this_cycle) &&
              (!frontend_decode_pending_valid ||
               frontend_decode_pending_drain) &&
              !frontend_miss_valid && !frontend_miss_done &&
@@ -4311,7 +4317,6 @@ module smolrv64(input wire        clock,
              frontend_speculative_fetch_ok(frontend_cmd_pc, frontend_cmd_prv) &&
              frontend_rsp_hit) begin
             if (!frontend_decode_pending_valid &&
-                !rf_decode_pop_this_cycle &&
                 !rf_decode_enqueue_this_cycle) begin
                enqueue_frontend_decode_hit(frontend_cmd_pc,
                                            frontend_rsp_next_pc,
