@@ -5438,6 +5438,12 @@ module smolrv64(input wire        clock,
            end else if (frontend_redirect_valid) begin
               clear_frontend_cmd();
               state <= `S_FETCH_REQ;
+           end else if (f_consumed_hit) begin
+              // The free-running frontend already queued/latch-buffered the
+              // matching fetch hit this cycle. Leave the backend in FETCH1 so
+              // it can retire from rf_decode next cycle while the frontend
+              // starts the next lookup on its own.
+              state <= `S_FETCH1;
            end else if (frontend_cmd_fast_ready && frontend_cmd_valid) begin
               clear_frontend_fast_cmd();
               state <= `S_FETCH_BUF_CHECK;
