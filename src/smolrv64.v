@@ -4449,6 +4449,38 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task consume_latched_ifetch_response;
+      reg [127:0] rsp_aligned;
+      reg [31:0]  rsp_insn;
+      begin
+         // Cross-doubleword responses keep the old second-half path for now;
+         // within-doubleword hits may use the frontend-produced instruction.
+         rsp_aligned = ifetch_latched_next_valid
+                       ? ifetch_latched_window
+                       : {64'bx, ifetch_latched_window[63:0]};
+         if (ifetch_latched_next_valid) begin
+            frontend_buf_fill      <= 1'b1;
+            frontend_buf_fill_pc   <= frontend_cmd_pc;
+            frontend_buf_fill_prv  <= frontend_cmd_prv;
+            frontend_buf_fill_asid <= frontend_cmd_asid;
+            frontend_buf_fill_data <= rsp_aligned;
+         end
+         rsp_insn = ifetch_latched_insn_valid
+                  ? ifetch_latched_insn
+                  : fetch_buf_pick_insn(rsp_aligned,
+                                        {1'b0, frontend_cmd_pc[2:0]});
+         accept_instruction_fetch(frontend_cmd_pc,
+                                  frontend_fallthrough_pc(frontend_cmd_pc,
+                                                          rsp_insn),
+                                  frontend_fallthrough_pc(frontend_cmd_pc,
+                                                          rsp_insn),
+                                  rsp_insn,
+                                  frontend_cmd_prv,
+                                  frontend_cmd_epoch,
+                                  1'b1);
+      end
+   endtask
+
    task prepare_retire_fetch;
       input [63:0] prepare_pc;
       input [ 1:0] prepare_prv;
@@ -5428,32 +5460,7 @@ module smolrv64(input wire        clock,
            end
         end
 
-        `S_IFETCH_RESP: begin
-           // Cross-doubleword responses keep the old second-half path for now;
-           // within-doubleword hits may use the frontend-produced instruction.
-           aligned = ifetch_latched_next_valid
-                     ? ifetch_latched_window
-                     : {64'bx, ifetch_latched_window[63:0]};
-           if (ifetch_latched_next_valid) begin
-              frontend_buf_fill      <= 1'b1;
-              frontend_buf_fill_pc   <= frontend_cmd_pc;
-              frontend_buf_fill_prv  <= frontend_cmd_prv;
-              frontend_buf_fill_asid <= frontend_cmd_asid;
-              frontend_buf_fill_data <= aligned;
-           end
-           insn = ifetch_latched_insn_valid
-                ? ifetch_latched_insn
-                : fetch_buf_pick_insn(aligned, {1'b0, frontend_cmd_pc[2:0]});
-           accept_instruction_fetch(frontend_cmd_pc,
-                                    frontend_fallthrough_pc(frontend_cmd_pc,
-                                                            insn),
-                                    frontend_fallthrough_pc(frontend_cmd_pc,
-                                                            insn),
-                                    insn,
-                                    frontend_cmd_prv,
-                                    frontend_cmd_epoch,
-                                    1'b1);
-        end
+        `S_IFETCH_RESP: consume_latched_ifetch_response();
 
         `S_RF2: begin
            // One-cycle wait: BRAM samples new rs1/rs2 from dispatch; output
