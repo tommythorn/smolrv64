@@ -4424,6 +4424,7 @@ module smolrv64(input wire        clock,
    task consume_frontend_miss;
       reg [127:0] miss_aligned;
       reg [31:0]  miss_insn;
+      reg [63:0]  miss_next_pc;
       begin
          miss_aligned = frontend_miss_next_valid ?
                         frontend_miss_window :
@@ -4438,13 +4439,12 @@ module smolrv64(input wire        clock,
          end
          if (!frontend_miss_insn_valid)
             miss_insn = fetch_buf_pick_insn(miss_aligned, {1'b0, frontend_miss_pc[2:0]});
+         miss_next_pc = frontend_fallthrough_pc(frontend_miss_pc, miss_insn);
          frontend_miss_valid <= 0;
          frontend_miss_done  <= 0;
          accept_instruction_fetch(frontend_miss_pc,
-                                  frontend_fallthrough_pc(frontend_miss_pc,
-                                                          miss_insn),
-                                  frontend_fallthrough_pc(frontend_miss_pc,
-                                                          miss_insn),
+                                  miss_next_pc,
+                                  miss_next_pc,
                                   miss_insn,
                                   frontend_miss_prv,
                                   frontend_miss_epoch,
