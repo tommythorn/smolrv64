@@ -4584,6 +4584,7 @@ module smolrv64(input wire        clock,
          frontend_cmd_fast_ready <= 1;
          frontend_cmd_speculative <= 0;
          frontend_cmd_spec_miss_ready <= 0;
+         f_state <= `F_FETCH_BUF_CHECK;
       end
    endtask
 
@@ -5458,7 +5459,6 @@ module smolrv64(input wire        clock,
            end else if (frontend_cmd_fast_ready && frontend_cmd_valid) begin
               clear_frontend_fast_cmd();
               state <= `S_FETCH_BUF_CHECK;
-              f_state <= `F_FETCH_BUF_CHECK;
            end else begin
               prepare_current_epoch_fetch(npc, prv);
            end
@@ -5491,7 +5491,6 @@ module smolrv64(input wire        clock,
               trap_frontend_instruction_access_fault();
            end else begin
               state <= `S_FETCH_BUF_CHECK;
-              f_state <= `F_FETCH_BUF_CHECK;
            end
         end
 
