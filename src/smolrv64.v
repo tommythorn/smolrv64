@@ -3506,6 +3506,31 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task enqueue_frontend_decode_hit;
+      input [63:0] decode_pc;
+      input [63:0] decode_next_pc;
+      input [63:0] decode_predicted_pc;
+      input [31:0] decode_insn;
+      input [ 1:0] decode_prv;
+      input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
+      begin
+         enqueue_rf_decode(decode_pc, decode_next_pc, decode_predicted_pc,
+                           decode_insn, decode_prv, decode_epoch, 1'b0);
+         rf_decode_prearmed <= 0;
+         rf_decode_prearm_block = 1;
+         frontend_cmd_pc <= decode_predicted_pc;
+         clear_frontend_fast_cmd();
+         frontend_cmd_spec_miss_ready <= 0;
+         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
+            frontend_cmd_valid <= 0;
+            frontend_cmd_speculative <= 0;
+         end else begin
+            frontend_cmd_valid <= 1;
+            frontend_cmd_speculative <= 1;
+         end
+      end
+   endtask
+
    task stage_rf_decode_current;
       input [63:0] decode_pc;
       input [63:0] decode_next_pc;
@@ -5155,9 +5180,8 @@ module smolrv64(input wire        clock,
       // Free-running frontend FSM. Runs BEFORE case(state) so f_consumed_hit
       // (blocking assign) propagates to the backend's S_FETCH_BUF_USE arm in
       // the same cycle. F_FETCH_BUF_USE owns the simple cache-hit path:
-      // latches the just-fetched instruction into frontend_decode_pending_*,
-      // which the unconditional drain at the top of this always block then
-      // pushes into rf_decode_*. Backend just retires from the queue.
+      // enqueue the just-fetched instruction directly into rf_decode_*.
+      // Backend just retires from the queue.
       case (f_state)
         `F_IDLE: begin
            // Self-kick: any cycle where a fetch command is pending and the
@@ -5196,7 +5220,7 @@ module smolrv64(input wire        clock,
                !frontend_decode_pending_valid &&
                !rf_decode_full) begin
               f_consumed_hit = 1;
-              latch_frontend_decode_pending(
+              enqueue_frontend_decode_hit(
                   f_latched_cmd_pc,
                   f_latched_decode_next_pc,
                   f_latched_next_pc,
@@ -5420,9 +5444,8 @@ module smolrv64(input wire        clock,
            end
 `endif
            if (f_consumed_hit) begin
-              // Frontend just latched this fetch into frontend_decode_pending_*
-              // via case(f_state) earlier in the cycle. Queue drain happens at
-              // the top of this always block; backend returns to retire.
+              // Frontend just enqueued this fetch via case(f_state) earlier in
+              // the cycle; backend returns to retire from the queue.
               state <= `S_FETCH1;
            end else if (f_latched_hit) begin
               accept_instruction_fetch(f_latched_cmd_pc,
