@@ -3489,6 +3489,24 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   task advance_frontend_cmd_after_decode_accept;
+      input [63:0] decode_predicted_pc;
+      begin
+         rf_decode_prearmed <= 0;
+         rf_decode_prearm_block = 1;
+         frontend_cmd_pc <= decode_predicted_pc;
+         clear_frontend_fast_cmd();
+         frontend_cmd_spec_miss_ready <= 0;
+         if (!decode_enqueue_leaves_frontend_room()) begin
+            frontend_cmd_valid <= 0;
+            frontend_cmd_speculative <= 0;
+         end else begin
+            frontend_cmd_valid <= 1;
+            frontend_cmd_speculative <= 1;
+         end
+      end
+   endtask
+
    task latch_frontend_decode_pending;
       input [63:0] decode_pc;
       input [63:0] decode_next_pc;
@@ -3511,18 +3529,7 @@ module smolrv64(input wire        clock,
             frontend_decode_pending_insn <= decode_insn;
             frontend_decode_pending_prv <= decode_prv;
             frontend_decode_pending_epoch <= decode_epoch;
-            rf_decode_prearmed <= 0;
-            rf_decode_prearm_block = 1;
-            frontend_cmd_pc <= decode_predicted_pc;
-            clear_frontend_fast_cmd();
-            frontend_cmd_spec_miss_ready <= 0;
-            if (!decode_enqueue_leaves_frontend_room()) begin
-               frontend_cmd_valid <= 0;
-               frontend_cmd_speculative <= 0;
-            end else begin
-               frontend_cmd_valid <= 1;
-               frontend_cmd_speculative <= 1;
-            end
+            advance_frontend_cmd_after_decode_accept(decode_predicted_pc);
          end
       end
    endtask
@@ -3551,18 +3558,7 @@ module smolrv64(input wire        clock,
       begin
          enqueue_rf_decode(decode_pc, decode_next_pc, decode_predicted_pc,
                            decode_insn, decode_prv, decode_epoch, 1'b0);
-         rf_decode_prearmed <= 0;
-         rf_decode_prearm_block = 1;
-         frontend_cmd_pc <= decode_predicted_pc;
-         clear_frontend_fast_cmd();
-         frontend_cmd_spec_miss_ready <= 0;
-         if (!decode_enqueue_leaves_frontend_room()) begin
-            frontend_cmd_valid <= 0;
-            frontend_cmd_speculative <= 0;
-         end else begin
-            frontend_cmd_valid <= 1;
-            frontend_cmd_speculative <= 1;
-         end
+         advance_frontend_cmd_after_decode_accept(decode_predicted_pc);
       end
    endtask
 
