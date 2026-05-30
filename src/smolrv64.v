@@ -4310,7 +4310,9 @@ module smolrv64(input wire        clock,
              !frontend_cmd_spec_miss_ready &&
              frontend_speculative_fetch_ok(frontend_cmd_pc, frontend_cmd_prv) &&
              frontend_rsp_hit) begin
-            if (!frontend_decode_pending_valid && !rf_decode_pop_this_cycle) begin
+            if (!frontend_decode_pending_valid &&
+                !rf_decode_pop_this_cycle &&
+                !rf_decode_enqueue_this_cycle) begin
                enqueue_frontend_decode_hit(frontend_cmd_pc,
                                            frontend_rsp_next_pc,
                                            frontend_rsp_predicted_next_pc,
