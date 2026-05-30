@@ -4377,6 +4377,7 @@ module smolrv64(input wire        clock,
       begin
          case (s)
            `S_FETCH1,
+           `S_EXECUTE2,
            `S_FRONTEND_MISS_WAIT,
            `S_DMEM_STORE_WAIT,
            `S_DMEM_STORE2,
