@@ -1200,6 +1200,7 @@ module smolrv64(input wire        clock,
    reg          rf_decode_prearmed = 0;
    reg          frontend_decode_pending_valid = 0;
    reg          frontend_decode_pending_drain = 0;
+   reg          frontend_decode_pending_latch_this_cycle = 0;
    reg  [63:0]  frontend_decode_pending_pc = `RESET_PC;
    reg  [63:0]  frontend_decode_pending_next_pc = `RESET_PC;
    reg  [63:0]  frontend_decode_pending_predicted_pc = `RESET_PC;
@@ -3386,7 +3387,8 @@ module smolrv64(input wire        clock,
             //   - queue full: bail to S_FETCH1 so backend can pop
             //   - pending occupied, queue has room: drain fires this cycle,
             //     wait one cycle and try again from S_FETCH_BUF_USE
-            if (!frontend_decode_pending_valid && !rf_decode_full) begin
+            if (!frontend_decode_pending_latch_this_cycle &&
+                !frontend_decode_pending_valid && !rf_decode_full) begin
                enqueue_frontend_decode_hit(
                    accept_pc,
                    accept_next_pc,
@@ -3485,27 +3487,35 @@ module smolrv64(input wire        clock,
       input [ 1:0] decode_prv;
       input [FRONTEND_EPOCH_BITS-1:0] decode_epoch;
       begin
-         frontend_decode_pending_valid <= 1;
-         frontend_decode_pending_pc <= decode_pc;
-         frontend_decode_pending_next_pc <= decode_next_pc;
-         frontend_decode_pending_predicted_pc <= decode_predicted_pc;
-         frontend_decode_pending_insn <= decode_insn;
-         frontend_decode_pending_prv <= decode_prv;
-         frontend_decode_pending_epoch <= decode_epoch;
-         rf_decode_prearmed <= 0;
-         rf_decode_prearm_block = 1;
-         frontend_cmd_pc <= decode_predicted_pc;
-         clear_frontend_fast_cmd();
-         frontend_cmd_spec_miss_ready <= 0;
-         if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
-              rf_decode_pop_this_cycle) ||
-             (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
-              !rf_decode_pop_this_cycle)) begin
-            frontend_cmd_valid <= 0;
-            frontend_cmd_speculative <= 0;
+         if (frontend_decode_pending_latch_this_cycle) begin
+`ifdef SIMULATE
+            $display("%05d BUG: multiple frontend decode pending latches in one cycle", $time);
+            $finish;
+`endif
          end else begin
-            frontend_cmd_valid <= 1;
-            frontend_cmd_speculative <= 1;
+            frontend_decode_pending_latch_this_cycle = 1'b1;
+            frontend_decode_pending_valid <= 1;
+            frontend_decode_pending_pc <= decode_pc;
+            frontend_decode_pending_next_pc <= decode_next_pc;
+            frontend_decode_pending_predicted_pc <= decode_predicted_pc;
+            frontend_decode_pending_insn <= decode_insn;
+            frontend_decode_pending_prv <= decode_prv;
+            frontend_decode_pending_epoch <= decode_epoch;
+            rf_decode_prearmed <= 0;
+            rf_decode_prearm_block = 1;
+            frontend_cmd_pc <= decode_predicted_pc;
+            clear_frontend_fast_cmd();
+            frontend_cmd_spec_miss_ready <= 0;
+            if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
+                 rf_decode_pop_this_cycle) ||
+                (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
+                 !rf_decode_pop_this_cycle)) begin
+               frontend_cmd_valid <= 0;
+               frontend_cmd_speculative <= 0;
+            end else begin
+               frontend_cmd_valid <= 1;
+               frontend_cmd_speculative <= 1;
+            end
          end
       end
    endtask
@@ -4325,6 +4335,7 @@ module smolrv64(input wire        clock,
       begin
          if (frontend_cmd_speculative &&
              (!rf_decode_full || rf_decode_pop_this_cycle) &&
+             !frontend_decode_pending_latch_this_cycle &&
              (!frontend_decode_pending_valid ||
               frontend_decode_pending_drain) &&
              !frontend_miss_valid && !frontend_miss_done &&
@@ -4350,6 +4361,7 @@ module smolrv64(input wire        clock,
          end else if (frontend_cmd_speculative && frontend_cmd_valid &&
                       (!rf_decode_full || rf_decode_pop_this_cycle) &&
                       !rf_decode_enqueue_this_cycle &&
+                      !frontend_decode_pending_latch_this_cycle &&
                       (!frontend_decode_pending_valid ||
                        frontend_decode_pending_drain) &&
                       !frontend_miss_valid && !frontend_miss_done &&
@@ -4507,7 +4519,8 @@ module smolrv64(input wire        clock,
          frontend_redirect_valid <= 0;
          write_back_register <= 0;
          write_back_fp_valid <= 0;
-         if (!frontend_decode_pending_valid &&
+         if (!frontend_decode_pending_latch_this_cycle &&
+             !frontend_decode_pending_valid &&
              !rf_decode_full && !rf_decode_enqueue_this_cycle) begin
             enqueue_frontend_decode_hit(frontend_miss_pc,
                                         miss_next_pc,
@@ -4516,8 +4529,9 @@ module smolrv64(input wire        clock,
                                         frontend_miss_prv,
                                         frontend_miss_epoch);
             state <= `S_FETCH1;
-         end else if (!frontend_decode_pending_valid ||
-                      frontend_decode_pending_drain) begin
+         end else if (!frontend_decode_pending_latch_this_cycle &&
+                      (!frontend_decode_pending_valid ||
+                       frontend_decode_pending_drain)) begin
             latch_frontend_decode_pending(frontend_miss_pc,
                                           miss_next_pc,
                                           miss_next_pc,
@@ -5169,6 +5183,7 @@ module smolrv64(input wire        clock,
       rf_decode_enqueue_this_cycle = 0;
       rf_decode_prearm_block = 0;
       frontend_decode_pending_drain = 0;
+      frontend_decode_pending_latch_this_cycle = 0;
       frontend_buf_flush <= 1'b0;
       frontend_buf_fill <= 1'b0;
       ifetch_read <= 0;
@@ -5279,6 +5294,7 @@ module smolrv64(input wire        clock,
            if (f_latched_hit &&
                !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
                  csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
+               !frontend_decode_pending_latch_this_cycle &&
                (!frontend_decode_pending_valid ||
                 frontend_decode_pending_drain)) begin
               f_consumed_hit = 1;
