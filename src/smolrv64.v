@@ -3488,7 +3488,10 @@ module smolrv64(input wire        clock,
          frontend_cmd_pc <= decode_predicted_pc;
          clear_frontend_fast_cmd();
          frontend_cmd_spec_miss_ready <= 0;
-         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
+         if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
+              rf_decode_pop_this_cycle) ||
+             (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
+              !rf_decode_pop_this_cycle)) begin
             frontend_cmd_valid <= 0;
             frontend_cmd_speculative <= 0;
          end else begin
@@ -3527,7 +3530,10 @@ module smolrv64(input wire        clock,
          frontend_cmd_pc <= decode_predicted_pc;
          clear_frontend_fast_cmd();
          frontend_cmd_spec_miss_ready <= 0;
-         if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1) begin
+         if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
+              rf_decode_pop_this_cycle) ||
+             (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
+              !rf_decode_pop_this_cycle)) begin
             frontend_cmd_valid <= 0;
             frontend_cmd_speculative <= 0;
          end else begin
@@ -8189,6 +8195,16 @@ module smolrv64(input wire        clock,
 `ifdef PC_TRACE
       end
 `endif
+
+      // The early pending-drain path above runs before the backend can pop an
+      // rf_decode entry.  Re-check after case(state) so a full queue can drain
+      // a pending frontend hit into the slot freed by this same cycle's pop.
+      if (!core_reset_now && frontend_decode_pending_valid &&
+          !frontend_decode_pending_drain &&
+          !rf_decode_enqueue_this_cycle &&
+          (rf_decode_pop_this_cycle || !rf_decode_full)) begin
+         enqueue_frontend_decode_pending();
+      end
 
       // RF BRAM data is available one cycle after ID drives rs1/rs2.  This
       // readiness advances even while the backend FSM remains in a long
