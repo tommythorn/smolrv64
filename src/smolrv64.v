@@ -5213,7 +5213,8 @@ module smolrv64(input wire        clock,
            // handled by latching frontend_cmd_* into f_latched_cmd_* in
            // F_FETCH_BUF_CHECK below.
            if (!core_reset_now && !frontend_flush_this_cycle &&
-               frontend_cmd_valid && !frontend_decode_pending_valid &&
+               frontend_cmd_valid &&
+               (!frontend_decode_pending_valid || frontend_decode_pending_drain) &&
                !rf_decode_full && !frontend_miss_valid && !frontend_miss_done &&
                !frontend_redirect_valid) begin
               f_state <= `F_FETCH_BUF_CHECK;
