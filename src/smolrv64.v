@@ -3342,7 +3342,7 @@ module smolrv64(input wire        clock,
             start_translation(accept_pc + 64'd2, 2'd0, accept_prv, `S_FETCH2_HALF);
          end else if (accept_from_ifetch_rsp && accept_pc[2:1] == 2'b11) begin
             insn_half <= accept_insn[15:0];
-            if (ifetch_latched_insn_valid && ifetch_latched_next_valid) begin
+            if (ifetch_latched_insn_valid) begin
                stage_rf_decode_current(accept_pc,
                                        accept_next_pc,
                                        accept_predicted_pc,
@@ -10381,9 +10381,10 @@ module smolrv64_frontend #(
                                                     icache_lookup_next_hit_way,
                               icache_req_same_line ? icache_req_next_bank : 3'd0);
    assign icache_rsp_window_comb = {icache_rsp_next_data, icache_rsp_data};
-   assign icache_rsp_insn_valid_comb = icache_req_va[2:1] != 2'b11;
    assign icache_rsp_insn_comb =
       pick_insn(icache_rsp_window_comb, {1'b0, icache_req_va[2:0]});
+   assign icache_rsp_insn_valid_comb =
+      icache_req_va[2:1] != 2'b11 || icache_rsp_insn_comb[1:0] != 2'b11;
    assign icache_rsp_next_pc_comb =
       fallthrough_pc(icache_req_va, icache_rsp_insn_comb);
 
