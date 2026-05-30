@@ -4389,6 +4389,49 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
+   function backend_may_pop_rf_decode;
+      input [5:0] s;
+      begin
+         backend_may_pop_rf_decode =
+            !id_valid && !frontend_miss_valid &&
+            rf_decode_matches_retire(npc, prv, fetch_epoch);
+         if (backend_may_pop_rf_decode) begin
+            case (s)
+              `S_FRONTEND_MISS_WAIT:
+                backend_may_pop_rf_decode = !frontend_miss_done;
+              `S_CBO_WAIT:
+                backend_may_pop_rf_decode = !cache_cbo_done;
+              `S_CVFPU_WAIT:
+                backend_may_pop_rf_decode = !cvfpu_out_valid;
+              `S_MUL_RUNNING:
+                backend_may_pop_rf_decode = mul_b != 0;
+              `S_DIV_RUNNING:
+                backend_may_pop_rf_decode = div_count != 0;
+              `S_PTW_DIRECT_WAIT:
+                backend_may_pop_rf_decode = !ptw_direct_rsp_valid_r;
+              `S_DMEM_STORE_WAIT,
+              `S_DMEM_STORE2:
+                backend_may_pop_rf_decode = !dmem_write_ready;
+              `S_DMEM_STORE_RESP_WAIT:
+                backend_may_pop_rf_decode = !dmem_write_done;
+              `S_DMEM_STORE_RESP_ARM:
+                backend_may_pop_rf_decode = 1'b1;
+              default:
+                backend_may_pop_rf_decode = 1'b0;
+            endcase
+         end
+      end
+   endfunction
+
+   function rf_decode_frontend_start_room;
+      input [5:0] s;
+      begin
+         rf_decode_frontend_start_room =
+            !rf_decode_full || rf_decode_pop_this_cycle ||
+            backend_may_pop_rf_decode(s);
+      end
+   endfunction
+
    function execute_req_matches_retire;
       input [63:0] retire_pc;
       input [ 1:0] retire_prv;
@@ -5214,7 +5257,8 @@ module smolrv64(input wire        clock,
            // F_FETCH_BUF_CHECK below.
            if (!core_reset_now && !frontend_flush_this_cycle &&
                frontend_cmd_valid && !frontend_decode_pending_valid &&
-               !rf_decode_full && !frontend_miss_valid && !frontend_miss_done &&
+               rf_decode_frontend_start_room(state) &&
+               !frontend_miss_valid && !frontend_miss_done &&
                !frontend_redirect_valid) begin
               f_state <= `F_FETCH_BUF_CHECK;
            end
