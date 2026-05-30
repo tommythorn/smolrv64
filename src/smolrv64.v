@@ -3443,7 +3443,9 @@ module smolrv64(input wire        clock,
             $display("%05d BUG: multiple rf_decode enqueues in one cycle", $time);
             $finish;
 `endif
-         end else if (rf_decode_full && !rf_decode_pop_this_cycle) begin
+         end else if (rf_decode_full &&
+                      !rf_decode_pop_this_cycle &&
+                      !backend_may_pop_rf_decode(state)) begin
 `ifdef SIMULATE
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
@@ -5285,7 +5287,7 @@ module smolrv64(input wire        clock,
                !(f_latched_cmd_pc[11:0] == 12'hFFE && f_latched_insn[1:0] == 2'b11 &&
                  csr_satp[63:60] == 4'd8 && f_latched_cmd_prv != 3) &&
                !frontend_decode_pending_valid &&
-               !rf_decode_full) begin
+               rf_decode_frontend_start_room(state)) begin
               f_consumed_hit = 1;
               enqueue_frontend_decode_hit(
                   f_latched_cmd_pc,
