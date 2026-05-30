@@ -4339,7 +4339,8 @@ module smolrv64(input wire        clock,
                                              frontend_cmd_epoch);
             end
          end else if (frontend_cmd_speculative && frontend_cmd_valid &&
-                      !rf_decode_full &&
+                      (!rf_decode_full || rf_decode_pop_this_cycle) &&
+                      !rf_decode_enqueue_this_cycle &&
                       (!frontend_decode_pending_valid ||
                        frontend_decode_pending_drain) &&
                       !frontend_miss_valid && !frontend_miss_done &&
