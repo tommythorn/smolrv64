@@ -1063,6 +1063,7 @@ module smolrv64(input wire        clock,
    reg          ifetch_latched_next_valid = 0;
    reg          ifetch_latched_insn_valid = 0;
    reg  [31:0]  ifetch_latched_insn = 0;
+   reg  [63:0]  ifetch_latched_next_pc = 0;
    reg          fetch_from_ifetch_rsp; // current fetch came from I-fetch response
    reg  [27:0]  dmem_store2_dw_addr; // 8B-doubleword addr for split-store second beat
    reg  [63:0]  dmem_store2_va;      // virtual address for split-store second beat
@@ -4473,7 +4474,7 @@ module smolrv64(input wire        clock,
                   : fetch_buf_pick_insn(rsp_aligned,
                                         {1'b0, frontend_cmd_pc[2:0]});
          rsp_next_pc = ifetch_latched_insn_valid
-                     ? icache_rsp_next_pc
+                     ? ifetch_latched_next_pc
                      : frontend_fallthrough_pc(frontend_cmd_pc, rsp_insn);
          accept_instruction_fetch(frontend_cmd_pc,
                                   rsp_next_pc,
@@ -8025,6 +8026,7 @@ module smolrv64(input wire        clock,
            ifetch_latched_next_valid            <= icache_rsp_next_valid;
            ifetch_latched_insn_valid            <= icache_rsp_insn_valid;
            ifetch_latched_insn                  <= icache_rsp_insn;
+           ifetch_latched_next_pc               <= icache_rsp_next_pc;
            state                                <= `S_IFETCH_RESP;
         end
 
@@ -8410,6 +8412,7 @@ module smolrv64(input wire        clock,
          ifetch_latched_next_valid <= 0;
          ifetch_latched_insn_valid <= 0;
          ifetch_latched_insn <= 0;
+         ifetch_latched_next_pc <= 0;
          translated       <= 0;
          ifetch_read      <= 0;
          dmem_read        <= 0;
