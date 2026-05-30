@@ -3479,6 +3479,16 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   function decode_enqueue_leaves_frontend_room;
+      begin
+         decode_enqueue_leaves_frontend_room =
+            !((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
+               rf_decode_pop_this_cycle) ||
+              (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
+               !rf_decode_pop_this_cycle));
+      end
+   endfunction
+
    task latch_frontend_decode_pending;
       input [63:0] decode_pc;
       input [63:0] decode_next_pc;
@@ -3506,10 +3516,7 @@ module smolrv64(input wire        clock,
             frontend_cmd_pc <= decode_predicted_pc;
             clear_frontend_fast_cmd();
             frontend_cmd_spec_miss_ready <= 0;
-            if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
-                 rf_decode_pop_this_cycle) ||
-                (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
-                 !rf_decode_pop_this_cycle)) begin
+            if (!decode_enqueue_leaves_frontend_room()) begin
                frontend_cmd_valid <= 0;
                frontend_cmd_speculative <= 0;
             end else begin
@@ -3549,10 +3556,7 @@ module smolrv64(input wire        clock,
          frontend_cmd_pc <= decode_predicted_pc;
          clear_frontend_fast_cmd();
          frontend_cmd_spec_miss_ready <= 0;
-         if ((rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT &&
-              rf_decode_pop_this_cycle) ||
-             (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT - 1'b1 &&
-              !rf_decode_pop_this_cycle)) begin
+         if (!decode_enqueue_leaves_frontend_room()) begin
             frontend_cmd_valid <= 0;
             frontend_cmd_speculative <= 0;
          end else begin
@@ -5288,6 +5292,7 @@ module smolrv64(input wire        clock,
            f_state                   <= `F_FETCH_BUF_USE;
         end
         `F_FETCH_BUF_USE: begin
+           f_state <= `F_IDLE;
            // Simple hit, using only the latched data — page-boundary
            // translated case and queue/pending pressure fall through to the
            // backend's arm.
@@ -5306,6 +5311,10 @@ module smolrv64(input wire        clock,
                      f_latched_insn,
                      f_latched_cmd_prv,
                      f_latched_cmd_epoch);
+                 if (decode_enqueue_leaves_frontend_room() &&
+                     !frontend_miss_valid && !frontend_miss_done &&
+                     !frontend_redirect_valid)
+                    f_state <= `F_FETCH_BUF_CHECK;
               end else begin
                  latch_frontend_decode_pending(
                      f_latched_cmd_pc,
@@ -5316,7 +5325,6 @@ module smolrv64(input wire        clock,
                      f_latched_cmd_epoch);
               end
            end
-           f_state <= `F_IDLE;
         end
         default: f_state <= `F_IDLE;
       endcase
