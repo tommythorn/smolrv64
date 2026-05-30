@@ -1357,12 +1357,13 @@ module smolrv64(input wire        clock,
    reg [63:0] dmem_rsp_data_r = 0;
    reg [63:0] dmem_rsp_next_data_r = 0;
    reg        dmem_rsp_next_valid_r = 0;
-   reg        ifetch_rsp_valid_r = 0;
    reg        ifetch_refill_retry_valid = 0;
    reg        dmem_write_done_r = 0;
    wire       cache_idle = cache_state == CACHE_IDLE;
    wire       cache_cbo_done = cache_cbo_done_r;
    wire       cache_read_req = ifetch_read || dmem_read;
+   wire       ifetch_rsp_valid =
+      cache_state == CACHE_HIT_RESP && cache_req_ifetch && icache_rsp_hit;
 
    reg        l2_fill_req_valid = 0;
    wire       l2_fill_req_ready;
@@ -8008,7 +8009,7 @@ module smolrv64(input wire        clock,
                                    fetch_from_ifetch_rsp);
         end
 
-        `S_IFETCH_WAIT: if (ifetch_rsp_valid_r) begin
+        `S_IFETCH_WAIT: if (ifetch_rsp_valid) begin
            ifetch_latched_window                <= icache_rsp_window;
            ifetch_latched_next_valid            <= icache_rsp_next_valid;
            ifetch_latched_insn_valid            <= icache_rsp_insn_valid;
@@ -8016,7 +8017,7 @@ module smolrv64(input wire        clock,
            state                                <= `S_IFETCH_RESP;
         end
 
-        `S_IFETCH_HALF_WAIT: if (ifetch_rsp_valid_r) begin
+        `S_IFETCH_HALF_WAIT: if (ifetch_rsp_valid) begin
            // Second-half fetches consume the raw 64-bit chunk at pc+2.  The
            // frontend instruction view is only valid for whole-instruction
            // fetch responses.
@@ -8165,7 +8166,7 @@ module smolrv64(input wire        clock,
       end
 
       if (!core_reset_now && !frontend_flush_this_cycle &&
-          frontend_miss_valid && ifetch_rsp_valid_r) begin
+          frontend_miss_valid && ifetch_rsp_valid) begin
          frontend_miss_valid      <= 0;
          frontend_miss_done       <= 1;
          frontend_miss_window     <= icache_rsp_window;
@@ -8485,7 +8486,6 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
       dmem_rsp_valid_r <= 0;
       dmem_rsp_next_valid_r <= 0;
-      ifetch_rsp_valid_r <= 0;
       ifetch_refill_retry_valid <= 0;
       ptw_direct_rsp_valid_r <= 0;
       dmem_write_done_r <= 0;
@@ -8715,7 +8715,6 @@ module smolrv64(input wire        clock,
            if (cache_req_ifetch) begin
               if (icache_rsp_hit) begin
                  csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
-                 ifetch_rsp_valid_r <= 1;
                  cache_state <= CACHE_IDLE;
               end else begin
                  csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
