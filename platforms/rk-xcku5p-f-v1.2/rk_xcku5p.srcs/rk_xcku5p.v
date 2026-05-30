@@ -54,7 +54,9 @@ module rk_xcku5p(
    // touching the DDR4 MIG, so calibration is preserved and mig_* latency
    // stats CSRs (which aren't in the CPU's reset block) survive across a
    // soft reset. Press key[1] to return to the monitor from a hung workload.
-   wire ui_cpu_reset = ui_rst | ~init_calib_complete | ~key[1];
+   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | ~key[1];
+   reg  [1:0] ui_cpu_reset_sync = 2'b11;
+   wire ui_cpu_reset = ui_cpu_reset_sync[1];
    reg  [1:0] cpu_reset_core_sync = 2'b11;
    wire cpu_reset = cpu_reset_core_sync[1];
 
@@ -72,6 +74,13 @@ module rk_xcku5p(
       .CLR(ui_rst),
       .O  (core_clk)
    );
+
+   always @(posedge ui_clk) begin
+      if (ui_cpu_reset_req)
+         ui_cpu_reset_sync <= 2'b11;
+      else
+         ui_cpu_reset_sync <= {ui_cpu_reset_sync[0], 1'b0};
+   end
 
    always @(posedge core_clk or posedge ui_cpu_reset) begin
       if (ui_cpu_reset)
