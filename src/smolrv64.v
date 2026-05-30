@@ -3373,12 +3373,12 @@ module smolrv64(input wire        clock,
          end else begin
             // Queue-only path (no fast-path bypass via stage_rf_decode_current).
             // Arbitrate against pending/queue pressure:
-            //   - pending empty, queue has room: latch + drain to queue
+            //   - pending empty, queue has room: enqueue directly
             //   - queue full: bail to S_FETCH1 so backend can pop
             //   - pending occupied, queue has room: drain fires this cycle,
             //     wait one cycle and try again from S_FETCH_BUF_USE
             if (!frontend_decode_pending_valid && !rf_decode_full) begin
-               latch_frontend_decode_pending(
+               enqueue_frontend_decode_hit(
                    accept_pc,
                    accept_next_pc,
                    accept_predicted_pc,
