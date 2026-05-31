@@ -8235,6 +8235,8 @@ module smolrv64(input wire        clock,
                     retire_current_wb_linear_fetch();
                  end
               end
+           end else begin
+              try_launch_queued_decode_preserve_state();
            end
         end
 
@@ -8251,6 +8253,8 @@ module smolrv64(input wire        clock,
               else begin
                  retire_current_wb_linear_fetch();
               end
+           end else begin
+              try_launch_queued_decode_preserve_state();
            end
         end
 
