@@ -606,7 +606,7 @@ module smolrv64(input wire        clock,
 `define S_DMEM_STORE2          22  // issue 2nd beat of cross-line store
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from the PTW response
-`define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
+`define S_RF                   26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
@@ -661,7 +661,7 @@ module smolrv64(input wire        clock,
 `define MULDIV_REMW            4'd11
 `define MULDIV_REMUW           4'd12
 
-// pre_exe_op: ALU operation code pre-decoded in S_RF3, consumed in S_EXECUTE.
+// pre_exe_op: ALU operation code pre-decoded in S_RF, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
 // reduces the critical path from ~15 LUT levels to ~7 LUT levels per stage.
 `define EXOP_ADD  4'd0   // exe_add = s1 + pre_exe_b  (s1[31:0]+b[31:0] if sxt)
@@ -677,7 +677,7 @@ module smolrv64(input wire        clock,
 `define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
 `define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
 
-// pre_mem_op: memory access class pre-decoded in S_RF3, consumed in S_EXECUTE.
+// pre_mem_op: memory access class pre-decoded in S_RF, consumed in S_EXECUTE.
 // Collapses the 22 per-insn load/store/AMO branches into one shared block
 // (single mem_addr adder).
 `define MEMOP_NONE  3'd0
@@ -898,9 +898,9 @@ module smolrv64(input wire        clock,
 
    // Read ports
    reg  [ 4:0] rs1, rs2;
-   wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF3 onwards
+   wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF onwards
    wire [63:0] s2_bram;
-   (* max_fanout = 32 *) reg [63:0] s1 = 0; // flip-flop copy of s1_bram; captured in S_RF3, used in S_EXECUTE
+   (* max_fanout = 32 *) reg [63:0] s1 = 0; // flip-flop copy of s1_bram; captured in S_RF, used in S_EXECUTE
    reg  [63:0] s2 = 0;
 
    reg  [ 4:0] write_back_register = 0;
@@ -912,7 +912,7 @@ module smolrv64(input wire        clock,
    reg  [63:0] write_back_fp_value;
    wire [63:0] f1_bram;     // FP regfile read port 0 (addressed by rs1)
    wire [63:0] f2_bram;     // FP regfile read port 1 (addressed by rs2)
-   reg  [63:0] f1 = 0;      // flip-flop copy of f1_bram; captured in S_RF3
+   reg  [63:0] f1 = 0;      // flip-flop copy of f1_bram; captured in S_RF
    reg  [63:0] f2 = 0;
    // Single-precision operand reads: if the f-reg isn't properly NaN-boxed,
    // the spec says single-precision ops see the canonical qNaN 0x7fc00000.
@@ -920,13 +920,13 @@ module smolrv64(input wire        clock,
    wire [31:0] f2_s = (&f2[63:32]) ? f2[31:0] : 32'h7fc00000;
    reg  [63:0] exe_add   = 0;  // execute-stage intermediate (registered at S_EXECUTE→S_EXECUTE2)
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
-   // Pre-decoded ALU control: computed in S_RF3, consumed in S_EXECUTE case block.
+   // Pre-decoded ALU control: computed in S_RF, consumed in S_EXECUTE case block.
    // Breaks the ~50-condition priority if-else chain critical path into two pipeline stages.
    reg  [ 3:0] pre_exe_op  = 0;  // EXOP_* operation code
    (* max_fanout = 32 *) reg [63:0] pre_exe_b = 0; // second operand
    reg         pre_exe_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
 
-   // Pre-decoded mem access: computed in S_RF3, consumed in S_EXECUTE shared block.
+   // Pre-decoded mem access: computed in S_RF, consumed in S_EXECUTE shared block.
    // Collapses 22 load/store/AMO branches into one; shares a single s1+offset adder.
    reg  [ 2:0] pre_mem_op       = 0; // MEMOP_* class code (NONE/LOAD/STORE/LR/SC/AMO)
    reg  [63:0] pre_mem_offset   = 0; // byte offset added to s1 to form mem_addr
@@ -936,7 +936,7 @@ module smolrv64(input wire        clock,
    reg         pre_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
    reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 
-   // Execute request boundary. S_RF3 asserts this after registering operands
+   // Execute request boundary. S_RF asserts this after registering operands
    // and predecode outputs; S_EXECUTE clears it when accepted.
    reg         execute_req_valid = 0;
    reg  [63:0] execute_req_pc = `RESET_PC;
@@ -1211,7 +1211,7 @@ module smolrv64(input wire        clock,
    reg  [FRONTEND_EPOCH_BITS-1:0] frontend_decode_pending_epoch = 0;
 
    // ID/RF stage boundary. Dispatch accepts one decoded instruction into this
-   // payload and launches the BRAM read; S_RF3 consumes it into EX.
+   // payload and launches the BRAM read; S_RF consumes it into EX.
    reg          id_valid = 0;
    reg          id_rf_ready = 0;
    reg  [63:0]  id_pc = `RESET_PC;
@@ -1577,7 +1577,7 @@ module smolrv64(input wire        clock,
            `S_DMEM_STORE2:           state_name = "DMEM_STORE2";
            `S_EXECUTE2:              state_name = "EXECUTE2";
            `S_PTW_PROCESS:           state_name = "PTW_PROCESS";
-           `S_RF3:                   state_name = "RF3";
+           `S_RF:                    state_name = "RF";
            `S_DMEM_STORE_RESP_WAIT:  state_name = "DMEM_STORE_RESP_WAIT";
            `S_DMEM_STORE_RESP_ARM:   state_name = "DMEM_STORE_RESP_ARM";
            `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
@@ -2794,7 +2794,7 @@ module smolrv64(input wire        clock,
    reg [6:0]   div_count;
 
    reg [63:0]  reservation = ~0;
-   // Registered LR/SC reservation hit, computed at S_RF3→S_EXECUTE edge
+   // Registered LR/SC reservation hit, computed at S_RF->S_EXECUTE edge
    // (reservation == s1_bram) so S_EXECUTE's SC branch doesn't have to do
    // the 64-bit compare in-flight with the mem_addr next-D mux.
    reg         reservation_match = 0;
@@ -3109,7 +3109,7 @@ module smolrv64(input wire        clock,
       input [5:0] s;
       begin
          case (s)
-           `S_RF3,
+           `S_RF,
            `S_LOAD_ALIGN,
            `S_MMIO_ALIGN,
            `S_AMO,
@@ -3613,7 +3613,7 @@ module smolrv64(input wire        clock,
             frontend_cmd_pc <= decode_predicted_pc;
             frontend_cmd_prv <= decode_prv;
             arm_frontend_spec_cmd();
-            state <= `S_RF3;
+            state <= `S_RF;
          end
       end
    endtask
@@ -3687,7 +3687,7 @@ module smolrv64(input wire        clock,
          end else begin
             load_id_from_rf_decode_head();
             pop_rf_decode_head();
-            state <= `S_RF3;
+            state <= `S_RF;
          end
       end
    endtask
@@ -5479,7 +5479,7 @@ module smolrv64(input wire        clock,
               redirect_retire_fetch(npc, prv);
               state <= `S_FETCH_REQ;
            end else if (id_matches_retire(npc, prv, fetch_epoch)) begin
-              state <= `S_RF3;
+              state <= `S_RF;
            end else if (id_valid) begin
               redirect_retire_fetch(npc, prv);
               state <= `S_FETCH_REQ;
@@ -5609,14 +5609,14 @@ module smolrv64(input wire        clock,
 
         `S_IFETCH_RESP: consume_latched_ifetch_response();
 
-        `S_RF3: begin
+        `S_RF: begin
            if (!id_valid) begin
               state <= `S_FETCH1;
            end else if (!id_rf_ready) begin
               id_rf_ready <= 1;
-              state <= `S_RF3;
+              state <= `S_RF;
            end else if (!id_ex_fire) begin
-              state <= `S_RF3;
+              state <= `S_RF;
            end else begin
               prepare_execute_req_from_id(1'b0);
            end
@@ -6691,7 +6691,7 @@ module smolrv64(input wire        clock,
               state <= `S_EXCEPTION;
            end
 
-           // Pre-registered ALU computation: uses pre_exe_op/pre_exe_b decoded in S_RF3.
+           // Pre-registered ALU computation: uses pre_exe_op/pre_exe_b decoded in S_RF.
            // Both operands (s1, pre_exe_b) and selector (pre_exe_op) are flip-flops,
            // so the critical path is only ~7 LUT levels (vs ~15 with the inline if-else).
            case (pre_exe_op)
