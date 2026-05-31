@@ -1198,6 +1198,9 @@ module smolrv64(input wire        clock,
    reg          rf_decode_enqueue_this_cycle = 0;
    reg          rf_decode_prearm_block = 0;
    reg          rf_decode_prearmed = 0;
+   reg  [RF_DECODE_QUEUE_BITS-1:0] rf_decode_prearmed_head = 0;
+   wire         rf_decode_prearmed_current =
+      rf_decode_prearmed && rf_decode_prearmed_head == rf_decode_head;
    reg          frontend_decode_pending_valid = 0;
    reg          frontend_decode_pending_drain = 0;
    reg          frontend_decode_pending_latch_this_cycle = 0;
@@ -3202,6 +3205,7 @@ module smolrv64(input wire        clock,
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
+         rf_decode_prearmed_head <= 0;
          rf_decode_prearm_block = 1;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
@@ -3493,6 +3497,7 @@ module smolrv64(input wire        clock,
       input [63:0] decode_predicted_pc;
       begin
          rf_decode_prearmed <= 0;
+         rf_decode_prearmed_head <= 0;
          rf_decode_prearm_block = 1;
          frontend_cmd_pc <= decode_predicted_pc;
          clear_frontend_fast_cmd();
@@ -3590,6 +3595,7 @@ module smolrv64(input wire        clock,
             rf_decode_tail <= 0;
             rf_decode_count <= 0;
             rf_decode_prearmed <= 0;
+            rf_decode_prearmed_head <= 0;
             rf_decode_prearm_block = 1;
             frontend_decode_pending_valid <= 0;
             frontend_decode_pending_drain = 0;
@@ -3632,7 +3638,7 @@ module smolrv64(input wire        clock,
    task load_id_from_rf_decode_head;
       begin
          id_valid <= 1;
-         id_rf_ready <= rf_decode_prearmed;
+         id_rf_ready <= rf_decode_prearmed_current;
          id_pc <= rf_decode_pc;
          id_next_pc <= rf_decode_next_pc;
          id_predicted_pc <= rf_decode_predicted_pc;
@@ -3655,6 +3661,7 @@ module smolrv64(input wire        clock,
          rf_decode_count <= rf_decode_enqueue_this_cycle ?
                             rf_decode_count : rf_decode_count - 1'b1;
          rf_decode_prearmed <= 0;
+         rf_decode_prearmed_head <= 0;
          rf_decode_prearm_block = 1;
          if (rf_decode_count == RF_DECODE_QUEUE_DEPTH_COUNT ||
              rf_decode_enqueue_this_cycle) begin
@@ -3668,6 +3675,7 @@ module smolrv64(input wire        clock,
          rs1 <= rf_decode_rs1;
          rs2 <= rf_decode_rs2;
          rf_decode_prearmed <= 1;
+         rf_decode_prearmed_head <= rf_decode_head;
       end
    endtask
 
@@ -3682,7 +3690,7 @@ module smolrv64(input wire        clock,
          end else begin
             load_id_from_rf_decode_head();
             pop_rf_decode_head();
-            state <= rf_decode_prearmed ? `S_RF3 : `S_RF2;
+            state <= rf_decode_prearmed_current ? `S_RF3 : `S_RF2;
          end
       end
    endtask
@@ -8451,6 +8459,7 @@ module smolrv64(input wire        clock,
          rf_decode_tail <= 0;
          rf_decode_count <= 0;
          rf_decode_prearmed <= 0;
+         rf_decode_prearmed_head <= 0;
          rf_decode_prearm_block = 1;
          frontend_decode_pending_valid <= 0;
          frontend_decode_pending_drain = 0;
