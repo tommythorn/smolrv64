@@ -4218,6 +4218,14 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task try_launch_queued_decode_preserve_state;
+      begin
+         if (!id_valid && !frontend_miss_valid &&
+             rf_decode_matches_retire(npc, prv, fetch_epoch))
+            launch_rf_decode_read_preserve_state();
+      end
+   endtask
+
    task try_prepare_retire_id_preserve_state;
       input [63:0] retire_pc;
       input [ 1:0] retire_prv;
@@ -7971,10 +7979,12 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_LOOKUP: begin
+           try_launch_queued_decode_preserve_state();
            state <= `S_TLB_CHECK;
         end
 
         `S_TLB_CHECK: begin
+           try_launch_queued_decode_preserve_state();
            if (tlb_4k_hit || tlb_2m_hit) begin
               route_translated_addr(tlb_4k_hit ? {tlb_4k_rd_pbase, tlb_req_va[11:0]} :
                                                  {tlb_2m_rd_pbase, tlb_req_va[20:0]},
@@ -7986,6 +7996,7 @@ module smolrv64(input wire        clock,
         end
 
         `S_PTW_PROCESS: begin
+           try_launch_queued_decode_preserve_state();
            // Sv39 page table walk: process the latched PTE.
            // PTE is pte_latch[63:0]; use aligned as a local alias for readability.
            aligned = pte_latch;
@@ -8124,11 +8135,13 @@ module smolrv64(input wire        clock,
         end
 
         `S_TLB_INSERT: begin
+           try_launch_queued_decode_preserve_state();
            commit_staged_tlb_insert;
            route_translated_addr(ptw_route_pa, ptw_route_perm, ptw_route_return);
         end
 
         `S_PTW_LAUNCH: begin
+           try_launch_queued_decode_preserve_state();
            if (phys_region(ptw_pte_addr) == `REGION_BRAM ||
                phys_region(ptw_pte_addr) == `REGION_DRAM) begin
               ptw_direct_addr  <= ptw_pte_addr[30:3];
