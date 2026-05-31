@@ -4,6 +4,8 @@ SIM_MEM_BASE="64'h70000000"
 SIM_RESET_PC="64'h80000000"
 SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
+TINY128_SIM_MEM_BASE="64'h80000000"
+TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 
 # For cache stress testing
 # SIM_CACHE_INDEX_BITS?=1
@@ -97,6 +99,26 @@ smolrv64-linux-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		-Mdir obj_dir_verbose -o $@ \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
+
+smolrv64-tiny128-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		$(TINY128_SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
+		-Wno-fatal \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
+		-Mdir obj_dir_tiny128_verbose -o $@ \
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
+	cp obj_dir_tiny128_verbose/$@ $@
+
+smolrv64-tiny128-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		$(TINY128_SIM_VDEFS) -DNO_TIMEOUT \
+		-Wno-fatal \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS)" \
+		-Mdir obj_dir_tiny128 -o $@ \
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
+	cp obj_dir_tiny128/$@ $@
 
 # Cosim build: smolrv64 under Verilator + simmerv (via C ABI) in lockstep.
 # Every retired instruction is sent to simmerv via a DPI callback and the
