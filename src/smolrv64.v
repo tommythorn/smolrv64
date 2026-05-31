@@ -604,7 +604,6 @@ module smolrv64(input wire        clock,
 `define S_IFETCH_HALF_WAIT      20  // wait for 2nd I-cache response of cross-line fetch
 `define S_DMEM_LOAD2_WAIT      21  // wait for 2nd D-cache response of cross-line load
 `define S_DMEM_STORE2          22  // issue 2nd beat of cross-line store
-`define S_RF2                  23  // wait for BRAM regfile read after rs1/rs2 launch
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from the PTW response
 `define S_RF3                  26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
@@ -1576,7 +1575,6 @@ module smolrv64(input wire        clock,
            `S_IFETCH_HALF_WAIT:      state_name = "IFETCH_HALF_WAIT";
            `S_DMEM_LOAD2_WAIT:       state_name = "DMEM_LOAD2_WAIT";
            `S_DMEM_STORE2:           state_name = "DMEM_STORE2";
-           `S_RF2:                   state_name = "RF2";
            `S_EXECUTE2:              state_name = "EXECUTE2";
            `S_PTW_PROCESS:           state_name = "PTW_PROCESS";
            `S_RF3:                   state_name = "RF3";
@@ -3111,7 +3109,6 @@ module smolrv64(input wire        clock,
       input [5:0] s;
       begin
          case (s)
-           `S_RF2,
            `S_RF3,
            `S_LOAD_ALIGN,
            `S_MMIO_ALIGN,
@@ -3616,7 +3613,7 @@ module smolrv64(input wire        clock,
             frontend_cmd_pc <= decode_predicted_pc;
             frontend_cmd_prv <= decode_prv;
             arm_frontend_spec_cmd();
-            state <= `S_RF2;
+            state <= `S_RF3;
          end
       end
    endtask
@@ -3690,7 +3687,7 @@ module smolrv64(input wire        clock,
          end else begin
             load_id_from_rf_decode_head();
             pop_rf_decode_head();
-            state <= rf_decode_prearmed_current ? `S_RF3 : `S_RF2;
+            state <= `S_RF3;
          end
       end
    endtask
@@ -5611,18 +5608,6 @@ module smolrv64(input wire        clock,
         end
 
         `S_IFETCH_RESP: consume_latched_ifetch_response();
-
-        `S_RF2: begin
-           // One-cycle wait: BRAM samples new rs1/rs2 from dispatch; output
-           // settles in S_RF3.
-           if (id_valid) begin
-              id_rf_ready <= 1;
-              state <= `S_RF3;
-           end else begin
-              id_rf_ready <= 0;
-              state <= `S_FETCH1;
-           end
-        end
 
         `S_RF3: begin
            if (!id_valid) begin
