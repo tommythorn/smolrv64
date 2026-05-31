@@ -6793,6 +6793,8 @@ module smolrv64(input wire        clock,
               end else begin
                  state <= `S_CVFPU_WAIT;
               end
+           end else begin
+              try_launch_queued_decode_preserve_state();
            end
         end
 
