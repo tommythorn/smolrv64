@@ -3692,6 +3692,15 @@ module smolrv64(input wire        clock,
 
    task pop_rf_decode_head;
       begin
+`ifdef SIMULATE
+         if (rf_decode_pop_this_cycle) begin
+            $display("%05d BUG: multiple rf_decode pops in one cycle", $time);
+            $finish;
+         end else if (!rf_decode_valid) begin
+            $display("%05d BUG: pop empty rf_decode queue", $time);
+            $finish;
+         end
+`endif
          rf_decode_pop_this_cycle = 1'b1;
          rf_decode_head <= rf_decode_head + 1'b1;
          rf_decode_count <= rf_decode_enqueue_this_cycle ?
@@ -5098,6 +5107,11 @@ module smolrv64(input wire        clock,
          execute_req_mem_wb_reg_q <= 0;
          execute_req_mem_fp_q <= 0;
       end else begin
+         if (rf_decode_count > RF_DECODE_QUEUE_DEPTH_COUNT) begin
+            $display("%05d BUG: rf_decode queue count out of range", $time);
+            $finish;
+         end
+
          if (id_valid_q && id_valid &&
              (id_pc != id_pc_q ||
               id_next_pc != id_next_pc_q ||
