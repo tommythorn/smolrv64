@@ -606,7 +606,7 @@ module smolrv64(input wire        clock,
 `define S_DMEM_STORE2          22  // issue 2nd beat of cross-line store
 `define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
 `define S_PTW_PROCESS          25  // process PTE latched from the PTW response
-`define S_RF                   26  // register BRAM output (s1_bram/s2_bram) into s1/s2 flip-flops
+`define S_RF                   26  // register BRAM output (s1_bram/s2_bram) into execute_req_rs1_value/execute_req_rs2_value flip-flops
 `define S_CBO_EXEC             29  // execute translated cache-block operation
 `define S_CBO_WAIT             30  // wait for cache-block operation completion
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
@@ -664,16 +664,16 @@ module smolrv64(input wire        clock,
 // execute_req_alu_op: ALU operation code pre-decoded in S_RF, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
 // reduces the critical path from ~15 LUT levels to ~7 LUT levels per stage.
-`define EXOP_ADD  4'd0   // exe_add = s1 + execute_req_alu_b  (s1[31:0]+b[31:0] if sxt)
-`define EXOP_SUB  4'd1   // exe_add = s1 - execute_req_alu_b
-`define EXOP_SHL  4'd2   // exe_add = s1 << b[5:0]    (s1[31:0]<<b[4:0] if sxt)
-`define EXOP_SHR  4'd3   // exe_add = s1 >> b[5:0]
-`define EXOP_SAR  4'd4   // exe_add = $signed(s1) >>> b[5:0]
-`define EXOP_XOR  4'd5   // exe_add = s1 ^ b
-`define EXOP_OR   4'd6   // exe_add = s1 | b
-`define EXOP_AND  4'd7   // exe_add = s1 & b
-`define EXOP_LTS  4'd8   // exe_add = ($signed(s1) < $signed(b)) ? 1 : 0
-`define EXOP_LTU  4'd9   // exe_add = (s1 < b) ? 1 : 0
+`define EXOP_ADD  4'd0   // exe_add = execute_req_rs1_value + execute_req_alu_b  (execute_req_rs1_value[31:0]+b[31:0] if sxt)
+`define EXOP_SUB  4'd1   // exe_add = execute_req_rs1_value - execute_req_alu_b
+`define EXOP_SHL  4'd2   // exe_add = execute_req_rs1_value << b[5:0]    (execute_req_rs1_value[31:0]<<b[4:0] if sxt)
+`define EXOP_SHR  4'd3   // exe_add = execute_req_rs1_value >> b[5:0]
+`define EXOP_SAR  4'd4   // exe_add = $signed(execute_req_rs1_value) >>> b[5:0]
+`define EXOP_XOR  4'd5   // exe_add = execute_req_rs1_value ^ b
+`define EXOP_OR   4'd6   // exe_add = execute_req_rs1_value | b
+`define EXOP_AND  4'd7   // exe_add = execute_req_rs1_value & b
+`define EXOP_LTS  4'd8   // exe_add = ($signed(execute_req_rs1_value) < $signed(b)) ? 1 : 0
+`define EXOP_LTU  4'd9   // exe_add = (execute_req_rs1_value < b) ? 1 : 0
 `define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
 `define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
 
@@ -900,8 +900,8 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] rs1, rs2;
    wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF onwards
    wire [63:0] s2_bram;
-   (* max_fanout = 32 *) reg [63:0] s1 = 0; // flip-flop copy of s1_bram; captured in S_RF, used in S_EXECUTE
-   reg  [63:0] s2 = 0;
+   (* max_fanout = 32 *) reg [63:0] execute_req_rs1_value = 0; // flip-flop copy of s1_bram; captured in S_RF, used in S_EXECUTE
+   reg  [63:0] execute_req_rs2_value = 0;
 
    reg  [ 4:0] write_back_register = 0;
    reg  [63:0] write_back_value;
@@ -912,12 +912,12 @@ module smolrv64(input wire        clock,
    reg  [63:0] write_back_fp_value;
    wire [63:0] f1_bram;     // FP regfile read port 0 (addressed by rs1)
    wire [63:0] f2_bram;     // FP regfile read port 1 (addressed by rs2)
-   reg  [63:0] f1 = 0;      // flip-flop copy of f1_bram; captured in S_RF
-   reg  [63:0] f2 = 0;
+   reg  [63:0] execute_req_frs1_value = 0;      // flip-flop copy of f1_bram; captured in S_RF
+   reg  [63:0] execute_req_frs2_value = 0;
    // Single-precision operand reads: if the f-reg isn't properly NaN-boxed,
    // the spec says single-precision ops see the canonical qNaN 0x7fc00000.
-   wire [31:0] f1_s = (&f1[63:32]) ? f1[31:0] : 32'h7fc00000;
-   wire [31:0] f2_s = (&f2[63:32]) ? f2[31:0] : 32'h7fc00000;
+   wire [31:0] execute_req_frs1_s = (&execute_req_frs1_value[63:32]) ? execute_req_frs1_value[31:0] : 32'h7fc00000;
+   wire [31:0] execute_req_frs2_s = (&execute_req_frs2_value[63:32]) ? execute_req_frs2_value[31:0] : 32'h7fc00000;
    reg  [63:0] exe_add   = 0;  // execute-stage intermediate (registered at S_EXECUTE→S_EXECUTE2)
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
    // Pre-decoded ALU control: computed in S_RF, consumed in S_EXECUTE case block.
@@ -927,9 +927,9 @@ module smolrv64(input wire        clock,
    reg         execute_req_alu_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
 
    // Pre-decoded mem access: computed in S_RF, consumed in S_EXECUTE shared block.
-   // Collapses 22 load/store/AMO branches into one; shares a single s1+offset adder.
+   // Collapses 22 load/store/AMO branches into one; shares a single execute_req_rs1_value+offset adder.
    reg  [ 2:0] execute_req_mem_op       = 0; // MEMOP_* class code (NONE/LOAD/STORE/LR/SC/AMO)
-   reg  [63:0] execute_req_mem_offset   = 0; // byte offset added to s1 to form mem_addr
+   reg  [63:0] execute_req_mem_offset   = 0; // byte offset added to execute_req_rs1_value to form mem_addr
    reg  [ 2:0] execute_req_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
    reg  [ 7:0] execute_req_mem_wr_mask  = 0; // byte-enable for stores+SC
    reg  [ 4:0] execute_req_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
@@ -3826,13 +3826,13 @@ module smolrv64(input wire        clock,
               $finish;
            end
 `endif
-           // Register RF output into s1/s2/f1/f2 flip-flops.  Early launch can
+           // Register RF output into execute_req_rs1_value/execute_req_rs2_value/execute_req_frs1_value/execute_req_frs2_value flip-flops.  Early launch can
            // overlap this read with the previous retire's writeback, so use the
            // local writeback bypass before latching operands.
-           s1 <= rf3_s1_value;
-           s2 <= rf3_s2_value;
-           f1 <= rf3_f1_value;
-           f2 <= rf3_f2_value;
+           execute_req_rs1_value <= rf3_s1_value;
+           execute_req_rs2_value <= rf3_s2_value;
+           execute_req_frs1_value <= rf3_f1_value;
+           execute_req_frs2_value <= rf3_f2_value;
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
            reservation_match <= (reservation == rf3_s1_value);
@@ -4051,7 +4051,7 @@ module smolrv64(input wire        clock,
                                 (rf3_insn[14:12] == 3'b111 && frm > 3'b100));
 
            // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
-           // early so S_EXECUTE can share a single s1+offset adder instead of
+           // early so S_EXECUTE can share a single execute_req_rs1_value+offset adder instead of
            // selecting between 22 parallel adders. Immediates are computed
            // inline from rf3_insn bits (the imm_*/c_uimm* registers are written
            // in S_EXECUTE and therefore stale here).
@@ -5771,7 +5771,7 @@ module smolrv64(input wire        clock,
 
            // Shared mem-access block — collapses all load/store/LR/SC/AMO
            // branches using the pre-decoded signals from rf3_mem_decode.
-           // One s1+execute_req_mem_offset adder replaces 22 parallel copies,
+           // One execute_req_rs1_value+execute_req_mem_offset adder replaces 22 parallel copies,
            // shrinking the mem_addr critical path from ~14 LUT levels to ~7.
            if (execute_req_mem_op != `MEMOP_NONE) begin
               if (execute_req_mem_fp && fs == 0) begin
@@ -5783,8 +5783,8 @@ module smolrv64(input wire        clock,
               write_back_register    = execute_req_mem_fp ? 5'd0 : execute_req_mem_wb_reg;
               write_back_fp_valid    = execute_req_mem_fp && execute_req_mem_op == `MEMOP_LOAD;
               write_back_fp_register = execute_req_mem_wb_reg;
-              mem_addr      = s1 + execute_req_mem_offset;
-              mem_va        = s1 + execute_req_mem_offset;
+              mem_addr      = execute_req_rs1_value + execute_req_mem_offset;
+              mem_va        = execute_req_rs1_value + execute_req_mem_offset;
               mem_asid      <= {TLB_ASID_BITS{1'b0}};
               mem_perm      <= CACHE_PERM_PHYS;
               mem_ctx       <= {((execute_req_mem_op == `MEMOP_STORE || execute_req_mem_op == `MEMOP_SC) ? 2'd2 :
@@ -5822,18 +5822,18 @@ module smolrv64(input wire        clock,
                        `MEMOP_LOAD: state <= `S_LOAD_ALIGN;
                        `MEMOP_STORE: begin
                           mem_wr_mask = execute_req_mem_wr_mask;
-                          store_value = execute_req_mem_fp ? f2 : s2;
+                          store_value = execute_req_mem_fp ? execute_req_frs2_value : execute_req_rs2_value;
                           state <= `S_STORE;
                        end
                        `MEMOP_LR: begin
-                          reservation <= s1;
+                          reservation <= execute_req_rs1_value;
                           state <= `S_LOAD_ALIGN;
                        end
                        `MEMOP_SC: begin
                           if (reservation_match) begin
                              write_back_value <= 0;
                              mem_wr_mask = execute_req_mem_wr_mask;
-                             store_value = s2;
+                             store_value = execute_req_rs2_value;
                              state <= `S_STORE;
                           end
                           // SC fail: write_back_value = 1 from EXOP_ONE in rf3_pre_decode;
@@ -5901,7 +5901,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c01) begin // C.SUB
@@ -5910,17 +5910,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h9c01) begin // C.SUBW
@@ -6049,17 +6049,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00000033) begin // ADD
@@ -6084,7 +6084,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00005033) begin // SRL
@@ -6097,12 +6097,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
+              retire_int_value_prepared_fetch(execute_req_rs1_value & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
@@ -6118,8 +6118,8 @@ module smolrv64(input wire        clock,
            else if ((ex_insn & 'hfff0707f) == 'h0000200f || // CBO.INVAL
                     (ex_insn & 'hfff0707f) == 'h0010200f || // CBO.CLEAN
                     (ex_insn & 'hfff0707f) == 'h0020200f) begin // CBO.FLUSH
-              mem_addr = s1;
-              mem_va = s1;
+              mem_addr = execute_req_rs1_value;
+              mem_va = execute_req_rs1_value;
               mem_asid <= {TLB_ASID_BITS{1'b0}};
               mem_perm <= CACHE_PERM_PHYS;
               mem_ctx <= {2'd2, (mprv ? mpp : prv), sum, mxr};
@@ -6214,19 +6214,19 @@ module smolrv64(input wire        clock,
               // if rd == 0 This matters [only] if the read has side
               // effects (I'm guilty of this part of RISC-V semantics).
               csr_op = `CSR_OP_COPY;
-              csr_arg = s1;
+              csr_arg = execute_req_rs1_value;
               state <= `S_HANDLE_CSR;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00002073) begin // CSRRS
               csr_op = `CSR_OP_OR;
-              csr_arg = s1;
+              csr_arg = execute_req_rs1_value;
               state <= `S_HANDLE_CSR;
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00003073) begin // CSRRC
               csr_op = `CSR_OP_ANDN;
-              csr_arg = s1;
+              csr_arg = execute_req_rs1_value;
               state <= `S_HANDLE_CSR;
            end
 
@@ -6412,7 +6412,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(64'd0, f1, f2, pre_fp_rnd_mode,
+                         start_cvfpu_issue(64'd0, execute_req_frs1_value, execute_req_frs2_value, pre_fp_rnd_mode,
                                            4'd2, ex_insn[27],
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6426,7 +6426,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(64'd0, f1, f2, pre_fp_rnd_mode,
+                         start_cvfpu_issue(64'd0, execute_req_frs1_value, execute_req_frs2_value, pre_fp_rnd_mode,
                                            4'd2, ex_insn[27],
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6439,7 +6439,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0, pre_fp_rnd_mode,
                                            4'd3, 1'b0,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6452,7 +6452,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0, pre_fp_rnd_mode,
                                            4'd3, 1'b0,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6465,7 +6465,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0, pre_fp_rnd_mode,
                                            4'd4, 1'b0,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6478,7 +6478,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0, pre_fp_rnd_mode,
                                            4'd4, 1'b0,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6491,7 +6491,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd5, 1'b0,
                                            3'd0, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6508,7 +6508,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd5, 1'b0,
                                            3'd1, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6525,7 +6525,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0,
                                            {2'b00, ex_insn[12]},
                                            4'd7, 1'b0,
                                            3'd0, 3'd0, 2'd3,
@@ -6539,7 +6539,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, f2, 64'd0,
+                         start_cvfpu_issue(execute_req_frs1_value, execute_req_frs2_value, 64'd0,
                                            {2'b00, ex_insn[12]},
                                            4'd7, 1'b0,
                                            3'd1, 3'd1, 2'd3,
@@ -6553,7 +6553,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd10, 1'b0,
                                            3'd1, 3'd0, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6570,7 +6570,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd10, 1'b0,
                                            3'd0, 3'd1, 2'd3,
                                            {3'd0, ex_rd}, 1'b1);
@@ -6584,11 +6584,11 @@ module smolrv64(input wire        clock,
                    7'b0010000: begin
                       case (ex_insn[14:12])
                         3'b000: retire_fp_value_linear_fetch(
-                           ex_rd, {32'hffffffff, f2_s[31], f1_s[30:0]});
+                           ex_rd, {32'hffffffff, execute_req_frs2_s[31], execute_req_frs1_s[30:0]});
                         3'b001: retire_fp_value_linear_fetch(
-                           ex_rd, {32'hffffffff, ~f2_s[31], f1_s[30:0]});
+                           ex_rd, {32'hffffffff, ~execute_req_frs2_s[31], execute_req_frs1_s[30:0]});
                         3'b010: retire_fp_value_linear_fetch(
-                           ex_rd, {32'hffffffff, f2_s[31] ^ f1_s[31], f1_s[30:0]});
+                           ex_rd, {32'hffffffff, execute_req_frs2_s[31] ^ execute_req_frs1_s[31], execute_req_frs1_s[30:0]});
                         default: begin
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
                            tval = ex_insn;
@@ -6600,11 +6600,11 @@ module smolrv64(input wire        clock,
                    7'b0010001: begin
                       case (ex_insn[14:12])
                         3'b000: retire_fp_value_linear_fetch(
-                           ex_rd, {f2[63], f1[62:0]});
+                           ex_rd, {execute_req_frs2_value[63], execute_req_frs1_value[62:0]});
                         3'b001: retire_fp_value_linear_fetch(
-                           ex_rd, {~f2[63], f1[62:0]});
+                           ex_rd, {~execute_req_frs2_value[63], execute_req_frs1_value[62:0]});
                         3'b010: retire_fp_value_linear_fetch(
-                           ex_rd, {f2[63] ^ f1[63], f1[62:0]});
+                           ex_rd, {execute_req_frs2_value[63] ^ execute_req_frs1_value[63], execute_req_frs1_value[62:0]});
                         default: begin
                            cause = `TRAP_ILLEGAL_INSTRUCTION;
                            tval = ex_insn;
@@ -6614,7 +6614,7 @@ module smolrv64(input wire        clock,
                    end
                    // FEQ.S / FLT.S / FLE.S: integer rd; NV flag on NaN per op.
                    7'b1010000: if (ex_insn[14:12] <= 3'b010) begin
-                      fcmp_result = fcmp_s(ex_insn[14:12], f1_s, f2_s);
+                      fcmp_result = fcmp_s(ex_insn[14:12], execute_req_frs1_s, execute_req_frs2_s);
                       write_back_register = ex_rd;
                       stage_int_commit_result({63'd0, fcmp_result[0]},
                                               fcmp_result[1] ? 5'b10000 : 5'd0,
@@ -6626,7 +6626,7 @@ module smolrv64(input wire        clock,
                    end
                    // FEQ.D / FLT.D / FLE.D
                    7'b1010001: if (ex_insn[14:12] <= 3'b010) begin
-                      fcmp_result = fcmp_d(ex_insn[14:12], f1, f2);
+                      fcmp_result = fcmp_d(ex_insn[14:12], execute_req_frs1_value, execute_req_frs2_value);
                       write_back_register = ex_rd;
                       stage_int_commit_result({63'd0, fcmp_result[0]},
                                               fcmp_result[1] ? 5'b10000 : 5'd0,
@@ -6643,7 +6643,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd11, ex_insn[20],
                                            3'd0, 3'd0,
                                            ex_insn[21] ? 2'd3 : 2'd2,
@@ -6661,7 +6661,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(f1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_frs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd11, ex_insn[20],
                                            3'd1, 3'd0,
                                            ex_insn[21] ? 2'd3 : 2'd2,
@@ -6679,7 +6679,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(s1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_rs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd12, ex_insn[20],
                                            3'd0, 3'd0,
                                            ex_insn[21] ? 2'd3 : 2'd2,
@@ -6697,7 +6697,7 @@ module smolrv64(input wire        clock,
                          tval = ex_insn;
                          state <= `S_EXCEPTION;
                       end else begin
-                         start_cvfpu_issue(s1, 64'd0, 64'd0, pre_fp_rnd_mode,
+                         start_cvfpu_issue(execute_req_rs1_value, 64'd0, 64'd0, pre_fp_rnd_mode,
                                            4'd12, ex_insn[20],
                                            3'd0, 3'd1,
                                            ex_insn[21] ? 2'd3 : 2'd2,
@@ -6711,10 +6711,10 @@ module smolrv64(input wire        clock,
                    // FMV.X.W (rs2=0, rm=0) or FCLASS.S (rs2=0, rm=1).
                    7'b1110000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      stage_int_commit_result({{32{f1[31]}}, f1[31:0]}, 5'd0, 1'b0);
+                      stage_int_commit_result({{32{execute_req_frs1_value[31]}}, execute_req_frs1_value[31:0]}, 5'd0, 1'b0);
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      stage_int_commit_result(fclass_s(f1), 5'd0, 1'b0);
+                      stage_int_commit_result(fclass_s(execute_req_frs1_value), 5'd0, 1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6723,18 +6723,18 @@ module smolrv64(input wire        clock,
                    // FMV.X.D (rs2=0, rm=0) or FCLASS.D (rs2=0, rm=1).
                    7'b1110001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
                       write_back_register = ex_rd;
-                      stage_int_commit_result(f1, 5'd0, 1'b0);
+                      stage_int_commit_result(execute_req_frs1_value, 5'd0, 1'b0);
                    end else if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b001) begin
                       write_back_register = ex_rd;
-                      stage_int_commit_result(fclass_d(f1), 5'd0, 1'b0);
+                      stage_int_commit_result(fclass_d(execute_req_frs1_value), 5'd0, 1'b0);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
                       state <= `S_EXCEPTION;
                    end
-                   // FMV.W.X (rs2=0, rm=0): NaN-box s1[31:0] into f[rd].
+                   // FMV.W.X (rs2=0, rm=0): NaN-box execute_req_rs1_value[31:0] into f[rd].
                    7'b1111000: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      retire_fp_value_linear_fetch(ex_rd, {32'hffffffff, s1[31:0]});
+                      retire_fp_value_linear_fetch(ex_rd, {32'hffffffff, execute_req_rs1_value[31:0]});
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6742,7 +6742,7 @@ module smolrv64(input wire        clock,
                    end
                    // FMV.D.X (rs2=0, rm=0): full 64-bit move.
                    7'b1111001: if (ex_insn[24:20] == 5'd0 && ex_insn[14:12] == 3'b000) begin
-                      retire_fp_value_linear_fetch(ex_rd, s1);
+                      retire_fp_value_linear_fetch(ex_rd, execute_req_rs1_value);
                    end else begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
                       tval = ex_insn;
@@ -6793,33 +6793,33 @@ module smolrv64(input wire        clock,
            end
 
            // Pre-registered ALU computation: uses execute_req_alu_op/execute_req_alu_b decoded in S_RF.
-           // Both operands (s1, execute_req_alu_b) and selector (execute_req_alu_op) are flip-flops,
+           // Both operands (execute_req_rs1_value, execute_req_alu_b) and selector (execute_req_alu_op) are flip-flops,
            // so the critical path is only ~7 LUT levels (vs ~15 with the inline if-else).
            case (execute_req_alu_op)
               `EXOP_ADD: exe_add <= execute_req_alu_sxt
-                            ? {32'd0, s1[31:0] + execute_req_alu_b[31:0]}
-                            : s1 + execute_req_alu_b;
+                            ? {32'd0, execute_req_rs1_value[31:0] + execute_req_alu_b[31:0]}
+                            : execute_req_rs1_value + execute_req_alu_b;
               `EXOP_SUB: exe_add <= execute_req_alu_sxt
-                            ? {32'd0, s1[31:0] - execute_req_alu_b[31:0]}
-                            : s1 - execute_req_alu_b;
+                            ? {32'd0, execute_req_rs1_value[31:0] - execute_req_alu_b[31:0]}
+                            : execute_req_rs1_value - execute_req_alu_b;
               `EXOP_SHL: exe_add <= execute_req_alu_sxt
-                            ? {32'd0, s1[31:0] << execute_req_alu_b[4:0]}
-                            : s1 << execute_req_alu_b[5:0];
+                            ? {32'd0, execute_req_rs1_value[31:0] << execute_req_alu_b[4:0]}
+                            : execute_req_rs1_value << execute_req_alu_b[5:0];
               `EXOP_SHR: exe_add <= execute_req_alu_sxt
-                            ? {32'd0, s1[31:0] >> execute_req_alu_b[4:0]}
-                            : s1 >> execute_req_alu_b[5:0];
+                            ? {32'd0, execute_req_rs1_value[31:0] >> execute_req_alu_b[4:0]}
+                            : execute_req_rs1_value >> execute_req_alu_b[5:0];
               // EXOP_SAR: use if/else to avoid ternary mixing signed/unsigned arms
-              // (Verilog coerces $signed(s1)>>>n to unsigned/logical when the
+              // (Verilog coerces $signed(execute_req_rs1_value)>>>n to unsigned/logical when the
               //  other ternary arm is unsigned, breaking arithmetic right shift)
               `EXOP_SAR: if (execute_req_alu_sxt)
-                            exe_add <= {32'd0, $signed(s1[31:0]) >>> execute_req_alu_b[4:0]};
+                            exe_add <= {32'd0, $signed(execute_req_rs1_value[31:0]) >>> execute_req_alu_b[4:0]};
                          else
-                            exe_add <= $signed(s1) >>> execute_req_alu_b[5:0];
-              `EXOP_XOR: exe_add <= s1 ^ execute_req_alu_b;
-              `EXOP_OR:  exe_add <= s1 | execute_req_alu_b;
-              `EXOP_AND: exe_add <= s1 & execute_req_alu_b;
-              `EXOP_LTS: exe_add <= $signed(s1) < $signed(execute_req_alu_b) ? 1 : 0;
-              `EXOP_LTU: exe_add <= s1 < execute_req_alu_b ? 1 : 0;
+                            exe_add <= $signed(execute_req_rs1_value) >>> execute_req_alu_b[5:0];
+              `EXOP_XOR: exe_add <= execute_req_rs1_value ^ execute_req_alu_b;
+              `EXOP_OR:  exe_add <= execute_req_rs1_value | execute_req_alu_b;
+              `EXOP_AND: exe_add <= execute_req_rs1_value & execute_req_alu_b;
+              `EXOP_LTS: exe_add <= $signed(execute_req_rs1_value) < $signed(execute_req_alu_b) ? 1 : 0;
+              `EXOP_LTU: exe_add <= execute_req_rs1_value < execute_req_alu_b ? 1 : 0;
               `EXOP_OPB: exe_add <= execute_req_alu_b;
               `EXOP_ONE: exe_add <= 1;
               default:   exe_add <= 0;
@@ -6856,8 +6856,8 @@ module smolrv64(input wire        clock,
         end
 
         `S_CVFPU_FMA_RF3: begin
-           start_cvfpu_issue(f1,
-                             f2,
+           start_cvfpu_issue(execute_req_frs1_value,
+                             execute_req_frs2_value,
                              (write_back_fp_valid &&
                               ex_insn[31:27] == write_back_fp_register) ?
                              fp_writeback_data : f1_bram,
@@ -7345,10 +7345,10 @@ module smolrv64(input wire        clock,
            // already checked both read and write permission), so S_STORE
            // will skip re-translation and use the physical mem_addr directly.
            mem_wr_mask = 255;
-           store_value = s2;
+           store_value = execute_req_rs2_value;
            if (!ex_insn[12]) begin
               write_back_value = {{32{write_back_value[31]}},write_back_value[31:0]};
-              store_value = {{32{s2[31]}},s2[31:0]};
+              store_value = {{32{execute_req_rs2_value[31]}},execute_req_rs2_value[31:0]};
               mem_wr_mask = 15;
            end
 
@@ -7881,13 +7881,13 @@ module smolrv64(input wire        clock,
 
            case (muldiv_start_op)
              `MULDIV_MUL: begin
-                mul_a = s1;
-                mul_b = s2;
+                mul_a = execute_req_rs1_value;
+                mul_b = execute_req_rs2_value;
                 state <= `S_MUL_RUNNING;
              end
 
              `MULDIV_MULH: begin
-                muldiv_output_negate = s1[63] != s2[63];
+                muldiv_output_negate = execute_req_rs1_value[63] != execute_req_rs2_value[63];
                 mul_a = {64'd0, pre_mul_abs_s1};
                 mul_b = pre_mul_abs_s2;
                 muldiv_output_high_part = 1;
@@ -7895,24 +7895,24 @@ module smolrv64(input wire        clock,
              end
 
              `MULDIV_MULHSU: begin
-                muldiv_output_negate = s1[63];
+                muldiv_output_negate = execute_req_rs1_value[63];
                 mul_a = {64'd0, pre_mul_abs_s1};
-                mul_b = s2;
+                mul_b = execute_req_rs2_value;
                 muldiv_output_high_part = 1;
                 state <= `S_MUL_RUNNING;
              end
 
              `MULDIV_MULHU: begin
-                mul_a = {64'd0, s1};
-                mul_b = s2;
+                mul_a = {64'd0, execute_req_rs1_value};
+                mul_b = execute_req_rs2_value;
                 muldiv_output_high_part = 1;
                 state <= `S_MUL_RUNNING;
              end
 
              `MULDIV_DIV: begin
-                muldiv_output_negate = s1[63] != s2[63];
-                if (s2 == 0)
-                  // No matter s1, this will produce -1 which is the correct answer
+                muldiv_output_negate = execute_req_rs1_value[63] != execute_req_rs2_value[63];
+                if (execute_req_rs2_value == 0)
+                  // No matter execute_req_rs1_value, this will produce -1 which is the correct answer
                   muldiv_output_negate = 0;
                 div_count = 64;
                 muldiv_p = {64'd0, pre_mul_abs_s1};
@@ -7923,16 +7923,16 @@ module smolrv64(input wire        clock,
 
              `MULDIV_DIVU: begin
                 div_count = 64;
-                muldiv_p = {64'd0, s1};
-                mul_a = {s2, 63'd0};
+                muldiv_p = {64'd0, execute_req_rs1_value};
+                mul_a = {execute_req_rs2_value, 63'd0};
                 mul_b = 0;
                 state <= `S_DIV_RUNNING;
              end
 
              `MULDIV_REM: begin
                 // "For REM, the sign of a nonzero result equals the sign of the dividend."
-                muldiv_output_negate = s1[63];
-                if (s2 == 0)
+                muldiv_output_negate = execute_req_rs1_value[63];
+                if (execute_req_rs2_value == 0)
                   // Preserve existing divide-by-zero behavior.
                   muldiv_output_negate = 0;
                 div_count = 64;
@@ -7944,28 +7944,28 @@ module smolrv64(input wire        clock,
              end
 
              `MULDIV_REMU: begin
-                if (s2 == 0)
-                  // No matter s1, this will produce -1 which is the correct answer
+                if (execute_req_rs2_value == 0)
+                  // No matter execute_req_rs1_value, this will produce -1 which is the correct answer
                   muldiv_output_negate = 0;
                 div_count = 64;
-                muldiv_p = {64'd0, s1};
-                mul_a = {s2, 63'd0};
+                muldiv_p = {64'd0, execute_req_rs1_value};
+                mul_a = {execute_req_rs2_value, 63'd0};
                 mul_b = 0;
                 muldiv_output_high_part = 1; // XXX abusing variables
                 state <= `S_DIV_RUNNING;
              end
 
              `MULDIV_MULW: begin
-                mul_a = s1[31:0];
-                mul_b = s2[31:0];
+                mul_a = execute_req_rs1_value[31:0];
+                mul_b = execute_req_rs2_value[31:0];
                 muldiv_output_sext32 = 1;
                 state <= `S_MUL_RUNNING;
              end
 
              `MULDIV_DIVW: begin
-                muldiv_output_negate = s1[31] != s2[31];
-                if (s2 == 0)
-                  // No matter s1, this will produce -1 which is the correct answer
+                muldiv_output_negate = execute_req_rs1_value[31] != execute_req_rs2_value[31];
+                if (execute_req_rs2_value == 0)
+                  // No matter execute_req_rs1_value, this will produce -1 which is the correct answer
                   muldiv_output_negate = 0;
                 div_count = 32;
                 muldiv_p = {96'd0, pre_mul_abs_s1w};
@@ -7976,12 +7976,12 @@ module smolrv64(input wire        clock,
              end
 
              `MULDIV_DIVUW: begin
-                if (s2 == 0)
-                  // No matter s1, this will produce -1 which is the correct answer
+                if (execute_req_rs2_value == 0)
+                  // No matter execute_req_rs1_value, this will produce -1 which is the correct answer
                   muldiv_output_negate = 0;
                 div_count = 32;
-                muldiv_p = {96'd0, s1[31:0]};
-                mul_a = {s2[31:0], 31'd0};
+                muldiv_p = {96'd0, execute_req_rs1_value[31:0]};
+                mul_a = {execute_req_rs2_value[31:0], 31'd0};
                 mul_b = 0;
                 muldiv_output_sext32 = 1;
                 state <= `S_DIV_RUNNING;
@@ -7989,7 +7989,7 @@ module smolrv64(input wire        clock,
 
              `MULDIV_REMW: begin
                 // "For REM, the sign of a nonzero result equals the sign of the dividend."
-                muldiv_output_negate = s1[31];
+                muldiv_output_negate = execute_req_rs1_value[31];
                 div_count = 32;
                 muldiv_p = {96'd0, pre_mul_abs_s1w};
                 mul_a = {pre_mul_abs_s2w, 31'd0};
@@ -8001,8 +8001,8 @@ module smolrv64(input wire        clock,
 
              `MULDIV_REMUW: begin
                 div_count = 32;
-                muldiv_p = {96'd0, s1[31:0]};
-                mul_a = {s2[31:0], 31'd0};
+                muldiv_p = {96'd0, execute_req_rs1_value[31:0]};
+                mul_a = {execute_req_rs2_value[31:0], 31'd0};
                 mul_b = 0;
                 muldiv_output_sext32 = 1;
                 muldiv_output_high_part = 1; // XXX abusing variables
