@@ -4,11 +4,11 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmolRV64 tiny128MiB";
+	model = "SmolRV64 tiny512MiB";
 
 	chosen {
-		linux,initrd-start = <0 0x8752c000>;
-		linux,initrd-end   = <0 0x87f00000>;
+		linux,initrd-start = <0 0x9f52c000>;
+		linux,initrd-end   = <0 0x9ff00000>;
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
@@ -131,6 +131,6 @@
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0 0x80000000 0 0x07f00000>; // 127 MiB
+		reg = <0 0x80000000 0 0x1ff00000>; // 511 MiB, DTB at 0x9ff00000
 	};
 };

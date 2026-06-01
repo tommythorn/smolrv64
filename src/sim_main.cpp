@@ -16,7 +16,10 @@ namespace {
 
 constexpr uint64_t SRAM_BASE = 0x70000000ULL;
 constexpr uint64_t AXI_BASE  = 0x80000000ULL;
-constexpr size_t   MEM_BYTES = 128ULL * 1024 * 1024;   // matches AXI_MEM_SIZE_LG2=27
+#ifndef COSIM_MEM_SIZE_LG2
+#define COSIM_MEM_SIZE_LG2 27
+#endif
+constexpr size_t   MEM_BYTES = 1ULL << COSIM_MEM_SIZE_LG2;
 
 SimmervCtx* g_ctx    = nullptr;
 uint64_t    g_seqno  = 0;

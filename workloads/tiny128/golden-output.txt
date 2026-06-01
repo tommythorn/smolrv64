@@ -76,9 +76,9 @@ Boot HART MEDELEG         : 0x000000000000b109
 [    0.000000]      vmemmap : 0xffffffc500000000 - 0xffffffc600000000   (4096 MB)
 [    0.000000]      vmalloc : 0xffffffc600000000 - 0xffffffd600000000   (  64 GB)
 [    0.000000]      modules : 0xffffffff0178f000 - 0xffffffff80000000   (2024 MB)
-[    0.000000]       lowmem : 0xffffffd600000000 - 0xffffffd607f00000   ( 127 MB)
+[    0.000000]       lowmem : 0xffffffd600000000 - 0xffffffd61ff00000   ( 511 MB)
 [    0.000000]       kernel : 0xffffffff80000000 - 0xffffffffffffffff   (2047 MB)
-[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 32512
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 130816
 [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
 [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
 [    0.000000] rcu: Hierarchical RCU implementation.
@@ -219,4 +219,4 @@ OK
 Starting network: OK
 
 Welcome to Simmerv/SmolRV64's tiny 10 MiB image
-smolrv64 login: 
+smolrv64 login:

@@ -5,7 +5,8 @@ SIM_RESET_PC="64'h80000000"
 SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 TINY128_SIM_MEM_BASE="64'h80000000"
-TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
+TINY128_SIM_MEM_SIZE_LG2=29
+TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 
 # For cache stress testing
 # SIM_CACHE_INDEX_BITS?=1
@@ -146,6 +147,18 @@ smolrv64-linux-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		-Mdir obj_dir_cosim -o smolrv64-linux-cosim \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cosim/smolrv64-linux-cosim $@
+
+smolrv64-tiny128-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
+		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
+	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
+		--top-module smolrv64_tb \
+		$(TINY128_SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
+		-Wno-fatal \
+		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -DCOSIM_MEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -I$(SIMMERV_INCLUDE)" \
+		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-Mdir obj_dir_tiny128_cosim -o smolrv64-tiny128-cosim \
+		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
+	cp obj_dir_tiny128_cosim/smolrv64-tiny128-cosim $@
 
 smolrv64-trace: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
