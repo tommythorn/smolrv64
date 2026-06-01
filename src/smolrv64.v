@@ -677,7 +677,7 @@ module smolrv64(input wire        clock,
 `define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
 `define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
 
-// pre_mem_op: memory access class pre-decoded in S_RF, consumed in S_EXECUTE.
+// execute_req_mem_op: memory access class pre-decoded in S_RF, consumed in S_EXECUTE.
 // Collapses the 22 per-insn load/store/AMO branches into one shared block
 // (single mem_addr adder).
 `define MEMOP_NONE  3'd0
@@ -928,12 +928,12 @@ module smolrv64(input wire        clock,
 
    // Pre-decoded mem access: computed in S_RF, consumed in S_EXECUTE shared block.
    // Collapses 22 load/store/AMO branches into one; shares a single s1+offset adder.
-   reg  [ 2:0] pre_mem_op       = 0; // MEMOP_* class code (NONE/LOAD/STORE/LR/SC/AMO)
-   reg  [63:0] pre_mem_offset   = 0; // byte offset added to s1 to form mem_addr
-   reg  [ 2:0] pre_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
-   reg  [ 7:0] pre_mem_wr_mask  = 0; // byte-enable for stores+SC
-   reg  [ 4:0] pre_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
-   reg         pre_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
+   reg  [ 2:0] execute_req_mem_op       = 0; // MEMOP_* class code (NONE/LOAD/STORE/LR/SC/AMO)
+   reg  [63:0] execute_req_mem_offset   = 0; // byte offset added to s1 to form mem_addr
+   reg  [ 2:0] execute_req_load_size_lg2= 0; // size/sign for loads+LR+AMO (matches load_size_lg2)
+   reg  [ 7:0] execute_req_mem_wr_mask  = 0; // byte-enable for stores+SC
+   reg  [ 4:0] execute_req_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
+   reg         execute_req_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
    reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 
    // Execute request boundary. S_RF asserts this after registering operands
@@ -976,7 +976,7 @@ module smolrv64(input wire        clock,
 `endif
 
    // FP load completions latch their boxed result into write_back_fp_value
-   // before retire. Keeping writeback data independent of pre_mem_fp lets an
+   // before retire. Keeping writeback data independent of execute_req_mem_fp lets an
    // early-launched next instruction predecode without changing the bypassed
    // value from the retiring FP load.
    wire [63:0] fp_writeback_data = write_back_fp_value;
@@ -4061,153 +4061,153 @@ module smolrv64(input wire        clock,
               d_csdsp_off  = {55'd0, rf3_insn[9:7],  rf3_insn[12:10],              3'd0};
 
               // Defaults: non-mem instruction
-              pre_mem_op        <= `MEMOP_NONE;
-              pre_mem_offset    <= 64'd0;
-              pre_load_size_lg2 <= 3'd0;
-              pre_mem_wr_mask   <= 8'd0;
-              pre_mem_wb_reg    <= 5'd0;
-              pre_mem_fp        <= 1'b0;
+              execute_req_mem_op        <= `MEMOP_NONE;
+              execute_req_mem_offset    <= 64'd0;
+              execute_req_load_size_lg2 <= 3'd0;
+              execute_req_mem_wr_mask   <= 8'd0;
+              execute_req_mem_wb_reg    <= 5'd0;
+              execute_req_mem_fp        <= 1'b0;
 
               // Compressed loads / stores (quadrants 0 & 2)
               if ((rf3_insn & 'he003) == 'h4000) begin // C.LW
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_clw_off;
-                 pre_load_size_lg2 <= 3'b110; // W, sign-extend
-                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_clw_off;
+                 execute_req_load_size_lg2 <= 3'b110; // W, sign-extend
+                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
               end
               else if ((rf3_insn & 'he003) == 'h2000) begin // C.FLD
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_cld_off;
-                 pre_load_size_lg2 <= 3'b011; // D
-                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
-                 pre_mem_fp        <= 1'b1;
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_cld_off;
+                 execute_req_load_size_lg2 <= 3'b011; // D
+                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_fp        <= 1'b1;
               end
               else if ((rf3_insn & 'he003) == 'h6000) begin // C.LD
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_cld_off;
-                 pre_load_size_lg2 <= 3'b011; // D
-                 pre_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_cld_off;
+                 execute_req_load_size_lg2 <= 3'b011; // D
+                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
               end
               else if ((rf3_insn & 'he003) == 'hc000) begin // C.SW
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_clw_off;
-                 pre_mem_wr_mask <= 8'h0f;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_clw_off;
+                 execute_req_mem_wr_mask <= 8'h0f;
               end
               else if ((rf3_insn & 'he003) == 'ha000) begin // C.FSD
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_cld_off;
-                 pre_mem_wr_mask <= 8'hff;
-                 pre_mem_fp      <= 1'b1;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_cld_off;
+                 execute_req_mem_wr_mask <= 8'hff;
+                 execute_req_mem_fp      <= 1'b1;
               end
               else if ((rf3_insn & 'he003) == 'he000) begin // C.SD
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_cld_off;
-                 pre_mem_wr_mask <= 8'hff;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_cld_off;
+                 execute_req_mem_wr_mask <= 8'hff;
               end
               else if ((rf3_insn & 'he003) == 'h4002) begin // C.LWSP
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_clwsp_off;
-                 pre_load_size_lg2 <= 3'b110;
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_clwsp_off;
+                 execute_req_load_size_lg2 <= 3'b110;
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
               end
               else if ((rf3_insn & 'he003) == 'h2002) begin // C.FLDSP
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_cldsp_off;
-                 pre_load_size_lg2 <= 3'b011;
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
-                 pre_mem_fp        <= 1'b1;
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_cldsp_off;
+                 execute_req_load_size_lg2 <= 3'b011;
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_fp        <= 1'b1;
               end
               else if ((rf3_insn & 'he003) == 'h6002) begin // C.LDSP
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_cldsp_off;
-                 pre_load_size_lg2 <= 3'b011;
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_cldsp_off;
+                 execute_req_load_size_lg2 <= 3'b011;
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
               end
               else if ((rf3_insn & 'he003) == 'hc002) begin // C.SWSP
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_cswsp_off;
-                 pre_mem_wr_mask <= 8'h0f;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_cswsp_off;
+                 execute_req_mem_wr_mask <= 8'h0f;
               end
               else if ((rf3_insn & 'he003) == 'ha002) begin // C.FSDSP
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_csdsp_off;
-                 pre_mem_wr_mask <= 8'hff;
-                 pre_mem_fp      <= 1'b1;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_csdsp_off;
+                 execute_req_mem_wr_mask <= 8'hff;
+                 execute_req_mem_fp      <= 1'b1;
               end
               else if ((rf3_insn & 'he003) == 'he002) begin // C.SDSP
-                 pre_mem_op      <= `MEMOP_STORE;
-                 pre_mem_offset  <= d_csdsp_off;
-                 pre_mem_wr_mask <= 8'hff;
+                 execute_req_mem_op      <= `MEMOP_STORE;
+                 execute_req_mem_offset  <= d_csdsp_off;
+                 execute_req_mem_wr_mask <= 8'hff;
               end
 
               // Uncompressed loads / stores / atomics
               else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00000) begin // LOAD
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_imm_i_s;
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_imm_i_s;
                  // funct3 = rf3_insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
                  // Current encoding: load_size_lg2 = {sxt, size[1:0]} where sxt=1 means sign-ext.
                  //   LB=0|4, LH=1|4, LW=2|4, LD=3, LBU=0, LHU=1, LWU=2.
                  // RISC-V: funct3[2]=0 is signed (B/H/W), funct3[2]=1 is unsigned (BU/HU/WU); LD has funct3=011 (size=3, no sxt).
                  // So load_size_lg2 = {~funct3[2] & (funct3[1:0] != 2'b11), funct3[1:0]}.
-                 pre_load_size_lg2 <= {~rf3_insn[14] & ~(rf3_insn[13] & rf3_insn[12]), rf3_insn[13:12]};
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_load_size_lg2 <= {~rf3_insn[14] & ~(rf3_insn[13] & rf3_insn[12]), rf3_insn[13:12]};
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
               end
               else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01000) begin // STORE
-                 pre_mem_op     <= `MEMOP_STORE;
-                 pre_mem_offset <= d_imm_s_s;
+                 execute_req_mem_op     <= `MEMOP_STORE;
+                 execute_req_mem_offset <= d_imm_s_s;
                  // wr_mask = (1 << (1 << funct3[1:0])) - 1
                  case (rf3_insn[13:12])
-                    2'b00: pre_mem_wr_mask <= 8'h01; // SB
-                    2'b01: pre_mem_wr_mask <= 8'h03; // SH
-                    2'b10: pre_mem_wr_mask <= 8'h0f; // SW
-                    2'b11: pre_mem_wr_mask <= 8'hff; // SD
+                    2'b00: execute_req_mem_wr_mask <= 8'h01; // SB
+                    2'b01: execute_req_mem_wr_mask <= 8'h03; // SH
+                    2'b10: execute_req_mem_wr_mask <= 8'h0f; // SW
+                    2'b11: execute_req_mem_wr_mask <= 8'hff; // SD
                  endcase
               end
               else if ((rf3_insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
                        (rf3_insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
-                 pre_mem_op        <= `MEMOP_LR;
-                 pre_mem_offset    <= 64'd0;
-                 pre_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_op        <= `MEMOP_LR;
+                 execute_req_mem_offset    <= 64'd0;
+                 execute_req_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
               end
               else if ((rf3_insn & 'hf800707f) == 'h1800202f ||  // SC.W
                        (rf3_insn & 'hf800707f) == 'h1800302f) begin // SC.D
-                 pre_mem_op      <= `MEMOP_SC;
-                 pre_mem_offset  <= 64'd0;
-                 pre_mem_wr_mask <= rf3_insn[12] ? 8'hff : 8'h0f;
-                 pre_mem_wb_reg  <= rf3_insn[11:7];
+                 execute_req_mem_op      <= `MEMOP_SC;
+                 execute_req_mem_offset  <= 64'd0;
+                 execute_req_mem_wr_mask <= rf3_insn[12] ? 8'hff : 8'h0f;
+                 execute_req_mem_wb_reg  <= rf3_insn[11:7];
               end
               // FP loads: FLW (funct3=010) and FLD (funct3=011); opcode 0000111
               else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00001 &&
                        (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
-                 pre_mem_op        <= `MEMOP_LOAD;
-                 pre_mem_offset    <= d_imm_i_s;
+                 execute_req_mem_op        <= `MEMOP_LOAD;
+                 execute_req_mem_offset    <= d_imm_i_s;
                  // FLW: 32-bit zero-extend (load_size_lg2=010), NaN-box in S_LOAD_ALIGN.
                  // FLD: 64-bit (load_size_lg2=011).
-                 pre_load_size_lg2 <= {1'b0, rf3_insn[13:12]};
-                 pre_mem_wb_reg    <= rf3_insn[11:7];
-                 pre_mem_fp        <= 1'b1;
+                 execute_req_load_size_lg2 <= {1'b0, rf3_insn[13:12]};
+                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_fp        <= 1'b1;
               end
               // FP stores: FSW (funct3=010) and FSD (funct3=011); opcode 0100111
               else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01001 &&
                        (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
-                 pre_mem_op        <= `MEMOP_STORE;
-                 pre_mem_offset    <= d_imm_s_s;
-                 pre_mem_wr_mask   <= rf3_insn[12] ? 8'hff : 8'h0f;
-                 pre_mem_fp        <= 1'b1;
+                 execute_req_mem_op        <= `MEMOP_STORE;
+                 execute_req_mem_offset    <= d_imm_s_s;
+                 execute_req_mem_wr_mask   <= rf3_insn[12] ? 8'hff : 8'h0f;
+                 execute_req_mem_fp        <= 1'b1;
               end
               else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01011 &&
                        (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
                  // funct5 must be one of the 9 defined AMO variants; otherwise
-                 // leave pre_mem_op = MEMOP_NONE so S_EXECUTE traps illegal instruction.
+                 // leave execute_req_mem_op = MEMOP_NONE so S_EXECUTE traps illegal instruction.
                  // (LR/SC are funct5 00010/00011, already matched above.)
                  case (rf3_insn[31:27])
                     5'b00000, 5'b00001, 5'b00100, 5'b01000, 5'b01100,
                     5'b10000, 5'b10100, 5'b11000, 5'b11100: begin
-                       pre_mem_op        <= `MEMOP_AMO;
-                       pre_mem_offset    <= 64'd0;
-                       pre_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
-                       pre_mem_wb_reg    <= rf3_insn[11:7];
+                       execute_req_mem_op        <= `MEMOP_AMO;
+                       execute_req_mem_offset    <= 64'd0;
+                       execute_req_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
+                       execute_req_mem_wb_reg    <= rf3_insn[11:7];
                     end
                     default: ; // illegal AMO funct5: falls through
                  endcase
@@ -5735,46 +5735,46 @@ module smolrv64(input wire        clock,
 
            // Shared mem-access block — collapses all load/store/LR/SC/AMO
            // branches using the pre-decoded signals from rf3_mem_decode.
-           // One s1+pre_mem_offset adder replaces 22 parallel copies,
+           // One s1+execute_req_mem_offset adder replaces 22 parallel copies,
            // shrinking the mem_addr critical path from ~14 LUT levels to ~7.
-           if (pre_mem_op != `MEMOP_NONE) begin
-              if (pre_mem_fp && fs == 0) begin
+           if (execute_req_mem_op != `MEMOP_NONE) begin
+              if (execute_req_mem_fp && fs == 0) begin
                  cause = `TRAP_ILLEGAL_INSTRUCTION;
                  tval = ex_insn;
                  state <= `S_EXCEPTION;
               end else begin
-              if (pre_mem_fp) fs = 3;
-              write_back_register    = pre_mem_fp ? 5'd0 : pre_mem_wb_reg;
-              write_back_fp_valid    = pre_mem_fp && pre_mem_op == `MEMOP_LOAD;
-              write_back_fp_register = pre_mem_wb_reg;
-              mem_addr      = s1 + pre_mem_offset;
-              mem_va        = s1 + pre_mem_offset;
+              if (execute_req_mem_fp) fs = 3;
+              write_back_register    = execute_req_mem_fp ? 5'd0 : execute_req_mem_wb_reg;
+              write_back_fp_valid    = execute_req_mem_fp && execute_req_mem_op == `MEMOP_LOAD;
+              write_back_fp_register = execute_req_mem_wb_reg;
+              mem_addr      = s1 + execute_req_mem_offset;
+              mem_va        = s1 + execute_req_mem_offset;
               mem_asid      <= {TLB_ASID_BITS{1'b0}};
               mem_perm      <= CACHE_PERM_PHYS;
-              mem_ctx       <= {((pre_mem_op == `MEMOP_STORE || pre_mem_op == `MEMOP_SC) ? 2'd2 :
-                                 (pre_mem_op == `MEMOP_AMO ? 2'd3 : 2'd1)),
+              mem_ctx       <= {((execute_req_mem_op == `MEMOP_STORE || execute_req_mem_op == `MEMOP_SC) ? 2'd2 :
+                                 (execute_req_mem_op == `MEMOP_AMO ? 2'd3 : 2'd1)),
                                 (mprv ? mpp : prv), sum, mxr};
-              load_size_lg2 = pre_load_size_lg2;
+              load_size_lg2 = execute_req_load_size_lg2;
               begin : mem_access_dispatch
                  reg [12:0] mem_access_bytes;
 
-                 case (pre_mem_op)
+                 case (execute_req_mem_op)
                    `MEMOP_STORE,
                    `MEMOP_SC: begin
-                      case (pre_mem_wr_mask)
+                      case (execute_req_mem_wr_mask)
                         8'hff: mem_access_bytes = 13'd8;
                         8'h0f: mem_access_bytes = 13'd4;
                         8'h03: mem_access_bytes = 13'd2;
                         default: mem_access_bytes = 13'd1;
                       endcase
                    end
-                   default: mem_access_bytes = 13'd1 << pre_load_size_lg2[1:0];
+                   default: mem_access_bytes = 13'd1 << execute_req_load_size_lg2[1:0];
                  endcase
 
                  if (csr_satp[63:60] == 4'd8 && (mprv ? mpp : prv) != 3 &&
-                     (pre_mem_op != `MEMOP_SC || reservation_match) &&
+                     (execute_req_mem_op != `MEMOP_SC || reservation_match) &&
                      ({1'b0, mem_addr[11:0]} + mem_access_bytes > 13'd4096)) begin
-                    cause = (pre_mem_op == `MEMOP_STORE || pre_mem_op == `MEMOP_SC || pre_mem_op == `MEMOP_AMO)
+                    cause = (execute_req_mem_op == `MEMOP_STORE || execute_req_mem_op == `MEMOP_SC || execute_req_mem_op == `MEMOP_AMO)
                             ? `TRAP_STORE_ADDRESS_MISALIGNED
                             : `TRAP_LOAD_ADDRESS_MISALIGNED;
                     tval = mem_addr;
@@ -5782,11 +5782,11 @@ module smolrv64(input wire        clock,
                     write_back_fp_valid = 0;
                     state <= `S_EXCEPTION;
                  end else begin
-                    case (pre_mem_op)
+                    case (execute_req_mem_op)
                        `MEMOP_LOAD: state <= `S_LOAD_ALIGN;
                        `MEMOP_STORE: begin
-                          mem_wr_mask = pre_mem_wr_mask;
-                          store_value = pre_mem_fp ? f2 : s2;
+                          mem_wr_mask = execute_req_mem_wr_mask;
+                          store_value = execute_req_mem_fp ? f2 : s2;
                           state <= `S_STORE;
                        end
                        `MEMOP_LR: begin
@@ -5796,7 +5796,7 @@ module smolrv64(input wire        clock,
                        `MEMOP_SC: begin
                           if (reservation_match) begin
                              write_back_value <= 0;
-                             mem_wr_mask = pre_mem_wr_mask;
+                             mem_wr_mask = execute_req_mem_wr_mask;
                              store_value = s2;
                              state <= `S_STORE;
                           end
@@ -5811,7 +5811,7 @@ module smolrv64(input wire        clock,
                     endcase
                  end
               end
-              end // else: !(pre_mem_fp && fs == 0)
+              end // else: !(execute_req_mem_fp && fs == 0)
            end
 
            // Quadrant 0
