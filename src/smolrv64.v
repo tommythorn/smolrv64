@@ -973,6 +973,10 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] execute_req_rs1_q = 0;
    reg  [ 4:0] execute_req_rs2_q = 0;
    reg  [ 5:0] execute_req_shamt_q = 0;
+   reg  [63:0] execute_req_rs1_value_q = 0;
+   reg  [63:0] execute_req_rs2_value_q = 0;
+   reg  [63:0] execute_req_frs1_value_q = 0;
+   reg  [63:0] execute_req_frs2_value_q = 0;
    reg  [ 3:0] execute_req_alu_op_q = 0;
    reg  [63:0] execute_req_alu_b_q = 0;
    reg         execute_req_alu_sxt_q = 0;
@@ -5056,6 +5060,10 @@ module smolrv64(input wire        clock,
          execute_req_rs1_q <= 0;
          execute_req_rs2_q <= 0;
          execute_req_shamt_q <= 0;
+         execute_req_rs1_value_q <= 0;
+         execute_req_rs2_value_q <= 0;
+         execute_req_frs1_value_q <= 0;
+         execute_req_frs2_value_q <= 0;
          execute_req_alu_op_q <= 0;
          execute_req_alu_b_q <= 0;
          execute_req_alu_sxt_q <= 0;
@@ -5077,6 +5085,10 @@ module smolrv64(input wire        clock,
               execute_req_rs1 != execute_req_rs1_q ||
               execute_req_rs2 != execute_req_rs2_q ||
               execute_req_shamt != execute_req_shamt_q ||
+              execute_req_rs1_value != execute_req_rs1_value_q ||
+              execute_req_rs2_value != execute_req_rs2_value_q ||
+              execute_req_frs1_value != execute_req_frs1_value_q ||
+              execute_req_frs2_value != execute_req_frs2_value_q ||
               execute_req_alu_op != execute_req_alu_op_q ||
               execute_req_alu_b != execute_req_alu_b_q ||
               execute_req_alu_sxt != execute_req_alu_sxt_q ||
@@ -5101,6 +5113,10 @@ module smolrv64(input wire        clock,
          execute_req_rs1_q <= execute_req_rs1;
          execute_req_rs2_q <= execute_req_rs2;
          execute_req_shamt_q <= execute_req_shamt;
+         execute_req_rs1_value_q <= execute_req_rs1_value;
+         execute_req_rs2_value_q <= execute_req_rs2_value;
+         execute_req_frs1_value_q <= execute_req_frs1_value;
+         execute_req_frs2_value_q <= execute_req_frs2_value;
          execute_req_alu_op_q <= execute_req_alu_op;
          execute_req_alu_b_q <= execute_req_alu_b;
          execute_req_alu_sxt_q <= execute_req_alu_sxt;
