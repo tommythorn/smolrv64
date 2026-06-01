@@ -61,4 +61,4 @@ fw_payload.elf-6.15.0.bin: fw_payload.elf-6.15.0
 
 ref:
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -n -m 512 -d tiny128.dtb,0x9ff00000 fw_payload.elf-6.15.0 tiny128.cpio,0x9f52c000
+	$(SIMMERV)/target/release/simmerv_cli -n -m 128 -d tiny128.dtb,0x87f00000 fw_payload.elf-6.15.0 tiny128.cpio,0x8752c000
