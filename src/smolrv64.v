@@ -541,23 +541,6 @@ module smolrv64(input wire        clock,
 `define CSR_MIG_TO_STATE 12'hfc7
 `define CSR_MIG_TO_CAUSE 12'hfc8
 `define CSR_MIG_TO_ADDR  12'hfc9
-`define CSR_VHPR_READS 12'hfca
-`define CSR_VHPR_WRITES 12'hfcb
-`define CSR_VHPR_READ_HITS 12'hfcc
-`define CSR_VHPR_READ_MISSES 12'hfcd
-`define CSR_VHPR_WRITE_HITS 12'hfce
-`define CSR_VHPR_WRITE_MISSES 12'hfcf
-`define CSR_VHPR_FILLS 12'hfd0
-`define CSR_VHPR_VICTIM_EVICTS 12'hfd1
-`define CSR_VHPR_DIRTY_VICTIM_EVICTS 12'hfd2
-`define CSR_VHPR_ALIAS_EVICTS 12'hfd3
-`define CSR_VHPR_DIRTY_ALIAS_EVICTS 12'hfd4
-`define CSR_VHPR_FLUSH_EVICTS 12'hfd5
-`define CSR_VHPR_DIRTY_FLUSH_EVICTS 12'hfd6
-`define CSR_VHPR_CBO_PROBES 12'hfd7
-`define CSR_VHPR_PTW_PROBES 12'hfd8
-`define CSR_VHPR_EPOCH_BUMPS 12'hfd9
-`define CSR_VHPR_EPOCH_ROLLOVERS 12'hfda
 `define CSR_VHPR_EPOCH 12'hfdb
 `define CSR_BUILD_STAMP 12'hfde
 
@@ -726,6 +709,43 @@ module smolrv64(input wire        clock,
 `define HPM_EVENT_PTW_LEAF_2M      16'h0311
 `define HPM_EVENT_PTW_LEAF_1G      16'h0312
 `define HPM_EVENT_PTW_LEAF_NAPOT   16'h0313
+`define HPM_EVENT_VHPR_READS              16'h0400
+`define HPM_EVENT_VHPR_WRITES             16'h0401
+`define HPM_EVENT_VHPR_READ_HITS          16'h0402
+`define HPM_EVENT_VHPR_READ_MISSES        16'h0403
+`define HPM_EVENT_VHPR_WRITE_HITS         16'h0404
+`define HPM_EVENT_VHPR_WRITE_MISSES       16'h0405
+`define HPM_EVENT_VHPR_FILLS              16'h0406
+`define HPM_EVENT_VHPR_VICTIM_EVICTS      16'h0407
+`define HPM_EVENT_VHPR_DIRTY_VICTIM_EVICTS 16'h0408
+`define HPM_EVENT_VHPR_ALIAS_EVICTS       16'h0409
+`define HPM_EVENT_VHPR_DIRTY_ALIAS_EVICTS 16'h040a
+`define HPM_EVENT_VHPR_FLUSH_EVICTS       16'h040b
+`define HPM_EVENT_VHPR_DIRTY_FLUSH_EVICTS 16'h040c
+`define HPM_EVENT_VHPR_CBO_PROBES         16'h040d
+`define HPM_EVENT_VHPR_PTW_PROBES         16'h040e
+`define HPM_EVENT_VHPR_EPOCH_BUMPS        16'h040f
+`define HPM_EVENT_VHPR_EPOCH_ROLLOVERS    16'h0410
+
+// Bit indices into the packed hpm_vhpr_pulse vector (one bit per VHPR stat).
+`define VHPRP_READS               0
+`define VHPRP_WRITES              1
+`define VHPRP_READ_HITS           2
+`define VHPRP_READ_MISSES         3
+`define VHPRP_WRITE_HITS          4
+`define VHPRP_WRITE_MISSES        5
+`define VHPRP_FILLS               6
+`define VHPRP_VICTIM_EVICTS       7
+`define VHPRP_DIRTY_VICTIM_EVICTS 8
+`define VHPRP_ALIAS_EVICTS        9
+`define VHPRP_DIRTY_ALIAS_EVICTS  10
+`define VHPRP_FLUSH_EVICTS        11
+`define VHPRP_DIRTY_FLUSH_EVICTS  12
+`define VHPRP_CBO_PROBES          13
+`define VHPRP_PTW_PROBES          14
+`define VHPRP_EPOCH_BUMPS         15
+`define VHPRP_EPOCH_ROLLOVERS     16
+`define VHPRP_WIDTH               17
 
 `define REGION_UART    3'd0
 `define REGION_CLINT   3'd1
@@ -2163,6 +2183,7 @@ module smolrv64(input wire        clock,
       input        ptw_leaf_2m_pulse;
       input        ptw_leaf_1g_pulse;
       input        ptw_leaf_napot_pulse;
+      input [`VHPRP_WIDTH-1:0] vhpr_pulse;
       begin
          case (event_code)
            `HPM_EVENT_CYCLES:          hpm_event_active = 1'b1;
@@ -2197,6 +2218,23 @@ module smolrv64(input wire        clock,
            `HPM_EVENT_PTW_LEAF_2M:     hpm_event_active = ptw_leaf_2m_pulse;
            `HPM_EVENT_PTW_LEAF_1G:     hpm_event_active = ptw_leaf_1g_pulse;
            `HPM_EVENT_PTW_LEAF_NAPOT:  hpm_event_active = ptw_leaf_napot_pulse;
+           `HPM_EVENT_VHPR_READS:              hpm_event_active = vhpr_pulse[`VHPRP_READS];
+           `HPM_EVENT_VHPR_WRITES:             hpm_event_active = vhpr_pulse[`VHPRP_WRITES];
+           `HPM_EVENT_VHPR_READ_HITS:          hpm_event_active = vhpr_pulse[`VHPRP_READ_HITS];
+           `HPM_EVENT_VHPR_READ_MISSES:        hpm_event_active = vhpr_pulse[`VHPRP_READ_MISSES];
+           `HPM_EVENT_VHPR_WRITE_HITS:         hpm_event_active = vhpr_pulse[`VHPRP_WRITE_HITS];
+           `HPM_EVENT_VHPR_WRITE_MISSES:       hpm_event_active = vhpr_pulse[`VHPRP_WRITE_MISSES];
+           `HPM_EVENT_VHPR_FILLS:              hpm_event_active = vhpr_pulse[`VHPRP_FILLS];
+           `HPM_EVENT_VHPR_VICTIM_EVICTS:      hpm_event_active = vhpr_pulse[`VHPRP_VICTIM_EVICTS];
+           `HPM_EVENT_VHPR_DIRTY_VICTIM_EVICTS: hpm_event_active = vhpr_pulse[`VHPRP_DIRTY_VICTIM_EVICTS];
+           `HPM_EVENT_VHPR_ALIAS_EVICTS:       hpm_event_active = vhpr_pulse[`VHPRP_ALIAS_EVICTS];
+           `HPM_EVENT_VHPR_DIRTY_ALIAS_EVICTS: hpm_event_active = vhpr_pulse[`VHPRP_DIRTY_ALIAS_EVICTS];
+           `HPM_EVENT_VHPR_FLUSH_EVICTS:       hpm_event_active = vhpr_pulse[`VHPRP_FLUSH_EVICTS];
+           `HPM_EVENT_VHPR_DIRTY_FLUSH_EVICTS: hpm_event_active = vhpr_pulse[`VHPRP_DIRTY_FLUSH_EVICTS];
+           `HPM_EVENT_VHPR_CBO_PROBES:         hpm_event_active = vhpr_pulse[`VHPRP_CBO_PROBES];
+           `HPM_EVENT_VHPR_PTW_PROBES:         hpm_event_active = vhpr_pulse[`VHPRP_PTW_PROBES];
+           `HPM_EVENT_VHPR_EPOCH_BUMPS:        hpm_event_active = vhpr_pulse[`VHPRP_EPOCH_BUMPS];
+           `HPM_EVENT_VHPR_EPOCH_ROLLOVERS:    hpm_event_active = vhpr_pulse[`VHPRP_EPOCH_ROLLOVERS];
            default:                    hpm_event_active = 1'b0;
          endcase
       end
@@ -2328,48 +2366,11 @@ module smolrv64(input wire        clock,
    reg                       vhpr_epoch_bump_req = 0;
    reg                       vhpr_epoch_bump_ack = 0;
    wire                      vhpr_epoch_bump_pending = vhpr_epoch_bump_req != vhpr_epoch_bump_ack;
-   reg [63:0] csr_vhpr_reads = 0;
-   reg [63:0] csr_vhpr_writes = 0;
-   reg [63:0] csr_vhpr_read_hits = 0;
-   reg [63:0] csr_vhpr_read_misses = 0;
-   reg [63:0] csr_vhpr_write_hits = 0;
-   reg [63:0] csr_vhpr_write_misses = 0;
-   reg [63:0] csr_vhpr_fills = 0;
-   reg [63:0] csr_vhpr_victim_evicts = 0;
-   reg [63:0] csr_vhpr_dirty_victim_evicts = 0;
-   reg [63:0] csr_vhpr_alias_evicts = 0;
-   reg [63:0] csr_vhpr_dirty_alias_evicts = 0;
-   reg [63:0] csr_vhpr_flush_evicts = 0;
-   reg [63:0] csr_vhpr_dirty_flush_evicts = 0;
-   reg [63:0] csr_vhpr_cbo_probes = 0;
-   reg [63:0] csr_vhpr_ptw_probes = 0;
-   reg [63:0] csr_vhpr_epoch_bumps = 0;
-   reg [63:0] csr_vhpr_epoch_rollovers = 0;
-   reg        vhpr_stats_clear_req = 0;
-   reg        vhpr_stats_clear_ack = 0;
-   wire       vhpr_stats_clear_pending = vhpr_stats_clear_req != vhpr_stats_clear_ack;
-
-   task vhpr_clear_stats;
-      begin
-         csr_vhpr_reads <= 0;
-         csr_vhpr_writes <= 0;
-         csr_vhpr_read_hits <= 0;
-         csr_vhpr_read_misses <= 0;
-         csr_vhpr_write_hits <= 0;
-         csr_vhpr_write_misses <= 0;
-         csr_vhpr_fills <= 0;
-         csr_vhpr_victim_evicts <= 0;
-         csr_vhpr_dirty_victim_evicts <= 0;
-         csr_vhpr_alias_evicts <= 0;
-         csr_vhpr_dirty_alias_evicts <= 0;
-         csr_vhpr_flush_evicts <= 0;
-         csr_vhpr_dirty_flush_evicts <= 0;
-         csr_vhpr_cbo_probes <= 0;
-         csr_vhpr_ptw_probes <= 0;
-         csr_vhpr_epoch_bumps <= 0;
-         csr_vhpr_epoch_rollovers <= 0;
-      end
-   endtask
+   // VHPR cache stats are exposed as selectable HPM events (0x0400+) rather
+   // than dedicated always-on CSR counters. One bit per stat is pulsed where
+   // the event occurs (block C cache FSM); hpm_vhpr_pulse_q feeds the event mux.
+   reg [`VHPRP_WIDTH-1:0] hpm_vhpr_pulse = 0;
+   reg [`VHPRP_WIDTH-1:0] hpm_vhpr_pulse_q = 0;
 
    task cache_flush_next_line;
       reg [`CACHE_INDEX_BITS-1:0] next_idx;
@@ -5285,6 +5286,7 @@ module smolrv64(input wire        clock,
          hpm_ptw_leaf_2m_q <= 0;
          hpm_ptw_leaf_1g_q <= 0;
          hpm_ptw_leaf_napot_q <= 0;
+         hpm_vhpr_pulse_q <= 0;
       end else begin
          hpm_instret_q <= hpm_instret_pulse;
          hpm_icache_read_q <= hpm_icache_read_pulse;
@@ -5317,6 +5319,7 @@ module smolrv64(input wire        clock,
          hpm_ptw_leaf_2m_q <= hpm_ptw_leaf_2m_pulse;
          hpm_ptw_leaf_1g_q <= hpm_ptw_leaf_1g_pulse;
          hpm_ptw_leaf_napot_q <= hpm_ptw_leaf_napot_pulse;
+         hpm_vhpr_pulse_q <= hpm_vhpr_pulse;
       end
       for (hpm_i = 0; hpm_i < `HPM_COUNTERS; hpm_i = hpm_i + 1) begin
          if (core_reset_now) begin
@@ -5361,7 +5364,8 @@ module smolrv64(input wire        clock,
                                           hpm_ptw_leaf_4k_q,
                                           hpm_ptw_leaf_2m_q,
                                           hpm_ptw_leaf_1g_q,
-                                          hpm_ptw_leaf_napot_q)) begin
+                                          hpm_ptw_leaf_napot_q,
+                                          hpm_vhpr_pulse_q)) begin
                if (csr_mhpmcounter[hpm_i] == 64'hffff_ffff_ffff_ffff &&
                    !csr_mhpmevent[hpm_i][`HPM_OF_BIT] &&
                    !(hpm_event_wr_en && hpm_wr_idx == hpm_i[3:0])) begin
@@ -7625,23 +7629,6 @@ module smolrv64(input wire        clock,
                 `CSR_MIG_TO_STATE:csr_read_val = csr_mig_to_state;
                 `CSR_MIG_TO_CAUSE:csr_read_val = csr_mig_to_cause;
                 `CSR_MIG_TO_ADDR: csr_read_val = csr_mig_to_addr;
-                `CSR_VHPR_READS: csr_read_val = csr_vhpr_reads;
-                `CSR_VHPR_WRITES: csr_read_val = csr_vhpr_writes;
-                `CSR_VHPR_READ_HITS: csr_read_val = csr_vhpr_read_hits;
-                `CSR_VHPR_READ_MISSES: csr_read_val = csr_vhpr_read_misses;
-                `CSR_VHPR_WRITE_HITS: csr_read_val = csr_vhpr_write_hits;
-                `CSR_VHPR_WRITE_MISSES: csr_read_val = csr_vhpr_write_misses;
-                `CSR_VHPR_FILLS: csr_read_val = csr_vhpr_fills;
-                `CSR_VHPR_VICTIM_EVICTS: csr_read_val = csr_vhpr_victim_evicts;
-                `CSR_VHPR_DIRTY_VICTIM_EVICTS: csr_read_val = csr_vhpr_dirty_victim_evicts;
-                `CSR_VHPR_ALIAS_EVICTS: csr_read_val = csr_vhpr_alias_evicts;
-                `CSR_VHPR_DIRTY_ALIAS_EVICTS: csr_read_val = csr_vhpr_dirty_alias_evicts;
-                `CSR_VHPR_FLUSH_EVICTS: csr_read_val = csr_vhpr_flush_evicts;
-                `CSR_VHPR_DIRTY_FLUSH_EVICTS: csr_read_val = csr_vhpr_dirty_flush_evicts;
-                `CSR_VHPR_CBO_PROBES: csr_read_val = csr_vhpr_cbo_probes;
-                `CSR_VHPR_PTW_PROBES: csr_read_val = csr_vhpr_ptw_probes;
-                `CSR_VHPR_EPOCH_BUMPS: csr_read_val = csr_vhpr_epoch_bumps;
-                `CSR_VHPR_EPOCH_ROLLOVERS: csr_read_val = csr_vhpr_epoch_rollovers;
                 `CSR_VHPR_EPOCH: csr_read_val = {{64-VHPR_EPOCH_BITS{1'b0}}, vhpr_epoch};
                 `CSR_BUILD_STAMP: csr_read_val = `SMOLRV64_BUILD_STAMP;
                 default: begin
@@ -7874,25 +7861,6 @@ module smolrv64(input wire        clock,
                    csr_mig_to_state <= 0;
                    csr_mig_to_cause <= 0;
                    csr_mig_to_addr  <= 0;
-                end
-                `CSR_VHPR_READS,
-                `CSR_VHPR_WRITES,
-                `CSR_VHPR_READ_HITS,
-                `CSR_VHPR_READ_MISSES,
-                `CSR_VHPR_WRITE_HITS,
-                `CSR_VHPR_WRITE_MISSES,
-                `CSR_VHPR_FILLS,
-                `CSR_VHPR_VICTIM_EVICTS,
-                `CSR_VHPR_DIRTY_VICTIM_EVICTS,
-                `CSR_VHPR_ALIAS_EVICTS,
-                `CSR_VHPR_DIRTY_ALIAS_EVICTS,
-                `CSR_VHPR_FLUSH_EVICTS,
-                `CSR_VHPR_DIRTY_FLUSH_EVICTS,
-                `CSR_VHPR_CBO_PROBES,
-                `CSR_VHPR_PTW_PROBES,
-                `CSR_VHPR_EPOCH_BUMPS,
-                `CSR_VHPR_EPOCH_ROLLOVERS: begin
-                   vhpr_stats_clear_req <= ~vhpr_stats_clear_ack;
                 end
                 default: begin
                  csr_write_failure = 1;
@@ -8903,6 +8871,7 @@ module smolrv64(input wire        clock,
       dcache_way0_tag_wr_en <= 0;
       dcache_way1_tag_wr_en <= 0;
       icache_invalidate_valid <= 0;
+      hpm_vhpr_pulse <= 0;
 
       if (ptw_direct_read)
          ptw_direct_probe_pending <= 1;
@@ -8938,9 +8907,9 @@ module smolrv64(input wire        clock,
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
                  vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
-                 csr_vhpr_epoch_bumps <= csr_vhpr_epoch_bumps + 1;
+                 hpm_vhpr_pulse[`VHPRP_EPOCH_BUMPS] <= 1;
                  if (next_epoch == {VHPR_EPOCH_BITS{1'b0}})
-                    csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
+                    hpm_vhpr_pulse[`VHPRP_EPOCH_ROLLOVERS] <= 1;
               end
               cache_flush_idx <= 0;
               cache_flush_way <= 0;
@@ -8954,9 +8923,9 @@ module smolrv64(input wire        clock,
               reg [VHPR_EPOCH_BITS-1:0] next_epoch;
               next_epoch = vhpr_epoch + {{VHPR_EPOCH_BITS-1{1'b0}}, 1'b1};
               vhpr_epoch_bump_ack <= vhpr_epoch_bump_req;
-              csr_vhpr_epoch_bumps <= csr_vhpr_epoch_bumps + 1;
+              hpm_vhpr_pulse[`VHPRP_EPOCH_BUMPS] <= 1;
               if (next_epoch == {VHPR_EPOCH_BITS{1'b0}}) begin
-                 csr_vhpr_epoch_rollovers <= csr_vhpr_epoch_rollovers + 1;
+                 hpm_vhpr_pulse[`VHPRP_EPOCH_ROLLOVERS] <= 1;
                  vhpr_next_epoch <= next_epoch;
                  vhpr_epoch_update_pending <= 1'b1;
                  cache_flush_idx <= 0;
@@ -8971,7 +8940,7 @@ module smolrv64(input wire        clock,
                  vhpr_epoch <= next_epoch;
               end
 	   end else if (cache_cbo_flush) begin
-              csr_vhpr_cbo_probes <= csr_vhpr_cbo_probes + 1;
+              hpm_vhpr_pulse[`VHPRP_CBO_PROBES] <= 1;
 	      cache_addr              <= {33'd0, cache_cbo_line_addr, 6'd0};
 	      cache_req_ptag          <= cache_cbo_ptag;
 	      cache_req_cbo           <= 1;
@@ -8990,7 +8959,7 @@ module smolrv64(input wire        clock,
               cache_way1_bank0_rd_idx <= {3'd0, cache_cbo_line_addr[11:6]};
               cache_state             <= CACHE_PROBE_READ;
 	   end else if (ptw_direct_probe_pending) begin
-              csr_vhpr_ptw_probes <= csr_vhpr_ptw_probes + 1;
+              hpm_vhpr_pulse[`VHPRP_PTW_PROBES] <= 1;
 	      cache_addr              <= {33'd0, ptw_direct_addr[27:3], 6'd0};
 	      cache_req_ptag          <= ptw_direct_addr[27:9];
 	      cache_req_cbo           <= 1;
@@ -9032,7 +9001,7 @@ module smolrv64(input wire        clock,
                  end
               end
            end else if (cache_read_req) begin
-              csr_vhpr_reads <= csr_vhpr_reads + 1;
+              hpm_vhpr_pulse[`VHPRP_READS] <= 1;
               cache_addr          <= cache_issue_addr;
               cache_req_va        <= cache_issue_va;
               cache_req_asid      <= cache_issue_asid;
@@ -9059,7 +9028,7 @@ module smolrv64(input wire        clock,
               cache_way1_next_rd_idx <= cache_way1_index(cache_issue_next_va, cache_issue_asid);
               cache_state         <= CACHE_TAG_READ;
            end else if (dmem_write) begin
-              csr_vhpr_writes <= csr_vhpr_writes + 1;
+              hpm_vhpr_pulse[`VHPRP_WRITES] <= 1;
               cache_addr          <= cache_issue_addr;
               cache_req_va        <= cache_issue_va;
               cache_req_asid      <= cache_issue_asid;
@@ -9123,22 +9092,22 @@ module smolrv64(input wire        clock,
         CACHE_HIT_RESP: begin : cache_hit_resp
            if (cache_req_ifetch) begin
               if (icache_rsp_hit) begin
-                 csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
+                 hpm_vhpr_pulse[`VHPRP_READ_HITS] <= 1;
                  cache_state <= CACHE_IDLE;
               end else begin
-                 csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
+                 hpm_vhpr_pulse[`VHPRP_READ_MISSES] <= 1;
                  cache_start_fill_request();
               end
            end else if (dcache_rsp_hit) begin
               if (cache_req_write) begin
-                 csr_vhpr_write_hits <= csr_vhpr_write_hits + 1;
+                 hpm_vhpr_pulse[`VHPRP_WRITE_HITS] <= 1;
                  cache_state <= CACHE_HIT_WRITE;
               end else begin
                  reg dcache_next_line_safe;
 
                  dcache_next_line_safe =
                     cache_req_same_line || cache_req_va[11:3] != 9'h1ff;
-                 csr_vhpr_read_hits <= csr_vhpr_read_hits + 1;
+                 hpm_vhpr_pulse[`VHPRP_READ_HITS] <= 1;
                  emit_dmem_load_rsp(dcache_rsp_data,
                                     dcache_rsp_next_data,
                                     dcache_rsp_next_valid &&
@@ -9147,9 +9116,9 @@ module smolrv64(input wire        clock,
               end
            end else begin
               if (cache_req_write)
-                 csr_vhpr_write_misses <= csr_vhpr_write_misses + 1;
+                 hpm_vhpr_pulse[`VHPRP_WRITE_MISSES] <= 1;
               else
-                 csr_vhpr_read_misses <= csr_vhpr_read_misses + 1;
+                 hpm_vhpr_pulse[`VHPRP_READ_MISSES] <= 1;
               cache_start_fill_request();
            end
         end
@@ -9187,8 +9156,8 @@ module smolrv64(input wire        clock,
            icache_invalidate_way <= cache_flush_way;
            icache_invalidate_idx <= cache_flush_idx;
            if (cache_meta_valid(flush_meta) && cache_meta_dirty(flush_meta)) begin
-              csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
-              csr_vhpr_dirty_flush_evicts <= csr_vhpr_dirty_flush_evicts + 1;
+              hpm_vhpr_pulse[`VHPRP_FLUSH_EVICTS] <= 1;
+              hpm_vhpr_pulse[`VHPRP_DIRTY_FLUSH_EVICTS] <= 1;
               cache_victim_way <= cache_flush_way;
               cache_victim_idx <= cache_flush_idx;
               cache_victim_ptag <= cache_meta_ptag(flush_meta);
@@ -9204,7 +9173,7 @@ module smolrv64(input wire        clock,
               cache_state <= CACHE_WB_PREP;
            end else begin
               if (cache_meta_valid(flush_meta)) begin
-                 csr_vhpr_flush_evicts <= csr_vhpr_flush_evicts + 1;
+                 hpm_vhpr_pulse[`VHPRP_FLUSH_EVICTS] <= 1;
               end
               cache_flush_next_line();
            end
@@ -9263,9 +9232,9 @@ module smolrv64(input wire        clock,
               cache_victim_ptag <= cache_req_ptag;
               same_as_target = found && found_way == cache_target_way && found_idx == cache_target_idx;
               if (found && !cache_req_cbo) begin
-                 csr_vhpr_alias_evicts <= csr_vhpr_alias_evicts + 1;
+                 hpm_vhpr_pulse[`VHPRP_ALIAS_EVICTS] <= 1;
                  if (found_dirty)
-                    csr_vhpr_dirty_alias_evicts <= csr_vhpr_dirty_alias_evicts + 1;
+                    hpm_vhpr_pulse[`VHPRP_DIRTY_ALIAS_EVICTS] <= 1;
               end
               cache_need_target_wb <= !cache_req_cbo && cache_target_dirty && !same_as_target;
               if (found && found_dirty) begin
@@ -9284,8 +9253,8 @@ module smolrv64(input wire        clock,
                  cache_cbo_done_r <= 1;
                  cache_state <= CACHE_IDLE;
               end else if (cache_target_dirty) begin
-                 csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
-                 csr_vhpr_dirty_victim_evicts <= csr_vhpr_dirty_victim_evicts + 1;
+                 hpm_vhpr_pulse[`VHPRP_VICTIM_EVICTS] <= 1;
+                 hpm_vhpr_pulse[`VHPRP_DIRTY_VICTIM_EVICTS] <= 1;
                  cache_victim_way <= cache_target_way;
                  cache_victim_idx <= cache_target_idx;
                  cache_victim_ptag <= cache_target_ptag;
@@ -9314,8 +9283,8 @@ module smolrv64(input wire        clock,
               cache_state <= CACHE_IDLE;
            end else if (cache_need_target_wb) begin
               cache_need_target_wb <= 0;
-              csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
-              csr_vhpr_dirty_victim_evicts <= csr_vhpr_dirty_victim_evicts + 1;
+              hpm_vhpr_pulse[`VHPRP_VICTIM_EVICTS] <= 1;
+              hpm_vhpr_pulse[`VHPRP_DIRTY_VICTIM_EVICTS] <= 1;
               cache_victim_way <= cache_target_way;
               cache_victim_idx <= cache_target_idx;
               cache_victim_ptag <= cache_target_ptag;
@@ -9460,9 +9429,9 @@ module smolrv64(input wire        clock,
               if (cache_fill_beat == cache_req_next_bank)
                  cache_fill_next_data <= cache_fill_data;
               if (cache_fill_beat == 3'd7) begin
-                 csr_vhpr_fills <= csr_vhpr_fills + 1;
+                 hpm_vhpr_pulse[`VHPRP_FILLS] <= 1;
                  if (cache_target_valid && !cache_target_dirty)
-                    csr_vhpr_victim_evicts <= csr_vhpr_victim_evicts + 1;
+                    hpm_vhpr_pulse[`VHPRP_VICTIM_EVICTS] <= 1;
                  if (!cache_req_ifetch) begin
                     dcache_way0_tag_wr_en <= !cache_target_way;
                     dcache_way1_tag_wr_en <= cache_target_way;
@@ -9498,11 +9467,6 @@ module smolrv64(input wire        clock,
 
         default: cache_state <= CACHE_IDLE;
       endcase
-
-      if (vhpr_stats_clear_pending) begin
-         vhpr_clear_stats();
-         vhpr_stats_clear_ack <= vhpr_stats_clear_req;
-      end
 
       if (core_reset_now) begin
          cache_state <= CACHE_IDLE;

@@ -128,5 +128,90 @@
     "EventName": "PTW_LEAF_NAPOT",
     "EventCode": "0x0313",
     "BriefDescription": "Page table walks completing at a NAPOT leaf"
+  },
+  {
+    "EventName": "VHPR_READS",
+    "EventCode": "0x0400",
+    "BriefDescription": "VHPR L1 read requests (combined I-fetch and D-load)"
+  },
+  {
+    "EventName": "VHPR_WRITES",
+    "EventCode": "0x0401",
+    "BriefDescription": "VHPR L1 write requests (D-store only)"
+  },
+  {
+    "EventName": "VHPR_READ_HITS",
+    "EventCode": "0x0402",
+    "BriefDescription": "VHPR L1 read hits (combined I-fetch and D-load)"
+  },
+  {
+    "EventName": "VHPR_READ_MISSES",
+    "EventCode": "0x0403",
+    "BriefDescription": "VHPR L1 read misses (combined I-fetch and D-load)"
+  },
+  {
+    "EventName": "VHPR_WRITE_HITS",
+    "EventCode": "0x0404",
+    "BriefDescription": "VHPR L1 write hits (D-store only)"
+  },
+  {
+    "EventName": "VHPR_WRITE_MISSES",
+    "EventCode": "0x0405",
+    "BriefDescription": "VHPR L1 write misses (D-store only)"
+  },
+  {
+    "EventName": "VHPR_FILLS",
+    "EventCode": "0x0406",
+    "BriefDescription": "VHPR L1 line fills from memory"
+  },
+  {
+    "EventName": "VHPR_VICTIM_EVICTS",
+    "EventCode": "0x0407",
+    "BriefDescription": "VHPR L1 victim-line evictions on fill"
+  },
+  {
+    "EventName": "VHPR_DIRTY_VICTIM_EVICTS",
+    "EventCode": "0x0408",
+    "BriefDescription": "VHPR L1 dirty victim-line evictions (require writeback)"
+  },
+  {
+    "EventName": "VHPR_ALIAS_EVICTS",
+    "EventCode": "0x0409",
+    "BriefDescription": "VHPR L1 evictions due to physical-alias reconciliation"
+  },
+  {
+    "EventName": "VHPR_DIRTY_ALIAS_EVICTS",
+    "EventCode": "0x040a",
+    "BriefDescription": "VHPR L1 dirty alias evictions (require writeback)"
+  },
+  {
+    "EventName": "VHPR_FLUSH_EVICTS",
+    "EventCode": "0x040b",
+    "BriefDescription": "VHPR L1 evictions during a flush walk"
+  },
+  {
+    "EventName": "VHPR_DIRTY_FLUSH_EVICTS",
+    "EventCode": "0x040c",
+    "BriefDescription": "VHPR L1 dirty evictions during a flush walk (require writeback)"
+  },
+  {
+    "EventName": "VHPR_CBO_PROBES",
+    "EventCode": "0x040d",
+    "BriefDescription": "VHPR L1 cache-block-operation probes"
+  },
+  {
+    "EventName": "VHPR_PTW_PROBES",
+    "EventCode": "0x040e",
+    "BriefDescription": "VHPR L1 probes from the page-table walker"
+  },
+  {
+    "EventName": "VHPR_EPOCH_BUMPS",
+    "EventCode": "0x040f",
+    "BriefDescription": "VHPR epoch increments (bulk invalidation via epoch)"
+  },
+  {
+    "EventName": "VHPR_EPOCH_ROLLOVERS",
+    "EventCode": "0x0410",
+    "BriefDescription": "VHPR epoch rollovers (epoch wrapped, forcing a real flush)"
   }
 ]
