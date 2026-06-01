@@ -661,11 +661,11 @@ module smolrv64(input wire        clock,
 `define MULDIV_REMW            4'd11
 `define MULDIV_REMUW           4'd12
 
-// pre_exe_op: ALU operation code pre-decoded in S_RF, consumed in S_EXECUTE.
+// execute_req_alu_op: ALU operation code pre-decoded in S_RF, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
 // reduces the critical path from ~15 LUT levels to ~7 LUT levels per stage.
-`define EXOP_ADD  4'd0   // exe_add = s1 + pre_exe_b  (s1[31:0]+b[31:0] if sxt)
-`define EXOP_SUB  4'd1   // exe_add = s1 - pre_exe_b
+`define EXOP_ADD  4'd0   // exe_add = s1 + execute_req_alu_b  (s1[31:0]+b[31:0] if sxt)
+`define EXOP_SUB  4'd1   // exe_add = s1 - execute_req_alu_b
 `define EXOP_SHL  4'd2   // exe_add = s1 << b[5:0]    (s1[31:0]<<b[4:0] if sxt)
 `define EXOP_SHR  4'd3   // exe_add = s1 >> b[5:0]
 `define EXOP_SAR  4'd4   // exe_add = $signed(s1) >>> b[5:0]
@@ -922,9 +922,9 @@ module smolrv64(input wire        clock,
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
    // Pre-decoded ALU control: computed in S_RF, consumed in S_EXECUTE case block.
    // Breaks the ~50-condition priority if-else chain critical path into two pipeline stages.
-   reg  [ 3:0] pre_exe_op  = 0;  // EXOP_* operation code
-   (* max_fanout = 32 *) reg [63:0] pre_exe_b = 0; // second operand
-   reg         pre_exe_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
+   reg  [ 3:0] execute_req_alu_op  = 0;  // EXOP_* operation code
+   (* max_fanout = 32 *) reg [63:0] execute_req_alu_b = 0; // second operand
+   reg         execute_req_alu_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
 
    // Pre-decoded mem access: computed in S_RF, consumed in S_EXECUTE shared block.
    // Collapses 22 load/store/AMO branches into one; shares a single s1+offset adder.
@@ -3852,7 +3852,7 @@ module smolrv64(input wire        clock,
            // Pre-decode ALU operation and second operand for S_EXECUTE.
            // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
            // after same-cycle writeback bypass.
-           // All assignments use <= so they register into pre_exe_op/pre_exe_b/pre_exe_sxt.
+           // All assignments use <= so they register into execute_req_alu_op/execute_req_alu_b/execute_req_alu_sxt.
            // Immediates are computed inline (1-3 LUT from insn_reg) rather than read from
            // the imm_i/imm_u registers (which are only updated with = inside S_EXECUTE).
            begin : rf3_pre_decode
@@ -3863,174 +3863,174 @@ module smolrv64(input wire        clock,
               d_c_imm = {{59{rf3_insn[12]}},rf3_insn[6:2]};  // c_imm12_62
 
               // Default: harmless value (only matters for instructions reaching S_EXECUTE2)
-              pre_exe_op  <= `EXOP_OPB;
-              pre_exe_b   <= 64'd0;
-              pre_exe_sxt <= 0;
+              execute_req_alu_op  <= `EXOP_OPB;
+              execute_req_alu_b   <= 64'd0;
+              execute_req_alu_sxt <= 0;
 
               // ---- Compressed instructions (rf3_insn[1:0] != 2'b11) ----
 
               // Quadrant 0
               if ((rf3_insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
-                 pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= {54'd0, rf3_insn[10:7], rf3_insn[12:11], rf3_insn[5], rf3_insn[6], 2'd0};
+                 execute_req_alu_op <= `EXOP_ADD;
+                 execute_req_alu_b  <= {54'd0, rf3_insn[10:7], rf3_insn[12:11], rf3_insn[5], rf3_insn[6], 2'd0};
               end
 
               // Quadrant 1
               else if ((rf3_insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
-                 pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_ADD;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
-                 pre_exe_op  <= `EXOP_ADD;
-                 pre_exe_b   <= d_c_imm;
-                 pre_exe_sxt <= 1;
+                 execute_req_alu_op  <= `EXOP_ADD;
+                 execute_req_alu_b   <= d_c_imm;
+                 execute_req_alu_sxt <= 1;
               end
               else if ((rf3_insn & 'he003) == 'h4001) begin // C.LI
-                 pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_OPB;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
-                 pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= {{55{rf3_insn[12]}}, rf3_insn[4:3], rf3_insn[5], rf3_insn[2], rf3_insn[6], 4'd0};
+                 execute_req_alu_op <= `EXOP_ADD;
+                 execute_req_alu_b  <= {{55{rf3_insn[12]}}, rf3_insn[4:3], rf3_insn[5], rf3_insn[2], rf3_insn[6], 4'd0};
               end
               else if ((rf3_insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
-                 pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= {{47{rf3_insn[12]}}, rf3_insn[6:2], 12'd0};
+                 execute_req_alu_op <= `EXOP_OPB;
+                 execute_req_alu_b  <= {{47{rf3_insn[12]}}, rf3_insn[6:2], 12'd0};
               end
               else if ((rf3_insn & 'hec03) == 'h8001) begin // C.SRLI
-                 pre_exe_op <= `EXOP_SHR;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_SHR;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'hec03) == 'h8401) begin // C.SRAI
-                 pre_exe_op <= `EXOP_SAR;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_SAR;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'hec03) == 'h8801) begin // C.ANDI
-                 pre_exe_op <= `EXOP_AND;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_AND;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c01) begin // C.SUB
-                 pre_exe_op <= `EXOP_SUB;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_SUB;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c21) begin // C.XOR
-                 pre_exe_op <= `EXOP_XOR;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_XOR;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c41) begin // C.OR
-                 pre_exe_op <= `EXOP_OR;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_OR;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h8c61) begin // C.AND
-                 pre_exe_op <= `EXOP_AND;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_AND;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hfc63) == 'h9c01) begin // C.SUBW
-                 pre_exe_op  <= `EXOP_SUB;
-                 pre_exe_b   <= rf3_s2_value;
-                 pre_exe_sxt <= 1;
+                 execute_req_alu_op  <= `EXOP_SUB;
+                 execute_req_alu_b   <= rf3_s2_value;
+                 execute_req_alu_sxt <= 1;
               end
               else if ((rf3_insn & 'hfc63) == 'h9c21) begin // C.ADDW
-                 pre_exe_op  <= `EXOP_ADD;
-                 pre_exe_b   <= rf3_s2_value;
-                 pre_exe_sxt <= 1;
+                 execute_req_alu_op  <= `EXOP_ADD;
+                 execute_req_alu_b   <= rf3_s2_value;
+                 execute_req_alu_sxt <= 1;
               end
 
               // Quadrant 2
               else if ((rf3_insn & 'he003) == 'h0002) begin // C.SLLI
-                 pre_exe_op <= `EXOP_SHL;
-                 pre_exe_b  <= d_c_imm;
+                 execute_req_alu_op <= `EXOP_SHL;
+                 execute_req_alu_b  <= d_c_imm;
               end
               else if ((rf3_insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
                  ;
               end
               else if ((rf3_insn & 'hf003) == 'h8002) begin // C.MV
-                 pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_OPB;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
               else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR (link = rf3_pc+2)
-                 pre_exe_op <= `EXOP_OPB;
-                 pre_exe_b  <= rf3_next_pc;
+                 execute_req_alu_op <= `EXOP_OPB;
+                 execute_req_alu_b  <= rf3_next_pc;
               end
               else if ((rf3_insn & 'hf003) == 'h9002) begin // C.ADD
-                 pre_exe_op <= `EXOP_ADD;
-                 pre_exe_b  <= rf3_s2_value;
+                 execute_req_alu_op <= `EXOP_ADD;
+                 execute_req_alu_b  <= rf3_s2_value;
               end
 
               // ---- 32-bit instructions (rf3_insn[1:0] == 2'b11) ----
               else if (rf3_insn[1:0] == 2'b11) begin
                  case (rf3_insn[6:2])
                     5'b01101: begin // LUI
-                       pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= d_imm_u;
+                       execute_req_alu_op <= `EXOP_OPB;
+                       execute_req_alu_b  <= d_imm_u;
                     end
                     5'b00101: begin // AUIPC
-                       pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= rf3_pc + d_imm_u;
+                       execute_req_alu_op <= `EXOP_OPB;
+                       execute_req_alu_b  <= rf3_pc + d_imm_u;
                     end
                     5'b11011: begin // JAL (link = rf3_pc+4)
-                       pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= rf3_next_pc;
+                       execute_req_alu_op <= `EXOP_OPB;
+                       execute_req_alu_b  <= rf3_next_pc;
                     end
                     5'b11001: begin // JALR (link = rf3_pc+4)
-                       pre_exe_op <= `EXOP_OPB;
-                       pre_exe_b  <= rf3_next_pc;
+                       execute_req_alu_op <= `EXOP_OPB;
+                       execute_req_alu_b  <= rf3_next_pc;
                     end
                     5'b00100: begin // OP-IMM: funct3 selects operation
-                       pre_exe_b <= d_imm_i; // default; shifts override below
+                       execute_req_alu_b <= d_imm_i; // default; shifts override below
                        case (rf3_insn[14:12])
-                          3'b000: pre_exe_op <= `EXOP_ADD;   // ADDI
-                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {58'd0, rf3_insn[25:20]}; end  // SLLI
-                          3'b010: pre_exe_op <= `EXOP_LTS;   // SLTI
-                          3'b011: pre_exe_op <= `EXOP_LTU;   // SLTIU
-                          3'b100: pre_exe_op <= `EXOP_XOR;   // XORI
+                          3'b000: execute_req_alu_op <= `EXOP_ADD;   // ADDI
+                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {58'd0, rf3_insn[25:20]}; end  // SLLI
+                          3'b010: execute_req_alu_op <= `EXOP_LTS;   // SLTI
+                          3'b011: execute_req_alu_op <= `EXOP_LTU;   // SLTIU
+                          3'b100: execute_req_alu_op <= `EXOP_XOR;   // XORI
                           3'b101: begin // SRLI / SRAI
-                             pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             pre_exe_b  <= {58'd0, rf3_insn[25:20]};
+                             execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             execute_req_alu_b  <= {58'd0, rf3_insn[25:20]};
                           end
-                          3'b110: pre_exe_op <= `EXOP_OR;    // ORI
-                          3'b111: pre_exe_op <= `EXOP_AND;   // ANDI
+                          3'b110: execute_req_alu_op <= `EXOP_OR;    // ORI
+                          3'b111: execute_req_alu_op <= `EXOP_AND;   // ANDI
                        endcase
                     end
                     5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
-                       pre_exe_b <= rf3_s2_value;
+                       execute_req_alu_b <= rf3_s2_value;
                        case (rf3_insn[14:12])
-                          3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
-                          3'b001: pre_exe_op <= `EXOP_SHL;  // SLL
-                          3'b010: pre_exe_op <= `EXOP_LTS;  // SLT
-                          3'b011: pre_exe_op <= `EXOP_LTU;  // SLTU
-                          3'b100: pre_exe_op <= `EXOP_XOR;  // XOR
-                          3'b101: pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
-                          3'b110: pre_exe_op <= `EXOP_OR;   // OR
-                          3'b111: pre_exe_op <= `EXOP_AND;  // AND
+                          3'b000: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
+                          3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLL
+                          3'b010: execute_req_alu_op <= `EXOP_LTS;  // SLT
+                          3'b011: execute_req_alu_op <= `EXOP_LTU;  // SLTU
+                          3'b100: execute_req_alu_op <= `EXOP_XOR;  // XOR
+                          3'b101: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
+                          3'b110: execute_req_alu_op <= `EXOP_OR;   // OR
+                          3'b111: execute_req_alu_op <= `EXOP_AND;  // AND
                           // MUL/DIV (funct7[0]=1): exe_add unused; default EXOP_OPB is fine
                        endcase
                     end
                     5'b00110: begin // OP-IMM-32 (W-type immediates)
-                       pre_exe_sxt <= 1;
+                       execute_req_alu_sxt <= 1;
                        case (rf3_insn[14:12])
-                          3'b000: begin pre_exe_op <= `EXOP_ADD; pre_exe_b <= d_imm_i; end  // ADDIW
-                          3'b001: begin pre_exe_op <= `EXOP_SHL; pre_exe_b <= {59'd0, rf3_insn[24:20]}; end  // SLLIW
+                          3'b000: begin execute_req_alu_op <= `EXOP_ADD; execute_req_alu_b <= d_imm_i; end  // ADDIW
+                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {59'd0, rf3_insn[24:20]}; end  // SLLIW
                           3'b101: begin  // SRLIW / SRAIW
-                             pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             pre_exe_b  <= {59'd0, rf3_insn[24:20]};
+                             execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             execute_req_alu_b  <= {59'd0, rf3_insn[24:20]};
                           end
                           default: ; // other funct3: no exe_add
                        endcase
                     end
                     5'b01110: begin // OP-REG-32 (W-type register)
-                       pre_exe_sxt <= 1;
-                       pre_exe_b <= rf3_s2_value;
+                       execute_req_alu_sxt <= 1;
+                       execute_req_alu_b <= rf3_s2_value;
                        case (rf3_insn[14:12])
-                          3'b000: pre_exe_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
-                          3'b001: pre_exe_op <= `EXOP_SHL;  // SLLW
-                          3'b101: pre_exe_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
+                          3'b000: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
+                          3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLLW
+                          3'b101: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
                           // MUL/DIV-W: exe_add unused
                           default: ;
                        endcase
                     end
                     5'b01011: begin // AMO — SC.W/D fail path writes exe_add = 1
-                       pre_exe_op <= `EXOP_ONE;
+                       execute_req_alu_op <= `EXOP_ONE;
                     end
                     default: ; // LOAD, STORE, BRANCH, CSR, etc.: exe_add unused
                  endcase
@@ -4774,9 +4774,9 @@ module smolrv64(input wire        clock,
       end
    endtask
 
-   task retire_pre_exe_b;
+   task retire_execute_req_alu_b;
       begin
-         retire_int_value_prepared_fetch(pre_exe_b);
+         retire_int_value_prepared_fetch(execute_req_alu_b);
       end
    endtask
 
@@ -5843,7 +5843,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'he003) == 'h4001) begin // C.LI
               write_back_register = ex_insn[11:7];
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'hef83) == 'h6101) begin // C.ADDI16SP
@@ -5852,7 +5852,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'he003) == 'h6001) begin // C.LUI
               write_back_register = ex_rs1;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'hec03) == 'h8001) begin // C.SRLI
@@ -5865,7 +5865,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hec03) == 'h8801) begin // C.ANDI
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 & pre_exe_b);
+              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c01) begin // C.SUB
@@ -5874,17 +5874,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfc63) == 'h8c21) begin // C.XOR
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
+              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c41) begin // C.OR
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 | pre_exe_b);
+              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h8c61) begin // C.AND
               write_back_register = ex_rs1;
-              retire_int_value_prepared_fetch(s1 & pre_exe_b);
+              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfc63) == 'h9c01) begin // C.SUBW
@@ -5924,7 +5924,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hf003) == 'h8002) begin // C.MV
               write_back_register = ex_rs1;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'hffff) == 'h9002) begin // C.EBREAK
@@ -5936,7 +5936,7 @@ module smolrv64(input wire        clock,
            else if ((ex_insn & 'hf07f) == 'h9002) begin // C.JALR
               write_back_register = 1;
               npc = pre_jalr_target;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'hf003) == 'h9002) begin // C.ADD
@@ -5948,23 +5948,23 @@ module smolrv64(input wire        clock,
            // Quadrant 3, uncompressed
            else if ((ex_insn & 'h0000007f) == 'h00000037) begin // LUI
               write_back_register = ex_rd;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'h0000007f) == 'h00000017) begin // AUIPC
               write_back_register = ex_rd;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'h0000007f) == 'h0000006f) begin // JAL
               write_back_register = ex_rd;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00000067) begin // JALR
               write_back_register = ex_rd;
               npc = pre_jalr_target;
-              retire_pre_exe_b();
+              retire_execute_req_alu_b();
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00000063) begin // BEQ
@@ -6013,17 +6013,17 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'h0000707f) == 'h00004013) begin // XORI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
+              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00006013) begin // ORI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 | pre_exe_b);
+              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'h0000707f) == 'h00007013) begin // ANDI
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 & pre_exe_b);
+              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00000033) begin // ADD
@@ -6048,7 +6048,7 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00004033) begin // XOR
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 ^ pre_exe_b);
+              retire_int_value_prepared_fetch(s1 ^ execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00005033) begin // SRL
@@ -6061,12 +6061,12 @@ module smolrv64(input wire        clock,
 
            else if ((ex_insn & 'hfe00707f) == 'h00006033) begin // OR
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 | pre_exe_b);
+              retire_int_value_prepared_fetch(s1 | execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hfe00707f) == 'h00007033) begin // AND
               write_back_register = ex_rd;
-              retire_int_value_prepared_fetch(s1 & pre_exe_b);
+              retire_int_value_prepared_fetch(s1 & execute_req_alu_b);
            end
 
            else if ((ex_insn & 'hf000707f) == 'h0000000f) begin // FENCE
@@ -6756,39 +6756,39 @@ module smolrv64(input wire        clock,
               state <= `S_EXCEPTION;
            end
 
-           // Pre-registered ALU computation: uses pre_exe_op/pre_exe_b decoded in S_RF.
-           // Both operands (s1, pre_exe_b) and selector (pre_exe_op) are flip-flops,
+           // Pre-registered ALU computation: uses execute_req_alu_op/execute_req_alu_b decoded in S_RF.
+           // Both operands (s1, execute_req_alu_b) and selector (execute_req_alu_op) are flip-flops,
            // so the critical path is only ~7 LUT levels (vs ~15 with the inline if-else).
-           case (pre_exe_op)
-              `EXOP_ADD: exe_add <= pre_exe_sxt
-                            ? {32'd0, s1[31:0] + pre_exe_b[31:0]}
-                            : s1 + pre_exe_b;
-              `EXOP_SUB: exe_add <= pre_exe_sxt
-                            ? {32'd0, s1[31:0] - pre_exe_b[31:0]}
-                            : s1 - pre_exe_b;
-              `EXOP_SHL: exe_add <= pre_exe_sxt
-                            ? {32'd0, s1[31:0] << pre_exe_b[4:0]}
-                            : s1 << pre_exe_b[5:0];
-              `EXOP_SHR: exe_add <= pre_exe_sxt
-                            ? {32'd0, s1[31:0] >> pre_exe_b[4:0]}
-                            : s1 >> pre_exe_b[5:0];
+           case (execute_req_alu_op)
+              `EXOP_ADD: exe_add <= execute_req_alu_sxt
+                            ? {32'd0, s1[31:0] + execute_req_alu_b[31:0]}
+                            : s1 + execute_req_alu_b;
+              `EXOP_SUB: exe_add <= execute_req_alu_sxt
+                            ? {32'd0, s1[31:0] - execute_req_alu_b[31:0]}
+                            : s1 - execute_req_alu_b;
+              `EXOP_SHL: exe_add <= execute_req_alu_sxt
+                            ? {32'd0, s1[31:0] << execute_req_alu_b[4:0]}
+                            : s1 << execute_req_alu_b[5:0];
+              `EXOP_SHR: exe_add <= execute_req_alu_sxt
+                            ? {32'd0, s1[31:0] >> execute_req_alu_b[4:0]}
+                            : s1 >> execute_req_alu_b[5:0];
               // EXOP_SAR: use if/else to avoid ternary mixing signed/unsigned arms
               // (Verilog coerces $signed(s1)>>>n to unsigned/logical when the
               //  other ternary arm is unsigned, breaking arithmetic right shift)
-              `EXOP_SAR: if (pre_exe_sxt)
-                            exe_add <= {32'd0, $signed(s1[31:0]) >>> pre_exe_b[4:0]};
+              `EXOP_SAR: if (execute_req_alu_sxt)
+                            exe_add <= {32'd0, $signed(s1[31:0]) >>> execute_req_alu_b[4:0]};
                          else
-                            exe_add <= $signed(s1) >>> pre_exe_b[5:0];
-              `EXOP_XOR: exe_add <= s1 ^ pre_exe_b;
-              `EXOP_OR:  exe_add <= s1 | pre_exe_b;
-              `EXOP_AND: exe_add <= s1 & pre_exe_b;
-              `EXOP_LTS: exe_add <= $signed(s1) < $signed(pre_exe_b) ? 1 : 0;
-              `EXOP_LTU: exe_add <= s1 < pre_exe_b ? 1 : 0;
-              `EXOP_OPB: exe_add <= pre_exe_b;
+                            exe_add <= $signed(s1) >>> execute_req_alu_b[5:0];
+              `EXOP_XOR: exe_add <= s1 ^ execute_req_alu_b;
+              `EXOP_OR:  exe_add <= s1 | execute_req_alu_b;
+              `EXOP_AND: exe_add <= s1 & execute_req_alu_b;
+              `EXOP_LTS: exe_add <= $signed(s1) < $signed(execute_req_alu_b) ? 1 : 0;
+              `EXOP_LTU: exe_add <= s1 < execute_req_alu_b ? 1 : 0;
+              `EXOP_OPB: exe_add <= execute_req_alu_b;
               `EXOP_ONE: exe_add <= 1;
               default:   exe_add <= 0;
            endcase
-           exe_sext32 <= pre_exe_sxt;
+           exe_sext32 <= execute_req_alu_sxt;
 
            end
         end
