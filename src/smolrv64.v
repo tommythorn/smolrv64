@@ -3513,6 +3513,13 @@ module smolrv64(input wire        clock,
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
 `endif
+         end else if (rf_decode_count != 0 &&
+                      rf_decode_pc_q[rf_decode_tail - 1'b1] == decode_pc &&
+                      rf_decode_epoch_q[rf_decode_tail - 1'b1] == decode_epoch) begin
+            // Dedup guard (experiment): drop an enqueue identical to the most
+            // recently queued entry. The redirect-target instruction is being
+            // double-fetched, leaving a stale duplicate at the head that breaks
+            // rf_decode_matches_retire and forces a perpetual redirect.
          end else begin
             rf_decode_enqueue_this_cycle = 1'b1;
             rf_decode_pc_q[rf_decode_tail] <= decode_pc;
