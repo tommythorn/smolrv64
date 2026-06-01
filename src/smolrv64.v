@@ -1264,27 +1264,27 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] id_rs2_q = 0;
    reg  [ 5:0] id_shamt_q = 0;
 `endif
-   wire [63:0]  rf3_pc = id_pc;
-   wire [63:0]  rf3_next_pc = id_next_pc;
-   wire [63:0]  rf3_predicted_pc = id_predicted_pc;
-   wire [ 1:0]  rf3_prv = id_prv;
-   wire [FRONTEND_EPOCH_BITS-1:0] rf3_epoch = id_epoch;
-   wire [31:0]  rf3_insn = id_insn;
-   wire [ 4:0]  rf3_rd = id_rd;
-   wire [ 4:0]  rf3_rs1 = id_rs1;
-   wire [ 4:0]  rf3_rs2 = id_rs2;
-   wire [ 5:0]  rf3_shamt = id_shamt;
-   wire [63:0]  rf3_s1_value =
-      (write_back_register != 0 && rf3_rs1 == write_back_register) ?
+   wire [63:0]  id_rf_pc = id_pc;
+   wire [63:0]  id_rf_next_pc = id_next_pc;
+   wire [63:0]  id_rf_predicted_pc = id_predicted_pc;
+   wire [ 1:0]  id_rf_prv = id_prv;
+   wire [FRONTEND_EPOCH_BITS-1:0] id_rf_epoch = id_epoch;
+   wire [31:0]  id_rf_insn = id_insn;
+   wire [ 4:0]  id_rf_rd = id_rd;
+   wire [ 4:0]  id_rf_rs1 = id_rs1;
+   wire [ 4:0]  id_rf_rs2 = id_rs2;
+   wire [ 5:0]  id_rf_shamt = id_shamt;
+   wire [63:0]  id_rf_rs1_value =
+      (write_back_register != 0 && id_rf_rs1 == write_back_register) ?
       write_back_value : s1_bram;
-   wire [63:0]  rf3_s2_value =
-      (write_back_register != 0 && rf3_rs2 == write_back_register) ?
+   wire [63:0]  id_rf_rs2_value =
+      (write_back_register != 0 && id_rf_rs2 == write_back_register) ?
       write_back_value : s2_bram;
-   wire [63:0]  rf3_f1_value =
-      (write_back_fp_valid && rf3_rs1 == write_back_fp_register) ?
+   wire [63:0]  id_rf_frs1_value =
+      (write_back_fp_valid && id_rf_rs1 == write_back_fp_register) ?
       fp_writeback_data : f1_bram;
-   wire [63:0]  rf3_f2_value =
-      (write_back_fp_valid && rf3_rs2 == write_back_fp_register) ?
+   wire [63:0]  id_rf_frs2_value =
+      (write_back_fp_valid && id_rf_rs2 == write_back_fp_register) ?
       fp_writeback_data : f2_bram;
 
    // VHPR write-back L1 for BRAM/DRAM.  The hit lookup is virtual
@@ -3855,187 +3855,187 @@ module smolrv64(input wire        clock,
            // Register RF output into execute_req_rs1_value/execute_req_rs2_value/execute_req_frs1_value/execute_req_frs2_value flip-flops.  Early launch can
            // overlap this read with the previous retire's writeback, so use the
            // local writeback bypass before latching operands.
-           execute_req_rs1_value <= rf3_s1_value;
-           execute_req_rs2_value <= rf3_s2_value;
-           execute_req_frs1_value <= rf3_f1_value;
-           execute_req_frs2_value <= rf3_f2_value;
+           execute_req_rs1_value <= id_rf_rs1_value;
+           execute_req_rs2_value <= id_rf_rs2_value;
+           execute_req_frs1_value <= id_rf_frs1_value;
+           execute_req_frs2_value <= id_rf_frs2_value;
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
-           reservation_match <= (reservation == rf3_s1_value);
-           pre_mul_abs_s1  <= rf3_s1_value[63] ? -rf3_s1_value : rf3_s1_value;
-           pre_mul_abs_s2  <= rf3_s2_value[63] ? -rf3_s2_value : rf3_s2_value;
-           pre_mul_abs_s1w <= rf3_s1_value[31] ? -rf3_s1_value[31:0] : rf3_s1_value[31:0];
-           pre_mul_abs_s2w <= rf3_s2_value[31] ? -rf3_s2_value[31:0] : rf3_s2_value[31:0];
+           reservation_match <= (reservation == id_rf_rs1_value);
+           pre_mul_abs_s1  <= id_rf_rs1_value[63] ? -id_rf_rs1_value : id_rf_rs1_value;
+           pre_mul_abs_s2  <= id_rf_rs2_value[63] ? -id_rf_rs2_value : id_rf_rs2_value;
+           pre_mul_abs_s1w <= id_rf_rs1_value[31] ? -id_rf_rs1_value[31:0] : id_rf_rs1_value[31:0];
+           pre_mul_abs_s2w <= id_rf_rs2_value[31] ? -id_rf_rs2_value[31:0] : id_rf_rs2_value[31:0];
            id_valid <= 0;
            id_rf_ready <= 0;
-           execute_req_pc <= rf3_pc;
-           execute_req_next_pc <= rf3_next_pc;
-           execute_req_predicted_pc <= rf3_predicted_pc;
-           execute_req_prv <= rf3_prv;
-           execute_req_epoch <= rf3_epoch;
-           execute_req_insn <= rf3_insn;
-           execute_req_rd <= rf3_rd;
-           execute_req_rs1 <= rf3_rs1;
-           execute_req_rs2 <= rf3_rs2;
-           execute_req_shamt <= rf3_shamt;
+           execute_req_pc <= id_rf_pc;
+           execute_req_next_pc <= id_rf_next_pc;
+           execute_req_predicted_pc <= id_rf_predicted_pc;
+           execute_req_prv <= id_rf_prv;
+           execute_req_epoch <= id_rf_epoch;
+           execute_req_insn <= id_rf_insn;
+           execute_req_rd <= id_rf_rd;
+           execute_req_rs1 <= id_rf_rs1;
+           execute_req_rs2 <= id_rf_rs2;
+           execute_req_shamt <= id_rf_shamt;
            execute_req_valid <= 1;
-           prepare_branch_metadata(rf3_pc, rf3_next_pc, rf3_insn,
-                                   rf3_s1_value, rf3_s2_value);
+           prepare_branch_metadata(id_rf_pc, id_rf_next_pc, id_rf_insn,
+                                   id_rf_rs1_value, id_rf_rs2_value);
            if (!preserve_state)
               state <= `S_EXECUTE;
 
            // Pre-decode ALU operation and second operand for S_EXECUTE.
-           // rf3_insn/rf3_pc are registered FFs; rf3_s2_value is read data
+           // id_rf_insn/id_rf_pc are registered FFs; id_rf_rs2_value is read data
            // after same-cycle writeback bypass.
            // All assignments use <= so they register into execute_req_alu_op/execute_req_alu_b/execute_req_alu_sxt.
            // Immediates are computed inline (1-3 LUT from insn_reg) rather than read from
            // the imm_i/imm_u registers (which are only updated with = inside S_EXECUTE).
-           begin : rf3_pre_decode
+           begin : id_rf_pre_decode
               reg [63:0] d_imm_i, d_imm_u, d_c_imm;
 
-              d_imm_i = {{52{rf3_insn[31]}},rf3_insn[31:20]};
-              d_imm_u = {{32{rf3_insn[31]}},rf3_insn[31:12],12'd0};
-              d_c_imm = {{59{rf3_insn[12]}},rf3_insn[6:2]};  // c_imm12_62
+              d_imm_i = {{52{id_rf_insn[31]}},id_rf_insn[31:20]};
+              d_imm_u = {{32{id_rf_insn[31]}},id_rf_insn[31:12],12'd0};
+              d_c_imm = {{59{id_rf_insn[12]}},id_rf_insn[6:2]};  // c_imm12_62
 
               // Default: harmless value (only matters for instructions reaching S_EXECUTE2)
               execute_req_alu_op  <= `EXOP_OPB;
               execute_req_alu_b   <= 64'd0;
               execute_req_alu_sxt <= 0;
 
-              // ---- Compressed instructions (rf3_insn[1:0] != 2'b11) ----
+              // ---- Compressed instructions (id_rf_insn[1:0] != 2'b11) ----
 
               // Quadrant 0
-              if ((rf3_insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
+              if ((id_rf_insn & 'he003) == 'h0000) begin // C.ADDI4SPN (rd'=rs2)
                  execute_req_alu_op <= `EXOP_ADD;
-                 execute_req_alu_b  <= {54'd0, rf3_insn[10:7], rf3_insn[12:11], rf3_insn[5], rf3_insn[6], 2'd0};
+                 execute_req_alu_b  <= {54'd0, id_rf_insn[10:7], id_rf_insn[12:11], id_rf_insn[5], id_rf_insn[6], 2'd0};
               end
 
               // Quadrant 1
-              else if ((rf3_insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
+              else if ((id_rf_insn & 'he003) == 'h0001) begin // C.ADDI / C.NOP
                  execute_req_alu_op <= `EXOP_ADD;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
+              else if ((id_rf_insn & 'he003) == 'h2001) begin // C.ADDIW (RV64)
                  execute_req_alu_op  <= `EXOP_ADD;
                  execute_req_alu_b   <= d_c_imm;
                  execute_req_alu_sxt <= 1;
               end
-              else if ((rf3_insn & 'he003) == 'h4001) begin // C.LI
+              else if ((id_rf_insn & 'he003) == 'h4001) begin // C.LI
                  execute_req_alu_op <= `EXOP_OPB;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
+              else if ((id_rf_insn & 'hef83) == 'h6101) begin // C.ADDI16SP (rd=sp)
                  execute_req_alu_op <= `EXOP_ADD;
-                 execute_req_alu_b  <= {{55{rf3_insn[12]}}, rf3_insn[4:3], rf3_insn[5], rf3_insn[2], rf3_insn[6], 4'd0};
+                 execute_req_alu_b  <= {{55{id_rf_insn[12]}}, id_rf_insn[4:3], id_rf_insn[5], id_rf_insn[2], id_rf_insn[6], 4'd0};
               end
-              else if ((rf3_insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
+              else if ((id_rf_insn & 'he003) == 'h6001) begin // C.LUI (rd!=0,2)
                  execute_req_alu_op <= `EXOP_OPB;
-                 execute_req_alu_b  <= {{47{rf3_insn[12]}}, rf3_insn[6:2], 12'd0};
+                 execute_req_alu_b  <= {{47{id_rf_insn[12]}}, id_rf_insn[6:2], 12'd0};
               end
-              else if ((rf3_insn & 'hec03) == 'h8001) begin // C.SRLI
+              else if ((id_rf_insn & 'hec03) == 'h8001) begin // C.SRLI
                  execute_req_alu_op <= `EXOP_SHR;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'hec03) == 'h8401) begin // C.SRAI
+              else if ((id_rf_insn & 'hec03) == 'h8401) begin // C.SRAI
                  execute_req_alu_op <= `EXOP_SAR;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'hec03) == 'h8801) begin // C.ANDI
+              else if ((id_rf_insn & 'hec03) == 'h8801) begin // C.ANDI
                  execute_req_alu_op <= `EXOP_AND;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'hfc63) == 'h8c01) begin // C.SUB
+              else if ((id_rf_insn & 'hfc63) == 'h8c01) begin // C.SUB
                  execute_req_alu_op <= `EXOP_SUB;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
-              else if ((rf3_insn & 'hfc63) == 'h8c21) begin // C.XOR
+              else if ((id_rf_insn & 'hfc63) == 'h8c21) begin // C.XOR
                  execute_req_alu_op <= `EXOP_XOR;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
-              else if ((rf3_insn & 'hfc63) == 'h8c41) begin // C.OR
+              else if ((id_rf_insn & 'hfc63) == 'h8c41) begin // C.OR
                  execute_req_alu_op <= `EXOP_OR;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
-              else if ((rf3_insn & 'hfc63) == 'h8c61) begin // C.AND
+              else if ((id_rf_insn & 'hfc63) == 'h8c61) begin // C.AND
                  execute_req_alu_op <= `EXOP_AND;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
-              else if ((rf3_insn & 'hfc63) == 'h9c01) begin // C.SUBW
+              else if ((id_rf_insn & 'hfc63) == 'h9c01) begin // C.SUBW
                  execute_req_alu_op  <= `EXOP_SUB;
-                 execute_req_alu_b   <= rf3_s2_value;
+                 execute_req_alu_b   <= id_rf_rs2_value;
                  execute_req_alu_sxt <= 1;
               end
-              else if ((rf3_insn & 'hfc63) == 'h9c21) begin // C.ADDW
+              else if ((id_rf_insn & 'hfc63) == 'h9c21) begin // C.ADDW
                  execute_req_alu_op  <= `EXOP_ADD;
-                 execute_req_alu_b   <= rf3_s2_value;
+                 execute_req_alu_b   <= id_rf_rs2_value;
                  execute_req_alu_sxt <= 1;
               end
 
               // Quadrant 2
-              else if ((rf3_insn & 'he003) == 'h0002) begin // C.SLLI
+              else if ((id_rf_insn & 'he003) == 'h0002) begin // C.SLLI
                  execute_req_alu_op <= `EXOP_SHL;
                  execute_req_alu_b  <= d_c_imm;
               end
-              else if ((rf3_insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
+              else if ((id_rf_insn & 'hf07f) == 'h8002) begin // C.JR (no exe_add, default ok)
                  ;
               end
-              else if ((rf3_insn & 'hf003) == 'h8002) begin // C.MV
+              else if ((id_rf_insn & 'hf003) == 'h8002) begin // C.MV
                  execute_req_alu_op <= `EXOP_OPB;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
-              else if ((rf3_insn & 'hf07f) == 'h9002) begin // C.JALR (link = rf3_pc+2)
+              else if ((id_rf_insn & 'hf07f) == 'h9002) begin // C.JALR (link = id_rf_pc+2)
                  execute_req_alu_op <= `EXOP_OPB;
-                 execute_req_alu_b  <= rf3_next_pc;
+                 execute_req_alu_b  <= id_rf_next_pc;
               end
-              else if ((rf3_insn & 'hf003) == 'h9002) begin // C.ADD
+              else if ((id_rf_insn & 'hf003) == 'h9002) begin // C.ADD
                  execute_req_alu_op <= `EXOP_ADD;
-                 execute_req_alu_b  <= rf3_s2_value;
+                 execute_req_alu_b  <= id_rf_rs2_value;
               end
 
-              // ---- 32-bit instructions (rf3_insn[1:0] == 2'b11) ----
-              else if (rf3_insn[1:0] == 2'b11) begin
-                 case (rf3_insn[6:2])
+              // ---- 32-bit instructions (id_rf_insn[1:0] == 2'b11) ----
+              else if (id_rf_insn[1:0] == 2'b11) begin
+                 case (id_rf_insn[6:2])
                     5'b01101: begin // LUI
                        execute_req_alu_op <= `EXOP_OPB;
                        execute_req_alu_b  <= d_imm_u;
                     end
                     5'b00101: begin // AUIPC
                        execute_req_alu_op <= `EXOP_OPB;
-                       execute_req_alu_b  <= rf3_pc + d_imm_u;
+                       execute_req_alu_b  <= id_rf_pc + d_imm_u;
                     end
-                    5'b11011: begin // JAL (link = rf3_pc+4)
+                    5'b11011: begin // JAL (link = id_rf_pc+4)
                        execute_req_alu_op <= `EXOP_OPB;
-                       execute_req_alu_b  <= rf3_next_pc;
+                       execute_req_alu_b  <= id_rf_next_pc;
                     end
-                    5'b11001: begin // JALR (link = rf3_pc+4)
+                    5'b11001: begin // JALR (link = id_rf_pc+4)
                        execute_req_alu_op <= `EXOP_OPB;
-                       execute_req_alu_b  <= rf3_next_pc;
+                       execute_req_alu_b  <= id_rf_next_pc;
                     end
                     5'b00100: begin // OP-IMM: funct3 selects operation
                        execute_req_alu_b <= d_imm_i; // default; shifts override below
-                       case (rf3_insn[14:12])
+                       case (id_rf_insn[14:12])
                           3'b000: execute_req_alu_op <= `EXOP_ADD;   // ADDI
-                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {58'd0, rf3_insn[25:20]}; end  // SLLI
+                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {58'd0, id_rf_insn[25:20]}; end  // SLLI
                           3'b010: execute_req_alu_op <= `EXOP_LTS;   // SLTI
                           3'b011: execute_req_alu_op <= `EXOP_LTU;   // SLTIU
                           3'b100: execute_req_alu_op <= `EXOP_XOR;   // XORI
                           3'b101: begin // SRLI / SRAI
-                             execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             execute_req_alu_b  <= {58'd0, rf3_insn[25:20]};
+                             execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             execute_req_alu_b  <= {58'd0, id_rf_insn[25:20]};
                           end
                           3'b110: execute_req_alu_op <= `EXOP_OR;    // ORI
                           3'b111: execute_req_alu_op <= `EXOP_AND;   // ANDI
                        endcase
                     end
                     5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
-                       execute_req_alu_b <= rf3_s2_value;
-                       case (rf3_insn[14:12])
-                          3'b000: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
+                       execute_req_alu_b <= id_rf_rs2_value;
+                       case (id_rf_insn[14:12])
+                          3'b000: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
                           3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLL
                           3'b010: execute_req_alu_op <= `EXOP_LTS;  // SLT
                           3'b011: execute_req_alu_op <= `EXOP_LTU;  // SLTU
                           3'b100: execute_req_alu_op <= `EXOP_XOR;  // XOR
-                          3'b101: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
+                          3'b101: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
                           3'b110: execute_req_alu_op <= `EXOP_OR;   // OR
                           3'b111: execute_req_alu_op <= `EXOP_AND;  // AND
                           // MUL/DIV (funct7[0]=1): exe_add unused; default EXOP_OPB is fine
@@ -4043,23 +4043,23 @@ module smolrv64(input wire        clock,
                     end
                     5'b00110: begin // OP-IMM-32 (W-type immediates)
                        execute_req_alu_sxt <= 1;
-                       case (rf3_insn[14:12])
+                       case (id_rf_insn[14:12])
                           3'b000: begin execute_req_alu_op <= `EXOP_ADD; execute_req_alu_b <= d_imm_i; end  // ADDIW
-                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {59'd0, rf3_insn[24:20]}; end  // SLLIW
+                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {59'd0, id_rf_insn[24:20]}; end  // SLLIW
                           3'b101: begin  // SRLIW / SRAIW
-                             execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             execute_req_alu_b  <= {59'd0, rf3_insn[24:20]};
+                             execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;
+                             execute_req_alu_b  <= {59'd0, id_rf_insn[24:20]};
                           end
                           default: ; // other funct3: no exe_add
                        endcase
                     end
                     5'b01110: begin // OP-REG-32 (W-type register)
                        execute_req_alu_sxt <= 1;
-                       execute_req_alu_b <= rf3_s2_value;
-                       case (rf3_insn[14:12])
-                          3'b000: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
+                       execute_req_alu_b <= id_rf_rs2_value;
+                       case (id_rf_insn[14:12])
+                          3'b000: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
                           3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLLW
-                          3'b101: execute_req_alu_op <= rf3_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
+                          3'b101: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
                           // MUL/DIV-W: exe_add unused
                           default: ;
                        endcase
@@ -4070,30 +4070,30 @@ module smolrv64(input wire        clock,
                     default: ; // LOAD, STORE, BRANCH, CSR, etc.: exe_add unused
                  endcase
               end
-           end // rf3_pre_decode
+           end // id_rf_pre_decode
 
-           pre_fp_rnd_mode <= rf3_insn[14:12] == 3'b111 ? frm : rf3_insn[14:12];
-           pre_fp_rmode_ok <= !(rf3_insn[14:12] == 3'b101 || rf3_insn[14:12] == 3'b110 ||
-                                (rf3_insn[14:12] == 3'b111 && frm > 3'b100));
+           pre_fp_rnd_mode <= id_rf_insn[14:12] == 3'b111 ? frm : id_rf_insn[14:12];
+           pre_fp_rmode_ok <= !(id_rf_insn[14:12] == 3'b101 || id_rf_insn[14:12] == 3'b110 ||
+                                (id_rf_insn[14:12] == 3'b111 && frm > 3'b100));
 
            // Mem pre-decode: compute offset/size/op/mask/wb-reg one cycle
            // early so S_EXECUTE can share a single execute_req_rs1_value+offset adder instead of
            // selecting between 22 parallel adders. Immediates are computed
-           // inline from rf3_insn bits (the imm_*/c_uimm* registers are written
+           // inline from id_rf_insn bits (the imm_*/c_uimm* registers are written
            // in S_EXECUTE and therefore stale here).
-           begin : rf3_mem_decode
+           begin : id_rf_mem_decode
               reg [63:0] d_imm_i_s, d_imm_s_s;
               reg [63:0] d_clw_off, d_cld_off, d_clwsp_off, d_cldsp_off,
                          d_cswsp_off, d_csdsp_off;
 
-              d_imm_i_s    = {{52{rf3_insn[31]}}, rf3_insn[31:20]};
-              d_imm_s_s    = {{52{rf3_insn[31]}}, rf3_insn[31:25], rf3_insn[11:7]};
-              d_clw_off    = {57'd0, rf3_insn[5],    rf3_insn[12:10], rf3_insn[6],     2'd0};
-              d_cld_off    = {56'd0, rf3_insn[6:5],  rf3_insn[12:10],              3'd0};
-              d_clwsp_off  = {56'd0, rf3_insn[3:2],  rf3_insn[12],    rf3_insn[6:4],   2'd0};
-              d_cldsp_off  = {55'd0, rf3_insn[4:2],  rf3_insn[12],    rf3_insn[6:5],   3'd0};
-              d_cswsp_off  = {56'd0, rf3_insn[8:7],  rf3_insn[12:9],               2'd0};
-              d_csdsp_off  = {55'd0, rf3_insn[9:7],  rf3_insn[12:10],              3'd0};
+              d_imm_i_s    = {{52{id_rf_insn[31]}}, id_rf_insn[31:20]};
+              d_imm_s_s    = {{52{id_rf_insn[31]}}, id_rf_insn[31:25], id_rf_insn[11:7]};
+              d_clw_off    = {57'd0, id_rf_insn[5],    id_rf_insn[12:10], id_rf_insn[6],     2'd0};
+              d_cld_off    = {56'd0, id_rf_insn[6:5],  id_rf_insn[12:10],              3'd0};
+              d_clwsp_off  = {56'd0, id_rf_insn[3:2],  id_rf_insn[12],    id_rf_insn[6:4],   2'd0};
+              d_cldsp_off  = {55'd0, id_rf_insn[4:2],  id_rf_insn[12],    id_rf_insn[6:5],   3'd0};
+              d_cswsp_off  = {56'd0, id_rf_insn[8:7],  id_rf_insn[12:9],               2'd0};
+              d_csdsp_off  = {55'd0, id_rf_insn[9:7],  id_rf_insn[12:10],              3'd0};
 
               // Defaults: non-mem instruction
               execute_req_mem_op        <= `MEMOP_NONE;
@@ -4104,150 +4104,150 @@ module smolrv64(input wire        clock,
               execute_req_mem_fp        <= 1'b0;
 
               // Compressed loads / stores (quadrants 0 & 2)
-              if ((rf3_insn & 'he003) == 'h4000) begin // C.LW
+              if ((id_rf_insn & 'he003) == 'h4000) begin // C.LW
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_clw_off;
                  execute_req_load_size_lg2 <= 3'b110; // W, sign-extend
-                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_wb_reg    <= {2'b01, id_rf_insn[4:2]};
               end
-              else if ((rf3_insn & 'he003) == 'h2000) begin // C.FLD
+              else if ((id_rf_insn & 'he003) == 'h2000) begin // C.FLD
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_cld_off;
                  execute_req_load_size_lg2 <= 3'b011; // D
-                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_wb_reg    <= {2'b01, id_rf_insn[4:2]};
                  execute_req_mem_fp        <= 1'b1;
               end
-              else if ((rf3_insn & 'he003) == 'h6000) begin // C.LD
+              else if ((id_rf_insn & 'he003) == 'h6000) begin // C.LD
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_cld_off;
                  execute_req_load_size_lg2 <= 3'b011; // D
-                 execute_req_mem_wb_reg    <= {2'b01, rf3_insn[4:2]};
+                 execute_req_mem_wb_reg    <= {2'b01, id_rf_insn[4:2]};
               end
-              else if ((rf3_insn & 'he003) == 'hc000) begin // C.SW
+              else if ((id_rf_insn & 'he003) == 'hc000) begin // C.SW
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_clw_off;
                  execute_req_mem_wr_mask <= 8'h0f;
               end
-              else if ((rf3_insn & 'he003) == 'ha000) begin // C.FSD
+              else if ((id_rf_insn & 'he003) == 'ha000) begin // C.FSD
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_cld_off;
                  execute_req_mem_wr_mask <= 8'hff;
                  execute_req_mem_fp      <= 1'b1;
               end
-              else if ((rf3_insn & 'he003) == 'he000) begin // C.SD
+              else if ((id_rf_insn & 'he003) == 'he000) begin // C.SD
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_cld_off;
                  execute_req_mem_wr_mask <= 8'hff;
               end
-              else if ((rf3_insn & 'he003) == 'h4002) begin // C.LWSP
+              else if ((id_rf_insn & 'he003) == 'h4002) begin // C.LWSP
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_clwsp_off;
                  execute_req_load_size_lg2 <= 3'b110;
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
               end
-              else if ((rf3_insn & 'he003) == 'h2002) begin // C.FLDSP
+              else if ((id_rf_insn & 'he003) == 'h2002) begin // C.FLDSP
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_cldsp_off;
                  execute_req_load_size_lg2 <= 3'b011;
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
                  execute_req_mem_fp        <= 1'b1;
               end
-              else if ((rf3_insn & 'he003) == 'h6002) begin // C.LDSP
+              else if ((id_rf_insn & 'he003) == 'h6002) begin // C.LDSP
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_cldsp_off;
                  execute_req_load_size_lg2 <= 3'b011;
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
               end
-              else if ((rf3_insn & 'he003) == 'hc002) begin // C.SWSP
+              else if ((id_rf_insn & 'he003) == 'hc002) begin // C.SWSP
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_cswsp_off;
                  execute_req_mem_wr_mask <= 8'h0f;
               end
-              else if ((rf3_insn & 'he003) == 'ha002) begin // C.FSDSP
+              else if ((id_rf_insn & 'he003) == 'ha002) begin // C.FSDSP
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_csdsp_off;
                  execute_req_mem_wr_mask <= 8'hff;
                  execute_req_mem_fp      <= 1'b1;
               end
-              else if ((rf3_insn & 'he003) == 'he002) begin // C.SDSP
+              else if ((id_rf_insn & 'he003) == 'he002) begin // C.SDSP
                  execute_req_mem_op      <= `MEMOP_STORE;
                  execute_req_mem_offset  <= d_csdsp_off;
                  execute_req_mem_wr_mask <= 8'hff;
               end
 
               // Uncompressed loads / stores / atomics
-              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00000) begin // LOAD
+              else if (id_rf_insn[1:0] == 2'b11 && id_rf_insn[6:2] == 5'b00000) begin // LOAD
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_imm_i_s;
-                 // funct3 = rf3_insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
+                 // funct3 = id_rf_insn[14:12]: {2:0] = size; [2] = 1 → NO sign-ext (U-variant); invert to match
                  // Current encoding: load_size_lg2 = {sxt, size[1:0]} where sxt=1 means sign-ext.
                  //   LB=0|4, LH=1|4, LW=2|4, LD=3, LBU=0, LHU=1, LWU=2.
                  // RISC-V: funct3[2]=0 is signed (B/H/W), funct3[2]=1 is unsigned (BU/HU/WU); LD has funct3=011 (size=3, no sxt).
                  // So load_size_lg2 = {~funct3[2] & (funct3[1:0] != 2'b11), funct3[1:0]}.
-                 execute_req_load_size_lg2 <= {~rf3_insn[14] & ~(rf3_insn[13] & rf3_insn[12]), rf3_insn[13:12]};
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_load_size_lg2 <= {~id_rf_insn[14] & ~(id_rf_insn[13] & id_rf_insn[12]), id_rf_insn[13:12]};
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
               end
-              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01000) begin // STORE
+              else if (id_rf_insn[1:0] == 2'b11 && id_rf_insn[6:2] == 5'b01000) begin // STORE
                  execute_req_mem_op     <= `MEMOP_STORE;
                  execute_req_mem_offset <= d_imm_s_s;
                  // wr_mask = (1 << (1 << funct3[1:0])) - 1
-                 case (rf3_insn[13:12])
+                 case (id_rf_insn[13:12])
                     2'b00: execute_req_mem_wr_mask <= 8'h01; // SB
                     2'b01: execute_req_mem_wr_mask <= 8'h03; // SH
                     2'b10: execute_req_mem_wr_mask <= 8'h0f; // SW
                     2'b11: execute_req_mem_wr_mask <= 8'hff; // SD
                  endcase
               end
-              else if ((rf3_insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
-                       (rf3_insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
+              else if ((id_rf_insn & 'hf9f0707f) == 'h1000202f ||  // LR.W
+                       (id_rf_insn & 'hf9f0707f) == 'h1000302f) begin // LR.D
                  execute_req_mem_op        <= `MEMOP_LR;
                  execute_req_mem_offset    <= 64'd0;
-                 execute_req_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_load_size_lg2 <= id_rf_insn[12] ? 3'b011 : 3'b110; // D : W(sign-ext)
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
               end
-              else if ((rf3_insn & 'hf800707f) == 'h1800202f ||  // SC.W
-                       (rf3_insn & 'hf800707f) == 'h1800302f) begin // SC.D
+              else if ((id_rf_insn & 'hf800707f) == 'h1800202f ||  // SC.W
+                       (id_rf_insn & 'hf800707f) == 'h1800302f) begin // SC.D
                  execute_req_mem_op      <= `MEMOP_SC;
                  execute_req_mem_offset  <= 64'd0;
-                 execute_req_mem_wr_mask <= rf3_insn[12] ? 8'hff : 8'h0f;
-                 execute_req_mem_wb_reg  <= rf3_insn[11:7];
+                 execute_req_mem_wr_mask <= id_rf_insn[12] ? 8'hff : 8'h0f;
+                 execute_req_mem_wb_reg  <= id_rf_insn[11:7];
               end
               // FP loads: FLW (funct3=010) and FLD (funct3=011); opcode 0000111
-              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b00001 &&
-                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
+              else if (id_rf_insn[1:0] == 2'b11 && id_rf_insn[6:2] == 5'b00001 &&
+                       (id_rf_insn[14:12] == 3'b010 || id_rf_insn[14:12] == 3'b011)) begin
                  execute_req_mem_op        <= `MEMOP_LOAD;
                  execute_req_mem_offset    <= d_imm_i_s;
                  // FLW: 32-bit zero-extend (load_size_lg2=010), NaN-box in S_LOAD_ALIGN.
                  // FLD: 64-bit (load_size_lg2=011).
-                 execute_req_load_size_lg2 <= {1'b0, rf3_insn[13:12]};
-                 execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                 execute_req_load_size_lg2 <= {1'b0, id_rf_insn[13:12]};
+                 execute_req_mem_wb_reg    <= id_rf_insn[11:7];
                  execute_req_mem_fp        <= 1'b1;
               end
               // FP stores: FSW (funct3=010) and FSD (funct3=011); opcode 0100111
-              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01001 &&
-                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin
+              else if (id_rf_insn[1:0] == 2'b11 && id_rf_insn[6:2] == 5'b01001 &&
+                       (id_rf_insn[14:12] == 3'b010 || id_rf_insn[14:12] == 3'b011)) begin
                  execute_req_mem_op        <= `MEMOP_STORE;
                  execute_req_mem_offset    <= d_imm_s_s;
-                 execute_req_mem_wr_mask   <= rf3_insn[12] ? 8'hff : 8'h0f;
+                 execute_req_mem_wr_mask   <= id_rf_insn[12] ? 8'hff : 8'h0f;
                  execute_req_mem_fp        <= 1'b1;
               end
-              else if (rf3_insn[1:0] == 2'b11 && rf3_insn[6:2] == 5'b01011 &&
-                       (rf3_insn[14:12] == 3'b010 || rf3_insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
+              else if (id_rf_insn[1:0] == 2'b11 && id_rf_insn[6:2] == 5'b01011 &&
+                       (id_rf_insn[14:12] == 3'b010 || id_rf_insn[14:12] == 3'b011)) begin // AMO*.W / AMO*.D
                  // funct5 must be one of the 9 defined AMO variants; otherwise
                  // leave execute_req_mem_op = MEMOP_NONE so S_EXECUTE traps illegal instruction.
                  // (LR/SC are funct5 00010/00011, already matched above.)
-                 case (rf3_insn[31:27])
+                 case (id_rf_insn[31:27])
                     5'b00000, 5'b00001, 5'b00100, 5'b01000, 5'b01100,
                     5'b10000, 5'b10100, 5'b11000, 5'b11100: begin
                        execute_req_mem_op        <= `MEMOP_AMO;
                        execute_req_mem_offset    <= 64'd0;
-                       execute_req_load_size_lg2 <= rf3_insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
-                       execute_req_mem_wb_reg    <= rf3_insn[11:7];
+                       execute_req_load_size_lg2 <= id_rf_insn[12] ? 3'b011 : 3'b010; // D : W(no sxt)
+                       execute_req_mem_wb_reg    <= id_rf_insn[11:7];
                     end
                     default: ; // illegal AMO funct5: falls through
                  endcase
               end
-           end // rf3_mem_decode
+           end // id_rf_mem_decode
       end
    endtask
 
@@ -5851,7 +5851,7 @@ module smolrv64(input wire        clock,
            // unhandled instructions.
 
            // Shared mem-access block — collapses all load/store/LR/SC/AMO
-           // branches using the pre-decoded signals from rf3_mem_decode.
+           // branches using the pre-decoded signals from id_rf_mem_decode.
            // One execute_req_rs1_value+execute_req_mem_offset adder replaces 22 parallel copies,
            // shrinking the mem_addr critical path from ~14 LUT levels to ~7.
            if (execute_req_mem_op != `MEMOP_NONE) begin
@@ -5917,7 +5917,7 @@ module smolrv64(input wire        clock,
                              store_value = execute_req_rs2_value;
                              state <= `S_STORE;
                           end
-                          // SC fail: write_back_value = 1 from EXOP_ONE in rf3_pre_decode;
+                          // SC fail: write_back_value = 1 from EXOP_ONE in id_rf_pre_decode;
                           // default state <= S_EXECUTE2 at top of S_EXECUTE retires it.
                        end
                        `MEMOP_AMO: begin
