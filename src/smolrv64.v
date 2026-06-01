@@ -973,6 +973,15 @@ module smolrv64(input wire        clock,
    reg  [ 4:0] execute_req_rs1_q = 0;
    reg  [ 4:0] execute_req_rs2_q = 0;
    reg  [ 5:0] execute_req_shamt_q = 0;
+   reg  [ 3:0] execute_req_alu_op_q = 0;
+   reg  [63:0] execute_req_alu_b_q = 0;
+   reg         execute_req_alu_sxt_q = 0;
+   reg  [ 2:0] execute_req_mem_op_q = 0;
+   reg  [63:0] execute_req_mem_offset_q = 0;
+   reg  [ 2:0] execute_req_load_size_lg2_q = 0;
+   reg  [ 7:0] execute_req_mem_wr_mask_q = 0;
+   reg  [ 4:0] execute_req_mem_wb_reg_q = 0;
+   reg         execute_req_mem_fp_q = 0;
 `endif
 
    // FP load completions latch their boxed result into write_back_fp_value
@@ -5047,6 +5056,15 @@ module smolrv64(input wire        clock,
          execute_req_rs1_q <= 0;
          execute_req_rs2_q <= 0;
          execute_req_shamt_q <= 0;
+         execute_req_alu_op_q <= 0;
+         execute_req_alu_b_q <= 0;
+         execute_req_alu_sxt_q <= 0;
+         execute_req_mem_op_q <= 0;
+         execute_req_mem_offset_q <= 0;
+         execute_req_load_size_lg2_q <= 0;
+         execute_req_mem_wr_mask_q <= 0;
+         execute_req_mem_wb_reg_q <= 0;
+         execute_req_mem_fp_q <= 0;
       end else begin
          if (execute_req_valid_q && execute_req_valid &&
              (execute_req_pc != execute_req_pc_q ||
@@ -5058,7 +5076,16 @@ module smolrv64(input wire        clock,
               execute_req_rd != execute_req_rd_q ||
               execute_req_rs1 != execute_req_rs1_q ||
               execute_req_rs2 != execute_req_rs2_q ||
-              execute_req_shamt != execute_req_shamt_q)) begin
+              execute_req_shamt != execute_req_shamt_q ||
+              execute_req_alu_op != execute_req_alu_op_q ||
+              execute_req_alu_b != execute_req_alu_b_q ||
+              execute_req_alu_sxt != execute_req_alu_sxt_q ||
+              execute_req_mem_op != execute_req_mem_op_q ||
+              execute_req_mem_offset != execute_req_mem_offset_q ||
+              execute_req_load_size_lg2 != execute_req_load_size_lg2_q ||
+              execute_req_mem_wr_mask != execute_req_mem_wr_mask_q ||
+              execute_req_mem_wb_reg != execute_req_mem_wb_reg_q ||
+              execute_req_mem_fp != execute_req_mem_fp_q)) begin
             $display("%05d BUG: execute request payload changed while valid", $time);
             $finish;
          end
@@ -5074,6 +5101,15 @@ module smolrv64(input wire        clock,
          execute_req_rs1_q <= execute_req_rs1;
          execute_req_rs2_q <= execute_req_rs2;
          execute_req_shamt_q <= execute_req_shamt;
+         execute_req_alu_op_q <= execute_req_alu_op;
+         execute_req_alu_b_q <= execute_req_alu_b;
+         execute_req_alu_sxt_q <= execute_req_alu_sxt;
+         execute_req_mem_op_q <= execute_req_mem_op;
+         execute_req_mem_offset_q <= execute_req_mem_offset;
+         execute_req_load_size_lg2_q <= execute_req_load_size_lg2;
+         execute_req_mem_wr_mask_q <= execute_req_mem_wr_mask;
+         execute_req_mem_wb_reg_q <= execute_req_mem_wb_reg;
+         execute_req_mem_fp_q <= execute_req_mem_fp;
       end
 `endif
       if (!csr_mcountinhibit[0] && hpm_mode_enabled(csr_mcyclecfg))
