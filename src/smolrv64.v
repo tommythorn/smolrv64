@@ -1251,6 +1251,19 @@ module smolrv64(input wire        clock,
    reg  [ 4:0]  id_rs2 = 0;
    reg  [ 5:0]  id_shamt = 0;
    wire         id_ex_fire = id_valid && id_rf_ready && ex_accept_ready;
+`ifdef SIMULATE
+   reg          id_valid_q = 0;
+   reg  [63:0] id_pc_q = `RESET_PC;
+   reg  [63:0] id_next_pc_q = `RESET_PC;
+   reg  [63:0] id_predicted_pc_q = `RESET_PC;
+   reg  [ 1:0] id_prv_q = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] id_epoch_q = 0;
+   reg  [31:0] id_insn_q = 0;
+   reg  [ 4:0] id_rd_q = 0;
+   reg  [ 4:0] id_rs1_q = 0;
+   reg  [ 4:0] id_rs2_q = 0;
+   reg  [ 5:0] id_shamt_q = 0;
+`endif
    wire [63:0]  rf3_pc = id_pc;
    wire [63:0]  rf3_next_pc = id_next_pc;
    wire [63:0]  rf3_predicted_pc = id_predicted_pc;
@@ -5049,6 +5062,17 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
 `ifdef SIMULATE
       if (core_reset_now) begin
+         id_valid_q <= 0;
+         id_pc_q <= `RESET_PC;
+         id_next_pc_q <= `RESET_PC;
+         id_predicted_pc_q <= `RESET_PC;
+         id_prv_q <= 0;
+         id_epoch_q <= 0;
+         id_insn_q <= 0;
+         id_rd_q <= 0;
+         id_rs1_q <= 0;
+         id_rs2_q <= 0;
+         id_shamt_q <= 0;
          execute_req_valid_q <= 0;
          execute_req_pc_q <= `RESET_PC;
          execute_req_next_pc_q <= `RESET_PC;
@@ -5074,6 +5098,21 @@ module smolrv64(input wire        clock,
          execute_req_mem_wb_reg_q <= 0;
          execute_req_mem_fp_q <= 0;
       end else begin
+         if (id_valid_q && id_valid &&
+             (id_pc != id_pc_q ||
+              id_next_pc != id_next_pc_q ||
+              id_predicted_pc != id_predicted_pc_q ||
+              id_prv != id_prv_q ||
+              id_epoch != id_epoch_q ||
+              id_insn != id_insn_q ||
+              id_rd != id_rd_q ||
+              id_rs1 != id_rs1_q ||
+              id_rs2 != id_rs2_q ||
+              id_shamt != id_shamt_q)) begin
+            $display("%05d BUG: ID payload changed while valid", $time);
+            $finish;
+         end
+
          if (execute_req_valid_q && execute_req_valid &&
              (execute_req_pc != execute_req_pc_q ||
               execute_req_next_pc != execute_req_next_pc_q ||
@@ -5101,6 +5140,18 @@ module smolrv64(input wire        clock,
             $display("%05d BUG: execute request payload changed while valid", $time);
             $finish;
          end
+
+         id_valid_q <= id_valid;
+         id_pc_q <= id_pc;
+         id_next_pc_q <= id_next_pc;
+         id_predicted_pc_q <= id_predicted_pc;
+         id_prv_q <= id_prv;
+         id_epoch_q <= id_epoch;
+         id_insn_q <= id_insn;
+         id_rd_q <= id_rd;
+         id_rs1_q <= id_rs1;
+         id_rs2_q <= id_rs2;
+         id_shamt_q <= id_shamt;
 
          execute_req_valid_q <= execute_req_valid;
          execute_req_pc_q <= execute_req_pc;
