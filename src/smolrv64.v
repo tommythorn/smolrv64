@@ -961,6 +961,19 @@ module smolrv64(input wire        clock,
    wire [ 4:0] ex_rs2 = execute_req_rs2;
    wire [ 5:0] ex_shamt = execute_req_shamt;
    reg         execute_res_valid = 0;
+`ifdef SIMULATE
+   reg         execute_req_valid_q = 0;
+   reg  [63:0] execute_req_pc_q = `RESET_PC;
+   reg  [63:0] execute_req_next_pc_q = `RESET_PC;
+   reg  [63:0] execute_req_predicted_pc_q = `RESET_PC;
+   reg  [ 1:0] execute_req_prv_q = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] execute_req_epoch_q = 0;
+   reg  [31:0] execute_req_insn_q = 0;
+   reg  [ 4:0] execute_req_rd_q = 0;
+   reg  [ 4:0] execute_req_rs1_q = 0;
+   reg  [ 4:0] execute_req_rs2_q = 0;
+   reg  [ 5:0] execute_req_shamt_q = 0;
+`endif
 
    // FP load completions latch their boxed result into write_back_fp_value
    // before retire. Keeping writeback data independent of pre_mem_fp lets an
@@ -3798,6 +3811,12 @@ module smolrv64(input wire        clock,
    task prepare_execute_req_from_id;
       input preserve_state;
       begin
+`ifdef SIMULATE
+           if (execute_req_valid) begin
+              $display("%05d BUG: overwrite busy execute request", $time);
+              $finish;
+           end
+`endif
            // Register RF output into s1/s2/f1/f2 flip-flops.  Early launch can
            // overlap this read with the previous retire's writeback, so use the
            // local writeback bypass before latching operands.
@@ -5015,6 +5034,48 @@ module smolrv64(input wire        clock,
    always @(posedge clock) begin
 /* verilator lint_off WIDTHEXPAND */
 /* verilator lint_off WIDTHTRUNC */
+`ifdef SIMULATE
+      if (core_reset_now) begin
+         execute_req_valid_q <= 0;
+         execute_req_pc_q <= `RESET_PC;
+         execute_req_next_pc_q <= `RESET_PC;
+         execute_req_predicted_pc_q <= `RESET_PC;
+         execute_req_prv_q <= 0;
+         execute_req_epoch_q <= 0;
+         execute_req_insn_q <= 0;
+         execute_req_rd_q <= 0;
+         execute_req_rs1_q <= 0;
+         execute_req_rs2_q <= 0;
+         execute_req_shamt_q <= 0;
+      end else begin
+         if (execute_req_valid_q && execute_req_valid &&
+             (execute_req_pc != execute_req_pc_q ||
+              execute_req_next_pc != execute_req_next_pc_q ||
+              execute_req_predicted_pc != execute_req_predicted_pc_q ||
+              execute_req_prv != execute_req_prv_q ||
+              execute_req_epoch != execute_req_epoch_q ||
+              execute_req_insn != execute_req_insn_q ||
+              execute_req_rd != execute_req_rd_q ||
+              execute_req_rs1 != execute_req_rs1_q ||
+              execute_req_rs2 != execute_req_rs2_q ||
+              execute_req_shamt != execute_req_shamt_q)) begin
+            $display("%05d BUG: execute request payload changed while valid", $time);
+            $finish;
+         end
+
+         execute_req_valid_q <= execute_req_valid;
+         execute_req_pc_q <= execute_req_pc;
+         execute_req_next_pc_q <= execute_req_next_pc;
+         execute_req_predicted_pc_q <= execute_req_predicted_pc;
+         execute_req_prv_q <= execute_req_prv;
+         execute_req_epoch_q <= execute_req_epoch;
+         execute_req_insn_q <= execute_req_insn;
+         execute_req_rd_q <= execute_req_rd;
+         execute_req_rs1_q <= execute_req_rs1;
+         execute_req_rs2_q <= execute_req_rs2;
+         execute_req_shamt_q <= execute_req_shamt;
+      end
+`endif
       if (!csr_mcountinhibit[0] && hpm_mode_enabled(csr_mcyclecfg))
          csr_mcycle <= csr_mcycle + 1;
       if (core_reset_now) begin
@@ -5624,6 +5685,10 @@ module smolrv64(input wire        clock,
 
         `S_EXECUTE: begin
            if (!execute_req_valid) begin
+`ifdef SIMULATE
+              $display("%05d BUG: S_EXECUTE without execute request", $time);
+              $finish;
+`endif
               state <= `S_FETCH1;
            end else begin
            pc <= ex_pc;
