@@ -1252,6 +1252,19 @@ module smolrv64(input wire        clock,
    reg  [ 5:0]  id_shamt = 0;
    wire         id_ex_fire = id_valid && id_rf_ready && ex_accept_ready;
 `ifdef SIMULATE
+   reg          rf_decode_valid_q = 0;
+   reg  [RF_DECODE_QUEUE_BITS-1:0] rf_decode_head_q = 0;
+   reg  [63:0] rf_decode_pc_q_assert = `RESET_PC;
+   reg  [63:0] rf_decode_next_pc_q_assert = `RESET_PC;
+   reg  [63:0] rf_decode_predicted_pc_q_assert = `RESET_PC;
+   reg  [31:0] rf_decode_insn_q_assert = 0;
+   reg  [ 1:0] rf_decode_prv_q_assert = 0;
+   reg  [FRONTEND_EPOCH_BITS-1:0] rf_decode_epoch_q_assert = 0;
+   reg          rf_decode_from_ifetch_rsp_q_assert = 0;
+   reg  [ 4:0] rf_decode_rd_q_assert = 0;
+   reg  [ 4:0] rf_decode_rs1_q_assert = 0;
+   reg  [ 4:0] rf_decode_rs2_q_assert = 0;
+   reg  [ 5:0] rf_decode_shamt_q_assert = 0;
    reg          id_valid_q = 0;
    reg  [63:0] id_pc_q = `RESET_PC;
    reg  [63:0] id_next_pc_q = `RESET_PC;
@@ -5071,6 +5084,19 @@ module smolrv64(input wire        clock,
 /* verilator lint_off WIDTHTRUNC */
 `ifdef SIMULATE
       if (core_reset_now) begin
+         rf_decode_valid_q <= 0;
+         rf_decode_head_q <= 0;
+         rf_decode_pc_q_assert <= `RESET_PC;
+         rf_decode_next_pc_q_assert <= `RESET_PC;
+         rf_decode_predicted_pc_q_assert <= `RESET_PC;
+         rf_decode_insn_q_assert <= 0;
+         rf_decode_prv_q_assert <= 0;
+         rf_decode_epoch_q_assert <= 0;
+         rf_decode_from_ifetch_rsp_q_assert <= 0;
+         rf_decode_rd_q_assert <= 0;
+         rf_decode_rs1_q_assert <= 0;
+         rf_decode_rs2_q_assert <= 0;
+         rf_decode_shamt_q_assert <= 0;
          id_valid_q <= 0;
          id_pc_q <= `RESET_PC;
          id_next_pc_q <= `RESET_PC;
@@ -5109,6 +5135,24 @@ module smolrv64(input wire        clock,
       end else begin
          if (rf_decode_count > RF_DECODE_QUEUE_DEPTH_COUNT) begin
             $display("%05d BUG: rf_decode queue count out of range", $time);
+            $finish;
+         end
+
+         if (rf_decode_valid_q && rf_decode_valid &&
+             !rf_decode_pop_this_cycle &&
+             (rf_decode_head != rf_decode_head_q ||
+              rf_decode_pc != rf_decode_pc_q_assert ||
+              rf_decode_next_pc != rf_decode_next_pc_q_assert ||
+              rf_decode_predicted_pc != rf_decode_predicted_pc_q_assert ||
+              rf_decode_insn != rf_decode_insn_q_assert ||
+              rf_decode_prv != rf_decode_prv_q_assert ||
+              rf_decode_epoch != rf_decode_epoch_q_assert ||
+              rf_decode_from_ifetch_rsp != rf_decode_from_ifetch_rsp_q_assert ||
+              rf_decode_rd != rf_decode_rd_q_assert ||
+              rf_decode_rs1 != rf_decode_rs1_q_assert ||
+              rf_decode_rs2 != rf_decode_rs2_q_assert ||
+              rf_decode_shamt != rf_decode_shamt_q_assert)) begin
+            $display("%05d BUG: rf_decode head payload changed without pop", $time);
             $finish;
          end
 
@@ -5154,6 +5198,20 @@ module smolrv64(input wire        clock,
             $display("%05d BUG: execute request payload changed while valid", $time);
             $finish;
          end
+
+         rf_decode_valid_q <= rf_decode_valid;
+         rf_decode_head_q <= rf_decode_head;
+         rf_decode_pc_q_assert <= rf_decode_pc;
+         rf_decode_next_pc_q_assert <= rf_decode_next_pc;
+         rf_decode_predicted_pc_q_assert <= rf_decode_predicted_pc;
+         rf_decode_insn_q_assert <= rf_decode_insn;
+         rf_decode_prv_q_assert <= rf_decode_prv;
+         rf_decode_epoch_q_assert <= rf_decode_epoch;
+         rf_decode_from_ifetch_rsp_q_assert <= rf_decode_from_ifetch_rsp;
+         rf_decode_rd_q_assert <= rf_decode_rd;
+         rf_decode_rs1_q_assert <= rf_decode_rs1;
+         rf_decode_rs2_q_assert <= rf_decode_rs2;
+         rf_decode_shamt_q_assert <= rf_decode_shamt;
 
          id_valid_q <= id_valid;
          id_pc_q <= id_pc;
