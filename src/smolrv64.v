@@ -4831,6 +4831,13 @@ module smolrv64(input wire        clock,
 
    task retire_no_wb_prepared_fetch;
       begin
+         // Instructions with no GPR/FP destination (C.JR, branches, ...) must
+         // clear the writeback target. Otherwise it carries the previous
+         // instruction's rd, causing a harmless-but-wrong redundant regfile
+         // re-write (write_valid is gated on write_back_register != 0) and a
+         // spurious cosim divergence.
+         write_back_register = 0;
+         write_back_fp_valid = 0;
          try_prepare_retire_id_no_pending();
          retire_prepared_fetch();
       end
