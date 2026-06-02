@@ -7545,19 +7545,23 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, reads zero
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) csr_read_val = 0;
-              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
-                 if (csrno[3:0] >= 4'd3)
-                    csr_read_val = csr_mhpmevent[csrno[3:0] - 4'd3];
+              // mhpmevent3..31 / mhpmcounter3..31 / hpmcounter3..31: the full
+              // architectural range exists. Counters/events 3..(2+HPM_COUNTERS)
+              // are implemented; the rest are hardwired 0 (read 0, no trap) per
+              // the privileged spec.
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + 12'd28) begin
+                 if (csrno - `CSR_MHPMEVENT3 < `HPM_COUNTERS)
+                    csr_read_val = csr_mhpmevent[(csrno - `CSR_MHPMEVENT3)];
                  else
                     csr_read_val = 0;
-              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
-                 if (csrno[3:0] >= 4'd3)
-                    csr_read_val = csr_mhpmcounter[csrno[3:0] - 4'd3];
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + 12'd28) begin
+                 if (csrno - `CSR_MHPMCOUNTER3 < `HPM_COUNTERS)
+                    csr_read_val = csr_mhpmcounter[(csrno - `CSR_MHPMCOUNTER3)];
                  else
                     csr_read_val = 0;
-              end else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= `CSR_HPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
-                 if (csrno[3:0] >= 4'd3)
-                    csr_read_val = csr_mhpmcounter[csrno[3:0] - 4'd3];
+              end else if (`CSR_HPMCOUNTER3 <= csrno && csrno <= `CSR_HPMCOUNTER3 + 12'd28) begin
+                 if (csrno - `CSR_HPMCOUNTER3 < `HPM_COUNTERS)
+                    csr_read_val = csr_mhpmcounter[(csrno - `CSR_HPMCOUNTER3)];
                  else
                     csr_read_val = 0;
               end
@@ -7707,18 +7711,21 @@ module smolrv64(input wire        clock,
               // PMP: pmpcfg0-15 and pmpaddr0-63 — M-mode only, writes silently ignored
               // (0 PMP entries implemented; all accesses permitted).
               if ('h3A0 <= csrno && csrno <= 'h3FF) begin end
-              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + (`HPM_COUNTERS - 1)) begin
-                 if (csrno[3:0] >= 4'd3) begin
+              // mhpmevent3..31 / mhpmcounter3..31: writes to implemented
+              // counters/events take effect; writes to the hardwired-0 ones
+              // (16..31) are silently ignored (no trap) per the spec.
+              else if (`CSR_MHPMEVENT3 <= csrno && csrno <= `CSR_MHPMEVENT3 + 12'd28) begin
+                 if (csrno - `CSR_MHPMEVENT3 < `HPM_COUNTERS) begin
                     hpm_event_wr_en <= 1;
-                    hpm_wr_idx <= csrno[3:0] - 4'd3;
-                    hpm_wr_data <= csr_modify_value(csr_mhpmevent[csrno[3:0] - 4'd3],
+                    hpm_wr_idx <= (csrno - `CSR_MHPMEVENT3);
+                    hpm_wr_data <= csr_modify_value(csr_mhpmevent[(csrno - `CSR_MHPMEVENT3)],
                                                      csr_arg, csr_op);
                  end
-              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + (`HPM_COUNTERS - 1)) begin
-                 if (csrno[3:0] >= 4'd3) begin
+              end else if (`CSR_MHPMCOUNTER3 <= csrno && csrno <= `CSR_MHPMCOUNTER3 + 12'd28) begin
+                 if (csrno - `CSR_MHPMCOUNTER3 < `HPM_COUNTERS) begin
                     hpm_counter_wr_en <= 1;
-                    hpm_wr_idx <= csrno[3:0] - 4'd3;
-                    hpm_wr_data <= csr_modify_value(csr_mhpmcounter[csrno[3:0] - 4'd3],
+                    hpm_wr_idx <= (csrno - `CSR_MHPMCOUNTER3);
+                    hpm_wr_data <= csr_modify_value(csr_mhpmcounter[(csrno - `CSR_MHPMCOUNTER3)],
                                                      csr_arg, csr_op);
                  end
               end
