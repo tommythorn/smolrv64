@@ -1215,10 +1215,6 @@ module smolrv64(input wire        clock,
    reg  [RF_DECODE_QUEUE_BITS-1:0] rf_decode_head = 0;
    reg  [RF_DECODE_QUEUE_BITS-1:0] rf_decode_tail = 0;
    reg  [RF_DECODE_QUEUE_BITS:0]   rf_decode_count = 0;
-   // Most recently enqueued pc/epoch, for cheap consecutive-duplicate dedup
-   // (avoids a tail-indexed array read on the enqueue timing path).
-   reg  [63:0] rf_decode_last_enq_pc = 0;
-   reg  [FRONTEND_EPOCH_BITS-1:0] rf_decode_last_enq_epoch = 0;
    reg  [63:0]  rf_decode_pc_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [63:0]  rf_decode_next_pc_q [0:RF_DECODE_QUEUE_DEPTH-1];
    reg  [63:0]  rf_decode_predicted_pc_q [0:RF_DECODE_QUEUE_DEPTH-1];
@@ -3517,20 +3513,8 @@ module smolrv64(input wire        clock,
             $display("%05d BUG: enqueue into full rf_decode queue", $time);
             $finish;
 `endif
-         end else if (rf_decode_count != 0 &&
-                      decode_pc == rf_decode_last_enq_pc &&
-                      decode_epoch == rf_decode_last_enq_epoch) begin
-            // Dedup: drop an enqueue identical to the most recently queued
-            // entry. The redirect-target instruction is double-fetched by
-            // racing enqueue paths (frontend hit, backend accept, speculative),
-            // leaving a stale duplicate at the head that breaks
-            // rf_decode_matches_retire and forces a perpetual redirect.
-            // Compared against a registered last-enqueued pc/epoch rather than
-            // a tail-indexed array read, to keep the enqueue path short.
          end else begin
             rf_decode_enqueue_this_cycle = 1'b1;
-            rf_decode_last_enq_pc <= decode_pc;
-            rf_decode_last_enq_epoch <= decode_epoch;
             rf_decode_pc_q[rf_decode_tail] <= decode_pc;
             rf_decode_next_pc_q[rf_decode_tail] <= decode_next_pc;
             rf_decode_predicted_pc_q[rf_decode_tail] <= decode_predicted_pc;
