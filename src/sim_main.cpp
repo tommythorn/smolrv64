@@ -151,6 +151,9 @@ static inline int csr_read_to_override(uint32_t insn) {
         case 0xC02:  // instret
         case 0xB00:  // mcycle
         case 0xB02:  // minstret
+        case 0xF11:  // mvendorid  — implementation-defined ID, differs by model
+        case 0xF12:  // marchid    — implementation-defined ID, differs by model
+        case 0xF13:  // mimpid     — implementation/build stamp, differs by model
             return (int)csrno;
         default:
             // HPM counters (mhpmcounter3..31 = 0xB03..0xB1F, hpmcounter3..31 =
