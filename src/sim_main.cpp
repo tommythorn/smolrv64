@@ -299,7 +299,10 @@ void tty_init() {
     // harmlessly skipped when stdin is a pipe or file.
     if (tcgetattr(STDIN_FILENO, &g_tty_orig) == 0) {
         struct termios raw = g_tty_orig;
-        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+        raw.c_cflag &= ~(CSIZE | PARENB);
+        raw.c_cflag |= CS8;
         raw.c_cc[VMIN]  = 0;
         raw.c_cc[VTIME] = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);

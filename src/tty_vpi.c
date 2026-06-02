@@ -24,7 +24,10 @@ static int init_tty(void) {
     // TTY-specific setup: disable canonical mode and echo for interactive use
     if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
         new_termios = orig_termios;
-        new_termios.c_lflag &= ~(ICANON | ECHO);
+        new_termios.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        new_termios.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+        new_termios.c_cflag &= ~(CSIZE | PARENB);
+        new_termios.c_cflag |= CS8;
         new_termios.c_cc[VMIN] = 0;
         new_termios.c_cc[VTIME] = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
