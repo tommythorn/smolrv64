@@ -326,6 +326,13 @@ endmodule
 `define SMOLRV64_BUILD_STAMP 64'h0
 `endif
 
+// mimpid carries the leading bits of the HEAD commit the bitstream/sim was
+// built from (set by build.tcl and the Makefile). Fallback for builds that
+// don't pass it: the historical date stamp.
+`ifndef SMOLRV64_GIT_COMMIT
+`define SMOLRV64_GIT_COMMIT 32'h20260518
+`endif
+
 module smolrv64(input wire        clock,
                 input wire        mem_clock,
                 input wire        fpu_clock,
@@ -7631,7 +7638,7 @@ module smolrv64(input wire        clock,
                 `CSR_MHARTID:  csr_read_val = 0;
                 `CSR_MVENDORID:csr_read_val = 0;
                 `CSR_MARCHID:  csr_read_val = 9; // YARVI, Smolrv64 = YARVI4
-                `CSR_MIMPID:   csr_read_val = 'h20260518;
+                `CSR_MIMPID:   csr_read_val = `SMOLRV64_GIT_COMMIT;
                 `CSR_MIG_MIN:  csr_read_val = {32'd0, csr_mig_min};
                 `CSR_MIG_MAX:  csr_read_val = {32'd0, csr_mig_max};
                 `CSR_MIG_TOTAL:csr_read_val = csr_mig_total;
