@@ -153,6 +153,14 @@ static inline int csr_read_to_override(uint32_t insn) {
         case 0xB02:  // minstret
             return (int)csrno;
         default:
+            // HPM counters (mhpmcounter3..31 = 0xB03..0xB1F, hpmcounter3..31 =
+            // 0xC03..0xC1F) and event selectors (mhpmevent3..31 = 0x323..0x33F)
+            // are model-specific, so let the DUT's read value win — same policy
+            // as cycle/instret.
+            if ((csrno >= 0xB03 && csrno <= 0xB1F) ||
+                (csrno >= 0xC03 && csrno <= 0xC1F) ||
+                (csrno >= 0x323 && csrno <= 0x33F))
+                return (int)csrno;
             return -1;
     }
 }
@@ -227,6 +235,10 @@ extern "C" void cosim_retire(
                      (unsigned long long)g_seqno);
         std::abort();
     }
+    // simmerv counts retirements from 0 while the DUT path counts from 1;
+    // they refer to the same retirement, so label them identically for the
+    // history/mismatch dumps. (seqno is display-only — not in the compare.)
+    ref.seqno = g_seqno;
 
     const uint32_t dut_insn_cmp = canonicalize_retired_insn(dut.insn);
     const uint32_t ref_insn_cmp = canonicalize_retired_insn(ref.insn);

@@ -7,6 +7,10 @@ TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$
 TINY128_SIM_MEM_BASE="64'h80000000"
 TINY128_SIM_MEM_SIZE_LG2=29
 TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
+# Cosim's sim_main mandates +even/+odd, which the RTL also $readmemh's into
+# axi_mem; tiny128 runs from the SRAM model and doesn't use axi_mem, but the
+# array must be large enough (512 MiB) to not abort the load on the 512 MiB image.
+TINY128_COSIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=29 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC)
 
 # For cache stress testing
 # SIM_CACHE_INDEX_BITS?=1
@@ -152,7 +156,7 @@ smolrv64-tiny128-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
-		$(TINY128_SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
+		$(TINY128_COSIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -DCOSIM_MEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -I$(SIMMERV_INCLUDE)" \
 		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
