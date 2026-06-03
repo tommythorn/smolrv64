@@ -214,6 +214,12 @@ extern "C" void cosim_retire(
     const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
     const bool dut_taking_mtip = trapped && trap_cause == MTIP_CAUSE;
     simmerv_set_mtimecmp(g_ctx, dut_taking_mtip ? mtimecmp : ~0ULL);
+    // Same gating for the supervisor timer (Sstc STIP, cause ...5): the DUT's
+    // registered pre_intr_pending vectors it a retire later than simmerv's
+    // mtime>=stimecmp would. Let simmerv take STIP only when the DUT does.
+    const unsigned long long STIP_CAUSE = 0x8000000000000005ULL;
+    const bool dut_taking_stip = trapped && trap_cause == STIP_CAUSE;
+    simmerv_set_stip_armed(g_ctx, dut_taking_stip);
     // Mirror DUT's PLIC→SEIP line: the two sims have independent UART/PLIC
     // state, so force simmerv's supervisor-external-interrupt bit to match.
     simmerv_set_seip(g_ctx, seip != 0);
