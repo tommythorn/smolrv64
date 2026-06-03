@@ -11,7 +11,7 @@
 `ifndef AXI_MEM_SIZE_LG2
 `define AXI_MEM_SIZE_LG2 27
 `endif
-`define AXI_MEM_SIZE (1 << `AXI_MEM_SIZE_LG2)
+`define AXI_MEM_SIZE (64'd1 << `AXI_MEM_SIZE_LG2)
 `ifdef VERILATOR
 module smolrv64_tb(input wire clock);
 `else
@@ -782,7 +782,7 @@ module smolrv64(input wire        clock,
 `ifndef MEM_SIZE_LG2
 `define MEM_SIZE_LG2    15 // 32 KiB, override with -DMEM_SIZE_LG2=N
 `endif
-`define MEM_SIZE        (1 << `MEM_SIZE_LG2)
+`define MEM_SIZE        (64'd1 << `MEM_SIZE_LG2)
    localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
    localparam TLB_CTX_BITS = 6;
    localparam TLB_ASID_BITS = 10;

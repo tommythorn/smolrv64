@@ -10,7 +10,11 @@ GIT_VDEF := "-DSMOLRV64_GIT_COMMIT=32'h$(GIT_COMMIT)"
 SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 TINY128_SIM_MEM_BASE="64'h80000000"
-TINY128_SIM_MEM_SIZE_LG2=29
+# 2 GiB (LG2=31): the gb5/Geekbench5 workload needs ~2 GiB of guest RAM.
+# Drives the SRAM model size (MEM_SIZE_LG2) and simmerv's MEM_BYTES
+# (COSIM_MEM_SIZE_LG2). axi_mem stays 512 MiB (LG2=29) below — it is loaded
+# but unused by tiny128/gb5, and the ~511 MiB image fits.
+TINY128_SIM_MEM_SIZE_LG2=31
 TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 # Cosim's sim_main mandates +even/+odd, which the RTL also $readmemh's into
 # axi_mem; tiny128 runs from the SRAM model and doesn't use axi_mem, but the
