@@ -61,11 +61,13 @@ Quality gates (must stay green): riscv-tests `(make)|&grep 'Test
 Passed'|wc -l` == 240; FPGA timing WNS (baseline +0.044 ns); cosim no
 divergence.
 
-## Progress this session: ~3.98 M → ~32.77 M retirements
+## Progress this session: ~3.98 M → ~168.4 M retirements
 
 Starting point was a divergence at the satp boot-trampoline (~3.98 M,
-already fixed/committed as `bcef83f`). This session fixed four more and
-reached retire ~32.77 M. In order:
+already fixed/committed as `bcef83f`). This session fixed five more; with
+the first four the run reached ~168 M (steady-state kernel idle/sched
+loop — clean from ~4 M through 168 M), then hit the SEIP timing
+divergence (#6). In order:
 
 1. **satp trampoline (~3.98 M)** — DUT-side, committed `bcef83f`
    "Serialize fetch on a value-changing SATP write". A value-changing
@@ -117,6 +119,21 @@ reached retire ~32.77 M. In order:
    path) and `mmu.rs load_virt_bytes`/`store_virt_bytes` (AMO/other) to
    return the misaligned trap when it holds. M-mode/Bare still byte-split.
 
+6. **Supervisor external interrupt (SEIP) delivery timing (~168.4 M)** —
+   cosim-glue side, same family as #2. At retire 168,401,574 a `csrrw
+   sstatus` that sets SIE was followed by REF taking SEIP (cause
+   0x8000000000000009) immediately while the DUT deferred one instruction.
+   The DUT suppresses interrupts for one instruction after a write to an
+   interrupt-control CSR (sstatus/sie/mstatus/mie/mip/mideleg — its
+   `just_xret` flag, smolrv64.v ~7936). Fix = same DUT-follow gate as
+   STIP: new `simmerv_set_seip_armed(bool)` masks `MIP_SEIP` out of the
+   take-set unless the DUT vectors SEIP this retire (`sim_main.cpp` sets
+   it = DUT trapped with cause …9). `mip.SEIP` (mirrored from the DUT PLIC
+   via `simmerv_set_seip`) stays set for sip reads. **Verification of this
+   one was still running (cosim20) at handoff — confirm it clears
+   168,401,574; if a supervisor *software* interrupt (SSIP, cause …1) ever
+   shows the same pattern, add the identical gate for it.**
+
 > **MISFEATURE (Tommy):** the DUT trapping page-crossing memops is itself
 > a misfeature — ideally the hardware should handle the cross (two dTLB
 > translations) rather than trap to firmware. Fix #5 is correct ONLY
@@ -127,13 +144,16 @@ reached retire ~32.77 M. In order:
 
 ## Current state / next step
 
-`cosim19` run (with fix #5) was in progress at last check (~15 M, no
-mismatch) — **confirm it clears 32,770,179 and find the next
+Fixes #1–#5 are verified: the run was clean from ~4 M to **168.4 M**.
+Fix #6 (SEIP gate) is committed but its verification run (`cosim20`) had
+not yet reached 168.4 M at handoff — **first step on resume: confirm
+`cosim20` (or a fresh run) clears retire 168,401,574, then find the next
 divergence.** Re-run the build+run commands above and read the MISMATCH
-block. The divergence cadence has been ~every few M retirements; each is
-either (a) a genuine simmerv model bug → fix simmerv, or (b) an
+block. With #1–#6 the workload appears to reach kernel steady state
+(repeating idle/scheduler PCs); divergences are now rare (~100 M apart).
+Each is either (a) a genuine simmerv model bug → fix simmerv, or (b) an
 unspecified / HW-timing quantity → make the cosim glue follow the DUT
-(see the STIP/MTIP/SEIP/HPM/mtime precedents in `sim_main.cpp`).
+(see the STIP/SEIP/MTIP/HPM/mtime precedents in `sim_main.cpp`).
 
 ## How to read a MISMATCH
 

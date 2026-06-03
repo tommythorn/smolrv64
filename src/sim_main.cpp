@@ -220,6 +220,11 @@ extern "C" void cosim_retire(
     const unsigned long long STIP_CAUSE = 0x8000000000000005ULL;
     const bool dut_taking_stip = trapped && trap_cause == STIP_CAUSE;
     simmerv_set_stip_armed(g_ctx, dut_taking_stip);
+    // Likewise the supervisor external interrupt (cause ...9): the DUT defers
+    // it one instruction after an interrupt-control CSR write (just_xret).
+    const unsigned long long SEIP_CAUSE = 0x8000000000000009ULL;
+    const bool dut_taking_seip = trapped && trap_cause == SEIP_CAUSE;
+    simmerv_set_seip_armed(g_ctx, dut_taking_seip);
     // Mirror DUT's PLIC→SEIP line: the two sims have independent UART/PLIC
     // state, so force simmerv's supervisor-external-interrupt bit to match.
     simmerv_set_seip(g_ctx, seip != 0);
