@@ -155,6 +155,27 @@ Each is either (a) a genuine simmerv model bug → fix simmerv, or (b) an
 unspecified / HW-timing quantity → make the cosim glue follow the DUT
 (see the STIP/SEIP/MTIP/HPM/mtime precedents in `sim_main.cpp`).
 
+## gb5 (Geekbench5) workload — needs a 2 GiB build (TODO)
+
+`workloads/gb5` (`make cosim` there) reuses the same cosim binary but is
+a much larger workload that **requires ~2 GiB of guest RAM**. The current
+tiny128 cosim is built for **512 MiB** (`MEM_SIZE_LG2=29`), so gb5 only
+stays valid while the guest touches < 512 MiB of physical RAM — above
+that the model is under-provisioned (a prior gb5 divergence ~83 M was on
+the old, pre-this-session build; with all six fixes it now sails past 83 M
+but is still on the wrong 512 MiB memory size). Converting to 2 GiB
+(`LG2=31`) is a multi-place change — known knobs:
+- `src/Makefile` `TINY128_SIM_MEM_SIZE_LG2` 29→31 (feeds `MEM_SIZE_LG2`
+  for the SRAM array AND `COSIM_MEM_SIZE_LG2` for simmerv's `MEM_BYTES`),
+  and the `TINY128_COSIM_VDEFS` hardcoded `AXI_MEM_SIZE_LG2=29`→31.
+- `src/smolrv64.v` — verify physical-address width / on-chip array sizing
+  / TLB-PPN / cache-tag assumptions hold at 2 GiB (the "many places").
+- `src/sim_main.cpp` — `MEM_BYTES`/base-address load math at 2 GiB.
+- `workloads/gb5/gb5.dts` memory node + image-load offsets.
+- Host RAM: even+odd SRAM and AXI arrays at 2 GiB each are large — the
+  Verilator process will need many GiB; fine on the M5/9950X3D.
+Not yet done — tackle as a unit before trusting gb5 cosim results.
+
 ## How to read a MISMATCH
 
 The block prints a DUT and REF line per recent retire; the diverging one
