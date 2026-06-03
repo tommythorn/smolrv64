@@ -2492,6 +2492,10 @@ module smolrv64(input wire        clock,
    reg  [63:0] int_commit_result = 0;
    reg  [ 4:0] int_commit_fflags = 0;
    reg         int_commit_prepared_fetch = 0;
+   // Forces S_INT_COMMIT to redirect/refetch npc (epoch bump + frontend
+   // flush) instead of accepting the prefetch. Set by a value-changing SATP
+   // write so the new translation applies to the very next fetch.
+   reg         int_commit_redirect_fetch = 0;
    reg  [63:0] c_imm12_8_109_6_7_2_11_53_x2;
    reg  [63:0] c_imm12_65_2_1110_43_x2;
    reg  [ 9:0] c_nzuimm107_1211_5_6_x4;
@@ -4864,6 +4868,21 @@ module smolrv64(input wire        clock,
       end
    endtask
 
+   task retire_current_wb_redirect_fetch;
+      begin
+         try_prepare_retire_id_current_wb();
+         // A value-changing SATP write invalidates the fetch buffer's
+         // translation context. A plain redirect (redirect_retire_fetch, as
+         // used by branch mispredicts) leaves frontend_buf intact, so a
+         // redirect to the sequential npc would hit the stale line prefetched
+         // under the old satp and be accepted WITHOUT re-translation. Flush the
+         // frontend like SFENCE.VMA so the refetch of npc misses the buffer and
+         // re-walks under the new satp; then layer the redirect target on top.
+         flush_frontend_speculation();
+         retire_redirect_fetch();
+      end
+   endtask
+
    task retire_int_pending_linear_fetch;
       input [4:0] pending_rd;
       begin
@@ -4908,6 +4927,7 @@ module smolrv64(input wire        clock,
          int_commit_result <= result;
          int_commit_fflags <= result_fflags;
          int_commit_prepared_fetch <= use_prepared_fetch;
+         int_commit_redirect_fetch <= 1'b0;
          state <= `S_INT_COMMIT;
       end
    endtask
@@ -7002,7 +7022,9 @@ module smolrv64(input wire        clock,
         `S_INT_COMMIT: begin
            write_back_value <= int_commit_result;
            fflags = fflags | int_commit_fflags;
-           if (int_commit_prepared_fetch) begin
+           if (int_commit_redirect_fetch) begin
+              retire_current_wb_redirect_fetch();
+           end else if (int_commit_prepared_fetch) begin
               execute_res_valid <= 0;
               retire_current_wb_prepared_fetch();
            end else begin
@@ -7540,6 +7562,7 @@ module smolrv64(input wire        clock,
            state <= `S_INT_COMMIT;
            int_commit_fflags <= 5'd0;
            int_commit_prepared_fetch <= 1'b1;
+           int_commit_redirect_fetch <= 1'b0;
            csr_access_failure = 0;
            csr_write_failure = 0;
            csr_read_val = 0;
@@ -7812,6 +7835,13 @@ module smolrv64(input wire        clock,
                          csr_satp_write_val[63:60] == 4'd8) begin
                        // WARL: only Bare and Sv39 are supported; unsupported
                        // MODE values cause the entire write to have no effect.
+                       // Treat a value-changing SATP write as fetch-serializing:
+                       // the new translation must apply to the next fetch, so
+                       // redirect/refetch npc under it rather than accepting the
+                       // frontend's prefetch made under the old satp. The ASID-
+                       // tagged TLB is left intact (no TLB flush needed).
+                       if (csr_satp_write_val != csr_satp)
+                          int_commit_redirect_fetch <= 1'b1;
                        csr_satp = csr_satp_write_val;
                      end
                    end
@@ -8665,6 +8695,7 @@ module smolrv64(input wire        clock,
          int_commit_result <= 0;
          int_commit_fflags <= 0;
          int_commit_prepared_fetch <= 0;
+         int_commit_redirect_fetch <= 0;
          npc <= `RESET_PC;
          clear_frontend_cmd();
          frontend_cmd_epoch <= 0;
