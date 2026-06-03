@@ -129,10 +129,11 @@ divergence (#6). In order:
    STIP: new `simmerv_set_seip_armed(bool)` masks `MIP_SEIP` out of the
    take-set unless the DUT vectors SEIP this retire (`sim_main.cpp` sets
    it = DUT trapped with cause …9). `mip.SEIP` (mirrored from the DUT PLIC
-   via `simmerv_set_seip`) stays set for sip reads. **Verification of this
-   one was still running (cosim20) at handoff — confirm it clears
-   168,401,574; if a supervisor *software* interrupt (SSIP, cause …1) ever
-   shows the same pattern, add the identical gate for it.**
+   via `simmerv_set_seip`) stays set for sip reads. **VERIFIED**: cosim20
+   cleared 168,401,574 and ran to 172 M+ — and reached **userspace**
+   (saw a `pc=0x3f…` user address ~171 M), so the guest is now booting
+   into userland. (If a supervisor *software* interrupt (SSIP, cause …1)
+   ever shows the same pattern, add the identical gate for it.)
 
 > **MISFEATURE (Tommy):** the DUT trapping page-crossing memops is itself
 > a misfeature — ideally the hardware should handle the cross (two dTLB
@@ -144,13 +145,12 @@ divergence (#6). In order:
 
 ## Current state / next step
 
-Fixes #1–#5 are verified: the run was clean from ~4 M to **168.4 M**.
-Fix #6 (SEIP gate) is committed but its verification run (`cosim20`) had
-not yet reached 168.4 M at handoff — **first step on resume: confirm
-`cosim20` (or a fresh run) clears retire 168,401,574, then find the next
-divergence.** Re-run the build+run commands above and read the MISMATCH
-block. With #1–#6 the workload appears to reach kernel steady state
-(repeating idle/scheduler PCs); divergences are now rare (~100 M apart).
+All six fixes are verified: the run is clean from ~4 M past **172 M**,
+and the guest has reached **userspace** (user-range PCs appear ~171 M).
+**First step on resume: re-run and find the next divergence** (now in
+userland execution). Re-run the build+run commands above and read the
+MISMATCH block. With #1–#6 the boot/kernel-steady-state phase is clean;
+divergences are now rare (~100 M apart).
 Each is either (a) a genuine simmerv model bug → fix simmerv, or (b) an
 unspecified / HW-timing quantity → make the cosim glue follow the DUT
 (see the STIP/SEIP/MTIP/HPM/mtime precedents in `sim_main.cpp`).
