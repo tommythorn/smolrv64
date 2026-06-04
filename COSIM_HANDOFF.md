@@ -1,4 +1,4 @@
-# Cosim oracle — cross-machine handoff (2026-06-02)
+# Cosim oracle — cross-machine handoff (2026-06-03)
 
 Self-contained resume notes for continuing the tiny128 lockstep-cosim
 divergence-hunt on another machine (e.g. MacBook Air M5). This file lives
@@ -143,38 +143,103 @@ divergence (#6). In order:
 > byte-split is already the right behavior). Revisit together; do not
 > treat the DUT trap as ground truth.
 
+## gb5 / OpenSBI-v1.7 CSR-probe cascade fixes (#7–#11, 2026-06-03)
+
+Switching to the gb5 workload (OpenSBI v1.7) surfaced a boot-time
+CSR-probe cascade: the newer firmware reads a batch of optional CSRs the
+older tiny128 firmware did not. Each one the DUT implements (mostly
+read-0) but simmerv lacked → `IllegalInstruction` divergence. Cleared in
+order (DUT pc ~0x8001117x probe routine, retires ~685 k–5.37 M):
+
+7. **Sstc / stimecmp (~685 k)** — DUT-side feature add (`smolrv64.v`).
+   `csrr stimecmp` (0x14d) trapped illegal on the DUT (no Sstc). Added
+   real Sstc: `csr_stimecmp` reg (reset all-1s, matches simmerv's
+   `u64::MAX`); STIP split into `stip_sw` (software-written via MIP) and a
+   registered comparator `stip_stc <= clint_mtime >= csr_stimecmp` (regd
+   for the same timing reason as `mtip`); `wire stip = csr_menvcfg[63]
+   (STCE) ? stip_stc : stip_sw` so STIP is HW-driven/read-only under Sstc,
+   software-driven otherwise; CSR read/write of 0x14d; S-mode access traps
+   illegal when `menvcfg.STCE=0` (M-mode always allowed) on both read+write
+   privilege checks. `gb5.dts` advertises `"sstc"`. The existing
+   `simmerv_set_stip_armed` STIP timing-gate (#2) still papers over the
+   1-cycle registered-comparator delivery skew. riscv-tests stays 240.
+
+8. **Smcntrpmf mcyclecfg/minstretcfg (~685.5 k)** — simmerv fix. DUT
+   implements 0x321/0x322 as plain M-mode RW regs (reset 0, used for the
+   UINH/SINH/MINH cycle/instret privilege-inhibit bits 60–62); simmerv
+   trapped. Added `Csr::Mcyclecfg`/`Minstretcfg` (enum + `legal()` +
+   `CsrFile` fields init 0 + read/write_csr_raw store-raw). Not wired into
+   simmerv's counter filtering (only stored) — revisit if a cycle/instret
+   value ever diverges.
+
+9. **Debug-trigger CSRs tselect/tdata1-3/tinfo (~685.5 k)** — simmerv fix.
+   DUT reads 0x7a0–0x7a4 as 0, writes to 0x7a0–0x7a3 no-op (no triggers).
+   Added `Tdata1/2/3/Tinfo` to the enum (`Tselect` already present) and
+   all five to `legal()`; reads fall through to `_ => 0`, writes to the
+   no-op `_ =>` default. `Tcontrol` (0x7a5) deliberately NOT added — the
+   DUT traps it too.
+
+10. **mideleg/sie LCOFIP bit 13 (~5.37 M)** — simmerv fix. Sscofpmf setup
+    writes `mideleg=0x2222`; DUT stores mideleg unmasked and reads back
+    0x2222, simmerv masked to 0x222 (dropped bit 13 / LCOFIP). Widened
+    simmerv's `Csr::Mideleg` write mask 0x222→0x2222 and the `Csr::Sie`
+    mask 0x222→0x2222 (DUT's SIE read mask is `csr_mie & 0x2222`). Bit 13
+    = supervisor local-counter-overflow interrupt.
+
+(11. reserved — next divergence in kernel-space, TBD.)
+
+After #7–#10 the cascade is clear and the guest jumps into the Linux
+kernel (kernel-virtual PCs ~6 M). simmerv changes #8–#10 are uncommitted
++ unbuilt-for-commit (clippy/fmt hook not yet run); DUT #7 verified
+riscv-tests 240 but uncommitted. **Commit pending** — see below.
+
 ## Current state / next step
 
-All six fixes are verified: the run is clean from ~4 M past **172 M**,
-and the guest has reached **userspace** (user-range PCs appear ~171 M).
-**First step on resume: re-run and find the next divergence** (now in
-userland execution). Re-run the build+run commands above and read the
-MISMATCH block. With #1–#6 the boot/kernel-steady-state phase is clean;
-divergences are now rare (~100 M apart).
-Each is either (a) a genuine simmerv model bug → fix simmerv, or (b) an
-unspecified / HW-timing quantity → make the cosim glue follow the DUT
-(see the STIP/SEIP/MTIP/HPM/mtime precedents in `sim_main.cpp`).
+Two tracks are verified:
+- **tiny128** (fixes #1–#6): clean ~4 M → past **172 M**, reached
+  **userspace**. This is the original oracle and remains valid.
+- **gb5 / OpenSBI v1.7** (fixes #7–#11 on top): clears the CSR-probe
+  cascade and runs into **Linux kernel-space** (kernel-virtual PCs from
+  ~6 M; clean past ~12 M and counting as of this writing).
 
-## gb5 (Geekbench5) workload — needs a 2 GiB build (TODO)
+**First step on resume:** re-run the gb5 cosim (`cd ~/smolrv64/workloads/
+gb5 && make cosim`), let it run, read the next MISMATCH block. The kernel
+memory-init phase is a long loop (clearing 2 GiB) around pc
+`0xffffffff801a6exx` — expect many millions of clean retires there before
+new code regions. Each new divergence is either (a) a genuine simmerv
+model bug → fix simmerv, or (b) an unspecified / HW-timing quantity →
+make the cosim glue follow the DUT (see the STIP/SEIP/MTIP/HPM/mtime
+precedents in `sim_main.cpp`).
 
-`workloads/gb5` (`make cosim` there) reuses the same cosim binary but is
-a much larger workload that **requires ~2 GiB of guest RAM**. The current
-tiny128 cosim is built for **512 MiB** (`MEM_SIZE_LG2=29`), so gb5 only
-stays valid while the guest touches < 512 MiB of physical RAM — above
-that the model is under-provisioned (a prior gb5 divergence ~83 M was on
-the old, pre-this-session build; with all six fixes it now sails past 83 M
-but is still on the wrong 512 MiB memory size). Converting to 2 GiB
-(`LG2=31`) is a multi-place change — known knobs:
-- `src/Makefile` `TINY128_SIM_MEM_SIZE_LG2` 29→31 (feeds `MEM_SIZE_LG2`
-  for the SRAM array AND `COSIM_MEM_SIZE_LG2` for simmerv's `MEM_BYTES`),
-  and the `TINY128_COSIM_VDEFS` hardcoded `AXI_MEM_SIZE_LG2=29`→31.
-- `src/smolrv64.v` — verify physical-address width / on-chip array sizing
-  / TLB-PPN / cache-tag assumptions hold at 2 GiB (the "many places").
-- `src/sim_main.cpp` — `MEM_BYTES`/base-address load math at 2 GiB.
-- `workloads/gb5/gb5.dts` memory node + image-load offsets.
-- Host RAM: even+odd SRAM and AXI arrays at 2 GiB each are large — the
-  Verilator process will need many GiB; fine on the M5/9950X3D.
-Not yet done — tackle as a unit before trusting gb5 cosim results.
+**Build note:** after editing simmerv, `cd ~/simmerv && cargo build
+--release`, then `cd ~/smolrv64/src && touch sim_main.cpp` BEFORE
+`make cosim` (the stale-link guard). `cargo` cwd resets to the parent
+repo after each shell call — always `cd` explicitly.
+
+## gb5 (Geekbench5) workload — 2 GiB build DONE, now the active workload
+
+`workloads/gb5` (`make cosim` there) is the active oracle workload — a
+large run that needs **~2 GiB guest RAM**. The 2 GiB conversion is
+complete (`MEM_SIZE_LG2=31`): `src/Makefile` `TINY128_SIM_MEM_SIZE_LG2=31`
+(feeds `MEM_SIZE_LG2`/`COSIM_MEM_SIZE_LG2`) with `AXI_MEM_SIZE_LG2=29`
+kept in `TINY128_COSIM_VDEFS`; `src/smolrv64.v` `MEM_SIZE`/`AXI_MEM_SIZE`
+use `64'd1 <<` (the 32-bit-literal overflow fix, committed); `gb5.dts`
+memory node `<0 0x80000000 0 0x7ff00000>`. `make cosim` from
+`workloads/gb5` rebuilds the dtb + 188 MB `mem.even`/`mem.odd` (gitignored
+— carry them or rebuild) and the cosim binary, then runs:
+
+```sh
+cd ~/smolrv64/workloads/gb5 && make cosim > /tmp/cosim_gb5.log 2>&1
+```
+
+`a1`/x11 (initrd FDT pointer) is set from `workloads/gb5/rf.hex` line 12
+(= 0x9ff00000) — it is derived from the gb5 parameters, NOT firmware.
+
+This run uses **OpenSBI v1.7** (`FW=fw_payload-7.1.0-rc6.bin`), newer than
+tiny128's firmware, which probes a different/larger set of optional CSRs
+at boot — fixes #7–#11 below clear that probe cascade. As of 2026-06-03
+the gb5 cosim clears the cascade and reaches **Linux kernel-space
+execution** (kernel-virtual PCs `0xffffffff8xxxxxxx` from ~6 M retires).
 
 ## How to read a MISMATCH
 
