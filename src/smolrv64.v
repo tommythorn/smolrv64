@@ -468,6 +468,7 @@ module smolrv64(input wire        clock,
 `define CSR_MIE        12'h304
 `define CSR_MTVEC      12'h305
 `define CSR_MCOUNTEREN 12'h306
+`define CSR_MENVCFG    12'h30a
 `define CSR_MCOUNTINHIBIT 12'h320
 `define CSR_MCYCLECFG  12'h321
 `define CSR_MINSTRETCFG 12'h322
@@ -2524,6 +2525,7 @@ module smolrv64(input wire        clock,
    reg [63:0]  csr_stvec      = 0,
                csr_scounteren = 0,
                csr_mcounteren = 0,
+               csr_menvcfg    = 0,
                csr_mcountinhibit = 0,
                csr_mcyclecfg  = 0,
                csr_minstretcfg = 0,
@@ -7639,6 +7641,7 @@ module smolrv64(input wire        clock,
                 `CSR_MIE:      csr_read_val = csr_mie;
                 `CSR_MTVEC:    csr_read_val = csr_mtvec;
                 `CSR_MCOUNTEREN: csr_read_val = csr_mcounteren;
+                `CSR_MENVCFG:  csr_read_val = csr_menvcfg;
                 `CSR_MCOUNTINHIBIT: csr_read_val = csr_mcountinhibit & `HPM_INHIBIT_MASK;
                 `CSR_MCYCLECFG: csr_read_val = csr_mcyclecfg;
                 `CSR_MINSTRETCFG: csr_read_val = csr_minstretcfg;
@@ -7866,6 +7869,9 @@ module smolrv64(input wire        clock,
                 `CSR_MIE:      csr_mie      = csr_modify_value(csr_mie, csr_arg, csr_op);
                 `CSR_MTVEC:    csr_mtvec    = csr_modify_value(csr_mtvec, csr_arg, csr_op); // XXX enforce 256-byte alignment for vectored interrupts
                 `CSR_MCOUNTEREN: csr_mcounteren = csr_modify_value(csr_mcounteren, csr_arg, csr_op) & `HPM_COUNTER_MASK;
+                // menvcfg: stored WARL, matching simmerv's raw store. The gb5
+                // DT advertises no sstc/zicboz, so STCE/CBZE are never enabled.
+                `CSR_MENVCFG:  csr_menvcfg  = csr_modify_value(csr_menvcfg, csr_arg, csr_op);
                 `CSR_MCOUNTINHIBIT: csr_mcountinhibit = csr_modify_value(csr_mcountinhibit, csr_arg, csr_op) & `HPM_INHIBIT_MASK;
                 `CSR_MCYCLECFG: csr_mcyclecfg = csr_modify_value(csr_mcyclecfg, csr_arg, csr_op);
                 `CSR_MINSTRETCFG: csr_minstretcfg = csr_modify_value(csr_minstretcfg, csr_arg, csr_op);
@@ -8783,6 +8789,7 @@ module smolrv64(input wire        clock,
          csr_mideleg      <= 0;
          csr_medeleg      <= 0;
          csr_mcounteren   <= 0;
+         csr_menvcfg      <= 0;
          csr_scounteren   <= 0;
          csr_senvcfg      <= 0;
          csr_mcountinhibit <= 0;
