@@ -457,6 +457,7 @@ module smolrv64(input wire        clock,
 `define CSR_SCAUSE     12'h142
 `define CSR_STVAL      12'h143
 `define CSR_SIP        12'h144
+`define CSR_STIMECMP   12'h14d
 `define CSR_SCOUNTOVF  12'hda0
 
 `define CSR_SATP       12'h180
@@ -2810,13 +2811,21 @@ module smolrv64(input wire        clock,
    // MEIP/SEIP driven by PLIC, MTIP/MSIP driven by CLINT
    reg         ueip = 0,
                lcofip = 0,
-               stip = 0, utip = 0,
+               stip_sw = 0, utip = 0,
                ssip = 0, usip = 0;
    wire        meip = plic_has_irq;
    wire        seip = plic_has_irq;
    reg         mtip = 0;
    always @(posedge clock) mtip <= clint_mtime >= clint_mtimecmp;
    wire        msip = clint_msip;
+
+   // Sstc: when menvcfg.STCE is set, STIP is driven by the stimecmp comparator
+   // (read-only to software); otherwise STIP keeps its software-written value.
+   // The comparator is registered for the same timing reason as mtip.
+   reg [63:0]  csr_stimecmp = ~0;
+   reg         stip_stc = 0;
+   always @(posedge clock) stip_stc <= clint_mtime >= csr_stimecmp;
+   wire        stip = csr_menvcfg[63] ? stip_stc : stip_sw;
 
    wire [13:0] csr_mip = {lcofip, 1'd0, meip, 1'd0, seip, ueip,
                           mtip, 1'd0, stip, utip,
@@ -7615,6 +7624,7 @@ module smolrv64(input wire        clock,
                 `CSR_SCAUSE:    csr_read_val = csr_scause;
                 `CSR_STVAL:     csr_read_val = csr_stval;
                 `CSR_SIP:       csr_read_val = csr_mip & csr_mideleg;
+                `CSR_STIMECMP:  csr_read_val = csr_stimecmp;
                 `CSR_SCOUNTOVF: csr_read_val = csr_scountovf_read_val;
 
                 `CSR_SATP: begin
@@ -7699,6 +7709,9 @@ module smolrv64(input wire        clock,
 `endif
                  csr_access_failure = 1;
               end
+              // Sstc: stimecmp is accessible from S-mode only when menvcfg.STCE=1
+              if (csrno == `CSR_STIMECMP && prv == 1 && !csr_menvcfg[63])
+                 csr_access_failure = 1;
               if (!csr_access_failure) begin
                  if (csrno == `CSR_CYCLE && !counter_access_allowed(6'd0))
                     csr_access_failure = 1;
@@ -7733,6 +7746,10 @@ module smolrv64(input wire        clock,
 `endif
                  csr_write_failure = 1;
               end
+
+              // Sstc: stimecmp is accessible from S-mode only when menvcfg.STCE=1
+              if (csrno == `CSR_STIMECMP && prv == 1 && !csr_menvcfg[63])
+                 csr_write_failure = 1;
            end
 
 
@@ -7822,6 +7839,7 @@ module smolrv64(input wire        clock,
                    if (csr_mideleg[1]) ssip = csr_next[1];
                    if (csr_mideleg[0]) usip = csr_next[0];
                 end
+                `CSR_STIMECMP:  csr_stimecmp = csr_modify_value(csr_stimecmp, csr_arg, csr_op);
                 `CSR_SATP: begin
                    if (prv == 1 && tvm) begin
                       cause = `TRAP_ILLEGAL_INSTRUCTION;
@@ -7886,7 +7904,7 @@ module smolrv64(input wire        clock,
                    // MTIP/MSIP (bits 7,3) are read-only, driven by CLINT
                    lcofip = csr_next[13];
                    ueip = csr_next[8];
-                   stip = csr_next[5];
+                   stip_sw = csr_next[5];
                    utip = csr_next[4];
                    ssip = csr_next[1];
                    usip = csr_next[0];
@@ -8790,6 +8808,7 @@ module smolrv64(input wire        clock,
          csr_medeleg      <= 0;
          csr_mcounteren   <= 0;
          csr_menvcfg      <= 0;
+         csr_stimecmp     <= ~0;
          csr_scounteren   <= 0;
          csr_senvcfg      <= 0;
          csr_mcountinhibit <= 0;
