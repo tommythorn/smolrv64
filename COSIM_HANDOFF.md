@@ -186,12 +186,25 @@ order (DUT pc ~0x8001117x probe routine, retires ~685 k–5.37 M):
     mask 0x222→0x2222 (DUT's SIE read mask is `csr_mie & 0x2222`). Bit 13
     = supervisor local-counter-overflow interrupt.
 
-(11. reserved — next divergence in kernel-space, TBD.)
+11. **Compressed-instruction fetch at page end (~1.96 G, userspace!)** —
+    simmerv fix. With #7–#10 the run sailed clean through kernel boot into
+    **userspace** and ran to retire **1,962,786,732** before diverging.
+    There a U-mode PC at `0x2afffe` (last halfword of its page) held a
+    compressed insn (`0x0705`, bits[1:0]=01); the DUT executed it
+    (npc += 2), but simmerv's `memop_code` always fetched 4 bytes, ran into
+    the unmapped next page `0x2b0000`, and took a spurious
+    InstructionPageFault (cause 0x0c, tval=0x2b0000). Fix (`cpu.rs
+    memop_code`): when `va & 0xfff == 0xffe`, fetch the low halfword first;
+    if it is compressed (`lo & 3 != 3`) return it without touching the next
+    page; only a real 32-bit insn reads the upper halfword (which may
+    legitimately fault). Strictly more correct — for 32-bit insns and all
+    non-boundary addresses behavior is byte-identical, so it cannot move an
+    earlier divergence.
 
-After #7–#10 the cascade is clear and the guest jumps into the Linux
-kernel (kernel-virtual PCs ~6 M). simmerv changes #8–#10 are uncommitted
-+ unbuilt-for-commit (clippy/fmt hook not yet run); DUT #7 verified
-riscv-tests 240 but uncommitted. **Commit pending** — see below.
+All of #7–#11 are committed: smolrv64 `0377fe7` (Sstc) + `9e90000`
+(handoff) on `dev`; simmerv `784ee4b` (CSR set) + `aa8fcb2` (fetch fix) on
+`main`. Push pending (no SSH key in sandbox): `git push origin dev` and
+`git -C ~/simmerv push codeberg main`.
 
 ## Current state / next step
 
@@ -199,14 +212,16 @@ Two tracks are verified:
 - **tiny128** (fixes #1–#6): clean ~4 M → past **172 M**, reached
   **userspace**. This is the original oracle and remains valid.
 - **gb5 / OpenSBI v1.7** (fixes #7–#11 on top): clears the CSR-probe
-  cascade and runs into **Linux kernel-space** (kernel-virtual PCs from
-  ~6 M; clean past ~12 M and counting as of this writing).
+  cascade, boots all the way through the kernel into **userspace**, and ran
+  clean to **~1.96 G retirements** before the compressed-fetch divergence
+  (#11, now fixed). A re-validation run from 0 is in progress (reaching
+  1.96 G again takes hours).
 
 **First step on resume:** re-run the gb5 cosim (`cd ~/smolrv64/workloads/
-gb5 && make cosim`), let it run, read the next MISMATCH block. The kernel
-memory-init phase is a long loop (clearing 2 GiB) around pc
-`0xffffffff801a6exx` — expect many millions of clean retires there before
-new code regions. Each new divergence is either (a) a genuine simmerv
+gb5 && make cosim`), let it run, read the next MISMATCH block. Expect long
+clean stretches: an early kernel memmap-init loop around pc
+`0xffffffff801a6exx` (millions of retires) and steady userspace execution
+to ~1.96 G. Each new divergence is either (a) a genuine simmerv
 model bug → fix simmerv, or (b) an unspecified / HW-timing quantity →
 make the cosim glue follow the DUT (see the STIP/SEIP/MTIP/HPM/mtime
 precedents in `sim_main.cpp`).
