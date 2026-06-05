@@ -1,12 +1,12 @@
 SRC_DIR  = ../../src
 SIM_ARGS ?=
-#FW=fw_payload.bin
-FW=fw_payload-7.1.0-rc6.bin
+FW=fw_payload.bin
+#FW=fw_payload-7.1.0-rc6.bin
 
 all: run
 
-mem.even mem.odd: linux.dtb $(FW)
-	$(SRC_DIR)/mkhex.py mem 0:$(FW) 1000000:linux.dtb 762b000:../tiny128/tiny128.cpio
+mem.even mem.odd: linux.dtb $(FW) tiny128.cpio
+	$(SRC_DIR)/mkhex.py mem 0:$(FW) 2000000:linux.dtb 762b000:tiny128.cpio
 
 linux.dtb: linux.dts
 	dtc -I dts -O dtb < $^ > $@
@@ -45,3 +45,9 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-cosim
 
 .PHONY: cosim
 .PHONY: $(SRC_DIR)/smolrv64-linux-verbose $(SRC_DIR)/smolrv64-linux-vl $(SRC_DIR)/smolrv64-linux-cosim
+
+tiny128.cpio: ../tiny128/tiny128.cpio.xz
+	xz -d < $< > $@
+
+%: %.xz
+	xz -d < $^ > $@

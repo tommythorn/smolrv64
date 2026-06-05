@@ -60,6 +60,6 @@ gb6.dtb: gb6.dts
 fw_payload.elf-6.15.0.bin: fw_payload.elf-6.15.0
 	$(RV)objcopy -O binary $^ $@
 
-ref:
+ref: gb6.dtb $(FW) $(IMG)
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -n -m 2048 -d gb6.dtb,0xfff00000 $(FW),0x80000000 $(IMG),0xe5f8ca00
+	$(SIMMERV)/target/release/simmerv_cli -m 2048 -d gb6.dtb,0xfff00000 $(FW),0x80000000 $(IMG),0xe5f8ca00

@@ -59,6 +59,6 @@ gb5.dtb: gb5.dts
 fw_payload.elf-6.15.0.bin: fw_payload.elf-6.15.0
 	$(RV)objcopy -O binary $^ $@
 
-ref:
+ref: gb5.dtb $(FW) img.Geekbench5.cpio
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -n -m 512 -d gb5.dtb,0x9ff00000 $(FW),0x80000000 img.Geekbench5.cpio,0x96270e00
+	$(SIMMERV)/target/release/simmerv_cli -m 2048 -d gb5.dtb,0x9ff00000 $(FW),0x80000000 img.Geekbench5.cpio,0x96270e00

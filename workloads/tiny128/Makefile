@@ -1,5 +1,6 @@
 SRC_DIR  = ../../src
 SIMMERV = $(HOME)/simmerv
+FW=fw_payload.bin-1.7+v7.1-rc1
 
 ifeq ($(shell uname -o),Darwin)
   RV=riscv64-elf-
@@ -10,8 +11,8 @@ endif
 
 # Byte offsets are relative to 0x80000000.  The DTB sits just above the
 # advertised RAM window, with the initrd packed immediately below it.
-mem.even mem.odd: tiny128.dtb fw_payload.elf-6.15.0.bin tiny128.cpio
-	$(SRC_DIR)/mkhex.py mem 0:fw_payload.elf-6.15.0.bin 1f52c000:tiny128.cpio 1ff00000:tiny128.dtb
+mem.even mem.odd: tiny128.dtb $(FW) tiny128.cpio
+	$(SRC_DIR)/mkhex.py mem 0:$(FW) 1f52c000:tiny128.cpio 1ff00000:tiny128.dtb
 
 $(SRC_DIR)/smolrv64-tiny128-verbose: $(SRC_DIR)/smolrv64.v
 	$(MAKE) -C $(SRC_DIR) smolrv64-tiny128-verbose
@@ -57,9 +58,9 @@ tiny128.cpio: tiny128.cpio.xz
 tiny128.dtb: tiny128.dts
 	dtc -I dts -O dtb < $^ > $@
 
-fw_payload.elf-6.15.0.bin: fw_payload.elf-6.15.0
+$(FW): fw_payload.elf-6.15.0
 	$(RV)objcopy -O binary $^ $@
 
-ref:
+ref: tiny128.dtb $(FW) tiny128.cpio
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -n -m 512 -d tiny128.dtb,0x9ff00000 fw_payload.elf-6.15.0 tiny128.cpio,0x9f52c000
+	$(SIMMERV)/target/release/simmerv_cli -m 512 -d tiny128.dtb,0x9ff00000 $(FW),0x80000000 tiny128.cpio,0x9f52c000
