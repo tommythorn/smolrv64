@@ -1,9 +1,15 @@
 SRC_DIR  = ../../src
-SIMMERV = $(HOME)/github/simmerv
 SIM_ARGS ?=
+#FW=fw_payload.bin
+FW=fw_payload-7.1.0-rc6.bin
 
-mem.even mem.odd: dts.dtb fw_payload.bin
-	$(SRC_DIR)/mkhex.py mem 0:fw_payload.bin 1000000:dts.dtb
+all: run
+
+mem.even mem.odd: linux.dtb $(FW)
+	$(SRC_DIR)/mkhex.py mem 0:$(FW) 1000000:linux.dtb 762b000:../tiny128/tiny128.cpio
+
+linux.dtb: linux.dts
+	dtc -I dts -O dtb < $^ > $@
 
 $(SRC_DIR)/smolrv64-linux-verbose:
 	$(MAKE) -C $(SRC_DIR) smolrv64-linux-verbose
@@ -39,13 +45,3 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-linux-cosim
 
 .PHONY: cosim
 .PHONY: $(SRC_DIR)/smolrv64-linux-verbose $(SRC_DIR)/smolrv64-linux-vl $(SRC_DIR)/smolrv64-linux-cosim
-
-$(SIMMERV)/target/release/simmerv_cli:
-	cd $(SIMMERV); cargo b -r
-
-golden-output.txt: $(SIMMERV)/target/release/simmerv_cli 
-	timeout 1 $(SIMMERV)/target/release/simmerv_cli -n -d dts.dtb,0x81000000 fw_payload.bin,0x80000000 > $@
-
-are-we-there-yet:
-	@(timeout 40 $(MAKE) -s run) | tee /tmp/sim.run.txt
-	@if diff /tmp/sim.run.txt golden-output.txt; then echo YES; else echo NO; fi

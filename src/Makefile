@@ -19,7 +19,7 @@ TINY128_SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_ME
 # Cosim's sim_main mandates +even/+odd, which the RTL also $readmemh's into
 # axi_mem; tiny128 runs from the SRAM model and doesn't use axi_mem, but the
 # array must be large enough (512 MiB) to not abort the load on the 512 MiB image.
-TINY128_COSIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=29 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
+TINY128_COSIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -DAXI_MEM_SIZE_LG2=31 -DMEM_BASEADDR=$(TINY128_SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 
 # For cache stress testing
 # SIM_CACHE_INDEX_BITS?=1
