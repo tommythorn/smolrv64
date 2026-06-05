@@ -91,8 +91,13 @@ divergence (#6). In order:
    stay computed from `mtime>=stimecmp` so guest reads still match
    (can't clobber `stimecmp` like MTIP's `mtimecmp`: it's a guest CSR).
    Dead ends: a simmerv `defer_interrupt` one-retire xret suppress gets
-   case 1 wrong; removing it gets case 2 wrong. Gate subsumes/replaces
-   defer — defer fully removed.
+   case 1 wrong; removing it gets case 2 wrong. The gate replaces defer
+   FOR COSIM only. **Do NOT delete defer_interrupt outright** — 6a58639
+   did, which hung STANDALONE boot (the armed gates default to armed
+   off-cosim, so a level-asserted STIP/SEIP livelocks the xRET return).
+   Restored in simmerv c9ccb11: defer_interrupt is kept + set on
+   MRET/SRET, and a `cosim_mode` flag (set by the `*_armed` setters)
+   disables it under cosim. Standalone uses defer; cosim uses the gates.
 
 3. **sstatus.UXL WARL (~29.34 M)** — simmerv fix. `csrrw sstatus`/`csrr`
    readback diverged: DUT `0x2_…` (UXL=2, RV64), REF `0x1_…`. `sstatus.
