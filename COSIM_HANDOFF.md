@@ -92,12 +92,17 @@ divergence (#6). In order:
    (can't clobber `stimecmp` like MTIP's `mtimecmp`: it's a guest CSR).
    Dead ends: a simmerv `defer_interrupt` one-retire xret suppress gets
    case 1 wrong; removing it gets case 2 wrong. The gate replaces defer
-   FOR COSIM only. **Do NOT delete defer_interrupt outright** — 6a58639
-   did, which hung STANDALONE boot (the armed gates default to armed
-   off-cosim, so a level-asserted STIP/SEIP livelocks the xRET return).
-   Restored in simmerv c9ccb11: defer_interrupt is kept + set on
-   MRET/SRET, and a `cosim_mode` flag (set by the `*_armed` setters)
-   disables it under cosim. Standalone uses defer; cosim uses the gates.
+   FOR COSIM only. **STANDALONE-BOOT GOTCHA (simmerv 4e79ef8):** 6a58639
+   also deleted the inline `handle_interrupt()` after sstatus/sie/mstatus/
+   mie writes — that hung standalone boot. Standalone runs the BLOCK
+   executor (run_soc/step_block), which checks interrupts only at block/
+   batch boundaries; those CSR writes are not block-terminal, so a
+   local_irq_enable/disable window inside one block never delivers the IRQ
+   → kernel spins forever. Fix = restore the inline take, gated by
+   `!cosim_mode` (cosim's per-retire step checks between instructions and
+   must NOT take inline — diverges from the DUT's fetch-boundary timing).
+   `cosim_mode` is set by the `*_armed` setters. The defer reintroduction
+   (c9ccb11) was a red herring and was reverted.
 
 3. **sstatus.UXL WARL (~29.34 M)** — simmerv fix. `csrrw sstatus`/`csrr`
    readback diverged: DUT `0x2_…` (UXL=2, RV64), REF `0x1_…`. `sstatus.
