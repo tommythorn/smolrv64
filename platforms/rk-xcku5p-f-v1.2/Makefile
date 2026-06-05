@@ -37,6 +37,9 @@ program:
 timing:
 	$(VIVADO) $(VFLAGS) -source report_timing.tcl
 
+cdc:
+	$(VIVADO) $(VFLAGS) -source report_cdc.tcl
+
 load:
 	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000
 	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs bit force
