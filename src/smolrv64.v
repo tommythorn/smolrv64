@@ -327,8 +327,13 @@ endmodule
 `endif
 
 // mimpid carries the leading bits of the HEAD commit the bitstream/sim was
-// built from (set by build.tcl and the Makefile). Fallback for builds that
-// don't pass it: the historical date stamp.
+// built from. build.tcl passes SMOLRV64_GIT_COMMIT directly; src/Makefile
+// defines SMOLRV64_GITVH and generates git_commit.vh (a tracked prerequisite,
+// so a new commit forces a relink and mimpid tracks HEAD). Anything else
+// falls back to the historical date stamp.
+`ifdef SMOLRV64_GITVH
+ `include "git_commit.vh"
+`endif
 `ifndef SMOLRV64_GIT_COMMIT
 `define SMOLRV64_GIT_COMMIT 32'h20260518
 `endif

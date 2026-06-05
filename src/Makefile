@@ -2,11 +2,14 @@ P=mem
 OPTS=
 SIM_MEM_BASE="64'h70000000"
 SIM_RESET_PC="64'h80000000"
-# Stamp every build's mimpid with the leading bits of the HEAD commit (matches
-# build.tcl's SMOLRV64_GIT_COMMIT for bitstreams). Double-quoted so the literal
-# apostrophe survives make -> sh; falls back to 00000000 outside a git tree.
+# Stamp every build's mimpid (CSR_MIMPID) with the leading bits of the HEAD
+# commit (matches build.tcl's SMOLRV64_GIT_COMMIT for bitstreams). The hash is
+# written into the generated git_commit.vh (rule below) rather than passed as a
+# -D, so a new commit changes a real prerequisite and forces a relink instead
+# of leaving a stale mimpid baked in. SMOLRV64_GITVH tells smolrv64.v to include
+# it; GIT_COMMIT falls back to 00000000 outside a git tree.
 GIT_COMMIT := $(shell git -C .. rev-parse --short=8 HEAD 2>/dev/null || echo 00000000)
-GIT_VDEF := "-DSMOLRV64_GIT_COMMIT=32'h$(GIT_COMMIT)"
+GIT_VDEF := -DSMOLRV64_GITVH
 SIM_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=27 -DAXI_MEM_SIZE_LG2=27 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 TESTER_VDEFS=-DSIMULATE -DMEM_SIZE_LG2=22 -DAXI_MEM_SIZE_LG2=22 -DMEM_BASEADDR=$(SIM_MEM_BASE) -DRESET_PC=$(SIM_RESET_PC) $(GIT_VDEF)
 TINY128_SIM_MEM_BASE="64'h80000000"
@@ -50,6 +53,20 @@ CVFPU_VL_FLAGS=-sv \
 CVFPU_VL_SRCS=-f cvfpu_sources.f $(CVFPU_SRCS)
 CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 
+# Common prerequisites for every Verilator sim build below. git_commit.vh is
+# regenerated whenever HEAD moves (rule below), so it forces a relink and
+# mimpid always matches the built commit.
+SIM_DEPS=$(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
+
+# Regenerate git_commit.vh, but only rewrite it when the commit actually
+# changes — FORCE runs the recipe every build, and cmp keeps the file's mtime
+# stable unless its contents differ, so unrelated builds don't relink.
+.PHONY: FORCE
+FORCE:
+git_commit.vh: FORCE
+	@printf "\`define SMOLRV64_GIT_COMMIT 32'h%s\n" "$(GIT_COMMIT)" > $@.tmp; \
+	 cmp -s $@.tmp $@ 2>/dev/null && rm -f $@.tmp || mv $@.tmp $@
+
 testall:
 	@(cd ../tests;./run-riscv-tests.sh passes)
 
@@ -59,7 +76,7 @@ run: $(P).even $(P).odd smolrv64-run
 verbose: $(P).even $(P).odd smolrv64-verbose
 	./smolrv64-verbose +even=$(P).even +odd=$(P).odd
 
-smolrv64-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-verbose: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
@@ -69,7 +86,7 @@ smolrv64-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_run_verbose/$@ $@
 
-smolrv64-run: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-run: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
@@ -91,7 +108,7 @@ smolrv64-linux-verbose: smolrv64-linux-verbose-vl
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
 # is needed.
-smolrv64-linux-verbose-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-linux-verbose-vl: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
@@ -104,7 +121,7 @@ smolrv64-linux-verbose-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 # Verilator build of the same config — much faster simulation.
 # Clock is driven by sim_main.cpp (under `ifdef VERILATOR), so no --timing
 # is needed.
-smolrv64-linux-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-linux-vl: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(SIM_VDEFS) -DNO_TIMEOUT \
@@ -114,7 +131,7 @@ smolrv64-linux-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_verbose/$@ $@
 
-smolrv64-tiny128-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-tiny128-verbose: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(TINY128_SIM_VDEFS) -DVERBOSE -DNO_TIMEOUT \
@@ -124,7 +141,7 @@ smolrv64-tiny128-verbose: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_tiny128_verbose/$@ $@
 
-smolrv64-tiny128-vl: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-tiny128-vl: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
 		$(TINY128_SIM_VDEFS) -DNO_TIMEOUT \
@@ -149,7 +166,7 @@ $(SIMMERV_LIB_DIR)/libsimmerv_cosim.a: \
 		$(SIMMERV_DIR)/cosim/Cargo.toml
 	cd $(SIMMERV_DIR) && cargo build --release -p simmerv-cosim
 
-smolrv64-linux-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
+smolrv64-linux-cosim: $(SIM_DEPS) \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
@@ -161,7 +178,7 @@ smolrv64-linux-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cosim/smolrv64-linux-cosim $@
 
-smolrv64-tiny128-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
+smolrv64-tiny128-cosim: $(SIM_DEPS) \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 \
 		--top-module smolrv64_tb \
@@ -173,7 +190,7 @@ smolrv64-tiny128-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_tiny128_cosim/smolrv64-tiny128-cosim $@
 
-smolrv64-trace: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-trace: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS -DTRACE \
@@ -183,7 +200,7 @@ smolrv64-trace: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_trace/$@ $@
 
-smolrv64-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-tester: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
@@ -193,7 +210,7 @@ smolrv64-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_tester/$@ $@
 
-smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
+smolrv64-cvfpu-tester: $(SIM_DEPS)
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
@@ -206,7 +223,7 @@ smolrv64-cvfpu-tester: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile
 # Cosim build with CVFPU enabled, in riscv-tests mode. Same DPI lockstep
 # as smolrv64-linux-cosim but with FP support so rv64uf/rv64ud tests can
 # be driven through cosim for divergence analysis.
-smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
+smolrv64-cvfpu-cosim: $(SIM_DEPS) \
 		$(SIMMERV_LIB_DIR)/libsimmerv_cosim.a
 	verilator $(CVFPU_VL_FLAGS) --cc --exe --build -j 0 --timing \
 		--top-module smolrv64_tb \
@@ -218,7 +235,7 @@ smolrv64-cvfpu-cosim: $(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_cosim/$@ $@
 
-lint:
+lint: git_commit.vh
 	verilator $(CVFPU_VL_FLAGS) -Wall --lint-only --timing --top-module smolrv64_tb \
 		$(TESTER_VDEFS) -DRISCV_TESTS \
 		-Wno-DECLFILENAME -Wno-BLKSEQ -Wno-PROCASSINIT \
