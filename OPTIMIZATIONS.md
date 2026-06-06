@@ -57,3 +57,23 @@ shared `dcache_bank_wr_data` bus cannot provide in one cycle.
 
 **Note:** `cbo.zero` deliberately does **not** depend on the split path; it relies
 only on the per-bank write-enable mask, which survives this rework.
+
+---
+
+## Svpbmt NC store: read-for-ownership on the flush-around path
+
+**What:** An NC/IO store is implemented as flush-around — fill the whole 64-byte
+line, merge the store, write the whole line back to memory, invalidate. The fill
+is a read-for-ownership: it pulls the line from DRAM only to overwrite it.
+
+**Why deferred:** Reusing the existing fill + writeback engine is what makes the
+NC bypass need no new datapath. The RFO is correct for the virtio use case (avail
+and used rings live on separate cache lines, so no same-line CPU/DMA write race).
+
+**Where:** `src/smolrv64.v` — `FILL_LINE_INSTALL` beat-7 NC-store branch
+(`cache_wb_after_ncstore`) and `cache_finish_writeback_line`.
+
+**Expected benefit:** A true uncached store path (write only the store's bytes to
+DRAM via a direct doubleword write — BRAM `mem0/mem1`, or an AXI single-beat
+write) removes the RFO *and* closes the same-line-DMA-clobber hole, making NC
+strictly correct. This is Option B in `SVPBMT_PLAN.md`.

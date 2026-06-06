@@ -1,10 +1,29 @@
 # Svpbmt Implementation Plan
 
-Status: **foundation implemented + validated; NC bypass datapath remaining.**
+Status: **implemented (foundation + NC bypass via flush-around); validated.**
 
 ## Progress
 
-**Done (validated: lint clean, riscv-tests 240/240; timing check in flight):**
+**NC/IO bypass — DONE (flush-around, Option A):** uncacheable accesses
+(`cache_req_perm[5]`) reach the cache normally (their PA is in DRAM) and the cache
+declines to retain them. Because NC lines are never installed, an NC access always
+misses -> `FILL_LINE_INSTALL`, where: an NC **load** invalidates the slot (tag=0)
+instead of installing (data already returned); an NC **store** writes the
+filled+merged line back to memory and invalidates the slot
+(`cache_wb_after_ncstore`), reusing the writeback engine -- no new datapath.
+Validated: riscv-tests 240/240, and a directed HPM test
+(`src/svpbmt_nc_test.s`) proving NC reads fill on every access (~16/16) while a
+PMA alias caches (~1) -- i.e. the bypass is real, not architecturally invisible.
+(Cosim no-regression + FPGA timing in flight.)
+
+**Known limitation (RFO same-line):** an NC store fills the whole line (read for
+ownership), merges the store, and writes the whole line back. If an external DMA
+agent writes *other bytes of the same 64-byte line* concurrently, the writeback
+can clobber them. Virtio keeps avail (CPU-written) and used (device-written) rings
+on separate lines, so this is safe there; the strict fix is Option B (write only
+the store's bytes, no RFO) -- logged in OPTIMIZATIONS.md.
+
+**Foundation (earlier, validated: lint, 240/240, timing +0.194 ns):**
 
 - Perm field widened to 6 bits `{uncacheable, physical, U, X, W, R}`
   (`CACHE_PERM_BITS`, `CACHE_PERM_PHYS`). This auto-threads an `uncacheable` bit

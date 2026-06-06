@@ -1435,6 +1435,7 @@ module smolrv64(input wire        clock,
    reg [`CACHE_INDEX_BITS-1:0] cache_flush_idx = 0;
    reg        cache_flush_way = 0;
    reg        cache_wb_after_flush = 0;
+   reg        cache_wb_after_ncstore = 0; // Svpbmt NC/IO store: writeback then invalidate, signal store done
    reg [30:6] cache_cbo_line_addr = 0;
    reg        cache_cbo_done_r = 0;
    reg [63:0] cache_bram_read_data_stage = 0;
@@ -2453,7 +2454,18 @@ module smolrv64(input wire        clock,
    task cache_finish_writeback_line;
       begin
          cache_wb_beat <= 0;
-         if (cache_wb_after_cbo) begin
+         if (cache_wb_after_ncstore) begin
+            // Svpbmt NC/IO store flush-around: the filled+merged line was written
+            // back to memory; invalidate the slot (it was never installed) and
+            // signal store completion so the store reaches DRAM uncached.
+            dcache_way0_tag_wr_en <= !cache_victim_way;
+            dcache_way1_tag_wr_en <= cache_victim_way;
+            dcache_tag_wr_idx <= cache_victim_idx;
+            dcache_tag_wr_data <= 0;
+            cache_wb_after_ncstore <= 1'b0;
+            dmem_write_done_r <= 1;
+            cache_state <= CACHE_IDLE;
+         end else if (cache_wb_after_cbo) begin
             dcache_way0_tag_wr_en <= !cache_victim_way;
             dcache_way1_tag_wr_en <= cache_victim_way;
             dcache_tag_wr_idx <= cache_victim_idx;
@@ -8388,15 +8400,13 @@ module smolrv64(input wire        clock,
                  cause = ptw_fault_cause;
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
-              end else if (aligned[62:61] == 2'b11 ||
-                           (aligned[62:61] != 2'b00 && !csr_menvcfg[62])) begin
-                 // Svpbmt: reserved PBMT encoding (11), or PBMT used while
-                 // menvcfg.PBMTE (bit 62) is clear -> page fault.
-                 cause = ptw_fault_cause;
-                 tval = ptw_va;
-                 state <= `S_EXCEPTION;
               end else begin
-                 // Translation successful - compute physical address
+                 // Translation successful - compute physical address.
+                 // Svpbmt PBMT (pte[62:61]) is honored leniently regardless of
+                 // menvcfg.PBMTE and without faulting on the reserved (11)
+                 // encoding -- matching the simmerv cosim model and tolerating
+                 // firmware (e.g. OpenSBI 0.9) that does not set PBMTE. NC/IO
+                 // become uncacheable via ptw_pte_uncacheable; PMA stays cached.
                  case (ptw_level)
                    2: mem_addr = {8'd0, aligned[53:28], ptw_va[29:0]}; // 1 GiB superpage
                    1: mem_addr = {8'd0, aligned[53:19], ptw_va[20:0]}; // 2 MiB superpage
@@ -9573,31 +9583,54 @@ module smolrv64(input wire        clock,
                  hpm_vhpr_pulse[`VHPRP_FILLS] <= 1;
                  if (cache_target_valid && !cache_target_dirty)
                     hpm_vhpr_pulse[`VHPRP_VICTIM_EVICTS] <= 1;
-                 if (!cache_req_ifetch) begin
-                    dcache_way0_tag_wr_en <= !cache_target_way;
-                    dcache_way1_tag_wr_en <= cache_target_way;
-                    dcache_tag_wr_idx  <= cache_target_idx;
-                    dcache_tag_wr_data <= cache_make_meta(cache_req_write, 1'b1,
-                                                          cache_req_asid,
-                                                          cache_req_perm,
-                                                          cache_req_vtag,
-                                                          cache_req_ptag,
-                                                          vhpr_epoch);
-                 end
-                 if (cache_req_write) begin
-                    dmem_write_done_r <= 1;
-                 end else if (cache_req_ifetch) begin
-                    ifetch_refill_retry_valid <= 1;
+                 if (cache_req_perm[5] && cache_req_write && !cache_req_ifetch) begin
+                    // Svpbmt NC/IO store (flush-around): do NOT install. The
+                    // filled+merged line sits in the cache_target banks; write it
+                    // back to memory and invalidate the slot so the store reaches
+                    // DRAM uncached. (No-install would lose the dirty store.)
+                    cache_victim_way        <= cache_target_way;
+                    cache_victim_idx        <= cache_target_idx;
+                    cache_victim_ptag       <= cache_req_ptag;
+                    cache_wb_base           <= {33'd0, cache_req_ptag, cache_target_idx[5:0], 6'd0};
+                    cache_wb_beat           <= 0;
+                    cache_wb_after_ncstore  <= 1'b1;
+                    cache_way0_rd_idx       <= cache_target_idx;
+                    cache_way1_rd_idx       <= cache_target_idx;
+                    cache_way0_bank0_rd_idx <= cache_target_idx;
+                    cache_way1_bank0_rd_idx <= cache_target_idx;
+                    cache_state             <= CACHE_WB_PREP;
                  end else begin
-                    emit_dmem_load_rsp(
-                       cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data,
-                       cache_req_same_line
-                       ? (cache_req_next_bank == 3'd7 ? cache_fill_data : cache_fill_next_data)
-                       : dcache_rsp_next_data,
-                       cache_req_same_line ||
-                          (dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff));
+                    if (!cache_req_ifetch) begin
+                       dcache_way0_tag_wr_en <= !cache_target_way;
+                       dcache_way1_tag_wr_en <= cache_target_way;
+                       dcache_tag_wr_idx  <= cache_target_idx;
+                       // Svpbmt NC/IO load: invalidate the slot (tag=0) instead of
+                       // installing, so the uncacheable line is not retained.
+                       if (cache_req_perm[5])
+                          dcache_tag_wr_data <= 0;
+                       else
+                          dcache_tag_wr_data <= cache_make_meta(cache_req_write, 1'b1,
+                                                                cache_req_asid,
+                                                                cache_req_perm,
+                                                                cache_req_vtag,
+                                                                cache_req_ptag,
+                                                                vhpr_epoch);
+                    end
+                    if (cache_req_write) begin
+                       dmem_write_done_r <= 1;
+                    end else if (cache_req_ifetch) begin
+                       ifetch_refill_retry_valid <= 1;
+                    end else begin
+                       emit_dmem_load_rsp(
+                          cache_req_bank == 3'd7 ? cache_fill_data : cache_fill_return_data,
+                          cache_req_same_line
+                          ? (cache_req_next_bank == 3'd7 ? cache_fill_data : cache_fill_next_data)
+                          : dcache_rsp_next_data,
+                          cache_req_same_line ||
+                             (dcache_rsp_next_hit && cache_req_va[11:3] != 9'h1ff));
+                    end
+                    cache_state      <= CACHE_IDLE;
                  end
-                 cache_state      <= CACHE_IDLE;
               end else begin
                  cache_fill_beat <= cache_fill_beat + 1;
                  cache_state     <= cache_bram_fill_commit ? CACHE_FILL_REQ :
