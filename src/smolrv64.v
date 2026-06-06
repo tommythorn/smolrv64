@@ -968,6 +968,7 @@ module smolrv64(input wire        clock,
    reg  [ 7:0] execute_req_mem_wr_mask  = 0; // byte-enable for stores+SC
    reg  [ 4:0] execute_req_mem_wb_reg   = 0; // destination register for loads/LR/SC/AMO (0 for stores)
    reg         execute_req_mem_fp       = 0; // 1 = FP load/store (route via f-regfile, NaN-box FLW)
+   reg         execute_req_cbo_zero     = 0; // 1 = Zicboz cbo.zero: write whole line as zeros
    reg  [ 2:0] load_size_lg2; // [1:0] = size (0:B, 1:H, 2:W, 3:D), [2] = sign-extend
 
    // Execute request boundary. S_RF asserts this after registering operands
@@ -1107,6 +1108,7 @@ module smolrv64(input wire        clock,
    reg          ifetch_read = 0;
    reg          dmem_read = 0;
    reg          dmem_write = 0;
+   reg          dmem_write_zero = 0;  // companion to dmem_write: 1 = cbo.zero whole-line zero
    reg  [63:0]  dmem_write_data;
    reg  [ 7:0]  dmem_write_strb;     // 1 = write byte
    wire         dmem_rsp_valid;
@@ -1391,6 +1393,7 @@ module smolrv64(input wire        clock,
    reg        cache_req_write = 0;
    reg        cache_req_ifetch = 0;
    reg        cache_req_cbo = 0;
+   reg        cache_req_zero = 0; // 1 = whole-line zero install/write (Zicboz cbo.zero)
    reg [30:6] cache_req_line_addr = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_vtag = 0;
    reg [`CACHE_VTAG_BITS-1:0] cache_req_next_vtag = 0;
@@ -2294,14 +2297,22 @@ module smolrv64(input wire        clock,
          dcache_bank_wr_data = cache_fill_data;
          if (cache_req_write && cache_fill_beat == cache_req_bank)
             dcache_bank_wr_data = merge_store_bytes(cache_fill_data, cache_store_data, cache_store_strb);
+         // Zicboz cbo.zero: overwrite every installed beat with zeros (whole
+         // line). The fetched fill data is discarded -- see CBO_ZERO note below
+         // for the cold-miss read-for-ownership we still pay here.
+         if (cache_req_zero)
+            dcache_bank_wr_data = 64'd0;
       end
 
       if (cache_state == CACHE_HIT_WRITE) begin
-         dcache_bank_wr_en = 8'd1 << cache_req_bank;
+         // cbo.zero zeros all 8 banks of the resident line in one cycle via the
+         // per-bank write-enable mask (shared write-data bus, uniform zero);
+         // ordinary stores write just the addressed bank.
+         dcache_bank_wr_en = cache_req_zero ? 8'hFF : (8'd1 << cache_req_bank);
          dcache_bank_wr_idx = dcache_rsp_hit_way ? cache_way1_rd_idx :
                                                    cache_way0_rd_idx;
          dcache_bank_wr_way = dcache_rsp_hit_way;
-         dcache_bank_wr_data =
+         dcache_bank_wr_data = cache_req_zero ? 64'd0 :
             merge_store_bytes(dcache_rsp_data, cache_store_data, cache_store_strb);
       end
    end
@@ -4143,6 +4154,7 @@ module smolrv64(input wire        clock,
               execute_req_mem_wr_mask   <= 8'd0;
               execute_req_mem_wb_reg    <= 5'd0;
               execute_req_mem_fp        <= 1'b0;
+              execute_req_cbo_zero      <= 1'b0;
 
               // Compressed loads / stores (quadrants 0 & 2)
               if ((id_rf_insn & 'he003) == 'h4000) begin // C.LW
@@ -5493,6 +5505,7 @@ module smolrv64(input wire        clock,
       ifetch_read <= 0;
       dmem_read   <= 0;
       dmem_write <= 0;
+      dmem_write_zero <= 0;
       ptw_direct_read <= 0;
       cache_cbo_flush <= 0;
       hpm_counter_wr_en <= 0;
@@ -6323,6 +6336,32 @@ module smolrv64(input wire        clock,
                  start_translation(mem_addr, 2'd2, mprv ? mpp : prv, `S_CBO_EXEC);
               else
                  state <= `S_CBO_EXEC;
+           end
+
+           else if ((ex_insn & 'hfff0707f) == 'h0040200f) begin // CBO.ZERO (Zicboz)
+              // Whole-line zero. Implemented as a cacheable write of zeros to
+              // the 64-byte block: the cache zeroes all 8 banks in one cycle via
+              // cache_req_zero (per-bank write-enable + uniform zero), so the
+              // ordinary store path handles translation, install/hit, dirty
+              // marking, and retire. A 64-aligned 64-byte block never crosses a
+              // page, so one translation covers it. Translated as a write
+              // (access 2'd2) so it faults on read-only pages and sets D.
+              //   COLD-MISS TODO: a cold miss still fetches the line from memory
+              //   before overwriting it with zeros (read-for-ownership). The
+              //   future optimization is to skip the fill on cache_req_zero and
+              //   jump straight to a zeroed dirty install. See OPTIMIZATIONS.md.
+              // Ungated on menvcfg/senvcfg CBZE, matching cbo.clean/flush/inval
+              // and the simmerv cosim model (OpenSBI sets CBZE before S-mode).
+              mem_addr = {execute_req_rs1_value[63:6], 6'd0};
+              mem_va   = {execute_req_rs1_value[63:6], 6'd0};
+              mem_asid <= {TLB_ASID_BITS{1'b0}};
+              mem_perm <= CACHE_PERM_PHYS;
+              mem_ctx  <= {2'd2, (mprv ? mpp : prv), sum, mxr};
+              mem_wr_mask = 8'hff;
+              store_value = 64'd0;
+              translated <= 0;
+              execute_req_cbo_zero <= 1'b1;
+              state <= `S_STORE;
            end
 
            else if ((ex_insn & 'hffffffff) == 'h00000073) begin // ECALL
@@ -7310,6 +7349,7 @@ module smolrv64(input wire        clock,
                     dmem_store_split    <= 1;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
+                       dmem_write_zero <= execute_req_cbo_zero;
                        state      <= `S_DMEM_STORE_RESP_ARM;
                     end else begin
                        state      <= `S_DMEM_STORE_WAIT;
@@ -7318,6 +7358,7 @@ module smolrv64(input wire        clock,
                     dmem_store_split  <= 0;
                     if (dmem_write_ready) begin
                        dmem_write <= 1;
+                       dmem_write_zero <= execute_req_cbo_zero;
                        state      <= `S_DMEM_STORE_RESP_ARM;
                     end else begin
                        state      <= `S_DMEM_STORE_WAIT;
@@ -9029,6 +9070,7 @@ module smolrv64(input wire        clock,
 	      cache_addr              <= {33'd0, cache_cbo_line_addr, 6'd0};
 	      cache_req_ptag          <= cache_cbo_ptag;
 	      cache_req_cbo           <= 1;
+	      cache_req_zero          <= 0;
 	      cache_req_write         <= 0;
 	      cache_req_ifetch         <= 0;
 	      cache_req_line_addr     <= cache_cbo_line_addr;
@@ -9048,6 +9090,7 @@ module smolrv64(input wire        clock,
 	      cache_addr              <= {33'd0, ptw_direct_addr[27:3], 6'd0};
 	      cache_req_ptag          <= ptw_direct_addr[27:9];
 	      cache_req_cbo           <= 1;
+	      cache_req_zero          <= 0;
 	      cache_req_write         <= 0;
 	      cache_req_ifetch         <= 0;
 	      cache_req_line_addr     <= ptw_direct_addr[27:3];
@@ -9095,6 +9138,7 @@ module smolrv64(input wire        clock,
               cache_req_write     <= 0;
               cache_req_ifetch     <= ifetch_read;
               cache_req_cbo       <= 0;
+              cache_req_zero      <= 0;
               cache_req_vtag      <= cache_vtag(cache_issue_va);
               cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
               cache_req_ptag      <= cache_issue_ptag;
@@ -9122,6 +9166,7 @@ module smolrv64(input wire        clock,
               cache_req_write     <= 1;
               cache_req_ifetch     <= 0;
               cache_req_cbo       <= 0;
+              cache_req_zero      <= dmem_write_zero;
               cache_req_vtag      <= cache_vtag(cache_issue_va);
               cache_req_next_vtag <= cache_vtag(cache_issue_next_va);
               cache_req_ptag      <= cache_issue_ptag;
