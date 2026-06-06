@@ -1,6 +1,64 @@
 # Svpbmt Implementation Plan
 
-Status: **recognition trivial / honored partially; NC cache-bypass deferred.**
+Status: **foundation implemented + validated; NC bypass datapath remaining.**
+
+## Progress
+
+**Done (validated: lint clean, riscv-tests 240/240; timing check in flight):**
+
+- Perm field widened to 6 bits `{uncacheable, physical, U, X, W, R}`
+  (`CACHE_PERM_BITS`, `CACHE_PERM_PHYS`). This auto-threads an `uncacheable` bit
+  through `mem_perm` -> `cache_req_perm`/`cache_issue_perm` -> TLB entry ->
+  cache meta everywhere perm already flows, so no separate signal plumbing was
+  needed. The uncacheable bit is `perm[5]`; the physical marker stays `perm[4]`.
+- PTW (`S_PTW_PROCESS`): page-faults on reserved PBMT (`pte[62:61]==11`) and on
+  `pte[62:61]!=0` while `menvcfg.PBMTE` (bit 62) is clear. The success branch
+  derives `ptw_pte_uncacheable = pte[62] | pte[61]` and folds it into the perm
+  passed to `route_translated_addr` / `stage_tlb_insert`.
+
+**Remaining: route uncacheable (`mem_perm[5]`) accesses so they do not retain in
+the L1.** Two ways:
+
+### Option A (recommended first cut): flush-around, reuse existing machinery
+
+Treat an uncacheable access as a normal cacheable access **plus** a CBO-style
+flush of the line, so nothing is retained and writes reach memory:
+
+- NC/IO **store**: normal cacheable store, then `cbo.flush` the line (writeback +
+  invalidate) before retiring -> data is in DRAM, line not retained.
+- NC/IO **load**: invalidate the line, normal cacheable load (fills fresh from
+  DRAM, returns), then invalidate again -> fresh value, not retained.
+
+This reuses the store/load path and the existing `cache_cbo_flush` /
+`CACHE_INVALIDATE` machinery (all already validated), needs **no new datapath**,
+and folds the special case into general mechanisms. Cost is performance (each NC
+access does fill+writeback/invalidate), but NC pages are rare (DMA buffers), so
+that is acceptable. Functionally correct for DMA coherence as long as the flush
+retires before the dependent device operation, which Linux's barriers guarantee.
+Implementation is FSM sequencing at the load/store completion points keyed on
+`mem_perm[5]`; validate with HPM counters (NC access => a fill + an immediate
+evict) and the normal value checks.
+
+### Option B (later, for performance): true uncached datapath
+
+Skip the L1 entirely: uncached load reuses `ptw_direct` read (BRAM /
+`l2_direct_read`); uncached store needs a NEW direct doubleword write (BRAM
+`mem0/mem1`; AXI single-beat via `axi_single_beat_master` for FPGA). Faster (no
+RFO/writeback) but much more new logic and timing surface. Note the MMIO
+`mmio_read`/`mmio_readdata` path is 32-bit device-register oriented and is NOT
+reusable for DRAM doublewords.
+
+IO type additionally implies strong ordering (no speculation/reorder) under
+either option.
+
+## Validation note
+
+The bypass itself is **not cosim-observable** (simmerv has no cache, so NC and
+PMA are identical there). It needs an **HPM-counter directed test**: a bare-metal
+program with hand-built Sv39 page tables mapping one page NC and one PMA, looping
+loads/stores over each, asserting the NC page advances fill/evict counters every
+access while the PMA page hits. Then `make timing` (hot path, zero margin) and a
+cosim no-regression boot.
 
 Svpbmt (Supervisor-mode Page-Based Memory Types, mandatory from RVA22S64) adds a
 2-bit memory-type field to each leaf PTE, bits **[62:61]**:

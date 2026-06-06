@@ -793,7 +793,7 @@ module smolrv64(input wire        clock,
    localparam [63:0] MEM_BASEADDR_VALUE = `MEM_BASEADDR;
    localparam TLB_CTX_BITS = 6;
    localparam TLB_ASID_BITS = 10;
-   localparam CACHE_PERM_BITS = 5; // {physical, U, X, W, R}
+   localparam CACHE_PERM_BITS = 6; // {uncacheable, physical, U, X, W, R} (uncacheable=Svpbmt NC/IO)
    localparam TLB_SATP_KEY_BITS = TLB_ASID_BITS;
    localparam FRONTEND_EPOCH_BITS = 2;
    localparam VHPR_EPOCH_BITS = 2;
@@ -1375,7 +1375,7 @@ module smolrv64(input wire        clock,
    reg                         dcache_bank_wr_way = 0;
    reg [63:0] dcache_bank_wr_data = 0;
 
-   localparam [CACHE_PERM_BITS-1:0] CACHE_PERM_PHYS = 5'b1_1111;
+   localparam [CACHE_PERM_BITS-1:0] CACHE_PERM_PHYS = 6'b0_1_1111;
 
    reg [ 4:0] cache_state = CACHE_IDLE;
    reg [63:0] cache_addr = 0;
@@ -2506,6 +2506,10 @@ module smolrv64(input wire        clock,
    reg [63:0] csr_mig_to_addr  = 0;
    reg  [127:0] aligned;
    reg  [127:0] pte_latch = 0;    // registered copy of PTE data used in S_PTW_PROCESS
+   // Svpbmt PBMT field is pte[62:61]: 00=PMA, 01=NC, 10=IO, 11=reserved. NC/IO
+   // are uncacheable. Reserved/disabled cases page-fault before the success
+   // branch, so in the success branch (pbmt != 0) == (bit62 | bit61).
+   wire        ptw_pte_uncacheable = pte_latch[62] | pte_latch[61];
    reg  [63:0] imm_i, imm_j, imm_b, imm_u, imm_s, csr_arg, csr_read_val, csr_satp_write_val;
    reg  [63:0] int_commit_result = 0;
    reg  [ 4:0] int_commit_fflags = 0;
@@ -8384,6 +8388,13 @@ module smolrv64(input wire        clock,
                  cause = ptw_fault_cause;
                  tval = ptw_va;
                  state <= `S_EXCEPTION;
+              end else if (aligned[62:61] == 2'b11 ||
+                           (aligned[62:61] != 2'b00 && !csr_menvcfg[62])) begin
+                 // Svpbmt: reserved PBMT encoding (11), or PBMT used while
+                 // menvcfg.PBMTE (bit 62) is clear -> page fault.
+                 cause = ptw_fault_cause;
+                 tval = ptw_va;
+                 state <= `S_EXCEPTION;
               end else begin
                  // Translation successful - compute physical address
                  case (ptw_level)
@@ -8421,16 +8432,16 @@ module smolrv64(input wire        clock,
 
                   if (ptw_level == 0 && aligned[63]) begin
                      hpm_tlb_uncached_napot_pulse <= 1;
-                     route_translated_addr(mem_addr, {1'b0, aligned[4:1]}, ptw_return);
+                     route_translated_addr(mem_addr, {ptw_pte_uncacheable, 1'b0, aligned[4:1]}, ptw_return);
                   end else if (ptw_level == 2) begin
                      hpm_tlb_uncached_1g_pulse <= 1;
-                     route_translated_addr(mem_addr, {1'b0, aligned[4:1]}, ptw_return);
+                     route_translated_addr(mem_addr, {ptw_pte_uncacheable, 1'b0, aligned[4:1]}, ptw_return);
                   end else begin
                      stage_tlb_insert(ptw_va, mem_addr, ptw_level, ptw_access, ptw_prv,
-                                      {1'b0, aligned[4:1]},
+                                      {ptw_pte_uncacheable, 1'b0, aligned[4:1]},
                                       ptw_satp, ptw_sum, ptw_mxr);
                      ptw_route_pa <= mem_addr;
-                     ptw_route_perm <= {1'b0, aligned[4:1]};
+                     ptw_route_perm <= {ptw_pte_uncacheable, 1'b0, aligned[4:1]};
                      ptw_route_return <= ptw_return;
                      state <= `S_TLB_INSERT;
                   end
