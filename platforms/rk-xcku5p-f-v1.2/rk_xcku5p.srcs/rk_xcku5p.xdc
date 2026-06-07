@@ -167,3 +167,14 @@ set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 
 # Ethernet/sys_rst_n pins are intentionally unconstrained here because the
 # current rk_xcku5p top level does not expose those ports.
+
+# MMIO clock-bridge FIFO reset is an async crossing (fifo_reset_q on ui_clk ->
+# XPM async-FIFO reset synchronizers in the core_clk/ui_clk domains). Because
+# core_clk/ui_clk are synchronous BUFGCE_DIV derivatives, Vivado otherwise times
+# this reset as a single-cycle path; it was the chronic worst path (WNS=0.000)
+# pinned by routing, not logic. The XPM reset block re-synchronizes assertion
+# internally, so this path is a false path. Removing it recovers ~0.05 ns and
+# lifts the design WNS off zero (next path is the core npc->frontend path).
+set_false_path \
+    -from [get_cells mmio_clock_bridge_inst/fifo_reset_q_reg] \
+    -through [get_pins -hier -filter {NAME =~ *mmio_clock_bridge_inst*xpm_fifo_rst_inst*/D}]
