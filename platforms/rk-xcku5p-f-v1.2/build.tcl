@@ -164,6 +164,15 @@ if {$step in {synth impl bit}} {
         set_property INCREMENTAL_CHECKPOINT "" [get_runs synth_1]
     }
     set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+    # Optional global fanout limit: the frontend enqueue path (pre_npc ->
+    # rf_decode_pc_q, rf_decode_predicted_pc_q) is route-dominated by a couple of
+    # high-fanout nets (fo>150). Forcing replication shortens those routes; it is
+    # functionally identical (same logic, replicated drivers). Set via env.
+    if {[info exists env(FANOUT_LIMIT)] && $env(FANOUT_LIMIT) ne ""} {
+        puts "Synth fanout limit: $env(FANOUT_LIMIT)"
+        set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
+            -value "-fanout_limit $env(FANOUT_LIMIT)" -objects [get_runs synth_1]
+    }
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
 }
