@@ -53,7 +53,7 @@ clean:
 	       .Xil *.jou *.log
 
 connect:
-	@screen $(TTY) 3000000
+	@screen $(TTY) 115200
 
 help:
 	@echo "Targets:"

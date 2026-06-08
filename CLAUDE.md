@@ -64,7 +64,7 @@ Targets (run from `platforms/rk-xcku5p-f-v1.2/`):
                    setup paths (no rebuild). Use this for every timing
                    diagnosis instead of asking the user to run reports.
 - `make clean`   — wipe generated outputs (keeps sources and .xpr)
-- `make connect` — screen to $(TTY) at 3 Mbaud
+- `make connect` — screen to $(TTY) at 115200
 
 Scripts live alongside the Makefile:
 - `build.tcl`         — synth/impl/bit flow driver

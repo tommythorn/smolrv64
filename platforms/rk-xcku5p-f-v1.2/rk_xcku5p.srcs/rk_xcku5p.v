@@ -881,14 +881,18 @@ module rk_xcku5p(
       .halted_o             (halted)
    );
 
-   // Core clock is half of the ~333.33 MHz UI clock; keep UART at 3 Mbaud.
+   // Core clock is half of the ~333.33 MHz UI clock. UART at 115200 (8N1):
+   // 3 Mbaud was marginal for the monitor's XMODEM RX on tight P&R draws; the
+   // standard rate gives ~26x the per-byte budget and is robust (also lets PPP
+   // run over the same line). Linux's ns16550a divisor is ignored — this rs232
+   // serializer sets the actual line rate.
    wire tx_ready;
-   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232tx_inst
+   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(115200)) rs232tx_inst
      (.clk(core_clk), .rst_n(~cpu_reset),
       .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
       .tx(txd));
 
-   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232rx_inst
+   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(115200)) rs232rx_inst
      (.clk(core_clk), .rst_n(~cpu_reset),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd), .overflow());
