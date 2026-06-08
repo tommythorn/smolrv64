@@ -174,6 +174,22 @@ if {$step in {impl bit}} {
     set_property STRATEGY Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
     set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
     set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1]
+    # Place/route directives. The default strategy leaves the frontend
+    # npc->rf_decode->cache_issue path at negative slack on this zero-margin
+    # design (WNS -0.122); ExtraTimingOpt placement + AggressiveExplore routing
+    # closes it (+0.129). These are the defaults so plain 'make bit' meets timing;
+    # override via PLACE_DIRECTIVE / ROUTE_DIRECTIVE env vars for closure sweeps.
+    set place_directive ExtraTimingOpt
+    set route_directive AggressiveExplore
+    if {[info exists env(PLACE_DIRECTIVE)] && $env(PLACE_DIRECTIVE) ne ""} {
+        set place_directive $env(PLACE_DIRECTIVE)
+    }
+    if {[info exists env(ROUTE_DIRECTIVE)] && $env(ROUTE_DIRECTIVE) ne ""} {
+        set route_directive $env(ROUTE_DIRECTIVE)
+    }
+    puts "Place directive: $place_directive   Route directive: $route_directive"
+    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE $place_directive [get_runs impl_1]
+    set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $route_directive [get_runs impl_1]
     if {![file exists $cvfpu_timing_hook]} {
         error "CVFPU timing hook missing: $cvfpu_timing_hook"
     }
