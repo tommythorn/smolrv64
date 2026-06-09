@@ -1,7 +1,9 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-module virtio_net_tx_drop(
+module virtio_net_tx_drop #(
+    parameter [31:0] QUEUE_SIZE = 32'd8  /* TX virtqueue depth, power of two */
+)(
     input  wire        clock,
     input  wire        reset,
 
@@ -147,6 +149,13 @@ module virtio_net_tx_drop(
    wire tx_notify = queue_notify_pulse && queue_notify_value == 32'd1;
    wire [15:0] next_avail_idx = last_avail_idx + 16'd1;
 
+   /* Ring-slot indices wrap at the (power-of-two) queue size. virtio-mmio always
+    * uses queue_num == QUEUE_NUM_MAX, so a compile-time mask is correct and keeps
+    * the DMA address arithmetic cheap. (Was hardcoded mod-8.) */
+   wire [15:0] ring_mask  = QUEUE_SIZE[15:0] - 16'd1;
+   wire [15:0] avail_slot = last_avail_idx & ring_mask;
+   wire [15:0] used_slot  = used_idx & ring_mask;
+
    assign debug_status = {device_status, 16'd0, notify_pending,
                           tx_queue_configured, driver_ok, state};
    assign debug_notify_count = notify_count;
@@ -265,7 +274,7 @@ module virtio_net_tx_drop(
 
            S_READ_RING: begin
               if (dma_cmd_ready) begin
-                 start_read64(tx_queue_driver + 64'd4 + {60'd0, last_avail_idx[2:0], 1'b0});
+                 start_read64(tx_queue_driver + 64'd4 + {47'd0, avail_slot, 1'b0});
                  state <= S_WAIT_RING;
               end
            end
@@ -284,7 +293,7 @@ module virtio_net_tx_drop(
 
            S_WRITE_USED_ID: begin
               if (dma_cmd_ready) begin
-                 start_write(tx_queue_device + 64'd4 + {58'd0, used_idx[2:0], 3'd0},
+                 start_write(tx_queue_device + 64'd4 + {45'd0, used_slot, 3'd0},
                              write_shift({48'd0, head_desc}, (tx_queue_device[2:0] + 3'd4) & 3'h7),
                              write_strobe((tx_queue_device[2:0] + 3'd4) & 3'h7, 4'd4));
                  state <= S_WAIT_USED_ID;
@@ -300,7 +309,7 @@ module virtio_net_tx_drop(
 
            S_WRITE_USED_LEN: begin
               if (dma_cmd_ready) begin
-                 start_write(tx_queue_device + 64'd8 + {58'd0, used_idx[2:0], 3'd0},
+                 start_write(tx_queue_device + 64'd8 + {45'd0, used_slot, 3'd0},
                              write_shift(64'd0, tx_queue_device[2:0]),
                              write_strobe(tx_queue_device[2:0], 4'd4));
                  state <= S_WAIT_USED_LEN;

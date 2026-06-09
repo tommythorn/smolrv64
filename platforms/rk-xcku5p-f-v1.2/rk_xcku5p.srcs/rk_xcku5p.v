@@ -552,7 +552,7 @@ module rk_xcku5p(
 
    virtio_mmio #(
       .DEVICE_ID(32'd1), /* Network device with a minimal TX-drop backend. */
-      .QUEUE_NUM_MAX(32'd8),
+      .QUEUE_NUM_MAX(32'd256), /* virtio-net needs > MAX_SKB_FRAGS+2 (=19) TX slots */
       .QUEUE_COUNT(32'd2)
    ) virtio_net_inst(
       .clock                   (ui_clk),
@@ -588,7 +588,9 @@ module rk_xcku5p(
       .device_status           (virtio_net_device_status)
    );
 
-   virtio_net_tx_drop virtio_net_tx_drop_inst(
+   virtio_net_tx_drop #(
+      .QUEUE_SIZE(32'd256)    /* must match virtio_net_inst QUEUE_NUM_MAX */
+   ) virtio_net_tx_drop_inst(
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),
