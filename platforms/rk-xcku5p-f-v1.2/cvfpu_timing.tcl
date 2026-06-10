@@ -53,3 +53,36 @@ if {[llength $cvfpu_fpu_resp_regs] && [llength $cvfpu_core_resp_regs]} {
    set_max_delay -datapath_only $cvfpu_data_bound \
       -from $cvfpu_fpu_resp_regs -to $cvfpu_core_resp_regs
 }
+
+# ---------------------------------------------------------------------------
+# core_clk hold margin.
+#
+# The D-cache LUTRAM (mem1, RAMD64E) write-address path
+#   cache_bram_word_idx_reg[*]_rep__* -> mem1_*/WADR
+# closes at only +0.010 ns hold under the aggressive (ExtraTimingOpt +
+# AggressiveExplore) place/route that was needed to pull the frontend SETUP
+# path positive. 10 ps is inside STA's clock-skew error band (this path sees
+# 0.179 ns of core_clk distribution skew), so it goes negative on real silicon
+# -> the cache write address is captured wrong -> deterministic, temperature-
+# insensitive data corruption (wrong operands/pointers in userspace, mangled
+# monitor XMODEM bytes). The router leaves it at +0.010 because STA reports it
+# as "met" and never tries harder.
+#
+# Add hold pessimism on core_clk so the tool must route in real hold margin.
+# Hold fixing inserts delay on the fast (short) paths and does not lengthen the
+# setup-critical (long) paths, so this should not regress WNS -- but verify both
+# WNS and WHS after the build (this is a zero-margin design). Tunable via env.
+set core_clk_obj [get_clocks -quiet core_clk]
+set hold_unc 0.100
+if {[info exists env(HOLD_UNCERTAINTY)] && $env(HOLD_UNCERTAINTY) ne ""} {
+   set hold_unc $env(HOLD_UNCERTAINTY)
+}
+if {[llength $core_clk_obj] && $hold_unc > 0} {
+   puts "core_clk hold uncertainty (intra): $hold_unc ns"
+   # MUST be the explicit -from/-to intra-clock form. The single-object form
+   # `set_clock_uncertainty -hold X [get_clocks core_clk]` only sets INTER-clock
+   # uncertainty and has zero effect on the core_clk->core_clk LUTRAM path
+   # (verified: single-object form leaves the path at +0.010; -from/-to drops it
+   # to -0.090, which forces route's hold-fixer to add real margin).
+   set_clock_uncertainty -hold $hold_unc -from $core_clk_obj -to $core_clk_obj
+}

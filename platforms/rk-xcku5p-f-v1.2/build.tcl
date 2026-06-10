@@ -202,7 +202,15 @@ if {$step in {impl bit}} {
     if {![file exists $cvfpu_timing_hook]} {
         error "CVFPU timing hook missing: $cvfpu_timing_hook"
     }
-    set_property STEPS.OPT_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
+    # Apply the timing hook before opt, place AND route. A constraint set only at
+    # OPT_DESIGN.TCL.PRE does not survive into route_design's timing view or the
+    # final checkpoint (each step re-reads the XDC), so the core_clk hold
+    # uncertainty had no effect on route's hold-fixing. Re-applying it before
+    # place and route makes route honor it (real hold margin) and persists it
+    # into the saved checkpoint. The hook is idempotent.
+    set_property STEPS.OPT_DESIGN.TCL.PRE   $cvfpu_timing_hook [get_runs impl_1]
+    set_property STEPS.PLACE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
+    set_property STEPS.ROUTE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
     run_if_needed impl_1 "" 12
     puts "Implementation complete."
 }
