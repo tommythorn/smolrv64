@@ -4,7 +4,7 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmolRV64 Ubuntu 2GiB";
+	model = "SmolRV64 Ubuntu 2GiB New";
 
 	chosen {
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/mmcblk0p1 rw ignore_loglevel random.trust_bootloader=on";
@@ -37,9 +37,7 @@
 		timebase-frequency = <1000000>; /* 1 MHz, a 10X lie */
 
 		cpu-map {
-
 			cluster0 {
-
 				core0 {
 					cpu = <&cpu0>;
 				};
@@ -60,7 +58,7 @@
 			riscv,cbop-block-size = <64>;
 			riscv,cboz-block-size = <64>;
 			mmu-type = "riscv,sv39";
-			clock-frequency = <333333333>;
+			clock-frequency = <166666666>;
 
 			cpu_intc: interrupt-controller {
 				#interrupt-cells = <1>;
