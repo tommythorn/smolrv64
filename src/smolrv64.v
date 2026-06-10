@@ -8317,12 +8317,6 @@ module smolrv64(input wire        clock,
            // PTE is pte_latch[63:0]; use aligned as a local alias for readability.
            aligned = pte_latch;
            // PTE fields: V=[0] R=[1] W=[2] X=[3] U=[4] G=[5] A=[6] D=[7] PPN=[53:10]
-`ifdef SIMULATE
-`ifdef VERBOSE
-           $display("PTW: va %x level %d pte_addr %x pte %x access %d prv %d time %0t",
-                    ptw_va, ptw_level, ptw_pte_addr, aligned[63:0], ptw_access, ptw_prv, $time);
-`endif
-`endif
            ptw_fault_cause = ptw_access == 0 ? `TRAP_INSTRUCTIONPAGE_FAULT :
                              ptw_access == 1 ? `TRAP_LOAD_PAGE_FAULT :
                                                `TRAP_STORE_PAGE_FAULT;
