@@ -315,8 +315,6 @@ module rk_xcku5p(
    localparam [31:0] BUILD_ID_GIT_COMMIT = `SMOLRV64_GIT_COMMIT;
    localparam        BUILD_ID_GIT_DIRTY = `SMOLRV64_GIT_DIRTY;
    reg  [31:0] build_id_readdata;
-   wire        virtio_net_debug_sel = virtio_net_sel && ui_mmio_address[11:8] == 4'hf;
-   reg  [31:0] virtio_net_debug_readdata;
    wire        virtio_blk_irq;
    wire        virtio_net_irq;
    reg         virtio_blk_irq_meta = 1'b0;
@@ -423,8 +421,7 @@ module rk_xcku5p(
             else if (virtio_blk_sel)
                mmio_readdata_q <= virtio_blk_readdata;
             else if (virtio_net_sel)
-               mmio_readdata_q <= virtio_net_debug_sel ? virtio_net_debug_readdata :
-                                  virtio_net_readdata;
+               mmio_readdata_q <= virtio_net_readdata;
             else if (build_id_sel)
                mmio_readdata_q <= build_id_readdata;
             else
@@ -493,25 +490,8 @@ module rk_xcku5p(
       .read_data    (sd_gpio_readdata)
    );
 
-   always @* begin
-      case (ui_mmio_address[7:2])
-        6'h00: virtio_net_debug_readdata = virtio_net_debug_status;
-        6'h01: virtio_net_debug_readdata = virtio_net_debug_notify_count;
-        6'h02: virtio_net_debug_readdata = virtio_net_debug_read_avail_count;
-        6'h03: virtio_net_debug_readdata = virtio_net_debug_empty_avail_count;
-        6'h04: virtio_net_debug_readdata = virtio_net_debug_read_ring_count;
-        6'h05: virtio_net_debug_readdata = virtio_net_debug_complete_count;
-        6'h06: virtio_net_debug_readdata = virtio_net_debug_irq_count;
-        6'h07: virtio_net_debug_readdata = virtio_net_debug_dma_error_count;
-        6'h08: virtio_net_debug_readdata = virtio_net_debug_indices;
-        6'h09: virtio_net_debug_readdata = virtio_net_debug_used_head;
-        6'h0a: virtio_net_debug_readdata = virtio_net_debug_last_avail_word_lo;
-        6'h0b: virtio_net_debug_readdata = virtio_net_debug_last_avail_word_hi;
-        6'h0c: virtio_net_debug_readdata = virtio_net_debug_last_ring_word_lo;
-        6'h0d: virtio_net_debug_readdata = virtio_net_debug_last_ring_word_hi;
-        default: virtio_net_debug_readdata = 32'd0;
-      endcase
-   end
+   /* virtio-net TX debug counters removed (TX is fixed). The engine's debug_*
+    * outputs now drive nothing and are stripped by synthesis (DCE). */
 
    virtio_mmio #(
       .DEVICE_ID(32'd0), /* Dormant until a block backend can complete queues. */
