@@ -101,7 +101,7 @@ send_line() {
 base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
 send_file "$DTB_ADDR"    "$DTB"    $((base + 1))
 base=$(grep -c "loaded sectors=" "$LOG" 2>/dev/null || true)
-send_line "SL2800 e0b0 80000000"
+send_line "SL2800 ffff 80000000"
 wait_for_loaded $((base + 1))
 send_line "X${FW_ADDR} 0 ${DTB_ADDR}"
 echo "[ubuntu-boot] done"
