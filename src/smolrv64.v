@@ -2709,7 +2709,6 @@ module smolrv64(input wire        clock,
    reg         uart_rx_front_valid = 0;
    reg         uart_rx_refill_pending = 0;
    reg [UART_FIFO_INDEX_BITS-1:0] uart_rx_refill_addr = 0;
-   reg [2:0]   uart_break_count = 0;
    wire [UART_FIFO_INDEX_BITS:0] uart_tx_count = uart_tx_tail - uart_tx_head;
    wire        uart_tx_empty = uart_tx_head == uart_tx_tail;
    wire        uart_tx_full = uart_tx_count == UART_FIFO_DEPTH_COUNT;
@@ -2717,12 +2716,11 @@ module smolrv64(input wire        clock,
    wire        uart_tx_idle = uart_tx_empty && uart_tx_ready;
    wire [UART_FIFO_INDEX_BITS:0] uart_rx_count = uart_rx_tail - uart_rx_head;
    wire        uart_rx_empty = uart_rx_head == uart_rx_tail;
-   wire        uart_rx_break_char = uart_rx_valid && uart_rx_data == 8'h18; // Ctrl-X
    wire        uart_rx_rbr_read = state == `S_LOCAL_LOAD &&
                                   phys_region(mem_addr) == `REGION_UART &&
                                   mem_addr[2:0] == 3'd0 && !uart_lcr[7];
    wire        uart_rx_pop = uart_rx_rbr_read && uart_rx_front_valid;
-   wire        uart_rx_push = uart_rx_valid && !uart_rx_break_char &&
+   wire        uart_rx_push = uart_rx_valid &&
                               (uart_rx_count < UART_FIFO_DEPTH_COUNT ||
                                uart_rx_pop);
    wire        uart_rx_ip = uart_ier[0] && uart_rx_front_valid;  // RX data available
@@ -5449,22 +5447,6 @@ module smolrv64(input wire        clock,
       end
       if (reset)
          core_reset_pending <= 1;
-      if (uart_rx_valid) begin
-         if (uart_rx_data == 8'h18) begin
-            if (uart_break_count == 3'd4) begin
-               core_reset_pending <= 1;
-               uart_break_count <= 0;
-               uart_rx_head <= 0;
-               uart_rx_tail <= 0;
-               uart_rx_front_valid <= 0;
-               uart_rx_refill_pending <= 0;
-            end else begin
-               uart_break_count <= uart_break_count + 1'b1;
-            end
-         end else begin
-            uart_break_count <= 0;
-         end
-      end
       // XXX This isn't very portable
       if (clint_mtime_clock_scaler[13]) begin
          clint_mtime_clock_scaler <= 3333 - 2; // 333.3333.. MHz / 3333 ~ 100.01 kHz
@@ -8910,7 +8892,6 @@ module smolrv64(input wire        clock,
          uart_rx_tail     <= 0;
          uart_rx_front_valid <= 0;
          uart_rx_refill_pending <= 0;
-         uart_break_count <= 0;
          uart_thre_pending <= 0;
          plic_pending     <= 0;
          plic_in_service  <= 0;
