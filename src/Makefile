@@ -158,6 +158,15 @@ SIMMERV_DIR     ?= $(HOME)/simmerv
 SIMMERV_LIB_DIR := $(SIMMERV_DIR)/target/release
 SIMMERV_INCLUDE := $(SIMMERV_DIR)/cosim
 
+# Link the Rust staticlib by path (works for both GNU ld and macOS ld, unlike
+# the GNU-only -l:libsimmerv_cosim.a). GNU ld resolves the staticlib's
+# transitive system deps implicitly; macOS ld needs the extras rustc reports
+# via `cargo rustc -- --print native-static-libs` (-framework vmnet -liconv).
+COSIM_LDFLAGS := $(SIMMERV_LIB_DIR)/libsimmerv_cosim.a -lpthread -ldl -lm
+ifeq ($(platform),Darwin)
+  COSIM_LDFLAGS += -framework vmnet -liconv
+endif
+
 $(SIMMERV_LIB_DIR)/libsimmerv_cosim.a: \
 		$(wildcard $(SIMMERV_DIR)/src/*.rs) \
 		$(wildcard $(SIMMERV_DIR)/src/**/*.rs) \
@@ -173,7 +182,7 @@ smolrv64-linux-cosim: $(SIM_DEPS) \
 		$(SIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
-		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-LDFLAGS "$(COSIM_LDFLAGS)" \
 		-Mdir obj_dir_cosim -o smolrv64-linux-cosim \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cosim/smolrv64-linux-cosim $@
@@ -185,7 +194,7 @@ smolrv64-tiny128-cosim: $(SIM_DEPS) \
 		$(TINY128_COSIM_VDEFS) -DNO_TIMEOUT -DVERILATOR_COSIM \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -DCOSIM_MEM_SIZE_LG2=$(TINY128_SIM_MEM_SIZE_LG2) -I$(SIMMERV_INCLUDE)" \
-		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-LDFLAGS "$(COSIM_LDFLAGS)" \
 		-Mdir obj_dir_tiny128_cosim -o smolrv64-tiny128-cosim \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_tiny128_cosim/smolrv64-tiny128-cosim $@
@@ -230,7 +239,7 @@ smolrv64-cvfpu-cosim: $(SIM_DEPS) \
 		$(TESTER_VDEFS) -DRISCV_TESTS -DVERILATOR_COSIM \
 		-Wno-fatal \
 		$(VL_OPT) -CFLAGS "$(VL_CFLAGS) -DVERILATOR_COSIM -I$(SIMMERV_INCLUDE)" \
-		-LDFLAGS "-L$(SIMMERV_LIB_DIR) -l:libsimmerv_cosim.a -lpthread -ldl -lm" \
+		-LDFLAGS "$(COSIM_LDFLAGS)" \
 		-Mdir obj_dir_cvfpu_cosim -o $@ \
 		$(CVFPU_VL_SRCS) $(SRCS) sim_main.cpp
 	cp obj_dir_cvfpu_cosim/$@ $@
