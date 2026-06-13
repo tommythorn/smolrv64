@@ -53,12 +53,14 @@
 			reg = <0>;
 			status = "okay";
 			compatible = "riscv";
-			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_zicbom_sscofpmf";
+			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_zicbom_zicbop_zicboz_sscofpmf_svpbmt";
 			riscv,isa-base = "rv64i";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicntr", "zicsr", "zifencei", "zihpm",
-				"zicbom", "sscofpmf";
+				"zicbom", "zicbop", "zicboz", "sscofpmf", "svpbmt";
 			riscv,cbom-block-size = <64>;
+			riscv,cbop-block-size = <64>;
+			riscv,cboz-block-size = <64>;
 			mmu-type = "riscv,sv39";
 			clock-frequency = <333333333>;
 
@@ -120,68 +122,6 @@
 			interrupts-extended = <&cpu_intc 3 &cpu_intc 7>;
 			reg = <0 0x2000000 0 0x10000>;
 			compatible = "riscv,clint0";
-		};
-
-		buildid@1000f000 {
-			compatible = "smolrv64,buildid";
-			reg = <0 0x1000f000 0 0x100>;
-		};
-
-		sd_cs_gpio: gpio@10001100 {
-			compatible = "wd,mbl-gpio";
-			reg = <0 0x10001100 0 0x1>;
-			reg-names = "dat";
-			gpio-controller;
-			#gpio-cells = <2>;
-			ngpios = <1>;
-		};
-
-		sd_cd_gpio: gpio@10001200 {
-			compatible = "wd,mbl-gpio";
-			reg = <0 0x10001200 0 0x1>;
-			reg-names = "dat";
-			gpio-controller;
-			#gpio-cells = <2>;
-			ngpios = <1>;
-			no-output;
-		};
-
-		spi@10001000 {
-			compatible = "opencores,tiny-spi-rtlsvn2";
-			reg = <0 0x10001000 0 0x100>;
-			clock-frequency = <333333333>;
-			baud-width = <8>;
-			num-cs = <1>;
-			cs-gpios = <&sd_cs_gpio 0 1>; /* GPIO_ACTIVE_LOW */
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			mmc@0 {
-				compatible = "mmc-spi-slot";
-				reg = <0>;
-				broken-cd;
-				bus-width = <1>;
-				voltage-ranges = <3300 3300>;
-				spi-max-frequency = <25000000>;
-			};
-		};
-
-		virtio_blk: virtio@10002000 {
-			compatible = "virtio,mmio";
-			reg = <0 0x10002000 0 0x1000>;
-			interrupts = <11>;
-			interrupt-parent = <&plic>;
-			dma-noncoherent;
-			status = "disabled";
-		};
-
-		virtio_net: virtio@10003000 {
-			compatible = "virtio,mmio";
-			reg = <0 0x10003000 0 0x1000>;
-			interrupts = <12>;
-			interrupt-parent = <&plic>;
-			dma-noncoherent;
-			status = "disabled";
 		};
 	};
 
