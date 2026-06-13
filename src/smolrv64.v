@@ -609,8 +609,8 @@ module smolrv64(input wire        clock,
 `define S_STORE_COMMIT         31  // commit a store after translation/routing decision
 `define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
 `define S_CVFPU_WAIT           34  // wait for a CVFPU result
-`define S_CVFPU_FMA_RF2        35  // wait for rs3 FP regfile read
-`define S_CVFPU_FMA_RF3        36  // issue CVFPU fused multiply-add/subtract
+// (35, 36 retired: the FMA rs3 detour folded into the normal S_RF read once
+//  rs3 got its own FP read port)
 `define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
 `define S_TLB_CHECK            38  // compare direct-mapped TLB entries
 `define S_DMEM_STORE_RESP_WAIT 43  // wait for an issued D-cache store to complete
@@ -931,7 +931,12 @@ module smolrv64(input wire        clock,
    reg  [ 1:0] prv = 3; // XXX We should set this on reset
 
    // Read ports
-   reg  [ 4:0] rs1, rs2;
+   // rs3 is the dedicated FP third-source read address (insn[31:27]) for R4
+   // FMADD/FMSUB/FNMSUB/FNMADD.  It has its own FP read port so the FMA no
+   // longer repurposes rs1 — repurposing rs1 left the shared read-address
+   // register pointing at rs3 and the *following* FP instruction could latch
+   // f[rs3] instead of its own rs1 operand (a rare wrong-result hazard).
+   reg  [ 4:0] rs1, rs2, rs3;
    wire [63:0] s1_bram;   // BRAM registered output; valid from start of S_RF onwards
    wire [63:0] s2_bram;
    (* max_fanout = 32 *) reg [63:0] execute_req_rs1_value = 0; // flip-flop copy of s1_bram; captured in S_RF, used in S_EXECUTE
@@ -946,8 +951,10 @@ module smolrv64(input wire        clock,
    reg  [63:0] write_back_fp_value;
    wire [63:0] f1_bram;     // FP regfile read port 0 (addressed by rs1)
    wire [63:0] f2_bram;     // FP regfile read port 1 (addressed by rs2)
+   wire [63:0] f3_bram;     // FP regfile read port 2 (addressed by rs3, FMA only)
    reg  [63:0] execute_req_frs1_value = 0;      // flip-flop copy of f1_bram; captured in S_RF
    reg  [63:0] execute_req_frs2_value = 0;
+   reg  [63:0] execute_req_frs3_value = 0;      // flip-flop copy of f3_bram; captured in S_RF
    // Single-precision operand reads: if the f-reg isn't properly NaN-boxed,
    // the spec says single-precision ops see the canonical qNaN 0x7fc00000.
    wire [31:0] execute_req_frs1_s = (&execute_req_frs1_value[63:32]) ? execute_req_frs1_value[31:0] : 32'h7fc00000;
@@ -1012,6 +1019,7 @@ module smolrv64(input wire        clock,
    reg  [63:0] execute_req_rs2_value_q = 0;
    reg  [63:0] execute_req_frs1_value_q = 0;
    reg  [63:0] execute_req_frs2_value_q = 0;
+   reg  [63:0] execute_req_frs3_value_q = 0;
    reg  [ 3:0] execute_req_alu_op_q = 0;
    reg  [63:0] execute_req_alu_b_q = 0;
    reg         execute_req_alu_sxt_q = 0;
@@ -1050,8 +1058,10 @@ module smolrv64(input wire        clock,
                       .write_addr(write_back_fp_register),
                       .read_addr_0(rs1),
                       .read_addr_1(rs2),
+                      .read_addr_2(rs3),
                       .read_data_0(f1_bram),
-                      .read_data_1(f2_bram));
+                      .read_data_1(f2_bram),
+                      .read_data_2(f3_bram));
 
    reg         cvfpu_in_valid = 0;
    reg  [2:0][63:0] cvfpu_operands = '0;
@@ -1335,6 +1345,11 @@ module smolrv64(input wire        clock,
    wire [63:0]  id_rf_frs2_value =
       (write_back_fp_valid && id_rf_rs2 == write_back_fp_register) ?
       fp_writeback_data : f2_bram;
+   // FP third source (R4 FMA): insn[31:27], same writeback-bypass as frs1/frs2.
+   wire [ 4:0]  id_rf_rs3 = id_rf_insn[31:27];
+   wire [63:0]  id_rf_frs3_value =
+      (write_back_fp_valid && id_rf_rs3 == write_back_fp_register) ?
+      fp_writeback_data : f3_bram;
 
    // VHPR write-back L1 for BRAM/DRAM.  The hit lookup is virtual
    // (ASID + virtual tag) while miss, writeback, and CBO reconciliation use
@@ -1673,8 +1688,6 @@ module smolrv64(input wire        clock,
            `S_STORE_COMMIT:          state_name = "STORE_COMMIT";
            `S_CVFPU_ISSUE:           state_name = "CVFPU_ISSUE";
            `S_CVFPU_WAIT:            state_name = "CVFPU_WAIT";
-           `S_CVFPU_FMA_RF2:         state_name = "CVFPU_FMA_RF2";
-           `S_CVFPU_FMA_RF3:         state_name = "CVFPU_FMA_RF3";
            `S_TLB_LOOKUP:            state_name = "TLB_LOOKUP";
            `S_TLB_CHECK:             state_name = "TLB_CHECK";
            `S_CBO_EXEC:              state_name = "CBO_EXEC";
@@ -3235,8 +3248,6 @@ module smolrv64(input wire        clock,
            `S_CBO_WAIT,
            `S_CVFPU_ISSUE,
            `S_CVFPU_WAIT,
-           `S_CVFPU_FMA_RF2,
-           `S_CVFPU_FMA_RF3,
            `S_MULDIV_START:
              frontend_spec_fetch_state = 1'b1;
            default:
@@ -3715,6 +3726,7 @@ module smolrv64(input wire        clock,
             id_shamt <= decoded_shamt;
             rs1 <= decoded_rs1;
             rs2 <= decoded_rs2;
+            rs3 <= decode_insn[31:27];
             frontend_cmd_pc <= decode_predicted_pc;
             frontend_cmd_prv <= decode_prv;
             arm_frontend_spec_cmd();
@@ -3753,6 +3765,7 @@ module smolrv64(input wire        clock,
          id_shamt <= rf_decode_shamt;
          rs1 <= rf_decode_rs1;
          rs2 <= rf_decode_rs2;
+         rs3 <= rf_decode_insn[31:27];
       end
    endtask
 
@@ -3785,6 +3798,7 @@ module smolrv64(input wire        clock,
       begin
          rs1 <= rf_decode_rs1;
          rs2 <= rf_decode_rs2;
+         rs3 <= rf_decode_insn[31:27];
          rf_decode_prearmed <= 1;
          rf_decode_prearmed_head <= rf_decode_head;
       end
@@ -3925,6 +3939,7 @@ module smolrv64(input wire        clock,
            execute_req_rs2_value <= id_rf_rs2_value;
            execute_req_frs1_value <= id_rf_frs1_value;
            execute_req_frs2_value <= id_rf_frs2_value;
+           execute_req_frs3_value <= id_rf_frs3_value;
            // Pre-compute SC reservation match one cycle early; S_EXECUTE's
            // SC branch then only sees a 1-bit registered hit.
            reservation_match <= (reservation == id_rf_rs1_value);
@@ -4565,9 +4580,7 @@ module smolrv64(input wire        clock,
            `S_MUL_RUNNING,
            `S_DIV_RUNNING,
            `S_CVFPU_ISSUE,
-           `S_CVFPU_WAIT,
-           `S_CVFPU_FMA_RF2,
-           `S_CVFPU_FMA_RF3:
+           `S_CVFPU_WAIT:
              frontend_spec_miss_state = 1'b1;
          default:
            frontend_spec_miss_state = 1'b0;
@@ -5256,6 +5269,7 @@ module smolrv64(input wire        clock,
               execute_req_rs2_value != execute_req_rs2_value_q ||
               execute_req_frs1_value != execute_req_frs1_value_q ||
               execute_req_frs2_value != execute_req_frs2_value_q ||
+              execute_req_frs3_value != execute_req_frs3_value_q ||
               execute_req_alu_op != execute_req_alu_op_q ||
               execute_req_alu_b != execute_req_alu_b_q ||
               execute_req_alu_sxt != execute_req_alu_sxt_q ||
@@ -5310,6 +5324,7 @@ module smolrv64(input wire        clock,
          execute_req_rs2_value_q <= execute_req_rs2_value;
          execute_req_frs1_value_q <= execute_req_frs1_value;
          execute_req_frs2_value_q <= execute_req_frs2_value;
+         execute_req_frs3_value_q <= execute_req_frs3_value;
          execute_req_alu_op_q <= execute_req_alu_op;
          execute_req_alu_b_q <= execute_req_alu_b;
          execute_req_alu_sxt_q <= execute_req_alu_sxt;
@@ -7002,8 +7017,19 @@ module smolrv64(input wire        clock,
                     tval = ex_insn;
                     state <= `S_EXCEPTION;
                  end else begin
-                    rs1 <= ex_insn[31:27]; // rs3; reuse FP read port 0
-                    state <= `S_CVFPU_FMA_RF2;
+                    // rs3 was read on its own FP port and latched in S_RF, so
+                    // issue the fused op directly (no rs1-repurpose detour).
+                    start_cvfpu_issue(execute_req_frs1_value,
+                                      execute_req_frs2_value,
+                                      execute_req_frs3_value,
+                                      pre_fp_rnd_mode,
+                                      ex_insn[3] ? 4'd1 : 4'd0,
+                                      ex_insn[2],
+                                      {2'd0, ex_insn[25]},
+                                      {2'd0, ex_insn[25]},
+                                      2'd3,
+                                      {3'd0, ex_rd},
+                                      1'b1);
                  end
               end
            end
@@ -7083,26 +7109,6 @@ module smolrv64(input wire        clock,
            end else begin
               retire_current_wb_linear_fetch();
            end
-        end
-
-        `S_CVFPU_FMA_RF2: begin
-           state <= `S_CVFPU_FMA_RF3;
-        end
-
-        `S_CVFPU_FMA_RF3: begin
-           start_cvfpu_issue(execute_req_frs1_value,
-                             execute_req_frs2_value,
-                             (write_back_fp_valid &&
-                              ex_insn[31:27] == write_back_fp_register) ?
-                             fp_writeback_data : f1_bram,
-                             pre_fp_rnd_mode,
-                             ex_insn[3] ? 4'd1 : 4'd0,
-                             ex_insn[2],
-                             {2'd0, ex_insn[25]},
-                             {2'd0, ex_insn[25]},
-                             2'd3,
-                             {3'd0, ex_rd},
-                             1'b1);
         end
 
         `S_CVFPU_ISSUE: begin
@@ -8638,9 +8644,9 @@ module smolrv64(input wire        clock,
       if (!core_reset_now && id_valid && !id_rf_ready)
          id_rf_ready <= 1;
 
-      // Pre-arm BRAM rs1/rs2 reads for the next queued decode once the current
-      // state's operands have already been latched. Keep EX/RF/FMA-rs3 states
-      // excluded because they still own or repurpose the read address ports.
+      // Pre-arm BRAM rs1/rs2/rs3 reads for the next queued decode once the
+      // current state's operands have already been latched. Keep EX/RF states
+      // excluded because they still own the read address ports.
       if (!core_reset_now && !id_valid && rf_decode_valid &&
           !rf_decode_prearmed && !rf_decode_prearm_block &&
           rf_prearm_safe_state(state))
@@ -11248,13 +11254,16 @@ module fregfile(input wire         clock,
                 input wire [63:0]  write_data,
                 input wire [ 4:0]  read_addr_0,
                 input wire [ 4:0]  read_addr_1,
+                input wire [ 4:0]  read_addr_2,
 
 `ifdef ASYNC_RF
                 output wire [63:0] read_data_0,
-                output wire [63:0] read_data_1
+                output wire [63:0] read_data_1,
+                output wire [63:0] read_data_2
 `else
                 output reg  [63:0] read_data_0,
-                output reg  [63:0] read_data_1
+                output reg  [63:0] read_data_1,
+                output reg  [63:0] read_data_2
 `endif
 );
    (* ram_style = "block" *)
@@ -11266,6 +11275,7 @@ module fregfile(input wire         clock,
 `ifndef ASYNC_RF
       read_data_0 <= fregfile[read_addr_0];
       read_data_1 <= fregfile[read_addr_1];
+      read_data_2 <= fregfile[read_addr_2];
 `endif
 
       if (write_valid) fregfile[write_addr] <= write_data;
@@ -11274,5 +11284,6 @@ module fregfile(input wire         clock,
 `ifdef ASYNC_RF
    assign read_data_0 = fregfile[read_addr_0];
    assign read_data_1 = fregfile[read_addr_1];
+   assign read_data_2 = fregfile[read_addr_2];
 `endif
 endmodule
