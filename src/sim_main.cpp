@@ -242,6 +242,13 @@ extern "C" void cosim_retire(
         if (override_csr >= 0) {
             simmerv_arm_csr_read(g_ctx, (uint16_t)override_csr, rd_val);
         }
+        // MMIO-load override: arm the DUT's loaded value unconditionally for
+        // any register-writing retire. simmerv consumes it only when its own
+        // load resolves to MMIO (device-register reads are model-specific and
+        // side-effecting); RAM loads and non-memory ops drop it. This keeps
+        // the two models from diverging on device reads (e.g. the 0x10001000
+        // window) the way the CSR-read override handles counter/ID CSRs.
+        simmerv_arm_load_value(g_ctx, rd_val);
     }
     SimmervRetire ref{};
     if (simmerv_step_retire(g_ctx, &ref) != 0) {
