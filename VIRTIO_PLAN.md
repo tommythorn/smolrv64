@@ -153,26 +153,45 @@ driver's free-descriptor wake threshold before suspecting DMA.
 ## Remaining Work: the real Ethernet data path
 
 The frontend is done; what is left is wiring `virtio_net_tx_drop`'s dropped
-frames to an actual RTL8211F-CG PHY (RGMII) and adding the receive path:
+frames to the RTL8211F-CG PHY (RGMII) and adding the receive path.
 
-1. **PHY pins + RGMII top-level ports.** Copy the `eth_txc/rxc`, `eth_txd[3:0]`,
-   `eth_rxd[3:0]`, `eth_tx_ctl`, `eth_rx_ctl` constraints from the board's
-   `12_UDP_TEST` design (`udp_test.srcs/.../pin.xdc`, LVCMOS18), add `mdio/mdc`
-   and a PHY reset, and expose them on `rk_xcku5p`. (In progress.)
-2. **RGMII 1 GbE MAC.** DDR I/O on `eth_txc`/`eth_rxc` (125 MHz), `rxc` capture
-   with IDELAY alignment, GMII↔RGMII, FCS, inter-frame gap.
-3. **MDIO.** Bring up the RTL8211F: link/autoneg, and the RGMII internal TX/RX
-   clock delays (the 8211F's delay-config is the usual gotcha).
-4. **Real TX.** Replace the "drop" with: stream the descriptor-fetched frame to
-   the MAC TX FIFO; complete the used-ring entry only on MAC accept.
-5. **RX path + second queue.** Provide RX buffers from the RX virtqueue, write
-   received frames (after FCS check) to guest DDR via DMA, update the RX used
-   ring, and raise the interrupt. Prepend the 12-byte `virtio_net_hdr`.
-6. **Enable the DT node** and confirm `eth0` carries real traffic (ping/PPP).
+DONE and sim-verified (Verilator):
+1. **PHY pins + RGMII ports** on `rk_xcku5p` (`eth_txc/rxc/txd/rxd/tx_ctl/
+   rx_ctl`, LVCMOS18 from `12_UDP_TEST`).  No MDIO/MDC/reset — the PHY uses
+   strapping defaults, matching the reference.  (commit e69b0c7)
+2. **RGMII adapter** (`gmii_to_rgmii.v`, `rgmii_rx/tx.v`) imported from the
+   reference: IDDRE1/ODDRE1/BUFG/BUFIO, whole MAC in the PHY RX-clock domain,
+   no MMCM, PHY-internal RGMII delays.  (fda607a)
+3. **MAC framer** `eth_mac_tx.v` (preamble/SFD/pad/FCS/IFG) + `eth_mac_rx.v`
+   (SFD detect, payload, FCS check) + `crc32_d8.v`.  TX FCS validated against an
+   independent software CRC32; TX->RX loopback round-trips and rejects a flipped
+   wire bit.  (fda607a, 9a24c68)
+4. **TX engine** `eth_tx_engine.v`: async-read frame BRAM (payload CDC) +
+   send/done toggle-synchronizer CDC, bridging `ui_clk` (virtio backend) to the
+   `gmii` clock.  Verified with skewed clocks.  (a01e0dc)
+
+REMAINING (hardware bring-up — no virtio model in sim, so these are verified on
+the board via the `0x10003f00` debug overlay, not in Verilator):
+5. **Real TX in the backend.** After `S_READ_RING` yields `head_desc`, read
+   `desc[head_desc]` (the 12-byte `virtio_net_hdr_v1`, `flags.NEXT` set), follow
+   `NEXT` to the frame-data descriptor, DMA its bytes into `eth_tx_engine`
+   (`wr_addr/wr_data/wr_en`), pulse `send` with the frame length, wait for `busy`
+   to fall, then run the existing used-ring writes.  Header is 12 bytes
+   (VERSION_1); no MRG_RXBUF/CSUM/GSO negotiated (DEVICE_FEATURES_1=0x3 =
+   VERSION_1+ACCESS_PLATFORM), so frames are linear hdr-desc -> data-desc chains.
+6. **RX path + second queue.** Pull a free buffer from the RX virtqueue's avail
+   ring, on `eth_mac_rx` `rx_last && rx_good` DMA the buffered frame (prepended
+   with a zeroed 12-byte `virtio_net_hdr_v1`) into it, write the RX used ring
+   (id + len), raise the interrupt.
+7. **Top integration.** Instantiate `gmii_to_rgmii` (replace `rgmii_mac_stub`) +
+   `eth_tx_engine` + `eth_mac_rx`, wire to the backend, add the new sources to
+   `build.tcl`, and add `create_clock` on `eth_rxc` (125 MHz) with the
+   `eth_txc` clock-forward.  **Adds a 125 MHz clock domain -> recheck timing.**
+8. **Enable the DT node** and confirm `eth0` carries real traffic (ping/PPP).
 
 The `0x10003f00` debug overlay (`notify_count`, `read_ring_count`,
-`complete_count`, `irq_count`, `dma_error_count`) stays useful as a cheap
-TX-path pass/fail signal while bringing up the MAC.
+`complete_count`, `irq_count`, `dma_error_count`) is the cheap TX pass/fail
+signal during bring-up.
 
 ## Proposed Address Map
 
