@@ -24,6 +24,15 @@ module rk_xcku5p(
     input  wire       sd_cd,
     inout  wire [3:0] sd_d,
 
+    // RGMII to RTL8211F-CG Ethernet PHY (pins per the board 12_UDP_TEST
+    // design).  Held idle by rgmii_mac_stub until the real MAC lands.
+    input  wire       eth_rxc,
+    input  wire [3:0] eth_rxd,
+    input  wire       eth_rx_ctl,
+    output wire       eth_txc,
+    output wire [3:0] eth_txd,
+    output wire       eth_tx_ctl,
+
     // DDR4 physical ports
     output wire        c0_ddr4_act_n,
     output wire [16:0] c0_ddr4_adr,
@@ -636,6 +645,19 @@ module rk_xcku5p(
       .m_axi_rready            (virtio_net_axi_rready)
    );
 
+   // RGMII PHY interface placeholder: TX idle, RX pins kept alive. This is the
+   // instantiation point the real 1 GbE MAC will replace (VIRTIO_PLAN.md).
+   rgmii_mac_stub rgmii_mac_stub_inst(
+      .sample_clk (ui_clk),
+      .reset      (ui_cpu_reset),
+      .eth_rxc    (eth_rxc),
+      .eth_rxd    (eth_rxd),
+      .eth_rx_ctl (eth_rx_ctl),
+      .eth_txc    (eth_txc),
+      .eth_txd    (eth_txd),
+      .eth_tx_ctl (eth_tx_ctl)
+   );
+
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter
    axi_two_master_arbiter ddr4_arbiter_inst(
@@ -863,18 +885,14 @@ module rk_xcku5p(
       .halted_o             (halted)
    );
 
-   // Core clock is half of the ~333.33 MHz UI clock. UART at 115200 (8N1):
-   // 3 Mbaud was marginal for the monitor's XMODEM RX on tight P&R draws; the
-   // standard rate gives ~26x the per-byte budget and is robust (also lets PPP
-   // run over the same line). Linux's ns16550a divisor is ignored — this rs232
-   // serializer sets the actual line rate.
+   // Core clock is half of the ~333.33 MHz UI clock; keep UART at 3 Mbaud.
    wire tx_ready;
-   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(115200)) rs232tx_inst
+   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232tx_inst
      (.clk(core_clk), .rst_n(~cpu_reset),
       .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
       .tx(txd));
 
-   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(115200)) rs232rx_inst
+   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232rx_inst
      (.clk(core_clk), .rst_n(~cpu_reset),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd), .overflow());

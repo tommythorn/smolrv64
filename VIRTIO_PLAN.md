@@ -20,11 +20,18 @@ real hardware:
 
 ## Constraints
 
-- The current cache is not coherent with external DMA masters.
-- The current RK top connects the core AXI master directly to the DDR4 MIG, so
-  device DMA needs an arbitration/interconnect layer before it can reach DDR.
-- The current RK top passes `ext_irq` as zero, so virtio completion interrupts
-  need PLIC source wiring.
+Most of the original constraints below have since been resolved (see Status);
+they are kept for history.
+
+- ~~The current cache is not coherent with external DMA masters.~~ RESOLVED:
+  Linux maps the virtqueues/buffers `Svpbmt` NC (non-cacheable), so device DMA
+  and the CPU see the same DDR. No L1 snoop/coherent-IO was needed. Verified by
+  ptdump and the bare-metal `workloads/virtio-coh` test.
+- ~~device DMA needs an arbitration/interconnect layer before it can reach
+  DDR.~~ RESOLVED: a two-master AXI arbiter (`src/axi_two_master_arbiter.v`)
+  routes core + device DMA to the DDR4 MIG.
+- ~~The RK top passes `ext_irq` as zero.~~ RESOLVED: virtio completion
+  interrupts are wired to PLIC sources (net = 12, block = 11).
 - The first implementation should avoid changing the existing SD/MMC boot path
   until Linux can enumerate and probe a harmless virtio-mmio device.
 
@@ -100,69 +107,72 @@ become entangled.
 
 ## Current Progress
 
-- A standalone `virtio_mmio` register shell exists in `src/virtio_mmio.v`.
-- The RK top instantiates a dormant block-device shell at `0x10002000`.
-- The RK top routes the shell interrupt to PLIC source 11.
-- A two-master AXI arbiter exists for routing both the CPU and device DMA to
-  DDR4.  The active RK build is reintroducing it first with the second master
-  tied off so timing can be checked before any real device backend is connected.
-- A fake RAM-less virtio-blk backend can walk one split-virtqueue request,
-  return deterministic read data, discard writes, update the used ring, and
-  raise the virtio interrupt.  It is currently compiled out of the RK top
-  because Ethernet is the first real virtio target and the first integrated
-  block version did not meet timing at 333 MHz.
-- The RK top keeps the virtio block shell dormant (`DeviceID = 0`) while the
-  active backend work shifts to virtio-net.  The DT node remains disabled until
-  the cache/DMA coherency path is ready enough for Linux to safely probe it.
-- `workloads/ubuntu/ubuntu.dts` contains a matching disabled DT node.  Enable
-  it only after a backend can complete queue requests.
+The virtio-mmio **transport and DMA work end to end** — the hard parts (queues,
+descriptor walking, used ring, interrupts, and DMA coherency) are done. What is
+left is the real Ethernet data path (MAC + PHY) behind the working frontend.
 
-## Resume Note: Stop Chasing Noncoherent Virtio
+- `src/virtio_mmio.v` — virtio-mmio register shell (MagicValue/Version/DeviceID,
+  feature negotiation, queue setup, queue-notify → backend).
+- `src/virtio_net_tx_drop.v` — a **working** virtio-net device whose transport is
+  complete: on TX-queue notify it DMA-reads the avail ring, walks the descriptor
+  ring, reads the frame from guest DDR, writes the used ring, and raises the PLIC
+  interrupt. It currently **drops** the frame (no MAC), so it is a fully
+  functional NIC from Linux's view minus an external wire.
+- The RK top (`rk_xcku5p.v`) instantiates the net device at `0x10003000`, IRQ 12,
+  with its AXI DMA master routed to DDR4 through `axi_two_master_arbiter.v`.
+- **DMA coherency is solved via Svpbmt NC**: Linux maps the vrings/buffers
+  non-cacheable, so device DMA and the CPU observe the same DDR. No L1 snoop was
+  needed. Verified by ptdump and bare-metal `workloads/virtio-coh`.
+- TX no longer wedges: `QUEUE_NUM_MAX` is 256 (virtio-net stops TX when free
+  descriptors < MAX_SKB_FRAGS+2 = 19; a depth-8 ring could never wake it). The
+  backend's ring indexing is parameterized by `QUEUE_SIZE` (mask, not mod-8).
+- `src/virtio_blk_fake.v` — a fake RAM-less virtio-blk backend (walks one
+  request, returns deterministic read data, discards writes, updates used ring,
+  IRQs). Compiled out of the RK top for now; net is the first real target and the
+  first integrated block version did not meet timing at 333 MHz.
+- `workloads/ubuntu/ubuntu.dts` carries the matching virtio-net DT node.
 
-As of commit `366ce99` (`Instrument virtio net TX path`), hardware testing
-proved the virtio-net TX failure is a cache coherency problem, not an interrupt
-delivery problem.
+## History: the TX wedge was queue size, not coherency
 
-Observed on the programmed board:
+An earlier resume note (commit `366ce99`, "Instrument virtio net TX path")
+concluded the virtio-net TX timeout was a cache-coherency problem: Linux kicked
+the TX queue, the backend's avail-ring DMA always read `avail.idx == 0`, and
+`read_ring_count`/`complete_count` never advanced (NETDEV watchdog forever).
 
-- Ubuntu booted with virtio-net enumerated.
-- `systemd-networkd` brought `eth0` up.
-- Linux repeatedly reported:
-  `virtio_net virtio0 eth0: NETDEV WATCHDOG: transmit queue 0 timed out`.
-- The debug overlay at `0x10003f00` showed:
-  - `debug_status = 0x0F000060`
-  - `notify_count = 1`
-  - `read_avail_count = 0x100`
-  - `empty_avail_count = 0x100`
-  - `read_ring_count = 0`
-  - `complete_count = 0`
-  - `irq_count = 0`
-  - `dma_error_count = 0`
+**That diagnosis was wrong.** Coherency was fine — the vring is Svpbmt NC and
+DMA is visible both ways (proven with ptdump and `workloads/virtio-coh`). The
+real bug was the **virtqueue depth**: virtio-net stops the TX queue when free
+descriptors fall below `MAX_SKB_FRAGS + 2 = 19` and only wakes it back above
+that. With `QUEUE_NUM_MAX = 8` (and no `INDIRECT_DESC`) the ring could never
+reach 19, so it stopped after the first packet and never restarted — hence
+`notify_count = 1` and no further progress. Fixed in `ea7eec2` by bumping the
+depth to 256 and masking ring indices by `QUEUE_SIZE` instead of hardcoded
+mod-8. Lesson: when a virtio queue stops after exactly one packet, suspect the
+driver's free-descriptor wake threshold before suspecting DMA.
 
-Interpretation:
+## Remaining Work: the real Ethernet data path
 
-Linux kicks TX queue 1, the RTL backend repeatedly reads the avail ring, but it
-always sees `avail.idx == 0`. The backend never reaches descriptor-ring reads,
-used-ring writes, or interrupts. That means the device DMA path is reading stale
-DDR contents while Linux's updated virtqueue state is resident in the CPU cache.
+The frontend is done; what is left is wiring `virtio_net_tx_drop`'s dropped
+frames to an actual RTL8211F-CG PHY (RGMII) and adding the receive path:
 
-Do not spend more time trying to fix this as an IRQ, queue-notify, or
-virtio-mmio register bug. The current TX-drop backend is useful only as a
-coherency reproducer and smoke test.
+1. **PHY pins + RGMII top-level ports.** Copy the `eth_txc/rxc`, `eth_txd[3:0]`,
+   `eth_rxd[3:0]`, `eth_tx_ctl`, `eth_rx_ctl` constraints from the board's
+   `12_UDP_TEST` design (`udp_test.srcs/.../pin.xdc`, LVCMOS18), add `mdio/mdc`
+   and a PHY reset, and expose them on `rk_xcku5p`. (In progress.)
+2. **RGMII 1 GbE MAC.** DDR I/O on `eth_txc`/`eth_rxc` (125 MHz), `rxc` capture
+   with IDELAY alignment, GMII↔RGMII, FCS, inter-frame gap.
+3. **MDIO.** Bring up the RTL8211F: link/autoneg, and the RGMII internal TX/RX
+   clock delays (the 8211F's delay-config is the usual gotcha).
+4. **Real TX.** Replace the "drop" with: stream the descriptor-fetched frame to
+   the MAC TX FIFO; complete the used-ring entry only on MAC accept.
+5. **RX path + second queue.** Provide RX buffers from the RX virtqueue, write
+   received frames (after FCS check) to guest DDR via DMA, update the RX used
+   ring, and raise the interrupt. Prepend the 12-byte `virtio_net_hdr`.
+6. **Enable the DT node** and confirm `eth0` carries real traffic (ping/PPP).
 
-Next direction:
-
-1. Build a coherent DMA path before extending virtio-net or adding virtio-blk.
-2. Prefer a hardware coherent-IO path where DMA reads probe/read dirty CPU
-   cache lines and DMA writes update or invalidate resident CPU lines.
-3. A fallback is correct Zicbom/noncoherent DMA, but only if Linux's
-   `cbo.clean`, `cbo.flush`, and `cbo.inval` paths are verified to make
-   virtqueue updates visible before device DMA.
-4. Keep the debug overlay until coherent DMA is working; it gives a cheap
-   pass/fail signal:
-   `read_ring_count` and `complete_count` must advance after `notify_count`.
-5. Once coherent DMA is available, retest the same bit-level scenario before
-   adding the real Ethernet MAC/PHY data path.
+The `0x10003f00` debug overlay (`notify_count`, `read_ring_count`,
+`complete_count`, `irq_count`, `dma_error_count`) stays useful as a cheap
+TX-path pass/fail signal while bringing up the MAC.
 
 ## Proposed Address Map
 

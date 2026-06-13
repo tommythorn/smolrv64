@@ -85,6 +85,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir axi_single_beat_master.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_net_tx_drop.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir rgmii_mac_stub.v] Verilog
 
     # smolrv64.v uses SystemVerilog (the always-on CV-FPU interface).
     add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog

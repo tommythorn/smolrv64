@@ -165,8 +165,36 @@ set_property BITSTREAM.CONFIG.CONFIGRATE 51.0 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 
-# Ethernet/sys_rst_n pins are intentionally unconstrained here because the
-# current rk_xcku5p top level does not expose those ports.
+# RGMII to the RTL8211F-CG Ethernet PHY. Pins copied from the board's
+# 12_UDP_TEST design (LVCMOS18). The MAC is not built yet (rgmii_mac_stub holds
+# TX idle); no MDIO/MDC or PHY-reset pins — the PHY uses strapping defaults,
+# matching the reference design. eth_rxc is not yet declared as a clock; the
+# real MAC will add create_clock + set_input_delay for the RGMII RX capture.
+set_property IOSTANDARD LVCMOS18 [get_ports eth_rxc]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[3]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[3]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {eth_txd[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports eth_rx_ctl]
+set_property IOSTANDARD LVCMOS18 [get_ports eth_tx_ctl]
+set_property IOSTANDARD LVCMOS18 [get_ports eth_txc]
+
+set_property PACKAGE_PIN K20 [get_ports {eth_txd[3]}]
+set_property PACKAGE_PIN L20 [get_ports {eth_txd[2]}]
+set_property PACKAGE_PIN L22 [get_ports {eth_txd[1]}]
+set_property PACKAGE_PIN L23 [get_ports {eth_txd[0]}]
+set_property PACKAGE_PIN K26 [get_ports {eth_rxd[3]}]
+set_property PACKAGE_PIN K25 [get_ports {eth_rxd[2]}]
+set_property PACKAGE_PIN L25 [get_ports {eth_rxd[1]}]
+set_property PACKAGE_PIN L24 [get_ports {eth_rxd[0]}]
+set_property PACKAGE_PIN K22 [get_ports eth_rxc]
+set_property PACKAGE_PIN K23 [get_ports eth_rx_ctl]
+set_property PACKAGE_PIN M26 [get_ports eth_tx_ctl]
+set_property PACKAGE_PIN M25 [get_ports eth_txc]
 
 # MMIO clock-bridge FIFO reset is an async crossing (fifo_reset_q on ui_clk ->
 # XPM async-FIFO reset synchronizers in the core_clk/ui_clk domains). Because
