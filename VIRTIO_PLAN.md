@@ -170,24 +170,37 @@ DONE and sim-verified (Verilator):
    send/done toggle-synchronizer CDC, bridging `ui_clk` (virtio backend) to the
    `gmii` clock.  Verified with skewed clocks.  (a01e0dc)
 
-REMAINING (hardware bring-up — no virtio model in sim, so these are verified on
-the board via the `0x10003f00` debug overlay, not in Verilator):
+DONE (TX path integrated; commit 0c767a0; bitstream met timing at +0.01 ns, same
+as baseline):
 5. **Real TX in the backend.** After `S_READ_RING` yields `head_desc`, read
-   `desc[head_desc]` (the 12-byte `virtio_net_hdr_v1`, `flags.NEXT` set), follow
-   `NEXT` to the frame-data descriptor, DMA its bytes into `eth_tx_engine`
-   (`wr_addr/wr_data/wr_en`), pulse `send` with the frame length, wait for `busy`
-   to fall, then run the existing used-ring writes.  Header is 12 bytes
-   (VERSION_1); no MRG_RXBUF/CSUM/GSO negotiated (DEVICE_FEATURES_1=0x3 =
-   VERSION_1+ACCESS_PLATFORM), so frames are linear hdr-desc -> data-desc chains.
-6. **RX path + second queue.** Pull a free buffer from the RX virtqueue's avail
-   ring, on `eth_mac_rx` `rx_last && rx_good` DMA the buffered frame (prepended
-   with a zeroed 12-byte `virtio_net_hdr_v1`) into it, write the RX used ring
-   (id + len), raise the interrupt.
-7. **Top integration.** Instantiate `gmii_to_rgmii` (replace `rgmii_mac_stub`) +
-   `eth_tx_engine` + `eth_mac_rx`, wire to the backend, add the new sources to
-   `build.tcl`, and add `create_clock` on `eth_rxc` (125 MHz) with the
-   `eth_txc` clock-forward.  **Adds a 125 MHz clock domain -> recheck timing.**
-8. **Enable the DT node** and confirm `eth0` carries real traffic (ping/PPP).
+   `desc[head_desc]` (addr/len), DMA the frame past the 12-byte
+   `virtio_net_hdr_v1` into `eth_tx_engine`, pulse `send`, then run the existing
+   used-ring writes.  Header is 12 bytes (VERSION_1); no MRG_RXBUF/CSUM/GSO
+   (DEVICE_FEATURES_1=0x3 = VERSION_1+ACCESS_PLATFORM).  **Assumes the Linux
+   can_push layout** (hdr inline ahead of the frame in one >=8B-aligned buffer);
+   if real TX turns out to chain hdr-desc -> data-desc, follow `NEXT`.  No
+   virtio regression: used ring completes on every path and `S_WAIT_SEND` has a
+   ~3 ms timeout (so no wedge with the link down).
+7. **Top integration.** `gmii_to_rgmii` (replaced `rgmii_mac_stub`) +
+   `eth_tx_engine` + `eth_mac_rx`; `create_clock` 8 ns on `eth_rxc` (xdc) +
+   async clock-group in `cvfpu_timing.tcl`.  Timing-neutral on the real build.
+   If a future change regresses WNS, swap `eth_tx_engine`'s distributed-RAM
+   buffer for BRAM (needs a 1-cycle read-ahead in `eth_mac_tx`).
+
+REMAINING:
+6. **RX path + second queue.** `eth_mac_rx` already deframes + FCS-checks
+   (frames counted in `eth_rx_good_cnt`, gmii domain, dont_touch).  Still TODO:
+   pull a free buffer from the RX virtqueue's avail ring, on `rx_last &&
+   rx_good` DMA the buffered frame (prepended with a zeroed 12-byte
+   `virtio_net_hdr_v1`) into it, write the RX used ring (id + len), raise the
+   interrupt.  Needs an RX frame BRAM (gmii write / ui read) mirroring
+   `eth_tx_engine`.
+8. **Confirm `eth0` carries real traffic** (ping/PPP); the DT node is already
+   present and enabled.
+
+Bring-up signals: scope `eth_txc`/`eth_txd` for outgoing frames; `eth_rx_good_cnt`
+(ILA) for RX framing.  PHY must be strapped for internal RGMII RX/TX delays
+(RTL8211F RXDLY/TXDLY), matching the 12_UDP_TEST reference (no FPGA IDELAY).
 
 The `0x10003f00` debug overlay (`notify_count`, `read_ring_count`,
 `complete_count`, `irq_count`, `dma_error_count`) is the cheap TX pass/fail
