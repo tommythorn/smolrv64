@@ -1,8 +1,8 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-module virtio_net_tx_drop #(
-    parameter [31:0] QUEUE_SIZE = 32'd8  /* TX virtqueue depth, power of two */
+module virtio_net #(
+    parameter [31:0] QUEUE_SIZE = 32'd8  /* virtqueue depth, power of two */
 )(
     input  wire        clock,
     input  wire        reset,

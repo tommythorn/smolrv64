@@ -584,9 +584,9 @@ module rk_xcku5p(
       .device_status           (virtio_net_device_status)
    );
 
-   virtio_net_tx_drop #(
+   virtio_net #(
       .QUEUE_SIZE(32'd256)    /* must match virtio_net_inst QUEUE_NUM_MAX */
-   ) virtio_net_tx_drop_inst(
+   ) virtio_net_inst(
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),

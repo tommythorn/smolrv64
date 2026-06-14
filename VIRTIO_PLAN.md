@@ -107,17 +107,21 @@ become entangled.
 
 ## Current Progress
 
-The virtio-mmio **transport and DMA work end to end** — the hard parts (queues,
-descriptor walking, used ring, interrupts, and DMA coherency) are done. What is
-left is the real Ethernet data path (MAC + PHY) behind the working frontend.
+**virtio-net is complete and works bidirectionally on hardware.** Linux brings
+up `eth0`, and TX + RX both carry real traffic over the RTL8211F RGMII PHY:
+ping round-trips to a host, DHCP gets an address, and the board reaches the LAN
+(verified 2026-06-14). The hard parts (queues, descriptor walking, used ring,
+interrupts, DMA coherency, MAC/PHY) are all done.
 
 - `src/virtio_mmio.v` — virtio-mmio register shell (MagicValue/Version/DeviceID,
   feature negotiation, queue setup, queue-notify → backend).
-- `src/virtio_net_tx_drop.v` — a **working** virtio-net device whose transport is
-  complete: on TX-queue notify it DMA-reads the avail ring, walks the descriptor
-  ring, reads the frame from guest DDR, writes the used ring, and raises the PLIC
-  interrupt. It currently **drops** the frame (no MAC), so it is a fully
-  functional NIC from Linux's view minus an external wire.
+- `src/virtio_net.v` — a **working bidirectional** virtio-net device. On TX-queue
+  notify it DMA-reads the avail ring, walks the descriptor ring, reads the frame
+  from guest DDR past the 12-byte `virtio_net_hdr_v1`, drives it out the MAC, and
+  completes the used ring + IRQ. On RX it pulls a free buffer from queue 0's
+  avail ring, DMAs the header + received frame in, and completes the RX used ring
+  + IRQ. (Formerly `virtio_net_tx_drop.v`, back when it dropped TX frames; renamed
+  once the MAC + RX path landed.)
 - The RK top (`rk_xcku5p.v`) instantiates the net device at `0x10003000`, IRQ 12,
   with its AXI DMA master routed to DDR4 through `axi_two_master_arbiter.v`.
 - **DMA coherency is solved via Svpbmt NC**: Linux maps the vrings/buffers
@@ -150,10 +154,10 @@ depth to 256 and masking ring indices by `QUEUE_SIZE` instead of hardcoded
 mod-8. Lesson: when a virtio queue stops after exactly one packet, suspect the
 driver's free-descriptor wake threshold before suspecting DMA.
 
-## Remaining Work: the real Ethernet data path
+## The Ethernet data path (DONE)
 
-The frontend is done; what is left is wiring `virtio_net_tx_drop`'s dropped
-frames to the RTL8211F-CG PHY (RGMII) and adding the receive path.
+The frontend and the full MAC/PHY data path are complete; `virtio_net.v` carries
+real bidirectional traffic over the RTL8211F-CG PHY (RGMII).
 
 DONE and sim-verified (Verilator):
 1. **PHY pins + RGMII ports** on `rk_xcku5p` (`eth_txc/rxc/txd/rxd/tx_ctl/
@@ -196,10 +200,13 @@ DONE (RX path integrated; commits 8ec4b2e + f9920dc):
    raises the IRQ.  Shares the DMA master with TX (RX serviced first in S_IDLE).
    No-buffer -> drop + count, never stalls.
 
-REMAINING:
-8. **Confirm `eth0` carries real traffic** (ping/PPP); the DT node is present
-   and enabled.  RX overlay words: f50 rx_deliver, f54 rx_nobuf, f58 engine
-   busy-drops, f48 eth_mac_rx good/bad framing.
+DONE (hardware-confirmed 2026-06-14):
+8. **`eth0` carries real traffic both ways.** Host↔board ping round-trips, the
+   board pulls DHCP and reaches the LAN. RX bring-up debug at `0x10003f00`:
+   f48 eth_mac_rx good/bad framing, f50 rx_deliver, f54 rx_nobuf, f58 engine
+   busy-drops, f5c/f60 first 8 RX bytes, f64 {good,len} of last RX frame.
+   (During bring-up: RX framed/FCS-passed good frames immediately once on a real
+   link; the only blocker to ping was the *host* lacking an IPv4 address.)
 
 Bring-up signals: scope `eth_txc`/`eth_txd` for outgoing frames; `eth_rx_good_cnt`
 (ILA) for RX framing.  PHY must be strapped for internal RGMII RX/TX delays
