@@ -187,16 +187,19 @@ as baseline):
    If a future change regresses WNS, swap `eth_tx_engine`'s distributed-RAM
    buffer for BRAM (needs a 1-cycle read-ahead in `eth_mac_tx`).
 
+DONE (RX path integrated; commits 8ec4b2e + f9920dc):
+6. **RX path + second queue.** `eth_rx_engine` (mirror of `eth_tx_engine`,
+   sim-verified) buffers each good frame from `eth_mac_rx` and hands it to the
+   backend in ui_clk.  The backend RX FSM (queue 0) takes a free buffer from the
+   RX avail ring, DMAs a 12-byte `virtio_net_hdr_v1` (num_buffers=1) + the frame
+   into it (byte/clock via wstrb, any alignment), writes the RX used ring, and
+   raises the IRQ.  Shares the DMA master with TX (RX serviced first in S_IDLE).
+   No-buffer -> drop + count, never stalls.
+
 REMAINING:
-6. **RX path + second queue.** `eth_mac_rx` already deframes + FCS-checks
-   (frames counted in `eth_rx_good_cnt`, gmii domain, dont_touch).  Still TODO:
-   pull a free buffer from the RX virtqueue's avail ring, on `rx_last &&
-   rx_good` DMA the buffered frame (prepended with a zeroed 12-byte
-   `virtio_net_hdr_v1`) into it, write the RX used ring (id + len), raise the
-   interrupt.  Needs an RX frame BRAM (gmii write / ui read) mirroring
-   `eth_tx_engine`.
-8. **Confirm `eth0` carries real traffic** (ping/PPP); the DT node is already
-   present and enabled.
+8. **Confirm `eth0` carries real traffic** (ping/PPP); the DT node is present
+   and enabled.  RX overlay words: f50 rx_deliver, f54 rx_nobuf, f58 engine
+   busy-drops, f48 eth_mac_rx good/bad framing.
 
 Bring-up signals: scope `eth_txc`/`eth_txd` for outgoing frames; `eth_rx_good_cnt`
 (ILA) for RX framing.  PHY must be strapped for internal RGMII RX/TX delays
