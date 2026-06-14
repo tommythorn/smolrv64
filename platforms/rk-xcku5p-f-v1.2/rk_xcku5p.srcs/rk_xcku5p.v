@@ -782,11 +782,27 @@ module rk_xcku5p(
    // ones the single-buffered engine drops while busy) for the debug overlay.
    (* dont_touch = "true" *) reg [15:0] eth_rx_good_cnt = 16'd0;
    (* dont_touch = "true" *) reg [15:0] eth_rx_bad_cnt  = 16'd0;
-   (* dont_touch = "true" *) reg [ 7:0] eth_rx_last_byte = 8'd0;
+   // Debug: capture the first 8 deframed bytes + length + FCS-good of the most
+   // recent RX frame (good or bad), so devmem can compare against the known
+   // host frame (e.g. ARP reply: first 6 bytes = board MAC 4a 18 30 e1 28 bc).
+   // Garbage/shift => RGMII RX capture timing; correct bytes => deframer/FCS.
+   (* dont_touch = "true" *) reg [63:0] rx_dbg_head = 64'd0;  // bytes 0..7, LE
+   (* dont_touch = "true" *) reg [10:0] rx_dbg_len  = 11'd0;
+   (* dont_touch = "true" *) reg        rx_dbg_good = 1'b0;
+   reg [10:0] rx_dbg_cnt = 11'd0;
    always @(posedge gmii_rx_clk) begin
-      if (eth_rx_valid)               eth_rx_last_byte <= eth_rx_data;
-      if (eth_rx_last &&  eth_rx_good) eth_rx_good_cnt <= eth_rx_good_cnt + 16'd1;
-      if (eth_rx_last && !eth_rx_good) eth_rx_bad_cnt  <= eth_rx_bad_cnt  + 16'd1;
+      if (eth_rx_valid) begin
+         if (rx_dbg_cnt < 11'd8)
+            rx_dbg_head[rx_dbg_cnt[2:0]*8 +: 8] <= eth_rx_data;
+         rx_dbg_cnt <= rx_dbg_cnt + 11'd1;
+      end
+      if (eth_rx_last) begin
+         rx_dbg_len  <= rx_dbg_cnt;
+         rx_dbg_good <= eth_rx_good;
+         rx_dbg_cnt  <= 11'd0;
+         if (eth_rx_good) eth_rx_good_cnt <= eth_rx_good_cnt + 16'd1;
+         else             eth_rx_bad_cnt  <= eth_rx_bad_cnt  + 16'd1;
+      end
    end
 
    // Bring the RX counters into ui_clk for the debug overlay. Plain multi-bit
@@ -794,9 +810,14 @@ module rk_xcku5p(
    // so a devmem read is coherent in practice (approximate during an increment).
    (* async_reg = "true" *) reg [15:0] eth_rx_good_ui0, eth_rx_good_ui;
    (* async_reg = "true" *) reg [15:0] eth_rx_bad_ui0,  eth_rx_bad_ui;
+   (* async_reg = "true" *) reg [63:0] rx_dbg_head_ui0, rx_dbg_head_ui;
+   (* async_reg = "true" *) reg [11:0] rx_dbg_lg_ui0, rx_dbg_lg_ui;  // {good, len}
    always @(posedge ui_clk) begin
       eth_rx_good_ui0 <= eth_rx_good_cnt; eth_rx_good_ui <= eth_rx_good_ui0;
       eth_rx_bad_ui0  <= eth_rx_bad_cnt;  eth_rx_bad_ui  <= eth_rx_bad_ui0;
+      rx_dbg_head_ui0 <= rx_dbg_head;     rx_dbg_head_ui <= rx_dbg_head_ui0;
+      rx_dbg_lg_ui0   <= {rx_dbg_good, rx_dbg_len};
+      rx_dbg_lg_ui    <= rx_dbg_lg_ui0;
    end
 
    // Debug overlay: reads to 0x10003f00..f7c return TX/RX bring-up state
@@ -827,6 +848,9 @@ module rk_xcku5p(
         6'd20: virtio_net_debug_word = virtio_net_debug_rx_deliver_count;
         6'd21: virtio_net_debug_word = virtio_net_debug_rx_nobuf_count;
         6'd22: virtio_net_debug_word = {16'd0, eth_rx_drop_count}; // engine busy-drops
+        6'd23: virtio_net_debug_word = rx_dbg_head_ui[31:0];   // RX bytes 0..3
+        6'd24: virtio_net_debug_word = rx_dbg_head_ui[63:32];  // RX bytes 4..7
+        6'd25: virtio_net_debug_word = {20'd0, rx_dbg_lg_ui};  // {good, len} of last RX
         default: virtio_net_debug_word = 32'd0;
       endcase
    end
