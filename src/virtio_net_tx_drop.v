@@ -31,6 +31,20 @@ module virtio_net_tx_drop #(
     output wire [31:0] debug_last_ring_word_lo,
     output wire [31:0] debug_last_ring_word_hi,
 
+    // TX frame engine (ui_clk side of eth_tx_engine).  The backend DMAs the
+    // outgoing L2 frame (descriptor payload past the 12-byte virtio_net_hdr)
+    // into the engine buffer, then pulses tx_send; the used-ring completion
+    // still runs regardless, so virtio TX never regresses even if a frame is
+    // mis-sized on first silicon.
+    output reg         tx_wr_en,
+    output reg  [10:0] tx_wr_addr,
+    output reg  [ 7:0] tx_wr_data,
+    output reg         tx_send,
+    output reg  [10:0] tx_send_len,
+    input  wire        tx_busy,
+    output wire [31:0] debug_tx_frame_count,
+    output wire [31:0] debug_tx_last_len,
+
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
     output wire [ 7:0] m_axi_awlen,
@@ -82,6 +96,16 @@ module virtio_net_tx_drop #(
    localparam [4:0] S_WAIT_USED_IDX  = 5'd10;
    localparam [4:0] S_COMPLETE       = 5'd11;
    localparam [4:0] S_RETRY_WAIT     = 5'd12;
+   // TX frame fetch: read the descriptor, DMA the frame into eth_tx_engine.
+   localparam [4:0] S_DESC_A         = 5'd13;  // read desc[head] addr
+   localparam [4:0] S_WAIT_DESC_A    = 5'd14;
+   localparam [4:0] S_DESC_B         = 5'd15;  // read desc[head] len/flags/next
+   localparam [4:0] S_WAIT_DESC_B    = 5'd16;
+   localparam [4:0] S_FRAME_RD       = 5'd17;  // read a 64-bit frame word
+   localparam [4:0] S_WAIT_FRAME     = 5'd18;
+   localparam [4:0] S_FILL           = 5'd19;  // byte-write the word into engine
+   localparam [4:0] S_SEND           = 5'd20;  // pulse tx_send
+   localparam [4:0] S_WAIT_SEND      = 5'd21;  // wait for TX to drain
 
    localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
    localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
@@ -102,6 +126,21 @@ module virtio_net_tx_drop #(
    reg [31:0] dma_error_count;
    reg [63:0] last_avail_word;
    reg [63:0] last_ring_word;
+
+   // TX frame-fetch working state
+   reg [63:0] desc_addr;       // guest address of descriptor payload (hdr+frame)
+   reg [10:0] frame_total;     // frame bytes to transmit (= desc len - 12)
+   reg [10:0] byte_idx;        // bytes written into the engine so far
+   reg [63:0] cur_word;        // current 64-bit DMA word being unpacked
+   reg [ 2:0] word_byte;       // next byte within cur_word
+   reg        first_word;      // first frame word holds hdr bytes 8..11 first
+   reg        tx_busy_seen;    // saw eth_tx_engine accept the send
+   reg [19:0] tx_timeout;      // guard: complete even if the link/TX never drains
+   reg [31:0] tx_frame_count;
+   reg [10:0] tx_last_len;
+
+   assign debug_tx_frame_count = tx_frame_count;
+   assign debug_tx_last_len    = {21'd0, tx_last_len};
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -199,9 +238,17 @@ module virtio_net_tx_drop #(
    always @(posedge clock) begin
       dma_cmd_valid <= 1'b0;
       used_buffer_interrupt <= 1'b0;
+      tx_wr_en <= 1'b0;
+      tx_send  <= 1'b0;
 
       if (reset || device_status == 8'd0) begin
          state <= S_IDLE;
+         tx_wr_addr <= 11'd0;
+         tx_wr_data <= 8'd0;
+         tx_send_len <= 11'd0;
+         tx_busy_seen <= 1'b0;
+         tx_frame_count <= 32'd0;
+         tx_last_len <= 11'd0;
          last_avail_idx <= 16'd0;
          avail_idx <= 16'd0;
          used_idx <= 16'd0;
@@ -287,7 +334,99 @@ module virtio_net_tx_drop #(
                  head_desc <= get16(dma_rsp_rdata,
                                     (tx_queue_driver[2:0] + 3'd4 +
                                      {last_avail_idx[1:0], 1'b0}) & 3'h7);
-                 state <= dma_rsp_error ? S_IDLE : S_WRITE_USED_ID;
+                 // Fetch + transmit the frame, then complete the used ring.
+                 state <= dma_rsp_error ? S_IDLE : S_DESC_A;
+              end
+           end
+
+           // ---- TX frame fetch -------------------------------------------
+           // Descriptor entry = {addr[63:0], len[31:0], flags[15:0],
+           // next[15:0]} at tx_queue_desc + head_desc*16.  With VERSION_1 and
+           // can_push, Linux puts the 12-byte virtio_net_hdr_v1 inline ahead
+           // of the frame in one (>=8-byte-aligned) buffer, so the frame is
+           // desc payload bytes [12 .. len).  We read word0 (hdr 0..7), then
+           // stream from desc_addr+8: that word's high 4 bytes are frame[0..3]
+           // (hdr 8..11 in the low 4), and later words are 8 frame bytes each.
+           S_DESC_A: begin
+              if (dma_cmd_ready) begin
+                 start_read64(tx_queue_desc + {44'd0, head_desc, 4'd0});
+                 state <= S_WAIT_DESC_A;
+              end
+           end
+           S_WAIT_DESC_A: begin
+              if (dma_rsp_valid) begin
+                 desc_addr <= dma_rsp_rdata;
+                 state <= dma_rsp_error ? S_WRITE_USED_ID : S_DESC_B;
+              end
+           end
+           S_DESC_B: begin
+              if (dma_cmd_ready) begin
+                 start_read64(tx_queue_desc + {44'd0, head_desc, 4'd0} + 64'd8);
+                 state <= S_WAIT_DESC_B;
+              end
+           end
+           S_WAIT_DESC_B: begin
+              if (dma_rsp_valid) begin : desc_b
+                 // rdata = {next[63:48], flags[47:32], len[31:0]}
+                 reg [31:0] dlen;
+                 dlen = dma_rsp_rdata[31:0];
+                 if (dma_rsp_error || dlen <= 32'd12 || dlen > 32'd1548) begin
+                    // nothing sensible to send; still complete the used ring
+                    state <= S_WRITE_USED_ID;
+                 end else begin
+                    frame_total <= dlen[10:0] - 11'd12;
+                    byte_idx    <= 11'd0;
+                    first_word  <= 1'b1;
+                    desc_addr   <= desc_addr + 64'd8;  // skip hdr word0
+                    state       <= S_FRAME_RD;
+                 end
+              end
+           end
+           S_FRAME_RD: begin
+              if (dma_cmd_ready) begin
+                 start_read64(desc_addr);
+                 state <= S_WAIT_FRAME;
+              end
+           end
+           S_WAIT_FRAME: begin
+              if (dma_rsp_valid) begin
+                 cur_word  <= dma_rsp_rdata;
+                 word_byte <= first_word ? 3'd4 : 3'd0; // skip hdr 8..11
+                 desc_addr <= desc_addr + 64'd8;
+                 first_word <= 1'b0;
+                 state <= dma_rsp_error ? S_SEND : S_FILL;
+              end
+           end
+           S_FILL: begin
+              // byte-write the engine buffer one byte/clock
+              tx_wr_en   <= 1'b1;
+              tx_wr_addr <= byte_idx;
+              tx_wr_data <= cur_word[{word_byte, 3'd0} +: 8];
+              byte_idx   <= byte_idx + 11'd1;
+              if (byte_idx == frame_total - 11'd1)
+                 state <= S_SEND;
+              else if (word_byte == 3'd7)
+                 state <= S_FRAME_RD;       // next word
+              else
+                 word_byte <= word_byte + 3'd1;
+           end
+           S_SEND: begin
+              tx_send      <= 1'b1;
+              tx_send_len  <= frame_total;
+              tx_busy_seen <= 1'b0;
+              tx_timeout   <= 20'hf_ffff;   // ~3 ms @ 333 MHz; >> any frame
+              state        <= S_WAIT_SEND;
+           end
+           S_WAIT_SEND: begin
+              // Complete on TX drain, OR on timeout so virtio never wedges if
+              // the PHY link is down (gmii_rx_clk not running -> busy never
+              // clears).  A dropped frame here is no worse than the old behavior.
+              if (tx_busy) tx_busy_seen <= 1'b1;
+              tx_timeout <= tx_timeout - 20'd1;
+              if ((tx_busy_seen && !tx_busy) || tx_timeout == 20'd0) begin
+                 tx_frame_count <= tx_frame_count + 32'd1;
+                 tx_last_len    <= frame_total;
+                 state <= S_WRITE_USED_ID;
               end
            end
 

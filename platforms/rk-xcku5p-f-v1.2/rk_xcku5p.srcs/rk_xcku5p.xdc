@@ -166,10 +166,13 @@ set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 
 # RGMII to the RTL8211F-CG Ethernet PHY. Pins copied from the board's
-# 12_UDP_TEST design (LVCMOS18). The MAC is not built yet (rgmii_mac_stub holds
-# TX idle); no MDIO/MDC or PHY-reset pins — the PHY uses strapping defaults,
-# matching the reference design. eth_rxc is not yet declared as a clock; the
-# real MAC will add create_clock + set_input_delay for the RGMII RX capture.
+# 12_UDP_TEST design (LVCMOS18). No MDIO/MDC or PHY-reset pins — the PHY uses
+# strapping defaults, matching the reference design. The MAC datapath runs in
+# the recovered RX clock (eth_rxc, 125 MHz -> BUFG gmii_rx_clk); the PHY adds
+# the RGMII RX/TX delays internally (strapping), so no IDELAY here. eth_rxc is
+# declared async to the DDR/core clocks in cvfpu_timing.tcl (eth_tx_engine
+# crosses with 2-FF synchronizers + an async-read frame RAM).
+create_clock -period 8.000 -name eth_rxc [get_ports eth_rxc]
 set_property IOSTANDARD LVCMOS18 [get_ports eth_rxc]
 set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[3]}]
 set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[2]}]

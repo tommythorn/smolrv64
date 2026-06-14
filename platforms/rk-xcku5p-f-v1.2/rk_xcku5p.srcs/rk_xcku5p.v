@@ -25,7 +25,7 @@ module rk_xcku5p(
     inout  wire [3:0] sd_d,
 
     // RGMII to RTL8211F-CG Ethernet PHY (pins per the board 12_UDP_TEST
-    // design).  Held idle by rgmii_mac_stub until the real MAC lands.
+    // design).  Driven by gmii_to_rgmii + eth_tx_engine / eth_mac_rx below.
     input  wire       eth_rxc,
     input  wire [3:0] eth_rxd,
     input  wire       eth_rx_ctl,
@@ -606,6 +606,15 @@ module rk_xcku5p(
       .debug_last_ring_word_lo (virtio_net_debug_last_ring_word_lo),
       .debug_last_ring_word_hi (virtio_net_debug_last_ring_word_hi),
 
+      .tx_wr_en                (virtio_net_tx_wr_en),
+      .tx_wr_addr              (virtio_net_tx_wr_addr),
+      .tx_wr_data              (virtio_net_tx_wr_data),
+      .tx_send                 (virtio_net_tx_send),
+      .tx_send_len             (virtio_net_tx_send_len),
+      .tx_busy                 (virtio_net_tx_busy),
+      .debug_tx_frame_count    (virtio_net_debug_tx_frame_count),
+      .debug_tx_last_len       (virtio_net_debug_tx_last_len),
+
       .m_axi_awid              (virtio_net_axi_awid),
       .m_axi_awaddr            (virtio_net_axi_awaddr),
       .m_axi_awlen             (virtio_net_axi_awlen),
@@ -645,18 +654,90 @@ module rk_xcku5p(
       .m_axi_rready            (virtio_net_axi_rready)
    );
 
-   // RGMII PHY interface placeholder: TX idle, RX pins kept alive. This is the
-   // instantiation point the real 1 GbE MAC will replace (VIRTIO_PLAN.md).
-   rgmii_mac_stub rgmii_mac_stub_inst(
-      .sample_clk (ui_clk),
-      .reset      (ui_cpu_reset),
-      .eth_rxc    (eth_rxc),
-      .eth_rxd    (eth_rxd),
-      .eth_rx_ctl (eth_rx_ctl),
-      .eth_txc    (eth_txc),
-      .eth_txd    (eth_txd),
-      .eth_tx_ctl (eth_tx_ctl)
+   // ===== Ethernet MAC: virtio_net (ui_clk) <-> eth_tx_engine <-> RGMII =====
+   // The MAC datapath runs in the PHY recovered RX clock (gmii_rx_clk), which
+   // gmii_to_rgmii derives from eth_rxc.  eth_tx_engine bridges ui_clk to that
+   // domain.  RX is deframed but not yet delivered to a virtqueue (see
+   // VIRTIO_PLAN.md step 6); its counters go to the debug overlay for bring-up.
+   wire        virtio_net_tx_wr_en;
+   wire [10:0] virtio_net_tx_wr_addr;
+   wire [ 7:0] virtio_net_tx_wr_data;
+   wire        virtio_net_tx_send;
+   wire [10:0] virtio_net_tx_send_len;
+   wire        virtio_net_tx_busy;
+   wire [31:0] virtio_net_debug_tx_frame_count;
+   wire [31:0] virtio_net_debug_tx_last_len;
+
+   wire        gmii_rx_clk;
+   wire        gmii_rx_dv;
+   wire [ 7:0] gmii_rxd;
+   wire        gmii_tx_en;
+   wire [ 7:0] gmii_txd;
+   wire        eth_rx_valid;
+   wire [ 7:0] eth_rx_data;
+   wire        eth_rx_last;
+   wire        eth_rx_good;
+
+   // Reset for the gmii_rx_clk domain: synchronize the CPU reset in.  If the
+   // PHY isn't supplying rxc (no link) the domain simply stays in reset.
+   (* async_reg = "true" *) reg [1:0] gmii_rst_sync = 2'b11;
+   always @(posedge gmii_rx_clk or posedge ui_cpu_reset)
+      if (ui_cpu_reset) gmii_rst_sync <= 2'b11;
+      else              gmii_rst_sync <= {gmii_rst_sync[0], 1'b0};
+   wire gmii_rst = gmii_rst_sync[1];
+
+   gmii_to_rgmii gmii_to_rgmii_inst(
+      .gmii_rx_clk  (gmii_rx_clk),
+      .gmii_rx_dv   (gmii_rx_dv),
+      .gmii_rxd     (gmii_rxd),
+      .gmii_tx_clk  (),
+      .gmii_tx_en   (gmii_tx_en),
+      .gmii_txd     (gmii_txd),
+      .rgmii_rxc    (eth_rxc),
+      .rgmii_rx_ctl (eth_rx_ctl),
+      .rgmii_rxd    (eth_rxd),
+      .rgmii_txc    (eth_txc),
+      .rgmii_tx_ctl (eth_tx_ctl),
+      .rgmii_txd    (eth_txd)
    );
+
+   eth_tx_engine #(.BUF_BYTES(1536)) eth_tx_engine_inst(
+      .ui_clk     (ui_clk),
+      .ui_rst     (ui_cpu_reset),
+      .wr_en      (virtio_net_tx_wr_en),
+      .wr_addr    (virtio_net_tx_wr_addr),
+      .wr_data    (virtio_net_tx_wr_data),
+      .send       (virtio_net_tx_send),
+      .send_len   (virtio_net_tx_send_len),
+      .busy       (virtio_net_tx_busy),
+      .gmii_clk   (gmii_rx_clk),
+      .gmii_rst   (gmii_rst),
+      .gmii_tx_en (gmii_tx_en),
+      .gmii_txd   (gmii_txd)
+   );
+
+   eth_mac_rx eth_mac_rx_inst(
+      .clk        (gmii_rx_clk),
+      .rst_n      (~gmii_rst),
+      .gmii_rx_dv (gmii_rx_dv),
+      .gmii_rxd   (gmii_rxd),
+      .rx_valid   (eth_rx_valid),
+      .rx_data    (eth_rx_data),
+      .rx_last    (eth_rx_last),
+      .rx_good    (eth_rx_good)
+   );
+
+   // RX is deframed but not yet delivered to a virtqueue (VIRTIO_PLAN.md step
+   // 6).  Keep the RX path (and the eth_rxd pins) synthesized and observable
+   // for bring-up via these dont_touch counters in the gmii_rx_clk domain.
+   (* dont_touch = "true" *) reg [15:0] eth_rx_good_cnt = 16'd0;
+   (* dont_touch = "true" *) reg [15:0] eth_rx_bad_cnt  = 16'd0;
+   (* dont_touch = "true" *) reg [ 7:0] eth_rx_last_byte = 8'd0;
+   always @(posedge gmii_rx_clk) begin
+      if (eth_rx_valid)               eth_rx_last_byte <= eth_rx_data;
+      if (eth_rx_last &&  eth_rx_good) eth_rx_good_cnt <= eth_rx_good_cnt + 16'd1;
+      if (eth_rx_last && !eth_rx_good) eth_rx_bad_cnt  <= eth_rx_bad_cnt  + 16'd1;
+   end
 
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter

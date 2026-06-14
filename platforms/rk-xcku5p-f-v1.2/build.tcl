@@ -85,7 +85,17 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir axi_single_beat_master.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_net_tx_drop.v] Verilog
+    # rgmii_mac_stub.v is no longer instantiated (replaced by gmii_to_rgmii +
+    # eth_tx_engine + eth_mac_rx) but stays in the fileset/.xpr so opening the
+    # project doesn't fault on a missing file; synthesis drops it (DCE).
     add_source_if_missing $fileset [file join $src_dir rgmii_mac_stub.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir crc32_d8.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir eth_mac_tx.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir eth_mac_rx.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir eth_tx_engine.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir rgmii_rx.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir rgmii_tx.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
 
     # smolrv64.v uses SystemVerilog (the always-on CV-FPU interface).
     add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog

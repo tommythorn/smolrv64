@@ -86,3 +86,19 @@ if {[llength $core_clk_obj] && $hold_unc > 0} {
    # to -0.090, which forces route's hold-fixer to add real margin).
    set_clock_uncertainty -hold $hold_unc -from $core_clk_obj -to $core_clk_obj
 }
+
+# --- Ethernet PHY RX clock (eth_rxc, 125 MHz) ---------------------------------
+# eth_rxc (BUFG -> gmii_rx_clk, BUFIO for the IDDRE1s) is fully asynchronous to
+# the DDR ui_clk / core_clk / fpu_clk tree.  The only crossing is eth_tx_engine,
+# which uses 2-FF (async_reg) synchronizers for the send/done handshake and an
+# async-read distributed-RAM frame buffer (written in ui_clk, read in
+# gmii_rx_clk while stable).  Declaring eth_rxc async to all other clocks keeps
+# the tool from timing those CDC paths as if related.  A single -group makes it
+# asynchronous to every other clock in the design.
+set eth_clk [get_clocks -quiet -include_generated_clocks eth_rxc]
+if {[llength $eth_clk]} {
+   puts "eth_rxc declared asynchronous to all other clocks"
+   set_clock_groups -asynchronous -group $eth_clk
+} else {
+   puts "WARNING: eth_rxc clock not found; skipping async clock grouping"
+}
