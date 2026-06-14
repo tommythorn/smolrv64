@@ -44,6 +44,8 @@ module virtio_net_tx_drop #(
     input  wire        tx_busy,
     output wire [31:0] debug_tx_frame_count,
     output wire [31:0] debug_tx_last_len,
+    output wire [31:0] debug_tx_desc_addr,  // guest addr of the desc payload
+    output wire [31:0] debug_tx_desc_len,   // descriptor length (= 12 + frame)
 
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
@@ -138,9 +140,13 @@ module virtio_net_tx_drop #(
    reg [19:0] tx_timeout;      // guard: complete even if the link/TX never drains
    reg [31:0] tx_frame_count;
    reg [10:0] tx_last_len;
+   reg [31:0] tx_dbg_desc_addr;
+   reg [31:0] tx_dbg_desc_len;
 
    assign debug_tx_frame_count = tx_frame_count;
    assign debug_tx_last_len    = {21'd0, tx_last_len};
+   assign debug_tx_desc_addr   = tx_dbg_desc_addr;
+   assign debug_tx_desc_len    = tx_dbg_desc_len;
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -249,6 +255,8 @@ module virtio_net_tx_drop #(
          tx_busy_seen <= 1'b0;
          tx_frame_count <= 32'd0;
          tx_last_len <= 11'd0;
+         tx_dbg_desc_addr <= 32'd0;
+         tx_dbg_desc_len <= 32'd0;
          last_avail_idx <= 16'd0;
          avail_idx <= 16'd0;
          used_idx <= 16'd0;
@@ -356,6 +364,7 @@ module virtio_net_tx_drop #(
            S_WAIT_DESC_A: begin
               if (dma_rsp_valid) begin
                  desc_addr <= dma_rsp_rdata;
+                 tx_dbg_desc_addr <= dma_rsp_rdata[31:0];
                  state <= dma_rsp_error ? S_WRITE_USED_ID : S_DESC_B;
               end
            end
@@ -370,6 +379,7 @@ module virtio_net_tx_drop #(
                  // rdata = {next[63:48], flags[47:32], len[31:0]}
                  reg [31:0] dlen;
                  dlen = dma_rsp_rdata[31:0];
+                 tx_dbg_desc_len <= dlen;
                  if (dma_rsp_error || dlen <= 32'd12 || dlen > 32'd1548) begin
                     // nothing sensible to send; still complete the used ring
                     state <= S_WRITE_USED_ID;

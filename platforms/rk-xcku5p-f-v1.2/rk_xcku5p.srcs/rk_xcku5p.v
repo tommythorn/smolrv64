@@ -429,6 +429,8 @@ module rk_xcku5p(
                mmio_readdata_q <= sd_cd_gpio_readdata;
             else if (virtio_blk_sel)
                mmio_readdata_q <= virtio_blk_readdata;
+            else if (virtio_net_sel && ui_mmio_address[11:8] == 4'hf)
+               mmio_readdata_q <= virtio_net_debug_word;  // 0x10003f00+ overlay
             else if (virtio_net_sel)
                mmio_readdata_q <= virtio_net_readdata;
             else if (build_id_sel)
@@ -614,6 +616,8 @@ module rk_xcku5p(
       .tx_busy                 (virtio_net_tx_busy),
       .debug_tx_frame_count    (virtio_net_debug_tx_frame_count),
       .debug_tx_last_len       (virtio_net_debug_tx_last_len),
+      .debug_tx_desc_addr      (virtio_net_debug_tx_desc_addr),
+      .debug_tx_desc_len       (virtio_net_debug_tx_desc_len),
 
       .m_axi_awid              (virtio_net_axi_awid),
       .m_axi_awaddr            (virtio_net_axi_awaddr),
@@ -667,6 +671,8 @@ module rk_xcku5p(
    wire        virtio_net_tx_busy;
    wire [31:0] virtio_net_debug_tx_frame_count;
    wire [31:0] virtio_net_debug_tx_last_len;
+   wire [31:0] virtio_net_debug_tx_desc_addr;
+   wire [31:0] virtio_net_debug_tx_desc_len;
 
    wire        gmii_rx_clk;
    wire        gmii_rx_dv;
@@ -737,6 +743,45 @@ module rk_xcku5p(
       if (eth_rx_valid)               eth_rx_last_byte <= eth_rx_data;
       if (eth_rx_last &&  eth_rx_good) eth_rx_good_cnt <= eth_rx_good_cnt + 16'd1;
       if (eth_rx_last && !eth_rx_good) eth_rx_bad_cnt  <= eth_rx_bad_cnt  + 16'd1;
+   end
+
+   // Bring the RX counters into ui_clk for the debug overlay. Plain multi-bit
+   // sampling: they change rarely (once per RX frame) and are stable between,
+   // so a devmem read is coherent in practice (approximate during an increment).
+   (* async_reg = "true" *) reg [15:0] eth_rx_good_ui0, eth_rx_good_ui;
+   (* async_reg = "true" *) reg [15:0] eth_rx_bad_ui0,  eth_rx_bad_ui;
+   always @(posedge ui_clk) begin
+      eth_rx_good_ui0 <= eth_rx_good_cnt; eth_rx_good_ui <= eth_rx_good_ui0;
+      eth_rx_bad_ui0  <= eth_rx_bad_cnt;  eth_rx_bad_ui  <= eth_rx_bad_ui0;
+   end
+
+   // Debug overlay: reads to 0x10003f00..f7c return TX/RX bring-up state
+   // (devmem from Linux).  Word index = ui_mmio_address[7:2].
+   reg [31:0] virtio_net_debug_word;
+   always @(*) begin
+      case (ui_mmio_address[7:2])
+        6'd0:  virtio_net_debug_word = virtio_net_debug_status;
+        6'd1:  virtio_net_debug_word = virtio_net_debug_notify_count;
+        6'd2:  virtio_net_debug_word = virtio_net_debug_read_avail_count;
+        6'd3:  virtio_net_debug_word = virtio_net_debug_empty_avail_count;
+        6'd4:  virtio_net_debug_word = virtio_net_debug_read_ring_count;
+        6'd5:  virtio_net_debug_word = virtio_net_debug_complete_count;
+        6'd6:  virtio_net_debug_word = virtio_net_debug_irq_count;
+        6'd7:  virtio_net_debug_word = virtio_net_debug_dma_error_count;
+        6'd8:  virtio_net_debug_word = virtio_net_debug_indices;
+        6'd9:  virtio_net_debug_word = virtio_net_debug_used_head;
+        6'd10: virtio_net_debug_word = virtio_net_debug_last_avail_word_lo;
+        6'd11: virtio_net_debug_word = virtio_net_debug_last_avail_word_hi;
+        6'd12: virtio_net_debug_word = virtio_net_debug_last_ring_word_lo;
+        6'd13: virtio_net_debug_word = virtio_net_debug_last_ring_word_hi;
+        6'd14: virtio_net_debug_word = virtio_net_debug_tx_frame_count;
+        6'd15: virtio_net_debug_word = virtio_net_debug_tx_last_len;
+        6'd16: virtio_net_debug_word = virtio_net_debug_tx_desc_addr;
+        6'd17: virtio_net_debug_word = virtio_net_debug_tx_desc_len;
+        6'd18: virtio_net_debug_word = {eth_rx_bad_ui, eth_rx_good_ui};
+        6'd19: virtio_net_debug_word = 32'h4554_4830; // "ETH0" sentinel
+        default: virtio_net_debug_word = 32'd0;
+      endcase
    end
 
    generate
