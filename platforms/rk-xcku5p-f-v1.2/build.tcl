@@ -93,6 +93,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir eth_mac_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir eth_mac_rx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir eth_tx_engine.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir eth_rx_engine.v] Verilog
     add_source_if_missing $fileset [file join $src_dir rgmii_rx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir rgmii_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog

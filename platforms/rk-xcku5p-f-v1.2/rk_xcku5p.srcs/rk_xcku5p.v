@@ -338,6 +338,11 @@ module rk_xcku5p(
    wire [63:0] virtio_net_queue1_desc;
    wire [63:0] virtio_net_queue1_driver;
    wire [63:0] virtio_net_queue1_device;
+   wire [31:0] virtio_net_queue0_num;
+   wire        virtio_net_queue0_ready;
+   wire [63:0] virtio_net_queue0_desc;
+   wire [63:0] virtio_net_queue0_driver;
+   wire [63:0] virtio_net_queue0_device;
    wire [ 7:0] virtio_net_device_status;
    wire [31:0] virtio_net_debug_status;
    wire [31:0] virtio_net_debug_notify_count;
@@ -566,11 +571,11 @@ module rk_xcku5p(
       .queue_desc              (),
       .queue_driver            (),
       .queue_device            (),
-      .queue0_num              (),
-      .queue0_ready            (),
-      .queue0_desc             (),
-      .queue0_driver           (),
-      .queue0_device           (),
+      .queue0_num              (virtio_net_queue0_num),
+      .queue0_ready            (virtio_net_queue0_ready),
+      .queue0_desc             (virtio_net_queue0_desc),
+      .queue0_driver           (virtio_net_queue0_driver),
+      .queue0_device           (virtio_net_queue0_device),
       .queue1_num              (virtio_net_queue1_num),
       .queue1_ready            (virtio_net_queue1_ready),
       .queue1_desc             (virtio_net_queue1_desc),
@@ -618,6 +623,18 @@ module rk_xcku5p(
       .debug_tx_last_len       (virtio_net_debug_tx_last_len),
       .debug_tx_desc_addr      (virtio_net_debug_tx_desc_addr),
       .debug_tx_desc_len       (virtio_net_debug_tx_desc_len),
+      .rx_queue_num            (virtio_net_queue0_num),
+      .rx_queue_ready          (virtio_net_queue0_ready),
+      .rx_queue_desc           (virtio_net_queue0_desc),
+      .rx_queue_driver         (virtio_net_queue0_driver),
+      .rx_queue_device         (virtio_net_queue0_device),
+      .rx_frame_valid          (eth_rx_frame_valid),
+      .rx_frame_len            (eth_rx_frame_len),
+      .rx_rd_addr              (eth_rx_rd_addr),
+      .rx_rd_data              (eth_rx_rd_data),
+      .rx_frame_ack            (eth_rx_frame_ack),
+      .debug_rx_deliver_count  (virtio_net_debug_rx_deliver_count),
+      .debug_rx_nobuf_count    (virtio_net_debug_rx_nobuf_count),
 
       .m_axi_awid              (virtio_net_axi_awid),
       .m_axi_awaddr            (virtio_net_axi_awaddr),
@@ -673,6 +690,8 @@ module rk_xcku5p(
    wire [31:0] virtio_net_debug_tx_last_len;
    wire [31:0] virtio_net_debug_tx_desc_addr;
    wire [31:0] virtio_net_debug_tx_desc_len;
+   wire [31:0] virtio_net_debug_rx_deliver_count;
+   wire [31:0] virtio_net_debug_rx_nobuf_count;
 
    wire        gmii_rx_clk;
    wire        gmii_rx_dv;
@@ -683,6 +702,13 @@ module rk_xcku5p(
    wire [ 7:0] eth_rx_data;
    wire        eth_rx_last;
    wire        eth_rx_good;
+   // eth_rx_engine <-> backend (ui_clk)
+   wire        eth_rx_frame_valid;
+   wire [10:0] eth_rx_frame_len;
+   wire [10:0] eth_rx_rd_addr;
+   wire [ 7:0] eth_rx_rd_data;
+   wire        eth_rx_frame_ack;
+   wire [15:0] eth_rx_drop_count;
 
    // Reset for the gmii_rx_clk domain: synchronize the CPU reset in.  If the
    // PHY isn't supplying rxc (no link) the domain simply stays in reset.
@@ -733,9 +759,27 @@ module rk_xcku5p(
       .rx_good    (eth_rx_good)
    );
 
-   // RX is deframed but not yet delivered to a virtqueue (VIRTIO_PLAN.md step
-   // 6).  Keep the RX path (and the eth_rxd pins) synthesized and observable
-   // for bring-up via these dont_touch counters in the gmii_rx_clk domain.
+   // RX engine buffers each good frame and hands it to the backend (ui_clk),
+   // which DMAs it into a guest RX-queue buffer.
+   eth_rx_engine #(.BUF_BYTES(1536)) eth_rx_engine_inst(
+      .gmii_clk    (gmii_rx_clk),
+      .gmii_rst    (gmii_rst),
+      .rx_valid    (eth_rx_valid),
+      .rx_data     (eth_rx_data),
+      .rx_last     (eth_rx_last),
+      .rx_good     (eth_rx_good),
+      .ui_clk      (ui_clk),
+      .ui_rst      (ui_cpu_reset),
+      .frame_valid (eth_rx_frame_valid),
+      .frame_len   (eth_rx_frame_len),
+      .rd_addr     (eth_rx_rd_addr),
+      .rd_data     (eth_rx_rd_data),
+      .frame_ack   (eth_rx_frame_ack),
+      .drop_count  (eth_rx_drop_count)
+   );
+
+   // Passive good/bad frame counters (count every frame eth_mac_rx sees, incl
+   // ones the single-buffered engine drops while busy) for the debug overlay.
    (* dont_touch = "true" *) reg [15:0] eth_rx_good_cnt = 16'd0;
    (* dont_touch = "true" *) reg [15:0] eth_rx_bad_cnt  = 16'd0;
    (* dont_touch = "true" *) reg [ 7:0] eth_rx_last_byte = 8'd0;
@@ -780,6 +824,9 @@ module rk_xcku5p(
         6'd17: virtio_net_debug_word = virtio_net_debug_tx_desc_len;
         6'd18: virtio_net_debug_word = {eth_rx_bad_ui, eth_rx_good_ui};
         6'd19: virtio_net_debug_word = 32'h4554_4830; // "ETH0" sentinel
+        6'd20: virtio_net_debug_word = virtio_net_debug_rx_deliver_count;
+        6'd21: virtio_net_debug_word = virtio_net_debug_rx_nobuf_count;
+        6'd22: virtio_net_debug_word = {16'd0, eth_rx_drop_count}; // engine busy-drops
         default: virtio_net_debug_word = 32'd0;
       endcase
    end

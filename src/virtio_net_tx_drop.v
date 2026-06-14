@@ -47,6 +47,23 @@ module virtio_net_tx_drop #(
     output wire [31:0] debug_tx_desc_addr,  // guest addr of the desc payload
     output wire [31:0] debug_tx_desc_len,   // descriptor length (= 12 + frame)
 
+    // RX virtqueue (queue 0) + eth_rx_engine (ui side).  When the engine has a
+    // received frame, the backend takes a free buffer from the RX avail ring,
+    // DMAs a zeroed 12-byte virtio_net_hdr_v1 + the frame into it, completes
+    // the RX used ring, and raises the interrupt.
+    input  wire [31:0] rx_queue_num,
+    input  wire        rx_queue_ready,
+    input  wire [63:0] rx_queue_desc,
+    input  wire [63:0] rx_queue_driver,
+    input  wire [63:0] rx_queue_device,
+    input  wire        rx_frame_valid,      // eth_rx_engine has a frame
+    input  wire [10:0] rx_frame_len,
+    output reg  [10:0] rx_rd_addr,          // read frame bytes from the engine
+    input  wire [ 7:0] rx_rd_data,
+    output reg         rx_frame_ack,        // release the engine buffer
+    output wire [31:0] debug_rx_deliver_count,
+    output wire [31:0] debug_rx_nobuf_count,
+
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
     output wire [ 7:0] m_axi_awlen,
@@ -108,10 +125,27 @@ module virtio_net_tx_drop #(
    localparam [4:0] S_FILL           = 5'd19;  // byte-write the word into engine
    localparam [4:0] S_SEND           = 5'd20;  // pulse tx_send
    localparam [4:0] S_WAIT_SEND      = 5'd21;  // wait for TX to drain
+   // RX delivery (queue 0): take a free buffer, DMA hdr+frame in, complete.
+   localparam [5:0] S_RX_AVAIL       = 6'd22;
+   localparam [5:0] S_RX_WAIT_AVAIL  = 6'd23;
+   localparam [5:0] S_RX_RING        = 6'd24;
+   localparam [5:0] S_RX_WAIT_RING   = 6'd25;
+   localparam [5:0] S_RX_DESC        = 6'd26;
+   localparam [5:0] S_RX_WAIT_DESC   = 6'd27;
+   localparam [5:0] S_RX_WRITE       = 6'd28;  // write one byte (hdr or frame)
+   localparam [5:0] S_RX_WRITE_WAIT  = 6'd29;
+   localparam [5:0] S_RX_USED_ID     = 6'd30;
+   localparam [5:0] S_RX_WAIT_USED_ID  = 6'd31;
+   localparam [5:0] S_RX_USED_LEN    = 6'd32;
+   localparam [5:0] S_RX_WAIT_USED_LEN = 6'd33;
+   localparam [5:0] S_RX_USED_IDX    = 6'd34;
+   localparam [5:0] S_RX_WAIT_USED_IDX = 6'd35;
+   localparam [5:0] S_RX_COMPLETE    = 6'd36;
+   localparam [5:0] S_RX_DROP        = 6'd37;  // no free buffer: drop the frame
 
    localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
    localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
-   reg [4:0]  state;
+   reg [5:0]  state;
    reg [15:0] last_avail_idx;
    reg [15:0] avail_idx;
    reg [15:0] used_idx;
@@ -143,6 +177,34 @@ module virtio_net_tx_drop #(
    reg [10:0] tx_last_len;
    reg [31:0] tx_dbg_desc_addr;
    reg [31:0] tx_dbg_desc_len;
+
+   // RX delivery working state
+   reg [15:0] rx_last_avail_idx;
+   reg [15:0] rx_avail_idx;
+   reg [15:0] rx_used_idx;
+   reg [15:0] rx_head_desc;
+   reg [63:0] rx_buf_addr;
+   reg [10:0] rx_widx;          // bytes written into the guest buffer
+   reg [10:0] rx_total;         // 12 + frame_len
+   reg [31:0] rx_deliver_count;
+   reg [31:0] rx_nobuf_count;
+
+   assign debug_rx_deliver_count = rx_deliver_count;
+   assign debug_rx_nobuf_count   = rx_nobuf_count;
+
+   wire rx_queue_configured = rx_queue_ready && rx_queue_num != 32'd0 &&
+                              rx_queue_desc[63:32] == 32'd0 &&
+                              rx_queue_driver[63:32] == 32'd0 &&
+                              rx_queue_device[63:32] == 32'd0;
+   wire [15:0] rx_avail_slot = rx_last_avail_idx & ring_mask;
+   wire [15:0] rx_used_slot  = rx_used_idx & ring_mask;
+   wire [15:0] rx_next_avail_idx = rx_last_avail_idx + 16'd1;
+   // byte to write this RX cycle: 12-byte virtio_net_hdr_v1 then the frame.
+   // The header is zero except num_buffers (bytes 10..11, LE) = 1, required
+   // when VIRTIO_NET_F_MRG_RXBUF is not negotiated.
+   wire [ 7:0] rx_wbyte = (rx_widx == 11'd10) ? 8'd1 :
+                          (rx_widx <  11'd12) ? 8'd0 : rx_rd_data;
+   wire [63:0] rx_waddr = rx_buf_addr + {53'd0, rx_widx};
 
    assign debug_tx_frame_count = tx_frame_count;
    assign debug_tx_last_len    = {21'd0, tx_last_len};
@@ -202,7 +264,7 @@ module virtio_net_tx_drop #(
    wire [15:0] avail_slot = last_avail_idx & ring_mask;
    wire [15:0] used_slot  = used_idx & ring_mask;
 
-   assign debug_status = {device_status, 16'd0, notify_pending,
+   assign debug_status = {device_status, 14'd0, rx_frame_valid, notify_pending,
                           tx_queue_configured, driver_ok, state};
    assign debug_notify_count = notify_count;
    assign debug_read_avail_count = read_avail_count;
@@ -247,6 +309,7 @@ module virtio_net_tx_drop #(
       used_buffer_interrupt <= 1'b0;
       tx_wr_en <= 1'b0;
       tx_send  <= 1'b0;
+      rx_frame_ack <= 1'b0;
 
       if (reset || device_status == 8'd0) begin
          state <= S_IDLE;
@@ -258,6 +321,15 @@ module virtio_net_tx_drop #(
          tx_last_len <= 11'd0;
          tx_dbg_desc_addr <= 32'd0;
          tx_dbg_desc_len <= 32'd0;
+         rx_last_avail_idx <= 16'd0;
+         rx_avail_idx <= 16'd0;
+         rx_used_idx <= 16'd0;
+         rx_head_desc <= 16'd0;
+         rx_widx <= 11'd0;
+         rx_total <= 11'd0;
+         rx_rd_addr <= 11'd0;
+         rx_deliver_count <= 32'd0;
+         rx_nobuf_count <= 32'd0;
          last_avail_idx <= 16'd0;
          avail_idx <= 16'd0;
          used_idx <= 16'd0;
@@ -282,7 +354,11 @@ module virtio_net_tx_drop #(
 
          case (state)
            S_IDLE: begin
-              if (tx_queue_configured && driver_ok) begin
+              // Deliver a received frame first, then service TX notifies.
+              if (rx_frame_valid && !rx_frame_ack &&
+                  rx_queue_configured && driver_ok) begin
+                 state <= S_RX_AVAIL;
+              end else if (tx_queue_configured && driver_ok) begin
                  if (tx_notify || notify_pending) begin
                     notify_pending <= 1'b0;
                     empty_retry_count <= EMPTY_RETRY_COUNT;
@@ -508,6 +584,135 @@ module virtio_net_tx_drop #(
               end else begin
                  state <= S_IDLE;
               end
+           end
+
+           // ---- RX delivery (queue 0): take a buffer, DMA hdr+frame in -----
+           S_RX_AVAIL: begin
+              if (dma_cmd_ready) begin
+                 start_read64(rx_queue_driver);          // avail flags+idx
+                 state <= S_RX_WAIT_AVAIL;
+              end
+           end
+           S_RX_WAIT_AVAIL: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 rx_avail_idx <= get16(dma_rsp_rdata, (rx_queue_driver[2:0] + 3'd2) & 3'h7);
+                 if (dma_rsp_error ||
+                     get16(dma_rsp_rdata, (rx_queue_driver[2:0] + 3'd2) & 3'h7) == rx_last_avail_idx)
+                    state <= S_RX_DROP;                  // no posted buffer
+                 else
+                    state <= S_RX_RING;
+              end
+           end
+           S_RX_RING: begin
+              if (dma_cmd_ready) begin
+                 start_read64(rx_queue_driver + 64'd4 + {47'd0, rx_avail_slot, 1'b0});
+                 state <= S_RX_WAIT_RING;
+              end
+           end
+           S_RX_WAIT_RING: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 rx_head_desc <= get16(dma_rsp_rdata,
+                                       (rx_queue_driver[2:0] + 3'd4 +
+                                        {rx_last_avail_idx[1:0], 1'b0}) & 3'h7);
+                 state <= dma_rsp_error ? S_RX_DROP : S_RX_DESC;
+              end
+           end
+           S_RX_DESC: begin
+              if (dma_cmd_ready) begin
+                 start_read64(rx_queue_desc + {44'd0, rx_head_desc, 4'd0});
+                 state <= S_RX_WAIT_DESC;
+              end
+           end
+           S_RX_WAIT_DESC: begin
+              if (dma_rsp_valid) begin
+                 rx_buf_addr <= dma_rsp_rdata;           // RX buffer guest addr
+                 rx_widx     <= 11'd0;
+                 rx_total    <= rx_frame_len + 11'd12;    // 12B hdr + frame
+                 rx_rd_addr  <= 11'd0;
+                 state <= dma_rsp_error ? S_RX_DROP : S_RX_WRITE;
+              end
+           end
+           S_RX_WRITE: begin
+              // One byte/clock; the AXI master aligns to 8 bytes and uses
+              // wstrb, so any RX-buffer alignment works.
+              if (dma_cmd_ready) begin
+                 start_write(rx_waddr,
+                             write_shift({56'd0, rx_wbyte}, rx_waddr[2:0]),
+                             write_strobe(rx_waddr[2:0], 4'd1));
+                 state <= S_RX_WRITE_WAIT;
+              end
+           end
+           S_RX_WRITE_WAIT: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 if (rx_widx == rx_total - 11'd1)
+                    state <= S_RX_USED_ID;
+                 else begin
+                    rx_widx <= rx_widx + 11'd1;
+                    // pre-issue the next frame byte address to the engine
+                    rx_rd_addr <= (rx_widx + 11'd1 >= 11'd12)
+                                  ? (rx_widx + 11'd1 - 11'd12) : 11'd0;
+                    state <= S_RX_WRITE;
+                 end
+              end
+           end
+           S_RX_USED_ID: begin
+              if (dma_cmd_ready) begin
+                 start_write(rx_queue_device + 64'd4 + {45'd0, rx_used_slot, 3'd0},
+                             write_shift({48'd0, rx_head_desc}, (rx_queue_device[2:0] + 3'd4) & 3'h7),
+                             write_strobe((rx_queue_device[2:0] + 3'd4) & 3'h7, 4'd4));
+                 state <= S_RX_WAIT_USED_ID;
+              end
+           end
+           S_RX_WAIT_USED_ID: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 state <= S_RX_USED_LEN;
+              end
+           end
+           S_RX_USED_LEN: begin
+              if (dma_cmd_ready) begin
+                 start_write(rx_queue_device + 64'd8 + {45'd0, rx_used_slot, 3'd0},
+                             write_shift({53'd0, rx_total}, rx_queue_device[2:0]),
+                             write_strobe(rx_queue_device[2:0], 4'd4));
+                 state <= S_RX_WAIT_USED_LEN;
+              end
+           end
+           S_RX_WAIT_USED_LEN: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 state <= S_RX_USED_IDX;
+              end
+           end
+           S_RX_USED_IDX: begin
+              if (dma_cmd_ready) begin
+                 start_write(rx_queue_device,
+                             write_shift({32'd0, rx_used_idx + 16'd1, 16'd0}, rx_queue_device[2:0]),
+                             write_strobe(rx_queue_device[2:0], 4'd4));
+                 state <= S_RX_WAIT_USED_IDX;
+              end
+           end
+           S_RX_WAIT_USED_IDX: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 state <= S_RX_COMPLETE;
+              end
+           end
+           S_RX_COMPLETE: begin
+              rx_used_idx       <= rx_used_idx + 16'd1;
+              rx_last_avail_idx <= rx_next_avail_idx;
+              used_buffer_interrupt <= 1'b1;
+              irq_count         <= irq_count + 32'd1;
+              rx_deliver_count  <= rx_deliver_count + 32'd1;
+              rx_frame_ack      <= 1'b1;               // release engine buffer
+              state <= S_IDLE;
+           end
+           S_RX_DROP: begin
+              rx_nobuf_count <= rx_nobuf_count + 32'd1;
+              rx_frame_ack   <= 1'b1;                  // drop: release engine
+              state <= S_IDLE;
            end
 
            default: state <= S_IDLE;
