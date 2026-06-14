@@ -7,7 +7,8 @@ module virtio_mmio #(
     parameter [31:0] DEVICE_FEATURES_0 = 32'd0,
     parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0003,
     parameter [31:0] QUEUE_NUM_MAX = 32'd8,
-    parameter [31:0] QUEUE_COUNT = 32'd1
+    parameter [31:0] QUEUE_COUNT = 32'd1,
+    parameter [31:0] CONFIG_CAPACITY_SECTORS = 32'd0 /* virtio-blk config: 512B sectors */
 ) (
     input  wire        clock,
     input  wire        reset,
@@ -71,6 +72,11 @@ module virtio_mmio #(
    localparam [11:0] REG_QUEUE_USED_LOW   = 12'h0a0;
    localparam [11:0] REG_QUEUE_USED_HIGH  = 12'h0a4;
    localparam [11:0] REG_CONFIG_GEN       = 12'h0fc;
+   /* Device config space (offset 0x100). virtio-blk: capacity is a 64-bit LE
+    * field of 512-byte sectors at config offset 0. Other devices leave
+    * CONFIG_CAPACITY_SECTORS = 0 and never read config (no F_MAC/F_STATUS/etc). */
+   localparam [11:0] REG_CONFIG_CAP_LOW   = 12'h100;
+   localparam [11:0] REG_CONFIG_CAP_HIGH  = 12'h104;
 
    reg [31:0] device_features_sel;
    reg [31:0] driver_features_sel;
@@ -143,6 +149,8 @@ module virtio_mmio #(
            REG_QUEUE_USED_LOW:   read_data = queue_device[31:0];
            REG_QUEUE_USED_HIGH:  read_data = queue_device[63:32];
            REG_CONFIG_GEN:       read_data = 32'd0;
+           REG_CONFIG_CAP_LOW:   read_data = CONFIG_CAPACITY_SECTORS;
+           REG_CONFIG_CAP_HIGH:  read_data = 32'd0;
            default:              read_data = 32'd0;
          endcase
       end

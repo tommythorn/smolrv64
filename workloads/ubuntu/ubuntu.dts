@@ -187,4 +187,19 @@
 		device_type = "memory";
 		reg = <0 0x80000000 0 0x7ffff000>; // 2 GiB MiB
 	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		// Backing store for the virtio-blk DDR-backed RAM disk. Carved out
+		// of RAM (no-map) so Linux never allocates here; the device owns it.
+		// Placed well below the initrd (0xff62b000) and DTB (0xfffff000).
+		// 64 MiB -> device AXI base 0x78000000 (PA & 0x7fffffff).
+		virtio_blk_disk@f8000000 {
+			reg = <0 0xf8000000 0 0x4000000>;
+			no-map;
+		};
+	};
 };

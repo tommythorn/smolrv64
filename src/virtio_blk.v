@@ -1,8 +1,29 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-module virtio_blk_fake #(
-    parameter [31:0] CAPACITY_SECTORS = 32'd2048
+// virtio-blk backend with a DDR-backed RAM disk.
+//
+// Walks the standard 3-descriptor blk request chain (header / data / status),
+// and instead of synthesising data (the old virtio_blk_fake), it copies the
+// data segment to/from a reserved DDR region:
+//
+//   sector S, word i  <->  BACKING_BASE + S*512 + i*8   (device AXI address)
+//
+//   T_IN  (read):  backing -> guest data buffer
+//   T_OUT (write): guest data buffer -> backing
+//
+// The copy is word-at-a-time through the single-beat AXI master (read src,
+// write dst), so it is mem-to-mem and slow but correct; a fast storage backend
+// replaces the backing store later behind this same frontend.
+//
+// Assumptions (valid for Linux block I/O):
+//   - the data descriptor is one segment (hdr/data/status chain, no extra NEXT)
+//   - data buffers are >=8-byte aligned and a whole number of 512-byte sectors,
+//     so every copied word is a full, 8-byte-aligned word (wstrb = 0xff).
+module virtio_blk #(
+    parameter [31:0] QUEUE_SIZE       = 32'd8,        /* virtqueue depth, power of two */
+    parameter [31:0] CAPACITY_SECTORS = 32'd131072,   /* 512-byte sectors (64 MB) */
+    parameter [30:0] BACKING_BASE     = 31'h7800_0000 /* device AXI addr of sector 0 */
 ) (
     input  wire        clock,
     input  wire        reset,
@@ -76,17 +97,19 @@ module virtio_blk_fake #(
    localparam [5:0] S_WAIT_HDR0        = 6'd18;
    localparam [5:0] S_READ_HDR1        = 6'd19;
    localparam [5:0] S_WAIT_HDR1        = 6'd20;
-   localparam [5:0] S_WRITE_DATA       = 6'd21;
-   localparam [5:0] S_WAIT_DATA        = 6'd22;
-   localparam [5:0] S_WRITE_STATUS     = 6'd23;
-   localparam [5:0] S_WAIT_STATUS      = 6'd24;
-   localparam [5:0] S_WRITE_USED_ID    = 6'd25;
-   localparam [5:0] S_WAIT_USED_ID     = 6'd26;
-   localparam [5:0] S_WRITE_USED_LEN   = 6'd27;
-   localparam [5:0] S_WAIT_USED_LEN    = 6'd28;
-   localparam [5:0] S_WRITE_USED_IDX   = 6'd29;
-   localparam [5:0] S_WAIT_USED_IDX    = 6'd30;
-   localparam [5:0] S_COMPLETE         = 6'd31;
+   localparam [5:0] S_COPY_READ        = 6'd21;
+   localparam [5:0] S_WAIT_COPY_READ   = 6'd22;
+   localparam [5:0] S_COPY_WRITE       = 6'd23;
+   localparam [5:0] S_WAIT_COPY_WRITE  = 6'd24;
+   localparam [5:0] S_WRITE_STATUS     = 6'd25;
+   localparam [5:0] S_WAIT_STATUS      = 6'd26;
+   localparam [5:0] S_WRITE_USED_ID    = 6'd27;
+   localparam [5:0] S_WAIT_USED_ID     = 6'd28;
+   localparam [5:0] S_WRITE_USED_LEN   = 6'd29;
+   localparam [5:0] S_WAIT_USED_LEN    = 6'd30;
+   localparam [5:0] S_WRITE_USED_IDX   = 6'd31;
+   localparam [5:0] S_WAIT_USED_IDX    = 6'd32;
+   localparam [5:0] S_COMPLETE         = 6'd33;
 
    localparam [15:0] VRING_DESC_F_NEXT  = 16'h0001;
    localparam [15:0] VRING_DESC_F_WRITE = 16'h0002;
@@ -96,13 +119,16 @@ module virtio_blk_fake #(
    localparam [ 7:0] VIRTIO_BLK_S_IOERR = 8'd1;
    localparam [ 7:0] VIRTIO_BLK_S_UNSUPP = 8'd2;
 
+   wire [15:0] ring_mask  = QUEUE_SIZE[15:0] - 16'd1;
+
    reg [5:0]  state;
    reg [15:0] last_avail_idx;
+   reg [15:0] avail_idx;       /* last published avail.idx (for draining a batch) */
+   reg        notify_pending;  /* a notify seen while busy; re-poll on completion */
    reg [15:0] used_idx;
    reg [15:0] head_desc;
    reg [15:0] desc1_index;
    reg [15:0] desc2_index;
-   reg [ 2:0] ring_slot;
    reg [63:0] desc0_addr;
    reg [31:0] desc0_len;
    reg [15:0] desc0_flags;
@@ -114,10 +140,29 @@ module virtio_blk_fake #(
    reg [15:0] desc2_flags;
    reg [31:0] req_type;
    reg [63:0] req_sector;
+   reg        req_is_read;
+   reg [63:0] copy_data;
    reg [31:0] data_words_left;
    reg [31:0] data_word_index;
    reg [ 7:0] status_byte;
    reg [31:0] used_len;
+
+   wire [15:0] avail_slot = last_avail_idx & ring_mask;
+   wire [15:0] used_slot  = used_idx & ring_mask;
+   wire [15:0] next_avail_idx = last_avail_idx + 16'd1;
+   wire        blk_notify = queue_notify_pulse && queue_notify_value == 32'd0;
+
+   // Data segment word addresses for the current word index.
+   wire [63:0] word_off     = {29'd0, data_word_index, 3'd0};
+   wire [63:0] backing_addr = {33'd0, BACKING_BASE} + (req_sector << 9) + word_off;
+   wire [63:0] guest_addr   = desc1_addr + word_off;
+   wire [63:0] copy_src     = req_is_read ? backing_addr : guest_addr;
+   wire [63:0] copy_dst     = req_is_read ? guest_addr   : backing_addr;
+
+   // Request stays within the backing store (sector*512 + len <= capacity).
+   wire [63:0] req_byte_end = (req_sector << 9) + {32'd0, desc1_len};
+   wire        bounds_ok    = req_sector[63:32] == 32'd0 &&
+                              req_byte_end <= {23'd0, CAPACITY_SECTORS, 9'd0};
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -169,17 +214,6 @@ module virtio_blk_fake #(
       end
    endfunction
 
-   function [63:0] fake_data_word;
-      input [63:0] sector;
-      input [31:0] word_index;
-      begin
-         if (sector == 64'd0 && word_index == 32'd0)
-            fake_data_word = 64'h5452_4956_4c4f_4d53; /* "SMOLVIRT" */
-         else
-            fake_data_word = {16'h5642, sector[15:0], word_index[31:0]};
-      end
-   endfunction
-
    wire driver_ok = device_status[2];
    wire queue_configured = queue_ready && queue_num != 32'd0 &&
                            queue_desc[63:32] == 32'd0 &&
@@ -217,11 +251,12 @@ module virtio_blk_fake #(
       if (reset || device_status == 8'd0) begin
          state <= S_IDLE;
          last_avail_idx <= 16'd0;
+         avail_idx <= 16'd0;
+         notify_pending <= 1'b0;
          used_idx <= 16'd0;
          head_desc <= 16'd0;
          desc1_index <= 16'd0;
          desc2_index <= 16'd0;
-         ring_slot <= 3'd0;
          desc0_addr <= 64'd0;
          desc0_len <= 32'd0;
          desc0_flags <= 16'd0;
@@ -233,15 +268,20 @@ module virtio_blk_fake #(
          desc2_flags <= 16'd0;
          req_type <= 32'd0;
          req_sector <= 64'd0;
+         req_is_read <= 1'b0;
+         copy_data <= 64'd0;
          data_words_left <= 32'd0;
          data_word_index <= 32'd0;
          status_byte <= VIRTIO_BLK_S_IOERR;
          used_len <= 32'd0;
       end else begin
+         if (blk_notify)
+            notify_pending <= 1'b1;
+
          case (state)
            S_IDLE: begin
-              if (queue_notify_pulse && queue_notify_value == 32'd0 &&
-                  queue_configured && driver_ok) begin
+              if (queue_configured && driver_ok && (blk_notify || notify_pending)) begin
+                 notify_pending <= 1'b0;
                  state <= S_READ_AVAIL;
               end
            end
@@ -254,7 +294,9 @@ module virtio_blk_fake #(
            end
            S_WAIT_AVAIL: begin
               if (dma_rsp_valid) begin
-                 if (dma_rsp_error || dma_rsp_rdata[31:16] == last_avail_idx)
+                 avail_idx <= get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd2) & 3'h7);
+                 if (dma_rsp_error ||
+                     get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx)
                     state <= S_IDLE;
                  else
                     state <= S_READ_RING;
@@ -263,14 +305,15 @@ module virtio_blk_fake #(
 
            S_READ_RING: begin
               if (dma_cmd_ready) begin
-                 ring_slot <= last_avail_idx[2:0];
-                 start_read64(queue_driver + 64'd4 + {60'd0, last_avail_idx[2:0], 1'b0});
+                 start_read64(queue_driver + 64'd4 + {47'd0, avail_slot, 1'b0});
                  state <= S_WAIT_RING;
               end
            end
            S_WAIT_RING: begin
               if (dma_rsp_valid) begin
-                 head_desc <= get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd4 + {last_avail_idx[1:0], 1'b0}) & 3'h7);
+                 head_desc <= get16(dma_rsp_rdata,
+                                    (queue_driver[2:0] + 3'd4 +
+                                     {last_avail_idx[1:0], 1'b0}) & 3'h7);
                  if (dma_rsp_error)
                     state <= S_IDLE;
                  else
@@ -394,16 +437,22 @@ module virtio_blk_fake #(
                  used_len <= 32'd1;
                  if (dma_rsp_error) begin
                     state <= S_IDLE;
+                 end else if (!bounds_ok) begin
+                    status_byte <= VIRTIO_BLK_S_IOERR;
+                    state <= S_WRITE_STATUS;
                  end else if (req_type == VIRTIO_BLK_T_IN &&
                               (desc1_flags & VRING_DESC_F_WRITE) != 16'd0 &&
                               (desc2_flags & VRING_DESC_F_WRITE) != 16'd0 &&
                               desc2_len != 32'd0) begin
+                    req_is_read <= 1'b1;
                     used_len <= desc1_len + 32'd1;
-                    state <= desc1_len == 32'd0 ? S_WRITE_STATUS : S_WRITE_DATA;
+                    state <= desc1_len == 32'd0 ? S_WRITE_STATUS : S_COPY_READ;
                  end else if (req_type == VIRTIO_BLK_T_OUT &&
+                              (desc1_flags & VRING_DESC_F_WRITE) == 16'd0 &&
                               (desc2_flags & VRING_DESC_F_WRITE) != 16'd0 &&
                               desc2_len != 32'd0) begin
-                    state <= S_WRITE_STATUS;
+                    req_is_read <= 1'b0;
+                    state <= desc1_len == 32'd0 ? S_WRITE_STATUS : S_COPY_READ;
                  end else begin
                     status_byte <= VIRTIO_BLK_S_UNSUPP;
                     state <= S_WRITE_STATUS;
@@ -411,17 +460,31 @@ module virtio_blk_fake #(
               end
            end
 
-           S_WRITE_DATA: begin
+           // Mem-to-mem data copy: read one source word, write it to dst.
+           S_COPY_READ: begin
               if (dma_cmd_ready) begin
-                 start_write(desc1_addr + {29'd0, data_word_index, 3'd0},
-                             fake_data_word(req_sector, data_word_index),
-                             data_words_left == 32'd1 && desc1_len[2:0] != 3'd0
-                             ? write_strobe(desc1_addr[2:0], {1'b0, desc1_len[2:0]})
-                             : 8'hff);
-                 state <= S_WAIT_DATA;
+                 start_read64(copy_src);
+                 state <= S_WAIT_COPY_READ;
               end
            end
-           S_WAIT_DATA: begin
+           S_WAIT_COPY_READ: begin
+              if (dma_rsp_valid) begin
+                 copy_data <= dma_rsp_rdata;
+                 if (dma_rsp_error) begin
+                    status_byte <= VIRTIO_BLK_S_IOERR;
+                    state <= S_WRITE_STATUS;
+                 end else begin
+                    state <= S_COPY_WRITE;
+                 end
+              end
+           end
+           S_COPY_WRITE: begin
+              if (dma_cmd_ready) begin
+                 start_write(copy_dst, copy_data, 8'hff);
+                 state <= S_WAIT_COPY_WRITE;
+              end
+           end
+           S_WAIT_COPY_WRITE: begin
               if (dma_rsp_valid) begin
                  if (dma_rsp_error) begin
                     status_byte <= VIRTIO_BLK_S_IOERR;
@@ -431,7 +494,7 @@ module virtio_blk_fake #(
                  end else begin
                     data_words_left <= data_words_left - 32'd1;
                     data_word_index <= data_word_index + 32'd1;
-                    state <= S_WRITE_DATA;
+                    state <= S_COPY_READ;
                  end
               end
            end
@@ -451,7 +514,7 @@ module virtio_blk_fake #(
 
            S_WRITE_USED_ID: begin
               if (dma_cmd_ready) begin
-                 start_write(queue_device + 64'd4 + {58'd0, used_idx[2:0], 3'd0},
+                 start_write(queue_device + 64'd4 + {45'd0, used_slot, 3'd0},
                              write_shift({48'd0, head_desc}, (queue_device[2:0] + 3'd4) & 3'h7),
                              write_strobe((queue_device[2:0] + 3'd4) & 3'h7, 4'd4));
                  state <= S_WAIT_USED_ID;
@@ -463,7 +526,7 @@ module virtio_blk_fake #(
            end
            S_WRITE_USED_LEN: begin
               if (dma_cmd_ready) begin
-                 start_write(queue_device + 64'd8 + {58'd0, used_idx[2:0], 3'd0},
+                 start_write(queue_device + 64'd8 + {45'd0, used_slot, 3'd0},
                              write_shift({32'd0, used_len}, queue_device[2:0]),
                              write_strobe(queue_device[2:0], 4'd4));
                  state <= S_WAIT_USED_LEN;
@@ -488,9 +551,17 @@ module virtio_blk_fake #(
 
            S_COMPLETE: begin
               used_idx <= used_idx + 16'd1;
-              last_avail_idx <= last_avail_idx + 16'd1;
+              last_avail_idx <= next_avail_idx;
               used_buffer_interrupt <= 1'b1;
-              state <= S_IDLE;
+              // Drain the rest of this batch, then a notify that arrived while
+              // busy, before going idle — so no notify is ever missed.
+              if (next_avail_idx != avail_idx)
+                 state <= S_READ_RING;
+              else if (notify_pending) begin
+                 notify_pending <= 1'b0;
+                 state <= S_READ_AVAIL;
+              end else
+                 state <= S_IDLE;
            end
 
            default: state <= S_IDLE;
@@ -550,7 +621,7 @@ module virtio_blk_fake #(
       .m_axi_rready   (m_axi_rready)
    );
 
-   wire unused_inputs = &{1'b0, CAPACITY_SECTORS, desc0_len, desc0_flags, ring_slot};
+   wire unused_inputs = &{1'b0, desc0_len, desc0_flags};
 endmodule
 
 `default_nettype wire

@@ -195,6 +195,14 @@ module rk_xcku5p(
 
    localparam USE_DDR_ARB = 1'b1;
 
+   // virtio-blk RAM disk backed by a reserved-memory carve-out (no-map) in the
+   // DTS at PA 0xf8000000, 64 MiB. The device sees it as AXI addr 0x78000000
+   // (PA & 0x7fffffff). Placed below the initrd (0xff62b000) / DTB (0xfffff000),
+   // so the top-of-memory boot blobs and the memory node stay untouched.
+   // 131072 sectors * 512 = 0x4000000 = 64 MiB.
+   localparam [31:0] VIRTIO_BLK_CAPACITY_SECTORS = 32'd131072;
+   localparam [30:0] VIRTIO_BLK_BACKING_BASE     = 31'h7800_0000;
+
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
       .sys_rst                        (~key[0]),          // active-high; key[0] low = pressed = reset
@@ -344,6 +352,17 @@ module rk_xcku5p(
    wire [63:0] virtio_net_queue0_driver;
    wire [63:0] virtio_net_queue0_device;
    wire [ 7:0] virtio_net_device_status;
+
+   wire        virtio_blk_queue_notify_pulse;
+   wire [31:0] virtio_blk_queue_notify_value;
+   wire        virtio_blk_used_buffer_interrupt;
+   wire [31:0] virtio_blk_queue0_num;
+   wire        virtio_blk_queue0_ready;
+   wire [63:0] virtio_blk_queue0_desc;
+   wire [63:0] virtio_blk_queue0_driver;
+   wire [63:0] virtio_blk_queue0_device;
+   wire [ 7:0] virtio_blk_device_status;
+
    wire [31:0] virtio_net_debug_status;
    wire [31:0] virtio_net_debug_notify_count;
    wire [31:0] virtio_net_debug_read_avail_count;
@@ -395,6 +414,84 @@ module rk_xcku5p(
    wire        virtio_net_axi_rlast;
    wire        virtio_net_axi_rvalid;
    wire        virtio_net_axi_rready;
+
+   // virtio-blk backend DMA master + the device-side arbiter output that merges
+   // net + blk into one master before the existing core-vs-device arbiter.
+   wire [ 2:0] virtio_blk_axi_awid;
+   wire [30:0] virtio_blk_axi_awaddr;
+   wire [ 7:0] virtio_blk_axi_awlen;
+   wire [ 2:0] virtio_blk_axi_awsize;
+   wire [ 1:0] virtio_blk_axi_awburst;
+   wire        virtio_blk_axi_awlock;
+   wire [ 3:0] virtio_blk_axi_awcache;
+   wire [ 2:0] virtio_blk_axi_awprot;
+   wire [ 3:0] virtio_blk_axi_awqos;
+   wire        virtio_blk_axi_awvalid;
+   wire        virtio_blk_axi_awready;
+   wire [63:0] virtio_blk_axi_wdata;
+   wire [ 7:0] virtio_blk_axi_wstrb;
+   wire        virtio_blk_axi_wlast;
+   wire        virtio_blk_axi_wvalid;
+   wire        virtio_blk_axi_wready;
+   wire [ 2:0] virtio_blk_axi_bid;
+   wire [ 1:0] virtio_blk_axi_bresp;
+   wire        virtio_blk_axi_bvalid;
+   wire        virtio_blk_axi_bready;
+   wire [ 2:0] virtio_blk_axi_arid;
+   wire [30:0] virtio_blk_axi_araddr;
+   wire [ 7:0] virtio_blk_axi_arlen;
+   wire [ 2:0] virtio_blk_axi_arsize;
+   wire [ 1:0] virtio_blk_axi_arburst;
+   wire        virtio_blk_axi_arlock;
+   wire [ 3:0] virtio_blk_axi_arcache;
+   wire [ 2:0] virtio_blk_axi_arprot;
+   wire [ 3:0] virtio_blk_axi_arqos;
+   wire        virtio_blk_axi_arvalid;
+   wire        virtio_blk_axi_arready;
+   wire [ 2:0] virtio_blk_axi_rid;
+   wire [63:0] virtio_blk_axi_rdata;
+   wire [ 1:0] virtio_blk_axi_rresp;
+   wire        virtio_blk_axi_rlast;
+   wire        virtio_blk_axi_rvalid;
+   wire        virtio_blk_axi_rready;
+
+   wire [ 2:0] device_axi_awid;
+   wire [30:0] device_axi_awaddr;
+   wire [ 7:0] device_axi_awlen;
+   wire [ 2:0] device_axi_awsize;
+   wire [ 1:0] device_axi_awburst;
+   wire        device_axi_awlock;
+   wire [ 3:0] device_axi_awcache;
+   wire [ 2:0] device_axi_awprot;
+   wire [ 3:0] device_axi_awqos;
+   wire        device_axi_awvalid;
+   wire        device_axi_awready;
+   wire [63:0] device_axi_wdata;
+   wire [ 7:0] device_axi_wstrb;
+   wire        device_axi_wlast;
+   wire        device_axi_wvalid;
+   wire        device_axi_wready;
+   wire [ 2:0] device_axi_bid;
+   wire [ 1:0] device_axi_bresp;
+   wire        device_axi_bvalid;
+   wire        device_axi_bready;
+   wire [ 2:0] device_axi_arid;
+   wire [30:0] device_axi_araddr;
+   wire [ 7:0] device_axi_arlen;
+   wire [ 2:0] device_axi_arsize;
+   wire [ 1:0] device_axi_arburst;
+   wire        device_axi_arlock;
+   wire [ 3:0] device_axi_arcache;
+   wire [ 2:0] device_axi_arprot;
+   wire [ 3:0] device_axi_arqos;
+   wire        device_axi_arvalid;
+   wire        device_axi_arready;
+   wire [ 2:0] device_axi_rid;
+   wire [63:0] device_axi_rdata;
+   wire [ 1:0] device_axi_rresp;
+   wire        device_axi_rlast;
+   wire        device_axi_rvalid;
+   wire        device_axi_rready;
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
@@ -510,8 +607,9 @@ module rk_xcku5p(
     * outputs now drive nothing and are stripped by synthesis (DCE). */
 
    virtio_mmio #(
-      .DEVICE_ID(32'd0), /* Dormant until a block backend can complete queues. */
-      .QUEUE_NUM_MAX(32'd8)
+      .DEVICE_ID(32'd2), /* virtio-blk, DDR-backed RAM disk backend below. */
+      .QUEUE_NUM_MAX(32'd8),
+      .CONFIG_CAPACITY_SECTORS(VIRTIO_BLK_CAPACITY_SECTORS)
    ) virtio_blk_inst(
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
@@ -522,9 +620,9 @@ module rk_xcku5p(
       .write_data              (ui_mmio_writedata),
       .byteenable              (ui_mmio_byteenable),
       .irq                     (virtio_blk_irq),
-      .queue_notify_pulse      (),
-      .queue_notify_value      (),
-      .used_buffer_interrupt   (1'b0),
+      .queue_notify_pulse      (virtio_blk_queue_notify_pulse),
+      .queue_notify_value      (virtio_blk_queue_notify_value),
+      .used_buffer_interrupt   (virtio_blk_used_buffer_interrupt),
       .config_change_interrupt (1'b0),
       .driver_features_0       (),
       .driver_features_1       (),
@@ -533,17 +631,73 @@ module rk_xcku5p(
       .queue_desc              (),
       .queue_driver            (),
       .queue_device            (),
-      .queue0_num              (),
-      .queue0_ready            (),
-      .queue0_desc             (),
-      .queue0_driver           (),
-      .queue0_device           (),
+      .queue0_num              (virtio_blk_queue0_num),
+      .queue0_ready            (virtio_blk_queue0_ready),
+      .queue0_desc             (virtio_blk_queue0_desc),
+      .queue0_driver           (virtio_blk_queue0_driver),
+      .queue0_device           (virtio_blk_queue0_device),
       .queue1_num              (),
       .queue1_ready            (),
       .queue1_desc             (),
       .queue1_driver           (),
       .queue1_device           (),
-      .device_status           ()
+      .device_status           (virtio_blk_device_status)
+   );
+
+   virtio_blk #(
+      .QUEUE_SIZE(32'd8),
+      .CAPACITY_SECTORS(VIRTIO_BLK_CAPACITY_SECTORS),
+      .BACKING_BASE(VIRTIO_BLK_BACKING_BASE)
+   ) virtio_blk_backend(
+      .clock                   (ui_clk),
+      .reset                   (ui_cpu_reset),
+      .queue_notify_pulse      (virtio_blk_queue_notify_pulse),
+      .queue_notify_value      (virtio_blk_queue_notify_value),
+      .queue_num               (virtio_blk_queue0_num),
+      .queue_ready             (virtio_blk_queue0_ready),
+      .queue_desc              (virtio_blk_queue0_desc),
+      .queue_driver            (virtio_blk_queue0_driver),
+      .queue_device            (virtio_blk_queue0_device),
+      .device_status           (virtio_blk_device_status),
+      .used_buffer_interrupt   (virtio_blk_used_buffer_interrupt),
+
+      .m_axi_awid              (virtio_blk_axi_awid),
+      .m_axi_awaddr            (virtio_blk_axi_awaddr),
+      .m_axi_awlen             (virtio_blk_axi_awlen),
+      .m_axi_awsize            (virtio_blk_axi_awsize),
+      .m_axi_awburst           (virtio_blk_axi_awburst),
+      .m_axi_awlock            (virtio_blk_axi_awlock),
+      .m_axi_awcache           (virtio_blk_axi_awcache),
+      .m_axi_awprot            (virtio_blk_axi_awprot),
+      .m_axi_awqos             (virtio_blk_axi_awqos),
+      .m_axi_awvalid           (virtio_blk_axi_awvalid),
+      .m_axi_awready           (virtio_blk_axi_awready),
+      .m_axi_wdata             (virtio_blk_axi_wdata),
+      .m_axi_wstrb             (virtio_blk_axi_wstrb),
+      .m_axi_wlast             (virtio_blk_axi_wlast),
+      .m_axi_wvalid            (virtio_blk_axi_wvalid),
+      .m_axi_wready            (virtio_blk_axi_wready),
+      .m_axi_bid               (virtio_blk_axi_bid),
+      .m_axi_bresp             (virtio_blk_axi_bresp),
+      .m_axi_bvalid            (virtio_blk_axi_bvalid),
+      .m_axi_bready            (virtio_blk_axi_bready),
+      .m_axi_arid              (virtio_blk_axi_arid),
+      .m_axi_araddr            (virtio_blk_axi_araddr),
+      .m_axi_arlen             (virtio_blk_axi_arlen),
+      .m_axi_arsize            (virtio_blk_axi_arsize),
+      .m_axi_arburst           (virtio_blk_axi_arburst),
+      .m_axi_arlock            (virtio_blk_axi_arlock),
+      .m_axi_arcache           (virtio_blk_axi_arcache),
+      .m_axi_arprot            (virtio_blk_axi_arprot),
+      .m_axi_arqos             (virtio_blk_axi_arqos),
+      .m_axi_arvalid           (virtio_blk_axi_arvalid),
+      .m_axi_arready           (virtio_blk_axi_arready),
+      .m_axi_rid               (virtio_blk_axi_rid),
+      .m_axi_rdata             (virtio_blk_axi_rdata),
+      .m_axi_rresp             (virtio_blk_axi_rresp),
+      .m_axi_rlast             (virtio_blk_axi_rlast),
+      .m_axi_rvalid            (virtio_blk_axi_rvalid),
+      .m_axi_rready            (virtio_blk_axi_rready)
    );
 
    virtio_mmio #(
@@ -857,6 +1011,129 @@ module rk_xcku5p(
 
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter
+   // Device-side arbiter: merge virtio-net (s0) and virtio-blk (s1) into one
+   // master before the core-vs-device arbiter below. Reusing the proven
+   // 2-master arbiter twice keeps each arbiter 2-input (timing-friendly) instead
+   // of growing a 3-master mux on the DDR path.
+   axi_two_master_arbiter device_arbiter_inst(
+      .clock          (ui_clk),
+      .reset          (ui_cpu_reset),
+
+      .s0_axi_awid    (virtio_net_axi_awid),
+      .s0_axi_awaddr  (virtio_net_axi_awaddr),
+      .s0_axi_awlen   (virtio_net_axi_awlen),
+      .s0_axi_awsize  (virtio_net_axi_awsize),
+      .s0_axi_awburst (virtio_net_axi_awburst),
+      .s0_axi_awlock  (virtio_net_axi_awlock),
+      .s0_axi_awcache (virtio_net_axi_awcache),
+      .s0_axi_awprot  (virtio_net_axi_awprot),
+      .s0_axi_awqos   (virtio_net_axi_awqos),
+      .s0_axi_awvalid (virtio_net_axi_awvalid),
+      .s0_axi_awready (virtio_net_axi_awready),
+      .s0_axi_wdata   (virtio_net_axi_wdata),
+      .s0_axi_wstrb   (virtio_net_axi_wstrb),
+      .s0_axi_wlast   (virtio_net_axi_wlast),
+      .s0_axi_wvalid  (virtio_net_axi_wvalid),
+      .s0_axi_wready  (virtio_net_axi_wready),
+      .s0_axi_bid     (virtio_net_axi_bid),
+      .s0_axi_bresp   (virtio_net_axi_bresp),
+      .s0_axi_bvalid  (virtio_net_axi_bvalid),
+      .s0_axi_bready  (virtio_net_axi_bready),
+      .s0_axi_arid    (virtio_net_axi_arid),
+      .s0_axi_araddr  (virtio_net_axi_araddr),
+      .s0_axi_arlen   (virtio_net_axi_arlen),
+      .s0_axi_arsize  (virtio_net_axi_arsize),
+      .s0_axi_arburst (virtio_net_axi_arburst),
+      .s0_axi_arlock  (virtio_net_axi_arlock),
+      .s0_axi_arcache (virtio_net_axi_arcache),
+      .s0_axi_arprot  (virtio_net_axi_arprot),
+      .s0_axi_arqos   (virtio_net_axi_arqos),
+      .s0_axi_arvalid (virtio_net_axi_arvalid),
+      .s0_axi_arready (virtio_net_axi_arready),
+      .s0_axi_rid     (virtio_net_axi_rid),
+      .s0_axi_rdata   (virtio_net_axi_rdata),
+      .s0_axi_rresp   (virtio_net_axi_rresp),
+      .s0_axi_rlast   (virtio_net_axi_rlast),
+      .s0_axi_rvalid  (virtio_net_axi_rvalid),
+      .s0_axi_rready  (virtio_net_axi_rready),
+
+      .s1_axi_awid    (virtio_blk_axi_awid),
+      .s1_axi_awaddr  (virtio_blk_axi_awaddr),
+      .s1_axi_awlen   (virtio_blk_axi_awlen),
+      .s1_axi_awsize  (virtio_blk_axi_awsize),
+      .s1_axi_awburst (virtio_blk_axi_awburst),
+      .s1_axi_awlock  (virtio_blk_axi_awlock),
+      .s1_axi_awcache (virtio_blk_axi_awcache),
+      .s1_axi_awprot  (virtio_blk_axi_awprot),
+      .s1_axi_awqos   (virtio_blk_axi_awqos),
+      .s1_axi_awvalid (virtio_blk_axi_awvalid),
+      .s1_axi_awready (virtio_blk_axi_awready),
+      .s1_axi_wdata   (virtio_blk_axi_wdata),
+      .s1_axi_wstrb   (virtio_blk_axi_wstrb),
+      .s1_axi_wlast   (virtio_blk_axi_wlast),
+      .s1_axi_wvalid  (virtio_blk_axi_wvalid),
+      .s1_axi_wready  (virtio_blk_axi_wready),
+      .s1_axi_bid     (virtio_blk_axi_bid),
+      .s1_axi_bresp   (virtio_blk_axi_bresp),
+      .s1_axi_bvalid  (virtio_blk_axi_bvalid),
+      .s1_axi_bready  (virtio_blk_axi_bready),
+      .s1_axi_arid    (virtio_blk_axi_arid),
+      .s1_axi_araddr  (virtio_blk_axi_araddr),
+      .s1_axi_arlen   (virtio_blk_axi_arlen),
+      .s1_axi_arsize  (virtio_blk_axi_arsize),
+      .s1_axi_arburst (virtio_blk_axi_arburst),
+      .s1_axi_arlock  (virtio_blk_axi_arlock),
+      .s1_axi_arcache (virtio_blk_axi_arcache),
+      .s1_axi_arprot  (virtio_blk_axi_arprot),
+      .s1_axi_arqos   (virtio_blk_axi_arqos),
+      .s1_axi_arvalid (virtio_blk_axi_arvalid),
+      .s1_axi_arready (virtio_blk_axi_arready),
+      .s1_axi_rid     (virtio_blk_axi_rid),
+      .s1_axi_rdata   (virtio_blk_axi_rdata),
+      .s1_axi_rresp   (virtio_blk_axi_rresp),
+      .s1_axi_rlast   (virtio_blk_axi_rlast),
+      .s1_axi_rvalid  (virtio_blk_axi_rvalid),
+      .s1_axi_rready  (virtio_blk_axi_rready),
+
+      .m_axi_awid     (device_axi_awid),
+      .m_axi_awaddr   (device_axi_awaddr),
+      .m_axi_awlen    (device_axi_awlen),
+      .m_axi_awsize   (device_axi_awsize),
+      .m_axi_awburst  (device_axi_awburst),
+      .m_axi_awlock   (device_axi_awlock),
+      .m_axi_awcache  (device_axi_awcache),
+      .m_axi_awprot   (device_axi_awprot),
+      .m_axi_awqos    (device_axi_awqos),
+      .m_axi_awvalid  (device_axi_awvalid),
+      .m_axi_awready  (device_axi_awready),
+      .m_axi_wdata    (device_axi_wdata),
+      .m_axi_wstrb    (device_axi_wstrb),
+      .m_axi_wlast    (device_axi_wlast),
+      .m_axi_wvalid   (device_axi_wvalid),
+      .m_axi_wready   (device_axi_wready),
+      .m_axi_bid      (device_axi_bid),
+      .m_axi_bresp    (device_axi_bresp),
+      .m_axi_bvalid   (device_axi_bvalid),
+      .m_axi_bready   (device_axi_bready),
+      .m_axi_arid     (device_axi_arid),
+      .m_axi_araddr   (device_axi_araddr),
+      .m_axi_arlen    (device_axi_arlen),
+      .m_axi_arsize   (device_axi_arsize),
+      .m_axi_arburst  (device_axi_arburst),
+      .m_axi_arlock   (device_axi_arlock),
+      .m_axi_arcache  (device_axi_arcache),
+      .m_axi_arprot   (device_axi_arprot),
+      .m_axi_arqos    (device_axi_arqos),
+      .m_axi_arvalid  (device_axi_arvalid),
+      .m_axi_arready  (device_axi_arready),
+      .m_axi_rid      (device_axi_rid),
+      .m_axi_rdata    (device_axi_rdata),
+      .m_axi_rresp    (device_axi_rresp),
+      .m_axi_rlast    (device_axi_rlast),
+      .m_axi_rvalid   (device_axi_rvalid),
+      .m_axi_rready   (device_axi_rready)
+   );
+
    axi_two_master_arbiter ddr4_arbiter_inst(
       .clock          (ui_clk),
       .reset          (ui_cpu_reset),
@@ -899,43 +1176,43 @@ module rk_xcku5p(
       .s0_axi_rvalid  (core_axi_rvalid),
       .s0_axi_rready  (core_axi_rready),
 
-      .s1_axi_awid    (virtio_net_axi_awid),
-      .s1_axi_awaddr  (virtio_net_axi_awaddr),
-      .s1_axi_awlen   (virtio_net_axi_awlen),
-      .s1_axi_awsize  (virtio_net_axi_awsize),
-      .s1_axi_awburst (virtio_net_axi_awburst),
-      .s1_axi_awlock  (virtio_net_axi_awlock),
-      .s1_axi_awcache (virtio_net_axi_awcache),
-      .s1_axi_awprot  (virtio_net_axi_awprot),
-      .s1_axi_awqos   (virtio_net_axi_awqos),
-      .s1_axi_awvalid (virtio_net_axi_awvalid),
-      .s1_axi_awready (virtio_net_axi_awready),
-      .s1_axi_wdata   (virtio_net_axi_wdata),
-      .s1_axi_wstrb   (virtio_net_axi_wstrb),
-      .s1_axi_wlast   (virtio_net_axi_wlast),
-      .s1_axi_wvalid  (virtio_net_axi_wvalid),
-      .s1_axi_wready  (virtio_net_axi_wready),
-      .s1_axi_bid     (virtio_net_axi_bid),
-      .s1_axi_bresp   (virtio_net_axi_bresp),
-      .s1_axi_bvalid  (virtio_net_axi_bvalid),
-      .s1_axi_bready  (virtio_net_axi_bready),
-      .s1_axi_arid    (virtio_net_axi_arid),
-      .s1_axi_araddr  (virtio_net_axi_araddr),
-      .s1_axi_arlen   (virtio_net_axi_arlen),
-      .s1_axi_arsize  (virtio_net_axi_arsize),
-      .s1_axi_arburst (virtio_net_axi_arburst),
-      .s1_axi_arlock  (virtio_net_axi_arlock),
-      .s1_axi_arcache (virtio_net_axi_arcache),
-      .s1_axi_arprot  (virtio_net_axi_arprot),
-      .s1_axi_arqos   (virtio_net_axi_arqos),
-      .s1_axi_arvalid (virtio_net_axi_arvalid),
-      .s1_axi_arready (virtio_net_axi_arready),
-      .s1_axi_rid     (virtio_net_axi_rid),
-      .s1_axi_rdata   (virtio_net_axi_rdata),
-      .s1_axi_rresp   (virtio_net_axi_rresp),
-      .s1_axi_rlast   (virtio_net_axi_rlast),
-      .s1_axi_rvalid  (virtio_net_axi_rvalid),
-      .s1_axi_rready  (virtio_net_axi_rready),
+      .s1_axi_awid    (device_axi_awid),
+      .s1_axi_awaddr  (device_axi_awaddr),
+      .s1_axi_awlen   (device_axi_awlen),
+      .s1_axi_awsize  (device_axi_awsize),
+      .s1_axi_awburst (device_axi_awburst),
+      .s1_axi_awlock  (device_axi_awlock),
+      .s1_axi_awcache (device_axi_awcache),
+      .s1_axi_awprot  (device_axi_awprot),
+      .s1_axi_awqos   (device_axi_awqos),
+      .s1_axi_awvalid (device_axi_awvalid),
+      .s1_axi_awready (device_axi_awready),
+      .s1_axi_wdata   (device_axi_wdata),
+      .s1_axi_wstrb   (device_axi_wstrb),
+      .s1_axi_wlast   (device_axi_wlast),
+      .s1_axi_wvalid  (device_axi_wvalid),
+      .s1_axi_wready  (device_axi_wready),
+      .s1_axi_bid     (device_axi_bid),
+      .s1_axi_bresp   (device_axi_bresp),
+      .s1_axi_bvalid  (device_axi_bvalid),
+      .s1_axi_bready  (device_axi_bready),
+      .s1_axi_arid    (device_axi_arid),
+      .s1_axi_araddr  (device_axi_araddr),
+      .s1_axi_arlen   (device_axi_arlen),
+      .s1_axi_arsize  (device_axi_arsize),
+      .s1_axi_arburst (device_axi_arburst),
+      .s1_axi_arlock  (device_axi_arlock),
+      .s1_axi_arcache (device_axi_arcache),
+      .s1_axi_arprot  (device_axi_arprot),
+      .s1_axi_arqos   (device_axi_arqos),
+      .s1_axi_arvalid (device_axi_arvalid),
+      .s1_axi_arready (device_axi_arready),
+      .s1_axi_rid     (device_axi_rid),
+      .s1_axi_rdata   (device_axi_rdata),
+      .s1_axi_rresp   (device_axi_rresp),
+      .s1_axi_rlast   (device_axi_rlast),
+      .s1_axi_rvalid  (device_axi_rvalid),
+      .s1_axi_rready  (device_axi_rready),
 
       .m_axi_awid     (m_axi_awid),
       .m_axi_awaddr   (m_axi_awaddr),

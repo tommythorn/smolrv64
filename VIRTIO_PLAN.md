@@ -130,11 +130,25 @@ interrupts, DMA coherency, MAC/PHY) are all done.
 - TX no longer wedges: `QUEUE_NUM_MAX` is 256 (virtio-net stops TX when free
   descriptors < MAX_SKB_FRAGS+2 = 19; a depth-8 ring could never wake it). The
   backend's ring indexing is parameterized by `QUEUE_SIZE` (mask, not mod-8).
-- `src/virtio_blk_fake.v` — a fake RAM-less virtio-blk backend (walks one
-  request, returns deterministic read data, discards writes, updates used ring,
-  IRQs). Compiled out of the RK top for now; net is the first real target and the
-  first integrated block version did not meet timing at 333 MHz.
-- `workloads/ubuntu/ubuntu.dts` carries the matching virtio-net DT node.
+- `src/virtio_blk.v` — a **working** virtio-blk backend backed by a DDR RAM disk
+  (Stage 1). Walks the standard hdr/data/status chain and copies the data segment
+  to/from a reserved DDR region (`BACKING_BASE + sector*512`): T_IN reads
+  backing->guest, T_OUT writes guest->backing, mem-to-mem through the single-beat
+  master. Parameterized ring indexing (mask, not mod-8) and a `notify_pending` +
+  batch-drain loop (mirrors virtio-net) so no notify is missed. Verilator
+  testbench `src/virtio_blk_tb.cpp` drives a real vring + AXI-slave memory model
+  and checks read, write, status, and the used ring. (Replaces the old
+  `virtio_blk_fake.v`.)
+- Block/net DMA share one DDR port via a **cascaded arbiter**: a second
+  `axi_two_master_arbiter` merges net (s0) + blk (s1) into one "device" master
+  that feeds the existing core-vs-device arbiter's s1. Reusing the proven
+  2-master arbiter twice keeps each arbiter 2-input — avoids the 3-master mux on
+  the DDR path that is the likely cause of the earlier 333 MHz timing miss.
+- The RAM-disk backing store is a `reserved-memory` carve-out (no-map) at PA
+  0xf8000000, 64 MiB (device AXI base 0x78000000), placed below the initrd
+  (0xff62b000) and DTB (0xfffff000); the memory node and boot blobs are untouched.
+- `workloads/ubuntu/ubuntu.dts` carries the matching virtio-net + virtio-blk DT
+  nodes (blk @0x10002000, IRQ 11) and the reserved-memory region.
 
 ## History: the TX wedge was queue size, not coherency
 
