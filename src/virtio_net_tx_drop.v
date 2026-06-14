@@ -135,7 +135,8 @@ module virtio_net_tx_drop #(
    reg [10:0] byte_idx;        // bytes written into the engine so far
    reg [63:0] cur_word;        // current 64-bit DMA word being unpacked
    reg [ 2:0] word_byte;       // next byte within cur_word
-   reg        first_word;      // first frame word holds hdr bytes 8..11 first
+   reg        first_word;      // apply start_off only to the first word read
+   reg [ 2:0] start_off;       // byte offset of frame[0] within its aligned word
    reg        tx_busy_seen;    // saw eth_tx_engine accept the send
    reg [19:0] tx_timeout;      // guard: complete even if the link/TX never drains
    reg [31:0] tx_frame_count;
@@ -384,10 +385,15 @@ module virtio_net_tx_drop #(
                     // nothing sensible to send; still complete the used ring
                     state <= S_WRITE_USED_ID;
                  end else begin
+                    // The frame starts at desc_addr+12 (after the v1 header),
+                    // at any byte alignment.  The AXI master aligns reads to 8
+                    // bytes (drops addr[2:0]), so read from the aligned word
+                    // containing frame[0] and extract from its byte offset.
                     frame_total <= dlen[10:0] - 11'd12;
                     byte_idx    <= 11'd0;
                     first_word  <= 1'b1;
-                    desc_addr   <= desc_addr + 64'd8;  // skip hdr word0
+                    start_off   <= desc_addr[2:0] + 3'd4;            // (desc+12)[2:0]
+                    desc_addr   <= (desc_addr + 64'd12) & ~64'd7;    // aligned word
                     state       <= S_FRAME_RD;
                  end
               end
@@ -401,7 +407,7 @@ module virtio_net_tx_drop #(
            S_WAIT_FRAME: begin
               if (dma_rsp_valid) begin
                  cur_word  <= dma_rsp_rdata;
-                 word_byte <= first_word ? 3'd4 : 3'd0; // skip hdr 8..11
+                 word_byte <= first_word ? start_off : 3'd0;
                  desc_addr <= desc_addr + 64'd8;
                  first_word <= 1'b0;
                  state <= dma_rsp_error ? S_SEND : S_FILL;
