@@ -740,7 +740,7 @@ module rk_xcku5p(
 
    virtio_net #(
       .QUEUE_SIZE(32'd256)    /* must match virtio_net_inst QUEUE_NUM_MAX */
-   ) virtio_net_inst(
+   ) virtio_net_backend(
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .queue_notify_pulse      (virtio_net_queue_notify_pulse),
