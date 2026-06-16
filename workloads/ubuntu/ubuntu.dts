@@ -7,7 +7,7 @@
 	model = "SmolRV64 Ubuntu 2GiB New";
 
 	chosen {
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/mmcblk0p1 rw ignore_loglevel random.trust_bootloader=on";
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/vda1 rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
                 /* Development-only static seed: replace with per-boot random bytes later. */
@@ -125,44 +125,8 @@
 			reg = <0 0x1000f000 0 0x100>;
 		};
 
-		sd_cs_gpio: gpio@10001100 {
-			compatible = "wd,mbl-gpio";
-			reg = <0 0x10001100 0 0x1>;
-			reg-names = "dat";
-			gpio-controller;
-			#gpio-cells = <2>;
-			ngpios = <1>;
-		};
-
-		sd_cd_gpio: gpio@10001200 {
-			compatible = "wd,mbl-gpio";
-			reg = <0 0x10001200 0 0x1>;
-			reg-names = "dat";
-			gpio-controller;
-			#gpio-cells = <2>;
-			ngpios = <1>;
-			no-output;
-		};
-
-		spi@10001000 {
-			compatible = "opencores,tiny-spi-rtlsvn2";
-			reg = <0 0x10001000 0 0x100>;
-			clock-frequency = <333333333>;
-			baud-width = <8>;
-			num-cs = <1>;
-			cs-gpios = <&sd_cs_gpio 0 1>; /* GPIO_ACTIVE_LOW */
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			mmc@0 {
-				compatible = "mmc-spi-slot";
-				reg = <0>;
-				broken-cd;
-				bus-width = <1>;
-				voltage-ranges = <3300 3300>;
-				spi-max-frequency = <25000000>;
-			};
-		};
+		/* The legacy mmc-spi-slot is gone; the SD card is driven in native
+		 * mode by the virtio-blk backend below and appears as /dev/vda. */
 
 		virtio_blk: virtio@10002000 {
 			compatible = "virtio,mmio";
@@ -186,20 +150,5 @@
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0 0x80000000 0 0x7ffff000>; // 2 GiB MiB
-	};
-
-	reserved-memory {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		// Backing store for the virtio-blk DDR-backed RAM disk. Carved out
-		// of RAM (no-map) so Linux never allocates here; the device owns it.
-		// Placed well below the initrd (0xff62b000) and DTB (0xfffff000).
-		// 64 MiB -> device AXI base 0x78000000 (PA & 0x7fffffff).
-		virtio_blk_disk@f8000000 {
-			reg = <0 0xf8000000 0 0x4000000>;
-			no-map;
-		};
 	};
 };

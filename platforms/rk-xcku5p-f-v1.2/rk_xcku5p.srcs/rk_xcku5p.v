@@ -19,8 +19,8 @@ module rk_xcku5p(
     input  wire       rxd,
     output wire [3:0] led,
     output wire       txd,
-    output wire       sd_clk,
-    output wire       sd_cmd,
+    output wire       sd_clk,    // SPI mode: SCK
+    output wire       sd_cmd,    // SPI mode: MOSI (DI)
     input  wire       sd_cd,
     inout  wire [3:0] sd_d,
 
@@ -69,7 +69,6 @@ module rk_xcku5p(
    reg  [1:0] cpu_reset_core_sync = 2'b11;
    wire cpu_reset = cpu_reset_core_sync[1];
 
-   // Keep board LEDs dark by default; status is available through the monitor.
    assign led = 4'b0000;
 
    // Run the CPU-side pipeline and hit path at half the DDR4 UI clock.  The
@@ -195,13 +194,11 @@ module rk_xcku5p(
 
    localparam USE_DDR_ARB = 1'b1;
 
-   // virtio-blk RAM disk backed by a reserved-memory carve-out (no-map) in the
-   // DTS at PA 0xf8000000, 64 MiB. The device sees it as AXI addr 0x78000000
-   // (PA & 0x7fffffff). Placed below the initrd (0xff62b000) / DTB (0xfffff000),
-   // so the top-of-memory boot blobs and the memory node stay untouched.
-   // 131072 sectors * 512 = 0x4000000 = 64 MiB.
-   localparam [31:0] VIRTIO_BLK_CAPACITY_SECTORS = 32'd131072;
-   localparam [30:0] VIRTIO_BLK_BACKING_BASE     = 31'h7800_0000;
+   // virtio-blk is backed by the SD card in SPI mode (sd_spi_host inside
+   // virtio_blk_backend). Capacity is read from the card's CSD at init and
+   // reported to the guest via virtio config.
+   wire [31:0] virtio_blk_capacity;
+   wire [31:0] virtio_blk_debug_word;   // SD/blk debug overlay at 0x10002f00
 
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
@@ -289,21 +286,18 @@ module rk_xcku5p(
    wire        ui_mmio_readdatavalid;
    wire [31:0] ui_mmio_readdata;
 
-   wire        spi_sd_clk;
-   wire        spi_sd_mosi;
-   wire        spi_sd_miso;
-   wire [ 3:0] sd_d_i;
-   wire [ 3:0] sd_d_o;
-   wire [ 3:0] sd_d_t;
-   wire [ 7:0] sd_gpio;
+   // SPI-mode SD pins, driven by sd_spi_host inside virtio_blk_backend.
+   //   SCK = sd_clk, MOSI = sd_cmd, MISO = sd_d[0], CS = sd_d[3] (active-low).
+   wire        blk_sck, blk_mosi, blk_miso, blk_cs_n;
+   wire [ 3:0] sd_d_i, sd_d_o, sd_d_t;
    reg         sd_cd_meta = 1'b1;
    reg         sd_cd_sync = 1'b1;
 
-   assign sd_clk  = spi_sd_clk;
-   assign sd_cmd  = spi_sd_mosi;
-   assign spi_sd_miso = sd_d_i[0];
-   assign sd_d_o = {sd_gpio[0], 1'b1, 1'b1, 1'b1};
-   assign sd_d_t = 4'b0001;
+   assign sd_clk      = blk_sck;
+   assign sd_cmd      = blk_mosi;
+   assign blk_miso    = sd_d_i[0];
+   assign sd_d_o      = {blk_cs_n, 1'b1, 1'b1, 1'b1};   // sd_d[3]=CS, [2:1] high
+   assign sd_d_t      = 4'b0001;                         // sd_d[0]=MISO (input)
 
    genvar sd_i;
    generate
@@ -317,14 +311,10 @@ module rk_xcku5p(
       end
    endgenerate
 
-   wire        sd_spi_sel    = ui_mmio_address[19:8] == 12'h010;
-   wire        sd_gpio_sel   = ui_mmio_address[19:8] == 12'h011;
    wire        sd_cd_gpio_sel = ui_mmio_address[19:8] == 12'h012;
    wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
-   wire [31:0] sd_spi_readdata;
-   wire [31:0] sd_gpio_readdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
    wire [31:0] virtio_net_readdata;
@@ -523,12 +513,10 @@ module rk_xcku5p(
          mmio_read_d1 <= ui_mmio_read;
          mmio_read_d2 <= mmio_read_d1;
          if (ui_mmio_read) begin
-            if (sd_spi_sel)
-               mmio_readdata_q <= sd_spi_readdata;
-            else if (sd_gpio_sel)
-               mmio_readdata_q <= sd_gpio_readdata;
-            else if (sd_cd_gpio_sel)
+            if (sd_cd_gpio_sel)
                mmio_readdata_q <= sd_cd_gpio_readdata;
+            else if (virtio_blk_sel && ui_mmio_address[11:8] == 4'hf)
+               mmio_readdata_q <= virtio_blk_debug_word;  // 0x10002f00: cap/state
             else if (virtio_blk_sel)
                mmio_readdata_q <= virtio_blk_readdata;
             else if (virtio_net_sel && ui_mmio_address[11:8] == 4'hf)
@@ -579,38 +567,14 @@ module rk_xcku5p(
       .ui_readdata         (ui_mmio_readdata)
    );
 
-   sd_spi_oc_tiny sd_spi_inst(
-      .clock        (ui_clk),
-      .reset        (ui_cpu_reset),
-      .address      (ui_mmio_address[7:0]),
-      .read_data    (sd_spi_readdata),
-      .read         (ui_mmio_read && sd_spi_sel),
-      .write        (ui_mmio_write && sd_spi_sel),
-      .write_data   (ui_mmio_writedata),
-      .byteenable   (ui_mmio_byteenable),
-      .spi_clk      (spi_sd_clk),
-      .spi_mosi     (spi_sd_mosi),
-      .spi_miso     (spi_sd_miso)
-   );
-
-   sd_gpio_dat sd_gpio_inst(
-      .clock        (ui_clk),
-      .reset        (ui_cpu_reset),
-      .write        (ui_mmio_write && sd_gpio_sel),
-      .write_data   (ui_mmio_writedata),
-      .byteenable   (ui_mmio_byteenable),
-      .gpio_out     (sd_gpio),
-      .read_data    (sd_gpio_readdata)
-   );
-
-   /* virtio-net TX debug counters removed (TX is fixed). The engine's debug_*
-    * outputs now drive nothing and are stripped by synthesis (DCE). */
+   /* The legacy mmc-spi controller (sd_spi_oc_tiny + sd_gpio CS) is gone; the
+    * SD card is now driven in SPI mode by sd_spi_host inside virtio_blk_backend. */
 
    virtio_mmio #(
-      .DEVICE_ID(32'd2), /* virtio-blk, DDR-backed RAM disk backend below. */
-      .QUEUE_NUM_MAX(32'd8),
-      .CONFIG_CAPACITY_SECTORS(VIRTIO_BLK_CAPACITY_SECTORS)
+      .DEVICE_ID(32'd2), /* virtio-blk, native-SD backend below. */
+      .QUEUE_NUM_MAX(32'd8)
    ) virtio_blk_inst(
+      .config_capacity_sectors (virtio_blk_capacity),
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .address                 (ui_mmio_address[11:0]),
@@ -646,8 +610,9 @@ module rk_xcku5p(
 
    virtio_blk #(
       .QUEUE_SIZE(32'd8),
-      .CAPACITY_SECTORS(VIRTIO_BLK_CAPACITY_SECTORS),
-      .BACKING_BASE(VIRTIO_BLK_BACKING_BASE)
+      .SD_SLOW_HALF(16'd416),   /* ui_clk 333 MHz -> ~400 kHz SPI init */
+      .SD_FAST_HALF(16'd40),    /*               -> ~4 MHz transfer (margin) */
+      .SD_INIT_TICKS(16'd10)    /* init idle bytes */
    ) virtio_blk_backend(
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
@@ -660,6 +625,13 @@ module rk_xcku5p(
       .queue_device            (virtio_blk_queue0_device),
       .device_status           (virtio_blk_device_status),
       .used_buffer_interrupt   (virtio_blk_used_buffer_interrupt),
+      .capacity_sectors        (virtio_blk_capacity),
+      .debug_sel               (ui_mmio_address[3:2]),
+      .debug_word              (virtio_blk_debug_word),
+      .sd_sck                  (blk_sck),
+      .sd_mosi                 (blk_mosi),
+      .sd_miso                 (blk_miso),
+      .sd_cs_n                 (blk_cs_n),
 
       .m_axi_awid              (virtio_blk_axi_awid),
       .m_axi_awaddr            (virtio_blk_axi_awaddr),
@@ -705,6 +677,7 @@ module rk_xcku5p(
       .QUEUE_NUM_MAX(32'd256), /* virtio-net needs > MAX_SKB_FRAGS+2 (=19) TX slots */
       .QUEUE_COUNT(32'd2)
    ) virtio_net_inst(
+      .config_capacity_sectors (32'd0),
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .address                 (ui_mmio_address[11:0]),

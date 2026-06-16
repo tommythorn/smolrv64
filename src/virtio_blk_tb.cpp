@@ -1,22 +1,23 @@
 // Build & run:
 //   verilator --cc --exe --build -Mdir obj_dir_blk \
 //     -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNUSEDSIGNAL \
-//     --top-module virtio_blk src/virtio_blk.v src/axi_single_beat_master.v \
-//     src/virtio_blk_tb.cpp
+//     -GSD_SLOW_HALF=3 -GSD_FAST_HALF=1 -GSD_INIT_TICKS=20 \
+//     --top-module virtio_blk src/virtio_blk.v src/sd_host.v \
+//     src/axi_single_beat_master.v src/virtio_blk_tb.cpp
 //   ./obj_dir_blk/Vvirtio_blk
 //
-// Drives virtio_blk with a behavioral single-outstanding AXI slave (a sparse
-// 64-bit word memory) and a real split virtqueue. Exercises:
-//   1. T_IN  (read):  backing sector -> guest data buffer
-//   2. T_OUT (write): guest data buffer -> backing sector
-// and checks the moved bytes, the status byte, and the used ring.
+// Drives virtio_blk with a behavioral AXI slave (sparse 64-bit word DDR) for
+// the vring + guest buffers, and the behavioral SD card (sd_card_model.h) on
+// the SD pins as the persistent backing store. Exercises the full path:
+//   1. T_IN  (read):  SD sector -> block buffer -> guest DATA buffer
+//   2. T_OUT (write): guest DATA buffer -> block buffer -> SD sector
+//   3. round trip: write a sector, then read it back, bytes match
 #include "Vvirtio_blk.h"
 #include "verilated.h"
+#include "sd_spi_card_model.h"
 #include <cstdio>
 #include <cstdint>
 #include <unordered_map>
-
-static const uint32_t BACKING_BASE = 0x78000000; // must match DUT BACKING_BASE
 
 // ---- sparse 8-byte-word memory (device AXI address space) -----------------
 static std::unordered_map<uint32_t, uint64_t> g_mem;
@@ -27,10 +28,7 @@ static uint64_t mem_rd64(uint32_t addr) {
 static void mem_wr64(uint32_t addr, uint64_t data, uint8_t strb) {
     uint64_t w = mem_rd64(addr);
     for (int b = 0; b < 8; b++)
-        if (strb & (1u << b)) {
-            w &= ~(0xffULL << (b * 8));
-            w |= (data & (0xffULL << (b * 8)));
-        }
+        if (strb & (1u << b)) { w &= ~(0xffULL << (b*8)); w |= (data & (0xffULL << (b*8))); }
     g_mem[addr >> 3] = w;
 }
 static void mem_wr_bytes(uint32_t addr, const uint8_t* p, int n) {
@@ -42,19 +40,19 @@ static void mem_wr_bytes(uint32_t addr, const uint8_t* p, int n) {
         g_mem[(a & ~7u) >> 3] = w;
     }
 }
-static uint8_t mem_rd_byte(uint32_t a) {
-    return (uint8_t)(mem_rd64(a & ~7u) >> ((a & 7) * 8));
-}
-static void mem_wr16(uint32_t a, uint16_t v) { uint8_t b[2]={(uint8_t)v,(uint8_t)(v>>8)}; mem_wr_bytes(a,b,2);}
+static uint8_t mem_rd_byte(uint32_t a) { return (uint8_t)(mem_rd64(a & ~7u) >> ((a & 7) * 8)); }
+static void mem_wr16(uint32_t a, uint16_t v){ uint8_t b[2]={(uint8_t)v,(uint8_t)(v>>8)}; mem_wr_bytes(a,b,2);}
 static uint16_t mem_rd16(uint32_t a){ return mem_rd_byte(a) | (mem_rd_byte(a+1)<<8); }
 static uint32_t mem_rd32(uint32_t a){ uint32_t v=0; for(int i=0;i<4;i++) v|=mem_rd_byte(a+i)<<(8*i); return v;}
 
-// ---- AXI slave model state ------------------------------------------------
 static Vvirtio_blk* dut;
+static SpiSdCard card;
 static bool s_rvalid = false; static uint64_t s_rdata = 0;
 static bool s_bvalid = false;
 
 static void tick() {
+    dut->sd_miso = card.miso & 1;
+
     dut->m_axi_arready = 1; dut->m_axi_awready = 1; dut->m_axi_wready = 1;
     dut->m_axi_rvalid = s_rvalid; dut->m_axi_rdata = s_rdata;
     dut->m_axi_rresp = 0; dut->m_axi_rlast = 1; dut->m_axi_rid = 1;
@@ -75,6 +73,8 @@ static void tick() {
     if (ar_hs && !s_rvalid) { s_rdata = mem_rd64(araddr); s_rvalid = true; }
     if (b_hs) s_bvalid = false;
     if (aw_hs && w_hs && !s_bvalid) { mem_wr64(awaddr, wdata, wstrb); s_bvalid = true; }
+
+    card.clock_edge(dut->sd_sck, dut->sd_cs_n, dut->sd_mosi);
 }
 
 // ---- vring layout (device addresses) --------------------------------------
@@ -100,14 +100,13 @@ static void set_blk_hdr(uint32_t type, uint64_t sector) {
 static int fails = 0;
 static void check(bool ok, const char* m) { if(!ok){ printf("FAIL: %s\n",m); fails++; } }
 
-// Run one request whose head descriptor is desc 0; wait for the used ring.
 static void run_request(uint16_t avail_idx, uint16_t expect_used_idx) {
-    mem_wr16(AVAIL + 0, 0);                       // avail.flags
-    mem_wr16(AVAIL + 4 + (avail_idx-1)*2, 0);     // avail.ring[slot] = head desc 0
-    mem_wr16(AVAIL + 2, avail_idx);               // avail.idx (publish)
+    mem_wr16(AVAIL + 0, 0);
+    mem_wr16(AVAIL + 4 + (avail_idx-1)*2, 0);      // avail.ring[slot] = head desc 0
+    mem_wr16(AVAIL + 2, avail_idx);                // avail.idx (publish)
     dut->queue_notify_pulse = 1; dut->queue_notify_value = 0; tick();
     dut->queue_notify_pulse = 0;
-    for (int i = 0; i < 20000; i++) {
+    for (int i = 0; i < 3000000; i++) {            // budget covers SD init + xfer
         tick();
         if (mem_rd16(USED + 2) == expect_used_idx) return;
     }
@@ -124,51 +123,65 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 8; i++) tick();
     dut->reset = 0;
 
-    // Configure queue 0 and bring the device to DRIVER_OK.
     dut->queue_num = 8; dut->queue_ready = 1;
     dut->queue_desc = DESC; dut->queue_driver = AVAIL; dut->queue_device = USED;
-    dut->device_status = 0x0f; // ACK|DRIVER|FEATURES_OK|DRIVER_OK (bit2 set)
+    dut->device_status = 0x0f; // ACK|DRIVER|FEATURES_OK|DRIVER_OK
     for (int i = 0; i < 4; i++) tick();
 
-    // Pre-load backing sector 3 with a known pattern.
-    const uint64_t SECT = 3;
-    uint8_t patt[512];
+    // ---- Test 1: READ (T_IN) SD sector 3 -> DATA buffer -------------------
+    const uint32_t SECT = 3;
+    std::array<uint8_t,512> patt;
     for (int i = 0; i < 512; i++) patt[i] = (uint8_t)(i*7 + 1);
-    mem_wr_bytes(BACKING_BASE + (uint32_t)(SECT*512), patt, 512);
+    card.store[SECT] = patt;
 
-    // ---- Test 1: READ (T_IN) backing sector 3 -> DATA buffer --------------
     set_blk_hdr(0 /*T_IN*/, SECT);
     set_desc(0, HDR,    16,  F_NEXT,            1);
     set_desc(1, DATA,   512, F_NEXT | F_WRITE,  2);
     set_desc(2, STATUS, 1,   F_WRITE,           0);
-    for (int i = 0; i < 512; i++) mem_wr_bytes(DATA + i, (const uint8_t*)"\0", 1); // clear
-    run_request(/*avail_idx*/1, /*expect_used*/1);
+    for (int i = 0; i < 512; i++) mem_wr_bytes(DATA + i, (const uint8_t*)"\0", 1);
+    run_request(1, 1);
 
     bool data_ok = true;
     for (int i = 0; i < 512; i++) if (mem_rd_byte(DATA + i) != patt[i]) data_ok = false;
-    check(data_ok, "read: DATA buffer == backing sector");
+    check(data_ok, "read: DATA buffer == SD sector");
     check(mem_rd_byte(STATUS) == 0, "read: status == S_OK");
     check(mem_rd16(USED + 4) == 0, "read: used.ring[0].id == head desc 0");
     check(mem_rd32(USED + 8) == 513, "read: used.ring[0].len == 512+1");
 
-    // ---- Test 2: WRITE (T_OUT) DATA buffer -> backing sector 5 ------------
-    const uint64_t SECT2 = 5;
-    uint8_t patt2[512];
+    // ---- Test 2: WRITE (T_OUT) DATA buffer -> SD sector 5 -----------------
+    const uint32_t SECT2 = 5;
+    std::array<uint8_t,512> patt2;
     for (int i = 0; i < 512; i++) patt2[i] = (uint8_t)(i ^ 0xa5);
-    mem_wr_bytes(DATA, patt2, 512);
+    mem_wr_bytes(DATA, patt2.data(), 512);
     set_blk_hdr(1 /*T_OUT*/, SECT2);
     set_desc(0, HDR,    16,  F_NEXT,   1);
-    set_desc(1, DATA,   512, F_NEXT,   2);   // device-readable (no F_WRITE)
+    set_desc(1, DATA,   512, F_NEXT,   2);
     set_desc(2, STATUS, 1,   F_WRITE,  0);
-    mem_wr_bytes(STATUS, (const uint8_t*)"\xff", 1); // poison status
-    run_request(/*avail_idx*/2, /*expect_used*/2);
+    mem_wr_bytes(STATUS, (const uint8_t*)"\xff", 1);
+    run_request(2, 2);
 
-    bool back_ok = true;
-    for (int i = 0; i < 512; i++)
-        if (mem_rd_byte(BACKING_BASE + (uint32_t)(SECT2*512) + i) != patt2[i]) back_ok = false;
-    check(back_ok, "write: backing sector == DATA buffer");
+    check(card.store.count(SECT2) && card.store[SECT2] == patt2,
+          "write: SD sector == DATA buffer");
     check(mem_rd_byte(STATUS) == 0, "write: status == S_OK");
     check(mem_rd32(USED + 8 + 8) == 1, "write: used.ring[1].len == 1 (status only)");
+
+    // ---- Test 3: round trip -- write sector 9, read it back ---------------
+    const uint32_t SECT3 = 9;
+    std::array<uint8_t,512> patt3;
+    for (int i = 0; i < 512; i++) patt3[i] = (uint8_t)(0x13 + i*5 + (i>>5));
+    mem_wr_bytes(DATA, patt3.data(), 512);
+    set_blk_hdr(1 /*T_OUT*/, SECT3);
+    set_desc(0, HDR, 16, F_NEXT, 1); set_desc(1, DATA, 512, F_NEXT, 2); set_desc(2, STATUS, 1, F_WRITE, 0);
+    run_request(3, 3);
+
+    for (int i = 0; i < 512; i++) mem_wr_bytes(DATA + i, (const uint8_t*)"\0", 1);
+    set_blk_hdr(0 /*T_IN*/, SECT3);
+    set_desc(0, HDR, 16, F_NEXT, 1); set_desc(1, DATA, 512, F_NEXT | F_WRITE, 2); set_desc(2, STATUS, 1, F_WRITE, 0);
+    run_request(4, 4);
+
+    bool rt_ok = true;
+    for (int i = 0; i < 512; i++) if (mem_rd_byte(DATA + i) != patt3[i]) rt_ok = false;
+    check(rt_ok, "round trip: read-back == written");
 
     printf("%s (%d failure(s))\n", fails ? "virtio_blk: FAIL" : "virtio_blk: PASS", fails);
     delete dut;
