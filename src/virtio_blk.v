@@ -586,7 +586,9 @@ module virtio_blk #(
            S_WR_CMD: begin
               sd_req_write  <= 1'b1;
               sd_req_sector <= blk_sector;
-              sd_req_last   <= (sectors_left == 23'd1);
+              sd_req_last   <= 1'b1;  // writes stay single-block (CMD24); multi-block
+                                      // write (CMD25) has an unresolved HW bug. Reads
+                                      // use multi-block (CMD18) — that's the readahead win.
               if (sd_busy && sd_req_valid) begin   // request accepted
                  sd_req_valid <= 1'b0;
                  state <= S_WR_WAIT;
