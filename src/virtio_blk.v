@@ -38,6 +38,9 @@ module virtio_blk #(
     output reg         used_buffer_interrupt,
     output wire [31:0] capacity_sectors,    // from the card's CSD (for virtio config)
 
+    // Runtime SD transfer-clock override (SCK half-period; 0 = compile default).
+    input  wire [15:0] sd_fast_half,
+
     // Debug readout (parent muxes into an MMIO overlay).
     input  wire [ 1:0] debug_sel,
     output wire [31:0] debug_word,
@@ -730,6 +733,7 @@ module virtio_blk #(
    ) sd (
       .clock      (clock),
       .reset      (reset),
+      .fast_half  (sd_fast_half),
       .req_valid  (sd_req_valid),
       .req_write  (sd_req_write),
       .req_sector (sd_req_sector),

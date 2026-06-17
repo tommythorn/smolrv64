@@ -23,6 +23,10 @@ module sd_spi_host #(
     input  wire        clock,
     input  wire        reset,
 
+    // Runtime transfer-clock override (SCK half-period in core clocks - 1);
+    // 0 = use the FAST_HALF parameter. Lets the speed be tuned over MMIO.
+    input  wire [15:0] fast_half,
+
     input  wire        req_valid,
     input  wire        req_write,
     input  wire [31:0] req_sector,
@@ -78,7 +82,7 @@ module sd_spi_host #(
    reg [3:0]  bx_bits;           // rising edges remaining
    reg        bx_phase;          // 0: SCK low half, 1: SCK high half
    reg [15:0] bx_div;
-   wire [15:0] half = ready ? FAST_HALF : SLOW_HALF;
+   wire [15:0] half = ready ? (fast_half != 16'd0 ? fast_half : FAST_HALF) : SLOW_HALF;
 
    // MISO is asynchronous to clock (driven by the card); synchronize it before
    // sampling so the capture is robust regardless of P&R timing margin.

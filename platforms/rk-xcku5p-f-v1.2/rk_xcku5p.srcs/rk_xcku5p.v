@@ -312,6 +312,11 @@ module rk_xcku5p(
    endgenerate
 
    wire        sd_cd_gpio_sel = ui_mmio_address[19:8] == 12'h012;
+   // 0x10001100: writable SD SPI transfer-clock divider (SCK half-period in
+   // ui_clk cycles - 1). SCK = 333.33 MHz / (2*(val+1)).  Set from the monitor
+   // (e.g. WW10001100 0x0C -> ~12.8 MHz) before booting to experiment.
+   wire        spi_speed_sel = ui_mmio_address[19:8] == 12'h011;
+   reg  [15:0] spi_fast_half = 16'd40;   // ~4.06 MHz default
    wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
@@ -507,13 +512,18 @@ module rk_xcku5p(
          mmio_read_d1 <= 1'b0;
          mmio_read_d2 <= 1'b0;
          mmio_readdata_q <= 32'd0;
+         spi_fast_half <= 16'd40;
       end else begin
          sd_cd_meta <= sd_cd;
          sd_cd_sync <= sd_cd_meta;
          mmio_read_d1 <= ui_mmio_read;
          mmio_read_d2 <= mmio_read_d1;
+         if (ui_mmio_write && spi_speed_sel)
+            spi_fast_half <= ui_mmio_writedata[15:0];
          if (ui_mmio_read) begin
-            if (sd_cd_gpio_sel)
+            if (spi_speed_sel)
+               mmio_readdata_q <= {16'd0, spi_fast_half};
+            else if (sd_cd_gpio_sel)
                mmio_readdata_q <= sd_cd_gpio_readdata;
             else if (virtio_blk_sel && ui_mmio_address[11:8] == 4'hf)
                mmio_readdata_q <= virtio_blk_debug_word;  // 0x10002f00: cap/state
@@ -626,6 +636,7 @@ module rk_xcku5p(
       .device_status           (virtio_blk_device_status),
       .used_buffer_interrupt   (virtio_blk_used_buffer_interrupt),
       .capacity_sectors        (virtio_blk_capacity),
+      .sd_fast_half            (spi_fast_half),
       .debug_sel               (ui_mmio_address[3:2]),
       .debug_word              (virtio_blk_debug_word),
       .sd_sck                  (blk_sck),
