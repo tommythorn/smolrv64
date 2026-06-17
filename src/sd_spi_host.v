@@ -145,7 +145,8 @@ module sd_spi_host #(
      S_IO_TAIL   = 7'd36, S_IO_IDLE  = 7'd37,
      S_COMPLETE  = 7'd38, S_ERROR    = 7'd39,
      S_IO_BLK    = 7'd40, S_IO_BLK_END = 7'd41,
-     S_BLK_DONE  = 7'd42, S_MB_WBUSY = 7'd43;
+     S_BLK_DONE  = 7'd42, S_MB_WBUSY = 7'd43,
+     S_MB_RDRAIN0= 7'd44, S_MB_RDRAIN = 7'd45;
 
    reg [6:0]  state, bx_ret;
    reg [15:0] init_cnt;
@@ -403,7 +404,7 @@ module sd_spi_host #(
                  cmd_open <= 1'b0;
                  if (op_write) begin to_cnt<=TO_WRITE; bx_tx<=8'hFD; bx_ret<=S_MB_WBUSY; state<=S_BX; end
                  else begin c_idx<=6'd12; c_arg<=32'd0; c_crc<=8'h01; c_extra<=3'd0;
-                            c_keepcs<=1'b0; c_ret<=S_IO_IDLE; state<=S_CMD_BUILD; end
+                            c_keepcs<=1'b1; c_ret<=S_MB_RDRAIN0; state<=S_CMD_BUILD; end
               end else state <= S_IO_TAIL;
            end else if (!cmd_open) begin
               state <= S_IO_TAIL;            // lone block (CMD17/24) done
@@ -414,7 +415,7 @@ module sd_spi_host #(
               cmd_open <= 1'b0;
               if (op_write) begin to_cnt<=TO_WRITE; bx_tx<=8'hFD; bx_ret<=S_MB_WBUSY; state<=S_BX; end
               else begin c_idx<=6'd12; c_arg<=32'd0; c_crc<=8'h01; c_extra<=3'd0;
-                         c_keepcs<=1'b0; c_ret<=S_IO_IDLE; state<=S_CMD_BUILD; end
+                         c_keepcs<=1'b1; c_ret<=S_MB_RDRAIN0; state<=S_CMD_BUILD; end
            end
         end
         // multi-block element complete; CS held, run open — pulse done, await next req
@@ -424,6 +425,14 @@ module sd_spi_host #(
            if (bx_rx == 8'hff) state <= S_IO_TAIL;
            else if (to_cnt==28'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
            else begin bx_tx<=8'hff; bx_ret<=S_MB_WBUSY; state<=S_BX; end
+        end
+        // multi-block read stop: CMD12 was sent but a real card finishes the
+        // in-flight block before its R1, so don't trust a mid-stream R1 — clock
+        // past the remaining block (CS held) until the bus idles, then release.
+        S_MB_RDRAIN0: begin poll_cnt<=20'd1024; bx_tx<=8'hff; bx_ret<=S_MB_RDRAIN; state<=S_BX; end
+        S_MB_RDRAIN: begin
+           if (poll_cnt==20'd0) state<=S_IO_TAIL;
+           else begin poll_cnt<=poll_cnt-20'd1; bx_tx<=8'hff; bx_ret<=S_MB_RDRAIN; state<=S_BX; end
         end
 
         S_IO_TAIL: begin cs_n<=1'b1; bx_tx<=8'hff; bx_ret<=S_IO_IDLE; state<=S_BX; end

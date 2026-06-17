@@ -79,8 +79,9 @@ struct SpiSdCard {
         case 18: txq.push_back(0x00);                              // READ_MULTIPLE_BLOCK
                  mread_active = true; mread_sector = sector;
                  push_block(store[mread_sector++]); break;
-        case 12: txq.clear(); mread_active = false;                // STOP_TRANSMISSION
-                 txq.push_back(0x00); break;                       // R1 (read stop: no busy)
+        case 12: mread_active = false; break;   // STOP_TRANSMISSION: stop refilling;
+                 // the already-queued in-flight block drains, then the bus idles (0xFF) —
+                 // modelling that a real card finishes the current block before going idle.
         case 24: txq.push_back(0x00); wr_sector = sector;
                  wr_multi = false; st = WRITE_RECV; wr_state = 0; return;
         case 25: txq.push_back(0x00); wr_sector = sector;          // WRITE_MULTIPLE_BLOCK
