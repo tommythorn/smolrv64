@@ -148,7 +148,14 @@ module sd_spi_host #(
    reg        v2_card;
    reg [31:0] ocr;
    reg [9:0]  acmd41_tries;
-   reg [19:0] poll_cnt;   // wide: the read-data-token wait must allow tens of ms
+   reg [19:0] poll_cnt;   // byte-poll counter (command R1 poll, CRC byte counting)
+   // Card media-timing waits (read access, write programming) are WALL-CLOCK, not
+   // SCK-relative: count core clocks so the budget doesn't shrink as the transfer
+   // clock rises. A byte-count timeout collapsed at high SCK (~125 ms at 12.8 MHz)
+   // and wedged writes; these hold steady at any speed.
+   reg [27:0] to_cnt;
+   localparam [27:0] TO_READ  = 28'd100000000;  // ~300 ms  read data token
+   localparam [27:0] TO_WRITE = 28'd200000000;  // ~600 ms  write busy
 
    // command engine scratch
    reg [5:0]  c_idx;
@@ -187,9 +194,10 @@ module sd_spi_host #(
       error  <= 1'b0;
       bx_go  <= 1'b0;
       eng_we <= 1'b0;
+      if (to_cnt != 28'd0) to_cnt <= to_cnt - 28'd1;  // wall-clock countdown (re-armed on entry to a media wait)
       if (reset) begin
          state <= S_RESET; ready <= 1'b0; cs_n <= 1'b1;
-         capacity_sectors <= 32'd0; v2_card <= 1'b0;
+         capacity_sectors <= 32'd0; v2_card <= 1'b0; to_cnt <= 28'd0;
          // dbg_r1/dbg_rd_to/dbg_retried deliberately NOT reset here, so the last
          // read's failure mode survives a key[1] soft-reset and can be read from
          // the monitor at 0x10002F08 after a boot failure.
@@ -316,15 +324,15 @@ module sd_spi_host #(
            else if (op_write) begin
               byte_idx<=9'd0; bx_tx<=8'hFE; bx_ret<=S_WR_DATA; state<=S_BX;  // start token
            end else begin
-              poll_cnt<=20'd100000; bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX;
+              to_cnt<=TO_READ; bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX;
            end
         end
 
         // ---- read: wait token 0xFE, read 512 bytes, 2 CRC ----
         S_RD_TOK: begin
            if (bx_rx == 8'hFE) begin byte_idx<=9'd0; cur_word<=64'd0; bx_tx<=8'hff; bx_ret<=S_RD_DATA; state<=S_BX; end
-           else if (poll_cnt==16'd0) begin io_ok<=1'b0; dbg_rd_to<=1'b1; state<=S_IO_TAIL; end
-           else begin poll_cnt<=poll_cnt-16'd1; bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX; end
+           else if (to_cnt==28'd0) begin io_ok<=1'b0; dbg_rd_to<=1'b1; state<=S_IO_TAIL; end
+           else begin bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX; end
         end
         S_RD_DATA: begin
            cur_word[{bb_lane, 3'b000} +: 8] <= bx_rx;
@@ -355,12 +363,12 @@ module sd_spi_host #(
         S_WR_RESP: begin
            // data response token: xxx00101 = accepted
            if ((bx_rx & 8'h1f) != 8'h05) io_ok <= 1'b0;
-           poll_cnt<=20'd200000; bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX;
+           to_cnt<=TO_WRITE; bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX;
         end
         S_WR_BUSY: begin                                    // card holds MISO low while writing
            if (bx_rx == 8'hff) state <= S_IO_TAIL;          // busy released
-           else if (poll_cnt==20'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
-           else begin poll_cnt<=poll_cnt-20'd1; bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX; end
+           else if (to_cnt==28'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
+           else begin bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX; end
         end
 
         S_IO_TAIL: begin cs_n<=1'b1; bx_tx<=8'hff; bx_ret<=S_IO_IDLE; state<=S_BX; end
