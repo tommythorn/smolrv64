@@ -28,9 +28,9 @@ static void core_cycle() {
     card.clock_edge(dut->sck, dut->cs_n, dut->mosi);
 }
 
-static bool run_request(int write, uint32_t sector, long budget) {
+static bool run_request(int write, uint32_t sector, int last, long budget) {
     saw_done = saw_error = false;
-    dut->req_valid = 1; dut->req_write = write; dut->req_sector = sector;
+    dut->req_valid = 1; dut->req_write = write; dut->req_sector = sector; dut->req_last = last;
     long n = 0;
     while (dut->busy == 0 && n++ < budget) core_cycle();
     dut->req_valid = 0;
@@ -41,7 +41,7 @@ static bool run_request(int write, uint32_t sector, long budget) {
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     dut = new Vsd_spi_host;
-    dut->reset = 1; dut->req_valid = 0; dut->buf_we = 0; dut->miso = 1;
+    dut->reset = 1; dut->req_valid = 0; dut->req_last = 1; dut->buf_we = 0; dut->miso = 1;
     dut->clock = 0; dut->eval();
     for (int i = 0; i < 8; i++) { dut->clock=0; dut->eval(); dut->clock=1; dut->eval(); }
     dut->reset = 0;
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
         std::array<uint8_t,512> pat;
         for (int i = 0; i < 512; i++) pat[i] = (uint8_t)(0xA0 ^ i ^ (i >> 3));
         card.store[1234] = pat;
-        if (!run_request(0, 1234, 5000000)) { printf("FAIL: read did not complete\n"); failures++; }
+        if (!run_request(0, 1234, 1, 5000000)) { printf("FAIL: read did not complete\n"); failures++; }
         else {
             int bad = 0;
             for (int w = 0; w < 64; w++) {
@@ -89,9 +89,57 @@ int main(int argc, char** argv) {
             dut->buf_addr = w; dut->buf_wdata = word; core_cycle();
         }
         dut->buf_we = 0;
-        if (!run_request(1, 4321, 5000000)) { printf("FAIL: write did not complete\n"); failures++; }
+        if (!run_request(1, 4321, 1, 5000000)) { printf("FAIL: write did not complete\n"); failures++; }
         else if (card.store.find(4321) == card.store.end() || card.store[4321] != pat) { printf("FAIL: written sector != buffer\n"); failures++; }
         else printf("ok: CMD24 write sector 4321 matches\n");
+    }
+
+    // ---- Test 4: CMD18 multi-block read of 3 contiguous sectors -----------
+    if (dut->ready) {
+        std::array<uint8_t,512> p[3];
+        for (int s = 0; s < 3; s++) {
+            for (int i = 0; i < 512; i++) p[s][i] = (uint8_t)(s*37 + i*5 + 1);
+            card.store[2000 + s] = p[s];
+        }
+        int bad = 0;
+        for (int s = 0; s < 3; s++) {
+            if (!run_request(0, 2000 + s, s == 2, 5000000)) { printf("FAIL: mb read blk %d\n", s); failures++; bad = -1; break; }
+            for (int w = 0; w < 64; w++) {
+                dut->buf_addr = w; dut->eval();
+                uint64_t word = dut->buf_rdata;
+                for (int k = 0; k < 8; k++)
+                    if ((uint8_t)(word >> (k*8)) != p[s][w*8+k] && bad < 8) {
+                        printf("  mb read mismatch s%d byte %d: got %02x exp %02x\n",
+                               s, w*8+k, (uint8_t)(word >> (k*8)), p[s][w*8+k]); bad++;
+                    }
+            }
+        }
+        if (bad > 0) { printf("FAIL: multi-block read data\n"); failures++; }
+        else if (bad == 0) printf("ok: CMD18 multi-block read (3 sectors) matches\n");
+    }
+
+    // ---- Test 5: CMD25 multi-block write of 3 contiguous sectors ----------
+    if (dut->ready) {
+        std::array<uint8_t,512> p[3];
+        bool ok = true;
+        for (int s = 0; s < 3 && ok; s++) {
+            for (int i = 0; i < 512; i++) p[s][i] = (uint8_t)(0x80 + s*13 + i*3);
+            dut->buf_we = 1;
+            for (int w = 0; w < 64; w++) {
+                uint64_t word = 0;
+                for (int k = 0; k < 8; k++) word |= (uint64_t)p[s][w*8+k] << (k*8);
+                dut->buf_addr = w; dut->buf_wdata = word; core_cycle();
+            }
+            dut->buf_we = 0;
+            if (!run_request(1, 3000 + s, s == 2, 5000000)) { printf("FAIL: mb write blk %d\n", s); failures++; ok = false; }
+        }
+        if (ok) {
+            int bad = 0;
+            for (int s = 0; s < 3; s++)
+                if (card.store.find(3000+s) == card.store.end() || card.store[3000+s] != p[s]) bad++;
+            if (bad) { printf("FAIL: multi-block write data (%d sectors)\n", bad); failures++; }
+            else printf("ok: CMD25 multi-block write (3 sectors) matches\n");
+        }
     }
 
     printf("sd_spi_host: %s (%d failure(s))\n", failures ? "FAIL" : "PASS", failures);

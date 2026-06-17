@@ -197,6 +197,7 @@ module virtio_blk #(
    reg         sd_req_valid;
    reg         sd_req_write;
    reg  [31:0] sd_req_sector;
+   reg         sd_req_last;     // last block of a contiguous run (drives CMD18/25 multi-block)
    wire        sd_busy, sd_done, sd_error, sd_ready;
    wire [63:0] sd_buf_rdata;
    wire        sd_buf_we = (state == S_WR_STORE);
@@ -313,6 +314,7 @@ module virtio_blk #(
          sd_req_valid <= 1'b0;
          sd_req_write <= 1'b0;
          sd_req_sector <= 32'd0;
+         sd_req_last <= 1'b1;
       end else begin
          if (blk_notify)
             notify_pending <= 1'b1;
@@ -506,6 +508,7 @@ module virtio_blk #(
            S_RD_SECTOR: begin
               sd_req_write  <= 1'b0;
               sd_req_sector <= blk_sector;
+              sd_req_last   <= (sectors_left == 23'd1);
               if (sd_busy && sd_req_valid) begin   // request accepted
                  sd_req_valid <= 1'b0;
                  word_in_blk  <= 6'd0;
@@ -583,6 +586,7 @@ module virtio_blk #(
            S_WR_CMD: begin
               sd_req_write  <= 1'b1;
               sd_req_sector <= blk_sector;
+              sd_req_last   <= (sectors_left == 23'd1);
               if (sd_busy && sd_req_valid) begin   // request accepted
                  sd_req_valid <= 1'b0;
                  state <= S_WR_WAIT;
@@ -737,6 +741,7 @@ module virtio_blk #(
       .req_valid  (sd_req_valid),
       .req_write  (sd_req_write),
       .req_sector (sd_req_sector),
+      .req_last   (sd_req_last),
       .busy       (sd_busy),
       .done       (sd_done),
       .error      (sd_error),

@@ -30,6 +30,8 @@ module sd_spi_host #(
     input  wire        req_valid,
     input  wire        req_write,
     input  wire [31:0] req_sector,
+    input  wire        req_last,    // 1 = last (or only) block of a contiguous run;
+                                    // a run of >1 block uses CMD18/CMD25 multi-block
     output wire        busy,
     output reg         done,
     output reg         error,
@@ -141,7 +143,9 @@ module sd_spi_host #(
      S_WR_TOK    = 7'd31, S_WR_DATA  = 7'd32, S_WR_CRC   = 7'd33,
      S_WR_RESP   = 7'd34, S_WR_BUSY  = 7'd35,
      S_IO_TAIL   = 7'd36, S_IO_IDLE  = 7'd37,
-     S_COMPLETE  = 7'd38, S_ERROR    = 7'd39;
+     S_COMPLETE  = 7'd38, S_ERROR    = 7'd39,
+     S_IO_BLK    = 7'd40, S_IO_BLK_END = 7'd41,
+     S_BLK_DONE  = 7'd42, S_MB_WBUSY = 7'd43;
 
    reg [6:0]  state, bx_ret;
    reg [15:0] init_cnt;
@@ -171,6 +175,9 @@ module sd_spi_host #(
    reg [3:0]  csd_idx;
    reg        op_write;
    reg [31:0] op_sector;
+   reg        op_last;    // this block is the last (or only) of the run
+   reg        op_multi;   // run uses CMD18/25 multi-block (disables single-block retry)
+   reg        cmd_open;   // a multi-block command is open (CS held, card streaming)
    reg        io_ok;
 
    wire [7:0] frame_byte = (c_step == 3'd0) ? {2'b01, c_idx} :
@@ -198,6 +205,7 @@ module sd_spi_host #(
       if (reset) begin
          state <= S_RESET; ready <= 1'b0; cs_n <= 1'b1;
          capacity_sectors <= 32'd0; v2_card <= 1'b0; to_cnt <= 28'd0;
+         cmd_open <= 1'b0; op_multi <= 1'b0;
          // dbg_r1/dbg_rd_to/dbg_retried deliberately NOT reset here, so the last
          // read's failure mode survives a key[1] soft-reset and can be read from
          // the monitor at 0x10002F08 after a boot failure.
@@ -305,24 +313,40 @@ module sd_spi_host #(
         S_READY: begin
            ready <= 1'b1;
            if (req_valid) begin
-              op_write <= req_write; op_sector <= req_sector; io_ok <= 1'b1;
-              io_retry <= 3'd7;        // up to 7 retries on a failed read
+              op_write <= req_write; op_sector <= req_sector; op_last <= req_last;
+              io_ok <= 1'b1;
+              io_retry <= 3'd7;        // up to 7 retries on a failed single-block read
               state <= S_IO_CMD;
            end
         end
 
         // ---- per-request: CMD17 (read) or CMD24 (write), CS kept low ----
         S_IO_CMD: begin
-           c_idx <= op_write ? 6'd24 : 6'd17;
-           c_arg <= ocr[30] ? op_sector : (op_sector << 9);  // CCS: block vs byte addr
-           c_crc<=8'h01; c_extra<=3'd0; c_keepcs<=1'b1;
-           c_ret<=S_IO_CMDD; state<=S_CMD_BUILD;
+           if (cmd_open) begin
+              // multi-block run already open: stream the next block, no command
+              state <= S_IO_BLK;
+           end else begin
+              // CMD17/24 for a lone block; CMD18/25 opens a multi-block run
+              c_idx <= op_write ? (op_last ? 6'd24 : 6'd25)
+                                : (op_last ? 6'd17 : 6'd18);
+              c_arg <= ocr[30] ? op_sector : (op_sector << 9);  // CCS: block vs byte addr
+              c_crc<=8'h01; c_extra<=3'd0; c_keepcs<=1'b1;
+              c_ret<=S_IO_CMDD; state<=S_CMD_BUILD;
+              op_multi <= !op_last;
+              if (!op_last) cmd_open <= 1'b1;
+           end
         end
         S_IO_CMDD: begin
            dbg_r1 <= resp[0];
-           if (resp[0] != 8'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
-           else if (op_write) begin
-              byte_idx<=9'd0; bx_tx<=8'hFE; bx_ret<=S_WR_DATA; state<=S_BX;  // start token
+           if (resp[0] != 8'd0) begin io_ok<=1'b0; cmd_open<=1'b0; state<=S_IO_TAIL; end
+           else state <= S_IO_BLK;   // command accepted: transfer this block
+        end
+
+        // ---- start one block's data phase (lone block or a multi-block element) ----
+        S_IO_BLK: begin
+           if (op_write) begin
+              // multi-block (CMD25) blocks use the 0xFC start token; lone CMD24 uses 0xFE
+              byte_idx<=9'd0; bx_tx<= cmd_open ? 8'hFC : 8'hFE; bx_ret<=S_WR_DATA; state<=S_BX;
            end else begin
               to_cnt<=TO_READ; bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX;
            end
@@ -344,7 +368,7 @@ module sd_spi_host #(
            else begin byte_idx<=byte_idx+9'd1; bx_tx<=8'hff; bx_ret<=S_RD_DATA; state<=S_BX; end
         end
         S_RD_CRC: begin
-           if (poll_cnt==16'd0) state<=S_IO_TAIL;          // both CRC bytes consumed
+           if (poll_cnt==16'd0) state<=S_IO_BLK_END;       // both CRC bytes consumed
            else begin poll_cnt<=poll_cnt-16'd1; bx_tx<=8'hff; bx_ret<=S_RD_CRC; state<=S_BX; end
         end
 
@@ -366,16 +390,47 @@ module sd_spi_host #(
            to_cnt<=TO_WRITE; bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX;
         end
         S_WR_BUSY: begin                                    // card holds MISO low while writing
-           if (bx_rx == 8'hff) state <= S_IO_TAIL;          // busy released
-           else if (to_cnt==28'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
+           if (bx_rx == 8'hff) state <= S_IO_BLK_END;       // busy released
+           else if (to_cnt==28'd0) begin io_ok<=1'b0; state<=S_IO_BLK_END; end
            else begin bx_tx<=8'hff; bx_ret<=S_WR_BUSY; state<=S_BX; end
+        end
+
+        // ---- end of one block: lone block, multi-block continue, or terminate ----
+        S_IO_BLK_END: begin
+           if (!io_ok) begin
+              // error: stop an open run so the card halts, else just close out
+              if (cmd_open) begin
+                 cmd_open <= 1'b0;
+                 if (op_write) begin to_cnt<=TO_WRITE; bx_tx<=8'hFD; bx_ret<=S_MB_WBUSY; state<=S_BX; end
+                 else begin c_idx<=6'd12; c_arg<=32'd0; c_crc<=8'h01; c_extra<=3'd0;
+                            c_keepcs<=1'b0; c_ret<=S_IO_IDLE; state<=S_CMD_BUILD; end
+              end else state <= S_IO_TAIL;
+           end else if (!cmd_open) begin
+              state <= S_IO_TAIL;            // lone block (CMD17/24) done
+           end else if (!op_last) begin
+              state <= S_BLK_DONE;           // more blocks in the run: keep it open
+           end else begin
+              // last block of a multi-block run: stop transmission
+              cmd_open <= 1'b0;
+              if (op_write) begin to_cnt<=TO_WRITE; bx_tx<=8'hFD; bx_ret<=S_MB_WBUSY; state<=S_BX; end
+              else begin c_idx<=6'd12; c_arg<=32'd0; c_crc<=8'h01; c_extra<=3'd0;
+                         c_keepcs<=1'b0; c_ret<=S_IO_IDLE; state<=S_CMD_BUILD; end
+           end
+        end
+        // multi-block element complete; CS held, run open — pulse done, await next req
+        S_BLK_DONE: begin done <= 1'b1; state <= S_READY; end
+        // wait out programming after the 0xFD stop-tran token (write multi-block)
+        S_MB_WBUSY: begin
+           if (bx_rx == 8'hff) state <= S_IO_TAIL;
+           else if (to_cnt==28'd0) begin io_ok<=1'b0; state<=S_IO_TAIL; end
+           else begin bx_tx<=8'hff; bx_ret<=S_MB_WBUSY; state<=S_BX; end
         end
 
         S_IO_TAIL: begin cs_n<=1'b1; bx_tx<=8'hff; bx_ret<=S_IO_IDLE; state<=S_BX; end
         S_IO_IDLE: begin
-           if (!io_ok && !op_write && io_retry != 3'd0) begin
+           if (!io_ok && !op_write && !op_multi && io_retry != 3'd0) begin
               io_retry <= io_retry - 3'd1; io_ok <= 1'b1;
-              dbg_retried <= 1'b1; state <= S_IO_CMD;   // retry the read
+              dbg_retried <= 1'b1; state <= S_IO_CMD;   // retry a lone-block read
            end else
               state <= io_ok ? S_COMPLETE : S_ERROR;
         end

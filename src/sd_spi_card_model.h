@@ -2,6 +2,10 @@
 // Mode 0: master changes MOSI on the falling SCK edge, samples MISO on rising;
 // the card (slave) samples MOSI on rising, updates MISO on falling. CS active-low.
 // Feed it the SPI pins each core cycle via clock_edge(); read miso back.
+//
+// Supports single-block CMD17/CMD24 and multi-block CMD18/CMD25:
+//   CMD18 streams {0xFE,512B,CRC} per block until CMD12 stops it.
+//   CMD25 receives {0xFC,512B,CRC} per block until the 0xFD stop-tran token.
 #pragma once
 #include <cstdint>
 #include <map>
@@ -32,9 +36,13 @@ struct SpiSdCard {
     uint32_t wr_sector = 0;
     std::array<uint8_t,512> wbuf{};
     bool high_capacity = true; // CCS=1 (block addressing)
+    // multi-block read (CMD18 .. CMD12) / write (CMD25 .. 0xFD)
+    bool mread_active = false;
+    uint32_t mread_sector = 0;
+    bool wr_multi = false;
 
     void reset_transfer() { bitpos = 0; in_byte = 0; out_byte = 0xff; miso = 1;
-                            st = IDLE; cmd_pos = 0; txq.clear(); }
+                            st = IDLE; cmd_pos = 0; txq.clear(); mread_active = false; }
 
     void push_block(const std::array<uint8_t,512>& d) {
         txq.push_back(0xFE);
@@ -68,27 +76,40 @@ struct SpiSdCard {
                  txq.push_back(0xff); txq.push_back(0xff);
                  break; }
         case 17: txq.push_back(0x00); push_block(store[sector]); break;
+        case 18: txq.push_back(0x00);                              // READ_MULTIPLE_BLOCK
+                 mread_active = true; mread_sector = sector;
+                 push_block(store[mread_sector++]); break;
+        case 12: txq.clear(); mread_active = false;                // STOP_TRANSMISSION
+                 txq.push_back(0x00); break;                       // R1 (read stop: no busy)
         case 24: txq.push_back(0x00); wr_sector = sector;
-                 st = WRITE_RECV; wr_state = 0; return;            // stay in WRITE_RECV
+                 wr_multi = false; st = WRITE_RECV; wr_state = 0; return;
+        case 25: txq.push_back(0x00); wr_sector = sector;          // WRITE_MULTIPLE_BLOCK
+                 wr_multi = true; st = WRITE_RECV; wr_state = 0; return;
         default: txq.push_back(0x05); break;                      // illegal command
         }
         st = IDLE;
     }
 
     void recv_write_byte(uint8_t b) {
-        if (wr_state == 0) {                 // wait for start token 0xFE
-            if (b == 0xFE) { wr_state = 1; wr_idx = 0; }
+        if (wr_state == 0) {                 // waiting for a token
+            if (b == 0xFE || b == 0xFC) { wr_state = 1; wr_idx = 0; }  // block start
+            else if (b == 0xFD) {            // stop-tran token (multi-write end)
+                txq.push_back(0x00);         // busy (one low byte)
+                txq.push_back(0xff);         // released
+                wr_multi = false; st = IDLE;
+            }
         } else if (wr_state == 1) {          // 512 data bytes
             wbuf[wr_idx++] = b;
             if (wr_idx == 512) wr_state = 2;
         } else if (wr_state == 2) {          // CRC byte 1
             wr_state = 3;
         } else {                              // CRC byte 2 -> store + respond
-            store[wr_sector] = wbuf;
+            store[wr_sector++] = wbuf;
             txq.push_back(0x05);             // data-response: accepted
             txq.push_back(0x00);             // busy (one low byte)
             txq.push_back(0xff);             // released
-            st = IDLE;
+            if (wr_multi) wr_state = 0;      // await next 0xFC block or 0xFD stop
+            else st = IDLE;
         }
     }
 
@@ -104,7 +125,12 @@ struct SpiSdCard {
         if (cmd_pos == 6) process_command();
     }
 
-    uint8_t next_out() { if (txq.empty()) return 0xff; uint8_t b = txq.front(); txq.pop_front(); return b; }
+    uint8_t next_out() {
+        if (txq.empty() && mread_active)       // keep the multi-read stream flowing
+            push_block(store[mread_sector++]);
+        if (txq.empty()) return 0xff;
+        uint8_t b = txq.front(); txq.pop_front(); return b;
+    }
 
     void clock_edge(int sck, int cs_n, int mosi) {
         if (cs_n) { reset_transfer(); prev_sck = sck; return; }

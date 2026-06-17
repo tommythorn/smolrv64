@@ -183,6 +183,47 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 512; i++) if (mem_rd_byte(DATA + i) != patt3[i]) rt_ok = false;
     check(rt_ok, "round trip: read-back == written");
 
+    // ---- Test 4: multi-sector READ (4 contiguous sectors -> one CMD18) ----
+    {
+        const uint32_t MSECT = 40; const int N = 4;
+        std::array<uint8_t,512> mp[N];
+        for (int s = 0; s < N; s++) {
+            for (int i = 0; i < 512; i++) mp[s][i] = (uint8_t)(s*53 + i*3 + 7);
+            card.store[MSECT + s] = mp[s];
+        }
+        set_blk_hdr(0 /*T_IN*/, MSECT);
+        set_desc(0, HDR,    16,    F_NEXT,           1);
+        set_desc(1, DATA,   512*N, F_NEXT | F_WRITE, 2);
+        set_desc(2, STATUS, 1,     F_WRITE,          0);
+        for (int i = 0; i < 512*N; i++) mem_wr_bytes(DATA + i, (const uint8_t*)"\0", 1);
+        run_request(5, 5);
+        bool ok = true;
+        for (int s = 0; s < N; s++)
+            for (int i = 0; i < 512; i++)
+                if (mem_rd_byte(DATA + s*512 + i) != mp[s][i]) ok = false;
+        check(ok, "multi-read: 4 sectors == SD store");
+        check(mem_rd_byte(STATUS) == 0, "multi-read: status == S_OK");
+    }
+
+    // ---- Test 5: multi-sector WRITE (4 contiguous sectors -> one CMD25) ----
+    {
+        const uint32_t MSECT = 60; const int N = 4;
+        std::array<uint8_t,512> mp[N];
+        for (int s = 0; s < N; s++)
+            for (int i = 0; i < 512; i++) mp[s][i] = (uint8_t)(0xA0 ^ (s*7) ^ i);
+        for (int s = 0; s < N; s++) mem_wr_bytes(DATA + s*512, mp[s].data(), 512);
+        set_blk_hdr(1 /*T_OUT*/, MSECT);
+        set_desc(0, HDR,    16,    F_NEXT,  1);
+        set_desc(1, DATA,   512*N, F_NEXT,  2);
+        set_desc(2, STATUS, 1,     F_WRITE, 0);
+        run_request(6, 6);
+        bool ok = true;
+        for (int s = 0; s < N; s++)
+            if (!card.store.count(MSECT + s) || card.store[MSECT + s] != mp[s]) ok = false;
+        check(ok, "multi-write: 4 SD sectors == DATA buffer");
+        check(mem_rd_byte(STATUS) == 0, "multi-write: status == S_OK");
+    }
+
     printf("%s (%d failure(s))\n", fails ? "virtio_blk: FAIL" : "virtio_blk: PASS", fails);
     delete dut;
     return fails ? 1 : 0;
