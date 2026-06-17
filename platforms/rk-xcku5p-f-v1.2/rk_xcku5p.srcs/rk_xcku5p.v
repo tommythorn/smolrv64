@@ -316,7 +316,7 @@ module rk_xcku5p(
    // ui_clk cycles - 1). SCK = 333.33 MHz / (2*(val+1)).  Set from the monitor
    // (e.g. WW10001100 0x0C -> ~12.8 MHz) before booting to experiment.
    wire        spi_speed_sel = ui_mmio_address[19:8] == 12'h011;
-   reg  [15:0] spi_fast_half = 16'd40;   // ~4.06 MHz default
+   reg  [15:0] spi_fast_half = 16'd6;    // 23.8 MHz default (HW-swept clean; ceiling ~28 MHz)
    wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
@@ -512,7 +512,7 @@ module rk_xcku5p(
          mmio_read_d1 <= 1'b0;
          mmio_read_d2 <= 1'b0;
          mmio_readdata_q <= 32'd0;
-         spi_fast_half <= 16'd40;
+         spi_fast_half <= 16'd6;
       end else begin
          sd_cd_meta <= sd_cd;
          sd_cd_sync <= sd_cd_meta;
