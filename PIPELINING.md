@@ -3,6 +3,14 @@
 This document tracks the current pipeline direction.  It is a working plan, not
 a constraint: when it conflicts with getting to a real pipeline, rewrite it.
 
+> **Status 2026-06-17 — read `docs/pipelining-findings.md` first.** The CPI root
+> cause is PINNED there: the frontend already runs ahead; the backend discards
+> the lead on every retire via a perpetual redirect (duplicate redirect-target
+> enqueue). Content-dedup and consumed-hit fixes are proven dead ends. The
+> blocker is the validation loop, not the plan. The goal below ("frontend runs
+> ahead of backend") is partly already achieved-but-discarded — read it with
+> that correction in mind.
+
 ## Goal
 
 Move SmolRV64 from a mostly single-instruction FSM to a simple in-order pipeline
