@@ -97,6 +97,11 @@ module smolrv64_tb;
    reg            axi_b_pending = 0;
    reg [30:0]     axi_araddr_q = 0;
    reg            axi_r_pending = 0;
+   reg [15:0]     axi_r_delay    = 16'd0;        // DDR read-latency countdown (per beat)
+   reg [15:0]     axi_rd_lat_min = 16'd0;        // +axi_rd_lat_min=<cyc> (0 = ideal, default)
+   reg [15:0]     axi_rd_lat_max = 16'd0;        // +axi_rd_lat_max=<cyc> (0 = ideal, default)
+   reg [15:0]     axi_lat_span   = 16'd1;        // max-min+1 (recomputed in initial)
+   reg [31:0]     axi_lat_rng    = 32'h2545F491; // xorshift32 state (+axi_lat_seed)
    integer        tb_i, tb_b;
 
    assign m_axi_awready = !axi_aw_seen && !axi_b_pending;
@@ -112,6 +117,17 @@ module smolrv64_tb;
             axi_read64 = axi_mem1[addr[`AXI_MEM_SIZE_LG2-1:4]];
          else
             axi_read64 = axi_mem0[addr[`AXI_MEM_SIZE_LG2-1:4]];
+      end
+   endfunction
+
+   // xorshift32 PRNG for reproducible, seedable read-latency jitter.
+   function [31:0] axi_lat_next;
+      input [31:0] x;
+      begin
+         x = x ^ (x << 13);
+         x = x ^ (x >> 17);
+         x = x ^ (x << 5);
+         axi_lat_next = x;
       end
    endfunction
 
@@ -161,6 +177,19 @@ module smolrv64_tb;
          $display("ERROR: please specify the +axi_even=<hexfile>");
          $finish;
       end
+
+      // Configurable sim DDR read latency (cycles per 64-bit AXI beat).
+      // Default 0..0 = the original ideal 1-cycle memory (no behavior change).
+      // Enable HW-like stalls with e.g. +axi_rd_lat_min=16 +axi_rd_lat_max=64.
+      if ($value$plusargs("axi_rd_lat_min=%d", axi_rd_lat_min)) ;
+      if ($value$plusargs("axi_rd_lat_max=%d", axi_rd_lat_max)) ;
+      if (axi_rd_lat_max < axi_rd_lat_min) axi_rd_lat_max = axi_rd_lat_min;
+      axi_lat_span = (axi_rd_lat_max - axi_rd_lat_min) + 16'd1;
+      if ($value$plusargs("axi_lat_seed=%d", axi_lat_rng)) ;
+      if (axi_lat_rng == 32'd0) axi_lat_rng = 32'h2545F491;
+      if (axi_rd_lat_max != 16'd0)
+         $display("sim DDR read latency: %0d..%0d cyc/beat, seed=%08x",
+                  axi_rd_lat_min, axi_rd_lat_max, axi_lat_rng);
    end
 
    always @(posedge clock) begin
@@ -189,16 +218,25 @@ module smolrv64_tb;
       end
 
       if (m_axi_arvalid && m_axi_arready) begin
-         axi_araddr_q <= m_axi_araddr;
+         axi_araddr_q  <= m_axi_araddr;
          axi_r_pending <= 1;
+         // Variable DDR read latency the ideal 1-cycle sim memory lacks: hold
+         // the response axi_r_delay cycles so the backend parks in its memory-
+         // wait states and the frontend can build a real lead (HW-like timing).
+         axi_r_delay   <= axi_rd_lat_min + (axi_lat_rng % axi_lat_span);
+         axi_lat_rng   <= axi_lat_next(axi_lat_rng);
       end
       if (axi_r_pending && !m_axi_rvalid) begin
-         m_axi_rid    <= 3'b000;
-         m_axi_rdata  <= axi_read64(axi_araddr_q);
-         m_axi_rresp  <= 2'b00;
-         m_axi_rlast  <= 1'b1;
-         m_axi_rvalid <= 1;
-         axi_r_pending <= 0;
+         if (axi_r_delay != 16'd0) begin
+            axi_r_delay <= axi_r_delay - 16'd1;
+         end else begin
+            m_axi_rid    <= 3'b000;
+            m_axi_rdata  <= axi_read64(axi_araddr_q);
+            m_axi_rresp  <= 2'b00;
+            m_axi_rlast  <= 1'b1;
+            m_axi_rvalid <= 1;
+            axi_r_pending <= 0;
+         end
       end else if (m_axi_rvalid && m_axi_rready) begin
          m_axi_rvalid <= 0;
       end
@@ -210,6 +248,7 @@ module smolrv64_tb;
          axi_w_seen    <= 0;
          axi_b_pending <= 0;
          axi_r_pending <= 0;
+         axi_r_delay   <= 0;
       end
    end
 
@@ -3498,14 +3537,24 @@ module smolrv64(input wire        clock,
                end
             end
          end else begin
-            // Queue-only path (no fast-path bypass via stage_rf_decode_current).
-            // Arbitrate against pending/queue pressure:
+            // Backend fetch-response path.  Launch directly into RF when the
+            // backend boundary is empty; otherwise arbitrate against
+            // pending/queue pressure:
             //   - pending empty, queue has room: enqueue directly
             //   - queue full: bail to S_FETCH1 so backend can pop
             //   - pending occupied, queue has room: drain fires this cycle,
             //     wait one cycle and try again from S_FETCH_BUF_USE
-            if (!frontend_decode_pending_latch_this_cycle &&
-                !frontend_decode_pending_valid && !rf_decode_full) begin
+            if (!id_valid && !frontend_decode_pending_valid &&
+                !rf_decode_valid && !rf_decode_enqueue_this_cycle) begin
+               stage_rf_decode_current(accept_pc,
+                                       accept_next_pc,
+                                       accept_predicted_pc,
+                                       accept_insn,
+                                       accept_prv,
+                                       accept_epoch,
+                                       accept_from_ifetch_rsp);
+            end else if (!frontend_decode_pending_latch_this_cycle &&
+                         !frontend_decode_pending_valid && !rf_decode_full) begin
                enqueue_frontend_decode_hit(
                    accept_pc,
                    accept_next_pc,
