@@ -912,18 +912,8 @@ module smolrv64(input wire        clock,
    reg  [CACHE_PERM_BITS-1:0] mem_perm;
    reg  [TLB_CTX_BITS-1:0] mem_ctx;
    reg  [15:0] mem_wr_mask;
-   function [63:0] merge_store_bytes;
-      input [63:0] old_word;
-      input [63:0] new_word;
-      input [ 7:0] byte_mask;
-      integer byte_i;
-      begin
-         merge_store_bytes = old_word;
-         for (byte_i = 0; byte_i < 8; byte_i = byte_i + 1)
-            if (byte_mask[byte_i])
-               merge_store_bytes[byte_i*8 +: 8] = new_word[byte_i*8 +: 8];
-      end
-   endfunction
+   // Load/store byte-steering helpers (merge_store_bytes, align_dmem_load_value).
+   `include "smolrv64_mem_align.vh"
 
    /* RISC-V Architectural state: operating mode, pc, and registers*/
    reg  [63:0] pc = 0; // XXX We should set this on reset
@@ -2998,93 +2988,8 @@ module smolrv64(input wire        clock,
 
    // IEEE 754 FCLASS: 10-bit one-hot classification (bit 0 = -inf, ..., bit 9 = qNaN).
    // Single-precision variant enforces NaN-boxing: unboxed value → canonical qNaN.
-   function [63:0] fclass_d;
-      input [63:0] v;
-      reg         sign;
-      reg [10:0]  exp;
-      reg [51:0]  mant;
-      reg         exp_all1, exp_0, mant_0, qbit;
-      begin
-         sign = v[63]; exp = v[62:52]; mant = v[51:0];
-         exp_all1 = &exp;  exp_0 = exp == 0;  mant_0 = mant == 0;  qbit = mant[51];
-         if      (exp_all1 && mant_0)   fclass_d = sign ? 64'h001 : 64'h080; // ±inf
-         else if (exp_all1)             fclass_d = qbit ? 64'h200 : 64'h100; // qNaN / sNaN
-         else if (exp_0 && mant_0)      fclass_d = sign ? 64'h008 : 64'h010; // ±0
-         else if (exp_0)                fclass_d = sign ? 64'h004 : 64'h020; // ±subnormal
-         else                           fclass_d = sign ? 64'h002 : 64'h040; // ±normal
-      end
-   endfunction
-
-   function [63:0] fclass_s;
-      input [63:0] v;
-      reg         sign;
-      reg [ 7:0]  exp;
-      reg [22:0]  mant;
-      reg         exp_all1, exp_0, mant_0, qbit;
-      begin
-         if (~(&v[63:32])) fclass_s = 64'h200; // improperly NaN-boxed → canonical qNaN
-         else begin
-            sign = v[31]; exp = v[30:23]; mant = v[22:0];
-            exp_all1 = &exp;  exp_0 = exp == 0;  mant_0 = mant == 0;  qbit = mant[22];
-            if      (exp_all1 && mant_0)   fclass_s = sign ? 64'h001 : 64'h080;
-            else if (exp_all1)             fclass_s = qbit ? 64'h200 : 64'h100;
-            else if (exp_0 && mant_0)      fclass_s = sign ? 64'h008 : 64'h010;
-            else if (exp_0)                fclass_s = sign ? 64'h004 : 64'h020;
-            else                           fclass_s = sign ? 64'h002 : 64'h040;
-         end
-      end
-   endfunction
-
-   // FP compares: returns {nv, result} where nv→fflags.NV, result→integer rd bit 0.
-   // op (from insn[14:12]): 000=FLE, 001=FLT, 010=FEQ.
-   // FEQ sets NV only on signaling NaN; FLT/FLE set NV on any NaN.
-   function [1:0] fcmp_s;
-      input [2:0] op;
-      input [31:0] a, b;
-      reg a_nan, b_nan, a_snan, b_snan, both_zero, eq, lt, le;
-      begin
-         a_nan = (a[30:23] == 8'hff) && (a[22:0] != 0);
-         b_nan = (b[30:23] == 8'hff) && (b[22:0] != 0);
-         a_snan = a_nan && !a[22];
-         b_snan = b_nan && !b[22];
-         both_zero = (a[30:0] == 0) && (b[30:0] == 0);
-         if (a_nan || b_nan)        begin eq = 0; lt = 0; le = 0; end
-         else if (both_zero)        begin eq = 1; lt = 0; le = 1; end
-         else if (a[31] != b[31])   begin eq = 0; lt = a[31]; le = a[31]; end
-         else if (!a[31])           begin eq = (a == b); lt = (a <  b); le = (a <= b); end
-         else                       begin eq = (a == b); lt = (a >  b); le = (a >= b); end
-         case (op)
-            3'b000:  fcmp_s = {a_nan  | b_nan,  le};
-            3'b001:  fcmp_s = {a_nan  | b_nan,  lt};
-            3'b010:  fcmp_s = {a_snan | b_snan, eq};
-            default: fcmp_s = 2'b00;
-         endcase
-      end
-   endfunction
-
-   function [1:0] fcmp_d;
-      input [2:0] op;
-      input [63:0] a, b;
-      reg a_nan, b_nan, a_snan, b_snan, both_zero, eq, lt, le;
-      begin
-         a_nan = (a[62:52] == 11'h7ff) && (a[51:0] != 0);
-         b_nan = (b[62:52] == 11'h7ff) && (b[51:0] != 0);
-         a_snan = a_nan && !a[51];
-         b_snan = b_nan && !b[51];
-         both_zero = (a[62:0] == 0) && (b[62:0] == 0);
-         if (a_nan || b_nan)        begin eq = 0; lt = 0; le = 0; end
-         else if (both_zero)        begin eq = 1; lt = 0; le = 1; end
-         else if (a[63] != b[63])   begin eq = 0; lt = a[63]; le = a[63]; end
-         else if (!a[63])           begin eq = (a == b); lt = (a <  b); le = (a <= b); end
-         else                       begin eq = (a == b); lt = (a >  b); le = (a >= b); end
-         case (op)
-            3'b000:  fcmp_d = {a_nan  | b_nan,  le};
-            3'b001:  fcmp_d = {a_nan  | b_nan,  lt};
-            3'b010:  fcmp_d = {a_snan | b_snan, eq};
-            default: fcmp_d = 2'b00;
-         endcase
-      end
-   endfunction
+   // FP classify/compare helpers.
+   `include "smolrv64_fp_ops.vh"
 
    function frontend_spec_fetch_state;
       input [5:0] s;
@@ -3779,22 +3684,7 @@ module smolrv64(input wire        clock,
       end
    endfunction
 
-   function [63:0] align_dmem_load_value;
-      input [127:0] load_data;
-      input [ 2:0]  load_size;
-      begin
-         case (load_size)
-           3'd0: align_dmem_load_value = {56'd0, load_data[7:0]};
-           3'd1: align_dmem_load_value = {48'd0, load_data[15:0]};
-           3'd2: align_dmem_load_value = {32'd0, load_data[31:0]};
-           3'd3: align_dmem_load_value = load_data[63:0];
-           3'd4: align_dmem_load_value = {{56{load_data[7]}},  load_data[7:0]};
-           3'd5: align_dmem_load_value = {{48{load_data[15]}}, load_data[15:0]};
-           3'd6: align_dmem_load_value = {{32{load_data[31]}}, load_data[31:0]};
-           default: align_dmem_load_value = 64'd0;
-         endcase
-      end
-   endfunction
+   // align_dmem_load_value lives in smolrv64_mem_align.vh (included above).
 
    task prepare_execute_req_from_id;
       input preserve_state;
