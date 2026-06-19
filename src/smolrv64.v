@@ -2808,51 +2808,8 @@ module smolrv64(input wire        clock,
    reg         hpm_ptw_leaf_1g_pulse = 0;
    reg         hpm_ptw_leaf_napot_pulse = 0;
 
-   function [`TLB_2M_INDEX_BITS-1:0] tlb_2m_index;
-      input [63:0] va;
-      input [ 1:0] access;
-      input [ 1:0] idx_prv;
-      input        idx_sum;
-      input        idx_mxr;
-      reg [TLB_CTX_BITS-1:0] ctx;
-      begin
-         ctx = {access, idx_prv, idx_sum, idx_mxr};
-         tlb_2m_index = va[28:21] ^ va[36:29] ^ {6'd0, va[38:37]} ^
-                        {2'd0, ctx};
-      end
-   endfunction
-
-   function [`TLB_4K_INDEX_BITS-1:0] tlb_4k_index;
-      input [63:0] va;
-      input [ 1:0] access;
-      input [ 1:0] idx_prv;
-      input        idx_sum;
-      input        idx_mxr;
-      reg [TLB_CTX_BITS-1:0] ctx;
-      begin
-         ctx = {access, idx_prv, idx_sum, idx_mxr};
-         tlb_4k_index = va[21:12] ^ {1'b0, va[30:22]} ^
-                        {8'd0, va[38:37]} ^ {4'd0, ctx};
-      end
-   endfunction
-
-   function [TLB_SATP_KEY_BITS-1:0] satp_tlb_key;
-      input [63:0] satp;
-      begin
-         // TLB entries are keyed by ASID only.  Translation invalidation is
-         // driven by SFENCE.VMA, not by the SATP CSR write itself.
-         satp_tlb_key = satp[53:44];
-      end
-   endfunction
-
-   function [63:0] satp_warl_value;
-      input [63:0] satp;
-      begin
-         satp_warl_value = satp;
-         // RV64 Sv39 permits up to 16 ASID bits; this core implements 10.
-         satp_warl_value[59:54] = 6'd0;
-      end
-   endfunction
+   // TLB index hashing + SATP field helpers.
+   `include "smolrv64_tlb_helpers.vh"
 
    wire [TLB_CTX_BITS-1:0] tlb_req_ctx = {tlb_req_access, tlb_req_prv,
                                           tlb_req_sum, tlb_req_mxr};
