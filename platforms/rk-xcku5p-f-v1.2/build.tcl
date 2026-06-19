@@ -101,6 +101,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
 
     add_source_if_missing $fileset [file join $src_dir smolrv64_alu.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_plic_arbiter.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_async_fifo.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_l2_boundary.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_mem_engine.v] SystemVerilog

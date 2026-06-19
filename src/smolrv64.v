@@ -2663,45 +2663,28 @@ module smolrv64(input wire        clock,
    reg [63:0]  plic_enabled = 0;       // Enable bits (S-mode context)
    reg [63:0]  plic_in_service = 0;    // Gateway has delivered source; wait for completion
    reg [ 2:0]  plic_threshold = 0;     // Priority threshold (S-mode)
-   reg [ 5:0]  plic_claim = 0;        // Last claimed IRQ
    wire [63:0] plic_source_level = {ext_irq, 1'b0}
                                   | (uart_irq_out ? (64'd1 << 10) : 64'd0);
 
-   // Find highest-priority pending+enabled interrupt (2-cycle pipeline)
-   // Stage 1: scan 4 groups of 16, register results
-   reg [5:0] plic_grp_irq_r [0:3];
-   reg [2:0] plic_grp_pri_r [0:3];
-   integer   plic_i, plic_g;
-   always @(posedge clock) begin : plic_stage1
-      reg [5:0] gi;
-      reg [2:0] gp;
-      for (plic_g = 0; plic_g < 4; plic_g = plic_g + 1) begin
-         gi = 0; gp = 0;
-         for (plic_i = plic_g * 16; plic_i < (plic_g + 1) * 16; plic_i = plic_i + 1)
-            if (plic_i > 0 &&
-                plic_pending[plic_i] && plic_enabled[plic_i] &&
-                plic_priority[plic_i] > plic_threshold &&
-                plic_priority[plic_i] > gp) begin
-               gi = plic_i[5:0];
-               gp = plic_priority[plic_i];
-            end
-         plic_grp_irq_r[plic_g] <= gi;
-         plic_grp_pri_r[plic_g] <= gp;
-      end
-   end
-   // Stage 2: merge 4 registered group results
-   reg [5:0] plic_best_irq = 0;
-   reg       plic_has_irq = 0;
-   always @(posedge clock) begin : plic_stage2
-      reg [5:0] best_irq;
-      reg [2:0] best_pri;
-      best_irq = plic_grp_irq_r[0]; best_pri = plic_grp_pri_r[0];
-      if (plic_grp_pri_r[1] > best_pri) begin best_irq = plic_grp_irq_r[1]; best_pri = plic_grp_pri_r[1]; end
-      if (plic_grp_pri_r[2] > best_pri) begin best_irq = plic_grp_irq_r[2]; best_pri = plic_grp_pri_r[2]; end
-      if (plic_grp_pri_r[3] > best_pri) begin best_irq = plic_grp_irq_r[3]; best_pri = plic_grp_pri_r[3]; end
-      plic_best_irq <= best_irq;
-      plic_has_irq  <= best_irq != 0;
-   end
+   // Highest-priority pending+enabled interrupt (2-cycle pipeline), arbitrated
+   // in smolrv64_plic_arbiter. The core still owns the PLIC register state; the
+   // arbiter only scans it. Flatten the per-source priority array for the port:
+   // source i occupies plic_priority_flat[i*3 +: 3].
+   wire [191:0] plic_priority_flat;
+   genvar plic_pf;
+   generate for (plic_pf = 0; plic_pf < 64; plic_pf = plic_pf + 1)
+      assign plic_priority_flat[plic_pf*3 +: 3] = plic_priority[plic_pf];
+   endgenerate
+   wire [5:0] plic_best_irq;
+   wire       plic_has_irq;
+   smolrv64_plic_arbiter plic_arbiter_inst
+     (.clock         (clock),
+      .pending       (plic_pending),
+      .enabled       (plic_enabled),
+      .priority_flat (plic_priority_flat),
+      .threshold     (plic_threshold),
+      .best_irq      (plic_best_irq),
+      .has_irq       (plic_has_irq));
 
    // MIP subfields
    // MEIP/SEIP driven by PLIC, MTIP/MSIP driven by CLINT

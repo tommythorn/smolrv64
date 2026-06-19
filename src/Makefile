@@ -44,8 +44,9 @@ else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
 
-SRCS=smolrv64.v smolrv64_alu.v smolrv64_async_fifo.v smolrv64_l2_boundary.v \
-     smolrv64_mem_engine.v smolrv64_frontend.v smolrv64_sdpram.v regfile.v fregfile.v
+SRCS=smolrv64.v smolrv64_alu.v smolrv64_plic_arbiter.v smolrv64_async_fifo.v \
+     smolrv64_l2_boundary.v smolrv64_mem_engine.v smolrv64_frontend.v \
+     smolrv64_sdpram.v regfile.v fregfile.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
 CVFPU_DEPS=$(CVFPU_SRCS) cvfpu_sources.f
 CVFPU_VL_FLAGS=-sv \
