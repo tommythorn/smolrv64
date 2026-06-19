@@ -222,34 +222,14 @@ module smolrv64_frontend #(
    // Cache metadata pack/unpack + index helpers, shared with the smolrv64 core.
    `include "smolrv64_cache_meta.vh"
 
-   assign icache_way0_tag_hit =
-      cache_meta_valid(icache_way0_tag_rd_data) &&
-      cache_meta_epoch(icache_way0_tag_rd_data) == icache_vhpr_epoch &&
-      cache_meta_asid(icache_way0_tag_rd_data) == icache_req_asid &&
-      cache_meta_vtag(icache_way0_tag_rd_data) == icache_req_vtag &&
-      cache_perm_allows_ctx(cache_meta_perm(icache_way0_tag_rd_data),
-                            icache_req_ctx);
-   assign icache_way1_tag_hit =
-      cache_meta_valid(icache_way1_tag_rd_data) &&
-      cache_meta_epoch(icache_way1_tag_rd_data) == icache_vhpr_epoch &&
-      cache_meta_asid(icache_way1_tag_rd_data) == icache_req_asid &&
-      cache_meta_vtag(icache_way1_tag_rd_data) == icache_req_vtag &&
-      cache_perm_allows_ctx(cache_meta_perm(icache_way1_tag_rd_data),
-                            icache_req_ctx);
-   assign icache_way0_next_tag_hit =
-      cache_meta_valid(icache_way0_tag_next_rd_data) &&
-      cache_meta_epoch(icache_way0_tag_next_rd_data) == icache_vhpr_epoch &&
-      cache_meta_asid(icache_way0_tag_next_rd_data) == icache_req_asid &&
-      cache_meta_vtag(icache_way0_tag_next_rd_data) == icache_req_next_vtag &&
-      cache_perm_allows_ctx(cache_meta_perm(icache_way0_tag_next_rd_data),
-                            icache_req_ctx);
-   assign icache_way1_next_tag_hit =
-      cache_meta_valid(icache_way1_tag_next_rd_data) &&
-      cache_meta_epoch(icache_way1_tag_next_rd_data) == icache_vhpr_epoch &&
-      cache_meta_asid(icache_way1_tag_next_rd_data) == icache_req_asid &&
-      cache_meta_vtag(icache_way1_tag_next_rd_data) == icache_req_next_vtag &&
-      cache_perm_allows_ctx(cache_meta_perm(icache_way1_tag_next_rd_data),
-                            icache_req_ctx);
+   assign icache_way0_tag_hit = cache_tag_hit(icache_way0_tag_rd_data, icache_req_vtag,
+                                              icache_vhpr_epoch, icache_req_asid, icache_req_ctx);
+   assign icache_way1_tag_hit = cache_tag_hit(icache_way1_tag_rd_data, icache_req_vtag,
+                                              icache_vhpr_epoch, icache_req_asid, icache_req_ctx);
+   assign icache_way0_next_tag_hit = cache_tag_hit(icache_way0_tag_next_rd_data, icache_req_next_vtag,
+                                                   icache_vhpr_epoch, icache_req_asid, icache_req_ctx);
+   assign icache_way1_next_tag_hit = cache_tag_hit(icache_way1_tag_next_rd_data, icache_req_next_vtag,
+                                                   icache_vhpr_epoch, icache_req_asid, icache_req_ctx);
 
    assign icache_rsp_hit_comb = icache_way0_tag_hit || icache_way1_tag_hit;
    assign icache_lookup_hit_way = icache_way1_tag_hit;
@@ -273,19 +253,8 @@ module smolrv64_frontend #(
    function [63:0] select_icache_bank_data;
       input       way;
       input [2:0] bank;
-      begin
-         case (bank)
-           3'd0: select_icache_bank_data = way ? icache_way1_bank_rd_data[0] : icache_way0_bank_rd_data[0];
-           3'd1: select_icache_bank_data = way ? icache_way1_bank_rd_data[1] : icache_way0_bank_rd_data[1];
-           3'd2: select_icache_bank_data = way ? icache_way1_bank_rd_data[2] : icache_way0_bank_rd_data[2];
-           3'd3: select_icache_bank_data = way ? icache_way1_bank_rd_data[3] : icache_way0_bank_rd_data[3];
-           3'd4: select_icache_bank_data = way ? icache_way1_bank_rd_data[4] : icache_way0_bank_rd_data[4];
-           3'd5: select_icache_bank_data = way ? icache_way1_bank_rd_data[5] : icache_way0_bank_rd_data[5];
-           3'd6: select_icache_bank_data = way ? icache_way1_bank_rd_data[6] : icache_way0_bank_rd_data[6];
-           3'd7: select_icache_bank_data = way ? icache_way1_bank_rd_data[7] : icache_way0_bank_rd_data[7];
-           default: select_icache_bank_data = 64'd0;
-         endcase
-      end
+      select_icache_bank_data = way ? icache_way1_bank_rd_data[bank]
+                                    : icache_way0_bank_rd_data[bank];
    endfunction
 
    wire [63:0] icache_rsp_data =

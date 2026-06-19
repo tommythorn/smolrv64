@@ -153,3 +153,19 @@
          end
       end
    endfunction
+
+   // Tag-match for one way: valid + epoch + ASID + vtag match and the entry's
+   // permissions allow the requesting context. Caller passes the lookup context
+   // (epoch/asid/ctx) so this serves both the d-cache and i-cache lookups.
+   function cache_tag_hit;
+      input [`CACHE_META_BITS-1:0] meta;
+      input [`CACHE_VTAG_BITS-1:0] want_vtag;
+      input [VHPR_EPOCH_BITS-1:0]  epoch;
+      input [TLB_ASID_BITS-1:0]    asid;
+      input [TLB_CTX_BITS-1:0]     ctx;
+      cache_tag_hit = cache_meta_valid(meta) &&
+                      cache_meta_epoch(meta) == epoch &&
+                      cache_meta_asid(meta)  == asid &&
+                      cache_meta_vtag(meta)  == want_vtag &&
+                      cache_perm_allows_ctx(cache_meta_perm(meta), ctx);
+   endfunction

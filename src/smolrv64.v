@@ -1061,30 +1061,14 @@ module smolrv64(input wire        clock,
    wire [63:0] dcache_way0_bank_rd_data [0:7];
    wire [63:0] dcache_way1_bank_rd_data [0:7];
 
-   wire dcache_way0_tag_hit = cache_meta_valid(dcache_way0_tag_rd_data) &&
-                              cache_meta_epoch(dcache_way0_tag_rd_data) == vhpr_epoch &&
-                              cache_meta_asid(dcache_way0_tag_rd_data) == cache_req_asid &&
-                              cache_meta_vtag(dcache_way0_tag_rd_data) == cache_req_vtag &&
-                              cache_perm_allows_ctx(cache_meta_perm(dcache_way0_tag_rd_data),
-                                                    cache_req_ctx);
-   wire dcache_way1_tag_hit = cache_meta_valid(dcache_way1_tag_rd_data) &&
-                              cache_meta_epoch(dcache_way1_tag_rd_data) == vhpr_epoch &&
-                              cache_meta_asid(dcache_way1_tag_rd_data) == cache_req_asid &&
-                              cache_meta_vtag(dcache_way1_tag_rd_data) == cache_req_vtag &&
-                              cache_perm_allows_ctx(cache_meta_perm(dcache_way1_tag_rd_data),
-                                                    cache_req_ctx);
-   wire dcache_way0_next_tag_hit = cache_meta_valid(dcache_way0_tag_next_rd_data) &&
-                                   cache_meta_epoch(dcache_way0_tag_next_rd_data) == vhpr_epoch &&
-                                   cache_meta_asid(dcache_way0_tag_next_rd_data) == cache_req_asid &&
-                                   cache_meta_vtag(dcache_way0_tag_next_rd_data) == cache_req_next_vtag &&
-                                   cache_perm_allows_ctx(cache_meta_perm(dcache_way0_tag_next_rd_data),
-                                                         cache_req_ctx);
-   wire dcache_way1_next_tag_hit = cache_meta_valid(dcache_way1_tag_next_rd_data) &&
-                                   cache_meta_epoch(dcache_way1_tag_next_rd_data) == vhpr_epoch &&
-                                   cache_meta_asid(dcache_way1_tag_next_rd_data) == cache_req_asid &&
-                                   cache_meta_vtag(dcache_way1_tag_next_rd_data) == cache_req_next_vtag &&
-                                   cache_perm_allows_ctx(cache_meta_perm(dcache_way1_tag_next_rd_data),
-                                                         cache_req_ctx);
+   wire dcache_way0_tag_hit = cache_tag_hit(dcache_way0_tag_rd_data, cache_req_vtag,
+                                            vhpr_epoch, cache_req_asid, cache_req_ctx);
+   wire dcache_way1_tag_hit = cache_tag_hit(dcache_way1_tag_rd_data, cache_req_vtag,
+                                            vhpr_epoch, cache_req_asid, cache_req_ctx);
+   wire dcache_way0_next_tag_hit = cache_tag_hit(dcache_way0_tag_next_rd_data, cache_req_next_vtag,
+                                                 vhpr_epoch, cache_req_asid, cache_req_ctx);
+   wire dcache_way1_next_tag_hit = cache_tag_hit(dcache_way1_tag_next_rd_data, cache_req_next_vtag,
+                                                 vhpr_epoch, cache_req_asid, cache_req_ctx);
 
    function [63:0] dcache_selected_bank_data;
       input       way;
