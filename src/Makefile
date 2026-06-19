@@ -44,7 +44,8 @@ else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
 
-SRCS=smolrv64.v
+SRCS=smolrv64.v smolrv64_alu.v smolrv64_async_fifo.v smolrv64_l2_boundary.v \
+     smolrv64_mem_engine.v smolrv64_frontend.v smolrv64_sdpram.v regfile.v fregfile.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
 CVFPU_DEPS=$(CVFPU_SRCS) cvfpu_sources.f
 CVFPU_VL_FLAGS=-sv \
@@ -56,7 +57,7 @@ CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 # Common prerequisites for every Verilator sim build below. git_commit.vh is
 # regenerated whenever HEAD moves (rule below), so it forces a relink and
 # mimpid always matches the built commit.
-SIM_DEPS=$(SRCS) $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
+SIM_DEPS=$(SRCS) smolrv64_defs.vh $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
 
 # Regenerate git_commit.vh, but only rewrite it when the commit actually
 # changes — FORCE runs the recipe every build, and cmp keeps the file's mtime

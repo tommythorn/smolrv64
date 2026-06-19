@@ -1,7 +1,11 @@
 # SmolRV64
 
-SmolRV64 is a single `always @(posedge clock)`
-RV64GC (IMAFDC) implementation which aspires to run Ubuntu.
+SmolRV64 is an RV64GC (IMAFDC) implementation which aspires to run Ubuntu.
+Its core is built around a single `always @(posedge clock)` FSM. The RTL is
+organized as one module per file under `src/` — the core lives in
+`smolrv64.v`, with the ALU, fetch frontend, memory engine, L2 boundary,
+register files, and CDC FIFO split into their own files (shared definitions
+in `smolrv64_defs.vh`).
 
 The first goal was functionality, so the RTL still has a simulator-like
 shape in many places.  The current work is shifting toward performance

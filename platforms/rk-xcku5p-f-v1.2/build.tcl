@@ -100,6 +100,14 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir rgmii_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
 
+    add_source_if_missing $fileset [file join $src_dir smolrv64_alu.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_async_fifo.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_l2_boundary.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_mem_engine.v] SystemVerilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_frontend.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_sdpram.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir regfile.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir fregfile.v] Verilog
     # smolrv64.v uses SystemVerilog (the always-on CV-FPU interface).
     add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog
     update_compile_order -fileset $fileset
