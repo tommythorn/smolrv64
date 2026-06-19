@@ -58,7 +58,7 @@ CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 # Common prerequisites for every Verilator sim build below. git_commit.vh is
 # regenerated whenever HEAD moves (rule below), so it forces a relink and
 # mimpid always matches the built commit.
-SIM_DEPS=$(SRCS) smolrv64_defs.vh smolrv64_cache_meta.vh smolrv64_fp_ops.vh smolrv64_mem_align.vh smolrv64_tlb_helpers.vh smolrv64_debug.vh $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
+SIM_DEPS=$(SRCS) smolrv64_defs.vh smolrv64_cache_meta.vh smolrv64_fp_ops.vh smolrv64_mem_align.vh smolrv64_tlb_helpers.vh smolrv64_debug.vh smolrv64_csr.vh $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
 
 # Regenerate git_commit.vh, but only rewrite it when the commit actually
 # changes — FORCE runs the recipe every build, and cmp keeps the file's mtime
