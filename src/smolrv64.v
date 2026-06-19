@@ -4850,6 +4850,12 @@ module smolrv64(input wire        clock,
             write_back_register = 0;
             write_back_fp_valid = 0;
             launch_rf_decode_read();
+         end else if (rf_decode_pc == pc && rf_decode_epoch == fetch_epoch) begin
+            // Stale duplicate of the just-retired instruction: drop and
+            // re-consume next cycle instead of squashing the lead (see
+            // try_early_launch_queued_decode for the safety argument).
+            pop_rf_decode_head();
+            state <= `S_FETCH1;
          end else begin
             redirect_retire_fetch(npc, prv);
             state <= `S_FETCH_REQ;
@@ -4868,8 +4874,18 @@ module smolrv64(input wire        clock,
             launch_rf_decode_read_preserve_state();
             launched = 1'b1;
          end else if (!id_valid && rf_decode_valid && !frontend_miss_valid) begin
-            redirect_retire_fetch(retire_pc, retire_prv);
-            launched = 1'b1;
+            if (rf_decode_pc == pc && rf_decode_epoch == fetch_epoch) begin
+               // Stale duplicate of the just-retired instruction at the head
+               // (seeded by an earlier squash->refetch double-enqueue). Drop it
+               // and re-consume next cycle instead of squashing the whole lead.
+               // Safe: head==pc can only be the legitimate next insn in a self
+               // loop, and that case matches npc above and takes the consume path.
+               pop_rf_decode_head();
+               launched = 1'b1;
+            end else begin
+               redirect_retire_fetch(retire_pc, retire_prv);
+               launched = 1'b1;
+            end
          end
       end
    endtask
