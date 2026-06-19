@@ -55,4 +55,21 @@
 `define CACHE_DIRTY_BIT (`CACHE_VALID_BIT + 1)
 `define CACHE_META_BITS (`CACHE_DIRTY_BIT + 1)
 
+// execute_req_mem_op: memory access class pre-decoded in S_RF (sibling of EXOP).
+`define MEMOP_NONE  3'd0
+`define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U}, FLW/FLD, compressed integer/FP loads
+`define MEMOP_STORE 3'd2  // S{B,H,W,D}, FSW/FSD, compressed integer/FP stores
+`define MEMOP_LR    3'd3  // LR.W / LR.D
+`define MEMOP_SC    3'd4  // SC.W / SC.D
+`define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
+
+// Physical address region classification (phys_region()).
+`define REGION_UART    3'd0
+`define REGION_CLINT   3'd1
+`define REGION_PLIC    3'd2
+`define REGION_BRAM    3'd3
+`define REGION_MMIO    3'd4
+`define REGION_DRAM    3'd5
+`define REGION_ILLEGAL 3'd6
+
 `endif // SMOLRV64_DEFS_VH

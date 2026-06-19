@@ -103,35 +103,7 @@ module smolrv64(input wire        clock,
                 output reg        halted_o = 0);
 
 // XXX Should I use param/localparam instead?
-`define TRAP_INSTRUCTION_ADDRESS_MISALIGNED      0
-`define TRAP_INSTRUCTION_ACCESS_FAULT            1
-`define TRAP_ILLEGAL_INSTRUCTION                 2
-`define TRAP_BREAKPOINT                          3
-`define TRAP_LOAD_ADDRESS_MISALIGNED             4
-`define TRAP_LOAD_ACCESS_FAULT                   5
-`define TRAP_STORE_ADDRESS_MISALIGNED            6
-`define TRAP_STORE_ACCESS_FAULT                  7
-`define TRAP_ENVIRONMENT_CALL_FROM_U_MODE        8
-`define TRAP_ENVIRONMENT_CALL_FROM_S_MODE        9
-// 10 is reserved
-`define TRAP_ENVIRONMENT_CALL_FROM_M_MODE       11
-`define TRAP_INSTRUCTIONPAGE_FAULT              12
-`define TRAP_LOAD_PAGE_FAULT                    13
-// 14 is reserved
-`define TRAP_STORE_PAGE_FAULT                   15
-
-`define USER_SOFTWARE_INTERRUPT                  0
-`define SUPERVISOR_SOFTWARE_INTERRUPT            1
-`define MACHINE_SOFTWARE_INTERRUPT               3
-
-`define USER_TIMER_INTERRUPT                     4
-`define SUPERVISOR_TIMER_INTERRUPT               5
-`define MACHINE_TIMER_INTERRUPT                  7
-
-`define USER_EXTERNAL_INTERRUPT                  8
-`define SUPERVISOR_EXTERNAL_INTERRUPT            9
-`define MACHINE_EXTERNAL_INTERRUPT              11
-`define LOCAL_COUNTER_OVERFLOW_INTERRUPT        13
+   `include "smolrv64_trap.vh"
 
 // RISC-V CSR address map + CSR op codes.
 `include "smolrv64_csr.vh"
@@ -148,89 +120,7 @@ module smolrv64(input wire        clock,
 // CSR handling is factored out of EXECUTE into its own state, as are
 // multiplication and divisions.
 //
-`define S_FETCH1         0
-`define S_FETCH2         1  // fetch translation return token; not a live FSM state
-`define S_EXECUTE        3
-
-`define S_EXCEPTION      4
-
-`define S_LOAD_ALIGN     5
-`define S_MMIO_ALIGN     7
-`define S_AMO            8
-
-`define S_STORE          9
-
-`define S_HANDLE_CSR    10
-
-`define S_MUL_RUNNING   11
-`define S_DIV_RUNNING   12
-
-`define S_PTW_LAUNCH    14  // launch PTW PTE fetch after ptw_* request fields are registered
-`define S_FETCH2_HALF   15
-
-`define S_IFETCH_WAIT           16  // wait for I-cache instruction response
-`define S_DMEM_LOAD_WAIT       17  // wait for D-cache load response
-`define S_PTW_DIRECT_WAIT      18  // wait for direct page-table-walk PTE read
-`define S_DMEM_STORE_WAIT      19  // backpressure wait before first store beat
-`define S_IFETCH_HALF_WAIT      20  // wait for 2nd I-cache response of cross-line fetch
-`define S_DMEM_LOAD2_WAIT      21  // wait for 2nd D-cache response of cross-line load
-`define S_DMEM_STORE2          22  // issue 2nd beat of cross-line store
-`define S_EXECUTE2             24  // complete write_back_value from pre-computed exe_add
-`define S_PTW_PROCESS          25  // process PTE latched from the PTW response
-`define S_RF                   26  // register BRAM output (s1_bram/s2_bram) into execute_req_rs1_value/execute_req_rs2_value flip-flops
-`define S_CBO_EXEC             29  // execute translated cache-block operation
-`define S_CBO_WAIT             30  // wait for cache-block operation completion
-`define S_STORE_COMMIT         31  // commit a store after translation/routing decision
-`define S_CVFPU_ISSUE          33  // present a CVFPU operation until accepted
-`define S_CVFPU_WAIT           34  // wait for a CVFPU result
-// (35, 36 retired: the FMA rs3 detour folded into the normal S_RF read once
-//  rs3 got its own FP read port)
-`define S_TLB_LOOKUP           37  // wait for direct-mapped TLB RAM outputs
-`define S_TLB_CHECK            38  // compare direct-mapped TLB entries
-`define S_DMEM_STORE_RESP_WAIT 43  // wait for an issued D-cache store to complete
-`define S_DMEM_STORE_RESP_ARM  44  // absorb one cycle so AXI busy flags see a new write
-`define S_IFETCH_RESP          45  // latch instruction from I-fetch response without fetch-source mux
-`define S_FETCH_BUF_CHECK      46  // fallback register for fetch-buffer hit decision
-`define S_FETCH_BUF_USE        47  // fallback consume for registered fetch-buffer hit
-`define S_MULDIV_START         48  // initialize iterative M-extension datapath
-`define S_FETCH_REQ            50  // issue registered PC/context fetch request
-`define S_FRONTEND_MISS_WAIT   51  // wait for speculative frontend cache miss after backend retire
-`define S_INT_COMMIT           52  // retire staged integer result after side effects
-`define S_LOCAL_LOAD           54  // commit local UART/CLINT/PLIC load data after address dispatch
-`define S_TLB_INSERT           55  // commit staged PTW result into the TLB, then route translated PA
-`define S_LAST_STATE           55  // update state register width accordingly
-
-// f_state: the free-running frontend FSM. Drives the cache-hit fetch path
-// (FETCH_REQ -> FETCH_BUF_CHECK -> FETCH_BUF_USE -> enqueue to rf_decode_*)
-// independently of the backend `state` register, so frontend work overlaps
-// with backend long-latency states (CVFPU, MULDIV, AMO, DRAM, etc).
-//
-// I-cache miss / TLB miss / cross-doubleword fetch still escalate
-// to the backend FSM — those resources are shared with the
-// load/store path and require arbitration the frontend can't do alone.
-`define F_IDLE                  0  // no fetch in flight
-`define F_FETCH_BUF_CHECK       1  // latch frontend_rsp_* into f_latched_*
-`define F_FETCH_BUF_USE         2  // on hit, enqueue rf_decode; on miss, hand to backend
-
-// ex_state: scaffolding for the back-half pipeline split. Eventually owns
-// S_EXECUTE / S_EXECUTE2 (and the various memory/EX states) so an instruction
-// can be in EX while the next is in RF.
-`define EX_IDLE              1'b0  // EX stage empty; nothing in flight
-`define EX_EXECUTE2          1'b1  // compute write_back_value from exe_add / exe_sext32
-
-`define MULDIV_MUL             4'd0
-`define MULDIV_MULH            4'd1
-`define MULDIV_MULHSU          4'd2
-`define MULDIV_MULHU           4'd3
-`define MULDIV_DIV             4'd4
-`define MULDIV_DIVU            4'd5
-`define MULDIV_REM             4'd6
-`define MULDIV_REMU            4'd7
-`define MULDIV_MULW            4'd8
-`define MULDIV_DIVW            4'd9
-`define MULDIV_DIVUW           4'd10
-`define MULDIV_REMW            4'd11
-`define MULDIV_REMUW           4'd12
+   `include "smolrv64_states.vh"
 
 // execute_req_alu_op (EXOP_*) op codes live in smolrv64_defs.vh, shared with
 // the extracted smolrv64_alu module.
@@ -239,97 +129,9 @@ module smolrv64(input wire        clock,
 // execute_req_mem_op: memory access class pre-decoded in S_RF, consumed in S_EXECUTE.
 // Collapses the 22 per-insn load/store/AMO branches into one shared block
 // (single mem_addr adder).
-`define MEMOP_NONE  3'd0
-`define MEMOP_LOAD  3'd1  // L{B,H,W,D}{,U}, FLW/FLD, compressed integer/FP loads
-`define MEMOP_STORE 3'd2  // S{B,H,W,D}, FSW/FSD, compressed integer/FP stores
-`define MEMOP_LR    3'd3  // LR.W / LR.D
-`define MEMOP_SC    3'd4  // SC.W / SC.D
-`define MEMOP_AMO   3'd5  // AMO*.W / AMO*.D
 
-`define HPM_COUNTERS 13
-`define HPM_LAST     (3 + `HPM_COUNTERS - 1)
-`define HPM_COUNTER_MASK ((64'h1 << (`HPM_COUNTERS + 3)) - 1)
-`define HPM_INHIBIT_MASK (`HPM_COUNTER_MASK & ~64'h2)
-`define HPM_OF_BIT 63
+   `include "smolrv64_hpm.vh"
 
-`define HPM_EVENT_NONE             16'h0000
-`define HPM_EVENT_CYCLES           16'h0001
-`define HPM_EVENT_INSTRUCTIONS     16'h0002
-`define HPM_EVENT_ICACHE_READ      16'h0100
-`define HPM_EVENT_ICACHE_HIT       16'h0101
-`define HPM_EVENT_ICACHE_MISS      16'h0102
-`define HPM_EVENT_ICACHE_FILL_LINE 16'h0103
-`define HPM_EVENT_ICACHE_FILL_BEAT 16'h0104
-`define HPM_EVENT_DCACHE_READ      16'h0110
-`define HPM_EVENT_DCACHE_WRITE     16'h0111
-`define HPM_EVENT_DCACHE_HIT       16'h0112
-`define HPM_EVENT_DCACHE_MISS      16'h0113
-`define HPM_EVENT_DCACHE_FILL_LINE 16'h0114
-`define HPM_EVENT_DCACHE_FILL_BEAT 16'h0115
-`define HPM_EVENT_DCACHE_WB_LINE   16'h0116
-`define HPM_EVENT_AXI_READ         16'h0200
-`define HPM_EVENT_AXI_WRITE        16'h0201
-`define HPM_EVENT_BUS_WAIT_CYCLE   16'h0202
-`define HPM_EVENT_TLB_LOOKUP       16'h0300
-`define HPM_EVENT_TLB_HIT          16'h0301
-`define HPM_EVENT_TLB_MISS         16'h0302
-`define HPM_EVENT_TLB_HIT_4K       16'h0303
-`define HPM_EVENT_TLB_HIT_2M       16'h0304
-`define HPM_EVENT_TLB_INSERT_4K    16'h0305
-`define HPM_EVENT_TLB_INSERT_2M    16'h0306
-`define HPM_EVENT_TLB_EVICT_4K     16'h0307
-`define HPM_EVENT_TLB_EVICT_2M     16'h0308
-`define HPM_EVENT_TLB_UNCACHED_1G  16'h0309
-`define HPM_EVENT_TLB_UNCACHED_NAPOT 16'h030a
-`define HPM_EVENT_PTW_LEAF_4K      16'h0310
-`define HPM_EVENT_PTW_LEAF_2M      16'h0311
-`define HPM_EVENT_PTW_LEAF_1G      16'h0312
-`define HPM_EVENT_PTW_LEAF_NAPOT   16'h0313
-`define HPM_EVENT_VHPR_READS              16'h0400
-`define HPM_EVENT_VHPR_WRITES             16'h0401
-`define HPM_EVENT_VHPR_READ_HITS          16'h0402
-`define HPM_EVENT_VHPR_READ_MISSES        16'h0403
-`define HPM_EVENT_VHPR_WRITE_HITS         16'h0404
-`define HPM_EVENT_VHPR_WRITE_MISSES       16'h0405
-`define HPM_EVENT_VHPR_FILLS              16'h0406
-`define HPM_EVENT_VHPR_VICTIM_EVICTS      16'h0407
-`define HPM_EVENT_VHPR_DIRTY_VICTIM_EVICTS 16'h0408
-`define HPM_EVENT_VHPR_ALIAS_EVICTS       16'h0409
-`define HPM_EVENT_VHPR_DIRTY_ALIAS_EVICTS 16'h040a
-`define HPM_EVENT_VHPR_FLUSH_EVICTS       16'h040b
-`define HPM_EVENT_VHPR_DIRTY_FLUSH_EVICTS 16'h040c
-`define HPM_EVENT_VHPR_CBO_PROBES         16'h040d
-`define HPM_EVENT_VHPR_PTW_PROBES         16'h040e
-`define HPM_EVENT_VHPR_EPOCH_BUMPS        16'h040f
-`define HPM_EVENT_VHPR_EPOCH_ROLLOVERS    16'h0410
-
-// Bit indices into the packed hpm_vhpr_pulse vector (one bit per VHPR stat).
-`define VHPRP_READS               0
-`define VHPRP_WRITES              1
-`define VHPRP_READ_HITS           2
-`define VHPRP_READ_MISSES         3
-`define VHPRP_WRITE_HITS          4
-`define VHPRP_WRITE_MISSES        5
-`define VHPRP_FILLS               6
-`define VHPRP_VICTIM_EVICTS       7
-`define VHPRP_DIRTY_VICTIM_EVICTS 8
-`define VHPRP_ALIAS_EVICTS        9
-`define VHPRP_DIRTY_ALIAS_EVICTS  10
-`define VHPRP_FLUSH_EVICTS        11
-`define VHPRP_DIRTY_FLUSH_EVICTS  12
-`define VHPRP_CBO_PROBES          13
-`define VHPRP_PTW_PROBES          14
-`define VHPRP_EPOCH_BUMPS         15
-`define VHPRP_EPOCH_ROLLOVERS     16
-`define VHPRP_WIDTH               17
-
-`define REGION_UART    3'd0
-`define REGION_CLINT   3'd1
-`define REGION_PLIC    3'd2
-`define REGION_BRAM    3'd3
-`define REGION_MMIO    3'd4
-`define REGION_DRAM    3'd5
-`define REGION_ILLEGAL 3'd6
 
    reg [5:0]   state = `S_FETCH1; // XXX We should set this on reset
    reg [1:0]   f_state = `F_IDLE; // free-running frontend FSM; see F_* defines
