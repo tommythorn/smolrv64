@@ -100,8 +100,8 @@ send_line() {
 
 base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
 send_file "$DTB_ADDR"    "$DTB"    $((base + 1))
-base=$(grep -c "loaded sectors=" "$LOG" 2>/dev/null || true)
-send_line "SL2800 ffff 80000000"
-wait_for_loaded $((base + 1))
+# SD loader is dead — XMODEM the firmware to FW_ADDR instead of the old SD load
+# (`SL2800 ffff 80000000` / wait_for_loaded), which now fails "SD init failed".
+send_file "$FW_ADDR"     "$FW"     $((base + 2))
 send_line "X${FW_ADDR} 0 ${DTB_ADDR}"
 echo "[ubuntu-boot] done"
