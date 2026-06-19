@@ -1752,19 +1752,8 @@ module smolrv64(input wire        clock,
    function [63:0] dcache_selected_bank_data;
       input       way;
       input [2:0] bank;
-      begin
-         case (bank)
-           3'd0: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[0] : dcache_way0_bank_rd_data[0];
-           3'd1: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[1] : dcache_way0_bank_rd_data[1];
-           3'd2: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[2] : dcache_way0_bank_rd_data[2];
-           3'd3: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[3] : dcache_way0_bank_rd_data[3];
-           3'd4: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[4] : dcache_way0_bank_rd_data[4];
-           3'd5: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[5] : dcache_way0_bank_rd_data[5];
-           3'd6: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[6] : dcache_way0_bank_rd_data[6];
-           3'd7: dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[7] : dcache_way0_bank_rd_data[7];
-           default: dcache_selected_bank_data = 64'd0;
-         endcase
-      end
+      dcache_selected_bank_data = way ? dcache_way1_bank_rd_data[bank]
+                                      : dcache_way0_bank_rd_data[bank];
    endfunction
 
    function [511:0] dcache_selected_line_data;
