@@ -8,18 +8,23 @@
 // execute_req_alu_op: ALU operation code pre-decoded in S_RF, consumed in S_EXECUTE.
 // Breaking the 50-case priority if-else exe_add path into two pipeline stages
 // reduces the critical path from ~15 LUT levels to ~7 LUT levels per stage.
-`define EXOP_ADD  4'd0   // exe_add = execute_req_rs1_value + execute_req_alu_b  (execute_req_rs1_value[31:0]+b[31:0] if sxt)
-`define EXOP_SUB  4'd1   // exe_add = execute_req_rs1_value - execute_req_alu_b
-`define EXOP_SHL  4'd2   // exe_add = execute_req_rs1_value << b[5:0]    (execute_req_rs1_value[31:0]<<b[4:0] if sxt)
-`define EXOP_SHR  4'd3   // exe_add = execute_req_rs1_value >> b[5:0]
-`define EXOP_SAR  4'd4   // exe_add = $signed(execute_req_rs1_value) >>> b[5:0]
-`define EXOP_XOR  4'd5   // exe_add = execute_req_rs1_value ^ b
-`define EXOP_OR   4'd6   // exe_add = execute_req_rs1_value | b
-`define EXOP_AND  4'd7   // exe_add = execute_req_rs1_value & b
-`define EXOP_LTS  4'd8   // exe_add = ($signed(execute_req_rs1_value) < $signed(b)) ? 1 : 0
-`define EXOP_LTU  4'd9   // exe_add = (execute_req_rs1_value < b) ? 1 : 0
-`define EXOP_OPB  4'd10  // exe_add = b               (LUI, AUIPC, JAL link, MV, LI)
-`define EXOP_ONE  4'd11  // exe_add = 1               (SC.W/D fail)
+// The core's pre-decoded ALU op (execute_req_alu_op) now carries the 6-bit
+// ALU_* codes from alu.v directly; the base RV64GC ops keep their EXOP_* names
+// as aliases. OPB (pass b) / ONE (=1) are smolrv64 result-routing pseudo-ops
+// outside the ALU_* range, handled in the smolrv64_alu wrapper.
+`include "alu_ops.vh"
+`define EXOP_ADD  `ALU_ADD
+`define EXOP_SUB  `ALU_SUB
+`define EXOP_SHL  `ALU_SLL
+`define EXOP_SHR  `ALU_SRL
+`define EXOP_SAR  `ALU_SRA
+`define EXOP_XOR  `ALU_XOR
+`define EXOP_OR   `ALU_OR
+`define EXOP_AND  `ALU_AND
+`define EXOP_LTS  `ALU_SLT
+`define EXOP_LTU  `ALU_SLTU
+`define EXOP_OPB  6'd48
+`define EXOP_ONE  6'd49
 
 // Cache / TLB geometry. The macro bodies reference parameters (TLB_ASID_BITS,
 // CACHE_PERM_BITS, VHPR_EPOCH_BITS) that are resolved at each expansion site,

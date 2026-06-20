@@ -289,9 +289,10 @@ module smolrv64(input wire        clock,
    reg         exe_sext32 = 0; // 1 = sign-extend bit 31 of exe_add
    // Pre-decoded ALU control: computed in S_RF, consumed in S_EXECUTE case block.
    // Breaks the ~50-condition priority if-else chain critical path into two pipeline stages.
-   reg  [ 3:0] execute_req_alu_op  = 0;  // EXOP_* operation code
+   reg  [ 5:0] execute_req_alu_op  = 0;  // ALU_* operation code (alu.v)
    (* max_fanout = 32 *) reg [63:0] execute_req_alu_b = 0; // second operand
    reg         execute_req_alu_sxt = 0;  // 1 → W-type: operate on [31:0], sign-extend result
+   reg         execute_req_alu_uw  = 0;  // 1 → zero-extend op1 from 32b (Zba .uw / slli.uw)
 
    // Pre-decoded mem access: computed in S_RF, consumed in S_EXECUTE shared block.
    // Collapses 22 load/store/AMO branches into one; shares a single execute_req_rs1_value+offset adder.
@@ -346,9 +347,10 @@ module smolrv64(input wire        clock,
    reg  [63:0] execute_req_frs1_value_q = 0;
    reg  [63:0] execute_req_frs2_value_q = 0;
    reg  [63:0] execute_req_frs3_value_q = 0;
-   reg  [ 3:0] execute_req_alu_op_q = 0;
+   reg  [ 5:0] execute_req_alu_op_q = 0;
    reg  [63:0] execute_req_alu_b_q = 0;
    reg         execute_req_alu_sxt_q = 0;
+   reg         execute_req_alu_uw_q = 0;
    reg  [ 2:0] execute_req_mem_op_q = 0;
    reg  [63:0] execute_req_mem_offset_q = 0;
    reg  [ 2:0] execute_req_load_size_lg2_q = 0;
@@ -396,6 +398,7 @@ module smolrv64(input wire        clock,
                          .a   (execute_req_rs1_value),
                          .b   (execute_req_alu_b),
                          .sxt (execute_req_alu_sxt),
+                         .uw  (execute_req_alu_uw),
                          .result(alu_result));
 
    reg         cvfpu_in_valid = 0;
@@ -2840,6 +2843,7 @@ module smolrv64(input wire        clock,
               execute_req_alu_op  <= `EXOP_OPB;
               execute_req_alu_b   <= 64'd0;
               execute_req_alu_sxt <= 0;
+              execute_req_alu_uw  <= 0;
 
               // ---- Compressed instructions (id_rf_insn[1:0] != 2'b11) ----
 
@@ -4083,6 +4087,7 @@ module smolrv64(input wire        clock,
          execute_req_alu_op_q <= 0;
          execute_req_alu_b_q <= 0;
          execute_req_alu_sxt_q <= 0;
+         execute_req_alu_uw_q <= 0;
          execute_req_mem_op_q <= 0;
          execute_req_mem_offset_q <= 0;
          execute_req_load_size_lg2_q <= 0;
@@ -4147,6 +4152,7 @@ module smolrv64(input wire        clock,
               execute_req_alu_op != execute_req_alu_op_q ||
               execute_req_alu_b != execute_req_alu_b_q ||
               execute_req_alu_sxt != execute_req_alu_sxt_q ||
+              execute_req_alu_uw != execute_req_alu_uw_q ||
               execute_req_mem_op != execute_req_mem_op_q ||
               execute_req_mem_offset != execute_req_mem_offset_q ||
               execute_req_load_size_lg2 != execute_req_load_size_lg2_q ||
@@ -4202,6 +4208,7 @@ module smolrv64(input wire        clock,
          execute_req_alu_op_q <= execute_req_alu_op;
          execute_req_alu_b_q <= execute_req_alu_b;
          execute_req_alu_sxt_q <= execute_req_alu_sxt;
+         execute_req_alu_uw_q <= execute_req_alu_uw;
          execute_req_mem_op_q <= execute_req_mem_op;
          execute_req_mem_offset_q <= execute_req_mem_offset;
          execute_req_load_size_lg2_q <= execute_req_load_size_lg2;
