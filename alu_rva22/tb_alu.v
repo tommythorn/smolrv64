@@ -2,7 +2,7 @@
 // independent behavioural reference over directed edge cases + random vectors.
 // Run with:  verilator --binary -j 0 tb_alu.v alu.v && ./obj_dir/Vtb_alu
 
-`include "alu.v"
+`include "../src/alu.v"
 `default_nettype none
 
 module tb_alu;
