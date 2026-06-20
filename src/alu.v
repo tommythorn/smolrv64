@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------
 //
-// A purely combinational RVA22 (RV64I + Zba + Zbb + Zbs) ALU with predecoded
+// A purely combinational RVA22 (RV64I + Zba + Zbb + Zbs) ALU — plus the RVA23
+// Zicond conditional-zero ops (czero.eqz/czero.nez) — with predecoded
 // steering. Evolved from the yarvi RV64I ALU; the elegant shared adder/compare
 // is preserved and the bit-manipulation extensions are layered on with maximal
 // unit sharing:
@@ -53,6 +54,9 @@
 `define ALU_BCLR   6'd30
 `define ALU_BSET   6'd31
 `define ALU_BINV   6'd32
+
+`define ALU_CZEQZ  6'd33   // Zicond czero.eqz (RVA23): rd = (rs2==0) ? 0 : rs1
+`define ALU_CZNEZ  6'd34   // Zicond czero.nez (RVA23): rd = (rs2!=0) ? 0 : rs1
 
 `define ALU_CLZ    6'd40
 `define ALU_CTZ    6'd41
@@ -195,7 +199,9 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
         default:    r_bit = op1 & op2;         // AND
    endcase
 
-   reg [MSB:0] r_ext;     // count / permute / extend / single-bit extract
+   wire op2_zero = (op2 == {XLEN{1'b0}});   // Zicond condition
+
+   reg [MSB:0] r_ext;     // count / permute / extend / single-bit / Zicond
    always @(*) case (op)
         `ALU_CLZ:   r_ext = {{(XLEN-7){1'b0}}, clz_n};
         `ALU_CTZ:   r_ext = {{(XLEN-7){1'b0}}, ctz_n};
@@ -205,6 +211,8 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
         `ALU_SEXTB: r_ext = {{(XLEN- 8){op1[ 7]}}, op1[ 7:0]};
         `ALU_SEXTH: r_ext = {{(XLEN-16){op1[15]}}, op1[15:0]};
         `ALU_ZEXTH: r_ext = {{(XLEN-16){1'b0}},    op1[15:0]};
+        `ALU_CZEQZ: r_ext = op2_zero ? {XLEN{1'b0}} : op1;   // czero.eqz
+        `ALU_CZNEZ: r_ext = op2_zero ? op1 : {XLEN{1'b0}};   // czero.nez
         default:    r_ext = {{MSB{1'b0}}, shift_res[0]};   // BEXT
    endcase
 

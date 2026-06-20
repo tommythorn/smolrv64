@@ -80,6 +80,8 @@ module tb_alu;
            `ALU_SEXTB:  r = {{56{a[7]}},  a[7:0]};
            `ALU_SEXTH:  r = {{48{a[15]}}, a[15:0]};
            `ALU_ZEXTH:  r = {48'b0, a[15:0]};
+           `ALU_CZEQZ:  r = (b == 0) ? 64'b0 : a;
+           `ALU_CZNEZ:  r = (b != 0) ? 64'b0 : a;
            default:     r = 64'b0;
          endcase
          if (w) r = sext32(r);
@@ -89,7 +91,7 @@ module tb_alu;
 
    // BEXT/CLZ/etc are not word ops; ROL/ROR/SLL/SRL/SRA/ADD/SUB/Zba-add are
    // (Zba .uw uses uw, not w). This list drives which modifiers we randomize.
-   reg [5:0] ops [0:32];
+   reg [5:0] ops [0:34];
    integer k;
    initial begin
       ops[0]=`ALU_ADD;   ops[1]=`ALU_SUB;   ops[2]=`ALU_SH1ADD; ops[3]=`ALU_SH2ADD;
@@ -100,7 +102,7 @@ module tb_alu;
       ops[20]=`ALU_ANDN; ops[21]=`ALU_ORN;  ops[22]=`ALU_XNOR;  ops[23]=`ALU_BCLR;
       ops[24]=`ALU_BSET; ops[25]=`ALU_BINV; ops[26]=`ALU_CLZ;   ops[27]=`ALU_CTZ;
       ops[28]=`ALU_CPOP; ops[29]=`ALU_REV8; ops[30]=`ALU_ORCB;  ops[31]=`ALU_SEXTB;
-      ops[32]=`ALU_SEXTH;
+      ops[32]=`ALU_SEXTH; ops[33]=`ALU_CZEQZ; ops[34]=`ALU_CZNEZ;
    end
 
    task check; input [63:0] exp; reg [63:0] got; begin
@@ -121,7 +123,7 @@ module tb_alu;
       vals[6]=64'h0123456789ABCDEF; vals[7]=64'h1;
 
       // Directed: every op x edge operands x shamt 0..63 x {w,uw}
-      for (k=0;k<=32;k=k+1) begin
+      for (k=0;k<=34;k=k+1) begin
          op = ops[k];
          for (iter=0; iter<8; iter=iter+1) begin : dvals
             integer j, sh, ww, uu;
@@ -139,7 +141,7 @@ module tb_alu;
 
       // Random
       for (iter=0; iter<300000; iter=iter+1) begin
-         op  = ops[{$random} % 33];
+         op  = ops[{$random} % 35];
          op1 = {$random, $random};
          op2 = {$random, $random};
          w   = $random & 1;
