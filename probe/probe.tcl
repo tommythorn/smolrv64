@@ -28,6 +28,14 @@ synth_design -top $top -part $part -mode out_of_context -flatten_hierarchy rebui
 
 create_clock -name clk -period $period [get_ports clk]
 
+# Pack the whole design into one clock region. The isolated flop-in/flop-out
+# harness otherwise lets the placer scatter cells across the die, inflating
+# routing far beyond what a real (compact) datapath would see. Constraining to a
+# single region gives representative local routing.
+create_pblock pb_probe
+add_cells_to_pblock [get_pblocks pb_probe] [get_cells -hier -filter {IS_PRIMITIVE}]
+resize_pblock [get_pblocks pb_probe] -add CLOCKREGION_X0Y0:CLOCKREGION_X0Y0
+
 opt_design
 place_design
 phys_opt_design

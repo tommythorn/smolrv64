@@ -97,12 +97,17 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    assign      ltu = dif[XLEN];
    assign      lt  = (op1[MSB] == op2[MSB]) ? dif[MSB] : op1[MSB];
 
-   // -------- arithmetic: ADD/SUB + Zba shift-add (sh{1,2,3}add[.uw], add.uw) --------
+   // -------- arithmetic --------
+   // Plain ADD/SUB feed op1/op2 straight into the (shared) sum/dif adders, so
+   // the common path has no pre-adder mux. Zba shift-add and add.uw use their
+   // own adders and are merged in at a shallow final-mux level.
    wire [1:0]    zsh    = (op == `ALU_SH1ADD) ? 2'd1 :
                           (op == `ALU_SH2ADD) ? 2'd2 :
                           (op == `ALU_SH3ADD) ? 2'd3 : 2'd0;
-   wire [MSB:0]  add_op1 = (uw ? {{(XLEN-32){1'b0}}, op1[31:0]} : op1) << zsh;
-   wire [MSB:0]  arith   = (op == `ALU_SUB) ? dif[MSB:0] : (add_op1 + op2);
+   wire [MSB:0]  op1_uw  = {{(XLEN-32){1'b0}}, op1[31:0]};
+   wire [MSB:0]  addsub  = (op == `ALU_SUB) ? dif[MSB:0] : sum;  // ADD / SUB
+   wire [MSB:0]  zba_sum = ((uw ? op1_uw : op1) << zsh) + op2;   // sh{1,2,3}add[.uw]
+   wire [MSB:0]  adduw   = op1_uw + op2;                         // add.uw
 
    // -------- one funnel shifter: SLL/SRL/SRA/ROL/ROR/BEXT/slli.uw --------
    // Right funnel ({hi,lo} >> shamt); left shifts use the bit-reverse identity
@@ -159,45 +164,73 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    // -------- single-bit (Zbs) mask: 1 << shamt --------
    wire [XLEN-1:0] bmask = {{(XLEN-1){1'b0}}, 1'b1} << (w ? op2[4:0] : op2[SHW-1:0]);
 
-   // -------- result select --------
+   // -------- result groups (each a small mux, computed in parallel) --------
+   reg [MSB:0] r_cmp;     // compares + min/max (from the subtractor)
+   always @(*) case (op)
+        `ALU_SLT:   r_cmp = {{MSB{1'b0}}, lt};
+        `ALU_SLTU:  r_cmp = {{MSB{1'b0}}, ltu};
+        `ALU_MIN:   r_cmp = lt  ? op1 : op2;
+        `ALU_MINU:  r_cmp = ltu ? op1 : op2;
+        `ALU_MAX:   r_cmp = lt  ? op2 : op1;
+        default:    r_cmp = ltu ? op2 : op1;   // MAXU
+   endcase
+
+   reg [MSB:0] r_bit;     // logic (Zbb negated-logic, Zbs single-bit)
+   always @(*) case (op)
+        `ALU_OR:    r_bit = op1 | op2;
+        `ALU_XOR:   r_bit = op1 ^ op2;
+        `ALU_ANDN:  r_bit = op1 & ~op2;
+        `ALU_ORN:   r_bit = op1 | ~op2;
+        `ALU_XNOR:  r_bit = ~(op1 ^ op2);
+        `ALU_BCLR:  r_bit = op1 & ~bmask;
+        `ALU_BSET:  r_bit = op1 |  bmask;
+        `ALU_BINV:  r_bit = op1 ^  bmask;
+        default:    r_bit = op1 & op2;         // AND
+   endcase
+
+   reg [MSB:0] r_ext;     // count / permute / extend / single-bit extract
+   always @(*) case (op)
+        `ALU_CLZ:   r_ext = {{(XLEN-7){1'b0}}, clz_n};
+        `ALU_CTZ:   r_ext = {{(XLEN-7){1'b0}}, ctz_n};
+        `ALU_CPOP:  r_ext = {{(XLEN-7){1'b0}}, pop_n};
+        `ALU_REV8:  r_ext = rev8;
+        `ALU_ORCB:  r_ext = orcb;
+        `ALU_SEXTB: r_ext = {{(XLEN- 8){op1[ 7]}}, op1[ 7:0]};
+        `ALU_SEXTH: r_ext = {{(XLEN-16){op1[15]}}, op1[15:0]};
+        `ALU_ZEXTH: r_ext = {{(XLEN-16){1'b0}},    op1[15:0]};
+        default:    r_ext = {{MSB{1'b0}}, shift_res[0]};   // BEXT
+   endcase
+
+   reg [MSB:0] r_arith;   // Zba shift-add / add.uw (ADD/SUB handled separately)
+   always @(*) case (op)
+        `ALU_SH1ADD, `ALU_SH2ADD, `ALU_SH3ADD: r_arith = zba_sum;
+        default:                               r_arith = adduw;   // add.uw
+   endcase
+
+   // -------- balanced final select --------
+   // The two slowest data sources — the carry-chain adder (ADD/SUB) and the
+   // funnel shifter — get the shallowest mux paths (one 2:1 each); the faster
+   // logic/compare/extend/Zba groups sit deeper in the tree.
+   wire is_addsub = (op == `ALU_ADD && !uw) || (op == `ALU_SUB);  // add.uw -> r_arith
+   wire is_shift  = (op == `ALU_SLL) || (op == `ALU_SRL) || (op == `ALU_SRA) ||
+                    (op == `ALU_ROL) || (op == `ALU_ROR);
+   wire is_cmp    = (op == `ALU_SLT)|| (op == `ALU_SLTU)||
+                    (op == `ALU_MIN)|| (op == `ALU_MINU)||
+                    (op == `ALU_MAX)|| (op == `ALU_MAXU);
+   wire is_bit    = (op == `ALU_AND)|| (op == `ALU_OR) || (op == `ALU_XOR) ||
+                    (op == `ALU_ANDN)||(op == `ALU_ORN)||(op == `ALU_XNOR)||
+                    (op == `ALU_BCLR)||(op == `ALU_BSET)||(op == `ALU_BINV);
+   wire is_zba    = (op == `ALU_SH1ADD)||(op == `ALU_SH2ADD)||(op == `ALU_SH3ADD)||
+                    (op == `ALU_ADD && uw);   // add.uw rides the r_arith group
+
+   wire [MSB:0] r_g0 = is_cmp  ? r_cmp   : r_ext;     // fast groups, deepest
+   wire [MSB:0] r_g1 = is_bit  ? r_bit   : r_g0;
+   wire [MSB:0] r_g2 = is_zba  ? r_arith : r_g1;
+   wire [MSB:0] r_g3 = is_shift ? shift_res : r_g2;   // shifter: one 2:1
+   wire [MSB:0] r_pre = is_addsub ? addsub : r_g3;    // adder: one 2:1
+
    always @(*) begin
-      case (op)
-        `ALU_ADD, `ALU_SUB, `ALU_SH1ADD, `ALU_SH2ADD, `ALU_SH3ADD:
-                    result = arith;
-
-        `ALU_SLT:   result = {{MSB{1'b0}}, lt};
-        `ALU_SLTU:  result = {{MSB{1'b0}}, ltu};
-        `ALU_MIN:   result = lt  ? op1 : op2;
-        `ALU_MINU:  result = ltu ? op1 : op2;
-        `ALU_MAX:   result = lt  ? op2 : op1;
-        `ALU_MAXU:  result = ltu ? op2 : op1;
-
-        `ALU_SLL, `ALU_SRL, `ALU_SRA, `ALU_ROL, `ALU_ROR:
-                    result = shift_res;
-        `ALU_BEXT:  result = {{MSB{1'b0}}, shift_res[0]};
-
-        `ALU_AND:   result = op1 & op2;
-        `ALU_OR:    result = op1 | op2;
-        `ALU_XOR:   result = op1 ^ op2;
-        `ALU_ANDN:  result = op1 & ~op2;
-        `ALU_ORN:   result = op1 | ~op2;
-        `ALU_XNOR:  result = ~(op1 ^ op2);
-        `ALU_BCLR:  result = op1 & ~bmask;
-        `ALU_BSET:  result = op1 |  bmask;
-        `ALU_BINV:  result = op1 ^  bmask;
-
-        `ALU_CLZ:   result = {{(XLEN-7){1'b0}}, clz_n};
-        `ALU_CTZ:   result = {{(XLEN-7){1'b0}}, ctz_n};
-        `ALU_CPOP:  result = {{(XLEN-7){1'b0}}, pop_n};
-        `ALU_REV8:  result = rev8;
-        `ALU_ORCB:  result = orcb;
-        `ALU_SEXTB: result = {{(XLEN- 8){op1[ 7]}}, op1[ 7:0]};
-        `ALU_SEXTH: result = {{(XLEN-16){op1[15]}}, op1[15:0]};
-        `ALU_ZEXTH: result = {{(XLEN-16){1'b0}},    op1[15:0]};
-
-        default:    result = {XLEN{1'bx}};
-      endcase
-
+      result = r_pre;
       // *W instructions: sign-extend the low 32 bits of the result.
       if (XLEN != 32 && w)
          result = {{XLEN/2{result[XLEN/2-1]}}, result[XLEN/2-1:0]};
