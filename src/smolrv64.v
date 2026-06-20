@@ -2954,56 +2954,136 @@ module smolrv64(input wire        clock,
                        execute_req_alu_op <= `EXOP_OPB;
                        execute_req_alu_b  <= id_rf_next_pc;
                     end
-                    5'b00100: begin // OP-IMM: funct3 selects operation
-                       execute_req_alu_b <= d_imm_i; // default; shifts override below
+                    5'b00100: begin // OP-IMM + Zbb/Zbs immediate forms
+                       execute_req_alu_b <= d_imm_i; // default (ADDI/SLTI/XORI/ORI/ANDI)
                        case (id_rf_insn[14:12])
-                          3'b000: execute_req_alu_op <= `EXOP_ADD;   // ADDI
-                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {58'd0, id_rf_insn[25:20]}; end  // SLLI
-                          3'b010: execute_req_alu_op <= `EXOP_LTS;   // SLTI
-                          3'b011: execute_req_alu_op <= `EXOP_LTU;   // SLTIU
-                          3'b100: execute_req_alu_op <= `EXOP_XOR;   // XORI
-                          3'b101: begin // SRLI / SRAI
-                             execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             execute_req_alu_b  <= {58'd0, id_rf_insn[25:20]};
+                          3'b000: execute_req_alu_op <= `ALU_ADD;   // ADDI
+                          3'b010: execute_req_alu_op <= `ALU_SLT;   // SLTI
+                          3'b011: execute_req_alu_op <= `ALU_SLTU;  // SLTIU
+                          3'b100: execute_req_alu_op <= `ALU_XOR;   // XORI
+                          3'b110: execute_req_alu_op <= `ALU_OR;    // ORI
+                          3'b111: execute_req_alu_op <= `ALU_AND;   // ANDI
+                          3'b001: begin // SLLI / Zbs(bclri/binvi/bseti) / Zbb unary
+                             execute_req_alu_b <= {58'd0, id_rf_insn[25:20]}; // shamt6
+                             case (id_rf_insn[31:26])
+                                6'b010010: execute_req_alu_op <= `ALU_BCLR;  // BCLRI
+                                6'b011010: execute_req_alu_op <= `ALU_BINV;  // BINVI
+                                6'b001010: execute_req_alu_op <= `ALU_BSET;  // BSETI
+                                6'b011000: case (id_rf_insn[24:20])           // funct7=0110000
+                                              5'b00001: execute_req_alu_op <= `ALU_CTZ;
+                                              5'b00010: execute_req_alu_op <= `ALU_CPOP;
+                                              5'b00100: execute_req_alu_op <= `ALU_SEXTB;
+                                              5'b00101: execute_req_alu_op <= `ALU_SEXTH;
+                                              default:  execute_req_alu_op <= `ALU_CLZ;  // rs2=00000
+                                           endcase
+                                default:   execute_req_alu_op <= `ALU_SLL;   // SLLI
+                             endcase
                           end
-                          3'b110: execute_req_alu_op <= `EXOP_OR;    // ORI
-                          3'b111: execute_req_alu_op <= `EXOP_AND;   // ANDI
+                          3'b101: begin // SRLI/SRAI / Zbs(bexti) / Zbb(rori/orcb/rev8)
+                             execute_req_alu_b <= {58'd0, id_rf_insn[25:20]}; // shamt6
+                             case (id_rf_insn[31:26])
+                                6'b010000: execute_req_alu_op <= `ALU_SRA;   // SRAI
+                                6'b010010: execute_req_alu_op <= `ALU_BEXT;  // BEXTI
+                                6'b011000: execute_req_alu_op <= `ALU_ROR;   // RORI
+                                6'b001010: execute_req_alu_op <= `ALU_ORCB;  // ORC.B
+                                6'b011010: execute_req_alu_op <= `ALU_REV8;  // REV8
+                                default:   execute_req_alu_op <= `ALU_SRL;   // SRLI
+                             endcase
+                          end
                        endcase
                     end
-                    5'b01100: begin // OP-REG: funct3+funct7[5] selects operation
+                    5'b01100: begin // OP-REG + Zba/Zbb/Zbs/Zicond
                        execute_req_alu_b <= id_rf_rs2_value;
                        case (id_rf_insn[14:12])
-                          3'b000: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADD/SUB
-                          3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLL
-                          3'b010: execute_req_alu_op <= `EXOP_LTS;  // SLT
-                          3'b011: execute_req_alu_op <= `EXOP_LTU;  // SLTU
-                          3'b100: execute_req_alu_op <= `EXOP_XOR;  // XOR
-                          3'b101: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRL/SRA
-                          3'b110: execute_req_alu_op <= `EXOP_OR;   // OR
-                          3'b111: execute_req_alu_op <= `EXOP_AND;  // AND
-                          // MUL/DIV (funct7[0]=1): exe_add unused; default EXOP_OPB is fine
+                          3'b000: execute_req_alu_op <= (id_rf_insn[31:25]==7'b0100000) ? `ALU_SUB : `ALU_ADD; // SUB/ADD
+                          3'b001: case (id_rf_insn[31:25])
+                                     7'b0110000: execute_req_alu_op <= `ALU_ROL;
+                                     7'b0100100: execute_req_alu_op <= `ALU_BCLR;
+                                     7'b0110100: execute_req_alu_op <= `ALU_BINV;
+                                     7'b0010100: execute_req_alu_op <= `ALU_BSET;
+                                     default:    execute_req_alu_op <= `ALU_SLL;   // SLL
+                                  endcase
+                          3'b010: execute_req_alu_op <= (id_rf_insn[31:25]==7'b0010000) ? `ALU_SH1ADD : `ALU_SLT;
+                          3'b011: execute_req_alu_op <= `ALU_SLTU;
+                          3'b100: case (id_rf_insn[31:25])
+                                     7'b0010000: execute_req_alu_op <= `ALU_SH2ADD;
+                                     7'b0100000: execute_req_alu_op <= `ALU_XNOR;
+                                     7'b0000101: execute_req_alu_op <= `ALU_MIN;
+                                     default:    execute_req_alu_op <= `ALU_XOR;   // XOR
+                                  endcase
+                          3'b101: case (id_rf_insn[31:25])
+                                     7'b0100000: execute_req_alu_op <= `ALU_SRA;
+                                     7'b0110000: execute_req_alu_op <= `ALU_ROR;
+                                     7'b0100100: execute_req_alu_op <= `ALU_BEXT;
+                                     7'b0000101: execute_req_alu_op <= `ALU_MINU;
+                                     7'b0000111: execute_req_alu_op <= `ALU_CZEQZ; // czero.eqz
+                                     default:    execute_req_alu_op <= `ALU_SRL;   // SRL
+                                  endcase
+                          3'b110: case (id_rf_insn[31:25])
+                                     7'b0010000: execute_req_alu_op <= `ALU_SH3ADD;
+                                     7'b0100000: execute_req_alu_op <= `ALU_ORN;
+                                     7'b0000101: execute_req_alu_op <= `ALU_MAX;
+                                     default:    execute_req_alu_op <= `ALU_OR;    // OR
+                                  endcase
+                          3'b111: case (id_rf_insn[31:25])
+                                     7'b0100000: execute_req_alu_op <= `ALU_ANDN;
+                                     7'b0000101: execute_req_alu_op <= `ALU_MAXU;
+                                     7'b0000111: execute_req_alu_op <= `ALU_CZNEZ; // czero.nez
+                                     default:    execute_req_alu_op <= `ALU_AND;   // AND
+                                  endcase
+                          // MUL/DIV (funct7=0000001): exe_add unused; defaults are harmless
                        endcase
                     end
-                    5'b00110: begin // OP-IMM-32 (W-type immediates)
-                       execute_req_alu_sxt <= 1;
+                    5'b00110: begin // OP-IMM-32 + Zba(slli.uw)/Zbb(clzw/ctzw/cpopw/roriw)
                        case (id_rf_insn[14:12])
-                          3'b000: begin execute_req_alu_op <= `EXOP_ADD; execute_req_alu_b <= d_imm_i; end  // ADDIW
-                          3'b001: begin execute_req_alu_op <= `EXOP_SHL; execute_req_alu_b <= {59'd0, id_rf_insn[24:20]}; end  // SLLIW
-                          3'b101: begin  // SRLIW / SRAIW
-                             execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;
-                             execute_req_alu_b  <= {59'd0, id_rf_insn[24:20]};
+                          3'b000: begin execute_req_alu_op <= `ALU_ADD; execute_req_alu_b <= d_imm_i; execute_req_alu_sxt <= 1; end // ADDIW
+                          3'b001: case (id_rf_insn[31:26])
+                                     6'b000010: begin execute_req_alu_op <= `ALU_SLL; execute_req_alu_uw <= 1;  // SLLI.UW (64-bit)
+                                                      execute_req_alu_b <= {58'd0, id_rf_insn[25:20]}; end
+                                     6'b011000: begin execute_req_alu_sxt <= 1;                                // CLZW/CTZW/CPOPW
+                                                      case (id_rf_insn[24:20])
+                                                         5'b00001: execute_req_alu_op <= `ALU_CTZ;
+                                                         5'b00010: execute_req_alu_op <= `ALU_CPOP;
+                                                         default:  execute_req_alu_op <= `ALU_CLZ;
+                                                      endcase end
+                                     default:   begin execute_req_alu_op <= `ALU_SLL; execute_req_alu_sxt <= 1; // SLLIW
+                                                      execute_req_alu_b <= {59'd0, id_rf_insn[24:20]}; end
+                                  endcase
+                          3'b101: begin
+                             execute_req_alu_sxt <= 1;
+                             execute_req_alu_b   <= {59'd0, id_rf_insn[24:20]};
+                             case (id_rf_insn[31:26])
+                                6'b011000: execute_req_alu_op <= `ALU_ROR;   // RORIW
+                                6'b010000: execute_req_alu_op <= `ALU_SRA;   // SRAIW
+                                default:   execute_req_alu_op <= `ALU_SRL;   // SRLIW
+                             endcase
                           end
-                          default: ; // other funct3: no exe_add
+                          default: ;
                        endcase
                     end
-                    5'b01110: begin // OP-REG-32 (W-type register)
-                       execute_req_alu_sxt <= 1;
+                    5'b01110: begin // OP-REG-32 + Zba(add.uw/sh*add.uw)/Zbb(rolw/rorw/zext.h)
                        execute_req_alu_b <= id_rf_rs2_value;
                        case (id_rf_insn[14:12])
-                          3'b000: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SUB : `EXOP_ADD;  // ADDW/SUBW
-                          3'b001: execute_req_alu_op <= `EXOP_SHL;  // SLLW
-                          3'b101: execute_req_alu_op <= id_rf_insn[30] ? `EXOP_SAR : `EXOP_SHR;  // SRLW/SRAW
-                          // MUL/DIV-W: exe_add unused
+                          3'b000: case (id_rf_insn[31:25])
+                                     7'b0100000: begin execute_req_alu_op <= `ALU_SUB; execute_req_alu_sxt <= 1; end // SUBW
+                                     7'b0000100: begin execute_req_alu_op <= `ALU_ADD; execute_req_alu_uw  <= 1; end // ADD.UW (64-bit)
+                                     default:    begin execute_req_alu_op <= `ALU_ADD; execute_req_alu_sxt <= 1; end // ADDW
+                                  endcase
+                          3'b001: case (id_rf_insn[31:25])
+                                     7'b0110000: begin execute_req_alu_op <= `ALU_ROL; execute_req_alu_sxt <= 1; end // ROLW
+                                     default:    begin execute_req_alu_op <= `ALU_SLL; execute_req_alu_sxt <= 1; end // SLLW
+                                  endcase
+                          3'b010: begin execute_req_alu_op <= `ALU_SH1ADD; execute_req_alu_uw <= 1; end              // SH1ADD.UW
+                          3'b100: case (id_rf_insn[31:25])
+                                     7'b0000100: execute_req_alu_op <= `ALU_ZEXTH;                                   // ZEXT.H (64-bit)
+                                     default:    begin execute_req_alu_op <= `ALU_SH2ADD; execute_req_alu_uw <= 1; end // SH2ADD.UW
+                                  endcase
+                          3'b101: case (id_rf_insn[31:25])
+                                     7'b0110000: begin execute_req_alu_op <= `ALU_ROR; execute_req_alu_sxt <= 1; end // RORW
+                                     7'b0100000: begin execute_req_alu_op <= `ALU_SRA; execute_req_alu_sxt <= 1; end // SRAW
+                                     default:    begin execute_req_alu_op <= `ALU_SRL; execute_req_alu_sxt <= 1; end // SRLW
+                                  endcase
+                          3'b110: begin execute_req_alu_op <= `ALU_SH3ADD; execute_req_alu_uw <= 1; end              // SH3ADD.UW
                           default: ;
                        endcase
                     end
@@ -5456,6 +5536,16 @@ module smolrv64(input wire        clock,
            end
 
            // LR.W/D, SC.W/D, and all AMO*.W/D variants handled by shared mem block above.
+
+           // Zba / Zbb / Zbs / Zicond register-result ops share the OP / OP-IMM
+           // / OP-32 / OP-IMM-32 opcodes. The base RV64 forms above are matched
+           // by exact funct7; everything remaining on these opcodes is a
+           // bitmanip/Zicond op whose execute_req_alu_op the S_RF decoder has
+           // already set, so just write back the ALU result via S_EXECUTE2.
+           else if (ex_insn[6:0] == 7'b0110011 || ex_insn[6:0] == 7'b0010011 ||
+                    ex_insn[6:0] == 7'b0111011 || ex_insn[6:0] == 7'b0011011) begin
+              write_back_register = ex_rd;
+           end
 
            else if ((ex_insn & 'hffffffff) == 'h30200073) begin // MRET
               frontend_buf_flush <= 1'b1;
