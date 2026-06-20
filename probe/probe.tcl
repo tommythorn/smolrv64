@@ -44,8 +44,16 @@ set achieved [expr {$period - $wns}]
 set fmax     [expr {1000.0 / $achieved}]
 
 report_timing -setup -max_paths 5 -file probe_timing.rpt
+
+# Area proxy: the harness has ~no combinational logic, so the LUT count is
+# essentially the DUT's. (FF count includes the flop-in/flop-out registers.)
+set luts [llength [get_cells -hier -filter {REF_NAME =~ LUT*}]]
+set ffs  [llength [get_cells -hier -filter {REF_NAME =~ FD*}]]
+set carry [llength [get_cells -hier -filter {REF_NAME =~ CARRY*}]]
+
 puts "----------------------------------------------------------------"
 puts [format "PROBE RESULT: top=%s  constraint=%sns  WNS=%.3fns  achieved_period=%.3fns  Fmax=%.1f MHz" \
         $top $period $wns $achieved $fmax]
+puts [format "PROBE AREA:   LUTs=%d  CARRY8=%d  FFs(incl harness)=%d" $luts $carry $ffs]
 puts "  (worst-path details in probe_timing.rpt)"
 puts "----------------------------------------------------------------"
