@@ -44,7 +44,7 @@ else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
 
-SRCS=smolrv64.v smolrv64_tb.v smolrv64_alu.v smolrv64_plic_arbiter.v \
+SRCS=smolrv64.v smolrv64_tb.v smolrv64_alu.v alu.v smolrv64_plic_arbiter.v \
      smolrv64_async_fifo.v smolrv64_l2_boundary.v smolrv64_mem_engine.v \
      smolrv64_frontend.v smolrv64_sdpram.v regfile.v fregfile.v
 CVFPU_SRCS=smolrv64_cvfpu.sv
@@ -58,7 +58,7 @@ CVFPU_SMOKE_TB=cvfpu_smoke_tb.sv
 # Common prerequisites for every Verilator sim build below. git_commit.vh is
 # regenerated whenever HEAD moves (rule below), so it forces a relink and
 # mimpid always matches the built commit.
-SIM_DEPS=$(SRCS) smolrv64_defs.vh smolrv64_cache_meta.vh smolrv64_fp_ops.vh smolrv64_mem_align.vh smolrv64_tlb_helpers.vh smolrv64_debug.vh smolrv64_csr.vh smolrv64_trap.vh smolrv64_states.vh smolrv64_hpm.vh $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
+SIM_DEPS=$(SRCS) smolrv64_defs.vh smolrv64_cache_meta.vh smolrv64_fp_ops.vh smolrv64_mem_align.vh smolrv64_tlb_helpers.vh smolrv64_debug.vh smolrv64_csr.vh smolrv64_trap.vh smolrv64_states.vh smolrv64_hpm.vh alu_ops.vh $(CVFPU_DEPS) sim_main.cpp Makefile git_commit.vh
 
 # Regenerate git_commit.vh, but only rewrite it when the commit actually
 # changes — FORCE runs the recipe every build, and cmp keeps the file's mtime
