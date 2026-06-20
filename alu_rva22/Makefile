@@ -4,7 +4,8 @@
 #   SRCS="flopwrap.v alu_rva22_probe.v ../alu_rva22/alu.v" PERIOD=2.5)
 
 VL := verilator
-VLFLAGS := --binary --timing -j 0 \
+# -I../src so alu.v's `include "alu_ops.vh" resolves (alu.v lives in ../src).
+VLFLAGS := --binary --timing -j 0 -I../src \
 	-Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNSIGNED -Wno-CASEINCOMPLETE -Wno-fatal
 
 .PHONY: test clean
