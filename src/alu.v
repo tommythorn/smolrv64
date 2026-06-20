@@ -112,29 +112,36 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    // -------- one funnel shifter: SLL/SRL/SRA/ROL/ROR/BEXT/slli.uw --------
    // Right funnel ({hi,lo} >> shamt); left shifts use the bit-reverse identity
    //   x << s == rev(rev(x) >> s),   rol(x,s) == rev(ror(rev(x),s)).
+   // The *W word ops share this funnel: their result is result[31:0], and with
+   // shamt<=31 those bits come only from the low operand, so we pack the 32-bit
+   // operand+fill into the low half and ignore the high half for word.
    wire is_left = (op == `ALU_SLL) || (op == `ALU_ROL);
    wire is_rot  = (op == `ALU_ROL) || (op == `ALU_ROR);
    wire is_sra  = (op == `ALU_SRA);
 
    wire [SHW-1:0] sh64 = op2[SHW-1:0];
    wire [4:0]     sh32 = op2[4:0];
+   wire [31:0]    o32  = op1[31:0];
 
-   // full-width funnel.  uw (zero-extend op1 from 32b) only applies to slli.uw;
-   // it has no meaning for the right shifts / rotates, so gate it on SLL.
-   wire [XLEN-1:0] sh_in  = (uw && op == `ALU_SLL) ? {{(XLEN-32){1'b0}}, op1[31:0]} : op1;
+   // 64-bit operand (uw zero-extends op1 for slli.uw only).
+   wire [XLEN-1:0] sh_in  = (uw && op == `ALU_SLL) ? {{(XLEN-32){1'b0}}, o32} : op1;
    wire [XLEN-1:0] base64 = is_left ? brevx(sh_in) : sh_in;
    wire [XLEN-1:0] hi64   = is_rot ? base64 : (is_sra ? {XLEN{base64[MSB]}} : {XLEN{1'b0}});
-   wire [2*XLEN-1:0] fun64 = {hi64, base64} >> sh64;
-   wire [XLEN-1:0] sh64_r = is_left ? brevx(fun64[XLEN-1:0]) : fun64[XLEN-1:0];
 
-   // 32-bit funnel for the *W word shifts/rotates
-   wire [31:0] o32     = op1[31:0];
-   wire [31:0] base32  = is_left ? brev32(o32) : o32;
-   wire [31:0] hi32    = is_rot ? base32 : (is_sra ? {32{base32[31]}} : 32'b0);
-   wire [63:0] fun32   = {hi32, base32} >> sh32;
-   wire [31:0] sh32_r  = is_left ? brev32(fun32[31:0]) : fun32[31:0];
+   // Word operand packed into 64 bits: low = base, high = fill (0 / sign / wrap).
+   wire [31:0] base32 = is_left ? brev32(o32) : o32;
+   wire [31:0] hi32   = is_rot ? base32 : (is_sra ? {32{base32[31]}} : 32'b0);
 
-   wire [XLEN-1:0] shift_res = w ? {{(XLEN-32){sh32_r[31]}}, sh32_r} : sh64_r;
+   // Single shared funnel.
+   wire [XLEN-1:0]   lo  = w ? {hi32, base32} : base64;
+   wire [SHW-1:0]    sh  = w ? {{(SHW-5){1'b0}}, sh32} : sh64;
+   wire [2*XLEN-1:0] fun = {hi64, lo} >> sh;
+   wire [XLEN-1:0]   fr  = fun[XLEN-1:0];
+
+   wire [XLEN-1:0] shift_raw =
+        is_left ? (w ? {{(XLEN-32){1'b0}}, brev32(fr[31:0])} : brevx(fr)) : fr;
+   wire [XLEN-1:0] shift_res =
+        w ? {{(XLEN-32){shift_raw[31]}}, shift_raw[31:0]} : shift_raw;
 
    // -------- count unit: CLZ/CTZ/CPOP (and *W variants via `w`) --------
    function [6:0] count_lz;          // leading zeros of the low `n` bits
