@@ -32,9 +32,14 @@ create_clock -name clk -period $period [get_ports clk]
 # harness otherwise lets the placer scatter cells across the die, inflating
 # routing far beyond what a real (compact) datapath would see. Constraining to a
 # single region gives representative local routing.
+set region "CLOCKREGION_X0Y0:CLOCKREGION_X0Y0"
+if {[info exists ::env(PROBE_REGION)] && $::env(PROBE_REGION) ne ""} {
+    set region $::env(PROBE_REGION)
+}
+puts "    pblock region: $region"
 create_pblock pb_probe
 add_cells_to_pblock [get_pblocks pb_probe] [get_cells -hier -filter {IS_PRIMITIVE}]
-resize_pblock [get_pblocks pb_probe] -add CLOCKREGION_X0Y0:CLOCKREGION_X0Y0
+resize_pblock [get_pblocks pb_probe] -add $region
 
 opt_design
 place_design

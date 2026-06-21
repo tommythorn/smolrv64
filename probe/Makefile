@@ -16,10 +16,11 @@ export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 TOP    ?= flopwrap
 PERIOD ?= 2.0
 SRCS   ?= flopwrap.v rf_alu.v
+REGION ?=                       # pblock region override, e.g. CLOCKREGION_X0Y0:CLOCKREGION_X1Y1
 
 .PHONY: probe clean
 probe:
-	$(VIVADO) $(VFLAGS) -source probe.tcl -tclargs $(TOP) $(PERIOD) $(PART) $(SRCS)
+	PROBE_REGION="$(REGION)" $(VIVADO) $(VFLAGS) -source probe.tcl -tclargs $(TOP) $(PERIOD) $(PART) $(SRCS)
 
 clean:
 	rm -rf probe_timing.rpt clockInfo.txt .Xil cong vivado*.jou vivado*.log *.pb *.rpx
