@@ -331,21 +331,55 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 
 ## Validated results (timing probe, `probe/`, xcku5p-ffvb676-2-i, OOC)
 
-| Design | Fmax | Area | File |
-|---|---|---|---|
-| Monolithic 4-wide renamer (full intra-bundle bypass) | ~440 MHz | 4351 LUTs | `renamer.v` |
-| **Sharded renamer slice** (decoder-resolved `{ARCH\|SLOT}`) | **~790 MHz** | 1469 LUTs/shard | `rename_shard.v` |
+| Design | Fmax | Area | File | Func |
+|---|---|---|---|---|
+| Monolithic 4-wide renamer (full intra-bundle bypass) | ~440 MHz | 4351 LUTs | `renamer.v` | — |
+| **Sharded renamer slice** (decoder-resolved `{ARCH\|SLOT}`) | **~790 MHz** | 1469 LUTs/shard | `rename_shard.v` | — |
+| **Cross-slot dependency matrix** | **~1.1 GHz** | 59 LUTs | `decode_xslot.v` | 9/9 ✓ |
+| 4-wide renamer bundle (matrix + 4 shards + broadcasts) | ~397 MHz* | 11.5k LUTs | `renamer_bundle.v` | ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
-W=4 / 32-entry. Both at the *old* 32-entry MAP / 64-phys geometry; the MAP read
-mux becomes 64:1 once `AREGS=64`. We are far over the 400 MHz bar, so no re-probe.
+W=4 / 32-entry. The cross-slot matrix (the O(W²) moved out of rename) is
+functionally verified and ~free (`tb_decode_xslot.v`, 9/9).
+
+\* The bundle's in-context number is **congestion-limited and unrepresentative**,
+for two reasons: (1) the probe harness forces all 4 shards into one clock region
+(`CLOCKREGION_X0Y0`) — the real design spreads shards across regions as distinct
+clusters; the worst path is 75% routing / 6 logic levels = congestion, not logic.
+(2) the bundle probe is one combinational input→MAP block; the real design
+**registers the cross-shard broadcasts** (next-cycle updates, not single-cycle
+logic paths). A faithful in-context number needs a multi-region floorplan +
+pipelined broadcasts. The component numbers (slice 790, matrix 1.1 GHz) + the
+registered-broadcast architecture are the real timing story. The bundle is
+functionally validated end-to-end (`tb_renamer_bundle.v`): RAW-through-bundle,
+ARCH identity read, cross-cycle MAP update, WAW youngest (intra-bundle +
+committed).
+
+Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
+`renamer_bundle` is the unified `AREGS=64` / `NPHYS=128`. All far enough above the
+400 MHz bar (per-component) that we don't sweep further.
 
 ## Build order / status
 
-1. Renamer — **done** (probe + RTL, validated).
-2. **Decoder — next.** Chosen over the scheduler because it freezes the
-   `{ARCH|SLOT}` + last-writer contract everything downstream consumes.
-3. Scheduler shard, execution units, aligner/fetcher — after.
+1. Renamer slice — **done** (probe + RTL, ~790 MHz).
+2. Cross-slot dependency matrix — **done** (`decode_xslot.v`, 9/9, ~1.1 GHz).
+3. 4-wide renamer bundle — **assembled + functionally verified**
+   (`renamer_bundle.v` + `tb_renamer_bundle.v`). In-context timing deferred until
+   a multi-region floorplan + registered broadcasts exist (single-region probe is
+   pessimistic — see results note).
+4. **Decoder operand decode — next.** RVC + base/FP operand-field extraction with
+   explicit per-operand valid bits, in unified 0..63 arch space, producing the
+   rest of the decoder IR (`rs1/rs2/rd` + valids + `uses_imm/imm` + `ctl`). Port
+   the mask decode from `src/smolrv64.v`. **RVC is the footgun** — verify operand
+   decode by cosim against the proven core, not just a directed TB. (Left for
+   review rather than implemented unsupervised.)
+5. Then: scheduler shard, execution units, aligner/fetcher; integration into the
+   existing SoC (replace inner core + frontend, reuse caches/TLB/devices).
 
-Every stage gets a ready/valid (elastic) boundary.
+Open discussion threads (flagged by TT, not yet detailed): back-pressure across
+stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
+multi-region floorplan for a real in-context bundle number.
+
+Every stage gets a ready/valid (elastic) boundary. New RTL currently lives in
+`probe/` (validate-first); migrates to `src/` at integration.
