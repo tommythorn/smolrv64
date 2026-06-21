@@ -340,6 +340,7 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | RV64C expander (16b→32b) | not probed | — | `rvc_expand.v` | 65536/65536 ✓ |
 | RV64I operand decode | not probed | — | `decode_operands.v` | 15/15 (directed) |
 | Full decode stage (lanes + matrix) | not probed | — | `decode_stage.v` | composition ✓ |
+| Decode→rename (registered boundary) | not probed | — | `decode_rename.v` | end-to-end ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -384,13 +385,21 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
 6. Full decode stage — **done** (`decode_slot.v` per lane, `decode_stage.v` =
    IW lanes + `decode_xslot`). Produces the renamer's input contract; composition
    TB (`tb_decode_stage.v`) passes on a mixed RVC/32b dependency-rich bundle.
-7. **Next:** wire decode → rename (refactor: the renamer should *consume*
-   `decode_stage`'s `{arch,is_slot,slot,map_writer,rd_v}` across a registered
-   stage boundary, not recompute `decode_xslot` — `renamer_bundle` embeds its own
-   copy for standalone validation). Then aligner + fetch (+ BP stub) to complete
-   the frontend; then scheduler shard, execution; integrate (replace inner core +
-   frontend, reuse caches/TLB/devices). Pending: cosim to close the operand-decode
-   coverage gap (`src/smolrv64.v` or `~/simmerv`).
+7. Decode → rename — **done** (`decode_rename.v` = `decode_stage` → registered
+   boundary → `renamer_bundle`). `renamer_bundle` no longer embeds `decode_xslot`;
+   it takes the cross-slot result (`s*_is_slot/s*_slot/map_writer`) as inputs, so
+   the O(W²) matrix is computed once in decode and the register cuts it out of the
+   rename critical path. End-to-end TB (`tb_decode_rename.v`): intra-bundle SLOT
+   RAW resolves to producer `pdst`s, dest arch/seq carry through the boundary, and
+   a second bundle reads the first's MAP writes one rename cycle later. The bundle
+   tb/probe now drive the new inputs via a **stimulus-side** `decode_xslot`.
+   *Note:* the boundary register advances every cycle — back-pressure (freeze on
+   stall / no free checkpoint / <2 free regs) is the next pending item.
+8. **Next:** aligner + fetch (+ BP stub) to complete the frontend; then scheduler
+   shard, execution; integrate (replace inner core + frontend, reuse
+   caches/TLB/devices). Also: wire back-pressure to freeze the decode→rename
+   boundary register; cosim to close the operand-decode coverage gap
+   (`src/smolrv64.v` or `~/simmerv`).
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
