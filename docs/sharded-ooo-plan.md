@@ -345,6 +345,8 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Fetch (PC seq + carry-free window) | not probed | — | `fetch.v` | directed ✓ |
 | **Full frontend** (PC→align→decode→rename) | not probed | — | `frontend.v` | end-to-end ✓ |
 | Scheduler shard (scoreboard issue queue) | not probed | — | `sched_shard.v` | directed ✓ |
+| Execution ctl decode | not probed | — | `decode_exec.v` | directed ✓ |
+| Execute datapath (reuses `src/alu.v`) | not probed | — | `exec_alu.v` | directed ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -442,14 +444,32 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
    scheduler, because the MAP already names a commit-lifetime token. Slot-naming
    would force either a double MAP write or a PR→slot translation CAM (= P6
    RAT-at-retire); avoided.
-10. **Next:** execution + PRF + writeback to close the compute loop (then commit /
-    CPR + convert the rename freelist to the bitmap + A[C]/P[C] reclamation).
-    Then a `sched_bundle` (4 shards + broadcast net) and wire frontend→schedule.
-    Deferred: branch prediction / FTQ (fetch is fall-through + redirect; TT has a
-    BP to expand into basic-block prediction — do it once the pipeline runs); the
-    load wake delay-line + WB reservation (with the LSU); back-pressure to freeze
-    the decode→rename boundary; wiring the real I$ to `fetch`'s imem interface;
-    cosim to close the operand-decode coverage gap (`src/smolrv64.v` or `~/simmerv`).
+10. Execution datapath — **done** (`decode_exec.v` + `exec_alu.v`), reusing
+    `src/alu.v` (RVA22 + Zicond). `decode_exec` is the 32-bit-only ctl decode (RVC
+    expanded upstream), op map ported from `smolrv64.v`'s pre-decode; folds
+    `EXOP_OPB` away (LUI=`ADD` 0, AUIPC=`ADD` pc, link=`next_pc`) and emits
+    operand-select + class flags. `exec_alu` = operand select → `alu.v` →
+    result/AGU; `sum`=address, `eq`/`lt`/`ltu` exported for the branch unit.
+    **Scope:** full RVA22 integer ALU + LUI/AUIPC/JAL(R)-link + load/store address
+    gen + branch compares. **Store split:** addr-gen (rs1) and data (rs2) are
+    separate deps so a store occupies its LSU slot without waiting on data.
+    **CSR reads** ride an ALU lane; **CSR-write / system / fence** → `is_serialize`
+    so steering pins them to shard 0. Deferred (flagged, routed to future units):
+    actual memory (LSU/D$), branch redirect, CSR file, M/A/F. `tb_exec` passes on
+    ALU/upper-imm/`*W`/Zbb/load-store-addr/branch/JALR/CSR/MUL. NB: probe TBs now
+    need `-I ../src` (for `alu.v` / `alu_ops.vh`).
+11. **Next:** PRF (S²-banked RF, broadcast writes) + writeback → close the compute
+    loop. 1-cycle-ALU forwarding is just **write-before-read** (producer issues T,
+    result registered into every shard's RF copy at edge T→T+1, dependent woken at
+    the same edge issues T+1 and reads it) — no separate bypass net for the 1-cycle
+    case. Thread the exec payload (ctl + imm + pc) through the scheduler, build
+    `exec_shard` (PRF + `exec_alu` + WB) and an `exec_bundle`, then wire
+    frontend→schedule→execute→wake and demonstrate end-to-end ALU execution. Then
+    commit / CPR + convert the rename freelist to the bitmap + A[C]/P[C]
+    reclamation. Deferred: branch prediction / FTQ (TT has a BP to make
+    basic-block — once the pipeline runs); load wake delay-line + WB reservation
+    (with the LSU); back-pressure to freeze the decode→rename boundary; wire the
+    real I$ to `fetch`'s imem interface; cosim to close the operand-decode gap.
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
