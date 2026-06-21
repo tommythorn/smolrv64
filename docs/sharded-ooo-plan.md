@@ -372,11 +372,15 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
    **exhaustively, 65536/65536** against the oracle `tools/rvc.rs` (→
    `rvc_cases.hex`) by `tb_rvc_expand.v`. Expand-then-decode: this feeds the
    32-bit operand decode, so the decoder only handles full-width forms.
-5. **Operand decode — next.** From the (expanded) 32-bit word: `rs1/rs2/rd` +
-   explicit per-operand valid bits (unified 0..63 arch space, FP=32..63),
-   `uses_imm/imm`, and the `ctl` blob. Port the mask decode from `src/smolrv64.v`;
-   verify by cosim against the proven core.
-6. Then: scheduler shard, execution units, aligner/fetcher; integration into the
+5. RV64I operand decode — **done** (`decode_operands.v`): 32-bit word →
+   unified-arch `rs1/rs2/rd` + explicit per-operand valids (x0 dest dropped;
+   shift-imm/CSR-imm read no rs2/rs1) + sign-extended `imm`/`has_imm` + `legal`.
+   Directed TB 15/15 (`tb_decode_operands.v`). **Verification gap:** directed only
+   — needs cosim vs `src/smolrv64.v` for full coverage. FP regs (arch 32..63),
+   AMO, SFENCE operands, and the execution `ctl` blob are TODO.
+6. **Next:** compose the per-slot decoder (`rvc_expand` → `decode_operands` →
+   carry-through `valid/seq/ckpt#`) feeding `decode_xslot` = the full decode stage;
+   then scheduler shard, execution units, aligner/fetcher; integrate into the
    existing SoC (replace inner core + frontend, reuse caches/TLB/devices).
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
