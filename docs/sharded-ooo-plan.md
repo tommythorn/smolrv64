@@ -344,6 +344,7 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Fetch-window aligner (RVC/32b carve) | not probed | — | `aligner.v` | directed ✓ |
 | Fetch (PC seq + carry-free window) | not probed | — | `fetch.v` | directed ✓ |
 | **Full frontend** (PC→align→decode→rename) | not probed | — | `frontend.v` | end-to-end ✓ |
+| Scheduler shard (scoreboard issue queue) | not probed | — | `sched_shard.v` | directed ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -418,12 +419,37 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
      fetch-side stall on cache-not-ready, and miss handling. `imem_avail` already
      models a short (sub-window) read. Note the memory's "I$ already in frontend"
      refers to the *existing* smolrv64 frontend, a different module.
-9. **Next:** branch prediction / FTQ (fetch is fall-through + redirect only for
-   now); then scheduler shard, execution; integrate (replace inner core +
-   frontend, reuse caches/TLB/devices — incl. wiring the real I$ to `fetch`'s
-   imem interface). Also pending: wire back-pressure to freeze the decode→rename
-   boundary register; cosim to close the operand-decode coverage gap
-   (`src/smolrv64.v` or `~/simmerv`).
+9. Scheduler shard — **done** (`sched_shard.v`): non-speculative scoreboard issue
+   queue, eager allocation (keys off physical-register readiness — no slot naming,
+   no PR↔slot CAM). Shared `ready[]` indexed by each entry's source PRs (wide mux
+   per source: linear in NPHYS/IQ depth, not the quadratic of a matrix, not a
+   per-entry wakeup CAM). 1 dispatch + 1 issue/cycle, oldest-first by seq;
+   cross-shard scoreboard updates ride SHARDS-wide `clr` (dispatched dests) /
+   `wake` (issued dests) broadcasts (self looped). v1 wakeup = 1-cycle (ALU);
+   fixed multi-cycle load latency needs a small per-source delay line on the wake
+   path (goes in with the LSU — `disp_lat`/`iss_lat` already carried so the
+   interface won't change); WB-slot reservation deferred. `tb_sched_shard`:
+   dep-chain wakeup, oldest-first contention via a sibling producer, IQ-full
+   backpressure.
+
+   **Allocation/scheduler decision (settled with TT, see plan below):** name by the
+   commit-lifetime physical register the bitmap freelist already mints (single MAP
+   write); the scheduler keys off PR readiness. *Matrix scheduler rejected* — N×N
+   in IQ entries, only practical at ~8-12; indexing columns by PR makes columns =
+   NPHYS (128×rows), past the quadratic wall. *Late/virtual allocation deferred* —
+   it's a storage optimization (smaller, S²-banked PRF), addable later as a
+   pure RF-path change (VR→PR table at writeback) without touching rename or the
+   scheduler, because the MAP already names a commit-lifetime token. Slot-naming
+   would force either a double MAP write or a PR→slot translation CAM (= P6
+   RAT-at-retire); avoided.
+10. **Next:** execution + PRF + writeback to close the compute loop (then commit /
+    CPR + convert the rename freelist to the bitmap + A[C]/P[C] reclamation).
+    Then a `sched_bundle` (4 shards + broadcast net) and wire frontend→schedule.
+    Deferred: branch prediction / FTQ (fetch is fall-through + redirect; TT has a
+    BP to expand into basic-block prediction — do it once the pipeline runs); the
+    load wake delay-line + WB reservation (with the LSU); back-pressure to freeze
+    the decode→rename boundary; wiring the real I$ to `fetch`'s imem interface;
+    cosim to close the operand-decode coverage gap (`src/smolrv64.v` or `~/simmerv`).
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
