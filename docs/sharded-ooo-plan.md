@@ -378,10 +378,16 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
    Directed TB 15/15 (`tb_decode_operands.v`). **Verification gap:** directed only
    — needs cosim vs `src/smolrv64.v` for full coverage. FP regs (arch 32..63),
    AMO, SFENCE operands, and the execution `ctl` blob are TODO.
-6. **Next:** compose the per-slot decoder (`rvc_expand` → `decode_operands` →
-   carry-through `valid/seq/ckpt#`) feeding `decode_xslot` = the full decode stage;
-   then scheduler shard, execution units, aligner/fetcher; integrate into the
-   existing SoC (replace inner core + frontend, reuse caches/TLB/devices).
+6. Full decode stage — **done** (`decode_slot.v` per lane, `decode_stage.v` =
+   IW lanes + `decode_xslot`). Produces the renamer's input contract; composition
+   TB (`tb_decode_stage.v`) passes on a mixed RVC/32b dependency-rich bundle.
+7. **Next:** wire decode → rename (refactor: the renamer should *consume*
+   `decode_stage`'s `{arch,is_slot,slot,map_writer,rd_v}` across a registered
+   stage boundary, not recompute `decode_xslot` — `renamer_bundle` embeds its own
+   copy for standalone validation). Then aligner + fetch (+ BP stub) to complete
+   the frontend; then scheduler shard, execution; integrate (replace inner core +
+   frontend, reuse caches/TLB/devices). Pending: cosim to close the operand-decode
+   coverage gap (`src/smolrv64.v` or `~/simmerv`).
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
