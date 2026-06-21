@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DTB=${DTB:-ubuntu.dtb}
-FW=${FW:-fw_payload.bin-1.7+v7.1-rc1}
+FW=${FW:-fw_payload.bin}
 INITRD=${INITRD:-tiny128.cpio}
 DTB_ADDR=${DTB_ADDR:-fffff000}
 FW_ADDR=${FW_ADDR:-80000000}
