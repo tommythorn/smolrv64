@@ -22,4 +22,4 @@ probe:
 	$(VIVADO) $(VFLAGS) -source probe.tcl -tclargs $(TOP) $(PERIOD) $(PART) $(SRCS)
 
 clean:
-	rm -rf probe_timing.rpt clockInfo.txt .Xil vivado*.jou vivado*.log *.pb *.rpx
+	rm -rf probe_timing.rpt clockInfo.txt .Xil cong vivado*.jou vivado*.log *.pb *.rpx
