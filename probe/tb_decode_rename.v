@@ -34,7 +34,7 @@ module tb;
    integer errs = 0;
 
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .PBITS(PBITS), .SBITS(SBITS)) dut
-     (.clk(clk), .inst(inst), .in_valid(in_valid), .seq_in(seq_in),
+     (.clk(clk), .reset(1'b0), .inst(inst), .in_valid(in_valid), .seq_in(seq_in),
       .fr_phys(fr_phys), .fr_valid(fr_valid),
       .chk_create(chk_create), .chk_create_idx(chk_create_idx),
       .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),

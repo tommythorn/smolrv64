@@ -28,6 +28,7 @@ module decode_rename
     parameter NCHK   = 4,
     parameter CBITS  = 2)
    (input  wire                 clk,
+    input  wire                 reset,    // squashes the boundary (no alloc/MAP write)
     // raw aligner words
     input  wire [IW*32-1:0]     inst,
     input  wire [IW-1:0]        in_valid,
@@ -74,14 +75,18 @@ module decode_rename
       q_map_writer = 0; q_seq = 0; q_rd = 0; q_rs1 = 0; q_rs2 = 0;
       q_s1_slot = 0; q_s2_slot = 0;
    end
+   // On reset, clear only the bits that cause downstream action: q_rd_v gates
+   // allocation, q_map_writer gates the MAP write, q_valid gates consumers.
+   // The rest may latch freely (ignored while their valids are 0).
    always @(posedge clk) begin
-      q_valid      <= d_valid;
+      q_valid      <= reset ? {IW{1'b0}} : d_valid;
+      q_rd_v       <= reset ? {IW{1'b0}} : d_rd_v;
+      q_map_writer <= reset ? {IW{1'b0}} : d_map_writer;
       q_seq        <= d_seq;
-      q_rd         <= d_rd;       q_rd_v       <= d_rd_v;
+      q_rd         <= d_rd;
       q_rs1        <= d_rs1;      q_rs2        <= d_rs2;
       q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
       q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
-      q_map_writer <= d_map_writer;
    end
 
    assign r_valid = q_valid;
