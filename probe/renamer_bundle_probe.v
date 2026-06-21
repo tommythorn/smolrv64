@@ -23,9 +23,19 @@ module probe_dut (input  wire         clk,
    wire [27:0] ps1, ps2, pdst;
    wire [3:0]  stall;
 
+   // cross-slot matrix is computed in decode now; feed its result to the bundle.
+   wire [3:0] s1_is_slot, s2_is_slot, map_writer;
+   wire [7:0] s1_slot, s2_slot;
+   decode_xslot #(.IW(4), .ABITS(6), .SBITS(2)) xs
+     (.rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v), .rd(rd), .rd_v(rd_v),
+      .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
+
    renamer_bundle dut
-     (.clk(clk), .rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v),
-      .rd(rd), .rd_v(rd_v), .fr_phys(fr_phys), .fr_valid(fr_valid),
+     (.clk(clk), .rs1(rs1), .rs2(rs2), .rd(rd), .rd_v(rd_v),
+      .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),
+      .fr_phys(fr_phys), .fr_valid(fr_valid),
       .chk_create(chk_create), .chk_create_idx(chk_create_idx),
       .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
       .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));

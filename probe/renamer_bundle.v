@@ -1,9 +1,11 @@
 `default_nettype none
 
-// Full 4-wide renamer bundle: the cross-slot dependency matrix (decode_xslot)
-// plus SHARDS rename_shard slices wired through the cross-shard broadcast network.
-// This is the in-context assembly (unlike the single-slice OOC probe) so the
-// cross-shard wiring is real and shows up in timing.
+// Full 4-wide renamer core: SHARDS rename_shard slices wired through the
+// cross-shard broadcast network. The cross-slot dependency matrix
+// (decode_xslot) is NOT here -- it lives in the decode stage and its results
+// arrive as inputs (s*_is_slot/s*_slot/map_writer), so the matrix is computed
+// exactly once and crosses into rename across a registered stage boundary
+// (see decode_rename.v). This module is purely the rename loop + broadcasts.
 //
 // Unified geometry: AREGS=64 (int+FP), NPHYS=128, POOL=32/shard, NCHK=4.
 //
@@ -12,8 +14,8 @@
 //   al_phys     = {alloc} broadcast  -> resolves SLOT(j) sources in every shard
 //   wr_phys     = {alloc} broadcast  -> MAP write data
 //   wr_arch     = {rd}    broadcast  -> MAP write address
-//   wr_valid    = map_writer         -> only the last-writer-per-arch updates MAP
-//   d_valid[i]  = rd_v[i]            -> shard i allocates for any register write
+//   wr_valid    = map_writer (input) -> only the last-writer-per-arch updates MAP
+//   d_valid[i]  = rd_v[i]  (input)   -> shard i allocates for any register write
 module renamer_bundle
   #(parameter SHARDS = 4,
     parameter ABITS  = 6,    // unified arch space 0..63
@@ -25,13 +27,19 @@ module renamer_bundle
     parameter SBITS  = 2,    // clog2(SHARDS)
     parameter NCHK   = 4,
     parameter CBITS  = 2)
-   (input  wire                   clk,
+   (input  wire                    clk,
+    // decoded operands (slot 0 = oldest)
     input  wire [SHARDS*ABITS-1:0] rs1,
-    input  wire [SHARDS-1:0]       rs1_v,
     input  wire [SHARDS*ABITS-1:0] rs2,
-    input  wire [SHARDS-1:0]       rs2_v,
     input  wire [SHARDS*ABITS-1:0] rd,
     input  wire [SHARDS-1:0]       rd_v,
+    // cross-slot resolution, precomputed in decode (decode_xslot)
+    input  wire [SHARDS-1:0]       s1_is_slot,
+    input  wire [SHARDS*SBITS-1:0] s1_slot,
+    input  wire [SHARDS-1:0]       s2_is_slot,
+    input  wire [SHARDS*SBITS-1:0] s2_slot,
+    input  wire [SHARDS-1:0]       map_writer,
+    // commit/free + checkpoint control
     input  wire [SHARDS*PBITS-1:0] fr_phys,
     input  wire [SHARDS-1:0]       fr_valid,
     input  wire                    chk_create,
@@ -42,14 +50,6 @@ module renamer_bundle
     output wire [SHARDS*PBITS-1:0] ps2,
     output wire [SHARDS*PBITS-1:0] pdst,
     output wire [SHARDS-1:0]       stall);
-
-   // --- cross-slot dependency matrix over the whole bundle
-   wire [SHARDS-1:0]       s1_is_slot, s2_is_slot, map_writer;
-   wire [SHARDS*SBITS-1:0] s1_slot, s2_slot;
-   decode_xslot #(.IW(SHARDS), .ABITS(ABITS), .SBITS(SBITS)) xs
-     (.rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v), .rd(rd), .rd_v(rd_v),
-      .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
-      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
 
    // --- broadcast buses built from the shards' own allocations
    wire [SHARDS*PBITS-1:0] alloc;        // = pdst of each shard

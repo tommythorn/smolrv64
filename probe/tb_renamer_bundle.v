@@ -21,9 +21,21 @@ module tb;
    integer errors = 0;
    reg  [PBITS-1:0]        cap;
 
+   // cross-slot matrix now lives in decode; the bundle takes its result as
+   // input, so the harness computes it (stimulus side, not RTL duplication).
+   localparam SBITS=2;
+   wire [SHARDS-1:0]       s1_is_slot, s2_is_slot, map_writer;
+   wire [SHARDS*SBITS-1:0] s1_slot, s2_slot;
+   decode_xslot #(.IW(SHARDS), .ABITS(ABITS), .SBITS(SBITS)) xs
+     (.rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v), .rd(rd), .rd_v(rd_v),
+      .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
+
    renamer_bundle dut
-     (.clk(clk), .rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v),
-      .rd(rd), .rd_v(rd_v), .fr_phys(fr_phys), .fr_valid(fr_valid),
+     (.clk(clk), .rs1(rs1), .rs2(rs2), .rd(rd), .rd_v(rd_v),
+      .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),
+      .fr_phys(fr_phys), .fr_valid(fr_valid),
       .chk_create(chk_create), .chk_create_idx(chk_create_idx),
       .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
       .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
