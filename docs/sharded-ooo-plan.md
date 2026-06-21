@@ -341,6 +341,9 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | RV64I operand decode | not probed | — | `decode_operands.v` | 15/15 (directed) |
 | Full decode stage (lanes + matrix) | not probed | — | `decode_stage.v` | composition ✓ |
 | Decode→rename (registered boundary) | not probed | — | `decode_rename.v` | end-to-end ✓ |
+| Fetch-window aligner (RVC/32b carve) | not probed | — | `aligner.v` | directed ✓ |
+| Fetch (PC seq + carry-free window) | not probed | — | `fetch.v` | directed ✓ |
+| **Full frontend** (PC→align→decode→rename) | not probed | — | `frontend.v` | end-to-end ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -395,9 +398,30 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
    tb/probe now drive the new inputs via a **stimulus-side** `decode_xslot`.
    *Note:* the boundary register advances every cycle — back-pressure (freeze on
    stall / no free checkpoint / <2 free regs) is the next pending item.
-8. **Next:** aligner + fetch (+ BP stub) to complete the frontend; then scheduler
-   shard, execution; integrate (replace inner core + frontend, reuse
-   caches/TLB/devices). Also: wire back-pressure to freeze the decode→rename
+8. Aligner + fetch + frontend — **done**. `aligner.v`: O(W) length prefix-scan
+   carving up to IW RVC/32b instructions from an HW-halfword window; uniform
+   32-bit data window (length depends on `[1:0]`, data does not); validity is a
+   prefix, a window-straddling 32b op is excluded from `consumed`. `fetch.v`: PC
+   sequencer with **carry-free windowing** — the window always starts at PC and
+   PC advances by `2*consumed`, so a straddler's first halfword simply reappears
+   as the next window's slot 0 (no leftover/shift buffer). Fall-through +
+   `redirect`; ready/valid downstream. `frontend.v` = `fetch` + `decode_rename`;
+   `tb_frontend` streams a real RV64IC program and gets the same rename as feeding
+   `decode_rename` directly. (Fix along the way: `decode_rename` gained a reset
+   that squashes the boundary — without it fetch presented bundle 0 during reset
+   and rename allocated it twice.)
+   - **Instruction memory is a behavioral TB stub.** `fetch` reads via an external
+     **combinational** interface (`imem_addr` → `imem_data`[HW halfwords] /
+     `imem_avail`); the TB supplies a `reg` array. **No cache integrated.** The
+     real SmolRV64 dual-bank even/odd I$ is the integration target for this
+     interface and needs: a request/response handshake (not single-cycle-present),
+     fetch-side stall on cache-not-ready, and miss handling. `imem_avail` already
+     models a short (sub-window) read. Note the memory's "I$ already in frontend"
+     refers to the *existing* smolrv64 frontend, a different module.
+9. **Next:** branch prediction / FTQ (fetch is fall-through + redirect only for
+   now); then scheduler shard, execution; integrate (replace inner core +
+   frontend, reuse caches/TLB/devices — incl. wiring the real I$ to `fetch`'s
+   imem interface). Also pending: wire back-pressure to freeze the decode→rename
    boundary register; cosim to close the operand-decode coverage gap
    (`src/smolrv64.v` or `~/simmerv`).
 
