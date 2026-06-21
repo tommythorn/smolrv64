@@ -20,10 +20,10 @@ module renamer_bundle
   #(parameter SHARDS = 4,
     parameter ABITS  = 6,    // unified arch space 0..63
     parameter AREGS  = 64,
-    parameter PBITS  = 7,    // 128 phys regs
-    parameter NPHYS  = 128,
-    parameter POOL   = 32,   // NPHYS/SHARDS
-    parameter HPTR   = 5,    // clog2(POOL)
+    parameter PBITS  = 8,    // 256 phys regs
+    parameter NPHYS  = 256,
+    parameter POOL   = 64,   // NPHYS/SHARDS
+    parameter HPTR   = 6,    // clog2(POOL)
     parameter SBITS  = 2,    // clog2(SHARDS)
     parameter NCHK   = 4,
     parameter CBITS  = 2)

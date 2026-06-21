@@ -1,30 +1,30 @@
 `default_nettype none
 
-// OOC timing probe for one execute shard: the issue -> RF read -> alu.v -> wb
-// path (the backend's per-shard critical path; the cross-shard wb broadcast is a
-// registered next-cycle update, not on this path). IN_W=453, OUT_W=139.
-module probe_dut (input wire clk, input wire [452:0] din, output wire [138:0] dout);
-
+// OOC timing/area probe for one execute shard at the pipeline geometry
+// (NPHYS=256, PBITS=8, POOL=64, IDXB=6): the issue -> RF read -> alu.v -> wb path
+// (the cross-shard wb broadcast is a registered next-cycle update, off this path).
+// IN_W=460, OUT_W=140.
+module probe_dut (input wire clk, input wire [459:0] din, output wire [139:0] dout);
    wire        iss_valid  = din[0];
-   wire [6:0]  iss_pdst   = din[7:1];
-   wire        iss_pdst_v = din[8];
-   wire [6:0]  iss_ps1    = din[15:9];
-   wire [6:0]  iss_ps2    = din[22:16];
-   wire [5:0]  alu_op     = din[28:23];
-   wire        alu_w      = din[29];
-   wire        alu_uw     = din[30];
-   wire [1:0]  op1_sel    = din[32:31];
-   wire        op2_imm    = din[33];
-   wire        res_link   = din[34];
-   wire        is_rvc     = din[35];
-   wire        is_mem     = din[36];
-   wire [63:0] imm        = din[100:37];
-   wire [63:0] pc         = din[164:101];
-   wire [3:0]  wb_valid_in = din[168:165];
-   wire [27:0] wb_pr_in    = din[196:169];
-   wire [255:0] wb_val_in  = din[452:197];
+   wire [7:0]  iss_pdst   = din[8:1];
+   wire        iss_pdst_v = din[9];
+   wire [7:0]  iss_ps1    = din[17:10];
+   wire [7:0]  iss_ps2    = din[25:18];
+   wire [5:0]  alu_op     = din[31:26];
+   wire        alu_w      = din[32];
+   wire        alu_uw     = din[33];
+   wire [1:0]  op1_sel    = din[35:34];
+   wire        op2_imm    = din[36];
+   wire        res_link   = din[37];
+   wire        is_rvc     = din[38];
+   wire        is_mem     = din[39];
+   wire [63:0] imm        = din[103:40];
+   wire [63:0] pc         = din[167:104];
+   wire [3:0]   wb_valid_in = din[171:168];
+   wire [31:0]  wb_pr_in    = din[203:172];
+   wire [255:0] wb_val_in   = din[459:204];
 
-   wire        wb_valid; wire [6:0] wb_pr; wire [63:0] wb_val;
+   wire        wb_valid; wire [7:0] wb_pr; wire [63:0] wb_val;
    wire [63:0] agu_addr; wire cmp_eq, cmp_lt, cmp_ltu;
 
    exec_shard dut
@@ -41,7 +41,7 @@ module probe_dut (input wire clk, input wire [452:0] din, output wire [138:0] do
 endmodule
 
 module exec_shard_probe (input wire clk, output wire probe_out);
-   flopwrap #(.IN_W(453), .OUT_W(139)) u (.clk(clk), .probe_out(probe_out));
+   flopwrap #(.IN_W(460), .OUT_W(140)) u (.clk(clk), .probe_out(probe_out));
 endmodule
 
 `default_nettype wire

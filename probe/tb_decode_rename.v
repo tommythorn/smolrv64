@@ -14,7 +14,7 @@
 // Bundle 2 (independent ARCH reads of a0/a1/a2) must see Bundle 1's MAP writes
 // one rename cycle later: map[a0]=pdst1[3]=3, map[a1]=pdst1[1]=1, map[a2]=2.
 module tb;
-   localparam IW=4, SEQW=8, ABITS=6, PBITS=7, SBITS=2;
+   localparam IW=4, SEQW=8, ABITS=6, PBITS=8, SBITS=2;
 
    reg                    clk = 0;
    always #5 clk = ~clk;

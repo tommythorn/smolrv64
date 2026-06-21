@@ -6,7 +6,7 @@
 //  - independent ARCH source reads the MAP (init identity map[r]=r)
 //  - cross-cycle: a destination's MAP write is visible to a reader next cycle
 module tb;
-   localparam SHARDS=4, ABITS=6, PBITS=7;
+   localparam SHARDS=4, ABITS=6, PBITS=8;
 
    reg                     clk = 0;
    always #5 clk = ~clk;

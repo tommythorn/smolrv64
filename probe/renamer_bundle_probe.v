@@ -31,7 +31,9 @@ module probe_dut (input  wire         clk,
       .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
       .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
 
-   renamer_bundle dut
+   // pinned to the historical 128-phys geometry (this probe's bit widths are 7-bit
+   // PBITS); the pipeline default is now NPHYS=256.
+   renamer_bundle #(.PBITS(7), .NPHYS(128), .POOL(32), .HPTR(5)) dut
      (.clk(clk), .rs1(rs1), .rs2(rs2), .rd(rd), .rd_v(rd_v),
       .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
       .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),

@@ -11,7 +11,7 @@
 // tb_decode_rename exactly: pdst=[0,1,2,3], intra-bundle SLOT RAW resolved,
 // r_rd=[10,11,12,10]. This proves the fetch path feeds decode->rename correctly.
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, ABITS=6, PBITS=7, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, ABITS=6, PBITS=8, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset, redirect=0;

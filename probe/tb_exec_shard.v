@@ -5,7 +5,7 @@
 // This shard is lane 0 (owns pr%4==0); its wb_out loops back to wb_in[0]. Sibling
 // lane 1 is driven directly to model a cross-shard producer (pr%4==1).
 module tb;
-   localparam SHARDS=4, SBITS=2, NPHYS=128, PBITS=7, POOL=32, IDXB=5;
+   localparam SHARDS=4, SBITS=2, NPHYS=256, PBITS=8, POOL=64, IDXB=6;
 
    reg                clk=0; always #5 clk=~clk;
    reg                iss_valid, iss_pdst_v;

@@ -25,8 +25,8 @@
 module sched_shard
   #(parameter SHARDS = 4,
     parameter SH     = 0,
-    parameter NPHYS  = 128,
-    parameter PBITS  = 7,
+    parameter NPHYS  = 256,
+    parameter PBITS  = 8,
     parameter IQD    = 8,        // issue-queue depth
     parameter IQW    = 3,        // clog2(IQD)
     parameter SEQW   = 8,

@@ -10,7 +10,7 @@
 // clr/wake at T updates the scoreboard at the T->T+1 edge (so a dependent issues
 // the cycle after its producer issues -- 1-cycle ALU wakeup).
 module tb;
-   localparam SHARDS=4, NPHYS=128, PBITS=7, IQD=8, IQW=3, SEQW=8, LATW=2;
+   localparam SHARDS=4, NPHYS=256, PBITS=8, IQD=8, IQW=3, SEQW=8, LATW=2;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

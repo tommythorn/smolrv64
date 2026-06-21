@@ -14,10 +14,10 @@
 module rf_shard
   #(parameter SHARDS = 4,
     parameter SBITS  = 2,
-    parameter NPHYS  = 128,
-    parameter PBITS  = 7,
-    parameter POOL   = 32,
-    parameter IDXB   = 5)        // PBITS-SBITS = clog2(POOL)
+    parameter NPHYS  = 256,
+    parameter PBITS  = 8,
+    parameter POOL   = 64,
+    parameter IDXB   = 6)        // PBITS-SBITS = clog2(POOL)
    (input  wire                    clk,
     // writeback broadcast: lane b is shard b writing one of its own registers
     input  wire [SHARDS-1:0]       wr_valid,
