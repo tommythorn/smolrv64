@@ -349,7 +349,8 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Execute datapath (reuses `src/alu.v`) | not probed | — | `exec_alu.v` | directed ✓ |
 | PRF shard (S²-banked, LUTRAM) | (in exec_shard) | — | `rf_shard.v` | directed ✓ |
 | **Execute shard** (RF+ALU+wb) | **272 MHz\*** | 2288 LUT / 39 CARRY8 / ~0 FF | `exec_shard.v` | directed ✓ |
-| Execute shard @ NPHYS=256 | 282 MHz\* | 2288 LUT (==128!) | `exec_shard_probe256.v` | — |
+| Execute shard @ NPHYS=256 | 271–282 MHz\* | 2288 LUT (==128!) | `exec_shard_probe.v` | — |
+| **ALU alone** (`exec_alu`) | **364 MHz\*** | 2125 LUT / 39 CARRY8 | `exec_alu_probe.v` | — |
 | Execute shard, full bypass (experiment) | 210 MHz\* | 2852 LUT | `exec_shard_bp.v` | — |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
@@ -491,12 +492,25 @@ are pessimistic but the *comparison* is informative):**
   worse, with the full ALU adder still in EX. **The real timing lever is the
   multi-region floorplan, not bypass.** Bypass theory (EX≈mux+ALU≈2.2 ns) only
   pays once routing is fixed; kept as an experiment to revisit then.
-- *256 physical registers:* `exec_shard` at NPHYS=256 probed **282 MHz / 2288 LUT
-  — identical LUTs to the 128-PRF build.** A LUT6 is natively a 64-deep RAM, so the
-  128-PRF's 32-deep banks under-filled it; 256 fills it at ~zero extra area/timing.
-  **Decision: adopt NPHYS=256** (big IPC headroom, ~free); cost is +1 bit on every
-  `pr` field (PBITS 7→8) and 2× freelist/checkpoint bitmaps — flip the params at
-  integration.
+- *256 physical registers:* `exec_shard` at NPHYS=256 probed **271–282 MHz / 2288
+  LUT — identical LUTs to the 128-PRF build.** A LUT6 is natively a 64-deep RAM, so
+  the 128-PRF's 32-deep banks under-filled it; 256 fills it at ~zero extra
+  area/timing. **DONE: NPHYS=256 adopted globally** (PBITS 8, POOL 64, HPTR/IDXB 6
+  defaults across renamer_bundle/decode_rename/frontend/rf_shard/exec_shard/
+  sched_shard; all TBs pass). Late allocation is now **moot, not deferred**: on a
+  resource-rich FPGA 256 regs cost ~0 LUTs, so there's no PRF storage to reclaim.
+- *333 MHz target (match the memory-interface clock, single clock domain):* the
+  ALU alone (`exec_alu`) probes **364 MHz — clears 333**; the single-cycle
+  RF-read+ALU `exec_shard` is **272 MHz**. So the RF read in series is what misses
+  333, not the ALU. A **2×2-region pblock did not change `exec_shard` (271 MHz)** →
+  the flopwrap number is placement-unrepresentative (the RF read-address fans to
+  all 64 bit-columns and the harness scatters it), not single-region congestion.
+  **Path to 333: split execute into RR (RF read) | EX (ALU) with single-level
+  result forwarding** (EX→WB reg into the EX operand mux) to keep dependent ALU
+  ops at 1/cycle. Cost = ALU latency 2 (small CPI hit) in exchange for one clock
+  domain at 333. NB: this is *single-level light* bypass — not the heavy 2-level
+  priority bypass that probed 210 MHz. Build the 2-stage execute at integration;
+  keep single-cycle `exec_shard` as the functional reference.
 12. **Next: integrate the backend end-to-end.** Thread the exec payload (ctl +
     imm + pc) through the scheduler (opaque pass-through field in the IQ entry, or
     a payload RAM indexed by the IQ slot); build `exec_bundle` (4 `exec_shard` +
