@@ -347,6 +347,8 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Scheduler shard (scoreboard issue queue) | not probed | — | `sched_shard.v` | directed ✓ |
 | Execution ctl decode | not probed | — | `decode_exec.v` | directed ✓ |
 | Execute datapath (reuses `src/alu.v`) | not probed | — | `exec_alu.v` | directed ✓ |
+| PRF shard (S²-banked, LUTRAM) | (in exec_shard) | — | `rf_shard.v` | directed ✓ |
+| **Execute shard** (RF+ALU+wb) | **272 MHz\*** | 2288 LUT / 39 CARRY8 / ~0 FF | `exec_shard.v` | directed ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -458,18 +460,36 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
     actual memory (LSU/D$), branch redirect, CSR file, M/A/F. `tb_exec` passes on
     ALU/upper-imm/`*W`/Zbb/load-store-addr/branch/JALR/CSR/MUL. NB: probe TBs now
     need `-I ../src` (for `alu.v` / `alu_ops.vh`).
-11. **Next:** PRF (S²-banked RF, broadcast writes) + writeback → close the compute
-    loop. 1-cycle-ALU forwarding is just **write-before-read** (producer issues T,
-    result registered into every shard's RF copy at edge T→T+1, dependent woken at
-    the same edge issues T+1 and reads it) — no separate bypass net for the 1-cycle
-    case. Thread the exec payload (ctl + imm + pc) through the scheduler, build
-    `exec_shard` (PRF + `exec_alu` + WB) and an `exec_bundle`, then wire
-    frontend→schedule→execute→wake and demonstrate end-to-end ALU execution. Then
-    commit / CPR + convert the rename freelist to the bitmap + A[C]/P[C]
-    reclamation. Deferred: branch prediction / FTQ (TT has a BP to make
-    basic-block — once the pipeline runs); load wake delay-line + WB reservation
-    (with the LSU); back-pressure to freeze the decode→rename boundary; wire the
-    real I$ to `fetch`'s imem interface; cosim to close the operand-decode gap.
+11. PRF + writeback — **done** (`rf_shard.v` + `exec_shard.v`). Per-shard RF copy
+    holds all NPHYS regs as SHARDS **owner-banks** (owner = `pr[SBITS-1:0]`, idx =
+    `pr[PBITS-1:SBITS]`), each bank single-write (its owner's wb lane) → no
+    multiport arbitration, cost = S² single-write banks + broadcast. 2 comb read
+    ports, pr0 reads 0. `exec_shard` = `rf_shard` + `exec_alu` + wb. Forwarding is
+    write-before-read (no bypass net). `tb_exec_shard`: self/cross-shard fwd,
+    persistence, x0=0. **Fit/timing probe (`exec_shard_probe.v`, OOC single
+    region):** Fmax **272 MHz\***, **2288 LUT / 39 CARRY8 / ~0 extra FF** — the
+    128×64 RF infers as **LUTRAM** (the FF count is just the harness), so the
+    S²-RF is cheap (~9.2k LUT for the 4-shard backend, <5% of xcku5p → fits
+    easily). \* single-region congestion-limited: 72% routing, logic only
+    1.03 ns / 10 levels — pessimistic (like the `renamer_bundle` probe); a
+    multi-region floorplan lifts it. Structural limiter = RF-read + ALU in one
+    cycle; lever if needed = split operand-read and ALU into two pipe stages (ALU
+    latency 2). **Decision (TT-aligned): keep single-cycle for now**, optimize with
+    the floorplan later. 1-cycle-ALU forwarding is just **write-before-read**
+    (producer issues T, result registered into every shard's RF copy at edge
+    T→T+1, dependent woken at the same edge issues T+1 and reads it) — no separate
+    bypass net for the 1-cycle case.
+12. **Next: integrate the backend end-to-end.** Thread the exec payload (ctl +
+    imm + pc) through the scheduler (opaque pass-through field in the IQ entry, or
+    a payload RAM indexed by the IQ slot); build `exec_bundle` (4 `exec_shard` +
+    the wb broadcast net, wb → scheduler `wake` + every RF copy); wire
+    `frontend → sched_bundle → exec_bundle → wake` and demonstrate end-to-end ALU
+    execution of a real program. Then commit / CPR + convert the rename freelist
+    to the bitmap + A[C]/P[C] reclamation. Deferred: branch prediction / FTQ (TT
+    has a BP to make basic-block — once the pipeline runs); load wake delay-line +
+    WB reservation (with the LSU); back-pressure to freeze the decode→rename
+    boundary; multi-region floorplan (lifts the 272 MHz); wire the real I$ to
+    `fetch`'s imem interface; cosim to close the operand-decode gap.
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
