@@ -349,6 +349,8 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Execute datapath (reuses `src/alu.v`) | not probed | — | `exec_alu.v` | directed ✓ |
 | PRF shard (S²-banked, LUTRAM) | (in exec_shard) | — | `rf_shard.v` | directed ✓ |
 | **Execute shard** (RF+ALU+wb) | **272 MHz\*** | 2288 LUT / 39 CARRY8 / ~0 FF | `exec_shard.v` | directed ✓ |
+| Execute shard @ NPHYS=256 | 282 MHz\* | 2288 LUT (==128!) | `exec_shard_probe256.v` | — |
+| Execute shard, full bypass (experiment) | 210 MHz\* | 2852 LUT | `exec_shard_bp.v` | — |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -479,6 +481,22 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
     (producer issues T, result registered into every shard's RF copy at edge
     T→T+1, dependent woken at the same edge issues T+1 and reads it) — no separate
     bypass net for the 1-cycle case.
+**Execute timing experiments (single-region probes, routing-dominated → readings
+are pessimistic but the *comparison* is informative):**
+- *Bypass vs write-before-read:* a full-bypass 2-stage variant (`exec_shard_bp.v`,
+  RR read | EX bypass+ALU, 2·SHARDS sources) probed **210 MHz / 2852 LUT — slower**
+  than the 272 MHz write-before-read `exec_shard`. The 272 limit is **routing/
+  congestion** (72% route; the RF-read logic was only 0.137 ns), not RF-read-in-
+  series, so splitting it out doesn't help — and bypass is bigger so it congests
+  worse, with the full ALU adder still in EX. **The real timing lever is the
+  multi-region floorplan, not bypass.** Bypass theory (EX≈mux+ALU≈2.2 ns) only
+  pays once routing is fixed; kept as an experiment to revisit then.
+- *256 physical registers:* `exec_shard` at NPHYS=256 probed **282 MHz / 2288 LUT
+  — identical LUTs to the 128-PRF build.** A LUT6 is natively a 64-deep RAM, so the
+  128-PRF's 32-deep banks under-filled it; 256 fills it at ~zero extra area/timing.
+  **Decision: adopt NPHYS=256** (big IPC headroom, ~free); cost is +1 bit on every
+  `pr` field (PBITS 7→8) and 2× freelist/checkpoint bitmaps — flip the params at
+  integration.
 12. **Next: integrate the backend end-to-end.** Thread the exec payload (ctl +
     imm + pc) through the scheduler (opaque pass-through field in the IQ entry, or
     a payload RAM indexed by the IQ slot); build `exec_bundle` (4 `exec_shard` +
