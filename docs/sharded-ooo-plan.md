@@ -368,13 +368,15 @@ Note: the old slice/monolithic Fmax were at the 32-entry MAP / 64-phys geometry;
    (`renamer_bundle.v` + `tb_renamer_bundle.v`). In-context timing deferred until
    a multi-region floorplan + registered broadcasts exist (single-region probe is
    pessimistic — see results note).
-4. **Decoder operand decode — next.** RVC + base/FP operand-field extraction with
-   explicit per-operand valid bits, in unified 0..63 arch space, producing the
-   rest of the decoder IR (`rs1/rs2/rd` + valids + `uses_imm/imm` + `ctl`). Port
-   the mask decode from `src/smolrv64.v`. **RVC is the footgun** — verify operand
-   decode by cosim against the proven core, not just a directed TB. (Left for
-   review rather than implemented unsupervised.)
-5. Then: scheduler shard, execution units, aligner/fetcher; integration into the
+4. RV64C expander — **done** (`rvc_expand.v`, combinational 16b→32b). Verified
+   **exhaustively, 65536/65536** against the oracle `tools/rvc.rs` (→
+   `rvc_cases.hex`) by `tb_rvc_expand.v`. Expand-then-decode: this feeds the
+   32-bit operand decode, so the decoder only handles full-width forms.
+5. **Operand decode — next.** From the (expanded) 32-bit word: `rs1/rs2/rd` +
+   explicit per-operand valid bits (unified 0..63 arch space, FP=32..63),
+   `uses_imm/imm`, and the `ctl` blob. Port the mask decode from `src/smolrv64.v`;
+   verify by cosim against the proven core.
+6. Then: scheduler shard, execution units, aligner/fetcher; integration into the
    existing SoC (replace inner core + frontend, reuse caches/TLB/devices).
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
