@@ -337,6 +337,9 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | **Sharded renamer slice** (decoder-resolved `{ARCH\|SLOT}`) | **~790 MHz** | 1469 LUTs/shard | `rename_shard.v` | — |
 | **Cross-slot dependency matrix** | **~1.1 GHz** | 59 LUTs | `decode_xslot.v` | 9/9 ✓ |
 | 4-wide renamer bundle (matrix + 4 shards + broadcasts) | ~397 MHz* | 11.5k LUTs | `renamer_bundle.v` | ✓ |
+| RV64C expander (16b→32b) | not probed | — | `rvc_expand.v` | 65536/65536 ✓ |
+| RV64I operand decode | not probed | — | `decode_operands.v` | 15/15 (directed) |
+| Full decode stage (lanes + matrix) | not probed | — | `decode_stage.v` | composition ✓ |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
