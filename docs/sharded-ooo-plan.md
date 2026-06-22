@@ -802,9 +802,14 @@ are pessimistic but the *comparison* is informative):**
       reclamation + back-pressure.
 15. **Then:** LSU (loads/stores, store addr/data split, commit-gated drain) — the
     rest of "real programs"; generalize branch recovery (mid-bundle truncation /
-    basic-block fetch, NCHK nested checkpoints via `ckpt_alive`, JAL/JALR precise);
-    M/CSR/FPU units. Note (TT): integrating Mul/Div, FPU, CSR lengthens the
-    issue→result path → 333 MHz gets harder; the 2-stage execute (RR|EX) is the
+    basic-block fetch, NCHK nested checkpoints via `ckpt_alive`, JAL/JALR precise) —
+    **all branch-recovery sub-items now DONE+verified**; CSR/FPU units. **M extension
+    DONE+verified** (`muldiv.v`: combinational RV64 datapath, all 13 ops, op =
+    `{alu_w,br_func}`; `is_mul` threaded to payload bit 151; `exec_shard` muxes
+    `wb_val`; `tb_muldiv` + e2e). M is **combinational 1-cycle** for now — a
+    pipelined multiply + iterative divide is the latency/timing follow-up (combinational
+    divide is a timing bomb on FPGA). Note (TT): integrating Mul/Div, FPU, CSR lengthens
+    the issue→result path → 333 MHz gets harder; the 2-stage execute (RR|EX) is the
     lever. Deferred: branch prediction/FTQ; multi-region floorplan; real I$ on
     `fetch`'s imem; cosim for the operand-decode gap.
 
