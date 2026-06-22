@@ -44,6 +44,28 @@ module aligner
       hwr = (idx < HW) ? hwin[idx*16 +: 16] : 16'b0;
    endfunction
 
+   // Control-transfer predecode (opcode bits only -- no full RVC expansion). A
+   // branch/jump *terminates* the bundle: it is included as the last valid slot,
+   // so every control transfer is the youngest instruction in its checkpoint.
+   // Mid-bundle branch recovery then folds into the already-exact "branch is last
+   // in bundle" case -- no sub-bundle MAP snapshot, freelist, or commit-count
+   // machinery. The straggling tail simply reappears as slot 0 of the next window
+   // (consumed stops at the branch, like the straddle case).
+   function is_cti(input [15:0] h0, input is32);
+      if (is32)
+         is_cti = (h0[6:0] == 7'b1100011)   // BRANCH
+                | (h0[6:0] == 7'b1101111)   // JAL
+                | (h0[6:0] == 7'b1100111);  // JALR
+      else case (h0[1:0])
+         2'b01:   is_cti = (h0[15:13] == 3'b101)    // C.J
+                         | (h0[15:13] == 3'b110)    // C.BEQZ
+                         | (h0[15:13] == 3'b111);   // C.BNEZ
+         2'b10:   is_cti = (h0[15:13] == 3'b100)     // C.JR / C.JALR
+                         & (h0[6:2] == 5'd0) & (h0[11:7] != 5'd0);
+         default: is_cti = 1'b0;
+      endcase
+   endfunction
+
    reg  [IW-1:0]    v;
    reg  [31:0]      ir   [0:IW-1];
    reg  [PCW-1:0]   pcv  [0:IW-1];
@@ -69,8 +91,10 @@ module aligner
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];
-         if (v[k]) pos = pos + (is32 ? 2'd2 : 2'd1);
-         else      run = 1'b0;                // prefix: stop at first that doesn't fit
+         if (v[k]) begin
+            pos = pos + (is32 ? 2'd2 : 2'd1);
+            if (is_cti(h0, is32)) run = 1'b0;  // branch/jump ends the bundle (youngest)
+         end else run = 1'b0;                  // prefix: stop at first that doesn't fit
       end
       cons = pos;                             // halfwords consumed (straddler excluded)
    end
