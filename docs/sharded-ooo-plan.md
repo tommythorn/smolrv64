@@ -806,9 +806,17 @@ are pessimistic but the *comparison* is informative):**
     **all branch-recovery sub-items now DONE+verified**; CSR/FPU units. **M extension
     DONE+verified** (`muldiv.v`: combinational RV64 datapath, all 13 ops, op =
     `{alu_w,br_func}`; `is_mul` threaded to payload bit 151; `exec_shard` muxes
-    `wb_val`; `tb_muldiv` + e2e). M is **combinational 1-cycle** for now — a
-    pipelined multiply + iterative divide is the latency/timing follow-up (combinational
-    divide is a timing bomb on FPGA). Note (TT): integrating Mul/Div, FPU, CSR lengthens
+    `wb_val`). **Multiply is combinational** (`mul.v`, DSP-friendly); **divide is
+    iterative** (`divider.v`, restoring, ~64 cyc, start/busy/done/abort) and integrated
+    with **deferred completion like a load**: issue starts the per-shard divider,
+    `exec_busy` stalls the shard (freeing its WB lane), completion drives the owner lane
+    + wakes (the scoreboard is writeback-driven, so no scheduler-latency change) and is
+    counted at `div_done` in `commit_ctl` (excluded from the issue decrement via
+    `iss_is_div`); a squash aborts an in-flight wrong-path divide. Subtle fix: a divide
+    is *not started* if a branch squashes it the same cycle it issues (before `dv_busy`
+    sets), else the divider wedges. Tests: `tb_mul`, `tb_divider` (+abort),
+    `tb_muldiv_e2e`, `tb_divsquash`. (Pipelined multiply is a later area/timing opt; a
+    shared divider would save 3 dividers.) Note (TT): integrating Mul/Div, FPU, CSR lengthens
     the issue→result path → 333 MHz gets harder; the 2-stage execute (RR|EX) is the
     lever. Deferred: branch prediction/FTQ; multi-region floorplan; real I$ on
     `fetch`'s imem; cosim for the operand-decode gap.
