@@ -17,8 +17,8 @@
 //   record pold     : owned displaced polds -> P[cur].
 //   create          : open a new (younger) span: cur++, clear A/P[cur+1].
 //   commit C        : free |= P[C]  (dead polds return); clear A/P[C].
-//   rollback to C   : free |= union(A[k] : k younger than C); clear A/P[younger];
-//                     cur = C  (squashed spans' allocations return to free).
+//   rollback to C   : recover to BEFORE span C -> free |= union(A[k] : k in [C,cur]),
+//                     clear A/P[C..cur], cur = C (C reopens; MAP restores snapshot[C]).
 // Snapshots leak under reallocate-then-squash with a free-snapshot; A/P do not.
 module freelist
   #(parameter SHARDS = 4,
@@ -83,13 +83,13 @@ module freelist
    // ----- which spans are younger than rollback_idx (in ring order) -----
    reg [NCHK-1:0] young;
    integer kk;
-   reg [CBITS-1:0] nyoung;
+   reg [CBITS:0] nyoung;
    always @* begin
       young  = {NCHK{1'b0}};
-      nyoung = curr - rollback_idx;     // # of spans newer than rollback_idx (mod NCHK)
+      nyoung = ((curr - rollback_idx) & (NCHK-1)) + 1'b1;  // spans [rollback_idx..cur] incl
       for (kk = 0; kk < NCHK; kk = kk + 1)
          if (kk < nyoung)
-            young[(rollback_idx + 1 + kk) & (NCHK-1)] = 1'b1;
+            young[(rollback_idx + kk) & (NCHK-1)] = 1'b1;
    end
    reg [POOL-1:0] roll_union;
    integer u;

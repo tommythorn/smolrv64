@@ -60,9 +60,10 @@ module tb;
       create=1; @(posedge clk); idle;               // -> span2
       alloc_en=1; @(posedge clk); idle;             // span2 alloc pr16(idx4)
       @(negedge clk); #1 ck("r.cnt3",free_count,3); ck("r.cur2",cur,2);
-      // rollback to span0: spans 1,2 undone (idx3,4 freed); span0 (idx2) survives
-      rollback=1; rollback_idx=0; @(posedge clk); idle; @(negedge clk);
-      #1 ck("rb.cnt",free_count,5); ck("rb.cur",cur,0); ck("rb.pr",alloc_pr,12);
+      // rollback to span1 (recover before span1): spans 1,2 undone (idx3,4 freed);
+      // span0 (idx2) survives. cur reopens at 1.
+      rollback=1; rollback_idx=1; @(posedge clk); idle; @(negedge clk);
+      #1 ck("rb.cnt",free_count,5); ck("rb.cur",cur,1); ck("rb.pr",alloc_pr,12);
 
       if (errs==0) $display("freelist: ALL TESTS PASSED");
       else         $display("freelist: %0d FAILURES", errs);
