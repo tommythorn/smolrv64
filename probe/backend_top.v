@@ -18,37 +18,51 @@ module backend_top
     parameter ABITS = 6,
     parameter PBITS = 8,
     parameter LATW  = 2,
+    parameter CBITS = 2,
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
-    input  wire                    redirect,
-    input  wire [PCW-1:0]          redirect_pc,
-    input  wire [SEQW-1:0]         redirect_seq,
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
-    // observation: per-shard writeback
+    // observation: per-shard writeback + the branch redirect
     output wire [IW-1:0]           wb_valid,
     output wire [IW*PBITS-1:0]     wb_pr,
-    output wire [IW*64-1:0]        wb_val);
+    output wire [IW*64-1:0]        wb_val,
+    output wire                    redirect,
+    output wire [PCW-1:0]          redirect_target);
+
+   // ---- redirect (from the execute bundle's oldest mispredicting branch) ----
+   wire               eb_redirect;
+   wire [63:0]        eb_target;
+   wire [SEQW-1:0]    eb_rseq;
+   assign redirect        = eb_redirect;
+   assign redirect_target = eb_target;
 
    // ---- frontend: fetch -> decode -> rename ----
-   wire [IW-1:0]      r_valid, r_rd_v, r_need1, r_need2, fe_stall;
+   wire [IW-1:0]      r_valid, r_rd_v, r_need1, r_need2, r_is_branch, fe_stall;
    wire [IW*SEQW-1:0] r_seq;
    wire [IW*ABITS-1:0] r_rd;
    wire [IW*PBITS-1:0] ps1, ps2, pdst;
    wire [IW*`PAYW-1:0] r_pay;
 
+   // speculative checkpoint at a renamed branch (single checkpoint slot 0 for now,
+   // one in-flight branch); restore it on misprediction.
+   wire chk_create = |(r_valid & r_is_branch);
+
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .RESET_PC(RESET_PC)) fe
-     (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
-      .redirect_seq(redirect_seq), .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail),
+     (.clk(clk), .reset(reset),
+      .redirect(eb_redirect), .redirect_pc(eb_target),
+      .redirect_seq(eb_rseq + 1'b1),          // target continues seqno after the branch
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
       .fr_phys({IW*PBITS{1'b0}}), .fr_valid({IW{1'b0}}),
-      .chk_create(1'b0), .chk_create_idx(2'b0), .chk_restore(1'b0), .chk_restore_idx(2'b0),
+      .chk_create(chk_create), .chk_create_idx({CBITS{1'b0}}),
+      .chk_restore(eb_redirect), .chk_restore_idx({CBITS{1'b0}}),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
-      .r_need1(r_need1), .r_need2(r_need2), .r_pay(r_pay), .stall(fe_stall));
+      .r_need1(r_need1), .r_need2(r_need2), .r_is_branch(r_is_branch),
+      .r_pay(r_pay), .stall(fe_stall));
 
    // ---- scheduler bundle ----
    wire [IW-1:0]       iss_valid, iss_pdst_v, disp_ready;
@@ -68,17 +82,19 @@ module backend_top
       .disp_ps1(ps1), .disp_need1(r_need1), .disp_ps2(ps2), .disp_need2(r_need2),
       .disp_lat(disp_lat), .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(wkv), .wake_pr(wkp),
+      .squash(eb_redirect), .squash_seq(eb_rseq),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_seq(iss_seq),
       .iss_lat(iss_lat), .iss_pay(iss_pay));
 
-   // ---- execute bundle (RF + ALU + wb broadcast) ----
-   exec_bundle #(.SHARDS(IW), .PBITS(PBITS)) eb
+   // ---- execute bundle (RF + ALU + wb broadcast + branch resolve) ----
+   exec_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW)) eb
      (.clk(clk),
-      .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
-      .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_pay(iss_pay),
+      .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
+      .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_pay(iss_pay),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),
-      .agu_addr(), .cmp_eq(), .cmp_lt(), .cmp_ltu());
+      .agu_addr(), .cmp_eq(), .cmp_lt(), .cmp_ltu(),
+      .redirect(eb_redirect), .redirect_target(eb_target), .redirect_seq(eb_rseq));
 
    assign wb_valid = wkv;
    assign wb_pr    = wkp;

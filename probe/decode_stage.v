@@ -37,7 +37,10 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW*2-1:0]       op1_sel,
     output wire [IW-1:0]         op2_imm,
     output wire [IW-1:0]         res_link,
-    output wire [IW-1:0]         is_mem);
+    output wire [IW-1:0]         is_mem,
+    output wire [IW-1:0]         is_branch,
+    output wire [IW*3-1:0]       br_func,
+    output wire [IW-1:0]         is_jump);
 
    genvar g;
    generate
@@ -53,7 +56,8 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
             .imm(imm[g*64 +: 64]), .has_imm(has_imm[g]), .legal(legal[g]),
             .alu_op(alu_op[g*6 +: 6]), .alu_w(alu_w[g]), .alu_uw(alu_uw[g]),
             .op1_sel(op1_sel[g*2 +: 2]), .op2_imm(op2_imm[g]),
-            .res_link(res_link[g]), .is_mem(is_mem[g]));
+            .res_link(res_link[g]), .is_mem(is_mem[g]),
+            .is_branch(is_branch[g]), .br_func(br_func[g*3 +: 3]), .is_jump(is_jump[g]));
       end
    endgenerate
 

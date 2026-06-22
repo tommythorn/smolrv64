@@ -1,3 +1,4 @@
+`include "exec_pay.vh"
 `default_nettype none
 
 // The scheduler bundle: SHARDS scoreboard issue queues + the cross-shard
@@ -15,7 +16,7 @@ module sched_bundle
     parameter IQW    = 3,
     parameter SEQW   = 8,
     parameter LATW   = 2,
-    parameter PAYW   = 142)
+    parameter PAYW   = `PAYW)
    (input  wire                    clk,
     input  wire                    reset,
     // dispatch (from rename), slot i -> shard i
@@ -33,6 +34,9 @@ module sched_bundle
     // wake from execute writeback
     input  wire [SHARDS-1:0]       wake_valid,
     input  wire [SHARDS*PBITS-1:0] wake_pr,
+    // branch misprediction squash (broadcast to all shards)
+    input  wire                    squash,
+    input  wire [SEQW-1:0]         squash_seq,
     // issue (to execute), slot i <- shard i
     output wire [SHARDS-1:0]       iss_valid,
     output wire [SHARDS*PBITS-1:0] iss_pdst,
@@ -64,6 +68,7 @@ module sched_bundle
          .disp_ready(disp_ready[i]),
          .clr_valid(clr_valid), .clr_pr(clr_pr),
          .wake_valid(wake_valid), .wake_pr(wake_pr),
+         .squash(squash), .squash_seq(squash_seq),
          .iss_valid(iss_valid[i]), .iss_seq(iss_seq[i*SEQW +: SEQW]),
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),

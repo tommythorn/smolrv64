@@ -13,9 +13,9 @@ module tb;
    localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
-   reg                reset, redirect=0;
-   reg  [PCW-1:0]     redirect_pc=0;
-   reg  [SEQW-1:0]    redirect_seq=0;
+   reg                reset;
+   wire               redirect;
+   wire [PCW-1:0]     redirect_target;
    wire [PCW-1:0]     imem_addr;
    reg  [HW*16-1:0]   imem_data;
    wire [PBW-1:0]     imem_avail = 4'd8;
@@ -25,9 +25,9 @@ module tb;
    integer errs=0, i, k, c;
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(0)) dut
-     (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
-      .redirect_seq(redirect_seq), .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail), .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val));
+     (.clk(clk), .reset(reset), .imem_addr(imem_addr), .imem_data(imem_data),
+      .imem_avail(imem_avail), .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
+      .redirect(redirect), .redirect_target(redirect_target));
 
    reg [15:0] mem [0:63];
    integer m;

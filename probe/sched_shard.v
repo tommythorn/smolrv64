@@ -1,3 +1,4 @@
+`include "exec_pay.vh"
 `default_nettype none
 
 // One shard of the sharded scheduler: a non-speculative scoreboard issue queue.
@@ -31,7 +32,7 @@ module sched_shard
     parameter IQW    = 3,        // clog2(IQD)
     parameter SEQW   = 8,
     parameter LATW   = 2,        // latency field width (carried, v1 unused)
-    parameter PAYW   = 142)      // opaque execute payload (ctl+imm+pc), see exec_pay.vh
+    parameter PAYW   = `PAYW)    // opaque execute payload (ctl+imm+pc+branch), see exec_pay.vh
    (input  wire                    clk,
     input  wire                    reset,
     // dispatch: this shard's renamed instruction
@@ -51,6 +52,9 @@ module sched_shard
     input  wire [SHARDS*PBITS-1:0] clr_pr,
     input  wire [SHARDS-1:0]       wake_valid,
     input  wire [SHARDS*PBITS-1:0] wake_pr,
+    // branch misprediction squash: drop entries younger than the branch
+    input  wire                    squash,
+    input  wire [SEQW-1:0]         squash_seq,
     // this shard's issue this cycle (bundle feeds it back as wake_*[SH])
     output wire                    iss_valid,
     output wire [SEQW-1:0]         iss_seq,
@@ -142,6 +146,12 @@ module sched_shard
 
          // issue: free the selected entry
          if (found) iqv[sel] <= 1'b0;
+
+         // branch squash: invalidate entries younger (in program order) than the
+         // mispredicting branch. (seqno is program order; rolled back on redirect.)
+         if (squash)
+            for (k = 0; k < IQD; k = k + 1)
+               if (iqv[k] && (iqseq[k] > squash_seq)) iqv[k] <= 1'b0;
 
          // dispatch: insert into a free slot (issue's freed slot is not reused
          // this cycle -- have_free only counts currently-invalid entries)

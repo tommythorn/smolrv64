@@ -30,6 +30,7 @@ module decode_rename
     parameter CBITS  = 2)
    (input  wire                 clk,
     input  wire                 reset,    // squashes the boundary (no alloc/MAP write)
+    input  wire                 flush,    // redirect: squash the in-flight (wrong-path) bundle
     // raw aligner words
     input  wire [IW*32-1:0]     inst,
     input  wire [IW-1:0]        in_valid,
@@ -52,7 +53,8 @@ module decode_rename
     output wire [IW*PBITS-1:0]  pdst,
     output wire [IW-1:0]        r_need1,  // source 1 is a real dependency to wait on
     output wire [IW-1:0]        r_need2,
-    output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc)
+    output wire [IW-1:0]        r_is_branch,  // for speculative checkpoint creation
+    output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc+branch)
     output wire [IW-1:0]        stall);
 
    // ---------------------------------------------------------- decode (comb)
@@ -62,6 +64,8 @@ module decode_rename
    wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_map_writer;
    wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot;
    wire [IW-1:0]        d_is_rvc, d_alu_w, d_alu_uw, d_op2_imm, d_res_link, d_is_mem;
+   wire [IW-1:0]        d_is_branch, d_is_jump;
+   wire [IW*3-1:0]      d_br_func;
    wire [IW*64-1:0]     d_imm;
    wire [IW*6-1:0]      d_alu_op;
    wire [IW*2-1:0]      d_op1_sel;
@@ -74,7 +78,8 @@ module decode_rename
       .s1_is_slot(d_s1_is_slot), .s1_slot(d_s1_slot),
       .s2_is_slot(d_s2_is_slot), .s2_slot(d_s2_slot), .map_writer(d_map_writer),
       .alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
-      .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem));
+      .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem),
+      .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump));
 
    // -------------------------------------------- decode/rename boundary reg
    reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer;
@@ -83,6 +88,8 @@ module decode_rename
    reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot;
    // payload + need flags registered alongside the rename contract
    reg [IW-1:0]        q_rs1_v, q_rs2_v, q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
+   reg [IW-1:0]        q_is_branch, q_is_jump;
+   reg [IW*3-1:0]      q_br_func;
    reg [IW*64-1:0]     q_imm, q_pc;
    reg [IW*6-1:0]      q_alu_op;
    reg [IW*2-1:0]      q_op1_sel;
@@ -94,10 +101,13 @@ module decode_rename
    // On reset, clear only the bits that cause downstream action: q_rd_v gates
    // allocation, q_map_writer gates the MAP write, q_valid gates consumers.
    // The rest may latch freely (ignored while their valids are 0).
+   wire squash = reset | flush;   // both kill the in-flight bundle's effects
    always @(posedge clk) begin
-      q_valid      <= reset ? {IW{1'b0}} : d_valid;
-      q_rd_v       <= reset ? {IW{1'b0}} : d_rd_v;
-      q_map_writer <= reset ? {IW{1'b0}} : d_map_writer;
+      q_valid      <= squash ? {IW{1'b0}} : d_valid;
+      q_rd_v       <= squash ? {IW{1'b0}} : d_rd_v;
+      q_map_writer <= squash ? {IW{1'b0}} : d_map_writer;
+      q_is_branch  <= squash ? {IW{1'b0}} : d_is_branch;
+      q_is_jump    <= d_is_jump; q_br_func <= d_br_func;
       q_seq        <= d_seq;
       q_rd         <= d_rd;
       q_rs1        <= d_rs1;      q_rs2        <= d_rs2;
@@ -116,12 +126,14 @@ module decode_rename
    assign r_rd_v  = q_rd_v;
    assign r_need1 = q_rs1_v;
    assign r_need2 = q_rs2_v;
+   assign r_is_branch = q_is_branch;
 
    // pack the execute payload per slot (see exec_pay.vh)
    genvar p;
    generate for (p = 0; p < IW; p = p + 1) begin : pay
       assign r_pay[p*`PAYW +: `PAYW] =
-        { q_pc[p*64 +: 64], q_imm[p*64 +: 64], q_is_mem[p], q_is_rvc[p],
+        { q_br_func[p*3 +: 3], q_is_jump[p], q_is_branch[p],
+          q_pc[p*64 +: 64], q_imm[p*64 +: 64], q_is_mem[p], q_is_rvc[p],
           q_res_link[p], q_op2_imm[p], q_op1_sel[p*2 +: 2], q_alu_uw[p],
           q_alu_w[p], q_alu_op[p*6 +: 6] };
    end endgenerate

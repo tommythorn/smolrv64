@@ -33,7 +33,7 @@ module frontend
    (input  wire                    clk,
     input  wire                    reset,
     // redirect (branch mispredict / exception / CPR rollback)
-    input  wire                    redirect,
+    input  wire                    redirect,    // fetch -> target (also flushes the boundary)
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     // instruction memory (combinational read)
@@ -57,6 +57,7 @@ module frontend
     output wire [IW*PBITS-1:0]     pdst,
     output wire [IW-1:0]           r_need1,
     output wire [IW-1:0]           r_need2,
+    output wire [IW-1:0]           r_is_branch,
     output wire [IW*`PAYW-1:0]     r_pay,
     output wire [IW-1:0]           stall);
 
@@ -75,14 +76,15 @@ module frontend
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .AREGS(AREGS),
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),
                    .SBITS(SBITS), .NCHK(NCHK), .CBITS(CBITS)) u_dr
-     (.clk(clk), .reset(reset), .inst(f_inst), .in_valid(f_slot_valid), .seq_in(f_seq),
-      .pc_in(f_pc),
+     (.clk(clk), .reset(reset), .flush(redirect), .inst(f_inst), .in_valid(f_slot_valid),
+      .seq_in(f_seq), .pc_in(f_pc),
       .fr_phys(fr_phys), .fr_valid(fr_valid),
       .chk_create(chk_create), .chk_create_idx(chk_create_idx),
       .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
-      .r_need1(r_need1), .r_need2(r_need2), .r_pay(r_pay), .stall(stall));
+      .r_need1(r_need1), .r_need2(r_need2), .r_is_branch(r_is_branch),
+      .r_pay(r_pay), .stall(stall));
 endmodule
 
 `default_nettype wire

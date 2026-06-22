@@ -23,13 +23,16 @@ module tb;
 
    exec_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
                 .POOL(POOL), .IDXB(IDXB)) dut
-     (.clk(clk), .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
+     (.clk(clk), .iss_valid(iss_valid), .iss_seq(8'd0),
+      .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2),
       .alu_op(alu_op), .alu_w(alu_w), .alu_uw(alu_uw), .op1_sel(op1_sel),
       .op2_imm(op2_imm), .res_link(res_link), .is_rvc(is_rvc), .is_mem(is_mem),
+      .is_branch(1'b0), .is_jump(1'b0), .br_func(3'b0),
       .imm(imm), .pc(pc),
       .wb_valid_in(wb_valid_in), .wb_pr_in(wb_pr_in), .wb_val_in(wb_val_in),
       .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
+      .br_redirect(), .br_target(), .br_seq(),
       .agu_addr(agu_addr), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
 
    // issue an op (defaults: ADD, op2=imm)

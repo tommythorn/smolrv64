@@ -20,10 +20,12 @@ module exec_shard
     parameter NPHYS  = 256,
     parameter PBITS  = 8,
     parameter POOL   = 64,
-    parameter IDXB   = 6)
+    parameter IDXB   = 6,
+    parameter SEQW   = 8)
    (input  wire                    clk,
     // issue from this shard's scheduler
     input  wire                    iss_valid,
+    input  wire [SEQW-1:0]         iss_seq,
     input  wire [PBITS-1:0]        iss_pdst,
     input  wire                    iss_pdst_v,    // writes a register
     input  wire [PBITS-1:0]        iss_ps1,
@@ -37,6 +39,9 @@ module exec_shard
     input  wire                    res_link,
     input  wire                    is_rvc,
     input  wire                    is_mem,
+    input  wire                    is_branch,
+    input  wire                    is_jump,
+    input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
     // writeback broadcast (all shards) -> RF writes
@@ -47,7 +52,11 @@ module exec_shard
     output wire                    wb_valid,
     output wire [PBITS-1:0]        wb_pr,
     output wire [63:0]             wb_val,
-    // for the later LSU / branch unit
+    // branch/jump resolution (this shard)
+    output wire                    br_redirect,   // valid only when iss_valid & (is_branch|is_jump)
+    output wire [63:0]             br_target,
+    output wire [SEQW-1:0]         br_seq,
+    // for the later LSU
     output wire [63:0]             agu_addr,
     output wire                    cmp_eq,
     output wire                    cmp_lt,
@@ -71,6 +80,16 @@ module exec_shard
    assign wb_valid = iss_valid & iss_pdst_v & ~is_mem;
    assign wb_pr    = iss_pdst;
    assign wb_val   = result;
+
+   // branch/jump resolution (predict not-taken): redirect on taken branch / any jump
+   wire bu_redirect;
+   branch_unit bu
+     (.is_branch(is_branch), .is_jump(is_jump), .is_jalr(is_jump & op2_imm),
+      .br_func(br_func), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
+      .pc(pc), .imm(imm), .agu_addr(agu_addr),
+      .redirect(bu_redirect), .target(br_target));
+   assign br_redirect = iss_valid & bu_redirect;
+   assign br_seq      = iss_seq;
 endmodule
 
 `default_nettype wire
