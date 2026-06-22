@@ -734,8 +734,17 @@ are pessimistic but the *comparison* is informative):**
       - *Build order:* BP **confidence** (ties into the postponed basic-block/FTQ BP) →
         **decouple `create` from dispatch** (checkpoint opens on policy; counts/freelist
         accumulate across bundles) → **coarse rollback + replay + fix-up override**.
-    - *Limits (to generalize next):* JAL/JALR precise link-write restore;
-      multi-cycle (load) wb suppression on squash (needed once the LSU exists).
+    - *JAL/JALR link-write restore — **done & verified** (no RTL change; truncation
+      already covered it):* a jump is the youngest instr in its checkpoint, so its link
+      write (`rd ← next_pc`, `exec_alu` `result = res_link ? pc+(rvc?2:4) : alu`) lives
+      in the checkpoint that is **kept** on redirect (rollback to `rckpt+1`), and the
+      preg holds the link value — so the target path reads `ra` correctly. `tb_jump`
+      proves both forms end-to-end: JAL (direct, link 0x4 read on the target) and JALR
+      (indirect, target = `rs1+imm`, link 0x18), each across its own redirect. (RVC
+      `c.jalr` link = `pc+2` rides the same `is_rvc` payload bit, validated by
+      `tb_rvc_expand` + RV64IC streaming.)
+    - *Limits (to generalize next):* multi-cycle (load) wb suppression on squash
+      (needed once the LSU exists).
     - **Seqno wrap invariant (all program-order compares):** seqno has limited range
       and wraps, so every `a>b`/`a<b` must be the signed-difference form
       `$signed(a-b)>0` / `<0` (== `(unsigned)(a-b) <= MAX_POSITIVE`), valid **only
