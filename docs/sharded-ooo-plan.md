@@ -304,6 +304,73 @@ simultaneous mem-issue stalls rather than demanding 4× ports / 4-way CAMs.
   ports), and **rollback rewinds the tail** to the branch's store#. Driven by the
   existing `commit`/`rollback`/`ckpt#` signals from `commit_ctl` — no new recovery.
 
+### Forwarding is byte-granular — and under CPR it must be *complete*
+The `resolved_through` gate (load waits until all older stores have resolved
+addresses) is cheap: one shared find-first-unresolved pointer + one comparator per
+waiting load. The forwarding itself is **per byte**, with no word/line framing
+(we support **arbitrary alignment — misaligned memops are not trapped**, matching
+the current core; only page-crossing traps, and that lives with the dTLB):
+
+```
+for each byte address X in [A, A+N):
+    value[X-A] = data of the YOUNGEST older store (store# ≤ S_max)
+                 whose [saddr, saddr+ssize) contains X ;   else  mem[X]
+```
+
+So a load is always memory bytes overlaid with per-byte youngest-older-store
+forwards — two older stores overlapping each other and the load, with some bytes
+falling through to memory, just works; there is no special case unless you impose a
+word model. The only legitimate stall is on store **data** (`data_rdy`), whose
+producer is older than the load → cannot cycle.
+
+**CPR consequence (a real ROB-vs-CPR drawback, but a narrow one):** the common
+path is identical to a ROB machine — both forward from the store queue and neither
+waits for a store to *commit/retire* to satisfy a normal load. What CPR removes is
+the **fallback**: a ROB machine that can't forward can stall the load until the
+blocking store *retires to cache*, and per-instruction retirement makes that
+deadlock-free. Under coarse checkpoints **that fallback deadlocks** — a same-
+checkpoint store can't drain (drain is commit-gated) until the checkpoint commits,
+which waits on the load. *(The deadlock is armed precisely once loads count
+completion correctly — see below — rather than at issue.)* Therefore **store-to-load
+forwarding must be complete** (the full per-byte merge); a load may wait only on
+store *data*, **never on a drain**. The escape is only ever needed for op classes
+forwarding fundamentally can't serve — **atomics (LR/SC, AMO)** and **MMIO/
+uncacheable loads** — and there the **checkpointing policy** is the tool: forcing a
+checkpoint boundary before such an op puts preceding stores in strictly-older
+checkpoints that commit/drain independently, reinstating ROB-like granularity
+*selectively* (cost: a checkpoint slot + serialization). It's a dispatch-time
+decision, so it's clean for opcode-known classes (AMO/LR/SC); a plain load that
+turns out to be MMIO isn't known until address-resolve and needs a resolve-time
+"serialize when oldest" path instead.
+
+### Completion accounting is per op-class (loads/stores complete at the LSU)
+`commit_ctl` counts an instruction done when it *completes*; the **source of the
+decrement varies by class**. ALU/branch complete **at issue** (fixed latency, no
+fault in the subset). **Loads complete at LSU writeback**, **stores complete when
+their buffer entry is ready to drain** (addr_rdy && data_rdy) — *not at issue*. So
+memory ops carry a "completes-later" bit: the issue-time decrement skips them, and
+the LSU supplies a second decrement source. (This is the "revisit when loads can
+page-fault" caveat made concrete; faulting ops will likewise complete at
+fault-resolution.)
+
+### Addressing is physical — disambiguation on virtual addresses is unsound
+Synonyms (two VAs → one PA) mean a load comparing **virtual** addresses could miss
+a forward from an aliasing older store and read stale memory. So the store buffer
+and load queue hold **physical** addresses: the **dTLB sits on the AGU output**,
+before any compare. This is why the existing **VHPR (virtual) D$ does not fit** and
+is deferred — reusing it would drag the whole store queue into VA-aliasing
+territory. The new LSU implies a **physically-tagged D$** (PIPT, or VIPT so the tag
+is physical) — a real divergence from "reuse the caches," *for the D$ only*. The
+**I$ is asymmetric**: read-only ⇒ no store queue, no disambiguation, no
+aliasing-wrong-value (stale lines only matter for `fence.i`, handled by flush), so a
+virtual I$ is fine and easy to reuse — but the payoff is small (the I$ was the cheap
+part). Milestone 1 sidesteps all of this by running the **dTLB as identity (bare
+mode)** against a **flat byte-addressable** stub: VA==PA, arbitrary alignment is
+free (no lines), disambiguation is trivially physical. Cache-line mechanics
+(misaligned **line-crossing** → two reads + merge), miss latency, and real
+translation (with the inherited **page-crossing trap**, single dTLB) all arrive
+together at the real-D$ milestone.
+
 ### LSU ↔ cache contract (designed now, cache stubbed during validation)
 Like `fetch`'s `imem`, the LSU talks to memory through an abstract port; a
 behavioral model stands in while the LSU core is built, and the real dual-bank
@@ -317,11 +384,21 @@ harder than I$↔fetch and so must be fixed up front:
   stubbed/bare-mode; integrate dTLB+D$ together as a later milestone.
 
 ### Build order (mirrors the CPR integration)
-1. Store buffer + load path vs. a behavioral 1-cycle memory: conservative
-   ordering, store-to-load forwarding, commit-gated drain, rollback rewind.
+1. Store buffer + load queue vs. a **flat byte-addressable** memory (dTLB =
+   identity): `resolved_through` gate, **complete byte-granular forwarding**
+   (sequential byte-merge first — obviously correct, slow; parallel per-byte
+   network is a later latency optimization with identical semantics), commit-gated
+   drain, rollback rewind. Memory ops decrement `commit_ctl` at LSU completion.
 2. Scheduler integration: WB-slot reservation + fixed N+3 hit latency.
 3. Miss deferral (variable latency on the stub).
-4. Real D$ + dTLB integration.
+4. Real D$ (physically-tagged) + dTLB: cache lines, line-crossing two-read+merge,
+   miss latency, translation + page-crossing trap.
+
+Forwarding implementation is a separate axis from correctness: the **sequential
+byte-merge** (init a byte buffer from memory over the load's range, replay older
+overlapping stores oldest→youngest, youngest wins per byte) is correct for
+arbitrary alignment and cheap in gates; the **parallel per-byte age-priority
+network** replaces it later for latency, same semantics.
 
 ## Aligner → decoder interface
 
