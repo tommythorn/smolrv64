@@ -683,10 +683,26 @@ are pessimistic but the *comparison* is informative):**
     the **target's** `x20` (88), never the squashed wrong-path values (131/132);
     redirect target verified. (Also fixed: `sched` `PAYW` was a stale 142 silently
     truncating 20 payload bits — now tracks `exec_pay.vh`.)
-    - *Limits (to generalize next):* branch must be **last-in-bundle / slot 0** (no
-      younger same-bundle) — mid-bundle needs bundle-truncation-at-branch (the start
-      of basic-block fetch); **one in-flight branch** (single checkpoint) — nested
-      speculation needs NCHK + `ckpt_alive`; JAL/JALR precise link-write restore;
+    - *Mid-bundle branches — **done** (truncation in the aligner):* the aligner
+      predecodes control transfers (opcode bits only, incl. RVC C.J/C.BEQZ/C.BNEZ/
+      C.JR/C.JALR) and **terminates the fetch bundle at the first CTI**, so a branch
+      is always the youngest instruction in its checkpoint. Mid-bundle recovery then
+      folds into the already-exact "branch last in bundle" case — **no sub-bundle MAP
+      snapshot, freelist, or commit-count machinery**. The straggling tail reappears
+      as slot 0 of the next window (`consumed` stops at the branch, like the straddle
+      case); it is also the start of basic-block fetch. Without this, a younger
+      same-bundle slot is seqno-squashed in the scheduler but **still counted** in the
+      branch's checkpoint, so the count never drains → in-order commit deadlocks.
+      `tb_branch_mid` (taken `beq` at slot 2; older slots 0/1 must commit) is the
+      discriminator — it checks `commit` fires (no deadlock) and the wrong path never
+      reaches arch state. Note the wrong-path instr *may* execute speculatively before
+      the branch resolves; that is correct, the rollback abandons its physreg.
+    - *Multiple in-flight branches:* now that each branch is its own checkpoint's
+      youngest, up to **NCHK** branches can be in flight (each a distinct checkpoint;
+      `exec_bundle` redirects on the oldest mispredict, rollback to `rckpt+1` discards
+      all younger checkpoints). Deeper nesting beyond NCHK needs `ckpt_alive` evac. A
+      dedicated multi-branch-in-flight TB is still TODO.
+    - *Limits (to generalize next):* JAL/JALR precise link-write restore;
       multi-cycle (load) wb suppression on squash (needed once the LSU exists).
     - **Seqno wrap invariant (all program-order compares):** seqno has limited range
       and wraps, so every `a>b`/`a<b` must be the signed-difference form
