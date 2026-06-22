@@ -72,7 +72,7 @@ module exec_bundle
          .alu_op(p[`PAY_ALUOP]), .alu_w(p[`PAY_W]), .alu_uw(p[`PAY_UW]),
          .op1_sel(p[`PAY_O1S]), .op2_imm(p[`PAY_O2I]), .res_link(p[`PAY_LINK]),
          .is_rvc(p[`PAY_RVC]), .is_mem(p[`PAY_MEM]),
-         .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .br_func(p[`PAY_BRFUNC]),
+         .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
          .wb_valid_in(ewbv), .wb_pr_in(ewbp), .wb_val_in(ewbd),
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),

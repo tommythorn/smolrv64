@@ -41,6 +41,7 @@ module exec_shard
     input  wire                    is_mem,
     input  wire                    is_branch,
     input  wire                    is_jump,
+    input  wire                    is_mul,        // M ext: result from muldiv (op = {alu_w,br_func})
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
@@ -77,10 +78,16 @@ module exec_shard
       .result(result), .addr(agu_addr),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
 
-   // ALU/link ops write back now; memory ops complete via the LSU (later)
+   // M extension: the op is exactly {is_w, funct3} = {alu_w, br_func}. Combinational
+   // here (1-cycle, like the ALU) — a pipelined multiply / iterative divide is a
+   // later timing optimization, same stance as the LSU's combinational byte-merge.
+   wire [63:0] md_result;
+   muldiv md (.rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w), .result(md_result));
+
+   // ALU/link/mul ops write back now; memory ops complete via the LSU (later)
    assign wb_valid = iss_valid & iss_pdst_v & ~is_mem;
    assign wb_pr    = iss_pdst;
-   assign wb_val   = result;
+   assign wb_val   = is_mul ? md_result : result;
 
    // branch/jump resolution (predict not-taken): redirect on taken branch / any jump
    wire bu_redirect;

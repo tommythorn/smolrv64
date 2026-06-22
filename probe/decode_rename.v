@@ -68,7 +68,7 @@ module decode_rename
    wire [IW-1:0]        d_is_rvc, d_alu_w, d_alu_uw, d_op2_imm, d_res_link, d_is_mem;
    wire [IW-1:0]        d_is_store, d_mem_signed;
    wire [IW*2-1:0]      d_mem_size;
-   wire [IW-1:0]        d_is_branch, d_is_jump;
+   wire [IW-1:0]        d_is_branch, d_is_jump, d_is_mul;
    wire [IW*3-1:0]      d_br_func;
    wire [IW*64-1:0]     d_imm;
    wire [IW*6-1:0]      d_alu_op;
@@ -85,7 +85,7 @@ module decode_rename
       .alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
       .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem),
       .is_store(d_is_store), .mem_size(d_mem_size), .mem_signed(d_mem_signed),
-      .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump));
+      .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump), .is_mul(d_is_mul));
 
    // -------------------------------------------- decode/rename boundary reg
    reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer, q_d_is_slot;
@@ -96,7 +96,7 @@ module decode_rename
    reg [IW-1:0]        q_rs1_v, q_rs2_v, q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
    reg [IW-1:0]        q_is_store, q_mem_signed;
    reg [IW*2-1:0]      q_mem_size;
-   reg [IW-1:0]        q_is_branch, q_is_jump;
+   reg [IW-1:0]        q_is_branch, q_is_jump, q_is_mul;
    reg [IW*3-1:0]      q_br_func;
    reg [IW*64-1:0]     q_imm, q_pc;
    reg [IW*6-1:0]      q_alu_op;
@@ -135,6 +135,7 @@ module decode_rename
          q_op1_sel <= d_op1_sel; q_op2_imm <= d_op2_imm; q_res_link <= d_res_link;
          q_is_rvc <= d_is_rvc; q_is_mem <= d_is_mem;
          q_is_store <= d_is_store; q_mem_size <= d_mem_size; q_mem_signed <= d_mem_signed;
+         q_is_mul <= d_is_mul;
       end
    end
 
@@ -150,7 +151,8 @@ module decode_rename
    genvar p;
    generate for (p = 0; p < IW; p = p + 1) begin : pay
       assign r_pay[p*`PAYW +: `PAYW] =
-        { q_mem_signed[p], q_mem_size[p*2 +: 2], q_is_store[p],
+        { q_is_mul[p],
+          q_mem_signed[p], q_mem_size[p*2 +: 2], q_is_store[p],
           q_br_func[p*3 +: 3], q_is_jump[p], q_is_branch[p],
           q_pc[p*64 +: 64], q_imm[p*64 +: 64], q_is_mem[p], q_is_rvc[p],
           q_res_link[p], q_op2_imm[p], q_op1_sel[p*2 +: 2], q_alu_uw[p],

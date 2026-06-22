@@ -28,7 +28,7 @@ module tb;
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2),
       .alu_op(alu_op), .alu_w(alu_w), .alu_uw(alu_uw), .op1_sel(op1_sel),
       .op2_imm(op2_imm), .res_link(res_link), .is_rvc(is_rvc), .is_mem(is_mem),
-      .is_branch(1'b0), .is_jump(1'b0), .br_func(3'b0),
+      .is_branch(1'b0), .is_jump(1'b0), .is_mul(1'b0), .br_func(3'b0),
       .imm(imm), .pc(pc),
       .wb_valid_in(wb_valid_in), .wb_pr_in(wb_pr_in), .wb_val_in(wb_val_in),
       .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),

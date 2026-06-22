@@ -36,7 +36,8 @@ module decode_slot #(parameter SEQW = 8)
     output wire             mem_signed,
     output wire             is_branch,
     output wire [2:0]       br_func,
-    output wire             is_jump);
+    output wire             is_jump,
+    output wire             is_mul);
 
    wire        is_c = (inst[1:0] != 2'b11);
    wire [31:0] exp_rvc;
@@ -57,7 +58,7 @@ module decode_slot #(parameter SEQW = 8)
       .op2_imm(op2_imm), .res_link(res_link), .is_mem(is_mem),
       .is_store(is_store), .mem_size(mem_size), .mem_signed(mem_signed),
       .is_branch(is_branch), .br_func(br_func), .is_jump(is_jump),
-      .is_csr(), .csr_func(), .is_serialize(), .is_mul(),
+      .is_csr(), .csr_func(), .is_serialize(), .is_mul(is_mul),
       .is_amo(), .is_fp(), .illegal());
 
    assign valid    = in_valid;
