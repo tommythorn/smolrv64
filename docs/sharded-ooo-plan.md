@@ -356,20 +356,39 @@ fault-resolution.)
 ### Addressing is physical — disambiguation on virtual addresses is unsound
 Synonyms (two VAs → one PA) mean a load comparing **virtual** addresses could miss
 a forward from an aliasing older store and read stale memory. So the store buffer
-and load queue hold **physical** addresses: the **dTLB sits on the AGU output**,
-before any compare. This is why the existing **VHPR (virtual) D$ does not fit** and
-is deferred — reusing it would drag the whole store queue into VA-aliasing
-territory. The new LSU implies a **physically-tagged D$** (PIPT, or VIPT so the tag
-is physical) — a real divergence from "reuse the caches," *for the D$ only*. The
-**I$ is asymmetric**: read-only ⇒ no store queue, no disambiguation, no
+and load queue hold **physical** addresses, and disambiguation/forwarding/the
+`resolved_through` gate are all physical. What changes between cache schemes is only
+*where the PA comes from*, not the LSU — the LSU is alias-safe by construction and
+the alias question lives entirely inside the D$.
+
+**VHPR is the leading D$ scheme** (revised — it was prematurely deferred). A
+virtually-*indexed* D$ that stores the **physical tag (PPN)** per line supplies the
+PA as a byproduct of a hit: read out the stored PPN, no dTLB on the common path. On
+a miss you translate via the miss-path TLB/PTW — the structure you'd have had anyway
+— and you're filling a line regardless, so the miss cost is unchanged (the dedicated
+dTLB merely did its lookup up front; the fill dominates either way). Net: the hit
+path is *strictly cheaper* (no TLB), and resolution coverage is the union of (D$ hit
+⇒ PA) and (TLB hit on miss ⇒ PA), not limited to the cache's line reach. Bonus: the
+translator now serves only **D$ misses**, not every AGU access, so a 4-wide machine
+no longer needs a multi-ported dTLB at AGU — it drops to miss-rate bandwidth and can
+fold into the PTW.
+
+The **synonym/alias problem is definitional, not open**: VHPR maintains
+**single-resident-alias** — a probe-by-physical-tag on miss guarantees a physical
+line is resident under exactly one VA, so an aliasing access simply *misses and
+migrates* the line; the stale-second-copy case cannot arise. The only cost is alias
+ping-pong on a program actively sharing a physical line under two VAs — a
+performance footnote, not correctness. (A store could go PIPT-style by translating
+first, but the VA-indexed access is cheaper and the miss path translates anyway.)
+
+The **I$ is asymmetric**: read-only ⇒ no store queue, no disambiguation, no
 aliasing-wrong-value (stale lines only matter for `fence.i`, handled by flush), so a
-virtual I$ is fine and easy to reuse — but the payoff is small (the I$ was the cheap
-part). Milestone 1 sidesteps all of this by running the **dTLB as identity (bare
-mode)** against a **flat byte-addressable** stub: VA==PA, arbitrary alignment is
-free (no lines), disambiguation is trivially physical. Cache-line mechanics
-(misaligned **line-crossing** → two reads + merge), miss latency, and real
-translation (with the inherited **page-crossing trap**, single dTLB) all arrive
-together at the real-D$ milestone.
+virtual I$ is fine and easy to reuse. Milestone 1 sidesteps all of this by running
+the **dTLB as identity (bare mode)** against a **flat byte-addressable** stub:
+VA==PA, arbitrary alignment is free (no lines), disambiguation is trivially physical.
+Cache-line mechanics (misaligned **line-crossing** → two reads + merge), miss
+latency, and real translation (with the inherited **page-crossing trap**, single
+dTLB) all arrive together at the real-D$ milestone.
 
 ### LSU ↔ cache contract (designed now, cache stubbed during validation)
 Like `fetch`'s `imem`, the LSU talks to memory through an abstract port; a
@@ -397,8 +416,9 @@ harder than I$↔fetch and so must be fixed up front:
 2. Scheduler WB-slot reservation + fixed N+3 hit latency (needed once load latency
    goes variable; M1's combinational load needs no reservation).
 3. Miss deferral (variable latency on the stub).
-4. Real D$ (physically-tagged) + dTLB: cache lines, line-crossing two-read+merge,
-   miss latency, translation + page-crossing trap.
+4. Real D$ (**VHPR — virtually-indexed, physical-tag/PPN per line; single-resident
+   alias**) + miss-path translator: cache lines, line-crossing two-read+merge, miss
+   latency, translation (PA from stored PPN on hit) + page-crossing trap.
 
 Forwarding implementation is a separate axis from correctness: the **sequential
 byte-merge** (init a byte buffer from memory over the load's range, replay older
