@@ -71,8 +71,8 @@ module exec_bundle
    integer j;
    always @* begin
       redirect = 1'b0; redirect_target = 64'd0; redirect_seq = {SEQW{1'b0}};
-      for (j = 0; j < SHARDS; j = j + 1)
-         if (brd[j] && (!redirect || brs[j*SEQW +: SEQW] < redirect_seq)) begin
+      for (j = 0; j < SHARDS; j = j + 1)   // oldest mispredict wins (wrap-safe compare)
+         if (brd[j] && (!redirect || $signed(brs[j*SEQW +: SEQW] - redirect_seq) < 0)) begin
             redirect        = 1'b1;
             redirect_target = brt[j*64 +: 64];
             redirect_seq    = brs[j*SEQW +: SEQW];

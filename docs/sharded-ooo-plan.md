@@ -548,8 +548,14 @@ are pessimistic but the *comparison* is informative):**
       younger same-bundle) — mid-bundle needs bundle-truncation-at-branch (the start
       of basic-block fetch); **one in-flight branch** (single checkpoint) — nested
       speculation needs NCHK + `ckpt_alive`; JAL/JALR precise link-write restore;
-      seqno-compare squash assumes no wrap; multi-cycle (load) wb suppression on
-      squash (needed once the LSU exists).
+      multi-cycle (load) wb suppression on squash (needed once the LSU exists).
+    - **Seqno wrap invariant (all program-order compares):** seqno has limited range
+      and wraps, so every `a>b`/`a<b` must be the signed-difference form
+      `$signed(a-b)>0` / `<0` (== `(unsigned)(a-b) <= MAX_POSITIVE`), valid **only
+      while any two compared seqnos are ≤ `2^(SEQW-1)` apart**. Applied to all three
+      seqno compares (scheduler issue-select & squash, execute oldest-mispredict).
+      Constraint: `SEQW` must exceed `clog2(2 × max in-flight instructions)` (today
+      SEQW=8 → window 127 ≫ ~36 in-flight). Wrap itself is not yet exercised by a TB.
 14. **Next:** LSU (loads/stores, store addr/data split) — needed for real programs;
     generalize the recovery (mid-bundle branches via truncation, NCHK nested
     checkpoints + `ckpt_alive`, JAL/JALR); commit/CPR + freelist→bitmap + A[C]/P[C];

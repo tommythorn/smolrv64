@@ -97,7 +97,9 @@ module sched_shard
          elig[e] = iqv[e]
                  && (!iqn1[e] || ready[iqs1[e]])
                  && (!iqn2[e] || ready[iqs2[e]]);
-         if (elig[e] && (!found || iqseq[e] < best)) begin
+         // oldest-first; wrap-safe program-order compare ("older" = signed diff < 0,
+         // valid while the in-flight window stays < 2^(SEQW-1))
+         if (elig[e] && (!found || $signed(iqseq[e] - best) < 0)) begin
             found = 1'b1; sel = e[IQW-1:0]; best = iqseq[e];
          end
       end
@@ -151,7 +153,7 @@ module sched_shard
          // mispredicting branch. (seqno is program order; rolled back on redirect.)
          if (squash)
             for (k = 0; k < IQD; k = k + 1)
-               if (iqv[k] && (iqseq[k] > squash_seq)) iqv[k] <= 1'b0;
+               if (iqv[k] && ($signed(iqseq[k] - squash_seq) > 0)) iqv[k] <= 1'b0;  // younger (wrap-safe)
 
          // dispatch: insert into a free slot (issue's freed slot is not reused
          // this cycle -- have_free only counts currently-invalid entries)
