@@ -355,6 +355,8 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Execute bundle (RF+ALU+wb net) | not probed | — | `exec_bundle.v` | cross-shard ✓ |
 | Scheduler bundle | not probed | — | `sched_bundle.v` | (in backend) |
 | **Full core, ALU subset** (FE→sched→exec) | not probed | — | `backend_top.v` | **end-to-end ✓** |
+| Branch unit (resolve taken/target) | not probed | — | `branch_unit.v` | directed ✓ |
+| **Branches + redirect + rollback** (CPR) | not probed | — | (`backend_top`) | **end-to-end ✓** |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -529,14 +531,32 @@ are pessimistic but the *comparison* is informative):**
       x0); `rf_shard` inits banks to 0. First alloc is now `64+shard`.
     - *Not yet:* renamer back-pressure (bounded programs only — IQ/freelist can't
       overflow); commit/CPR + freelist→bitmap reclamation.
-13. **Next:** LSU (loads/stores) + branch unit (redirect) + commit/CPR — the
-    pieces needed to run real programs and to *prove redirect & rollback work*.
-    Also: renamer back-pressure (freeze decode→rename on no-free-reg / IQ-full /
-    no-checkpoint); freelist→bitmap + A[C]/P[C]; the M/CSR/FPU units. Note (TT):
-    integrating Mul/Div, FPU, CSR lengthens the issue→result path → 333 MHz gets
-    harder (more result-mux/forwarding levels); the 2-stage execute (RR|EX) is the
-    lever. Deferred still: branch prediction/FTQ; multi-region floorplan; real I$
-    on `fetch`'s imem; cosim for the operand-decode gap.
+13. Branches + redirect + rollback — **done & verified** (`branch_unit.v` +
+    `backend_top` wiring). Conditional branches resolve in execute; `exec_bundle`
+    picks the **oldest** mispredicting branch → one redirect (predict-not-taken, so
+    a taken branch / any jump is the mispredict). On redirect: fetch → target with
+    seqno rolled back to `branch_seq+1`; decode→rename boundary flushed; rename
+    MAP+freelist restored from the speculative checkpoint taken at the branch
+    (`chk_create`/`chk_restore`, single slot); scheduler invalidates IQ entries
+    with `seqno > branch_seq`. ALU writebacks are self-contained (touch only their
+    own soon-to-be-freed physreg), so no execute-side wb suppression yet. `tb_branch`
+    proves it: a taken `beq` over wrong-path `x20` writes, a later consumer reads
+    the **target's** `x20` (88), never the squashed wrong-path values (131/132);
+    redirect target verified. (Also fixed: `sched` `PAYW` was a stale 142 silently
+    truncating 20 payload bits — now tracks `exec_pay.vh`.)
+    - *Limits (to generalize next):* branch must be **last-in-bundle / slot 0** (no
+      younger same-bundle) — mid-bundle needs bundle-truncation-at-branch (the start
+      of basic-block fetch); **one in-flight branch** (single checkpoint) — nested
+      speculation needs NCHK + `ckpt_alive`; JAL/JALR precise link-write restore;
+      seqno-compare squash assumes no wrap; multi-cycle (load) wb suppression on
+      squash (needed once the LSU exists).
+14. **Next:** LSU (loads/stores, store addr/data split) — needed for real programs;
+    generalize the recovery (mid-bundle branches via truncation, NCHK nested
+    checkpoints + `ckpt_alive`, JAL/JALR); commit/CPR + freelist→bitmap + A[C]/P[C];
+    renamer back-pressure; the M/CSR/FPU units. Note (TT): integrating Mul/Div,
+    FPU, CSR lengthens the issue→result path → 333 MHz gets harder; the 2-stage
+    execute (RR|EX) is the lever. Deferred: branch prediction/FTQ; multi-region
+    floorplan; real I$ on `fetch`'s imem; cosim for the operand-decode gap.
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
