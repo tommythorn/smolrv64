@@ -1,56 +1,54 @@
 `include "exec_pay.vh"
 `default_nettype none
 
-// One shard of the sharded scheduler: a non-speculative scoreboard issue queue.
-// Eager allocation (the map already holds a commit-lifetime physical register),
-// so the scheduler keys purely off physical-register readiness -- no slot naming,
-// no PR<->slot translation. This is NOT a matrix and NOT a per-entry wakeup CAM:
-// readiness is a shared ready[] bit-array indexed by each entry's stored source
-// PRs (a wide mux per source, linear in NPHYS and IQ depth, not quadratic). The
-// structure has the same external contract as a fancier scheduler, so it can be
-// swapped later without disturbing rename/dispatch or execute.
+// One shard of the sharded scheduler: a classic CAM reservation station.
 //
-// Per cycle this shard dispatches <=1 renamed instruction into its IQ and issues
-// <=1 ready instruction (oldest-first by program-order seq). Cross-shard comms
-// are registered next-cycle scoreboard updates carried on SHARDS-wide broadcast
-// buses (self included; the bundle loops this shard's own dispatch/issue back in):
-//   clr_*  = every shard's freshly dispatched dest PR  -> clear ready (new value pending)
-//   wake_* = every shard's issued dest PR (+latency)   -> set ready when the value lands
+// **Stopgap design** (the scheduler is the single most timing-critical structure and
+// gets a full rethink later). N=2 entries, 3 source operands each (rs1/rs2/rs3, the
+// 3rd for future FMA). Chosen to take the 256-deep `ready[]` lookup OFF the issue
+// critical path: each entry carries its source tags + *registered* per-source ready
+// bits, woken by a CAM compare of those tags against the result/wake broadcast. So
+// issue eligibility is just `r1 & r2 & r3` (an AND of flops) + a 2-way oldest select
+// -- no array index, no serial min-scan. (The old scoreboard indexed ready[ps] with
+// a 258:1 mux per source on the issue path; that was the bottleneck.)
 //
-// v1 wakeup is 1-cycle (ALU): an issued producer's dest becomes ready at the next
-// edge, so a dependent issues the cycle after its producer (value bypassed). Fixed
-// multi-cycle latency (loads = 3) needs a small per-source delay line on the wake
-// path; that goes in with the LSU. disp_lat/iss_lat are already carried so adding
-// it does not change this interface. WB-slot reservation likewise deferred (no
-// execute/WB yet) -- it only matters once latencies mix.
+// A small per-phys `ready` table still exists, but is read only at DISPATCH (to seed
+// a new entry's ready bits) -- off the issue path. Same-cycle dispatch-vs-wake is
+// handled by OR-ing the wake CAM match into the seed.
+//
+// Wakeup source is unchanged (the result broadcast): a 1-cycle ALU producer drives
+// it combinationally at issue, so a dependent wakes at T and issues T+1 (back-to-back);
+// multi-cycle units (iterative divide, etc.) broadcast at completion (deferred).
 module sched_shard
   #(parameter SHARDS = 4,
     parameter SH     = 0,
     parameter NPHYS  = 256,
     parameter PBITS  = 8,
-    parameter IQD    = 8,        // issue-queue depth
-    parameter IQW    = 3,        // clog2(IQD)
+    parameter N      = 2,        // reservation-station entries (fixed small for timing)
+    parameter NW     = 1,        // clog2(N)
     parameter SEQW   = 8,
-    parameter LATW   = 2,        // latency field width (carried, v1 unused)
-    parameter CBITS  = 2,        // checkpoint id width (carried to issue for commit_ctl)
-    parameter MIDXW  = 3,        // LSU slot index (sb/lq), allocated at dispatch
-    parameter PAYW   = `PAYW)    // opaque execute payload (ctl+imm+pc+branch), see exec_pay.vh
+    parameter LATW   = 2,        // carried, unused by this scheduler
+    parameter CBITS  = 2,
+    parameter MIDXW  = 3,
+    parameter PAYW   = `PAYW)
    (input  wire                    clk,
     input  wire                    reset,
     // dispatch: this shard's renamed instruction
     input  wire                    disp_valid,
     input  wire [SEQW-1:0]         disp_seq,
     input  wire [PBITS-1:0]        disp_pdst,
-    input  wire                    disp_pdst_v,   // writes a register (allocates dest)
+    input  wire                    disp_pdst_v,
     input  wire [PBITS-1:0]        disp_ps1,
-    input  wire                    disp_need1,    // src1 is a real reg to wait on
+    input  wire                    disp_need1,
     input  wire [PBITS-1:0]        disp_ps2,
     input  wire                    disp_need2,
+    input  wire [PBITS-1:0]        disp_ps3,      // 3rd operand (FMA); tie need3=0 until FP
+    input  wire                    disp_need3,
     input  wire [LATW-1:0]         disp_lat,
-    input  wire [CBITS-1:0]        disp_ckpt,     // checkpoint this instr belongs to
-    input  wire [MIDXW-1:0]        disp_mem_idx,  // LSU sb/lq slot (mem ops)
-    input  wire [PAYW-1:0]         disp_pay,      // opaque, stored and emitted at issue
-    output wire                    disp_ready,    // IQ has room (backpressure to rename)
+    input  wire [CBITS-1:0]        disp_ckpt,
+    input  wire [MIDXW-1:0]        disp_mem_idx,
+    input  wire [PAYW-1:0]         disp_pay,
+    output wire                    disp_ready,    // a slot is (or becomes) free this cycle
     // cross-shard scoreboard broadcasts (self included)
     input  wire [SHARDS-1:0]       clr_valid,
     input  wire [SHARDS*PBITS-1:0] clr_pr,
@@ -68,122 +66,142 @@ module sched_shard
     output wire                    iss_pdst_v,
     output wire [PBITS-1:0]        iss_ps1,
     output wire [PBITS-1:0]        iss_ps2,
+    output wire [PBITS-1:0]        iss_ps3,
     output wire [LATW-1:0]         iss_lat,
     output wire [CBITS-1:0]        iss_ckpt,
     output wire [MIDXW-1:0]        iss_mem_idx,
     output wire [PAYW-1:0]         iss_pay);
 
-   // ---------------------------------------------------------------- state
-   reg              ready [0:NPHYS-1];           // scoreboard: phys reg has its value
-   reg              iqv   [0:IQD-1];
-   reg [SEQW-1:0]   iqseq [0:IQD-1];
-   reg [PBITS-1:0]  iqpd  [0:IQD-1];
-   reg              iqpdv [0:IQD-1];
-   reg [PBITS-1:0]  iqs1  [0:IQD-1];
-   reg              iqn1  [0:IQD-1];
-   reg [PBITS-1:0]  iqs2  [0:IQD-1];
-   reg              iqn2  [0:IQD-1];
-   reg [LATW-1:0]   iqlat [0:IQD-1];
-   reg [CBITS-1:0]  iqck  [0:IQD-1];
-   reg [MIDXW-1:0]  iqmi  [0:IQD-1];
-   reg [PAYW-1:0]   iqpay [0:IQD-1];
+   // -------------------------------------------------------------- state
+   reg              ready [0:NPHYS-1];        // per-phys value-present (read at DISPATCH only)
+   reg              v   [0:N-1];
+   reg [SEQW-1:0]   sq  [0:N-1];
+   reg [PBITS-1:0]  pd  [0:N-1];
+   reg              pdv [0:N-1];
+   reg [PBITS-1:0]  s1  [0:N-1], s2 [0:N-1], s3 [0:N-1];
+   reg              r1  [0:N-1], r2 [0:N-1], r3 [0:N-1];   // per-source ready (CAM-woken)
+   reg [LATW-1:0]   lat [0:N-1];
+   reg [CBITS-1:0]  ck  [0:N-1];
+   reg [MIDXW-1:0]  mi  [0:N-1];
+   reg [PAYW-1:0]   py  [0:N-1];
 
-   integer i;
+   integer i, k;
    initial begin
       for (i = 0; i < NPHYS; i = i + 1) ready[i] = 1'b1;   // arch values present
-      for (i = 0; i < IQD;   i = i + 1) iqv[i]   = 1'b0;
+      for (i = 0; i < N;     i = i + 1) v[i]     = 1'b0;
    end
 
-   // ------------------------------------------------ eligibility + oldest select
-   // A source is satisfied if it is not a real dependency or its PR is ready.
-   reg [IQD-1:0]  elig;
+   // ---------------------------------------- CAM wake match (tag vs result broadcast)
+   function match;
+      input [PBITS-1:0] tag;
+      integer s;
+      begin
+         match = 1'b0;
+         for (s = 0; s < SHARDS; s = s + 1)
+            if (wake_valid[s] && (wake_pr[s*PBITS +: PBITS] == tag)) match = 1'b1;
+      end
+   endfunction
+
+   // same-cycle clr: a producer being *allocated* this cycle (in any shard) marks its
+   // dest not-ready. The seed below reads the ready table combinationally (pre-edge),
+   // so it must mask a stale "ready" for a tag being cleared this very cycle -- this is
+   // the common intra-bundle dependency (producer + consumer dispatch together).
+   function clr_hit;
+      input [PBITS-1:0] tag;
+      integer s;
+      begin
+         clr_hit = 1'b0;
+         for (s = 0; s < SHARDS; s = s + 1)
+            if (clr_valid[s] && (clr_pr[s*PBITS +: PBITS] == tag)) clr_hit = 1'b1;
+      end
+   endfunction
+
+   // ------------------------------------------------ eligibility + oldest-of-N select
+   reg [N-1:0]    elig;
    reg            found;
-   reg [IQW-1:0]  sel;
+   reg [NW-1:0]   sel;
    reg [SEQW-1:0] best;
    integer e;
    always @* begin
-      found = 1'b0; sel = {IQW{1'b0}}; best = {SEQW{1'b0}};
-      for (e = 0; e < IQD; e = e + 1) begin
-         elig[e] = iqv[e]
-                 && (!iqn1[e] || ready[iqs1[e]])
-                 && (!iqn2[e] || ready[iqs2[e]]);
-         // oldest-first; wrap-safe program-order compare ("older" = signed diff < 0,
-         // valid while the in-flight window stays < 2^(SEQW-1))
-         if (elig[e] && (!found || $signed(iqseq[e] - best) < 0)) begin
-            found = 1'b1; sel = e[IQW-1:0]; best = iqseq[e];
+      found = 1'b0; sel = {NW{1'b0}}; best = {SEQW{1'b0}};
+      for (e = 0; e < N; e = e + 1) begin
+         elig[e] = v[e] & r1[e] & r2[e] & r3[e];      // all sources ready (flops, no mux)
+         if (elig[e] && (!found || $signed(sq[e] - best) < 0)) begin
+            found = 1'b1; sel = e[NW-1:0]; best = sq[e];
          end
       end
    end
 
-   // free IQ slot for dispatch (lowest invalid entry)
-   reg          have_free;
-   reg [IQW-1:0] freeslot;
-   always @* begin
-      have_free = 1'b0; freeslot = {IQW{1'b0}};
-      for (e = IQD-1; e >= 0; e = e - 1)
-         if (!iqv[e]) begin have_free = 1'b1; freeslot = e[IQW-1:0]; end
-   end
-
-   assign disp_ready = have_free;
-   // hold all issue while the divider runs (it owns the shard's WB lane on completion)
+   // free slot: any invalid entry, else the one issuing this cycle (same-cycle reuse so
+   // N=2 still sustains 1 dispatch/cycle). issue is gated by exec_busy.
    wire issue = found & ~exec_busy;
-   assign iss_valid  = issue;
-   assign iss_seq    = iqseq[sel];
-   assign iss_pdst   = iqpd [sel];
-   assign iss_pdst_v = iqpdv[sel];
-   assign iss_ps1    = iqs1 [sel];
-   assign iss_ps2    = iqs2 [sel];
-   assign iss_lat    = iqlat[sel];
-   assign iss_ckpt   = iqck [sel];
-   assign iss_mem_idx= iqmi [sel];
-   assign iss_pay    = iqpay[sel];
-
-   // ------------------------------------------------ unpack broadcast buses
-   reg [PBITS-1:0] wkpr [0:SHARDS-1];
-   reg [PBITS-1:0] clpr [0:SHARDS-1];
-   integer s;
-   always @* for (s = 0; s < SHARDS; s = s + 1) begin
-      wkpr[s] = wake_pr[s*PBITS +: PBITS];
-      clpr[s] = clr_pr [s*PBITS +: PBITS];
+   reg           inv_avail;
+   reg [NW-1:0]  inv_idx;
+   always @* begin
+      inv_avail = 1'b0; inv_idx = {NW{1'b0}};
+      for (e = N-1; e >= 0; e = e - 1) if (!v[e]) begin inv_avail = 1'b1; inv_idx = e[NW-1:0]; end
    end
+   wire [NW-1:0] dst = inv_avail ? inv_idx : sel;       // where a new dispatch lands
+   assign disp_ready = inv_avail | issue;
+
+   assign iss_valid  = issue;
+   assign iss_seq    = sq [sel];
+   assign iss_pdst   = pd [sel];
+   assign iss_pdst_v = pdv[sel];
+   assign iss_ps1    = s1 [sel];
+   assign iss_ps2    = s2 [sel];
+   assign iss_ps3    = s3 [sel];
+   assign iss_lat    = lat[sel];
+   assign iss_ckpt   = ck [sel];
+   assign iss_mem_idx= mi [sel];
+   assign iss_pay    = py [sel];
+
+   // seed a new entry's ready bits: not-a-dep, OR in the table & not cleared this cycle,
+   // OR woken this cycle. Computed procedurally at the dispatch edge (NOT a continuous
+   // assign -- match()/clr_hit() read wake_valid/clr_valid, which a wire's sensitivity
+   // would miss, leaving the seed stale; same gotcha as the aligner's hwr()).
+   reg seed1, seed2, seed3;
 
    // ------------------------------------------------------------- sequential
-   integer k;
+   integer s;
    always @(posedge clk) begin
       if (reset) begin
          for (k = 0; k < NPHYS; k = k + 1) ready[k] <= 1'b1;
-         for (k = 0; k < IQD;   k = k + 1) iqv[k]   <= 1'b0;
+         for (k = 0; k < N;     k = k + 1) v[k]     <= 1'b0;
       end else begin
-         // scoreboard: set woken producers (v1: 1-cycle), then clear freshly
-         // dispatched dests -- clear after set so a same-cycle clash leaves the
-         // newly allocated dest not-ready (its value is still pending).
-         for (s = 0; s < SHARDS; s = s + 1) if (wake_valid[s]) ready[wkpr[s]] <= 1'b1;
-         for (s = 0; s < SHARDS; s = s + 1) if (clr_valid[s])  ready[clpr[s]] <= 1'b0;
+         // ready table: wake sets, freshly dispatched dest clears (clear after set so a
+         // same-cycle clash leaves the new dest not-ready) -- read only at dispatch.
+         for (s = 0; s < SHARDS; s = s + 1) if (wake_valid[s]) ready[wake_pr[s*PBITS +: PBITS]] <= 1'b1;
+         for (s = 0; s < SHARDS; s = s + 1) if (clr_valid[s])  ready[clr_pr [s*PBITS +: PBITS]] <= 1'b0;
 
-         // issue: free the selected entry (only when actually issuing)
-         if (issue) iqv[sel] <= 1'b0;
+         // CAM wakeup of live entries (catch a tag matching the result broadcast)
+         for (k = 0; k < N; k = k + 1) if (v[k]) begin
+            if (!r1[k] && match(s1[k])) r1[k] <= 1'b1;
+            if (!r2[k] && match(s2[k])) r2[k] <= 1'b1;
+            if (!r3[k] && match(s3[k])) r3[k] <= 1'b1;
+         end
 
-         // branch squash: invalidate entries younger (in program order) than the
-         // mispredicting branch. (seqno is program order; rolled back on redirect.)
+         // issue: free the selected entry
+         if (issue) v[sel] <= 1'b0;
+
+         // branch squash: invalidate entries younger than the mispredicting branch
          if (squash)
-            for (k = 0; k < IQD; k = k + 1)
-               if (iqv[k] && ($signed(iqseq[k] - squash_seq) > 0)) iqv[k] <= 1'b0;  // younger (wrap-safe)
+            for (k = 0; k < N; k = k + 1)
+               if (v[k] && ($signed(sq[k] - squash_seq) > 0)) v[k] <= 1'b0;
 
-         // dispatch: insert into a free slot (issue's freed slot is not reused
-         // this cycle -- have_free only counts currently-invalid entries)
-         if (disp_valid && have_free) begin
-            iqv  [freeslot] <= 1'b1;
-            iqseq[freeslot] <= disp_seq;
-            iqpd [freeslot] <= disp_pdst;
-            iqpdv[freeslot] <= disp_pdst_v;
-            iqs1 [freeslot] <= disp_ps1;
-            iqn1 [freeslot] <= disp_need1;
-            iqs2 [freeslot] <= disp_ps2;
-            iqn2 [freeslot] <= disp_need2;
-            iqlat[freeslot] <= disp_lat;
-            iqck [freeslot] <= disp_ckpt;
-            iqmi [freeslot] <= disp_mem_idx;
-            iqpay[freeslot] <= disp_pay;
+         // dispatch: write the new entry (overrides a same-cycle issue-free of this slot)
+         if (disp_valid && disp_ready) begin
+            seed1 = ~disp_need1 | (ready[disp_ps1] & ~clr_hit(disp_ps1)) | match(disp_ps1);
+            seed2 = ~disp_need2 | (ready[disp_ps2] & ~clr_hit(disp_ps2)) | match(disp_ps2);
+            seed3 = ~disp_need3 | (ready[disp_ps3] & ~clr_hit(disp_ps3)) | match(disp_ps3);
+            v  [dst] <= 1'b1;
+            sq [dst] <= disp_seq;
+            pd [dst] <= disp_pdst;  pdv[dst] <= disp_pdst_v;
+            s1 [dst] <= disp_ps1;   r1 [dst] <= seed1;
+            s2 [dst] <= disp_ps2;   r2 [dst] <= seed2;
+            s3 [dst] <= disp_ps3;   r3 [dst] <= seed3;
+            lat[dst] <= disp_lat;   ck [dst] <= disp_ckpt;
+            mi [dst] <= disp_mem_idx; py[dst] <= disp_pay;
          end
       end
    end

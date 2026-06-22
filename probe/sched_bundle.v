@@ -12,8 +12,8 @@ module sched_bundle
   #(parameter SHARDS = 4,
     parameter NPHYS  = 256,
     parameter PBITS  = 8,
-    parameter IQD    = 8,
-    parameter IQW    = 3,
+    parameter N      = 2,        // CAM reservation-station entries per shard
+    parameter NW     = 1,
     parameter SEQW   = 8,
     parameter LATW   = 2,
     parameter CBITS  = 2,
@@ -30,6 +30,8 @@ module sched_bundle
     input  wire [SHARDS-1:0]       disp_need1,
     input  wire [SHARDS*PBITS-1:0] disp_ps2,
     input  wire [SHARDS-1:0]       disp_need2,
+    input  wire [SHARDS*PBITS-1:0] disp_ps3,      // FMA 3rd operand (tie need3=0 until FP)
+    input  wire [SHARDS-1:0]       disp_need3,
     input  wire [SHARDS*LATW-1:0]  disp_lat,
     input  wire [SHARDS*CBITS-1:0] disp_ckpt,
     input  wire [SHARDS*MIDXW-1:0] disp_mem_idx,
@@ -49,6 +51,7 @@ module sched_bundle
     output wire [SHARDS-1:0]       iss_pdst_v,
     output wire [SHARDS*PBITS-1:0] iss_ps1,
     output wire [SHARDS*PBITS-1:0] iss_ps2,
+    output wire [SHARDS*PBITS-1:0] iss_ps3,
     output wire [SHARDS*SEQW-1:0]  iss_seq,
     output wire [SHARDS*LATW-1:0]  iss_lat,
     output wire [SHARDS*CBITS-1:0] iss_ckpt,
@@ -66,13 +69,14 @@ module sched_bundle
 
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       sched_shard #(.SHARDS(SHARDS), .SH(i), .NPHYS(NPHYS), .PBITS(PBITS),
-                    .IQD(IQD), .IQW(IQW), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS),
+                    .N(N), .NW(NW), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS),
                     .MIDXW(MIDXW), .PAYW(PAYW)) sh
         (.clk(clk), .reset(reset),
          .disp_valid(disp_valid[i]), .disp_seq(disp_seq[i*SEQW +: SEQW]),
          .disp_pdst(disp_pdst[i*PBITS +: PBITS]), .disp_pdst_v(disp_pdst_v[i]),
          .disp_ps1(disp_ps1[i*PBITS +: PBITS]), .disp_need1(disp_need1[i]),
          .disp_ps2(disp_ps2[i*PBITS +: PBITS]), .disp_need2(disp_need2[i]),
+         .disp_ps3(disp_ps3[i*PBITS +: PBITS]), .disp_need3(disp_need3[i]),
          .disp_lat(disp_lat[i*LATW +: LATW]), .disp_ckpt(disp_ckpt[i*CBITS +: CBITS]),
          .disp_mem_idx(disp_mem_idx[i*MIDXW +: MIDXW]),
          .disp_pay(disp_pay[i*PAYW +: PAYW]),
@@ -83,6 +87,7 @@ module sched_bundle
          .iss_valid(iss_valid[i]), .iss_seq(iss_seq[i*SEQW +: SEQW]),
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),
+         .iss_ps3(iss_ps3[i*PBITS +: PBITS]),
          .iss_lat(iss_lat[i*LATW +: LATW]), .iss_ckpt(iss_ckpt[i*CBITS +: CBITS]),
          .iss_mem_idx(iss_mem_idx[i*MIDXW +: MIDXW]),
          .iss_pay(iss_pay[i*PAYW +: PAYW]));

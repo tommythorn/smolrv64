@@ -157,12 +157,14 @@ module backend_top
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
       .disp_ps1(ps1), .disp_need1(r_need1), .disp_ps2(ps2), .disp_need2(r_need2),
+      .disp_ps3({IW*PBITS{1'b0}}), .disp_need3({IW{1'b0}}),   // FMA 3rd operand: unused until FP
       .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(wkv), .wake_pr(wkp),
       .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(eb_exec_busy),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
-      .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_seq(iss_seq),
+      .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
+      .iss_seq(iss_seq),
       .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
