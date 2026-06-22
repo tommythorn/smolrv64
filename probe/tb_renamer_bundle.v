@@ -41,9 +41,11 @@ module tb;
       .rollback(rollback), .rollback_idx(rollback_idx),
       .ps1(ps1), .ps2(ps2), .pdst(pdst), .cur(cur), .stall(stall));
 
+   // create=1 every cycle: each presented bundle is a dispatch (allocates + writes
+   // the MAP). MAP update and allocation are create-gated in rename_shard now.
    task idle;
       begin rs1=0; rs1_v=0; rs2=0; rs2_v=0; rd=0; rd_v=0;
-            create=0; commit=0; rollback=0; commit_idx=0; rollback_idx=0; end
+            create=1; commit=0; rollback=0; commit_idx=0; rollback_idx=0; end
    endtask
 
    initial begin

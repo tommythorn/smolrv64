@@ -1,26 +1,27 @@
 `include "exec_pay.vh"
 `default_nettype none
 
-// Full sharded-OoO core (frontend + backend), ALU subset, with commit/CPR:
+// Full sharded-OoO core (frontend + backend), ALU + LSU subset, with commit/CPR:
 //   PC -> fetch/align -> decode -> [reg] -> rename -> dispatch
-//      -> scheduler (scoreboard issue queues) -> execute (RF + ALU) -> writeback
+//      -> scheduler (scoreboard issue queues) -> execute (RF + ALU + AGU)
+//      -> writeback / unified LSU
 //   writeback -> scheduler wake (+ every RF copy)   [write-before-read forwarding]
 //
-// Checkpoint / commit / recovery (no ROB):
-//   * one checkpoint per dispatched bundle; commit_ctl tracks per-checkpoint
-//     in-flight counts (incremented at dispatch, decremented at ISSUE -- issue is
-//     the universal completion event, since nops/stores/branches never write back)
-//     and commits the oldest in-order once it is closed and drained;
-//   * each shard's bitmap freelist reclaims a committed checkpoint's dead polds in
-//     one OR, and on a branch redirect rolls back the younger checkpoints' allocs;
-//   * the renamer's replicated MAP restores from a per-checkpoint snapshot.
-//   * back-pressure: the frontend freezes when the checkpoint ring is full, a
-//     freelist is empty, or the scheduler has no room (`accept`).
+// Commit/CPR (no ROB): one checkpoint per dispatched bundle; commit_ctl counts
+// per-checkpoint in-flight instrs (incr at dispatch, decr at completion) and
+// commits the oldest in order; bitmap freelists + MAP snapshot recover on a branch
+// redirect. Back-pressure (`accept`) freezes the frontend on a full checkpoint
+// ring, an empty freelist, a full scheduler, OR a full store buffer / load queue.
 //
-// Branch redirect reopens the span *after* the branch's bundle (rb_idx = br_ckpt+1)
-// so the branch's own bundle survives; the scheduler squashes by seqno (precise),
-// the freelist/MAP roll back by checkpoint (per-bundle granularity -- a redirecting
-// branch must be the youngest in its bundle, as today). LSU and CSR/M/F are future.
+// LSU (M1): unified store buffer + load queue, flat byte-addressable data memory
+// (dmem) stub, physical addresses (dTLB = identity). Loads/stores allocate an LSU
+// slot at dispatch (mem_idx threaded through the scheduler like ckpt#), execute
+// their AGU in the shard, and the LSU resolves ordering + byte-granular forwarding.
+// A load completes at the LSU and writes back on its owner shard's lane (the LSU
+// skips lanes busy with an ALU writeback -> no collision). Completion accounting:
+// ALU/branch/store at issue; LOADS at LSU completion (excluded from the issue
+// decrement, counted via ld_done). TODO: serialize fences/atomics/MMIO via a forced
+// unique checkpoint (deferred; the M1 tests don't use them).
 module backend_top
   #(parameter IW    = 4,
     parameter HW    = 8,
@@ -33,12 +34,24 @@ module backend_top
     parameter NCHK  = 4,
     parameter DCW   = 3,         // clog2(IW+1)
     parameter CNTW  = 3,         // per-checkpoint outstanding count width
+    parameter SBITS = 2,         // clog2(IW) -- owner-shard id width
+    parameter AW    = 64,
+    parameter SBDEPTH= 8, parameter SBI = 3,
+    parameter LQDEPTH= 8, parameter LQI = 3,
+    parameter MIDXW = 3,         // = max(SBI, LQI)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    // data memory port (flat byte-addressable stub; real D$ later)
+    output wire [AW-1:0]           dmem_raddr,
+    input  wire [63:0]             dmem_rdata,
+    output wire                    dmem_wen,
+    output wire [AW-1:0]           dmem_waddr,
+    output wire [63:0]             dmem_wdata,
+    output wire [7:0]              dmem_wmask,
     // observation: per-shard writeback + the branch redirect
     output wire [IW-1:0]           wb_valid,
     output wire [IW*PBITS-1:0]     wb_pr,
@@ -69,10 +82,31 @@ module backend_top
    wire               cc_commit, cc_rollback, cc_full;
    wire [CBITS-1:0]   cc_commit_idx, cc_rollback_idx;
 
+   // ---- per-slot memory-op classification (from the renamed payload) ----
+   wire [IW-1:0]      slot_mem, slot_store, dl_is_load, dl_is_store;
+   genvar gi;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : cls
+      assign slot_mem[gi]   = r_pay[gi*`PAYW + `PAY_MEM];
+      assign slot_store[gi] = r_pay[gi*`PAYW + `PAY_STORE];
+      assign dl_is_load[gi]  = r_valid[gi] & slot_mem[gi] & ~slot_store[gi];
+      assign dl_is_store[gi] = r_valid[gi] & slot_mem[gi] &  slot_store[gi];
+   end endgenerate
+
+   // ---- LSU dispatch allocation (combinational) ----
+   wire [IW*SBI-1:0]  disp_sb_idx;
+   wire [IW*LQI-1:0]  disp_lq_idx;
+   wire               sb_full, lq_full;
+   wire [IW*MIDXW-1:0] disp_mem_idx;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : midx
+      assign disp_mem_idx[gi*MIDXW +: MIDXW] =
+         dl_is_store[gi] ? disp_sb_idx[gi*SBI +: SBI] : disp_lq_idx[gi*LQI +: LQI];
+   end endgenerate
+
    // ---- dispatch / back-pressure decision (on the renamed bundle) ----
    wire [IW-1:0]      disp_ready;
    wire               any_valid    = |r_valid;
-   wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall) && !eb_redirect;
+   wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
+                                     && !sb_full && !lq_full && !eb_redirect;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
@@ -106,50 +140,116 @@ module backend_top
    wire [IW*SEQW-1:0]  iss_seq;
    wire [IW*LATW-1:0]  iss_lat;
    wire [IW*CBITS-1:0] iss_ckpt;
+   wire [IW*MIDXW-1:0] iss_mem_idx;
    wire [IW*`PAYW-1:0] iss_pay;
-   wire [IW-1:0]       wkv;          // writeback = wake source
+   wire [IW-1:0]       wkv;          // effective writeback = wake source (ALU ∪ load)
    wire [IW*PBITS-1:0] wkp;
 
-   // every ALU op is fixed latency 1 in this subset; tag every slot with the
-   // bundle's checkpoint; only dispatch into the IQ when the bundle fires.
    wire [IW*LATW-1:0] disp_lat  = {IW{ {{(LATW-1){1'b0}}, 1'b1} }};
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
    wire [IW-1:0]      sched_disp_valid = r_valid & {IW{disp_fire}};
 
-   sched_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS)) sb
+   sched_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .LATW(LATW),
+                  .CBITS(CBITS), .MIDXW(MIDXW)) sb
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
       .disp_ps1(ps1), .disp_need1(r_need1), .disp_ps2(ps2), .disp_need2(r_need2),
-      .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_pay(r_pay), .disp_ready(disp_ready),
+      .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
+      .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(wkv), .wake_pr(wkp),
       .squash(eb_redirect), .squash_seq(eb_rseq),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_seq(iss_seq),
-      .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_pay(iss_pay));
+      .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
-   // ---- commit control: count by ISSUE, in-order commit, rollback on redirect ----
+   // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
+   wire [IW-1:0]      iss_mem, iss_store, iss_is_load;
+   wire [IW*4-1:0]    iss_nb;
+   wire [IW-1:0]      iss_sgn;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : icl
+      wire [1:0] isz = iss_pay[gi*`PAYW + 148 +: 2];           // PAY_MSIZE
+      assign iss_mem[gi]     = iss_pay[gi*`PAYW + `PAY_MEM];
+      assign iss_store[gi]   = iss_pay[gi*`PAYW + `PAY_STORE];
+      assign iss_sgn[gi]     = iss_pay[gi*`PAYW + `PAY_MSGN];
+      assign iss_nb[gi*4+:4] = (4'd1 << isz);                  // bytes: 1/2/4/8
+      assign iss_is_load[gi] = iss_valid[gi] & iss_mem[gi] & ~iss_store[gi];
+   end endgenerate
+
+   // ---- commit control: count by completion (loads at LSU), commit in order ----
+   wire               lsu_ld_done;
+   wire [CBITS-1:0]   lsu_ld_done_ckpt;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(iss_valid), .iss_ckpt(iss_ckpt),
+      .iss_valid(iss_valid), .iss_is_load(iss_is_load), .iss_ckpt(iss_ckpt),
+      .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),
-      .create(),                                  // = disp_fire (driven directly above)
+      .create(),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx), .full(cc_full));
 
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
 
-   // ---- execute bundle (RF + ALU + wb broadcast + branch resolve) ----
-   exec_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS)) eb
+   // ---- execute bundle (RF + ALU + AGU + wb broadcast + branch resolve) ----
+   wire [IW*64-1:0]   eb_agu, eb_stdata;
+   wire [IW-1:0]      eb_wb_busy;
+   wire               lsu_ld_wb_v;
+   wire [SBITS-1:0]   lsu_ld_wb_owner;
+   wire [PBITS-1:0]   lsu_ld_wb_pdst;
+   wire [63:0]        lsu_ld_wb_val;
+
+   exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS)) eb
      (.clk(clk),
       .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
       .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2),
       .iss_ckpt(iss_ckpt), .iss_pay(iss_pay),
+      .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
+      .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),
-      .agu_addr(), .cmp_eq(), .cmp_lt(), .cmp_ltu(),
+      .agu_addr(eb_agu), .st_data(eb_stdata), .cmp_eq(), .cmp_lt(), .cmp_ltu(),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt));
+
+   // ---- LSU execute-port drive (from issue + the shards' AGU/store-data) ----
+   wire [IW-1:0]      exe_st_v, exe_ld_v;
+   wire [IW*SBI-1:0]  exe_st_idx;
+   wire [IW*LQI-1:0]  exe_ld_idx;
+   wire [IW*AW-1:0]   exe_st_addr, exe_ld_addr;
+   wire [IW*64-1:0]   exe_st_data;
+   wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
+   wire [IW-1:0]      exe_ld_sgn;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
+      assign exe_st_v[gi] = iss_valid[gi] & iss_mem[gi] &  iss_store[gi];
+      assign exe_ld_v[gi] = iss_valid[gi] & iss_mem[gi] & ~iss_store[gi];
+      assign exe_st_idx[gi*SBI +: SBI] = iss_mem_idx[gi*MIDXW +: SBI];
+      assign exe_ld_idx[gi*LQI +: LQI] = iss_mem_idx[gi*MIDXW +: LQI];
+      assign exe_st_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
+      assign exe_ld_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
+      assign exe_st_data[gi*64 +: 64]  = eb_stdata[gi*64 +: 64];
+      assign exe_st_nb[gi*4 +: 4]      = iss_nb[gi*4 +: 4];
+      assign exe_ld_nb[gi*4 +: 4]      = iss_nb[gi*4 +: 4];
+      assign exe_ld_sgn[gi]            = iss_sgn[gi];
+   end endgenerate
+
+   lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
+         .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI)) u_lsu
+     (.clk(clk), .reset(reset),
+      .disp_fire(disp_fire), .disp_is_load(dl_is_load), .disp_is_store(dl_is_store),
+      .disp_seq(r_seq), .disp_ckpt(disp_ckpt), .disp_pdst(pdst),
+      .disp_sb_idx(disp_sb_idx), .disp_lq_idx(disp_lq_idx),
+      .sb_full(sb_full), .lq_full(lq_full),
+      .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
+      .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
+      .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
+      .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
+      .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
+      .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
+      .wb_busy(eb_wb_busy),
+      .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
+      .ld_wb_val(lsu_ld_wb_val), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .commit(cc_commit), .commit_idx(cc_commit_idx),
+      .rollback(eb_redirect), .rollback_seq(eb_rseq));
 
    assign wb_valid = wkv;
    assign wb_pr    = wkp;

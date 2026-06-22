@@ -56,8 +56,9 @@ module exec_shard
     output wire                    br_redirect,   // valid only when iss_valid & (is_branch|is_jump)
     output wire [63:0]             br_target,
     output wire [SEQW-1:0]         br_seq,
-    // for the later LSU
+    // for the LSU
     output wire [63:0]             agu_addr,
+    output wire [63:0]             st_data,       // store data (= rs2) for the store buffer
     output wire                    cmp_eq,
     output wire                    cmp_lt,
     output wire                    cmp_ltu);
@@ -90,6 +91,7 @@ module exec_shard
       .redirect(bu_redirect), .target(br_target));
    assign br_redirect = iss_valid & bu_redirect;
    assign br_seq      = iss_seq;
+   assign st_data     = rs2_val;          // store data path (no op2_imm mux)
 endmodule
 
 `default_nettype wire

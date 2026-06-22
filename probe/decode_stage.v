@@ -40,6 +40,9 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW-1:0]         op2_imm,
     output wire [IW-1:0]         res_link,
     output wire [IW-1:0]         is_mem,
+    output wire [IW-1:0]         is_store,
+    output wire [IW*2-1:0]       mem_size,
+    output wire [IW-1:0]         mem_signed,
     output wire [IW-1:0]         is_branch,
     output wire [IW*3-1:0]       br_func,
     output wire [IW-1:0]         is_jump);
@@ -59,6 +62,7 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
             .alu_op(alu_op[g*6 +: 6]), .alu_w(alu_w[g]), .alu_uw(alu_uw[g]),
             .op1_sel(op1_sel[g*2 +: 2]), .op2_imm(op2_imm[g]),
             .res_link(res_link[g]), .is_mem(is_mem[g]),
+            .is_store(is_store[g]), .mem_size(mem_size[g*2 +: 2]), .mem_signed(mem_signed[g]),
             .is_branch(is_branch[g]), .br_func(br_func[g*3 +: 3]), .is_jump(is_jump[g]));
       end
    endgenerate

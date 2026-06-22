@@ -75,6 +75,11 @@ module lsu
     output reg  [7:0]             mem_wmask,
 
     // ---- load writeback (to the owner shard's WB lane) + completion ----
+    // Combinational: a load completes the cycle it is selected. `wb_busy[s]` marks
+    // shards whose WB lane is taken by an ALU writeback this cycle; the LSU simply
+    // does not select a load owned by a busy shard (it defers — loads are already
+    // variable-latency), so the shared lane never collides (no WB reservation yet).
+    input  wire [IW-1:0]          wb_busy,
     output reg                    ld_wb_v,
     output reg  [PBITS-1:0]       ld_wb_pdst,
     output reg  [SBITS-1:0]       ld_wb_owner,
@@ -171,7 +176,7 @@ module lsu
    always @* begin
       ld_sel_v = 1'b0; ld_sel = {LQI{1'b0}}; ld_best = {SEQW{1'b0}};
       for (i = 0; i < LQDEPTH; i = i + 1) begin
-         if (lq_v[i] && lq_rdy[i]) begin
+         if (lq_v[i] && lq_rdy[i] && !wb_busy[lq_own[i]]) begin   // owner lane free
             // order-safe? no older unfilled store
             blocked = 1'b0;
             for (j = 0; j < SBDEPTH; j = j + 1)
@@ -190,6 +195,42 @@ module lsu
    // (same gotcha as the aligner), and a sequential read sees current values.
    wire [AW-1:0] la = lq_addr[ld_sel];
    assign mem_raddr = la;
+
+   // combinational byte-merge + load writeback (memory ∪ youngest-older-store/byte)
+   reg [63:0]     m_mrg;
+   reg [7:0]      m_byt;
+   reg            m_fwd;
+   reg [SEQW-1:0] m_bseq, m_lsq;
+   reg [AW-1:0]   m_bx;
+   reg [3:0]      m_nb;
+   integer        mb, mj;
+   always @* begin
+      m_lsq = lq_seq[ld_sel];
+      m_nb  = lq_nb [ld_sel];
+      m_mrg = 64'd0;
+      for (mb = 0; mb < 8; mb = mb + 1) begin
+         m_bx  = la + mb[3:0];
+         m_fwd = 1'b0; m_bseq = {SEQW{1'b0}};
+         m_byt = mem_rdata[mb*8 +: 8];                 // default: memory
+         for (mj = 0; mj < SBDEPTH; mj = mj + 1)
+            if (sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0)
+                && (m_bx >= sb_addr[mj]) && (m_bx < sb_addr[mj] + sb_nb[mj])
+                && (!m_fwd || ($signed(m_bseq - sb_seq[mj]) < 0))) begin   // youngest wins
+               m_fwd  = 1'b1; m_bseq = sb_seq[mj];
+               m_byt  = sb_data[mj][ (m_bx - sb_addr[mj])*8 +: 8 ];
+            end
+         m_mrg[mb*8 +: 8] = m_byt;
+      end
+      ld_wb_v      = ld_sel_v;
+      ld_wb_pdst   = lq_pd [ld_sel];
+      ld_wb_owner  = lq_own[ld_sel];
+      ld_wb_val    = (m_nb==4'd1) ? (lq_sgn[ld_sel] ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
+                   : (m_nb==4'd2) ? (lq_sgn[ld_sel] ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
+                   : (m_nb==4'd4) ? (lq_sgn[ld_sel] ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
+                   : m_mrg;
+      ld_done      = ld_sel_v;
+      ld_done_ckpt = lq_ck[ld_sel];
+   end
 
    // ------------------------------ drain --------------------------------
    // oldest committed+filled store -> one masked write/cycle.
@@ -218,22 +259,11 @@ module lsu
    // ----------------------------- sequential ----------------------------
    reg [SBI-1:0]  eidx;
    reg [LQI-1:0]  lidx;
-   // merge scratch (computed in the seq block, reads current arrays)
-   reg [63:0]     m_mrg;
-   reg [7:0]      m_byt;
-   reg            m_fwd;
-   reg [SEQW-1:0] m_bseq, m_lsq;
-   reg [AW-1:0]   m_bx;
-   reg [3:0]      m_nb;
-   integer        mb, mj;
    always @(posedge clk) begin
       if (reset) begin
          for (i = 0; i < SBDEPTH; i = i + 1) begin sb_v[i]<=0; sb_rdy[i]<=0; sb_cmt[i]<=0; end
          for (i = 0; i < LQDEPTH; i = i + 1) begin lq_v[i]<=0; lq_rdy[i]<=0; end
-         ld_wb_v <= 1'b0; ld_done <= 1'b0;
       end else begin
-         ld_wb_v <= 1'b0; ld_done <= 1'b0;
-
          // (1) dispatch allocation
          if (disp_fire) begin
             for (i = 0; i < IW; i = i + 1) begin
@@ -272,36 +302,9 @@ module lsu
             end
          end
 
-         // (3) load completion: byte-merge (memory ∪ youngest-older-store per byte)
-         //     -> WB + commit_ctl decrement. Computed here (current array values).
-         if (ld_sel_v) begin
-            m_lsq = lq_seq[ld_sel];
-            m_nb  = lq_nb [ld_sel];
-            m_mrg = 64'd0;
-            for (mb = 0; mb < 8; mb = mb + 1) begin
-               m_bx  = la + mb[3:0];                          // byte offset 0..7
-               m_fwd = 1'b0; m_bseq = {SEQW{1'b0}};
-               m_byt = mem_rdata[mb*8 +: 8];                 // default: memory
-               for (mj = 0; mj < SBDEPTH; mj = mj + 1)
-                  if (sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0)
-                      && (m_bx >= sb_addr[mj]) && (m_bx < sb_addr[mj] + sb_nb[mj])
-                      && (!m_fwd || ($signed(m_bseq - sb_seq[mj]) < 0))) begin   // youngest wins
-                     m_fwd  = 1'b1; m_bseq = sb_seq[mj];
-                     m_byt  = sb_data[mj][ (m_bx - sb_addr[mj])*8 +: 8 ];
-                  end
-               m_mrg[mb*8 +: 8] = m_byt;
-            end
-            ld_wb_v     <= 1'b1;
-            ld_wb_pdst  <= lq_pd[ld_sel];
-            ld_wb_owner <= lq_own[ld_sel];
-            ld_wb_val   <= (m_nb==4'd1) ? (lq_sgn[ld_sel] ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
-                         : (m_nb==4'd2) ? (lq_sgn[ld_sel] ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
-                         : (m_nb==4'd4) ? (lq_sgn[ld_sel] ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
-                         : m_mrg;
-            ld_done     <= 1'b1;
-            ld_done_ckpt<= lq_ck[ld_sel];
-            lq_v[ld_sel]<= 1'b0;            // free the LQ entry
-         end
+         // (3) load completion is combinational (ld_wb_*/ld_done above); here we
+         //     just free the LQ entry of the load that completed this cycle.
+         if (ld_sel_v) lq_v[ld_sel] <= 1'b0;
 
          // (4) commit: mark this checkpoint's stores drainable
          if (commit)

@@ -20,9 +20,10 @@ module tb;
      (.clk(clk), .iss_valid(iss_valid), .iss_seq({SHARDS*8{1'b0}}),
       .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_pay(iss_pay),
-      .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val), .agu_addr(agu_addr),
+      .lsu_wb_v(1'b0), .lsu_wb_owner(2'd0), .lsu_wb_pr(8'd0), .lsu_wb_val(64'd0), .wb_busy(),
+      .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val), .agu_addr(agu_addr), .st_data(),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .redirect(), .redirect_target(), .redirect_seq());
+      .redirect(), .redirect_target(), .redirect_seq(), .redirect_ckpt());
 
    function [`PAYW-1:0] mkpay(input [5:0] op, input [1:0] o1s, input o2i,
                               input [63:0] imm, input [63:0] pc);

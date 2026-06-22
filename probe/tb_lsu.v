@@ -59,6 +59,7 @@ module tb;
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
       .mem_raddr(mem_raddr), .mem_rdata(mem_rdata),
       .mem_wen(mem_wen), .mem_waddr(mem_waddr), .mem_wdata(mem_wdata), .mem_wmask(mem_wmask),
+      .wb_busy({IW{1'b0}}),
       .ld_wb_v(ld_wb_v), .ld_wb_pdst(ld_wb_pdst), .ld_wb_owner(ld_wb_owner),
       .ld_wb_val(ld_wb_val), .ld_done(ld_done), .ld_done_ckpt(ld_done_ckpt),
       .commit(commit), .commit_idx(commit_idx), .rollback(rollback), .rollback_seq(rollback_seq));

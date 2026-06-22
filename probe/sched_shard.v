@@ -33,6 +33,7 @@ module sched_shard
     parameter SEQW   = 8,
     parameter LATW   = 2,        // latency field width (carried, v1 unused)
     parameter CBITS  = 2,        // checkpoint id width (carried to issue for commit_ctl)
+    parameter MIDXW  = 3,        // LSU slot index (sb/lq), allocated at dispatch
     parameter PAYW   = `PAYW)    // opaque execute payload (ctl+imm+pc+branch), see exec_pay.vh
    (input  wire                    clk,
     input  wire                    reset,
@@ -47,6 +48,7 @@ module sched_shard
     input  wire                    disp_need2,
     input  wire [LATW-1:0]         disp_lat,
     input  wire [CBITS-1:0]        disp_ckpt,     // checkpoint this instr belongs to
+    input  wire [MIDXW-1:0]        disp_mem_idx,  // LSU sb/lq slot (mem ops)
     input  wire [PAYW-1:0]         disp_pay,      // opaque, stored and emitted at issue
     output wire                    disp_ready,    // IQ has room (backpressure to rename)
     // cross-shard scoreboard broadcasts (self included)
@@ -66,6 +68,7 @@ module sched_shard
     output wire [PBITS-1:0]        iss_ps2,
     output wire [LATW-1:0]         iss_lat,
     output wire [CBITS-1:0]        iss_ckpt,
+    output wire [MIDXW-1:0]        iss_mem_idx,
     output wire [PAYW-1:0]         iss_pay);
 
    // ---------------------------------------------------------------- state
@@ -80,6 +83,7 @@ module sched_shard
    reg              iqn2  [0:IQD-1];
    reg [LATW-1:0]   iqlat [0:IQD-1];
    reg [CBITS-1:0]  iqck  [0:IQD-1];
+   reg [MIDXW-1:0]  iqmi  [0:IQD-1];
    reg [PAYW-1:0]   iqpay [0:IQD-1];
 
    integer i;
@@ -127,6 +131,7 @@ module sched_shard
    assign iss_ps2    = iqs2 [sel];
    assign iss_lat    = iqlat[sel];
    assign iss_ckpt   = iqck [sel];
+   assign iss_mem_idx= iqmi [sel];
    assign iss_pay    = iqpay[sel];
 
    // ------------------------------------------------ unpack broadcast buses
@@ -173,6 +178,7 @@ module sched_shard
             iqn2 [freeslot] <= disp_need2;
             iqlat[freeslot] <= disp_lat;
             iqck [freeslot] <= disp_ckpt;
+            iqmi [freeslot] <= disp_mem_idx;
             iqpay[freeslot] <= disp_pay;
          end
       end
