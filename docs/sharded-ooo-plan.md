@@ -352,6 +352,9 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Execute shard @ NPHYS=256 | 271–282 MHz\* | 2288 LUT (==128!) | `exec_shard_probe.v` | — |
 | **ALU alone** (`exec_alu`) | **364 MHz\*** | 2125 LUT / 39 CARRY8 | `exec_alu_probe.v` | — |
 | Execute shard, full bypass (experiment) | 210 MHz\* | 2852 LUT | `exec_shard_bp.v` | — |
+| Execute bundle (RF+ALU+wb net) | not probed | — | `exec_bundle.v` | cross-shard ✓ |
+| Scheduler bundle | not probed | — | `sched_bundle.v` | (in backend) |
+| **Full core, ALU subset** (FE→sched→exec) | not probed | — | `backend_top.v` | **end-to-end ✓** |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
 LUT6 levels, 77% routing. The flagged "true N write ports of flops" is cheap at
@@ -511,17 +514,29 @@ are pessimistic but the *comparison* is informative):**
   domain at 333. NB: this is *single-level light* bypass — not the heavy 2-level
   priority bypass that probed 210 MHz. Build the 2-stage execute at integration;
   keep single-cycle `exec_shard` as the functional reference.
-12. **Next: integrate the backend end-to-end.** Thread the exec payload (ctl +
-    imm + pc) through the scheduler (opaque pass-through field in the IQ entry, or
-    a payload RAM indexed by the IQ slot); build `exec_bundle` (4 `exec_shard` +
-    the wb broadcast net, wb → scheduler `wake` + every RF copy); wire
-    `frontend → sched_bundle → exec_bundle → wake` and demonstrate end-to-end ALU
-    execution of a real program. Then commit / CPR + convert the rename freelist
-    to the bitmap + A[C]/P[C] reclamation. Deferred: branch prediction / FTQ (TT
-    has a BP to make basic-block — once the pipeline runs); load wake delay-line +
-    WB reservation (with the LSU); back-pressure to freeze the decode→rename
-    boundary; multi-region floorplan (lifts the 272 MHz); wire the real I$ to
-    `fetch`'s imem interface; cosim to close the operand-decode gap.
+12. Backend integration — **done** (`backend_top.v`): `frontend → sched_bundle →
+    exec_bundle → wake`, ALU subset. The exec payload (ctl+imm+pc) rides through
+    rename (registered) into the scheduler as an opaque IQ field (`exec_pay.vh`),
+    emitted at issue. `exec_bundle` = 4 `exec_shard` + the wb broadcast (= RF-write
+    feed *and* scheduler wake); `sched_bundle` = 4 `sched_shard` + clr(dispatch)/
+    wake(writeback) net. `tb_backend` runs a real RV64I program (4 independent +
+    4 cross-bundle-RAW `addi`) and checks the `(pr,val)` writeback stream — RAW
+    resolves via scoreboard + write-before-read forwarding. **End-to-end verified.**
+    - *Latent bug fixed:* `rename_shard` freelist started at phys 0, but phys
+      0..AREGS-1 are the initial arch mappings (`map[r]=r`) — allocating them
+      corrupts live state / hands out x0. Now `head` starts past the
+      `ARSH=AREGS/SHARDS` arch-mapped regs per shard (phys 0..63 reserved, incl
+      x0); `rf_shard` inits banks to 0. First alloc is now `64+shard`.
+    - *Not yet:* renamer back-pressure (bounded programs only — IQ/freelist can't
+      overflow); commit/CPR + freelist→bitmap reclamation.
+13. **Next:** LSU (loads/stores) + branch unit (redirect) + commit/CPR — the
+    pieces needed to run real programs and to *prove redirect & rollback work*.
+    Also: renamer back-pressure (freeze decode→rename on no-free-reg / IQ-full /
+    no-checkpoint); freelist→bitmap + A[C]/P[C]; the M/CSR/FPU units. Note (TT):
+    integrating Mul/Div, FPU, CSR lengthens the issue→result path → 333 MHz gets
+    harder (more result-mux/forwarding levels); the 2-stage execute (RR|EX) is the
+    lever. Deferred still: branch prediction/FTQ; multi-region floorplan; real I$
+    on `fetch`'s imem; cosim for the operand-decode gap.
 
 Open discussion threads (flagged by TT, not yet detailed): back-pressure across
 stages; LSU store-to-load forwarding data locality + shared L1D read ports; the
