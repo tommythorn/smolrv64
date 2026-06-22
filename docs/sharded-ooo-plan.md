@@ -271,25 +271,57 @@ Conclusion: **do not speculate loads.** Speculation only buys back the small
 structural-hazard throughput on the WB lane, at the cost of reintroducing the
 replay/recovery machinery the fixed-latency stance exists to avoid.
 
-## LSU / store buffer
+## LSU / store buffer — **UNIFIED** (decided 2026-06-21, TT)
 
-- Sharded execution, but stores occupy a **fixed slot in a circular store
-  buffer** in store order (global **store sequence number** gives the total
-  order). A load records the seq# of its youngest-older store. The LSU tracks
-  outstanding stores in store order, with **address and data readiness tracked
-  separately**.
-- The store buffer **drains as checkpoints commit**. Committing N stores in one
-  cycle would need N cache write ports — avoided by **decoupling commit from
-  drain**: commit just advances a "committed-through store#" pointer; a separate
-  drain engine writes ≤1 store/cycle into the cache. Commit width and cache write
-  ports become independent.
+Execution/RF/rename/scheduler shard; **memory does not.** Disambiguation is
+inherently global (a load must check *every* older store regardless of shard), so
+a single store buffer + load queue + L1D port set is the right structure — the
+Alpha 21264 answer (cluster the integer datapath, keep one load/store queue).
+This *resolves the earlier contradiction in this doc* (the cross-shard-comms
+section's "LSU does not shard" wins; the sharded-store-buffer sketch is dropped)
+and **dissolves both former open questions**: store-to-load forwarding is a single
+CAM over one buffer (no cross-shard data-locality fetch), and L1D read-port
+contention becomes a structural issue-stall gated by the *same* WB-reservation
+the scheduler already runs. Throughput cost is small (~1–1.2 mem ops/cycle avg);
+simultaneous mem-issue stalls rather than demanding 4× ports / 4-way CAMs.
 
-Open questions (LSU deep-dive, details to follow):
-- **Store-to-load forwarding data locality** — the matching store's *data* may sit
-  in another shard's store buffer; forwarding is then a cross-shard fetch, or the
-  store data must live somewhere centrally addressable by seq#.
-- **Shared L1D read-port contention** when multiple shards issue loads the same
-  cycle (separate from, and not solved by, the RF-WB answer above).
+- **Global store sequence number** gives total store order; a load records the
+  seq# of its youngest-older store. The buffer tracks outstanding stores in order
+  with **address and data readiness tracked separately** (store splits into
+  addr-gen rs1+imm — already computed in `exec_alu` — and data rs2).
+- **Register-readiness vs. memory-readiness are decoupled.** The scoreboard
+  scheduler issues a load when its *address operand* (rs1) is ready; the LSU owns
+  memory ordering downstream (the load takes a load-queue slot and the LSU
+  resolves ordering + forwarding before driving WB). Memory ordering is *not*
+  forced onto a register scoreboard bit.
+- **Non-speculative ordering (first cut):** a load executes only once all older
+  stores have *resolved addresses* — no memory-order violations, no replay path
+  (we already have branch recovery; we don't add a second one). Speculative
+  disambiguation is a later perf lever, not a correctness need.
+- **The store buffer is a CPR structure** (parallel to the freelist): stores never
+  hit memory until commit; **commit advances a "committed-through store#"
+  pointer**, a drain engine writes ≤1 store/cycle (commit width ⊥ cache write
+  ports), and **rollback rewinds the tail** to the branch's store#. Driven by the
+  existing `commit`/`rollback`/`ckpt#` signals from `commit_ctl` — no new recovery.
+
+### LSU ↔ cache contract (designed now, cache stubbed during validation)
+Like `fetch`'s `imem`, the LSU talks to memory through an abstract port; a
+behavioral model stands in while the LSU core is built, and the real dual-bank
+D$ + dTLB drop on later (separable per the cache-extraction plan). The contract is
+harder than I$↔fetch and so must be fixed up front:
+- **Variable latency:** assume **hit at fixed latency N+3**, reserve the WB slot;
+  on **miss or ordering-stall the load defers** (doesn't assert ready, re-arbitrates
+  later) — deferral, *not* replay. A returning fill preempts one issue cycle.
+- **Write side gated by CPR:** the drain engine is the only writer, post-commit.
+- **Physical addresses first:** run the LSU post-translation with the dTLB
+  stubbed/bare-mode; integrate dTLB+D$ together as a later milestone.
+
+### Build order (mirrors the CPR integration)
+1. Store buffer + load path vs. a behavioral 1-cycle memory: conservative
+   ordering, store-to-load forwarding, commit-gated drain, rollback rewind.
+2. Scheduler integration: WB-slot reservation + fixed N+3 hit latency.
+3. Miss deferral (variable latency on the stub).
+4. Real D$ + dTLB integration.
 
 ## Aligner → decoder interface
 
