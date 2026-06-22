@@ -12,11 +12,11 @@ module tb;
    always #5 clk = ~clk;
 
    reg  [SHARDS*ABITS-1:0] rs1, rs2, rd;
-   reg  [SHARDS-1:0]       rs1_v, rs2_v, rd_v, fr_valid;
-   reg  [SHARDS*PBITS-1:0] fr_phys;
-   reg                     chk_create=0, chk_restore=0;
-   reg  [1:0]              chk_create_idx=0, chk_restore_idx=0;
+   reg  [SHARDS-1:0]       rs1_v, rs2_v, rd_v;
+   reg                     reset=0, create=0, commit=0, rollback=0;
+   reg  [1:0]              commit_idx=0, rollback_idx=0;
    wire [SHARDS*PBITS-1:0] ps1, ps2, pdst;
+   wire [1:0]              cur;
    wire [SHARDS-1:0]       stall;
    integer errors = 0;
    reg  [PBITS-1:0]        cap;
@@ -24,24 +24,26 @@ module tb;
    // cross-slot matrix now lives in decode; the bundle takes its result as
    // input, so the harness computes it (stimulus side, not RTL duplication).
    localparam SBITS=2;
-   wire [SHARDS-1:0]       s1_is_slot, s2_is_slot, map_writer;
-   wire [SHARDS*SBITS-1:0] s1_slot, s2_slot;
+   wire [SHARDS-1:0]       s1_is_slot, s2_is_slot, map_writer, d_is_slot;
+   wire [SHARDS*SBITS-1:0] s1_slot, s2_slot, d_slot;
    decode_xslot #(.IW(SHARDS), .ABITS(ABITS), .SBITS(SBITS)) xs
      (.rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v), .rd(rd), .rd_v(rd_v),
       .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
-      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),
+      .d_is_slot(d_is_slot), .d_slot(d_slot));
 
    renamer_bundle dut
-     (.clk(clk), .rs1(rs1), .rs2(rs2), .rd(rd), .rd_v(rd_v),
+     (.clk(clk), .reset(reset), .rs1(rs1), .rs2(rs2), .rd(rd), .rd_v(rd_v),
       .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
       .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),
-      .fr_phys(fr_phys), .fr_valid(fr_valid),
-      .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-      .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
+      .d_is_slot(d_is_slot), .d_slot(d_slot),
+      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .rollback(rollback), .rollback_idx(rollback_idx),
+      .ps1(ps1), .ps2(ps2), .pdst(pdst), .cur(cur), .stall(stall));
 
    task idle;
-      begin rs1=0; rs1_v=0; rs2=0; rs2_v=0; rd=0; rd_v=0; fr_phys=0; fr_valid=0; end
+      begin rs1=0; rs1_v=0; rs2=0; rs2_v=0; rd=0; rd_v=0;
+            create=0; commit=0; rollback=0; commit_idx=0; rollback_idx=0; end
    endtask
 
    initial begin

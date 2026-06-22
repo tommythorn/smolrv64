@@ -40,13 +40,14 @@ module frontend
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
-    // backend commit/free + checkpoint control (rename time domain)
-    input  wire [IW*PBITS-1:0]     fr_phys,
-    input  wire [IW-1:0]           fr_valid,
-    input  wire                    chk_create,
-    input  wire [CBITS-1:0]        chk_create_idx,
-    input  wire                    chk_restore,
-    input  wire [CBITS-1:0]        chk_restore_idx,
+    // back-pressure: accept a new bundle this cycle (else freeze fetch + boundary)
+    input  wire                    accept,
+    // checkpoint / commit control (rename time domain)
+    input  wire                    create,
+    input  wire                    commit,
+    input  wire [CBITS-1:0]        commit_idx,
+    input  wire                    rollback,
+    input  wire [CBITS-1:0]        rollback_idx,
     // renamed bundle out (one cycle after fetch), aligned with r_valid/r_seq
     output wire [IW-1:0]           r_valid,
     output wire [IW*SEQW-1:0]      r_seq,
@@ -59,6 +60,8 @@ module frontend
     output wire [IW-1:0]           r_need2,
     output wire [IW-1:0]           r_is_branch,
     output wire [IW*`PAYW-1:0]     r_pay,
+    output wire [CBITS-1:0]        r_ckpt,
+    output wire [CBITS-1:0]        cur,
     output wire [IW-1:0]           stall);
 
    wire [IW-1:0]      f_slot_valid;
@@ -70,21 +73,21 @@ module frontend
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail), .ready(1'b1), .valid(f_valid),
+      .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
       .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq));
 
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .AREGS(AREGS),
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),
                    .SBITS(SBITS), .NCHK(NCHK), .CBITS(CBITS)) u_dr
-     (.clk(clk), .reset(reset), .flush(redirect), .inst(f_inst), .in_valid(f_slot_valid),
+     (.clk(clk), .reset(reset), .flush(redirect), .accept(accept),
+      .inst(f_inst), .in_valid(f_slot_valid),
       .seq_in(f_seq), .pc_in(f_pc),
-      .fr_phys(fr_phys), .fr_valid(fr_valid),
-      .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-      .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
+      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
       .r_need1(r_need1), .r_need2(r_need2), .r_is_branch(r_is_branch),
-      .r_pay(r_pay), .stall(stall));
+      .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .stall(stall));
 endmodule
 
 `default_nettype wire

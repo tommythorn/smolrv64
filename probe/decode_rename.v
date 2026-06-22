@@ -31,18 +31,18 @@ module decode_rename
    (input  wire                 clk,
     input  wire                 reset,    // squashes the boundary (no alloc/MAP write)
     input  wire                 flush,    // redirect: squash the in-flight (wrong-path) bundle
+    input  wire                 accept,   // back-pressure: latch a new bundle (else hold)
     // raw aligner words
     input  wire [IW*32-1:0]     inst,
     input  wire [IW-1:0]        in_valid,
     input  wire [IW*SEQW-1:0]   seq_in,
     input  wire [IW*64-1:0]     pc_in,    // per-slot PC (for the execute payload)
-    // commit/free + checkpoint control (already in the rename time domain)
-    input  wire [IW*PBITS-1:0]  fr_phys,
-    input  wire [IW-1:0]        fr_valid,
-    input  wire                 chk_create,
-    input  wire [CBITS-1:0]     chk_create_idx,
-    input  wire                 chk_restore,
-    input  wire [CBITS-1:0]     chk_restore_idx,
+    // checkpoint / commit control (already in the rename time domain)
+    input  wire                 create,
+    input  wire                 commit,
+    input  wire [CBITS-1:0]     commit_idx,
+    input  wire                 rollback,
+    input  wire [CBITS-1:0]     rollback_idx,
     // renamed bundle (one cycle after inst), aligned with r_valid/r_seq
     output wire [IW-1:0]        r_valid,
     output wire [IW*SEQW-1:0]   r_seq,
@@ -55,14 +55,16 @@ module decode_rename
     output wire [IW-1:0]        r_need2,
     output wire [IW-1:0]        r_is_branch,  // for speculative checkpoint creation
     output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc+branch)
+    output wire [CBITS-1:0]     r_ckpt,   // the renamed bundle's checkpoint (= cur)
+    output wire [CBITS-1:0]     cur,      // freelist's open span (for commit_ctl)
     output wire [IW-1:0]        stall);
 
    // ---------------------------------------------------------- decode (comb)
    wire [IW-1:0]        d_valid, d_rd_v, d_rs1_v, d_rs2_v;
    wire [IW*SEQW-1:0]   d_seq;
    wire [IW*ABITS-1:0]  d_rd, d_rs1, d_rs2;
-   wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_map_writer;
-   wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot;
+   wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_map_writer, d_d_is_slot;
+   wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot, d_d_slot;
    wire [IW-1:0]        d_is_rvc, d_alu_w, d_alu_uw, d_op2_imm, d_res_link, d_is_mem;
    wire [IW-1:0]        d_is_branch, d_is_jump;
    wire [IW*3-1:0]      d_br_func;
@@ -77,15 +79,16 @@ module decode_rename
       .rs2(d_rs2), .rs2_v(d_rs2_v), .imm(d_imm), .has_imm(), .legal(),
       .s1_is_slot(d_s1_is_slot), .s1_slot(d_s1_slot),
       .s2_is_slot(d_s2_is_slot), .s2_slot(d_s2_slot), .map_writer(d_map_writer),
+      .d_is_slot(d_d_is_slot), .d_slot(d_d_slot),
       .alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
       .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem),
       .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump));
 
    // -------------------------------------------- decode/rename boundary reg
-   reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer;
+   reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer, q_d_is_slot;
    reg [IW*SEQW-1:0]   q_seq;
    reg [IW*ABITS-1:0]  q_rd, q_rs1, q_rs2;
-   reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot;
+   reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot, q_d_slot;
    // payload + need flags registered alongside the rename contract
    reg [IW-1:0]        q_rs1_v, q_rs2_v, q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
    reg [IW-1:0]        q_is_branch, q_is_jump;
@@ -98,26 +101,35 @@ module decode_rename
       q_map_writer = 0; q_seq = 0; q_rd = 0; q_rs1 = 0; q_rs2 = 0;
       q_s1_slot = 0; q_s2_slot = 0;
    end
-   // On reset, clear only the bits that cause downstream action: q_rd_v gates
-   // allocation, q_map_writer gates the MAP write, q_valid gates consumers.
-   // The rest may latch freely (ignored while their valids are 0).
-   wire squash = reset | flush;   // both kill the in-flight bundle's effects
+   // Boundary update policy: a redirect/reset squashes the in-flight bundle; else
+   // when `accept` is high we latch the next decoded bundle; else (back-pressure
+   // stall) we HOLD the current bundle so it can be re-presented to rename until
+   // it dispatches. On squash we clear only the bits that cause downstream action
+   // (q_valid gates consumers, q_rd_v gates allocation, q_map_writer gates the
+   // MAP write); the rest are don't-care while their valids are 0.
+   wire squash = reset | flush;
    always @(posedge clk) begin
-      q_valid      <= squash ? {IW{1'b0}} : d_valid;
-      q_rd_v       <= squash ? {IW{1'b0}} : d_rd_v;
-      q_map_writer <= squash ? {IW{1'b0}} : d_map_writer;
-      q_is_branch  <= squash ? {IW{1'b0}} : d_is_branch;
-      q_is_jump    <= d_is_jump; q_br_func <= d_br_func;
-      q_seq        <= d_seq;
-      q_rd         <= d_rd;
-      q_rs1        <= d_rs1;      q_rs2        <= d_rs2;
-      q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
-      q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
-      q_rs1_v <= d_rs1_v; q_rs2_v <= d_rs2_v;
-      q_imm <= d_imm; q_pc <= pc_in;
-      q_alu_op <= d_alu_op; q_alu_w <= d_alu_w; q_alu_uw <= d_alu_uw;
-      q_op1_sel <= d_op1_sel; q_op2_imm <= d_op2_imm; q_res_link <= d_res_link;
-      q_is_rvc <= d_is_rvc; q_is_mem <= d_is_mem;
+      if (squash) begin
+         q_valid <= {IW{1'b0}}; q_rd_v <= {IW{1'b0}};
+         q_map_writer <= {IW{1'b0}}; q_is_branch <= {IW{1'b0}}; q_d_is_slot <= {IW{1'b0}};
+      end else if (accept) begin
+         q_valid      <= d_valid;
+         q_rd_v       <= d_rd_v;
+         q_map_writer <= d_map_writer;
+         q_is_branch  <= d_is_branch;
+         q_is_jump    <= d_is_jump; q_br_func <= d_br_func;
+         q_seq        <= d_seq;
+         q_rd         <= d_rd;
+         q_rs1        <= d_rs1;      q_rs2        <= d_rs2;
+         q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
+         q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
+         q_d_is_slot  <= d_d_is_slot;   q_d_slot   <= d_d_slot;
+         q_rs1_v <= d_rs1_v; q_rs2_v <= d_rs2_v;
+         q_imm <= d_imm; q_pc <= pc_in;
+         q_alu_op <= d_alu_op; q_alu_w <= d_alu_w; q_alu_uw <= d_alu_uw;
+         q_op1_sel <= d_op1_sel; q_op2_imm <= d_op2_imm; q_res_link <= d_res_link;
+         q_is_rvc <= d_is_rvc; q_is_mem <= d_is_mem;
+      end
    end
 
    assign r_valid = q_valid;
@@ -142,14 +154,17 @@ module decode_rename
    renamer_bundle #(.SHARDS(IW), .ABITS(ABITS), .AREGS(AREGS), .PBITS(PBITS),
                     .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR), .SBITS(SBITS),
                     .NCHK(NCHK), .CBITS(CBITS)) rn
-     (.clk(clk),
+     (.clk(clk), .reset(reset),
       .rs1(q_rs1), .rs2(q_rs2), .rd(q_rd), .rd_v(q_rd_v),
       .s1_is_slot(q_s1_is_slot), .s1_slot(q_s1_slot),
       .s2_is_slot(q_s2_is_slot), .s2_slot(q_s2_slot), .map_writer(q_map_writer),
-      .fr_phys(fr_phys), .fr_valid(fr_valid),
-      .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-      .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
+      .d_is_slot(q_d_is_slot), .d_slot(q_d_slot),
+      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .rollback(rollback), .rollback_idx(rollback_idx),
+      .ps1(ps1), .ps2(ps2), .pdst(pdst), .cur(cur), .stall(stall));
+
+   // the renamed bundle is allocated into the freelist's current span
+   assign r_ckpt = cur;
 endmodule
 
 `default_nettype wire

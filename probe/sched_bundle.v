@@ -16,6 +16,7 @@ module sched_bundle
     parameter IQW    = 3,
     parameter SEQW   = 8,
     parameter LATW   = 2,
+    parameter CBITS  = 2,
     parameter PAYW   = `PAYW)
    (input  wire                    clk,
     input  wire                    reset,
@@ -29,6 +30,7 @@ module sched_bundle
     input  wire [SHARDS*PBITS-1:0] disp_ps2,
     input  wire [SHARDS-1:0]       disp_need2,
     input  wire [SHARDS*LATW-1:0]  disp_lat,
+    input  wire [SHARDS*CBITS-1:0] disp_ckpt,
     input  wire [SHARDS*PAYW-1:0]  disp_pay,
     output wire [SHARDS-1:0]       disp_ready,
     // wake from execute writeback
@@ -45,6 +47,7 @@ module sched_bundle
     output wire [SHARDS*PBITS-1:0] iss_ps2,
     output wire [SHARDS*SEQW-1:0]  iss_seq,
     output wire [SHARDS*LATW-1:0]  iss_lat,
+    output wire [SHARDS*CBITS-1:0] iss_ckpt,
     output wire [SHARDS*PAYW-1:0]  iss_pay);
 
    // clr broadcast: a dispatched dest clears its scoreboard bit (new value pending)
@@ -58,13 +61,14 @@ module sched_bundle
 
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       sched_shard #(.SHARDS(SHARDS), .SH(i), .NPHYS(NPHYS), .PBITS(PBITS),
-                    .IQD(IQD), .IQW(IQW), .SEQW(SEQW), .LATW(LATW), .PAYW(PAYW)) sh
+                    .IQD(IQD), .IQW(IQW), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS), .PAYW(PAYW)) sh
         (.clk(clk), .reset(reset),
          .disp_valid(disp_valid[i]), .disp_seq(disp_seq[i*SEQW +: SEQW]),
          .disp_pdst(disp_pdst[i*PBITS +: PBITS]), .disp_pdst_v(disp_pdst_v[i]),
          .disp_ps1(disp_ps1[i*PBITS +: PBITS]), .disp_need1(disp_need1[i]),
          .disp_ps2(disp_ps2[i*PBITS +: PBITS]), .disp_need2(disp_need2[i]),
-         .disp_lat(disp_lat[i*LATW +: LATW]), .disp_pay(disp_pay[i*PAYW +: PAYW]),
+         .disp_lat(disp_lat[i*LATW +: LATW]), .disp_ckpt(disp_ckpt[i*CBITS +: CBITS]),
+         .disp_pay(disp_pay[i*PAYW +: PAYW]),
          .disp_ready(disp_ready[i]),
          .clr_valid(clr_valid), .clr_pr(clr_pr),
          .wake_valid(wake_valid), .wake_pr(wake_pr),
@@ -72,7 +76,8 @@ module sched_bundle
          .iss_valid(iss_valid[i]), .iss_seq(iss_seq[i*SEQW +: SEQW]),
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),
-         .iss_lat(iss_lat[i*LATW +: LATW]), .iss_pay(iss_pay[i*PAYW +: PAYW]));
+         .iss_lat(iss_lat[i*LATW +: LATW]), .iss_ckpt(iss_ckpt[i*CBITS +: CBITS]),
+         .iss_pay(iss_pay[i*PAYW +: PAYW]));
    end endgenerate
 endmodule
 

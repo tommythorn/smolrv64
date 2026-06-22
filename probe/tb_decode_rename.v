@@ -22,24 +22,27 @@ module tb;
    reg  [IW*32-1:0]   inst;
    reg  [IW-1:0]      in_valid;
    reg  [IW*SEQW-1:0] seq_in;
-   reg  [IW*PBITS-1:0] fr_phys;
-   reg  [IW-1:0]      fr_valid;
-   reg                chk_create=0, chk_restore=0;
-   reg  [1:0]         chk_create_idx=0, chk_restore_idx=0;
+   reg                create=1'b1, commit=0, rollback=0, accept=1'b1;
+   reg  [1:0]         commit_idx=0, rollback_idx=0;
 
    wire [IW-1:0]      r_valid, r_rd_v, stall;
    wire [IW*SEQW-1:0] r_seq;
    wire [IW*ABITS-1:0] r_rd;
    wire [IW*PBITS-1:0] ps1, ps2, pdst;
+   wire [1:0]         r_ckpt, cur;
    integer errs = 0;
 
+   // pc_in / payload outputs not checked here; tie/ignore. create=1 every cycle so
+   // each renamed bundle allocates + writes the MAP (no commit/rollback exercised).
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .PBITS(PBITS), .SBITS(SBITS)) dut
-     (.clk(clk), .reset(1'b0), .flush(1'b0), .inst(inst), .in_valid(in_valid), .seq_in(seq_in),
-      .fr_phys(fr_phys), .fr_valid(fr_valid),
-      .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-      .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
+     (.clk(clk), .reset(1'b0), .flush(1'b0), .accept(accept),
+      .inst(inst), .in_valid(in_valid), .seq_in(seq_in), .pc_in({IW*64{1'b0}}),
+      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
+      .ps1(ps1), .ps2(ps2), .pdst(pdst),
+      .r_need1(), .r_need2(), .r_is_branch(), .r_pay(), .r_ckpt(r_ckpt), .cur(cur),
+      .stall(stall));
 
    function [PBITS-1:0] P(input [IW*PBITS-1:0] bus, input integer k);
       P = bus[k*PBITS +: PBITS];
@@ -51,7 +54,7 @@ module tb;
    task idle; begin inst=0; in_valid=0; seq_in=0; end endtask
 
    initial begin
-      idle; fr_phys=0; fr_valid=0;
+      idle;
       @(negedge clk); @(negedge clk);
 
       // present Bundle 1 (decode comb; latched at next posedge)

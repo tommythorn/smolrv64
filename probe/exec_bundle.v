@@ -14,7 +14,8 @@ module exec_bundle
     parameter PBITS  = 8,
     parameter POOL   = 64,
     parameter IDXB   = 6,
-    parameter SEQW   = 8)
+    parameter SEQW   = 8,
+    parameter CBITS  = 2)
    (input  wire                    clk,
     input  wire [SHARDS-1:0]       iss_valid,
     input  wire [SHARDS*SEQW-1:0]  iss_seq,
@@ -22,6 +23,7 @@ module exec_bundle
     input  wire [SHARDS-1:0]       iss_pdst_v,
     input  wire [SHARDS*PBITS-1:0] iss_ps1,
     input  wire [SHARDS*PBITS-1:0] iss_ps2,
+    input  wire [SHARDS*CBITS-1:0] iss_ckpt,
     input  wire [SHARDS*`PAYW-1:0] iss_pay,
     // writeback broadcast out (= RF-write feed, looped internally, + scheduler wake)
     output wire [SHARDS-1:0]       wb_valid,
@@ -33,7 +35,8 @@ module exec_bundle
     // oldest mispredicting branch this cycle -> redirect
     output reg                     redirect,
     output reg  [63:0]             redirect_target,
-    output reg  [SEQW-1:0]         redirect_seq);
+    output reg  [SEQW-1:0]         redirect_seq,
+    output reg  [CBITS-1:0]        redirect_ckpt);   // the branch's checkpoint
 
    wire [SHARDS-1:0]       wbv;
    wire [SHARDS*PBITS-1:0] wbp;
@@ -71,11 +74,13 @@ module exec_bundle
    integer j;
    always @* begin
       redirect = 1'b0; redirect_target = 64'd0; redirect_seq = {SEQW{1'b0}};
+      redirect_ckpt = {CBITS{1'b0}};
       for (j = 0; j < SHARDS; j = j + 1)   // oldest mispredict wins (wrap-safe compare)
          if (brd[j] && (!redirect || $signed(brs[j*SEQW +: SEQW] - redirect_seq) < 0)) begin
             redirect        = 1'b1;
             redirect_target = brt[j*64 +: 64];
             redirect_seq    = brs[j*SEQW +: SEQW];
+            redirect_ckpt   = iss_ckpt[j*CBITS +: CBITS];
          end
    end
 endmodule

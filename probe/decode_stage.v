@@ -30,6 +30,8 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW-1:0]         s2_is_slot,
     output wire [IW*SBITS-1:0]   s2_slot,
     output wire [IW-1:0]         map_writer,
+    output wire [IW-1:0]         d_is_slot,
+    output wire [IW*SBITS-1:0]   d_slot,
     // execute control payload (per slot)
     output wire [IW*6-1:0]       alu_op,
     output wire [IW-1:0]         alu_w,
@@ -64,7 +66,8 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
    decode_xslot #(.IW(IW), .ABITS(ABITS), .SBITS(SBITS)) xs
      (.rs1(rs1), .rs1_v(rs1_v), .rs2(rs2), .rs2_v(rs2_v), .rd(rd), .rd_v(rd_v),
       .s1_is_slot(s1_is_slot), .s1_slot(s1_slot),
-      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer));
+      .s2_is_slot(s2_is_slot), .s2_slot(s2_slot), .map_writer(map_writer),
+      .d_is_slot(d_is_slot), .d_slot(d_slot));
 endmodule
 
 `default_nettype wire

@@ -359,6 +359,7 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | **Branches + redirect + rollback** (CPR) | not probed | — | (`backend_top`) | **end-to-end ✓** |
 | Bitmap freelist + A[C]/P[C] reclamation | not probed | — | `freelist.v` | directed ✓ |
 | Commit control (per-bundle ckpt, by-issue) | not probed | — | `commit_ctl.v` | directed ✓ |
+| **Commit/CPR integrated** (reclaim + back-pressure) | not probed | — | (`backend_top`) | **end-to-end ✓** (`tb_reclaim`) |
 | Pipeline trace (observability) | — | — | `tb_trace.v` | — |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
@@ -532,8 +533,8 @@ are pessimistic but the *comparison* is informative):**
       corrupts live state / hands out x0. Now `head` starts past the
       `ARSH=AREGS/SHARDS` arch-mapped regs per shard (phys 0..63 reserved, incl
       x0); `rf_shard` inits banks to 0. First alloc is now `64+shard`.
-    - *Not yet:* renamer back-pressure (bounded programs only — IQ/freelist can't
-      overflow); commit/CPR + freelist→bitmap reclamation.
+    - *Now done (item 14):* renamer back-pressure + commit/CPR + freelist→bitmap
+      reclamation are wired and verified.
 13. Branches + redirect + rollback — **done & verified** (`branch_unit.v` +
     `backend_top` wiring). Conditional branches resolve in execute; `exec_bundle`
     picks the **oldest** mispredicting branch → one redirect (predict-not-taken, so
@@ -559,11 +560,12 @@ are pessimistic but the *comparison* is informative):**
       seqno compares (scheduler issue-select & squash, execute oldest-mispredict).
       Constraint: `SEQW` must exceed `clog2(2 × max in-flight instructions)` (today
       SEQW=8 → window 127 ≫ ~36 in-flight). Wrap itself is not yet exercised by a TB.
-14. Commit / CPR — **in progress** (TT chose this next, for sustained execution +
-    correct stores). Two core pieces built & tested standalone:
-    - **`freelist.v`** — bitmap free + A[C]/P[C]; lets a committed checkpoint
-      bulk-free its dead polds in one cycle (the array/ring couldn't). Inclusive
-      rollback (recover before span C).
+14. Commit / CPR — **DONE & integrated end-to-end** (sustained execution past the
+    freelist depth). Pieces:
+    - **`freelist.v`** — bitmap free + A[C]/P[C]; a committed checkpoint bulk-frees
+      its dead polds in one cycle (the array/ring couldn't). Inclusive rollback
+      (recover before span C). Now lives **inside** `rename_shard` (the ring +
+      `chk_fl` snapshots are gone; only the MAP + `chk_map` snapshot remain).
     - **`commit_ctl.v`** — one checkpoint per dispatched bundle; per-checkpoint
       outstanding count **incremented at dispatch (all valid instrs) and decremented
       at ISSUE — not writeback**, because nops/stores/branches never write back but
@@ -572,13 +574,31 @@ are pessimistic but the *comparison* is informative):**
       checkpoint commits in order when its count drains and it's closed; `full`
       back-pressure when the NCHK ring fills (1 slot reserved); rollback clears
       squashed checkpoints' counts.
-    **Remaining:** pold capture + cross-shard routing into `freelist.P[cur]`; wire
-    `commit_ctl` ↔ `freelist` (create/commit/rollback) and thread the ckpt# through
-    dispatch→scheduler→issue (for the decrement) and into the redirect; renamer
-    **back-pressure** (`full` / `free_count < 2` → freeze the frontend); rewire
-    `rename_shard` onto `freelist` (drop the ring + `chk_fl` snapshots; keep the MAP
-    snapshot for rollback). Milestone: a program long enough to need reclamation
-    runs to completion (and multiple in-flight branches work).
+    - **pold (intra-bundle WAW), the clean general case:** `decode_xslot` now also
+      emits `d_is_slot/d_slot` (youngest earlier in-bundle writer of the destination),
+      mirroring the source SLOT resolution. So `pold = d_is_slot ? al_phys[d_slot] :
+      map[d_arch]` — every allocating instruction displaces *exactly one* register
+      (the winner frees the intermediate pdst, each loser frees the pre-bundle MAP
+      entry), so `#freed == #allocated` per span and the freelist balances. Polds are
+      broadcast across the bundle (`pold_valid/pold_bus`, mirror of `al_phys`) so each
+      shard's freelist records the polds it owns into `P[cur]`.
+    - **MAP snapshot for rollback:** at each `create` (closing span `cur`) the
+      *post-bundle* MAP (`nmap`) is snapshotted into the **next** span's slot
+      `chk_map[cur+1]`; a branch in span C reopens span C+1 and restores
+      `chk_map[C+1]` (= the map just after the branch's bundle) — robust even if no
+      successor bundle has renamed. `chk_map[0]` starts at the identity map.
+    - **back-pressure:** `accept = !any_valid || (!full && &disp_ready && !any_stall
+      && !redirect)` freezes both `fetch.ready` and the decode/rename boundary; the
+      bitmap alloc + MAP write only commit on `create` (= the bundle actually fires),
+      so a held bundle re-presents without double-allocating.
+    - **redirect granularity:** scheduler squashes by seqno (precise per-instruction);
+      the freelist/MAP roll back by checkpoint (per-bundle) to `redirect_ckpt+1`, so a
+      redirecting branch must be the youngest in its bundle (as today). The branch's
+      ckpt# rides dispatch→IQ (`iqck`)→issue and out of `exec_bundle.redirect_ckpt`.
+    - **Verified:** `tb_branch`/`tb_backend`/`tb_trace` (redirect+rollback through the
+      new path), and `tb_reclaim` — 64 sequential `addi x1,x1,1` (all shard 1) run
+      through a 48-deep pool to completion (x1=64, 112 commits), impossible without
+      reclamation + back-pressure.
 15. **Then:** LSU (loads/stores, store addr/data split, commit-gated drain) — the
     rest of "real programs"; generalize branch recovery (mid-bundle truncation /
     basic-block fetch, NCHK nested checkpoints via `ckpt_alive`, JAL/JALR precise);

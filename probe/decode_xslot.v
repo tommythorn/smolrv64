@@ -14,6 +14,11 @@
 //   * map_writer: for each destination, whether it is the *youngest* writer of its
 //     arch reg in the bundle (last-writer-wins) and thus the only MAP-visible one.
 //     (WAW resolution.)
+//   * dst redirects (d_is_slot/d_slot): for each destination, whether an *earlier*
+//     in-bundle slot also writes the same arch reg, and which (youngest such). The
+//     displaced prior mapping (pold, freed at commit) is then that earlier slot's
+//     freshly allocated physreg instead of the MAP entry -- so each writer frees
+//     exactly one register and reclamation balances. (Intra-bundle WAW pold.)
 //
 // Pure combinational; ports are flattened buses (Verilog-2001). In the machine
 // each shard runs this over its own slot + the neighbours' broadcast dests; here
@@ -32,11 +37,14 @@ module decode_xslot
     output wire [IW*SBITS-1:0] s1_slot,
     output wire [IW-1:0]       s2_is_slot,
     output wire [IW*SBITS-1:0] s2_slot,
-    output wire [IW-1:0]       map_writer);
+    output wire [IW-1:0]       map_writer,
+    output wire [IW-1:0]       d_is_slot,
+    output wire [IW*SBITS-1:0] d_slot);
 
-   reg [IW-1:0]    s1is, s2is, mw;
+   reg [IW-1:0]    s1is, s2is, mw, dis;
    reg [SBITS-1:0] s1sl [0:IW-1];
    reg [SBITS-1:0] s2sl [0:IW-1];
+   reg [SBITS-1:0] dsl  [0:IW-1];
 
    integer i, j;
    reg [ABITS-1:0] a1, a2, di;
@@ -65,6 +73,13 @@ module decode_xslot
          for (j = 0; j < IW; j = j + 1)
             if ((j > i) && rd_v[j] && (rd[j*ABITS +: ABITS] == di))
                mw[i] = 1'b0;
+
+         // dst pold -> youngest *earlier* in-bundle writer of the same arch reg
+         dis[i] = 1'b0;  dsl[i] = {SBITS{1'b0}};
+         for (j = 0; j < IW; j = j + 1)
+            if ((j < i) && rd_v[i] && rd_v[j] && (rd[j*ABITS +: ABITS] == di)) begin
+               dis[i] = 1'b1;  dsl[i] = j[SBITS-1:0];   // ascending => youngest earlier wins
+            end
       end
    end
 
@@ -73,11 +88,13 @@ module decode_xslot
       for (g = 0; g < IW; g = g + 1) begin : pk
          assign s1_slot[g*SBITS +: SBITS] = s1sl[g];
          assign s2_slot[g*SBITS +: SBITS] = s2sl[g];
+         assign d_slot [g*SBITS +: SBITS] = dsl[g];
       end
    endgenerate
    assign s1_is_slot = s1is;
    assign s2_is_slot = s2is;
    assign map_writer = mw;
+   assign d_is_slot  = dis;
 endmodule
 
 `default_nettype wire

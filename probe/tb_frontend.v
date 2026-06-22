@@ -20,25 +20,26 @@ module tb;
    wire [PCW-1:0]     imem_addr;
    reg  [HW*16-1:0]   imem_data;
    wire [PBW-1:0]     imem_avail = 4'd8;
-   reg  [IW*PBITS-1:0] fr_phys=0;
-   reg  [IW-1:0]      fr_valid=0;
-   reg                chk_create=0, chk_restore=0;
-   reg  [1:0]         chk_create_idx=0, chk_restore_idx=0;
+   reg                create=1'b1, commit=0, rollback=0, accept=1'b1;
+   reg  [1:0]         commit_idx=0, rollback_idx=0;
    wire [IW-1:0]      r_valid, r_rd_v, stall;
    wire [IW*SEQW-1:0] r_seq;
    wire [IW*ABITS-1:0] r_rd;
    wire [IW*PBITS-1:0] ps1, ps2, pdst;
+   wire [1:0]         r_ckpt, cur;
    integer errs=0;
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(0),
               .ABITS(ABITS), .PBITS(PBITS)) dut
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail), .fr_phys(fr_phys), .fr_valid(fr_valid),
-      .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-      .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
+      .imem_avail(imem_avail), .accept(accept),
+      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
+      .ps1(ps1), .ps2(ps2), .pdst(pdst),
+      .r_need1(), .r_need2(), .r_is_branch(), .r_pay(), .r_ckpt(r_ckpt), .cur(cur),
+      .stall(stall));
 
    reg [15:0] mem [0:63];
    integer m;

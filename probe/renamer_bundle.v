@@ -3,19 +3,27 @@
 // Full 4-wide renamer core: SHARDS rename_shard slices wired through the
 // cross-shard broadcast network. The cross-slot dependency matrix
 // (decode_xslot) is NOT here -- it lives in the decode stage and its results
-// arrive as inputs (s*_is_slot/s*_slot/map_writer), so the matrix is computed
-// exactly once and crosses into rename across a registered stage boundary
-// (see decode_rename.v). This module is purely the rename loop + broadcasts.
+// arrive as inputs (s*_is_slot/s*_slot/map_writer/d_is_slot/d_slot), so the
+// matrix is computed exactly once and crosses into rename across a registered
+// stage boundary (see decode_rename.v). This module is purely the rename loop +
+// broadcasts.
 //
-// Unified geometry: AREGS=64 (int+FP), NPHYS=128, POOL=32/shard, NCHK=4.
+// Unified geometry: AREGS=64 (int+FP), NPHYS=256, POOL=64/shard, NCHK=4.
 //
 // Wiring of the broadcasts (all combinational this cycle):
 //   alloc[i]    = shard i's freshly allocated phys dest (pdst)
-//   al_phys     = {alloc} broadcast  -> resolves SLOT(j) sources in every shard
+//   al_phys     = {alloc} broadcast  -> resolves SLOT(j) sources + d_slot pold
 //   wr_phys     = {alloc} broadcast  -> MAP write data
 //   wr_arch     = {rd}    broadcast  -> MAP write address
 //   wr_valid    = map_writer (input) -> only the last-writer-per-arch updates MAP
+//   pold_bus    = {pold}  broadcast  -> each shard's freelist records the polds it
+//                                       owns into P[cur] (freed when cur commits)
+//   pold_valid  = {pold_v}           -> valid per displacing instruction
 //   d_valid[i]  = rd_v[i]  (input)   -> shard i allocates for any register write
+//
+// Checkpoint / commit control (create/commit/rollback + indices) is driven in
+// lockstep into every shard, so all four freelists keep an identical `cur`; we
+// surface shard 0's as the bundle's `cur`.
 module renamer_bundle
   #(parameter SHARDS = 4,
     parameter ABITS  = 6,    // unified arch space 0..63
@@ -28,6 +36,7 @@ module renamer_bundle
     parameter NCHK   = 4,
     parameter CBITS  = 2)
    (input  wire                    clk,
+    input  wire                    reset,
     // decoded operands (slot 0 = oldest)
     input  wire [SHARDS*ABITS-1:0] rs1,
     input  wire [SHARDS*ABITS-1:0] rs2,
@@ -39,26 +48,32 @@ module renamer_bundle
     input  wire [SHARDS-1:0]       s2_is_slot,
     input  wire [SHARDS*SBITS-1:0] s2_slot,
     input  wire [SHARDS-1:0]       map_writer,
-    // commit/free + checkpoint control
-    input  wire [SHARDS*PBITS-1:0] fr_phys,
-    input  wire [SHARDS-1:0]       fr_valid,
-    input  wire                    chk_create,
-    input  wire [CBITS-1:0]        chk_create_idx,
-    input  wire                    chk_restore,
-    input  wire [CBITS-1:0]        chk_restore_idx,
+    input  wire [SHARDS-1:0]       d_is_slot,
+    input  wire [SHARDS*SBITS-1:0] d_slot,
+    // checkpoint / commit control
+    input  wire                    create,
+    input  wire                    commit,
+    input  wire [CBITS-1:0]        commit_idx,
+    input  wire                    rollback,
+    input  wire [CBITS-1:0]        rollback_idx,
     output wire [SHARDS*PBITS-1:0] ps1,
     output wire [SHARDS*PBITS-1:0] ps2,
     output wire [SHARDS*PBITS-1:0] pdst,
+    output wire [CBITS-1:0]        cur,
     output wire [SHARDS-1:0]       stall);
 
-   // --- broadcast buses built from the shards' own allocations
+   // --- broadcast buses built from the shards' own allocations / displacements
    wire [SHARDS*PBITS-1:0] alloc;        // = pdst of each shard
+   wire [SHARDS*PBITS-1:0] pold_bus;     // = pold of each shard
+   wire [SHARDS-1:0]       pold_valid;
    wire [SHARDS*ABITS-1:0] wr_arch  = rd;
    wire [SHARDS*PBITS-1:0] wr_phys  = alloc;
    wire [SHARDS-1:0]       wr_valid = map_writer;
    wire [SHARDS*PBITS-1:0] al_phys  = alloc;
+   wire [SHARDS*CBITS-1:0] cur_each;
 
    assign pdst = alloc;
+   assign cur  = cur_each[0*CBITS +: CBITS];   // all shards identical
 
    // --- one rename_shard per lane
    genvar i;
@@ -67,19 +82,22 @@ module renamer_bundle
          rename_shard #(.SHARDS(SHARDS), .SH(i), .AREGS(AREGS), .ABITS(ABITS),
                         .NPHYS(NPHYS), .PBITS(PBITS), .POOL(POOL), .HPTR(HPTR),
                         .SBITS(SBITS), .NCHK(NCHK), .CBITS(CBITS)) sh
-           (.clk(clk),
+           (.clk(clk), .reset(reset),
             .s1_arch(rs1[i*ABITS +: ABITS]), .s1_is_slot(s1_is_slot[i]),
             .s1_slot(s1_slot[i*SBITS +: SBITS]),
             .s2_arch(rs2[i*ABITS +: ABITS]), .s2_is_slot(s2_is_slot[i]),
             .s2_slot(s2_slot[i*SBITS +: SBITS]),
             .d_arch(rd[i*ABITS +: ABITS]), .d_valid(rd_v[i]),
+            .d_is_slot(d_is_slot[i]), .d_slot(d_slot[i*SBITS +: SBITS]),
             .wr_arch(wr_arch), .wr_phys(wr_phys), .wr_valid(wr_valid),
             .al_phys(al_phys),
-            .fr_phys(fr_phys[i*PBITS +: PBITS]), .fr_valid(fr_valid[i]),
-            .chk_create(chk_create), .chk_create_idx(chk_create_idx),
-            .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
+            .pold_valid(pold_valid), .pold_bus(pold_bus),
+            .create(create), .commit(commit), .commit_idx(commit_idx),
+            .rollback(rollback), .rollback_idx(rollback_idx),
             .ps1(ps1[i*PBITS +: PBITS]), .ps2(ps2[i*PBITS +: PBITS]),
-            .pdst(alloc[i*PBITS +: PBITS]), .pold(),  .stall(stall[i]));
+            .pdst(alloc[i*PBITS +: PBITS]), .pold(pold_bus[i*PBITS +: PBITS]),
+            .pold_v(pold_valid[i]), .cur(cur_each[i*CBITS +: CBITS]),
+            .stall(stall[i]));
       end
    endgenerate
 endmodule
