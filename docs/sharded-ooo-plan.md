@@ -700,8 +700,13 @@ are pessimistic but the *comparison* is informative):**
     - *Multiple in-flight branches:* now that each branch is its own checkpoint's
       youngest, up to **NCHK** branches can be in flight (each a distinct checkpoint;
       `exec_bundle` redirects on the oldest mispredict, rollback to `rckpt+1` discards
-      all younger checkpoints). Deeper nesting beyond NCHK needs `ckpt_alive` evac. A
-      dedicated multi-branch-in-flight TB is still TODO.
+      all younger checkpoints). Deeper nesting beyond NCHK needs `ckpt_alive` evac.
+      `tb_branch_multi` verifies it: three branches in three distinct checkpoints live
+      at once (B0/B1 not-taken → commit, B2 taken → redirects to its own target 0x40),
+      older committed path undisturbed, 10 commits drain in order. (Same-cycle
+      oldest-wins among *multiple taken* branches — the double-redirect race — is not
+      yet directly forced; it's timing-fragile and the oldest-mispredict select covers
+      it by construction.)
     - **Truncation is a stopgap, NOT the end state** (Tommy): a checkpoint per branch
       makes checkpoint == basic block, so the window is capped at NCHK basic blocks
       (~NCHK×5–6 instr) and a checkpoint is burned on *every* branch even when the BP
