@@ -176,7 +176,14 @@ module lsu
    always @* begin
       ld_sel_v = 1'b0; ld_sel = {LQI{1'b0}}; ld_best = {SEQW{1'b0}};
       for (i = 0; i < LQDEPTH; i = i + 1) begin
-         if (lq_v[i] && lq_rdy[i] && !wb_busy[lq_own[i]]) begin   // owner lane free
+         // owner lane free, AND not squashed this cycle: a wrong-path load (seq newer
+         // than the branch's rollback_seq) must not complete even in the squash cycle
+         // itself -- the lq_v clear only lands at the next edge, so without this gate a
+         // squashed load could combinationally assert ld_wb_v (RF write / wake) and
+         // ld_done (a spurious commit_ctl decrement). A correct-path older load is not
+         // gated and still completes normally.
+         if (lq_v[i] && lq_rdy[i] && !wb_busy[lq_own[i]]
+             && !(rollback && older(rollback_seq, lq_seq[i]))) begin
             // order-safe? no older unfilled store
             blocked = 1'b0;
             for (j = 0; j < SBDEPTH; j = j + 1)

@@ -172,6 +172,25 @@ module tb;
           {mem[8'hA3],mem[8'hA2],mem[8'hA1],mem[8'hA0]},
           {8'hC0+8'hA3, 8'hC0+8'hA2, 8'hC0+8'hA1, 8'hC0+8'hA0});
 
+      // ========== T5: squashed in-flight load -- WB suppressed in squash cycle ==========
+      // A wrong-path load that is selectable (rdy, gate-open) must NOT complete in the
+      // very cycle its rollback fires: lq_v clears only at the next edge, so without the
+      // squash gate it would combinationally assert ld_wb_v (RF write/wake) + ld_done
+      // (a spurious commit_ctl decrement). load seq=40 @0xB0, then rollback to seq=39.
+      @(negedge clk); disp_fire=1; disp_is_load=4'b0001; disp_seq[0+:SEQW]=8'd40; disp_ckpt[0+:CBITS]=2'd0;
+      disp_pdst[0+:PBITS]=8'd72; #1; idxL=disp_lq_idx[0+:LQI]; @(posedge clk); idle;
+      @(negedge clk); exe_ld_v=4'b0001; exe_ld_idx[0+:LQI]=idxL; exe_ld_addr[0+:AW]=64'hB0;
+      exe_ld_nb[0+:4]=4'd4; @(posedge clk); idle;       // lq_rdy=1 -> selectable next cycle
+      @(negedge clk);                                    // the cycle the load would complete
+      if (!ld_wb_v) begin $display("FAIL T5: load not selectable pre-squash (setup)"); errs=errs+1; end
+      wbc0 = wb_count;
+      rollback=1; rollback_seq=8'd39; #1;                // squash (40>39) in THIS cycle
+      if (ld_wb_v) begin $display("FAIL T5: ld_wb_v not suppressed in squash cycle"); errs=errs+1; end
+      if (ld_done) begin $display("FAIL T5: ld_done not suppressed in squash cycle"); errs=errs+1; end
+      @(posedge clk); idle;                              // rollback clears lq_v
+      repeat (3) @(posedge clk);
+      if (wb_count != wbc0) begin $display("FAIL T5: squashed load still completed"); errs=errs+1; end
+
       if (errs==0) $display("lsu: ALL TESTS PASSED");
       else         $display("lsu: %0d FAILURES", errs);
       $finish;

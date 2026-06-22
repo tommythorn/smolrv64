@@ -743,8 +743,17 @@ are pessimistic but the *comparison* is informative):**
       (indirect, target = `rs1+imm`, link 0x18), each across its own redirect. (RVC
       `c.jalr` link = `pc+2` rides the same `is_rvc` payload bit, validated by
       `tb_rvc_expand` + RV64IC streaming.)
-    - *Limits (to generalize next):* multi-cycle (load) wb suppression on squash
-      (needed once the LSU exists).
+    - *Multi-cycle load WB suppression on squash — **done & verified**:* load
+      completion is combinational off `lq_v`, but `lq_v` only clears at the next edge,
+      so in the squash cycle itself a wrong-path load (seq newer than `rollback_seq`)
+      could still be selected → assert `ld_wb_v` (RF write / wake) and `ld_done` (a
+      spurious `commit_ctl` decrement on a checkpoint being squashed). Fix: the load
+      selector excludes `rollback && older(rollback_seq, lq_seq[i])` this cycle (a
+      correct-path *older* load is not gated and still completes). `tb_lsu` T5 drives a
+      ready, gate-open load and asserts `rollback` same-cycle: `ld_wb_v`/`ld_done`
+      suppressed, entry cleared (fails 3 ways without the gate). The edge-clear handles
+      every later cycle; this closes the squash-cycle gap that opens once loads are
+      truly multi-cycle (miss-deferral / WB reservation).
     - **Seqno wrap invariant (all program-order compares):** seqno has limited range
       and wraps, so every `a>b`/`a<b` must be the signed-difference form
       `$signed(a-b)>0` / `<0` (== `(unsigned)(a-b) <= MAX_POSITIVE`), valid **only
