@@ -67,8 +67,8 @@ module tb;
       // ---- renamed bundle 0 must match tb_decode_rename ----
       if (r_valid!==4'b1111) begin $display("FAIL r_valid=%b",r_valid); errs=errs+1; end
       if (r_rd_v !==4'b1111) begin $display("FAIL r_rd_v=%b",r_rd_v); errs=errs+1; end
-      ckp("pdst0",P(pdst,0),7'd0); ckp("pdst1",P(pdst,1),7'd1);
-      ckp("pdst2",P(pdst,2),7'd2); ckp("pdst3",P(pdst,3),7'd3);
+      ckp("pdst0",P(pdst,0),8'd64); ckp("pdst1",P(pdst,1),8'd65);  // phys 0..63 reserved for arch
+      ckp("pdst2",P(pdst,2),8'd66); ckp("pdst3",P(pdst,3),8'd67);
       ckp("ps1[1]<-pdst0",P(ps1,1),P(pdst,0));   // add a1,a0,a0 : both srcs SLOT(0)
       ckp("ps2[1]<-pdst0",P(ps2,1),P(pdst,0));
       ckp("ps2[2]<-pdst1",P(ps2,2),P(pdst,1));   // c.mv a2,a1 : src2 SLOT(1)

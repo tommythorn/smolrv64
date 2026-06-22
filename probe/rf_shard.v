@@ -31,6 +31,12 @@ module rf_shard
 
    reg [63:0] bank [0:SHARDS-1][0:POOL-1];
 
+   // phys 0..AREGS-1 are the initial architectural regs (reset value 0); init the
+   // RF to 0 so an arch reg read before its first write returns 0.
+   integer ib, ir;
+   initial for (ib = 0; ib < SHARDS; ib = ib + 1)
+              for (ir = 0; ir < POOL; ir = ir + 1) bank[ib][ir] = 64'd0;
+
    // each bank written only by its owner lane (single write port per bank)
    integer b;
    always @(posedge clk)

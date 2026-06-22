@@ -29,7 +29,15 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW*SBITS-1:0]   s1_slot,
     output wire [IW-1:0]         s2_is_slot,
     output wire [IW*SBITS-1:0]   s2_slot,
-    output wire [IW-1:0]         map_writer);
+    output wire [IW-1:0]         map_writer,
+    // execute control payload (per slot)
+    output wire [IW*6-1:0]       alu_op,
+    output wire [IW-1:0]         alu_w,
+    output wire [IW-1:0]         alu_uw,
+    output wire [IW*2-1:0]       op1_sel,
+    output wire [IW-1:0]         op2_imm,
+    output wire [IW-1:0]         res_link,
+    output wire [IW-1:0]         is_mem);
 
    genvar g;
    generate
@@ -42,7 +50,10 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
             .rd(rd[g*ABITS +: ABITS]), .rd_v(rd_v[g]),
             .rs1(rs1[g*ABITS +: ABITS]), .rs1_v(rs1_v[g]),
             .rs2(rs2[g*ABITS +: ABITS]), .rs2_v(rs2_v[g]),
-            .imm(imm[g*64 +: 64]), .has_imm(has_imm[g]), .legal(legal[g]));
+            .imm(imm[g*64 +: 64]), .has_imm(has_imm[g]), .legal(legal[g]),
+            .alu_op(alu_op[g*6 +: 6]), .alu_w(alu_w[g]), .alu_uw(alu_uw[g]),
+            .op1_sel(op1_sel[g*2 +: 2]), .op2_imm(op2_imm[g]),
+            .res_link(res_link[g]), .is_mem(is_mem[g]));
       end
    endgenerate
 

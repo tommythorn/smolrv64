@@ -70,10 +70,11 @@ module tb;
       // ---- check Bundle 1's renamed outputs (q now holds Bundle 1) ----
       if (r_valid!==4'b1111) begin $display("FAIL B1 r_valid=%b",r_valid); errs=errs+1; end
       if (r_rd_v !==4'b1111) begin $display("FAIL B1 r_rd_v=%b",r_rd_v); errs=errs+1; end
-      ckp("B1 pdst0", P(pdst,0), 7'd0);
-      ckp("B1 pdst1", P(pdst,1), 7'd1);
-      ckp("B1 pdst2", P(pdst,2), 7'd2);
-      ckp("B1 pdst3", P(pdst,3), 7'd3);
+      // shard i's first allocation = AREGS + i = 64 + i (phys 0..63 reserved for arch)
+      ckp("B1 pdst0", P(pdst,0), 8'd64);
+      ckp("B1 pdst1", P(pdst,1), 8'd65);
+      ckp("B1 pdst2", P(pdst,2), 8'd66);
+      ckp("B1 pdst3", P(pdst,3), 8'd67);
       // intra-bundle RAW (SLOT) must resolve to producer pdsts
       ckp("B1 ps1[1]<-pdst0", P(ps1,1), P(pdst,0));
       ckp("B1 ps2[1]<-pdst0", P(ps2,1), P(pdst,0));
@@ -90,9 +91,9 @@ module tb;
       #1;
       // ---- check Bundle 2 reads Bundle 1's MAP through the registered path ----
       if (r_valid!==4'b1111) begin $display("FAIL B2 r_valid=%b",r_valid); errs=errs+1; end
-      ckp("B2 ps1[0]=map[a0]", P(ps1,0), 7'd3);  // s3 was a0's map_writer -> pdst1[3]
-      ckp("B2 ps1[1]=map[a1]", P(ps1,1), 7'd1);
-      ckp("B2 ps1[2]=map[a2]", P(ps1,2), 7'd2);
+      ckp("B2 ps1[0]=map[a0]", P(ps1,0), 8'd67);  // s3 was a0's map_writer -> pdst1[3]=67
+      ckp("B2 ps1[1]=map[a1]", P(ps1,1), 8'd65);
+      ckp("B2 ps1[2]=map[a2]", P(ps1,2), 8'd66);
 
       @(negedge clk);
       if (errs==0) $display("decode_rename: ALL TESTS PASSED");

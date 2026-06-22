@@ -63,6 +63,7 @@ module rename_shard
     output wire                  stall);
 
    localparam CNTW = HPTR + 1;
+   localparam ARSH = AREGS / SHARDS;   // arch regs owned per shard = reserved freelist head
 
    // ---------------------------------------------------------------- state
    reg [PBITS-1:0] map [0:AREGS-1];        // replicated architectural map
@@ -76,15 +77,20 @@ module rename_shard
    reg [HPTR-1:0]  chk_tail  [0:NCHK-1];
    reg [CNTW-1:0]  chk_count [0:NCHK-1];
 
+   // Init: arch reg a -> phys a (map[a]=a), so phys 0..AREGS-1 are the live initial
+   // mappings and must NOT be free. This shard's owned pool fl[r]=SH+SHARDS*r has its
+   // first ARSH entries (fl[0..ARSH-1]) equal to exactly those arch-mapped phys regs,
+   // so the free regs are fl[ARSH..POOL-1]: start head past the reserved head. This
+   // also reserves phys 0 as x0 (it's arch 0, never allocated, rf reads it as 0).
    integer b, r;
    initial begin
       for (r = 0; r < AREGS; r = r + 1) map[r] = r[PBITS-1:0];
       for (r = 0; r < POOL;  r = r + 1) fl[r]  = (SH + SHARDS*r) % NPHYS;  // this shard's pool
-      head = 0; tail = 0; count = POOL;     // ring starts full of free regs
+      head = ARSH[HPTR-1:0]; tail = 0; count = POOL - ARSH;  // free = fl[ARSH..POOL-1]
       for (b = 0; b < NCHK; b = b + 1) begin
          for (r = 0; r < AREGS; r = r + 1) chk_map[b][r] = r[PBITS-1:0];
          for (r = 0; r < POOL;  r = r + 1) chk_fl[b][r]  = (SH + SHARDS*r) % NPHYS;
-         chk_head[b] = 0; chk_tail[b] = 0; chk_count[b] = POOL;
+         chk_head[b] = ARSH[HPTR-1:0]; chk_tail[b] = 0; chk_count[b] = POOL - ARSH;
       end
    end
 

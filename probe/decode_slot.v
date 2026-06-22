@@ -2,9 +2,10 @@
 
 // One decoder lane: raw aligner word -> decoded per-slot IR (no cross-slot yet).
 // The aligner delivers a 32-bit word with the top 16 bits ignored for compressed
-// instructions (inst[1:0]!=11). We RVC-expand in place, then operand-decode the
-// resulting 32-bit form. Per-operand valids are gated by in_valid so an invalid
-// slot contributes no dependencies.
+// instructions (inst[1:0]!=11). We RVC-expand in place, then decode both the
+// rename-facing operands (decode_operands) and the execute control (decode_exec)
+// from the resulting 32-bit form. Per-operand valids are gated by in_valid so an
+// invalid slot contributes no dependencies.
 module decode_slot #(parameter SEQW = 8)
    (input  wire [31:0]      inst,
     input  wire             in_valid,
@@ -21,7 +22,15 @@ module decode_slot #(parameter SEQW = 8)
     output wire             rs2_v,
     output wire [63:0]      imm,
     output wire             has_imm,
-    output wire             legal);
+    output wire             legal,
+    // execute control (payload to scheduler/execute)
+    output wire [5:0]       alu_op,
+    output wire             alu_w,
+    output wire             alu_uw,
+    output wire [1:0]       op1_sel,
+    output wire             op2_imm,
+    output wire             res_link,
+    output wire             is_mem);
 
    wire        is_c = (inst[1:0] != 2'b11);
    wire [31:0] exp_rvc;
@@ -34,6 +43,15 @@ module decode_slot #(parameter SEQW = 8)
    decode_operands u_op (.insn(full), .rd(d_rd), .rd_v(d_rdv), .rs1(d_rs1),
       .rs1_v(d_rs1v), .rs2(d_rs2), .rs2_v(d_rs2v), .imm(d_imm),
       .has_imm(d_himm), .legal(d_legal));
+
+   // execute control; the units beyond ALU (branch/csr/mul/amo/fp) are decoded
+   // but left unconnected here until those backend units exist.
+   decode_exec u_ex (.insn(full),
+      .alu_op(alu_op), .alu_w(alu_w), .alu_uw(alu_uw), .op1_sel(op1_sel),
+      .op2_imm(op2_imm), .res_link(res_link), .is_mem(is_mem),
+      .is_store(), .mem_size(), .mem_signed(), .is_branch(), .br_func(),
+      .is_jump(), .is_csr(), .csr_func(), .is_serialize(), .is_mul(),
+      .is_amo(), .is_fp(), .illegal());
 
    assign valid    = in_valid;
    assign seq      = seq_in;

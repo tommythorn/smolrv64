@@ -30,7 +30,8 @@ module sched_shard
     parameter IQD    = 8,        // issue-queue depth
     parameter IQW    = 3,        // clog2(IQD)
     parameter SEQW   = 8,
-    parameter LATW   = 2)        // latency field width (carried, v1 unused)
+    parameter LATW   = 2,        // latency field width (carried, v1 unused)
+    parameter PAYW   = 142)      // opaque execute payload (ctl+imm+pc), see exec_pay.vh
    (input  wire                    clk,
     input  wire                    reset,
     // dispatch: this shard's renamed instruction
@@ -43,6 +44,7 @@ module sched_shard
     input  wire [PBITS-1:0]        disp_ps2,
     input  wire                    disp_need2,
     input  wire [LATW-1:0]         disp_lat,
+    input  wire [PAYW-1:0]         disp_pay,      // opaque, stored and emitted at issue
     output wire                    disp_ready,    // IQ has room (backpressure to rename)
     // cross-shard scoreboard broadcasts (self included)
     input  wire [SHARDS-1:0]       clr_valid,
@@ -56,7 +58,8 @@ module sched_shard
     output wire                    iss_pdst_v,
     output wire [PBITS-1:0]        iss_ps1,
     output wire [PBITS-1:0]        iss_ps2,
-    output wire [LATW-1:0]         iss_lat);
+    output wire [LATW-1:0]         iss_lat,
+    output wire [PAYW-1:0]         iss_pay);
 
    // ---------------------------------------------------------------- state
    reg              ready [0:NPHYS-1];           // scoreboard: phys reg has its value
@@ -69,6 +72,7 @@ module sched_shard
    reg [PBITS-1:0]  iqs2  [0:IQD-1];
    reg              iqn2  [0:IQD-1];
    reg [LATW-1:0]   iqlat [0:IQD-1];
+   reg [PAYW-1:0]   iqpay [0:IQD-1];
 
    integer i;
    initial begin
@@ -112,6 +116,7 @@ module sched_shard
    assign iss_ps1    = iqs1 [sel];
    assign iss_ps2    = iqs2 [sel];
    assign iss_lat    = iqlat[sel];
+   assign iss_pay    = iqpay[sel];
 
    // ------------------------------------------------ unpack broadcast buses
    reg [PBITS-1:0] wkpr [0:SHARDS-1];
@@ -150,6 +155,7 @@ module sched_shard
             iqs2 [freeslot] <= disp_ps2;
             iqn2 [freeslot] <= disp_need2;
             iqlat[freeslot] <= disp_lat;
+            iqpay[freeslot] <= disp_pay;
          end
       end
    end

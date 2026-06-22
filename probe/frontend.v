@@ -1,3 +1,4 @@
+`include "exec_pay.vh"
 `default_nettype none
 
 // Sharded-OoO frontend: PC -> fetch/align -> decode -> [registered boundary] ->
@@ -54,11 +55,14 @@ module frontend
     output wire [IW*PBITS-1:0]     ps1,
     output wire [IW*PBITS-1:0]     ps2,
     output wire [IW*PBITS-1:0]     pdst,
+    output wire [IW-1:0]           r_need1,
+    output wire [IW-1:0]           r_need2,
+    output wire [IW*`PAYW-1:0]     r_pay,
     output wire [IW-1:0]           stall);
 
    wire [IW-1:0]      f_slot_valid;
    wire [IW*32-1:0]   f_inst;
-   wire [IW*PCW-1:0]  f_pc;        // produced; not carried into rename yet (TODO)
+   wire [IW*PCW-1:0]  f_pc;
    wire [IW*SEQW-1:0] f_seq;
    wire               f_valid;
 
@@ -72,11 +76,13 @@ module frontend
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),
                    .SBITS(SBITS), .NCHK(NCHK), .CBITS(CBITS)) u_dr
      (.clk(clk), .reset(reset), .inst(f_inst), .in_valid(f_slot_valid), .seq_in(f_seq),
+      .pc_in(f_pc),
       .fr_phys(fr_phys), .fr_valid(fr_valid),
       .chk_create(chk_create), .chk_create_idx(chk_create_idx),
       .chk_restore(chk_restore), .chk_restore_idx(chk_restore_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .stall(stall));
+      .ps1(ps1), .ps2(ps2), .pdst(pdst),
+      .r_need1(r_need1), .r_need2(r_need2), .r_pay(r_pay), .stall(stall));
 endmodule
 
 `default_nettype wire
