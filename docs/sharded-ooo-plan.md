@@ -384,12 +384,18 @@ harder than I$↔fetch and so must be fixed up front:
   stubbed/bare-mode; integrate dTLB+D$ together as a later milestone.
 
 ### Build order (mirrors the CPR integration)
-1. Store buffer + load queue vs. a **flat byte-addressable** memory (dTLB =
-   identity): `resolved_through` gate, **complete byte-granular forwarding**
-   (sequential byte-merge first — obviously correct, slow; parallel per-byte
-   network is a later latency optimization with identical semantics), commit-gated
-   drain, rollback rewind. Memory ops decrement `commit_ctl` at LSU completion.
-2. Scheduler integration: WB-slot reservation + fixed N+3 hit latency.
+1. **DONE** — `lsu.v` (unified store buffer + load queue, pool/seqno-ordered) vs. a
+   **flat byte-addressable** dmem (dTLB = identity): order gate (no older unfilled
+   store), **complete byte-granular forwarding** (per-byte youngest-older-store ∪
+   memory), commit-gated drain, rollback squash-by-seqno. Wired into `backend_top`:
+   LSU slots allocated at dispatch (mem_idx threaded through the scheduler), AGU +
+   store-data from the shards, load WB muxed onto the owner lane (busy-gated, no
+   collision), loads counted at LSU completion. `tb_lsu` + end-to-end `tb_ldst`
+   (store → forwarded load → dependent) green. M1 simplifications still standing:
+   stores issue-on-both; combinational (fixed-1-cycle) load; serialize fences/
+   atomics/MMIO via a forced checkpoint is a **TODO** (unused by the M1 tests).
+2. Scheduler WB-slot reservation + fixed N+3 hit latency (needed once load latency
+   goes variable; M1's combinational load needs no reservation).
 3. Miss deferral (variable latency on the stub).
 4. Real D$ (physically-tagged) + dTLB: cache lines, line-crossing two-read+merge,
    miss latency, translation + page-crossing trap.
