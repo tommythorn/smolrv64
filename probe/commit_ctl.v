@@ -29,10 +29,14 @@ module commit_ctl
     // iss_is_load and counted by the ld_done port instead.
     input  wire [IW-1:0]         iss_valid,
     input  wire [IW-1:0]         iss_is_load,
+    input  wire [IW-1:0]         iss_is_div,    // divides also defer (iterative) -> count at div_done
     input  wire [IW*CBITS-1:0]   iss_ckpt,
     // load completion from the LSU (the deferred decrement)
     input  wire                  ld_done,
     input  wire [CBITS-1:0]      ld_done_ckpt,
+    // per-shard iterative-divide completion (deferred decrement)
+    input  wire [IW-1:0]         div_done,
+    input  wire [IW*CBITS-1:0]   div_done_ckpt,
     // branch redirect -> rollback to the branch's checkpoint
     input  wire                  redirect,
     input  wire [CBITS-1:0]      redirect_ckpt,
@@ -79,9 +83,12 @@ module commit_ctl
    always @* begin
       for (i = 0; i < NCHK; i = i + 1) dec[i] = 0;
       for (s = 0; s < IW; s = s + 1)
-         if (iss_valid[s] && !iss_is_load[s])
+         if (iss_valid[s] && !iss_is_load[s] && !iss_is_div[s])
             dec[iss_ckpt[s*CBITS +: CBITS]] = dec[iss_ckpt[s*CBITS +: CBITS]] + 1'b1;
       if (ld_done) dec[ld_done_ckpt] = dec[ld_done_ckpt] + 1'b1;   // load completes at LSU
+      for (s = 0; s < IW; s = s + 1)                                // divide completes at the divider
+         if (div_done[s])
+            dec[div_done_ckpt[s*CBITS +: CBITS]] = dec[div_done_ckpt[s*CBITS +: CBITS]] + 1'b1;
    end
 
    always @(posedge clk) begin

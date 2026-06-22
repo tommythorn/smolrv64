@@ -21,7 +21,8 @@ module exec_shard
     parameter PBITS  = 8,
     parameter POOL   = 64,
     parameter IDXB   = 6,
-    parameter SEQW   = 8)
+    parameter SEQW   = 8,
+    parameter CBITS  = 2)
    (input  wire                    clk,
     // issue from this shard's scheduler
     input  wire                    iss_valid,
@@ -30,6 +31,10 @@ module exec_shard
     input  wire                    iss_pdst_v,    // writes a register
     input  wire [PBITS-1:0]        iss_ps1,
     input  wire [PBITS-1:0]        iss_ps2,
+    input  wire [CBITS-1:0]        iss_ckpt,      // checkpoint (captured for a div's deferred completion)
+    // squash: abort an in-flight divide whose seqno is rolled back
+    input  wire                    squash,
+    input  wire [SEQW-1:0]         squash_seq,
     // execute payload (decode_exec ctl + imm/pc)
     input  wire [5:0]              alu_op,
     input  wire                    alu_w,
@@ -41,7 +46,7 @@ module exec_shard
     input  wire                    is_mem,
     input  wire                    is_branch,
     input  wire                    is_jump,
-    input  wire                    is_mul,        // M ext: result from muldiv (op = {alu_w,br_func})
+    input  wire                    is_mul,        // M ext (op = {alu_w,br_func}): mul = comb, div = iterative
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
@@ -62,7 +67,11 @@ module exec_shard
     output wire [63:0]             st_data,       // store data (= rs2) for the store buffer
     output wire                    cmp_eq,
     output wire                    cmp_lt,
-    output wire                    cmp_ltu);
+    output wire                    cmp_ltu,
+    // iterative divide: structural-hazard backpressure + deferred completion
+    output wire                    exec_busy,     // divider running -> scheduler holds this shard
+    output wire                    div_done,      // a divide completed this cycle (-> commit_ctl)
+    output wire [CBITS-1:0]        div_done_ckpt);
 
    wire [63:0] rs1_val, rs2_val;
    rf_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
@@ -78,16 +87,49 @@ module exec_shard
       .result(result), .addr(agu_addr),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
 
-   // M extension: the op is exactly {is_w, funct3} = {alu_w, br_func}. Combinational
-   // here (1-cycle, like the ALU) — a pipelined multiply / iterative divide is a
-   // later timing optimization, same stance as the LSU's combinational byte-merge.
-   wire [63:0] md_result;
-   muldiv md (.rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w), .result(md_result));
+   // M extension (op = {is_w,funct3} = {alu_w,br_func}). funct3[2] splits the class:
+   // mul/mulh/mulhsu/mulhu are combinational (1-cycle, DSP-friendly); div/rem run on
+   // the iterative divider and complete later (deferred, like a load).
+   wire mul_op = is_mul & ~br_func[2];
+   wire div_op = is_mul &  br_func[2];
 
-   // ALU/link/mul ops write back now; memory ops complete via the LSU (later)
-   assign wb_valid = iss_valid & iss_pdst_v & ~is_mem;
-   assign wb_pr    = iss_pdst;
-   assign wb_val   = is_mul ? md_result : result;
+   wire [63:0] mul_res;
+   mul mu (.rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w), .result(mul_res));
+
+   // Iterative divider: a div issues (exec_busy=0 then), runs ~64 cycles holding the
+   // shard (exec_busy stalls the scheduler so nothing else issues here and the WB lane
+   // stays free), and completes via the same lane. Squash aborts a wrong-path divide.
+   function automatic older;          // a strictly older than b (wrap-safe)
+      input [SEQW-1:0] a, bb; older = ($signed(a - bb) < 0);
+   endfunction
+   wire        dv_busy, dv_done;
+   wire [63:0] dv_res;
+   reg  [PBITS-1:0] dv_pdst;
+   reg  [SEQW-1:0]  dv_seq;
+   reg  [CBITS-1:0] dv_ck;
+   // Don't START a divide that is being squashed this same cycle (a branch can
+   // redirect the cycle a younger div issues -- then dv_busy isn't set yet, so the
+   // mid-run abort below can't catch it and the divider would wedge forever).
+   wire dv_squash_now = squash & older(squash_seq, iss_seq);
+   wire dv_start = iss_valid & div_op & ~dv_busy & ~dv_squash_now;
+   wire dv_abort = dv_busy & squash & older(squash_seq, dv_seq);   // in-flight div rolled back
+   divider dv (.clk(clk), .reset(1'b0), .start(dv_start), .abort(dv_abort),
+               .rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w),
+               .busy(dv_busy), .done(dv_done), .result(dv_res));
+   always @(posedge clk) if (dv_start) begin
+      dv_pdst <= iss_pdst; dv_seq <= iss_seq; dv_ck <= iss_ckpt;
+   end
+   wire dv_complete = dv_done & ~dv_abort;     // squash in the result cycle suppresses completion
+
+   // ALU/link/mul write back now; div defers to dv_complete; mem completes via LSU.
+   wire normal_wb = iss_valid & iss_pdst_v & ~is_mem & ~div_op;
+   assign wb_valid = normal_wb | dv_complete;
+   assign wb_pr    = dv_complete ? dv_pdst : iss_pdst;
+   assign wb_val   = dv_complete ? dv_res : (mul_op ? mul_res : result);
+
+   assign exec_busy     = dv_busy;
+   assign div_done      = dv_complete;
+   assign div_done_ckpt = dv_ck;
 
    // branch/jump resolution (predict not-taken): redirect on taken branch / any jump
    wire bu_redirect;

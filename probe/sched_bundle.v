@@ -41,6 +41,8 @@ module sched_bundle
     // branch misprediction squash (broadcast to all shards)
     input  wire                    squash,
     input  wire [SEQW-1:0]         squash_seq,
+    // per-shard execute stall (iterative divider busy)
+    input  wire [SHARDS-1:0]       exec_busy,
     // issue (to execute), slot i <- shard i
     output wire [SHARDS-1:0]       iss_valid,
     output wire [SHARDS*PBITS-1:0] iss_pdst,
@@ -77,7 +79,7 @@ module sched_bundle
          .disp_ready(disp_ready[i]),
          .clr_valid(clr_valid), .clr_pr(clr_pr),
          .wake_valid(wake_valid), .wake_pr(wake_pr),
-         .squash(squash), .squash_seq(squash_seq),
+         .squash(squash), .squash_seq(squash_seq), .exec_busy(exec_busy[i]),
          .iss_valid(iss_valid[i]), .iss_seq(iss_seq[i*SEQW +: SEQW]),
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),

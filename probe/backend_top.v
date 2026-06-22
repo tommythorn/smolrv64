@@ -144,6 +144,9 @@ module backend_top
    wire [IW*`PAYW-1:0] iss_pay;
    wire [IW-1:0]       wkv;          // effective writeback = wake source (ALU ∪ load)
    wire [IW*PBITS-1:0] wkp;
+   // per-shard iterative-divide status (exec_bundle -> scheduler stall + commit count)
+   wire [IW-1:0]       eb_exec_busy, eb_div_done;
+   wire [IW*CBITS-1:0] eb_div_done_ckpt;
 
    wire [IW*LATW-1:0] disp_lat  = {IW{ {{(LATW-1){1'b0}}, 1'b1} }};
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
@@ -157,13 +160,13 @@ module backend_top
       .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(wkv), .wake_pr(wkp),
-      .squash(eb_redirect), .squash_seq(eb_rseq),
+      .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(eb_exec_busy),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_seq(iss_seq),
       .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
-   wire [IW-1:0]      iss_mem, iss_store, iss_is_load;
+   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_div;
    wire [IW*4-1:0]    iss_nb;
    wire [IW-1:0]      iss_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : icl
@@ -173,6 +176,9 @@ module backend_top
       assign iss_sgn[gi]     = iss_pay[gi*`PAYW + `PAY_MSGN];
       assign iss_nb[gi*4+:4] = (4'd1 << isz);                  // bytes: 1/2/4/8
       assign iss_is_load[gi] = iss_valid[gi] & iss_mem[gi] & ~iss_store[gi];
+      // div/rem = is_mul & funct3[2] (br_func MSB, payload bit 146); deferred like a load
+      assign iss_is_div[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_MUL]
+                                             & iss_pay[gi*`PAYW + 146];
    end endgenerate
 
    // ---- commit control: count by completion (loads at LSU), commit in order ----
@@ -181,8 +187,9 @@ module backend_top
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(iss_valid), .iss_is_load(iss_is_load), .iss_ckpt(iss_ckpt),
+      .iss_valid(iss_valid), .iss_is_load(iss_is_load), .iss_is_div(iss_is_div), .iss_ckpt(iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),
       .create(),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
@@ -204,6 +211,8 @@ module backend_top
       .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
       .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2),
       .iss_ckpt(iss_ckpt), .iss_pay(iss_pay),
+      .squash(eb_redirect), .squash_seq(eb_rseq),
+      .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),

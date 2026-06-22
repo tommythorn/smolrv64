@@ -52,7 +52,7 @@ module tb;
       saw42=0; sawm21=0; saw2=0; saw6=0; saw43=0;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 
-      for (c=0; c<40; c=c+1) begin
+      for (c=0; c<250; c=c+1) begin   // divides are now iterative (~64 cyc each)
          @(negedge clk);
          for (k=0;k<IW;k=k+1) if (wb_valid[k]) case (wb_val[k*64+:64])
             64'd42:                  saw42=1;

@@ -59,6 +59,8 @@ module sched_shard
     // branch misprediction squash: drop entries younger than the branch
     input  wire                    squash,
     input  wire [SEQW-1:0]         squash_seq,
+    // structural stall: this shard's iterative divider is busy -> issue nothing
+    input  wire                    exec_busy,
     // this shard's issue this cycle (bundle feeds it back as wake_*[SH])
     output wire                    iss_valid,
     output wire [SEQW-1:0]         iss_seq,
@@ -123,7 +125,9 @@ module sched_shard
    end
 
    assign disp_ready = have_free;
-   assign iss_valid  = found;
+   // hold all issue while the divider runs (it owns the shard's WB lane on completion)
+   wire issue = found & ~exec_busy;
+   assign iss_valid  = issue;
    assign iss_seq    = iqseq[sel];
    assign iss_pdst   = iqpd [sel];
    assign iss_pdst_v = iqpdv[sel];
@@ -156,8 +160,8 @@ module sched_shard
          for (s = 0; s < SHARDS; s = s + 1) if (wake_valid[s]) ready[wkpr[s]] <= 1'b1;
          for (s = 0; s < SHARDS; s = s + 1) if (clr_valid[s])  ready[clpr[s]] <= 1'b0;
 
-         // issue: free the selected entry
-         if (found) iqv[sel] <= 1'b0;
+         // issue: free the selected entry (only when actually issuing)
+         if (issue) iqv[sel] <= 1'b0;
 
          // branch squash: invalidate entries younger (in program order) than the
          // mispredicting branch. (seqno is program order; rolled back on redirect.)

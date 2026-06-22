@@ -43,7 +43,7 @@ module tb;
       .disp_ready(disp_ready),
       .clr_valid(clr_valid), .clr_pr(clr_pr),
       .wake_valid(wake_valid), .wake_pr(wake_pr),
-      .squash(1'b0), .squash_seq(8'd0),
+      .squash(1'b0), .squash_seq(8'd0), .exec_busy(1'b0),
       .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
       .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_lat(iss_lat));
 

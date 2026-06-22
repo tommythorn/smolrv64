@@ -7,7 +7,7 @@
 // exercise the handshake returning to idle.
 module tb;
    reg         clk=0; always #5 clk=~clk;
-   reg         reset, start;
+   reg         reset, start, abort;
    reg  [63:0] rs1, rs2;
    reg  [2:0]  f3;
    reg         is_w;
@@ -15,7 +15,7 @@ module tb;
    wire [63:0] result;
    integer errs=0;
 
-   divider dut (.clk(clk), .reset(reset), .start(start), .abort(1'b0), .rs1(rs1), .rs2(rs2),
+   divider dut (.clk(clk), .reset(reset), .start(start), .abort(abort), .rs1(rs1), .rs2(rs2),
                 .f3(f3), .is_w(is_w), .busy(busy), .done(done), .result(result));
 
    localparam D=3'b100, DU=3'b101, R=3'b110, RU=3'b111;
@@ -34,7 +34,7 @@ module tb;
    endtask
 
    initial begin
-      reset=1; start=0; rs1=0; rs2=0; f3=0; is_w=0;
+      reset=1; start=0; abort=0; rs1=0; rs2=0; f3=0; is_w=0;
       @(negedge clk); @(negedge clk); reset=0;
 
       run("div.20/3",   64'd20, 64'd3,  0, D,  64'd6);
@@ -58,6 +58,22 @@ module tb;
       run("remuw.7/4",  64'd7,  64'd4,              1, RU, 64'd3);
       run("divuw.junk", 64'hDEAD000000000022, 64'h1234000000000005, 1, DU, 64'd6); // 34/5=6 (low32)
       run("divw.ovf",   64'h0000000080000000, 64'hFFFFFFFFFFFFFFFF, 1, D, 64'hFFFFFFFF80000000);
+
+      // abort mid-run: start a divide, run partway, abort -> busy drops, no done,
+      // and the unit is free to accept a new divide that completes correctly.
+      @(negedge clk); rs1=64'd1000; rs2=64'd7; is_w=0; f3=D; start=1;
+      @(negedge clk); start=0;
+      repeat (5) @(negedge clk);
+      if (!busy) begin $display("FAIL abort: not busy mid-run"); errs=errs+1; end
+      abort=1; @(negedge clk); abort=0;
+      if (busy) begin $display("FAIL abort: still busy after abort"); errs=errs+1; end
+      begin : abwin
+         integer w; for (w=0; w<70; w=w+1) begin
+            @(negedge clk);
+            if (done) begin $display("FAIL abort: aborted divide asserted done"); errs=errs+1; end
+         end
+      end
+      run("post-abort.div", 64'd20, 64'd3, 0, D, 64'd6);   // unit recovered
 
       if (errs==0) $display("divider: ALL TESTS PASSED (iterative div/rem)");
       else         $display("divider: %0d FAILURES", errs);

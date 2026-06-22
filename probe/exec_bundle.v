@@ -25,6 +25,13 @@ module exec_bundle
     input  wire [SHARDS*PBITS-1:0] iss_ps2,
     input  wire [SHARDS*CBITS-1:0] iss_ckpt,
     input  wire [SHARDS*`PAYW-1:0] iss_pay,
+    // squash (oldest-mispredict redirect): abort wrong-path in-flight divides
+    input  wire                    squash,
+    input  wire [SEQW-1:0]         squash_seq,
+    // per-shard iterative-divide status -> scheduler stall + commit_ctl completion
+    output wire [SHARDS-1:0]       exec_busy,
+    output wire [SHARDS-1:0]       div_done,
+    output wire [SHARDS*CBITS-1:0] div_done_ckpt,
     // LSU load writeback, muxed into the per-lane broadcast (the LSU avoids lanes
     // busy with an ALU writeback, so there is no collision — see wb_busy out)
     input  wire                    lsu_wb_v,
@@ -64,11 +71,14 @@ module exec_bundle
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       wire [`PAYW-1:0] p = iss_pay[i*`PAYW +: `PAYW];
       exec_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
-                   .POOL(POOL), .IDXB(IDXB), .SEQW(SEQW)) sh
+                   .POOL(POOL), .IDXB(IDXB), .SEQW(SEQW), .CBITS(CBITS)) sh
         (.clk(clk),
          .iss_valid(iss_valid[i]), .iss_seq(iss_seq[i*SEQW +: SEQW]),
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),
+         .iss_ckpt(iss_ckpt[i*CBITS +: CBITS]), .squash(squash), .squash_seq(squash_seq),
+         .exec_busy(exec_busy[i]), .div_done(div_done[i]),
+         .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]),
          .alu_op(p[`PAY_ALUOP]), .alu_w(p[`PAY_W]), .alu_uw(p[`PAY_UW]),
          .op1_sel(p[`PAY_O1S]), .op2_imm(p[`PAY_O2I]), .res_link(p[`PAY_LINK]),
          .is_rvc(p[`PAY_RVC]), .is_mem(p[`PAY_MEM]),
