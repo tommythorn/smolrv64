@@ -702,6 +702,33 @@ are pessimistic but the *comparison* is informative):**
       `exec_bundle` redirects on the oldest mispredict, rollback to `rckpt+1` discards
       all younger checkpoints). Deeper nesting beyond NCHK needs `ckpt_alive` evac. A
       dedicated multi-branch-in-flight TB is still TODO.
+    - **Truncation is a stopgap, NOT the end state** (Tommy): a checkpoint per branch
+      makes checkpoint == basic block, so the window is capped at NCHK basic blocks
+      (~NCHK×5–6 instr) and a checkpoint is burned on *every* branch even when the BP
+      is accurate — wasteful, since the whole CPR win is spending the scarce checkpoint
+      budget only where rollback actually happens. **General direction = selective,
+      confidence-gated checkpoint placement, decoupled from bundle/branch boundaries:**
+      open a checkpoint only at a *low-confidence* branch, a *forced-serializing* op
+      (the atomics/MMIO/fence checkpoint — already an instance of on-demand placement),
+      or a *distance cap* (every N instr, for forward progress + bounded replay); let
+      many confidently-predicted branches ride inside one checkpoint.
+      - *Checkpointed* branch miss → today's cheap precise recovery (restore `rckpt+1`,
+        redirect to target).
+      - *Non-checkpointed* branch miss → **coarse rollback to the nearest enclosing
+        (older) checkpoint `C`, then re-execute forward** from `C`'s start PC, replaying
+        the correctly-predicted C→branch work. Rare under confidence gating, so net win.
+      - *Why replay is mandatory:* the MAP is snapshotted only at `C`, so restoring
+        `chk_map[C]` discards the C→branch renames — they must be re-executed to rebuild
+        the MAP. LSU rollback-by-seqno + freelist A[C]/P[C] already compose with a
+        coarser `rollback_seq = C_start_seq` (no new teardown). Need to store each
+        checkpoint's **start PC/seqno**.
+      - *The subtle bit:* the offending branch must be **forced to its resolved outcome
+        on replay** (else it re-mispredicts → livelock). Record `(PC → dir/target)` in a
+        small **fix-up override** the front-end applies at that branch on replay, then
+        clears; the distance cap guarantees forward progress.
+      - *Build order:* BP **confidence** (ties into the postponed basic-block/FTQ BP) →
+        **decouple `create` from dispatch** (checkpoint opens on policy; counts/freelist
+        accumulate across bundles) → **coarse rollback + replay + fix-up override**.
     - *Limits (to generalize next):* JAL/JALR precise link-write restore;
       multi-cycle (load) wb suppression on squash (needed once the LSU exists).
     - **Seqno wrap invariant (all program-order compares):** seqno has limited range
