@@ -358,6 +358,7 @@ slot 3 youngest — so `SLOT(j)` requires `j < i` and last-writer = highest inde
 | Branch unit (resolve taken/target) | not probed | — | `branch_unit.v` | directed ✓ |
 | **Branches + redirect + rollback** (CPR) | not probed | — | (`backend_top`) | **end-to-end ✓** |
 | Bitmap freelist + A[C]/P[C] reclamation | not probed | — | `freelist.v` | directed ✓ |
+| Commit control (per-bundle ckpt, by-issue) | not probed | — | `commit_ctl.v` | directed ✓ |
 | Pipeline trace (observability) | — | — | `tb_trace.v` | — |
 
 The sharded slice's critical path is the W-port MAP write-enable decode — only 3
@@ -559,16 +560,25 @@ are pessimistic but the *comparison* is informative):**
       Constraint: `SEQW` must exceed `clog2(2 × max in-flight instructions)` (today
       SEQW=8 → window 127 ≫ ~36 in-flight). Wrap itself is not yet exercised by a TB.
 14. Commit / CPR — **in progress** (TT chose this next, for sustained execution +
-    correct stores). The bitmap **`freelist.v`** (A[C]/P[C] reclamation) is built &
-    tested standalone — the core that lets a committed checkpoint bulk-free its dead
-    polds in one cycle (the array/ring freelist couldn't). **Remaining:**
-    completion tracking (per-checkpoint outstanding-instruction counters, decremented
-    on writeback/complete), in-order commit (oldest checkpoint when its count hits 0
-    → `commit`), pold capture + cross-shard routing into `P[cur]`, NCHK checkpoint
-    allocation (replace the single-slot branch hack), renamer **back-pressure** (no
-    free checkpoint / `free_count < 2`), and rewiring `rename_shard` onto `freelist`
-    (replacing the ring + `chk_fl` snapshots; MAP snapshot stays for rollback).
-    Milestone: a program long enough to need reclamation runs to completion.
+    correct stores). Two core pieces built & tested standalone:
+    - **`freelist.v`** — bitmap free + A[C]/P[C]; lets a committed checkpoint
+      bulk-free its dead polds in one cycle (the array/ring couldn't). Inclusive
+      rollback (recover before span C).
+    - **`commit_ctl.v`** — one checkpoint per dispatched bundle; per-checkpoint
+      outstanding count **incremented at dispatch (all valid instrs) and decremented
+      at ISSUE — not writeback**, because nops/stores/branches never write back but
+      all issue (issue is the universal completion event; "issued ⟹ done" holds for
+      non-faulting fixed-latency ops — revisit when loads can page-fault). Oldest
+      checkpoint commits in order when its count drains and it's closed; `full`
+      back-pressure when the NCHK ring fills (1 slot reserved); rollback clears
+      squashed checkpoints' counts.
+    **Remaining:** pold capture + cross-shard routing into `freelist.P[cur]`; wire
+    `commit_ctl` ↔ `freelist` (create/commit/rollback) and thread the ckpt# through
+    dispatch→scheduler→issue (for the decrement) and into the redirect; renamer
+    **back-pressure** (`full` / `free_count < 2` → freeze the frontend); rewire
+    `rename_shard` onto `freelist` (drop the ring + `chk_fl` snapshots; keep the MAP
+    snapshot for rollback). Milestone: a program long enough to need reclamation
+    runs to completion (and multiple in-flight branches work).
 15. **Then:** LSU (loads/stores, store addr/data split, commit-gated drain) — the
     rest of "real programs"; generalize branch recovery (mid-bundle truncation /
     basic-block fetch, NCHK nested checkpoints via `ckpt_alive`, JAL/JALR precise);
