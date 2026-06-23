@@ -59,7 +59,8 @@ module exec_bundle
     output reg                     redirect,
     output reg  [63:0]             redirect_target,
     output reg  [SEQW-1:0]         redirect_seq,
-    output reg  [CBITS-1:0]        redirect_ckpt);
+    output reg  [CBITS-1:0]        redirect_ckpt,
+    output reg                     redirect_is_trap);  // exception -> roll back TO ckpt (not +1)
 
    wire [SHARDS-1:0]       wbv;          // per-shard registered ALU/M writeback valid
    wire [SHARDS*PBITS-1:0] wbp;
@@ -68,6 +69,7 @@ module exec_bundle
    wire [SHARDS*64-1:0]    brt;
    wire [SHARDS*SEQW-1:0]  brs;
    wire [SHARDS*CBITS-1:0] brc;          // EX-stage ckpt of each shard (for redirect)
+   wire [SHARDS-1:0]       brtr;         // per-shard "redirect is a trap"
 
    // effective per-lane registered writeback = ALU/M result, else the LSU load.
    wire [SHARDS-1:0]       ewbv;
@@ -88,7 +90,7 @@ module exec_bundle
 
    // ---- CSR file (shared; one system op executes at a time -> single port) ----
    wire [63:0]          csr_rdata, csr_redir_target;
-   wire                 csr_redir_valid, csr_illegal;
+   wire                 csr_redir_valid, csr_redir_is_trap, csr_illegal;
    wire [SHARDS-1:0]    csr_req_v, csr_req_is_csr;
    wire [SHARDS*3-1:0]  csr_req_func;
    wire [SHARDS*12-1:0] csr_req_addr, csr_rd_addr;
@@ -113,7 +115,8 @@ module exec_bundle
          .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
          .csr_rdata(csr_rdata), .csr_redir_target(csr_redir_target),
-         .csr_redir_valid(csr_redir_valid), .csr_illegal(csr_illegal),
+         .csr_redir_valid(csr_redir_valid), .csr_redir_is_trap(csr_redir_is_trap),
+         .csr_illegal(csr_illegal),
          .csr_req_v(csr_req_v[i]), .csr_req_is_csr(csr_req_is_csr[i]),
          .csr_req_func(csr_req_func[i*3 +: 3]), .csr_req_addr(csr_req_addr[i*12 +: 12]),
          .csr_req_src(csr_req_src[i*64 +: 64]), .csr_req_pc(csr_req_pc[i*64 +: 64]),
@@ -123,6 +126,7 @@ module exec_bundle
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
          .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_seq(brs[i*SEQW +: SEQW]),
+         .br_is_trap(brtr[i]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),
          .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
@@ -148,7 +152,7 @@ module exec_bundle
    csr_file u_csr
      (.clk(clk), .reset(reset),            // squash must NOT reset CSR state (only reset does)
       .raddr(s_rdaddr), .rdata(csr_rdata), .redir_target(csr_redir_target),
-      .redir_valid(csr_redir_valid), .csr_illegal(csr_illegal),
+      .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));
 
@@ -170,13 +174,14 @@ module exec_bundle
    integer j;
    always @* begin
       redirect = 1'b0; redirect_target = 64'd0; redirect_seq = {SEQW{1'b0}};
-      redirect_ckpt = {CBITS{1'b0}};
+      redirect_ckpt = {CBITS{1'b0}}; redirect_is_trap = 1'b0;
       for (j = 0; j < SHARDS; j = j + 1)
          if (brd[j] && (!redirect || $signed(brs[j*SEQW +: SEQW] - redirect_seq) < 0)) begin
-            redirect        = 1'b1;
-            redirect_target = brt[j*64 +: 64];
-            redirect_seq    = brs[j*SEQW +: SEQW];
-            redirect_ckpt   = brc[j*CBITS +: CBITS];
+            redirect         = 1'b1;
+            redirect_target  = brt[j*64 +: 64];
+            redirect_seq     = brs[j*SEQW +: SEQW];
+            redirect_ckpt    = brc[j*CBITS +: CBITS];
+            redirect_is_trap = brtr[j];
          end
    end
 endmodule

@@ -70,6 +70,7 @@ module backend_top
    wire [63:0]        eb_target;
    wire [SEQW-1:0]    eb_rseq;
    wire [CBITS-1:0]   eb_rckpt;
+   wire               eb_rtrap;       // redirect is an exception (roll back TO its ckpt)
    assign redirect        = eb_redirect;
    assign redirect_target = eb_target;
 
@@ -120,8 +121,10 @@ module backend_top
       for (dc = 0; dc < IW; dc = dc + 1) disp_count = disp_count + r_valid[dc];
    end
 
-   // a mispredicting branch reopens the span just after its own bundle's
-   wire [CBITS-1:0]   rb_idx = eb_rckpt + 1'b1;
+   // a mispredicting branch/xret reopens the span just AFTER its own bundle (keep it);
+   // an EXCEPTION reopens its OWN span (eb_rckpt) so the faulting (solo) op is squashed
+   // and its rd allocation annulled -- precise trap.
+   wire [CBITS-1:0]   rb_idx = eb_rtrap ? eb_rckpt : (eb_rckpt + 1'b1);
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
@@ -290,7 +293,7 @@ module backend_top
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .redirect(eb_redirect), .redirect_target(eb_target),
-      .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt));
+      .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap));
 
    // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
    wire [IW-1:0]      exe_st_v, exe_ld_v;

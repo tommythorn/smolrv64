@@ -78,7 +78,7 @@ module aligner
    reg [PBW-1:0] pos;
    reg           run;
    reg [15:0]    h0;
-   reg           is32, have;
+   reg           is32, have, is_sys;
    // Explicit sensitivity: hwin is read via the hwr() function, which iverilog's
    // @* does not pull into the list -- name it so the block re-evaluates on it.
    always @(hwin or avail or base_pc or base_seq) begin
@@ -89,14 +89,24 @@ module aligner
          is32 = (h0[1:0] == 2'b11);
          // all needed halfwords present?  first always, second only if 32-bit
          have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
-         v[k]   = run & have;
+         // A SYSTEM op (ecall/ebreak/csr/xret) is SOLO in its bundle: terminate the
+         // bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo means
+         // its checkpoint contains only it, so a trap can roll back TO that checkpoint
+         // and precisely annul the faulting op's rd (e.g. a priv-violating csrr) without
+         // disturbing older instructions. (is_cti already ends the bundle AFTER it.)
+         is_sys = is32 && (h0[6:0] == 7'b1110011);
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];
-         if (v[k]) begin
-            pos = pos + (is32 ? 2'd2 : 2'd1);
-            if (is_cti(h0, is32)) run = 1'b0;  // branch/jump ends the bundle (youngest)
-         end else run = 1'b0;                  // prefix: stop at first that doesn't fit
+         if ((k != 0) && is_sys) begin
+            v[k] = 1'b0; run = 1'b0;           // SYSTEM begins a fresh (solo) bundle
+         end else begin
+            v[k] = run & have;
+            if (v[k]) begin
+               pos = pos + (is32 ? 2'd2 : 2'd1);
+               if (is_cti(h0, is32)) run = 1'b0;  // CTI / SYSTEM ends the bundle (youngest)
+            end else run = 1'b0;               // prefix: stop at first that doesn't fit
+         end
       end
       cons = pos;                             // halfwords consumed (straddler excluded)
    end

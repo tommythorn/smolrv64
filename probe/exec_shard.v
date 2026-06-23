@@ -58,6 +58,7 @@ module exec_shard
     input  wire [63:0]             csr_rdata,    // old value at imm[11:0]
     input  wire [63:0]             csr_redir_target, // trap/xret target (from csr_file)
     input  wire                    csr_redir_valid,  // active sys op redirects (trap/xret/illegal)
+    input  wire                    csr_redir_is_trap,// the redirect is an exception (roll back TO ckpt)
     input  wire                    csr_illegal,      // active CSR op is illegal -> no rd write
     output wire                    csr_req_v,    // drive the CSR update port
     output wire                    csr_req_is_csr,
@@ -87,6 +88,7 @@ module exec_shard
     output wire                    br_redirect,
     output wire [63:0]             br_target,
     output wire [SEQW-1:0]         br_seq,
+    output wire                    br_is_trap,    // redirect is an exception (roll back TO ckpt)
     // ---- EX: LSU drive (aligned with agu/st_data) ----
     output wire                    ex_valid,
     output wire [SEQW-1:0]         ex_seq,
@@ -234,6 +236,7 @@ module exec_shard
    assign br_redirect = (ex_v & bu_redirect) | sys_redirect;
    assign br_target   = sys_redirect ? sys_target : bu_target;
    assign br_seq      = ex_sq;
+   assign br_is_trap  = sys_redirect & csr_redir_is_trap;   // exception -> precise (TO ckpt)
    assign st_data     = op2f;
 
    // EX-stage LSU control (aligned with agu/st_data)

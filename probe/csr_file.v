@@ -21,6 +21,7 @@ module csr_file
     // redirect for the current system op (combinational)
     output reg  [63:0] redir_target,
     output wire        redir_valid,   // this op redirects (trap / xret / illegal-CSR)
+    output wire        redir_is_trap, // redirect is an exception (roll back TO this op's ckpt)
     output wire        csr_illegal,   // active CSR op is an illegal access (suppress rd)
     // single update (driven at EX by the oldest system op -> non-speculative)
     input  wire        upd_valid,
@@ -129,7 +130,8 @@ module csr_file
    wire [63:0] exc_cause = csr_illegal ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
    wire        exc_to_s  = exc_active & (priv != M) & medeleg[exc_cause[5:0]];
 
-   assign redir_valid = upd_valid & (exc_active | is_mret | is_sret);
+   assign redir_valid   = upd_valid & (exc_active | is_mret | is_sret);
+   assign redir_is_trap = upd_valid & exc_active;   // ecall/ebreak/illegal-CSR (not xret)
    // ---- redirect target (combinational) ----
    always @* begin
       if (is_mret)              redir_target = mepc;
