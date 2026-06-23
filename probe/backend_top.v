@@ -172,19 +172,14 @@ module backend_top
       .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
-   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_div;
-   wire [IW*4-1:0]    iss_nb;
-   wire [IW-1:0]      iss_sgn;
+   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : icl
-      wire [1:0] isz = iss_pay[gi*`PAYW + 148 +: 2];           // PAY_MSIZE
       assign iss_mem[gi]     = iss_pay[gi*`PAYW + `PAY_MEM];
       assign iss_store[gi]   = iss_pay[gi*`PAYW + `PAY_STORE];
-      assign iss_sgn[gi]     = iss_pay[gi*`PAYW + `PAY_MSGN];
-      assign iss_nb[gi*4+:4] = (4'd1 << isz);                  // bytes: 1/2/4/8
       assign iss_is_load[gi] = iss_valid[gi] & iss_mem[gi] & ~iss_store[gi];
-      // div/rem = is_mul & funct3[2] (br_func MSB, payload bit 146); deferred like a load
-      assign iss_is_div[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_MUL]
-                                             & iss_pay[gi*`PAYW + 146];
+      // M-ops (mul AND div) are deferred multi-cycle -> excluded from select-wake / the
+      // issue-time commit decrement, counted at completion, and stall their shard.
+      assign iss_is_mul[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_MUL];
    end endgenerate
 
    // ================= registered issue stage (select | execute split) =================
@@ -219,7 +214,7 @@ module backend_top
    end
 
    // execute-stage op decode (from the registered payload) -> LSU + commit
-   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_div;
+   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_mul;
    wire [IW*4-1:0] q_iss_nb;
    wire [IW-1:0]   q_iss_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : qicl
@@ -229,8 +224,7 @@ module backend_top
       assign q_iss_sgn[gi]     = q_iss_pay[gi*`PAYW + `PAY_MSGN];
       assign q_iss_nb[gi*4+:4] = (4'd1 << qsz);
       assign q_iss_is_load[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
-      assign q_iss_is_div[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL]
-                                                 & q_iss_pay[gi*`PAYW + 146];
+      assign q_iss_is_mul[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL];
    end endgenerate
 
    // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
@@ -239,14 +233,14 @@ module backend_top
    wire [IW*PBITS-1:0] sel_wake_pr;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : selw
       assign sel_wake_v[gi]             = iss_valid[gi] & iss_pdst_v[gi]
-                                          & ~iss_mem[gi] & ~iss_is_div[gi];
+                                          & ~iss_mem[gi] & ~iss_is_mul[gi];
       assign sel_wake_pr[gi*PBITS +: PBITS] = iss_pdst[gi*PBITS +: PBITS];
    end endgenerate
    assign sched_wake_v  = {sel_wake_v, wkv};        // [hi]=select, [lo]=completion
    assign sched_wake_pr = {sel_wake_pr, wkp};
 
    // a divide heading to / running on a shard's divider stalls that shard's issue
-   assign busy_to_sched = q_iss_is_div | eb_exec_busy;
+   assign busy_to_sched = q_iss_is_mul | eb_exec_busy;
 
    // ---- commit control: count by completion (loads at LSU), commit in order ----
    wire               lsu_ld_done;
@@ -254,7 +248,7 @@ module backend_top
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(q_iss_valid), .iss_is_load(q_iss_is_load), .iss_is_div(q_iss_is_div), .iss_ckpt(q_iss_ckpt),
+      .iss_valid(q_iss_valid), .iss_is_load(q_iss_is_load), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),

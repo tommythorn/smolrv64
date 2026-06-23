@@ -87,49 +87,52 @@ module exec_shard
       .result(result), .addr(agu_addr),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
 
-   // M extension (op = {is_w,funct3} = {alu_w,br_func}). funct3[2] splits the class:
-   // mul/mulh/mulhsu/mulhu are combinational (1-cycle, DSP-friendly); div/rem run on
-   // the iterative divider and complete later (deferred, like a load).
+   // M extension (op = {is_w,funct3} = {alu_w,br_func}): both classes are deferred,
+   // multi-cycle units that complete off the single-cycle path (mul = 3-cycle pipelined,
+   // div/rem = iterative). funct3[2] selects which. One M-op per shard at a time, so
+   // they share the start/capture/completion logic; exec_busy stalls the shard's issue
+   // while one is in flight (keeping the WB lane free), and a squash aborts a wrong-path
+   // one. Latency-1 ops (ALU/link) write back here; loads complete via the LSU.
    wire mul_op = is_mul & ~br_func[2];
    wire div_op = is_mul &  br_func[2];
 
-   wire [63:0] mul_res;
-   mul mu (.rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w), .result(mul_res));
-
-   // Iterative divider: a div issues (exec_busy=0 then), runs ~64 cycles holding the
-   // shard (exec_busy stalls the scheduler so nothing else issues here and the WB lane
-   // stays free), and completes via the same lane. Squash aborts a wrong-path divide.
    function automatic older;          // a strictly older than b (wrap-safe)
       input [SEQW-1:0] a, bb; older = ($signed(a - bb) < 0);
    endfunction
-   wire        dv_busy, dv_done;
-   wire [63:0] dv_res;
-   reg  [PBITS-1:0] dv_pdst;
-   reg  [SEQW-1:0]  dv_seq;
-   reg  [CBITS-1:0] dv_ck;
-   // Don't START a divide that is being squashed this same cycle (a branch can
-   // redirect the cycle a younger div issues -- then dv_busy isn't set yet, so the
-   // mid-run abort below can't catch it and the divider would wedge forever).
-   wire dv_squash_now = squash & older(squash_seq, iss_seq);
-   wire dv_start = iss_valid & div_op & ~dv_busy & ~dv_squash_now;
-   wire dv_abort = dv_busy & squash & older(squash_seq, dv_seq);   // in-flight div rolled back
-   divider dv (.clk(clk), .reset(1'b0), .start(dv_start), .abort(dv_abort),
+
+   wire        mbusy, mdone;  wire [63:0] mres;     // 3-cycle multiply
+   wire        dbusy, ddone;  wire [63:0] dres;     // iterative divide
+   wire        munit_busy = mbusy | dbusy;
+   reg  [PBITS-1:0] m_pdst;
+   reg  [SEQW-1:0]  m_seq;
+   reg  [CBITS-1:0] m_ck;
+   // Don't START an M-op squashed this same cycle (a branch can redirect the cycle a
+   // younger M-op issues, before *_busy is set -- the mid-run abort couldn't catch it).
+   wire m_squash_now = squash & older(squash_seq, iss_seq);
+   wire m_start = iss_valid & is_mul & ~munit_busy & ~m_squash_now;
+   wire m_abort = munit_busy & squash & older(squash_seq, m_seq);   // in-flight M-op rolled back
+
+   mul3 mu (.clk(clk), .reset(1'b0), .start(m_start & mul_op), .abort(m_abort),
+            .rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w),
+            .busy(mbusy), .done(mdone), .result(mres));
+   divider dv (.clk(clk), .reset(1'b0), .start(m_start & div_op), .abort(m_abort),
                .rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w),
-               .busy(dv_busy), .done(dv_done), .result(dv_res));
-   always @(posedge clk) if (dv_start) begin
-      dv_pdst <= iss_pdst; dv_seq <= iss_seq; dv_ck <= iss_ckpt;
+               .busy(dbusy), .done(ddone), .result(dres));
+   always @(posedge clk) if (m_start) begin
+      m_pdst <= iss_pdst; m_seq <= iss_seq; m_ck <= iss_ckpt;
    end
-   wire dv_complete = dv_done & ~dv_abort;     // squash in the result cycle suppresses completion
+   wire m_complete = (mdone | ddone) & ~m_abort;   // squash in the result cycle suppresses
+   wire [63:0] m_res = mdone ? mres : dres;        // only one in flight -> one done at a time
 
-   // ALU/link/mul write back now; div defers to dv_complete; mem completes via LSU.
-   wire normal_wb = iss_valid & iss_pdst_v & ~is_mem & ~div_op;
-   assign wb_valid = normal_wb | dv_complete;
-   assign wb_pr    = dv_complete ? dv_pdst : iss_pdst;
-   assign wb_val   = dv_complete ? dv_res : (mul_op ? mul_res : result);
+   // ALU/link write back now; M-ops defer to m_complete; mem completes via LSU.
+   wire normal_wb = iss_valid & iss_pdst_v & ~is_mem & ~is_mul;
+   assign wb_valid = normal_wb | m_complete;
+   assign wb_pr    = m_complete ? m_pdst : iss_pdst;
+   assign wb_val   = m_complete ? m_res  : result;
 
-   assign exec_busy     = dv_busy;
-   assign div_done      = dv_complete;
-   assign div_done_ckpt = dv_ck;
+   assign exec_busy     = munit_busy;
+   assign div_done      = m_complete;       // "M-op completed" (mul or divide) -> commit_ctl
+   assign div_done_ckpt = m_ck;
 
    // branch/jump resolution (predict not-taken): redirect on taken branch / any jump
    wire bu_redirect;
