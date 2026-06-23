@@ -56,8 +56,7 @@ module exec_shard
     input  wire [63:0]             pc,
     // CSR file (system op executes here when oldest -> precise)
     input  wire [63:0]             csr_rdata,    // old value at imm[11:0]
-    input  wire [63:0]             csr_mtvec,    // trap target
-    input  wire [63:0]             csr_mepc,     // xret target
+    input  wire [63:0]             csr_redir_target, // trap/xret target (from csr_file)
     output wire                    csr_req_v,    // drive the CSR update port
     output wire                    csr_req_is_csr,
     output wire [2:0]              csr_req_func,
@@ -207,16 +206,17 @@ module exec_shard
    assign csr_req_src    = csr_src;
    assign csr_req_pc     = ex_pc;
 
-   wire is_ecall  = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h000);
-   wire is_ebreak = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h001);
-   wire is_mret   = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h302);
-   wire [63:0] sys_target = (is_ecall | is_ebreak) ? csr_mtvec : csr_mepc;  // mret
-   // ONLY actual control transfers redirect. A plain CSR op (and wfi/sfence) mutates
-   // state at EX non-speculatively (it issues only when oldest) and falls through to
-   // pc+4 -- the correct path, already in flight -- so it needs no flush: any younger
-   // CSR reader is itself gated-to-oldest and will see the new value. (Avoids a flush
-   // per CSR write, which is also churn the recovery path would rather not take.)
-   wire sys_redirect = ex_v & (is_ecall | is_ebreak | is_mret);
+   // control-transfer system ops: ecall(0)/ebreak(1)/sret(0x102)/mret(0x302). Their
+   // redirect target is computed by csr_file (trap->m/stvec by delegation, xret->
+   // m/sepc). A plain CSR op (and wfi/sfence) does NOT redirect: it mutates state at
+   // EX non-speculatively (issues only when oldest) and falls through to pc+4 -- the
+   // correct path, already in flight -- so no flush is needed (younger CSR readers are
+   // themselves gated-to-oldest and will see the new value).
+   wire is_sysctl = ex_ser & ~ex_csr &
+        ((ex_imm[11:0]==12'h000) | (ex_imm[11:0]==12'h001) |
+         (ex_imm[11:0]==12'h102) | (ex_imm[11:0]==12'h302));
+   wire [63:0] sys_target = csr_redir_target;
+   wire sys_redirect = ex_v & is_sysctl;
 
    // busy = unit running OR an M-op in EX about to start it (so no second M-op is
    // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.

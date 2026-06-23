@@ -87,7 +87,7 @@ module exec_bundle
    always @(posedge clk) begin fw2v <= wbv; fw2p <= wbp; fw2d <= wbd; end
 
    // ---- CSR file (shared; one system op executes at a time -> single port) ----
-   wire [63:0]          csr_rdata, csr_mtvec, csr_mepc;
+   wire [63:0]          csr_rdata, csr_redir_target;
    wire [SHARDS-1:0]    csr_req_v, csr_req_is_csr;
    wire [SHARDS*3-1:0]  csr_req_func;
    wire [SHARDS*12-1:0] csr_req_addr, csr_rd_addr;
@@ -111,7 +111,7 @@ module exec_bundle
          .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
          .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
-         .csr_rdata(csr_rdata), .csr_mtvec(csr_mtvec), .csr_mepc(csr_mepc),
+         .csr_rdata(csr_rdata), .csr_redir_target(csr_redir_target),
          .csr_req_v(csr_req_v[i]), .csr_req_is_csr(csr_req_is_csr[i]),
          .csr_req_func(csr_req_func[i*3 +: 3]), .csr_req_addr(csr_req_addr[i*12 +: 12]),
          .csr_req_src(csr_req_src[i*64 +: 64]), .csr_req_pc(csr_req_pc[i*64 +: 64]),
@@ -145,7 +145,7 @@ module exec_bundle
    end
    csr_file u_csr
      (.clk(clk), .reset(reset),            // squash must NOT reset CSR state (only reset does)
-      .raddr(s_rdaddr), .rdata(csr_rdata), .mtvec_o(csr_mtvec), .mepc_o(csr_mepc),
+      .raddr(s_rdaddr), .rdata(csr_rdata), .redir_target(csr_redir_target),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));
 
