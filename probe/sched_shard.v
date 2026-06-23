@@ -42,6 +42,9 @@ module sched_shard
     input  wire [PBITS-1:0]        disp_ps1,
     input  wire [PBITS-1:0]        disp_ps2,
     input  wire [PBITS-1:0]        disp_ps3,      // 3rd operand (FMA); tied to p0 until FP
+    input  wire                    disp_rdy1,     // shared scoreboard read for each source
+    input  wire                    disp_rdy2,     // (ready[disp_psX], pre-edge) -- from
+    input  wire                    disp_rdy3,     // sched_bundle's single ready[] table
     input  wire [LATW-1:0]         disp_lat,
     input  wire [CBITS-1:0]        disp_ckpt,
     input  wire [MIDXW-1:0]        disp_mem_idx,
@@ -71,7 +74,10 @@ module sched_shard
     output wire [PAYW-1:0]         iss_pay);
 
    // -------------------------------------------------------------- state
-   reg              ready [0:NPHYS-1];        // per-phys value-present (read at DISPATCH only)
+   // The per-phys "value-present" scoreboard is SHARED across shards (it is bit-identical
+   // in every shard: same broadcasts, no per-shard write) -- it lives in sched_bundle and
+   // feeds each source's pre-read ready bit in via disp_rdy{1,2,3}. So this shard holds no
+   // 256-entry table; it only seeds new entries and CAM-wakes resident ones.
    reg              v   [0:N-1];
    reg [SEQW-1:0]   sq  [0:N-1];
    reg [PBITS-1:0]  pd  [0:N-1];
@@ -84,10 +90,7 @@ module sched_shard
    reg [PAYW-1:0]   py  [0:N-1];
 
    integer i, k;
-   initial begin
-      for (i = 0; i < NPHYS; i = i + 1) ready[i] = 1'b1;   // arch values present
-      for (i = 0; i < N;     i = i + 1) v[i]     = 1'b0;
-   end
+   initial for (i = 0; i < N; i = i + 1) v[i] = 1'b0;
 
    // ---------------------------------------- CAM wake match (tag vs result broadcast)
    function match;
@@ -165,18 +168,8 @@ module sched_shard
    integer s;
    always @(posedge clk) begin
       if (reset) begin
-         for (k = 0; k < NPHYS; k = k + 1) ready[k] <= 1'b1;
-         for (k = 0; k < N;     k = k + 1) v[k]     <= 1'b0;
+         for (k = 0; k < N; k = k + 1) v[k] <= 1'b0;
       end else begin
-         // ready table: wake sets, freshly dispatched dest clears (clear after set so a
-         // same-cycle clash leaves the new dest not-ready) -- read only at dispatch.
-         for (s = 0; s < WAKEN;  s = s + 1) if (wake_valid[s]) ready[wake_pr[s*PBITS +: PBITS]] <= 1'b1;
-         // p0 is the constant-zero reg: always ready, never a real dest -> never cleared
-         // (a non-writer's clr would target p0 only if pdst_v leaked; guard it regardless).
-         for (s = 0; s < SHARDS; s = s + 1)
-            if (clr_valid[s] && (clr_pr[s*PBITS +: PBITS] != {PBITS{1'b0}}))
-               ready[clr_pr[s*PBITS +: PBITS]] <= 1'b0;
-
          // CAM wakeup of live entries (catch a tag matching the result broadcast)
          for (k = 0; k < N; k = k + 1) if (v[k]) begin
             if (!r1[k] && match(s1[k])) r1[k] <= 1'b1;
@@ -195,10 +188,11 @@ module sched_shard
          // dispatch: write the new entry (overrides a same-cycle issue-free of this slot)
          if (disp_valid && disp_ready) begin
             // no per-operand "need" bit: a non-dependency arrives as p0 (constant zero,
-            // ready[0] hardwired below), so its seed is just ready & ~clr | wake.
-            seed1 = (ready[disp_ps1] & ~clr_hit(disp_ps1)) | match(disp_ps1);
-            seed2 = (ready[disp_ps2] & ~clr_hit(disp_ps2)) | match(disp_ps2);
-            seed3 = (ready[disp_ps3] & ~clr_hit(disp_ps3)) | match(disp_ps3);
+            // ready[0] hardwired in the shared table), so its seed is just ready & ~clr |
+            // wake. disp_rdyX is the shared scoreboard's pre-edge read of ready[disp_psX].
+            seed1 = (disp_rdy1 & ~clr_hit(disp_ps1)) | match(disp_ps1);
+            seed2 = (disp_rdy2 & ~clr_hit(disp_ps2)) | match(disp_ps2);
+            seed3 = (disp_rdy3 & ~clr_hit(disp_ps3)) | match(disp_ps3);
             v  [dst] <= 1'b1;
             sq [dst] <= disp_seq;
             pd [dst] <= disp_pdst;  pdv[dst] <= disp_pdst_v;

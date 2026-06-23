@@ -65,6 +65,33 @@ module sched_bundle
       assign clr_pr[i*PBITS +: PBITS] = disp_pdst[i*PBITS +: PBITS];
    end endgenerate
 
+   // --------------------------------------------- shared per-phys "value-present" scoreboard
+   // One table for the whole bundle: it is bit-identical in every shard (all see the same
+   // wake/clr broadcasts, no per-shard write), so it lived 4x replicated in the shards. Here
+   // it is single: wake sets, a freshly dispatched dest clears, p0 is never cleared. Each
+   // shard's three sources are pre-read combinationally and handed down (disp_rdy{1,2,3}).
+   reg              ready [0:NPHYS-1];
+   integer ix, ws, cs;
+   initial for (ix = 0; ix < NPHYS; ix = ix + 1) ready[ix] = 1'b1;   // arch values present
+   always @(posedge clk) begin
+      if (reset) for (ix = 0; ix < NPHYS; ix = ix + 1) ready[ix] <= 1'b1;
+      else begin
+         for (ws = 0; ws < WAKEN;  ws = ws + 1)
+            if (wake_valid[ws]) ready[wake_pr[ws*PBITS +: PBITS]] <= 1'b1;
+         // p0 is the constant-zero reg: always ready, never a real dest -> never cleared
+         // (a non-writer's clr would target p0 only if pdst_v leaked; guard it regardless).
+         for (cs = 0; cs < SHARDS; cs = cs + 1)
+            if (clr_valid[cs] && (clr_pr[cs*PBITS +: PBITS] != {PBITS{1'b0}}))
+               ready[clr_pr[cs*PBITS +: PBITS]] <= 1'b0;
+      end
+   end
+   wire [SHARDS-1:0] disp_rdy1, disp_rdy2, disp_rdy3;
+   generate for (i = 0; i < SHARDS; i = i + 1) begin : rdgen
+      assign disp_rdy1[i] = ready[disp_ps1[i*PBITS +: PBITS]];
+      assign disp_rdy2[i] = ready[disp_ps2[i*PBITS +: PBITS]];
+      assign disp_rdy3[i] = ready[disp_ps3[i*PBITS +: PBITS]];
+   end endgenerate
+
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       sched_shard #(.SHARDS(SHARDS), .SH(i), .NPHYS(NPHYS), .PBITS(PBITS),
                     .N(N), .NW(NW), .WAKEN(WAKEN), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS),
@@ -72,9 +99,9 @@ module sched_bundle
         (.clk(clk), .reset(reset),
          .disp_valid(disp_valid[i]), .disp_seq(disp_seq[i*SEQW +: SEQW]),
          .disp_pdst(disp_pdst[i*PBITS +: PBITS]), .disp_pdst_v(disp_pdst_v[i]),
-         .disp_ps1(disp_ps1[i*PBITS +: PBITS]),
-         .disp_ps2(disp_ps2[i*PBITS +: PBITS]),
-         .disp_ps3(disp_ps3[i*PBITS +: PBITS]),
+         .disp_ps1(disp_ps1[i*PBITS +: PBITS]), .disp_rdy1(disp_rdy1[i]),
+         .disp_ps2(disp_ps2[i*PBITS +: PBITS]), .disp_rdy2(disp_rdy2[i]),
+         .disp_ps3(disp_ps3[i*PBITS +: PBITS]), .disp_rdy3(disp_rdy3[i]),
          .disp_lat(disp_lat[i*LATW +: LATW]), .disp_ckpt(disp_ckpt[i*CBITS +: CBITS]),
          .disp_mem_idx(disp_mem_idx[i*MIDXW +: MIDXW]),
          .disp_pay(disp_pay[i*PAYW +: PAYW]),

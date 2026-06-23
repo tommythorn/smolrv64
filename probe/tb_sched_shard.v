@@ -31,13 +31,32 @@ module tb;
    wire [SHARDS-1:0]       wake_valid = {2'b00, sib_wake_v, (iss_valid & iss_pdst_v)};
    wire [SHARDS*PBITS-1:0] wake_pr    = {{2*PBITS{1'b0}}, sib_wake_pr, iss_pdst};
 
+   // the per-phys scoreboard now lives in sched_bundle; this unit test mirrors it to feed
+   // the shard's pre-read ready bits (disp_rdy*). Same logic: init 1, wake sets, dispatched
+   // dest clears, p0 never cleared. ps3 is tied to p0 here, so disp_rdy3 is always ready.
+   reg ready_m [0:NPHYS-1];
+   integer mi;
+   initial for (mi = 0; mi < NPHYS; mi = mi + 1) ready_m[mi] = 1'b1;
+   always @(posedge clk)
+      if (reset) for (mi = 0; mi < NPHYS; mi = mi + 1) ready_m[mi] <= 1'b1;
+      else begin
+         for (mi = 0; mi < SHARDS; mi = mi + 1)
+            if (wake_valid[mi]) ready_m[wake_pr[mi*PBITS +: PBITS]] <= 1'b1;
+         for (mi = 0; mi < SHARDS; mi = mi + 1)
+            if (clr_valid[mi] && (clr_pr[mi*PBITS +: PBITS] != 0))
+               ready_m[clr_pr[mi*PBITS +: PBITS]] <= 1'b0;
+      end
+   wire disp_rdy1 = ready_m[disp_ps1];
+   wire disp_rdy2 = ready_m[disp_ps2];
+   wire disp_rdy3 = ready_m[8'd0];
+
    sched_shard #(.SHARDS(SHARDS), .SH(0), .NPHYS(NPHYS), .PBITS(PBITS),
                  .N(N), .NW(NW), .SEQW(SEQW), .LATW(LATW)) dut
      (.clk(clk), .reset(reset),
       .disp_valid(disp_valid), .disp_seq(disp_seq), .disp_pdst(disp_pdst),
-      .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1),
-      .disp_ps2(disp_ps2),
-      .disp_ps3(8'd0), .disp_lat(disp_lat),
+      .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1), .disp_rdy1(disp_rdy1),
+      .disp_ps2(disp_ps2), .disp_rdy2(disp_rdy2),
+      .disp_ps3(8'd0), .disp_rdy3(disp_rdy3), .disp_lat(disp_lat),
       .disp_ready(disp_ready),
       .clr_valid(clr_valid), .clr_pr(clr_pr),
       .wake_valid(wake_valid), .wake_pr(wake_pr),
