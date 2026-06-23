@@ -36,7 +36,8 @@ module fetch
     output wire [IW-1:0]           slot_valid,
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
-    output wire [IW*SEQW-1:0]      seq);
+    output wire [IW*SEQW-1:0]      seq,
+    output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
 
    localparam PBW = $clog2(HW+2);
 
@@ -45,6 +46,7 @@ module fetch
    initial begin pc_q = RESET_PC; seq_q = 0; end
 
    assign imem_addr = pc_q;
+   assign cur_seq   = seq_q;
 
    wire [PBW-1:0] consumed;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al

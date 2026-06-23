@@ -110,17 +110,23 @@ module mmu
 
    wire hit_perm_fault = perm_fault({56'd0, tlb_perm[tlb_idx]}, req_access, priv, sum, mxr);
 
+   // the in-flight (or just-finished) walk is for va_q; only honor its result when the
+   // current request still matches (a redirect can change req_vaddr mid-walk -> the stale
+   // walk must not be reported against the new request).
+   wire req_match = (va_q == req_vaddr);
+
    // ---- combinational translation result ----
    // resolves this cycle on: Bare, non-canonical, a TLB hit, or a just-finished walk.
-   assign t_ready = req_valid & (!xlate | noncanon | tlb_hit | w_done);
-   assign t_paddr = w_done   ? w_paddr :
+   assign t_ready = req_valid & (!xlate | noncanon | tlb_hit | (w_done & req_match));
+   wire wdm = w_done & req_match;
+   assign t_paddr = wdm      ? w_paddr :
                     !xlate    ? req_vaddr[AW-1:0] :
                                 leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr);
-   assign t_fault = w_done ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
-   assign t_cause = w_done ? w_cause : pf_cause;
+   assign t_fault = wdm ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
+   assign t_cause = wdm ? w_cause : pf_cause;
 
    // start a walk when the request can't resolve this cycle
-   wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !w_done & (st==IDLE);
+   wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !wdm & (st==IDLE);
 
    // PTE address = (table_ppn << 12) | (vpn[lvl] << 3)
    wire [8:0] vpn_lvl = (lvl==2'd2) ? va_q[38:30] : (lvl==2'd1) ? va_q[29:21] : va_q[20:12];
@@ -139,8 +145,10 @@ module mmu
               va_q<=req_vaddr; acc_q<=req_access; prv_q<=priv; sum_q<=sum; mxr_q<=mxr;
               walk_ppn<=satp[43:0]; lvl<=2'd2; st<=REQ;
            end
-           REQ: begin ptw_addr<=pte_addr; ptw_read<=1'b1; st<=RCV; end
-           RCV: if (ptw_rvalid) begin
+           REQ: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
+                else begin ptw_addr<=pte_addr; ptw_read<=1'b1; st<=RCV; end
+           RCV: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
+                else if (ptw_rvalid) begin
               // ptw_rdata = the PTE
               if (!ptw_rdata[0] || (!ptw_rdata[1] && ptw_rdata[2])) begin
                  w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;   // invalid

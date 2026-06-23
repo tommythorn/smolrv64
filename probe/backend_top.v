@@ -86,8 +86,15 @@ module backend_top
    wire [SEQW-1:0]    eb_rseq;
    wire [CBITS-1:0]   eb_rckpt;
    wire               eb_rtrap;       // redirect is an exception (roll back TO its ckpt)
-   assign redirect        = eb_redirect;
-   assign redirect_target = eb_target;
+   // unified redirect: branch/csr (eb), fetch-fault (iflt), data-fault (dflt). roll_*
+   // drives the squash/rollback consumers (scheduler/LSU/commit/issue); fe_red_* drives
+   // the frontend PC. A fetch fault fires only when empty -> no squash/rollback needed.
+   wire               roll_v, fe_red_v;
+   wire [SEQW-1:0]    roll_seq, fe_red_seq;
+   wire [CBITS-1:0]   roll_ckpt;
+   wire [PCW-1:0]     fe_red_pc;
+   assign redirect        = fe_red_v;
+   assign redirect_target = fe_red_pc;
 
    // ---- frontend: fetch -> decode -> rename ----
    wire [IW-1:0]      r_valid, r_rd_v, r_is_branch, fe_stall;
@@ -169,11 +176,44 @@ module backend_top
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
 
+   // ---- precise page-fault trap injection ----
+   // A faulting fetch is the youngest in program order: stall fetch (imem_avail=0,
+   // already) and wait until every older op commits (cc_empty); then inject an external
+   // trap (epc=tval=faulting VA) into csr_file and redirect to the trap vector. A data
+   // (load/store) fault rolls back to the faulting checkpoint first, then injects with
+   // epc = that bundle's start PC (a checkpoint is atomic -> re-executing it is correct).
+   wire               cc_empty;
+   wire [SEQW-1:0]    fe_cur_seq;
+   wire               csr_redir_v;
+   wire [63:0]        csr_redir_tgt;
+   reg                pend_iflt;
+   reg  [63:0]        iflt_va;
+   reg  [3:0]         iflt_cause;
+   wire               iflt_fire;        // fetch-fault trap fires this cycle
+   initial pend_iflt = 1'b0;
+   always @(posedge clk) begin
+      if (reset) pend_iflt <= 1'b0;
+      else if (iflt_fire) pend_iflt <= 1'b0;
+      else if (immu_fault & ~pend_iflt) begin
+         pend_iflt <= 1'b1; iflt_va <= imem_va; iflt_cause <= immu_cause;
+      end
+   end
+   assign iflt_fire = pend_iflt & cc_empty;
+
+   // data-fault trap (declared below near the LSU); combined external-trap drive
+   wire               dflt_fire;
+   wire [3:0]         dflt_cause;
+   wire [63:0]        dflt_epc, dflt_tval;
+   wire               xtrap_v     = iflt_fire | dflt_fire;
+   wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : dflt_cause;
+   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : dflt_epc;
+   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;
+
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
-      .redirect(eb_redirect), .redirect_pc(eb_target),
-      .redirect_seq(eb_rseq + 1'b1),          // target continues seqno after the branch
+      .redirect(fe_red_v), .redirect_pc(fe_red_pc),
+      .redirect_seq(fe_red_seq),
       .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
@@ -181,7 +221,7 @@ module backend_top
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
       .r_is_branch(r_is_branch),
-      .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .stall(fe_stall));
+      .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .cur_seq(fe_cur_seq), .stall(fe_stall));
 
    // ---- scheduler bundle ----
    wire [IW-1:0]       iss_valid, iss_pdst_v;
@@ -212,7 +252,7 @@ module backend_top
       .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),
-      .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(busy_to_sched),
+      .squash(roll_v), .squash_seq(roll_seq), .exec_busy(busy_to_sched),
       .committed(cc_committed),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
@@ -248,7 +288,7 @@ module backend_top
    wire [IW-1:0]       iss_squashed;
    genvar gq;
    generate for (gq = 0; gq < IW; gq = gq + 1) begin : sq
-      assign iss_squashed[gq] = eb_redirect & ($signed(iss_seq[gq*SEQW +: SEQW] - eb_rseq) > 0);
+      assign iss_squashed[gq] = roll_v & ($signed(iss_seq[gq*SEQW +: SEQW] - roll_seq) > 0);
    end endgenerate
    integer qi;
    initial begin q_iss_valid = {IW{1'b0}}; end
@@ -304,14 +344,15 @@ module backend_top
    wire [SEQW-1:0]    lsu_dfault_seq;
    wire [CBITS-1:0]   lsu_dfault_ckpt;
    wire [3:0]         lsu_dfault_cause;
+   wire [AW-1:0]      lsu_dfault_tval;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
-      .redirect(eb_redirect), .redirect_ckpt(rb_idx),
-      .create(),
+      .redirect(roll_v), .redirect_ckpt(roll_ckpt),
+      .create(), .empty(cc_empty),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .committed_idx(cc_committed), .full(cc_full));
@@ -341,7 +382,7 @@ module backend_top
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2),
       .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),
-      .squash(eb_redirect), .squash_seq(eb_rseq),
+      .squash(roll_v), .squash_seq(roll_seq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
@@ -353,7 +394,10 @@ module backend_top
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
       .mmu_satp(mmu_satp), .mmu_priv(mmu_priv), .mmu_dpriv(mmu_dpriv),
-      .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush));
+      .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush),
+      .xtrap_v(xtrap_v), .xtrap_cause(xtrap_cause),
+      .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
+      .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
    // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
    wire [IW-1:0]      exe_st_v, exe_ld_v;
@@ -413,13 +457,42 @@ module backend_top
       .stp_rdata(stptw_rdata), .stp_rvalid(stptw_rvalid),
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
+      .dfault_tval(lsu_dfault_tval),
       .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
       .ld_wb_val(lsu_ld_wb_val), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
-      .rollback(eb_redirect), .rollback_seq(eb_rseq));
+      .rollback(roll_v), .rollback_seq(roll_seq));
+
+   // ---- per-checkpoint base PC/seq (precise data-fault trap epc + squash boundary) ----
+   reg  [PCW-1:0]  chk_pc  [0:NCHK-1];
+   reg  [SEQW-1:0] chk_seq [0:NCHK-1];
+   wire [PCW-1:0]  disp_base_pc = r_pay[`PAY_PC];   // slot-0 PC = the bundle's oldest op
+   always @(posedge clk) if (disp_fire) begin
+      chk_pc [cur] <= disp_base_pc;
+      chk_seq[cur] <= r_seq[SEQW-1:0];
+   end
+
+   // data page fault: the faulting load/store blocks commit -> trap once its checkpoint
+   // is the oldest live one (committed_idx). A checkpoint is atomic, so epc = its bundle
+   // start PC: after the handler maps the page and sret returns, the whole (annulled)
+   // bundle re-executes correctly. roll back the faulting checkpoint .. cur.
+   assign dflt_fire  = lsu_dfault_v & (cc_committed == lsu_dfault_ckpt) & ~iflt_fire;
+   assign dflt_cause = lsu_dfault_cause;
+   assign dflt_epc   = chk_pc[lsu_dfault_ckpt];
+   assign dflt_tval  = lsu_dfault_tval;
+
+   // unified redirect distribution
+   assign roll_v     = eb_redirect | dflt_fire;
+   assign roll_seq   = dflt_fire ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
+   assign roll_ckpt  = dflt_fire ? lsu_dfault_ckpt : rb_idx;
+   assign fe_red_v   = roll_v | iflt_fire;
+   assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt : eb_target;
+   assign fe_red_seq = iflt_fire ? fe_cur_seq
+                     : dflt_fire ? chk_seq[lsu_dfault_ckpt]
+                     : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;
    assign wb_pr    = wkp;

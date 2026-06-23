@@ -106,6 +106,7 @@ module lsu
     output wire [SEQW-1:0]        dfault_seq,
     output wire [CBITS-1:0]       dfault_ckpt,
     output wire [3:0]             dfault_cause,
+    output wire [AW-1:0]          dfault_tval, // faulting virtual address
 
     // ---- flat memory port (stub; real D$ later) ----
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
@@ -403,6 +404,7 @@ module lsu
    assign dfault_seq   = ld_xflt ? lq_seq[ld_sel] : sb_seq[dr_sel];
    assign dfault_ckpt  = ld_xflt ? lq_ck [ld_sel] : sb_ck [dr_sel];
    assign dfault_cause = ld_xflt ? ldx_cause      : stx_cause;
+   assign dfault_tval  = ld_xflt ? lq_addr[ld_sel] : sb_addr[dr_sel];
 
    always @(posedge clk) begin
       if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; end

@@ -90,6 +90,8 @@ module tb;
                   rd64({8'd0, ptw_addr}), dut.imem_va, dut.eb.u_csr.satp);
       ldptw_rvalid <= ldptw_read;
       if (ldptw_read) ldptw_rdata <= rd64({8'd0, ldptw_addr});
+      if (mmudbg && dmem_wen && dmem_waddr >= 64'h80004000 && dmem_waddr < 64'h8000a000)
+         $display("[%0t] PTwrite @%h data=%h mask=%b", $time, dmem_waddr, dmem_wdata, dmem_wmask);
       stptw_rvalid <= stptw_read;
       if (stptw_read) stptw_rdata <= rd64({8'd0, stptw_addr});
    end
@@ -121,6 +123,10 @@ module tb;
          if (commit) ncommit = ncommit + 1;
          if (trace && c>0 && (c % 100 == 0))
             $display("[%0d] commits=%0d pc=%h full=%b", c, ncommit, imem_addr, dut.cc_full);
+         if (mmudbg && dut.xtrap_v)
+            $display("[%0d] XTRAP cause=%0d epc=%h tval=%h -> %h (priv %0d)",
+                     c, dut.xtrap_cause, dut.xtrap_epc, dut.xtrap_tval,
+                     dut.csr_redir_tgt, dut.eb.u_csr.priv);
          if (trace) begin
             if (dut.eb_redirect)
                $display("[%0d] REDIRECT -> %h (seq %0d)", c, dut.eb_target, dut.eb_rseq);

@@ -30,6 +30,13 @@ module csr_file
     output wire        o_sum,         // mstatus.SUM
     output wire        o_mxr,         // mstatus.MXR
     output wire        o_tlb_flush,   // 1-cycle: sfence.vma or satp write -> flush TLBs
+    // ---- external trap injection (page faults from the iMMU/LSU; precise) ----
+    // Fired by backend_top once the fault is the oldest (fetch: pipeline empty; data:
+    // rolled back to the faulting checkpoint). Mutually exclusive with a system op.
+    input  wire        xtrap_v,
+    input  wire [3:0]  xtrap_cause,   // 12=instr / 13=load / 15=store page fault
+    input  wire [63:0] xtrap_epc,     // resume PC (faulting VA / faulting bundle start)
+    input  wire [63:0] xtrap_tval,    // faulting virtual address
     // single update (driven at EX by the oldest system op -> non-speculative)
     input  wire        upd_valid,
     input  wire        upd_is_csr,
@@ -146,15 +153,23 @@ module csr_file
    wire        exc_active = is_ecall | is_ebreak | csr_illegal;
    wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
    wire [63:0] exc_cause = csr_illegal ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
-   wire        exc_to_s  = exc_active & (priv != M) & medeleg[exc_cause[5:0]];
 
-   assign redir_valid   = upd_valid & (exc_active | is_mret | is_sret);
-   assign redir_is_trap = upd_valid & exc_active;   // ecall/ebreak/illegal-CSR (not xret)
+   // unified trap: a system-op exception OR an external (page-fault) injection
+   wire        trap_v     = (upd_valid & exc_active) | xtrap_v;
+   wire [63:0] trap_cause = xtrap_v ? {60'd0, xtrap_cause} : exc_cause;
+   wire [63:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;
+   wire [63:0] trap_tval  = xtrap_v ? xtrap_tval : (is_ebreak ? upd_pc : 64'd0);
+   wire        trap_to_s  = trap_v & (priv != M) & medeleg[trap_cause[5:0]];
+   wire        do_mret    = upd_valid & is_mret & ~trap_v;
+   wire        do_sret    = upd_valid & is_sret & ~trap_v;
+
+   assign redir_valid   = trap_v | do_mret | do_sret;
+   assign redir_is_trap = trap_v;                   // exception (not xret)
    // ---- redirect target (combinational) ----
    always @* begin
-      if (is_mret)              redir_target = mepc;
-      else if (is_sret)         redir_target = sepc;
-      else if (exc_to_s)        redir_target = {stvec[63:2], 2'b0};
+      if (do_mret)              redir_target = mepc;
+      else if (do_sret)         redir_target = sepc;
+      else if (trap_to_s)       redir_target = {stvec[63:2], 2'b0};
       else                      redir_target = {mtvec[63:2], 2'b0};
    end
 
@@ -167,25 +182,25 @@ module csr_file
          mie<=0; mip<=0; medeleg<=0; mideleg<=0; mcounteren<=0; satp<=0;
          pmpcfg0<=0; pmpaddr0<=0; mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
+      end else if (trap_v) begin
+         // trap (system-op exception OR external page fault); target priv per delegation
+         if (trap_to_s) begin
+            sepc   <= trap_epc;
+            scause <= trap_cause;
+            stval  <= trap_tval;
+            mstatus[SPIE_B] <= mstatus[SIE_B]; mstatus[SIE_B] <= 1'b0;
+            mstatus[SPP_B]  <= priv[0];
+            priv <= S;
+         end else begin
+            mepc   <= trap_epc;
+            mcause <= trap_cause;
+            mtval  <= trap_tval;
+            mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
+            mstatus[12:11]  <= priv;
+            priv <= M;
+         end
       end else if (upd_valid) begin
-         if (exc_active) begin
-            // trap (ecall/ebreak/illegal-CSR); target priv per delegation
-            if (exc_to_s) begin
-               sepc   <= upd_pc;
-               scause <= exc_cause;
-               stval  <= is_ebreak ? upd_pc : 64'd0;
-               mstatus[SPIE_B] <= mstatus[SIE_B]; mstatus[SIE_B] <= 1'b0;
-               mstatus[SPP_B]  <= priv[0];
-               priv <= S;
-            end else begin
-               mepc   <= upd_pc;
-               mcause <= exc_cause;
-               mtval  <= is_ebreak ? upd_pc : 64'd0;
-               mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
-               mstatus[12:11]  <= priv;
-               priv <= M;
-            end
-         end else if (upd_is_csr) begin
+         if (upd_is_csr) begin
             case (upd_addr)
               MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
               SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);

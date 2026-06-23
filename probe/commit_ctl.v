@@ -47,6 +47,7 @@ module commit_ctl
     output wire                  rollback,
     output wire [CBITS-1:0]      rollback_idx,
     output wire [CBITS-1:0]      committed_idx, // oldest live checkpoint (for serialize gating)
+    output wire                  empty,         // no instructions in flight (-> precise fetch trap)
     output wire                  full);         // ring full -> stall dispatch
 
    reg [CNTW-1:0]  count [0:NCHK-1];
@@ -68,6 +69,8 @@ module commit_ctl
    assign commit     = !redirect && (committed != cur) && (count[committed] == 0);
    assign commit_idx = committed;
    assign committed_idx = committed;
+   // empty = no live closed checkpoints AND the open one holds no outstanding ops.
+   assign empty = (committed == cur) && (count[committed] == {CNTW{1'b0}});
 
    // squashed checkpoints on rollback: [redirect_ckpt .. cur] inclusive
    reg [NCHK-1:0]  young;

@@ -60,6 +60,7 @@ module frontend
     output wire [IW*`PAYW-1:0]     r_pay,
     output wire [CBITS-1:0]        r_ckpt,
     output wire [CBITS-1:0]        cur,
+    output wire [SEQW-1:0]         cur_seq,     // fetch PC's seqno (for trap resume)
     output wire [IW-1:0]           stall);
 
    wire [IW-1:0]      f_slot_valid;
@@ -72,7 +73,7 @@ module frontend
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .imem_addr(imem_addr), .imem_data(imem_data),
       .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
-      .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq));
+      .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
 
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .AREGS(AREGS),
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),
