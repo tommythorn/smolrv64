@@ -130,6 +130,10 @@ module tb;
             $display("[%0d] DFAULT ckpt=%0d committed=%0d cause=%0d tval=%h fire=%b empty=%b",
                      c, dut.lsu_dfault_ckpt, dut.cc_committed, dut.lsu_dfault_cause,
                      dut.lsu_dfault_tval, dut.dflt_fire, dut.cc_empty);
+         if (mmudbg && dut.roll_v)
+            $display("[%0d] ROLL ckpt=%0d seq=%0d cur=%0d cmtd=%0d eb=%b dflt=%b iflt=%b full=%b",
+                     c, dut.roll_ckpt, dut.roll_seq, dut.cur, dut.cc_committed,
+                     dut.eb_redirect, dut.dflt_fire, dut.iflt_fire, dut.cc_full);
          if (mmudbg && dut.xtrap_v)
             $display("[%0d] XTRAP cause=%0d epc=%h tval=%h -> %h (priv %0d)",
                      c, dut.xtrap_cause, dut.xtrap_epc, dut.xtrap_tval,
