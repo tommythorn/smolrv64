@@ -73,7 +73,7 @@ module lsu
     input  wire [IW-1:0]          exe_ld_sgn,         // sign-extend the result
 
     // ---- flat memory port (stub; real D$ later) ----
-    output wire [AW-1:0]          mem_raddr,
+    output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
     output reg                    mem_wen,
     output reg  [AW-1:0]          mem_waddr,
@@ -185,8 +185,19 @@ module lsu
       older = ($signed(a - bb) < 0);
    endfunction
 
-   // -------------------- pick the load to execute -----------------------
-   // oldest valid, address-resolved, order-safe load (combinational scan).
+   // ====================== load pipeline: SELECT | MERGE ======================
+   // SELECT (combinational scan -> p_* register): pick the oldest order-safe load and
+   //   latch its {attrs, address}; issue mem_raddr (registered). The WB-lane is NOT
+   //   checked here -- it is checked one cycle later (MERGE), where wb_busy lines up with
+   //   the cycle this load actually writes back. So SELECT just picks the global oldest.
+   // MERGE (combinational from p_* + the now-valid mem_rdata -> r_* register): byte-merge
+   //   memory with the store buffer; commit to the WB register only when the owner lane is
+   //   free next cycle. If busy, STALL (hold p_*/mem_raddr, retry) -- correct because
+   //   wb_busy is always next-cycle and a fire always writes back next cycle.
+   // Net: load-use latency +1 vs the single-stage merge; this is the shape a synchronous
+   //   D$ wants (address out -> 1 cycle -> data back).
+
+   // -------------------------- SELECT (scan) --------------------------
    reg            ld_sel_v;
    reg [LQI-1:0]  ld_sel;
    reg [SEQW-1:0] ld_best;
@@ -194,16 +205,10 @@ module lsu
    always @* begin
       ld_sel_v = 1'b0; ld_sel = {LQI{1'b0}}; ld_best = {SEQW{1'b0}};
       for (i = 0; i < LQDEPTH; i = i + 1) begin
-         // owner lane free, AND not squashed this cycle: a wrong-path load (seq newer
-         // than the branch's rollback_seq) must not complete even in the squash cycle
-         // itself -- the lq_v clear only lands at the next edge, so without this gate a
-         // squashed load could combinationally assert ld_wb_v (RF write / wake) and
-         // ld_done (a spurious commit_ctl decrement). A correct-path older load is not
-         // gated and still completes normally.
-         if (lq_v[i] && lq_rdy[i] && !wb_busy[lq_own[i]]
-             && !(rollback && older(rollback_seq, lq_seq[i]))) begin
-            // order-safe? no older unfilled store
-            blocked = 1'b0;
+         // not squashed this cycle: a wrong-path load (seq newer than the branch's
+         // rollback_seq) must not be selected even in the squash cycle itself.
+         if (lq_v[i] && lq_rdy[i] && !(rollback && older(rollback_seq, lq_seq[i]))) begin
+            blocked = 1'b0;          // order-safe? no older unfilled store
             for (j = 0; j < SBDEPTH; j = j + 1)
                if (sb_v[j] && !sb_rdy[j] && older(sb_seq[j], lq_seq[i])) blocked = 1'b1;
             if (!blocked && (!ld_sel_v || older(lq_seq[i], ld_best))) begin
@@ -213,46 +218,65 @@ module lsu
       end
    end
 
-   // -------------------- byte-granular forward merge --------------------
-   wire [AW-1:0] la = lq_addr[ld_sel];
-   assign mem_raddr = la;
+   // ------------------- MERGE-stage register (p_*) --------------------
+   reg            p_v;
+   reg [PBITS-1:0] p_pdst;
+   reg [SBITS-1:0] p_owner;
+   reg [SEQW-1:0] p_seq;
+   reg [CBITS-1:0] p_ck;
+   reg [3:0]      p_nb;
+   reg            p_sgn;
+   reg [WW-1:0]   p_w0, p_w1;
+   reg [2:0]      p_lb;
+   initial p_v = 1'b0;
 
-   // combinational byte-merge (memory ∪ youngest-older-store/byte) -> the c_* result,
-   // which is FLOPPED below. The byte-merge is thus its own pipeline stage; nothing
-   // combinational from the LSU reaches the writeback/RF-write/forwarding path.
-   //
-   // The selected load is reduced (at fill) to {w0,w1,lb}. For load byte mb the absolute
+   // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
+   // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.
+   wire merge_squash = rollback & older(rollback_seq, p_seq);
+   wire merge_fire   = p_v & ~wb_busy[p_owner] & ~merge_squash;
+   wire merge_drop   = p_v & merge_squash;
+   wire merge_adv    = ~p_v | merge_fire | merge_drop;   // MERGE stage empties next cycle
+   wire sel_fire     = merge_adv & ld_sel_v;             // SELECT may hand a load to MERGE
+
+   always @(posedge clk) begin
+      if (reset) p_v <= 1'b0;
+      else if (sel_fire) begin
+         p_v <= 1'b1;
+         p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
+         p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
+         p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
+         p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
+         mem_raddr <= lq_addr[ld_sel];
+      end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
+   end
+
+   // ----------------------- MERGE (byte merge) -----------------------
+   // The held load (p_*) is reduced (at fill) to {w0,w1,lb}. For load byte mb the absolute
    // position is lb+mb, which falls in word lwb (= w0 or w1) at byte lane `posw`. A store
    // covers that byte iff one of its two words equals lwb and the matching per-word mask
    // bit is set -- both are EQUALITY tests (no carry chain). Youngest older store wins.
    reg [63:0]     m_mrg;
    reg [7:0]      m_byt;
    reg            m_fwd, m_c0, m_c1;
-   reg [SEQW-1:0] m_bseq, m_lsq;
-   reg [3:0]      m_nb, m_lp;
+   reg [SEQW-1:0] m_bseq;
+   reg [3:0]      m_lp;
    reg [2:0]      m_posw;
    reg [WW-1:0]   m_lwb;
    reg [SBDEPTH-1:0] s_use;        // store is valid+ready+older-than-load (byte-independent)
    integer        mb, mj;
-   reg            c_v;
    reg [63:0]     c_val;
-   wire [WW-1:0]  lw0 = lq_w0[ld_sel];
-   wire [WW-1:0]  lw1 = lq_w1[ld_sel];
-   wire [2:0]     llb = lq_lb[ld_sel];
    always @* begin
-      m_lsq = lq_seq[ld_sel];
-      m_nb  = lq_nb [ld_sel];
       m_mrg = 64'd0;
       // hoist the per-store "older than this load" seqno compare out of the byte loop
       // (it does not depend on the byte) -- one 8-bit compare/store, not 8.
       for (mj = 0; mj < SBDEPTH; mj = mj + 1)
-         s_use[mj] = sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0);
+         s_use[mj] = sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - p_seq) < 0);
       for (mb = 0; mb < 8; mb = mb + 1) begin
-         m_lp   = {1'b0, llb} + mb[3:0];               // 0..14 (no big carry: 3b + const)
+         m_lp   = {1'b0, p_lb} + mb[3:0];              // 0..14 (no big carry: 3b + const)
          m_posw = m_lp[2:0];
-         m_lwb  = m_lp[3] ? lw1 : lw0;                 // which word this load byte is in
+         m_lwb  = m_lp[3] ? p_w1 : p_w0;               // which word this load byte is in
          m_fwd  = 1'b0; m_bseq = {SEQW{1'b0}};
-         m_byt  = mem_rdata[mb*8 +: 8];                // default: memory (read @ la, byte mb)
+         m_byt  = mem_rdata[mb*8 +: 8];                // default: memory (read @ mem_raddr)
          for (mj = 0; mj < SBDEPTH; mj = mj + 1) begin
             m_c0 = s_use[mj] && (sb_w0[mj] == m_lwb) && sb_be0[mj][m_posw];
             m_c1 = s_use[mj] && (sb_w1[mj] == m_lwb) && sb_be1[mj][m_posw];
@@ -264,14 +288,13 @@ module lsu
          end
          m_mrg[mb*8 +: 8] = m_byt;
       end
-      c_v   = ld_sel_v;
-      c_val = (m_nb==4'd1) ? (lq_sgn[ld_sel] ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
-            : (m_nb==4'd2) ? (lq_sgn[ld_sel] ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
-            : (m_nb==4'd4) ? (lq_sgn[ld_sel] ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
+      c_val = (p_nb==4'd1) ? (p_sgn ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
+            : (p_nb==4'd2) ? (p_sgn ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
+            : (p_nb==4'd4) ? (p_sgn ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
             : m_mrg;
    end
 
-   // ---- writeback register (the byte-merge result, flopped) ----
+   // ---- writeback register (the byte-merge result, flopped; fires when lane free) ----
    reg            r_v;
    reg [PBITS-1:0] r_pdst;
    reg [SBITS-1:0] r_owner;
@@ -282,16 +305,13 @@ module lsu
    always @(posedge clk) begin
       if (reset) r_v <= 1'b0;
       else begin
-         r_v     <= c_v;
-         r_pdst  <= lq_pd [ld_sel];
-         r_owner <= lq_own[ld_sel];
-         r_val   <= c_val;
-         r_seq   <= lq_seq[ld_sel];
-         r_ck    <= lq_ck [ld_sel];
+         r_v     <= merge_fire;
+         r_pdst  <= p_pdst;  r_owner <= p_owner;
+         r_val   <= c_val;   r_seq   <= p_seq;  r_ck <= p_ck;
       end
    end
-   // present the registered result; a rollback that squashes this load (now out of the
-   // LQ) the cycle it would write back suppresses it.
+   // present the registered result; a rollback that squashes this load the cycle it would
+   // write back suppresses it (the MERGE-stage squash covers the cycle before).
    wire r_kill = rollback & older(rollback_seq, r_seq);
    assign ld_wb_v      = r_v & ~r_kill;
    assign ld_wb_pdst   = r_pdst;
@@ -390,9 +410,9 @@ module lsu
             end
          end
 
-         // (3) load completion is combinational (ld_wb_*/ld_done above); here we
-         //     just free the LQ entry of the load that completed this cycle.
-         if (ld_sel_v) lq_v[ld_sel] <= 1'b0;
+         // (3) the selected load advances into the MERGE stage (p_*) -- free its LQ entry
+         //     when SELECT fires (it then lives in the pipeline, not the queue).
+         if (sel_fire) lq_v[ld_sel] <= 1'b0;
 
          // (4) commit: mark this checkpoint's stores drainable
          if (commit)
