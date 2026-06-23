@@ -23,6 +23,13 @@ module csr_file
     output wire        redir_valid,   // this op redirects (trap / xret / illegal-CSR)
     output wire        redir_is_trap, // redirect is an exception (roll back TO this op's ckpt)
     output wire        csr_illegal,   // active CSR op is an illegal access (suppress rd)
+    // ---- translation context for the iMMU/dMMU (combinational) ----
+    output wire [63:0] o_satp,        // satp (MODE/ASID/PPN)
+    output wire [1:0]  o_priv,        // current privilege (instruction-fetch priv)
+    output wire [1:0]  o_dpriv,       // effective data-access priv (honors MPRV/MPP)
+    output wire        o_sum,         // mstatus.SUM
+    output wire        o_mxr,         // mstatus.MXR
+    output wire        o_tlb_flush,   // 1-cycle: sfence.vma or satp write -> flush TLBs
     // single update (driven at EX by the oldest system op -> non-speculative)
     input  wire        upd_valid,
     input  wire        upd_is_csr,
@@ -116,6 +123,17 @@ module csr_file
    wire is_ebreak = ~upd_is_csr & (upd_addr == OP_EBREAK);
    wire is_mret   = ~upd_is_csr & (upd_addr == OP_MRET);
    wire is_sret   = ~upd_is_csr & (upd_addr == OP_SRET);
+   // sfence.vma: SYSTEM funct3==0 with funct7==9 (imm[11:5]==7'h09); flush the TLBs
+   wire is_sfence = ~upd_is_csr & (upd_addr[11:5] == 7'h09);
+
+   // ---- translation context (consumed by the iMMU/dMMU) ----
+   // effective data privilege honors MPRV: when set, accesses use MPP (mstatus[12:11]).
+   assign o_satp      = satp;
+   assign o_priv      = priv;
+   assign o_dpriv     = mstatus[17] ? mstatus[12:11] : priv;
+   assign o_sum       = mstatus[18];
+   assign o_mxr       = mstatus[19];
+   assign o_tlb_flush = upd_valid & (is_sfence | (upd_is_csr & (upd_addr == SATP)));
 
    // illegal CSR access: writing a read-only CSR (addr[11:10]==11 & the op writes), or
    // accessing a CSR that needs higher privilege than current (addr[9:8] > priv).

@@ -64,7 +64,14 @@ module exec_bundle
     output reg  [63:0]             redirect_target,
     output reg  [SEQW-1:0]         redirect_seq,
     output reg  [CBITS-1:0]        redirect_ckpt,
-    output reg                     redirect_is_trap);  // exception -> roll back TO ckpt (not +1)
+    output reg                     redirect_is_trap,   // exception -> roll back TO ckpt (not +1)
+    // ---- translation context passed out to the iMMU/dMMU ----
+    output wire [63:0]             mmu_satp,
+    output wire [1:0]              mmu_priv,
+    output wire [1:0]              mmu_dpriv,
+    output wire                    mmu_sum,
+    output wire                    mmu_mxr,
+    output wire                    mmu_flush);
 
    wire [SHARDS-1:0]       wbv;          // per-shard registered ALU/M writeback valid
    wire [SHARDS*PBITS-1:0] wbp;
@@ -160,6 +167,8 @@ module exec_bundle
      (.clk(clk), .reset(reset),            // squash must NOT reset CSR state (only reset does)
       .raddr(s_rdaddr), .rdata(csr_rdata), .redir_target(csr_redir_target),
       .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
+      .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
+      .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));
 

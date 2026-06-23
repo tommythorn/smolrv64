@@ -55,6 +55,12 @@ module backend_top
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
+    // page-table-walker memory port (registered read; serves the iMMU's TLB misses).
+    // Unused in Bare mode (satp.MODE=0) -> may float in the simpler testbenches.
+    output wire [55:0]             ptw_addr,
+    output wire                    ptw_read,
+    input  wire [63:0]             ptw_rdata,
+    input  wire                    ptw_rvalid,
     // observation: per-shard writeback + the branch redirect
     output wire [IW-1:0]           wb_valid,
     output wire [IW*PBITS-1:0]     wb_pr,
@@ -126,12 +132,35 @@ module backend_top
    // and its rd allocation annulled -- precise trap.
    wire [CBITS-1:0]   rb_idx = eb_rtrap ? eb_rckpt : (eb_rckpt + 1'b1);
 
+   // ---- instruction-side translation (iMMU): fetch emits a VA; translate to a PA ----
+   // Bare mode (satp.MODE=0) is a zero-latency identity passthrough; under Sv39 a TLB
+   // hit also resolves combinationally, while a miss forces imem_avail=0 (fetch bubbles)
+   // until the PTW fills the TLB. A fetch page fault stalls for now (precise fetch-fault
+   // wiring is a later increment; the -v happy path never fetch-faults).
+   wire [PCW-1:0]                imem_va;
+   wire [55:0]                   immu_pa;
+   wire                          immu_ready, immu_fault;
+   wire [3:0]                    immu_cause;
+   wire [63:0]                   mmu_satp;
+   wire [1:0]                    mmu_priv, mmu_dpriv;
+   wire                          mmu_sum, mmu_mxr, mmu_flush;
+   wire [$clog2(HW+2)-1:0]       imem_avail_g = (immu_ready & ~immu_fault) ? imem_avail
+                                                                           : {$clog2(HW+2){1'b0}};
+   assign imem_addr = {8'd0, immu_pa};
+
+   mmu #(.AW(56)) u_immu
+     (.clk(clk), .reset(reset),
+      .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
+      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(mmu_satp), .flush(mmu_flush),
+      .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
+      .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
+
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(eb_redirect), .redirect_pc(eb_target),
       .redirect_seq(eb_rseq + 1'b1),          // target continues seqno after the branch
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
+      .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
@@ -303,7 +332,9 @@ module backend_top
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .redirect(eb_redirect), .redirect_target(eb_target),
-      .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap));
+      .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
+      .mmu_satp(mmu_satp), .mmu_priv(mmu_priv), .mmu_dpriv(mmu_dpriv),
+      .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush));
 
    // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
    wire [IW-1:0]      exe_st_v, exe_ld_v;
