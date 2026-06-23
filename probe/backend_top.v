@@ -36,9 +36,9 @@ module backend_top
     parameter CNTW  = 3,         // per-checkpoint outstanding count width
     parameter SBITS = 2,         // clog2(IW) -- owner-shard id width
     parameter AW    = 64,
-    parameter SBDEPTH= 8, parameter SBI = 3,
-    parameter LQDEPTH= 8, parameter LQI = 3,
-    parameter MIDXW = 3,         // = max(SBI, LQI)
+    parameter SBDEPTH= 4, parameter SBI = 2,   // small store buffer -> shallow byte-merge
+    parameter LQDEPTH= 4, parameter LQI = 2,
+    parameter MIDXW = 2,         // = max(SBI, LQI)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
