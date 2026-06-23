@@ -26,10 +26,10 @@ module tb;
    wire                dmem_wen;
    wire [63:0]         dmem_waddr, dmem_wdata;
    wire [7:0]          dmem_wmask;
-   wire [55:0]         ptw_addr;
-   wire                ptw_read;
-   reg  [63:0]         ptw_rdata;
-   reg                 ptw_rvalid;
+   wire [55:0]         ptw_addr, ldptw_addr, stptw_addr;
+   wire                ptw_read, ldptw_read, stptw_read;
+   reg  [63:0]         ptw_rdata, ldptw_rdata, stptw_rdata;
+   reg                 ptw_rvalid, ldptw_rvalid, stptw_rvalid;
    wire [IW-1:0]       wb_valid;
    wire [IW*PBITS-1:0] wb_pr;
    wire [IW*64-1:0]    wb_val;
@@ -45,6 +45,10 @@ module tb;
       .dmem_wmask(dmem_wmask),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
+      .ldptw_addr(ldptw_addr), .ldptw_read(ldptw_read),
+      .ldptw_rdata(ldptw_rdata), .ldptw_rvalid(ldptw_rvalid),
+      .stptw_addr(stptw_addr), .stptw_read(stptw_read),
+      .stptw_rdata(stptw_rdata), .stptw_rvalid(stptw_rvalid),
       .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
       .redirect(redirect), .redirect_target(redirect_target),
       .commit(commit), .commit_idx());
@@ -74,10 +78,16 @@ module tb;
    end
    always @(dmem_raddr or wtick) dmem_rdata = rd64(dmem_raddr);
 
-   // page-table-walker port: registered read of a PTE from physical memory
+   // page-table-walker ports (iMMU + load dMMU + store/amo dMMU): each a registered
+   // read of a PTE from physical memory. Independent ports (walks are rare; real HW
+   // would arbitrate one cache port -- not needed for the probe).
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;
       if (ptw_read) ptw_rdata <= rd64({8'd0, ptw_addr});
+      ldptw_rvalid <= ldptw_read;
+      if (ldptw_read) ldptw_rdata <= rd64({8'd0, ldptw_addr});
+      stptw_rvalid <= stptw_read;
+      if (stptw_read) stptw_rdata <= rd64({8'd0, stptw_addr});
    end
 
    // ---- exit monitor ----
@@ -90,7 +100,7 @@ module tb;
    initial begin
       tohost = 64'h8000_1000;
       ncyc   = 200000;
-      ptw_rvalid = 1'b0;
+      ptw_rvalid = 1'b0; ldptw_rvalid = 1'b0; stptw_rvalid = 1'b0;
       if (!$value$plusargs("hex=%s", hexfile)) begin
          $display("FATAL: need +hex=<file>"); $finish;
       end

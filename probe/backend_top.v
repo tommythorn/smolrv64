@@ -61,6 +61,15 @@ module backend_top
     output wire                    ptw_read,
     input  wire [63:0]             ptw_rdata,
     input  wire                    ptw_rvalid,
+    // data-side PTW ports (load path + store/amo path); also float in Bare-mode TBs
+    output wire [55:0]             ldptw_addr,
+    output wire                    ldptw_read,
+    input  wire [63:0]             ldptw_rdata,
+    input  wire                    ldptw_rvalid,
+    output wire [55:0]             stptw_addr,
+    output wire                    stptw_read,
+    input  wire [63:0]             stptw_rdata,
+    input  wire                    stptw_rvalid,
     // observation: per-shard writeback + the branch redirect
     output wire [IW-1:0]           wb_valid,
     output wire [IW*PBITS-1:0]     wb_pr,
@@ -285,6 +294,11 @@ module backend_top
    // ---- commit control: count by completion (loads at LSU), commit in order ----
    wire               lsu_ld_done;
    wire [CBITS-1:0]   lsu_ld_done_ckpt;
+   // ---- data page-fault report from the LSU (-> precise trap, below) ----
+   wire               lsu_dfault_v;
+   wire [SEQW-1:0]    lsu_dfault_seq;
+   wire [CBITS-1:0]   lsu_dfault_ckpt;
+   wire [3:0]         lsu_dfault_cause;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
@@ -386,6 +400,14 @@ module backend_top
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
       .amo_sz(amo_sz), .amo_pdst(amo_pdst), .amo_owner(amo_owner), .amo_ckpt(amo_ckpt),
+      .xl_satp(mmu_satp), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
+      .xl_flush(mmu_flush),
+      .ldp_addr(ldptw_addr), .ldp_read(ldptw_read),
+      .ldp_rdata(ldptw_rdata), .ldp_rvalid(ldptw_rvalid),
+      .stp_addr(stptw_addr), .stp_read(stptw_read),
+      .stp_rdata(stptw_rdata), .stp_rvalid(stptw_rvalid),
+      .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
+      .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .wb_busy(eb_wb_busy),

@@ -82,6 +82,31 @@ module lsu
     input  wire [SBITS-1:0]       amo_owner,
     input  wire [CBITS-1:0]       amo_ckpt,
 
+    // ---- address translation (dTLB); Bare (satp.MODE=0) = identity bypass ----
+    // Translation happens at the memory-access boundaries (load SELECT, store drain,
+    // AMO), not at fill -- one access per port/cycle, each with a stall hook. Ordering
+    // + forwarding stay in VA space (no aliasing in tests); only mem_raddr/mem_waddr
+    // become physical. Two single-port walkers (load path; store+amo path -- those two
+    // never overlap, since an AMO's A_WAIT waits for all stores to drain first).
+    input  wire [63:0]            xl_satp,
+    input  wire [1:0]             xl_priv,     // effective data priv (MPRV-resolved)
+    input  wire                   xl_sum,
+    input  wire                   xl_mxr,
+    input  wire                   xl_flush,
+    output wire [55:0]            ldp_addr,    // load-path PTW memory port
+    output wire                   ldp_read,
+    input  wire [63:0]            ldp_rdata,
+    input  wire                   ldp_rvalid,
+    output wire [55:0]            stp_addr,    // store/amo-path PTW memory port
+    output wire                   stp_read,
+    input  wire [63:0]            stp_rdata,
+    input  wire                   stp_rvalid,
+    // ---- data page-fault report (precise: rolls back to the faulting op's ckpt) ----
+    output wire                   dfault_v,    // a load/store/amo page-faults this cycle
+    output wire [SEQW-1:0]        dfault_seq,
+    output wire [CBITS-1:0]       dfault_ckpt,
+    output wire [3:0]             dfault_cause,
+
     // ---- flat memory port (stub; real D$ later) ----
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
@@ -246,11 +271,30 @@ module lsu
    reg [AW-1:0]     a_addr;  reg [63:0] a_data;  reg [4:0] a_func;  reg [1:0] a_sz;
    reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;
    reg [63:0]       a_rdval_q;
+   reg [AW-1:0]     a_wpa;                             // translated (aligned) AMO phys addr
    reg              rsv_v;   reg [WW-1:0] rsv_w;       // LR/SC reservation (word granularity)
    // registered AMO writeback (1-cycle pulse) -- aligns with wb_busy like a load's r_*
    reg              amo_wbv;
    reg [PBITS-1:0]  amo_wbpd;  reg [SBITS-1:0] amo_wbow;  reg [63:0] amo_wbvl;  reg [CBITS-1:0] amo_wbck;
    initial begin ast = A_IDLE; rsv_v = 1'b0; amo_wbv = 1'b0; end
+
+   // ===================== address translation (dTLB) =====================
+   wire xlate = (xl_satp[63:60] == 4'd8);   // Sv39 on; else Bare identity bypass
+
+   // load-path walker: translate the selected load's VA. A miss holds sel_fire off
+   // (the load stays in the LQ) while the PTW walks; the fill makes it hit next cycle.
+   wire        ldx_ready, ldx_fault;
+   wire [55:0] ldx_pa;
+   wire [3:0]  ldx_cause;
+   mmu #(.AW(56)) u_ldmmu
+     (.clk(clk), .reset(reset),
+      .req_valid(ld_sel_v & xlate), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
+      .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
+      .ptw_addr(ldp_addr), .ptw_read(ldp_read), .ptw_rdata(ldp_rdata), .ptw_rvalid(ldp_rvalid),
+      .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause));
+   wire          ld_xok = ~xlate | (ldx_ready & ~ldx_fault);
+   wire          ld_xflt = xlate & ldx_ready & ldx_fault;          // selected load page-faults
+   wire [AW-1:0] ld_pa  = xlate ? {{(AW-56){1'b0}}, ldx_pa} : lq_addr[ld_sel];
 
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
    // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.
@@ -262,7 +306,7 @@ module lsu
    // selection while the atomic FSM is busy (ast != A_IDLE) OR an atomic is arriving this
    // cycle (~amo_v). The latter keeps any load out of the MERGE stage during the atomic, so
    // a load's ld_done never collides with the atomic's (single completion port).
-   wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v;
+   wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok;
 
    // ====================== atomic (A ext) FSM ======================
    // Atomics are serialized + solo (issue only when oldest), so when one executes every
@@ -330,6 +374,36 @@ module lsu
       for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
    end
 
+   // store/amo-path walker. Drain and AMO never overlap: an AMO's A_WAIT waits for all
+   // committed stores to drain, so amo_need_xl => no committed store => dr_v==0. On a
+   // miss the drain (or AMO) stalls (no memory write; the FSM holds) while the PTW walks.
+   wire amo_need_xl = (ast == A_WAIT) & ~amo_pend & ~p_v;   // about to read the RMW location
+   wire        stx_ready, stx_fault;
+   wire [55:0] stx_pa;
+   wire [3:0]  stx_cause;
+   mmu #(.AW(56)) u_stmmu
+     (.clk(clk), .reset(reset),
+      .req_valid(xlate & (amo_need_xl | dr_v)),
+      .req_vaddr(amo_need_xl ? a_addr : sb_addr[dr_sel]),
+      .req_access(amo_need_xl ? 2'd3 : 2'd2),
+      .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
+      .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
+      .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause));
+   wire          st_xok    = ~xlate | (stx_ready & ~stx_fault);   // drain ok (valid when ~amo_need_xl)
+   wire          st_xflt   = xlate & ~amo_need_xl & dr_v & stx_ready & stx_fault;
+   wire          amo_xok   = ~xlate | (stx_ready & ~stx_fault);   // amo ok (valid when amo_need_xl)
+   wire          amo_xflt  = xlate & amo_need_xl & stx_ready & stx_fault;
+   wire [AW-1:0] st_pa     = xlate ? {{(AW-56){1'b0}}, stx_pa} : sb_addr[dr_sel];
+   wire [AW-1:0] amo_pa_al = xlate ? (({{(AW-56){1'b0}}, stx_pa}) & ~{{(AW-3){1'b0}}, 3'b111})
+                                   : a_waddr;
+
+   // data page-fault report -> backend_top injects a precise trap (rolls back to the
+   // faulting op's checkpoint). Load takes priority over a store drain.
+   assign dfault_v     = ld_xflt | st_xflt;
+   assign dfault_seq   = ld_xflt ? lq_seq[ld_sel] : sb_seq[dr_sel];
+   assign dfault_ckpt  = ld_xflt ? lq_ck [ld_sel] : sb_ck [dr_sel];
+   assign dfault_cause = ld_xflt ? ldx_cause      : stx_cause;
+
    always @(posedge clk) begin
       if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; end
       else begin
@@ -340,7 +414,7 @@ module lsu
             p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
             p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
             p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
-            mem_raddr <= lq_addr[ld_sel];
+            mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
          end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
 
          // ---- atomic FSM (solo: never overlaps a load's mem_raddr/p_*) ----
@@ -349,7 +423,9 @@ module lsu
                       a_addr<=amo_addr; a_data<=amo_data; a_func<=amo_func; a_sz<=amo_sz;
                       a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; ast<=A_WAIT;
                    end
-           A_WAIT: if (!amo_pend && !p_v) begin mem_raddr <= a_waddr; ast<=A_RD; end  // older stores drained, load pipe empty
+           A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
+                      mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; ast<=A_RD;
+                   end
            A_RD:   begin a_rdval_q <= a_rdval; ast<=A_WB;     // memory write driven below (amo_wr_now)
                       if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
                       if (a_issc) rsv_v<=1'b0;
@@ -442,12 +518,12 @@ module lsu
    always @* begin
       if (amo_wr_now) begin                 // atomic RMW write (solo -> no drain conflict)
          mem_wen   = 1'b1;
-         mem_waddr = a_waddr;
+         mem_waddr = a_wpa;                  // translated (aligned) physical address
          mem_wdata = a_wdata;
          mem_wmask = a_wmask;
       end else begin
-         mem_wen   = dr_v;
-         mem_waddr = sb_addr[dr_sel];
+         mem_wen   = dr_v & st_xok;          // hold the write while a store-drain xlate walks
+         mem_waddr = st_pa;                  // physical address (Bare: == VA)
          mem_wdata = sb_data[dr_sel];
          mem_wmask = dr_mask;
       end
@@ -528,8 +604,8 @@ module lsu
             for (i = 0; i < SBDEPTH; i = i + 1)
                if (sb_v[i] && (sb_ck[i] == commit_idx)) sb_cmt[i] <= 1'b1;
 
-         // (5) drain: retire the selected store from the buffer
-         if (dr_v) sb_v[dr_sel] <= 1'b0;
+         // (5) drain: retire the selected store from the buffer (only once translated)
+         if (dr_v & st_xok) sb_v[dr_sel] <= 1'b0;
 
          // (6) rollback: squash wrong-path entries (newer than the branch)
          if (rollback) begin
