@@ -149,11 +149,12 @@ module decode_exec
         5'b11100: begin // SYSTEM
            if (f3==3'b000) is_serialize=1;                              // ECALL/EBREAK/xRET/SFENCE/WFI
            else if (f3==3'b100) illegal=1;                              // reserved
-           else begin is_csr=1; csr_func=f3;                            // CSRRW/S/C (+imm)
-                      // CSR write side-effect (RW always; RS/RC when rs1!=x0) serializes
-                      if (f3[1:0]==2'b01 || insn[19:15]!=5'b0) is_serialize=1; end
+           else begin is_csr=1; csr_func=f3; is_serialize=1; end        // CSRRW/S/C (+imm)
+                      // every CSR op serializes (issues only when oldest) -- simplest
+                      // correct rule; a read-only CSR is rare enough that the drain is free
         end
-        5'b00011: is_serialize=1;                                       // MISC-MEM (FENCE/FENCE.I)
+        5'b00011: ;                                                    // MISC-MEM (FENCE/FENCE.I): NOP
+                                                                       // (single hart, in-order commit -> a memory/instr barrier is free)
 
         5'b01011: is_amo=1;                                             // AMO (deferred, LSU)
         5'b10100: is_fp=1;                                              // OP-FP (deferred)

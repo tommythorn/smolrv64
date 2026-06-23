@@ -48,9 +48,23 @@ module exec_shard
     input  wire                    is_branch,
     input  wire                    is_jump,
     input  wire                    is_mul,
+    input  wire                    is_csr,
+    input  wire [2:0]              csr_func,
+    input  wire                    is_serialize,
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
+    // CSR file (system op executes here when oldest -> precise)
+    input  wire [63:0]             csr_rdata,    // old value at imm[11:0]
+    input  wire [63:0]             csr_mtvec,    // trap target
+    input  wire [63:0]             csr_mepc,     // xret target
+    output wire                    csr_req_v,    // drive the CSR update port
+    output wire                    csr_req_is_csr,
+    output wire [2:0]              csr_req_func,
+    output wire [11:0]             csr_req_addr,
+    output wire [63:0]             csr_req_src,
+    output wire [63:0]             csr_req_pc,
+    output wire [11:0]             csr_rd_addr,  // combinational read addr (= ex_imm[11:0])
     // ---- RF write source (registered ALU/M ∪ the LSU load), all shards ----
     input  wire [SHARDS-1:0]       wb_valid_in,
     input  wire [SHARDS*PBITS-1:0] wb_pr_in,
@@ -105,7 +119,7 @@ module exec_shard
    wire rr_kill = squash & older(squash_seq, iss_seq);
 
    reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
-                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr;
+                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser;
    reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2;
    reg  [SEQW-1:0]  ex_sq;
    reg  [CBITS-1:0] ex_ck;
@@ -113,7 +127,7 @@ module exec_shard
    reg  [63:0]      ex_r1, ex_r2, ex_imm, ex_pc;
    reg  [5:0]       ex_aop;
    reg  [1:0]       ex_o1s, ex_msz;
-   reg  [2:0]       ex_bf;
+   reg  [2:0]       ex_bf, ex_csrf;
    always @(posedge clk) begin
       ex_v   <= iss_valid & ~rr_kill;
       ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2;
@@ -123,6 +137,7 @@ module exec_shard
       ex_o2i <= op2_imm; ex_link <= res_link; ex_rvc <= is_rvc;
       ex_memr <= is_mem; ex_str <= is_store; ex_msz <= mem_size; ex_msgn <= mem_signed;
       ex_br  <= is_branch; ex_jmp <= is_jump; ex_mulr <= is_mul; ex_bf <= br_func;
+      ex_csr <= is_csr; ex_csrf <= csr_func; ex_ser <= is_serialize;
    end
 
    // ============================== EX stage ==============================
@@ -172,13 +187,34 @@ module exec_shard
 
    // result flop = writeback. ALU/link results, plus M completions (mux'd in; only one
    // M-op per shard at a time -> no collision). mem ops complete via the LSU.
-   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr;
-   assign      wb_next   = ex_alu_wb | m_complete;   // what this lane writes back next cycle
+   // a CSR op writes rd = the OLD csr value (read combinationally from csr_file).
+   wire        csr_wb    = ex_v & ex_csr & ex_pdv;
+   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr;
+   assign      wb_next   = ex_alu_wb | m_complete | csr_wb;   // what this lane writes back next cycle
    always @(posedge clk) begin
-      wb_valid <= ex_alu_wb | m_complete;
+      wb_valid <= ex_alu_wb | m_complete | csr_wb;
       wb_pr    <= m_complete ? m_pdst : ex_pd;
-      wb_val   <= m_complete ? m_res  : result;
+      wb_val   <= m_complete ? m_res : (csr_wb ? csr_rdata : result);
    end
+
+   // ---- CSR/system unit: read addr + update request + redirect ----
+   assign csr_rd_addr    = ex_imm[11:0];                       // combinational read
+   wire [63:0] csr_src   = ex_csrf[2] ? {59'b0, ex_imm[16:12]} : op1f;  // zimm | rs1
+   assign csr_req_v      = ex_v & ex_ser;                      // oldest -> non-speculative
+   assign csr_req_is_csr = ex_csr;
+   assign csr_req_func   = ex_csrf;
+   assign csr_req_addr   = ex_imm[11:0];
+   assign csr_req_src    = csr_src;
+   assign csr_req_pc     = ex_pc;
+
+   wire [63:0] sys_next  = ex_pc + (ex_rvc ? 64'd2 : 64'd4);
+   wire is_ecall  = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h000);
+   wire is_ebreak = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h001);
+   wire is_mret   = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h302);
+   wire [63:0] sys_target = (is_ecall | is_ebreak) ? csr_mtvec
+                          :  is_mret               ? csr_mepc
+                          :                          sys_next;  // csr / wfi / sret / sfence
+   wire sys_redirect = ex_v & ex_ser;
 
    // busy = unit running OR an M-op in EX about to start it (so no second M-op is
    // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.
@@ -186,14 +222,17 @@ module exec_shard
    assign div_done      = m_complete;
    assign div_done_ckpt = m_ck;
 
-   // branch/jump resolution (EX, bypassed operands)
-   wire bu_redirect;
+   // branch/jump resolution (EX, bypassed operands). The system op's redirect (trap/
+   // xret/CSR-barrier) folds into the same per-lane redirect port: a lane is either a
+   // branch or a system op, never both, and exec_bundle's oldest-select handles order.
+   wire bu_redirect; wire [63:0] bu_target;
    branch_unit bu
      (.is_branch(ex_br), .is_jump(ex_jmp), .is_jalr(ex_jmp & ex_o2i),
       .br_func(ex_bf), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
       .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr),
-      .redirect(bu_redirect), .target(br_target));
-   assign br_redirect = ex_v & bu_redirect;
+      .redirect(bu_redirect), .target(bu_target));
+   assign br_redirect = (ex_v & bu_redirect) | sys_redirect;
+   assign br_target   = sys_redirect ? sys_target : bu_target;
    assign br_seq      = ex_sq;
    assign st_data     = op2f;
 

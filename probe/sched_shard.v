@@ -57,6 +57,10 @@ module sched_shard
     input  wire [SEQW-1:0]         squash_seq,
     // structural stall: this shard's iterative divider is busy -> issue nothing
     input  wire                    exec_busy,
+    // oldest live checkpoint: a serializing op (CSR/system/fence) issues only when
+    // its checkpoint is the oldest, so it executes non-speculatively (nothing older
+    // can squash it) and its CSR/trap side-effect + redirect are precise.
+    input  wire [CBITS-1:0]        committed,
     // this shard's issue this cycle (bundle feeds it back as wake_*[SH])
     output wire                    iss_valid,
     output wire [SEQW-1:0]         iss_seq,
@@ -130,7 +134,9 @@ module sched_shard
    always @* begin
       found = 1'b0; sel = {NW{1'b0}}; best = {AGEW{1'b0}};
       for (e = 0; e < N; e = e + 1) begin
-         elig[e] = v[e] & r1[e] & r2[e] & r3[e];      // all sources ready (flops, no mux)
+         // all sources ready (flops, no mux); a serializing entry must also be oldest
+         elig[e] = v[e] & r1[e] & r2[e] & r3[e]
+                 & (~py[e][`PAY_SER] | (ck[e] == committed));
          if (elig[e] && (!found || $signed(sq[e][SEQW-1:AGELSB] - best) < 0)) begin
             found = 1'b1; sel = e[NW-1:0]; best = sq[e][SEQW-1:AGELSB];
          end

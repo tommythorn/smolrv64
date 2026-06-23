@@ -1,0 +1,24 @@
+#!/bin/bash
+# Compile+run every probe unit testbench (tb_*.v), count PASS. tb_trace is a
+# trace-only harness (no PASS string) -> excluded.
+set -u
+cd "$(dirname "$0")"
+srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+pass=0; total=0; fails=""
+for tb in tb_*.v; do
+   [ "$tb" = tb_trace.v ] && continue
+   [ "$tb" = tb_riscv.v ] && continue
+   total=$((total+1))
+   if ! timeout 90 iverilog -g2012 -I. -I../src -s tb -o /tmp/tb.vvp $srcs "$tb" ../src/alu.v >/tmp/tb_cc.log 2>&1; then
+      printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
+   fi
+   out=$(timeout 60 vvp /tmp/tb.vvp 2>&1)
+   if echo "$out" | grep -qiE 'ALL TESTS PASSED|ALL 65536 MATCH'; then
+      pass=$((pass+1))
+   else
+      printf "%-22s FAIL\n" "$tb"; fails="$fails $tb"
+   fi
+done
+echo "----"
+echo "tb pass=$pass / $total"
+[ -n "$fails" ] && echo "fails:$fails"

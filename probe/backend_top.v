@@ -83,7 +83,7 @@ module backend_top
 
    // ---- commit control ----
    wire               cc_commit, cc_rollback, cc_full;
-   wire [CBITS-1:0]   cc_commit_idx, cc_rollback_idx;
+   wire [CBITS-1:0]   cc_commit_idx, cc_rollback_idx, cc_committed;
 
    // ---- per-slot memory-op classification (from the renamed payload) ----
    wire [IW-1:0]      slot_mem, slot_store, dl_is_load, dl_is_store;
@@ -167,6 +167,7 @@ module backend_top
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),
       .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(busy_to_sched),
+      .committed(cc_committed),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
       .iss_seq(iss_seq),
@@ -255,7 +256,8 @@ module backend_top
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),
       .create(),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
-      .rollback(cc_rollback), .rollback_idx(cc_rollback_idx), .full(cc_full));
+      .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
+      .committed_idx(cc_committed), .full(cc_full));
 
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
@@ -275,7 +277,7 @@ module backend_top
    wire [IW*2-1:0]    ex_msize;
 
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
-     (.clk(clk),
+     (.clk(clk), .reset(reset),
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2),
       .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),

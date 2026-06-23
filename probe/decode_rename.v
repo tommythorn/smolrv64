@@ -71,6 +71,8 @@ module decode_rename
    wire [IW*64-1:0]     d_imm;
    wire [IW*6-1:0]      d_alu_op;
    wire [IW*2-1:0]      d_op1_sel;
+   wire [IW-1:0]        d_is_csr, d_is_serialize;
+   wire [IW*3-1:0]      d_csr_func;
 
    decode_stage #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .SBITS(SBITS)) dec
      (.inst(inst), .in_valid(in_valid), .seq_in(seq_in),
@@ -83,7 +85,8 @@ module decode_rename
       .alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
       .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem),
       .is_store(d_is_store), .mem_size(d_mem_size), .mem_signed(d_mem_signed),
-      .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump), .is_mul(d_is_mul));
+      .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump), .is_mul(d_is_mul),
+      .is_csr(d_is_csr), .csr_func(d_csr_func), .is_serialize(d_is_serialize));
 
    // -------------------------------------------- decode/rename boundary reg
    reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer, q_d_is_slot;
@@ -99,10 +102,12 @@ module decode_rename
    reg [IW*64-1:0]     q_imm, q_pc;
    reg [IW*6-1:0]      q_alu_op;
    reg [IW*2-1:0]      q_op1_sel;
+   reg [IW-1:0]        q_is_csr, q_is_serialize;
+   reg [IW*3-1:0]      q_csr_func;
    initial begin
       q_valid = 0; q_rd_v = 0; q_s1_is_slot = 0; q_s2_is_slot = 0;
       q_map_writer = 0; q_seq = 0; q_rd = 0; q_rs1 = 0; q_rs2 = 0;
-      q_s1_slot = 0; q_s2_slot = 0;
+      q_s1_slot = 0; q_s2_slot = 0; q_is_serialize = 0; q_is_csr = 0;
    end
    // Boundary update policy: a redirect/reset squashes the in-flight bundle; else
    // when `accept` is high we latch the next decoded bundle; else (back-pressure
@@ -115,6 +120,7 @@ module decode_rename
       if (squash) begin
          q_valid <= {IW{1'b0}}; q_rd_v <= {IW{1'b0}};
          q_map_writer <= {IW{1'b0}}; q_is_branch <= {IW{1'b0}}; q_d_is_slot <= {IW{1'b0}};
+         q_is_serialize <= {IW{1'b0}};
       end else if (accept) begin
          q_valid      <= d_valid;
          q_rd_v       <= d_rd_v;
@@ -133,6 +139,7 @@ module decode_rename
          q_is_rvc <= d_is_rvc; q_is_mem <= d_is_mem;
          q_is_store <= d_is_store; q_mem_size <= d_mem_size; q_mem_signed <= d_mem_signed;
          q_is_mul <= d_is_mul;
+         q_is_csr <= d_is_csr; q_csr_func <= d_csr_func; q_is_serialize <= d_is_serialize;
       end
    end
 
@@ -146,7 +153,8 @@ module decode_rename
    genvar p;
    generate for (p = 0; p < IW; p = p + 1) begin : pay
       assign r_pay[p*`PAYW +: `PAYW] =
-        { q_is_mul[p],
+        { q_is_serialize[p], q_csr_func[p*3 +: 3], q_is_csr[p],
+          q_is_mul[p],
           q_mem_signed[p], q_mem_size[p*2 +: 2], q_is_store[p],
           q_br_func[p*3 +: 3], q_is_jump[p], q_is_branch[p],
           q_pc[p*64 +: 64], q_imm[p*64 +: 64], q_is_mem[p], q_is_rvc[p],

@@ -18,6 +18,7 @@ module exec_bundle
     parameter CBITS  = 2,
     parameter MIDXW  = 3)
    (input  wire                    clk,
+    input  wire                    reset,
     input  wire [SHARDS-1:0]       iss_valid,
     input  wire [SHARDS*SEQW-1:0]  iss_seq,
     input  wire [SHARDS*PBITS-1:0] iss_pdst,
@@ -85,6 +86,13 @@ module exec_bundle
    initial fw2v = {SHARDS{1'b0}};
    always @(posedge clk) begin fw2v <= wbv; fw2p <= wbp; fw2d <= wbd; end
 
+   // ---- CSR file (shared; one system op executes at a time -> single port) ----
+   wire [63:0]          csr_rdata, csr_mtvec, csr_mepc;
+   wire [SHARDS-1:0]    csr_req_v, csr_req_is_csr;
+   wire [SHARDS*3-1:0]  csr_req_func;
+   wire [SHARDS*12-1:0] csr_req_addr, csr_rd_addr;
+   wire [SHARDS*64-1:0] csr_req_src, csr_req_pc;
+
    genvar i;
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       wire [`PAYW-1:0] p = iss_pay[i*`PAYW +: `PAYW];
@@ -101,7 +109,13 @@ module exec_bundle
          .is_rvc(p[`PAY_RVC]), .is_mem(p[`PAY_MEM]), .is_store(p[`PAY_STORE]),
          .mem_size(p[`PAY_MSIZE]), .mem_signed(p[`PAY_MSGN]),
          .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
+         .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
+         .csr_rdata(csr_rdata), .csr_mtvec(csr_mtvec), .csr_mepc(csr_mepc),
+         .csr_req_v(csr_req_v[i]), .csr_req_is_csr(csr_req_is_csr[i]),
+         .csr_req_func(csr_req_func[i*3 +: 3]), .csr_req_addr(csr_req_addr[i*12 +: 12]),
+         .csr_req_src(csr_req_src[i*64 +: 64]), .csr_req_pc(csr_req_pc[i*64 +: 64]),
+         .csr_rd_addr(csr_rd_addr[i*12 +: 12]),
          .wb_valid_in(ewbv), .wb_pr_in(ewbp), .wb_val_in(ewbd),      // RF write (incl. load)
          .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
@@ -114,6 +128,26 @@ module exec_bundle
          .exec_busy(exec_busy[i]), .div_done(div_done[i]),
          .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]), .wb_next(wbn[i]));
    end endgenerate
+
+   // pick the single active system op (gated to oldest -> at most one csr_req_v)
+   reg               sv, s_iscsr;
+   reg  [2:0]        s_func;
+   reg  [11:0]       s_addr, s_rdaddr;
+   reg  [63:0]       s_src, s_pc;
+   integer cn;
+   always @* begin
+      sv=1'b0; s_iscsr=1'b0; s_func=3'd0; s_addr=12'd0; s_rdaddr=12'd0; s_src=64'd0; s_pc=64'd0;
+      for (cn = 0; cn < SHARDS; cn = cn + 1) if (csr_req_v[cn]) begin
+         sv=1'b1; s_iscsr=csr_req_is_csr[cn]; s_func=csr_req_func[cn*3 +: 3];
+         s_addr=csr_req_addr[cn*12 +: 12]; s_rdaddr=csr_rd_addr[cn*12 +: 12];
+         s_src=csr_req_src[cn*64 +: 64]; s_pc=csr_req_pc[cn*64 +: 64];
+      end
+   end
+   csr_file u_csr
+     (.clk(clk), .reset(reset),            // squash must NOT reset CSR state (only reset does)
+      .raddr(s_rdaddr), .rdata(csr_rdata), .mtvec_o(csr_mtvec), .mepc_o(csr_mepc),
+      .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
+      .upd_src(s_src), .upd_pc(s_pc));
 
    assign ex_ckpt = brc;
 

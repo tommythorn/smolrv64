@@ -46,8 +46,8 @@ module tb;
       chk(32'h004100e7,  1, 1,   2, 1,   -1, 0,    1, 64'd4,              1); // jalr x1,4(x2)
       chk(32'h00311093,  1, 1,   2, 1,   -1, 0,    1, 64'd3,              1); // slli x1,x2,3 (rs2 NOT a read)
       chk(32'h00208033,  0, 0,   1, 1,    2, 1,    0, 64'd0,              1); // add x0,x1,x2 (x0 dest)
-      chk(32'h300312f3,  5, 1,   6, 1,   -1, 0,    0, 64'd0,              1); // csrrw x5,mstatus,x6 (no imm)
-      chk(32'h3003d2f3,  5, 1,  -1, 0,   -1, 0,    1, 64'd7,              1); // csrrwi x5,mstatus,7
+      chk(32'h300312f3,  5, 1,   6, 1,   -1, 0,    0, 64'h6300,           1); // csrrw x5,mstatus,x6 (imm={zimm=6,addr=0x300})
+      chk(32'h3003d2f3,  5, 1,  -1, 0,   -1, 0,    1, 64'h7300,           1); // csrrwi x5,mstatus,7 (imm={zimm=7,addr=0x300})
       chk(32'h00000073, -1, 0,  -1, 0,   -1, 0,    0, 64'd0,              1); // ecall (no GPRs)
       chk(32'h00000000, -1, 0,  -1, 0,   -1, 0,   -1, 64'd0,              0); // illegal (legal=0)
 

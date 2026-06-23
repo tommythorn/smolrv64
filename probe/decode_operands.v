@@ -90,6 +90,11 @@ module decode_operands
         C:       imm = imm_csri;
         default: imm = 64'b0;
       endcase
+
+      // SYSTEM ops carry their CSR address (insn[31:20]) and zimm (rs1 field) in imm,
+      // so the execute CSR/trap unit can read both without a new payload field. For
+      // funct3==0 (ECALL/EBREAK/xRET/WFI) imm[11:0] selects which system op.
+      if (opcode == SYSTEM) imm = {47'b0, rs1f, insn[31:20]};
    end
 endmodule
 

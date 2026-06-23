@@ -55,10 +55,11 @@ module tb;
       .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1), .disp_rdy1(disp_rdy1),
       .disp_ps2(disp_ps2), .disp_rdy2(disp_rdy2),
       .disp_ps3(8'd0), .disp_rdy3(disp_rdy3),
+      .disp_ckpt(2'd0), .disp_mem_idx(3'd0), .disp_pay(157'd0),
       .disp_ready(disp_ready),
       .clr_valid(clr_valid), .clr_pr(clr_pr),
       .wake_valid(wake_valid), .wake_pr(wake_pr),
-      .squash(1'b0), .squash_seq(8'd0), .exec_busy(1'b0),
+      .squash(1'b0), .squash_seq(8'd0), .exec_busy(1'b0), .committed(2'd0),
       .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
       .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3));
 
