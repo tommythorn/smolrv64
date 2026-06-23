@@ -207,14 +207,16 @@ module exec_shard
    assign csr_req_src    = csr_src;
    assign csr_req_pc     = ex_pc;
 
-   wire [63:0] sys_next  = ex_pc + (ex_rvc ? 64'd2 : 64'd4);
    wire is_ecall  = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h000);
    wire is_ebreak = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h001);
    wire is_mret   = ex_ser & ~ex_csr & (ex_imm[11:0] == 12'h302);
-   wire [63:0] sys_target = (is_ecall | is_ebreak) ? csr_mtvec
-                          :  is_mret               ? csr_mepc
-                          :                          sys_next;  // csr / wfi / sret / sfence
-   wire sys_redirect = ex_v & ex_ser;
+   wire [63:0] sys_target = (is_ecall | is_ebreak) ? csr_mtvec : csr_mepc;  // mret
+   // ONLY actual control transfers redirect. A plain CSR op (and wfi/sfence) mutates
+   // state at EX non-speculatively (it issues only when oldest) and falls through to
+   // pc+4 -- the correct path, already in flight -- so it needs no flush: any younger
+   // CSR reader is itself gated-to-oldest and will see the new value. (Avoids a flush
+   // per CSR write, which is also churn the recovery path would rather not take.)
+   wire sys_redirect = ex_v & (is_ecall | is_ebreak | is_mret);
 
    // busy = unit running OR an M-op in EX about to start it (so no second M-op is
    // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.

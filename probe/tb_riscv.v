@@ -72,6 +72,7 @@ module tb;
    reg [63:0] tohost; integer c, b2;
    integer    ncyc;
    integer    trace=0;
+   reg        fl2_16=1'bx;
    reg [8*256-1:0] hexfile;
    initial begin
       tohost = 64'h8000_1000;

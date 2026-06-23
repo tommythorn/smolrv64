@@ -126,7 +126,13 @@ module rename_shard
               : (s2_arch == {ABITS{1'b0}}) ? {PBITS{1'b0}} : map[s2_arch];
    // displaced prior mapping: an earlier in-bundle writer's pdst, else the MAP.
    assign pold   = d_is_slot ? ap[d_slot] : map[d_arch];
-   assign pold_v = d_valid;                     // every alloc displaces exactly one
+   // Gate by `create` (actual dispatch), exactly like alloc_en: a displaced pold is
+   // recorded into the freelist's P[cur] only when the displacing instruction really
+   // dispatches. Without this, a bundle stalled at the rename boundary (back-pressure /
+   // serialize gating) re-broadcasts its pold every cycle, and across a rollback the
+   // same physreg can land in multiple spans' P[] -> freed more than once -> freed while
+   // live -> double allocation. (Hand testbenches never stalled, so this stayed latent.)
+   assign pold_v = d_valid & create;            // every dispatched alloc displaces exactly one
 
    // ----------------------------------- MAP next-state: W distinct-addr writes
    reg [PBITS-1:0] nmap [0:AREGS-1];
