@@ -1,0 +1,459 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
+| Date              : Mon Jun 22 22:32:49 2026
+| Host              : coffee running 64-bit Ubuntu 26.04 LTS
+| Command           : report_timing -setup -max_paths 3 -file sanity_timing.rpt
+| Design            : backend_top
+| Device            : xcku5p-ffvb676
+| Speed File        : -2  PRODUCTION 1.29 05-01-2022
+| Design State      : Synthesized
+| Temperature Grade : I
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+Slack (VIOLATED) :        -8.168ns  (required time - arrival time)
+  Source:                 eb/lane[1].sh/wb_pr_reg[0]/C
+                            (rising edge-triggered cell FDRE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Destination:            sb/lane[2].sh/ready_reg[138]/D
+                            (rising edge-triggered cell FDSE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Path Group:             clk
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            2.500ns  (clk rise@2.500ns - clk rise@0.000ns)
+  Data Path Delay:        10.649ns  (logic 2.486ns (23.345%)  route 8.163ns (76.655%))
+  Logic Levels:           47  (CARRY8=8 LUT2=3 LUT3=5 LUT4=4 LUT5=10 LUT6=17)
+  Clock Path Skew:        -0.009ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    0.021ns = ( 2.521 - 2.500 ) 
+    Source Clock Delay      (SCD):    0.030ns
+    Clock Pessimism Removal (CPR):    0.000ns
+  Clock Uncertainty:      0.035ns  ((TSJ^2 + TIJ^2)^1/2 + DJ) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Total Input Jitter      (TIJ):    0.000ns
+    Discrete Jitter          (DJ):    0.000ns
+    Phase Error              (PE):    0.000ns
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock clk rise edge)        0.000     0.000 r  
+                                                      0.000     0.000 r  clk (IN)
+                         net (fo=19792, unset)        0.030     0.030    eb/lane[1].sh/clk
+                         FDRE                                         r  eb/lane[1].sh/wb_pr_reg[0]/C
+  -------------------------------------------------------------------    -------------------
+                         FDRE (Prop_FDRE_C_Q)         0.077     0.107 r  eb/lane[1].sh/wb_pr_reg[0]/Q
+                         net (fo=15, unplaced)        0.196     0.303    eb/lane[1].sh/wb_pr_reg[7]_94[0]
+                         LUT6 (Prop_LUT6_I0_O)        0.150     0.453 r  eb/lane[1].sh/p20_i_148/O
+                         net (fo=1, unplaced)         0.140     0.593    eb/lane[1].sh/p20_i_148_n_0
+                         LUT4 (Prop_LUT4_I1_O)        0.090     0.683 r  eb/lane[1].sh/p20_i_140/O
+                         net (fo=65, unplaced)        0.216     0.899    eb/lane[0].sh/p20__10_66
+                         LUT3 (Prop_LUT3_I0_O)        0.090     0.989 r  eb/lane[0].sh/p20_i_48/O
+                         net (fo=65, unplaced)        0.174     1.163    eb/lane[0].sh/dv/p20__10_32
+                         LUT5 (Prop_LUT5_I0_O)        0.125     1.288 r  eb/lane[0].sh/dv/p20__3_i_16/O
+                         net (fo=28, unplaced)        0.243     1.531    eb/lane[0].sh/B[1]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     1.569 r  eb/lane[0].sh/wb_val[1]_i_11/O
+                         net (fo=139, unplaced)       0.279     1.848    eb/lane[0].sh/ea/core/ea/core/redirect_target[7]_INST_0_i_32_2
+                         LUT5 (Prop_LUT5_I4_O)        0.037     1.885 r  eb/lane[0].sh/ea/core/wb_val[0]_i_47/O
+                         net (fo=1, unplaced)         0.023     1.908    eb_n_3056
+                         CARRY8 (Prop_CARRY8_S[1]_CO[7])
+                                                      0.197     2.105 r  ea/core/wb_val_reg[0]_i_25/CO[7]
+                         net (fo=1, unplaced)         0.005     2.110    ea/core/wb_val_reg[0]_i_25_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.132 r  ea/core/wb_val_reg[15]_i_27/CO[7]
+                         net (fo=1, unplaced)         0.005     2.137    ea/core/wb_val_reg[15]_i_27_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.159 r  ea/core/wb_val_reg[23]_i_9/CO[7]
+                         net (fo=1, unplaced)         0.005     2.164    ea/core/wb_val_reg[23]_i_9_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.186 r  ea/core/wb_val_reg[63]_i_42/CO[7]
+                         net (fo=1, unplaced)         0.005     2.191    ea/core/wb_val_reg[63]_i_42_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.213 r  ea/core/wb_val_reg[38]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.218    ea/core/wb_val_reg[38]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.240 r  ea/core/wb_val_reg[47]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.245    ea/core/wb_val_reg[47]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.267 r  ea/core/wb_val_reg[55]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.272    ea/core/wb_val_reg[55]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_O[7])
+                                                      0.116     2.388 r  ea/core/wb_val_reg[63]_i_47/O[7]
+                         net (fo=2, unplaced)         0.138     2.526    eb/lane[0].sh/wb_val[0]_i_31_0[7]
+                         LUT5 (Prop_LUT5_I4_O)        0.038     2.564 r  eb/lane[0].sh/redirect_INST_0_i_29/O
+                         net (fo=65, unplaced)        0.262     2.826    eb/lane[0].sh/cmp_lt
+                         LUT6 (Prop_LUT6_I1_O)        0.038     2.864 f  eb/lane[0].sh/redirect_INST_0_i_10/O
+                         net (fo=1, unplaced)         0.186     3.050    eb/lane[0].sh/bu/taken
+                         LUT4 (Prop_LUT4_I0_O)        0.038     3.088 f  eb/lane[0].sh/redirect_INST_0_i_4/O
+                         net (fo=91, unplaced)        0.269     3.357    eb/lane[0].sh/p_15_in
+                         LUT5 (Prop_LUT5_I2_O)        0.038     3.395 r  eb/lane[0].sh/redirect_INST_0_i_72/O
+                         net (fo=1, unplaced)         0.186     3.581    eb/lane[0].sh/redirect_INST_0_i_72_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.619 r  eb/lane[0].sh/redirect_INST_0_i_32/O
+                         net (fo=1, unplaced)         0.186     3.805    eb/lane[0].sh/redirect_INST_0_i_32_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.843 r  eb/lane[0].sh/redirect_INST_0_i_12/O
+                         net (fo=1, unplaced)         0.186     4.029    eb/lane[0].sh/redirect_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     4.067 r  eb/lane[0].sh/redirect_INST_0_i_5/O
+                         net (fo=86, unplaced)        0.268     4.335    eb/lane[0].sh/redirect1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     4.373 f  eb/lane[0].sh/i___61_i_6/O
+                         net (fo=2, unplaced)         0.140     4.513    eb/lane[0].sh/p_0_in[2]
+                         LUT5 (Prop_LUT5_I0_O)        0.090     4.603 r  eb/lane[0].sh/redirect_INST_0_i_77/O
+                         net (fo=1, unplaced)         0.186     4.789    eb/lane[0].sh/redirect_INST_0_i_77_n_0
+                         LUT5 (Prop_LUT5_I2_O)        0.038     4.827 r  eb/lane[0].sh/redirect_INST_0_i_34/O
+                         net (fo=2, unplaced)         0.186     5.013    eb/lane[0].sh/redirect_INST_0_i_34_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     5.051 r  eb/lane[0].sh/redirect_INST_0_i_16/O
+                         net (fo=1, unplaced)         0.186     5.237    eb/lane[0].sh/redirect_INST_0_i_16_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     5.275 r  eb/lane[0].sh/redirect_INST_0_i_6/O
+                         net (fo=72, unplaced)        0.264     5.539    eb/lane[0].sh/dv/redirect10_out
+                         LUT6 (Prop_LUT6_I1_O)        0.038     5.577 r  eb/lane[0].sh/dv/wb_valid[3]_INST_0_i_9/O
+                         net (fo=2, unplaced)         0.186     5.763    eb/lane[3].sh/v3_reg_0
+                         LUT2 (Prop_LUT2_I1_O)        0.038     5.801 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_12/O
+                         net (fo=2, unplaced)         0.186     5.987    eb/lane[3].sh/redirect_target[63]_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.025 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_3/O
+                         net (fo=72, unplaced)        0.264     6.289    eb/lane[3].sh/dv/v[0]_i_10
+                         LUT6 (Prop_LUT6_I4_O)        0.038     6.327 r  eb/lane[3].sh/dv/seq_q[5]_i_3/O
+                         net (fo=78, unplaced)        0.266     6.593    eb/lane[2].sh/dv/v1_i_3__1_1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     6.631 r  eb/lane[2].sh/dv/v1_i_14__1/O
+                         net (fo=1, unplaced)         0.186     6.817    eb/lane[2].sh/dv/v1_i_14__1_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.855 f  eb/lane[2].sh/dv/v1_i_11__1/O
+                         net (fo=1, unplaced)         0.186     7.041    eb/lane[2].sh/dv/v1_i_11__1_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     7.079 r  eb/lane[2].sh/dv/v1_i_8__1/O
+                         net (fo=1, unplaced)         0.186     7.265    eb/lane[2].sh/dv/v1_i_8__1_n_0
+                         LUT6 (Prop_LUT6_I0_O)        0.038     7.303 r  eb/lane[2].sh/dv/v1_i_5__1/O
+                         net (fo=4, unplaced)         0.198     7.501    eb/lane[2].sh/mu/m_ck_reg[0]_2
+                         LUT5 (Prop_LUT5_I4_O)        0.070     7.571 f  eb/lane[2].sh/mu/v[1]_i_7__2/O
+                         net (fo=1, unplaced)         0.186     7.757    eb/lane[2].sh/mu/eb_exec_busy[2]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     7.795 f  eb/lane[2].sh/mu/v[1]_i_4__1/O
+                         net (fo=3, unplaced)         0.192     7.987    sb/lane[2].sh/busy_to_sched[0]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.025 r  sb/lane[2].sh/v[0]_i_4__1/O
+                         net (fo=8, unplaced)         0.214     8.239    sb/lane[2].sh/p_5_in48_in
+                         LUT3 (Prop_LUT3_I2_O)        0.070     8.309 r  sb/lane[2].sh/ready[134]_i_7__0/O
+                         net (fo=3, unplaced)         0.192     8.501    sb/lane[0].sh/disp_ready[1]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.539 r  sb/lane[0].sh/i___27_i_4/O
+                         net (fo=1, unplaced)         0.186     8.725    fe/u_dr/rn/lane[0].sh/fl/can_dispatch4
+                         LUT5 (Prop_LUT5_I2_O)        0.038     8.763 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_2/O
+                         net (fo=2, unplaced)         0.186     8.949    fe/u_dr/rn/lane[0].sh/fl/p_86_in
+                         LUT5 (Prop_LUT5_I4_O)        0.038     8.987 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_1/O
+                         net (fo=81, unplaced)        0.267     9.254    fe/u_dr/rn/lane[0].sh/fl/q_valid_reg[2]
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.324 r  fe/u_dr/rn/lane[0].sh/fl/s1[0][7]_i_5/O
+                         net (fo=3, unplaced)         0.192     9.516    fe/u_dr/rn/lane[0].sh/fl/sched_disp_valid[2]
+                         LUT3 (Prop_LUT3_I0_O)        0.038     9.554 r  fe/u_dr/rn/lane[0].sh/fl/ready[134]_i_3__2/O
+                         net (fo=136, unplaced)       0.278     9.832    fe/u_dr/rn/lane[2].sh/fl/ready_reg[134]_0
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.902 f  fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2/O
+                         net (fo=29, unplaced)        0.243    10.145    fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038    10.183 r  fe/u_dr/rn/lane[2].sh/fl/ready[138]_i_9__0/O
+                         net (fo=1, unplaced)         0.186    10.369    eb/lane[0].sh/ready_reg[138]
+                         LUT6 (Prop_LUT6_I5_O)        0.038    10.407 r  eb/lane[0].sh/ready[138]_i_4__1/O
+                         net (fo=1, unplaced)         0.186    10.593    eb/lane[3].sh/ready_reg[138]_4
+                         LUT5 (Prop_LUT5_I3_O)        0.038    10.631 r  eb/lane[3].sh/ready[138]_i_1__1/O
+                         net (fo=1, unplaced)         0.048    10.679    sb/lane[2].sh/ready_reg[138]_3
+                         FDSE                                         r  sb/lane[2].sh/ready_reg[138]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock clk rise edge)        2.500     2.500 r  
+                                                      0.000     2.500 r  clk (IN)
+                         net (fo=19792, unset)        0.021     2.521    sb/lane[2].sh/clk
+                         FDSE                                         r  sb/lane[2].sh/ready_reg[138]/C
+                         clock pessimism              0.000     2.521    
+                         clock uncertainty           -0.035     2.486    
+                         FDSE (Setup_FDSE_C_D)        0.025     2.511    sb/lane[2].sh/ready_reg[138]
+  -------------------------------------------------------------------
+                         required time                          2.511    
+                         arrival time                         -10.679    
+  -------------------------------------------------------------------
+                         slack                                 -8.168    
+
+Slack (VIOLATED) :        -8.168ns  (required time - arrival time)
+  Source:                 eb/lane[1].sh/wb_pr_reg[0]/C
+                            (rising edge-triggered cell FDRE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Destination:            sb/lane[2].sh/ready_reg[190]/D
+                            (rising edge-triggered cell FDSE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Path Group:             clk
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            2.500ns  (clk rise@2.500ns - clk rise@0.000ns)
+  Data Path Delay:        10.649ns  (logic 2.486ns (23.345%)  route 8.163ns (76.655%))
+  Logic Levels:           47  (CARRY8=8 LUT2=3 LUT3=5 LUT4=4 LUT5=10 LUT6=17)
+  Clock Path Skew:        -0.009ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    0.021ns = ( 2.521 - 2.500 ) 
+    Source Clock Delay      (SCD):    0.030ns
+    Clock Pessimism Removal (CPR):    0.000ns
+  Clock Uncertainty:      0.035ns  ((TSJ^2 + TIJ^2)^1/2 + DJ) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Total Input Jitter      (TIJ):    0.000ns
+    Discrete Jitter          (DJ):    0.000ns
+    Phase Error              (PE):    0.000ns
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock clk rise edge)        0.000     0.000 r  
+                                                      0.000     0.000 r  clk (IN)
+                         net (fo=19792, unset)        0.030     0.030    eb/lane[1].sh/clk
+                         FDRE                                         r  eb/lane[1].sh/wb_pr_reg[0]/C
+  -------------------------------------------------------------------    -------------------
+                         FDRE (Prop_FDRE_C_Q)         0.077     0.107 r  eb/lane[1].sh/wb_pr_reg[0]/Q
+                         net (fo=15, unplaced)        0.196     0.303    eb/lane[1].sh/wb_pr_reg[7]_94[0]
+                         LUT6 (Prop_LUT6_I0_O)        0.150     0.453 r  eb/lane[1].sh/p20_i_148/O
+                         net (fo=1, unplaced)         0.140     0.593    eb/lane[1].sh/p20_i_148_n_0
+                         LUT4 (Prop_LUT4_I1_O)        0.090     0.683 r  eb/lane[1].sh/p20_i_140/O
+                         net (fo=65, unplaced)        0.216     0.899    eb/lane[0].sh/p20__10_66
+                         LUT3 (Prop_LUT3_I0_O)        0.090     0.989 r  eb/lane[0].sh/p20_i_48/O
+                         net (fo=65, unplaced)        0.174     1.163    eb/lane[0].sh/dv/p20__10_32
+                         LUT5 (Prop_LUT5_I0_O)        0.125     1.288 r  eb/lane[0].sh/dv/p20__3_i_16/O
+                         net (fo=28, unplaced)        0.243     1.531    eb/lane[0].sh/B[1]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     1.569 r  eb/lane[0].sh/wb_val[1]_i_11/O
+                         net (fo=139, unplaced)       0.279     1.848    eb/lane[0].sh/ea/core/ea/core/redirect_target[7]_INST_0_i_32_2
+                         LUT5 (Prop_LUT5_I4_O)        0.037     1.885 r  eb/lane[0].sh/ea/core/wb_val[0]_i_47/O
+                         net (fo=1, unplaced)         0.023     1.908    eb_n_3056
+                         CARRY8 (Prop_CARRY8_S[1]_CO[7])
+                                                      0.197     2.105 r  ea/core/wb_val_reg[0]_i_25/CO[7]
+                         net (fo=1, unplaced)         0.005     2.110    ea/core/wb_val_reg[0]_i_25_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.132 r  ea/core/wb_val_reg[15]_i_27/CO[7]
+                         net (fo=1, unplaced)         0.005     2.137    ea/core/wb_val_reg[15]_i_27_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.159 r  ea/core/wb_val_reg[23]_i_9/CO[7]
+                         net (fo=1, unplaced)         0.005     2.164    ea/core/wb_val_reg[23]_i_9_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.186 r  ea/core/wb_val_reg[63]_i_42/CO[7]
+                         net (fo=1, unplaced)         0.005     2.191    ea/core/wb_val_reg[63]_i_42_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.213 r  ea/core/wb_val_reg[38]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.218    ea/core/wb_val_reg[38]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.240 r  ea/core/wb_val_reg[47]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.245    ea/core/wb_val_reg[47]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.267 r  ea/core/wb_val_reg[55]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.272    ea/core/wb_val_reg[55]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_O[7])
+                                                      0.116     2.388 r  ea/core/wb_val_reg[63]_i_47/O[7]
+                         net (fo=2, unplaced)         0.138     2.526    eb/lane[0].sh/wb_val[0]_i_31_0[7]
+                         LUT5 (Prop_LUT5_I4_O)        0.038     2.564 r  eb/lane[0].sh/redirect_INST_0_i_29/O
+                         net (fo=65, unplaced)        0.262     2.826    eb/lane[0].sh/cmp_lt
+                         LUT6 (Prop_LUT6_I1_O)        0.038     2.864 f  eb/lane[0].sh/redirect_INST_0_i_10/O
+                         net (fo=1, unplaced)         0.186     3.050    eb/lane[0].sh/bu/taken
+                         LUT4 (Prop_LUT4_I0_O)        0.038     3.088 f  eb/lane[0].sh/redirect_INST_0_i_4/O
+                         net (fo=91, unplaced)        0.269     3.357    eb/lane[0].sh/p_15_in
+                         LUT5 (Prop_LUT5_I2_O)        0.038     3.395 r  eb/lane[0].sh/redirect_INST_0_i_72/O
+                         net (fo=1, unplaced)         0.186     3.581    eb/lane[0].sh/redirect_INST_0_i_72_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.619 r  eb/lane[0].sh/redirect_INST_0_i_32/O
+                         net (fo=1, unplaced)         0.186     3.805    eb/lane[0].sh/redirect_INST_0_i_32_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.843 r  eb/lane[0].sh/redirect_INST_0_i_12/O
+                         net (fo=1, unplaced)         0.186     4.029    eb/lane[0].sh/redirect_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     4.067 r  eb/lane[0].sh/redirect_INST_0_i_5/O
+                         net (fo=86, unplaced)        0.268     4.335    eb/lane[0].sh/redirect1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     4.373 f  eb/lane[0].sh/i___61_i_6/O
+                         net (fo=2, unplaced)         0.140     4.513    eb/lane[0].sh/p_0_in[2]
+                         LUT5 (Prop_LUT5_I0_O)        0.090     4.603 r  eb/lane[0].sh/redirect_INST_0_i_77/O
+                         net (fo=1, unplaced)         0.186     4.789    eb/lane[0].sh/redirect_INST_0_i_77_n_0
+                         LUT5 (Prop_LUT5_I2_O)        0.038     4.827 r  eb/lane[0].sh/redirect_INST_0_i_34/O
+                         net (fo=2, unplaced)         0.186     5.013    eb/lane[0].sh/redirect_INST_0_i_34_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     5.051 r  eb/lane[0].sh/redirect_INST_0_i_16/O
+                         net (fo=1, unplaced)         0.186     5.237    eb/lane[0].sh/redirect_INST_0_i_16_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     5.275 r  eb/lane[0].sh/redirect_INST_0_i_6/O
+                         net (fo=72, unplaced)        0.264     5.539    eb/lane[0].sh/dv/redirect10_out
+                         LUT6 (Prop_LUT6_I1_O)        0.038     5.577 r  eb/lane[0].sh/dv/wb_valid[3]_INST_0_i_9/O
+                         net (fo=2, unplaced)         0.186     5.763    eb/lane[3].sh/v3_reg_0
+                         LUT2 (Prop_LUT2_I1_O)        0.038     5.801 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_12/O
+                         net (fo=2, unplaced)         0.186     5.987    eb/lane[3].sh/redirect_target[63]_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.025 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_3/O
+                         net (fo=72, unplaced)        0.264     6.289    eb/lane[3].sh/dv/v[0]_i_10
+                         LUT6 (Prop_LUT6_I4_O)        0.038     6.327 r  eb/lane[3].sh/dv/seq_q[5]_i_3/O
+                         net (fo=78, unplaced)        0.266     6.593    eb/lane[2].sh/dv/v1_i_3__1_1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     6.631 r  eb/lane[2].sh/dv/v1_i_14__1/O
+                         net (fo=1, unplaced)         0.186     6.817    eb/lane[2].sh/dv/v1_i_14__1_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.855 f  eb/lane[2].sh/dv/v1_i_11__1/O
+                         net (fo=1, unplaced)         0.186     7.041    eb/lane[2].sh/dv/v1_i_11__1_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     7.079 r  eb/lane[2].sh/dv/v1_i_8__1/O
+                         net (fo=1, unplaced)         0.186     7.265    eb/lane[2].sh/dv/v1_i_8__1_n_0
+                         LUT6 (Prop_LUT6_I0_O)        0.038     7.303 r  eb/lane[2].sh/dv/v1_i_5__1/O
+                         net (fo=4, unplaced)         0.198     7.501    eb/lane[2].sh/mu/m_ck_reg[0]_2
+                         LUT5 (Prop_LUT5_I4_O)        0.070     7.571 f  eb/lane[2].sh/mu/v[1]_i_7__2/O
+                         net (fo=1, unplaced)         0.186     7.757    eb/lane[2].sh/mu/eb_exec_busy[2]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     7.795 f  eb/lane[2].sh/mu/v[1]_i_4__1/O
+                         net (fo=3, unplaced)         0.192     7.987    sb/lane[2].sh/busy_to_sched[0]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.025 r  sb/lane[2].sh/v[0]_i_4__1/O
+                         net (fo=8, unplaced)         0.214     8.239    sb/lane[2].sh/p_5_in48_in
+                         LUT3 (Prop_LUT3_I2_O)        0.070     8.309 r  sb/lane[2].sh/ready[134]_i_7__0/O
+                         net (fo=3, unplaced)         0.192     8.501    sb/lane[0].sh/disp_ready[1]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.539 r  sb/lane[0].sh/i___27_i_4/O
+                         net (fo=1, unplaced)         0.186     8.725    fe/u_dr/rn/lane[0].sh/fl/can_dispatch4
+                         LUT5 (Prop_LUT5_I2_O)        0.038     8.763 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_2/O
+                         net (fo=2, unplaced)         0.186     8.949    fe/u_dr/rn/lane[0].sh/fl/p_86_in
+                         LUT5 (Prop_LUT5_I4_O)        0.038     8.987 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_1/O
+                         net (fo=81, unplaced)        0.267     9.254    fe/u_dr/rn/lane[0].sh/fl/q_valid_reg[2]
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.324 r  fe/u_dr/rn/lane[0].sh/fl/s1[0][7]_i_5/O
+                         net (fo=3, unplaced)         0.192     9.516    fe/u_dr/rn/lane[0].sh/fl/sched_disp_valid[2]
+                         LUT3 (Prop_LUT3_I0_O)        0.038     9.554 r  fe/u_dr/rn/lane[0].sh/fl/ready[134]_i_3__2/O
+                         net (fo=136, unplaced)       0.278     9.832    fe/u_dr/rn/lane[2].sh/fl/ready_reg[134]_0
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.902 f  fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2/O
+                         net (fo=29, unplaced)        0.243    10.145    fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038    10.183 r  fe/u_dr/rn/lane[2].sh/fl/ready[190]_i_14/O
+                         net (fo=1, unplaced)         0.186    10.369    eb/lane[0].sh/ready_reg[190]_0
+                         LUT5 (Prop_LUT5_I4_O)        0.038    10.407 r  eb/lane[0].sh/ready[190]_i_5__1/O
+                         net (fo=1, unplaced)         0.186    10.593    sb/lane[2].sh/ready_reg[190]_13
+                         LUT6 (Prop_LUT6_I4_O)        0.038    10.631 r  sb/lane[2].sh/ready[190]_i_1__1/O
+                         net (fo=1, unplaced)         0.048    10.679    sb/lane[2].sh/ready[190]_i_1__1_n_0
+                         FDSE                                         r  sb/lane[2].sh/ready_reg[190]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock clk rise edge)        2.500     2.500 r  
+                                                      0.000     2.500 r  clk (IN)
+                         net (fo=19792, unset)        0.021     2.521    sb/lane[2].sh/clk
+                         FDSE                                         r  sb/lane[2].sh/ready_reg[190]/C
+                         clock pessimism              0.000     2.521    
+                         clock uncertainty           -0.035     2.486    
+                         FDSE (Setup_FDSE_C_D)        0.025     2.511    sb/lane[2].sh/ready_reg[190]
+  -------------------------------------------------------------------
+                         required time                          2.511    
+                         arrival time                         -10.679    
+  -------------------------------------------------------------------
+                         slack                                 -8.168    
+
+Slack (VIOLATED) :        -8.168ns  (required time - arrival time)
+  Source:                 eb/lane[1].sh/wb_pr_reg[0]/C
+                            (rising edge-triggered cell FDRE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Destination:            sb/lane[3].sh/ready_reg[186]/D
+                            (rising edge-triggered cell FDSE clocked by clk  {rise@0.000ns fall@1.250ns period=2.500ns})
+  Path Group:             clk
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            2.500ns  (clk rise@2.500ns - clk rise@0.000ns)
+  Data Path Delay:        10.649ns  (logic 2.486ns (23.345%)  route 8.163ns (76.655%))
+  Logic Levels:           47  (CARRY8=8 LUT2=3 LUT3=5 LUT4=4 LUT5=9 LUT6=18)
+  Clock Path Skew:        -0.009ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    0.021ns = ( 2.521 - 2.500 ) 
+    Source Clock Delay      (SCD):    0.030ns
+    Clock Pessimism Removal (CPR):    0.000ns
+  Clock Uncertainty:      0.035ns  ((TSJ^2 + TIJ^2)^1/2 + DJ) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Total Input Jitter      (TIJ):    0.000ns
+    Discrete Jitter          (DJ):    0.000ns
+    Phase Error              (PE):    0.000ns
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock clk rise edge)        0.000     0.000 r  
+                                                      0.000     0.000 r  clk (IN)
+                         net (fo=19792, unset)        0.030     0.030    eb/lane[1].sh/clk
+                         FDRE                                         r  eb/lane[1].sh/wb_pr_reg[0]/C
+  -------------------------------------------------------------------    -------------------
+                         FDRE (Prop_FDRE_C_Q)         0.077     0.107 r  eb/lane[1].sh/wb_pr_reg[0]/Q
+                         net (fo=15, unplaced)        0.196     0.303    eb/lane[1].sh/wb_pr_reg[7]_94[0]
+                         LUT6 (Prop_LUT6_I0_O)        0.150     0.453 r  eb/lane[1].sh/p20_i_148/O
+                         net (fo=1, unplaced)         0.140     0.593    eb/lane[1].sh/p20_i_148_n_0
+                         LUT4 (Prop_LUT4_I1_O)        0.090     0.683 r  eb/lane[1].sh/p20_i_140/O
+                         net (fo=65, unplaced)        0.216     0.899    eb/lane[0].sh/p20__10_66
+                         LUT3 (Prop_LUT3_I0_O)        0.090     0.989 r  eb/lane[0].sh/p20_i_48/O
+                         net (fo=65, unplaced)        0.174     1.163    eb/lane[0].sh/dv/p20__10_32
+                         LUT5 (Prop_LUT5_I0_O)        0.125     1.288 r  eb/lane[0].sh/dv/p20__3_i_16/O
+                         net (fo=28, unplaced)        0.243     1.531    eb/lane[0].sh/B[1]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     1.569 r  eb/lane[0].sh/wb_val[1]_i_11/O
+                         net (fo=139, unplaced)       0.279     1.848    eb/lane[0].sh/ea/core/ea/core/redirect_target[7]_INST_0_i_32_2
+                         LUT5 (Prop_LUT5_I4_O)        0.037     1.885 r  eb/lane[0].sh/ea/core/wb_val[0]_i_47/O
+                         net (fo=1, unplaced)         0.023     1.908    eb_n_3056
+                         CARRY8 (Prop_CARRY8_S[1]_CO[7])
+                                                      0.197     2.105 r  ea/core/wb_val_reg[0]_i_25/CO[7]
+                         net (fo=1, unplaced)         0.005     2.110    ea/core/wb_val_reg[0]_i_25_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.132 r  ea/core/wb_val_reg[15]_i_27/CO[7]
+                         net (fo=1, unplaced)         0.005     2.137    ea/core/wb_val_reg[15]_i_27_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.159 r  ea/core/wb_val_reg[23]_i_9/CO[7]
+                         net (fo=1, unplaced)         0.005     2.164    ea/core/wb_val_reg[23]_i_9_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.186 r  ea/core/wb_val_reg[63]_i_42/CO[7]
+                         net (fo=1, unplaced)         0.005     2.191    ea/core/wb_val_reg[63]_i_42_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.213 r  ea/core/wb_val_reg[38]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.218    ea/core/wb_val_reg[38]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.240 r  ea/core/wb_val_reg[47]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.245    ea/core/wb_val_reg[47]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_CO[7])
+                                                      0.022     2.267 r  ea/core/wb_val_reg[55]_i_12/CO[7]
+                         net (fo=1, unplaced)         0.005     2.272    ea/core/wb_val_reg[55]_i_12_n_0
+                         CARRY8 (Prop_CARRY8_CI_O[7])
+                                                      0.116     2.388 r  ea/core/wb_val_reg[63]_i_47/O[7]
+                         net (fo=2, unplaced)         0.138     2.526    eb/lane[0].sh/wb_val[0]_i_31_0[7]
+                         LUT5 (Prop_LUT5_I4_O)        0.038     2.564 r  eb/lane[0].sh/redirect_INST_0_i_29/O
+                         net (fo=65, unplaced)        0.262     2.826    eb/lane[0].sh/cmp_lt
+                         LUT6 (Prop_LUT6_I1_O)        0.038     2.864 f  eb/lane[0].sh/redirect_INST_0_i_10/O
+                         net (fo=1, unplaced)         0.186     3.050    eb/lane[0].sh/bu/taken
+                         LUT4 (Prop_LUT4_I0_O)        0.038     3.088 f  eb/lane[0].sh/redirect_INST_0_i_4/O
+                         net (fo=91, unplaced)        0.269     3.357    eb/lane[0].sh/p_15_in
+                         LUT5 (Prop_LUT5_I2_O)        0.038     3.395 r  eb/lane[0].sh/redirect_INST_0_i_72/O
+                         net (fo=1, unplaced)         0.186     3.581    eb/lane[0].sh/redirect_INST_0_i_72_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.619 r  eb/lane[0].sh/redirect_INST_0_i_32/O
+                         net (fo=1, unplaced)         0.186     3.805    eb/lane[0].sh/redirect_INST_0_i_32_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     3.843 r  eb/lane[0].sh/redirect_INST_0_i_12/O
+                         net (fo=1, unplaced)         0.186     4.029    eb/lane[0].sh/redirect_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     4.067 r  eb/lane[0].sh/redirect_INST_0_i_5/O
+                         net (fo=86, unplaced)        0.268     4.335    eb/lane[0].sh/redirect1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     4.373 f  eb/lane[0].sh/i___61_i_6/O
+                         net (fo=2, unplaced)         0.140     4.513    eb/lane[0].sh/p_0_in[2]
+                         LUT5 (Prop_LUT5_I0_O)        0.090     4.603 r  eb/lane[0].sh/redirect_INST_0_i_77/O
+                         net (fo=1, unplaced)         0.186     4.789    eb/lane[0].sh/redirect_INST_0_i_77_n_0
+                         LUT5 (Prop_LUT5_I2_O)        0.038     4.827 r  eb/lane[0].sh/redirect_INST_0_i_34/O
+                         net (fo=2, unplaced)         0.186     5.013    eb/lane[0].sh/redirect_INST_0_i_34_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     5.051 r  eb/lane[0].sh/redirect_INST_0_i_16/O
+                         net (fo=1, unplaced)         0.186     5.237    eb/lane[0].sh/redirect_INST_0_i_16_n_0
+                         LUT6 (Prop_LUT6_I3_O)        0.038     5.275 r  eb/lane[0].sh/redirect_INST_0_i_6/O
+                         net (fo=72, unplaced)        0.264     5.539    eb/lane[0].sh/dv/redirect10_out
+                         LUT6 (Prop_LUT6_I1_O)        0.038     5.577 r  eb/lane[0].sh/dv/wb_valid[3]_INST_0_i_9/O
+                         net (fo=2, unplaced)         0.186     5.763    eb/lane[3].sh/v3_reg_0
+                         LUT2 (Prop_LUT2_I1_O)        0.038     5.801 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_12/O
+                         net (fo=2, unplaced)         0.186     5.987    eb/lane[3].sh/redirect_target[63]_INST_0_i_12_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.025 r  eb/lane[3].sh/redirect_target[63]_INST_0_i_3/O
+                         net (fo=72, unplaced)        0.264     6.289    eb/lane[3].sh/dv/v[0]_i_10
+                         LUT6 (Prop_LUT6_I4_O)        0.038     6.327 r  eb/lane[3].sh/dv/seq_q[5]_i_3/O
+                         net (fo=78, unplaced)        0.266     6.593    eb/lane[2].sh/dv/v1_i_3__1_1
+                         LUT4 (Prop_LUT4_I3_O)        0.038     6.631 r  eb/lane[2].sh/dv/v1_i_14__1/O
+                         net (fo=1, unplaced)         0.186     6.817    eb/lane[2].sh/dv/v1_i_14__1_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     6.855 f  eb/lane[2].sh/dv/v1_i_11__1/O
+                         net (fo=1, unplaced)         0.186     7.041    eb/lane[2].sh/dv/v1_i_11__1_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     7.079 r  eb/lane[2].sh/dv/v1_i_8__1/O
+                         net (fo=1, unplaced)         0.186     7.265    eb/lane[2].sh/dv/v1_i_8__1_n_0
+                         LUT6 (Prop_LUT6_I0_O)        0.038     7.303 r  eb/lane[2].sh/dv/v1_i_5__1/O
+                         net (fo=4, unplaced)         0.198     7.501    eb/lane[2].sh/mu/m_ck_reg[0]_2
+                         LUT5 (Prop_LUT5_I4_O)        0.070     7.571 f  eb/lane[2].sh/mu/v[1]_i_7__2/O
+                         net (fo=1, unplaced)         0.186     7.757    eb/lane[2].sh/mu/eb_exec_busy[2]
+                         LUT3 (Prop_LUT3_I2_O)        0.038     7.795 f  eb/lane[2].sh/mu/v[1]_i_4__1/O
+                         net (fo=3, unplaced)         0.192     7.987    sb/lane[2].sh/busy_to_sched[0]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.025 r  sb/lane[2].sh/v[0]_i_4__1/O
+                         net (fo=8, unplaced)         0.214     8.239    sb/lane[2].sh/p_5_in48_in
+                         LUT3 (Prop_LUT3_I2_O)        0.070     8.309 r  sb/lane[2].sh/ready[134]_i_7__0/O
+                         net (fo=3, unplaced)         0.192     8.501    sb/lane[0].sh/disp_ready[1]
+                         LUT6 (Prop_LUT6_I5_O)        0.038     8.539 r  sb/lane[0].sh/i___27_i_4/O
+                         net (fo=1, unplaced)         0.186     8.725    fe/u_dr/rn/lane[0].sh/fl/can_dispatch4
+                         LUT5 (Prop_LUT5_I2_O)        0.038     8.763 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_2/O
+                         net (fo=2, unplaced)         0.186     8.949    fe/u_dr/rn/lane[0].sh/fl/p_86_in
+                         LUT5 (Prop_LUT5_I4_O)        0.038     8.987 r  fe/u_dr/rn/lane[0].sh/fl/i___27_i_1/O
+                         net (fo=81, unplaced)        0.267     9.254    fe/u_dr/rn/lane[0].sh/fl/q_valid_reg[2]
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.324 r  fe/u_dr/rn/lane[0].sh/fl/s1[0][7]_i_5/O
+                         net (fo=3, unplaced)         0.192     9.516    fe/u_dr/rn/lane[0].sh/fl/sched_disp_valid[2]
+                         LUT3 (Prop_LUT3_I0_O)        0.038     9.554 r  fe/u_dr/rn/lane[0].sh/fl/ready[134]_i_3__2/O
+                         net (fo=136, unplaced)       0.278     9.832    fe/u_dr/rn/lane[2].sh/fl/ready_reg[134]_0
+                         LUT2 (Prop_LUT2_I1_O)        0.070     9.902 f  fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2/O
+                         net (fo=29, unplaced)        0.243    10.145    fe/u_dr/rn/lane[2].sh/fl/ready[182]_i_6__2_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038    10.183 r  fe/u_dr/rn/lane[2].sh/fl/ready[186]_i_10__2/O
+                         net (fo=1, unplaced)         0.186    10.369    eb/lane[0].sh/ready_reg[186]
+                         LUT6 (Prop_LUT6_I5_O)        0.038    10.407 r  eb/lane[0].sh/ready[186]_i_5__2/O
+                         net (fo=1, unplaced)         0.186    10.593    fe/u_dr/rn/lane[2].sh/fl/ready_reg[186]_5
+                         LUT6 (Prop_LUT6_I4_O)        0.038    10.631 r  fe/u_dr/rn/lane[2].sh/fl/ready[186]_i_1__2/O
+                         net (fo=1, unplaced)         0.048    10.679    sb/lane[3].sh/ready_reg[186]_1
+                         FDSE                                         r  sb/lane[3].sh/ready_reg[186]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock clk rise edge)        2.500     2.500 r  
+                                                      0.000     2.500 r  clk (IN)
+                         net (fo=19792, unset)        0.021     2.521    sb/lane[3].sh/clk
+                         FDSE                                         r  sb/lane[3].sh/ready_reg[186]/C
+                         clock pessimism              0.000     2.521    
+                         clock uncertainty           -0.035     2.486    
+                         FDSE (Setup_FDSE_C_D)        0.025     2.511    sb/lane[3].sh/ready_reg[186]
+  -------------------------------------------------------------------
+                         required time                          2.511    
+                         arrival time                         -10.679    
+  -------------------------------------------------------------------
+                         slack                                 -8.168    
+
+
+
+

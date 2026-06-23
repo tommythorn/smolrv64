@@ -40,11 +40,8 @@ module sched_shard
     input  wire [PBITS-1:0]        disp_pdst,
     input  wire                    disp_pdst_v,
     input  wire [PBITS-1:0]        disp_ps1,
-    input  wire                    disp_need1,
     input  wire [PBITS-1:0]        disp_ps2,
-    input  wire                    disp_need2,
-    input  wire [PBITS-1:0]        disp_ps3,      // 3rd operand (FMA); tie need3=0 until FP
-    input  wire                    disp_need3,
+    input  wire [PBITS-1:0]        disp_ps3,      // 3rd operand (FMA); tied to p0 until FP
     input  wire [LATW-1:0]         disp_lat,
     input  wire [CBITS-1:0]        disp_ckpt,
     input  wire [MIDXW-1:0]        disp_mem_idx,
@@ -157,10 +154,11 @@ module sched_shard
    assign iss_mem_idx= mi [sel];
    assign iss_pay    = py [sel];
 
-   // seed a new entry's ready bits: not-a-dep, OR in the table & not cleared this cycle,
-   // OR woken this cycle. Computed procedurally at the dispatch edge (NOT a continuous
-   // assign -- match()/clr_hit() read wake_valid/clr_valid, which a wire's sensitivity
-   // would miss, leaving the seed stale; same gotcha as the aligner's hwr()).
+   // seed a new entry's ready bits: in the table & not cleared this cycle, OR woken this
+   // cycle. A non-dependency operand is p0 (ready[0] hardwired), so no "need" term is
+   // needed. Computed procedurally at the dispatch edge (NOT a continuous assign --
+   // match()/clr_hit() read wake_valid/clr_valid, which a wire's sensitivity would miss,
+   // leaving the seed stale; same gotcha as the aligner's hwr()).
    reg seed1, seed2, seed3;
 
    // ------------------------------------------------------------- sequential
@@ -173,7 +171,11 @@ module sched_shard
          // ready table: wake sets, freshly dispatched dest clears (clear after set so a
          // same-cycle clash leaves the new dest not-ready) -- read only at dispatch.
          for (s = 0; s < WAKEN;  s = s + 1) if (wake_valid[s]) ready[wake_pr[s*PBITS +: PBITS]] <= 1'b1;
-         for (s = 0; s < SHARDS; s = s + 1) if (clr_valid[s])  ready[clr_pr [s*PBITS +: PBITS]] <= 1'b0;
+         // p0 is the constant-zero reg: always ready, never a real dest -> never cleared
+         // (a non-writer's clr would target p0 only if pdst_v leaked; guard it regardless).
+         for (s = 0; s < SHARDS; s = s + 1)
+            if (clr_valid[s] && (clr_pr[s*PBITS +: PBITS] != {PBITS{1'b0}}))
+               ready[clr_pr[s*PBITS +: PBITS]] <= 1'b0;
 
          // CAM wakeup of live entries (catch a tag matching the result broadcast)
          for (k = 0; k < N; k = k + 1) if (v[k]) begin
@@ -192,9 +194,11 @@ module sched_shard
 
          // dispatch: write the new entry (overrides a same-cycle issue-free of this slot)
          if (disp_valid && disp_ready) begin
-            seed1 = ~disp_need1 | (ready[disp_ps1] & ~clr_hit(disp_ps1)) | match(disp_ps1);
-            seed2 = ~disp_need2 | (ready[disp_ps2] & ~clr_hit(disp_ps2)) | match(disp_ps2);
-            seed3 = ~disp_need3 | (ready[disp_ps3] & ~clr_hit(disp_ps3)) | match(disp_ps3);
+            // no per-operand "need" bit: a non-dependency arrives as p0 (constant zero,
+            // ready[0] hardwired below), so its seed is just ready & ~clr | wake.
+            seed1 = (ready[disp_ps1] & ~clr_hit(disp_ps1)) | match(disp_ps1);
+            seed2 = (ready[disp_ps2] & ~clr_hit(disp_ps2)) | match(disp_ps2);
+            seed3 = (ready[disp_ps3] & ~clr_hit(disp_ps3)) | match(disp_ps3);
             v  [dst] <= 1'b1;
             sq [dst] <= disp_seq;
             pd [dst] <= disp_pdst;  pdv[dst] <= disp_pdst_v;

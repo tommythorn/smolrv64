@@ -13,7 +13,7 @@ module tb;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;
-   reg                disp_valid, disp_pdst_v, disp_need1, disp_need2;
+   reg                disp_valid, disp_pdst_v;
    reg [SEQW-1:0]     disp_seq;
    reg [PBITS-1:0]    disp_pdst, disp_ps1, disp_ps2;
    reg [LATW-1:0]     disp_lat;
@@ -35,9 +35,9 @@ module tb;
                  .N(N), .NW(NW), .SEQW(SEQW), .LATW(LATW)) dut
      (.clk(clk), .reset(reset),
       .disp_valid(disp_valid), .disp_seq(disp_seq), .disp_pdst(disp_pdst),
-      .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1), .disp_need1(disp_need1),
-      .disp_ps2(disp_ps2), .disp_need2(disp_need2),
-      .disp_ps3(8'd0), .disp_need3(1'b0), .disp_lat(disp_lat),
+      .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1),
+      .disp_ps2(disp_ps2),
+      .disp_ps3(8'd0), .disp_lat(disp_lat),
       .disp_ready(disp_ready),
       .clr_valid(clr_valid), .clr_pr(clr_pr),
       .wake_valid(wake_valid), .wake_pr(wake_pr),
@@ -46,12 +46,13 @@ module tb;
       .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3),
       .iss_lat(iss_lat));
 
+   // a non-dependency source is just p0 (ps=0): always ready, no "need" bit.
    task do_disp(input [SEQW-1:0] sq, input [PBITS-1:0] dst, input pdv,
-                input [PBITS-1:0] s1, input n1, input [PBITS-1:0] s2, input n2);
+                input [PBITS-1:0] s1, input [PBITS-1:0] s2);
       begin disp_valid=1; disp_seq=sq; disp_pdst=dst; disp_pdst_v=pdv;
-            disp_ps1=s1; disp_need1=n1; disp_ps2=s2; disp_need2=n2; disp_lat=1; end
+            disp_ps1=s1; disp_ps2=s2; disp_lat=1; end
    endtask
-   task no_disp; begin disp_valid=0; disp_pdst_v=0; disp_need1=0; disp_need2=0; end endtask
+   task no_disp; begin disp_valid=0; disp_pdst_v=0; end endtask
 
    task ckiss(input [127:0] nm, input ev, input [SEQW-1:0] es);
       begin #1;
@@ -66,11 +67,11 @@ module tb;
 
       // ---- Test A: dependent chain A->B->C, LATENCY 1 (each issues the cycle after
       //      its producer issues), sustained 1/cycle through an N=2 RS. ----
-      @(negedge clk); do_disp(0, 8'd20,1, 8'd0,0, 8'd0,0);   // A: no src deps
+      @(negedge clk); do_disp(0, 8'd20,1, 8'd0, 8'd0);   // A: no src deps
       ckiss("A.c0", 1'b0, 0);                                // A not resident yet
-      @(negedge clk); do_disp(1, 8'd21,1, 8'd20,1, 8'd0,0);  // B: src1=20 (A)
+      @(negedge clk); do_disp(1, 8'd21,1, 8'd20, 8'd0);  // B: src1=20 (A)
       ckiss("A.c1", 1'b1, 0);                                // A issues
-      @(negedge clk); do_disp(2, 8'd22,1, 8'd21,1, 8'd0,0);  // C: src1=21 (B)
+      @(negedge clk); do_disp(2, 8'd22,1, 8'd21, 8'd0);  // C: src1=21 (B)
       ckiss("A.c2", 1'b1, 1);                                // B issues (woke by A, latency 1)
       @(negedge clk); no_disp;
       ckiss("A.c3", 1'b1, 2);                                // C issues (woke by B, latency 1)
@@ -79,9 +80,9 @@ module tb;
 
       // ---- Test B: oldest-first among 2 entries waiting on a cross-shard producer ----
       @(negedge clk); sib_clr_v=1; sib_clr_pr=8'd40;         // sibling allocates producer 40
-                      do_disp(10, 8'd41,1, 8'd40,1, 8'd0,0); // Q waits on 40
+                      do_disp(10, 8'd41,1, 8'd40, 8'd0); // Q waits on 40
       ckiss("B.c0", 1'b0, 0);
-      @(negedge clk); sib_clr_v=0; do_disp(11, 8'd42,1, 8'd40,1, 8'd0,0); // R waits on 40
+      @(negedge clk); sib_clr_v=0; do_disp(11, 8'd42,1, 8'd40, 8'd0); // R waits on 40
       ckiss("B.c1", 1'b0, 0);                                // Q resident, 40 not ready
       @(negedge clk); no_disp; sib_wake_v=1; sib_wake_pr=8'd40; // sibling issues producer
       ckiss("B.c2", 1'b0, 0);                                // wake applies at edge
@@ -93,10 +94,10 @@ module tb;
       ckiss("B.c5", 1'b0, 0);
 
       // ---- Test C: N=2 capacity / backpressure (both entries stuck on pr50) ----
-      @(negedge clk); sib_clr_v=1; sib_clr_pr=8'd50; do_disp(20, 8'd60,1, 8'd50,1, 8'd0,0);
-      @(negedge clk); sib_clr_v=0; do_disp(21, 8'd61,1, 8'd50,1, 8'd0,0);
+      @(negedge clk); sib_clr_v=1; sib_clr_pr=8'd50; do_disp(20, 8'd60,1, 8'd50, 8'd0);
+      @(negedge clk); sib_clr_v=0; do_disp(21, 8'd61,1, 8'd50, 8'd0);
       #1; if(!disp_ready) begin $display("FAIL C dr@2 (1 slot free expected)"); errs=errs+1; end
-      @(negedge clk); do_disp(22, 8'd62,1, 8'd50,1, 8'd0,0); // 3rd attempt -> RS full
+      @(negedge clk); do_disp(22, 8'd62,1, 8'd50, 8'd0); // 3rd attempt -> RS full
       #1; if(disp_ready) begin $display("FAIL C dr@3 (RS should be full)"); errs=errs+1; end
       if(iss_valid) begin $display("FAIL C none-should-issue"); errs=errs+1; end
       @(negedge clk); no_disp; sib_wake_v=1; sib_wake_pr=8'd50;  // wake the producer

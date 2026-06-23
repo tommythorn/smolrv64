@@ -41,7 +41,7 @@ module tb;
       .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
-      .r_need1(), .r_need2(), .r_is_branch(), .r_pay(), .r_ckpt(r_ckpt), .cur(cur),
+      .r_is_branch(), .r_pay(), .r_ckpt(r_ckpt), .cur(cur),
       .stall(stall));
 
    function [PBITS-1:0] P(input [IW*PBITS-1:0] bus, input integer k);

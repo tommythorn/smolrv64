@@ -71,7 +71,7 @@ module backend_top
    assign redirect_target = eb_target;
 
    // ---- frontend: fetch -> decode -> rename ----
-   wire [IW-1:0]      r_valid, r_rd_v, r_need1, r_need2, r_is_branch, fe_stall;
+   wire [IW-1:0]      r_valid, r_rd_v, r_is_branch, fe_stall;
    wire [IW*SEQW-1:0] r_seq;
    wire [IW*ABITS-1:0] r_rd;
    wire [IW*PBITS-1:0] ps1, ps2, pdst;
@@ -131,7 +131,7 @@ module backend_top
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
-      .r_need1(r_need1), .r_need2(r_need2), .r_is_branch(r_is_branch),
+      .r_is_branch(r_is_branch),
       .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .stall(fe_stall));
 
    // ---- scheduler bundle ----
@@ -160,8 +160,8 @@ module backend_top
                   .CBITS(CBITS), .MIDXW(MIDXW)) sb
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
-      .disp_ps1(ps1), .disp_need1(r_need1), .disp_ps2(ps2), .disp_need2(r_need2),
-      .disp_ps3({IW*PBITS{1'b0}}), .disp_need3({IW{1'b0}}),   // FMA 3rd operand: unused until FP
+      .disp_ps1(ps1), .disp_ps2(ps2),
+      .disp_ps3({IW*PBITS{1'b0}}),   // FMA 3rd operand: p0 (always ready) until FP
       .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),

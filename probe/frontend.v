@@ -56,8 +56,6 @@ module frontend
     output wire [IW*PBITS-1:0]     ps1,
     output wire [IW*PBITS-1:0]     ps2,
     output wire [IW*PBITS-1:0]     pdst,
-    output wire [IW-1:0]           r_need1,
-    output wire [IW-1:0]           r_need2,
     output wire [IW-1:0]           r_is_branch,
     output wire [IW*`PAYW-1:0]     r_pay,
     output wire [CBITS-1:0]        r_ckpt,
@@ -86,7 +84,7 @@ module frontend
       .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),
-      .r_need1(r_need1), .r_need2(r_need2), .r_is_branch(r_is_branch),
+      .r_is_branch(r_is_branch),
       .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .stall(stall));
 endmodule
 

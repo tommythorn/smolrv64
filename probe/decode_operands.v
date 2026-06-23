@@ -70,12 +70,15 @@ module decode_operands
       endcase
 
       // operand fields (integer -> top arch bit 0). x0 dest writes are discarded.
-      rd    = {1'b0, rdf};
-      rs1   = {1'b0, rs1f};
-      rs2   = {1'b0, rs2f};
       rd_v  = legal && has_rd && (rdf != 5'b0);
       rs1_v = legal && has_rs1;
       rs2_v = legal && has_rs2;
+      // An absent source reads as arch x0 (-> phys p0): the constant-zero register is
+      // always ready and never written, so it drops out of the scheduler's readiness
+      // test with no per-operand "need" bit. (A present x0 source already does this.)
+      rd    = {1'b0, rdf};
+      rs1   = rs1_v ? {1'b0, rs1f} : 6'd0;
+      rs2   = rs2_v ? {1'b0, rs2f} : 6'd0;
 
       has_imm = legal && (imm_sel != N);
       case (imm_sel)

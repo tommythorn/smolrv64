@@ -51,8 +51,6 @@ module decode_rename
     output wire [IW*PBITS-1:0]  ps1,
     output wire [IW*PBITS-1:0]  ps2,
     output wire [IW*PBITS-1:0]  pdst,
-    output wire [IW-1:0]        r_need1,  // source 1 is a real dependency to wait on
-    output wire [IW-1:0]        r_need2,
     output wire [IW-1:0]        r_is_branch,  // for speculative checkpoint creation
     output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc+branch)
     output wire [CBITS-1:0]     r_ckpt,   // the renamed bundle's checkpoint (= cur)
@@ -92,8 +90,8 @@ module decode_rename
    reg [IW*SEQW-1:0]   q_seq;
    reg [IW*ABITS-1:0]  q_rd, q_rs1, q_rs2;
    reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot, q_d_slot;
-   // payload + need flags registered alongside the rename contract
-   reg [IW-1:0]        q_rs1_v, q_rs2_v, q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
+   // payload registered alongside the rename contract
+   reg [IW-1:0]        q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
    reg [IW-1:0]        q_is_store, q_mem_signed;
    reg [IW*2-1:0]      q_mem_size;
    reg [IW-1:0]        q_is_branch, q_is_jump, q_is_mul;
@@ -129,7 +127,6 @@ module decode_rename
          q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
          q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
          q_d_is_slot  <= d_d_is_slot;   q_d_slot   <= d_d_slot;
-         q_rs1_v <= d_rs1_v; q_rs2_v <= d_rs2_v;
          q_imm <= d_imm; q_pc <= pc_in;
          q_alu_op <= d_alu_op; q_alu_w <= d_alu_w; q_alu_uw <= d_alu_uw;
          q_op1_sel <= d_op1_sel; q_op2_imm <= d_op2_imm; q_res_link <= d_res_link;
@@ -143,8 +140,6 @@ module decode_rename
    assign r_seq   = q_seq;
    assign r_rd    = q_rd;
    assign r_rd_v  = q_rd_v;
-   assign r_need1 = q_rs1_v;
-   assign r_need2 = q_rs2_v;
    assign r_is_branch = q_is_branch;
 
    // pack the execute payload per slot (see exec_pay.vh)
