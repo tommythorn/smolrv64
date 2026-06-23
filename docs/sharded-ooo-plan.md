@@ -411,10 +411,31 @@ harder than I$↔fetch and so must be fixed up front:
    store-data from the shards, load WB muxed onto the owner lane (busy-gated, no
    collision), loads counted at LSU completion. `tb_lsu` + end-to-end `tb_ldst`
    (store → forwarded load → dependent) green. M1 simplifications still standing:
-   stores issue-on-both; combinational (fixed-1-cycle) load; serialize fences/
-   atomics/MMIO via a forced checkpoint is a **TODO** (unused by the M1 tests).
+   stores issue-on-both; serialize fences/atomics/MMIO via a forced checkpoint is a
+   **TODO** (unused by the M1 tests).
+   - **Timing rework (2026-06-22, TT):** the byte-merge was the backend's critical
+     path. Two changes, suite 26/26 throughout, area flat (~25% LUT, DSP 64):
+     (a) **fill-time arithmetic + word-equality merge** — each SB/LQ entry is reduced
+     *at fill* (sequential, off the critical path) to a 2-word representation
+     `{w0, w1=w0+1}` + per-word byte-enable masks + data pre-shifted into the word
+     lanes (a misaligned/word-spanning access spills into `w1`, self-contained — no
+     extra slot, no replay, dispatch-time allocation untouched). The combinational
+     merge becomes pure word-**EQUALITY** (XNOR, no carry) + mask lookup + youngest-
+     select, replacing the per-byte 34-bit range compares (carry chains). The per-store
+     "older-than-load" seqno compare is hoisted out of the per-byte loop.
+     (b) **pipelined load-select** — split the one-cycle "pick oldest order-safe load
+     AND merge it" into **SELECT | MERGE**: SELECT latches the load's attrs+addr into
+     `p_*` and registers `mem_raddr`; MERGE byte-merges one cycle later and commits to
+     the WB register. The WB-lane reservation moves to MERGE (where `wb_busy` lines up
+     with the load's actual writeback cycle); on conflict MERGE stalls and retries.
+     Squash gated at both MERGE (`p_seq`) and output (`r_seq`). Load-use latency +1 —
+     this is the shape a synchronous D$ wants (addr out → 1 cycle → data back).
+     LSU-alone OOC logic delay **4.64 → 2.39 ns**. (Note: the *full-backend* OOC worst
+     path is a flattened-hierarchy artifact crossing unrelated units; only the
+     LSU-alone OOC number is meaningful pre-integration. No real-Fmax path exists until
+     the sharded core is wired into a platform top — OOC logic-delay is the only signal.)
 2. Scheduler WB-slot reservation + fixed N+3 hit latency (needed once load latency
-   goes variable; M1's combinational load needs no reservation).
+   goes variable; the MERGE-stage lane reservation is the M1 form of this).
 3. Miss deferral (variable latency on the stub).
 4. Real D$ (**VHPR — virtually-indexed, physical-tag/PPN per line; single-resident
    alias**) + miss-path translator: cache lines, line-crossing two-read+merge, miss
