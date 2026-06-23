@@ -57,6 +57,8 @@ module exec_shard
     // CSR file (system op executes here when oldest -> precise)
     input  wire [63:0]             csr_rdata,    // old value at imm[11:0]
     input  wire [63:0]             csr_redir_target, // trap/xret target (from csr_file)
+    input  wire                    csr_redir_valid,  // active sys op redirects (trap/xret/illegal)
+    input  wire                    csr_illegal,      // active CSR op is illegal -> no rd write
     output wire                    csr_req_v,    // drive the CSR update port
     output wire                    csr_req_is_csr,
     output wire [2:0]              csr_req_func,
@@ -187,7 +189,8 @@ module exec_shard
    // result flop = writeback. ALU/link results, plus M completions (mux'd in; only one
    // M-op per shard at a time -> no collision). mem ops complete via the LSU.
    // a CSR op writes rd = the OLD csr value (read combinationally from csr_file).
-   wire        csr_wb    = ex_v & ex_csr & ex_pdv;
+   // An illegal CSR access traps and writes nothing.
+   wire        csr_wb    = ex_v & ex_csr & ex_pdv & ~csr_illegal;
    wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr;
    assign      wb_next   = ex_alu_wb | m_complete | csr_wb;   // what this lane writes back next cycle
    always @(posedge clk) begin
@@ -206,17 +209,12 @@ module exec_shard
    assign csr_req_src    = csr_src;
    assign csr_req_pc     = ex_pc;
 
-   // control-transfer system ops: ecall(0)/ebreak(1)/sret(0x102)/mret(0x302). Their
-   // redirect target is computed by csr_file (trap->m/stvec by delegation, xret->
-   // m/sepc). A plain CSR op (and wfi/sfence) does NOT redirect: it mutates state at
-   // EX non-speculatively (issues only when oldest) and falls through to pc+4 -- the
-   // correct path, already in flight -- so no flush is needed (younger CSR readers are
-   // themselves gated-to-oldest and will see the new value).
-   wire is_sysctl = ex_ser & ~ex_csr &
-        ((ex_imm[11:0]==12'h000) | (ex_imm[11:0]==12'h001) |
-         (ex_imm[11:0]==12'h102) | (ex_imm[11:0]==12'h302));
+   // csr_file decides whether a system op redirects and where: ecall/ebreak/illegal-CSR
+   // -> m/stvec (by delegation), mret/sret -> m/sepc. A plain LEGAL CSR op does NOT
+   // redirect (redir_valid=0): it mutates state at EX non-speculatively (issues only
+   // when oldest) and falls through to pc+4 -- the correct path, already in flight.
    wire [63:0] sys_target = csr_redir_target;
-   wire sys_redirect = ex_v & is_sysctl;
+   wire sys_redirect = ex_v & ex_ser & csr_redir_valid;
 
    // busy = unit running OR an M-op in EX about to start it (so no second M-op is
    // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.

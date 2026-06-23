@@ -42,6 +42,12 @@ module decode_operands
    wire [63:0] imm_j = {{43{insn[31]}}, insn[31], insn[19:12], insn[20], insn[30:21], 1'b0};
    wire [63:0] imm_csri = {59'b0, rs1f};                   // zimm (CSR immediate)
 
+   // CSR write to a read-only CSR (addr[11:10]==11): statically illegal -> traps and
+   // writes no rd. "Writes" = csrrw/wi, or csrrs/c with rs1!=x0.  (insn[31:30]=addr[11:10])
+   wire csr_ro_wr = (opcode==SYSTEM) && (funct3[1:0]!=2'b00) && (funct3!=3'b100)
+                  && (insn[31:30]==2'b11)
+                  && ((funct3[1:0]==2'b01) || (rs1f != 5'b0));
+
    localparam [2:0] N=0, I=1, S=2, B=3, U=4, J=5, C=6;     // imm selectors
    reg [2:0] imm_sel;
    reg       has_rd, has_rs1, has_rs2;
@@ -70,7 +76,10 @@ module decode_operands
       endcase
 
       // operand fields (integer -> top arch bit 0). x0 dest writes are discarded.
-      rd_v  = legal && has_rd && (rdf != 5'b0);
+      // A CSR write to a read-only CSR (addr[11:10]==11) traps (csr_file raises cause 2)
+      // and must NOT write rd, so give it no destination (csr_ro_wr) -> rename allocates
+      // nothing and there is no mapping to corrupt, exactly like ecall.
+      rd_v  = legal && has_rd && (rdf != 5'b0) && !csr_ro_wr;
       rs1_v = legal && has_rs1;
       rs2_v = legal && has_rs2;
       // An absent source reads as arch x0 (-> phys p0): the constant-zero register is

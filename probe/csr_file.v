@@ -18,8 +18,10 @@ module csr_file
     // combinational read (for a CSR op's rd = old value)
     input  wire [11:0] raddr,
     output reg  [63:0] rdata,
-    // redirect target for the current system op (combinational)
+    // redirect for the current system op (combinational)
     output reg  [63:0] redir_target,
+    output wire        redir_valid,   // this op redirects (trap / xret / illegal-CSR)
+    output wire        csr_illegal,   // active CSR op is an illegal access (suppress rd)
     // single update (driven at EX by the oldest system op -> non-speculative)
     input  wire        upd_valid,
     input  wire        upd_is_csr,
@@ -113,18 +115,27 @@ module csr_file
    wire is_ebreak = ~upd_is_csr & (upd_addr == OP_EBREAK);
    wire is_mret   = ~upd_is_csr & (upd_addr == OP_MRET);
    wire is_sret   = ~upd_is_csr & (upd_addr == OP_SRET);
-   wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
-   wire [63:0] trap_cause  = is_ebreak ? 64'd3 : ecall_cause;
-   // delegate to S if currently in S/U and medeleg bit set for this cause
-   wire deleg = (priv != M) & medeleg[trap_cause[5:0]];
-   wire trap_to_s = (is_ecall | is_ebreak) & deleg;
 
+   // illegal CSR access: writing a read-only CSR (addr[11:10]==11 & the op writes), or
+   // accessing a CSR that needs higher privilege than current (addr[9:8] > priv).
+   wire csr_writes = upd_is_csr & ((upd_func[1:0]==2'b01) | (upd_src != 64'd0));
+   wire csr_ro     = (upd_addr[11:10]==2'b11) & csr_writes;
+   wire csr_nopriv = upd_is_csr & (priv < upd_addr[9:8]);
+   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv);
+
+   // exception this op raises (ecall/ebreak/illegal-CSR) + cause + delegation
+   wire        exc_active = is_ecall | is_ebreak | csr_illegal;
+   wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
+   wire [63:0] exc_cause = csr_illegal ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
+   wire        exc_to_s  = exc_active & (priv != M) & medeleg[exc_cause[5:0]];
+
+   assign redir_valid = upd_valid & (exc_active | is_mret | is_sret);
    // ---- redirect target (combinational) ----
    always @* begin
       if (is_mret)              redir_target = mepc;
       else if (is_sret)         redir_target = sepc;
-      else if (trap_to_s)       redir_target = {stvec[63:2], 2'b0};
-      else                      redir_target = {mtvec[63:2], 2'b0};   // ecall/ebreak -> M
+      else if (exc_to_s)        redir_target = {stvec[63:2], 2'b0};
+      else                      redir_target = {mtvec[63:2], 2'b0};
    end
 
    localparam MIE_B=3, SIE_B=1, MPIE_B=7, SPIE_B=5, SPP_B=8;  // [12:11]=MPP
@@ -137,7 +148,24 @@ module csr_file
          pmpcfg0<=0; pmpaddr0<=0; mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
       end else if (upd_valid) begin
-         if (upd_is_csr) begin
+         if (exc_active) begin
+            // trap (ecall/ebreak/illegal-CSR); target priv per delegation
+            if (exc_to_s) begin
+               sepc   <= upd_pc;
+               scause <= exc_cause;
+               stval  <= is_ebreak ? upd_pc : 64'd0;
+               mstatus[SPIE_B] <= mstatus[SIE_B]; mstatus[SIE_B] <= 1'b0;
+               mstatus[SPP_B]  <= priv[0];
+               priv <= S;
+            end else begin
+               mepc   <= upd_pc;
+               mcause <= exc_cause;
+               mtval  <= is_ebreak ? upd_pc : 64'd0;
+               mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
+               mstatus[12:11]  <= priv;
+               priv <= M;
+            end
+         end else if (upd_is_csr) begin
             case (upd_addr)
               MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
               SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
@@ -165,22 +193,6 @@ module csr_file
               MNSTATUS:   mnstatus<= newv;
               default:    ;
             endcase
-         end else if (is_ecall | is_ebreak) begin
-            if (trap_to_s) begin
-               sepc   <= upd_pc;
-               scause <= trap_cause;
-               stval  <= is_ebreak ? upd_pc : 64'd0;
-               mstatus[SPIE_B] <= mstatus[SIE_B]; mstatus[SIE_B] <= 1'b0;
-               mstatus[SPP_B]  <= priv[0];        // SPP = (prev priv==S)
-               priv <= S;
-            end else begin
-               mepc   <= upd_pc;
-               mcause <= trap_cause;
-               mtval  <= is_ebreak ? upd_pc : 64'd0;
-               mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
-               mstatus[12:11]  <= priv;           // MPP = prev priv
-               priv <= M;
-            end
          end else if (is_mret) begin
             priv <= mstatus[12:11];
             mstatus[MIE_B]  <= mstatus[MPIE_B]; mstatus[MPIE_B] <= 1'b1;

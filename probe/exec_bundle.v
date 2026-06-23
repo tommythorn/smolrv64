@@ -88,6 +88,7 @@ module exec_bundle
 
    // ---- CSR file (shared; one system op executes at a time -> single port) ----
    wire [63:0]          csr_rdata, csr_redir_target;
+   wire                 csr_redir_valid, csr_illegal;
    wire [SHARDS-1:0]    csr_req_v, csr_req_is_csr;
    wire [SHARDS*3-1:0]  csr_req_func;
    wire [SHARDS*12-1:0] csr_req_addr, csr_rd_addr;
@@ -112,6 +113,7 @@ module exec_bundle
          .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
          .csr_rdata(csr_rdata), .csr_redir_target(csr_redir_target),
+         .csr_redir_valid(csr_redir_valid), .csr_illegal(csr_illegal),
          .csr_req_v(csr_req_v[i]), .csr_req_is_csr(csr_req_is_csr[i]),
          .csr_req_func(csr_req_func[i*3 +: 3]), .csr_req_addr(csr_req_addr[i*12 +: 12]),
          .csr_req_src(csr_req_src[i*64 +: 64]), .csr_req_pc(csr_req_pc[i*64 +: 64]),
@@ -146,6 +148,7 @@ module exec_bundle
    csr_file u_csr
      (.clk(clk), .reset(reset),            // squash must NOT reset CSR state (only reset does)
       .raddr(s_rdaddr), .rdata(csr_rdata), .redir_target(csr_redir_target),
+      .redir_valid(csr_redir_valid), .csr_illegal(csr_illegal),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));
 
