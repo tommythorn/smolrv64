@@ -51,11 +51,16 @@ module exec_shard
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
-    // ---- writeback broadcast (registered, all shards): RF write + 1-ahead forward ----
+    // ---- RF write source (registered ALU/M ∪ the LSU load), all shards ----
     input  wire [SHARDS-1:0]       wb_valid_in,
     input  wire [SHARDS*PBITS-1:0] wb_pr_in,
     input  wire [SHARDS*64-1:0]    wb_val_in,
-    // ---- 2-ahead forward (the writeback broadcast delayed one cycle) ----
+    // ---- forwarding sources: registered ALU/M only (the LSU load is NOT forwarded --
+    //      its consumers wake at completion and read the RF). 1-ahead = byp_*, 2-ahead
+    //      = fw2_* (byp delayed one cycle). ----
+    input  wire [SHARDS-1:0]       byp_valid,
+    input  wire [SHARDS*PBITS-1:0] byp_pr,
+    input  wire [SHARDS*64-1:0]    byp_val,
     input  wire [SHARDS-1:0]       fw2_valid,
     input  wire [SHARDS*PBITS-1:0] fw2_pr,
     input  wire [SHARDS*64-1:0]    fw2_val,
@@ -127,10 +132,10 @@ module exec_shard
    always @* begin
       op1f = ex_r1; op2f = ex_r2;
       for (s = 0; s < SHARDS; s = s + 1) begin
-         if (fw2_valid[s]  && fw2_pr [s*PBITS +: PBITS] == ex_p1) op1f = fw2_val [s*64 +: 64];
-         if (fw2_valid[s]  && fw2_pr [s*PBITS +: PBITS] == ex_p2) op2f = fw2_val [s*64 +: 64];
-         if (wb_valid_in[s]&& wb_pr_in[s*PBITS +: PBITS] == ex_p1) op1f = wb_val_in[s*64 +: 64];
-         if (wb_valid_in[s]&& wb_pr_in[s*PBITS +: PBITS] == ex_p2) op2f = wb_val_in[s*64 +: 64];
+         if (fw2_valid[s] && fw2_pr[s*PBITS +: PBITS] == ex_p1) op1f = fw2_val[s*64 +: 64];
+         if (fw2_valid[s] && fw2_pr[s*PBITS +: PBITS] == ex_p2) op2f = fw2_val[s*64 +: 64];
+         if (byp_valid[s] && byp_pr[s*PBITS +: PBITS] == ex_p1) op1f = byp_val[s*64 +: 64];
+         if (byp_valid[s] && byp_pr[s*PBITS +: PBITS] == ex_p2) op2f = byp_val[s*64 +: 64];
       end
    end
 

@@ -74,12 +74,13 @@ module exec_bundle
    wire [SHARDS*64-1:0]    ewbd;
    assign wb_busy = wbv;
 
-   // 2-ahead forwarding source = the broadcast delayed one cycle.
+   // 2-ahead forwarding source = the registered ALU/M results (wbv/wbp/wbd, NOT the
+   // LSU-merged ewb) delayed one cycle. Loads are not forwarded.
    reg  [SHARDS-1:0]       fw2v;
    reg  [SHARDS*PBITS-1:0] fw2p;
    reg  [SHARDS*64-1:0]    fw2d;
    initial fw2v = {SHARDS{1'b0}};
-   always @(posedge clk) begin fw2v <= ewbv; fw2p <= ewbp; fw2d <= ewbd; end
+   always @(posedge clk) begin fw2v <= wbv; fw2p <= wbp; fw2d <= wbd; end
 
    genvar i;
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
@@ -98,8 +99,9 @@ module exec_bundle
          .mem_size(p[`PAY_MSIZE]), .mem_signed(p[`PAY_MSGN]),
          .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
-         .wb_valid_in(ewbv), .wb_pr_in(ewbp), .wb_val_in(ewbd),
-         .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),
+         .wb_valid_in(ewbv), .wb_pr_in(ewbp), .wb_val_in(ewbd),      // RF write (incl. load)
+         .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
+         .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
          .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_seq(brs[i*SEQW +: SEQW]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
