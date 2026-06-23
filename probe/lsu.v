@@ -72,6 +72,16 @@ module lsu
     input  wire [IW*4-1:0]        exe_ld_nb,          // load size in bytes (1..8)
     input  wire [IW-1:0]          exe_ld_sgn,         // sign-extend the result
 
+    // ---- atomic (A ext) execute port (single: atomics are serialized + solo) ----
+    input  wire                   amo_v,              // an atomic at EX (oldest, non-spec)
+    input  wire [4:0]             amo_func,           // funct5
+    input  wire [AW-1:0]          amo_addr,
+    input  wire [63:0]            amo_data,           // rs2
+    input  wire [1:0]             amo_sz,             // .W=2 / .D=3
+    input  wire [PBITS-1:0]       amo_pdst,
+    input  wire [SBITS-1:0]       amo_owner,
+    input  wire [CBITS-1:0]       amo_ckpt,
+
     // ---- flat memory port (stub; real D$ later) ----
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
@@ -230,24 +240,128 @@ module lsu
    reg [2:0]      p_lb;
    initial p_v = 1'b0;
 
+   // ---- atomic (A ext) FSM state (declared early: used by sel_fire below) ----
+   localparam A_IDLE=2'd0, A_WAIT=2'd1, A_RD=2'd2, A_WB=2'd3;
+   reg [1:0]        ast;
+   reg [AW-1:0]     a_addr;  reg [63:0] a_data;  reg [4:0] a_func;  reg [1:0] a_sz;
+   reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;
+   reg [63:0]       a_rdval_q;
+   reg              rsv_v;   reg [WW-1:0] rsv_w;       // LR/SC reservation (word granularity)
+   // registered AMO writeback (1-cycle pulse) -- aligns with wb_busy like a load's r_*
+   reg              amo_wbv;
+   reg [PBITS-1:0]  amo_wbpd;  reg [SBITS-1:0] amo_wbow;  reg [63:0] amo_wbvl;  reg [CBITS-1:0] amo_wbck;
+   initial begin ast = A_IDLE; rsv_v = 1'b0; amo_wbv = 1'b0; end
+
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
    // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.
    wire merge_squash = rollback & older(rollback_seq, p_seq);
    wire merge_fire   = p_v & ~wb_busy[p_owner] & ~merge_squash;
    wire merge_drop   = p_v & merge_squash;
    wire merge_adv    = ~p_v | merge_fire | merge_drop;   // MERGE stage empties next cycle
-   wire sel_fire     = merge_adv & ld_sel_v;             // SELECT may hand a load to MERGE
+   // a younger load must not bypass an in-flight (older) atomic's RMW write -> hold load
+   // selection while the atomic FSM is busy (ast != A_IDLE) OR an atomic is arriving this
+   // cycle (~amo_v). The latter keeps any load out of the MERGE stage during the atomic, so
+   // a load's ld_done never collides with the atomic's (single completion port).
+   wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v;
+
+   // ====================== atomic (A ext) FSM ======================
+   // Atomics are serialized + solo (issue only when oldest), so when one executes every
+   // older store has committed and (after A_WAIT) drained, and nothing younger is live --
+   // the RMW is non-speculative and sees coherent memory. As cheap as in-order. States:
+   //   IDLE -> WAIT(older stores drain) -> RD(read+compute+write) -> WB(write rd back).
+   wire [AW-1:0]    a_waddr = a_addr & ~{{(AW-3){1'b0}}, 3'b111};   // 8-byte aligned
+   wire [WW-1:0]    a_word  = a_addr[PAW-1:3];
+   wire             a_islr  = (a_func == 5'b00010);
+   wire             a_issc  = (a_func == 5'b00011);
+   wire             a_isw   = (a_sz == 2'd2);
+   wire             a_half  = a_addr[2];
+   wire [31:0]      a_old32 = a_half ? mem_rdata[63:32] : mem_rdata[31:0];
+   wire [31:0]      a_d32   = a_data[31:0];
+   wire             a_scok  = rsv_v && (rsv_w == a_word);
+   // committed stores still in the buffer must drain before the RMW reads memory
+   reg              amo_pend;
+   integer pp;
+   always @* begin amo_pend = 1'b0;
+      for (pp = 0; pp < SBDEPTH; pp = pp + 1) if (sb_v[pp] && sb_cmt[pp]) amo_pend = 1'b1; end
+   // RMW result (value to store; for .W only low 32 used)
+   reg [63:0] a_resv;
+   always @* begin
+      case (a_func)
+        5'b00001: a_resv = a_data;                                                    // swap
+        5'b00000: a_resv = a_isw ? {32'b0, a_old32 + a_d32}            : mem_rdata + a_data;
+        5'b00100: a_resv = a_isw ? {32'b0, a_old32 ^ a_d32}            : mem_rdata ^ a_data;
+        5'b01100: a_resv = a_isw ? {32'b0, a_old32 & a_d32}            : mem_rdata & a_data;
+        5'b01000: a_resv = a_isw ? {32'b0, a_old32 | a_d32}            : mem_rdata | a_data;
+        5'b10000: a_resv = a_isw ? {32'b0, ($signed(a_old32)<$signed(a_d32))?a_old32:a_d32}
+                                 : ($signed(mem_rdata)<$signed(a_data))?mem_rdata:a_data;   // min
+        5'b10100: a_resv = a_isw ? {32'b0, ($signed(a_old32)>$signed(a_d32))?a_old32:a_d32}
+                                 : ($signed(mem_rdata)>$signed(a_data))?mem_rdata:a_data;   // max
+        5'b11000: a_resv = a_isw ? {32'b0, (a_old32<a_d32)?a_old32:a_d32}
+                                 : (mem_rdata<a_data)?mem_rdata:a_data;                      // minu
+        5'b11100: a_resv = a_isw ? {32'b0, (a_old32>a_d32)?a_old32:a_d32}
+                                 : (mem_rdata>a_data)?mem_rdata:a_data;                      // maxu
+        5'b00011: a_resv = a_data;                                                    // SC stores rs2
+        default:  a_resv = mem_rdata;                                                 // LR: no write
+      endcase
+   end
+   wire [63:0] a_oldv   = a_isw ? {{32{a_old32[31]}}, a_old32} : mem_rdata;
+   wire [63:0] a_rdval  = a_issc ? (a_scok ? 64'd0 : 64'd1) : a_oldv;     // SC: 0=ok 1=fail
+   wire        a_dowr   = a_islr ? 1'b0 : a_issc ? a_scok : 1'b1;         // who writes memory
+   wire        amo_wr_now = (ast == A_RD) & a_dowr;
+   wire        amo_wb_ok  = (ast == A_WB) & ~wb_busy[a_own];   // reserve owner lane (next cycle)
+   wire [63:0] a_wdata  = a_isw ? (a_half ? {a_resv[31:0],32'b0} : {32'b0,a_resv[31:0]}) : a_resv;
+   wire [7:0]  a_wmask  = a_isw ? (a_half ? 8'hF0 : 8'h0F) : 8'hFF;
+
+   // drain select (oldest committed+filled store -> one masked write/cycle); declared here
+   // (before the FSM) because the FSM's reservation-clear references dr_v/dr_sel.
+   reg            dr_v;
+   reg [SBI-1:0]  dr_sel;
+   reg [SEQW-1:0] dr_best;
+   always @* begin
+      dr_v = 1'b0; dr_sel = {SBI{1'b0}}; dr_best = {SEQW{1'b0}};
+      for (i = 0; i < SBDEPTH; i = i + 1)
+         if (sb_v[i] && sb_rdy[i] && sb_cmt[i] && (!dr_v || older(sb_seq[i], dr_best))) begin
+            dr_v = 1'b1; dr_sel = i[SBI-1:0]; dr_best = sb_seq[i];
+         end
+   end
+   reg [7:0] dr_mask;
+   always @* begin
+      dr_mask = 8'd0;
+      for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
+   end
 
    always @(posedge clk) begin
-      if (reset) p_v <= 1'b0;
-      else if (sel_fire) begin
-         p_v <= 1'b1;
-         p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
-         p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
-         p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
-         p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
-         mem_raddr <= lq_addr[ld_sel];
-      end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
+      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; end
+      else begin
+         amo_wbv <= 1'b0;                       // 1-cycle pulse unless A_WB sets it
+         if (sel_fire) begin
+            p_v <= 1'b1;
+            p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
+            p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
+            p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
+            p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
+            mem_raddr <= lq_addr[ld_sel];
+         end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
+
+         // ---- atomic FSM (solo: never overlaps a load's mem_raddr/p_*) ----
+         case (ast)
+           A_IDLE: if (amo_v) begin
+                      a_addr<=amo_addr; a_data<=amo_data; a_func<=amo_func; a_sz<=amo_sz;
+                      a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; ast<=A_WAIT;
+                   end
+           A_WAIT: if (!amo_pend && !p_v) begin mem_raddr <= a_waddr; ast<=A_RD; end  // older stores drained, load pipe empty
+           A_RD:   begin a_rdval_q <= a_rdval; ast<=A_WB;     // memory write driven below (amo_wr_now)
+                      if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
+                      if (a_issc) rsv_v<=1'b0;
+                   end
+           A_WB:   if (amo_wb_ok) begin           // owner lane free next cycle -> register wb
+                      amo_wbv<=1'b1; amo_wbpd<=a_pdst; amo_wbow<=a_own;
+                      amo_wbvl<=a_rdval_q; amo_wbck<=a_ck; ast<=A_IDLE;
+                   end
+         endcase
+         // an intervening store to the reserved word breaks the reservation
+         if (dr_v && rsv_v && (sb_addr[dr_sel][PAW-1:3] == rsv_w)) rsv_v <= 1'b0;
+      end
    end
 
    // ----------------------- MERGE (byte merge) -----------------------
@@ -313,35 +427,30 @@ module lsu
    // present the registered result; a rollback that squashes this load the cycle it would
    // write back suppresses it (the MERGE-stage squash covers the cycle before).
    wire r_kill = rollback & older(rollback_seq, r_seq);
-   assign ld_wb_v      = r_v & ~r_kill;
-   assign ld_wb_pdst   = r_pdst;
-   assign ld_wb_owner  = r_owner;
-   assign ld_wb_val    = r_val;
-   assign ld_done      = ld_wb_v;
-   assign ld_done_ckpt = r_ck;
+   // the atomic FSM writes rd back (and signals completion) in A_WB; it is solo so it
+   // never collides with a normal load writeback.
+   assign ld_wb_v      = amo_wbv ? 1'b1     : (r_v & ~r_kill);
+   assign ld_wb_pdst   = amo_wbv ? amo_wbpd : r_pdst;
+   assign ld_wb_owner  = amo_wbv ? amo_wbow : r_owner;
+   assign ld_wb_val    = amo_wbv ? amo_wbvl : r_val;
+   assign ld_done      = amo_wbv ? 1'b1     : (r_v & ~r_kill);
+   assign ld_done_ckpt = amo_wbv ? amo_wbck : r_ck;
 
    // ------------------------------ drain --------------------------------
-   // oldest committed+filled store -> one masked write/cycle.
-   reg            dr_v;
-   reg [SBI-1:0]  dr_sel;
-   reg [SEQW-1:0] dr_best;
+   // (dr_v/dr_sel/dr_mask are declared+computed above, before the atomic FSM, since the
+   //  FSM's reservation-clear references them.)
    always @* begin
-      dr_v = 1'b0; dr_sel = {SBI{1'b0}}; dr_best = {SEQW{1'b0}};
-      for (i = 0; i < SBDEPTH; i = i + 1)
-         if (sb_v[i] && sb_rdy[i] && sb_cmt[i] && (!dr_v || older(sb_seq[i], dr_best))) begin
-            dr_v = 1'b1; dr_sel = i[SBI-1:0]; dr_best = sb_seq[i];
-         end
-   end
-   reg [7:0] dr_mask;
-   always @* begin
-      dr_mask = 8'd0;
-      for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
-   end
-   always @* begin
-      mem_wen   = dr_v;
-      mem_waddr = sb_addr[dr_sel];
-      mem_wdata = sb_data[dr_sel];
-      mem_wmask = dr_mask;
+      if (amo_wr_now) begin                 // atomic RMW write (solo -> no drain conflict)
+         mem_wen   = 1'b1;
+         mem_waddr = a_waddr;
+         mem_wdata = a_wdata;
+         mem_wmask = a_wmask;
+      end else begin
+         mem_wen   = dr_v;
+         mem_waddr = sb_addr[dr_sel];
+         mem_wdata = sb_data[dr_sel];
+         mem_wmask = dr_mask;
+      end
    end
 
    // ----------------------------- sequential ----------------------------

@@ -72,6 +72,7 @@ module tb;
    reg [63:0] tohost; integer c, b2;
    integer    ncyc;
    integer    trace=0;
+   integer    ncommit=0;
    reg        fl2_16=1'bx;
    reg [8*256-1:0] hexfile;
    initial begin
@@ -89,6 +90,9 @@ module tb;
       if ($value$plusargs("trace=%d", trace)) ;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
+         if (commit) ncommit = ncommit + 1;
+         if (trace && c>0 && (c % 100 == 0))
+            $display("[%0d] commits=%0d pc=%h full=%b", c, ncommit, imem_addr, dut.cc_full);
          if (trace) begin
             if (dut.eb_redirect)
                $display("[%0d] REDIRECT -> %h (seq %0d)", c, dut.eb_target, dut.eb_rseq);
@@ -109,7 +113,7 @@ module tb;
             $finish;
          end
       end
-      $display("RISCV-TEST TIMEOUT after %0d cycles (pc~%h)", ncyc, imem_addr);
+      $display("RISCV-TEST TIMEOUT after %0d cycles (pc~%h) commits=%0d", ncyc, imem_addr, ncommit);
       $finish;
    end
 

@@ -8,9 +8,10 @@
 //   [147] is_store  [149:148] mem_size  [150] mem_signed   (LSU)
 //   [151] is_mul    (M ext; the op is {alu_w, br_func} = {is_w, funct3})
 //   [152] is_csr  [155:153] csr_func  [156] is_serialize    (SYSTEM/FENCE)
+//   [157] is_amo  [162:158] amo_func (funct5)               (A extension)
 // For SYSTEM ops imm carries {.., zimm=imm[16:12], csr_addr=imm[11:0]} (the
 // instruction's rs1 field + insn[31:20]); decode_operands packs it there.
-`define PAYW        157
+`define PAYW        163
 `define PAY_ALUOP   5:0
 `define PAY_W       6
 `define PAY_UW      7
@@ -31,4 +32,6 @@
 `define PAY_CSR     152
 `define PAY_CSRF    155:153
 `define PAY_SER     156
+`define PAY_AMO     157
+`define PAY_AMOF    162:158
 `endif

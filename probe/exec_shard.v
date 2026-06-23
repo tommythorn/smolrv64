@@ -51,6 +51,8 @@ module exec_shard
     input  wire                    is_csr,
     input  wire [2:0]              csr_func,
     input  wire                    is_serialize,
+    input  wire                    is_amo,
+    input  wire [4:0]              amo_func,
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
@@ -100,6 +102,10 @@ module exec_shard
     output wire                    ex_msigned,
     output wire [63:0]             agu_addr,
     output wire [63:0]             st_data,
+    // ---- EX: atomic (A ext) drive: serialized RMW in the LSU ----
+    output wire                    ex_amo,        // this lane has an atomic at EX
+    output wire [4:0]              ex_amo_func,
+    output wire [PBITS-1:0]        ex_amo_pdst,
     // ---- M-unit status ----
     output wire                    exec_busy,
     output wire                    div_done,
@@ -122,7 +128,8 @@ module exec_shard
    wire rr_kill = squash & older(squash_seq, iss_seq);
 
    reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
-                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser;
+                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor;
+   reg  [4:0]       ex_amof;
    reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2;
    reg  [SEQW-1:0]  ex_sq;
    reg  [CBITS-1:0] ex_ck;
@@ -141,6 +148,7 @@ module exec_shard
       ex_memr <= is_mem; ex_str <= is_store; ex_msz <= mem_size; ex_msgn <= mem_signed;
       ex_br  <= is_branch; ex_jmp <= is_jump; ex_mulr <= is_mul; ex_bf <= br_func;
       ex_csr <= is_csr; ex_csrf <= csr_func; ex_ser <= is_serialize;
+      ex_amor <= is_amo; ex_amof <= amo_func;
    end
 
    // ============================== EX stage ==============================
@@ -193,7 +201,8 @@ module exec_shard
    // a CSR op writes rd = the OLD csr value (read combinationally from csr_file).
    // An illegal CSR access traps and writes nothing.
    wire        csr_wb    = ex_v & ex_csr & ex_pdv & ~csr_illegal;
-   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr;
+   // an atomic's rd comes from the LSU (ld_wb), not the ALU result -> exclude it here.
+   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr & ~ex_amor;
    assign      wb_next   = ex_alu_wb | m_complete | csr_wb;   // what this lane writes back next cycle
    always @(posedge clk) begin
       wb_valid <= ex_alu_wb | m_complete | csr_wb;
@@ -204,7 +213,7 @@ module exec_shard
    // ---- CSR/system unit: read addr + update request + redirect ----
    assign csr_rd_addr    = ex_imm[11:0];                       // combinational read
    wire [63:0] csr_src   = ex_csrf[2] ? {59'b0, ex_imm[16:12]} : op1f;  // zimm | rs1
-   assign csr_req_v      = ex_v & ex_ser;                      // oldest -> non-speculative
+   assign csr_req_v      = ex_v & ex_ser & ~ex_amor;           // SYSTEM/CSR only (not AMO)
    assign csr_req_is_csr = ex_csr;
    assign csr_req_func   = ex_csrf;
    assign csr_req_addr   = ex_imm[11:0];
@@ -238,6 +247,10 @@ module exec_shard
    assign br_seq      = ex_sq;
    assign br_is_trap  = sys_redirect & csr_redir_is_trap;   // exception -> precise (TO ckpt)
    assign st_data     = op2f;
+   // atomic drive: addr = agu_addr (rs1+0), data = st_data (rs2), size = ex_msz, sign = ex_msgn
+   assign ex_amo      = ex_v & ex_amor;
+   assign ex_amo_func = ex_amof;
+   assign ex_amo_pdst = ex_pd;
 
    // EX-stage LSU control (aligned with agu/st_data)
    assign ex_valid    = ex_v;

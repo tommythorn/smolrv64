@@ -32,7 +32,8 @@ module decode_exec
    output reg  [2:0]  csr_func,    // SYSTEM funct3 (csrrw/s/c + imm variants)
    output reg         is_serialize,// CSR-write / system / fence -> pin to shard 0
    output reg         is_mul,      // M ext (deferred unit)
-   output reg         is_amo,      // A ext (deferred, with LSU)
+   output reg         is_amo,      // A ext (serialized RMW in LSU)
+   output reg  [4:0]  amo_func,    // AMO funct5 (insn[31:27]): LR/SC/swap/add/and/or/xor/min/max
    output reg         is_fp,       // F/D ext (deferred unit)
    output reg         illegal);
 
@@ -49,7 +50,7 @@ module decode_exec
       is_mem=0; is_store=0; mem_size=2'd0; mem_signed=0;
       is_branch=0; br_func=f3; is_jump=0;
       is_csr=0; csr_func=f3; is_serialize=0;
-      is_mul=0; is_amo=0; is_fp=0; illegal=0;
+      is_mul=0; is_amo=0; amo_func=insn[31:27]; is_fp=0; illegal=0;
 
       if (insn[1:0] != 2'b11) illegal = 1'b1;   // not a 32-bit insn (should be expanded)
       else case (opc)
@@ -156,7 +157,12 @@ module decode_exec
         5'b00011: ;                                                    // MISC-MEM (FENCE/FENCE.I): NOP
                                                                        // (single hart, in-order commit -> a memory/instr barrier is free)
 
-        5'b01011: is_amo=1;                                             // AMO (deferred, LSU)
+        5'b01011: begin                                                // AMO (A ext)
+           is_amo=1; is_serialize=1;            // serialized + solo (gate to oldest)
+           op2_imm=1; alu_op=`ALU_ADD;          // AGU = rs1 + 0 (addr = rs1)
+           mem_size=f3[1:0]; mem_signed=1'b1;   // .W=2/.D=3; rd sign-extends (.W)
+           if (f3!=3'b010 && f3!=3'b011) illegal=1;
+        end
         5'b10100: is_fp=1;                                              // OP-FP (deferred)
         5'b00001, 5'b01001: begin is_fp=1; is_mem=1; is_store=opc[3];   // F/D LOAD/STORE-FP
                                   op2_imm=1; alu_op=`ALU_ADD; end

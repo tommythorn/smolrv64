@@ -55,6 +55,10 @@ module exec_bundle
     output wire [SHARDS-1:0]       ex_msigned,
     output wire [SHARDS*64-1:0]    agu_addr,
     output wire [SHARDS*64-1:0]    st_data,
+    // ---- per-shard atomic (A ext) drive ----
+    output wire [SHARDS-1:0]       ex_amo,
+    output wire [SHARDS*5-1:0]     ex_amo_func,
+    output wire [SHARDS*PBITS-1:0] ex_amo_pdst,
     // oldest mispredicting branch this cycle -> redirect
     output reg                     redirect,
     output reg  [63:0]             redirect_target,
@@ -113,6 +117,9 @@ module exec_bundle
          .mem_size(p[`PAY_MSIZE]), .mem_signed(p[`PAY_MSGN]),
          .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
          .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
+         .is_amo(p[`PAY_AMO]), .amo_func(p[`PAY_AMOF]),
+         .ex_amo(ex_amo[i]), .ex_amo_func(ex_amo_func[i*5 +: 5]),
+         .ex_amo_pdst(ex_amo_pdst[i*PBITS +: PBITS]),
          .imm(p[`PAY_IMM]), .pc(p[`PAY_PC]),
          .csr_rdata(csr_rdata), .csr_redir_target(csr_redir_target),
          .csr_redir_valid(csr_redir_valid), .csr_redir_is_trap(csr_redir_is_trap),

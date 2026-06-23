@@ -49,7 +49,9 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW-1:0]         is_mul,
     output wire [IW-1:0]         is_csr,
     output wire [IW*3-1:0]       csr_func,
-    output wire [IW-1:0]         is_serialize);
+    output wire [IW-1:0]         is_serialize,
+    output wire [IW-1:0]         is_amo,
+    output wire [IW*5-1:0]       amo_func);
 
    genvar g;
    generate
@@ -69,7 +71,8 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
             .is_store(is_store[g]), .mem_size(mem_size[g*2 +: 2]), .mem_signed(mem_signed[g]),
             .is_branch(is_branch[g]), .br_func(br_func[g*3 +: 3]), .is_jump(is_jump[g]),
             .is_mul(is_mul[g]),
-            .is_csr(is_csr[g]), .csr_func(csr_func[g*3 +: 3]), .is_serialize(is_serialize[g]));
+            .is_csr(is_csr[g]), .csr_func(csr_func[g*3 +: 3]), .is_serialize(is_serialize[g]),
+            .is_amo(is_amo[g]), .amo_func(amo_func[g*5 +: 5]));
       end
    endgenerate
 

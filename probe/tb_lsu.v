@@ -57,6 +57,8 @@ module tb;
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
+      .amo_v(1'b0), .amo_func(5'd0), .amo_addr({AW{1'b0}}), .amo_data(64'd0),
+      .amo_sz(2'd0), .amo_pdst({PBITS{1'b0}}), .amo_owner({SBITS{1'b0}}), .amo_ckpt({CBITS{1'b0}}),
       .mem_raddr(mem_raddr), .mem_rdata(mem_rdata),
       .mem_wen(mem_wen), .mem_waddr(mem_waddr), .mem_wdata(mem_wdata), .mem_wmask(mem_wmask),
       .wb_busy({IW{1'b0}}),

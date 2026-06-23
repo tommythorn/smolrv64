@@ -26,7 +26,7 @@ module decode_operands
 
    localparam [6:0] LUI=7'h37, AUIPC=7'h17, JAL=7'h6f, JALR=7'h67, BRANCH=7'h63,
                     LOAD=7'h03, STORE=7'h23, OPIMM=7'h13, OP=7'h33,
-                    OPIMM32=7'h1b, OP32=7'h3b, MISCMEM=7'h0f, SYSTEM=7'h73;
+                    OPIMM32=7'h1b, OP32=7'h3b, MISCMEM=7'h0f, SYSTEM=7'h73, AMO=7'h2f;
 
    wire [6:0] opcode = insn[6:0];
    wire [2:0] funct3 = insn[14:12];
@@ -63,6 +63,7 @@ module decode_operands
         STORE:      begin has_rs1 = 1'b1; has_rs2 = 1'b1; imm_sel = S; end
         OPIMM, OPIMM32: begin has_rd = 1'b1; has_rs1 = 1'b1; imm_sel = I; end
         OP, OP32:   begin has_rd = 1'b1; has_rs1 = 1'b1; has_rs2 = 1'b1; end
+        AMO:        begin has_rd = 1'b1; has_rs1 = 1'b1; has_rs2 = 1'b1; end  // rd, addr=rs1, data=rs2 (LR: rs2 ignored)
         MISCMEM:    ;                                       // FENCE/FENCE.I: no GPR deps
         SYSTEM: case (funct3)
                   3'b000: ;                                // ECALL/EBREAK/xRET/WFI

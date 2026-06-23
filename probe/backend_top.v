@@ -177,7 +177,7 @@ module backend_top
       .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
-   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul;
+   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul, iss_is_amo;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : icl
       assign iss_mem[gi]     = iss_pay[gi*`PAYW + `PAY_MEM];
       assign iss_store[gi]   = iss_pay[gi*`PAYW + `PAY_STORE];
@@ -185,6 +185,8 @@ module backend_top
       // M-ops (mul AND div) are deferred multi-cycle -> excluded from select-wake / the
       // issue-time commit decrement, counted at completion, and stall their shard.
       assign iss_is_mul[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_MUL];
+      // atomics complete at the LSU (variable latency) -> also excluded from select-wake.
+      assign iss_is_amo[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_AMO];
    end endgenerate
 
    // ================= registered issue stage (select | execute split) =================
@@ -219,7 +221,7 @@ module backend_top
    end
 
    // execute-stage op decode (from the registered payload) -> LSU + commit
-   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_mul;
+   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_mul, q_iss_is_amo, q_iss_defer;
    wire [IW*4-1:0] q_iss_nb;
    wire [IW-1:0]   q_iss_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : qicl
@@ -230,6 +232,10 @@ module backend_top
       assign q_iss_nb[gi*4+:4] = (4'd1 << qsz);
       assign q_iss_is_load[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
       assign q_iss_is_mul[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL];
+      assign q_iss_is_amo[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_AMO];
+      // loads AND atomics complete at the LSU -> deferred (excluded from the issue-time
+      // commit decrement, counted via ld_done instead).
+      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi];
    end endgenerate
 
    // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
@@ -238,7 +244,7 @@ module backend_top
    wire [IW*PBITS-1:0] sel_wake_pr;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : selw
       assign sel_wake_v[gi]             = iss_valid[gi] & iss_pdst_v[gi]
-                                          & ~iss_mem[gi] & ~iss_is_mul[gi];
+                                          & ~iss_mem[gi] & ~iss_is_mul[gi] & ~iss_is_amo[gi];
       assign sel_wake_pr[gi*PBITS +: PBITS] = iss_pdst[gi*PBITS +: PBITS];
    end endgenerate
    assign sched_wake_v  = {sel_wake_v, wkv};        // [hi]=select, [lo]=completion
@@ -253,7 +259,7 @@ module backend_top
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(q_iss_valid), .iss_is_load(q_iss_is_load), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
+      .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),
@@ -267,6 +273,9 @@ module backend_top
 
    // ---- execute bundle (2-stage RR|EX + forwarding + wb broadcast + branch) ----
    wire [IW*64-1:0]   eb_agu, eb_stdata;
+   wire [IW-1:0]      eb_amo;
+   wire [IW*5-1:0]    eb_amo_func;
+   wire [IW*PBITS-1:0] eb_amo_pdst;
    wire [IW-1:0]      eb_wb_busy;
    wire               lsu_ld_wb_v;
    wire [SBITS-1:0]   lsu_ld_wb_owner;
@@ -292,6 +301,7 @@ module backend_top
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
       .agu_addr(eb_agu), .st_data(eb_stdata),
+      .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap));
 
@@ -316,6 +326,22 @@ module backend_top
       assign exe_ld_sgn[gi]            = ex_msigned[gi];
    end endgenerate
 
+   // ---- single active atomic -> LSU amo port (atomics are serialized+solo: <=1 at EX) ----
+   reg                amo_v;   reg [4:0] amo_func;  reg [1:0] amo_sz;
+   reg  [AW-1:0]      amo_addr; reg [63:0] amo_data;
+   reg  [PBITS-1:0]   amo_pdst; reg [SBITS-1:0] amo_owner; reg [CBITS-1:0] amo_ckpt;
+   integer am;
+   always @* begin
+      amo_v=1'b0; amo_func=5'd0; amo_sz=2'd0; amo_addr={AW{1'b0}}; amo_data=64'd0;
+      amo_pdst={PBITS{1'b0}}; amo_owner={SBITS{1'b0}}; amo_ckpt={CBITS{1'b0}};
+      for (am = 0; am < IW; am = am + 1) if (eb_amo[am]) begin
+         amo_v=1'b1; amo_func=eb_amo_func[am*5 +: 5]; amo_sz=ex_msize[am*2 +: 2];
+         amo_addr=eb_agu[am*64 +: AW]; amo_data=eb_stdata[am*64 +: 64];
+         amo_pdst=eb_amo_pdst[am*PBITS +: PBITS]; amo_owner=am[SBITS-1:0];
+         amo_ckpt=ex_ckpt[am*CBITS +: CBITS];
+      end
+   end
+
    lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
          .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI)) u_lsu
      (.clk(clk), .reset(reset),
@@ -327,6 +353,8 @@ module backend_top
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
+      .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
+      .amo_sz(amo_sz), .amo_pdst(amo_pdst), .amo_owner(amo_owner), .amo_ckpt(amo_ckpt),
       .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .wb_busy(eb_wb_busy),

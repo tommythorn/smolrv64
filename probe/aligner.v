@@ -57,7 +57,8 @@ module aligner
          is_cti = (h0[6:0] == 7'b1100011)   // BRANCH
                 | (h0[6:0] == 7'b1101111)   // JAL
                 | (h0[6:0] == 7'b1100111)   // JALR
-                | (h0[6:0] == 7'b1110011);  // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence)
+                | (h0[6:0] == 7'b1110011)   // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence)
+                | (h0[6:0] == 7'b0101111);  // AMO (atomic: solo, serialized RMW)
       else case (h0[1:0])
          2'b01:   is_cti = (h0[15:13] == 3'b101)    // C.J
                          | (h0[15:13] == 3'b110)    // C.BEQZ
@@ -89,12 +90,12 @@ module aligner
          is32 = (h0[1:0] == 2'b11);
          // all needed halfwords present?  first always, second only if 32-bit
          have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
-         // A SYSTEM op (ecall/ebreak/csr/xret) is SOLO in its bundle: terminate the
-         // bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo means
-         // its checkpoint contains only it, so a trap can roll back TO that checkpoint
-         // and precisely annul the faulting op's rd (e.g. a priv-violating csrr) without
-         // disturbing older instructions. (is_cti already ends the bundle AFTER it.)
-         is_sys = is32 && (h0[6:0] == 7'b1110011);
+         // A SYSTEM op (ecall/ebreak/csr/xret) or an AMO is SOLO in its bundle: terminate
+         // the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo SYSTEM
+         // lets a trap roll back TO that checkpoint and precisely annul the faulting op's
+         // rd (e.g. a priv-violating csrr). Solo AMO means that when it issues (gated to
+         // oldest) every older store has drained, so its direct-memory RMW is coherent.
+         is_sys = is32 && ((h0[6:0] == 7'b1110011) || (h0[6:0] == 7'b0101111));
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];
