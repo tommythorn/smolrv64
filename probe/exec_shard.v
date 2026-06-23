@@ -1,19 +1,16 @@
 `default_nettype none
 
-// One shard's execute slice: read this shard's RF copy, run exec_alu, drive a
-// writeback. The writeback broadcast (all shards' results) comes in and is
-// written into this shard's RF copy at the next edge; this shard's own result is
-// also broadcast out for the siblings (and for the scheduler wake).
+// One shard's execute slice, TWO pipeline stages:
+//   RR : read this shard's RF copy, flop the operands + control.
+//   EX : bypass-mux the operands (forward from the registered writeback, 1- and
+//        2-ahead), run exec_alu / AGU / branch / the M-units, flop the result.
+//   the result flop IS the writeback -> RF-write and the broadcast come from a flop
+//   (short path). A dependent reads its producer from: the 1-ahead wb (its EX), the
+//   2-ahead wb (delayed one more cycle), or the RF (3+ behind, write-before-read).
 //
-// Forwarding for 1-cycle ALU ops is write-before-read, no bypass net: a producer
-// issued in cycle T reads operands and computes combinationally in T; its result
-// rides wb_* and is registered into EVERY shard's RF copy at edge T->T+1; the
-// dependent (woken at that same edge) issues in T+1 and simply reads the RF.
-//
-// Loads/branches/stores: agu_addr (= rs1+imm) and cmp_* are produced for the
-// (later) LSU and branch-resolution units; they do not write back here. A store
-// has no rd so wb_valid is naturally 0. Loads' real value comes from the LSU, so
-// here wb is suppressed for memory ops (is_mem) -- they complete later.
+// Latency-1 ALU is preserved by select-time wake (in the scheduler) + this forwarding.
+// Loads / mul / divide are deferred: they complete later and their consumers read the
+// RF (woken at completion), so they don't need forwarding.
 module exec_shard
   #(parameter SHARDS = 4,
     parameter SBITS  = 2,
@@ -22,18 +19,19 @@ module exec_shard
     parameter POOL   = 64,
     parameter IDXB   = 6,
     parameter SEQW   = 8,
-    parameter CBITS  = 2)
+    parameter CBITS  = 2,
+    parameter MIDXW  = 3)
    (input  wire                    clk,
-    // issue from this shard's scheduler
+    // ---- RR: issue from this shard's scheduler ----
     input  wire                    iss_valid,
     input  wire [SEQW-1:0]         iss_seq,
     input  wire [PBITS-1:0]        iss_pdst,
-    input  wire                    iss_pdst_v,    // writes a register
+    input  wire                    iss_pdst_v,
     input  wire [PBITS-1:0]        iss_ps1,
     input  wire [PBITS-1:0]        iss_ps2,
-    input  wire [CBITS-1:0]        iss_ckpt,      // checkpoint (captured for a div's deferred completion)
-    // squash: abort an in-flight divide whose seqno is rolled back
-    input  wire                    squash,
+    input  wire [CBITS-1:0]        iss_ckpt,
+    input  wire [MIDXW-1:0]        iss_mem_idx,
+    input  wire                    squash,        // branch redirect this cycle
     input  wire [SEQW-1:0]         squash_seq,
     // execute payload (decode_exec ctl + imm/pc)
     input  wire [5:0]              alu_op,
@@ -44,106 +42,162 @@ module exec_shard
     input  wire                    res_link,
     input  wire                    is_rvc,
     input  wire                    is_mem,
+    input  wire                    is_store,
+    input  wire [1:0]              mem_size,
+    input  wire                    mem_signed,
     input  wire                    is_branch,
     input  wire                    is_jump,
-    input  wire                    is_mul,        // M ext (op = {alu_w,br_func}): mul = comb, div = iterative
+    input  wire                    is_mul,
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
     input  wire [63:0]             pc,
-    // writeback broadcast (all shards) -> RF writes
+    // ---- writeback broadcast (registered, all shards): RF write + 1-ahead forward ----
     input  wire [SHARDS-1:0]       wb_valid_in,
     input  wire [SHARDS*PBITS-1:0] wb_pr_in,
     input  wire [SHARDS*64-1:0]    wb_val_in,
-    // this shard's writeback out (one broadcast lane + the scheduler wake source)
-    output wire                    wb_valid,
-    output wire [PBITS-1:0]        wb_pr,
-    output wire [63:0]             wb_val,
-    // branch/jump resolution (this shard)
-    output wire                    br_redirect,   // valid only when iss_valid & (is_branch|is_jump)
+    // ---- 2-ahead forward (the writeback broadcast delayed one cycle) ----
+    input  wire [SHARDS-1:0]       fw2_valid,
+    input  wire [SHARDS*PBITS-1:0] fw2_pr,
+    input  wire [SHARDS*64-1:0]    fw2_val,
+    // ---- EX: this shard's registered writeback (broadcast + wake source) ----
+    output reg                     wb_valid,
+    output reg  [PBITS-1:0]        wb_pr,
+    output reg  [63:0]             wb_val,
+    // ---- EX: branch/jump resolution ----
+    output wire                    br_redirect,
     output wire [63:0]             br_target,
     output wire [SEQW-1:0]         br_seq,
-    // for the LSU
+    // ---- EX: LSU drive (aligned with agu/st_data) ----
+    output wire                    ex_valid,
+    output wire [SEQW-1:0]         ex_seq,
+    output wire [CBITS-1:0]        ex_ckpt,
+    output wire [MIDXW-1:0]        ex_mem_idx,
+    output wire                    ex_mem,
+    output wire                    ex_store,
+    output wire [1:0]              ex_msize,
+    output wire                    ex_msigned,
     output wire [63:0]             agu_addr,
-    output wire [63:0]             st_data,       // store data (= rs2) for the store buffer
-    output wire                    cmp_eq,
-    output wire                    cmp_lt,
-    output wire                    cmp_ltu,
-    // iterative divide: structural-hazard backpressure + deferred completion
-    output wire                    exec_busy,     // divider running -> scheduler holds this shard
-    output wire                    div_done,      // a divide completed this cycle (-> commit_ctl)
+    output wire [63:0]             st_data,
+    // ---- M-unit status ----
+    output wire                    exec_busy,
+    output wire                    div_done,
     output wire [CBITS-1:0]        div_done_ckpt);
-
-   wire [63:0] rs1_val, rs2_val;
-   rf_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
-              .POOL(POOL), .IDXB(IDXB)) rf
-     (.clk(clk), .wr_valid(wb_valid_in), .wr_pr(wb_pr_in), .wr_val(wb_val_in),
-      .ra1(iss_ps1), .ra2(iss_ps2), .rd1(rs1_val), .rd2(rs2_val));
-
-   wire [63:0] result;
-   exec_alu ea
-     (.alu_op(alu_op), .alu_w(alu_w), .alu_uw(alu_uw), .op1_sel(op1_sel),
-      .op2_imm(op2_imm), .res_link(res_link), .is_rvc(is_rvc),
-      .rs1_val(rs1_val), .rs2_val(rs2_val), .imm(imm), .pc(pc),
-      .result(result), .addr(agu_addr),
-      .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
-
-   // M extension (op = {is_w,funct3} = {alu_w,br_func}): both classes are deferred,
-   // multi-cycle units that complete off the single-cycle path (mul = 3-cycle pipelined,
-   // div/rem = iterative). funct3[2] selects which. One M-op per shard at a time, so
-   // they share the start/capture/completion logic; exec_busy stalls the shard's issue
-   // while one is in flight (keeping the WB lane free), and a squash aborts a wrong-path
-   // one. Latency-1 ops (ALU/link) write back here; loads complete via the LSU.
-   wire mul_op = is_mul & ~br_func[2];
-   wire div_op = is_mul &  br_func[2];
 
    function automatic older;          // a strictly older than b (wrap-safe)
       input [SEQW-1:0] a, bb; older = ($signed(a - bb) < 0);
    endfunction
 
-   wire        mbusy, mdone;  wire [63:0] mres;     // 3-cycle multiply
-   wire        dbusy, ddone;  wire [63:0] dres;     // iterative divide
-   wire        munit_busy = mbusy | dbusy;
-   reg  [PBITS-1:0] m_pdst;
-   reg  [SEQW-1:0]  m_seq;
-   reg  [CBITS-1:0] m_ck;
-   // Don't START an M-op squashed this same cycle (a branch can redirect the cycle a
-   // younger M-op issues, before *_busy is set -- the mid-run abort couldn't catch it).
-   wire m_squash_now = squash & older(squash_seq, iss_seq);
-   wire m_start = iss_valid & is_mul & ~munit_busy & ~m_squash_now;
-   wire m_abort = munit_busy & squash & older(squash_seq, m_seq);   // in-flight M-op rolled back
+   // ============================== RR stage ==============================
+   wire [63:0] rf_rs1, rf_rs2;
+   rf_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
+              .POOL(POOL), .IDXB(IDXB)) rf
+     (.clk(clk), .wr_valid(wb_valid_in), .wr_pr(wb_pr_in), .wr_val(wb_val_in),
+      .ra1(iss_ps1), .ra2(iss_ps2), .rd1(rf_rs1), .rd2(rf_rs2));
 
+   // squash an op that becomes wrong-path the cycle it is flopped into EX
+   wire rr_kill = squash & older(squash_seq, iss_seq);
+
+   reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
+                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr;
+   reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2;
+   reg  [SEQW-1:0]  ex_sq;
+   reg  [CBITS-1:0] ex_ck;
+   reg  [MIDXW-1:0] ex_mi;
+   reg  [63:0]      ex_r1, ex_r2, ex_imm, ex_pc;
+   reg  [5:0]       ex_aop;
+   reg  [1:0]       ex_o1s, ex_msz;
+   reg  [2:0]       ex_bf;
+   always @(posedge clk) begin
+      ex_v   <= iss_valid & ~rr_kill;
+      ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2;
+      ex_sq  <= iss_seq; ex_ck <= iss_ckpt; ex_mi <= iss_mem_idx;
+      ex_r1  <= rf_rs1; ex_r2 <= rf_rs2; ex_imm <= imm; ex_pc <= pc;
+      ex_aop <= alu_op; ex_w <= alu_w; ex_uw <= alu_uw; ex_o1s <= op1_sel;
+      ex_o2i <= op2_imm; ex_link <= res_link; ex_rvc <= is_rvc;
+      ex_memr <= is_mem; ex_str <= is_store; ex_msz <= mem_size; ex_msgn <= mem_signed;
+      ex_br  <= is_branch; ex_jmp <= is_jump; ex_mulr <= is_mul; ex_bf <= br_func;
+   end
+
+   // ============================== EX stage ==============================
+   // operand forwarding: 1-ahead = wb_*_in (this cycle's registered writebacks),
+   // 2-ahead = fw2_* (those delayed one more cycle). A physreg is written once, so
+   // a tag matches at most one source; prefer the newer (1-ahead).
+   reg [63:0] op1f, op2f;
+   integer s;
+   always @* begin
+      op1f = ex_r1; op2f = ex_r2;
+      for (s = 0; s < SHARDS; s = s + 1) begin
+         if (fw2_valid[s]  && fw2_pr [s*PBITS +: PBITS] == ex_p1) op1f = fw2_val [s*64 +: 64];
+         if (fw2_valid[s]  && fw2_pr [s*PBITS +: PBITS] == ex_p2) op2f = fw2_val [s*64 +: 64];
+         if (wb_valid_in[s]&& wb_pr_in[s*PBITS +: PBITS] == ex_p1) op1f = wb_val_in[s*64 +: 64];
+         if (wb_valid_in[s]&& wb_pr_in[s*PBITS +: PBITS] == ex_p2) op2f = wb_val_in[s*64 +: 64];
+      end
+   end
+
+   wire [63:0] result, cmp_e_x;
+   wire        cmp_eq, cmp_lt, cmp_ltu;
+   exec_alu ea
+     (.alu_op(ex_aop), .alu_w(ex_w), .alu_uw(ex_uw), .op1_sel(ex_o1s),
+      .op2_imm(ex_o2i), .res_link(ex_link), .is_rvc(ex_rvc),
+      .rs1_val(op1f), .rs2_val(op2f), .imm(ex_imm), .pc(ex_pc),
+      .result(result), .addr(agu_addr),
+      .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu));
+
+   // M-units (EX-stage start, deferred completion) — shared per shard
+   wire mul_op = ex_mulr & ~ex_bf[2];
+   wire div_op = ex_mulr &  ex_bf[2];
+   wire        mbusy, mdone;  wire [63:0] mres;
+   wire        dbusy, ddone;  wire [63:0] dres;
+   wire        munit_busy = mbusy | dbusy;
+   reg  [PBITS-1:0] m_pdst;  reg [SEQW-1:0] m_seq;  reg [CBITS-1:0] m_ck;
+   wire m_squash_now = squash & older(squash_seq, ex_sq);
+   wire m_start = ex_v & ex_mulr & ~munit_busy & ~m_squash_now;
+   wire m_abort = munit_busy & squash & older(squash_seq, m_seq);
    mul3 mu (.clk(clk), .reset(1'b0), .start(m_start & mul_op), .abort(m_abort),
-            .rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w),
+            .rs1(op1f), .rs2(op2f), .f3(ex_bf), .is_w(ex_w),
             .busy(mbusy), .done(mdone), .result(mres));
    divider dv (.clk(clk), .reset(1'b0), .start(m_start & div_op), .abort(m_abort),
-               .rs1(rs1_val), .rs2(rs2_val), .f3(br_func), .is_w(alu_w),
+               .rs1(op1f), .rs2(op2f), .f3(ex_bf), .is_w(ex_w),
                .busy(dbusy), .done(ddone), .result(dres));
-   always @(posedge clk) if (m_start) begin
-      m_pdst <= iss_pdst; m_seq <= iss_seq; m_ck <= iss_ckpt;
+   always @(posedge clk) if (m_start) begin m_pdst <= ex_pd; m_seq <= ex_sq; m_ck <= ex_ck; end
+   wire        m_complete = (mdone | ddone) & ~m_abort;
+   wire [63:0] m_res = mdone ? mres : dres;
+
+   // result flop = writeback. ALU/link results, plus M completions (mux'd in; only one
+   // M-op per shard at a time -> no collision). mem ops complete via the LSU.
+   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr;
+   always @(posedge clk) begin
+      wb_valid <= ex_alu_wb | m_complete;
+      wb_pr    <= m_complete ? m_pdst : ex_pd;
+      wb_val   <= m_complete ? m_res  : result;
    end
-   wire m_complete = (mdone | ddone) & ~m_abort;   // squash in the result cycle suppresses
-   wire [63:0] m_res = mdone ? mres : dres;        // only one in flight -> one done at a time
 
-   // ALU/link write back now; M-ops defer to m_complete; mem completes via LSU.
-   wire normal_wb = iss_valid & iss_pdst_v & ~is_mem & ~is_mul;
-   assign wb_valid = normal_wb | m_complete;
-   assign wb_pr    = m_complete ? m_pdst : iss_pdst;
-   assign wb_val   = m_complete ? m_res  : result;
-
-   assign exec_busy     = munit_busy;
-   assign div_done      = m_complete;       // "M-op completed" (mul or divide) -> commit_ctl
+   // busy = unit running OR an M-op in EX about to start it (so no second M-op is
+   // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.
+   assign exec_busy     = munit_busy | (ex_v & ex_mulr & ~m_squash_now);
+   assign div_done      = m_complete;
    assign div_done_ckpt = m_ck;
 
-   // branch/jump resolution (predict not-taken): redirect on taken branch / any jump
+   // branch/jump resolution (EX, bypassed operands)
    wire bu_redirect;
    branch_unit bu
-     (.is_branch(is_branch), .is_jump(is_jump), .is_jalr(is_jump & op2_imm),
-      .br_func(br_func), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .pc(pc), .imm(imm), .agu_addr(agu_addr),
+     (.is_branch(ex_br), .is_jump(ex_jmp), .is_jalr(ex_jmp & ex_o2i),
+      .br_func(ex_bf), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
+      .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr),
       .redirect(bu_redirect), .target(br_target));
-   assign br_redirect = iss_valid & bu_redirect;
-   assign br_seq      = iss_seq;
-   assign st_data     = rs2_val;          // store data path (no op2_imm mux)
+   assign br_redirect = ex_v & bu_redirect;
+   assign br_seq      = ex_sq;
+   assign st_data     = op2f;
+
+   // EX-stage LSU control (aligned with agu/st_data)
+   assign ex_valid    = ex_v;
+   assign ex_seq      = ex_sq;
+   assign ex_ckpt     = ex_ck;
+   assign ex_mem_idx  = ex_mi;
+   assign ex_mem      = ex_memr;
+   assign ex_store    = ex_str;
+   assign ex_msize    = ex_msz;
+   assign ex_msigned  = ex_msgn;
 endmodule
 
 `default_nettype wire

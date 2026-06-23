@@ -259,29 +259,37 @@ module backend_top
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
 
-   // ---- execute bundle (RF + ALU + AGU + wb broadcast + branch resolve) ----
+   // ---- execute bundle (2-stage RR|EX + forwarding + wb broadcast + branch) ----
    wire [IW*64-1:0]   eb_agu, eb_stdata;
    wire [IW-1:0]      eb_wb_busy;
    wire               lsu_ld_wb_v;
    wire [SBITS-1:0]   lsu_ld_wb_owner;
    wire [PBITS-1:0]   lsu_ld_wb_pdst;
    wire [63:0]        lsu_ld_wb_val;
+   // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
+   wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned;
+   wire [IW*SEQW-1:0] ex_seq;
+   wire [IW*CBITS-1:0] ex_ckpt;
+   wire [IW*MIDXW-1:0] ex_mem_idx;
+   wire [IW*2-1:0]    ex_msize;
 
-   exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS)) eb
+   exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
      (.clk(clk),
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2),
-      .iss_ckpt(q_iss_ckpt), .iss_pay(q_iss_pay),
+      .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),
       .squash(eb_redirect), .squash_seq(eb_rseq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),
-      .agu_addr(eb_agu), .st_data(eb_stdata), .cmp_eq(), .cmp_lt(), .cmp_ltu(),
+      .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
+      .ex_mem(ex_mem), .ex_store(ex_store), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
+      .agu_addr(eb_agu), .st_data(eb_stdata),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt));
 
-   // ---- LSU execute-port drive (from issue + the shards' AGU/store-data) ----
+   // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
    wire [IW-1:0]      exe_st_v, exe_ld_v;
    wire [IW*SBI-1:0]  exe_st_idx;
    wire [IW*LQI-1:0]  exe_ld_idx;
@@ -290,16 +298,16 @@ module backend_top
    wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
    wire [IW-1:0]      exe_ld_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
-      assign exe_st_v[gi] = q_iss_valid[gi] & q_iss_mem[gi] &  q_iss_store[gi];
-      assign exe_ld_v[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
-      assign exe_st_idx[gi*SBI +: SBI] = q_iss_mem_idx[gi*MIDXW +: SBI];
-      assign exe_ld_idx[gi*LQI +: LQI] = q_iss_mem_idx[gi*MIDXW +: LQI];
+      assign exe_st_v[gi] = ex_valid[gi] & ex_mem[gi] &  ex_store[gi];
+      assign exe_ld_v[gi] = ex_valid[gi] & ex_mem[gi] & ~ex_store[gi];
+      assign exe_st_idx[gi*SBI +: SBI] = ex_mem_idx[gi*MIDXW +: SBI];
+      assign exe_ld_idx[gi*LQI +: LQI] = ex_mem_idx[gi*MIDXW +: LQI];
       assign exe_st_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
       assign exe_ld_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
       assign exe_st_data[gi*64 +: 64]  = eb_stdata[gi*64 +: 64];
-      assign exe_st_nb[gi*4 +: 4]      = q_iss_nb[gi*4 +: 4];
-      assign exe_ld_nb[gi*4 +: 4]      = q_iss_nb[gi*4 +: 4];
-      assign exe_ld_sgn[gi]            = q_iss_sgn[gi];
+      assign exe_st_nb[gi*4 +: 4]      = (4'd1 << ex_msize[gi*2 +: 2]);
+      assign exe_ld_nb[gi*4 +: 4]      = (4'd1 << ex_msize[gi*2 +: 2]);
+      assign exe_ld_sgn[gi]            = ex_msigned[gi];
    end endgenerate
 
    lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
