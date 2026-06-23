@@ -9,21 +9,19 @@
 // eligible); a wake broadcast at T sets a matching source ready at the T->T+1 edge,
 // so a dependent issues the very next cycle after its producer (LATENCY 1).
 module tb;
-   localparam SHARDS=4, NPHYS=256, PBITS=8, N=2, NW=1, SEQW=8, LATW=2;
+   localparam SHARDS=4, NPHYS=256, PBITS=8, N=2, SEQW=8;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;
    reg                disp_valid, disp_pdst_v;
    reg [SEQW-1:0]     disp_seq;
    reg [PBITS-1:0]    disp_pdst, disp_ps1, disp_ps2;
-   reg [LATW-1:0]     disp_lat;
    wire               disp_ready;
    reg                sib_clr_v, sib_wake_v;
    reg [PBITS-1:0]    sib_clr_pr, sib_wake_pr;
    wire               iss_valid, iss_pdst_v;
    wire [SEQW-1:0]    iss_seq;
    wire [PBITS-1:0]   iss_pdst, iss_ps1, iss_ps2, iss_ps3;
-   wire [LATW-1:0]    iss_lat;
    integer errs=0;
 
    wire [SHARDS-1:0]       clr_valid  = {2'b00, sib_clr_v,  (disp_valid & disp_ready & disp_pdst_v)};
@@ -51,25 +49,24 @@ module tb;
    wire disp_rdy3 = ready_m[8'd0];
 
    sched_shard #(.SHARDS(SHARDS), .SH(0), .NPHYS(NPHYS), .PBITS(PBITS),
-                 .N(N), .NW(NW), .SEQW(SEQW), .LATW(LATW)) dut
+                 .N(N), .SEQW(SEQW)) dut
      (.clk(clk), .reset(reset),
       .disp_valid(disp_valid), .disp_seq(disp_seq), .disp_pdst(disp_pdst),
       .disp_pdst_v(disp_pdst_v), .disp_ps1(disp_ps1), .disp_rdy1(disp_rdy1),
       .disp_ps2(disp_ps2), .disp_rdy2(disp_rdy2),
-      .disp_ps3(8'd0), .disp_rdy3(disp_rdy3), .disp_lat(disp_lat),
+      .disp_ps3(8'd0), .disp_rdy3(disp_rdy3),
       .disp_ready(disp_ready),
       .clr_valid(clr_valid), .clr_pr(clr_pr),
       .wake_valid(wake_valid), .wake_pr(wake_pr),
       .squash(1'b0), .squash_seq(8'd0), .exec_busy(1'b0),
       .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
-      .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3),
-      .iss_lat(iss_lat));
+      .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3));
 
    // a non-dependency source is just p0 (ps=0): always ready, no "need" bit.
    task do_disp(input [SEQW-1:0] sq, input [PBITS-1:0] dst, input pdv,
                 input [PBITS-1:0] s1, input [PBITS-1:0] s2);
       begin disp_valid=1; disp_seq=sq; disp_pdst=dst; disp_pdst_v=pdv;
-            disp_ps1=s1; disp_ps2=s2; disp_lat=1; end
+            disp_ps1=s1; disp_ps2=s2; end
    endtask
    task no_disp; begin disp_valid=0; disp_pdst_v=0; end endtask
 

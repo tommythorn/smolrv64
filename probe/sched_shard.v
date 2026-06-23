@@ -24,11 +24,9 @@ module sched_shard
     parameter SH     = 0,
     parameter NPHYS  = 256,
     parameter PBITS  = 8,
-    parameter N      = 2,        // reservation-station entries (fixed small for timing)
-    parameter NW     = 1,        // clog2(N)
+    parameter N      = 2,        // reservation-station entries (sweep for timing)
     parameter WAKEN  = 4,        // wake compare ports (select-time + completion-time)
     parameter SEQW   = 8,
-    parameter LATW   = 2,        // carried, unused by this scheduler
     parameter CBITS  = 2,
     parameter MIDXW  = 3,
     parameter PAYW   = `PAYW)
@@ -45,7 +43,6 @@ module sched_shard
     input  wire                    disp_rdy1,     // shared scoreboard read for each source
     input  wire                    disp_rdy2,     // (ready[disp_psX], pre-edge) -- from
     input  wire                    disp_rdy3,     // sched_bundle's single ready[] table
-    input  wire [LATW-1:0]         disp_lat,
     input  wire [CBITS-1:0]        disp_ckpt,
     input  wire [MIDXW-1:0]        disp_mem_idx,
     input  wire [PAYW-1:0]         disp_pay,
@@ -68,10 +65,11 @@ module sched_shard
     output wire [PBITS-1:0]        iss_ps1,
     output wire [PBITS-1:0]        iss_ps2,
     output wire [PBITS-1:0]        iss_ps3,
-    output wire [LATW-1:0]         iss_lat,
     output wire [CBITS-1:0]        iss_ckpt,
     output wire [MIDXW-1:0]        iss_mem_idx,
     output wire [PAYW-1:0]         iss_pay);
+
+   localparam NW = (N <= 2) ? 1 : $clog2(N);   // entry-index width (tracks N)
 
    // -------------------------------------------------------------- state
    // The per-phys "value-present" scoreboard is SHARED across shards (it is bit-identical
@@ -84,7 +82,6 @@ module sched_shard
    reg              pdv [0:N-1];
    reg [PBITS-1:0]  s1  [0:N-1], s2 [0:N-1], s3 [0:N-1];
    reg              r1  [0:N-1], r2 [0:N-1], r3 [0:N-1];   // per-source ready (CAM-woken)
-   reg [LATW-1:0]   lat [0:N-1];
    reg [CBITS-1:0]  ck  [0:N-1];
    reg [MIDXW-1:0]  mi  [0:N-1];
    reg [PAYW-1:0]   py  [0:N-1];
@@ -152,7 +149,6 @@ module sched_shard
    assign iss_ps1    = s1 [sel];
    assign iss_ps2    = s2 [sel];
    assign iss_ps3    = s3 [sel];
-   assign iss_lat    = lat[sel];
    assign iss_ckpt   = ck [sel];
    assign iss_mem_idx= mi [sel];
    assign iss_pay    = py [sel];
@@ -199,7 +195,7 @@ module sched_shard
             s1 [dst] <= disp_ps1;   r1 [dst] <= seed1;
             s2 [dst] <= disp_ps2;   r2 [dst] <= seed2;
             s3 [dst] <= disp_ps3;   r3 [dst] <= seed3;
-            lat[dst] <= disp_lat;   ck [dst] <= disp_ckpt;
+            ck [dst] <= disp_ckpt;
             mi [dst] <= disp_mem_idx; py[dst] <= disp_pay;
          end
       end

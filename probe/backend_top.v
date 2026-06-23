@@ -29,7 +29,7 @@ module backend_top
     parameter SEQW  = 8,
     parameter ABITS = 6,
     parameter PBITS = 8,
-    parameter LATW  = 2,
+    parameter SCHED_N = 2,       // CAM reservation-station entries/shard (sweep for timing)
     parameter CBITS = 2,
     parameter NCHK  = 4,
     parameter DCW   = 3,         // clog2(IW+1)
@@ -138,7 +138,6 @@ module backend_top
    wire [IW-1:0]       iss_valid, iss_pdst_v;
    wire [IW*PBITS-1:0] iss_pdst, iss_ps1, iss_ps2;
    wire [IW*SEQW-1:0]  iss_seq;
-   wire [IW*LATW-1:0]  iss_lat;
    wire [IW*CBITS-1:0] iss_ckpt;
    wire [IW*MIDXW-1:0] iss_mem_idx;
    wire [IW*`PAYW-1:0] iss_pay;
@@ -152,24 +151,23 @@ module backend_top
    wire [2*IW*PBITS-1:0] sched_wake_pr;
    wire [IW-1:0]         busy_to_sched;
 
-   wire [IW*LATW-1:0] disp_lat  = {IW{ {{(LATW-1){1'b0}}, 1'b1} }};
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
    wire [IW-1:0]      sched_disp_valid = r_valid & {IW{disp_fire}};
 
-   sched_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .LATW(LATW),
+   sched_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .N(SCHED_N),
                   .CBITS(CBITS), .MIDXW(MIDXW)) sb
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
       .disp_ps1(ps1), .disp_ps2(ps2),
       .disp_ps3({IW*PBITS{1'b0}}),   // FMA 3rd operand: p0 (always ready) until FP
-      .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
+      .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),
       .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(busy_to_sched),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
       .iss_seq(iss_seq),
-      .iss_lat(iss_lat), .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
+      .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
    wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul;
