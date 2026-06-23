@@ -11,7 +11,9 @@
 module tb;
    localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8;
    localparam [63:0] BASE = 64'h8000_0000;
-   localparam        WORDS = 1<<18;            // 256K bytes of image space
+   localparam        WORDS = 1<<23;            // 8 MiB: covers the -v page pool (env/v
+                                                // demand-paging allocates phys pages well
+                                                // past the image, e.g. ~0x8007b000)
    localparam        SIZE  = WORDS;
 
    reg                 clk=0; always #5 clk=~clk;
@@ -101,6 +103,7 @@ module tb;
    integer    ncyc;
    integer    trace=0;
    integer    ncommit=0;
+   integer    dlo=999999999, dhi=0;
    reg        fl2_16=1'bx;
    reg [8*256-1:0] hexfile;
    initial begin
@@ -121,6 +124,9 @@ module tb;
 
       if ($value$plusargs("trace=%d", trace)) ;
       if ($value$plusargs("mmudbg=%d", mmudbg)) ;
+      if ($value$plusargs("dlo=%d", dlo)) ;
+      if ($value$plusargs("dhi=%d", dhi)) ;
+      if ($test$plusargs("vcd")) begin $dumpfile("/tmp/dump.vcd"); $dumpvars(0, tb); end
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
          if (commit) ncommit = ncommit + 1;
@@ -138,6 +144,12 @@ module tb;
             $display("[%0d] XTRAP cause=%0d epc=%h tval=%h -> %h (priv %0d)",
                      c, dut.xtrap_cause, dut.xtrap_epc, dut.xtrap_tval,
                      dut.csr_redir_tgt, dut.eb.u_csr.priv);
+         if (c >= dlo && c <= dhi)
+            $display("[%0d] pcq=%h va=%h rdy=%b flt=%b ist=%0d vaq=%h | ebr=%b ebtgt=%h roll=%b feV=%b fePC=%h feSQ=%0d | cur=%0d cmt=%0d full=%b empt=%b acc=%b disp=%b stall=%b",
+                     c, dut.fe.u_fetch.pc_q, dut.imem_va, dut.immu_ready, dut.immu_fault,
+                     dut.u_immu.st, dut.u_immu.va_q, dut.eb_redirect, dut.eb_target, dut.roll_v,
+                     dut.fe_red_v, dut.fe_red_pc, dut.fe_red_seq, dut.cur, dut.cc_committed,
+                     dut.cc_full, dut.cc_empty, dut.accept, dut.disp_fire, dut.fe_stall);
          if (trace) begin
             if (dut.eb_redirect)
                $display("[%0d] REDIRECT -> %h (seq %0d)", c, dut.eb_target, dut.eb_rseq);
