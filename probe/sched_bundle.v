@@ -14,6 +14,7 @@ module sched_bundle
     parameter PBITS  = 8,
     parameter N      = 2,        // CAM reservation-station entries per shard
     parameter NW     = 1,
+    parameter WAKEN  = 2*SHARDS, // wake ports: select-time (SHARDS) + completion-time (SHARDS)
     parameter SEQW   = 8,
     parameter LATW   = 2,
     parameter CBITS  = 2,
@@ -37,9 +38,9 @@ module sched_bundle
     input  wire [SHARDS*MIDXW-1:0] disp_mem_idx,
     input  wire [SHARDS*PAYW-1:0]  disp_pay,
     output wire [SHARDS-1:0]       disp_ready,
-    // wake from execute writeback
-    input  wire [SHARDS-1:0]       wake_valid,
-    input  wire [SHARDS*PBITS-1:0] wake_pr,
+    // wake: select-time (latency-1) + completion-time (load/divide), WAKEN ports
+    input  wire [WAKEN-1:0]        wake_valid,
+    input  wire [WAKEN*PBITS-1:0]  wake_pr,
     // branch misprediction squash (broadcast to all shards)
     input  wire                    squash,
     input  wire [SEQW-1:0]         squash_seq,
@@ -69,7 +70,7 @@ module sched_bundle
 
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
       sched_shard #(.SHARDS(SHARDS), .SH(i), .NPHYS(NPHYS), .PBITS(PBITS),
-                    .N(N), .NW(NW), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS),
+                    .N(N), .NW(NW), .WAKEN(WAKEN), .SEQW(SEQW), .LATW(LATW), .CBITS(CBITS),
                     .MIDXW(MIDXW), .PAYW(PAYW)) sh
         (.clk(clk), .reset(reset),
          .disp_valid(disp_valid[i]), .disp_seq(disp_seq[i*SEQW +: SEQW]),

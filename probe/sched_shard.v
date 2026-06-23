@@ -26,6 +26,7 @@ module sched_shard
     parameter PBITS  = 8,
     parameter N      = 2,        // reservation-station entries (fixed small for timing)
     parameter NW     = 1,        // clog2(N)
+    parameter WAKEN  = 4,        // wake compare ports (select-time + completion-time)
     parameter SEQW   = 8,
     parameter LATW   = 2,        // carried, unused by this scheduler
     parameter CBITS  = 2,
@@ -52,8 +53,8 @@ module sched_shard
     // cross-shard scoreboard broadcasts (self included)
     input  wire [SHARDS-1:0]       clr_valid,
     input  wire [SHARDS*PBITS-1:0] clr_pr,
-    input  wire [SHARDS-1:0]       wake_valid,
-    input  wire [SHARDS*PBITS-1:0] wake_pr,
+    input  wire [WAKEN-1:0]        wake_valid,    // select-time (latency-1) + completion-time
+    input  wire [WAKEN*PBITS-1:0]  wake_pr,
     // branch misprediction squash: drop entries younger than the branch
     input  wire                    squash,
     input  wire [SEQW-1:0]         squash_seq,
@@ -97,7 +98,7 @@ module sched_shard
       integer s;
       begin
          match = 1'b0;
-         for (s = 0; s < SHARDS; s = s + 1)
+         for (s = 0; s < WAKEN; s = s + 1)
             if (wake_valid[s] && (wake_pr[s*PBITS +: PBITS] == tag)) match = 1'b1;
       end
    endfunction
@@ -171,7 +172,7 @@ module sched_shard
       end else begin
          // ready table: wake sets, freshly dispatched dest clears (clear after set so a
          // same-cycle clash leaves the new dest not-ready) -- read only at dispatch.
-         for (s = 0; s < SHARDS; s = s + 1) if (wake_valid[s]) ready[wake_pr[s*PBITS +: PBITS]] <= 1'b1;
+         for (s = 0; s < WAKEN;  s = s + 1) if (wake_valid[s]) ready[wake_pr[s*PBITS +: PBITS]] <= 1'b1;
          for (s = 0; s < SHARDS; s = s + 1) if (clr_valid[s])  ready[clr_pr [s*PBITS +: PBITS]] <= 1'b0;
 
          // CAM wakeup of live entries (catch a tag matching the result broadcast)

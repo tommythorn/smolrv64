@@ -147,6 +147,10 @@ module backend_top
    // per-shard iterative-divide status (exec_bundle -> scheduler stall + commit count)
    wire [IW-1:0]       eb_exec_busy, eb_div_done;
    wire [IW*CBITS-1:0] eb_div_done_ckpt;
+   // wake bus into the scheduler (select-time + completion-time) + per-shard issue stall
+   wire [2*IW-1:0]       sched_wake_v;
+   wire [2*IW*PBITS-1:0] sched_wake_pr;
+   wire [IW-1:0]         busy_to_sched;
 
    wire [IW*LATW-1:0] disp_lat  = {IW{ {{(LATW-1){1'b0}}, 1'b1} }};
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
@@ -160,8 +164,8 @@ module backend_top
       .disp_ps3({IW*PBITS{1'b0}}), .disp_need3({IW{1'b0}}),   // FMA 3rd operand: unused until FP
       .disp_lat(disp_lat), .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
-      .wake_valid(wkv), .wake_pr(wkp),
-      .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(eb_exec_busy),
+      .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),
+      .squash(eb_redirect), .squash_seq(eb_rseq), .exec_busy(busy_to_sched),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
       .iss_seq(iss_seq),
@@ -183,13 +187,74 @@ module backend_top
                                              & iss_pay[gi*`PAYW + 146];
    end endgenerate
 
+   // ================= registered issue stage (select | execute split) =================
+   // The scheduler's combinational select (iss_*) is registered here; execute, LSU and
+   // commit consume the registered q_iss_*. This breaks the old fused select->RF->ALU->wb
+   // megapath. Latency-1 back-to-back is preserved by a SELECT-TIME wake (below): the
+   // selected latency-1 dest is broadcast now, so a dependent is selected next cycle and
+   // reads the result from the RF the cycle after (write-before-read across this stage).
+   // A wrong-path op selected the same cycle a branch redirects is gated out here.
+   reg  [IW-1:0]       q_iss_valid, q_iss_pdst_v;
+   reg  [IW*PBITS-1:0] q_iss_pdst, q_iss_ps1, q_iss_ps2;
+   reg  [IW*SEQW-1:0]  q_iss_seq;
+   reg  [IW*CBITS-1:0] q_iss_ckpt;
+   reg  [IW*MIDXW-1:0] q_iss_mem_idx;
+   reg  [IW*`PAYW-1:0] q_iss_pay;
+   wire [IW-1:0]       iss_squashed;
+   genvar gq;
+   generate for (gq = 0; gq < IW; gq = gq + 1) begin : sq
+      assign iss_squashed[gq] = eb_redirect & ($signed(iss_seq[gq*SEQW +: SEQW] - eb_rseq) > 0);
+   end endgenerate
+   integer qi;
+   initial begin q_iss_valid = {IW{1'b0}}; end
+   always @(posedge clk) begin
+      if (reset) q_iss_valid <= {IW{1'b0}};
+      else begin
+         q_iss_valid   <= iss_valid & ~iss_squashed;
+         q_iss_pdst_v  <= iss_pdst_v;
+         q_iss_pdst    <= iss_pdst;   q_iss_ps1 <= iss_ps1;  q_iss_ps2 <= iss_ps2;
+         q_iss_seq     <= iss_seq;    q_iss_ckpt <= iss_ckpt;
+         q_iss_mem_idx <= iss_mem_idx; q_iss_pay <= iss_pay;
+      end
+   end
+
+   // execute-stage op decode (from the registered payload) -> LSU + commit
+   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_div;
+   wire [IW*4-1:0] q_iss_nb;
+   wire [IW-1:0]   q_iss_sgn;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : qicl
+      wire [1:0] qsz = q_iss_pay[gi*`PAYW + 148 +: 2];
+      assign q_iss_mem[gi]     = q_iss_pay[gi*`PAYW + `PAY_MEM];
+      assign q_iss_store[gi]   = q_iss_pay[gi*`PAYW + `PAY_STORE];
+      assign q_iss_sgn[gi]     = q_iss_pay[gi*`PAYW + `PAY_MSGN];
+      assign q_iss_nb[gi*4+:4] = (4'd1 << qsz);
+      assign q_iss_is_load[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
+      assign q_iss_is_div[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL]
+                                                 & q_iss_pay[gi*`PAYW + 146];
+   end endgenerate
+
+   // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
+   // select-wake fires for a selected latency-1 register writer (not mem, not div).
+   wire [IW-1:0]       sel_wake_v;
+   wire [IW*PBITS-1:0] sel_wake_pr;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : selw
+      assign sel_wake_v[gi]             = iss_valid[gi] & iss_pdst_v[gi]
+                                          & ~iss_mem[gi] & ~iss_is_div[gi];
+      assign sel_wake_pr[gi*PBITS +: PBITS] = iss_pdst[gi*PBITS +: PBITS];
+   end endgenerate
+   assign sched_wake_v  = {sel_wake_v, wkv};        // [hi]=select, [lo]=completion
+   assign sched_wake_pr = {sel_wake_pr, wkp};
+
+   // a divide heading to / running on a shard's divider stalls that shard's issue
+   assign busy_to_sched = q_iss_is_div | eb_exec_busy;
+
    // ---- commit control: count by completion (loads at LSU), commit in order ----
    wire               lsu_ld_done;
    wire [CBITS-1:0]   lsu_ld_done_ckpt;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(iss_valid), .iss_is_load(iss_is_load), .iss_is_div(iss_is_div), .iss_ckpt(iss_ckpt),
+      .iss_valid(q_iss_valid), .iss_is_load(q_iss_is_load), .iss_is_div(q_iss_is_div), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(eb_redirect), .redirect_ckpt(rb_idx),
@@ -210,9 +275,9 @@ module backend_top
 
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS)) eb
      (.clk(clk),
-      .iss_valid(iss_valid), .iss_seq(iss_seq), .iss_pdst(iss_pdst),
-      .iss_pdst_v(iss_pdst_v), .iss_ps1(iss_ps1), .iss_ps2(iss_ps2),
-      .iss_ckpt(iss_ckpt), .iss_pay(iss_pay),
+      .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
+      .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2),
+      .iss_ckpt(q_iss_ckpt), .iss_pay(q_iss_pay),
       .squash(eb_redirect), .squash_seq(eb_rseq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
@@ -231,16 +296,16 @@ module backend_top
    wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
    wire [IW-1:0]      exe_ld_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
-      assign exe_st_v[gi] = iss_valid[gi] & iss_mem[gi] &  iss_store[gi];
-      assign exe_ld_v[gi] = iss_valid[gi] & iss_mem[gi] & ~iss_store[gi];
-      assign exe_st_idx[gi*SBI +: SBI] = iss_mem_idx[gi*MIDXW +: SBI];
-      assign exe_ld_idx[gi*LQI +: LQI] = iss_mem_idx[gi*MIDXW +: LQI];
+      assign exe_st_v[gi] = q_iss_valid[gi] & q_iss_mem[gi] &  q_iss_store[gi];
+      assign exe_ld_v[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
+      assign exe_st_idx[gi*SBI +: SBI] = q_iss_mem_idx[gi*MIDXW +: SBI];
+      assign exe_ld_idx[gi*LQI +: LQI] = q_iss_mem_idx[gi*MIDXW +: LQI];
       assign exe_st_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
       assign exe_ld_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
       assign exe_st_data[gi*64 +: 64]  = eb_stdata[gi*64 +: 64];
-      assign exe_st_nb[gi*4 +: 4]      = iss_nb[gi*4 +: 4];
-      assign exe_ld_nb[gi*4 +: 4]      = iss_nb[gi*4 +: 4];
-      assign exe_ld_sgn[gi]            = iss_sgn[gi];
+      assign exe_st_nb[gi*4 +: 4]      = q_iss_nb[gi*4 +: 4];
+      assign exe_ld_nb[gi*4 +: 4]      = q_iss_nb[gi*4 +: 4];
+      assign exe_ld_sgn[gi]            = q_iss_sgn[gi];
    end endgenerate
 
    lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
