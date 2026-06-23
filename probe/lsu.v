@@ -35,6 +35,7 @@ module lsu
     parameter SEQW    = 8,
     parameter CBITS   = 2,
     parameter AW      = 64,
+    parameter PAW     = 34,        // physical address width: only these bits disambiguate
     parameter SBDEPTH = 8,
     parameter SBI     = 3,        // clog2(SBDEPTH)
     parameter LQDEPTH = 8,
@@ -210,22 +211,24 @@ module lsu
    reg [7:0]      m_byt;
    reg            m_fwd;
    reg [SEQW-1:0] m_bseq, m_lsq;
-   reg [AW-1:0]   m_bx;
+   reg [PAW-1:0]  m_bx;            // load byte address (only the physical-address bits)
    reg [3:0]      m_nb;
    integer        mb, mj;
    reg            c_v;
    reg [63:0]     c_val;
+   wire [PAW-1:0] la_p = la[PAW-1:0];
    always @* begin
       m_lsq = lq_seq[ld_sel];
       m_nb  = lq_nb [ld_sel];
       m_mrg = 64'd0;
       for (mb = 0; mb < 8; mb = mb + 1) begin
-         m_bx  = la + mb[3:0];
+         m_bx  = la_p + mb[3:0];
          m_fwd = 1'b0; m_bseq = {SEQW{1'b0}};
          m_byt = mem_rdata[mb*8 +: 8];                 // default: memory
+         // overlap test on the physical-address bits only (high bits are always 0)
          for (mj = 0; mj < SBDEPTH; mj = mj + 1)
             if (sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0)
-                && (m_bx >= sb_addr[mj]) && (m_bx < sb_addr[mj] + sb_nb[mj])
+                && (m_bx >= sb_addr[mj][PAW-1:0]) && (m_bx < sb_addr[mj][PAW-1:0] + sb_nb[mj])
                 && (!m_fwd || ($signed(m_bseq - sb_seq[mj]) < 0))) begin   // youngest wins
                m_fwd  = 1'b1; m_bseq = sb_seq[mj];
                m_byt  = sb_data[mj][ (m_bx - sb_addr[mj])*8 +: 8 ];
