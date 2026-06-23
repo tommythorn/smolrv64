@@ -71,6 +71,7 @@ module tb;
    // ---- exit monitor ----
    reg [63:0] tohost; integer c, b2;
    integer    ncyc;
+   integer    trace=0;
    reg [8*256-1:0] hexfile;
    initial begin
       tohost = 64'h8000_1000;
@@ -84,8 +85,19 @@ module tb;
 
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 
+      if ($value$plusargs("trace=%d", trace)) ;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
+         if (trace) begin
+            if (dut.eb_redirect)
+               $display("[%0d] REDIRECT -> %h (seq %0d)", c, dut.eb_target, dut.eb_rseq);
+            for (b2=0;b2<IW;b2=b2+1)
+               if (dut.wb_valid[b2])
+                  $display("[%0d]   WB lane%0d pr=%0d val=%h", c, b2,
+                           dut.wb_pr[b2*PBITS+:PBITS], dut.wb_val[b2*64+:64]);
+            if (dmem_wen)
+               $display("[%0d]   STORE @%h data=%h mask=%b", c, dmem_waddr, dmem_wdata, dmem_wmask);
+         end
          // tohost store?
          if (dmem_wen && (dmem_waddr - (dmem_waddr%8)) == tohost && dmem_wmask[0]) begin
             if (dmem_wdata[31:0] == 32'd1)
