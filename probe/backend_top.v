@@ -484,10 +484,15 @@ module backend_top
    assign dflt_epc   = chk_pc[lsu_dfault_ckpt];
    assign dflt_tval  = lsu_dfault_tval;
 
-   // unified redirect distribution
-   assign roll_v     = eb_redirect | dflt_fire;
-   assign roll_seq   = dflt_fire ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
-   assign roll_ckpt  = dflt_fire ? lsu_dfault_ckpt : rb_idx;
+   // unified redirect distribution. A fetch fault fires only when empty, so its rollback
+   // is a no-op functionally but keeps the frontend flush paired with a rename rollback
+   // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
+   // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
+   assign roll_v     = eb_redirect | dflt_fire | iflt_fire;
+   assign roll_seq   = iflt_fire ? fe_cur_seq
+                     : dflt_fire ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
+   assign roll_ckpt  = iflt_fire ? cc_committed
+                     : dflt_fire ? lsu_dfault_ckpt : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
    assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt : eb_target;
    assign fe_red_seq = iflt_fire ? fe_cur_seq

@@ -110,6 +110,9 @@ module tb;
       if (!$value$plusargs("hex=%s", hexfile)) begin
          $display("FATAL: need +hex=<file>"); $finish;
       end
+      // zero memory first (real BSS/page-table RAM is zeroed): an unmapped PTE then
+      // reads V=0 -> clean page fault, instead of X (which the walk can't fault on).
+      for (m=0; m<SIZE; m=m+1) mem[m] = 8'd0;
       $readmemh(hexfile, mem);
       if ($value$plusargs("tohost=%h", tohost)) ;
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -123,6 +126,10 @@ module tb;
          if (commit) ncommit = ncommit + 1;
          if (trace && c>0 && (c % 100 == 0))
             $display("[%0d] commits=%0d pc=%h full=%b", c, ncommit, imem_addr, dut.cc_full);
+         if (mmudbg && dut.lsu_dfault_v && (c % 200 == 0))
+            $display("[%0d] DFAULT ckpt=%0d committed=%0d cause=%0d tval=%h fire=%b empty=%b",
+                     c, dut.lsu_dfault_ckpt, dut.cc_committed, dut.lsu_dfault_cause,
+                     dut.lsu_dfault_tval, dut.dflt_fire, dut.cc_empty);
          if (mmudbg && dut.xtrap_v)
             $display("[%0d] XTRAP cause=%0d epc=%h tval=%h -> %h (priv %0d)",
                      c, dut.xtrap_cause, dut.xtrap_epc, dut.xtrap_tval,
