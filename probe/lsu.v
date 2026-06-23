@@ -15,8 +15,13 @@
 //   * COMPLETE byte-granular forwarding: each load byte takes the youngest older
 //     store covering it, else memory. Arbitrary alignment (no misalign trap); two
 //     older stores overlapping each other and the load, with some bytes from memory,
-//     just work. Done combinationally here → fixed 1-cycle load (no WB reservation
-//     needed yet); a timed FSM / parallel network is a later latency optimization.
+//     just work. The address arithmetic is done at FILL (sequential, off the critical
+//     path): each entry is reduced to a 2-word representation -- {w0,w1=w0+1} word
+//     addresses (8-byte words), a per-word byte-enable mask, and the data laid into the
+//     word lanes (so a misaligned/word-spanning access spills into w1). The merge is
+//     then pure word-EQUALITY (XNOR, no carry chain) + mask lookup + youngest-select,
+//     which is what keeps it off the critical path (the old per-byte range compares
+//     were carry chains). Combinational here, result flopped -> fixed 1-cycle load.
 //   * Stores issue-on-both (rs1 & rs2): a store entry is filled (addr+data+size) in
 //     one execute step, so `rdy` covers both — the addr/data split is a later opt.
 //     Therefore a store completes at execute and is counted at issue like an ALU op;
@@ -96,26 +101,38 @@ module lsu
 
    integer i, j, b;
 
+   localparam WW = PAW - 3;        // word-address width (8-byte words)
+
    // ============================ store buffer ============================
    reg              sb_v   [0:SBDEPTH-1];
    reg              sb_rdy [0:SBDEPTH-1];   // filled (addr+data) — M1: addr==data ready
    reg              sb_cmt [0:SBDEPTH-1];   // its checkpoint has committed (drainable)
    reg [SEQW-1:0]   sb_seq [0:SBDEPTH-1];
    reg [CBITS-1:0]  sb_ck  [0:SBDEPTH-1];
-   reg [AW-1:0]     sb_addr[0:SBDEPTH-1];
-   reg [63:0]       sb_data[0:SBDEPTH-1];
-   reg [3:0]        sb_nb  [0:SBDEPTH-1];
+   reg [AW-1:0]     sb_addr[0:SBDEPTH-1];   // byte address (drain only)
+   reg [63:0]       sb_data[0:SBDEPTH-1];   // raw data    (drain only)
+   reg [3:0]        sb_nb  [0:SBDEPTH-1];   // size 1..8   (drain only)
+   // forwarding view (computed at fill, off the critical path): 2-word representation
+   reg [WW-1:0]     sb_w0  [0:SBDEPTH-1];   // low word address  = addr[PAW-1:3]
+   reg [WW-1:0]     sb_w1  [0:SBDEPTH-1];   // high word address = w0 + 1 (spill word)
+   reg [7:0]        sb_be0 [0:SBDEPTH-1];   // byte-enables in word w0
+   reg [7:0]        sb_be1 [0:SBDEPTH-1];   // byte-enables in word w1
+   reg [63:0]       sb_d0  [0:SBDEPTH-1];   // data laid into word-w0 byte lanes
+   reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
 
    // ============================ load queue =============================
    reg              lq_v   [0:LQDEPTH-1];
    reg              lq_rdy [0:LQDEPTH-1];   // address resolved
    reg [SEQW-1:0]   lq_seq [0:LQDEPTH-1];
    reg [CBITS-1:0]  lq_ck  [0:LQDEPTH-1];
-   reg [AW-1:0]     lq_addr[0:LQDEPTH-1];
+   reg [AW-1:0]     lq_addr[0:LQDEPTH-1];   // byte address (mem_raddr)
    reg [3:0]        lq_nb  [0:LQDEPTH-1];
    reg              lq_sgn [0:LQDEPTH-1];
    reg [PBITS-1:0]  lq_pd  [0:LQDEPTH-1];
    reg [SBITS-1:0]  lq_own [0:LQDEPTH-1];
+   reg [WW-1:0]     lq_w0  [0:LQDEPTH-1];   // low word  (precomputed at fill)
+   reg [WW-1:0]     lq_w1  [0:LQDEPTH-1];   // high word = w0 + 1
+   reg [2:0]        lq_lb  [0:LQDEPTH-1];   // byte offset within word
 
    initial begin
       for (i = 0; i < SBDEPTH; i = i + 1) begin sb_v[i]=0; sb_rdy[i]=0; sb_cmt[i]=0; end
@@ -197,42 +214,54 @@ module lsu
    end
 
    // -------------------- byte-granular forward merge --------------------
-   // The merge (memory ∪ per-byte youngest-older-store) is computed in the
-   // sequential block below, at the latch point — iverilog's `always @*` does not
-   // reliably track array reads buried in a nested loop with a variable part-select
-   // (same gotcha as the aligner), and a sequential read sees current values.
    wire [AW-1:0] la = lq_addr[ld_sel];
    assign mem_raddr = la;
 
    // combinational byte-merge (memory ∪ youngest-older-store/byte) -> the c_* result,
    // which is FLOPPED below. The byte-merge is thus its own pipeline stage; nothing
    // combinational from the LSU reaches the writeback/RF-write/forwarding path.
+   //
+   // The selected load is reduced (at fill) to {w0,w1,lb}. For load byte mb the absolute
+   // position is lb+mb, which falls in word lwb (= w0 or w1) at byte lane `posw`. A store
+   // covers that byte iff one of its two words equals lwb and the matching per-word mask
+   // bit is set -- both are EQUALITY tests (no carry chain). Youngest older store wins.
    reg [63:0]     m_mrg;
    reg [7:0]      m_byt;
-   reg            m_fwd;
+   reg            m_fwd, m_c0, m_c1;
    reg [SEQW-1:0] m_bseq, m_lsq;
-   reg [PAW-1:0]  m_bx;            // load byte address (only the physical-address bits)
-   reg [3:0]      m_nb;
+   reg [3:0]      m_nb, m_lp;
+   reg [2:0]      m_posw;
+   reg [WW-1:0]   m_lwb;
+   reg [SBDEPTH-1:0] s_use;        // store is valid+ready+older-than-load (byte-independent)
    integer        mb, mj;
    reg            c_v;
    reg [63:0]     c_val;
-   wire [PAW-1:0] la_p = la[PAW-1:0];
+   wire [WW-1:0]  lw0 = lq_w0[ld_sel];
+   wire [WW-1:0]  lw1 = lq_w1[ld_sel];
+   wire [2:0]     llb = lq_lb[ld_sel];
    always @* begin
       m_lsq = lq_seq[ld_sel];
       m_nb  = lq_nb [ld_sel];
       m_mrg = 64'd0;
+      // hoist the per-store "older than this load" seqno compare out of the byte loop
+      // (it does not depend on the byte) -- one 8-bit compare/store, not 8.
+      for (mj = 0; mj < SBDEPTH; mj = mj + 1)
+         s_use[mj] = sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0);
       for (mb = 0; mb < 8; mb = mb + 1) begin
-         m_bx  = la_p + mb[3:0];
-         m_fwd = 1'b0; m_bseq = {SEQW{1'b0}};
-         m_byt = mem_rdata[mb*8 +: 8];                 // default: memory
-         // overlap test on the physical-address bits only (high bits are always 0)
-         for (mj = 0; mj < SBDEPTH; mj = mj + 1)
-            if (sb_v[mj] && sb_rdy[mj] && ($signed(sb_seq[mj] - m_lsq) < 0)
-                && (m_bx >= sb_addr[mj][PAW-1:0]) && (m_bx < sb_addr[mj][PAW-1:0] + sb_nb[mj])
+         m_lp   = {1'b0, llb} + mb[3:0];               // 0..14 (no big carry: 3b + const)
+         m_posw = m_lp[2:0];
+         m_lwb  = m_lp[3] ? lw1 : lw0;                 // which word this load byte is in
+         m_fwd  = 1'b0; m_bseq = {SEQW{1'b0}};
+         m_byt  = mem_rdata[mb*8 +: 8];                // default: memory (read @ la, byte mb)
+         for (mj = 0; mj < SBDEPTH; mj = mj + 1) begin
+            m_c0 = s_use[mj] && (sb_w0[mj] == m_lwb) && sb_be0[mj][m_posw];
+            m_c1 = s_use[mj] && (sb_w1[mj] == m_lwb) && sb_be1[mj][m_posw];
+            if ((m_c0 || m_c1)
                 && (!m_fwd || ($signed(m_bseq - sb_seq[mj]) < 0))) begin   // youngest wins
                m_fwd  = 1'b1; m_bseq = sb_seq[mj];
-               m_byt  = sb_data[mj][ (m_bx - sb_addr[mj])*8 +: 8 ];
+               m_byt  = m_c0 ? sb_d0[mj][m_posw*8 +: 8] : sb_d1[mj][m_posw*8 +: 8];
             end
+         end
          m_mrg[mb*8 +: 8] = m_byt;
       end
       c_v   = ld_sel_v;
@@ -298,6 +327,11 @@ module lsu
    // ----------------------------- sequential ----------------------------
    reg [SBI-1:0]  eidx;
    reg [LQI-1:0]  lidx;
+   reg [AW-1:0]   f_addr;          // fill temps (off the critical path)
+   reg [2:0]      f_off;
+   reg [8:0]      f_be9;
+   reg [127:0]    f_wd;
+   reg [15:0]     f_wbe;
    always @(posedge clk) begin
       if (reset) begin
          for (i = 0; i < SBDEPTH; i = i + 1) begin sb_v[i]<=0; sb_rdy[i]<=0; sb_cmt[i]<=0; end
@@ -326,17 +360,32 @@ module lsu
          // (2) execute fills (out of order)
          for (i = 0; i < IW; i = i + 1) begin
             if (exe_st_v[i]) begin
-               eidx = exe_st_idx[i*SBI +: SBI];
-               sb_addr[eidx] <= exe_st_addr[i*AW +: AW];
+               eidx   = exe_st_idx[i*SBI +: SBI];
+               f_addr = exe_st_addr[i*AW +: AW];
+               f_off  = f_addr[2:0];
+               f_be9  = (9'd1 << exe_st_nb[i*4 +: 4]) - 9'd1;       // 1..8 -> byte mask
+               f_wd   = {64'd0, exe_st_data[i*64 +: 64]} << {f_off, 3'd0}; // data into lanes
+               f_wbe  = {8'd0, f_be9[7:0]} << f_off;                // mask into lanes
+               sb_addr[eidx] <= f_addr;
                sb_data[eidx] <= exe_st_data[i*64 +: 64];
                sb_nb[eidx]   <= exe_st_nb[i*4 +: 4];
+               sb_w0[eidx]   <= f_addr[PAW-1:3];
+               sb_w1[eidx]   <= f_addr[PAW-1:3] + 1'b1;
+               sb_d0[eidx]   <= f_wd[63:0];
+               sb_d1[eidx]   <= f_wd[127:64];
+               sb_be0[eidx]  <= f_wbe[7:0];
+               sb_be1[eidx]  <= f_wbe[15:8];
                sb_rdy[eidx]  <= 1'b1;
             end
             if (exe_ld_v[i]) begin
-               lidx = exe_ld_idx[i*LQI +: LQI];
-               lq_addr[lidx] <= exe_ld_addr[i*AW +: AW];
+               lidx   = exe_ld_idx[i*LQI +: LQI];
+               f_addr = exe_ld_addr[i*AW +: AW];
+               lq_addr[lidx] <= f_addr;
                lq_nb[lidx]   <= exe_ld_nb[i*4 +: 4];
                lq_sgn[lidx]  <= exe_ld_sgn[i];
+               lq_w0[lidx]   <= f_addr[PAW-1:3];
+               lq_w1[lidx]   <= f_addr[PAW-1:3] + 1'b1;
+               lq_lb[lidx]   <= f_addr[2:0];
                lq_rdy[lidx]  <= 1'b1;
             end
          end
