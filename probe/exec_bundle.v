@@ -72,7 +72,10 @@ module exec_bundle
    wire [SHARDS-1:0]       ewbv;
    wire [SHARDS*PBITS-1:0] ewbp;
    wire [SHARDS*64-1:0]    ewbd;
-   assign wb_busy = wbv;
+   // wb_busy to the LSU = the NEXT-cycle writeback per lane (the LSU's registered load
+   // result lands a cycle after it selects, so it reserves the lane one cycle ahead).
+   wire [SHARDS-1:0]       wbn;
+   assign wb_busy = wbn;
 
    // 2-ahead forwarding source = the registered ALU/M results (wbv/wbp/wbd, NOT the
    // LSU-merged ewb) delayed one cycle. Loads are not forwarded.
@@ -109,7 +112,7 @@ module exec_bundle
          .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
          .agu_addr(agu_addr[i*64 +: 64]), .st_data(st_data[i*64 +: 64]),
          .exec_busy(exec_busy[i]), .div_done(div_done[i]),
-         .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]));
+         .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]), .wb_next(wbn[i]));
    end endgenerate
 
    assign ex_ckpt = brc;

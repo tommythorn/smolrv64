@@ -86,7 +86,9 @@ module exec_shard
     // ---- M-unit status ----
     output wire                    exec_busy,
     output wire                    div_done,
-    output wire [CBITS-1:0]        div_done_ckpt);
+    output wire [CBITS-1:0]        div_done_ckpt,
+    // next-cycle writeback on this shard's lane (for the LSU's lane reservation)
+    output wire                    wb_next);
 
    function automatic older;          // a strictly older than b (wrap-safe)
       input [SEQW-1:0] a, bb; older = ($signed(a - bb) < 0);
@@ -171,6 +173,7 @@ module exec_shard
    // result flop = writeback. ALU/link results, plus M completions (mux'd in; only one
    // M-op per shard at a time -> no collision). mem ops complete via the LSU.
    wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr;
+   assign      wb_next   = ex_alu_wb | m_complete;   // what this lane writes back next cycle
    always @(posedge clk) begin
       wb_valid <= ex_alu_wb | m_complete;
       wb_pr    <= m_complete ? m_pdst : ex_pd;

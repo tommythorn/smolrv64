@@ -79,13 +79,13 @@ module lsu
     // shards whose WB lane is taken by an ALU writeback this cycle; the LSU simply
     // does not select a load owned by a busy shard (it defers — loads are already
     // variable-latency), so the shared lane never collides (no WB reservation yet).
-    input  wire [IW-1:0]          wb_busy,
-    output reg                    ld_wb_v,
-    output reg  [PBITS-1:0]       ld_wb_pdst,
-    output reg  [SBITS-1:0]       ld_wb_owner,
-    output reg  [63:0]            ld_wb_val,
-    output reg                    ld_done,            // -> commit_ctl decrement
-    output reg  [CBITS-1:0]       ld_done_ckpt,
+    input  wire [IW-1:0]          wb_busy,            // NEXT-cycle wb per lane (lane reservation)
+    output wire                   ld_wb_v,            // registered (byte-merge is its own stage)
+    output wire [PBITS-1:0]       ld_wb_pdst,
+    output wire [SBITS-1:0]       ld_wb_owner,
+    output wire [63:0]            ld_wb_val,
+    output wire                   ld_done,            // -> commit_ctl decrement
+    output wire [CBITS-1:0]       ld_done_ckpt,
 
     // ---- commit / rollback (CPR) ----
     input  wire                   commit,
@@ -203,7 +203,9 @@ module lsu
    wire [AW-1:0] la = lq_addr[ld_sel];
    assign mem_raddr = la;
 
-   // combinational byte-merge + load writeback (memory ∪ youngest-older-store/byte)
+   // combinational byte-merge (memory ∪ youngest-older-store/byte) -> the c_* result,
+   // which is FLOPPED below. The byte-merge is thus its own pipeline stage; nothing
+   // combinational from the LSU reaches the writeback/RF-write/forwarding path.
    reg [63:0]     m_mrg;
    reg [7:0]      m_byt;
    reg            m_fwd;
@@ -211,6 +213,8 @@ module lsu
    reg [AW-1:0]   m_bx;
    reg [3:0]      m_nb;
    integer        mb, mj;
+   reg            c_v;
+   reg [63:0]     c_val;
    always @* begin
       m_lsq = lq_seq[ld_sel];
       m_nb  = lq_nb [ld_sel];
@@ -228,16 +232,41 @@ module lsu
             end
          m_mrg[mb*8 +: 8] = m_byt;
       end
-      ld_wb_v      = ld_sel_v;
-      ld_wb_pdst   = lq_pd [ld_sel];
-      ld_wb_owner  = lq_own[ld_sel];
-      ld_wb_val    = (m_nb==4'd1) ? (lq_sgn[ld_sel] ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
-                   : (m_nb==4'd2) ? (lq_sgn[ld_sel] ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
-                   : (m_nb==4'd4) ? (lq_sgn[ld_sel] ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
-                   : m_mrg;
-      ld_done      = ld_sel_v;
-      ld_done_ckpt = lq_ck[ld_sel];
+      c_v   = ld_sel_v;
+      c_val = (m_nb==4'd1) ? (lq_sgn[ld_sel] ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
+            : (m_nb==4'd2) ? (lq_sgn[ld_sel] ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
+            : (m_nb==4'd4) ? (lq_sgn[ld_sel] ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
+            : m_mrg;
    end
+
+   // ---- writeback register (the byte-merge result, flopped) ----
+   reg            r_v;
+   reg [PBITS-1:0] r_pdst;
+   reg [SBITS-1:0] r_owner;
+   reg [63:0]     r_val;
+   reg [SEQW-1:0] r_seq;
+   reg [CBITS-1:0] r_ck;
+   initial r_v = 1'b0;
+   always @(posedge clk) begin
+      if (reset) r_v <= 1'b0;
+      else begin
+         r_v     <= c_v;
+         r_pdst  <= lq_pd [ld_sel];
+         r_owner <= lq_own[ld_sel];
+         r_val   <= c_val;
+         r_seq   <= lq_seq[ld_sel];
+         r_ck    <= lq_ck [ld_sel];
+      end
+   end
+   // present the registered result; a rollback that squashes this load (now out of the
+   // LQ) the cycle it would write back suppresses it.
+   wire r_kill = rollback & older(rollback_seq, r_seq);
+   assign ld_wb_v      = r_v & ~r_kill;
+   assign ld_wb_pdst   = r_pdst;
+   assign ld_wb_owner  = r_owner;
+   assign ld_wb_val    = r_val;
+   assign ld_done      = ld_wb_v;
+   assign ld_done_ckpt = r_ck;
 
    // ------------------------------ drain --------------------------------
    // oldest committed+filled store -> one masked write/cycle.
