@@ -29,7 +29,10 @@ module backend_top
     parameter SEQW  = 8,
     parameter ABITS = 6,
     parameter PBITS = 8,
-    parameter SCHED_N = 2,       // CAM reservation-station entries/shard (sweep for timing)
+    parameter SCHED_N = 16,      // CAM RS entries/shard. Sweep @3ns: select path was the
+                                 // cap (N12=3.17 N16=4.49ns) until the age compare was
+                                 // coarsened (low 4 seqno bits dropped) -> N16=2.55ns,
+                                 // RS no longer the limiter (shared scoreboard write is).
     parameter CBITS = 2,
     parameter NCHK  = 4,
     parameter DCW   = 3,         // clog2(IW+1)
