@@ -115,17 +115,24 @@ module sched_shard
    endfunction
 
    // ------------------------------------------------ eligibility + oldest-of-N select
+   // The oldest pick is a fairness heuristic, not a correctness rule (any eligible entry
+   // may issue), so the age compare is COARSENED: drop the low AGELSB bits of the seqno.
+   // This keeps "really old wins" (no starvation) while shrinking each compare in this
+   // serial scan from a full-seqno subtract to (SEQW-AGELSB) bits -- the select chain is
+   // what bounds N. The stored/issued seq stays full width (commit/squash need it).
+   localparam AGELSB = 4;
+   localparam AGEW   = SEQW - AGELSB;
    reg [N-1:0]    elig;
    reg            found;
    reg [NW-1:0]   sel;
-   reg [SEQW-1:0] best;
+   reg [AGEW-1:0] best;
    integer e;
    always @* begin
-      found = 1'b0; sel = {NW{1'b0}}; best = {SEQW{1'b0}};
+      found = 1'b0; sel = {NW{1'b0}}; best = {AGEW{1'b0}};
       for (e = 0; e < N; e = e + 1) begin
          elig[e] = v[e] & r1[e] & r2[e] & r3[e];      // all sources ready (flops, no mux)
-         if (elig[e] && (!found || $signed(sq[e] - best) < 0)) begin
-            found = 1'b1; sel = e[NW-1:0]; best = sq[e];
+         if (elig[e] && (!found || $signed(sq[e][SEQW-1:AGELSB] - best) < 0)) begin
+            found = 1'b1; sel = e[NW-1:0]; best = sq[e][SEQW-1:AGELSB];
          end
       end
    end
