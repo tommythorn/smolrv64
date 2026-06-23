@@ -157,10 +157,15 @@ module backend_top
                                                                            : {$clog2(HW+2){1'b0}};
    assign imem_addr = {8'd0, immu_pa};
 
+   // instruction fetch translates only below M-mode (M fetches are always physical);
+   // data accesses translate only when the effective (MPRV-resolved) priv is below M.
+   wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
+   wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
+
    mmu #(.AW(56)) u_immu
      (.clk(clk), .reset(reset),
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
-      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(mmu_satp), .flush(mmu_flush),
+      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
 
@@ -400,7 +405,7 @@ module backend_top
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
       .amo_sz(amo_sz), .amo_pdst(amo_pdst), .amo_owner(amo_owner), .amo_ckpt(amo_ckpt),
-      .xl_satp(mmu_satp), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
+      .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush),
       .ldp_addr(ldptw_addr), .ldp_read(ldptw_read),
       .ldp_rdata(ldptw_rdata), .ldp_rvalid(ldptw_rvalid),

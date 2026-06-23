@@ -69,6 +69,7 @@ module tb;
    // reads after a store settles (loads of just-stored data otherwise go via LSU
    // forwarding, but this keeps the memory port coherent too).
    reg wtick=0;
+   integer mmudbg=0;
    integer m;
    always @(imem_addr or wtick) begin
       for (m=0;m<HW;m=m+1) begin
@@ -84,6 +85,9 @@ module tb;
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;
       if (ptw_read) ptw_rdata <= rd64({8'd0, ptw_addr});
+      if (mmudbg && ptw_read)
+         $display("[%0t] iPTW addr=%h pte=%h va=%h satp=%h", $time, ptw_addr,
+                  rd64({8'd0, ptw_addr}), dut.imem_va, dut.eb.u_csr.satp);
       ldptw_rvalid <= ldptw_read;
       if (ldptw_read) ldptw_rdata <= rd64({8'd0, ldptw_addr});
       stptw_rvalid <= stptw_read;
@@ -111,6 +115,7 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 
       if ($value$plusargs("trace=%d", trace)) ;
+      if ($value$plusargs("mmudbg=%d", mmudbg)) ;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
          if (commit) ncommit = ncommit + 1;
