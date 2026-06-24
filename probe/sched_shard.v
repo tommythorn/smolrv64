@@ -113,8 +113,9 @@ module sched_shard
       integer s;
       begin
          clr_hit = 1'b0;
-         for (s = 0; s < SHARDS; s = s + 1)
-            if (clr_valid[s] && (clr_pr[s*PBITS +: PBITS] == tag)) clr_hit = 1'b1;
+         if (tag != {PBITS{1'b0}})                 // p0 is constant-ready, never reallocated
+            for (s = 0; s < SHARDS; s = s + 1)
+               if (clr_valid[s] && (clr_pr[s*PBITS +: PBITS] == tag)) clr_hit = 1'b1;
       end
    endfunction
 
@@ -199,9 +200,14 @@ module sched_shard
             // no per-operand "need" bit: a non-dependency arrives as p0 (constant zero,
             // ready[0] hardwired in the shared table), so its seed is just ready & ~clr |
             // wake. disp_rdyX is the shared scoreboard's pre-edge read of ready[disp_psX].
-            seed1 = (disp_rdy1 & ~clr_hit(disp_ps1)) | match(disp_ps1);
-            seed2 = (disp_rdy2 & ~clr_hit(disp_ps2)) | match(disp_ps2);
-            seed3 = (disp_rdy3 & ~clr_hit(disp_ps3)) | match(disp_ps3);
+            // A tag being (re)allocated as a dest THIS cycle (clr_hit) belongs to a producer
+            // that has only just dispatched -> its value is not ready, and any wake for that
+            // tag this cycle is a STALE wake for the PRIOR owner of that physreg (reuse races
+            // a lingering broadcast, e.g. after a rollback compresses physreg recycling).
+            // Mask the whole seed (rdy AND match) by ~clr_hit, not just rdy.
+            seed1 = (disp_rdy1 | match(disp_ps1)) & ~clr_hit(disp_ps1);
+            seed2 = (disp_rdy2 | match(disp_ps2)) & ~clr_hit(disp_ps2);
+            seed3 = (disp_rdy3 | match(disp_ps3)) & ~clr_hit(disp_ps3);
             v  [dst] <= 1'b1;
             sq [dst] <= disp_seq;
             pd [dst] <= disp_pdst;  pdv[dst] <= disp_pdst_v;
