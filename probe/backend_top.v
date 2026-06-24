@@ -129,10 +129,17 @@ module backend_top
    end endgenerate
 
    // ---- dispatch / back-pressure decision (on the renamed bundle) ----
+   wire               lsu_dfault_v;          // data page-fault latched in the LSU (declared early: gates dispatch)
    wire [IW-1:0]      disp_ready;
    wire               any_valid    = |r_valid;
+   // Freeze dispatch while a data page-fault is latched but not yet delivered: it is
+   // delivered late (when its checkpoint becomes oldest), and with only NCHK checkpoints
+   // wrong-path speculation can wrap the ring and reuse -- thus overwrite -- the faulting
+   // checkpoint's chk_seq/chk_pc before delivery. Freezing preserves them. Cannot deadlock:
+   // older checkpoints still complete + commit independently of dispatch, so committed
+   // advances to the fault's checkpoint and dflt_fire clears the latch.
    wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
-                                     && !sb_full && !lq_full && !eb_redirect;
+                                     && !sb_full && !lq_full && !eb_redirect && !lsu_dfault_v;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
@@ -348,7 +355,6 @@ module backend_top
    wire               lsu_st_done;
    wire [CBITS-1:0]   lsu_st_done_ckpt;
    // ---- data page-fault report from the LSU (-> precise trap, below) ----
-   wire               lsu_dfault_v;
    wire [SEQW-1:0]    lsu_dfault_seq;
    wire [CBITS-1:0]   lsu_dfault_ckpt;
    wire [3:0]         lsu_dfault_cause;

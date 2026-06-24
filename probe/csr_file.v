@@ -162,13 +162,18 @@ module csr_file
    wire        trap_to_s  = trap_v & (priv != M) & medeleg[trap_cause[5:0]];
    wire        do_mret    = upd_valid & is_mret & ~trap_v;
    wire        do_sret    = upd_valid & is_sret & ~trap_v;
+   // sfence.vma redirects to its fall-through (always a 4-byte insn): this squashes and
+   // refetches every younger instruction so any store that was check-translated against the
+   // pre-sfence page tables is re-executed (and re-walked) against the flushed/new tables.
+   wire        do_sfence  = upd_valid & is_sfence & ~trap_v;
 
-   assign redir_valid   = trap_v | do_mret | do_sret;
+   assign redir_valid   = trap_v | do_mret | do_sret | do_sfence;
    assign redir_is_trap = trap_v;                   // exception (not xret)
    // ---- redirect target (combinational) ----
    always @* begin
       if (do_mret)              redir_target = mepc;
       else if (do_sret)         redir_target = sepc;
+      else if (do_sfence)       redir_target = upd_pc + 64'd4;
       else if (trap_to_s)       redir_target = {stvec[63:2], 2'b0};
       else                      redir_target = {mtvec[63:2], 2'b0};
    end
