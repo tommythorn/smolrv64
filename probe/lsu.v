@@ -139,7 +139,8 @@ module lsu
     input  wire                   commit,
     input  wire [CBITS-1:0]       commit_idx,
     input  wire                   rollback,
-    input  wire [SEQW-1:0]        rollback_seq);      // squash entries newer than this
+    input  wire [SEQW-1:0]        rollback_seq,       // squash entries newer than this
+    input  wire                   dfault_taken);      // our data-fault trap fired this cycle
 
    integer i, j, b;
 
@@ -464,7 +465,9 @@ module lsu
    initial df_v = 1'b0;
    always @(posedge clk) begin
       if (reset) df_v <= 1'b0;
-      else if (df_v && rollback && older(rollback_seq, df_seq_r)) df_v <= 1'b0;
+      // clear when our own trap is taken (one-cycle pulse, robust to checkpoint-index reuse
+      // corrupting the seqno compare) OR when a branch rollback squashes the faulting op.
+      else if (df_v && (dfault_taken || (rollback && older(rollback_seq, df_seq_r)))) df_v <= 1'b0;
       else if (df_now && (!df_v || older(df_nseq, df_seq_r))) begin
          df_v <= 1'b1; df_seq_r <= df_nseq; df_ck_r <= df_nck;
          df_cau_r <= df_ncau; df_tval_r <= df_ntval;

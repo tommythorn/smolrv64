@@ -322,7 +322,7 @@ module backend_top
       // commit decrement, counted via ld_done instead). Under Sv39, plain stores also defer
       // (counted via st_done) so a store page fault is delivered precisely (the store holds
       // its checkpoint open until its translation is checked). In Bare mode stores keep
-      // counting at issue -- full (parallel) store throughput, no faults possible.
+      // counting at issue -- full (parallel) store throughput, and prompt drain (fence_i).
       assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi]
                                  | (q_iss_is_store[gi] & data_xlate);
    end endgenerate
@@ -476,7 +476,7 @@ module backend_top
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
       .ld_wb_val(lsu_ld_wb_val), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
-      .rollback(roll_v), .rollback_seq(roll_seq));
+      .rollback(roll_v), .rollback_seq(roll_seq), .dfault_taken(dflt_fire));
 
    // ---- per-checkpoint base PC/seq (precise data-fault trap epc + squash boundary) ----
    reg  [PCW-1:0]  chk_pc  [0:NCHK-1];
