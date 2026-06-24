@@ -38,6 +38,11 @@ module csr_file
     input  wire [3:0]  xtrap_cause,   // exception: 12/13/15 page fault; interrupt: cause number
     input  wire [63:0] xtrap_epc,     // resume PC (faulting VA / faulting bundle start)
     input  wire [63:0] xtrap_tval,    // faulting virtual address
+    // ---- hardware interrupt-pending lines (from CLINT/PLIC, combinational) ----
+    // The device-owned mip bits: MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). OR'd into
+    // the effective mip; the read-only set (MEIP/MTIP/MSIP) is masked out of CSR writes
+    // so software clears them only at the device (mtimecmp/msip), never via mip.
+    input  wire [11:0] hw_ip,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
@@ -77,6 +82,9 @@ module csr_file
    localparam [63:0] SSTATUS_WMASK = 64'h0000_0000_000C_6122;
    // interrupt-enable/pending S-visible bits (SSIE/STIE/SEIE = 1,5,9)
    localparam [63:0] S_INT_MASK = 64'h0000_0000_0000_0222;
+   // mip bits owned read-only by hardware (MEIP/MTIP/MSIP = 11,7,3): software MIP
+   // writes can't touch them (they reflect the device lines, cleared at the device).
+   localparam [63:0] HW_RO_MASK = 64'h0000_0000_0000_0888;
 
    reg [1:0]  priv;
    reg [63:0] mstatus, mtvec, mepc, mcause, mtval, mscratch, mie, mip,
@@ -91,6 +99,10 @@ module csr_file
                   | (mstatus[10:9]  == 2'b11);  // VS  dirty
    wire [63:0] mstatus_r = {status_sd, mstatus[62:36], 4'b1010, mstatus[31:0]};
 
+   // effective mip = software-held bits OR the hardware-driven device lines (CLINT/PLIC).
+   // hw_ip is 0 when no device is wired (current TB) -> eff_mip == mip, no behavior change.
+   wire [63:0] eff_mip = mip | {52'd0, hw_ip};
+
    // ---- combinational read ----
    always @* begin
       case (raddr)
@@ -103,9 +115,9 @@ module csr_file
         MTVAL:      rdata = mtval;
         MSCRATCH:   rdata = mscratch;
         MIE:        rdata = mie;
-        MIP:        rdata = mip;
+        MIP:        rdata = eff_mip;
         SIE:        rdata = mie & S_INT_MASK;
-        SIP:        rdata = mip & S_INT_MASK;
+        SIP:        rdata = eff_mip & S_INT_MASK;
         MEDELEG:    rdata = medeleg;
         MIDELEG:    rdata = mideleg;
         MCOUNTEREN: rdata = mcounteren;
@@ -178,7 +190,7 @@ module csr_file
    // in M. Priority MEI(11),MSI(3),MTI(7),SEI(9),SSI(1),STI(5) -- matches smolrv64.
    wire        m_glob = (priv == M) ? mstatus[3] : 1'b1;            // mstatus.MIE
    wire        s_glob = (priv == S) ? mstatus[1] : (priv == U);    // mstatus.SIE
-   wire [11:0] ip_ie  = mip[11:0] & mie[11:0];
+   wire [11:0] ip_ie  = eff_mip[11:0] & mie[11:0];
    wire [11:0] pend_m = ip_ie & ~mideleg[11:0];
    wire [11:0] pend_s = ip_ie &  mideleg[11:0];
    wire        take_m = m_glob & (pend_m != 12'd0);
@@ -272,7 +284,7 @@ module csr_file
               MTVAL:      mtval   <= newv;
               MSCRATCH:   mscratch<= newv;
               MIE:        mie     <= newv;
-              MIP:        mip     <= newv;
+              MIP:        mip     <= newv & ~HW_RO_MASK;  // MEIP/MTIP/MSIP read-only (device-owned)
               SIE:        mie     <= (mie & ~S_INT_MASK) | (newv & S_INT_MASK);
               SIP:        mip     <= (mip & ~S_INT_MASK) | (newv & S_INT_MASK);
               MEDELEG:    medeleg <= newv;

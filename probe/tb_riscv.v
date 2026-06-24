@@ -42,6 +42,7 @@ module tb;
                  .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
+      .hw_ip(12'd0),                       // no CLINT/PLIC in this device-less harness
       .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),

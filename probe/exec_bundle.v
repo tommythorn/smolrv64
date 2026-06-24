@@ -78,6 +78,7 @@ module exec_bundle
     input  wire [3:0]              xtrap_cause,
     input  wire [63:0]             xtrap_epc,
     input  wire [63:0]             xtrap_tval,
+    input  wire [11:0]             hw_ip,            // hardware interrupt-pending (CLINT/PLIC)
     output wire                    irq_v,            // an interrupt is deliverable now
     output wire [3:0]              irq_cause,
     output wire                    csr_redir_v,      // csr_file redirect this cycle (trap/xret)
@@ -182,6 +183,7 @@ module exec_bundle
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
+      .hw_ip(hw_ip),
       .irq_v(irq_v), .irq_cause(irq_cause),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));

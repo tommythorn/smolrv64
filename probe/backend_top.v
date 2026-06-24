@@ -48,6 +48,9 @@ module backend_top
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    // hardware interrupt-pending lines from the platform CLINT/PLIC:
+    // MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). Tie to 0 in device-less testbenches.
+    input  wire [11:0]             hw_ip,
     // data memory port (flat byte-addressable stub; real D$ later)
     output wire [AW-1:0]           dmem_raddr,
     input  wire [63:0]             dmem_rdata,
@@ -448,6 +451,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
+      .hw_ip(hw_ip),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 

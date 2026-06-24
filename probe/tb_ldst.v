@@ -28,7 +28,7 @@ module tb;
    integer errs=0, i, k, c;
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(0)) dut
-     (.clk(clk), .reset(reset), .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
+     (.clk(clk), .reset(reset), .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(12'd0),
       .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata), .dmem_wen(dmem_wen),
       .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
