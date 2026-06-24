@@ -130,6 +130,8 @@ module backend_top
 
    // ---- dispatch / back-pressure decision (on the renamed bundle) ----
    wire               lsu_dfault_v;          // data page-fault latched in the LSU (declared early: gates dispatch)
+   reg                replay_v;              // fault-replay: refetch the faulting bundle one-op-per-bundle
+   initial replay_v = 1'b0;                  // (so the faulting op becomes solo -> precise trap, declared early: feeds frontend)
    wire [IW-1:0]      disp_ready;
    wire               any_valid    = |r_valid;
    // Freeze dispatch while a data page-fault is latched but not yet delivered: it is
@@ -193,6 +195,12 @@ module backend_top
    wire [SEQW-1:0]    fe_cur_seq;
    wire               csr_redir_v;
    wire [63:0]        csr_redir_tgt;
+   // data-fault trap (assigned below near the LSU); declared early so iflt can defer to it
+   wire               dflt_fire;
+   wire               dflt_ready;       // faulting mem op is the oldest live checkpoint
+   wire               dflt_replay;      // phase 1: roll back + refetch it solo (no trap yet)
+   wire               dflt_roll;        // either phase rolls back to the faulting checkpoint
+
    reg                pend_iflt;
    reg  [63:0]        iflt_va;
    reg  [3:0]         iflt_cause;
@@ -205,10 +213,11 @@ module backend_top
          pend_iflt <= 1'b1; iflt_va <= imem_va; iflt_cause <= immu_cause;
       end
    end
-   assign iflt_fire = pend_iflt & cc_empty;
+   // Suppress fetch-fault delivery during a data-fault replay: the replaying op is older,
+   // so a younger speculative fetch fault must not preempt it (replay empties the pipe ->
+   // cc_empty, which would otherwise let iflt fire). Cleared automatically when replay ends.
+   assign iflt_fire = pend_iflt & cc_empty & ~replay_v;
 
-   // data-fault trap (declared below near the LSU); combined external-trap drive
-   wire               dflt_fire;
    wire [3:0]         dflt_cause;
    wire [63:0]        dflt_epc, dflt_tval;
    wire               xtrap_v     = iflt_fire | dflt_fire;
@@ -220,7 +229,7 @@ module backend_top
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
-      .redirect_seq(fe_red_seq),
+      .redirect_seq(fe_red_seq), .solo_all(replay_v),
       .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
@@ -493,28 +502,46 @@ module backend_top
       chk_seq[cur] <= r_seq[SEQW-1:0];
    end
 
-   // data page fault: the faulting load/store blocks commit -> trap once its checkpoint
-   // is the oldest live one (committed_idx). A checkpoint is atomic, so epc = its bundle
-   // start PC: after the handler maps the page and sret returns, the whole (annulled)
-   // bundle re-executes correctly. roll back the faulting checkpoint .. cur.
-   assign dflt_fire  = lsu_dfault_v & (cc_committed == lsu_dfault_ckpt) & ~iflt_fire;
+   // data page/access fault: the faulting load/store blocks commit -> handle once its
+   // checkpoint is the oldest live one (committed_idx). A checkpoint is atomic, so a
+   // mid-bundle faulting op cannot be made precise directly (its older siblings would be
+   // annulled too). Two-phase REPLAY-TO-SOLO: phase 1 rolls back to the bundle start and
+   // refetches it one-op-per-bundle (solo_all), so the older siblings land in their own
+   // (committable) checkpoints; phase 2, with the faulting op now solo, delivers a precise
+   // trap (epc = chk_pc = that op's PC) and annuls only it. An already-solo op (AMO, or a
+   // load alone in its bundle) just pays one extra refetch -- still correct.
+   assign dflt_ready  = lsu_dfault_v & (cc_committed == lsu_dfault_ckpt) & ~iflt_fire;
+   // already first in its bundle (no older siblings to commit) -> precise directly, no replay
+   wire   dflt_solo   = (lsu_dfault_seq == chk_seq[lsu_dfault_ckpt]);
+   assign dflt_replay = dflt_ready & ~dflt_solo & ~replay_v;   // phase 1 (mid-bundle fault only)
+   assign dflt_fire   = dflt_ready & ( dflt_solo |  replay_v); // phase 2, or direct when already solo
+   assign dflt_roll   = dflt_ready;                 // any delivery/replay rolls back the same way
    assign dflt_cause = lsu_dfault_cause;
    assign dflt_epc   = chk_pc[lsu_dfault_ckpt];
    assign dflt_tval  = lsu_dfault_tval;
+
+   always @(posedge clk) begin
+      if (reset)            replay_v <= 1'b0;
+      else if (dflt_fire)   replay_v <= 1'b0;       // precise trap delivered
+      else if (dflt_replay) replay_v <= 1'b1;       // entered solo replay
+   end
 
    // unified redirect distribution. A fetch fault fires only when empty, so its rollback
    // is a no-op functionally but keeps the frontend flush paired with a rename rollback
    // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
-   assign roll_v     = eb_redirect | dflt_fire | iflt_fire;
+   assign roll_v     = eb_redirect | dflt_roll | iflt_fire;
    assign roll_seq   = iflt_fire ? fe_cur_seq
-                     : dflt_fire ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
+                     : dflt_roll ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
    assign roll_ckpt  = iflt_fire ? cc_committed
-                     : dflt_fire ? lsu_dfault_ckpt : rb_idx;
+                     : dflt_roll ? lsu_dfault_ckpt : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
-   assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt : eb_target;
+   // phase 2 / fetch-fault redirect to the trap vector; phase 1 refetches the bundle start
+   assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt
+                     : dflt_replay             ? chk_pc[lsu_dfault_ckpt]
+                     :                           eb_target;
    assign fe_red_seq = iflt_fire ? fe_cur_seq
-                     : dflt_fire ? chk_seq[lsu_dfault_ckpt]
+                     : dflt_roll ? chk_seq[lsu_dfault_ckpt]
                      : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;

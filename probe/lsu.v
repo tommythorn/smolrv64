@@ -299,13 +299,15 @@ module lsu
    wire [3:0]  ldx_cause;
    mmu #(.AW(56)) u_ldmmu
      (.clk(clk), .reset(reset),
-      .req_valid(ld_sel_v & xlate), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
+      .req_valid(ld_sel_v), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(ldp_addr), .ptw_read(ldp_read), .ptw_rdata(ldp_rdata), .ptw_rvalid(ldp_rvalid),
       .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause));
-   wire          ld_xok = ~xlate | (ldx_ready & ~ldx_fault);
-   wire          ld_xflt = xlate & ldx_ready & ldx_fault;          // selected load page-faults
-   wire [AW-1:0] ld_pa  = xlate ? {{(AW-56){1'b0}}, ldx_pa} : lq_addr[ld_sel];
+   // mmu resolves combinationally in Bare mode (no walk): a noncanon/out-of-range load
+   // there yields ldx_fault with an ACCESS-fault cause (5), surfaced like any page fault.
+   wire          ld_xok = ldx_ready & ~ldx_fault;
+   wire          ld_xflt = ldx_ready & ldx_fault;                  // selected load page/access-faults
+   wire [AW-1:0] ld_pa  = {{(AW-56){1'b0}}, ldx_pa};
 
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
    // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.

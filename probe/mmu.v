@@ -49,6 +49,11 @@ module mmu
 
    wire [3:0]  pf_cause = (req_access == 2'd0) ? 4'd12 :
                           (req_access == 2'd1) ? 4'd13 : 4'd15;
+   // Bare mode has no page tables, so an out-of-range (non-canonical/unaddressable)
+   // access raises an ACCESS fault, not a page fault.  cause 1=fetch, 5=load, 7=store/amo.
+   // (matches SmolRV64's phys-region default case; PMP itself is intentionally unsupported.)
+   wire [3:0]  af_cause = (req_access == 2'd0) ? 4'd1 :
+                          (req_access == 2'd1) ? 4'd5 : 4'd7;
 
    // -------------------- TLB (direct-mapped on VPN[3:0] of vpn0) --------------------
    reg              tlb_v   [0:TLBN-1];
@@ -123,7 +128,7 @@ module mmu
                     !xlate    ? req_vaddr[AW-1:0] :
                                 leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr);
    assign t_fault = wdm ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
-   assign t_cause = wdm ? w_cause : pf_cause;
+   assign t_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
 
    // start a walk when the request can't resolve this cycle
    wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !wdm & (st==IDLE);

@@ -31,6 +31,7 @@ module aligner
     input  wire [$clog2(HW+2)-1:0] avail,    // halfwords present (0..HW)
     input  wire [PCW-1:0]          base_pc,  // PC of hwin[0]
     input  wire [SEQW-1:0]         base_seq, // seq of slot 0
+    input  wire                    solo_all, // force one instruction per bundle (fault replay)
     output wire [IW-1:0]           valid,
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
@@ -82,7 +83,7 @@ module aligner
    reg           is32, have, is_sys;
    // Explicit sensitivity: hwin is read via the hwr() function, which iverilog's
    // @* does not pull into the list -- name it so the block re-evaluates on it.
-   always @(hwin or avail or base_pc or base_seq) begin
+   always @(hwin or avail or base_pc or base_seq or solo_all) begin
       pos = 0;
       run = 1'b1;
       for (k = 0; k < IW; k = k + 1) begin
@@ -99,8 +100,8 @@ module aligner
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];
-         if ((k != 0) && is_sys) begin
-            v[k] = 1'b0; run = 1'b0;           // SYSTEM begins a fresh (solo) bundle
+         if ((k != 0) && (is_sys || solo_all)) begin
+            v[k] = 1'b0; run = 1'b0;           // SYSTEM (or fault replay) begins a fresh (solo) bundle
          end else begin
             v[k] = run & have;
             if (v[k]) begin

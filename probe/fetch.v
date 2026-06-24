@@ -26,6 +26,7 @@ module fetch
     input  wire                    redirect,
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
+    input  wire                    solo_all,    // align one instruction per bundle (fault replay)
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
@@ -51,6 +52,7 @@ module fetch
    wire [PBW-1:0] consumed;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(imem_avail), .base_pc(pc_q), .base_seq(seq_q),
+      .solo_all(solo_all),
       .valid(slot_valid), .inst(inst), .pc(pc), .seq(seq), .consumed(consumed));
 
    assign valid = |slot_valid;          // a bundle is present iff >=1 instr aligned
