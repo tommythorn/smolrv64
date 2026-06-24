@@ -102,6 +102,7 @@ module tb;
    reg [63:0] tohost; integer c, b2;
    integer    ncyc;
    integer    trace=0;
+   integer    storelog=0;
    integer    ncommit=0;
    integer    dlo=999999999, dhi=0;
    reg        fl2_16=1'bx;
@@ -123,6 +124,7 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 
       if ($value$plusargs("trace=%d", trace)) ;
+      if ($value$plusargs("storelog=%d", storelog)) ;
       if ($value$plusargs("mmudbg=%d", mmudbg)) ;
       if ($value$plusargs("dlo=%d", dlo)) ;
       if ($value$plusargs("dhi=%d", dhi)) ;
@@ -176,10 +178,18 @@ module tb;
    end
 
    // apply stores to memory (after the monitor sees them)
+   integer szp; reg [63:0] vlp;
    always @(posedge clk) if (!reset && dmem_wen) begin
       for (b2=0;b2<8;b2=b2+1)
          if (dmem_wmask[b2]) mem[(dmem_waddr-BASE)+b2] <= dmem_wdata[b2*8 +: 8];
       wtick <= ~wtick;
+      // cosim store-stream log, matching simmerv's SIMMERV_STORELOG format:
+      //   ST <pa,16hex> <nbytes> <value,16hex>   (mask is low-contiguous for these tests)
+      if (storelog) begin
+         szp = 0; for (b2=0;b2<8;b2=b2+1) szp = szp + dmem_wmask[b2];
+         vlp = (szp==8) ? dmem_wdata : (dmem_wdata & ((64'd1 << (szp*8)) - 64'd1));
+         $display("ST %016x %0d %016x", dmem_waddr, szp, vlp);
+      end
    end
 endmodule
 
