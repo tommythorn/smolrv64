@@ -433,15 +433,16 @@ module backend_top
    reg                amo_v;   reg [4:0] amo_func;  reg [1:0] amo_sz;
    reg  [AW-1:0]      amo_addr; reg [63:0] amo_data;
    reg  [PBITS-1:0]   amo_pdst; reg [SBITS-1:0] amo_owner; reg [CBITS-1:0] amo_ckpt;
+   reg  [SEQW-1:0]    amo_seq;
    integer am;
    always @* begin
       amo_v=1'b0; amo_func=5'd0; amo_sz=2'd0; amo_addr={AW{1'b0}}; amo_data=64'd0;
-      amo_pdst={PBITS{1'b0}}; amo_owner={SBITS{1'b0}}; amo_ckpt={CBITS{1'b0}};
+      amo_pdst={PBITS{1'b0}}; amo_owner={SBITS{1'b0}}; amo_ckpt={CBITS{1'b0}}; amo_seq={SEQW{1'b0}};
       for (am = 0; am < IW; am = am + 1) if (eb_amo[am]) begin
          amo_v=1'b1; amo_func=eb_amo_func[am*5 +: 5]; amo_sz=ex_msize[am*2 +: 2];
          amo_addr=eb_agu[am*64 +: AW]; amo_data=eb_stdata[am*64 +: 64];
          amo_pdst=eb_amo_pdst[am*PBITS +: PBITS]; amo_owner=am[SBITS-1:0];
-         amo_ckpt=ex_ckpt[am*CBITS +: CBITS];
+         amo_ckpt=ex_ckpt[am*CBITS +: CBITS]; amo_seq=ex_seq[am*SEQW +: SEQW];
       end
    end
 
@@ -458,6 +459,7 @@ module backend_top
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
       .amo_sz(amo_sz), .amo_pdst(amo_pdst), .amo_owner(amo_owner), .amo_ckpt(amo_ckpt),
+      .amo_seq(amo_seq),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush),
       .ldp_addr(ldptw_addr), .ldp_read(ldptw_read),

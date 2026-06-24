@@ -81,6 +81,7 @@ module lsu
     input  wire [PBITS-1:0]       amo_pdst,
     input  wire [SBITS-1:0]       amo_owner,
     input  wire [CBITS-1:0]       amo_ckpt,
+    input  wire [SEQW-1:0]        amo_seq,
 
     // ---- address translation (dTLB); Bare (satp.MODE=0) = identity bypass ----
     // Translation happens at the memory-access boundaries (load SELECT, store drain,
@@ -278,7 +279,7 @@ module lsu
    localparam A_IDLE=2'd0, A_WAIT=2'd1, A_RD=2'd2, A_WB=2'd3;
    reg [1:0]        ast;
    reg [AW-1:0]     a_addr;  reg [63:0] a_data;  reg [4:0] a_func;  reg [1:0] a_sz;
-   reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;
+   reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;  reg [SEQW-1:0] a_seq;
    reg [63:0]       a_rdval_q;
    reg [AW-1:0]     a_wpa;                             // translated (aligned) AMO phys addr
    reg              rsv_v;   reg [WW-1:0] rsv_w;       // LR/SC reservation (word granularity)
@@ -437,12 +438,15 @@ module lsu
    // could never reach its checkpoint (the older faulting op never completes) -> deadlock.
    // So pick the older of a concurrent load/store fault, and (below) let an older fault
    // preempt a younger one already latched.
-   wire             df_now   = ld_xflt | st_ck_flt;
-   wire             pick_ld  = ld_xflt & (~st_ck_flt | older(lq_seq[ld_sel], sb_seq[ck_sel]));
-   wire [SEQW-1:0]  df_nseq  = pick_ld ? lq_seq [ld_sel] : sb_seq [ck_sel];
-   wire [CBITS-1:0] df_nck   = pick_ld ? lq_ck  [ld_sel] : sb_ck  [ck_sel];
-   wire [3:0]       df_ncau  = pick_ld ? ldx_cause       : stx_cause;
-   wire [AW-1:0]    df_ntval = pick_ld ? lq_addr[ld_sel] : sb_addr[ck_sel];
+   // an AMO faulting is solo + oldest by construction (issues only when oldest, holds the
+   // pipe), so it is always the oldest fault when present -> highest priority.
+   wire             df_now   = ld_xflt | st_ck_flt | amo_xflt;
+   wire             pick_am  = amo_xflt;
+   wire             pick_ld  = ~pick_am & ld_xflt & (~st_ck_flt | older(lq_seq[ld_sel], sb_seq[ck_sel]));
+   wire [SEQW-1:0]  df_nseq  = pick_am ? a_seq     : pick_ld ? lq_seq [ld_sel] : sb_seq [ck_sel];
+   wire [CBITS-1:0] df_nck   = pick_am ? a_ck      : pick_ld ? lq_ck  [ld_sel] : sb_ck  [ck_sel];
+   wire [3:0]       df_ncau  = pick_am ? stx_cause : pick_ld ? ldx_cause       : stx_cause;
+   wire [AW-1:0]    df_ntval = pick_am ? a_addr    : pick_ld ? lq_addr[ld_sel] : sb_addr[ck_sel];
 
    // Register the report. dfault_v feeds backend_top's roll_v, which feeds our own
    // `rollback`; but the load/store select that produces df_now is itself combinationally
@@ -489,7 +493,7 @@ module lsu
          case (ast)
            A_IDLE: if (amo_v) begin
                       a_addr<=amo_addr; a_data<=amo_data; a_func<=amo_func; a_sz<=amo_sz;
-                      a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; ast<=A_WAIT;
+                      a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; a_seq<=amo_seq; ast<=A_WAIT;
                    end
            A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
                       mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; ast<=A_RD;
@@ -689,6 +693,9 @@ module lsu
                if (sb_v[i] && older(rollback_seq, sb_seq[i])) sb_v[i] <= 1'b0;
             for (i = 0; i < LQDEPTH; i = i + 1)
                if (lq_v[i] && older(rollback_seq, lq_seq[i])) lq_v[i] <= 1'b0;
+            // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
+            // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic.
+            if (ast != A_IDLE && older(rollback_seq, a_seq)) begin ast <= A_IDLE; rsv_v <= 1'b0; end
          end
       end
    end
