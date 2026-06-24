@@ -3,6 +3,7 @@
 # trace-only harness (no PASS string) -> excluded.
 set -u
 cd "$(dirname "$0")"
+ulimit -v $((25 * 1024 * 1024)) 2>/dev/null || true   # cap @25 GiB: runaway aborts, not OOM
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
 pass=0; total=0; fails=""
 for tb in tb_*.v; do

@@ -6,6 +6,10 @@
 set -u
 cd "$(dirname "$0")"
 
+# Safety net: cap address space at 25 GiB so a runaway sim (e.g. a zero-delay
+# combinational oscillation) aborts on bad_alloc instead of OOM-killing the box.
+ulimit -v $((25 * 1024 * 1024)) 2>/dev/null || true
+
 TESTDIR=../tests/riscv-tests/passes
 NM=$(command -v riscv64-unknown-elf-nm || command -v riscv64-elf-nm || command -v riscv64-linux-gnu-nm)
 CYC=${CYC:-200000}

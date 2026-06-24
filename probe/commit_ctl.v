@@ -34,6 +34,10 @@ module commit_ctl
     // load completion from the LSU (the deferred decrement)
     input  wire                  ld_done,
     input  wire [CBITS-1:0]      ld_done_ckpt,
+    // store completion from the LSU (deferred decrement; only under Sv39, where stores are
+    // excluded from the issue-time count and complete after their translation check)
+    input  wire                  st_done,
+    input  wire [CBITS-1:0]      st_done_ckpt,
     // per-shard iterative-divide completion (deferred decrement)
     input  wire [IW-1:0]         div_done,
     input  wire [IW*CBITS-1:0]   div_done_ckpt,
@@ -91,6 +95,7 @@ module commit_ctl
          if (iss_valid[s] && !iss_is_load[s] && !iss_is_div[s])
             dec[iss_ckpt[s*CBITS +: CBITS]] = dec[iss_ckpt[s*CBITS +: CBITS]] + 1'b1;
       if (ld_done) dec[ld_done_ckpt] = dec[ld_done_ckpt] + 1'b1;   // load completes at LSU
+      if (st_done) dec[st_done_ckpt] = dec[st_done_ckpt] + 1'b1;   // store completes at LSU (Sv39)
       for (s = 0; s < IW; s = s + 1)                                // divide completes at the divider
          if (div_done[s])
             dec[div_done_ckpt[s*CBITS +: CBITS]] = dec[div_done_ckpt[s*CBITS +: CBITS]] + 1'b1;

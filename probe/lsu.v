@@ -107,6 +107,11 @@ module lsu
     output wire [CBITS-1:0]       dfault_ckpt,
     output wire [3:0]             dfault_cause,
     output wire [AW-1:0]          dfault_tval, // faulting virtual address
+    // ---- store completion (deferred decrement, like ld_done): a store retires from
+    //      commit_ctl's count only once its translation has been checked fault-free.
+    //      Used only under Sv39 (backend defers store completion to the LSU then). ----
+    output wire                   st_done,
+    output wire [CBITS-1:0]       st_done_ckpt,
 
     // ---- flat memory port (stub; real D$ later) ----
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
@@ -155,6 +160,9 @@ module lsu
    reg [7:0]        sb_be1 [0:SBDEPTH-1];   // byte-enables in word w1
    reg [63:0]       sb_d0  [0:SBDEPTH-1];   // data laid into word-w0 byte lanes
    reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
+   reg [AW-1:0]     sb_pa  [0:SBDEPTH-1];   // physical drain address (Bare: ==VA; Sv39: filled at check)
+   reg              sb_xck [0:SBDEPTH-1];   // translation checked (drainable; Bare: set at fill)
+   reg              sb_xflt[0:SBDEPTH-1];   // store page-faults (reported via dfault, never drains)
 
    // ============================ load queue =============================
    reg              lq_v   [0:LQDEPTH-1];
@@ -365,7 +373,8 @@ module lsu
    always @* begin
       dr_v = 1'b0; dr_sel = {SBI{1'b0}}; dr_best = {SEQW{1'b0}};
       for (i = 0; i < SBDEPTH; i = i + 1)
-         if (sb_v[i] && sb_rdy[i] && sb_cmt[i] && (!dr_v || older(sb_seq[i], dr_best))) begin
+         if (sb_v[i] && sb_rdy[i] && sb_cmt[i] && sb_xck[i] && !sb_xflt[i]
+             && (!dr_v || older(sb_seq[i], dr_best))) begin
             dr_v = 1'b1; dr_sel = i[SBI-1:0]; dr_best = sb_seq[i];
          end
    end
@@ -375,36 +384,93 @@ module lsu
       for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
    end
 
-   // store/amo-path walker. Drain and AMO never overlap: an AMO's A_WAIT waits for all
-   // committed stores to drain, so amo_need_xl => no committed store => dr_v==0. On a
-   // miss the drain (or AMO) stalls (no memory write; the FSM holds) while the PTW walks.
+   // store/amo-path walker. PRE-COMMIT store check: translate the OLDEST unchecked store
+   // (sb_xck=0) so a store page fault is discovered while the store is still speculative
+   // (its checkpoint open) -> a precise trap can roll it back. (The drain-time translation
+   // it replaces ran post-commit -> a store fault could never be delivered precisely.) The
+   // architectural write still happens later at drain, using the PA stashed here (sb_pa).
+   // One store checked per cycle (single MMU port) -- matches the single st_done port. AMO
+   // (solo + oldest) shares the port and wins: when it needs translation no younger store
+   // can be pending a check (older stores already drained, nothing younger in flight).
    wire amo_need_xl = (ast == A_WAIT) & ~amo_pend & ~p_v;   // about to read the RMW location
+
+   // oldest store still needing a translation check
+   reg            ck_v;
+   reg [SBI-1:0]  ck_sel;
+   reg [SEQW-1:0] ck_best;
+   always @* begin
+      ck_v = 1'b0; ck_sel = {SBI{1'b0}}; ck_best = {SEQW{1'b0}};
+      for (i = 0; i < SBDEPTH; i = i + 1)
+         if (sb_v[i] && sb_rdy[i] && !sb_xck[i] && (!ck_v || older(sb_seq[i], ck_best))) begin
+            ck_v = 1'b1; ck_sel = i[SBI-1:0]; ck_best = sb_seq[i];
+         end
+   end
+   wire        st_need_xl = xlate & ck_v & ~amo_need_xl;    // checking a store this cycle
+
    wire        stx_ready, stx_fault;
    wire [55:0] stx_pa;
    wire [3:0]  stx_cause;
    mmu #(.AW(56)) u_stmmu
      (.clk(clk), .reset(reset),
-      .req_valid(xlate & (amo_need_xl | dr_v)),
-      .req_vaddr(amo_need_xl ? a_addr : sb_addr[dr_sel]),
+      .req_valid(xlate & (amo_need_xl | ck_v)),
+      .req_vaddr(amo_need_xl ? a_addr : sb_addr[ck_sel]),
       .req_access(amo_need_xl ? 2'd3 : 2'd2),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
       .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause));
-   wire          st_xok    = ~xlate | (stx_ready & ~stx_fault);   // drain ok (valid when ~amo_need_xl)
-   wire          st_xflt   = xlate & ~amo_need_xl & dr_v & stx_ready & stx_fault;
    wire          amo_xok   = ~xlate | (stx_ready & ~stx_fault);   // amo ok (valid when amo_need_xl)
    wire          amo_xflt  = xlate & amo_need_xl & stx_ready & stx_fault;
-   wire [AW-1:0] st_pa     = xlate ? {{(AW-56){1'b0}}, stx_pa} : sb_addr[dr_sel];
    wire [AW-1:0] amo_pa_al = xlate ? (({{(AW-56){1'b0}}, stx_pa}) & ~{{(AW-3){1'b0}}, 3'b111})
                                    : a_waddr;
+   // store-check outcome this cycle (valid when st_need_xl)
+   wire          st_ck_done = st_need_xl & stx_ready & ~stx_fault;   // translated OK -> completes
+   wire          st_ck_flt  = st_need_xl & stx_ready &  stx_fault;   // page-faults -> precise trap
+
+   // store completion: retire from commit_ctl's count once checked fault-free.
+   assign st_done      = st_ck_done;
+   assign st_done_ckpt = sb_ck[ck_sel];
 
    // data page-fault report -> backend_top injects a precise trap (rolls back to the
-   // faulting op's checkpoint). Load takes priority over a store drain.
-   assign dfault_v     = ld_xflt | st_xflt;
-   assign dfault_seq   = ld_xflt ? lq_seq[ld_sel] : sb_seq[dr_sel];
-   assign dfault_ckpt  = ld_xflt ? lq_ck [ld_sel] : sb_ck [dr_sel];
-   assign dfault_cause = ld_xflt ? ldx_cause      : stx_cause;
-   assign dfault_tval  = ld_xflt ? lq_addr[ld_sel] : sb_addr[dr_sel];
+   // faulting op's checkpoint). Precise exceptions require the OLDEST faulting memory op:
+   // loads translate eagerly/out-of-order while stores are checked in-order one/cycle, so a
+   // younger load can fault before an older store -- if we latched the younger one, commit
+   // could never reach its checkpoint (the older faulting op never completes) -> deadlock.
+   // So pick the older of a concurrent load/store fault, and (below) let an older fault
+   // preempt a younger one already latched.
+   wire             df_now   = ld_xflt | st_ck_flt;
+   wire             pick_ld  = ld_xflt & (~st_ck_flt | older(lq_seq[ld_sel], sb_seq[ck_sel]));
+   wire [SEQW-1:0]  df_nseq  = pick_ld ? lq_seq [ld_sel] : sb_seq [ck_sel];
+   wire [CBITS-1:0] df_nck   = pick_ld ? lq_ck  [ld_sel] : sb_ck  [ck_sel];
+   wire [3:0]       df_ncau  = pick_ld ? ldx_cause       : stx_cause;
+   wire [AW-1:0]    df_ntval = pick_ld ? lq_addr[ld_sel] : sb_addr[ck_sel];
+
+   // Register the report. dfault_v feeds backend_top's roll_v, which feeds our own
+   // `rollback`; but the load/store select that produces df_now is itself combinationally
+   // gated by `rollback` (the squash-this-cycle guards at the select loops). So a faulting
+   // op would chase its own precise-trap rollback in a zero-delay loop (deselect -> fault
+   // drops -> roll_v drops -> reselect -> ...). Latching the report breaks the cycle: the
+   // output no longer depends combinationally on rollback. Cleared when the faulting op is
+   // squashed -- its own precise trap rolls back to its ckpt (rollback_seq < df_seq), and a
+   // branch redirect that kills it does the same.
+   reg              df_v;
+   reg [SEQW-1:0]   df_seq_r;
+   reg [CBITS-1:0]  df_ck_r;
+   reg [3:0]        df_cau_r;
+   reg [AW-1:0]     df_tval_r;
+   initial df_v = 1'b0;
+   always @(posedge clk) begin
+      if (reset) df_v <= 1'b0;
+      else if (df_v && rollback && older(rollback_seq, df_seq_r)) df_v <= 1'b0;
+      else if (df_now && (!df_v || older(df_nseq, df_seq_r))) begin
+         df_v <= 1'b1; df_seq_r <= df_nseq; df_ck_r <= df_nck;
+         df_cau_r <= df_ncau; df_tval_r <= df_ntval;
+      end
+   end
+   assign dfault_v     = df_v;
+   assign dfault_seq   = df_seq_r;
+   assign dfault_ckpt  = df_ck_r;
+   assign dfault_cause = df_cau_r;
+   assign dfault_tval  = df_tval_r;
 
    always @(posedge clk) begin
       if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; end
@@ -524,8 +590,8 @@ module lsu
          mem_wdata = a_wdata;
          mem_wmask = a_wmask;
       end else begin
-         mem_wen   = dr_v & st_xok;          // hold the write while a store-drain xlate walks
-         mem_waddr = st_pa;                  // physical address (Bare: == VA)
+         mem_wen   = dr_v;                   // dr_v already requires the store be xck'd (translated)
+         mem_waddr = sb_pa[dr_sel];          // physical address (Bare: == VA, filled at fill-time)
          mem_wdata = sb_data[dr_sel];
          mem_wmask = dr_mask;
       end
@@ -574,6 +640,9 @@ module lsu
                f_wd   = {64'd0, exe_st_data[i*64 +: 64]} << {f_off, 3'd0}; // data into lanes
                f_wbe  = {8'd0, f_be9[7:0]} << f_off;                // mask into lanes
                sb_addr[eidx] <= f_addr;
+               sb_pa[eidx]   <= f_addr;          // default PA==VA (Bare); overwritten by the Sv39 check
+               sb_xck[eidx]  <= ~xlate;          // Bare: drainable now; Sv39: await pre-commit check
+               sb_xflt[eidx] <= 1'b0;
                sb_data[eidx] <= exe_st_data[i*64 +: 64];
                sb_nb[eidx]   <= exe_st_nb[i*4 +: 4];
                sb_w0[eidx]   <= f_addr[PAW-1:3];
@@ -597,6 +666,11 @@ module lsu
             end
          end
 
+         // (2b) pre-commit store-check result (one store/cycle, Sv39): mark the checked
+         //      store drainable (stash its PA) or faulting (-> dfault drives a precise trap).
+         if (st_ck_done) begin sb_xck[ck_sel] <= 1'b1; sb_pa[ck_sel] <= {{(AW-56){1'b0}}, stx_pa}; end
+         if (st_ck_flt)  begin sb_xck[ck_sel] <= 1'b1; sb_xflt[ck_sel] <= 1'b1; end
+
          // (3) the selected load advances into the MERGE stage (p_*) -- free its LQ entry
          //     when SELECT fires (it then lives in the pipeline, not the queue).
          if (sel_fire) lq_v[ld_sel] <= 1'b0;
@@ -606,8 +680,8 @@ module lsu
             for (i = 0; i < SBDEPTH; i = i + 1)
                if (sb_v[i] && (sb_ck[i] == commit_idx)) sb_cmt[i] <= 1'b1;
 
-         // (5) drain: retire the selected store from the buffer (only once translated)
-         if (dr_v & st_xok) sb_v[dr_sel] <= 1'b0;
+         // (5) drain: retire the selected store from the buffer (dr_v already requires xck'd)
+         if (dr_v) sb_v[dr_sel] <= 1'b0;
 
          // (6) rollback: squash wrong-path entries (newer than the branch)
          if (rollback) begin

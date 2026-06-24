@@ -304,7 +304,8 @@ module backend_top
    end
 
    // execute-stage op decode (from the registered payload) -> LSU + commit
-   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_mul, q_iss_is_amo, q_iss_defer;
+   wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_store, q_iss_is_mul, q_iss_is_amo, q_iss_defer;
+   wire            data_xlate = (satp_data[63:60] == 4'd8);   // Sv39 on for data accesses
    wire [IW*4-1:0] q_iss_nb;
    wire [IW-1:0]   q_iss_sgn;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : qicl
@@ -314,11 +315,16 @@ module backend_top
       assign q_iss_sgn[gi]     = q_iss_pay[gi*`PAYW + `PAY_MSGN];
       assign q_iss_nb[gi*4+:4] = (4'd1 << qsz);
       assign q_iss_is_load[gi] = q_iss_valid[gi] & q_iss_mem[gi] & ~q_iss_store[gi];
+      assign q_iss_is_store[gi]= q_iss_valid[gi] & q_iss_mem[gi] &  q_iss_store[gi] & ~q_iss_is_amo[gi];
       assign q_iss_is_mul[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL];
       assign q_iss_is_amo[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_AMO];
       // loads AND atomics complete at the LSU -> deferred (excluded from the issue-time
-      // commit decrement, counted via ld_done instead).
-      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi];
+      // commit decrement, counted via ld_done instead). Under Sv39, plain stores also defer
+      // (counted via st_done) so a store page fault is delivered precisely (the store holds
+      // its checkpoint open until its translation is checked). In Bare mode stores keep
+      // counting at issue -- full (parallel) store throughput, no faults possible.
+      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi]
+                                 | (q_iss_is_store[gi] & data_xlate);
    end endgenerate
 
    // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
@@ -339,6 +345,8 @@ module backend_top
    // ---- commit control: count by completion (loads at LSU), commit in order ----
    wire               lsu_ld_done;
    wire [CBITS-1:0]   lsu_ld_done_ckpt;
+   wire               lsu_st_done;
+   wire [CBITS-1:0]   lsu_st_done_ckpt;
    // ---- data page-fault report from the LSU (-> precise trap, below) ----
    wire               lsu_dfault_v;
    wire [SEQW-1:0]    lsu_dfault_seq;
@@ -350,6 +358,7 @@ module backend_top
       .disp_fire(disp_fire), .disp_count(disp_count),
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(roll_v), .redirect_ckpt(roll_ckpt),
       .create(), .empty(cc_empty),
@@ -458,6 +467,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
+      .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .wb_busy(eb_wb_busy),
