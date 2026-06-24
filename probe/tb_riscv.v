@@ -11,7 +11,7 @@
 module tb;
    localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8;
    localparam [63:0] BASE = 64'h8000_0000;
-   localparam        WORDS = 1<<23;            // 8 MiB: covers the -v page pool (env/v
+   localparam        WORDS = 1<<21;            // 2 MiB: covers the -v page pool (env/v
                                                 // demand-paging allocates phys pages well
                                                 // past the image, e.g. ~0x8007b000)
    localparam        SIZE  = WORDS;
@@ -126,7 +126,8 @@ module tb;
       if ($value$plusargs("mmudbg=%d", mmudbg)) ;
       if ($value$plusargs("dlo=%d", dlo)) ;
       if ($value$plusargs("dhi=%d", dhi)) ;
-      if ($test$plusargs("vcd")) begin $dumpfile("/tmp/dump.vcd"); $dumpvars(0, tb); end
+      // dump only the core (NOT tb.mem -- dumping the multi-MiB memory array OOMs).
+      if ($test$plusargs("vcd")) begin $dumpfile("/tmp/dump.vcd"); $dumpvars(0, dut); end
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
          if (commit) ncommit = ncommit + 1;
