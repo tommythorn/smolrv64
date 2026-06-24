@@ -134,6 +134,7 @@ module exec_bundle
          .mem_size(p[`PAY_MSIZE]), .mem_signed(p[`PAY_MSGN]),
          .is_branch(p[`PAY_BR]), .is_jump(p[`PAY_JMP]), .is_mul(p[`PAY_MUL]), .br_func(p[`PAY_BRFUNC]),
          .is_csr(p[`PAY_CSR]), .csr_func(p[`PAY_CSRF]), .is_serialize(p[`PAY_SER]),
+         .is_fencei(p[`PAY_FENCEI]),
          .is_amo(p[`PAY_AMO]), .amo_func(p[`PAY_AMOF]),
          .ex_amo(ex_amo[i]), .ex_amo_func(ex_amo_func[i*5 +: 5]),
          .ex_amo_pdst(ex_amo_pdst[i*PBITS +: PBITS]),

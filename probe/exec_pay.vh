@@ -10,9 +10,10 @@
 //   [152] is_csr  [155:153] csr_func  [156] is_serialize    (SYSTEM/FENCE)
 //   [157] is_amo  [162:158] amo_func (funct5)               (A extension)
 //   [163] illegal  (raises an illegal-instruction trap, cause 2)
+//   [164] is_fencei (FENCE.I: serialize + redirect to pc+4 so the refetch sees prior stores)
 // For SYSTEM ops imm carries {.., zimm=imm[16:12], csr_addr=imm[11:0]} (the
 // instruction's rs1 field + insn[31:20]); decode_operands packs it there.
-`define PAYW        164
+`define PAYW        165
 `define PAY_ALUOP   5:0
 `define PAY_W       6
 `define PAY_UW      7
@@ -36,4 +37,5 @@
 `define PAY_AMO     157
 `define PAY_AMOF    162:158
 `define PAY_ILL     163
+`define PAY_FENCEI  164
 `endif

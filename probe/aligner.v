@@ -59,7 +59,8 @@ module aligner
                 | (h0[6:0] == 7'b1101111)   // JAL
                 | (h0[6:0] == 7'b1100111)   // JALR
                 | (h0[6:0] == 7'b1110011)   // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence)
-                | (h0[6:0] == 7'b0101111);  // AMO (atomic: solo, serialized RMW)
+                | (h0[6:0] == 7'b0101111)   // AMO (atomic: solo, serialized RMW)
+                | ((h0[6:0] == 7'b0001111) & (h0[14:12] == 3'b001)); // FENCE.I (serialize+refetch)
       else case (h0[1:0])
          2'b01:   is_cti = (h0[15:13] == 3'b101)    // C.J
                          | (h0[15:13] == 3'b110)    // C.BEQZ
@@ -96,7 +97,8 @@ module aligner
          // lets a trap roll back TO that checkpoint and precisely annul the faulting op's
          // rd (e.g. a priv-violating csrr). Solo AMO means that when it issues (gated to
          // oldest) every older store has drained, so its direct-memory RMW is coherent.
-         is_sys = is32 && ((h0[6:0] == 7'b1110011) || (h0[6:0] == 7'b0101111));
+         is_sys = is32 && ((h0[6:0] == 7'b1110011) || (h0[6:0] == 7'b0101111)
+                           || ((h0[6:0] == 7'b0001111) && (h0[14:12] == 3'b001))); // FENCE.I solo
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];

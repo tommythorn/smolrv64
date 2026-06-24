@@ -51,6 +51,7 @@ module exec_shard
     input  wire                    is_csr,
     input  wire [2:0]              csr_func,
     input  wire                    is_serialize,
+    input  wire                    is_fencei,
     input  wire                    is_amo,
     input  wire [4:0]              amo_func,
     input  wire [2:0]              br_func,
@@ -128,7 +129,7 @@ module exec_shard
    wire rr_kill = squash & older(squash_seq, iss_seq);
 
    reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
-                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor;
+                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor, ex_fencei;
    reg  [4:0]       ex_amof;
    reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2;
    reg  [SEQW-1:0]  ex_sq;
@@ -148,7 +149,7 @@ module exec_shard
       ex_memr <= is_mem; ex_str <= is_store; ex_msz <= mem_size; ex_msgn <= mem_signed;
       ex_br  <= is_branch; ex_jmp <= is_jump; ex_mulr <= is_mul; ex_bf <= br_func;
       ex_csr <= is_csr; ex_csrf <= csr_func; ex_ser <= is_serialize;
-      ex_amor <= is_amo; ex_amof <= amo_func;
+      ex_amor <= is_amo; ex_amof <= amo_func; ex_fencei <= is_fencei;
    end
 
    // ============================== EX stage ==============================
@@ -213,7 +214,7 @@ module exec_shard
    // ---- CSR/system unit: read addr + update request + redirect ----
    assign csr_rd_addr    = ex_imm[11:0];                       // combinational read
    wire [63:0] csr_src   = ex_csrf[2] ? {59'b0, ex_imm[16:12]} : op1f;  // zimm | rs1
-   assign csr_req_v      = ex_v & ex_ser & ~ex_amor;           // SYSTEM/CSR only (not AMO)
+   assign csr_req_v      = ex_v & ex_ser & ~ex_amor & ~ex_fencei; // SYSTEM/CSR only (not AMO/FENCE.I)
    assign csr_req_is_csr = ex_csr;
    assign csr_req_func   = ex_csrf;
    assign csr_req_addr   = ex_imm[11:0];
@@ -242,8 +243,14 @@ module exec_shard
       .br_func(ex_bf), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
       .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr),
       .redirect(bu_redirect), .target(bu_target));
-   assign br_redirect = (ex_v & bu_redirect) | sys_redirect;
-   assign br_target   = sys_redirect ? sys_target : bu_target;
+   // FENCE.I redirects to its fall-through (pc+4) once it issues -- and it issues only when
+   // oldest (is_serialize), so every prior store has committed + drained to memory. The
+   // refetch of pc+4 onward then sees the new instruction bytes (I/D coherence). Like the
+   // sfence redirect, it's NOT a trap (rolls back to ckpt+1, keeping fence.i itself).
+   wire fencei_redir = ex_v & ex_fencei;
+   assign br_redirect = (ex_v & bu_redirect) | sys_redirect | fencei_redir;
+   assign br_target   = sys_redirect ? sys_target
+                      : fencei_redir ? (ex_pc + 64'd4) : bu_target;
    assign br_seq      = ex_sq;
    assign br_is_trap  = sys_redirect & csr_redir_is_trap;   // exception -> precise (TO ckpt)
    assign st_data     = op2f;

@@ -35,6 +35,7 @@ module decode_exec
    output reg         is_amo,      // A ext (serialized RMW in LSU)
    output reg  [4:0]  amo_func,    // AMO funct5 (insn[31:27]): LR/SC/swap/add/and/or/xor/min/max
    output reg         is_fp,       // F/D ext (deferred unit)
+   output reg         is_fencei,   // FENCE.I -> serialize + redirect to refetch (I/D coherence)
    output reg         illegal);
 
    localparam [1:0] OP1_RS1 = 2'd0, OP1_PC = 2'd1, OP1_ZERO = 2'd2;
@@ -50,7 +51,7 @@ module decode_exec
       is_mem=0; is_store=0; mem_size=2'd0; mem_signed=0;
       is_branch=0; br_func=f3; is_jump=0;
       is_csr=0; csr_func=f3; is_serialize=0;
-      is_mul=0; is_amo=0; amo_func=insn[31:27]; is_fp=0; illegal=0;
+      is_mul=0; is_amo=0; amo_func=insn[31:27]; is_fp=0; is_fencei=0; illegal=0;
 
       if (insn[1:0] != 2'b11) illegal = 1'b1;   // not a 32-bit insn (should be expanded)
       else case (opc)
@@ -154,8 +155,9 @@ module decode_exec
                       // every CSR op serializes (issues only when oldest) -- simplest
                       // correct rule; a read-only CSR is rare enough that the drain is free
         end
-        5'b00011: ;                                                    // MISC-MEM (FENCE/FENCE.I): NOP
-                                                                       // (single hart, in-order commit -> a memory/instr barrier is free)
+        5'b00011: if (f3==3'b001) begin is_serialize=1; is_fencei=1; end // FENCE.I: serialize +
+                      // refetch (the store-to-instruction must be visible to the refetch). Plain
+                      // FENCE (f3=000) stays a NOP (single hart, in-order commit -> barrier free).
 
         5'b01011: begin                                                // AMO (A ext)
            is_amo=1; is_serialize=1;            // serialized + solo (gate to oldest)
@@ -175,7 +177,7 @@ module decode_exec
       // -- it issues as a harmless ADD whose only role is to flag the trap downstream.
       if (illegal) begin
          is_mem=0; is_store=0; is_branch=0; is_jump=0; res_link=0;
-         is_csr=0; is_serialize=0; is_mul=0; is_amo=0; is_fp=0;
+         is_csr=0; is_serialize=0; is_mul=0; is_amo=0; is_fp=0; is_fencei=0;
       end
    end
 endmodule
