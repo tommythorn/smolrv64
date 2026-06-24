@@ -387,6 +387,8 @@ module lsu
       dr_mask = 8'd0;
       for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
    end
+   // debug-only: the VIRTUAL address of the store driving mem this cycle (cosim store log)
+   wire [AW-1:0] dbg_st_va = amo_wr_now ? a_addr : sb_addr[dr_sel];
 
    // store/amo-path walker. PRE-COMMIT store check: translate the OLDEST unchecked store
    // (sb_xck=0) so a store page fault is discovered while the store is still speculative

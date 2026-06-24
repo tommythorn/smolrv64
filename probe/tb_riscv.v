@@ -188,7 +188,8 @@ module tb;
       if (storelog) begin
          szp = 0; for (b2=0;b2<8;b2=b2+1) szp = szp + dmem_wmask[b2];
          vlp = (szp==8) ? dmem_wdata : (dmem_wdata & ((64'd1 << (szp*8)) - 64'd1));
-         $display("ST %016x %0d %016x", dmem_waddr, szp, vlp);
+         // log the VIRTUAL store address (dbg_st_va) -> frame-allocation-independent, matches simmerv
+         $display("ST %016x %0d %016x", dut.u_lsu.dbg_st_va, szp, vlp);
       end
    end
 endmodule
