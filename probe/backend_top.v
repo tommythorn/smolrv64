@@ -217,7 +217,13 @@ module backend_top
    initial pend_iflt = 1'b0;
    always @(posedge clk) begin
       if (reset) pend_iflt <= 1'b0;
-      else if (iflt_fire) pend_iflt <= 1'b0;
+      // A pending fetch fault is for the YOUNGEST (frontier) fetch. ANY redirect (branch,
+      // data fault, interrupt) or its own delivery changes the fetch stream, so a fault
+      // latched for the now-squashed (wrong-path) frontier is stale -> drop it; the new
+      // stream re-faults next cycle if it is genuinely unmapped. Without this, a speculative
+      // wrong-path fetch fault survives a rollback and fires spuriously once cc_empty (e.g.
+      // a data-fault rollback then a stale iflt to the branch's fail target).
+      else if (roll_v) pend_iflt <= 1'b0;
       else if (immu_fault & ~pend_iflt) begin
          pend_iflt <= 1'b1; iflt_va <= imem_va; iflt_cause <= immu_cause;
       end
