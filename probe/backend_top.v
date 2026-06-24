@@ -132,6 +132,10 @@ module backend_top
    wire               lsu_dfault_v;          // data page-fault latched in the LSU (declared early: gates dispatch)
    reg                replay_v;              // fault-replay: refetch the faulting bundle one-op-per-bundle
    initial replay_v = 1'b0;                  // (so the faulting op becomes solo -> precise trap, declared early: feeds frontend)
+   reg                ill_v;                 // illegal-instruction fault latched (declared early: gates dispatch)
+   reg  [SEQW-1:0]    ill_seq;               // its seqno + checkpoint (set at issue, below)
+   reg  [CBITS-1:0]   ill_ckpt;
+   initial ill_v = 1'b0;
    wire [IW-1:0]      disp_ready;
    wire               any_valid    = |r_valid;
    // Freeze dispatch while a data page-fault is latched but not yet delivered: it is
@@ -141,7 +145,7 @@ module backend_top
    // older checkpoints still complete + commit independently of dispatch, so committed
    // advances to the fault's checkpoint and dflt_fire clears the latch.
    wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
-                                     && !sb_full && !lq_full && !eb_redirect && !lsu_dfault_v;
+                                     && !sb_full && !lq_full && !eb_redirect && !lsu_dfault_v && !ill_v;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
@@ -200,6 +204,11 @@ module backend_top
    wire               dflt_ready;       // faulting mem op is the oldest live checkpoint
    wire               dflt_replay;      // phase 1: roll back + refetch it solo (no trap yet)
    wire               dflt_roll;        // either phase rolls back to the faulting checkpoint
+   // pending interrupt (from csr_file) + the precise delivery decision (assigned near dflt)
+   wire               csr_irq_v;
+   wire [3:0]         csr_irq_cause;
+   wire               irq_fire;         // an interrupt is delivered this cycle
+   wire [63:0]        irq_epc;          // its resume PC (oldest live checkpoint's start)
 
    reg                pend_iflt;
    reg  [63:0]        iflt_va;
@@ -215,15 +224,22 @@ module backend_top
    end
    // Suppress fetch-fault delivery during a data-fault replay: the replaying op is older,
    // so a younger speculative fetch fault must not preempt it (replay empties the pipe ->
-   // cc_empty, which would otherwise let iflt fire). Cleared automatically when replay ends.
-   assign iflt_fire = pend_iflt & cc_empty & ~replay_v;
+   // cc_empty, which would otherwise let iflt fire). EXCEPTION: a replay that drains to an
+   // empty pipe with a pending fetch fault and NO data/illegal fault re-raised has been
+   // RECLASSIFIED into that fetch fault -- e.g. an "illegal" op that was really a mis-fetched
+   // instruction in an unmapped page past a fetch-window boundary. Let iflt fire (and clear
+   // replay_v, below); else replay_v sticks (dflt_fire never comes) and blocks all faults.
+   wire replay_to_iflt = replay_v & cc_empty & pend_iflt & ~lsu_dfault_v & ~ill_v;
+   assign iflt_fire = pend_iflt & cc_empty & (~replay_v | replay_to_iflt);
 
    wire [3:0]         dflt_cause;
    wire [63:0]        dflt_epc, dflt_tval;
-   wire               xtrap_v     = iflt_fire | dflt_fire;
-   wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : dflt_cause;
-   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : dflt_epc;
-   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;
+   // faults take priority over interrupts; an interrupt rolls back the oldest live checkpoint.
+   wire               xtrap_v     = iflt_fire | dflt_fire | irq_fire;
+   wire               xtrap_intr  = irq_fire;
+   wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : irq_fire ? csr_irq_cause : dflt_cause;
+   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : irq_fire ? irq_epc : dflt_epc;
+   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : irq_fire ? 64'd0   : dflt_tval;
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
@@ -321,6 +337,7 @@ module backend_top
 
    // execute-stage op decode (from the registered payload) -> LSU + commit
    wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_store, q_iss_is_mul, q_iss_is_amo, q_iss_defer;
+   wire [IW-1:0]   q_iss_is_ill;
    wire            data_xlate = (satp_data[63:60] == 4'd8);   // Sv39 on for data accesses
    wire [IW*4-1:0] q_iss_nb;
    wire [IW-1:0]   q_iss_sgn;
@@ -334,12 +351,16 @@ module backend_top
       assign q_iss_is_store[gi]= q_iss_valid[gi] & q_iss_mem[gi] &  q_iss_store[gi] & ~q_iss_is_amo[gi];
       assign q_iss_is_mul[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_MUL];
       assign q_iss_is_amo[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_AMO];
+      // an illegal instruction never completes: like a faulting load it is deferred so its
+      // checkpoint stays open (never commits) until the illegal-instruction trap is delivered.
+      assign q_iss_is_ill[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_ILL];
       // loads AND atomics complete at the LSU -> deferred (excluded from the issue-time
       // commit decrement, counted via ld_done instead). Under Sv39, plain stores also defer
       // (counted via st_done) so a store page fault is delivered precisely (the store holds
       // its checkpoint open until its translation is checked). In Bare mode stores keep
       // counting at issue -- full (parallel) store throughput, and prompt drain (fence_i).
-      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi]
+      // Illegal ops defer too -- they hold their checkpoint for the precise trap.
+      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi] | q_iss_is_ill[gi]
                                  | (q_iss_is_store[gi] & data_xlate);
    end endgenerate
 
@@ -419,8 +440,9 @@ module backend_top
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
       .mmu_satp(mmu_satp), .mmu_priv(mmu_priv), .mmu_dpriv(mmu_dpriv),
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush),
-      .xtrap_v(xtrap_v), .xtrap_cause(xtrap_cause),
+      .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
+      .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
    // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
@@ -502,46 +524,100 @@ module backend_top
       chk_seq[cur] <= r_seq[SEQW-1:0];
    end
 
-   // data page/access fault: the faulting load/store blocks commit -> handle once its
-   // checkpoint is the oldest live one (committed_idx). A checkpoint is atomic, so a
+   // ---- illegal-instruction fault latch (detected at the registered issue stage) ----
+   // An illegal op is deferred (q_iss_defer), so it holds its checkpoint open exactly like
+   // a faulting load -- giving the deferred-fault machinery time to deliver a precise trap.
+   // Latch the OLDEST pending illegal op; clear it when its own trap fires or any rollback
+   // squashes it (mirrors the LSU data-fault latch). Both faults share one replay-to-solo path.
+   reg              il_now;
+   reg  [SEQW-1:0]  il_nseq;
+   reg  [CBITS-1:0] il_nck;
+   integer iq;
+   always @* begin
+      il_now = 1'b0; il_nseq = {SEQW{1'b0}}; il_nck = {CBITS{1'b0}};
+      for (iq = 0; iq < IW; iq = iq + 1)
+         // exclude an op being squashed by THIS cycle's rollback (newer than roll_seq):
+         // otherwise a wrong-path illegal op (e.g. speculation into zero-padding past an
+         // ecall) latches ill_v just as it is squashed, and nothing later clears it -> hang.
+         if (q_iss_is_ill[iq] &&
+             !(roll_v && $signed(roll_seq - q_iss_seq[iq*SEQW +: SEQW]) < 0) &&
+             (!il_now || $signed(q_iss_seq[iq*SEQW +: SEQW] - il_nseq) < 0)) begin
+            il_now  = 1'b1;
+            il_nseq = q_iss_seq[iq*SEQW +: SEQW];
+            il_nck  = q_iss_ckpt[iq*CBITS +: CBITS];
+         end
+   end
+
+   // data page/access OR illegal fault: the faulting/illegal op blocks commit -> handle once
+   // its checkpoint is the oldest live one (committed_idx). A checkpoint is atomic, so a
    // mid-bundle faulting op cannot be made precise directly (its older siblings would be
    // annulled too). Two-phase REPLAY-TO-SOLO: phase 1 rolls back to the bundle start and
    // refetches it one-op-per-bundle (solo_all), so the older siblings land in their own
    // (committable) checkpoints; phase 2, with the faulting op now solo, delivers a precise
-   // trap (epc = chk_pc = that op's PC) and annuls only it. An already-solo op (AMO, or a
-   // load alone in its bundle) just pays one extra refetch -- still correct.
-   assign dflt_ready  = lsu_dfault_v & (cc_committed == lsu_dfault_ckpt) & ~iflt_fire;
+   // trap (epc = chk_pc = that op's PC) and annuls only it. An already-solo op (AMO, a load
+   // alone in its bundle, or a solo illegal op) just pays one extra refetch -- still correct.
+   wire             df_oldest = lsu_dfault_v & (cc_committed == lsu_dfault_ckpt);
+   wire             il_oldest = ill_v        & (cc_committed == ill_ckpt);
+   wire             flt_v     = df_oldest | il_oldest;          // data fault wins ties (same ckpt)
+   wire [SEQW-1:0]  flt_seq   = df_oldest ? lsu_dfault_seq   : ill_seq;
+   wire [CBITS-1:0] flt_ckpt  = df_oldest ? lsu_dfault_ckpt  : ill_ckpt;
+   wire [3:0]       flt_cause = df_oldest ? lsu_dfault_cause : 4'd2;       // 2 = illegal instruction
+   wire [AW-1:0]    flt_tval  = df_oldest ? lsu_dfault_tval  : {AW{1'b0}}; // mtval=0 for illegal
+
+   assign dflt_ready  = flt_v & ~iflt_fire;
    // already first in its bundle (no older siblings to commit) -> precise directly, no replay
-   wire   dflt_solo   = (lsu_dfault_seq == chk_seq[lsu_dfault_ckpt]);
+   wire   dflt_solo   = (flt_seq == chk_seq[flt_ckpt]);
    assign dflt_replay = dflt_ready & ~dflt_solo & ~replay_v;   // phase 1 (mid-bundle fault only)
    assign dflt_fire   = dflt_ready & ( dflt_solo |  replay_v); // phase 2, or direct when already solo
    assign dflt_roll   = dflt_ready;                 // any delivery/replay rolls back the same way
-   assign dflt_cause = lsu_dfault_cause;
-   assign dflt_epc   = chk_pc[lsu_dfault_ckpt];
-   assign dflt_tval  = lsu_dfault_tval;
+   assign dflt_cause = flt_cause;
+   assign dflt_epc   = chk_pc[flt_ckpt];
+   assign dflt_tval  = flt_tval;
+
+   // ---- interrupt delivery (precise) ----
+   // An enabled+pending interrupt is taken between instructions: roll back the OLDEST live
+   // checkpoint (none of it has committed) and resume the handler at csr_redir_tgt with
+   // epc = that checkpoint's start PC. Gated off while any fault/replay/redirect is in flight
+   // (faults take priority) and while empty (no live checkpoint -> the next dispatch makes it
+   // non-empty and we fire then; a NOP/WFI-spin keeps dispatching, so this always progresses).
+   assign irq_fire = csr_irq_v & ~cc_empty & ~replay_v & ~pend_iflt
+                     & ~lsu_dfault_v & ~ill_v & ~eb_redirect;
+   assign irq_epc  = chk_pc[cc_committed];
 
    always @(posedge clk) begin
-      if (reset)            replay_v <= 1'b0;
-      else if (dflt_fire)   replay_v <= 1'b0;       // precise trap delivered
-      else if (dflt_replay) replay_v <= 1'b1;       // entered solo replay
+      if (reset) ill_v <= 1'b0;
+      else if (ill_v && ((dflt_fire & il_oldest) ||
+                         (roll_v && $signed(roll_seq - ill_seq) < 0))) ill_v <= 1'b0;
+      else if (il_now && (!ill_v || $signed(il_nseq - ill_seq) < 0)) begin
+         ill_v <= 1'b1; ill_seq <= il_nseq; ill_ckpt <= il_nck;
+      end
+   end
+
+   always @(posedge clk) begin
+      if (reset)                       replay_v <= 1'b0;
+      else if (dflt_fire | iflt_fire)  replay_v <= 1'b0;  // trap delivered (data, or reclassified fetch)
+      else if (dflt_replay)            replay_v <= 1'b1;  // entered solo replay
    end
 
    // unified redirect distribution. A fetch fault fires only when empty, so its rollback
    // is a no-op functionally but keeps the frontend flush paired with a rename rollback
    // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
-   assign roll_v     = eb_redirect | dflt_roll | iflt_fire;
+   assign roll_v     = eb_redirect | dflt_roll | iflt_fire | irq_fire;
    assign roll_seq   = iflt_fire ? fe_cur_seq
-                     : dflt_roll ? (chk_seq[lsu_dfault_ckpt] - 1'b1) : eb_rseq;
+                     : dflt_roll ? (chk_seq[flt_ckpt]    - 1'b1)
+                     : irq_fire  ? (chk_seq[cc_committed] - 1'b1) : eb_rseq;
    assign roll_ckpt  = iflt_fire ? cc_committed
-                     : dflt_roll ? lsu_dfault_ckpt : rb_idx;
+                     : dflt_roll ? flt_ckpt
+                     : irq_fire  ? cc_committed : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
-   // phase 2 / fetch-fault redirect to the trap vector; phase 1 refetches the bundle start
-   assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt
-                     : dflt_replay             ? chk_pc[lsu_dfault_ckpt]
-                     :                           eb_target;
+   // phase 2 / fetch-fault / interrupt redirect to the trap vector; phase 1 refetches the start
+   assign fe_red_pc  = (iflt_fire | dflt_fire | irq_fire) ? csr_redir_tgt
+                     : dflt_replay                        ? chk_pc[flt_ckpt]
+                     :                                      eb_target;
    assign fe_red_seq = iflt_fire ? fe_cur_seq
-                     : dflt_roll ? chk_seq[lsu_dfault_ckpt]
+                     : dflt_roll ? chk_seq[flt_ckpt]
+                     : irq_fire  ? chk_seq[cc_committed]
                      : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;

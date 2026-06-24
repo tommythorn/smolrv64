@@ -169,6 +169,14 @@ module decode_exec
         5'b10000,5'b10001,5'b10010,5'b10011: is_fp=1;                   // FMADD/FMSUB/FNMSUB/FNMADD
         default: illegal=1;
       endcase
+
+      // An illegal instruction raises a precise trap (cause 2) instead of executing;
+      // neutralize every op-type flag so it carries no side effect (mem/branch/csr/...)
+      // -- it issues as a harmless ADD whose only role is to flag the trap downstream.
+      if (illegal) begin
+         is_mem=0; is_store=0; is_branch=0; is_jump=0; res_link=0;
+         is_csr=0; is_serialize=0; is_mul=0; is_amo=0; is_fp=0;
+      end
    end
 endmodule
 

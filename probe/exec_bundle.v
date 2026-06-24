@@ -74,9 +74,12 @@ module exec_bundle
     output wire                    mmu_flush,
     // ---- external trap injection (page faults) + the resulting redirect target ----
     input  wire                    xtrap_v,
+    input  wire                    xtrap_intr,
     input  wire [3:0]              xtrap_cause,
     input  wire [63:0]             xtrap_epc,
     input  wire [63:0]             xtrap_tval,
+    output wire                    irq_v,            // an interrupt is deliverable now
+    output wire [3:0]              irq_cause,
     output wire                    csr_redir_v,      // csr_file redirect this cycle (trap/xret)
     output wire [63:0]             csr_redir_tgt);
 
@@ -176,8 +179,9 @@ module exec_bundle
       .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
-      .xtrap_v(xtrap_v), .xtrap_cause(xtrap_cause),
+      .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
+      .irq_v(irq_v), .irq_cause(irq_cause),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));
 

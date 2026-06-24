@@ -34,9 +34,13 @@ module csr_file
     // Fired by backend_top once the fault is the oldest (fetch: pipeline empty; data:
     // rolled back to the faulting checkpoint). Mutually exclusive with a system op.
     input  wire        xtrap_v,
-    input  wire [3:0]  xtrap_cause,   // 12=instr / 13=load / 15=store page fault
+    input  wire        xtrap_intr,    // the injected trap is an interrupt (mcause MSB, vectored)
+    input  wire [3:0]  xtrap_cause,   // exception: 12/13/15 page fault; interrupt: cause number
     input  wire [63:0] xtrap_epc,     // resume PC (faulting VA / faulting bundle start)
     input  wire [63:0] xtrap_tval,    // faulting virtual address
+    // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
+    output wire        irq_v,         // an enabled+pending interrupt is deliverable now
+    output wire [3:0]  irq_cause,     // its cause number (highest priority)
     // single update (driven at EX by the oldest system op -> non-speculative)
     input  wire        upd_valid,
     input  wire        upd_is_csr,
@@ -140,42 +144,90 @@ module csr_file
    assign o_dpriv     = mstatus[17] ? mstatus[12:11] : priv;
    assign o_sum       = mstatus[18];
    assign o_mxr       = mstatus[19];
-   assign o_tlb_flush = upd_valid & (is_sfence | (upd_is_csr & (upd_addr == SATP)));
 
-   // illegal CSR access: writing a read-only CSR (addr[11:10]==11 & the op writes), or
-   // accessing a CSR that needs higher privilege than current (addr[9:8] > priv).
-   wire csr_writes = upd_is_csr & ((upd_func[1:0]==2'b01) | (upd_src != 64'd0));
-   wire csr_ro     = (upd_addr[11:10]==2'b11) & csr_writes;
-   wire csr_nopriv = upd_is_csr & (priv < upd_addr[9:8]);
-   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv);
+   // trap-virtual-memory / trap-SRET (mstatus.TVM=20, TSR=22): in S-mode these make
+   // sfence.vma + satp access (TVM) and sret (TSR) trap as illegal -- matches smolrv64.
+   wire tvm = mstatus[20];
+   wire tsr = mstatus[22];
 
-   // exception this op raises (ecall/ebreak/illegal-CSR) + cause + delegation
-   wire        exc_active = is_ecall | is_ebreak | csr_illegal;
+   // illegal CSR access: writing a read-only CSR (addr[11:10]==11 & the op writes),
+   // accessing a CSR that needs higher privilege than current (addr[9:8] > priv), or a
+   // satp access while priv==S & TVM.
+   wire csr_writes  = upd_is_csr & ((upd_func[1:0]==2'b01) | (upd_src != 64'd0));
+   wire csr_ro      = (upd_addr[11:10]==2'b11) & csr_writes;
+   wire csr_nopriv  = upd_is_csr & (priv < upd_addr[9:8]);
+   wire satp_tvm    = upd_is_csr & (upd_addr == SATP) & (priv == S) & tvm;
+   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm);
+
+   // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
+   wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
+   wire sret_illegal   = is_sret   & ((priv == U) | ((priv == S) & tsr));
+   wire sys_illegal    = sfence_illegal | sret_illegal;
+
+   assign o_tlb_flush = upd_valid & ~csr_illegal & ~sfence_illegal
+                        & (is_sfence | (upd_is_csr & (upd_addr == SATP)));
+
+   // ---- pending interrupt: highest-priority enabled+pending, per delegation/priv ----
+   // M-targeted ints (mip&mie&~mideleg) are taken when priv<M, or priv==M with mstatus.MIE.
+   // S-targeted ints (mip&mie&mideleg) are taken when priv<S(=U), or priv==S with SIE; never
+   // in M. Priority MEI(11),MSI(3),MTI(7),SEI(9),SSI(1),STI(5) -- matches smolrv64.
+   wire        m_glob = (priv == M) ? mstatus[3] : 1'b1;            // mstatus.MIE
+   wire        s_glob = (priv == S) ? mstatus[1] : (priv == U);    // mstatus.SIE
+   wire [11:0] ip_ie  = mip[11:0] & mie[11:0];
+   wire [11:0] pend_m = ip_ie & ~mideleg[11:0];
+   wire [11:0] pend_s = ip_ie &  mideleg[11:0];
+   wire        take_m = m_glob & (pend_m != 12'd0);
+   wire        take_s = ~take_m & s_glob & (pend_s != 12'd0);
+   wire [11:0] pend   = take_m ? pend_m : (take_s ? pend_s : 12'd0);
+   wire        irq_to_s = take_s;
+   assign      irq_v     = take_m | take_s;
+   assign      irq_cause = pend[11] ? 4'd11 : pend[3] ? 4'd3 : pend[7] ? 4'd7
+                         : pend[9]  ? 4'd9  : pend[1] ? 4'd1 : 4'd5;   // STI(5) last
+
+   // exception this op raises (ecall/ebreak/illegal-CSR/illegal-sfence/sret) + cause + delegation
+   wire        exc_active = is_ecall | is_ebreak | csr_illegal | sys_illegal;
    wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
-   wire [63:0] exc_cause = csr_illegal ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
+   wire [63:0] exc_cause = (csr_illegal | sys_illegal) ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
 
-   // unified trap: a system-op exception OR an external (page-fault) injection
-   wire        trap_v     = (upd_valid & exc_active) | xtrap_v;
-   wire [63:0] trap_cause = xtrap_v ? {60'd0, xtrap_cause} : exc_cause;
+   // unified trap: a system-op exception OR an external (page-fault / interrupt) injection.
+   // sysop_exc is the active system op's OWN exception; trap_v adds external injection. Only
+   // sysop_exc may feed redir_valid/do_xret below -- NOT xtrap_v -- else the external trap
+   // (which reaches the frontend via csr_redir_tgt, not the shard) would close a combinational
+   // loop: xtrap_v -> redir_valid -> exec_shard sys_redirect -> eb_redirect -> (irq gating) -> xtrap_v.
+   wire        sysop_exc  = upd_valid & exc_active;
+   wire        trap_is_intr = xtrap_v & xtrap_intr;
+   wire        trap_v     = sysop_exc | xtrap_v;
+   wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, xtrap_cause})  // mcause MSB
+                          : xtrap_v      ? {60'd0, xtrap_cause} : exc_cause;
    wire [63:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;
    wire [63:0] trap_tval  = xtrap_v ? xtrap_tval : (is_ebreak ? upd_pc : 64'd0);
-   wire        trap_to_s  = trap_v & (priv != M) & medeleg[trap_cause[5:0]];
-   wire        do_mret    = upd_valid & is_mret & ~trap_v;
-   wire        do_sret    = upd_valid & is_sret & ~trap_v;
+   // delegation: interrupts use the precomputed irq_to_s (mideleg); exceptions use medeleg
+   wire        trap_to_s  = trap_is_intr ? irq_to_s
+                          : trap_v & (priv != M) & medeleg[trap_cause[5:0]];
+   wire        do_mret    = upd_valid & is_mret & ~sysop_exc;
+   wire        do_sret    = upd_valid & is_sret & ~sysop_exc;
    // sfence.vma redirects to its fall-through (always a 4-byte insn): this squashes and
    // refetches every younger instruction so any store that was check-translated against the
    // pre-sfence page tables is re-executed (and re-walked) against the flushed/new tables.
-   wire        do_sfence  = upd_valid & is_sfence & ~trap_v;
+   wire        do_sfence  = upd_valid & is_sfence & ~sysop_exc;
 
-   assign redir_valid   = trap_v | do_mret | do_sret | do_sfence;
-   assign redir_is_trap = trap_v;                   // exception (not xret)
+   // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
+   // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
+   assign redir_valid   = sysop_exc | do_mret | do_sret | do_sfence;
+   assign redir_is_trap = sysop_exc;                // the system op's own exception
    // ---- redirect target (combinational) ----
+   // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
+   // xret so backend_top's csr_redir_tgt is the trap vector. Vectored mode (tvec[0]) sends an
+   // interrupt to base + 4*cause; exceptions and direct mode go to base.
+   wire [63:0] tvec_base = trap_to_s ? {stvec[63:2], 2'b0} : {mtvec[63:2], 2'b0};
+   wire        tvec_vec  = trap_is_intr & (trap_to_s ? stvec[0] : mtvec[0]);
+   wire [63:0] trap_tgt  = tvec_vec ? (tvec_base + {{58{1'b0}}, xtrap_cause, 2'b00}) : tvec_base;
    always @* begin
-      if (do_mret)              redir_target = mepc;
+      if (xtrap_v)              redir_target = trap_tgt;
+      else if (do_mret)         redir_target = mepc;
       else if (do_sret)         redir_target = sepc;
       else if (do_sfence)       redir_target = upd_pc + 64'd4;
-      else if (trap_to_s)       redir_target = {stvec[63:2], 2'b0};
-      else                      redir_target = {mtvec[63:2], 2'b0};
+      else                      redir_target = trap_tgt;
    end
 
    localparam MIE_B=3, SIE_B=1, MPIE_B=7, SPIE_B=5, SPP_B=8;  // [12:11]=MPP
