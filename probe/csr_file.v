@@ -83,8 +83,13 @@ module csr_file
               medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus;
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
 
-   // mstatus as seen on a read: force SXL=UXL=2
-   wire [63:0] mstatus_r = {mstatus[63:36], 4'b1010, mstatus[31:0]};
+   // mstatus as seen on a read: force SXL=UXL=2, and derive SD (bit 63) = any of
+   // FS/XS/VS == Dirty (read-only summary; not a stored bit). The riscv-tests v-handler
+   // saves/compares sstatus and expects SD set once it dirties FS.
+   wire status_sd = (mstatus[14:13] == 2'b11)   // FS  dirty
+                  | (mstatus[16:15] == 2'b11)   // XS  dirty
+                  | (mstatus[10:9]  == 2'b11);  // VS  dirty
+   wire [63:0] mstatus_r = {status_sd, mstatus[62:36], 4'b1010, mstatus[31:0]};
 
    // ---- combinational read ----
    always @* begin
