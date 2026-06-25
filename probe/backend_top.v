@@ -51,9 +51,14 @@ module backend_top
     // hardware interrupt-pending lines from the platform CLINT/PLIC:
     // MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). Tie to 0 in device-less testbenches.
     input  wire [11:0]             hw_ip,
-    // data memory port (flat byte-addressable stub; real D$ later)
+    // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
+    // request/response handshake so a multi-cycle D$ can stall: dmem_ren pulses on a fresh
+    // dmem_raddr, dmem_rvalid signals dmem_rdata is valid. Tie dmem_rvalid=1 for a
+    // zero-latency memory (combinational read) -> bit-exact 1-cycle loads.
     output wire [AW-1:0]           dmem_raddr,
+    output wire                    dmem_ren,
     input  wire [63:0]             dmem_rdata,
+    input  wire                    dmem_rvalid,
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
@@ -517,7 +522,7 @@ module backend_top
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
-      .mem_raddr(dmem_raddr), .mem_rdata(dmem_rdata),
+      .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),

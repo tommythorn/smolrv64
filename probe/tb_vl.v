@@ -22,6 +22,7 @@ module tb;
    reg  [HW*16-1:0]    imem_data;
    wire [3:0]          imem_avail = 4'd8;
    wire [63:0]         dmem_raddr;
+   wire                dmem_ren;
    reg  [63:0]         dmem_rdata;
    wire                dmem_wen;
    wire [63:0]         dmem_waddr, dmem_wdata;
@@ -41,7 +42,8 @@ module tb;
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
       .hw_ip(12'd0),                       // no CLINT/PLIC in this device-less harness
-      .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata),
+      .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren),
+      .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
@@ -73,6 +75,22 @@ module tb;
    end
    always @(dmem_raddr or wtick) dmem_rdata = rd64(dmem_raddr);
 
+   // ---- variable load-read latency (proves the LSU miss-stall path) ----
+   // +memlat=0 (default): dmem_rvalid==1 always -> combinational memory, bit-exact 1-cycle
+   // loads. +memlat=N (N>=1): each load read returns N cycles after its dmem_ren pulse.
+   // dmem_rdata stays combinational on the (held) dmem_raddr, so it reflects the address
+   // live at the cycle rvalid asserts -- the single-outstanding contract the LSU relies on.
+   reg  [15:0] memlat;
+   reg         lat_busy; reg [15:0] lat_cnt;
+   initial begin memlat = 16'd0; lat_busy = 1'b0; lat_cnt = 16'd0; end
+   wire dmem_rvalid = (memlat == 16'd0) ? 1'b1
+                    : (dmem_ren ? 1'b0 : (lat_busy && lat_cnt == 16'd0));
+   always @(posedge clk) begin
+      if (reset)            begin lat_busy <= 1'b0; lat_cnt <= 16'd0; end
+      else if (dmem_ren)    begin lat_busy <= 1'b1; lat_cnt <= (memlat==16'd0)?16'd0:(memlat-16'd1); end
+      else if (lat_busy && lat_cnt != 16'd0) lat_cnt <= lat_cnt - 16'd1;
+   end
+
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;
       if (ptw_read) ptw_rdata <= rd64({8'd0, ptw_addr});
@@ -96,6 +114,7 @@ module tb;
       $readmemh(hexfile, mem);
       if ($value$plusargs("tohost=%h", tohost)) ;
       if ($value$plusargs("cycles=%d", ncyc)) ;
+      if ($value$plusargs("memlat=%d", memlat)) ;
 
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 

@@ -32,7 +32,7 @@ run_one() {
    local bin_t="$1" base="$2" elf="$3"
    local th; th=$("$NM" "$elf" 2>/dev/null | awk '/ tohost$/{print $1}'); [ -z "$th" ] && th=80001000
    od -An -v -tx1 "$bin_t" > "$tmp/$base.hex"
-   local out; out=$("$BIN" +hex="$tmp/$base.hex" +tohost="$th" +cycles=$CYC 2>&1 | grep -E 'RISCV-TEST')
+   local out; out=$("$BIN" +hex="$tmp/$base.hex" +tohost="$th" +cycles=$CYC +memlat=${MEMLAT:-0} 2>&1 | grep -E 'RISCV-TEST')
    case "$out" in
       *PASS*)    printf "%-26s PASS\n"    "$base" ;;
       *TIMEOUT*) printf "%-26s TIMEOUT\n" "$base"; echo "FAIL $base" >> "$res" ;;

@@ -114,9 +114,19 @@ module lsu
     output wire                   st_done,
     output wire [CBITS-1:0]       st_done_ckpt,
 
-    // ---- flat memory port (stub; real D$ later) ----
+    // ---- data memory READ port: request/response handshake (real D$ can stall) ----
+    // mem_ren pulses for one cycle when a fresh address is registered on mem_raddr
+    // (a load entering MERGE, or an atomic entering its RMW read). mem_raddr then
+    // HOLDS until the access completes. mem_rvalid signals mem_rdata is valid for the
+    // currently-presented mem_raddr -- it may arrive 1+ cycles later (cache miss/fill).
+    // The merge/RMW stall (hold p_*/mem_raddr) until mem_rvalid. Single-outstanding:
+    // a new mem_ren supersedes any prior unfinished read, and mem_rdata must always
+    // reflect the address held at the cycle mem_rvalid asserts (no stale-data hazard).
+    // Tie mem_rvalid high for a zero-latency (combinational) memory -> 1-cycle loads.
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
+    output reg                    mem_ren,            // read-request pulse (fresh mem_raddr)
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
+    input  wire                   mem_rvalid,         // mem_rdata valid for mem_raddr this cycle
     output reg                    mem_wen,
     output reg  [AW-1:0]          mem_waddr,
     output reg  [63:0]            mem_wdata,
@@ -312,7 +322,10 @@ module lsu
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
    // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.
    wire merge_squash = rollback & older(rollback_seq, p_seq);
-   wire merge_fire   = p_v & ~wb_busy[p_owner] & ~merge_squash;
+   // a held load merges only once its memory read returns (mem_rvalid) AND its owner
+   // WB lane is free next cycle; otherwise STALL (hold p_*/mem_raddr). A squash drops it
+   // even mid-miss (the abandoned read's response is simply never consumed).
+   wire merge_fire   = p_v & mem_rvalid & ~wb_busy[p_owner] & ~merge_squash;
    wire merge_drop   = p_v & merge_squash;
    wire merge_adv    = ~p_v | merge_fire | merge_drop;   // MERGE stage empties next cycle
    // a younger load must not bypass an in-flight (older) atomic's RMW write -> hold load
@@ -364,7 +377,7 @@ module lsu
    wire [63:0] a_oldv   = a_isw ? {{32{a_old32[31]}}, a_old32} : mem_rdata;
    wire [63:0] a_rdval  = a_issc ? (a_scok ? 64'd0 : 64'd1) : a_oldv;     // SC: 0=ok 1=fail
    wire        a_dowr   = a_islr ? 1'b0 : a_issc ? a_scok : 1'b1;         // who writes memory
-   wire        amo_wr_now = (ast == A_RD) & a_dowr;
+   wire        amo_wr_now = (ast == A_RD) & a_dowr & mem_rvalid;  // write the cycle RMW data returns
    wire        amo_wb_ok  = (ast == A_WB) & ~wb_busy[a_own];   // reserve owner lane (next cycle)
    wire [63:0] a_wdata  = a_isw ? (a_half ? {a_resv[31:0],32'b0} : {32'b0,a_resv[31:0]}) : a_resv;
    wire [7:0]  a_wmask  = a_isw ? (a_half ? 8'hF0 : 8'h0F) : 8'hFF;
@@ -484,9 +497,10 @@ module lsu
    assign dfault_tval  = df_tval_r;
 
    always @(posedge clk) begin
-      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; end
+      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; end
       else begin
          amo_wbv <= 1'b0;                       // 1-cycle pulse unless A_WB sets it
+         mem_ren <= 1'b0;                        // 1-cycle read-request pulse (set on a fresh mem_raddr)
          if (sel_fire) begin
             p_v <= 1'b1;
             p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
@@ -494,6 +508,7 @@ module lsu
             p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
             p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
             mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
+            mem_ren   <= 1'b1;                  // request the read (mem_raddr valid next cycle)
          end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
 
          // ---- atomic FSM (solo: never overlaps a load's mem_raddr/p_*) ----
@@ -503,9 +518,9 @@ module lsu
                       a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; a_seq<=amo_seq; ast<=A_WAIT;
                    end
            A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
-                      mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; ast<=A_RD;
+                      mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; mem_ren <= 1'b1; ast<=A_RD;
                    end
-           A_RD:   begin a_rdval_q <= a_rdval; ast<=A_WB;     // memory write driven below (amo_wr_now)
+           A_RD:   if (mem_rvalid) begin a_rdval_q <= a_rdval; ast<=A_WB;  // wait for RMW read data
                       if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
                       if (a_issc) rsv_v<=1'b0;
                    end

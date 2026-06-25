@@ -27,7 +27,7 @@ module tb;
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(0)) dut
      (.clk(clk), .reset(reset), .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail), .hw_ip(12'd0), .dmem_rdata(64'd0), .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
+      .imem_avail(imem_avail), .hw_ip(12'd0), .dmem_rdata(64'd0), .dmem_rvalid(1'b1), .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
       .redirect(redirect), .redirect_target(redirect_target), .commit(commit));
 
    reg [15:0] mem [0:63];
