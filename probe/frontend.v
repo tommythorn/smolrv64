@@ -37,6 +37,7 @@ module frontend
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire                    solo_all,    // align one instruction per bundle (fault replay)
+    input  wire                    irq_inject,  // inject the interrupt pseudo-op at the current PC
     // instruction memory (combinational read)
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
@@ -72,7 +73,7 @@ module frontend
 
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
-      .redirect_seq(redirect_seq), .solo_all(solo_all),
+      .redirect_seq(redirect_seq), .solo_all(solo_all), .irq_inject(irq_inject),
       .imem_addr(imem_addr), .imem_data(imem_data),
       .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
       .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));

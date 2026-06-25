@@ -32,7 +32,7 @@ module tb;
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(0),
               .ABITS(ABITS), .PBITS(PBITS)) dut
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
-      .redirect_seq(redirect_seq), .solo_all(1'b0), .imem_addr(imem_addr), .imem_data(imem_data),
+      .redirect_seq(redirect_seq), .solo_all(1'b0), .irq_inject(1'b0), .imem_addr(imem_addr), .imem_data(imem_data),
       .imem_avail(imem_avail), .accept(accept),
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),

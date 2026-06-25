@@ -27,6 +27,10 @@ module fetch
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire                    solo_all,    // align one instruction per bundle (fault replay)
+    // interrupt injection: present a synthetic solo SYSTEM op (the interrupt pseudo-
+    // instruction) at the current PC, WITHOUT advancing PC -- the displaced real
+    // instruction re-fetches after the handler returns (mepc = this PC).
+    input  wire                    irq_inject,
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     input  wire [HW*16-1:0]        imem_data,
@@ -41,6 +45,10 @@ module fetch
     output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
 
    localparam PBW = $clog2(HW+2);
+   // SYSTEM, funct3=000, imm[11:0]=OP_IRQ(0x7F0), rs1=rd=0 -> the interrupt pseudo-op.
+   // Decodes (decode_exec) as a serialized solo SYSTEM op; csr_file's OP_IRQ selector
+   // turns its (oldest, non-speculative) execution into the interrupt trap.
+   localparam [31:0] IRQ_INSN = 32'h7F00_0073;
 
    reg [PCW-1:0]  pc_q;
    reg [SEQW-1:0] seq_q;
@@ -49,11 +57,23 @@ module fetch
    assign imem_addr = pc_q;
    assign cur_seq   = seq_q;
 
-   wire [PBW-1:0] consumed;
+   wire [PBW-1:0]   al_consumed;
+   wire [IW-1:0]    al_valid;
+   wire [IW*32-1:0] al_inst;
+   wire [IW*PCW-1:0] al_pc;
+   wire [IW*SEQW-1:0] al_seq;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(imem_avail), .base_pc(pc_q), .base_seq(seq_q),
       .solo_all(solo_all),
-      .valid(slot_valid), .inst(inst), .pc(pc), .seq(seq), .consumed(consumed));
+      .valid(al_valid), .inst(al_inst), .pc(al_pc), .seq(al_seq), .consumed(al_consumed));
+
+   // inject overrides the aligned bundle with a solo synthetic op at {pc_q, seq_q}.
+   assign slot_valid = irq_inject ? {{(IW-1){1'b0}}, 1'b1} : al_valid;
+   assign inst       = irq_inject ? {{((IW-1)*32){1'b0}}, IRQ_INSN} : al_inst;
+   assign pc         = irq_inject ? {{((IW-1)*PCW){1'b0}}, pc_q}     : al_pc;
+   assign seq        = irq_inject ? {{((IW-1)*SEQW){1'b0}}, seq_q}   : al_seq;
+   // on inject, consume NO halfwords (hold PC) but still take one seqno for the pseudo-op
+   wire [PBW-1:0] consumed = irq_inject ? {PBW{1'b0}} : al_consumed;
 
    assign valid = |slot_valid;          // a bundle is present iff >=1 instr aligned
    wire   fire  = ready && valid;        // advance only on a downstream handshake
@@ -73,7 +93,7 @@ module fetch
          pc_q  <= redirect_pc;
          seq_q <= redirect_seq;
       end else if (fire) begin
-         pc_q  <= pc_q + {{(PCW-PBW-1){1'b0}}, consumed, 1'b0};  // += 2*consumed
+         pc_q  <= pc_q + {{(PCW-PBW-1){1'b0}}, consumed, 1'b0};  // += 2*consumed (0 on inject)
          seq_q <= seq_q + nvalid;
       end
    end

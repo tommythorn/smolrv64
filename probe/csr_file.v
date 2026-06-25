@@ -68,7 +68,12 @@ module csr_file
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
-                     OP_MRET=12'h302, OP_WFI=12'h105;
+                     OP_MRET=12'h302, OP_WFI=12'h105,
+                     // synthetic SYSTEM selector for the interrupt pseudo-instruction the
+                     // frontend injects when an interrupt is pending. It reuses the whole
+                     // ecall trap path (solo checkpoint, roll-back-TO-ckpt, vector redirect);
+                     // delivery here just substitutes the interrupt cause/epc semantics.
+                     OP_IRQ=12'h7F0;
 
    // RV64 misa = MXL(2)<<62 | I C M A S U
    localparam [63:0] MISA_VAL = (64'd2<<62) | (64'd1<<0)  /*A*/ | (64'd1<<2)  /*C*/
@@ -151,6 +156,11 @@ module csr_file
    wire is_ebreak = ~upd_is_csr & (upd_addr == OP_EBREAK);
    wire is_mret   = ~upd_is_csr & (upd_addr == OP_MRET);
    wire is_sret   = ~upd_is_csr & (upd_addr == OP_SRET);
+   // the injected interrupt pseudo-op. It delivers ONLY if an interrupt is still
+   // enabled+pending when it executes (oldest); else it retires as a NOP -- so an
+   // older op that disabled the interrupt before this point correctly suppresses it.
+   wire is_irqop  = ~upd_is_csr & (upd_addr == OP_IRQ);
+   wire irq_take  = upd_valid & is_irqop & irq_v;
    // sfence.vma: SYSTEM funct3==0 with funct7==9 (imm[11:5]==7'h09); flush the TLBs
    wire is_sfence = ~upd_is_csr & (upd_addr[11:5] == 7'h09);
 
@@ -211,12 +221,16 @@ module csr_file
    // sysop_exc may feed redir_valid/do_xret below -- NOT xtrap_v -- else the external trap
    // (which reaches the frontend via csr_redir_tgt, not the shard) would close a combinational
    // loop: xtrap_v -> redir_valid -> exec_shard sys_redirect -> eb_redirect -> (irq gating) -> xtrap_v.
+   // a trap is: this system op's OWN exception (ecall/ebreak/illegal), the interrupt
+   // pseudo-op delivering (irq_take), or an external page-fault injection (xtrap_v).
+   // Interrupts now arrive as the irq_take SYSTEM op (mcause MSB, vectored, epc=op PC);
+   // xtrap is exception-only (page faults) so xtrap_intr is vestigial (tied 0).
    wire        sysop_exc  = upd_valid & exc_active;
-   wire        trap_is_intr = xtrap_v & xtrap_intr;
-   wire        trap_v     = sysop_exc | xtrap_v;
-   wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, xtrap_cause})  // mcause MSB
-                          : xtrap_v      ? {60'd0, xtrap_cause} : exc_cause;
-   wire [63:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;
+   wire        trap_is_intr = irq_take | (xtrap_v & xtrap_intr);
+   wire        trap_v     = sysop_exc | irq_take | xtrap_v;
+   wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, (irq_take ? irq_cause : xtrap_cause)})
+                          : xtrap_v      ? {60'd0, xtrap_cause} : exc_cause;  // mcause MSB on intr
+   wire [63:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;   // irq_take -> upd_pc (interrupted PC)
    wire [63:0] trap_tval  = xtrap_v ? xtrap_tval : (is_ebreak ? upd_pc : 64'd0);
    // delegation: interrupts use the precomputed irq_to_s (mideleg); exceptions use medeleg
    wire        trap_to_s  = trap_is_intr ? irq_to_s
@@ -230,15 +244,15 @@ module csr_file
 
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | do_mret | do_sret | do_sfence;
-   assign redir_is_trap = sysop_exc;                // the system op's own exception
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence;
+   assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
    // xret so backend_top's csr_redir_tgt is the trap vector. Vectored mode (tvec[0]) sends an
    // interrupt to base + 4*cause; exceptions and direct mode go to base.
    wire [63:0] tvec_base = trap_to_s ? {stvec[63:2], 2'b0} : {mtvec[63:2], 2'b0};
    wire        tvec_vec  = trap_is_intr & (trap_to_s ? stvec[0] : mtvec[0]);
-   wire [63:0] trap_tgt  = tvec_vec ? (tvec_base + {{58{1'b0}}, xtrap_cause, 2'b00}) : tvec_base;
+   wire [63:0] trap_tgt  = tvec_vec ? (tvec_base + {trap_cause[5:0], 2'b00}) : tvec_base;
    always @* begin
       if (xtrap_v)              redir_target = trap_tgt;
       else if (do_mret)         redir_target = mepc;

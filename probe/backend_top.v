@@ -210,8 +210,7 @@ module backend_top
    // pending interrupt (from csr_file) + the precise delivery decision (assigned near dflt)
    wire               csr_irq_v;
    wire [3:0]         csr_irq_cause;
-   wire               irq_fire;         // an interrupt is delivered this cycle
-   wire [63:0]        irq_epc;          // its resume PC (oldest live checkpoint's start)
+   wire               irq_inject;       // inject the interrupt pseudo-op this cycle
 
    reg                pend_iflt;
    reg  [63:0]        iflt_va;
@@ -243,18 +242,19 @@ module backend_top
 
    wire [3:0]         dflt_cause;
    wire [63:0]        dflt_epc, dflt_tval;
-   // faults take priority over interrupts; an interrupt rolls back the oldest live checkpoint.
-   wire               xtrap_v     = iflt_fire | dflt_fire | irq_fire;
-   wire               xtrap_intr  = irq_fire;
-   wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : irq_fire ? csr_irq_cause : dflt_cause;
-   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : irq_fire ? irq_epc : dflt_epc;
-   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : irq_fire ? 64'd0   : dflt_tval;
+   // xtrap carries EXCEPTIONS only now (fetch/data page faults). Interrupts are delivered
+   // by the injected irq_take pseudo-op through the SYSTEM-op trap path, not here.
+   wire               xtrap_v     = iflt_fire | dflt_fire;
+   wire               xtrap_intr  = 1'b0;
+   wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : dflt_cause;
+   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : dflt_epc;
+   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
-      .redirect_seq(fe_red_seq), .solo_all(replay_v),
+      .redirect_seq(fe_red_seq), .solo_all(replay_v), .irq_inject(irq_inject),
       .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
@@ -584,15 +584,23 @@ module backend_top
    assign dflt_epc   = chk_pc[flt_ckpt];
    assign dflt_tval  = flt_tval;
 
-   // ---- interrupt delivery (precise) ----
-   // An enabled+pending interrupt is taken between instructions: roll back the OLDEST live
-   // checkpoint (none of it has committed) and resume the handler at csr_redir_tgt with
-   // epc = that checkpoint's start PC. Gated off while any fault/replay/redirect is in flight
-   // (faults take priority) and while empty (no live checkpoint -> the next dispatch makes it
-   // non-empty and we fire then; a NOP/WFI-spin keeps dispatching, so this always progresses).
-   assign irq_fire = csr_irq_v & ~cc_empty & ~replay_v & ~pend_iflt
-                     & ~lsu_dfault_v & ~ill_v & ~eb_redirect;
-   assign irq_epc  = chk_pc[cc_committed];
+   // ---- interrupt injection (precise, via the irq_take pseudo-op) ----
+   // When an interrupt is enabled+pending, inject a synthetic solo SYSTEM op at the current
+   // fetch PC (fetch holds PC). It renames/schedules like an ecall, becomes the oldest, and
+   // csr_file delivers the trap there (mepc = that PC; rolls back TO its own checkpoint to
+   // squash the displaced/younger ops -- which then re-fetch after mret). This reuses the
+   // entire SYSTEM-op exception path, so no roll-oldest-checkpoint machinery is needed (and
+   // it lets older in-flight work commit, sidestepping the commit-count-orphan corner).
+   // One pseudo-op in flight at a time: inject_inflight latches at injection and clears when
+   // the op resolves (its own trap, or any rollback squashes it) or the interrupt clears.
+   reg inject_inflight; initial inject_inflight = 1'b0;
+   assign irq_inject = csr_irq_v & ~inject_inflight & ~replay_v & ~pend_iflt & ~lsu_dfault_v
+                       & ~ill_v & ~eb_redirect & ~dflt_replay & ~dflt_fire & ~iflt_fire & ~roll_v;
+   always @(posedge clk) begin
+      if (reset)                    inject_inflight <= 1'b0;
+      else if (irq_inject & accept) inject_inflight <= 1'b1;   // pseudo-op entered the pipe
+      else if (roll_v | ~csr_irq_v) inject_inflight <= 1'b0;   // squashed/delivered/cleared
+   end
 
    always @(posedge clk) begin
       if (reset) ill_v <= 1'b0;
@@ -613,21 +621,19 @@ module backend_top
    // is a no-op functionally but keeps the frontend flush paired with a rename rollback
    // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
-   assign roll_v     = eb_redirect | dflt_roll | iflt_fire | irq_fire;
+   assign roll_v     = eb_redirect | dflt_roll | iflt_fire;
    assign roll_seq   = iflt_fire ? fe_cur_seq
-                     : dflt_roll ? (chk_seq[flt_ckpt]    - 1'b1)
-                     : irq_fire  ? (chk_seq[cc_committed] - 1'b1) : eb_rseq;
+                     : dflt_roll ? (chk_seq[flt_ckpt] - 1'b1) : eb_rseq;
    assign roll_ckpt  = iflt_fire ? cc_committed
-                     : dflt_roll ? flt_ckpt
-                     : irq_fire  ? cc_committed : rb_idx;
+                     : dflt_roll ? flt_ckpt : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
-   // phase 2 / fetch-fault / interrupt redirect to the trap vector; phase 1 refetches the start
-   assign fe_red_pc  = (iflt_fire | dflt_fire | irq_fire) ? csr_redir_tgt
-                     : dflt_replay                        ? chk_pc[flt_ckpt]
-                     :                                      eb_target;
+   // phase 2 / fetch-fault redirect to the trap vector; phase 1 refetches the start.
+   // (an interrupt's redirect rides eb_target -- the irq_take pseudo-op's SYSTEM redirect.)
+   assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt
+                     : dflt_replay             ? chk_pc[flt_ckpt]
+                     :                           eb_target;
    assign fe_red_seq = iflt_fire ? fe_cur_seq
                      : dflt_roll ? chk_seq[flt_ckpt]
-                     : irq_fire  ? chk_seq[cc_committed]
                      : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;

@@ -9,6 +9,8 @@ pass=0; total=0; fails=""
 for tb in tb_*.v; do
    [ "$tb" = tb_trace.v ] && continue
    [ "$tb" = tb_riscv.v ] && continue
+   [ "$tb" = tb_vl.v ]    && continue   # +hex-driven riscv-test harnesses (run via
+   [ "$tb" = tb_irq.v ]   && continue   # run-vl-tests.sh / a custom interrupt program)
    total=$((total+1))
    if ! timeout 90 iverilog -g2012 -I. -I../src -s tb -o /tmp/tb.vvp $srcs "$tb" ../src/alu.v >/tmp/tb_cc.log 2>&1; then
       printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
