@@ -40,6 +40,7 @@ module renamer_bundle
     // decoded operands (slot 0 = oldest)
     input  wire [SHARDS*ABITS-1:0] rs1,
     input  wire [SHARDS*ABITS-1:0] rs2,
+    input  wire [SHARDS*ABITS-1:0] rs3,
     input  wire [SHARDS*ABITS-1:0] rd,
     input  wire [SHARDS-1:0]       rd_v,
     // cross-slot resolution, precomputed in decode (decode_xslot)
@@ -47,6 +48,8 @@ module renamer_bundle
     input  wire [SHARDS*SBITS-1:0] s1_slot,
     input  wire [SHARDS-1:0]       s2_is_slot,
     input  wire [SHARDS*SBITS-1:0] s2_slot,
+    input  wire [SHARDS-1:0]       s3_is_slot,
+    input  wire [SHARDS*SBITS-1:0] s3_slot,
     input  wire [SHARDS-1:0]       map_writer,
     input  wire [SHARDS-1:0]       d_is_slot,
     input  wire [SHARDS*SBITS-1:0] d_slot,
@@ -58,6 +61,7 @@ module renamer_bundle
     input  wire [CBITS-1:0]        rollback_idx,
     output wire [SHARDS*PBITS-1:0] ps1,
     output wire [SHARDS*PBITS-1:0] ps2,
+    output wire [SHARDS*PBITS-1:0] ps3,
     output wire [SHARDS*PBITS-1:0] pdst,
     output wire [CBITS-1:0]        cur,
     output wire [SHARDS-1:0]       stall);
@@ -87,6 +91,8 @@ module renamer_bundle
             .s1_slot(s1_slot[i*SBITS +: SBITS]),
             .s2_arch(rs2[i*ABITS +: ABITS]), .s2_is_slot(s2_is_slot[i]),
             .s2_slot(s2_slot[i*SBITS +: SBITS]),
+            .s3_arch(rs3[i*ABITS +: ABITS]), .s3_is_slot(s3_is_slot[i]),
+            .s3_slot(s3_slot[i*SBITS +: SBITS]),
             .d_arch(rd[i*ABITS +: ABITS]), .d_valid(rd_v[i]),
             .d_is_slot(d_is_slot[i]), .d_slot(d_slot[i*SBITS +: SBITS]),
             .wr_arch(wr_arch), .wr_phys(wr_phys), .wr_valid(wr_valid),
@@ -95,6 +101,7 @@ module renamer_bundle
             .create(create), .commit(commit), .commit_idx(commit_idx),
             .rollback(rollback), .rollback_idx(rollback_idx),
             .ps1(ps1[i*PBITS +: PBITS]), .ps2(ps2[i*PBITS +: PBITS]),
+            .ps3(ps3[i*PBITS +: PBITS]),
             .pdst(alloc[i*PBITS +: PBITS]), .pold(pold_bus[i*PBITS +: PBITS]),
             .pold_v(pold_valid[i]), .cur(cur_each[i*CBITS +: CBITS]),
             .stall(stall[i]));

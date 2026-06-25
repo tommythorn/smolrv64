@@ -50,6 +50,7 @@ module decode_rename
     output wire [IW-1:0]        r_rd_v,
     output wire [IW*PBITS-1:0]  ps1,
     output wire [IW*PBITS-1:0]  ps2,
+    output wire [IW*PBITS-1:0]  ps3,
     output wire [IW*PBITS-1:0]  pdst,
     output wire [IW-1:0]        r_is_branch,  // for speculative checkpoint creation
     output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc+branch)
@@ -58,11 +59,11 @@ module decode_rename
     output wire [IW-1:0]        stall);
 
    // ---------------------------------------------------------- decode (comb)
-   wire [IW-1:0]        d_valid, d_rd_v, d_rs1_v, d_rs2_v;
+   wire [IW-1:0]        d_valid, d_rd_v, d_rs1_v, d_rs2_v, d_rs3_v;
    wire [IW*SEQW-1:0]   d_seq;
-   wire [IW*ABITS-1:0]  d_rd, d_rs1, d_rs2;
-   wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_map_writer, d_d_is_slot;
-   wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot, d_d_slot;
+   wire [IW*ABITS-1:0]  d_rd, d_rs1, d_rs2, d_rs3;
+   wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_s3_is_slot, d_map_writer, d_d_is_slot;
+   wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot, d_s3_slot, d_d_slot;
    wire [IW-1:0]        d_is_rvc, d_alu_w, d_alu_uw, d_op2_imm, d_res_link, d_is_mem;
    wire [IW-1:0]        d_is_store, d_mem_signed;
    wire [IW*2-1:0]      d_mem_size;
@@ -79,9 +80,10 @@ module decode_rename
      (.inst(inst), .in_valid(in_valid), .seq_in(seq_in),
       .valid(d_valid), .seq(d_seq), .is_rvc(d_is_rvc), .expanded(),
       .rd(d_rd), .rd_v(d_rd_v), .rs1(d_rs1), .rs1_v(d_rs1_v),
-      .rs2(d_rs2), .rs2_v(d_rs2_v), .imm(d_imm), .has_imm(), .legal(),
+      .rs2(d_rs2), .rs2_v(d_rs2_v), .rs3(d_rs3), .rs3_v(d_rs3_v), .imm(d_imm), .has_imm(), .legal(),
       .s1_is_slot(d_s1_is_slot), .s1_slot(d_s1_slot),
-      .s2_is_slot(d_s2_is_slot), .s2_slot(d_s2_slot), .map_writer(d_map_writer),
+      .s2_is_slot(d_s2_is_slot), .s2_slot(d_s2_slot),
+      .s3_is_slot(d_s3_is_slot), .s3_slot(d_s3_slot), .map_writer(d_map_writer),
       .d_is_slot(d_d_is_slot), .d_slot(d_d_slot),
       .alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
       .op2_imm(d_op2_imm), .res_link(d_res_link), .is_mem(d_is_mem),
@@ -91,10 +93,10 @@ module decode_rename
       .is_amo(d_is_amo), .amo_func(d_amo_func), .is_fencei(d_is_fencei), .illegal(d_illegal));
 
    // -------------------------------------------- decode/rename boundary reg
-   reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_map_writer, q_d_is_slot;
+   reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_s3_is_slot, q_map_writer, q_d_is_slot;
    reg [IW*SEQW-1:0]   q_seq;
-   reg [IW*ABITS-1:0]  q_rd, q_rs1, q_rs2;
-   reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot, q_d_slot;
+   reg [IW*ABITS-1:0]  q_rd, q_rs1, q_rs2, q_rs3;
+   reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot, q_s3_slot, q_d_slot;
    // payload registered alongside the rename contract
    reg [IW-1:0]        q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
    reg [IW-1:0]        q_is_store, q_mem_signed;
@@ -133,9 +135,10 @@ module decode_rename
          q_is_jump    <= d_is_jump; q_br_func <= d_br_func;
          q_seq        <= d_seq;
          q_rd         <= d_rd;
-         q_rs1        <= d_rs1;      q_rs2        <= d_rs2;
+         q_rs1        <= d_rs1;      q_rs2        <= d_rs2;     q_rs3 <= d_rs3;
          q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
          q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
+         q_s3_is_slot <= d_s3_is_slot; q_s3_slot  <= d_s3_slot;
          q_d_is_slot  <= d_d_is_slot;   q_d_slot   <= d_d_slot;
          q_imm <= d_imm; q_pc <= pc_in;
          q_alu_op <= d_alu_op; q_alu_w <= d_alu_w; q_alu_uw <= d_alu_uw;
@@ -190,13 +193,14 @@ module decode_rename
                     .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR), .SBITS(SBITS),
                     .NCHK(NCHK), .CBITS(CBITS)) rn
      (.clk(clk), .reset(reset),
-      .rs1(q_rs1), .rs2(q_rs2), .rd(q_rd), .rd_v(q_rd_v),
+      .rs1(q_rs1), .rs2(q_rs2), .rs3(q_rs3), .rd(q_rd), .rd_v(q_rd_v),
       .s1_is_slot(q_s1_is_slot), .s1_slot(q_s1_slot),
-      .s2_is_slot(q_s2_is_slot), .s2_slot(q_s2_slot), .map_writer(q_map_writer),
+      .s2_is_slot(q_s2_is_slot), .s2_slot(q_s2_slot),
+      .s3_is_slot(q_s3_is_slot), .s3_slot(q_s3_slot), .map_writer(q_map_writer),
       .d_is_slot(q_d_is_slot), .d_slot(q_d_slot),
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst), .cur(cur), .stall(stall));
+      .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst), .cur(cur), .stall(stall));
 
    // the renamed bundle is allocated into the freelist's current span
    assign r_ckpt = cur;

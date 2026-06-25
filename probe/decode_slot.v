@@ -20,6 +20,8 @@ module decode_slot #(parameter SEQW = 8)
     output wire             rs1_v,
     output wire [5:0]       rs2,
     output wire             rs2_v,
+    output wire [5:0]       rs3,
+    output wire             rs3_v,
     output wire [63:0]      imm,
     output wire             has_imm,
     output wire             legal,
@@ -51,11 +53,11 @@ module decode_slot #(parameter SEQW = 8)
    rvc_expand u_rvc (.c(inst[15:0]), .insn(exp_rvc));
    wire [31:0] full = is_c ? exp_rvc : inst;
 
-   wire [5:0]  d_rd, d_rs1, d_rs2;
-   wire        d_rdv, d_rs1v, d_rs2v, d_himm, d_legal;
+   wire [5:0]  d_rd, d_rs1, d_rs2, d_rs3;
+   wire        d_rdv, d_rs1v, d_rs2v, d_rs3v, d_himm, d_legal;
    wire [63:0] d_imm;
    decode_operands u_op (.insn(full), .rd(d_rd), .rd_v(d_rdv), .rs1(d_rs1),
-      .rs1_v(d_rs1v), .rs2(d_rs2), .rs2_v(d_rs2v), .imm(d_imm),
+      .rs1_v(d_rs1v), .rs2(d_rs2), .rs2_v(d_rs2v), .rs3(d_rs3), .rs3_v(d_rs3v), .imm(d_imm),
       .has_imm(d_himm), .legal(d_legal));
 
    // execute control; the units beyond ALU (branch/csr/mul/amo/fp) are decoded
@@ -78,6 +80,8 @@ module decode_slot #(parameter SEQW = 8)
    assign rs1_v    = in_valid & d_rs1v;
    assign rs2      = d_rs2;
    assign rs2_v    = in_valid & d_rs2v;
+   assign rs3      = d_rs3;
+   assign rs3_v    = in_valid & d_rs3v;
    assign imm      = d_imm;
    assign has_imm  = in_valid & d_himm;
    assign legal    = in_valid & d_legal;

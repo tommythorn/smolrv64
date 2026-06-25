@@ -111,7 +111,7 @@ module backend_top
    wire [IW-1:0]      r_valid, r_rd_v, r_is_branch, fe_stall;
    wire [IW*SEQW-1:0] r_seq;
    wire [IW*ABITS-1:0] r_rd;
-   wire [IW*PBITS-1:0] ps1, ps2, pdst;
+   wire [IW*PBITS-1:0] ps1, ps2, ps3, pdst;
    wire [IW*`PAYW-1:0] r_pay;
    wire [CBITS-1:0]   r_ckpt, cur;
 
@@ -268,7 +268,7 @@ module backend_top
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst),
+      .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst),
       .r_is_branch(r_is_branch),
       .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .cur_seq(fe_cur_seq), .stall(fe_stall));
 
@@ -297,7 +297,7 @@ module backend_top
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
       .disp_ps1(ps1), .disp_ps2(ps2),
-      .disp_ps3({IW*PBITS{1'b0}}),   // FMA 3rd operand: p0 (always ready) until FP
+      .disp_ps3(ps3),                // FMA 3rd operand (renamed; p0 for non-FMA ops via rs3_v=0)
       .disp_ckpt(disp_ckpt), .disp_mem_idx(disp_mem_idx),
       .disp_pay(r_pay), .disp_ready(disp_ready),
       .wake_valid(sched_wake_v), .wake_pr(sched_wake_pr),

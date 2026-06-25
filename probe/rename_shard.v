@@ -47,6 +47,9 @@ module rename_shard
     input  wire [ABITS-1:0]      s2_arch,
     input  wire                  s2_is_slot,
     input  wire [SBITS-1:0]      s2_slot,
+    input  wire [ABITS-1:0]      s3_arch,
+    input  wire                  s3_is_slot,
+    input  wire [SBITS-1:0]      s3_slot,
     input  wire [ABITS-1:0]      d_arch,
     input  wire                  d_valid,        // allocates a destination
     input  wire                  d_is_slot,      // pold comes from an earlier slot
@@ -69,6 +72,7 @@ module rename_shard
     // renamed outputs
     output wire [PBITS-1:0]      ps1,
     output wire [PBITS-1:0]      ps2,
+    output wire [PBITS-1:0]      ps3,
     output wire [PBITS-1:0]      pdst,           // this shard's allocated dest
     output wire [PBITS-1:0]      pold,           // prior mapping of d_arch (freed at commit)
     output wire                  pold_v,         // d_arch was actually displaced
@@ -124,6 +128,8 @@ module rename_shard
               : (s1_arch == {ABITS{1'b0}}) ? {PBITS{1'b0}} : map[s1_arch];
    assign ps2 = s2_is_slot ? ap[s2_slot]
               : (s2_arch == {ABITS{1'b0}}) ? {PBITS{1'b0}} : map[s2_arch];
+   assign ps3 = s3_is_slot ? ap[s3_slot]
+              : (s3_arch == {ABITS{1'b0}}) ? {PBITS{1'b0}} : map[s3_arch];
    // displaced prior mapping: an earlier in-bundle writer's pdst, else the MAP.
    assign pold   = d_is_slot ? ap[d_slot] : map[d_arch];
    // Gate by `create` (actual dispatch), exactly like alloc_en: a displaced pold is

@@ -57,6 +57,7 @@ module frontend
     output wire [IW-1:0]           r_rd_v,
     output wire [IW*PBITS-1:0]     ps1,
     output wire [IW*PBITS-1:0]     ps2,
+    output wire [IW*PBITS-1:0]     ps3,
     output wire [IW*PBITS-1:0]     pdst,
     output wire [IW-1:0]           r_is_branch,
     output wire [IW*`PAYW-1:0]     r_pay,
@@ -87,7 +88,7 @@ module frontend
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
-      .ps1(ps1), .ps2(ps2), .pdst(pdst),
+      .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst),
       .r_is_branch(r_is_branch),
       .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .stall(stall));
 endmodule

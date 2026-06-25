@@ -31,27 +31,33 @@ module decode_xslot
     input  wire [IW-1:0]       rs1_v,
     input  wire [IW*ABITS-1:0] rs2,
     input  wire [IW-1:0]       rs2_v,
+    input  wire [IW*ABITS-1:0] rs3,
+    input  wire [IW-1:0]       rs3_v,
     input  wire [IW*ABITS-1:0] rd,
     input  wire [IW-1:0]       rd_v,
     output wire [IW-1:0]       s1_is_slot,
     output wire [IW*SBITS-1:0] s1_slot,
     output wire [IW-1:0]       s2_is_slot,
     output wire [IW*SBITS-1:0] s2_slot,
+    output wire [IW-1:0]       s3_is_slot,
+    output wire [IW*SBITS-1:0] s3_slot,
     output wire [IW-1:0]       map_writer,
     output wire [IW-1:0]       d_is_slot,
     output wire [IW*SBITS-1:0] d_slot);
 
-   reg [IW-1:0]    s1is, s2is, mw, dis;
+   reg [IW-1:0]    s1is, s2is, s3is, mw, dis;
    reg [SBITS-1:0] s1sl [0:IW-1];
    reg [SBITS-1:0] s2sl [0:IW-1];
+   reg [SBITS-1:0] s3sl [0:IW-1];
    reg [SBITS-1:0] dsl  [0:IW-1];
 
    integer i, j;
-   reg [ABITS-1:0] a1, a2, di;
+   reg [ABITS-1:0] a1, a2, a3, di;
    always @* begin
       for (i = 0; i < IW; i = i + 1) begin
          a1 = rs1[i*ABITS +: ABITS];
          a2 = rs2[i*ABITS +: ABITS];
+         a3 = rs3[i*ABITS +: ABITS];
          di = rd [i*ABITS +: ABITS];
 
          // src1 -> youngest earlier in-bundle writer of the same arch reg
@@ -66,6 +72,13 @@ module decode_xslot
          for (j = 0; j < IW; j = j + 1)
             if ((j < i) && rs2_v[i] && rd_v[j] && (rd[j*ABITS +: ABITS] == a2)) begin
                s2is[i] = 1'b1;  s2sl[i] = j[SBITS-1:0];
+            end
+
+         // src3 (FMA)
+         s3is[i] = 1'b0;  s3sl[i] = {SBITS{1'b0}};
+         for (j = 0; j < IW; j = j + 1)
+            if ((j < i) && rs3_v[i] && rd_v[j] && (rd[j*ABITS +: ABITS] == a3)) begin
+               s3is[i] = 1'b1;  s3sl[i] = j[SBITS-1:0];
             end
 
          // map_writer: this dst is MAP-visible iff no *younger* slot writes the same reg
@@ -88,11 +101,13 @@ module decode_xslot
       for (g = 0; g < IW; g = g + 1) begin : pk
          assign s1_slot[g*SBITS +: SBITS] = s1sl[g];
          assign s2_slot[g*SBITS +: SBITS] = s2sl[g];
+         assign s3_slot[g*SBITS +: SBITS] = s3sl[g];
          assign d_slot [g*SBITS +: SBITS] = dsl[g];
       end
    endgenerate
    assign s1_is_slot = s1is;
    assign s2_is_slot = s2is;
+   assign s3_is_slot = s3is;
    assign map_writer = mw;
    assign d_is_slot  = dis;
 endmodule
