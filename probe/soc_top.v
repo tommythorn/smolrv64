@@ -15,9 +15,12 @@
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module soc_top #(
    parameter IW=4, HW=8, PCW=64, SEQW=8, PBITS=8,
-   parameter [63:0] BASE = 64'h8000_0000,
-   parameter        RAM_LG2 = 21,          // 2 MiB
-   parameter        SIZE_KB = 128          // each cache
+   parameter [63:0] BASE     = 64'h8000_0000,   // DDR
+   parameter        RAM_LG2  = 21,              // 2 MiB DDR
+   parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
+   parameter        LRAM_LG2 = 18,              // 256 KiB local SRAM
+   parameter [63:0] RESET_PC = BASE,            // tests link @DDR; the platform boots @LBASE
+   parameter        SIZE_KB  = 128              // each cache
 ) (
    input  wire             clk,
    input  wire             reset,
@@ -26,7 +29,14 @@ module soc_top #(
    output wire             dmem_wen,
    output wire [63:0]      dmem_waddr,
    output wire [63:0]      dmem_wdata,
-   output wire [7:0]       dmem_wmask
+   output wire [7:0]       dmem_wmask,
+   // external DDR line port (cache-backed DRAM @ BASE): sim TB / FPGA DDR4 bridge
+   output wire             ddr_req,
+   output wire             ddr_we,
+   output wire [57:0]      ddr_addr,     // line address PA[63:6]
+   output wire [511:0]     ddr_wdata,
+   input  wire [511:0]     ddr_rdata,
+   input  wire             ddr_ack
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -47,7 +57,7 @@ module soc_top #(
    wire [IW-1:0]       wb_valid;  wire [IW*PBITS-1:0] wb_pr;  wire [IW*64-1:0] wb_val;
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
-   backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(BASE)) core
+   backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -211,26 +221,44 @@ module soc_top #(
    assign ic_l2_ack = a_ack[1];  assign ic_l2_rdata = arb_rdata;
    assign pw_ack    = a_ack[4:2];
 
-   // ---------------- behavioral line RAM (byte array; $readmemh-loadable) ----------------
-   reg [7:0] ram [0:SIZE-1];
-   reg m_busy; reg [3:0] m_cnt; reg m_we_q; reg [LAW-1:0] m_ad_q; reg [511:0] m_wd_q;
-   reg [511:0] m_rdata_r; reg m_ack_r;
-   integer kb; reg [63:0] m_base;
+   // ---------------- memory: internal local SRAM (BRAM) + EXTERNAL DDR port ----------------
+   // The arbiter's single line transaction is region-decoded: the on-chip local SRAM at
+   // LBASE (boot/monitor; FPGA = BRAM init'd from mem.even/odd) is served internally; the
+   // DDR region at BASE is forwarded to soc_top's external line port (ddr_*) -- the sim TB's
+   // behavioral DRAM, or the real DDR4/MIG bridge on the FPGA. The cache is PIPT so it fills/
+   // writes either region transparently. (lram is $readmemh-loadable via dut.lram for boot.)
+   localparam LSIZE = 1<<LRAM_LG2;
+   wire [63:0] m_pa       = {{6{1'b0}}, m_addr} << 6;       // physical byte addr of the line
+   wire        m_is_local = (m_pa >= LBASE) && (m_pa < LBASE + LSIZE);
+
+   // local SRAM responder (on-chip BRAM)
+   reg [7:0] lram [0:LSIZE-1];
+   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_ad_q; reg [511:0] l_wd_q;
+   reg [511:0] l_rdata; reg l_ack; integer kb; reg [63:0] l_base;
+   wire l_req = m_req & m_is_local;
    always @(posedge clk) begin
-      m_ack_r <= 1'b0;
-      if (reset) m_busy<=1'b0;
-      else if (!m_busy && m_req) begin m_busy<=1'b1; m_cnt<=4'd2; m_we_q<=m_we; m_ad_q<=m_addr; m_wd_q<=m_wdata; end
-      else if (m_busy) begin
-         if (m_cnt==0) begin
-            m_base = ({{6{1'b0}},m_ad_q} << 6) - BASE;
-            if (m_we_q) for (kb=0;kb<64;kb=kb+1) ram[m_base+kb] <= m_wd_q[kb*8 +: 8];
-            else        for (kb=0;kb<64;kb=kb+1) m_rdata_r[kb*8 +: 8] <= ram[m_base+kb];
-            m_ack_r<=1'b1; m_busy<=1'b0;
-         end else m_cnt <= m_cnt-1;
+      l_ack <= 1'b0;
+      if (reset) l_busy<=1'b0;
+      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd2; l_we_q<=m_we; l_ad_q<=m_addr; l_wd_q<=m_wdata; end
+      else if (l_busy) begin
+         if (l_cnt==0) begin
+            l_base = ({{6{1'b0}},l_ad_q} << 6) - LBASE;
+            if (l_we_q) for (kb=0;kb<64;kb=kb+1) lram[l_base+kb] <= l_wd_q[kb*8 +: 8];
+            else        for (kb=0;kb<64;kb=kb+1) l_rdata[kb*8 +: 8] <= lram[l_base+kb];
+            l_ack<=1'b1; l_busy<=1'b0;
+         end else l_cnt <= l_cnt-1;
       end
    end
-   assign m_rdata = m_rdata_r;
-   assign m_ack   = m_ack_r;
+
+   // external DDR line port (sim TB drives it; FPGA = DDR4 bridge)
+   assign ddr_req   = m_req & ~m_is_local;
+   assign ddr_we    = m_we;
+   assign ddr_addr  = m_addr;
+   assign ddr_wdata = m_wdata;
+
+   // response mux back to the arbiter (m_addr held by the arbiter through the transaction)
+   assign m_ack   = m_is_local ? l_ack   : ddr_ack;
+   assign m_rdata = m_is_local ? l_rdata : ddr_rdata;
 endmodule
 
 `default_nettype wire
