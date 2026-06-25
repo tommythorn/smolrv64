@@ -101,6 +101,7 @@ module exec_shard
     output wire [MIDXW-1:0]        ex_mem_idx,
     output wire                    ex_mem,
     output wire                    ex_store,
+    output wire                    ex_fp,         // EX op is an FP instruction (FLW/FLD box at LSU)
     output wire [1:0]              ex_msize,
     output wire                    ex_msigned,
     output wire [63:0]             agu_addr,
@@ -230,15 +231,19 @@ module exec_shard
    wire fp_start = fp_arith & ~fpu_inflight & ~mbusy & ~dbusy & ~fp_squash_now;
    function [63:0] fpsel; input [1:0] s; input [63:0] a, b;
       fpsel = (s==2'd1) ? a : (s==2'd2) ? b : 64'd0; endfunction   // op3 (FMA) = 0 until ps3 read
+   // unbox a single from an f-register: a properly NaN-boxed value yields its low 32 bits;
+   // anything else (e.g. a double, or a raw int) is the canonical single NaN (RISC-V spec).
+   function [31:0] unbox_s; input [63:0] x;
+      unbox_s = (x[63:32]==32'hffffffff) ? x[31:0] : 32'h7fc00000; endfunction
    wire [63:0] fpo0r = fpsel(ex_fpo0, op1f, op2f);
    wire [63:0] fpo1r = fpsel(ex_fpo1, op1f, op2f);
    wire [63:0] fpo2r = fpsel(ex_fpo2, op1f, op2f);
-   // NaN-box FP32 register operands feeding the CVFPU (FLW-loaded singles are stored raw):
-   // a non-boxed single would be read as NaN by fpnew. op0 may be an INTEGER source (I2F) -> skip.
+   // Feed the CVFPU a properly-boxed single for FP32 ops (unbox: real single, else canon NaN).
+   // op0 may be an INTEGER source (I2F) -> pass it through unmolested.
    wire        src32 = (ex_fpsrc==3'd0);
-   wire [63:0] fpo0  = (src32 & ~ex_fpo0i) ? {32'hffffffff, fpo0r[31:0]} : fpo0r;
-   wire [63:0] fpo1  = src32 ? {32'hffffffff, fpo1r[31:0]} : fpo1r;
-   wire [63:0] fpo2  = src32 ? {32'hffffffff, fpo2r[31:0]} : fpo2r;
+   wire [63:0] fpo0  = (src32 & ~ex_fpo0i) ? {32'hffffffff, unbox_s(fpo0r)} : fpo0r;
+   wire [63:0] fpo1  = src32 ? {32'hffffffff, unbox_s(fpo1r)} : fpo1r;
+   wire [63:0] fpo2  = src32 ? {32'hffffffff, unbox_s(fpo2r)} : fpo2r;
    wire fp_iss_ready, fp_res_valid, fpu_busyo;  wire [63:0] fp_res_data;  wire [4:0] fp_fflags;
    fp_unit #(.TAGW(1)) u_fpu
      (.clk(clk), .reset(1'b0),
@@ -259,8 +264,12 @@ module exec_shard
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
    wire       ex_fpd = ex_insn[25];          // 0=single 1=double
    wire [2:0] ex_f3  = ex_insn[14:12];
+   // single in-core ops unbox their f-reg sources (non-boxed -> canonical NaN). FMV.X.W is a
+   // raw 32-bit bit-move and must NOT unbox.
+   wire [31:0] us1 = unbox_s(op1f);
+   wire [31:0] us2 = unbox_s(op2f);
    wire [1:0] cmp_d2 = fcmp_d(ex_f3, op1f, op2f);
-   wire [1:0] cmp_s2 = fcmp_s(ex_f3, op1f[31:0], op2f[31:0]);
+   wire [1:0] cmp_s2 = fcmp_s(ex_f3, us1, us2);
    reg [63:0] fp_incore_res;
    always @* begin
       case (ex_fpcls)
@@ -268,13 +277,13 @@ module exec_shard
                ? (ex_f3==3'b000 ? {op2f[63], op1f[62:0]}
                 : ex_f3==3'b001 ? {~op2f[63], op1f[62:0]}
                 :                 {op2f[63]^op1f[63], op1f[62:0]})
-               : {32'hffffffff, (ex_f3==3'b000 ? {op2f[31], op1f[30:0]}
-                : ex_f3==3'b001 ? {~op2f[31], op1f[30:0]}
-                :                 {op2f[31]^op1f[31], op1f[30:0]})};
+               : {32'hffffffff, (ex_f3==3'b000 ? {us2[31], us1[30:0]}
+                : ex_f3==3'b001 ? {~us2[31], us1[30:0]}
+                :                 {us2[31]^us1[31], us1[30:0]})};
         3'd2: fp_incore_res = {63'd0, (ex_fpd ? cmp_d2[0] : cmp_s2[0])};      // FEQ/FLT/FLE -> int
-        3'd3: fp_incore_res = ex_fpd ? op1f : {{32{op1f[31]}}, op1f[31:0]};   // FMV.X.D/W -> int
+        3'd3: fp_incore_res = ex_fpd ? op1f : {{32{op1f[31]}}, op1f[31:0]};   // FMV.X.D/W -> int (raw)
         3'd4: fp_incore_res = ex_fpd ? op1f : {32'hffffffff, op1f[31:0]};     // FMV.D/W.X -> fp (box)
-        3'd5: fp_incore_res = ex_fpd ? fclass_d(op1f) : fclass_s(op1f);       // FCLASS -> int
+        3'd5: fp_incore_res = ex_fpd ? fclass_d(op1f) : fclass_s(op1f);       // FCLASS -> int (unboxes inside)
         default: fp_incore_res = 64'd0;
       endcase
    end
@@ -361,6 +370,7 @@ module exec_shard
    assign ex_mem_idx  = ex_mi;
    assign ex_mem      = ex_memr;
    assign ex_store    = ex_str;
+   assign ex_fp       = (ex_insn[6:0]==7'b0000111);   // LOAD-FP (FLW/FLD) -> LSU NaN-boxes FLW
    assign ex_msize    = ex_msz;
    assign ex_msigned  = ex_msgn;
 endmodule

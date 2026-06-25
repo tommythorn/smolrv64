@@ -71,6 +71,7 @@ module lsu
     input  wire [IW*AW-1:0]       exe_ld_addr,
     input  wire [IW*4-1:0]        exe_ld_nb,          // load size in bytes (1..8)
     input  wire [IW-1:0]          exe_ld_sgn,         // sign-extend the result
+    input  wire [IW-1:0]          exe_ld_fp,          // FP load -> NaN-box a 4-byte (FLW) result
 
     // ---- atomic (A ext) execute port (single: atomics are serialized + solo) ----
     input  wire                   amo_v,              // an atomic at EX (oldest, non-spec)
@@ -186,6 +187,7 @@ module lsu
    reg [AW-1:0]     lq_addr[0:LQDEPTH-1];   // byte address (mem_raddr)
    reg [3:0]        lq_nb  [0:LQDEPTH-1];
    reg              lq_sgn [0:LQDEPTH-1];
+   reg              lq_fp  [0:LQDEPTH-1];   // FLW -> NaN-box a 4-byte result
    reg [PBITS-1:0]  lq_pd  [0:LQDEPTH-1];
    reg [SBITS-1:0]  lq_own [0:LQDEPTH-1];
    reg [WW-1:0]     lq_w0  [0:LQDEPTH-1];   // low word  (precomputed at fill)
@@ -284,6 +286,7 @@ module lsu
    reg [CBITS-1:0] p_ck;
    reg [3:0]      p_nb;
    reg            p_sgn;
+   reg            p_fp;
    reg [WW-1:0]   p_w0, p_w1;
    reg [2:0]      p_lb;
    initial p_v = 1'b0;
@@ -514,7 +517,7 @@ module lsu
             p_v <= 1'b1;
             p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
             p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
-            p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel];
+            p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
             p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
             mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
             mem_ren   <= 1'b1;                  // request the read (mem_raddr valid next cycle)
@@ -589,7 +592,8 @@ module lsu
       end
       c_val = (p_nb==4'd1) ? (p_sgn ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
             : (p_nb==4'd2) ? (p_sgn ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
-            : (p_nb==4'd4) ? (p_sgn ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
+            : (p_nb==4'd4) ? (p_fp  ? {32'hffffffff,    m_mrg[31:0]}      // FLW: NaN-box
+                            : p_sgn ? {{32{m_mrg[31]}}, m_mrg[31:0]} : {32'd0, m_mrg[31:0]})
             : m_mrg;
    end
 
@@ -700,6 +704,7 @@ module lsu
                lq_addr[lidx] <= f_addr;
                lq_nb[lidx]   <= exe_ld_nb[i*4 +: 4];
                lq_sgn[lidx]  <= exe_ld_sgn[i];
+               lq_fp[lidx]   <= exe_ld_fp[i];
                lq_w0[lidx]   <= f_addr[PAW-1:3];
                lq_w1[lidx]   <= f_addr[PAW-1:3] + 1'b1;
                lq_lb[lidx]   <= f_addr[2:0];

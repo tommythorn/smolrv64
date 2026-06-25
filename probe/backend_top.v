@@ -450,7 +450,7 @@ module backend_top
    wire [PBITS-1:0]   lsu_ld_wb_pdst;
    wire [63:0]        lsu_ld_wb_val;
    // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
-   wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned;
+   wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned, ex_fp;
    wire [IW*SEQW-1:0] ex_seq;
    wire [IW*CBITS-1:0] ex_ckpt;
    wire [IW*MIDXW-1:0] ex_mem_idx;
@@ -468,7 +468,7 @@ module backend_top
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
-      .ex_mem(ex_mem), .ex_store(ex_store), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
+      .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .redirect(eb_redirect), .redirect_target(eb_target),
@@ -489,7 +489,7 @@ module backend_top
    wire [IW*AW-1:0]   exe_st_addr, exe_ld_addr;
    wire [IW*64-1:0]   exe_st_data;
    wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
-   wire [IW-1:0]      exe_ld_sgn;
+   wire [IW-1:0]      exe_ld_sgn, exe_ld_fp;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
       assign exe_st_v[gi] = ex_valid[gi] & ex_mem[gi] &  ex_store[gi];
       assign exe_ld_v[gi] = ex_valid[gi] & ex_mem[gi] & ~ex_store[gi];
@@ -501,6 +501,7 @@ module backend_top
       assign exe_st_nb[gi*4 +: 4]      = (4'd1 << ex_msize[gi*2 +: 2]);
       assign exe_ld_nb[gi*4 +: 4]      = (4'd1 << ex_msize[gi*2 +: 2]);
       assign exe_ld_sgn[gi]            = ex_msigned[gi];
+      assign exe_ld_fp[gi]             = ex_fp[gi];           // FLW -> NaN-box the word load
    end endgenerate
 
    // ---- single active atomic -> LSU amo port (atomics are serialized+solo: <=1 at EX) ----
@@ -530,7 +531,7 @@ module backend_top
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
-      .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
+      .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn), .exe_ld_fp(exe_ld_fp),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
       .amo_sz(amo_sz), .amo_pdst(amo_pdst), .amo_owner(amo_owner), .amo_ckpt(amo_ckpt),
       .amo_seq(amo_seq),
