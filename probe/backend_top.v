@@ -63,6 +63,7 @@ module backend_top
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
+    input  wire                    dmem_wready,        // write accepted/done; tie 1 for 1-cycle writes
     // page-table-walker memory port (registered read; serves the iMMU's TLB misses).
     // Unused in Bare mode (satp.MODE=0) -> may float in the simpler testbenches.
     output wire [55:0]             ptw_addr,
@@ -524,6 +525,7 @@ module backend_top
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
+      .mem_wready(dmem_wready),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
       .ld_wb_val(lsu_ld_wb_val), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),

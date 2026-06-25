@@ -127,10 +127,11 @@ module lsu
     output reg                    mem_ren,            // read-request pulse (fresh mem_raddr)
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
     input  wire                   mem_rvalid,         // mem_rdata valid for mem_raddr this cycle
-    output reg                    mem_wen,
+    output reg                    mem_wen,            // held until mem_wready (drain + AMO write)
     output reg  [AW-1:0]          mem_waddr,
     output reg  [63:0]            mem_wdata,
     output reg  [7:0]             mem_wmask,
+    input  wire                   mem_wready,         // write accepted/done; tie 1 for 1-cycle writes
 
     // ---- load writeback (to the owner shard's WB lane) + completion ----
     // Combinational: a load completes the cycle it is selected. `wb_busy[s]` marks
@@ -287,8 +288,8 @@ module lsu
    initial p_v = 1'b0;
 
    // ---- atomic (A ext) FSM state (declared early: used by sel_fire below) ----
-   localparam A_IDLE=2'd0, A_WAIT=2'd1, A_RD=2'd2, A_WB=2'd3;
-   reg [1:0]        ast;
+   localparam A_IDLE=3'd0, A_WAIT=3'd1, A_RD=3'd2, A_WR=3'd4, A_WB=3'd3;
+   reg [2:0]        ast;
    reg [AW-1:0]     a_addr;  reg [63:0] a_data;  reg [4:0] a_func;  reg [1:0] a_sz;
    reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;  reg [SEQW-1:0] a_seq;
    reg [63:0]       a_rdval_q;
@@ -377,7 +378,7 @@ module lsu
    wire [63:0] a_oldv   = a_isw ? {{32{a_old32[31]}}, a_old32} : mem_rdata;
    wire [63:0] a_rdval  = a_issc ? (a_scok ? 64'd0 : 64'd1) : a_oldv;     // SC: 0=ok 1=fail
    wire        a_dowr   = a_islr ? 1'b0 : a_issc ? a_scok : 1'b1;         // who writes memory
-   wire        amo_wr_now = (ast == A_RD) & a_dowr & mem_rvalid;  // write the cycle RMW data returns
+   wire        amo_wr_now = (ast == A_WR);   // RMW write held through A_WR until mem_wready
    wire        amo_wb_ok  = (ast == A_WB) & ~wb_busy[a_own];   // reserve owner lane (next cycle)
    wire [63:0] a_wdata  = a_isw ? (a_half ? {a_resv[31:0],32'b0} : {32'b0,a_resv[31:0]}) : a_resv;
    wire [7:0]  a_wmask  = a_isw ? (a_half ? 8'hF0 : 8'h0F) : 8'hFF;
@@ -520,17 +521,19 @@ module lsu
            A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
                       mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; mem_ren <= 1'b1; ast<=A_RD;
                    end
-           A_RD:   if (mem_rvalid) begin a_rdval_q <= a_rdval; ast<=A_WB;  // wait for RMW read data
+           A_RD:   if (mem_rvalid) begin a_rdval_q <= a_rdval;  // RMW read data returned
                       if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
                       if (a_issc) rsv_v<=1'b0;
+                      ast <= a_dowr ? A_WR : A_WB;   // write phase only if this AMO writes memory
                    end
+           A_WR:   if (mem_wready) ast <= A_WB;      // hold the RMW write until accepted
            A_WB:   if (amo_wb_ok) begin           // owner lane free next cycle -> register wb
                       amo_wbv<=1'b1; amo_wbpd<=a_pdst; amo_wbow<=a_own;
                       amo_wbvl<=a_rdval_q; amo_wbck<=a_ck; ast<=A_IDLE;
                    end
          endcase
          // an intervening store to the reserved word breaks the reservation
-         if (dr_v && rsv_v && (sb_addr[dr_sel][PAW-1:3] == rsv_w)) rsv_v <= 1'b0;
+         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][PAW-1:3] == rsv_w)) rsv_v <= 1'b0;
          // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
          // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic. Driven here
          // (priority-last in the FSM's own block) so ast/rsv_v have a SINGLE driver.
@@ -710,8 +713,10 @@ module lsu
             for (i = 0; i < SBDEPTH; i = i + 1)
                if (sb_v[i] && (sb_ck[i] == commit_idx)) sb_cmt[i] <= 1'b1;
 
-         // (5) drain: retire the selected store from the buffer (dr_v already requires xck'd)
-         if (dr_v) sb_v[dr_sel] <= 1'b0;
+         // (5) drain: retire the selected store from the buffer once the write is ACCEPTED
+         //     (mem_wready). mem_wen=dr_v stays asserted, re-selecting the same store, until
+         //     a multi-cycle D$ accepts it. (Tie mem_wready=1 -> frees next cycle, as before.)
+         if (dr_v && mem_wready) sb_v[dr_sel] <= 1'b0;
 
          // (6) rollback: squash wrong-path entries (newer than the branch)
          if (rollback) begin

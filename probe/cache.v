@@ -31,7 +31,9 @@ module cache #(
    parameter RDW      = 64,
    parameter WDW      = 64,
    parameter OFFB     = 6,         // line offset bits (64 B line)
-   parameter WRITABLE = 1
+   parameter WRITABLE = 1,
+   parameter WRTHRU   = 0          // 1 = write-through (write-allocate, never dirty -> L2 always
+                                   //     current, so PTW reads flat memory coherently); 0 = write-back
 ) (
    input  wire             clk,
    input  wire             reset,
@@ -97,14 +99,15 @@ module cache #(
    reg [WRB-1:0]  r_wmask;
    reg [OFFB-1:0] r_off;
    reg            r_span;
-   wire [PAW-1:0] line1 = {r_addr[PAW-1:OFFB], {OFFB{1'b0}}} + (1<<OFFB);
+   wire [PAW-1:0] line0 = {r_addr[PAW-1:OFFB], {OFFB{1'b0}}};
+   wire [PAW-1:0] line1 = line0 + (1<<OFFB);
 
    reg [LINEB-1:0] lw0, lw1;
    reg [IDXB-1:0]  wi0, wi1;
    reg             ww0, ww1;
 
    localparam S_IDLE=0, S_LOOK=1, S_CHECK=2, S_WB=3, S_WBW=4, S_FILL=5, S_FILLW=6,
-              S_FIN=7, S_FLUSH=8, S_FLUSHW=9;
+              S_FIN=7, S_FLUSH=8, S_FLUSHW=9, S_WT0=10, S_WT0W=11, S_WT1=12, S_WT1W=13;
    reg [3:0]      st;
    reg            phase;
    reg [PAW-1:0]  cur_line;
@@ -211,14 +214,24 @@ module cache #(
                     if (pos < WORDB) n0[pos*8 +: 8]          = r_wdata[b*8 +: 8];
                     else             n1[(pos-WORDB)*8 +: 8]  = r_wdata[b*8 +: 8];
                  end
-                 datm[flat(ww0?1:0,wi0)] <= n0; dirm[flat(ww0?1:0,wi0)] <= 1'b1;
-                 if (r_span) begin
-                    datm[flat(ww1?1:0,wi1)] <= n1; dirm[flat(ww1?1:0,wi1)] <= 1'b1;
+                 datm[flat(ww0?1:0,wi0)] <= n0;
+                 if (r_span) datm[flat(ww1?1:0,wi1)] <= n1;
+                 if (WRTHRU!=0) begin
+                    lw0 <= n0; lw1 <= n1;            // carry the clean line(s) to the L2 write-through
+                    st <= S_WT0;
+                 end else begin
+                    dirm[flat(ww0?1:0,wi0)] <= 1'b1;
+                    if (r_span) dirm[flat(ww1?1:0,wi1)] <= 1'b1;
+                    wr_ack <= 1; st <= S_IDLE;
                  end
-                 wr_ack <= 1;
-                 st <= S_IDLE;
               end
            end
+           // write-through: push the just-written clean line(s) to L2 (full-line writes;
+           // line stays clean so eviction never writes back, and L2 stays current for PTW).
+           S_WT0:  begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=lw0; st<=S_WT0W; end
+           S_WT0W: if (l2_ack) begin if (r_span) st<=S_WT1; else begin wr_ack<=1; st<=S_IDLE; end end
+           S_WT1:  begin l2_req<=1; l2_we<=1; l2_addr<=line1[PAW-1:OFFB]; l2_wdata<=lw1; st<=S_WT1W; end
+           S_WT1W: if (l2_ack) begin wr_ack<=1; st<=S_IDLE; end
            S_FLUSH: begin
               if (fscan == NW) begin
                  inv_busy <= 0; st <= S_IDLE;

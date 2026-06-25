@@ -63,7 +63,7 @@ module tb;
       .ldp_addr(), .ldp_read(), .ldp_rdata(64'd0), .ldp_rvalid(1'b0),
       .stp_addr(), .stp_read(), .stp_rdata(64'd0), .stp_rvalid(1'b0),
       .dfault_v(), .dfault_seq(), .dfault_ckpt(), .dfault_cause(),
-      .mem_raddr(mem_raddr), .mem_rdata(mem_rdata), .mem_rvalid(1'b1),
+      .mem_raddr(mem_raddr), .mem_rdata(mem_rdata), .mem_rvalid(1'b1), .mem_wready(1'b1),
       .mem_wen(mem_wen), .mem_waddr(mem_waddr), .mem_wdata(mem_wdata), .mem_wmask(mem_wmask),
       .wb_busy({IW{1'b0}}),
       .ld_wb_v(ld_wb_v), .ld_wb_pdst(ld_wb_pdst), .ld_wb_owner(ld_wb_owner),

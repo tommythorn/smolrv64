@@ -159,7 +159,7 @@ module lsu_fmax (input wire clk, output reg probe_out = 1'b0);
       .dfault_v(dfault_v), .dfault_seq(dfault_seq), .dfault_ckpt(dfault_ckpt),
       .dfault_cause(dfault_cause), .dfault_tval(dfault_tval),
       .st_done(st_done), .st_done_ckpt(st_done_ckpt),
-      .mem_raddr(mem_raddr), .mem_ren(mem_ren), .mem_rdata(mem_rdata), .mem_rvalid(mem_rvalid),
+      .mem_raddr(mem_raddr), .mem_ren(mem_ren), .mem_rdata(mem_rdata), .mem_rvalid(mem_rvalid), .mem_wready(1'b1),
       .mem_wen(mem_wen), .mem_waddr(mem_waddr), .mem_wdata(mem_wdata), .mem_wmask(mem_wmask),
       .wb_busy(wb_busy),
       .ld_wb_v(ld_wb_v), .ld_wb_pdst(ld_wb_pdst), .ld_wb_owner(ld_wb_owner),

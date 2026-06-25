@@ -45,7 +45,7 @@ module tb;
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
-      .dmem_wmask(dmem_wmask),
+      .dmem_wmask(dmem_wmask), .dmem_wready(dmem_wready),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .ldptw_addr(ldptw_addr), .ldptw_read(ldptw_read),
@@ -73,7 +73,59 @@ module tb;
          imem_data[m*16+8 +: 8] = mem[(imem_addr-BASE)+2*m+1];
       end
    end
-   always @(dmem_raddr or wtick) dmem_rdata = rd64(dmem_raddr);
+   // ---- optional real D$ (cache.v, write-through) between LSU dmem port and `mem` (L2) ----
+   // +cache=1 routes loads/stores through the unified PIPT cache; mem stays current via
+   // write-through so the PTW/imem (which read mem directly) remain coherent.
+   reg          cache_en;  initial cache_en = 1'b0;
+   reg          c_rd_pend;                                  // hold rd_req from the ren pulse
+   // hold rd_req from the dmem_ren pulse until rd_valid; mask OFF on the valid cycle so the
+   // cache doesn't re-accept the same (still-held) address and emit a spurious 2nd rd_valid.
+   wire         c_rd_req = cache_en & (dmem_ren | c_rd_pend) & ~c_rd_valid;
+   wire [63:0]  c_rd_data;  wire c_rd_valid, c_wr_ack;
+   wire         c_l2_req, c_l2_we;  wire [57:0] c_l2_addr;  // PAW=64 -> line addr [63:6]
+   wire [511:0] c_l2_wdata;  reg [511:0] c_l2_rdata;  reg c_l2_ack;
+   always @(posedge clk) if (reset) c_rd_pend<=1'b0;
+      else if (dmem_ren) c_rd_pend<=1'b1; else if (c_rd_valid) c_rd_pend<=1'b0;
+   // STICKY rd result: the LSU MERGE consumes mem_rvalid only when its WB lane is free, and
+   // it expects rvalid/rdata to STAY valid until then (the +memlat model holds it high until
+   // the next ren). The cache pulses rd_valid for one cycle, so latch it and hold until the
+   // next dmem_ren clears it -- otherwise a load whose WB lane is busy that cycle wedges.
+   reg          c_rdv_st;  reg [63:0] c_rdd_st;
+   always @(posedge clk) if (reset) c_rdv_st<=1'b0;
+      else if (dmem_ren) c_rdv_st<=1'b0;
+      else if (c_rd_valid) begin c_rdv_st<=1'b1; c_rdd_st<=c_rd_data; end
+   // the held result is valid only while NO newer read is issuing (dmem_ren) or in flight
+   // (c_rd_pend) -- else the previous load's sticky would leak into the next load's MERGE.
+   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
+
+   cache #(.PAW(64), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
+     (.clk(clk), .reset(reset),
+      .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
+      .wr_req(cache_en & dmem_wen & ~c_wr_ack), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
+      .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .inv_req(1'b0), .inv_busy(),
+      .l2_req(c_l2_req), .l2_we(c_l2_we), .l2_addr(c_l2_addr), .l2_wdata(c_l2_wdata),
+      .l2_rdata(c_l2_rdata), .l2_ack(c_l2_ack));
+
+   // cache L2 responder: line read/write of `mem` (based at BASE), 2-cycle latency
+   reg c_l2busy; reg [3:0] c_l2cnt; reg c_l2we_q; reg [57:0] c_l2ad_q; reg [511:0] c_l2wd_q;
+   integer kk; reg [63:0] c_l2base;
+   always @(posedge clk) begin
+      c_l2_ack <= 1'b0;
+      if (reset) c_l2busy <= 1'b0;
+      else if (!c_l2busy && c_l2_req) begin
+         c_l2busy<=1'b1; c_l2cnt<=4'd2; c_l2we_q<=c_l2_we; c_l2ad_q<=c_l2_addr; c_l2wd_q<=c_l2_wdata;
+      end else if (c_l2busy) begin
+         if (c_l2cnt==0) begin
+            c_l2base = ({{6{1'b0}},c_l2ad_q} << 6) - BASE;
+            if (c_l2we_q) for (kk=0;kk<64;kk=kk+1) mem[c_l2base+kk] <= c_l2wd_q[kk*8 +: 8];
+            else          for (kk=0;kk<64;kk=kk+1) c_l2_rdata[kk*8 +: 8] <= mem[c_l2base+kk];
+            c_l2_ack<=1'b1; c_l2busy<=1'b0;
+         end else c_l2cnt <= c_l2cnt-1;
+      end
+   end
+
+   always @(dmem_raddr or wtick or cache_en or c_rd_data or c_rdv_st or c_rdd_st)
+      dmem_rdata = cache_en ? (c_st_ok ? c_rdd_st : c_rd_data) : rd64(dmem_raddr);
 
    // ---- variable load-read latency (proves the LSU miss-stall path) ----
    // +memlat=0 (default): dmem_rvalid==1 always -> combinational memory, bit-exact 1-cycle
@@ -83,8 +135,10 @@ module tb;
    reg  [15:0] memlat;
    reg         lat_busy; reg [15:0] lat_cnt;
    initial begin memlat = 16'd0; lat_busy = 1'b0; lat_cnt = 16'd0; end
-   wire dmem_rvalid = (memlat == 16'd0) ? 1'b1
+   wire dmem_rvalid = cache_en ? (c_rd_valid | c_st_ok)
+                    : (memlat == 16'd0) ? 1'b1
                     : (dmem_ren ? 1'b0 : (lat_busy && lat_cnt == 16'd0));
+   wire dmem_wready = cache_en ? c_wr_ack : 1'b1;
    always @(posedge clk) begin
       if (reset)            begin lat_busy <= 1'b0; lat_cnt <= 16'd0; end
       else if (dmem_ren)    begin lat_busy <= 1'b1; lat_cnt <= (memlat==16'd0)?16'd0:(memlat-16'd1); end
@@ -115,6 +169,7 @@ module tb;
       if ($value$plusargs("tohost=%h", tohost)) ;
       if ($value$plusargs("cycles=%d", ncyc)) ;
       if ($value$plusargs("memlat=%d", memlat)) ;
+      begin : cache_arg integer ce; if ($value$plusargs("cache=%d", ce)) cache_en = (ce!=0); end
 
       reset=1; @(negedge clk); @(negedge clk); reset=0;
 
@@ -132,12 +187,14 @@ module tb;
       $finish;
    end
 
-   // apply stores to memory (after the monitor sees them)
-   always @(posedge clk) if (!reset && dmem_wen) begin
+   // apply stores to memory (direct path only; with the cache, write-through updates `mem`)
+   always @(posedge clk) if (!reset && !cache_en && dmem_wen) begin
       for (b2=0;b2<8;b2=b2+1)
          if (dmem_wmask[b2]) mem[(dmem_waddr-BASE)+b2] <= dmem_wdata[b2*8 +: 8];
       wtick <= ~wtick;
    end
+   // with the cache, the L2 write-through updates `mem`; pulse wtick so imem refetch sees it
+   always @(posedge clk) if (!reset && cache_en && c_l2busy && c_l2cnt==0 && c_l2we_q) wtick <= ~wtick;
 endmodule
 
 `default_nettype wire
