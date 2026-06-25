@@ -531,6 +531,10 @@ module lsu
          endcase
          // an intervening store to the reserved word breaks the reservation
          if (dr_v && rsv_v && (sb_addr[dr_sel][PAW-1:3] == rsv_w)) rsv_v <= 1'b0;
+         // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
+         // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic. Driven here
+         // (priority-last in the FSM's own block) so ast/rsv_v have a SINGLE driver.
+         if (rollback && ast != A_IDLE && older(rollback_seq, a_seq)) begin ast <= A_IDLE; rsv_v <= 1'b0; end
       end
    end
 
@@ -715,9 +719,8 @@ module lsu
                if (sb_v[i] && older(rollback_seq, sb_seq[i])) sb_v[i] <= 1'b0;
             for (i = 0; i < LQDEPTH; i = i + 1)
                if (lq_v[i] && older(rollback_seq, lq_seq[i])) lq_v[i] <= 1'b0;
-            // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
-            // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic.
-            if (ast != A_IDLE && older(rollback_seq, a_seq)) begin ast <= A_IDLE; rsv_v <= 1'b0; end
+            // (the in-flight-AMO squash of ast/rsv_v lives in the AMO FSM block above, so
+            //  those regs have a single driver -- avoids a multi-driven net.)
          end
       end
    end
