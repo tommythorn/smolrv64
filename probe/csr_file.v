@@ -29,6 +29,11 @@ module csr_file
     output wire [1:0]  o_dpriv,       // effective data-access priv (honors MPRV/MPP)
     output wire        o_sum,         // mstatus.SUM
     output wire        o_mxr,         // mstatus.MXR
+    output wire [2:0]  o_frm,         // fcsr.frm -> FP units for dynamic rounding
+    // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
+    // (pre-reduced across shards in backend_top at FP completion).
+    input  wire        fp_fflags_we,
+    input  wire [4:0]  fp_fflags,
     output wire        o_tlb_flush,   // 1-cycle: sfence.vma or satp write -> flush TLBs
     // ---- external trap injection (page faults from the iMMU/LSU; precise) ----
     // Fired by backend_top once the fault is the oldest (fetch: pipeline empty; data:
@@ -64,7 +69,8 @@ module csr_file
                      SSTATUS=12'h100, SIE=12'h104, STVEC=12'h105, SCOUNTEREN=12'h106,
                      SSCRATCH=12'h140, SEPC=12'h141, SCAUSE=12'h142, STVAL=12'h143,
                      SIP=12'h144, SATP=12'h180,
-                     MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13;
+                     MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13,
+                     FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
@@ -79,6 +85,10 @@ module csr_file
    localparam [63:0] MISA_VAL = (64'd2<<62) | (64'd1<<0)  /*A*/ | (64'd1<<2)  /*C*/
                               | (64'd1<<8) /*I*/ | (64'd1<<12) /*M*/
                               | (64'd1<<18) /*S*/ | (64'd1<<20) /*U*/;
+   // NOTE: F/D (bits 5,3) are deliberately NOT advertised yet. The FP datapath works, but
+   // advertising F enables the rv64mi-p-csr "FP store has no effect when mstatus.FS==Off"
+   // check, which needs execute-time FS-disabled illegal-instruction trapping (also required
+   // for Linux lazy FP context switch). Advertise F/D together with that trap. [[fpu-fs-trap]]
 
    // mstatus writable bits (M-mode write); SXL/UXL (35:32) are hardwired to 2.
    localparam [63:0] MSTATUS_WMASK = 64'h0000_0000_007E_79AA;
@@ -95,6 +105,8 @@ module csr_file
    reg [63:0] mstatus, mtvec, mepc, mcause, mtval, mscratch, mie, mip,
               medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus;
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
+   reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
+   assign o_frm = fcsr[7:5];
 
    // mstatus as seen on a read: force SXL=UXL=2, and derive SD (bit 63) = any of
    // FS/XS/VS == Dirty (read-only summary; not a stored bit). The riscv-tests v-handler
@@ -136,6 +148,9 @@ module csr_file
         PMPCFG0:    rdata = pmpcfg0;
         PMPADDR0:   rdata = pmpaddr0;
         MNSTATUS:   rdata = mnstatus;
+        FFLAGS:     rdata = {59'd0, fcsr[4:0]};
+        FRM:        rdata = {61'd0, fcsr[7:5]};
+        FCSR:       rdata = {56'd0, fcsr};
         default:    rdata = 64'd0;   // mhartid/mvendorid/marchid/mimpid/unknown
       endcase
    end
@@ -270,6 +285,7 @@ module csr_file
          mie<=0; mip<=0; medeleg<=0; mideleg<=0; mcounteren<=0; satp<=0;
          pmpcfg0<=0; pmpaddr0<=0; mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
+         fcsr<=0;
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
          if (trap_to_s) begin
@@ -314,6 +330,9 @@ module csr_file
               PMPCFG0:    pmpcfg0 <= newv;
               PMPADDR0:   pmpaddr0<= newv;
               MNSTATUS:   mnstatus<= newv;
+              FFLAGS:     fcsr[4:0] <= newv[4:0];
+              FRM:        fcsr[7:5] <= newv[2:0];
+              FCSR:       fcsr      <= newv[7:0];
               default:    ;
             endcase
          end else if (is_mret) begin
@@ -325,6 +344,13 @@ module csr_file
             mstatus[SIE_B]  <= mstatus[SPIE_B]; mstatus[SPIE_B] <= 1'b1;
             mstatus[SPP_B]  <= 1'b0;
          end
+      end
+      // FP exception flags accumulate (OoO, off the trap/csr chain). Last write to
+      // fcsr[4:0] this cycle, so it ORs on top of a coincident fcsr CSR write. FP ops
+      // also dirty mstatus.FS (-> SD); harmless when FP is idle.
+      if (!reset && fp_fflags_we) begin
+         fcsr[4:0]      <= fcsr[4:0] | fp_fflags;
+         mstatus[14:13] <= 2'b11;
       end
    end
 endmodule

@@ -14,7 +14,7 @@ for tb in tb_*.v; do
    [ "$tb" = tb_soc.v ]   && continue   # +hex-driven SoC harness (run-soc-test.sh)
    [ "$tb" = tb_soctop.v ] && continue  # +hex-driven soc_top harness (verilated)
    total=$((total+1))
-   if ! timeout 90 iverilog -g2012 -I. -I../src -s tb -o /tmp/tb.vvp $srcs "$tb" ../src/alu.v >/tmp/tb_cc.log 2>&1; then
+   if ! timeout 90 iverilog -g2012 -I. -I../src -s tb -o /tmp/tb.vvp $srcs "$tb" ../src/alu.v fp_unit_stub.sv >/tmp/tb_cc.log 2>&1; then
       printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
    fi
    out=$(timeout 60 vvp /tmp/tb.vvp 2>&1)

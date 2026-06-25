@@ -167,7 +167,8 @@ module decode_exec
         end
         5'b10100: is_fp=1;                                              // OP-FP (deferred)
         5'b00001, 5'b01001: begin is_fp=1; is_mem=1; is_store=opc[3];   // F/D LOAD/STORE-FP
-                                  op2_imm=1; alu_op=`ALU_ADD; end
+                                  op2_imm=1; alu_op=`ALU_ADD;
+                                  mem_size=f3[1:0]; mem_signed=1'b0; end // FLW=W FLD=D; no sign-ext
         5'b10000,5'b10001,5'b10010,5'b10011: is_fp=1;                   // FMADD/FMSUB/FNMSUB/FNMADD
         default: illegal=1;
       endcase

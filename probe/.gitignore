@@ -4,3 +4,4 @@ clockInfo.txt
 probe_timing.rpt
 *.jou
 *.pb
+obj_dir_fp/

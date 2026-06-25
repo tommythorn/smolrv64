@@ -29,6 +29,7 @@ module fp_unit #(parameter TAGW = 24)
     output wire [63:0]      res_data,
     output wire [4:0]       res_fflags,
     output wire [TAGW-1:0]  res_tag,
+    input  wire             flush,          // abort in-flight op(s) (squash)
     output wire             busy);
 
    logic [2:0][63:0] ops;
@@ -45,7 +46,7 @@ module fp_unit #(parameter TAGW = 24)
       .tag_in(iss_tag),
       .result(res_data), .fflags(res_fflags), .tag_out(res_tag),
       .out_valid(res_valid), .out_ready(res_ready),
-      .flush(1'b0), .busy(busy));
+      .flush(flush), .busy(busy));
 endmodule
 
 `default_nettype wire

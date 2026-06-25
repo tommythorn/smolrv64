@@ -18,11 +18,15 @@ classes=("$@")
 # ---- build the verilated binary once ----
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
 echo "building obj_dir_vl/tb_vl ..."
-verilator --binary --timing -j 0 -Wall \
+# The core embeds the CVFPU (smolrv64_cvfpu.sv via fp_unit.sv) for the F/D extensions, so
+# the FP source list + SystemVerilog + the cvfpu-specific -Wno flags are always needed.
+verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
+   -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
    -I. -I../src --top-module tb --Mdir obj_dir_vl -o tb_vl \
-   $srcs tb_vl.v ../src/alu.v > /tmp/vlbuild.log 2>&1
+   $srcs tb_vl.v ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv \
+   > /tmp/vlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/vlbuild.log; exit 1; fi
 BIN=$(pwd)/obj_dir_vl/tb_vl
 

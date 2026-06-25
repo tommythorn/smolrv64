@@ -34,6 +34,8 @@ module exec_bundle
     output wire [SHARDS-1:0]       exec_busy,
     output wire [SHARDS-1:0]       div_done,
     output wire [SHARDS*CBITS-1:0] div_done_ckpt,
+    output wire [SHARDS-1:0]       fp_done,
+    output wire [SHARDS*CBITS-1:0] fp_done_ckpt,
     // LSU load writeback muxed onto its owner lane
     input  wire                    lsu_wb_v,
     input  wire [SBITS-1:0]        lsu_wb_owner,
@@ -120,6 +122,17 @@ module exec_bundle
    wire [SHARDS*3-1:0]  csr_req_func;
    wire [SHARDS*12-1:0] csr_req_addr, csr_rd_addr;
    wire [SHARDS*64-1:0] csr_req_src, csr_req_pc;
+   wire [SHARDS*5-1:0]  fp_fflags_sh;        // per-shard FP flags (valid with fp_flags_we_sh)
+   wire [SHARDS-1:0]    fp_flags_we_sh;
+   wire [2:0]           csr_frm;             // fcsr.frm (from u_csr) -> shards
+   // OR-reduce the flags of every shard raising FP flags this cycle into one accumulate pulse
+   reg  [4:0] fp_fflags_or; integer fk;
+   always @* begin
+      fp_fflags_or = 5'd0;
+      for (fk = 0; fk < SHARDS; fk = fk + 1)
+         if (fp_flags_we_sh[fk]) fp_fflags_or = fp_fflags_or | fp_fflags_sh[fk*5 +: 5];
+   end
+   wire fp_fflags_we = |fp_flags_we_sh;
 
    genvar i;
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
@@ -131,6 +144,7 @@ module exec_bundle
          .iss_pdst(iss_pdst[i*PBITS +: PBITS]), .iss_pdst_v(iss_pdst_v[i]),
          .iss_ps1(iss_ps1[i*PBITS +: PBITS]), .iss_ps2(iss_ps2[i*PBITS +: PBITS]),
          .iss_ckpt(iss_ckpt[i*CBITS +: CBITS]), .iss_mem_idx(iss_mem_idx[i*MIDXW +: MIDXW]),
+         .iss_insn(p[`PAY_INSN]),
          .squash(squash), .squash_seq(squash_seq),
          .alu_op(p[`PAY_ALUOP]), .alu_w(p[`PAY_W]), .alu_uw(p[`PAY_UW]),
          .op1_sel(p[`PAY_O1S]), .op2_imm(p[`PAY_O2I]), .res_link(p[`PAY_LINK]),
@@ -161,7 +175,10 @@ module exec_bundle
          .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
          .agu_addr(agu_addr[i*64 +: 64]), .st_data(st_data[i*64 +: 64]),
          .exec_busy(exec_busy[i]), .div_done(div_done[i]),
-         .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]), .wb_next(wbn[i]));
+         .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]),
+         .fp_done(fp_done[i]), .fp_done_ckpt(fp_done_ckpt[i*CBITS +: CBITS]),
+         .fp_flags_we(fp_flags_we_sh[i]), .fp_flags(fp_fflags_sh[i*5 +: 5]),
+         .i_frm(csr_frm), .wb_next(wbn[i]));
    end endgenerate
 
    // pick the single active system op (gated to oldest -> at most one csr_req_v)
@@ -184,6 +201,7 @@ module exec_bundle
       .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
+      .o_frm(csr_frm), .fp_fflags_we(fp_fflags_we), .fp_fflags(fp_fflags_or),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip),

@@ -282,8 +282,9 @@ module backend_top
    wire [IW-1:0]       wkv;          // effective writeback = wake source (ALU ∪ load)
    wire [IW*PBITS-1:0] wkp;
    // per-shard iterative-divide status (exec_bundle -> scheduler stall + commit count)
-   wire [IW-1:0]       eb_exec_busy, eb_div_done;
-   wire [IW*CBITS-1:0] eb_div_done_ckpt;
+   wire [IW-1:0]       eb_exec_busy, eb_div_done, eb_fp_done;
+   wire [IW*CBITS-1:0] eb_div_done_ckpt, eb_fp_done_ckpt;
+   wire [IW-1:0]       q_iss_is_fp;
    // wake bus into the scheduler (select-time + completion-time) + per-shard issue stall
    wire [2*IW-1:0]       sched_wake_v;
    wire [2*IW*PBITS-1:0] sched_wake_pr;
@@ -309,7 +310,7 @@ module backend_top
       .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
-   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul, iss_is_amo;
+   wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul, iss_is_amo, iss_is_fp;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : icl
       assign iss_mem[gi]     = iss_pay[gi*`PAYW + `PAY_MEM];
       assign iss_store[gi]   = iss_pay[gi*`PAYW + `PAY_STORE];
@@ -319,6 +320,13 @@ module backend_top
       assign iss_is_mul[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_MUL];
       // atomics complete at the LSU (variable latency) -> also excluded from select-wake.
       assign iss_is_amo[gi]  = iss_valid[gi] & iss_pay[gi*`PAYW + `PAY_AMO];
+      // FPU-arith (use_fpu) results land at the CVFPU pipe (deferred, like divides) -> their
+      // dest must NOT select-wake (a consumer would read the stale RF before fp_done).
+      wire iss_fpu;
+      decode_fp u_iifp (.insn(iss_pay[gi*`PAYW + 165 +: 32]), .fp_valid(), .use_fpu(iss_fpu),
+         .fp_class(), .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(), .rnd(),
+         .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
+      assign iss_is_fp[gi]   = iss_valid[gi] & iss_fpu;
    end endgenerate
 
    // ================= registered issue stage (select | execute split) =================
@@ -379,6 +387,13 @@ module backend_top
       // Illegal ops defer too -- they hold their checkpoint for the precise trap.
       assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi] | q_iss_is_ill[gi]
                                  | (q_iss_is_store[gi] & data_xlate);
+      // FPU-arith ops complete at the FP unit (deferred, like divides) -> excluded from the
+      // issue count and decremented at fp_done.
+      wire qi_fpu;
+      decode_fp u_qifp (.insn(q_iss_pay[gi*`PAYW + 165 +: 32]), .fp_valid(), .use_fpu(qi_fpu),
+         .fp_class(), .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(), .rnd(),
+         .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
+      assign q_iss_is_fp[gi] = q_iss_valid[gi] & qi_fpu;
    end endgenerate
 
    // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
@@ -387,7 +402,8 @@ module backend_top
    wire [IW*PBITS-1:0] sel_wake_pr;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : selw
       assign sel_wake_v[gi]             = iss_valid[gi] & iss_pdst_v[gi]
-                                          & ~iss_mem[gi] & ~iss_is_mul[gi] & ~iss_is_amo[gi];
+                                          & ~iss_mem[gi] & ~iss_is_mul[gi] & ~iss_is_amo[gi]
+                                          & ~iss_is_fp[gi];
       assign sel_wake_pr[gi*PBITS +: PBITS] = iss_pdst[gi*PBITS +: PBITS];
    end endgenerate
    assign sched_wake_v  = {sel_wake_v, wkv};        // [hi]=select, [lo]=completion
@@ -409,7 +425,8 @@ module backend_top
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul), .iss_ckpt(q_iss_ckpt),
+      .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul),
+      .iss_is_fp(q_iss_is_fp), .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt), .iss_ckpt(q_iss_ckpt),
       .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
@@ -446,6 +463,7 @@ module backend_top
       .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),
       .squash(roll_v), .squash_seq(roll_seq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
+      .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),

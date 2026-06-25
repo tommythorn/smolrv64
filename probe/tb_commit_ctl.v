@@ -21,9 +21,12 @@ module tb;
 
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) dut
      (.clk(clk), .reset(reset), .cur(cur_r), .disp_fire(disp_fire), .disp_count(disp_count),
-      .iss_valid(iss_valid), .iss_is_load({IW{1'b0}}), .iss_is_div({IW{1'b0}}), .iss_ckpt(iss_ckpt),
+      .iss_valid(iss_valid), .iss_is_load({IW{1'b0}}), .iss_is_div({IW{1'b0}}),
+      .iss_is_fp({IW{1'b0}}), .iss_ckpt(iss_ckpt),
       .ld_done(1'b0), .ld_done_ckpt({CBITS{1'b0}}),
+      .st_done(1'b0), .st_done_ckpt({CBITS{1'b0}}),
       .div_done({IW{1'b0}}), .div_done_ckpt({IW*CBITS{1'b0}}),
+      .fp_done({IW{1'b0}}), .fp_done_ckpt({IW*CBITS{1'b0}}),
       .redirect(redirect), .redirect_ckpt(redirect_ckpt),
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx), .full(full));
