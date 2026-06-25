@@ -62,6 +62,7 @@ module decode_rename
    wire [IW-1:0]        d_valid, d_rd_v, d_rs1_v, d_rs2_v, d_rs3_v;
    wire [IW*SEQW-1:0]   d_seq;
    wire [IW*ABITS-1:0]  d_rd, d_rs1, d_rs2, d_rs3;
+   wire [IW*32-1:0]     d_expanded;
    wire [IW-1:0]        d_s1_is_slot, d_s2_is_slot, d_s3_is_slot, d_map_writer, d_d_is_slot;
    wire [IW*SBITS-1:0]  d_s1_slot, d_s2_slot, d_s3_slot, d_d_slot;
    wire [IW-1:0]        d_is_rvc, d_alu_w, d_alu_uw, d_op2_imm, d_res_link, d_is_mem;
@@ -78,7 +79,7 @@ module decode_rename
 
    decode_stage #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .SBITS(SBITS)) dec
      (.inst(inst), .in_valid(in_valid), .seq_in(seq_in),
-      .valid(d_valid), .seq(d_seq), .is_rvc(d_is_rvc), .expanded(),
+      .valid(d_valid), .seq(d_seq), .is_rvc(d_is_rvc), .expanded(d_expanded),
       .rd(d_rd), .rd_v(d_rd_v), .rs1(d_rs1), .rs1_v(d_rs1_v),
       .rs2(d_rs2), .rs2_v(d_rs2_v), .rs3(d_rs3), .rs3_v(d_rs3_v), .imm(d_imm), .has_imm(), .legal(),
       .s1_is_slot(d_s1_is_slot), .s1_slot(d_s1_slot),
@@ -96,6 +97,7 @@ module decode_rename
    reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_s3_is_slot, q_map_writer, q_d_is_slot;
    reg [IW*SEQW-1:0]   q_seq;
    reg [IW*ABITS-1:0]  q_rd, q_rs1, q_rs2, q_rs3;
+   reg [IW*32-1:0]     q_insn;
    reg [IW*SBITS-1:0]  q_s1_slot, q_s2_slot, q_s3_slot, q_d_slot;
    // payload registered alongside the rename contract
    reg [IW-1:0]        q_is_rvc, q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_is_mem;
@@ -136,6 +138,7 @@ module decode_rename
          q_seq        <= d_seq;
          q_rd         <= d_rd;
          q_rs1        <= d_rs1;      q_rs2        <= d_rs2;     q_rs3 <= d_rs3;
+         q_insn       <= d_expanded;
          q_s1_is_slot <= d_s1_is_slot; q_s1_slot  <= d_s1_slot;
          q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
          q_s3_is_slot <= d_s3_is_slot; q_s3_slot  <= d_s3_slot;
@@ -177,7 +180,8 @@ module decode_rename
    genvar p;
    generate for (p = 0; p < IW; p = p + 1) begin : pay
       assign r_pay[p*`PAYW +: `PAYW] =
-        { q_is_fencei[p], ill_ok[p],
+        { q_insn[p*32 +: 32],
+          q_is_fencei[p], ill_ok[p],
           q_amo_func[p*5 +: 5], q_is_amo[p],
           q_is_serialize[p], q_csr_func[p*3 +: 3], q_is_csr[p],
           q_is_mul[p],

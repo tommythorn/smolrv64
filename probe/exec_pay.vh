@@ -13,7 +13,11 @@
 //   [164] is_fencei (FENCE.I: serialize + redirect to pc+4 so the refetch sees prior stores)
 // For SYSTEM ops imm carries {.., zimm=imm[16:12], csr_addr=imm[11:0]} (the
 // instruction's rs1 field + insn[31:20]); decode_operands packs it there.
-`define PAYW        165
+// F/D: carry the RVC-expanded 32-bit instruction so execute can re-run decode_fp for
+// the CVFPU control + operand routing (functional-first; cheaper than threading the 11
+// decoded fields -- optimise to decoded fields later if IQ area matters).
+`define PAYW        197
+`define PAY_INSN    196:165
 `define PAY_ALUOP   5:0
 `define PAY_W       6
 `define PAY_UW      7
