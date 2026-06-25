@@ -1,0 +1,179 @@
+`timescale 1ns/1ps
+`default_nettype none
+
+// Unit TB for cache.v (unified skewed-2-way PIPT L1). Drives the D$ instance
+// through hit / miss-fill / write / dirty-eviction-writeback / line-crossing /
+// flush, checking every read against a golden byte memory `refm`, and checking
+// writeback correctness by comparing the behavioral L2 (`l2mem`) to `refm` after a
+// flush. Then a brief I$-mode (WRITABLE=0, 128-bit read) check.
+module tb;
+   localparam PAW = 34, LINEB = 512, OFFB = 6, L2LAT = 2;
+   localparam MEM = 'h30000;                       // test memory (covers distinct-tag set probes)
+
+   reg clk=0; always #5 clk=~clk;
+   reg reset;
+
+   reg  [7:0] l2mem [0:MEM-1];                     // backing store (== refm after flush)
+   reg  [7:0] refm   [0:MEM-1];                     // golden architectural memory
+   integer k, errs=0;
+
+   // ---------------- D$ instance ----------------
+   reg          d_rd_req, d_wr_req, d_inv_req;
+   reg  [PAW-1:0] d_rd_addr, d_wr_addr;
+   reg  [63:0]  d_wr_data;  reg [7:0] d_wr_mask;
+   wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy;
+   wire         d_l2_req, d_l2_we;  wire [PAW-OFFB-1:0] d_l2_addr;
+   wire [LINEB-1:0] d_l2_wdata;  reg [LINEB-1:0] d_l2_rdata;  reg d_l2_ack;
+
+   cache #(.PAW(PAW), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1)) u_d
+     (.clk(clk), .reset(reset),
+      .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
+      .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
+      .wr_ack(d_wr_ack), .inv_req(d_inv_req), .inv_busy(d_inv_busy),
+      .l2_req(d_l2_req), .l2_we(d_l2_we), .l2_addr(d_l2_addr), .l2_wdata(d_l2_wdata),
+      .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
+
+   // D$ behavioral L2 (reads + writes l2mem, L2LAT cycles)
+   reg dbusy; reg [3:0] dcnt; reg dwe_q; reg [PAW-OFFB-1:0] dad_q; reg [LINEB-1:0] dwd_q;
+   always @(posedge clk) begin
+      d_l2_ack <= 0;
+      if (reset) dbusy <= 0;
+      else if (!dbusy && d_l2_req) begin
+         dbusy<=1; dcnt<=L2LAT; dwe_q<=d_l2_we; dad_q<=d_l2_addr; dwd_q<=d_l2_wdata;
+      end else if (dbusy) begin
+         if (dcnt==0) begin
+            if (dwe_q) for (k=0;k<64;k=k+1) l2mem[(dad_q<<OFFB)+k] <= dwd_q[k*8 +: 8];
+            else       for (k=0;k<64;k=k+1) d_l2_rdata[k*8 +: 8] <= l2mem[(dad_q<<OFFB)+k];
+            d_l2_ack <= 1; dbusy <= 0;
+         end else dcnt <= dcnt-1;
+      end
+   end
+
+   // ---------------- I$ instance (read-only, 128-bit) ----------------
+   reg          i_rd_req, i_inv_req;  reg [PAW-1:0] i_rd_addr;
+   wire [127:0] i_rd_data;  wire i_rd_valid, i_inv_busy;
+   wire         i_l2_req, i_l2_we;  wire [PAW-OFFB-1:0] i_l2_addr;
+   wire [LINEB-1:0] i_l2_wdata;  reg [LINEB-1:0] i_l2_rdata;  reg i_l2_ack;
+   cache #(.PAW(PAW), .SIZE_KB(64), .RDW(128), .WDW(64), .WRITABLE(0)) u_i
+     (.clk(clk), .reset(reset),
+      .rd_req(i_rd_req), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
+      .wr_req(1'b0), .wr_addr(34'd0), .wr_data(64'd0), .wr_mask(8'd0),
+      .wr_ack(), .inv_req(i_inv_req), .inv_busy(i_inv_busy),
+      .l2_req(i_l2_req), .l2_we(i_l2_we), .l2_addr(i_l2_addr), .l2_wdata(i_l2_wdata),
+      .l2_rdata(i_l2_rdata), .l2_ack(i_l2_ack));
+   reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;
+   always @(posedge clk) begin
+      i_l2_ack <= 0;
+      if (reset) ibusy <= 0;
+      else if (!ibusy && i_l2_req) begin ibusy<=1; icnt<=L2LAT; iad_q<=i_l2_addr; end
+      else if (ibusy) begin
+         if (icnt==0) begin
+            for (k=0;k<64;k=k+1) i_l2_rdata[k*8 +: 8] <= l2mem[(iad_q<<OFFB)+k];
+            i_l2_ack <= 1; ibusy <= 0;
+         end else icnt <= icnt-1;
+      end
+   end
+
+   // ---------------- helpers ----------------
+   task dread; input [PAW-1:0] a; input integer nb; // read nb bytes, check vs refm
+      integer j; reg [63:0] got, exp;
+      begin
+         @(negedge clk); d_rd_req=1; d_rd_addr=a;
+         @(posedge clk); @(negedge clk); d_rd_req=0;
+         while (!d_rd_valid) @(posedge clk);
+         got = d_rd_data;
+         exp = 0; for (j=0;j<nb;j=j+1) exp[j*8 +: 8] = refm[a+j];
+         if ((got & ((64'd1<<(nb*8))-1)) !== exp) begin
+            $display("FAIL read @%h nb=%0d got=%h exp=%h", a, nb, got, exp); errs=errs+1;
+         end else $display("  ok  read @%h nb=%0d = %h", a, nb, exp);
+         @(negedge clk);
+      end
+   endtask
+
+   task dwrite; input [PAW-1:0] a; input [63:0] d; input [7:0] m; input integer nb;
+      integer j;
+      begin
+         @(negedge clk); d_wr_req=1; d_wr_addr=a; d_wr_data=d; d_wr_mask=m;
+         @(posedge clk); @(negedge clk); d_wr_req=0;
+         while (!d_wr_ack) @(posedge clk);
+         for (j=0;j<nb;j=j+1) if (m[j]) refm[a+j] = d[j*8 +: 8];
+         $display("  ok  write @%h data=%h mask=%b", a, d, m);
+         @(negedge clk);
+      end
+   endtask
+
+   task dflush;
+      begin
+         @(negedge clk); d_inv_req=1; @(posedge clk); @(negedge clk); d_inv_req=0;
+         while (d_inv_busy) @(posedge clk);
+         @(negedge clk);
+         // writeback correctness: every byte in L2 must now match refm
+         for (k=0;k<MEM;k=k+1) if (l2mem[k] !== refm[k]) begin
+            $display("FAIL flush: l2mem[%0d]=%h refm=%h", k, l2mem[k], refm[k]); errs=errs+1;
+         end
+         $display("  ok  flush -> L2 matches refm");
+      end
+   endtask
+
+   task iread; input [PAW-1:0] a;                  // I$ 16-byte read, check vs refm
+      integer j; reg [127:0] got, exp;
+      begin
+         @(negedge clk); i_rd_req=1; i_rd_addr=a;
+         @(posedge clk); @(negedge clk); i_rd_req=0;
+         while (!i_rd_valid) @(posedge clk);
+         got = i_rd_data;
+         exp = 0; for (j=0;j<16;j=j+1) exp[j*8 +: 8] = refm[a+j];
+         if (got !== exp) begin $display("FAIL iread @%h got=%h exp=%h",a,got,exp); errs=errs+1; end
+         else $display("  ok  iread @%h = %h", a, exp);
+         @(negedge clk);
+      end
+   endtask
+
+   initial begin
+      for (k=0;k<MEM;k=k+1) begin refm[k] = (k*7+3) & 8'hff; l2mem[k] = refm[k]; end
+      d_rd_req=0; d_wr_req=0; d_inv_req=0; i_rd_req=0; i_inv_req=0;
+      reset=1; repeat(3) @(negedge clk); reset=0; @(negedge clk);
+
+      $display("== D$: miss/fill + hit ==");
+      dread(34'h080, 8);          // cold miss -> fill from L2
+      dread(34'h080, 8);          // hit
+      dread(34'h088, 8);          // hit (same line, next word)
+
+      $display("== D$: write + read-back (dirty) ==");
+      dwrite(34'h080, 64'hDEADBEEF_CAFEF00D, 8'hFF, 8);
+      dread (34'h080, 8);         // sees new data
+      dwrite(34'h0A3, 64'h00000000_000000AA, 8'h01, 1);   // sub-word byte store
+      dread (34'h0A0, 8);
+
+      $display("== D$: dirty eviction + writeback + refill ==");
+      dwrite(34'h00080, 64'h11111111_22222222, 8'hFF, 8); // A: way0[idx2], dirty
+      dread (34'h10080, 8);                                // B: way1 (vic toggled)
+      dread (34'h20080, 8);                                // C: way0[idx2] evicts A (WB)
+      dread (34'h00080, 8);                                // A refilled from L2 -> written value
+
+      $display("== D$: line-crossing read + write ==");
+      dread (34'h0BC, 8);                                  // 0xBC..0xC3 spans line 2->3
+      dwrite(34'h0BC, 64'h01020304_05060708, 8'hFF, 8);    // spanning write
+      dread (34'h0BC, 8);
+      dread (34'h0C0, 8);                                  // line 3 reflects the high half
+
+      $display("== D$: flush (writeback) ==");
+      dflush();
+      dread (34'h080, 8);                                  // post-flush miss, from L2
+
+      $display("== I$: miss/fill + hit + invalidate ==");
+      iread(34'h100);
+      iread(34'h100);
+      iread(34'h1F8);                                      // 16-byte read spanning lines
+      @(negedge clk); i_inv_req=1; @(posedge clk); @(negedge clk); i_inv_req=0;
+      while (i_inv_busy) @(posedge clk); @(negedge clk);
+      iread(34'h100);                                      // re-miss after invalidate
+
+      if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
+      $finish;
+   end
+
+   initial begin #500000; $display("CACHE-TB TIMEOUT"); $finish; end
+endmodule
+
+`default_nettype wire
