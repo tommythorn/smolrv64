@@ -56,6 +56,33 @@ module tb;
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h000)    // MTIP = bit 7
                      | (clint_msip ? 12'h008 : 12'h000);   // MSIP = bit 3
 
+   // ---- NS16550A UART @ 0x1000_0000 (byte registers, offsets 0..7) ----
+   // The LSU memory port is byte-addressed (lane b <-> byte at addr+b, data in natural
+   // lanes), so the device is modelled per-byte exactly like RAM -- no lane realignment.
+   // Minimal TX model: write THR (off 0, DLAB=0) -> emit char; read LSR (off 5) -> THRE|TEMT.
+   localparam [63:0] UART_BASE = 64'h1000_0000;
+   wire        is_uart_r = (dmem_raddr & ~64'hf) == UART_BASE;
+   wire        is_uart_w = (dmem_waddr & ~64'hf) == UART_BASE;
+   reg  [7:0]  uart_lcr = 8'd0;                       // bit 7 = DLAB
+   function [63:0] uart_rd(input [63:0] addr);
+      integer b; reg [2:0] off;
+      begin uart_rd = 64'd0;
+         for (b=0;b<8;b=b+1) begin
+            off = (addr - UART_BASE + b) & 3'h7;
+            uart_rd[b*8 +: 8] = (off==3'd5) ? 8'h60 : 8'h00;   // LSR: THRE(0x20)|TEMT(0x40); else 0
+         end
+      end
+   endfunction
+   integer ub;
+   always @(posedge clk) if (!reset && dmem_wen && is_uart_w) begin
+      for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
+         case ((dmem_waddr - UART_BASE + ub) & 3'h7)
+            3'd0: if (!uart_lcr[7]) $write("%c", dmem_wdata[ub*8 +: 8]);   // THR -> emit
+            3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];                       // LCR (track DLAB)
+            default: ;
+         endcase
+   end
+
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS),
                  .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
@@ -92,9 +119,9 @@ module tb;
          imem_data[m*16+8 +: 8] = mem[(imem_addr-BASE)+2*m+1];
       end
    end
-   // dmem read mux: CLINT region -> clint.rdata, else RAM
-   always @(dmem_raddr or wtick or is_clint_r or clint_rdata)
-      dmem_rdata = is_clint_r ? clint_rdata : rd64(dmem_raddr);
+   // dmem read mux: CLINT / UART regions -> device, else RAM
+   always @(dmem_raddr or wtick or is_clint_r or is_uart_r or clint_rdata)
+      dmem_rdata = is_clint_r ? clint_rdata : is_uart_r ? uart_rd(dmem_raddr) : rd64(dmem_raddr);
 
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;     if (ptw_read)   ptw_rdata   <= rd64({8'd0, ptw_addr});
@@ -127,8 +154,8 @@ module tb;
       $finish;
    end
 
-   // apply RAM stores (CLINT writes go to the device, not memory)
-   always @(posedge clk) if (!reset && dmem_wen && !is_clint_w) begin
+   // apply RAM stores (CLINT/UART writes go to their devices, not memory)
+   always @(posedge clk) if (!reset && dmem_wen && !is_clint_w && !is_uart_w) begin
       for (b2=0;b2<8;b2=b2+1)
          if (dmem_wmask[b2]) mem[(dmem_waddr-BASE)+b2] <= dmem_wdata[b2*8 +: 8];
       wtick <= ~wtick;

@@ -1,16 +1,28 @@
 #!/bin/bash
-# Build + run the SoC end-to-end test: soctest.S programs the real CLINT timer over
-# MMIO (read mtime, write mtimecmp) then takes a machine timer interrupt delivered
-# through tb_soc.v's address decoder (CLINT @ 0x0200_0000, mtip -> hw_ip[7]). PASS =
-# handler stores 1 to tohost. Proves LSU<->CLINT MMIO routing end to end.
+# Build + run the SoC end-to-end tests against tb_soc.v (backend_top + behavioral RAM
+# + real clint.v + NS16550A UART, behind an address decoder on the LSU memory port):
+#   soctest  -- program the CLINT timer over MMIO, take a machine timer interrupt
+#               (LSU<->CLINT load/store routing + mtip->hw_ip->trap)
+#   uarttest -- print a string over the UART (sub-word byte MMIO loads+stores)
+# PASS = the program stores 1 to tohost. Pass a test name to run just one.
 set -e
 cd "$(dirname "$0")"
 GCC=${GCC:-riscv64-linux-gnu-gcc}; OC=${OC:-riscv64-linux-gnu-objcopy}; NM=${NM:-riscv64-linux-gnu-nm}
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-$GCC -nostdlib -fno-pic -mcmodel=medany -march=rv64imac_zicsr -mabi=lp64 -static -no-pie \
-   -T soctest.ld -o "$T/soc.elf" soctest.S 2>/dev/null
-$OC -O binary "$T/soc.elf" "$T/soc.bin"; od -An -v -tx1 "$T/soc.bin" > "$T/soc.hex"
-TH=$($NM "$T/soc.elf" | awk '/ tohost$/{print $1}')
+
+# build the harness once
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
 iverilog -g2012 -I. -I../src -s tb -o "$T/tb_soc.vvp" $srcs tb_soc.v ../src/alu.v
-vvp "$T/tb_soc.vvp" +hex="$T/soc.hex" +tohost=$TH +cycles=20000
+
+run_one() {
+   local name="$1"
+   $GCC -nostdlib -fno-pic -mcmodel=medany -march=rv64imac_zicsr -mabi=lp64 -static -no-pie \
+      -T soctest.ld -o "$T/$name.elf" "$name.S" 2>/dev/null
+   $OC -O binary "$T/$name.elf" "$T/$name.bin"; od -An -v -tx1 "$T/$name.bin" > "$T/$name.hex"
+   local th; th=$($NM "$T/$name.elf" | awk '/ tohost$/{print $1}')
+   echo "=== $name ==="
+   vvp "$T/tb_soc.vvp" +hex="$T/$name.hex" +tohost=$th +cycles=20000 2>&1 | grep -vE 'Not enough words'
+}
+
+tests="${*:-soctest uarttest}"
+for t in $tests; do run_one "$t"; done
