@@ -20,7 +20,7 @@ module tb;
 
    wire [PCW-1:0]      imem_addr;
    reg  [HW*16-1:0]    imem_data;
-   wire [3:0]          imem_avail = 4'd8;
+   wire [3:0]          imem_avail = !icache_en ? 4'd8 : (i_match ? 4'd8 : 4'd0);
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    reg  [63:0]         dmem_rdata;
@@ -67,10 +67,52 @@ module tb;
 
    reg wtick=0;
    integer m;
+   reg [HW*16-1:0] mem_win;
    always @(imem_addr or wtick) begin
       for (m=0;m<HW;m=m+1) begin
-         imem_data[m*16 +: 8]   = mem[(imem_addr-BASE)+2*m];
-         imem_data[m*16+8 +: 8] = mem[(imem_addr-BASE)+2*m+1];
+         mem_win[m*16 +: 8]   = mem[(imem_addr-BASE)+2*m];
+         mem_win[m*16+8 +: 8] = mem[(imem_addr-BASE)+2*m+1];
+      end
+   end
+   always @* imem_data = icache_en ? i_win : mem_win;
+
+   // ---- optional real I$ (cache.v, read-only) on the fetch path: imem_addr (PA) -> I$ ----
+   // The frontend holds imem_addr while imem_avail=0, so a miss just stalls fetch; on an I$
+   // hit we present the 16-byte window with avail=8. i_pa tracks the window we hold; when the
+   // frontend advances (imem_addr != i_pa) we re-request. (fence.i I$-coherence is a step-3
+   // follow-up: it needs the core to invalidate the I$ + order behind the D$ drain.)
+   wire         icache_en = cache_en;
+   reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
+   wire         i_match  = icache_en & i_have & (i_pa == imem_addr);
+   wire         i_need   = icache_en & ~i_match;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid;
+   wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
+   wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
+   wire         ic_l2_req, ic_l2_we;  wire [57:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
+   reg  [511:0] ic_l2_rdata;  reg ic_l2_ack;
+   always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
+      else begin
+         if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
+         if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
+      end
+   cache #(.PAW(64), .SIZE_KB(128), .RDW(HW*16), .WDW(64), .WRITABLE(0)) u_icache
+     (.clk(clk), .reset(reset),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .inv_req(1'b0), .inv_busy(),
+      .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
+      .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));
+   // I$ L2 responder (read-only): line read of `mem` (based at BASE), 2-cycle latency
+   reg ic_l2busy; reg [3:0] ic_l2cnt; reg [57:0] ic_l2ad_q; integer ik; reg [63:0] ic_l2base;
+   always @(posedge clk) begin
+      ic_l2_ack <= 1'b0;
+      if (reset) ic_l2busy <= 1'b0;
+      else if (!ic_l2busy && ic_l2_req) begin ic_l2busy<=1'b1; ic_l2cnt<=4'd2; ic_l2ad_q<=ic_l2_addr; end
+      else if (ic_l2busy) begin
+         if (ic_l2cnt==0) begin
+            ic_l2base = ({{6{1'b0}},ic_l2ad_q} << 6) - BASE;
+            for (ik=0;ik<64;ik=ik+1) ic_l2_rdata[ik*8 +: 8] <= mem[ic_l2base+ik];
+            ic_l2_ack<=1'b1; ic_l2busy<=1'b0;
+         end else ic_l2cnt <= ic_l2cnt-1;
       end
    end
    // ---- optional real D$ (cache.v, write-through) between LSU dmem port and `mem` (L2) ----
