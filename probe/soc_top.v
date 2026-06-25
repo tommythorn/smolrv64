@@ -49,7 +49,7 @@ module soc_top #(
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(BASE)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(12'd0),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
@@ -59,27 +59,66 @@ module soc_top #(
       .wb_valid(wb_valid), .wb_pr(wb_pr), .wb_val(wb_val),
       .redirect(redirect), .redirect_target(redirect_target), .commit(commit), .commit_idx());
 
-   // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl) ----------------
+   // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
+   localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000;
+   wire is_clint_r = (dmem_raddr & ~64'hffff) == CLINT_BASE;
+   wire is_uart_r  = (dmem_raddr & ~64'hf)    == UART_BASE;
+   wire is_dev_r   = is_clint_r | is_uart_r;
+   wire is_clint_w = (dmem_waddr & ~64'hffff) == CLINT_BASE;
+   wire is_uart_w  = (dmem_waddr & ~64'hf)    == UART_BASE;
+   wire is_dev_w   = is_clint_w | is_uart_w;
+   // device read returns 1 cycle after the ren pulse (combinational device data, held addr);
+   // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
+   reg  dev_rvalid, dev_wack;
+   always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
+      else begin dev_rvalid <= dmem_ren & is_dev_r; dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
+   wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;
+   clint #(.SCALE_DIV(8)) u_clint
+     (.clk(clk), .reset(reset),
+      .we(dmem_wen & is_clint_w & ~dev_wack),
+      .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
+      .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
+      .mtip(clint_mtip), .msip(clint_msip), .o_mtime());
+   wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0);
+   // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR read (off 5) -> THRE|TEMT
+   reg [7:0] uart_lcr;  integer ub;
+   always @(posedge clk) if (reset) uart_lcr<=8'd0;
+      else if (dmem_wen & is_uart_w & ~dev_wack)
+         for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
+            case ((dmem_waddr - UART_BASE + ub) & 3'h7)
+               3'd0: if (!uart_lcr[7]) $write("%c", dmem_wdata[ub*8 +: 8]);
+               3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
+               default: ;
+            endcase
+   function [63:0] uart_rd; input [63:0] a; integer b2; reg [2:0] off;
+      begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
+         off=(a-UART_BASE+b2)&3'h7; uart_rd[b2*8 +: 8]=(off==3'd5)?8'h60:8'h00; end end
+   endfunction
+   wire [63:0] dev_rdata = is_clint_r ? clint_rdata : is_uart_r ? uart_rd(dmem_raddr) : 64'd0;
+
+   // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
    wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
-   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rd_valid;
+   wire         raw_rvalid = is_dev_r ? dev_rvalid : dc_rd_valid;
+   wire [63:0]  raw_rdata  = is_dev_r ? dev_rdata  : dc_rd_data;
+   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~raw_rvalid & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
-      else if (dmem_ren) c_rd_pend<=1'b1; else if (dc_rd_valid) c_rd_pend<=1'b0;
+      else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
    always @(posedge clk) if (reset) c_rdv_st<=1'b0;
       else if (dmem_ren) c_rdv_st<=1'b0;
-      else if (dc_rd_valid) begin c_rdv_st<=1'b1; c_rdd_st<=dc_rd_data; end
+      else if (raw_rvalid) begin c_rdv_st<=1'b1; c_rdd_st<=raw_rdata; end
    wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
-   assign       dmem_rdata  = c_st_ok ? c_rdd_st : dc_rd_data;
-   assign       dmem_rvalid = dc_rd_valid | c_st_ok;
-   assign       dmem_wready = dc_wr_ack;
+   assign       dmem_rdata  = c_st_ok ? c_rdd_st : raw_rdata;
+   assign       dmem_rvalid = raw_rvalid | c_st_ok;
+   assign       dmem_wready = is_dev_w ? dev_wack : dc_wr_ack;
 
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
-      .wr_req(dmem_wen & ~dc_wr_ack), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
+      .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(1'b0), .inv_busy(),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack));
