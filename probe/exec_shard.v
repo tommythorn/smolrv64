@@ -90,6 +90,7 @@ module exec_shard
     // ---- EX: branch/jump resolution ----
     output wire                    br_redirect,
     output wire [63:0]             br_target,
+    output wire                    fencei_redir_o,     // this shard is redirecting for a FENCE.I
     output wire [SEQW-1:0]         br_seq,
     output wire                    br_is_trap,    // redirect is an exception (roll back TO ckpt)
     // ---- EX: LSU drive (aligned with agu/st_data) ----
@@ -248,6 +249,7 @@ module exec_shard
    // refetch of pc+4 onward then sees the new instruction bytes (I/D coherence). Like the
    // sfence redirect, it's NOT a trap (rolls back to ckpt+1, keeping fence.i itself).
    wire fencei_redir = ex_v & ex_fencei;
+   assign fencei_redir_o = fencei_redir;
    assign br_redirect = (ex_v & bu_redirect) | sys_redirect | fencei_redir;
    assign br_target   = sys_redirect ? sys_target
                       : fencei_redir ? (ex_pc + 64'd4) : bu_target;

@@ -20,7 +20,9 @@ module tb;
 
    wire [PCW-1:0]      imem_addr;
    reg  [HW*16-1:0]    imem_data;
-   wire [3:0]          imem_avail = !icache_en ? 4'd8 : (i_match ? 4'd8 : 4'd0);
+   wire                dmem_idle, ifence;
+   // fence.i ordering: stall fetch while a fence.i flush is in progress.
+   wire [3:0]          imem_avail = !icache_en ? 4'd8 : (fi_stall ? 4'd0 : (i_match ? 4'd8 : 4'd0));
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    reg  [63:0]         dmem_rdata;
@@ -46,6 +48,7 @@ module tb;
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask), .dmem_wready(dmem_wready),
+      .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .ldptw_addr(ldptw_addr), .ldptw_read(ldptw_read),
@@ -85,20 +88,37 @@ module tb;
    reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
    wire         i_match  = icache_en & i_have & (i_pa == imem_addr);
    wire         i_need   = icache_en & ~i_match;
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;
    wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
    wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
    wire         ic_l2_req, ic_l2_we;  wire [57:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    reg  [511:0] ic_l2_rdata;  reg ic_l2_ack;
    always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
       else begin
+         if (ic_inv_req) i_have<=1'b0;   // fence.i flush -> drop the held window, force a refill
          if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
          if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
+      end
+   // fence.i ordering FSM: on a fence.i redirect, stall fetch until the D$ has drained to memory
+   // (dmem_idle), then invalidate the I$, then resume -- so the refetch sees the modified code.
+   localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
+   reg [1:0] fi;  reg ic_inv_req;
+   wire      fi_stall = icache_en & (fi != FI_IDLE);
+   always @(posedge clk) if (reset) begin fi<=FI_IDLE; ic_inv_req<=1'b0; end
+      else begin
+         ic_inv_req <= 1'b0;
+         case (fi)
+           FI_IDLE:  if (icache_en & ifence) fi<=FI_DRAIN;
+           FI_DRAIN: if (dmem_idle) begin ic_inv_req<=1'b1; fi<=FI_INV; end
+           FI_INV:   fi<=FI_WAIT;
+           FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
+         endcase
       end
    cache #(.PAW(64), .SIZE_KB(128), .RDW(HW*16), .WDW(64), .WRITABLE(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
-      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .inv_req(1'b0), .inv_busy(),
+      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(),
+      .inv_req(ic_inv_req), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));
    // I$ L2 responder (read-only): line read of `mem` (based at BASE), 2-cycle latency

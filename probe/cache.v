@@ -107,7 +107,8 @@ module cache #(
    reg             ww0, ww1;
 
    localparam S_IDLE=0, S_LOOK=1, S_CHECK=2, S_WB=3, S_WBW=4, S_FILL=5, S_FILLW=6,
-              S_FIN=7, S_FLUSH=8, S_FLUSHW=9, S_WT0=10, S_WT0W=11, S_WT1=12, S_WT1W=13;
+              S_FIN=7, S_FLUSH=8, S_FLUSHW=9, S_WT0=10, S_WT0W=11, S_WT1=12, S_WT1W=13,
+              S_INVDONE=14;
    reg [3:0]      st;
    reg            phase;
    reg [PAW-1:0]  cur_line;
@@ -146,7 +147,12 @@ module cache #(
          case (st)
            S_IDLE: begin
               if (inv_req) begin
-                 inv_busy <= 1; fscan <= 0; st <= S_FLUSH;
+                 // never-dirty roles (I$ read-only, D$ write-through) need no writeback:
+                 // clear all valid in one cycle. Write-back keeps the scan-with-writeback.
+                 if (WRITABLE==0 || WRTHRU!=0) begin
+                    for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
+                    inv_busy <= 1; st <= S_INVDONE;
+                 end else begin inv_busy <= 1; fscan <= 0; st <= S_FLUSH; end
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_addr   <= rd_req ? rd_addr : wr_addr;
@@ -249,6 +255,7 @@ module cache #(
               valm[fscan[FW-1:0]] <= 1'b0; dirm[fscan[FW-1:0]] <= 1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
+           S_INVDONE: begin inv_busy <= 1'b0; st <= S_IDLE; end
          endcase
       end
    end

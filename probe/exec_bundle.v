@@ -65,6 +65,7 @@ module exec_bundle
     output reg  [SEQW-1:0]         redirect_seq,
     output reg  [CBITS-1:0]        redirect_ckpt,
     output reg                     redirect_is_trap,   // exception -> roll back TO ckpt (not +1)
+    output wire                    ifence,             // a FENCE.I is redirecting this cycle (I$ flush + drain order)
     // ---- translation context passed out to the iMMU/dMMU ----
     output wire [63:0]             mmu_satp,
     output wire [1:0]              mmu_priv,
@@ -88,6 +89,8 @@ module exec_bundle
    wire [SHARDS*PBITS-1:0] wbp;
    wire [SHARDS*64-1:0]    wbd;
    wire [SHARDS-1:0]       brd;
+   wire [SHARDS-1:0]       fnci;         // per-shard FENCE.I redirect
+   assign ifence = |fnci;
    wire [SHARDS*64-1:0]    brt;
    wire [SHARDS*SEQW-1:0]  brs;
    wire [SHARDS*CBITS-1:0] brc;          // EX-stage ckpt of each shard (for redirect)
@@ -151,7 +154,7 @@ module exec_bundle
          .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
-         .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_seq(brs[i*SEQW +: SEQW]),
+         .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
          .br_is_trap(brtr[i]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),

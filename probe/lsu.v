@@ -113,6 +113,7 @@ module lsu
     //      Used only under Sv39 (backend defers store completion to the LSU then). ----
     output wire                   st_done,
     output wire [CBITS-1:0]       st_done_ckpt,
+    output wire                   sb_empty,           // no live stores + AMO idle (mem is current) -- for fence.i ordering
 
     // ---- data memory READ port: request/response handshake (real D$ can stall) ----
     // mem_ren pulses for one cycle when a fresh address is registered on mem_raddr
@@ -445,6 +446,13 @@ module lsu
    // store-check outcome this cycle (valid when st_need_xl)
    wire          st_ck_done = st_need_xl & stx_ready & ~stx_fault;   // translated OK -> completes
    wire          st_ck_flt  = st_need_xl & stx_ready &  stx_fault;   // page-faults -> precise trap
+
+   // fence.i ordering: the store buffer is empty (all stores drained+written-through to memory,
+   // since an entry frees on mem_wready which the D$ asserts only after its L2 write completes)
+   // and no atomic is mid-RMW -> memory is current and safe to refetch from.
+   reg sb_any; integer se;
+   always @* begin sb_any = 1'b0; for (se=0;se<SBDEPTH;se=se+1) sb_any = sb_any | sb_v[se]; end
+   assign sb_empty = ~sb_any & (ast == A_IDLE);
 
    // store completion: retire from commit_ctl's count once checked fault-free.
    assign st_done      = st_ck_done;

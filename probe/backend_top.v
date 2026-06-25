@@ -64,6 +64,8 @@ module backend_top
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
     input  wire                    dmem_wready,        // write accepted/done; tie 1 for 1-cycle writes
+    output wire                    dmem_idle,          // LSU store buffer empty (mem current) -- fence.i ordering
+    output wire                    ifence,             // FENCE.I redirecting this cycle -- invalidate the I$
     // page-table-walker memory port (registered read; serves the iMMU's TLB misses).
     // Unused in Bare mode (satp.MODE=0) -> may float in the simpler testbenches.
     output wire [55:0]             ptw_addr,
@@ -453,6 +455,7 @@ module backend_top
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
+      .ifence(ifence),
       .mmu_satp(mmu_satp), .mmu_priv(mmu_priv), .mmu_dpriv(mmu_dpriv),
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
@@ -522,7 +525,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
-      .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
+      .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .mem_wready(dmem_wready),
