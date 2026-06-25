@@ -274,7 +274,7 @@ module backend_top
 
    // ---- scheduler bundle ----
    wire [IW-1:0]       iss_valid, iss_pdst_v;
-   wire [IW*PBITS-1:0] iss_pdst, iss_ps1, iss_ps2;
+   wire [IW*PBITS-1:0] iss_pdst, iss_ps1, iss_ps2, iss_ps3;
    wire [IW*SEQW-1:0]  iss_seq;
    wire [IW*CBITS-1:0] iss_ckpt;
    wire [IW*MIDXW-1:0] iss_mem_idx;
@@ -305,7 +305,7 @@ module backend_top
       .squash(roll_v), .squash_seq(roll_seq), .exec_busy(busy_to_sched),
       .committed(cc_committed),
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
-      .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(),     // ps3 unused until FP execute
+      .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3),     // ps3 = FMA 3rd operand
       .iss_seq(iss_seq),
       .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
 
@@ -337,7 +337,7 @@ module backend_top
    // reads the result from the RF the cycle after (write-before-read across this stage).
    // A wrong-path op selected the same cycle a branch redirects is gated out here.
    reg  [IW-1:0]       q_iss_valid, q_iss_pdst_v;
-   reg  [IW*PBITS-1:0] q_iss_pdst, q_iss_ps1, q_iss_ps2;
+   reg  [IW*PBITS-1:0] q_iss_pdst, q_iss_ps1, q_iss_ps2, q_iss_ps3;
    reg  [IW*SEQW-1:0]  q_iss_seq;
    reg  [IW*CBITS-1:0] q_iss_ckpt;
    reg  [IW*MIDXW-1:0] q_iss_mem_idx;
@@ -354,7 +354,7 @@ module backend_top
       else begin
          q_iss_valid   <= iss_valid & ~iss_squashed;
          q_iss_pdst_v  <= iss_pdst_v;
-         q_iss_pdst    <= iss_pdst;   q_iss_ps1 <= iss_ps1;  q_iss_ps2 <= iss_ps2;
+         q_iss_pdst    <= iss_pdst;   q_iss_ps1 <= iss_ps1;  q_iss_ps2 <= iss_ps2;  q_iss_ps3 <= iss_ps3;
          q_iss_seq     <= iss_seq;    q_iss_ckpt <= iss_ckpt;
          q_iss_mem_idx <= iss_mem_idx; q_iss_pay <= iss_pay;
       end
@@ -459,7 +459,7 @@ module backend_top
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
      (.clk(clk), .reset(reset),
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
-      .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2),
+      .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2), .iss_ps3(q_iss_ps3),
       .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),
       .squash(roll_v), .squash_seq(roll_seq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),

@@ -23,11 +23,13 @@ module rf_shard
     input  wire [SHARDS-1:0]       wr_valid,
     input  wire [SHARDS*PBITS-1:0] wr_pr,
     input  wire [SHARDS*64-1:0]    wr_val,
-    // two read ports
+    // three read ports (rs1/rs2 + rs3 for the FMA 3rd operand)
     input  wire [PBITS-1:0]        ra1,
     input  wire [PBITS-1:0]        ra2,
+    input  wire [PBITS-1:0]        ra3,
     output wire [63:0]             rd1,
-    output wire [63:0]             rd2);
+    output wire [63:0]             rd2,
+    output wire [63:0]             rd3);
 
    reg [63:0] bank [0:SHARDS-1][0:POOL-1];
 
@@ -49,16 +51,20 @@ module rf_shard
    wire [IDXB-1:0]  i1 = ra1[PBITS-1:SBITS];
    wire [SBITS-1:0] b2 = ra2[SBITS-1:0];
    wire [IDXB-1:0]  i2 = ra2[PBITS-1:SBITS];
+   wire [SBITS-1:0] b3 = ra3[SBITS-1:0];
+   wire [IDXB-1:0]  i3 = ra3[PBITS-1:SBITS];
 
-   wire [SHARDS*64-1:0] r1, r2;
+   wire [SHARDS*64-1:0] r1, r2, r3;
    genvar g;
    generate for (g = 0; g < SHARDS; g = g + 1) begin : rd
       assign r1[g*64 +: 64] = bank[g][i1];
       assign r2[g*64 +: 64] = bank[g][i2];
+      assign r3[g*64 +: 64] = bank[g][i3];
    end endgenerate
 
    assign rd1 = (ra1 == {PBITS{1'b0}}) ? 64'd0 : r1[b1*64 +: 64];
    assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0 : r2[b2*64 +: 64];
+   assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0 : r3[b3*64 +: 64];
 endmodule
 
 `default_nettype wire

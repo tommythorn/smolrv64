@@ -29,6 +29,7 @@ module tb;
    reg  [IW*AW-1:0]  exe_ld_addr;
    reg  [IW*4-1:0]   exe_ld_nb;
    reg  [IW-1:0]     exe_ld_sgn;
+   reg  [IW-1:0]     exe_ld_fp;
    wire [AW-1:0]     mem_raddr;
    wire [63:0]       mem_rdata;
    wire              mem_wen;
@@ -56,7 +57,7 @@ module tb;
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
-      .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
+      .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn), .exe_ld_fp(exe_ld_fp),
       .amo_v(1'b0), .amo_func(5'd0), .amo_addr({AW{1'b0}}), .amo_data(64'd0),
       .amo_sz(2'd0), .amo_pdst({PBITS{1'b0}}), .amo_owner({SBITS{1'b0}}), .amo_ckpt({CBITS{1'b0}}),
       .xl_satp(64'd0), .xl_priv(2'd0), .xl_sum(1'b0), .xl_mxr(1'b0), .xl_flush(1'b0),
@@ -91,7 +92,7 @@ module tb;
    task idle; begin
       disp_fire=0; disp_is_load=0; disp_is_store=0; disp_seq=0; disp_ckpt=0; disp_pdst=0;
       exe_st_v=0; exe_st_idx=0; exe_st_addr=0; exe_st_data=0; exe_st_nb=0;
-      exe_ld_v=0; exe_ld_idx=0; exe_ld_addr=0; exe_ld_nb=0; exe_ld_sgn=0;
+      exe_ld_v=0; exe_ld_idx=0; exe_ld_addr=0; exe_ld_nb=0; exe_ld_sgn=0; exe_ld_fp=0;
       commit=0; commit_idx=0; rollback=0; rollback_seq=0;
    end endtask
 

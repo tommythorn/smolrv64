@@ -29,6 +29,7 @@ module exec_shard
     input  wire                    iss_pdst_v,
     input  wire [PBITS-1:0]        iss_ps1,
     input  wire [PBITS-1:0]        iss_ps2,
+    input  wire [PBITS-1:0]        iss_ps3,      // FMA 3rd operand
     input  wire [CBITS-1:0]        iss_ckpt,
     input  wire [MIDXW-1:0]        iss_mem_idx,
     input  wire [31:0]             iss_insn,      // RVC-expanded instruction (for decode_fp)
@@ -128,11 +129,11 @@ module exec_shard
    endfunction
 
    // ============================== RR stage ==============================
-   wire [63:0] rf_rs1, rf_rs2;
+   wire [63:0] rf_rs1, rf_rs2, rf_rs3;
    rf_shard #(.SHARDS(SHARDS), .SBITS(SBITS), .NPHYS(NPHYS), .PBITS(PBITS),
               .POOL(POOL), .IDXB(IDXB)) rf
      (.clk(clk), .wr_valid(wb_valid_in), .wr_pr(wb_pr_in), .wr_val(wb_val_in),
-      .ra1(iss_ps1), .ra2(iss_ps2), .rd1(rf_rs1), .rd2(rf_rs2));
+      .ra1(iss_ps1), .ra2(iss_ps2), .ra3(iss_ps3), .rd1(rf_rs1), .rd2(rf_rs2), .rd3(rf_rs3));
 
    // FP control (decode_fp at RR; registered into EX alongside operands)
    wire        fp_v_d, fp_use_d;  wire [2:0] fp_cls_d, fp_src_d, fp_dst_d, fp_rnd_d;
@@ -148,11 +149,11 @@ module exec_shard
    reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
                     ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor, ex_fencei;
    reg  [4:0]       ex_amof;
-   reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2;
+   reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2, ex_p3;
    reg  [SEQW-1:0]  ex_sq;
    reg  [CBITS-1:0] ex_ck;
    reg  [MIDXW-1:0] ex_mi;
-   reg  [63:0]      ex_r1, ex_r2, ex_imm, ex_pc;
+   reg  [63:0]      ex_r1, ex_r2, ex_r3, ex_imm, ex_pc;
    reg  [5:0]       ex_aop;
    reg  [1:0]       ex_o1s, ex_msz;
    reg  [2:0]       ex_bf, ex_csrf;
@@ -167,9 +168,9 @@ module exec_shard
       ex_fprnd<=fp_rnd_d; ex_fpop<=fp_op_d; ex_fpmod<=fp_mod_d; ex_fpint<=fp_int_d;
       ex_fpo0<=fp_o0_d; ex_fpo1<=fp_o1_d; ex_fpo2<=fp_o2_d;  ex_fpo0i<=fp_o0i_d;  ex_insn<=iss_insn;
       ex_v   <= iss_valid & ~rr_kill;
-      ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2;
+      ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2; ex_p3 <= iss_ps3;
       ex_sq  <= iss_seq; ex_ck <= iss_ckpt; ex_mi <= iss_mem_idx;
-      ex_r1  <= rf_rs1; ex_r2 <= rf_rs2; ex_imm <= imm; ex_pc <= pc;
+      ex_r1  <= rf_rs1; ex_r2 <= rf_rs2; ex_r3 <= rf_rs3; ex_imm <= imm; ex_pc <= pc;
       ex_aop <= alu_op; ex_w <= alu_w; ex_uw <= alu_uw; ex_o1s <= op1_sel;
       ex_o2i <= op2_imm; ex_link <= res_link; ex_rvc <= is_rvc;
       ex_memr <= is_mem; ex_str <= is_store; ex_msz <= mem_size; ex_msgn <= mem_signed;
@@ -182,15 +183,17 @@ module exec_shard
    // operand forwarding: 1-ahead = wb_*_in (this cycle's registered writebacks),
    // 2-ahead = fw2_* (those delayed one more cycle). A physreg is written once, so
    // a tag matches at most one source; prefer the newer (1-ahead).
-   reg [63:0] op1f, op2f;
+   reg [63:0] op1f, op2f, op3f;
    integer s;
    always @* begin
-      op1f = ex_r1; op2f = ex_r2;
+      op1f = ex_r1; op2f = ex_r2; op3f = ex_r3;
       for (s = 0; s < SHARDS; s = s + 1) begin
          if (fw2_valid[s] && fw2_pr[s*PBITS +: PBITS] == ex_p1) op1f = fw2_val[s*64 +: 64];
          if (fw2_valid[s] && fw2_pr[s*PBITS +: PBITS] == ex_p2) op2f = fw2_val[s*64 +: 64];
+         if (fw2_valid[s] && fw2_pr[s*PBITS +: PBITS] == ex_p3) op3f = fw2_val[s*64 +: 64];
          if (byp_valid[s] && byp_pr[s*PBITS +: PBITS] == ex_p1) op1f = byp_val[s*64 +: 64];
          if (byp_valid[s] && byp_pr[s*PBITS +: PBITS] == ex_p2) op2f = byp_val[s*64 +: 64];
+         if (byp_valid[s] && byp_pr[s*PBITS +: PBITS] == ex_p3) op3f = byp_val[s*64 +: 64];
       end
    end
 
@@ -229,15 +232,15 @@ module exec_shard
    wire fp_abort = fpu_inflight & squash & older(squash_seq, fp_seq);
    // a fresh FP op may start only when the unit is free and nothing older is squashing it.
    wire fp_start = fp_arith & ~fpu_inflight & ~mbusy & ~dbusy & ~fp_squash_now;
-   function [63:0] fpsel; input [1:0] s; input [63:0] a, b;
-      fpsel = (s==2'd1) ? a : (s==2'd2) ? b : 64'd0; endfunction   // op3 (FMA) = 0 until ps3 read
+   function [63:0] fpsel; input [1:0] s; input [63:0] a, b, c;
+      fpsel = (s==2'd1) ? a : (s==2'd2) ? b : (s==2'd3) ? c : 64'd0; endfunction  // 3=frs3 (FMA)
    // unbox a single from an f-register: a properly NaN-boxed value yields its low 32 bits;
    // anything else (e.g. a double, or a raw int) is the canonical single NaN (RISC-V spec).
    function [31:0] unbox_s; input [63:0] x;
       unbox_s = (x[63:32]==32'hffffffff) ? x[31:0] : 32'h7fc00000; endfunction
-   wire [63:0] fpo0r = fpsel(ex_fpo0, op1f, op2f);
-   wire [63:0] fpo1r = fpsel(ex_fpo1, op1f, op2f);
-   wire [63:0] fpo2r = fpsel(ex_fpo2, op1f, op2f);
+   wire [63:0] fpo0r = fpsel(ex_fpo0, op1f, op2f, op3f);
+   wire [63:0] fpo1r = fpsel(ex_fpo1, op1f, op2f, op3f);
+   wire [63:0] fpo2r = fpsel(ex_fpo2, op1f, op2f, op3f);
    // Feed the CVFPU a properly-boxed single for FP32 ops (unbox: real single, else canon NaN).
    // op0 may be an INTEGER source (I2F) -> pass it through unmolested.
    wire        src32 = (ex_fpsrc==3'd0);
