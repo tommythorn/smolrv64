@@ -750,6 +750,7 @@ module backend_top
    reg  [PBITS-1:0] q_ps2  [0:QN-1];
    reg  [4:0]       q_rs1  [0:QN-1];   // source arch regs (from the insn fields)
    reg  [4:0]       q_rs2  [0:QN-1];
+   reg  [SBI-1:0]   q_sbidx[0:QN-1];   // store's SB slot (to read back sb_data at retire)
    integer          qn; initial qn = 0;
    reg              cot_found;
 
@@ -825,6 +826,13 @@ module backend_top
                   ck_da = (q_rk[0]==2'd2) ? (32 + q_ri[0]) : {1'b0, q_ri[0]};
                   arch_phys[ck_da] = q_prd[0];
                end
+`ifdef STDATA_TAP
+               // print each committed STORE's SB data (read back at retire, pre-drain) ->
+               // 0 = operand/PRF-read bug; correct value = ordering/memory bug.
+               if (!q_trap[0] && (q_insn[0][6:0]==7'h23))
+                  $display("[%0t] ST-RETIRE pc=%h insn=%h sbidx=%0d sb_data=%h",
+                     $time, q_pc[0], q_insn[0], q_sbidx[0], u_lsu.sb_data[q_sbidx[0]]);
+`endif
                probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
                   (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
                   {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
@@ -836,6 +844,7 @@ module backend_top
                   q_val[fi]=q_val[fi+1]; q_vok[fi]=q_vok[fi+1]; q_cmt[fi]=q_cmt[fi+1];
                   q_trap[fi]=q_trap[fi+1]; q_cause[fi]=q_cause[fi+1]; q_tval[fi]=q_tval[fi+1];
                   q_ps1[fi]=q_ps1[fi+1]; q_ps2[fi]=q_ps2[fi+1]; q_rs1[fi]=q_rs1[fi+1]; q_rs2[fi]=q_rs2[fi+1];
+                  q_sbidx[fi]=q_sbidx[fi+1];
                end
                qn = qn - 1;
             end
@@ -873,6 +882,7 @@ module backend_top
                q_ps2 [qn] = ps2[fl*PBITS +: PBITS];
                q_rs1 [qn] = r_pay[fl*`PAYW + 165 + 15 +: 5];   // insn[19:15]
                q_rs2 [qn] = r_pay[fl*`PAYW + 165 + 20 +: 5];   // insn[24:20]
+               q_sbidx[qn] = disp_sb_idx[fl*SBI +: SBI];
                q_prv [qn] = mmu_priv;
                q_mepc[qn] = 64'd0;          // filled at commit (mepc-after-retire)
                q_val [qn] = 64'd0;  q_vok[qn] = 1'b0;  q_cmt[qn] = 1'b0;

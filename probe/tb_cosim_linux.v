@@ -73,51 +73,24 @@ module tb;
 `ifdef LSU_TAP
          // rename check (any cycle): store sd x8 @ ...8003ddb6 -> its rs2 physreg (ps2)
          // vs x8 producer addi x8 @ ...80002f40 -> its dest (pdst). Mismatch => rename bug.
-         if (c > 8800000 && c < 9040000 && dut.core.disp_fire)
-            for (b2 = 0; b2 < 4; b2 = b2 + 1) if (dut.core.r_valid[b2]) begin
-               // dispatches in the function (incl store ddb6) + the x8 producer (2f40)
-               if ((dut.core.r_pay[b2*197+78 +: 64] >= 64'hffffffff8003dda0 &&
-                    dut.core.r_pay[b2*197+78 +: 64] <= 64'hffffffff8003dde2) ||
-                   dut.core.r_pay[b2*197+78 +: 64] == 64'hffffffff80002f40)
-                  $display("[c=%0d DISP pc=%h ps1=%0d ps2=%0d pdst=%0d rd=%0d]", c,
-                     dut.core.r_pay[b2*197+78 +: 64], dut.core.ps1[b2*8 +: 8],
-                     dut.core.ps2[b2*8 +: 8], dut.core.pdst[b2*8 +: 8], dut.core.r_rd[b2*6 +: 6]);
-               // format sanity check: any dispatch in a tiny window
-               if (c >= 8900000 && c <= 8900020)
-                  $display("[c=%0d FMT pc=%h]", c, dut.core.r_pay[b2*197+78 +: 64]);
-            end
-         // window around the store->load divergence (~retire 3.03M ~ cycle 9.0-9.2M).
-         // page offset 0xf88 survives translation -> frame-PA-independent filter.
-         if (c > 8800000 && c < 9300000) begin
+         // $time window around the ACTUAL failing store/load (store retires ~$time 9.5516e10).
+         // Tap drains + loads to page-offset 0xf88 (frame-PA-independent) with full detail.
+         if ($time > 95400000000 && $time < 95520000000) begin
             if (dut.core.u_lsu.mem_wen && dut.core.u_lsu.mem_waddr[11:0]==12'hf88)
-               $display("[c=%0d ST-DRAIN pa=%h data=%h mask=%b]", c,
+               $display("[%0t ST-DRAIN pa=%h data=%h mask=%b]", $time,
                   dut.core.u_lsu.mem_waddr, dut.core.u_lsu.mem_wdata, dut.core.u_lsu.mem_wmask);
-            // store FILL at execute: is the store's data correct (0xfb0) entering the SB?
-            for (b2 = 0; b2 < 4; b2 = b2 + 1)
-               if (dut.core.u_lsu.exe_st_v[b2] && dut.core.u_lsu.exe_st_addr[b2*64 +: 12]==12'hf88)
-                  $display("[c=%0d ST-FILL lane%0d va=%h data=%h idx=%0d]", c, b2,
-                     dut.core.u_lsu.exe_st_addr[b2*64 +: 64], dut.core.u_lsu.exe_st_data[b2*64 +: 64],
-                     dut.core.u_lsu.exe_st_idx[b2*2 +: 2]);
             if (dut.core.u_lsu.mem_ren && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[c=%0d LD-REQ  pa=%h]", c, dut.core.u_lsu.mem_raddr);
+               $display("[%0t LD-REQ pa=%h]", $time, dut.core.u_lsu.mem_raddr);
             if (dut.core.u_lsu.mem_rvalid && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[c=%0d LD-RDATA pa=%h rdata=%h]", c,
-                  dut.core.u_lsu.mem_raddr, dut.core.u_lsu.mem_rdata);
-            if (dut.core.u_lsu.ld_wb_v && dut.core.u_lsu.ld_wb_val==64'd0
-                && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[c=%0d LD-WB    pa=%h val=%h pd=%0d]", c, dut.core.u_lsu.mem_raddr,
-                  dut.core.u_lsu.ld_wb_val, dut.core.u_lsu.ld_wb_pdst);
-            // AMO drain (different line) -- confirm it's not clobbering 0xf88
-            if (dut.core.u_lsu.mem_wen && dut.core.u_lsu.ast != 3'd0)
-               $display("[c=%0d AMO-WR  pa=%h data=%h st=%0d]", c,
-                  dut.core.u_lsu.mem_waddr, dut.core.u_lsu.mem_wdata, dut.core.u_lsu.ast);
-            // full store-buffer dump right at the failing load (c~9061759)
-            if (c >= 9061755 && c <= 9061762)
+               $display("[%0t LD-RDATA pa=%h rdata=%h]", $time, dut.core.u_lsu.mem_raddr, dut.core.u_lsu.mem_rdata);
+            if (dut.core.u_lsu.ld_wb_v && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
+               $display("[%0t LD-WB pa=%h val=%h]", $time, dut.core.u_lsu.mem_raddr, dut.core.u_lsu.ld_wb_val);
+            // SB dump while a load to 0xf88 is held in MERGE (p_v): does it forward?
+            if (dut.core.u_lsu.p_v && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
                for (b2 = 0; b2 < 4; b2 = b2 + 1)
-                  $display("[c=%0d SB[%0d] v=%b cmt=%b seq=%0d va=%h data=%h nb=%0d ast=%0d ld_sel=%0d p_v=%b]",
-                     c, b2, dut.core.u_lsu.sb_v[b2], dut.core.u_lsu.sb_cmt[b2], dut.core.u_lsu.sb_seq[b2],
-                     dut.core.u_lsu.sb_addr[b2], dut.core.u_lsu.sb_data[b2], dut.core.u_lsu.sb_nb[b2],
-                     dut.core.u_lsu.ast, dut.core.u_lsu.ld_sel, dut.core.u_lsu.p_v);
+                  $display("[%0t SB[%0d] v=%b cmt=%b seq=%0d addr=%h data=%h]", $time, b2,
+                     dut.core.u_lsu.sb_v[b2], dut.core.u_lsu.sb_cmt[b2], dut.core.u_lsu.sb_seq[b2],
+                     dut.core.u_lsu.sb_addr[b2], dut.core.u_lsu.sb_data[b2]);
          end
 `endif
       end
