@@ -746,8 +746,20 @@ module backend_top
    reg              q_trap [0:QN-1];
    reg  [63:0]      q_cause[0:QN-1];
    reg  [63:0]      q_tval [0:QN-1];
+   reg  [PBITS-1:0] q_ps1  [0:QN-1];   // renamed source physregs (rename-correctness check)
+   reg  [PBITS-1:0] q_ps2  [0:QN-1];
+   reg  [4:0]       q_rs1  [0:QN-1];   // source arch regs (from the insn fields)
+   reg  [4:0]       q_rs2  [0:QN-1];
    integer          qn; initial qn = 0;
    reg              cot_found;
+
+   // Rename-correctness invariant: a retiring op's source physreg (ps) MUST equal the
+   // arch reg's current physreg (last committed writer). Tracked in retire (= program)
+   // order, so it's exact with no false positives. Fires at the BAD RENAME (e.g. the
+   // store reading a wrong-mapped x8) -- pinpointing the rename/chk_map bug locally.
+   reg [PBITS-1:0]  arch_phys [0:63];
+   integer          api; initial for (api = 0; api < 64; api = api + 1) arch_phys[api] = api[PBITS-1:0];
+   reg [6:0]        ck_op;  reg ck_u1, ck_u2;  integer ck_da;
 
    // ---- trap-fire fields (combinational, sampled at the delivery edge) ----
    wire        cot_fire  = eb.u_csr.trap_v;
@@ -780,6 +792,25 @@ module backend_top
          //    the LIVE mepc read here is the correct mepc-after-retire for normal ops.
          for (fl = 0; fl < QN; fl = fl + 1)
             if (qn > 0 && q_cmt[0] && (q_trap[0] || q_rk[0] == 2'd0 || q_vok[0])) begin
+               // rename-correctness check (integer-source ops only; skip FP-source + traps)
+               if (!q_trap[0]) begin
+                  ck_op = q_insn[0][6:0];
+                  // integer-rs1 ops: OP/OP32/OP-IMM/IMM32/LOAD/STORE/BRANCH/JALR/AMO
+                  ck_u1 = (ck_op==7'h33)|(ck_op==7'h3b)|(ck_op==7'h13)|(ck_op==7'h1b)
+                        | (ck_op==7'h03)|(ck_op==7'h23)|(ck_op==7'h63)|(ck_op==7'h67)|(ck_op==7'h2f);
+                  // integer-rs2 ops: OP/OP32/STORE/BRANCH/AMO
+                  ck_u2 = (ck_op==7'h33)|(ck_op==7'h3b)|(ck_op==7'h23)|(ck_op==7'h63)|(ck_op==7'h2f);
+                  if (ck_u1 && (arch_phys[q_rs1[0]] != q_ps1[0]))
+                     $display("[%0t] *** REN-CHK pc=%h insn=%h rs1=x%0d ps1=%0d != live=%0d",
+                        $time, q_pc[0], q_insn[0], q_rs1[0], q_ps1[0], arch_phys[q_rs1[0]]);
+                  if (ck_u2 && (arch_phys[q_rs2[0]] != q_ps2[0]))
+                     $display("[%0t] *** REN-CHK pc=%h insn=%h rs2=x%0d ps2=%0d != live=%0d",
+                        $time, q_pc[0], q_insn[0], q_rs2[0], q_ps2[0], arch_phys[q_rs2[0]]);
+               end
+               if (q_rk[0] != 2'd0) begin            // update tracked arch->phys
+                  ck_da = (q_rk[0]==2'd2) ? (32 + q_ri[0]) : {1'b0, q_ri[0]};
+                  arch_phys[ck_da] = q_prd[0];
+               end
                probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
                   (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
                   {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
@@ -790,6 +821,7 @@ module backend_top
                   q_prd[fi]=q_prd[fi+1]; q_prv[fi]=q_prv[fi+1]; q_mepc[fi]=q_mepc[fi+1];
                   q_val[fi]=q_val[fi+1]; q_vok[fi]=q_vok[fi+1]; q_cmt[fi]=q_cmt[fi+1];
                   q_trap[fi]=q_trap[fi+1]; q_cause[fi]=q_cause[fi+1]; q_tval[fi]=q_tval[fi+1];
+                  q_ps1[fi]=q_ps1[fi+1]; q_ps2[fi]=q_ps2[fi+1]; q_rs1[fi]=q_rs1[fi+1]; q_rs2[fi]=q_rs2[fi+1];
                end
                qn = qn - 1;
             end
@@ -823,6 +855,10 @@ module backend_top
                              r_rd[fl*ABITS + 5]      ? 2'd2 :
                             (r_rd[fl*ABITS +: 5]==0) ? 2'd0 : 2'd1;
                q_prd [qn] = pdst[fl*PBITS +: PBITS];
+               q_ps1 [qn] = ps1[fl*PBITS +: PBITS];
+               q_ps2 [qn] = ps2[fl*PBITS +: PBITS];
+               q_rs1 [qn] = r_pay[fl*`PAYW + 165 + 15 +: 5];   // insn[19:15]
+               q_rs2 [qn] = r_pay[fl*`PAYW + 165 + 20 +: 5];   // insn[24:20]
                q_prv [qn] = mmu_priv;
                q_mepc[qn] = 64'd0;          // filled at commit (mepc-after-retire)
                q_val [qn] = 64'd0;  q_vok[qn] = 1'b0;  q_cmt[qn] = 1'b0;

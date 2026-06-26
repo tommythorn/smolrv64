@@ -107,6 +107,28 @@ module renamer_bundle
             .stall(stall[i]));
       end
    endgenerate
+
+`ifdef FL_ASSERT
+   // Invariant checker: the architectural map must NEVER point to a FREE physreg.
+   // If a rollback/commit frees a physreg that is still some arch reg's live mapping,
+   // a later reader (e.g. a re-dispatched store reading rs2) gets garbage. This fires
+   // locally the cycle after the bad free -- pinpointing the freelist/recovery bug,
+   // vs a downstream value divergence millions of instructions later. The map is
+   // replicated (read lane[0]); each shard owns physregs with pr[SBITS-1:0]==shard.
+   genvar gj;
+   generate for (gj = 0; gj < SHARDS; gj = gj + 1) begin : flchk
+      integer fa; reg [PBITS-1:0] fap;
+      always @(posedge clk) if (!reset)
+         for (fa = 0; fa < AREGS; fa = fa + 1) begin
+            fap = lane[0].sh.map[fa];
+            if ((fap[SBITS-1:0] == gj[SBITS-1:0]) && lane[gj].sh.fl.free[fap[PBITS-1:SBITS]]) begin
+               $display("[%0t] *** FL-ASSERT: arch r%0d -> phys %0d is FREE (rollback=%b rb_idx=%0d commit=%b cmt_idx=%0d)",
+                  $time, fa, fap, rollback, rollback_idx, commit, commit_idx);
+               $finish;
+            end
+         end
+   end endgenerate
+`endif
 endmodule
 
 `default_nettype wire
