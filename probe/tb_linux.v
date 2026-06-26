@@ -83,6 +83,23 @@ module tb;
             rx_we <= 1'b1; rx_data <= cmd[(cmdlen-1-ci)*8 +: 8]; ci <= ci+1;
          end
          if ((c % 500000) == 0) $display("[c=%0d pc=%h commit=%b]", c, dut.imem_addr, commit);
+         // adapter request/response sequence: who is the cache serving vs the LSU's load addr?
+         if (c > 1783560 && c < 1783612)
+            $display("[ADPSEQ c=%0d dmem_ren=%b dmem_raddr=%h | dc_st=%0d dc_cur=%h dc_rd_v=%b | raw_rv=%b dmem_rv=%b c_rd_pend=%b]",
+               c, dut.dmem_ren, dut.dmem_raddr, dut.u_dcache.st, dut.u_dcache.cur_line,
+               dut.dc_rd_valid, dut.raw_rvalid, dut.dmem_rvalid, dut.c_rd_pend);
+         // soc_top D$ read-adapter tap: is the bad value from the CACHE (dc_rd_data) or the
+         // sticky-rdata adapter leaking a prior load (c_rdd_st via c_st_ok)?
+         if (c > 1783600 && c < 1783615)
+            $display("[ADPT c=%0d dmem_rvalid=%b dmem_rdata=%h | dc_rd_v=%b dc_rd_data=%h | c_st_ok=%b c_rdd_st=%h]",
+               c, dut.dmem_rvalid, dut.dmem_rdata, dut.dc_rd_valid, dut.dc_rd_data, dut.c_st_ok, dut.c_rdd_st);
+         // LSU MERGE tap for the bad load (addr 0x80016ed8): mem_rdata (cache/mem return) vs
+         // c_val (merged result). rdata==badval -> stale cache line; rdata ok but c_val bad -> forward.
+         if (c > 1783000 && c < 1783650 && dut.core.u_lsu.mem_rvalid
+             && dut.core.u_lsu.mem_raddr == 64'h80016ed8)
+            $display("[LSU-MERGE c=%0d raddr=%h mem_rdata=%h c_val=%h merge_fire=%b]", c,
+               dut.core.u_lsu.mem_raddr, dut.core.u_lsu.mem_rdata, dut.core.u_lsu.c_val,
+               dut.core.u_lsu.merge_fire);
          // PC-filtered LSU trace near the failure: the `ld ra,56(sp)` (0x80001e0a) address
          // (-> sp) on every shard, + every store into the suspect stack/RA region. brp[i] is
          // shard i's EX-stage PC (= ex_pc, unconditional); eb_agu[i] is its AGU address.

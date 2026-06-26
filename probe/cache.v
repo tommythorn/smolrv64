@@ -43,6 +43,7 @@ module cache #(
    input  wire [PAW-1:0]   rd_addr,
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
+   output reg  [PAW-1:0]   rd_resp_addr,  // byte addr this rd_valid answers (consumer matches its req)
 
    // ---- consumer write port (WRITABLE only; byte-masked) ----
    input  wire             wr_req,
@@ -210,6 +211,7 @@ module cache #(
               if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
                  rd_valid <= 1;
+                 rd_resp_addr <= r_addr;     // the request this response answers
                  st <= S_IDLE;
               end else begin : do_write
                  reg [LINEB-1:0] n0, n1;

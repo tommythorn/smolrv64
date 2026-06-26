@@ -142,12 +142,18 @@ module soc_top #(
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
-   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;
+   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
-   wire         raw_rvalid = is_dev_r ? dev_rvalid : dc_rd_valid;
+   // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
+   // ("a new mem_ren supersedes any prior unfinished read"). The cache, already committed to the
+   // squashed address, would otherwise deliver that stale line to the new load. Match the cache's
+   // response address to the current request (like the I$ does with i_pa); a non-matching response
+   // is discarded and the request re-issues for the new address.
+   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
+   wire         raw_rvalid = is_dev_r ? dev_rvalid : dc_rv_ok;
    wire [63:0]  raw_rdata  = is_dev_r ? dev_rdata  : dc_rd_data;
-   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~raw_rvalid & ~is_dev_r;
+   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
@@ -162,6 +168,7 @@ module soc_top #(
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_resp_addr(dc_rd_resp_addr),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(1'b0), .inv_busy(),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
