@@ -65,7 +65,7 @@ module csr_file
    localparam [11:0] MSTATUS=12'h300, MISA=12'h301, MEDELEG=12'h302, MIDELEG=12'h303,
                      MIE=12'h304, MTVEC=12'h305, MCOUNTEREN=12'h306,
                      MSCRATCH=12'h340, MEPC=12'h341, MCAUSE=12'h342, MTVAL=12'h343,
-                     MIP=12'h344, MHARTID=12'hF14,
+                     MIP=12'h344, MHARTID=12'hF14, MTOPI=12'hFB0,
                      PMPCFG0=12'h3A0, PMPADDR0=12'h3B0, MNSTATUS=12'h744,
                      SSTATUS=12'h100, SIE=12'h104, STVEC=12'h105, SCOUNTEREN=12'h106,
                      SSCRATCH=12'h140, SEPC=12'h141, SCAUSE=12'h142, STVAL=12'h143,
@@ -198,7 +198,11 @@ module csr_file
    wire csr_ro      = (upd_addr[11:10]==2'b11) & csr_writes;
    wire csr_nopriv  = upd_is_csr & (priv < upd_addr[9:8]);
    wire satp_tvm    = upd_is_csr & (upd_addr == SATP) & (priv == S) & tvm;
-   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm);
+   // Unimplemented CSR -> illegal (must trap, not silently read 0). mtopi is an AIA
+   // (Smaia) CSR; AIA is not in RVA22, and OpenSBI probes mtopi to detect it -- the
+   // trap is how it concludes AIA is absent. Add other unimplemented CSRs here as found.
+   wire csr_unimpl  = upd_is_csr & (upd_addr == MTOPI);
+   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl);
 
    // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
    wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
