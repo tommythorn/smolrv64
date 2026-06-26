@@ -19,7 +19,8 @@ module tb;
                 .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr),
                 .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
                 .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-                .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack));
+                .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+                .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready());
 
    // behavioral DDR (line port, 4-cycle latency): cache-backed DRAM at BASE
    reg [7:0] ram [0:(1<<21)-1];

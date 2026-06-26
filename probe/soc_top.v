@@ -36,7 +36,12 @@ module soc_top #(
    output wire [57:0]      ddr_addr,     // line address PA[63:6]
    output wire [511:0]     ddr_wdata,
    input  wire [511:0]     ddr_rdata,
-   input  wire             ddr_ack
+   input  wire             ddr_ack,
+   // UART receive: the TB/host pushes a byte (uart_rx_we while uart_rx_ready) -> the core
+   // reads it from RBR. uart_rx_ready = the holding register is empty (DR clear).
+   input  wire             uart_rx_we,
+   input  wire [7:0]       uart_rx_data,
+   output wire             uart_rx_ready
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -103,21 +108,36 @@ module soc_top #(
       .src(64'd0), .meip(plic_meip), .seip(plic_seip));
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
-   // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR read (off 5) -> THRE|TEMT
+   // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR (off 5) -> THRE|TEMT|DR;
+   // RBR read (off 0, DLAB=0) -> the received byte (clears DR). LCR.DLAB(bit7) gates off 0.
    reg [7:0] uart_lcr;  integer ub;
-   always @(posedge clk) if (reset) uart_lcr<=8'd0;
-      else if (dmem_wen & is_uart_w & ~dev_wack)
-         for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
-            case ((dmem_waddr - UART_BASE + ub) & 3'h7)
-               3'd0: if (!uart_lcr[7]) $write("%c", dmem_wdata[ub*8 +: 8]);
-               3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
-               default: ;
-            endcase
-   function [63:0] uart_rd; input [63:0] a; integer b2; reg [2:0] off;
+   reg [7:0] uart_rbr;  reg uart_dr;       // RX holding register + data-ready
+   assign    uart_rx_ready = ~uart_dr;
+   // RBR read strobe: a load to offset 0 with DLAB clear consumes the byte
+   wire      uart_off0  = ((dmem_raddr - UART_BASE) & 64'h7) == 64'd0;
+   wire      uart_rbr_rd = dmem_ren & is_uart_r & uart_off0 & ~uart_lcr[7];
+   always @(posedge clk) if (reset) begin uart_lcr<=8'd0; uart_dr<=1'b0; uart_rbr<=8'd0; end
+      else begin
+         if (dmem_wen & is_uart_w & ~dev_wack)
+            for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
+               case ((dmem_waddr - UART_BASE + ub) & 3'h7)
+                  3'd0: if (!uart_lcr[7]) $write("%c", dmem_wdata[ub*8 +: 8]);
+                  3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
+                  default: ;
+               endcase
+         if (uart_rx_we & ~uart_dr) begin uart_rbr <= uart_rx_data; uart_dr <= 1'b1; end
+         else if (uart_rbr_rd)      uart_dr <= 1'b0;
+      end
+   function [63:0] uart_rd; input [63:0] a; input [7:0] rbr; input dr; input dlab;
+      integer b2; reg [2:0] off;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
-         off=(a-UART_BASE+b2)&3'h7; uart_rd[b2*8 +: 8]=(off==3'd5)?8'h60:8'h00; end end
+         off=(a-UART_BASE+b2)&3'h7;
+         uart_rd[b2*8 +: 8] = (off==3'd5) ? (8'h60 | (dr?8'h01:8'h00))      // LSR: THRE|TEMT|DR
+                            : (off==3'd0 && !dlab) ? rbr                     // RBR
+                            : 8'h00; end end
    endfunction
-   wire [63:0] dev_rdata = is_clint_r ? clint_rdata : is_uart_r ? uart_rd(dmem_raddr)
+   wire [63:0] dev_rdata = is_clint_r ? clint_rdata
+                         : is_uart_r  ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7])
                          : is_plic_r  ? plic_rdata  : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------

@@ -13,6 +13,8 @@ for tb in tb_*.v; do
    [ "$tb" = tb_irq.v ]   && continue   # run-vl-tests.sh / a custom interrupt program)
    [ "$tb" = tb_soc.v ]   && continue   # +hex-driven SoC harness (run-soc-test.sh)
    [ "$tb" = tb_soctop.v ] && continue  # +hex-driven soc_top harness (verilated)
+   [ "$tb" = tb_mon.v ]    && continue  # +monhex monitor-boot harness (verilated)
+   [ "$tb" = tb_linux.v ]  && continue  # +bin-driven Linux-boot harness (verilated)
    total=$((total+1))
    if ! timeout 90 iverilog -g2012 -I. -I../src -s tb -o /tmp/tb.vvp $srcs "$tb" ../src/alu.v fp_unit_stub.sv ../src/smolrv64_plic_arbiter.v >/tmp/tb_cc.log 2>&1; then
       printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
