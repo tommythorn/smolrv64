@@ -70,13 +70,15 @@ module soc_top #(
       .redirect(redirect), .redirect_target(redirect_target), .commit(commit), .commit_idx());
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
-   localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000;
-   wire is_clint_r = (dmem_raddr & ~64'hffff) == CLINT_BASE;
-   wire is_uart_r  = (dmem_raddr & ~64'hf)    == UART_BASE;
-   wire is_dev_r   = is_clint_r | is_uart_r;
-   wire is_clint_w = (dmem_waddr & ~64'hffff) == CLINT_BASE;
-   wire is_uart_w  = (dmem_waddr & ~64'hf)    == UART_BASE;
-   wire is_dev_w   = is_clint_w | is_uart_w;
+   localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
+   wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
+   wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
+   wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r;
+   wire is_clint_w = (dmem_waddr & ~64'hffff)     == CLINT_BASE;
+   wire is_uart_w  = (dmem_waddr & ~64'hf)        == UART_BASE;
+   wire is_plic_w  = (dmem_waddr & ~64'h3ff_ffff) == PLIC_BASE;
+   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w;
    // device read returns 1 cycle after the ren pulse (combinational device data, held addr);
    // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
    reg  dev_rvalid, dev_wack;
@@ -89,7 +91,18 @@ module soc_top #(
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
       .mtip(clint_mtip), .msip(clint_msip), .o_mtime());
-   wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0);
+   // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller. No real sources yet
+   // (the UART is output-only and there is no virtio), so src=0 -- but the kernel still
+   // probes/initialises the region at boot, which would otherwise fault as unmapped.
+   wire [63:0] plic_rdata;  wire plic_meip, plic_seip;
+   wire [63:0] plic_addr = (dmem_wen & is_plic_w) ? dmem_waddr : dmem_raddr;
+   plic u_plic
+     (.clk(clk), .reset(reset),
+      .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
+      .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
+      .src(64'd0), .meip(plic_meip), .seip(plic_seip));
+   wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
+                     | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
    // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR read (off 5) -> THRE|TEMT
    reg [7:0] uart_lcr;  integer ub;
    always @(posedge clk) if (reset) uart_lcr<=8'd0;
@@ -104,7 +117,8 @@ module soc_top #(
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
          off=(a-UART_BASE+b2)&3'h7; uart_rd[b2*8 +: 8]=(off==3'd5)?8'h60:8'h00; end end
    endfunction
-   wire [63:0] dev_rdata = is_clint_r ? clint_rdata : is_uart_r ? uart_rd(dmem_raddr) : 64'd0;
+   wire [63:0] dev_rdata = is_clint_r ? clint_rdata : is_uart_r ? uart_rd(dmem_raddr)
+                         : is_plic_r  ? plic_rdata  : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
