@@ -949,6 +949,7 @@ module backend_top
    reg [ABW-1:0]  rb_tag [0:255];                   // ROB (by hwseq): producer abs tag
    reg            rb_wbv [0:255];                   // ... writeback done
    reg [63:0]     rb_val [0:255];                   // ... value (for the value check)
+   reg [ABW-1:0]  po     [0:NPHYS-1];               // phys-reg -> owner abs (set at allocation)
    reg            tv [0:31]; reg [SEQW-1:0] ths [0:31]; reg [ABW-1:0] tab [0:31];
    reg [ABW-1:0]  wab;
    reg [6:0]      sop; reg [4:0] srs1, srs2, srd; reg srdfp, sck1, sck2;
@@ -959,6 +960,7 @@ module backend_top
       for (sl = 0; sl < NCHK; sl = sl + 1)
          for (sa = 0; sa < 32; sa = sa + 1) begin cr_v[sl][sa]=0; cr_hs[sl][sa]=0; cr_ab[sl][sa]=0; end
       for (sa = 0; sa < 256; sa = sa + 1) begin o1v[sa]=0; o2v[sa]=0; rb_tag[sa]=0; rb_wbv[sa]=0; end
+      for (sa = 0; sa < NPHYS; sa = sa + 1) po[sa]=0;
    end
    // dispatch: capture sources from the seqno-RAT, open ROB tags, update + snapshot RAT
    always @(posedge clk) if (!reset) begin
@@ -982,6 +984,7 @@ module backend_top
             o1v[shs] <= sck1 & tv[srs1] & (srs1 != 5'd0); o1hs[shs] <= ths[srs1]; o1ab[shs] <= tab[srs1];
             o2v[shs] <= sck2 & tv[srs2] & (srs2 != 5'd0); o2hs[shs] <= ths[srs2]; o2ab[shs] <= tab[srs2];
             rb_tag[shs] <= wab;  rb_wbv[shs] <= 1'b0;
+            if (r_rd_v[sl]) po[pdst[sl*PBITS +: PBITS]] <= wab;   // this physreg now belongs to this op
             if (r_rd_v[sl] & ~srdfp & (srd != 5'd0)) begin tv[srd]=1'b1; ths[srd]=shs; tab[srd]=wab; end
             wab = wab + 1'b1;
          end
@@ -994,6 +997,14 @@ module backend_top
       // writeback: mark each producer's ROB entry done + record value (same block to
       // keep rb_* single-driver; runs every cycle, after the dispatch open above)
       for (sl = 0; sl < IW; sl = sl + 1) if (wkv[sl]) begin
+         // FAULTY-WRITEBACK: the physreg being written must still belong to the writer.
+         // If it has been reallocated (owner abs != writer abs), this is a stale/squashed
+         // writeback overwriting a good register -- the leaked-writeback bug.
+         if ((po[wkp[sl*PBITS +: PBITS]] != 0) && (rb_tag[wkq[sl*SEQW +: SEQW]] != 0)
+             && (po[wkp[sl*PBITS +: PBITS]] != rb_tag[wkq[sl*SEQW +: SEQW]]))
+            $display("[%0t] *** SEQROB FAULTY-WRITEBACK: op hwseq=%0d (abs=%0d) writes phys %0d val=%h, but it is owned by abs=%0d",
+               $time, wkq[sl*SEQW +: SEQW], rb_tag[wkq[sl*SEQW +: SEQW]],
+               wkp[sl*PBITS +: PBITS], wb_val[sl*64 +: 64], po[wkp[sl*PBITS +: PBITS]]);
          rb_wbv[wkq[sl*SEQW +: SEQW]] <= 1'b1;
          rb_val[wkq[sl*SEQW +: SEQW]] <= wb_val[sl*64 +: 64];
       end
