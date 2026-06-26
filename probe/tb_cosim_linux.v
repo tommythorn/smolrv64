@@ -73,24 +73,22 @@ module tb;
 `ifdef LSU_TAP
          // rename check (any cycle): store sd x8 @ ...8003ddb6 -> its rs2 physreg (ps2)
          // vs x8 producer addi x8 @ ...80002f40 -> its dest (pdst). Mismatch => rename bug.
-         // $time window around the ACTUAL failing store/load (store retires ~$time 9.5516e10).
-         // Tap drains + loads to page-offset 0xf88 (frame-PA-independent) with full detail.
-         if ($time > 95400000000 && $time < 95520000000) begin
-            if (dut.core.u_lsu.mem_wen && dut.core.u_lsu.mem_waddr[11:0]==12'hf88)
-               $display("[%0t ST-DRAIN pa=%h data=%h mask=%b]", $time,
-                  dut.core.u_lsu.mem_waddr, dut.core.u_lsu.mem_wdata, dut.core.u_lsu.mem_wmask);
-            if (dut.core.u_lsu.mem_ren && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[%0t LD-REQ pa=%h]", $time, dut.core.u_lsu.mem_raddr);
-            if (dut.core.u_lsu.mem_rvalid && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[%0t LD-RDATA pa=%h rdata=%h]", $time, dut.core.u_lsu.mem_raddr, dut.core.u_lsu.mem_rdata);
-            if (dut.core.u_lsu.ld_wb_v && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               $display("[%0t LD-WB pa=%h val=%h]", $time, dut.core.u_lsu.mem_raddr, dut.core.u_lsu.ld_wb_val);
-            // SB dump while a load to 0xf88 is held in MERGE (p_v): does it forward?
-            if (dut.core.u_lsu.p_v && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
-               for (b2 = 0; b2 < 4; b2 = b2 + 1)
-                  $display("[%0t SB[%0d] v=%b cmt=%b seq=%0d addr=%h data=%h]", $time, b2,
-                     dut.core.u_lsu.sb_v[b2], dut.core.u_lsu.sb_cmt[b2], dut.core.u_lsu.sb_seq[b2],
-                     dut.core.u_lsu.sb_addr[b2], dut.core.u_lsu.sb_data[b2]);
+         // Forwarding trace: whenever a load is HELD in MERGE (p_v) reading the 0xf88 word
+         // (VA[11:3]=0x1f1), dump the forwarding decision -- s_use (eligible older stores),
+         // mem_rdata (memory), c_val (merge result), and the SB. Shows forward-vs-memory.
+         if ($time > 95450000000 && $time < 95470000000 && dut.core.u_lsu.p_v)
+            $display("[%0t PV p_w0=%h off=%h c_val=%h]", $time,
+               dut.core.u_lsu.p_w0, dut.core.u_lsu.p_w0[8:0], dut.core.u_lsu.c_val);
+         if ($time > 90000000000 && dut.core.u_lsu.p_v
+             && (dut.core.u_lsu.p_w0[8:0] == 9'h1f1)) begin
+            $display("[%0t LD-MERGE p_seq=%0d p_w0=%h p_lb=%0d s_use=%b mem_rdata=%h c_val=%h]",
+               $time, dut.core.u_lsu.p_seq, dut.core.u_lsu.p_w0, dut.core.u_lsu.p_lb,
+               dut.core.u_lsu.s_use, dut.core.u_lsu.mem_rdata, dut.core.u_lsu.c_val);
+            for (b2 = 0; b2 < 4; b2 = b2 + 1)
+               $display("    SB[%0d] v=%b rdy=%b cmt=%b seq=%0d w0=%h d0=%h be0=%b", b2,
+                  dut.core.u_lsu.sb_v[b2], dut.core.u_lsu.sb_rdy[b2], dut.core.u_lsu.sb_cmt[b2],
+                  dut.core.u_lsu.sb_seq[b2], dut.core.u_lsu.sb_w0[b2], dut.core.u_lsu.sb_d0[b2],
+                  dut.core.u_lsu.sb_be0[b2]);
          end
 `endif
       end
