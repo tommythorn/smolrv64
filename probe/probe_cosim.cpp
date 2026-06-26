@@ -1,0 +1,231 @@
+// Cosim glue for the sharded-OoO probe core, verilated under tb_vl.v with
+// -DPROBE_COSIM. backend_top emits one probe_retire() DPI call per committed
+// instruction (and per trap) in program order; here we lockstep those against
+// the simmerv golden model (C ABI in ~/simmerv) and abort on the first
+// divergence. Mirrors src/sim_main.cpp's comparison/arming machinery; the one
+// structural difference is that the probe reports no architectural next_pc, so
+// we BUFFER one retire and fill its next_pc with the following retire's pc
+// (exact for in-order commit, traps included).
+//
+// Init is lazy (on the first probe_retire): we read the same +hex flat byte
+// image tb_vl.v loads, install it in simmerv at +reset_pc (default 0x80000000),
+// zero registers and set the PC. No main() here -- verilator --binary owns it.
+
+#include "verilated.h"
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include "simmerv_cosim.h"
+
+namespace {
+
+constexpr uint64_t AXI_BASE = 0x80000000ULL;
+#ifndef COSIM_MEM_SIZE_LG2
+#define COSIM_MEM_SIZE_LG2 27
+#endif
+constexpr size_t MEM_BYTES = 1ULL << COSIM_MEM_SIZE_LG2;
+
+SimmervCtx* g_ctx   = nullptr;
+bool        g_inited = false;
+uint64_t    g_seqno = 0;
+
+struct RingEntry { SimmervRetire dut; SimmervRetire ref; bool valid; };
+constexpr size_t RING_N = 32;
+RingEntry g_ring[RING_N] = {};
+size_t    g_ring_idx = 0;
+
+// buffered previous retire (so next_pc = next retire's pc)
+bool          g_have_prev = false;
+SimmervRetire g_prev{};
+uint64_t      g_prev_mtimecmp = ~0ULL;
+bool          g_prev_seip = false;
+
+const char* plusarg(const char* key) {
+    // verilated --binary parsed the args; fetch "+key=...".
+    const char* m = Verilated::commandArgsPlusMatch(key);
+    if (!m || !m[0]) return nullptr;
+    const char* eq = std::strchr(m, '=');
+    return eq ? eq + 1 : nullptr;
+}
+
+bool load_flat_hex(const char* path) {
+    std::ifstream in(path);
+    if (!in) { std::fprintf(stderr, "cosim: cannot open %s\n", path); return false; }
+    std::vector<uint8_t> ram(MEM_BYTES, 0);
+    std::string tok;
+    size_t i = 0;
+    while (in >> tok) {
+        if (tok.empty() || tok[0] == '@' || tok[0] == '/') {
+            if (!tok.empty() && tok[0] == '@') i = std::stoull(tok.substr(1), nullptr, 16);
+            continue;
+        }
+        if (i >= ram.size()) { std::fprintf(stderr, "cosim: image overflow\n"); return false; }
+        ram[i++] = (uint8_t)std::stoul(tok, nullptr, 16);
+    }
+    if (simmerv_write_memory(g_ctx, AXI_BASE, ram.data(), ram.size()) != 0) {
+        std::fprintf(stderr, "cosim: simmerv_write_memory failed\n"); return false;
+    }
+    return true;
+}
+
+void cosim_init() {
+    g_inited = true;
+    setvbuf(stdout, nullptr, _IONBF, 0);   // so $display debug survives abort()
+    g_ctx = simmerv_create(MEM_BYTES);
+    if (!g_ctx) { std::fprintf(stderr, "cosim: simmerv_create failed\n"); std::abort(); }
+    const char* hex = plusarg("hex");
+    if (!hex) { std::fprintf(stderr, "cosim: need +hex=<file>\n"); std::abort(); }
+    if (!load_flat_hex(hex)) std::abort();
+    simmerv_zero_registers(g_ctx);
+    const char* rpc = plusarg("reset_pc");
+    uint64_t reset_pc = rpc ? std::strtoull(rpc, nullptr, 16) : AXI_BASE;
+    simmerv_set_pc(g_ctx, reset_pc);
+    simmerv_set_mtime(g_ctx, 0);
+    std::fprintf(stderr, "cosim: simmerv ready (reset_pc=%016llx)\n",
+                 (unsigned long long)reset_pc);
+}
+
+void dump_retire(const char* label, const SimmervRetire& r) {
+    std::fprintf(stderr,
+        "  %s seq=%llu pc=%016llx npc=%016llx insn=%08x prv=%u trap=%u "
+        "rd=(k%u,x%u)=%016llx cause=%016llx tval=%016llx mepc=%016llx\n",
+        label, (unsigned long long)r.seqno, (unsigned long long)r.pc,
+        (unsigned long long)r.next_pc, r.insn, r.prv, r.trapped, r.rd_kind, r.rd_idx,
+        (unsigned long long)r.rd_val, (unsigned long long)r.trap_cause,
+        (unsigned long long)r.trap_tval, (unsigned long long)r.mepc);
+}
+
+[[noreturn]] void mismatch_abort(const SimmervRetire& dut, const SimmervRetire& ref) {
+    std::fprintf(stderr, "\n*** cosim MISMATCH at retire #%llu ***\n\n",
+                 (unsigned long long)g_seqno);
+    std::fprintf(stderr, "Recent history (DUT vs REF):\n");
+    for (size_t i = 0; i < RING_N; i++) {
+        size_t idx = (g_ring_idx + i) % RING_N;
+        if (!g_ring[idx].valid) continue;
+        dump_retire("DUT", g_ring[idx].dut);
+        dump_retire("REF", g_ring[idx].ref);
+    }
+    std::fprintf(stderr, "Diverging retire:\n");
+    dump_retire("DUT", dut);
+    dump_retire("REF", ref);
+    std::fflush(stderr);
+    std::abort();
+}
+
+uint32_t canon_insn(uint32_t insn) {
+    return (insn & 0x3) == 0x3 ? insn : (insn & 0xffffu);
+}
+
+int csr_read_to_override(uint32_t insn) {
+    if ((insn & 0x7f) != 0x73) return -1;
+    const uint32_t f3 = (insn >> 12) & 0x7;
+    if (f3 == 0 || f3 == 4) return -1;
+    const uint32_t csrno = (insn >> 20) & 0xfff;
+    switch (csrno) {
+        case 0xC00: case 0xC01: case 0xC02:
+        case 0xB00: case 0xB02:
+        case 0xF11: case 0xF12: case 0xF13: return (int)csrno;
+        default:
+            if ((csrno >= 0xB03 && csrno <= 0xB1F) ||
+                (csrno >= 0xC03 && csrno <= 0xC1F) ||
+                (csrno >= 0x323 && csrno <= 0x33F)) return (int)csrno;
+            return -1;
+    }
+}
+
+// Step simmerv for one buffered DUT retire P and compare.
+void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
+    simmerv_set_mtime(g_ctx, dut.mtime);
+    const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
+    const unsigned long long STIP_CAUSE = 0x8000000000000005ULL;
+    const unsigned long long SEIP_CAUSE = 0x8000000000000009ULL;
+    simmerv_set_mtimecmp(g_ctx, (dut.trapped && dut.trap_cause == MTIP_CAUSE) ? mtimecmp : ~0ULL);
+    simmerv_set_stip_armed(g_ctx, dut.trapped && dut.trap_cause == STIP_CAUSE);
+    simmerv_set_seip_armed(g_ctx, dut.trapped && dut.trap_cause == SEIP_CAUSE);
+    simmerv_set_seip(g_ctx, seip);
+    simmerv_set_plic_ip(g_ctx, 10, seip);
+    if (!dut.trapped && dut.rd_kind != 0) {
+        const int oc = csr_read_to_override(dut.insn);
+        if (oc >= 0) simmerv_arm_csr_read(g_ctx, (uint16_t)oc, dut.rd_val);
+        simmerv_arm_load_value(g_ctx, dut.rd_val);
+    }
+    SimmervRetire ref{};
+    if (simmerv_step_retire(g_ctx, &ref) != 0) {
+        std::fprintf(stderr, "cosim: simmerv_step_retire failed at seq %llu\n",
+                     (unsigned long long)g_seqno);
+        std::abort();
+    }
+    ref.seqno = g_seqno;
+
+    // The probe reports the RVC-EXPANDED 32-bit insn for compressed instructions,
+    // whereas simmerv reports the raw 16-bit parcel. Reconciling needs an RVC
+    // un-expander; instead, when the retire is compressed (ref parcel's low 2 bits
+    // != 11) we skip insn-equality -- pc/next_pc/rd/rd_val still pin the behavior,
+    // and RVC expansion is separately verified (tb_rvc_expand, exhaustive).
+    const bool ref_compressed = (ref.insn & 0x3) != 0x3;
+    const bool insn_ok = ref_compressed || (canon_insn(dut.insn) == canon_insn(ref.insn));
+
+    const bool ok =
+        dut.pc         == ref.pc        &&
+        dut.next_pc    == ref.next_pc   &&
+        insn_ok                         &&
+        dut.rd_kind    == ref.rd_kind   &&
+        dut.rd_idx     == ref.rd_idx    &&
+        dut.prv        == ref.prv       &&
+        dut.trapped    == ref.trapped   &&
+        (dut.rd_kind == 0 || dut.rd_val == ref.rd_val) &&
+        dut.trap_cause == ref.trap_cause &&
+        dut.trap_tval  == ref.trap_tval &&
+        dut.mepc       == ref.mepc;
+
+    g_ring[g_ring_idx] = { dut, ref, true };
+    g_ring_idx = (g_ring_idx + 1) % RING_N;
+
+    if (g_seqno == 1 || (g_seqno % 1'000'000) == 0)
+        std::fprintf(stderr, "cosim: %llu retirements ok (pc=%016llx)\n",
+                     (unsigned long long)g_seqno, (unsigned long long)dut.pc);
+
+    if (!ok) mismatch_abort(dut, ref);
+}
+
+} // namespace
+
+// DPI callback from backend_top.v (one per committed instruction or trap).
+extern "C" void probe_retire(
+    unsigned long long pc,
+    unsigned int       insn,
+    unsigned char      rd_kind,
+    unsigned char      rd_idx,
+    unsigned char      prv,
+    unsigned char      trapped,
+    unsigned long long rd_val,
+    unsigned long long trap_cause,
+    unsigned long long trap_tval,
+    unsigned long long mtime,
+    unsigned long long mtimecmp,
+    unsigned long long mepc,
+    unsigned char      seip)
+{
+    if (!g_inited) cosim_init();
+
+    SimmervRetire e{};
+    e.pc = pc; e.insn = insn; e.rd_kind = rd_kind; e.rd_idx = rd_idx;
+    e.prv = prv; e.trapped = trapped; e.rd_val = rd_val;
+    e.trap_cause = trap_cause; e.trap_tval = trap_tval; e.mtime = mtime; e.mepc = mepc;
+
+    if (g_have_prev) {
+        g_prev.next_pc = pc;            // in-order commit: this retire's pc
+        g_seqno++;
+        g_prev.seqno = g_seqno;
+        step_compare(g_prev, g_prev_mtimecmp, g_prev_seip);
+    }
+    g_prev = e;
+    g_prev_mtimecmp = mtimecmp;
+    g_prev_seip = (seip != 0);
+    g_have_prev = true;
+}

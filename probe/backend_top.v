@@ -686,6 +686,162 @@ module backend_top
 
    assign wb_valid = wkv;
    assign wb_pr    = wkp;
+
+`ifdef PROBE_COSIM
+   // ============================ cosim retire stream ============================
+   // Reconstruct an in-order architectural retire stream from the OoO/CPR backend
+   // and hand each committed instruction (and each trap) to simmerv via a DPI call
+   // (probe_cosim.cpp). Records per-(ckpt,slot) info at dispatch, fills the result
+   // value at writeback (unique phys-dest match), and emits at commit in slot
+   // order; a trap is emitted when csr_file delivers one (its op is the oldest live
+   // checkpoint, so interleaving with commits preserves program order). next_pc is
+   // computed C-side by buffering one retire (= the next retire's pc). VERIFY-ONLY.
+   import "DPI-C" function void probe_retire(
+      input longint unsigned pc,
+      input int     unsigned insn,
+      input byte    unsigned rd_kind,     // 0 none, 1 int, 2 fp
+      input byte    unsigned rd_idx,
+      input byte    unsigned prv,
+      input byte    unsigned trapped,
+      input longint unsigned rd_val,
+      input longint unsigned trap_cause,
+      input longint unsigned trap_tval,
+      input longint unsigned mtime_v,
+      input longint unsigned mtimecmp_v,
+      input longint unsigned mepc_v,
+      input byte    unsigned seip_v);
+
+   // In-order retire FIFO (decouples emission from commit: the probe commits ALU
+   // ops on the issue count, which can fire a cycle or two BEFORE the value writes
+   // back -- so we cannot read rd_val at commit). Push at dispatch (program order),
+   // fill rd_val at writeback (unique phys-dest match), mark committed at commit,
+   // truncate the tail by seqno on a squash, and emit the head only once its value
+   // is ready (or it has no dest). A trap pushes a ready entry so it stays ordered
+   // behind older committed instructions. Blocking assignments => sequential FIFO.
+   localparam QN = 40;
+   reg  [SEQW-1:0]  q_seq  [0:QN-1];
+   reg  [CBITS-1:0] q_ck   [0:QN-1];
+   reg  [63:0]      q_pc   [0:QN-1];
+   reg  [31:0]      q_insn [0:QN-1];
+   reg  [1:0]       q_rk   [0:QN-1];
+   reg  [4:0]       q_ri   [0:QN-1];
+   reg  [PBITS-1:0] q_prd  [0:QN-1];
+   reg  [1:0]       q_prv  [0:QN-1];
+   reg  [63:0]      q_mepc [0:QN-1];
+   reg  [63:0]      q_val  [0:QN-1];
+   reg              q_vok  [0:QN-1];
+   reg              q_cmt  [0:QN-1];
+   reg              q_trap [0:QN-1];
+   reg  [63:0]      q_cause[0:QN-1];
+   reg  [63:0]      q_tval [0:QN-1];
+   integer          qn; initial qn = 0;
+   reg              cot_found;
+
+   // ---- trap-fire fields (combinational, sampled at the delivery edge) ----
+   wire        cot_fire  = eb.u_csr.trap_v;
+   wire [63:0] cot_cause = eb.u_csr.trap_cause;
+   wire [63:0] cot_epc   = eb.u_csr.trap_epc;      // trapping/interrupted PC
+   wire [63:0] cot_tval  = eb.u_csr.trap_tval;
+   wire        cot_to_s  = eb.u_csr.trap_to_s;
+   wire [63:0] cot_mepc  = cot_to_s ? eb.u_csr.mepc : cot_epc;   // mepc after retire
+   wire [1:0]  cot_prv   = eb.u_csr.priv;          // privilege BEFORE the trap
+   wire        cot_intr  = cot_cause[63];
+   // instruction-side faults retire no instruction (insn=0), like async interrupts
+   wire        cot_ifault = ~cot_intr & ((cot_cause[5:0]==6'd0) | (cot_cause[5:0]==6'd1)
+                                       | (cot_cause[5:0]==6'd12));
+   // the trapping op's insn: look it up by PC in the (pre-squash) FIFO
+   reg  [31:0] cot_insn; integer tlk;
+   always @* begin
+      cot_insn = 32'd0;
+      if (~cot_intr & ~cot_ifault)
+         for (tlk = 0; tlk < QN; tlk = tlk + 1)
+            if ((tlk < qn) && (q_pc[tlk] == cot_epc)) cot_insn = q_insn[tlk];
+   end
+
+   integer fi, fl, cut;
+   always @(posedge clk) begin
+      if (reset) qn = 0;
+      else begin
+         // 0. emit: drain the head while committed AND value-ready (or no dest/trap).
+         //    Runs FIRST so it acts on entries committed in a PRIOR cycle -- a 1-cycle
+         //    lag past commit, by which time a CSR op's mepc/csr write has landed, so
+         //    the LIVE mepc read here is the correct mepc-after-retire for normal ops.
+         for (fl = 0; fl < QN; fl = fl + 1)
+            if (qn > 0 && q_cmt[0] && (q_trap[0] || q_rk[0] == 2'd0 || q_vok[0])) begin
+               probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
+                  (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
+                  {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
+                  64'd0, {64{1'b1}}, q_trap[0] ? q_mepc[0] : eb.u_csr.mepc, 8'd0);
+               for (fi = 0; fi < QN-1; fi = fi + 1) begin
+                  q_seq[fi]=q_seq[fi+1]; q_ck[fi]=q_ck[fi+1]; q_pc[fi]=q_pc[fi+1];
+                  q_insn[fi]=q_insn[fi+1]; q_rk[fi]=q_rk[fi+1]; q_ri[fi]=q_ri[fi+1];
+                  q_prd[fi]=q_prd[fi+1]; q_prv[fi]=q_prv[fi+1]; q_mepc[fi]=q_mepc[fi+1];
+                  q_val[fi]=q_val[fi+1]; q_vok[fi]=q_vok[fi+1]; q_cmt[fi]=q_cmt[fi+1];
+                  q_trap[fi]=q_trap[fi+1]; q_cause[fi]=q_cause[fi+1]; q_tval[fi]=q_tval[fi+1];
+               end
+               qn = qn - 1;
+            end
+         // 1. squash: drop tail entries (uncommitted, seq younger than roll_seq)
+         if (roll_v) begin
+            cut = qn;
+            for (fi = QN-1; fi >= 0; fi = fi - 1)
+               if ((fi < qn) && !q_cmt[fi] && ($signed(q_seq[fi] - roll_seq) > 0)) cut = fi;
+            qn = cut;
+         end
+         // 2. writeback: fill rd_val for the unique in-flight writer of each phys dest
+         for (fl = 0; fl < IW; fl = fl + 1) if (wkv[fl])
+            for (fi = 0; fi < QN; fi = fi + 1)
+               if ((fi < qn) && !q_vok[fi] && (q_rk[fi] != 2'd0)
+                   && (q_prd[fi] == wkp[fl*PBITS +: PBITS])) begin
+                  q_val[fi] = wb_val[fl*64 +: 64]; q_vok[fi] = 1'b1;
+               end
+         // 3. commit: mark this bundle's (so-far uncommitted) entries committed
+         if (cc_commit)
+            for (fi = 0; fi < QN; fi = fi + 1)
+               if ((fi < qn) && !q_cmt[fi] && (q_ck[fi] == cc_commit_idx)) q_cmt[fi] = 1'b1;
+         // 4. dispatch: push each valid slot in program order
+         if (disp_fire)
+            for (fl = 0; fl < IW; fl = fl + 1) if (r_valid[fl]) begin
+               q_seq [qn] = r_seq[fl*SEQW +: SEQW];
+               q_ck  [qn] = cur;
+               q_pc  [qn] = r_pay[fl*`PAYW + 78  +: 64];   // PAY_PC
+               q_insn[qn] = r_pay[fl*`PAYW + 165 +: 32];   // PAY_INSN
+               q_ri  [qn] = r_rd[fl*ABITS +: 5];
+               q_rk  [qn] = !r_rd_v[fl]              ? 2'd0 :
+                             r_rd[fl*ABITS + 5]      ? 2'd2 :
+                            (r_rd[fl*ABITS +: 5]==0) ? 2'd0 : 2'd1;
+               q_prd [qn] = pdst[fl*PBITS +: PBITS];
+               q_prv [qn] = mmu_priv;
+               q_mepc[qn] = 64'd0;          // filled at commit (mepc-after-retire)
+               q_val [qn] = 64'd0;  q_vok[qn] = 1'b0;  q_cmt[qn] = 1'b0;
+               q_trap[qn] = 1'b0;   q_cause[qn] = 64'd0; q_tval[qn] = 64'd0;
+               qn = qn + 1;
+            end
+         // 5. trap: deliver as the precise trap retire. ecall/ebreak/illegal-CSR and
+         //    the interrupt pseudo-op COMMIT (count at issue) and trap -- convert that
+         //    committed entry in place so it doesn't emit as a normal retire. Data/
+         //    illegal/fetch faults annul their op (squashed above) -> push a fresh entry.
+         if (cot_fire) begin
+            cot_found = 1'b0;
+            for (fi = 0; fi < QN; fi = fi + 1)
+               if (!cot_found && (fi < qn) && !q_trap[fi] && (q_pc[fi] == cot_epc)) begin
+                  q_trap[fi] = 1'b1; q_cmt[fi] = 1'b1; q_vok[fi] = 1'b1; q_rk[fi] = 2'd0;
+                  q_insn[fi] = cot_insn; q_prv[fi] = cot_prv; q_mepc[fi] = cot_mepc;
+                  q_cause[fi] = cot_cause; q_tval[fi] = cot_tval; cot_found = 1'b1;
+               end
+            if (!cot_found) begin
+               q_seq [qn] = {SEQW{1'b0}};  q_ck[qn] = {CBITS{1'b0}};
+               q_pc  [qn] = cot_epc;       q_insn[qn] = cot_insn;
+               q_rk  [qn] = 2'd0;          q_ri[qn] = 5'd0;
+               q_prd [qn] = {PBITS{1'b0}}; q_prv[qn] = cot_prv;  q_mepc[qn] = cot_mepc;
+               q_val [qn] = 64'd0;         q_vok[qn] = 1'b1;     q_cmt[qn] = 1'b1;
+               q_trap[qn] = 1'b1;          q_cause[qn] = cot_cause; q_tval[qn] = cot_tval;
+               qn = qn + 1;
+            end
+         end
+      end
+   end
+`endif
 endmodule
 
 `default_nettype wire
