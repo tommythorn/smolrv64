@@ -1,34 +1,31 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// Fetch + iMMU page-cross safety test.
+// Fetch + iMMU page-cross test. Drives the real `fetch` against the real `mmu`
+// over a behavioral Sv39 table, covering the three page-boundary cases:
 //
-// The concern: a *compressed* (16-bit) instruction sitting in the last two bytes
-// of a mapped page, with the NEXT page UNMAPPED, must NOT raise a fetch page
-// fault. The RVC is complete within the mapped page; the unmapped page beyond it
-// is irrelevant until execution actually advances there.
+//   A) COMPRESSED op in a page's last 2 bytes, next page UNMAPPED -> NO fault
+//      (complete in the mapped page; the fetch never translates the next page).
+//   B) 32-bit op STRADDLING into a MAPPED but NON-CONTIGUOUS next page -> the
+//      fetch lazily translates PC+2 and emits the correct {hi,lo} combined word
+//      (proving it uses the real translation, not contiguous physical bytes).
+//   C) 32-bit op STRADDLING into an UNMAPPED next page -> a PRECISE fetch fault:
+//      epc = the instruction PC (imem_ipc = pc_q), tval = the faulting VA
+//      (imem_addr = pc_q+2), cause 12 -- matching simmerv's memop_code.
 //
-// Why the core is safe by construction: the iMMU translates exactly ONE address
-// per fetch -- req_vaddr = the fetch PC (backend_top: imem_va = pc_q). It never
-// speculatively translates PC+2 or the next page. So an RVC whose PC is in the
-// mapped page only ever triggers a translation of THAT page -> no fault. The
-// fault for the unmapped page appears only once the PC itself advances into it
-// (the genuinely-next instruction), where it is correct (and squashed by a
-// rollback if a branch/jump redirects away first).
-//
-// This test wires the real `fetch` to the real `mmu` over a behavioral Sv39 page
-// table (page 0x1000 mapped -> 0x80003000; page 0x2000 unmapped, identical to
-// tb_mmu) and a behavioral imem holding a C.NOP at VA 0x1FFE (the last halfword
-// of the mapped page). It asserts: (1) PC=0x1FFE fetches fault-free and aligns
-// the RVC; (2) PC=0x2000 (the unmapped page) fetch-faults (cause 12) only when
-// the PC actually targets it.
+// Page table (all VAs share VPN2=VPN1=0, so leaves live in one L0 table):
+//   L0[1] VA 0x1000 -> PA 0x80003000   (A: RVC at 0x1FFE; next page 0x2000 unmapped)
+//   L0[2] VA 0x2000 -> unmapped
+//   L0[3] VA 0x3000 -> PA 0x80005000   (C: 32-bit lo at 0x3FFE; next page 0x4000 unmapped)
+//   L0[4] VA 0x4000 -> unmapped
+//   L0[5] VA 0x5000 -> PA 0x80007000   (B: 32-bit lo at 0x5FFE)
+//   L0[6] VA 0x6000 -> PA 0x80009000   (B: 32-bit hi -- NON-contiguous w/ 0x80007xxx)
 module tb;
    localparam IW=4, HW=8, PCW=64, SEQW=8, AW=56;
    reg clk=0; always #5 clk=~clk;
    reg reset;
    integer errs=0;
 
-   // fetch control / outputs
    reg               redirect; reg [PCW-1:0] redirect_pc; reg [SEQW-1:0] redirect_seq;
    reg               ready;
    wire              f_valid;
@@ -38,19 +35,16 @@ module tb;
    wire [IW*SEQW-1:0] f_seq;
    wire [SEQW-1:0]   cur_seq;
 
-   // fetch <-> iMMU <-> behavioral imem
-   wire [PCW-1:0]    imem_va;            // fetch's VA out (= pc_q)
+   wire [PCW-1:0]    f_imem_va;          // fetch's translate VA (pc_q, or pc_q+2 in straddle)
+   wire [PCW-1:0]    f_imem_ipc;         // fetch's instruction PC (fault epc)
    wire [AW-1:0]     immu_pa;
    wire              immu_ready, immu_fault;
    wire [3:0]        immu_cause;
    reg  [63:0]       satp; reg [1:0] priv;
 
-   // behavioral imem: full window claimed available (like soc_top), but gated to 0
-   // while the translation is not ready / faulting -- exactly the backend wiring.
    reg  [HW*16-1:0]  imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail_g = (immu_ready & ~immu_fault) ? 4'd8 : 4'd0;
 
-   // PTW port
    wire [AW-1:0]     ptw_addr; wire ptw_read;
    reg  [63:0]       ptw_rdata; reg ptw_rvalid;
 
@@ -58,92 +52,88 @@ module tb;
      (.clk(clk), .reset(reset),
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
       .solo_all(1'b0), .irq_inject(1'b0),
-      .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
+      .imem_addr(f_imem_va), .imem_ipc(f_imem_ipc),
+      .imem_data(imem_data), .imem_avail(imem_avail_g),
       .ready(ready), .valid(f_valid), .slot_valid(slot_valid),
       .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
 
    mmu #(.AW(AW)) u_immu
-     (.clk(clk), .reset(reset), .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
+     (.clk(clk), .reset(reset), .req_valid(1'b1), .req_vaddr(f_imem_va), .req_access(2'd0),
       .priv(priv), .sum(1'b0), .mxr(1'b0), .satp(satp), .flush(1'b0),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
 
-   // behavioral 3-level page table (registered read): VA 0x1000 page -> PA 0x80003000
-   // (RWX U A D), VA 0x2000 page UNMAPPED. (Same table as tb_mmu.)
+   // behavioral 3-level page table (registered read)
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;
       if (ptw_read) case (ptw_addr)
-         56'h80010000: ptw_rdata <= (64'h80011 << 10) | 64'd1;     // root[0] -> L1 table
-         56'h80011000: ptw_rdata <= (64'h80012 << 10) | 64'd1;     // L1[0]   -> L0 table
-         56'h80012008: ptw_rdata <= (64'h80003 << 10) | 64'hDF;    // L0[1]   leaf RWX U A D
-         default:      ptw_rdata <= 64'd0;                         // invalid (V=0) -> page fault
+         56'h80010000: ptw_rdata <= (64'h80011 << 10) | 64'd1;     // root[0] -> L1
+         56'h80011000: ptw_rdata <= (64'h80012 << 10) | 64'd1;     // L1[0]   -> L0
+         56'h80012008: ptw_rdata <= (64'h80003 << 10) | 64'hDF;    // L0[1] VA 0x1000 leaf
+         56'h80012018: ptw_rdata <= (64'h80005 << 10) | 64'hDF;    // L0[3] VA 0x3000 leaf
+         56'h80012028: ptw_rdata <= (64'h80007 << 10) | 64'hDF;    // L0[5] VA 0x5000 leaf
+         56'h80012030: ptw_rdata <= (64'h80009 << 10) | 64'hDF;    // L0[6] VA 0x6000 leaf
+         default:      ptw_rdata <= 64'd0;                         // invalid -> page fault
       endcase
    end
 
-   // behavioral imem: a C.NOP (0x0001, an RVC -> low 2 bits != 11) at PA 0x80003FFE,
-   // i.e. VA 0x1FFE, the LAST halfword of the mapped page. Window starts at the PA.
-   localparam [15:0] RVC = 16'h0001;
+   // behavioral imem: halfword at a PA. C.NOP (RVC) at 0x80003FFE; 32-bit lo halves
+   // (low2==11) at 0x80005FFE and 0x80007FFE; the case-B hi half at 0x80009000.
    integer k;
-   reg seen_fault2;
    always @* begin
       imem_data = {(HW*16){1'b0}};
-      for (k = 0; k < HW; k = k + 1)
-         if ((immu_pa + 2*k) == 56'h80003FFE) imem_data[k*16 +: 16] = RVC;
+      for (k = 0; k < HW; k = k + 1) begin
+         if ((immu_pa + 2*k) == 56'h80003FFE) imem_data[k*16 +: 16] = 16'h0001;  // A: c.nop
+         if ((immu_pa + 2*k) == 56'h80005FFE) imem_data[k*16 +: 16] = 16'h0013;  // C: lo (32-bit)
+         if ((immu_pa + 2*k) == 56'h80007FFE) imem_data[k*16 +: 16] = 16'hB0B7;  // B: lo (32-bit)
+         if ((immu_pa + 2*k) == 56'h80009000) imem_data[k*16 +: 16] = 16'hDEAD;  // B: hi
+      end
    end
 
-   task wait_xlate;  // hold PC, let the walk resolve (or fault)
-      integer n;
-      begin n=0; while (!immu_ready && n<40) begin @(negedge clk); #1; n=n+1; end end
-   endtask
+   reg seen; reg [31:0] got;
+   task settle; integer n; begin n=0; while (n<40) begin @(negedge clk); #1; n=n+1; end end endtask
 
    initial begin
       reset=1; redirect=0; redirect_pc=0; redirect_seq=0; ready=0; satp=0; priv=0; ptw_rvalid=0;
       @(negedge clk); @(negedge clk); reset=0; @(negedge clk);
-      satp = (64'd8 << 60) | 64'h80010;          // Sv39, root PPN 0x80010
-      priv = 2'd0;                                // U-mode (the leaf is U=1, X=1)
+      satp = (64'd8 << 60) | 64'h80010; priv = 2'd0;
 
-      // ---- 1) RVC at the last halfword of the mapped page: must NOT fault ----
+      // ---- A) RVC at page end, next page unmapped: no fault ----
       @(negedge clk); redirect=1; redirect_pc=64'h1FFE; redirect_seq=0; @(negedge clk); redirect=0;
-      ready=0;                                    // hold PC at 0x1FFE
-      wait_xlate;
-      // observe a few settled cycles
-      repeat (3) begin
-         @(negedge clk); #1;
-         if (imem_va==64'h1FFE && immu_fault) begin
-            $display("FAIL: RVC at page-end VA 1FFE raised a fetch fault (cause %0d)", immu_cause);
-            errs=errs+1;
-         end
-      end
-      if (immu_fault) begin
-         $display("FAIL: page-end RVC fetch faulted (cause %0d)", immu_cause); errs=errs+1;
-      end else if (!slot_valid[0]) begin
-         $display("FAIL: RVC did not align (slot_valid=%b, ready=%b fault=%b)", slot_valid, immu_ready, immu_fault);
-         errs=errs+1;
-      end else begin
-         $display("  ok: VA 1FFE RVC fetched fault-free -> PA %h, slot0 inst=%h", immu_pa, f_inst[31:0]);
-      end
+      ready=0; seen=0;
+      repeat (40) begin @(negedge clk); #1;
+         if (f_imem_va==64'h1FFE && immu_fault) seen=1; end  // any fault while fetching the RVC = bug
+      if (seen)                  begin $display("FAIL A: RVC at 0x1FFE raised a fetch fault"); errs=errs+1; end
+      else if (!slot_valid[0])   begin $display("FAIL A: RVC did not align (sv=%b ready=%b)", slot_valid, immu_ready); errs=errs+1; end
+      else $display("  okA: RVC at 0x1FFE fetched fault-free (PA %h)", immu_pa);
 
-      // ---- 2) the unmapped next page faults (cause 12) only when PC targets it ----
-      @(negedge clk); redirect=1; redirect_pc=64'h2000; redirect_seq=1; @(negedge clk); redirect=0;
-      ready=0; seen_fault2=0;
-      repeat (40) begin
-         @(negedge clk); #1;
-         if (imem_va==64'h2000 && immu_fault && immu_cause==4'd12) seen_fault2=1;
-      end
-      if (!seen_fault2) begin
-         $display("FAIL: unmapped VA 2000 never fetch-faulted (last: va=%h ready=%b fault=%b cause=%0d)",
-                  imem_va, immu_ready, immu_fault, immu_cause);
+      // ---- B) 32-bit op straddling into a MAPPED non-contiguous page: correct combine ----
+      @(negedge clk); redirect=1; redirect_pc=64'h5FFE; redirect_seq=0; @(negedge clk); redirect=0;
+      ready=0; seen=0; got=0;
+      repeat (40) begin @(negedge clk); #1;
+         if (slot_valid[0] && !immu_fault && f_pc[PCW-1:0]==64'h5FFE) begin seen=1; got=f_inst[31:0]; end end
+      if (!seen)                 begin $display("FAIL B: straddler never emitted (sv=%b fault=%b va=%h)", slot_valid, immu_fault, f_imem_va); errs=errs+1; end
+      else if (got!==32'hDEADB0B7) begin $display("FAIL B: combined inst=%h exp DEADB0B7", got); errs=errs+1; end
+      else $display("  okB: 32-bit straddler -> %h (hi from non-contiguous page 0x80009000)", got);
+
+      // ---- C) 32-bit op straddling into an UNMAPPED page: precise fault ----
+      @(negedge clk); redirect=1; redirect_pc=64'h3FFE; redirect_seq=0; @(negedge clk); redirect=0;
+      ready=0; seen=0;
+      repeat (40) begin @(negedge clk); #1;
+         // precise: epc = instruction PC (0x3FFE), tval = faulting VA (0x4000), cause 12
+         if (immu_fault && immu_cause==4'd12 && f_imem_va==64'h4000 && f_imem_ipc==64'h3FFE) seen=1; end
+      if (!seen) begin
+         $display("FAIL C: straddle into unmapped page not precise (fault=%b cause=%0d va=%h ipc=%h)",
+                  immu_fault, immu_cause, f_imem_va, f_imem_ipc);
          errs=errs+1;
-      end else begin
-         $display("  ok: VA 2000 (unmapped) fetch-faults cause 12 only once PC reaches it");
-      end
+      end else $display("  okC: straddle-into-unmapped faults cause 12, epc=0x3FFE tval=0x4000");
 
       if (errs==0) $display("fetch-pagecross: ALL TESTS PASSED");
       else         $display("fetch-pagecross: %0d FAILURES", errs);
       $finish;
    end
 
-   initial begin #80000; $display("fetch-pagecross: TIMEOUT"); $finish; end
+   initial begin #200000; $display("fetch-pagecross: TIMEOUT"); $finish; end
 endmodule
 
 `default_nettype wire

@@ -188,6 +188,7 @@ module backend_top
    // until the PTW fills the TLB. A fetch page fault stalls for now (precise fetch-fault
    // wiring is a later increment; the -v happy path never fetch-faults).
    wire [PCW-1:0]                imem_va;
+   wire [PCW-1:0]                imem_ipc;    // PC of the instruction being fetched (fault EPC)
    wire [55:0]                   immu_pa;
    wire                          immu_ready, immu_fault;
    wire [3:0]                    immu_cause;
@@ -232,7 +233,8 @@ module backend_top
    wire               irq_inject;       // inject the interrupt pseudo-op this cycle
 
    reg                pend_iflt;
-   reg  [63:0]        iflt_va;
+   reg  [63:0]        iflt_va;          // faulting VA (-> tval): straddle high half = pc_q+2
+   reg  [63:0]        iflt_epc;         // faulting instruction PC (-> epc): pc_q (= iflt_va when no straddle)
    reg  [3:0]         iflt_cause;
    wire               iflt_fire;        // fetch-fault trap fires this cycle
    initial pend_iflt = 1'b0;
@@ -246,7 +248,7 @@ module backend_top
       // a data-fault rollback then a stale iflt to the branch's fail target).
       else if (roll_v) pend_iflt <= 1'b0;
       else if (immu_fault & ~pend_iflt) begin
-         pend_iflt <= 1'b1; iflt_va <= imem_va; iflt_cause <= immu_cause;
+         pend_iflt <= 1'b1; iflt_va <= imem_va; iflt_epc <= imem_ipc; iflt_cause <= immu_cause;
       end
    end
    // Suppress fetch-fault delivery during a data-fault replay: the replaying op is older,
@@ -266,8 +268,8 @@ module backend_top
    wire               xtrap_v     = iflt_fire | dflt_fire;
    wire               xtrap_intr  = 1'b0;
    wire [3:0]         xtrap_cause = iflt_fire ? iflt_cause : dflt_cause;
-   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_va    : dflt_epc;
-   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;
+   wire [63:0]        xtrap_epc   = iflt_fire ? iflt_epc   : dflt_epc;   // instruction PC
+   wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;  // faulting VA
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
               .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
@@ -275,7 +277,7 @@ module backend_top
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
       .redirect_seq(fe_red_seq), .solo_all(replay_v), .irq_inject(irq_inject),
-      .imem_addr(imem_va), .imem_data(imem_data), .imem_avail(imem_avail_g),
+      .imem_addr(imem_va), .imem_ipc(imem_ipc), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
