@@ -71,6 +71,21 @@ module tb;
          @(negedge clk);
          if ((c % 1000000) == 0) $display("[c=%0d pc=%h]", c, dut.imem_addr);
 `ifdef LSU_TAP
+         // rename check (any cycle): store sd x8 @ ...8003ddb6 -> its rs2 physreg (ps2)
+         // vs x8 producer addi x8 @ ...80002f40 -> its dest (pdst). Mismatch => rename bug.
+         if (c > 8800000 && c < 9040000 && dut.core.disp_fire)
+            for (b2 = 0; b2 < 4; b2 = b2 + 1) if (dut.core.r_valid[b2]) begin
+               // dispatches in the function (incl store ddb6) + the x8 producer (2f40)
+               if ((dut.core.r_pay[b2*197+78 +: 64] >= 64'hffffffff8003dda0 &&
+                    dut.core.r_pay[b2*197+78 +: 64] <= 64'hffffffff8003dde2) ||
+                   dut.core.r_pay[b2*197+78 +: 64] == 64'hffffffff80002f40)
+                  $display("[c=%0d DISP pc=%h ps1=%0d ps2=%0d pdst=%0d rd=%0d]", c,
+                     dut.core.r_pay[b2*197+78 +: 64], dut.core.ps1[b2*8 +: 8],
+                     dut.core.ps2[b2*8 +: 8], dut.core.pdst[b2*8 +: 8], dut.core.r_rd[b2*6 +: 6]);
+               // format sanity check: any dispatch in a tiny window
+               if (c >= 8900000 && c <= 8900020)
+                  $display("[c=%0d FMT pc=%h]", c, dut.core.r_pay[b2*197+78 +: 64]);
+            end
          // window around the store->load divergence (~retire 3.03M ~ cycle 9.0-9.2M).
          // page offset 0xf88 survives translation -> frame-PA-independent filter.
          if (c > 8800000 && c < 9300000) begin

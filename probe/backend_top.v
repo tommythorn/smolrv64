@@ -1,6 +1,14 @@
 `include "exec_pay.vh"
 `default_nettype none
 
+// PROBE_POOL: physregs per shard (default 64 -> NPHYS=256). Shrinking it (e.g.
+// -DPROBE_POOL=20) forces aggressive physreg reuse, exposing physreg-lifetime /
+// operand-capture bugs in short tests instead of millions of instructions in. The
+// freelist needs ARSH=AREGS/SHARDS=16 reserved arch regs/shard, so POOL>=18.
+`ifndef PROBE_POOL
+ `define PROBE_POOL 64
+`endif
+
 // Full sharded-OoO core (frontend + backend), ALU + LSU subset, with commit/CPR:
 //   PC -> fetch/align -> decode -> [reg] -> rename -> dispatch
 //      -> scheduler (scoreboard issue queues) -> execute (RF + ALU + AGU)
@@ -35,6 +43,8 @@ module backend_top
                                  // RS no longer the limiter (shared scoreboard write is).
     parameter CBITS = 2,
     parameter NCHK  = 4,
+    parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
+    parameter NPHYS = IW * POOL,     // total physregs (SHARDS=IW)
     parameter DCW   = 3,         // clog2(IW+1)
     parameter CNTW  = 3,         // per-checkpoint outstanding count width
     parameter SBITS = 2,         // clog2(IW) -- owner-shard id width
@@ -260,7 +270,8 @@ module backend_top
    wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
-              .PBITS(PBITS), .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
+              .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
+              .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
       .redirect_seq(fe_red_seq), .solo_all(replay_v), .irq_inject(irq_inject),
@@ -475,7 +486,8 @@ module backend_top
    wire [IW*MIDXW-1:0] ex_mem_idx;
    wire [IW*2-1:0]    ex_msize;
 
-   exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
+   exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
+                 .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
      (.clk(clk), .reset(reset),
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2), .iss_ps3(q_iss_ps3),
