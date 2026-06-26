@@ -786,6 +786,20 @@ module backend_top
    always @(posedge clk) begin
       if (reset) qn = 0;
       else begin
+         // ISS-CHK: the registered issued source physregs (what execute reads) must equal
+         // the dispatched ps for the same seqno -- catches the scheduler corrupting/swapping
+         // an op's source payload between rename and execute, which the dispatch-time REN-CHK
+         // cannot see. (ps==0/p0 for unused sources matches trivially -> no opcode gating.)
+         for (fl = 0; fl < IW; fl = fl + 1) if (q_iss_valid[fl])
+            for (fi = 0; fi < QN; fi = fi + 1)
+               if ((fi < qn) && !q_trap[fi] && (q_seq[fi] == q_iss_seq[fl*SEQW +: SEQW])) begin
+                  if (q_iss_ps1[fl*PBITS +: PBITS] != q_ps1[fi])
+                     $display("[%0t] *** ISS-CHK seq=%0d pc=%h iss_ps1=%0d != disp_ps1=%0d", $time,
+                        q_iss_seq[fl*SEQW +: SEQW], q_pc[fi], q_iss_ps1[fl*PBITS +: PBITS], q_ps1[fi]);
+                  if (q_iss_ps2[fl*PBITS +: PBITS] != q_ps2[fi])
+                     $display("[%0t] *** ISS-CHK seq=%0d pc=%h iss_ps2=%0d != disp_ps2=%0d", $time,
+                        q_iss_seq[fl*SEQW +: SEQW], q_pc[fi], q_iss_ps2[fl*PBITS +: PBITS], q_ps2[fi]);
+               end
          // 0. emit: drain the head while committed AND value-ready (or no dest/trap).
          //    Runs FIRST so it acts on entries committed in a PRIOR cycle -- a 1-cycle
          //    lag past commit, by which time a CSR op's mepc/csr write has landed, so
