@@ -291,6 +291,35 @@ module lsu
    reg [2:0]      p_lb;
    initial p_v = 1'b0;
 
+`ifdef LSU_ASSERT
+   // In-module assertions (local signals -> no hierarchical-observation problem).
+   integer az;
+   always @(posedge clk) if (!reset) begin
+      // ORDER-SAFETY: a load held in MERGE must have NO older UNFILLED store in the SB
+      // (else it read memory/forwarded before the store's data existed -> stale load).
+      if (p_v)
+         for (az = 0; az < SBDEPTH; az = az + 1)
+            if (sb_v[az] && !sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0))
+               $display("[%0t] *** LSU-ORD: load p_seq=%0d w0=%h merges w/ older UNFILLED store sb[%0d] seq=%0d addr=%h",
+                  $time, p_seq, p_w0, az, sb_seq[az], sb_addr[az]);
+      // FORWARD: an aligned 8-byte load whose word is fully covered by an older filled
+      // 8-byte store MUST get that store's data. If c_val != sb_d0 -> byte-merge dropout.
+      if (p_v && (p_nb == 4'd8) && (p_lb == 3'd0))
+         for (az = 0; az < SBDEPTH; az = az + 1)
+            if (sb_v[az] && sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0)
+                && (sb_w0[az] == p_w0) && (sb_be0[az] == 8'hff) && (c_val != sb_d0[az]))
+               $display("[%0t] *** LSU-FWD-MISS: load p_seq=%0d w0=%h c_val=%h != store sb[%0d] seq=%0d d0=%h (mem_rdata=%h s_use=%b)",
+                  $time, p_seq, p_w0, c_val, az, sb_seq[az], sb_d0[az], mem_rdata, s_use);
+      // DIAGNOSTIC: a load that returns 0 while an older filled NONZERO store sits in the
+      // SB -> dump words to see if the store's sb_w0 matches the load's p_w0 (it should).
+      if (p_v && (c_val == 64'd0) && (p_nb == 4'd8))
+         for (az = 0; az < SBDEPTH; az = az + 1)
+            if (sb_v[az] && sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0) && (sb_d0[az] != 64'd0))
+               $display("[%0t] LD0 p_seq=%0d p_w0=%h p_w1=%h | sb[%0d] seq=%0d w0=%h w1=%h d0=%h be0=%b",
+                  $time, p_seq, p_w0, p_w1, az, sb_seq[az], sb_w0[az], sb_w1[az], sb_d0[az], sb_be0[az]);
+   end
+`endif
+
    // ---- atomic (A ext) FSM state (declared early: used by sel_fire below) ----
    localparam A_IDLE=3'd0, A_WAIT=3'd1, A_RD=3'd2, A_WR=3'd4, A_WB=3'd3;
    reg [2:0]        ast;
