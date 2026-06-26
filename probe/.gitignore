@@ -7,3 +7,5 @@ probe_timing.rpt
 obj_dir_fp/
 obj_dir_cosim/
 tb_cosim
+obj_dir_cosim_linux/
+tb_cosim_linux

@@ -53,6 +53,21 @@ const char* plusarg(const char* key) {
     return eq ? eq + 1 : nullptr;
 }
 
+// Load a raw binary file into simmerv at phys addr (BASE + off).
+bool load_bin_at(const char* path, uint64_t off) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { std::fprintf(stderr, "cosim: cannot open %s\n", path); return false; }
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    if (off + buf.size() > MEM_BYTES) { std::fprintf(stderr, "cosim: %s overflows DDR\n", path); return false; }
+    if (simmerv_write_memory(g_ctx, AXI_BASE + off, buf.data(), buf.size()) != 0) {
+        std::fprintf(stderr, "cosim: simmerv_write_memory(%s) failed\n", path); return false;
+    }
+    std::fprintf(stderr, "cosim: loaded %zu bytes @ DDR+%llx (%s)\n",
+                 buf.size(), (unsigned long long)off, path);
+    return true;
+}
+
 bool load_flat_hex(const char* path) {
     std::ifstream in(path);
     if (!in) { std::fprintf(stderr, "cosim: cannot open %s\n", path); return false; }
@@ -78,16 +93,30 @@ void cosim_init() {
     setvbuf(stdout, nullptr, _IONBF, 0);   // so $display debug survives abort()
     g_ctx = simmerv_create(MEM_BYTES);
     if (!g_ctx) { std::fprintf(stderr, "cosim: simmerv_create failed\n"); std::abort(); }
-    const char* hex = plusarg("hex");
-    if (!hex) { std::fprintf(stderr, "cosim: need +hex=<file>\n"); std::abort(); }
-    if (!load_flat_hex(hex)) std::abort();
     simmerv_zero_registers(g_ctx);
-    const char* rpc = plusarg("reset_pc");
-    uint64_t reset_pc = rpc ? std::strtoull(rpc, nullptr, 16) : AXI_BASE;
+    uint64_t reset_pc = AXI_BASE;
+    const char* fw = plusarg("fw");
+    if (fw) {
+        // Linux mode: fw_payload@DDR+0, DTB@+0x2000000, initrd@+0x762b000, a1=DTB.
+        const uint64_t OFF_DTB = 0x2000000ULL, OFF_INITRD = 0x762b000ULL;
+        if (!load_bin_at(fw, 0)) std::abort();
+        const char* dtb = plusarg("dtb");
+        if (!dtb) { std::fprintf(stderr, "cosim: need +dtb with +fw\n"); std::abort(); }
+        if (!load_bin_at(dtb, OFF_DTB)) std::abort();
+        if (const char* ird = plusarg("initrd")) if (!load_bin_at(ird, OFF_INITRD)) std::abort();
+        const char* a1 = plusarg("a1");
+        simmerv_write_register(g_ctx, 11, a1 ? std::strtoull(a1, nullptr, 16) : (AXI_BASE + OFF_DTB));
+    } else {
+        const char* hex = plusarg("hex");
+        if (!hex) { std::fprintf(stderr, "cosim: need +hex or +fw\n"); std::abort(); }
+        if (!load_flat_hex(hex)) std::abort();
+        const char* rpc = plusarg("reset_pc");
+        if (rpc) reset_pc = std::strtoull(rpc, nullptr, 16);
+    }
     simmerv_set_pc(g_ctx, reset_pc);
     simmerv_set_mtime(g_ctx, 0);
-    std::fprintf(stderr, "cosim: simmerv ready (reset_pc=%016llx)\n",
-                 (unsigned long long)reset_pc);
+    std::fprintf(stderr, "cosim: simmerv ready (reset_pc=%016llx%s)\n",
+                 (unsigned long long)reset_pc, fw ? ", linux" : "");
 }
 
 void dump_retire(const char* label, const SimmervRetire& r) {
@@ -129,7 +158,10 @@ int csr_read_to_override(uint32_t insn) {
     switch (csrno) {
         case 0xC00: case 0xC01: case 0xC02:
         case 0xB00: case 0xB02:
-        case 0xF11: case 0xF12: case 0xF13: return (int)csrno;
+        case 0xF11: case 0xF12: case 0xF13:
+        // PMP cfg/addr: no enforcement modeled; the DUT stores them verbatim while
+        // simmerv's CSR fast-path ignores writes -> let the DUT's read value win.
+        case 0x3A0: case 0x3B0: return (int)csrno;
         default:
             if ((csrno >= 0xB03 && csrno <= 0xB1F) ||
                 (csrno >= 0xC03 && csrno <= 0xC1F) ||
@@ -169,6 +201,7 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
     // and RVC expansion is separately verified (tb_rvc_expand, exhaustive).
     const bool ref_compressed = (ref.insn & 0x3) != 0x3;
     const bool insn_ok = ref_compressed || (canon_insn(dut.insn) == canon_insn(ref.insn));
+    const bool rdval_ok = dut.rd_kind == 0 || dut.rd_val == ref.rd_val;
 
     const bool ok =
         dut.pc         == ref.pc        &&
@@ -178,7 +211,7 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
         dut.rd_idx     == ref.rd_idx    &&
         dut.prv        == ref.prv       &&
         dut.trapped    == ref.trapped   &&
-        (dut.rd_kind == 0 || dut.rd_val == ref.rd_val) &&
+        rdval_ok                        &&
         dut.trap_cause == ref.trap_cause &&
         dut.trap_tval  == ref.trap_tval &&
         dut.mepc       == ref.mepc;
