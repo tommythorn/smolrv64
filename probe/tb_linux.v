@@ -58,7 +58,7 @@ module tb;
    reg [8*256-1:0] monhex, fw, dtb, initrd, cmd;
    integer ncyc, c, ci, cmdlen, pi;
    reg [63:0] srcring [0:63];  reg [63:0] tgtring [0:63];  reg [5:0] pcwr;
-   reg frozen, dumped;  reg [63:0] mraddr_q;  integer la_idx;
+   reg frozen, dumped;  reg [63:0] mraddr_q;  integer la_idx, si;
    initial begin pcwr=0; frozen=0; dumped=0; mraddr_q=0; end
    initial begin
       rx_we=0; rx_data=0; ci=0; ncyc=200000000;
@@ -83,17 +83,22 @@ module tb;
             rx_we <= 1'b1; rx_data <= cmd[(cmdlen-1-ci)*8 +: 8]; ci <= ci+1;
          end
          if ((c % 500000) == 0) $display("[c=%0d pc=%h commit=%b]", c, dut.imem_addr, commit);
-         // near the failure: did the bad RA value 0x80017000 get STORED (and where), or only
-         // appear as a LOAD result (-> load/forwarding bug)?
-         if (c > 1782000 && c < 1784000) begin
-            if (dmem_wen && dmem_wdata == 64'h80017000)
-               $display("[STORE-BADVAL c=%0d addr=%h wmask=%b]", c, dmem_waddr, dmem_wmask);
-            if (dut.core.lsu_ld_wb_v && dut.core.lsu_ld_wb_val == 64'h80017000) begin
-               // the load's phys addr was on mem_raddr a cycle earlier; show DDR content there
-               la_idx = (mraddr_q - BASE) & (DDR_BYTES-1);
-               $display("[LOAD-BADVAL c=%0d addr~%h ddr[addr]=%h%h%h%h%h%h%h%h]", c, mraddr_q,
-                  ram[la_idx+7],ram[la_idx+6],ram[la_idx+5],ram[la_idx+4],
-                  ram[la_idx+3],ram[la_idx+2],ram[la_idx+1],ram[la_idx+0]);
+         // PC-filtered LSU trace near the failure: the `ld ra,56(sp)` (0x80001e0a) address
+         // (-> sp) on every shard, + every store into the suspect stack/RA region. brp[i] is
+         // shard i's EX-stage PC (= ex_pc, unconditional); eb_agu[i] is its AGU address.
+         if (c > 1778000 && c < 1784000) begin
+            for (si=0; si<4; si=si+1) if (dut.core.ex_valid[si]) begin
+               if (dut.core.eb.brp[si*64 +: 64]==64'h80001e0a && dut.core.ex_mem[si] && !dut.core.ex_store[si]) begin
+                  la_idx = (dut.core.eb_agu[si*64 +: 64] - BASE) & (DDR_BYTES-1);
+                  $display("[LDRA  c=%0d sh=%0d ld_addr=%h (sp=%h) ddr[addr]=%h%h%h%h%h%h%h%h]", c, si,
+                     dut.core.eb_agu[si*64 +: 64], dut.core.eb_agu[si*64 +: 64]-64'd56,
+                     ram[la_idx+7],ram[la_idx+6],ram[la_idx+5],ram[la_idx+4],
+                     ram[la_idx+3],ram[la_idx+2],ram[la_idx+1],ram[la_idx+0]);
+               end
+               if (dut.core.ex_mem[si] && dut.core.ex_store[si] &&
+                   dut.core.eb_agu[si*64 +: 64] >= 64'h80016e00 && dut.core.eb_agu[si*64 +: 64] < 64'h80017100)
+                  $display("[STK-ST c=%0d pc=%h st_addr=%h data=%h]", c,
+                     dut.core.eb.brp[si*64 +: 64], dut.core.eb_agu[si*64 +: 64], dut.core.eb_stdata[si*64 +: 64]);
             end
          end
          // log every trap taken after the jump to DDR
