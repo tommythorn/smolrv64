@@ -49,6 +49,7 @@ module csr_file
     // the effective mip; the read-only set (MEIP/MTIP/MSIP) is masked out of CSR writes
     // so software clears them only at the device (mtimecmp/msip), never via mip.
     input  wire [11:0] hw_ip,
+    input  wire [63:0] mtime,       // free-running CLINT time (Sstc stimecmp compare); 0 in device-less TBs
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
@@ -71,7 +72,8 @@ module csr_file
                      SSCRATCH=12'h140, SEPC=12'h141, SCAUSE=12'h142, STVAL=12'h143,
                      SIP=12'h144, SATP=12'h180,
                      MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13,
-                     FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003;
+                     FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003,
+                     STIMECMP=12'h14D, MENVCFG=12'h30A;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
@@ -101,7 +103,8 @@ module csr_file
 
    reg [1:0]  priv;
    reg [63:0] mstatus, mtvec, mepc, mcause, mtval, mscratch, mie, mip,
-              medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus;
+              medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus,
+              stimecmp, menvcfg;   // Sstc: supervisor timer-compare + menvcfg.STCE enable
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
@@ -117,7 +120,11 @@ module csr_file
 
    // effective mip = software-held bits OR the hardware-driven device lines (CLINT/PLIC).
    // hw_ip is 0 when no device is wired (current TB) -> eff_mip == mip, no behavior change.
-   wire [63:0] eff_mip = mip | {52'd0, hw_ip};
+   // Sstc: when menvcfg.STCE, sip/mip.STIP(5) is driven by the stimecmp deadline
+   // (read-only to software); otherwise it is the software-/device-written bit.
+   wire        stip_sstc = menvcfg[63] & (mtime >= stimecmp);
+   wire [63:0] base_mip  = mip | {52'd0, hw_ip};
+   wire [63:0] eff_mip   = menvcfg[63] ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
 
    // ---- combinational read ----
    always @* begin
@@ -147,6 +154,8 @@ module csr_file
         PMPCFG0:    rdata = pmpcfg0;
         PMPADDR0:   rdata = pmpaddr0;
         MNSTATUS:   rdata = mnstatus;
+        STIMECMP:   rdata = stimecmp;
+        MENVCFG:    rdata = menvcfg;
         FFLAGS:     rdata = {59'd0, fcsr[4:0]};
         FRM:        rdata = {61'd0, fcsr[7:5]};
         FCSR:       rdata = {56'd0, fcsr};
@@ -202,7 +211,10 @@ module csr_file
    // (Smaia) CSR; AIA is not in RVA22, and OpenSBI probes mtopi to detect it -- the
    // trap is how it concludes AIA is absent. Add other unimplemented CSRs here as found.
    wire csr_unimpl  = upd_is_csr & (upd_addr == MTOPI);
-   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl);
+   // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
+   // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
+   wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
+   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill);
 
    // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
    wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
@@ -298,7 +310,7 @@ module csr_file
          mie<=0; mip<=0; medeleg<=0; mideleg<=0; mcounteren<=0; satp<=0;
          pmpcfg0<=0; pmpaddr0<=0; mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
-         fcsr<=0;
+         fcsr<=0; stimecmp<=~64'd0; menvcfg<=64'd0;   // Sstc: stimecmp resets to "no deadline"
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
          if (trap_to_s) begin
@@ -343,6 +355,8 @@ module csr_file
               PMPCFG0:    pmpcfg0 <= newv;
               PMPADDR0:   pmpaddr0<= newv;
               MNSTATUS:   mnstatus<= newv;
+              STIMECMP:   stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
+              MENVCFG:    menvcfg <= newv;
               FFLAGS:     fcsr[4:0] <= newv[4:0];
               FRM:        fcsr[7:5] <= newv[2:0];
               FCSR:       fcsr      <= newv[7:0];

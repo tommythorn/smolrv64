@@ -64,7 +64,7 @@ module soc_top #(
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
@@ -89,13 +89,13 @@ module soc_top #(
    reg  dev_rvalid, dev_wack;
    always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
       else begin dev_rvalid <= dmem_ren & is_dev_r; dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
-   wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;
+   wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
    clint #(.SCALE_DIV(8)) u_clint
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
-      .mtip(clint_mtip), .msip(clint_msip), .o_mtime());
+      .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
    // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller. No real sources yet
    // (the UART is output-only and there is no virtio), so src=0 -- but the kernel still
    // probes/initialises the region at boot, which would otherwise fault as unmapped.

@@ -61,6 +61,7 @@ module backend_top
     // hardware interrupt-pending lines from the platform CLINT/PLIC:
     // MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). Tie to 0 in device-less testbenches.
     input  wire [11:0]             hw_ip,
+    input  wire [63:0]             mtime,            // free-running CLINT time (Sstc); 0 in device-less TBs
     // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
     // request/response handshake so a multi-cycle D$ can stall: dmem_ren pulses on a fresh
     // dmem_raddr, dmem_rvalid signals dmem_rdata is valid. Tie dmem_rvalid=1 for a
@@ -513,7 +514,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip),
+      .hw_ip(hw_ip), .mtime(mtime),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
