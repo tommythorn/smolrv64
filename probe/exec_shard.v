@@ -312,11 +312,18 @@ module exec_shard
    // M-op per shard at a time -> no collision). mem ops complete via the LSU.
    // a CSR op writes rd = the OLD csr value (read combinationally from csr_file).
    // An illegal CSR access traps and writes nothing.
-   wire        csr_wb    = ex_v & ex_csr & ex_pdv & ~csr_illegal;
+   // EX-stage squash: an op already flopped into EX becomes wrong-path when a branch in
+   // some lane redirects with a seqno OLDER than this op. rr_kill only covers the RR->EX
+   // boundary; without this an in-EX ALU/CSR op still writes back, and since its physreg
+   // may already be reclaimed+reused (CPR frees on rollback), the stale writeback corrupts
+   // the new owner's value and re-wakes its consumer (the leaked-writeback bug, task #30).
+   // The LSU has the equivalent guard (merge_squash); the ALU/CSR path was missing it.
+   wire        ex_squash = squash & older(squash_seq, ex_sq);
+   wire        csr_wb    = ex_v & ex_csr & ex_pdv & ~csr_illegal & ~ex_squash;
    // an atomic's rd comes from the LSU (ld_wb), not the ALU result -> exclude it here.
    // FP ops also don't take the ALU result: FPU-arith writes via fp_complete (below);
    // in-core FP ops (CMP/SGNJ/MV/FCLASS) are handled separately (TODO -- not yet).
-   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr & ~ex_amor & ~ex_fpv;
+   wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr & ~ex_amor & ~ex_fpv & ~ex_squash;
    assign      wb_next   = ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
    always @(posedge clk) begin
       wb_valid <= ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
