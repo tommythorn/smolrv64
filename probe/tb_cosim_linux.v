@@ -56,7 +56,7 @@ module tb;
    endtask
 
    reg [8*256-1:0] fw, dtb, initrd;
-   integer ncyc, c;
+   integer ncyc, c, b2;
    initial begin
       ncyc = 200000000;
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
@@ -70,6 +70,41 @@ module tb;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
          if ((c % 1000000) == 0) $display("[c=%0d pc=%h]", c, dut.imem_addr);
+`ifdef LSU_TAP
+         // window around the store->load divergence (~retire 3.03M ~ cycle 9.0-9.2M).
+         // page offset 0xf88 survives translation -> frame-PA-independent filter.
+         if (c > 8800000 && c < 9300000) begin
+            if (dut.core.u_lsu.mem_wen && dut.core.u_lsu.mem_waddr[11:0]==12'hf88)
+               $display("[c=%0d ST-DRAIN pa=%h data=%h mask=%b]", c,
+                  dut.core.u_lsu.mem_waddr, dut.core.u_lsu.mem_wdata, dut.core.u_lsu.mem_wmask);
+            // store FILL at execute: is the store's data correct (0xfb0) entering the SB?
+            for (b2 = 0; b2 < 4; b2 = b2 + 1)
+               if (dut.core.u_lsu.exe_st_v[b2] && dut.core.u_lsu.exe_st_addr[b2*64 +: 12]==12'hf88)
+                  $display("[c=%0d ST-FILL lane%0d va=%h data=%h idx=%0d]", c, b2,
+                     dut.core.u_lsu.exe_st_addr[b2*64 +: 64], dut.core.u_lsu.exe_st_data[b2*64 +: 64],
+                     dut.core.u_lsu.exe_st_idx[b2*2 +: 2]);
+            if (dut.core.u_lsu.mem_ren && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
+               $display("[c=%0d LD-REQ  pa=%h]", c, dut.core.u_lsu.mem_raddr);
+            if (dut.core.u_lsu.mem_rvalid && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
+               $display("[c=%0d LD-RDATA pa=%h rdata=%h]", c,
+                  dut.core.u_lsu.mem_raddr, dut.core.u_lsu.mem_rdata);
+            if (dut.core.u_lsu.ld_wb_v && dut.core.u_lsu.ld_wb_val==64'd0
+                && dut.core.u_lsu.mem_raddr[11:0]==12'hf88)
+               $display("[c=%0d LD-WB    pa=%h val=%h pd=%0d]", c, dut.core.u_lsu.mem_raddr,
+                  dut.core.u_lsu.ld_wb_val, dut.core.u_lsu.ld_wb_pdst);
+            // AMO drain (different line) -- confirm it's not clobbering 0xf88
+            if (dut.core.u_lsu.mem_wen && dut.core.u_lsu.ast != 3'd0)
+               $display("[c=%0d AMO-WR  pa=%h data=%h st=%0d]", c,
+                  dut.core.u_lsu.mem_waddr, dut.core.u_lsu.mem_wdata, dut.core.u_lsu.ast);
+            // full store-buffer dump right at the failing load (c~9061759)
+            if (c >= 9061755 && c <= 9061762)
+               for (b2 = 0; b2 < 4; b2 = b2 + 1)
+                  $display("[c=%0d SB[%0d] v=%b cmt=%b seq=%0d va=%h data=%h nb=%0d ast=%0d ld_sel=%0d p_v=%b]",
+                     c, b2, dut.core.u_lsu.sb_v[b2], dut.core.u_lsu.sb_cmt[b2], dut.core.u_lsu.sb_seq[b2],
+                     dut.core.u_lsu.sb_addr[b2], dut.core.u_lsu.sb_data[b2], dut.core.u_lsu.sb_nb[b2],
+                     dut.core.u_lsu.ast, dut.core.u_lsu.ld_sel, dut.core.u_lsu.p_v);
+         end
+`endif
       end
       $display("COSIM-LINUX TIMEOUT after %0d cycles (pc~%h)", ncyc, dut.imem_addr);
       $finish;
