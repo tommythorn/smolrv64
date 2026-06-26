@@ -479,6 +479,8 @@ module backend_top
    wire [SBITS-1:0]   lsu_ld_wb_owner;
    wire [PBITS-1:0]   lsu_ld_wb_pdst;
    wire [63:0]        lsu_ld_wb_val;
+   wire [SEQW-1:0]    lsu_ld_wb_seq;
+   wire [IW*SEQW-1:0] wkq;          // per-lane writeback seqno (cosim seqno-matched capture)
    // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
    wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned, ex_fp;
    wire [IW*SEQW-1:0] ex_seq;
@@ -496,8 +498,8 @@ module backend_top
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
-      .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .wb_busy(eb_wb_busy),
-      .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val),
+      .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .lsu_wb_seq(lsu_ld_wb_seq), .wb_busy(eb_wb_busy),
+      .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
       .agu_addr(eb_agu), .st_data(eb_stdata),
@@ -581,7 +583,7 @@ module backend_top
       .mem_wready(dmem_wready),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
-      .ld_wb_val(lsu_ld_wb_val), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .ld_wb_val(lsu_ld_wb_val), .ld_wb_seq(lsu_ld_wb_seq), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(roll_v), .rollback_seq(roll_seq), .dfault_taken(dflt_fire));
 
@@ -855,12 +857,19 @@ module backend_top
                if ((fi < qn) && !q_cmt[fi] && ($signed(q_seq[fi] - roll_seq) > 0)) cut = fi;
             qn = cut;
          end
-         // 2. writeback: fill rd_val for the unique in-flight writer of each phys dest
+         // 2. writeback: attribute each writeback to the in-flight entry whose SEQNO
+         //    matches it (not its pdst). A physreg is reused rapidly, and a
+         //    WRONG-PATH op (later squashed) can write a physreg that a younger right-path
+         //    op reuses; matching purely by pdst then captures the wrong-path value (or an
+         //    rd=x0 op's value) since both share the number. The writeback seqno (wkq) is
+         //    unique to the producing op, so it lands on exactly that op's entry -- a
+         //    squashed op's stray writeback matches no live entry and is harmlessly dropped.
          for (fl = 0; fl < IW; fl = fl + 1) if (wkv[fl])
             for (fi = 0; fi < QN; fi = fi + 1)
-               if ((fi < qn) && !q_vok[fi] && (q_rk[fi] != 2'd0)
-                   && (q_prd[fi] == wkp[fl*PBITS +: PBITS])) begin
-                  q_val[fi] = wb_val[fl*64 +: 64]; q_vok[fi] = 1'b1;
+               if ((fi < qn) && !q_vok[fi]
+                   && (q_seq[fi] == wkq[fl*SEQW +: SEQW])) begin
+                  if (q_rk[fi] != 2'd0) q_val[fi] = wb_val[fl*64 +: 64];
+                  q_vok[fi] = 1'b1;
                end
          // 3. commit: mark this bundle's (so-far uncommitted) entries committed
          if (cc_commit)

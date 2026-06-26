@@ -42,11 +42,13 @@ module exec_bundle
     input  wire [SBITS-1:0]        lsu_wb_owner,
     input  wire [PBITS-1:0]        lsu_wb_pr,
     input  wire [63:0]             lsu_wb_val,
+    input  wire [SEQW-1:0]         lsu_wb_seq,     // seqno of the LSU writeback (cosim)
     output wire [SHARDS-1:0]       wb_busy,        // per-shard ALU wb valid (-> LSU defer)
     // registered writeback broadcast out (RF write feed + scheduler wake)
     output wire [SHARDS-1:0]       wb_valid,
     output wire [SHARDS*PBITS-1:0] wb_pr,
     output wire [SHARDS*64-1:0]    wb_val,
+    output wire [SHARDS*SEQW-1:0]  wb_seq,         // per-lane writeback seqno (cosim capture)
     // EX-stage LSU drive (aligned with agu/st_data)
     output wire [SHARDS-1:0]       ex_valid,
     output wire [SHARDS*SEQW-1:0]  ex_seq,
@@ -93,6 +95,7 @@ module exec_bundle
    wire [SHARDS-1:0]       wbv;          // per-shard registered ALU/M writeback valid
    wire [SHARDS*PBITS-1:0] wbp;
    wire [SHARDS*64-1:0]    wbd;
+   wire [SHARDS*SEQW-1:0]  wbsq;         // per-shard registered ALU/M writeback seqno (cosim)
    wire [SHARDS-1:0]       brd;
    wire [SHARDS-1:0]       fnci;         // per-shard FENCE.I redirect
    assign ifence = |fnci;
@@ -107,6 +110,7 @@ module exec_bundle
    wire [SHARDS-1:0]       ewbv;
    wire [SHARDS*PBITS-1:0] ewbp;
    wire [SHARDS*64-1:0]    ewbd;
+   wire [SHARDS*SEQW-1:0]  ewbsq;
    // wb_busy to the LSU = the NEXT-cycle writeback per lane (the LSU's registered load
    // result lands a cycle after it selects, so it reserves the lane one cycle ahead).
    wire [SHARDS-1:0]       wbn;
@@ -174,6 +178,7 @@ module exec_bundle
          .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
+         .wb_seq(wbsq[i*SEQW +: SEQW]),
          .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_pc(brp[i*64 +: 64]),
          .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
          .br_is_trap(brtr[i]),
@@ -227,11 +232,13 @@ module exec_bundle
       assign ewbv[k]                = wbv[k] | ld_here;
       assign ewbp[k*PBITS +: PBITS] = wbv[k] ? wbp[k*PBITS +: PBITS] : lsu_wb_pr;
       assign ewbd[k*64 +: 64]       = wbv[k] ? wbd[k*64 +: 64]       : lsu_wb_val;
+      assign ewbsq[k*SEQW +: SEQW]  = wbv[k] ? wbsq[k*SEQW +: SEQW]  : lsu_wb_seq;
    end endgenerate
 
    assign wb_valid = ewbv;
    assign wb_pr    = ewbp;
    assign wb_val   = ewbd;
+   assign wb_seq   = ewbsq;
 
    // oldest mispredicting branch (EX stage) -> redirect; its checkpoint = EX-stage ckpt
    integer j;

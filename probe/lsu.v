@@ -145,6 +145,7 @@ module lsu
     output wire [PBITS-1:0]       ld_wb_pdst,
     output wire [SBITS-1:0]       ld_wb_owner,
     output wire [63:0]            ld_wb_val,
+    output wire [SEQW-1:0]        ld_wb_seq,          // seqno of this writeback (cosim capture)
     output wire                   ld_done,            // -> commit_ctl decrement
     output wire [CBITS-1:0]       ld_done_ckpt,
 
@@ -331,6 +332,7 @@ module lsu
    // registered AMO writeback (1-cycle pulse) -- aligns with wb_busy like a load's r_*
    reg              amo_wbv;
    reg [PBITS-1:0]  amo_wbpd;  reg [SBITS-1:0] amo_wbow;  reg [63:0] amo_wbvl;  reg [CBITS-1:0] amo_wbck;
+   reg [SEQW-1:0]   amo_wbsq;
    initial begin ast = A_IDLE; rsv_v = 1'b0; amo_wbv = 1'b0; end
 
    // ===================== address translation (dTLB) =====================
@@ -569,7 +571,7 @@ module lsu
            A_WR:   if (mem_wready) ast <= A_WB;      // hold the RMW write until accepted
            A_WB:   if (amo_wb_ok) begin           // owner lane free next cycle -> register wb
                       amo_wbv<=1'b1; amo_wbpd<=a_pdst; amo_wbow<=a_own;
-                      amo_wbvl<=a_rdval_q; amo_wbck<=a_ck; ast<=A_IDLE;
+                      amo_wbvl<=a_rdval_q; amo_wbck<=a_ck; amo_wbsq<=a_seq; ast<=A_IDLE;
                    end
          endcase
          // an intervening store to the reserved word breaks the reservation
@@ -651,6 +653,7 @@ module lsu
    assign ld_wb_pdst   = amo_wbv ? amo_wbpd : r_pdst;
    assign ld_wb_owner  = amo_wbv ? amo_wbow : r_owner;
    assign ld_wb_val    = amo_wbv ? amo_wbvl : r_val;
+   assign ld_wb_seq    = amo_wbv ? amo_wbsq : r_seq;
    assign ld_done      = amo_wbv ? 1'b1     : (r_v & ~r_kill);
    assign ld_done_ckpt = amo_wbv ? amo_wbck : r_ck;
 

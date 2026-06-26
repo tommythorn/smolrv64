@@ -89,6 +89,7 @@ module exec_shard
     output reg                     wb_valid,
     output reg  [PBITS-1:0]        wb_pr,
     output reg  [63:0]             wb_val,
+    output reg  [SEQW-1:0]         wb_seq,         // seqno of this writeback (cosim capture)
     // ---- EX: branch/jump resolution ----
     output wire                    br_redirect,
     output wire [63:0]             br_target,
@@ -319,6 +320,7 @@ module exec_shard
    assign      wb_next   = ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
    always @(posedge clk) begin
       wb_valid <= ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
+      wb_seq   <= fp_complete ? fp_seq : (m_complete ? m_seq : ex_sq);
       wb_pr    <= fp_complete ? fp_pd : (m_complete ? m_pdst : ex_pd);
       wb_val   <= fp_complete ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
                 : fp_incore_wb ? fp_incore_res
