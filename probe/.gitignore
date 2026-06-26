@@ -5,3 +5,5 @@ probe_timing.rpt
 *.jou
 *.pb
 obj_dir_fp/
+obj_dir_cosim/
+tb_cosim
