@@ -382,7 +382,13 @@ module exec_shard
    // atomic drive: addr = agu_addr (rs1+0), data = st_data (rs2), size = ex_msz, sign = ex_msgn
    assign ex_amo      = ex_v & ex_amor;
    assign ex_amo_func = ex_amof;
-   assign ex_amo_pdst = ex_pd;
+   // An AMO with rd=x0 (amoor/amoadd.d x0,... -- atomic update discarding the result,
+   // common in kernels) has ex_pdv=0 and no allocated dest, so ex_pd is the renamer's
+   // phantom alloc_pr (the next free reg) which a younger op will really allocate. The
+   // LSU AMO path writes rd back unconditionally (it carries no dest-valid bit), so
+   // without this it clobbers that younger op's register. Map a non-writing AMO's dest
+   // to phys0, which rf_shard reads as hardwired zero -> the writeback is inert. (task #30)
+   assign ex_amo_pdst = ex_pdv ? ex_pd : {PBITS{1'b0}};
 
    // EX-stage LSU control (aligned with agu/st_data)
    assign ex_valid    = ex_v;
