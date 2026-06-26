@@ -97,6 +97,8 @@ module exec_bundle
    wire [SHARDS-1:0]       fnci;         // per-shard FENCE.I redirect
    assign ifence = |fnci;
    wire [SHARDS*64-1:0]    brt;
+   wire [SHARDS*64-1:0]    brp;          // per-shard redirecting-op PC (debug control-flow trace)
+   reg  [63:0]             redirect_src_pc;
    wire [SHARDS*SEQW-1:0]  brs;
    wire [SHARDS*CBITS-1:0] brc;          // EX-stage ckpt of each shard (for redirect)
    wire [SHARDS-1:0]       brtr;         // per-shard "redirect is a trap"
@@ -172,7 +174,8 @@ module exec_bundle
          .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
-         .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
+         .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_pc(brp[i*64 +: 64]),
+         .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
          .br_is_trap(brtr[i]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),
@@ -234,7 +237,7 @@ module exec_bundle
    integer j;
    always @* begin
       redirect = 1'b0; redirect_target = 64'd0; redirect_seq = {SEQW{1'b0}};
-      redirect_ckpt = {CBITS{1'b0}}; redirect_is_trap = 1'b0;
+      redirect_ckpt = {CBITS{1'b0}}; redirect_is_trap = 1'b0; redirect_src_pc = 64'd0;
       for (j = 0; j < SHARDS; j = j + 1)
          if (brd[j] && (!redirect || $signed(brs[j*SEQW +: SEQW] - redirect_seq) < 0)) begin
             redirect         = 1'b1;
@@ -242,6 +245,7 @@ module exec_bundle
             redirect_seq     = brs[j*SEQW +: SEQW];
             redirect_ckpt    = brc[j*CBITS +: CBITS];
             redirect_is_trap = brtr[j];
+            redirect_src_pc  = brp[j*64 +: 64];
          end
    end
 endmodule

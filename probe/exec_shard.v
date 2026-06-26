@@ -92,6 +92,7 @@ module exec_shard
     // ---- EX: branch/jump resolution ----
     output wire                    br_redirect,
     output wire [63:0]             br_target,
+    output wire [63:0]             br_pc,         // PC of the redirecting op (debug: control-flow trace)
     output wire                    fencei_redir_o,     // this shard is redirecting for a FENCE.I
     output wire [SEQW-1:0]         br_seq,
     output wire                    br_is_trap,    // redirect is an exception (roll back TO ckpt)
@@ -366,6 +367,7 @@ module exec_shard
    assign br_target   = sys_redirect ? sys_target
                       : fencei_redir ? (ex_pc + 64'd4) : bu_target;
    assign br_seq      = ex_sq;
+   assign br_pc       = ex_pc;
    assign br_is_trap  = sys_redirect & csr_redir_is_trap;   // exception -> precise (TO ckpt)
    assign st_data     = op2f;
    // atomic drive: addr = agu_addr (rs1+0), data = st_data (rs2), size = ex_msz, sign = ex_msgn

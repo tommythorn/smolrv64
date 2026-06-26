@@ -57,9 +57,9 @@ module tb;
 
    reg [8*256-1:0] monhex, fw, dtb, initrd, cmd;
    integer ncyc, c, ci, cmdlen, pi;
-   reg [63:0] pcring [0:63];  reg [5:0] pcwr;  reg [63:0] lastpc;  reg [15:0] hangc;
+   reg [63:0] srcring [0:63];  reg [63:0] tgtring [0:63];  reg [5:0] pcwr;
    reg frozen, dumped;
-   initial begin pcwr=0; lastpc=0; hangc=0; frozen=0; dumped=0; end
+   initial begin pcwr=0; frozen=0; dumped=0; end
    initial begin
       rx_we=0; rx_data=0; ci=0; ncyc=200000000;
       if (!$value$plusargs("monhex=%s", monhex)) begin $display("FATAL: +monhex"); $finish; end
@@ -82,25 +82,29 @@ module tb;
             rx_we <= 1'b1; rx_data <= cmd[(cmdlen-1-ci)*8 +: 8]; ci <= ci+1;
          end
          if ((c % 500000) == 0) $display("[c=%0d pc=%h commit=%b]", c, dut.imem_addr, commit);
-         // log every trap taken (cause<8 = exception, not ecall) after the jump to DDR
+         // log every trap taken after the jump to DDR
          if (dut.core.eb.u_csr.trap_v && c > 30000)
             $display("[TRAP c=%0d cause=%0d epc=%h tval=%h intr=%b]", c,
                dut.core.eb.u_csr.trap_cause, dut.core.eb.u_csr.trap_epc,
                dut.core.eb.u_csr.trap_tval, dut.core.eb.u_csr.trap_is_intr);
-         // record distinct fetch PCs UNTIL the wfi hang loop is entered, then freeze + dump
-         if (dut.imem_addr >= 64'h800079e8 && dut.imem_addr <= 64'h800079f2) hangc <= hangc + 1'b1;
-         else hangc <= 0;
-         if (!frozen && dut.imem_addr != lastpc) begin
-            pcring[pcwr] <= dut.imem_addr; pcwr <= pcwr + 1'b1; lastpc <= dut.imem_addr;
+         // ring of architectural control transfers (oldest mispredict redirect): src_pc -> target.
+         // Fetch is fall-through, so every taken jump/branch shows here -- the bad jump to the
+         // zero page will be in the tail with its source instruction PC.
+         if (!frozen && dut.core.eb.redirect) begin
+            srcring[pcwr] <= dut.core.eb.redirect_src_pc; tgtring[pcwr] <= dut.core.eb.redirect_target;
+            pcwr <= pcwr + 1'b1;
+            if (dut.core.eb.redirect_target >= 64'h80016000 && dut.core.eb.redirect_target < 64'h80018000)
+               $display("[BADJUMP c=%0d src=%h -> target=%h trap=%b]", c,
+                  dut.core.eb.redirect_src_pc, dut.core.eb.redirect_target, dut.core.eb.redirect_is_trap);
          end
-         // freeze + dump the recent fetch path on the first illegal-instruction trap
+         // freeze + dump the recent control transfers on the first illegal-instruction trap
          if (dut.core.eb.u_csr.trap_v && dut.core.eb.u_csr.trap_cause==64'd2 && c>30000 && !frozen)
             frozen <= 1'b1;
          if (frozen && !dumped) begin
             dumped <= 1'b1;
-            $display("[fetch path into the hang (oldest first):]");
+            $display("[recent control transfers before the illegal trap (oldest first), src -> target:]");
             for (pi=0; pi<64; pi=pi+1)
-               $display("   %h", pcring[(pcwr + pi) & 6'h3f]);
+               $display("   %h -> %h", srcring[(pcwr + pi) & 6'h3f], tgtring[(pcwr + pi) & 6'h3f]);
             $finish;
          end
       end
