@@ -76,6 +76,7 @@ module exec_bundle
     output wire [1:0]              mmu_dpriv,
     output wire                    mmu_sum,
     output wire                    mmu_mxr,
+    output wire                    fs_off,         // mstatus.FS==Off -> FP ops trap illegal
     output wire                    mmu_flush,
     // ---- external trap injection (page faults) + the resulting redirect target ----
     input  wire                    xtrap_v,
@@ -181,7 +182,7 @@ module exec_bundle
          .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]),
          .fp_done(fp_done[i]), .fp_done_ckpt(fp_done_ckpt[i*CBITS +: CBITS]),
          .fp_flags_we(fp_flags_we_sh[i]), .fp_flags(fp_fflags_sh[i*5 +: 5]),
-         .i_frm(csr_frm), .wb_next(wbn[i]));
+         .i_frm(csr_frm), .i_fs_off(fs_off), .wb_next(wbn[i]));
    end endgenerate
 
    // pick the single active system op (gated to oldest -> at most one csr_req_v)
@@ -204,7 +205,7 @@ module exec_bundle
       .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
-      .o_frm(csr_frm), .fp_fflags_we(fp_fflags_we), .fp_fflags(fp_fflags_or),
+      .o_frm(csr_frm), .o_fs_off(fs_off), .fp_fflags_we(fp_fflags_we), .fp_fflags(fp_fflags_or),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip),

@@ -30,6 +30,7 @@ module csr_file
     output wire        o_sum,         // mstatus.SUM
     output wire        o_mxr,         // mstatus.MXR
     output wire [2:0]  o_frm,         // fcsr.frm -> FP units for dynamic rounding
+    output wire        o_fs_off,      // mstatus.FS==Off -> FP instructions trap illegal
     // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
     // (pre-reduced across shards in backend_top at FP completion).
     input  wire        fp_fflags_we,
@@ -84,11 +85,8 @@ module csr_file
    // RV64 misa = MXL(2)<<62 | I C M A S U
    localparam [63:0] MISA_VAL = (64'd2<<62) | (64'd1<<0)  /*A*/ | (64'd1<<2)  /*C*/
                               | (64'd1<<8) /*I*/ | (64'd1<<12) /*M*/
+                              | (64'd1<<3) /*D*/  | (64'd1<<5)  /*F*/
                               | (64'd1<<18) /*S*/ | (64'd1<<20) /*U*/;
-   // NOTE: F/D (bits 5,3) are deliberately NOT advertised yet. The FP datapath works, but
-   // advertising F enables the rv64mi-p-csr "FP store has no effect when mstatus.FS==Off"
-   // check, which needs execute-time FS-disabled illegal-instruction trapping (also required
-   // for Linux lazy FP context switch). Advertise F/D together with that trap. [[fpu-fs-trap]]
 
    // mstatus writable bits (M-mode write); SXL/UXL (35:32) are hardwired to 2.
    localparam [63:0] MSTATUS_WMASK = 64'h0000_0000_007E_79AA;
@@ -106,7 +104,8 @@ module csr_file
               medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus;
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
-   assign o_frm = fcsr[7:5];
+   assign o_frm    = fcsr[7:5];
+   assign o_fs_off = (mstatus[14:13] == 2'b00);
 
    // mstatus as seen on a read: force SXL=UXL=2, and derive SD (bit 63) = any of
    // FS/XS/VS == Dirty (read-only summary; not a stored bit). The riscv-tests v-handler
@@ -256,10 +255,19 @@ module csr_file
    // refetches every younger instruction so any store that was check-translated against the
    // pre-sfence page tables is re-executed (and re-walked) against the flushed/new tables.
    wire        do_sfence  = upd_valid & is_sfence & ~sysop_exc;
+   // A write that changes mstatus.FS redirects to fall-through (like sfence): younger FP ops
+   // already in flight were evaluated against the old FS, so refetch them to re-evaluate the
+   // FS-disabled illegal-instruction trap. FS-changes are rare (context switch) so the cost is
+   // negligible; the FP arithmetic tests set FS once at startup and never trip this.
+   wire [1:0]  newfs_m = (((mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK)) >> 13);
+   wire [1:0]  newfs_s = (((mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK)) >> 13);
+   wire        do_fschg = upd_valid & upd_is_csr & ~csr_illegal &
+                          ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
+                          | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
 
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence;
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg;
    assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
@@ -273,6 +281,7 @@ module csr_file
       else if (do_mret)         redir_target = mepc;
       else if (do_sret)         redir_target = sepc;
       else if (do_sfence)       redir_target = upd_pc + 64'd4;
+      else if (do_fschg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else                      redir_target = trap_tgt;
    end
 

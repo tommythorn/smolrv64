@@ -12,7 +12,7 @@ NM=$(command -v riscv64-unknown-elf-nm || command -v riscv64-elf-nm || command -
 CYC=${CYC:-200000}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 8)}
 classes=("$@")
-[ ${#classes[@]} -eq 0 ] && classes=(rv64ui-p rv64um-p rv64uc-p rv64ua-p rv64mi-p rv64si-p \
+[ ${#classes[@]} -eq 0 ] && classes=(rv64ui-p rv64um-p rv64uc-p rv64ua-p rv64uf-p rv64ud-p rv64mi-p rv64si-p \
                                      rv64ui-v rv64um-v rv64ua-v rv64uc-v)
 
 # ---- build the verilated binary once ----
@@ -34,7 +34,10 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 res="$tmp/results"; : > "$res"
 run_one() {
    local bin_t="$1" base="$2" elf="$3"
-   local th; th=$("$NM" "$elf" 2>/dev/null | awk '/ tohost$/{print $1}'); [ -z "$th" ] && th=80001000
+   # need the ELF's tohost symbol; skip when the ELF is absent (some tests ship only .bin,
+   # e.g. fcvt_w) -- a guessed tohost just yields a spurious fail/timeout.
+   local th; th=$("$NM" "$elf" 2>/dev/null | awk '/ tohost$/{print $1}')
+   if [ -z "$th" ]; then printf "%-26s SKIP(no-elf)\n" "$base"; return; fi
    od -An -v -tx1 "$bin_t" > "$tmp/$base.hex"
    local out; out=$("$BIN" +hex="$tmp/$base.hex" +tohost="$th" +cycles=$CYC +memlat=${MEMLAT:-0} +cache=${CACHE:-0} 2>&1 | grep -E 'RISCV-TEST')
    case "$out" in

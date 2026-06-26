@@ -120,6 +120,7 @@ module exec_shard
     output wire                    fp_flags_we,       // an FP op produced exception flags this cycle
     output wire [4:0]              fp_flags,          // those flags (CVFPU completion OR in-core compare)
     input  wire [2:0]              i_frm,             // fcsr.frm for dynamic rounding (rm==111)
+    input  wire                    i_fs_off,          // mstatus.FS==Off -> suppress FP exec (trapped)
     // next-cycle writeback on this shard's lane (for the LSU's lane reservation)
     output wire                    wb_next);
 
@@ -162,11 +163,13 @@ module exec_shard
    reg  [3:0]       ex_fpop;  reg ex_fpmod;  reg [1:0] ex_fpint, ex_fpo0, ex_fpo1, ex_fpo2;  reg ex_fpo0i;
    reg              fpu_inflight = 1'b0;  reg [SEQW-1:0] fp_seq;  reg [PBITS-1:0] fp_pd;  reg [CBITS-1:0] fp_ck;
    reg              fp_dst32;             // in-flight op's result is FP32 -> NaN-box the writeback
+   reg              ex_fs_off;            // this op executed with FS==Off -> suppress FP, it traps
    reg  [31:0]      ex_insn;
    always @(posedge clk) begin
       ex_fpv<=fp_v_d; ex_fpu<=fp_use_d; ex_fpcls<=fp_cls_d; ex_fpsrc<=fp_src_d; ex_fpdst<=fp_dst_d;
       ex_fprnd<=fp_rnd_d; ex_fpop<=fp_op_d; ex_fpmod<=fp_mod_d; ex_fpint<=fp_int_d;
       ex_fpo0<=fp_o0_d; ex_fpo1<=fp_o1_d; ex_fpo2<=fp_o2_d;  ex_fpo0i<=fp_o0i_d;  ex_insn<=iss_insn;
+      ex_fs_off<=i_fs_off;
       ex_v   <= iss_valid & ~rr_kill;
       ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2; ex_p3 <= iss_ps3;
       ex_sq  <= iss_seq; ex_ck <= iss_ckpt; ex_mi <= iss_mem_idx;
@@ -227,7 +230,11 @@ module exec_shard
    wire [63:0] m_res = mdone ? mres : dres;
 
    // ---- per-shard FP-arith unit (CVFPU): one op in flight, deferred like the divider ----
-   wire fp_arith = ex_v & ex_fpv & ex_fpu;
+   // FS-disabled: this FP op executed with mstatus.FS==Off -> it raises an illegal trap
+   // (handled in backend_top) and must produce NO FP side effect (no CVFPU start, no in-core
+   // writeback, no fflags). Covers arith + in-core; FP load/store are gated at the LSU.
+   wire fp_dis   = ex_v & ex_fpv & ex_fs_off;
+   wire fp_arith = ex_v & ex_fpv & ex_fpu & ~fp_dis;
    wire fp_squash_now = squash & older(squash_seq, ex_sq);
    wire fp_abort = fpu_inflight & squash & older(squash_seq, fp_seq);
    // a fresh FP op may start only when the unit is free and nothing older is squashing it.
@@ -290,11 +297,11 @@ module exec_shard
         default: fp_incore_res = 64'd0;
       endcase
    end
-   wire fp_incore_wb = ex_v & ex_fpv & ~ex_fpu & ex_pdv;
+   wire fp_incore_wb = ex_v & ex_fpv & ~ex_fpu & ex_pdv & ~fp_dis;
    // FP exception flags to fcsr: from a CVFPU completion, or an in-core compare's NV bit.
    // (in-core ops other than compares raise no flags.) fp_incore raises flags even when rd=x0
    // is dropped (a compare always has rd, but gate on the op being valid, not on ex_pdv).
-   wire       fp_icmp   = ex_v & ex_fpv & ~ex_fpu & (ex_fpcls==3'd2);
+   wire       fp_icmp   = ex_v & ex_fpv & ~ex_fpu & (ex_fpcls==3'd2) & ~fp_dis;
    wire       fp_icmp_nv= ex_fpd ? cmp_d2[1] : cmp_s2[1];
    assign     fp_flags_we = fp_complete | fp_icmp;
    assign     fp_flags    = fp_complete ? fp_fflags : {fp_icmp_nv, 4'd0};

@@ -184,6 +184,7 @@ module backend_top
    wire [63:0]                   mmu_satp;
    wire [1:0]                    mmu_priv, mmu_dpriv;
    wire                          mmu_sum, mmu_mxr, mmu_flush;
+   wire                          eb_fs_off;        // mstatus.FS==Off (FP ops trap illegal)
    wire [$clog2(HW+2)-1:0]       imem_avail_g = (immu_ready & ~immu_fault) ? imem_avail
                                                                            : {$clog2(HW+2){1'b0}};
    assign imem_addr = {8'd0, immu_pa};
@@ -362,7 +363,7 @@ module backend_top
 
    // execute-stage op decode (from the registered payload) -> LSU + commit
    wire [IW-1:0]   q_iss_mem, q_iss_store, q_iss_is_load, q_iss_is_store, q_iss_is_mul, q_iss_is_amo, q_iss_defer;
-   wire [IW-1:0]   q_iss_is_ill;
+   wire [IW-1:0]   q_iss_is_ill, q_iss_is_ill_eff, q_iss_fp_dis;
    wire            data_xlate = (satp_data[63:60] == 4'd8);   // Sv39 on for data accesses
    wire [IW*4-1:0] q_iss_nb;
    wire [IW-1:0]   q_iss_sgn;
@@ -379,13 +380,22 @@ module backend_top
       // an illegal instruction never completes: like a faulting load it is deferred so its
       // checkpoint stays open (never commits) until the illegal-instruction trap is delivered.
       assign q_iss_is_ill[gi]  = q_iss_valid[gi] & q_iss_pay[gi*`PAYW + `PAY_ILL];
+      // FS-disabled trap: an FP instruction (LOAD/STORE-FP, OP-FP, FMADD family) executed
+      // with mstatus.FS==Off raises illegal-instruction (cause 2), like Linux lazy-FP. A
+      // change to FS redirects+refetches younger ops (csr_file do_fschg), so by the time an
+      // FP op reaches here fs_off is current -> this execute-time check is precise.
+      wire [6:0] qop = q_iss_pay[gi*`PAYW + 165 +: 7];
+      wire qi_fpop = (qop==7'b0000111) | (qop==7'b0100111) | (qop==7'b1010011)
+                   | (qop==7'b1000011) | (qop==7'b1000111) | (qop==7'b1001011) | (qop==7'b1001111);
+      assign q_iss_fp_dis[gi]  = q_iss_valid[gi] & qi_fpop & eb_fs_off;
+      assign q_iss_is_ill_eff[gi] = q_iss_is_ill[gi] | q_iss_fp_dis[gi];
       // loads AND atomics complete at the LSU -> deferred (excluded from the issue-time
       // commit decrement, counted via ld_done instead). Under Sv39, plain stores also defer
       // (counted via st_done) so a store page fault is delivered precisely (the store holds
       // its checkpoint open until its translation is checked). In Bare mode stores keep
       // counting at issue -- full (parallel) store throughput, and prompt drain (fence_i).
       // Illegal ops defer too -- they hold their checkpoint for the precise trap.
-      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi] | q_iss_is_ill[gi]
+      assign q_iss_defer[gi]   = q_iss_is_load[gi] | q_iss_is_amo[gi] | q_iss_is_ill_eff[gi]
                                  | (q_iss_is_store[gi] & data_xlate);
       // FPU-arith ops complete at the FP unit (deferred, like divides) -> excluded from the
       // issue count and decremented at fp_done.
@@ -395,6 +405,15 @@ module backend_top
          .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
       assign q_iss_is_fp[gi] = q_iss_valid[gi] & qi_fpu;
    end endgenerate
+
+   // FP-disabled flag aligned to the EX stage (gates the LSU FP load/store dispatch so a
+   // disabled FLW/FSW makes no memory access; it is held + trapped via q_iss_is_ill_eff).
+   reg [IW-1:0] ex_fp_dis;
+   initial ex_fp_dis = {IW{1'b0}};
+   always @(posedge clk) begin
+      if (reset) ex_fp_dis <= {IW{1'b0}};
+      else       ex_fp_dis <= q_iss_fp_dis;
+   end
 
    // ---- wake: select-time (latency-1) + completion-time (load/divide via wb) ----
    // select-wake fires for a selected latency-1 register writer (not mem, not div).
@@ -475,7 +494,7 @@ module backend_top
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
       .ifence(ifence),
       .mmu_satp(mmu_satp), .mmu_priv(mmu_priv), .mmu_dpriv(mmu_dpriv),
-      .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush),
+      .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip),
@@ -491,8 +510,8 @@ module backend_top
    wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
    wire [IW-1:0]      exe_ld_sgn, exe_ld_fp;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
-      assign exe_st_v[gi] = ex_valid[gi] & ex_mem[gi] &  ex_store[gi];
-      assign exe_ld_v[gi] = ex_valid[gi] & ex_mem[gi] & ~ex_store[gi];
+      assign exe_st_v[gi] = ex_valid[gi] & ex_mem[gi] &  ex_store[gi] & ~ex_fp_dis[gi];
+      assign exe_ld_v[gi] = ex_valid[gi] & ex_mem[gi] & ~ex_store[gi] & ~ex_fp_dis[gi];
       assign exe_st_idx[gi*SBI +: SBI] = ex_mem_idx[gi*MIDXW +: SBI];
       assign exe_ld_idx[gi*LQI +: LQI] = ex_mem_idx[gi*MIDXW +: LQI];
       assign exe_st_addr[gi*AW +: AW]  = eb_agu[gi*64 +: AW];
@@ -578,7 +597,7 @@ module backend_top
          // exclude an op being squashed by THIS cycle's rollback (newer than roll_seq):
          // otherwise a wrong-path illegal op (e.g. speculation into zero-padding past an
          // ecall) latches ill_v just as it is squashed, and nothing later clears it -> hang.
-         if (q_iss_is_ill[iq] &&
+         if (q_iss_is_ill_eff[iq] &&
              !(roll_v && $signed(roll_seq - q_iss_seq[iq*SEQW +: SEQW]) < 0) &&
              (!il_now || $signed(q_iss_seq[iq*SEQW +: SEQW] - il_nseq) < 0)) begin
             il_now  = 1'b1;
