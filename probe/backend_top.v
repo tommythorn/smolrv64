@@ -923,6 +923,98 @@ module backend_top
       end
    end
 `endif
+
+`ifdef SEQROB
+   // ============================================================================
+   // Sim-only seqno-ROB value-flow checker. A LOGICAL (seqno) shadow that is immune
+   // to physreg reuse: a seqno-RAT maps each integer arch reg to its producer's
+   // {hwseq, abs}; a finite ROB (indexed by hwseq, tagged with a monotone abs to
+   // detect eviction) records each producer's writeback. At EXECUTE we assert that
+   // each integer source's producer has already written back -- a consumer reading
+   // before its producer completes (the physreg-reuse early-wake bug) trips it AT THE
+   // CYCLE, no cosim needed. The seqno-RAT is recovered on rollback exactly like the
+   // rename MAP (snapshot at create, restore at rollback). A producer whose ROB entry
+   // was evicted (tag mismatch) is too far in the past -> skipped (finite window).
+   localparam ABW = 32;
+   integer sa, sl, swb;
+   reg [ABW-1:0]  g_abs;
+   reg            sr_v  [0:31];                     // seqno-RAT: arch -> producer
+   reg [SEQW-1:0] sr_hs [0:31];
+   reg [ABW-1:0]  sr_ab [0:31];
+   reg            cr_v  [0:NCHK-1][0:31];           // per-checkpoint snapshot (rollback)
+   reg [SEQW-1:0] cr_hs [0:NCHK-1][0:31];
+   reg [ABW-1:0]  cr_ab [0:NCHK-1][0:31];
+   reg            o1v [0:255]; reg [SEQW-1:0] o1hs [0:255]; reg [ABW-1:0] o1ab [0:255];
+   reg            o2v [0:255]; reg [SEQW-1:0] o2hs [0:255]; reg [ABW-1:0] o2ab [0:255];
+   reg [ABW-1:0]  rb_tag [0:255];                   // ROB (by hwseq): producer abs tag
+   reg            rb_wbv [0:255];                   // ... writeback done
+   reg [63:0]     rb_val [0:255];                   // ... value (for the value check)
+   reg            tv [0:31]; reg [SEQW-1:0] ths [0:31]; reg [ABW-1:0] tab [0:31];
+   reg [ABW-1:0]  wab;
+   reg [6:0]      sop; reg [4:0] srs1, srs2, srd; reg srdfp, sck1, sck2;
+   reg [SEQW-1:0] shs, xhs; reg wbnow1, wbnow2;
+   initial begin
+      g_abs = 1;
+      for (sa = 0; sa < 32;  sa = sa + 1) begin sr_v[sa]=0; sr_hs[sa]=0; sr_ab[sa]=0; end
+      for (sl = 0; sl < NCHK; sl = sl + 1)
+         for (sa = 0; sa < 32; sa = sa + 1) begin cr_v[sl][sa]=0; cr_hs[sl][sa]=0; cr_ab[sl][sa]=0; end
+      for (sa = 0; sa < 256; sa = sa + 1) begin o1v[sa]=0; o2v[sa]=0; rb_tag[sa]=0; rb_wbv[sa]=0; end
+   end
+   // dispatch: capture sources from the seqno-RAT, open ROB tags, update + snapshot RAT
+   always @(posedge clk) if (!reset) begin
+      if (cc_rollback) begin
+         for (sa = 0; sa < 32; sa = sa + 1) begin
+            sr_v[sa] <= cr_v[cc_rollback_idx][sa]; sr_hs[sa] <= cr_hs[cc_rollback_idx][sa];
+            sr_ab[sa] <= cr_ab[cc_rollback_idx][sa];
+         end
+      end else if (disp_fire) begin
+         for (sa = 0; sa < 32; sa = sa + 1) begin tv[sa]=sr_v[sa]; ths[sa]=sr_hs[sa]; tab[sa]=sr_ab[sa]; end
+         wab = g_abs;
+         for (sl = 0; sl < IW; sl = sl + 1) if (r_valid[sl]) begin
+            shs  = r_seq[sl*SEQW +: SEQW];
+            sop  = r_pay[sl*`PAYW + 165 +: 7];
+            srs1 = r_pay[sl*`PAYW + 165 + 15 +: 5];
+            srs2 = r_pay[sl*`PAYW + 165 + 20 +: 5];
+            srd  = r_rd[sl*ABITS +: 5];  srdfp = r_rd[sl*ABITS + 5];
+            sck1 = (sop==7'h33)|(sop==7'h3b)|(sop==7'h13)|(sop==7'h1b)
+                 | (sop==7'h03)|(sop==7'h23)|(sop==7'h63)|(sop==7'h67)|(sop==7'h2f);
+            sck2 = (sop==7'h33)|(sop==7'h3b)|(sop==7'h23)|(sop==7'h63)|(sop==7'h2f);
+            o1v[shs] <= sck1 & tv[srs1] & (srs1 != 5'd0); o1hs[shs] <= ths[srs1]; o1ab[shs] <= tab[srs1];
+            o2v[shs] <= sck2 & tv[srs2] & (srs2 != 5'd0); o2hs[shs] <= ths[srs2]; o2ab[shs] <= tab[srs2];
+            rb_tag[shs] <= wab;  rb_wbv[shs] <= 1'b0;
+            if (r_rd_v[sl] & ~srdfp & (srd != 5'd0)) begin tv[srd]=1'b1; ths[srd]=shs; tab[srd]=wab; end
+            wab = wab + 1'b1;
+         end
+         for (sa = 0; sa < 32; sa = sa + 1) begin
+            sr_v[sa] <= tv[sa]; sr_hs[sa] <= ths[sa]; sr_ab[sa] <= tab[sa];
+            cr_v[cur+1'b1][sa] <= tv[sa]; cr_hs[cur+1'b1][sa] <= ths[sa]; cr_ab[cur+1'b1][sa] <= tab[sa];
+         end
+         g_abs <= wab;
+      end
+      // writeback: mark each producer's ROB entry done + record value (same block to
+      // keep rb_* single-driver; runs every cycle, after the dispatch open above)
+      for (sl = 0; sl < IW; sl = sl + 1) if (wkv[sl]) begin
+         rb_wbv[wkq[sl*SEQW +: SEQW]] <= 1'b1;
+         rb_val[wkq[sl*SEQW +: SEQW]] <= wb_val[sl*64 +: 64];
+      end
+   end
+   // execute: a source's producer (still in the ROB window) must have written back
+   always @(posedge clk) if (!reset)
+      for (sl = 0; sl < IW; sl = sl + 1) if (ex_valid[sl]) begin
+         xhs = ex_seq[sl*SEQW +: SEQW];
+         wbnow1 = 1'b0; wbnow2 = 1'b0;                  // producer writing back THIS cycle? (EX/wb race)
+         for (swb = 0; swb < IW; swb = swb + 1) if (wkv[swb]) begin
+            if (wkq[swb*SEQW +: SEQW] == o1hs[xhs]) wbnow1 = 1'b1;
+            if (wkq[swb*SEQW +: SEQW] == o2hs[xhs]) wbnow2 = 1'b1;
+         end
+         if (o1v[xhs] && (rb_tag[o1hs[xhs]] == o1ab[xhs]) && !rb_wbv[o1hs[xhs]] && !wbnow1)
+            $display("[%0t] *** SEQROB EARLY-READ: op hwseq=%0d read rs1 from producer hwseq=%0d (abs=%0d) before writeback",
+               $time, xhs, o1hs[xhs], o1ab[xhs]);
+         if (o2v[xhs] && (rb_tag[o2hs[xhs]] == o2ab[xhs]) && !rb_wbv[o2hs[xhs]] && !wbnow2)
+            $display("[%0t] *** SEQROB EARLY-READ: op hwseq=%0d read rs2 from producer hwseq=%0d (abs=%0d) before writeback",
+               $time, xhs, o2hs[xhs], o2ab[xhs]);
+      end
+`endif
 endmodule
 
 `default_nettype wire

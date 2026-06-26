@@ -23,7 +23,7 @@ echo "building obj_dir_vl/tb_vl ..."
 verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
-   -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
+   -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
    -I. -I../src --top-module tb --Mdir obj_dir_vl -o tb_vl \
    $srcs tb_vl.v ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv \
    > /tmp/vlbuild.log 2>&1
