@@ -3,36 +3,48 @@
 # CLINT/PLIC/UART + behavioral DDR) with -DPROBE_COSIM, resets to OpenSBI (0x8000_0000)
 # with a1=DTB, and locksteps every committed instruction against simmerv -- aborts on the
 # first divergence (the high-signal output for an overnight run).
-#   ./run-cosim-linux.sh            (builds if needed; BUILD=1 forces rebuild)
-#   CYC=... ./run-cosim-linux.sh
+#
+# Defaults run workloads/linux (tiny128). Override via env for other workloads -- the
+# gb5/gb6 dirs ship a `make pcosim` that sets these:
+#   NAME       per-workload binary/obj-dir tag (default linux)
+#   MEM_LG2    log2(DDR bytes); sizes the RTL ram[], the C bound, AND simmerv (default 28=256MiB)
+#   FW DTB INITRD   image paths (absolute; this script cd's to probe/)
+#   OFF_DTB OFF_INITRD   load offsets from 0x8000_0000, hex no-0x (default linux 2000000 / 762b000)
+#   A1         DTB physical address seeded into a1, hex no-0x (default 82000000)
+#   CYC        cycle cap (default 200000000);  BUILD=1 forces a rebuild
 set -u
 cd "$(dirname "$0")"
 
 SIMMERV_DIR=${SIMMERV_DIR:-$HOME/simmerv}
 SIMMERV_LIB=$SIMMERV_DIR/target/release/libsimmerv_cosim.a
 SIMMERV_INC=$SIMMERV_DIR/cosim
+
+NAME=${NAME:-linux}
+MEM_LG2=${MEM_LG2:-28}
 W=../workloads/linux
 FW=${FW:-$W/fw_payload.bin}; DTB=${DTB:-$W/dts.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
+OFF_DTB=${OFF_DTB:-2000000}; OFF_INITRD=${OFF_INITRD:-762b000}; A1=${A1:-82000000}
 CYC=${CYC:-200000000}
-BIN=$(pwd)/obj_dir_cosim_linux/tb_cosim_linux
+BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 
 [ -f "$SIMMERV_LIB" ] || (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
 
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
-   echo "building obj_dir_cosim_linux/tb_cosim_linux ..."
+   echo "building obj_dir_cosim_${NAME}/tb_cosim_${NAME} (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
-      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=28 ${VDEFS:-} \
-      -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=28 -I$SIMMERV_INC" \
+      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
+      -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm" \
-      -I. -I../src --top-module tb --Mdir obj_dir_cosim_linux -o tb_cosim_linux \
+      -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
       $srcs tb_cosim_linux.v ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp > /tmp/cosimlinuxbuild.log 2>&1
-   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosimlinuxbuild.log | head; exit 1; fi
+      fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp > /tmp/cosim_${NAME}_build.log 2>&1
+   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosim_${NAME}_build.log | head; exit 1; fi
 fi
 
-echo "=== Linux cosim (fw=$FW dtb=$DTB) ==="
-"$BIN" +fw="$FW" +dtb="$DTB" +initrd="$INITRD" +a1=82000000 +cycles=$CYC
+echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=$INITRD@+$OFF_INITRD a1=$A1) ==="
+"$BIN" +fw="$FW" +dtb="$DTB" +initrd="$INITRD" \
+       +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC

@@ -46,7 +46,17 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-cosim
 		+sram_odd=$(CURDIR)/mem.odd \
 		+rf=$(CURDIR)/rf.hex
 
-.PHONY: cosim
+# Probe (sharded-OoO) core cosim vs simmerv -- the analogue of `make cosim`, driving
+# probe/tb_cosim_linux (flat fw/dtb/initrd load) with gb6's memory layout (2 GiB; DTB
+# @0xfff00000, initrd @0xe5f8ca00). First run builds; BUILD=1 or CYC=N to override.
+PROBE ?= ../../probe
+CYC   ?= 200000000
+pcosim: gb6.dtb $(FW) $(IMG)
+	NAME=gb6 MEM_LG2=31 A1=fff00000 OFF_DTB=7ff00000 OFF_INITRD=65f8ca00 \
+	FW=$(CURDIR)/$(FW) DTB=$(CURDIR)/gb6.dtb INITRD=$(CURDIR)/$(IMG) \
+	CYC=$(CYC) BUILD=$(BUILD) $(PROBE)/run-cosim-linux.sh
+
+.PHONY: cosim pcosim
 .PHONY: $(SRC_DIR)/smolrv64-tiny128-verbose $(SRC_DIR)/smolrv64-tiny128-vl $(SRC_DIR)/smolrv64-tiny128-cosim
 
 %: %.xz

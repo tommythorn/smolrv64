@@ -9,8 +9,15 @@
 //   +fw=... +dtb=... [+initrd=...] [+cycles=N]   (C side reads the same plusargs)
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
-   localparam        DDR_BYTES = 1<<28;            // 256 MiB
-   localparam [63:0] OFF_FW = 64'h000_0000, OFF_DTB = 64'h200_0000, OFF_INITRD = 64'h762_b000;
+`ifdef COSIM_MEM_SIZE_LG2
+   localparam [63:0] DDR_BYTES = 64'd1 << `COSIM_MEM_SIZE_LG2;   // 64-bit: LG2>=31 (>=2GiB) ok
+`else
+   localparam [63:0] DDR_BYTES = 64'd1 << 28;       // 256 MiB (linux default)
+`endif
+   // DTB/initrd load offsets default to the linux workload but are overridable per
+   // workload via +dtb_off=/+initrd_off= (gb5/gb6 place them much higher); fw is @0.
+   localparam [63:0] OFF_FW = 64'h000_0000, OFF_DTB_DEF = 64'h200_0000, OFF_INITRD_DEF = 64'h762_b000;
+   reg [63:0] off_dtb, off_initrd;
 
    reg clk=0; always #5 clk=~clk;
    reg reset;
@@ -27,31 +34,47 @@ module tb;
       .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready));
 
-   // behavioral DDR (256 MiB, 4-cycle line latency)
-   reg [7:0] ram [0:DDR_BYTES-1];
+   // behavioral DDR (DDR_BYTES, 4-cycle line latency). Modeled as a 512-bit LINE array (the
+   // ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 -- which stays under
+   // the ~1-billion-element array-dimension limit even at 2 GiB (a flat byte array overflows
+   // it). A line holds bytes little-endian: byte k at bits [k*8 +: 8], matching the port.
+   localparam [63:0] NLINES = DDR_BYTES >> 6;
+   localparam [63:0] LBASE  = BASE >> 6;            // DDR base as a line address
+   reg [511:0] lram [0:NLINES-1];
    reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
-   integer kb; reg [63:0] d_base;
+   reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
       else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; end
       else if (d_busy) begin
          if (d_cnt==0) begin
-            d_base = (({{6{1'b0}},d_ad_q} << 6) - BASE) & (DDR_BYTES-1);
-            if (d_we_q) for (kb=0;kb<64;kb=kb+1) ram[d_base+kb] <= d_wd_q[kb*8 +: 8];
-            else        for (kb=0;kb<64;kb=kb+1) ddr_rdata[kb*8 +: 8] <= ram[d_base+kb];
+            line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
+            if (d_we_q) lram[line] <= d_wd_q;
+            else        ddr_rdata  <= lram[line];
             ddr_ack<=1'b1; d_busy<=1'b0;
          end else d_cnt <= d_cnt-1;
       end
    end
 
+   // Load a raw image at byte offset `off` (64-byte aligned for all workloads). $fread fills
+   // each 512-bit element MSB-first, so reverse the 64 bytes of every loaded line back to the
+   // little-endian byte order the ddr_* port (and the byte-array model it replaced) uses.
    task load_bin; input [8*256-1:0] fname; input [63:0] off;
-      integer fd, n; begin
+      integer fd, n, j; reg [63:0] sl, nl, li; reg [7:0] t; begin
          fd = $fopen(fname, "rb");
          if (fd == 0) begin $display("FATAL: cannot open %0s", fname); $finish; end
-         n  = $fread(ram, fd, off, DDR_BYTES-off);
+         sl = off >> 6;
+         n  = $fread(lram, fd, sl, NLINES - sl);
          $fclose(fd);
-         $display("[cosim-linux: loaded %0d bytes @ DDR+%h]", n, off);
+         nl = (n + 63) >> 6;
+         for (li = sl; li < sl + nl; li = li + 1)
+            for (j = 0; j < 32; j = j + 1) begin
+               t = lram[li][j*8 +: 8];
+               lram[li][j*8 +: 8]      = lram[li][(63-j)*8 +: 8];
+               lram[li][(63-j)*8 +: 8] = t;
+            end
+         $display("[cosim-linux: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
       end
    endtask
 
@@ -62,9 +85,12 @@ module tb;
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
+      off_dtb = OFF_DTB_DEF; off_initrd = OFF_INITRD_DEF;
+      if ($value$plusargs("dtb_off=%h",    off_dtb))    ;
+      if ($value$plusargs("initrd_off=%h", off_initrd)) ;
       load_bin(fw,  OFF_FW);
-      load_bin(dtb, OFF_DTB);
-      if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, OFF_INITRD);
+      load_bin(dtb, off_dtb);
+      if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
 
       reset=1; @(negedge clk); @(negedge clk); reset=0;
       for (c=0; c<ncyc; c=c+1) begin

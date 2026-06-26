@@ -46,8 +46,11 @@ uint64_t      g_prev_mtimecmp = ~0ULL;
 bool          g_prev_seip = false;
 
 const char* plusarg(const char* key) {
-    // verilated --binary parsed the args; fetch "+key=...".
-    const char* m = Verilated::commandArgsPlusMatch(key);
+    // verilated --binary parsed the args; fetch "+key=...". Match "key=" (not just the
+    // prefix "key") so e.g. plusarg("dtb")/("initrd") don't also match +dtb_off=/+initrd_off=
+    // -- commandArgsPlusMatch is a prefix match, and those share the dtb/initrd prefix.
+    char k[64]; std::snprintf(k, sizeof k, "%s=", key);
+    const char* m = Verilated::commandArgsPlusMatch(k);
     if (!m || !m[0]) return nullptr;
     const char* eq = std::strchr(m, '=');
     return eq ? eq + 1 : nullptr;
@@ -97,9 +100,16 @@ void cosim_init() {
     uint64_t reset_pc = AXI_BASE;
     const char* fw = plusarg("fw");
     if (fw) {
-        // Linux mode: fw_payload@DDR+0, DTB@+0x2000000, initrd@+0x762b000, a1=DTB.
-        const uint64_t OFF_DTB = 0x2000000ULL, OFF_INITRD = 0x762b000ULL;
+        // Linux mode: fw_payload@DDR+0, DTB/initrd at workload offsets (default linux;
+        // overridden per workload via +dtb_off=/+initrd_off= to match the RTL harness), a1=DTB.
+        // NB: plusarg() returns a pointer into a SHARED static buffer that the next plusarg()
+        // call overwrites -- consume each result (load the file / convert the number) BEFORE
+        // the next plusarg() call; never hold two plusarg pointers across a call.
         if (!load_bin_at(fw, 0)) std::abort();
+        const char* doff = plusarg("dtb_off");
+        const uint64_t OFF_DTB    = doff ? std::strtoull(doff, nullptr, 16) : 0x2000000ULL;
+        const char* ioff = plusarg("initrd_off");
+        const uint64_t OFF_INITRD = ioff ? std::strtoull(ioff, nullptr, 16) : 0x762b000ULL;
         const char* dtb = plusarg("dtb");
         if (!dtb) { std::fprintf(stderr, "cosim: need +dtb with +fw\n"); std::abort(); }
         if (!load_bin_at(dtb, OFF_DTB)) std::abort();
