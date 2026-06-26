@@ -55,13 +55,52 @@ module tb;
       end
    endtask
 
+   // read 8 little-endian bytes from the behavioral DDR (a physical addr in [BASE, BASE+DDR))
+   function [63:0] rd64; input [63:0] pa; integer k; reg [63:0] v;
+      begin v=0; for (k=0;k<8;k=k+1) v[k*8 +: 8] = ram[((pa - BASE) & (DDR_BYTES-1)) + k]; rd64=v; end
+   endfunction
+   // manual Sv39 walk of `satp`'s table for `va`, printing each PTE level + the verdict.
+   // Compares against the probe's MMU fault: page mapped here -> probe faulted spuriously.
+   task walk_sv39; input [63:0] satp; input [63:0] va;
+      reg [63:0] base, pte, pa; reg [8:0] v2,v1,v0; reg leaf, bad;
+      begin
+         v2=va[38:30]; v1=va[29:21]; v0=va[20:12];
+         base={satp[43:0],12'd0};
+         $display("  [WALK va=%h satp=%h root=%h v2=%0d v1=%0d v0=%0d]", va, satp, base, v2, v1, v0);
+         begin : scan  // dump every non-zero root (L2) entry to characterize the table
+            integer e;
+            for (e=0; e<512; e=e+1) if (rd64(base + e*8) != 0)
+               $display("    root[%0d] = %h", e, rd64(base + e*8));
+         end
+         pte=rd64(base + v2*8);
+         $display("    L2 @%h = %h (V%b R%b W%b X%b)", base+v2*8, pte, pte[0],pte[1],pte[2],pte[3]);
+         if (!pte[0]||(!pte[1]&&pte[2])) $display("    -> L2 INVALID (fault)");
+         else if (pte[1]|pte[3]) $display("    -> L2 LEAF 1G -> pa=%h", {pte[53:28],va[29:0]});
+         else begin
+            base={pte[53:10],12'd0};
+            pte=rd64(base + v1*8);
+            $display("    L1 @%h = %h (V%b R%b W%b X%b)", base+v1*8, pte, pte[0],pte[1],pte[2],pte[3]);
+            if (!pte[0]||(!pte[1]&&pte[2])) $display("    -> L1 INVALID (fault)");
+            else if (pte[1]|pte[3]) $display("    -> L1 LEAF 2M -> pa=%h", {pte[53:19],va[20:0]});
+            else begin
+               base={pte[53:10],12'd0};
+               pte=rd64(base + v0*8);
+               $display("    L0 @%h = %h (V%b R%b W%b X%b A%b D%b)", base+v0*8, pte, pte[0],pte[1],pte[2],pte[3],pte[6],pte[7]);
+               if (!pte[0]||(!pte[1]&&pte[2])) $display("    -> L0 INVALID (fault)");
+               else if (pte[1]|pte[3]) $display("    -> L0 LEAF 4K -> pa=%h (MAPPED)", {pte[53:10],va[11:0]});
+               else $display("    -> L0 not-a-leaf (fault)");
+            end
+         end
+      end
+   endtask
+
    reg [8*256-1:0] monhex, fw, dtb, initrd, cmd;
-   integer ncyc, c, ci, cmdlen, pi;
+   integer ncyc, c, ci, cmdlen, pi, nwalk;
    reg [63:0] srcring [0:63];  reg [63:0] tgtring [0:63];  reg [5:0] pcwr;
    reg frozen, dumped;  reg [63:0] mraddr_q;  integer la_idx, si;
    initial begin pcwr=0; frozen=0; dumped=0; mraddr_q=0; end
    initial begin
-      rx_we=0; rx_data=0; ci=0; ncyc=200000000;
+      rx_we=0; rx_data=0; ci=0; ncyc=200000000; nwalk=0;
       if (!$value$plusargs("monhex=%s", monhex)) begin $display("FATAL: +monhex"); $finish; end
       if (!$value$plusargs("fw=%s", fw))        begin $display("FATAL: +fw"); $finish; end
       if (!$value$plusargs("dtb=%s", dtb))      begin $display("FATAL: +dtb"); $finish; end
@@ -83,6 +122,26 @@ module tb;
             rx_we <= 1'b1; rx_data <= cmd[(cmdlen-1-ci)*8 +: 8]; ci <= ci+1;
          end
          if ((c % 500000) == 0) $display("[c=%0d pc=%h commit=%b]", c, dut.imem_addr, commit);
+         // fine PC+satp+priv trace through the MMU transition window
+         if (c > 10080000 && c < 11100000 && (c % 20000)==0)
+            $display("[MMU c=%0d pc=%h satp=%h priv=%0d]", c, dut.imem_addr, dut.core.eb.u_csr.satp, dut.core.eb.u_csr.priv);
+         // tap the dMMU (load) PTW around the cause-13 fault: the PTEs it reads + its decision
+         if (c > 11055000 && c < 11066000) begin
+            if (dut.core.u_lsu.u_ldmmu.st==2'd2 && dut.core.u_lsu.u_ldmmu.ptw_rvalid)
+               $display("[dMMU c=%0d lvl=%0d ptw_addr=%h pte=%h]", c, dut.core.u_lsu.u_ldmmu.lvl,
+                  dut.core.u_lsu.u_ldmmu.ptw_addr, dut.core.u_lsu.u_ldmmu.ptw_rdata);
+            if (dut.core.u_lsu.u_ldmmu.w_done && dut.core.u_lsu.u_ldmmu.w_fault)
+               $display("[dMMU c=%0d WALK-FAULT va=%h cause=%0d]", c,
+                  dut.core.u_lsu.u_ldmmu.va_q, dut.core.u_lsu.u_ldmmu.w_cause);
+            if (dut.core.u_lsu.u_ldmmu.t_fault)
+               $display("[dMMU c=%0d t_fault va=%h tlb_hit=%b noncanon=%b hit_pf=%b wdm=%b]", c,
+                  dut.core.u_lsu.u_ldmmu.req_vaddr, dut.core.u_lsu.u_ldmmu.tlb_hit,
+                  dut.core.u_lsu.u_ldmmu.noncanon, dut.core.u_lsu.u_ldmmu.hit_perm_fault,
+                  dut.core.u_lsu.u_ldmmu.wdm);
+         end
+         // watch stores into the root page table (0x80a8c000) -- did the kernel write root[2]?
+         if (c < 10100000 && dmem_wen && (dmem_waddr & ~64'hfff) == 64'h80a8c000)
+            $display("[PTSTORE c=%0d addr=%h data=%h mask=%b]", c, dmem_waddr, dmem_wdata, dmem_wmask);
          // adapter request/response sequence: who is the cache serving vs the LSU's load addr?
          if (c > 1783560 && c < 1783612)
             $display("[ADPSEQ c=%0d dmem_ren=%b dmem_raddr=%h | dc_st=%0d dc_cur=%h dc_rd_v=%b | raw_rv=%b dmem_rv=%b c_rd_pend=%b]",
@@ -119,10 +178,18 @@ module tb;
             end
          end
          // log every trap taken after the jump to DDR
-         if (dut.core.eb.u_csr.trap_v && c > 30000)
-            $display("[TRAP c=%0d cause=%0d epc=%h tval=%h intr=%b]", c,
-               dut.core.eb.u_csr.trap_cause, dut.core.eb.u_csr.trap_epc,
-               dut.core.eb.u_csr.trap_tval, dut.core.eb.u_csr.trap_is_intr);
+         if (dut.core.eb.u_csr.trap_v && c > 30000) begin
+            $display("[TRAP c=%0d cause=%0d epc=%h tval=%h to_s=%b stvec=%h mtvec=%h tgt=%h satp=%h priv=%0d]", c,
+               dut.core.eb.u_csr.trap_cause, dut.core.eb.u_csr.trap_epc, dut.core.eb.u_csr.trap_tval,
+               dut.core.eb.u_csr.trap_to_s, dut.core.eb.u_csr.stvec, dut.core.eb.u_csr.mtvec,
+               dut.core.eb.u_csr.redir_target, dut.core.eb.u_csr.satp, dut.core.eb.u_csr.priv);
+            // on the first page fault, manually walk the kernel's table for tval -> spurious?
+            if ((dut.core.eb.u_csr.trap_cause==64'd12 || dut.core.eb.u_csr.trap_cause==64'd13
+                 || dut.core.eb.u_csr.trap_cause==64'd15) && nwalk < 4) begin
+               nwalk <= nwalk + 1;
+               walk_sv39(dut.core.eb.u_csr.satp, dut.core.eb.u_csr.trap_tval);
+            end
+         end
          // ring of architectural control transfers (oldest mispredict redirect): src_pc -> target.
          // Fetch is fall-through, so every taken jump/branch shows here -- the bad jump to the
          // zero page will be in the tail with its source instruction PC.

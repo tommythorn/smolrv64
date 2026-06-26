@@ -152,10 +152,14 @@ module mmu
            end
            REQ: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
                 else begin ptw_addr<=pte_addr; ptw_read<=1'b1; st<=RCV; end
-           RCV: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
-                else if (ptw_rvalid) begin
+           RCV: if (ptw_rvalid) begin
+              // DRAIN the in-flight PTW read before honoring an abort: leaving RCV while a read
+              // is still outstanding leaks its response into the NEXT walk's read (a stale wrong
+              // PTE that can misdecode as a leaf -> spurious page fault). So abort only after the
+              // response arrives (single-outstanding PTW port). req changed -> abort, read drained.
+              if (!req_match) st<=IDLE;
               // ptw_rdata = the PTE
-              if (!ptw_rdata[0] || (!ptw_rdata[1] && ptw_rdata[2])) begin
+              else if (!ptw_rdata[0] || (!ptw_rdata[1] && ptw_rdata[2])) begin
                  w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;   // invalid
               end else if (ptw_rdata[1] || ptw_rdata[3]) begin                 // leaf (R|X)
                  if (((lvl==2'd2) && (ptw_rdata[27:10]!=0)) ||
