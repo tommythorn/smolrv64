@@ -827,8 +827,14 @@ fn print_pc_hotspots(uids: &[u32], insns: &[Insn], topn: usize) {
     }
     let mut m: HashMap<u64, Agg> = HashMap::new();
     let mut tot_resid = 0u64;
+    let (mut n_kern, mut n_user) = (0u64, 0u64); // dispatch split by PC half (Sv39 sign-ext)
     for &uid in uids {
         let i = &insns[uid as usize];
+        if is_kernel(i.pc) {
+            n_kern += 1;
+        } else {
+            n_user += 1;
+        }
         let sel = match opt(i.sel) {
             Some(s) => s,
             None => continue,
@@ -843,16 +849,28 @@ fn print_pc_hotspots(uids: &[u32], insns: &[Insn], topn: usize) {
     }
     let mut v: Vec<(u64, &Agg)> = m.iter().map(|(&pc, a)| (pc, a)).collect();
     v.sort_by(|a, b| b.1.resid.cmp(&a.1.resid));
+    let tot = (n_kern + n_user).max(1) as f64;
     println!("\n=== PC hotspots (top {topn} by total scheduler residency = DISPATCH->SELECT) ===");
-    println!("{:>10} {:>8} {:>7} {:>7} {:>6}  {}", "pc", "count", "avgDep", "avgRes", "%res", "insn");
+    println!(
+        "dispatched: kernel {:.1}%  user {:.1}%   (kernel = Sv39 high-half PC)",
+        100.0 * n_kern as f64 / tot, 100.0 * n_user as f64 / tot
+    );
+    println!("{:>10} {:>2} {:>8} {:>7} {:>7} {:>6}  {}", "pc", "KU", "count", "avgDep", "avgRes", "%res", "insn");
     for (pc, a) in v.iter().take(topn) {
         let pctr = 100.0 * a.resid as f64 / tot_resid.max(1) as f64;
         println!(
-            "{:>10x} {:>8} {:>7.1} {:>7.1} {:>5.1}%  {}",
-            pc, a.cnt, a.dep as f64 / a.cnt as f64, a.resid as f64 / a.cnt as f64, pctr,
+            "{:>10x} {:>2} {:>8} {:>7.1} {:>7.1} {:>5.1}%  {}",
+            pc, if is_kernel(*pc) { "K" } else { "U" }, a.cnt,
+            a.dep as f64 / a.cnt as f64, a.resid as f64 / a.cnt as f64, pctr,
             rvdisasm::disasm(a.insn, *pc)
         );
     }
+}
+
+// Kernel vs user by PC: under Sv39 sign-extension, kernel VAs have bits[63:39]=1 (the
+// value is negative as i64); user VAs are low-canonical (positive). A good cheap proxy.
+fn is_kernel(pc: u64) -> bool {
+    (pc as i64) < 0
 }
 
 // ----------------------------------------------------------------- interactive TUI
