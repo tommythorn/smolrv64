@@ -117,6 +117,8 @@ module cache #(
    wire [CHB-1:0]   clo    = r_off[OFFB-1 -: CHB];
    wire [LZB-1:0]   bwc    = r_off[LZB-1:0];
    wire [PAIRB-1:0] pair_lo = clo[CHB-1:1];
+   wire [CHB-1:0]   chunk_hi = clo + 1'b1;                   // same-line high chunk of a spilling store
+   wire [PAIRB-1:0] pair_hi  = chunk_hi[CHB-1:1];            // its pair index (PAIRB-wide: no concat overflow)
    wire [CHB-1:0]   chunk_e = clo[0] ? (clo + 1'b1) : clo;   // even-parity chunk of the window
    wire [CHB-1:0]   chunk_o = clo[0] ? clo : (clo + 1'b1);   // odd-parity chunk of the window
    wire [PAIRB-1:0] pair_e  = chunk_e[CHB-1:1];
@@ -220,7 +222,7 @@ module cache #(
          bk_wrdata[w0_way*2 + clo[0]] = nwin[0 +: BANKW];
          if (store_hi && !r_span) begin
             bk_wren  [w0_way*2 + (clo[0]^1'b1)] = 1'b1;
-            bk_wraddr[w0_way*2 + (clo[0]^1'b1)] = { w0_idx, ((clo+1'b1) >> 1) };
+            bk_wraddr[w0_way*2 + (clo[0]^1'b1)] = { w0_idx, pair_hi };
             bk_wrdata[w0_way*2 + (clo[0]^1'b1)] = nwin[BANKW +: BANKW];
          end
       end
