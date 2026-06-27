@@ -96,7 +96,8 @@ account.
 - **Windowed/triggered**, not whole-run: 700M insns × ~10 events × ~16 B ≈ 100 GB is
   absurd. Capture a steady-state window (a few hundred K–few M insns), triggered by
   cycle range or a software MMIO poke.
-- Post-process offline (Python): group by `uid`, sort by clock → per-insn waterfall.
+- Post-process offline in **Rust** (`probe/perftool/`): group by `uid`, sort by clock
+  → per-insn waterfall + dependency histograms. (No Python in the toolchain.)
 
 ## 7. Derived analyses
 
