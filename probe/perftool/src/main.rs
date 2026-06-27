@@ -423,6 +423,7 @@ fn main() {
     }
 
     let h = build_hists(&shown, &insns);
+    print_bottleneck(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles);
     diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
     print_accounting(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles);
     print_time_bins(min_cyc, max_cyc, &stalls, &disp_cycles, 16);
@@ -536,7 +537,12 @@ fn build_hists(uids: &[u32], insns: &[Insn]) -> Hists {
         h.dep.add(ready.saturating_sub(i.disp));
         h.wake.add(sel.saturating_sub(ready));
         h.d2s.add(sel.saturating_sub(i.disp));
-        if last_prod_wb > 0 && sel >= last_prod_wb {
+        // Back-to-back dependent latency: count the producer link ONLY when the consumer
+        // actually waited on it -- i.e. the producer wrote back AFTER the consumer dispatched.
+        // A producer that wrote back before dispatch is a long-lived value (the operand was
+        // already there); including it inflates the metric by millions of cycles on a long
+        // trace (a callee-saved reg / constant read 200M cycles after it was produced).
+        if last_prod_wb > i.disp && sel >= last_prod_wb {
             h.wb2s.add(sel - last_prod_wb);
         }
         if let Some(w) = opt(i.wb) {
@@ -665,6 +671,38 @@ fn verdict(dep: &Hist, wake: &Hist, sel_ipc: f64) -> (&'static str, &'static str
     }
 }
 
+// Top-down verdict from CYCLE ACCOUNTING (every cycle), not the histograms (only the
+// cycles that dispatch). On a back-pressure/frontend-bound machine the histograms describe
+// a small minority of cycles, so this leads and the histogram diagnosis is secondary.
+fn print_bottleneck(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
+    let (total, disp, stall, empty, sbits) = accounting(lo, hi, stalls, disp_cycles);
+    let fbits = reason_counts(lo, hi, fe_empty);
+    let pct = |x: u64| 100.0 * x as f64 / total.max(1) as f64;
+    let top = |b: &[u64], n: usize| -> usize { (0..n).max_by_key(|&k| b[k]).unwrap_or(0) };
+    let si = top(&sbits, 7);
+    let fi = top(&fbits, 5);
+
+    println!("\n--- top-down bottleneck (all {total} cycles) ---");
+    println!(
+        "  dispatching {:.1}% of cycles  |  back-pressure stall {:.1}%  |  frontend-empty {:.1}%",
+        pct(disp), pct(stall), pct(empty)
+    );
+    println!(
+        "  dominant loss: stall:{} {:.1}%   frontend:{} {:.1}%",
+        STALL_LABELS[si], pct(sbits[si]), FEMPTY_LABELS[fi], pct(fbits[fi])
+    );
+    // Lead with whichever structural class loses the most cycles; the histogram diagnosis
+    // (below) only characterizes the cycles we DO dispatch.
+    let verdict = if pct(disp) >= 40.0 {
+        "DISPATCHING FREELY -- the in-scheduler histograms below are the real story"
+    } else if stall >= empty {
+        "BACK-PRESSURE-BOUND -- a backend structure is full; fix it before the bypass net"
+    } else {
+        "FRONTEND-BOUND -- no bundle to dispatch; fix fetch/I$/redirects before the backend"
+    };
+    println!("  => {verdict}");
+}
+
 // First-approximation diagnosis from the histograms. Refine once occupancy lands (step 2).
 fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_disp: u64, n_squash: u64) {
     let dep_a = dep.avg();
@@ -674,7 +712,7 @@ fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_d
     let per_link = wb2s.avg() + exec.avg();
     let (verdict, lever) = verdict(dep, wake, sel_ipc);
 
-    println!("\n--- first-approximation diagnosis ---");
+    println!("\n--- in-scheduler diagnosis (of the cycles we DO dispatch) ---");
     println!("  {verdict}");
     println!("  lever: {lever}");
     println!(
