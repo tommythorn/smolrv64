@@ -44,7 +44,8 @@ module lsu
     parameter SBDEPTH = 8,
     parameter SBI     = 3,        // clog2(SBDEPTH)
     parameter LQDEPTH = 8,
-    parameter LQI     = 3)        // clog2(LQDEPTH)
+    parameter LQI     = 3,        // clog2(LQDEPTH)
+    parameter [63:0] DEV_TOP = 64'h7000_0000)  // PA < DEV_TOP == MMIO (device) space; ==LBASE
    (input  wire                   clk,
     input  wire                   reset,
 
@@ -152,6 +153,7 @@ module lsu
     // ---- commit / rollback (CPR) ----
     input  wire                   commit,
     input  wire [CBITS-1:0]       commit_idx,
+    input  wire [CBITS-1:0]       committed,          // oldest-live checkpoint (== commit_ctl committed_idx)
     input  wire                   rollback,
     input  wire [SEQW-1:0]        rollback_seq,       // squash entries newer than this
     input  wire                   dfault_taken);      // our data-fault trap fired this cycle
@@ -368,7 +370,18 @@ module lsu
    // selection while the atomic FSM is busy (ast != A_IDLE) OR an atomic is arriving this
    // cycle (~amo_v). The latter keeps any load out of the MERGE stage during the atomic, so
    // a load's ld_done never collides with the atomic's (single completion port).
-   wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok;
+   // Read-side-effecting DEVICE loads (MMIO: anything below the local-SRAM/DRAM base, i.e.
+   // CLINT/PLIC/UART) must NOT execute speculatively: a UART RBR / PLIC-claim read pops state
+   // at request time, so a branch-mispredict squash (or a replay after an older branch
+   // resolves) would consume a byte/claim that the program never receives. Gate on the
+   // already-translated PHYSICAL address (correct under Bare and Sv39) and only let such a
+   // load fire once its checkpoint is the oldest live one (== committed): then no older branch
+   // can squash it. (Residual: an older sibling in the SAME oldest checkpoint page-faulting
+   // could still annul it -- needs replay-to-solo; harmless for M-mode/Bare which never data-
+   // faults, i.e. the monitor. Stores are already commit-gated, so only loads need this.)
+   wire ld_is_dev = ld_pa < DEV_TOP;                     // DEV_TOP is a module parameter
+   wire ld_dev_ok = ~ld_is_dev | (lq_ck[ld_sel] == committed);
+   wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
 
    // ====================== atomic (A ext) FSM ======================
    // Atomics are serialized + solo (issue only when oldest), so when one executes every

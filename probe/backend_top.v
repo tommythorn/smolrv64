@@ -587,7 +587,7 @@ module backend_top
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
       .ld_wb_val(lsu_ld_wb_val), .ld_wb_seq(lsu_ld_wb_seq), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
-      .commit(cc_commit), .commit_idx(cc_commit_idx),
+      .commit(cc_commit), .commit_idx(cc_commit_idx), .committed(cc_committed),
       .rollback(roll_v), .rollback_seq(roll_seq), .dfault_taken(dflt_fire));
 
    // ---- per-checkpoint base PC/seq (precise data-fault trap epc + squash boundary) ----

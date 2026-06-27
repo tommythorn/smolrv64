@@ -48,8 +48,11 @@ module tb;
    reg  [SEQW-1:0]  rollback_seq;
    integer errs=0;
 
+   // DEV_TOP=0: this TB's flat memory lives at low addresses (0..255) which the real
+   // platform maps to MMIO; disable the device non-speculative gate so the TB keeps
+   // testing forwarding/blocking on those addresses unchanged.
    lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
-         .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI)) dut
+         .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI), .DEV_TOP(64'd0)) dut
      (.clk(clk), .reset(reset),
       .disp_fire(disp_fire), .disp_is_load(disp_is_load), .disp_is_store(disp_is_store),
       .disp_seq(disp_seq), .disp_ckpt(disp_ckpt), .disp_pdst(disp_pdst),
@@ -69,7 +72,8 @@ module tb;
       .wb_busy({IW{1'b0}}),
       .ld_wb_v(ld_wb_v), .ld_wb_pdst(ld_wb_pdst), .ld_wb_owner(ld_wb_owner),
       .ld_wb_val(ld_wb_val), .ld_done(ld_done), .ld_done_ckpt(ld_done_ckpt),
-      .commit(commit), .commit_idx(commit_idx), .rollback(rollback), .rollback_seq(rollback_seq));
+      .commit(commit), .commit_idx(commit_idx), .committed(2'd0),
+      .rollback(rollback), .rollback_seq(rollback_seq));
 
    // ---- flat byte-addressable memory model ----
    reg [7:0] mem [0:255];
