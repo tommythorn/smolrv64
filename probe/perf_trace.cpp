@@ -53,6 +53,14 @@ extern "C" void perf_ev(long long cyc, int kind, int seq, int ckp, int rdv,
    if (!g_init) init();
    if (!g_on) return;
    uint64_t c = (uint64_t)cyc;
+   // cycle heartbeat (every 50M cyc) so a long run can be windowed: watch stderr to see
+   // how cycles map to the workload, then set PERF_TRACE_WIN around the region of interest.
+   static uint64_t hb = 0;
+   if (c >= hb) {
+      std::fprintf(stderr, "perf_trace: cyc %llu (%llu records captured)\n",
+                   (unsigned long long)c, (unsigned long long)g_n);
+      hb = c + 50000000ULL;
+   }
    if (c < g_lo || c >= g_hi) return;
    uint8_t r[32];
    std::memset(r, 0, sizeof r);

@@ -36,6 +36,13 @@ STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time con
 # a .a can't carry it).
 if [ "$(uname -s)" = Darwin ]; then OSLIBS="-framework vmnet"; else OSLIBS="-ldl"; fi
 
+# PERF_TRACE=1 builds the performance event trace in (backend_top.v taps + perf_trace.cpp
+# DPI sink). The sink is env-configured at run time: PERF_TRACE_OUT (file) and
+# PERF_TRACE_WIN="start,len" (cycle window -- ESSENTIAL for a long run like gb5, or the
+# trace fills the disk). Folded into the build stamp so toggling it forces a rebuild.
+PERFOPT=""; PERFSRC=""
+[ -n "${PERF_TRACE:-}" ] && { PERFOPT="-DPERF_TRACE"; PERFSRC="perf_trace.cpp"; }
+
 # Decide whether to (re)build. The old check keyed ONLY on binary existence, so a
 # stale binary silently ran old RTL -- and MEM_LG2/VDEFS are compile-time -D's, so a
 # size change (e.g. gb5 1->2 GiB) was inert until a manual BUILD=1. Now rebuild when:
@@ -43,7 +50,7 @@ if [ "$(uname -s)" = Darwin ]; then OSLIBS="-framework vmnet"; else OSLIBS="-ldl
 #   - the compile-time config (MEM_LG2 + VDEFS) differs from what's baked in, or
 #   - any source under probe/ or ../src/ is newer than the binary.
 # (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
-want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-}"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
@@ -59,12 +66,12 @@ if [ "$need_build" = 1 ]; then
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
-      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
+      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} $PERFOPT \
       -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -lm $OSLIBS" \
       -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
       $srcs tb_cosim_linux.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp > /tmp/cosim_${NAME}_build.log 2>&1
+      fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp $PERFSRC > /tmp/cosim_${NAME}_build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosim_${NAME}_build.log | head; exit 1; fi
    echo "$want" > "$STAMP"
 fi
