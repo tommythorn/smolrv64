@@ -96,7 +96,8 @@ module tb;
    endtask
 
    reg [8*256-1:0] monhex, fw, dtb, initrd, cmd;
-   integer ncyc, c, ci, cmdlen, pi, nwalk;
+   integer ci, cmdlen, pi, nwalk;
+   reg [63:0] ncyc, c;        // 64-bit: long Linux runs exceed 2^32 cycles
    reg [63:0] srcring [0:63];  reg [63:0] tgtring [0:63];  reg [5:0] pcwr;
    reg frozen, dumped;  reg [63:0] mraddr_q;  integer la_idx, si;
    initial begin pcwr=0; frozen=0; dumped=0; mraddr_q=0; end

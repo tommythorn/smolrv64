@@ -80,7 +80,8 @@ module tb;
    endtask
 
    reg [8*256-1:0] fw, dtb, initrd;
-   integer ncyc, c, b2;
+   integer b2;
+   reg [63:0] ncyc, c;        // 64-bit: cosim runs (gb5/sha256) exceed 2^32 cycles
    initial begin
       ncyc = 200000000;
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
@@ -98,7 +99,7 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
       for (c=0; (ncyc==0) || (c<ncyc); c=c+1) begin
          @(negedge clk);
-         if ((c % 1000000) == 0) $display("[c=%0d pc=%h]", c, dut.imem_addr);
+         if ((c % 1000000) == 0) $display("[c=%0d]", c);
 `ifdef LSU_TAP
          // rename check (any cycle): store sd x8 @ ...8003ddb6 -> its rs2 physreg (ps2)
          // vs x8 producer addi x8 @ ...80002f40 -> its dest (pdst). Mismatch => rename bug.
