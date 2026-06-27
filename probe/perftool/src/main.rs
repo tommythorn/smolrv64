@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
 
 const KIND_DISP: u8 = 1;
 const KIND_SEL: u8 = 2;
@@ -22,7 +24,19 @@ const KIND_SQUASH: u8 = 5;
 const HELP: &str = r#"perftool -- sharded-OoO performance event trace analyzer
 
 USAGE
-    perftool <trace.bin> [--waterfall N] [--pipeview N] [--help]
+    perftool <trace.bin> [--waterfall N] [--pipeview N] [--interactive] [--help]
+
+    -i, --interactive
+                    scrollable TUI: a terminal-sized window into the trace with a
+                    concise stats header (recomputed over the VISIBLE window) above the
+                    pipeview/waterfall. Keys:
+                      up/down        scroll one instruction
+                      pgup/pgdn      scroll one page
+                      home/end       jump to start/end
+                      tab            toggle pipeview <-> waterfall
+                      q              quit
+                    All displayed data (histograms, diagnosis, view) is for the window
+                    you are looking at, not the whole trace.
 
     <trace.bin>     binary trace from a -DPERF_TRACE build (perf_trace.cpp).
                     Produce one with:  PERF_TRACE=1 ./run-vl-tests.sh <test>
@@ -179,6 +193,7 @@ fn main() {
         pipeview = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
     }
     let incl_squashed = args.iter().any(|a| a == "--include-squashed");
+    let interactive = args.iter().any(|a| a == "--interactive" || a == "-i");
 
     let data = std::fs::read(path).unwrap_or_else(|e| {
         eprintln!("perftool: cannot read {path}: {e}");
@@ -294,30 +309,73 @@ fn main() {
 
     let cyc_span = max_cyc.saturating_sub(min_cyc) + 1;
     let sel_ipc = n_sel as f64 / cyc_span as f64;
-    println!("=== perf trace: {path} ===");
-    println!("records: disp={n_disp} sel={n_sel} wb={n_wb} commit={n_commit} squash={n_squash}");
-    println!("cycle span: {cyc_span} ({min_cyc}..{max_cyc})");
-    println!("dispatched IPC: {:.3}   selected IPC: {:.3}", n_disp as f64 / cyc_span as f64, sel_ipc);
-    let n_sq_insn = insns.values().filter(|i| i.squashed).count();
-    if n_sq_insn > 0 {
-        println!(
-            "squashed instructions: {} {}",
-            n_sq_insn,
-            if incl_squashed { "(shown)" } else { "(hidden; pass --include-squashed to show)" }
-        );
+    if !interactive {
+        println!("=== perf trace: {path} ===");
+        println!("records: disp={n_disp} sel={n_sel} wb={n_wb} commit={n_commit} squash={n_squash}");
+        println!("cycle span: {cyc_span} ({min_cyc}..{max_cyc})");
+        println!("dispatched IPC: {:.3}   selected IPC: {:.3}", n_disp as f64 / cyc_span as f64, sel_ipc);
+        let n_sq_insn = insns.values().filter(|i| i.squashed).count();
+        if n_sq_insn > 0 {
+            println!(
+                "squashed instructions: {} {}",
+                n_sq_insn,
+                if incl_squashed { "(shown)" } else { "(hidden; pass --include-squashed to show)" }
+            );
+        }
     }
 
-    let mut h_dep = Hist::new("DISPATCH->READY  (operands wait: dependency stall)");
-    let mut h_wake = Hist::new("READY->SELECT    (select-bandwidth pressure)");
-    let mut h_d2s = Hist::new("DISPATCH->SELECT (total in scheduler)");
-    let mut h_wb2s = Hist::new("last-producer WB->SELECT (back-to-back dependent latency)");
-    let mut h_exec = Hist::new("SELECT->WRITEBACK (execute latency)");
+    // instructions for stats/views: squashed (wrong-path) hidden unless requested
+    let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
 
-    for &uid in &order {
-        let i = &insns[&uid];
-        if !incl_squashed && i.squashed {
-            continue;
+    if interactive {
+        interactive_mode(&shown, &insns);
+        return;
+    }
+
+    let h = build_hists(&shown, &insns);
+    diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
+    h.dep.print();
+    h.wake.print();
+    h.d2s.print();
+    h.wb2s.print();
+    h.exec.print();
+
+    if waterfall > 0 {
+        println!("\n=== waterfall (first {waterfall} dispatched) ===");
+        wf_header();
+        for &uid in shown.iter().take(waterfall) {
+            wf_row(uid, &insns);
         }
+    }
+
+    if pipeview > 0 {
+        let v: Vec<u64> = shown.iter().take(pipeview).copied().collect();
+        println!("\n=== pipeview (first {pipeview} dispatched) ===");
+        println!("legend: D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback");
+        pipe_render(&v, &insns, usize::MAX);
+    }
+}
+
+struct Hists {
+    dep: Hist,
+    wake: Hist,
+    d2s: Hist,
+    wb2s: Hist,
+    exec: Hist,
+}
+
+// Build the five lifecycle histograms over an explicit list of uids (READY derived from
+// each op's producers' writeback). Used for both the whole trace and an interactive window.
+fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
+    let mut h = Hists {
+        dep: Hist::new("DISPATCH->READY  (operands wait: dependency stall)"),
+        wake: Hist::new("READY->SELECT    (select-bandwidth pressure)"),
+        d2s: Hist::new("DISPATCH->SELECT (total in scheduler)"),
+        wb2s: Hist::new("last-producer WB->SELECT (back-to-back dependent latency)"),
+        exec: Hist::new("SELECT->WRITEBACK (execute latency)"),
+    };
+    for &uid in uids {
+        let i = &insns[&uid];
         let sel = match i.sel {
             Some(s) => s,
             None => continue,
@@ -327,45 +385,30 @@ fn main() {
         let pw2 = wbc(i.prod2);
         let last_prod_wb = pw1.max(pw2);
         let ready = i.disp.max(pw1).max(pw2);
-        h_dep.add(ready.saturating_sub(i.disp));
-        h_wake.add(sel.saturating_sub(ready));
-        h_d2s.add(sel.saturating_sub(i.disp));
+        h.dep.add(ready.saturating_sub(i.disp));
+        h.wake.add(sel.saturating_sub(ready));
+        h.d2s.add(sel.saturating_sub(i.disp));
         if last_prod_wb > 0 && sel >= last_prod_wb {
-            h_wb2s.add(sel - last_prod_wb);
+            h.wb2s.add(sel - last_prod_wb);
         }
         if let Some(w) = i.wb {
             if w >= sel {
-                h_exec.add(w - sel);
+                h.exec.add(w - sel);
             }
         }
     }
+    h
+}
 
-    diagnose(&h_dep, &h_wake, &h_wb2s, &h_exec, sel_ipc, n_disp, n_squash);
-
-    h_dep.print();
-    h_wake.print();
-    h_d2s.print();
-    h_wb2s.print();
-    h_exec.print();
-
-    // instructions shown in the views: squashed (wrong-path) hidden unless requested
-    let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
-
-    if waterfall > 0 {
-        println!("\n=== waterfall (first {waterfall} dispatched) ===");
-        println!("{:>6} {:>4} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "seq", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
-        for &uid in shown.iter().take(waterfall) {
-            let i = &insns[&uid];
-            let s = i.sel.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let w = i.wb.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let v = i.wbval.map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
-            println!("{:>6} {:>4} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.seqno, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
-        }
-    }
-
-    if pipeview > 0 {
-        render_pipeview(&shown, &insns, pipeview);
-    }
+fn wf_header() {
+    println!("{:>6} {:>4} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "seq", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
+}
+fn wf_row(uid: u64, insns: &HashMap<u64, Insn>) {
+    let i = &insns[&uid];
+    let s = i.sel.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let w = i.wb.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let v = i.wbval.map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
+    println!("{:>6} {:>4} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.seqno, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
 }
 
 fn ready_of(insns: &HashMap<u64, Insn>, i: &Insn) -> u64 {
@@ -410,16 +453,17 @@ fn stage_char(c: u64, disp: u64, ready: u64, sel: Option<u64>, wb: Option<u64>) 
     }
 }
 
-// konata/O3PipeView-style per-cycle view: one row per instruction, all on a shared
-// cycle axis (origin = earliest dispatch), so a vertical column is one cycle across
-// all instructions -- overlap and stalls read off directly.
-fn render_pipeview(order: &[u64], insns: &HashMap<u64, Insn>, n: usize) {
-    let shown: Vec<u64> = order.iter().take(n).copied().collect();
-    if shown.is_empty() {
+// konata/O3PipeView-style per-cycle view of an explicit list of instructions, all on a
+// shared cycle axis (origin = earliest dispatch in the list), so a vertical column is one
+// cycle across all rows -- overlap and stalls read off directly. The timeline is capped to
+// max_cols (terminal width) so it never wraps; the caller prints any title/legend.
+const PIPE_LEFTW: usize = 48; // must match the row prefix format below
+fn pipe_render(vis: &[u64], insns: &HashMap<u64, Insn>, max_cols: usize) {
+    if vis.is_empty() {
         return;
     }
-    let c0 = shown.iter().map(|u| insns[u].disp).min().unwrap();
-    let c1 = shown
+    let c0 = vis.iter().map(|u| insns[u].disp).min().unwrap();
+    let c1 = vis
         .iter()
         .map(|u| {
             let i = &insns[u];
@@ -428,14 +472,10 @@ fn render_pipeview(order: &[u64], insns: &HashMap<u64, Insn>, n: usize) {
         .max()
         .unwrap();
     let span = (c1 - c0) as usize;
-    const LEFTW: usize = 48; // must match the row prefix format below
+    let tlcols = (span + 1).min(max_cols.saturating_sub(PIPE_LEFTW).max(1));
 
-    println!("\n=== pipeview (first {} dispatched), cycles {}..{} ===", shown.len(), c0, c1);
-    println!("legend: D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback");
-
-    // cycle ruler: the cycle number written every 10 columns
-    let mut ruler = vec![b' '; span + 1];
-    for col in 0..=span {
+    let mut ruler = vec![b' '; tlcols];
+    for col in 0..tlcols {
         if (c0 + col as u64) % 10 == 0 {
             for (k, ch) in (c0 + col as u64).to_string().bytes().enumerate() {
                 if col + k < ruler.len() {
@@ -444,28 +484,24 @@ fn render_pipeview(order: &[u64], insns: &HashMap<u64, Insn>, n: usize) {
             }
         }
     }
-    println!("{}{}", " ".repeat(LEFTW), String::from_utf8(ruler).unwrap());
+    println!("{}{}", " ".repeat(PIPE_LEFTW), String::from_utf8(ruler).unwrap());
 
-    for u in &shown {
+    for u in vis {
         let i = &insns[u];
         let ready = ready_of(insns, i).min(i.sel.unwrap_or(u64::MAX));
-        let tl: String = (0..=span).map(|col| stage_char(c0 + col as u64, i.disp, ready, i.sel, i.wb)).collect();
+        let tl: String = (0..tlcols).map(|col| stage_char(c0 + col as u64, i.disp, ready, i.sel, i.wb)).collect();
         let mut dis = rvdisasm::disasm(i.insn, i.pc);
         dis.truncate(24);
         println!("{:>5} {:>3} {:>10x} {:<24} | {}", u, i.seqno, i.pc, dis, tl);
     }
 }
 
-// First-approximation diagnosis from the histograms (docs/perf-observability-plan.md
-// decision table). Heuristic, clearly labelled; refine once occupancy lands (step 2).
-fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_disp: u64, n_squash: u64) {
+// The decision-table verdict (docs/perf-observability-plan.md). Heuristic, shared by the
+// static diagnosis and the interactive header.
+fn verdict(dep: &Hist, wake: &Hist, sel_ipc: f64) -> (&'static str, &'static str) {
     let dep_a = dep.avg();
     let wake_a = wake.avg();
-    let dep_wait = dep.frac_nonzero();
-    let squash_pct = if n_disp > 0 { 100.0 * n_squash as f64 / n_disp as f64 } else { 0.0 };
-    let per_link = wb2s.avg() + exec.avg();
-
-    let (verdict, lever) = if sel_ipc >= 2.5 {
+    if sel_ipc >= 2.5 {
         ("HEALTHY -- high issue throughput", "watch the dominant secondary cost below")
     } else if dep_a >= 2.0 && dep_a >= wake_a * 1.5 {
         ("LATENCY / BYPASS-BOUND -- operands wait; the scheduler issues promptly once ready",
@@ -478,7 +514,17 @@ fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_d
          "the issue window is likely starved (fetch / redirects / branch prediction); confirm with occupancy (step 2)")
     } else {
         ("MODERATE -- headroom remains", "address the dominant cost below")
-    };
+    }
+}
+
+// First-approximation diagnosis from the histograms. Refine once occupancy lands (step 2).
+fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_disp: u64, n_squash: u64) {
+    let dep_a = dep.avg();
+    let wake_a = wake.avg();
+    let dep_wait = dep.frac_nonzero();
+    let squash_pct = if n_disp > 0 { 100.0 * n_squash as f64 / n_disp as f64 } else { 0.0 };
+    let per_link = wb2s.avg() + exec.avg();
+    let (verdict, lever) = verdict(dep, wake, sel_ipc);
 
     println!("\n--- first-approximation diagnosis ---");
     println!("  {verdict}");
@@ -491,4 +537,190 @@ fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_d
         "            dependent per-link ~{:.1}c (WB->SELECT {:.1} + execute {:.1}), squash {:.1}% of dispatched",
         per_link, wb2s.avg(), exec.avg(), squash_pct
     );
+}
+
+// ----------------------------------------------------------------- interactive TUI
+// Zero-dependency: raw mode + size via `stty`, ANSI for clear/positioning.
+
+const SPARK: [char; 9] = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+fn spark(h: &Hist) -> String {
+    let peak = h.b.iter().copied().max().unwrap_or(1).max(1);
+    h.b.iter().map(|&c| SPARK[((9 * c / peak) as usize).min(8)]).collect()
+}
+
+enum Key {
+    Up,
+    Down,
+    PgUp,
+    PgDn,
+    Home,
+    End,
+    Tab,
+    Quit,
+    Other,
+}
+
+fn stty_capture(args: &[&str]) -> Option<String> {
+    let out = Command::new("stty").args(args).stdin(Stdio::inherit()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+fn run_stty(args: &[&str]) {
+    let _ = Command::new("stty").args(args).stdin(Stdio::inherit()).status();
+}
+fn term_size() -> (usize, usize) {
+    if let Some(s) = stty_capture(&["size"]) {
+        let mut it = s.split_whitespace();
+        if let (Some(r), Some(c)) = (it.next(), it.next()) {
+            if let (Ok(r), Ok(c)) = (r.parse(), c.parse()) {
+                return (r, c);
+            }
+        }
+    }
+    (24, 80)
+}
+
+// Restores terminal modes + cursor on drop (including on early return / Ctrl-C-as-byte).
+struct RawGuard {
+    saved: String,
+}
+impl RawGuard {
+    fn new() -> Option<RawGuard> {
+        let saved = stty_capture(&["-g"])?.trim().to_string();
+        if saved.is_empty() {
+            return None;
+        }
+        run_stty(&["-echo", "-icanon", "-isig", "min", "1", "time", "0"]);
+        print!("\x1b[?25l"); // hide cursor
+        let _ = io::stdout().flush();
+        Some(RawGuard { saved })
+    }
+}
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        run_stty(&[&self.saved]);
+        print!("\x1b[?25h\x1b[2J\x1b[H"); // show cursor, clear
+        let _ = io::stdout().flush();
+    }
+}
+
+fn read_key() -> Key {
+    let mut b = [0u8; 1];
+    if io::stdin().read(&mut b).unwrap_or(0) == 0 {
+        return Key::Quit;
+    }
+    match b[0] {
+        b'q' | 0x03 | 0x04 => Key::Quit, // q, Ctrl-C, Ctrl-D
+        b'\t' => Key::Tab,
+        0x1b => {
+            let mut c = [0u8; 1];
+            if io::stdin().read(&mut c).unwrap_or(0) == 0 {
+                return Key::Quit; // bare ESC
+            }
+            if c[0] != b'[' && c[0] != b'O' {
+                return Key::Other;
+            }
+            let mut d = [0u8; 1];
+            if io::stdin().read(&mut d).unwrap_or(0) == 0 {
+                return Key::Other;
+            }
+            let eat = || {
+                let mut t = [0u8; 1];
+                let _ = io::stdin().read(&mut t);
+            };
+            match d[0] {
+                b'A' => Key::Up,
+                b'B' => Key::Down,
+                b'H' => Key::Home,
+                b'F' => Key::End,
+                b'5' => { eat(); Key::PgUp } // ESC [ 5 ~
+                b'6' => { eat(); Key::PgDn } // ESC [ 6 ~
+                b'1' => { eat(); Key::Home } // ESC [ 1 ~
+                b'4' => { eat(); Key::End }  // ESC [ 4 ~
+                _ => Key::Other,
+            }
+        }
+        _ => Key::Other,
+    }
+}
+
+fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>) {
+    if shown.is_empty() {
+        eprintln!("perftool: no (non-squashed) instructions to show");
+        return;
+    }
+    let guard = RawGuard::new();
+    if guard.is_none() {
+        eprintln!("perftool: --interactive needs a terminal (stty failed)");
+        return;
+    }
+    let total = shown.len();
+    let mut start = 0usize;
+    let mut pipe = true;
+
+    loop {
+        let (rows, cols) = term_size();
+        let header = 7usize; // concise header + ruler
+        let win = rows.saturating_sub(header + 1).max(1);
+        if start > total.saturating_sub(1) {
+            start = total.saturating_sub(1);
+        }
+        let end = (start + win).min(total);
+        let vis = &shown[start..end];
+
+        let h = build_hists(vis, insns);
+        let wmin = vis.iter().map(|u| insns[u].disp).min().unwrap();
+        let wmax = vis.iter().map(|u| { let i = &insns[u]; i.wb.or(i.sel).unwrap_or(i.disp) }).max().unwrap();
+        let wspan = (wmax - wmin + 1) as f64;
+        let nsel = vis.iter().filter(|u| insns[u].sel.is_some()).count();
+        let ipc = nsel as f64 / wspan;
+        let (vd, _lever) = verdict(&h.dep, &h.wake, ipc);
+
+        let mut out = String::new();
+        out.push_str("\x1b[H\x1b[2J"); // home + clear
+        out.push_str(&format!(
+            "perftool  uid {}..{} of {}  |  view: {}  |  cyc {}..{} ({}c)  sel-IPC {:.2}\n",
+            start, end, total, if pipe { "pipeview" } else { "waterfall" }, wmin, wmax, wspan as u64, ipc
+        ));
+        out.push_str(&format!("diagnosis: {}\n", vd));
+        out.push_str(&format!(
+            "dep[D>R] {:.1} {}   sel[R>i] {:.1} {}   exec[i>w] {:.1} {}   link[w>i] {:.1} {}\n",
+            h.dep.avg(), spark(&h.dep), h.wake.avg(), spark(&h.wake), h.exec.avg(), spark(&h.exec), h.wb2s.avg(), spark(&h.wb2s)
+        ));
+        out.push_str("buckets: 0 1 2-3 4-7 8-15 16-31 32-63 64+    legend: D=disp ==dep -=wait i=issue e=exec w=wb\n\n");
+        print!("{out}");
+        let _ = io::stdout().flush();
+
+        if pipe {
+            pipe_render(vis, insns, cols);
+        } else {
+            wf_header();
+            for &u in vis {
+                wf_row(u, insns);
+            }
+        }
+
+        print!(
+            "\x1b[7m up/dn pg home/end scroll | tab view | q quit \x1b[0m"
+        );
+        let _ = io::stdout().flush();
+
+        match read_key() {
+            Key::Up => start = start.saturating_sub(1),
+            Key::Down => {
+                if end < total {
+                    start += 1;
+                }
+            }
+            Key::PgUp => start = start.saturating_sub(win),
+            Key::PgDn => start = (start + win).min(total.saturating_sub(1)),
+            Key::Home => start = 0,
+            Key::End => start = total.saturating_sub(win),
+            Key::Tab => pipe = !pipe,
+            Key::Quit => break,
+            Key::Other => {}
+        }
+    }
 }
