@@ -287,25 +287,29 @@ module soc_top #(
    wire [63:0] m_pa       = {{6{1'b0}}, m_addr} << 6;       // physical byte addr of the line
    wire        m_is_local = (m_pa >= LBASE) && (m_pa < LBASE + LSIZE);
 
-   // local SRAM responder (on-chip BRAM)
-   reg [7:0] lram [0:LSIZE-1];
-   // FPGA: bake the monitor image into the BRAM at elaboration (one byte per hex line).
-   // Sim TBs instead load dut.lram directly via +monhex, so guard on the compile-time define.
+   // local SRAM responder (on-chip BRAM). Stored as 512-bit LINES (the L2 port is
+   // line-granular) so it infers a clean single-read/single-write BRAM -- a byte array
+   // with a 64-byte for-loop access does NOT (Vivado can't template it).
+   localparam NLLINE = LSIZE/64;                 // number of 64-byte lines
+   localparam [LAW-1:0] LLBASE = LBASE >> 6;     // local SRAM base as a line address
+   reg [511:0] lmem [0:NLLINE-1];
+   // FPGA: bake the monitor image into the BRAM at elaboration (one 64-byte line per hex
+   // line). Sim TBs instead pack dut.lmem directly via +monhex, so guard on the define.
 `ifdef SOC_BOOT_HEX
-   initial $readmemh(`SOC_BOOT_HEX, lram);
+   initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
-   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_ad_q; reg [511:0] l_wd_q;
-   reg [511:0] l_rdata; reg l_ack; integer kb; reg [63:0] l_base;
+   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_li_q; reg [511:0] l_wd_q;
+   reg [511:0] l_rdata; reg l_ack;
+   wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
    wire l_req = m_req & m_is_local;
    always @(posedge clk) begin
       l_ack <= 1'b0;
       if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd2; l_we_q<=m_we; l_ad_q<=m_addr; l_wd_q<=m_wdata; end
+      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; end
       else if (l_busy) begin
          if (l_cnt==0) begin
-            l_base = ({{6{1'b0}},l_ad_q} << 6) - LBASE;
-            if (l_we_q) for (kb=0;kb<64;kb=kb+1) lram[l_base+kb] <= l_wd_q[kb*8 +: 8];
-            else        for (kb=0;kb<64;kb=kb+1) l_rdata[kb*8 +: 8] <= lram[l_base+kb];
+            if (l_we_q) lmem[l_li_q] <= l_wd_q;
+            else        l_rdata     <= lmem[l_li_q];
             l_ack<=1'b1; l_busy<=1'b0;
          end else l_cnt <= l_cnt-1;
       end

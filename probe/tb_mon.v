@@ -44,12 +44,17 @@ module tb;
    // ---- UART RX command injection: feed `cmd` one byte at a time as the UART accepts ----
    reg [8*256-1:0] cmd;  integer cmdlen, ci;  reg [31:0] startcyc;
    integer ncyc, c;  reg [8*256-1:0] monhex;
+   reg [7:0] monbytes [0:(1<<18)-1];  integer mli, mbk;   // byte image -> pack into lmem lines
    initial begin
       rx_we=0; rx_data=0; ci=0;
       ncyc = 2000000;
       if (!$value$plusargs("monhex=%s", monhex)) begin $display("FATAL: need +monhex"); $finish; end
       for (c=0; c<DDR_BYTES; c=c+1) ram[c]=8'd0;
-      $readmemh(monhex, dut.lram);                 // monitor image -> local SRAM @0x7000_0000
+      for (c=0; c<(1<<18); c=c+1) monbytes[c]=8'd0;
+      $readmemh(monhex, monbytes);                 // byte-per-line monitor image
+      for (mli=0; mli<(1<<18)/64; mli=mli+1)        // pack into 512-bit lmem lines
+         for (mbk=0; mbk<64; mbk=mbk+1)
+            dut.lmem[mli][mbk*8 +: 8] = monbytes[mli*64+mbk];
       if ($value$plusargs("cycles=%d", ncyc)) ;
       // default injected command: read mem @0x70000000 (echoes back the first monitor word)
       cmd = "R70000000\r"; cmdlen = 10;
