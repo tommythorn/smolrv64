@@ -49,7 +49,7 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-cosim
 # probe/tb_cosim_linux (flat fw/dtb/initrd load) with gb5's memory layout (1 GiB; DTB
 # @0x9ff00000, initrd @0x96270e00). First run builds; BUILD=1 or CYC=N to override.
 PROBE ?= ../../probe
-CYC   ?= 200000000
+CYC   ?= 0          # 0 = unbounded: run until a cosim divergence (or Ctrl-C)
 pcosim: gb5.dtb $(FW) img.Geekbench5.cpio
 	NAME=gb5 MEM_LG2=30 A1=9ff00000 OFF_DTB=1ff00000 OFF_INITRD=16270e00 \
 	FW=$(CURDIR)/$(FW) DTB=$(CURDIR)/gb5.dtb INITRD=$(CURDIR)/img.Geekbench5.cpio \

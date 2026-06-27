@@ -92,8 +92,10 @@ module tb;
       load_bin(dtb, off_dtb);
       if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
 
+      // +cycles=0 (or CYC=0) runs UNBOUNDED -- stop only on a cosim divergence (the C
+      // harness abort()s) or an external interrupt. Any nonzero value is a hard cycle cap.
       reset=1; @(negedge clk); @(negedge clk); reset=0;
-      for (c=0; c<ncyc; c=c+1) begin
+      for (c=0; (ncyc==0) || (c<ncyc); c=c+1) begin
          @(negedge clk);
          if ((c % 1000000) == 0) $display("[c=%0d pc=%h]", c, dut.imem_addr);
 `ifdef LSU_TAP
