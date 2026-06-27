@@ -43,7 +43,7 @@ module tb;
    // ---- CLINT (fast tick for sim) + address decode ----
    wire        is_clint_r = (dmem_raddr & ~64'hffff) == CLINT_BASE;
    wire        is_clint_w = (dmem_waddr & ~64'hffff) == CLINT_BASE;
-   wire [63:0] clint_rdata;
+   wire [63:0] clint_rdata, clint_mtime;
    wire        clint_mtip, clint_msip;
    clint #(.SCALE_DIV(8)) u_clint
      (.clk(clk), .reset(reset),
@@ -52,7 +52,7 @@ module tb;
       // does not occur in these tests); reads otherwise drive the combinational rdata.
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
-      .mtip(clint_mtip), .msip(clint_msip), .o_mtime());
+      .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h000)    // MTIP = bit 7
                      | (clint_msip ? 12'h008 : 12'h000);   // MSIP = bit 3
 
@@ -87,7 +87,7 @@ module tb;
                  .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
-      .hw_ip(hw_ip),
+      .hw_ip(hw_ip), .mtime(clint_mtime),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),

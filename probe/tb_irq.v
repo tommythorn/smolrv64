@@ -37,7 +37,7 @@ module tb;
                  .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
-      .hw_ip(hw_ip),
+      .hw_ip(hw_ip), .mtime(64'd0),
       .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1), .dmem_wready(1'b1),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
