@@ -11,6 +11,7 @@
 // kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 const KIND_DISP: u8 = 1;
 const KIND_SEL: u8 = 2;
@@ -31,6 +32,10 @@ USAGE
                     all rows on a shared cycle axis so overlap/stalls are visible:
                       D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback
                     Read down a column to see what every instruction is doing that cycle.
+    --include-squashed
+                    include wrong-path (squashed) instructions. By default they are
+                    hidden from the histograms, waterfall, and pipeview so the stats
+                    reflect only retired work; the count is reported in the summary.
     --help          this text
 
 THE INSTRUCTION TIMELINE
@@ -88,6 +93,7 @@ struct Insn {
     sel: Option<u64>,
     wb: Option<u64>,
     wbval: Option<u64>,
+    squashed: bool,
 }
 
 fn rd16(b: &[u8], o: usize) -> u16 {
@@ -172,6 +178,7 @@ fn main() {
     if let Some(p) = args.iter().position(|a| a == "--pipeview") {
         pipeview = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
     }
+    let incl_squashed = args.iter().any(|a| a == "--include-squashed");
 
     let data = std::fs::read(path).unwrap_or_else(|e| {
         eprintln!("perftool: cannot read {path}: {e}");
@@ -183,6 +190,13 @@ fn main() {
     let mut seq2uid: [Option<u64>; 256] = [None; 256];
     let mut pdst2uid: HashMap<u16, u64> = HashMap::new();
     let mut next_uid: u64 = 0;
+    // In-flight FIFO (program order) + per-bundle sizes, to mark squashed instructions
+    // exactly like the hardware: a SQUASH(roll_seq=R) kills every in-flight op younger
+    // than R (signed8(seq-R)>0); a COMMIT retires the oldest bundle. (Windowed traces
+    // are approximate near the window start, where pre-window commits have no bundle.)
+    let mut inflight: VecDeque<u64> = VecDeque::new();
+    let mut bsize: VecDeque<usize> = VecDeque::new();
+    let mut cur_disp_cyc: Option<u64> = None;
 
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
     let (mut min_cyc, mut max_cyc) = (u64::MAX, 0u64);
@@ -210,13 +224,19 @@ fn main() {
                 insns.insert(
                     uid,
                     Insn { seqno, ckpid, pc: datum, insn: iword, pdst, ps1, ps2, prod1, prod2,
-                           disp: cyc, sel: None, wb: None, wbval: None },
+                           disp: cyc, sel: None, wb: None, wbval: None, squashed: false },
                 );
                 order.push(uid);
                 seq2uid[seqno as usize] = Some(uid);
                 if rdv != 0 {
                     pdst2uid.insert(pdst, uid);
                 }
+                if cur_disp_cyc != Some(cyc) {
+                    bsize.push_back(0);
+                    cur_disp_cyc = Some(cyc);
+                }
+                inflight.push_back(uid);
+                *bsize.back_mut().unwrap() += 1;
             }
             KIND_SEL => {
                 n_sel += 1;
@@ -239,8 +259,35 @@ fn main() {
                     }
                 }
             }
-            KIND_COMMIT => n_commit += 1,
-            KIND_SQUASH => n_squash += 1,
+            KIND_COMMIT => {
+                n_commit += 1;
+                if let Some(nb) = bsize.pop_front() {
+                    for _ in 0..nb {
+                        inflight.pop_front();
+                    }
+                }
+            }
+            KIND_SQUASH => {
+                n_squash += 1;
+                let r = seqno; // roll_seq: kill in-flight ops younger than R
+                while let Some(&u) = inflight.back() {
+                    if (insns[&u].seqno.wrapping_sub(r) as i8) > 0 {
+                        inflight.pop_back();
+                        if let Some(i) = insns.get_mut(&u) {
+                            i.squashed = true;
+                        }
+                        if let Some(b) = bsize.back_mut() {
+                            *b -= 1;
+                            if *b == 0 {
+                                bsize.pop_back();
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                cur_disp_cyc = None; // next dispatch starts a fresh bundle
+            }
             _ => {}
         }
     }
@@ -251,6 +298,14 @@ fn main() {
     println!("records: disp={n_disp} sel={n_sel} wb={n_wb} commit={n_commit} squash={n_squash}");
     println!("cycle span: {cyc_span} ({min_cyc}..{max_cyc})");
     println!("dispatched IPC: {:.3}   selected IPC: {:.3}", n_disp as f64 / cyc_span as f64, sel_ipc);
+    let n_sq_insn = insns.values().filter(|i| i.squashed).count();
+    if n_sq_insn > 0 {
+        println!(
+            "squashed instructions: {} {}",
+            n_sq_insn,
+            if incl_squashed { "(shown)" } else { "(hidden; pass --include-squashed to show)" }
+        );
+    }
 
     let mut h_dep = Hist::new("DISPATCH->READY  (operands wait: dependency stall)");
     let mut h_wake = Hist::new("READY->SELECT    (select-bandwidth pressure)");
@@ -260,6 +315,9 @@ fn main() {
 
     for &uid in &order {
         let i = &insns[&uid];
+        if !incl_squashed && i.squashed {
+            continue;
+        }
         let sel = match i.sel {
             Some(s) => s,
             None => continue,
@@ -290,10 +348,13 @@ fn main() {
     h_wb2s.print();
     h_exec.print();
 
+    // instructions shown in the views: squashed (wrong-path) hidden unless requested
+    let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
+
     if waterfall > 0 {
         println!("\n=== waterfall (first {waterfall} dispatched) ===");
         println!("{:>6} {:>4} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "seq", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
-        for &uid in order.iter().take(waterfall) {
+        for &uid in shown.iter().take(waterfall) {
             let i = &insns[&uid];
             let s = i.sel.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
             let w = i.wb.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
@@ -303,7 +364,7 @@ fn main() {
     }
 
     if pipeview > 0 {
-        render_pipeview(&order, &insns, pipeview);
+        render_pipeview(&shown, &insns, pipeview);
     }
 }
 
