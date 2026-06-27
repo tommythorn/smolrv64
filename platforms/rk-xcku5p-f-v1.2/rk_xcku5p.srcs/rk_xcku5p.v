@@ -1415,12 +1415,14 @@ module rk_xcku5p(
       .m_axi_rid(core_axi_rid), .m_axi_rdata(core_axi_rdata), .m_axi_rresp(core_axi_rresp),
       .m_axi_rlast(core_axi_rlast), .m_axi_rvalid(core_axi_rvalid), .m_axi_rready(core_axi_rready));
 
-   // UART at probe_clk. 41.67 MHz / 115200 = 361.7 (~0.05% error); host: screen $TTY 115200.
+   // UART at probe_clk. rs232 ROUNDS the divisor (period=(CLK+BAUD/2)/BAUD), so at
+   // 41.67 MHz / 3 Mbaud -> period 14 -> 2.976 Mbaud (0.79% err, well within tolerance).
+   // Matches the scalar core + `make connect` (3 Mbaud); 26x faster fw load than 115200.
    // rs232tx.ready (output, ready-to-accept) feeds soc_top.uart_tx_ready directly.
-   rs232tx #(.CLK_FREQ(41_666_666), .BAUD(115200)) probe_tx
+   rs232tx #(.CLK_FREQ(41_666_666), .BAUD(3_000_000)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
-   rs232rx #(.CLK_FREQ(41_666_666), .BAUD(115200)) probe_rx
+   rs232rx #(.CLK_FREQ(41_666_666), .BAUD(3_000_000)) probe_rx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
