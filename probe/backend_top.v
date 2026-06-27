@@ -1082,6 +1082,25 @@ module backend_top
                  {24'd0, 1'b0, eb_redirect, (lsu_dfault_v | ill_v), lq_full, sb_full,
                   ~(&disp_ready), (|fe_stall), cc_full},
                  0, 0, 0, 0, 0, 64'd0, 0);
+      // KIND 7 = FETCH-EMPTY: the frontend delivered NO bundle to dispatch (the
+      // `frontend-empty` accounting bucket). The `seq` field carries the reason this
+      // fetch slot is empty, so an I$ miss is told apart from a redirect refetch:
+      //   b0 redirect (frontend being re-steered: branch/trap/fence flush)
+      //   b1 immu-wait (iTLB miss / PTW in progress -> imem gated off)
+      //   b2 immu-fault (fetch page/access fault pending)
+      //   b3 icache-miss (translation OK but the I$ returned 0 halfwords)
+      //   b4 other (none above: fetch/decode/rename pipeline bubble or aligner truncate)
+      if (!any_valid) begin : fetch_empty_ev
+         reg fe_rd, fe_iw, fe_if, fe_im, fe_ot;
+         fe_rd = fe_red_v;
+         fe_iw = ~immu_ready & ~fe_red_v;
+         fe_if = immu_fault & ~fe_red_v;
+         fe_im = immu_ready & ~immu_fault & (imem_avail == 0) & ~fe_red_v;
+         fe_ot = ~(fe_rd | fe_iw | fe_if | fe_im);
+         perf_ev(perf_cyc, 7,
+                 {27'd0, fe_ot, fe_im, fe_if, fe_iw, fe_rd},
+                 0, 0, 0, 0, 0, 64'd0, 0);
+      end
    end
 `endif
 endmodule

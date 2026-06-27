@@ -21,9 +21,12 @@ const KIND_WB: u8 = 3;
 const KIND_COMMIT: u8 = 4;
 const KIND_SQUASH: u8 = 5;
 const KIND_STALL: u8 = 6;
+const KIND_FEMPTY: u8 = 7;
 // dispatch-stall reason bits (mask in the STALL record's seqno field; see backend_top.v)
 const STALL_LABELS: [&str; 7] =
     ["checkpoints", "free-regs", "scheduler", "store-buf", "load-queue", "fault", "redirect"];
+// frontend-empty reason bits (mask in the FEMPTY record's seqno field; see backend_top.v)
+const FEMPTY_LABELS: [&str; 5] = ["redirect", "immu-wait", "immu-fault", "icache-miss", "other"];
 
 const HELP: &str = r#"perftool -- sharded-OoO performance event trace analyzer
 
@@ -99,8 +102,11 @@ CYCLE ACCOUNTING ("why aren't we dispatching?")
         dispatch        a bundle was dispatched this cycle (forward progress)
         stall           a bundle was READY at the front but back-pressured (can't
                         dispatch) -- the interesting bucket; see reasons below
-        frontend-empty  nothing was ready to dispatch (fetch bubble, redirect
-                        refetch, decode gap) -- a FRONTEND problem, not backend
+        frontend-empty  no bundle was delivered -- a FRONTEND problem, not backend.
+                        Broken down by reason: redirect (branch/trap/fence flush),
+                        immu-wait (iTLB miss / PTW), immu-fault (fetch fault pending),
+                        icache-miss (translated OK but I$ returned nothing), other
+                        (fetch/decode/rename pipeline bubble or aligner truncation).
     When stalled, the hardware reports WHICH structure is full (a cycle can have
     several at once, so reason %s may sum past the stall %):
         checkpoints   out of CPR checkpoints (NCHK=4) -- too few in-flight branches
@@ -244,6 +250,7 @@ fn main() {
     let mut bsize: VecDeque<usize> = VecDeque::new();
     let mut cur_disp_cyc: Option<u64> = None;
     let mut stalls: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per stall cycle
+    let mut fe_empty: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per frontend-empty cycle
     let mut disp_cycles: Vec<u64> = Vec::new(); // distinct dispatch cycles (sorted)
 
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
@@ -338,6 +345,7 @@ fn main() {
                 cur_disp_cyc = None; // next dispatch starts a fresh bundle
             }
             KIND_STALL => stalls.push((cyc, seqno)), // seqno field carries the reason mask
+            KIND_FEMPTY => fe_empty.push((cyc, seqno)), // seqno field carries the reason mask
             _ => {}
         }
     }
@@ -363,13 +371,13 @@ fn main() {
     let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
 
     if interactive {
-        interactive_mode(&shown, &insns, &stalls, &disp_cycles);
+        interactive_mode(&shown, &insns, &stalls, &fe_empty, &disp_cycles);
         return;
     }
 
     let h = build_hists(&shown, &insns);
     diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
-    print_accounting(min_cyc, max_cyc, &stalls, &disp_cycles);
+    print_accounting(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles);
     print_time_bins(min_cyc, max_cyc, &stalls, &disp_cycles, 16);
     h.dep.print();
     h.wake.print();
@@ -600,18 +608,42 @@ fn accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64]) -> (u
     (total, disp, stall, empty, bits)
 }
 
-fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64]) {
+// Count, per reason bit, how many events in [lo,hi] assert that bit (a cycle may set several).
+fn reason_counts(lo: u64, hi: u64, events: &[(u64, u8)]) -> [u64; 8] {
+    let mut b = [0u64; 8];
+    for &(c, m) in events {
+        if c >= lo && c <= hi {
+            for (k, slot) in b.iter_mut().enumerate() {
+                if m & (1 << k) != 0 {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+    b
+}
+
+fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
     let (total, disp, stall, empty, bits) = accounting(lo, hi, stalls, disp_cycles);
     let pct = |x: u64| 100.0 * x as f64 / total.max(1) as f64;
     println!("\n--- cycle accounting ({total} cycles): every cycle is one of ---");
     println!("  dispatch       {:>10} ({:4.1}%)  -- a bundle dispatched", disp, pct(disp));
     println!("  stall          {:>10} ({:4.1}%)  -- bundle ready but back-pressured", stall, pct(stall));
-    println!("  frontend-empty {:>10} ({:4.1}%)  -- no bundle ready (fetch bubble / redirect refetch)", empty, pct(empty));
+    println!("  frontend-empty {:>10} ({:4.1}%)  -- no bundle delivered (I$ miss / redirect / bubble)", empty, pct(empty));
     if stall > 0 {
         println!("  stall by reason (% of all cycles; a cycle may have several):");
         for b in 0..7 {
             if bits[b] > 0 {
                 println!("     {:<12} {:>10} ({:4.1}%)", STALL_LABELS[b], bits[b], pct(bits[b]));
+            }
+        }
+    }
+    let fe = reason_counts(lo, hi, fe_empty);
+    if fe.iter().take(5).any(|&x| x > 0) {
+        println!("  frontend-empty by reason (% of all cycles):");
+        for b in 0..5 {
+            if fe[b] > 0 {
+                println!("     {:<12} {:>10} ({:4.1}%)", FEMPTY_LABELS[b], fe[b], pct(fe[b]));
             }
         }
     }
@@ -790,7 +822,7 @@ fn read_key() -> Key {
     }
 }
 
-fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u8)], disp_cycles: &[u64]) {
+fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
     if shown.is_empty() {
         eprintln!("perftool: no (non-squashed) instructions to show");
         return;
@@ -843,9 +875,17 @@ fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u
                     reasons.push_str(&format!(" {}={:.0}%", STALL_LABELS[b], pct(bits[b])));
                 }
             }
+            let mut fe = String::new();
+            for (b, &c) in reason_counts(wmin, wmax, fe_empty).iter().take(5).enumerate() {
+                if c > 0 {
+                    fe.push_str(&format!(" {}={:.0}%", FEMPTY_LABELS[b], pct(c)));
+                }
+            }
             out.push_str(&format!(
-                "cycles: disp {:.0}%  stall {:.0}%  fe-empty {:.0}%  | stall:{}\n",
-                pct(disp), pct(stall), pct(empty), if reasons.is_empty() { " -".into() } else { reasons }
+                "cycles: disp {:.0}%  stall {:.0}%  fe-empty {:.0}%  | stall:{} | fe:{}\n",
+                pct(disp), pct(stall), pct(empty),
+                if reasons.is_empty() { " -".into() } else { reasons },
+                if fe.is_empty() { " -".into() } else { fe }
             ));
         }
         print!("{out}");
