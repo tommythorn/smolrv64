@@ -46,12 +46,15 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-cosim
 		+rf=$(CURDIR)/rf.hex
 
 # Probe (sharded-OoO) core cosim vs simmerv -- the analogue of `make cosim`, driving
-# probe/tb_cosim_linux (flat fw/dtb/initrd load) with gb5's memory layout (1 GiB; DTB
+# probe/tb_cosim_linux (flat fw/dtb/initrd load) with gb5's memory layout (2 GiB; DTB
 # @0x9ff00000, initrd @0x96270e00). First run builds; BUILD=1 or CYC=N to override.
+# MEM_LG2=31 (2 GiB) MUST match the gb5.dtb memory node (reg <.. 0x7ff00000>, ~2 GiB)
+# and the `ref` target's simmerv -m 2048; a smaller cosim wraps OOB accesses where
+# simmerv access-faults -> spurious divergence once the workload exceeds the size.
 PROBE ?= ../../probe
 CYC   ?= 0          # 0 = unbounded: run until a cosim divergence (or Ctrl-C)
 pcosim: gb5.dtb $(FW) img.Geekbench5.cpio
-	NAME=gb5 MEM_LG2=30 A1=9ff00000 OFF_DTB=1ff00000 OFF_INITRD=16270e00 \
+	NAME=gb5 MEM_LG2=31 A1=9ff00000 OFF_DTB=1ff00000 OFF_INITRD=16270e00 \
 	FW=$(CURDIR)/$(FW) DTB=$(CURDIR)/gb5.dtb INITRD=$(CURDIR)/img.Geekbench5.cpio \
 	CYC=$(CYC) BUILD=$(BUILD) $(PROBE)/run-cosim-linux.sh
 
