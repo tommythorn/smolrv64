@@ -26,10 +26,27 @@ FW=${FW:-$W/fw_payload.bin}; DTB=${DTB:-$W/dts.dtb}; INITRD=${INITRD:-$W/tiny128
 OFF_DTB=${OFF_DTB:-2000000}; OFF_INITRD=${OFF_INITRD:-762b000}; A1=${A1:-82000000}
 CYC=${CYC:-200000000}
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
+STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
 
 [ -f "$SIMMERV_LIB" ] || (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
 
-if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
+# Decide whether to (re)build. The old check keyed ONLY on binary existence, so a
+# stale binary silently ran old RTL -- and MEM_LG2/VDEFS are compile-time -D's, so a
+# size change (e.g. gb5 1->2 GiB) was inert until a manual BUILD=1. Now rebuild when:
+#   - the binary is missing, or BUILD=1, or
+#   - the compile-time config (MEM_LG2 + VDEFS) differs from what's baked in, or
+#   - any source under probe/ or ../src/ is newer than the binary.
+# (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
+need_build=0
+if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
+elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
+elif find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.vh' -o -name '*.cpp' -o -name '*.f' \) \
+        -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
+   need_build=1; echo "source newer than binary -> rebuild"
+fi
+
+if [ "$need_build" = 1 ]; then
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
    echo "building obj_dir_cosim_${NAME}/tb_cosim_${NAME} (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \
@@ -43,6 +60,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       $srcs tb_cosim_linux.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp > /tmp/cosim_${NAME}_build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosim_${NAME}_build.log | head; exit 1; fi
+   echo "$want" > "$STAMP"
 fi
 
 echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=$INITRD@+$OFF_INITRD a1=$A1) ==="
