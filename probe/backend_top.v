@@ -1049,7 +1049,8 @@ module backend_top
    // ps1/ps2 + WRITEBACK clocks. kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH.
    import "DPI-C" function void perf_ev(input longint cyc, input int kind, input int seq,
                                         input int ckp, input int rdv, input int pdst,
-                                        input int ps1, input int ps2, input longint pc);
+                                        input int ps1, input int ps2, input longint data,
+                                        input int insn);
    reg [63:0] perf_cyc; integer pti;
    initial perf_cyc = 64'd0;
    always @(posedge clk) if (!reset) begin
@@ -1060,16 +1061,17 @@ module backend_top
                     {31'd0, r_rd_v[pti]}, {{(32-PBITS){1'b0}}, pdst[pti*PBITS +: PBITS]},
                     {{(32-PBITS){1'b0}}, ps1[pti*PBITS +: PBITS]},
                     {{(32-PBITS){1'b0}}, ps2[pti*PBITS +: PBITS]},
-                    r_pay[pti*`PAYW + 78 +: 64]);
+                    r_pay[pti*`PAYW + 78 +: 64], r_pay[pti*`PAYW + 165 +: 32]); // PAY_PC, PAY_INSN
       for (pti = 0; pti < IW; pti = pti + 1) if (iss_valid[pti])
          perf_ev(perf_cyc, 2, {24'd0, iss_seq[pti*SEQW +: SEQW]},
-                 {30'd0, iss_ckpt[pti*CBITS +: CBITS]}, 0, 0, 0, 0, 64'd0);
+                 {30'd0, iss_ckpt[pti*CBITS +: CBITS]}, 0, 0, 0, 0, 64'd0, 0);
       for (pti = 0; pti < IW; pti = pti + 1) if (wkv[pti])
          perf_ev(perf_cyc, 3, {24'd0, wkq[pti*SEQW +: SEQW]}, 0, 0,
-                 {{(32-PBITS){1'b0}}, wkp[pti*PBITS +: PBITS]}, 0, 0, 64'd0);
-      if (cc_commit) perf_ev(perf_cyc, 4, 0, {30'd0, cc_commit_idx}, 0, 0, 0, 0, 64'd0);
+                 {{(32-PBITS){1'b0}}, wkp[pti*PBITS +: PBITS]}, 0, 0,
+                 wb_val[pti*64 +: 64], 0);
+      if (cc_commit) perf_ev(perf_cyc, 4, 0, {30'd0, cc_commit_idx}, 0, 0, 0, 0, 64'd0, 0);
       if (roll_v)    perf_ev(perf_cyc, 5, {24'd0, roll_seq}, {30'd0, roll_ckpt},
-                             0, 0, 0, 0, 64'd0);
+                             0, 0, 0, 0, 64'd0, 0);
    end
 `endif
 endmodule

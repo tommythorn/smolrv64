@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "perftool"
 version = "0.1.0"
+dependencies = [
+ "rvdisasm",
+]
+
+[[package]]
+name = "rvdisasm"
+version = "0.1.0"

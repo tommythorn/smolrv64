@@ -44,11 +44,12 @@ struct Closer {                 // flush + report on normal $finish / exit
 }  // namespace
 
 // One fixed 32-byte little-endian record (must match perftool/src/main.rs Rec):
-//   [0..8) cyc u64   [8..16) pc u64   [16] kind u8   [17] seqno u8   [18] ckpid u8
-//   [19] rdv u8      [20..22) pdst u16  [22..24) ps1 u16  [24..26) ps2 u16  [26..32) pad
+//   [0..8) data u64  -- DISPATCH: pc,  WRITEBACK: wb_val
+//   [16] kind u8   [17] seqno u8   [18] ckpid u8   [19] rdv u8
+//   [20..22) pdst u16  [22..24) ps1 u16  [24..26) ps2 u16  [26..30) insn u32  [30..32) pad
 // kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH.
 extern "C" void perf_ev(long long cyc, int kind, int seq, int ckp, int rdv,
-                        int pdst, int ps1, int ps2, long long pc) {
+                        int pdst, int ps1, int ps2, long long data, int insn) {
    if (!g_init) init();
    if (!g_on) return;
    uint64_t c = (uint64_t)cyc;
@@ -56,8 +57,8 @@ extern "C" void perf_ev(long long cyc, int kind, int seq, int ckp, int rdv,
    uint8_t r[32];
    std::memset(r, 0, sizeof r);
    std::memcpy(r + 0, &c, 8);
-   uint64_t p = (uint64_t)pc;
-   std::memcpy(r + 8, &p, 8);
+   uint64_t dv = (uint64_t)data;
+   std::memcpy(r + 8, &dv, 8);
    r[16] = (uint8_t)kind;
    r[17] = (uint8_t)seq;
    r[18] = (uint8_t)ckp;
@@ -66,6 +67,7 @@ extern "C" void perf_ev(long long cyc, int kind, int seq, int ckp, int rdv,
    u = (uint16_t)pdst; std::memcpy(r + 20, &u, 2);
    u = (uint16_t)ps1;  std::memcpy(r + 22, &u, 2);
    u = (uint16_t)ps2;  std::memcpy(r + 24, &u, 2);
+   uint32_t iw = (uint32_t)insn; std::memcpy(r + 26, &iw, 4);
    std::fwrite(r, 1, sizeof r, g_fp);
    g_n++;
 }
