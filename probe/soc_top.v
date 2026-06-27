@@ -41,7 +41,12 @@ module soc_top #(
    // reads it from RBR. uart_rx_ready = the holding register is empty (DR clear).
    input  wire             uart_rx_we,
    input  wire [7:0]       uart_rx_data,
-   output wire             uart_rx_ready
+   output wire             uart_rx_ready,
+   // UART transmit byte stream (THR writes): on FPGA this feeds rs232tx (valid/ready
+   // handshake). A sim TB ties uart_tx_ready=1 to drain instantly; $write still emits.
+   output wire             uart_tx_valid,
+   output wire [7:0]       uart_tx_data,
+   input  wire             uart_tx_ready
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -112,32 +117,42 @@ module soc_top #(
    // RBR read (off 0, DLAB=0) -> the received byte (clears DR). LCR.DLAB(bit7) gates off 0.
    reg [7:0] uart_lcr;  integer ub;
    reg [7:0] uart_rbr;  reg uart_dr;       // RX holding register + data-ready
+   reg [7:0] uart_thr;  reg uart_thr_full; // TX holding register + pending flag
    assign    uart_rx_ready = ~uart_dr;
+   // TX byte stream: hold the THR byte until rs232tx accepts it (FPGA backpressure).
+   // In a sim TB uart_tx_ready is tied 1, so the byte drains next cycle (THRE stays high).
+   assign    uart_tx_valid = uart_thr_full;
+   assign    uart_tx_data  = uart_thr;
    // RBR read strobe: a load to offset 0 with DLAB clear consumes the byte
    wire      uart_off0  = ((dmem_raddr - UART_BASE) & 64'h7) == 64'd0;
    wire      uart_rbr_rd = dmem_ren & is_uart_r & uart_off0 & ~uart_lcr[7];
-   always @(posedge clk) if (reset) begin uart_lcr<=8'd0; uart_dr<=1'b0; uart_rbr<=8'd0; end
+   always @(posedge clk) if (reset) begin uart_lcr<=8'd0; uart_dr<=1'b0; uart_rbr<=8'd0;
+                                          uart_thr<=8'd0; uart_thr_full<=1'b0; end
       else begin
+         if (uart_thr_full & uart_tx_ready) uart_thr_full <= 1'b0;  // serializer took the byte
          if (dmem_wen & is_uart_w & ~dev_wack)
             for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
                case ((dmem_waddr - UART_BASE + ub) & 3'h7)
-                  3'd0: if (!uart_lcr[7]) $write("%c", dmem_wdata[ub*8 +: 8]);
+                  3'd0: if (!uart_lcr[7]) begin
+                           uart_thr <= dmem_wdata[ub*8 +: 8]; uart_thr_full <= 1'b1;
+                           $write("%c", dmem_wdata[ub*8 +: 8]);   // sim-only; synth ignores
+                        end
                   3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
                   default: ;
                endcase
          if (uart_rx_we & ~uart_dr) begin uart_rbr <= uart_rx_data; uart_dr <= 1'b1; end
          else if (uart_rbr_rd)      uart_dr <= 1'b0;
       end
-   function [63:0] uart_rd; input [63:0] a; input [7:0] rbr; input dr; input dlab;
+   function [63:0] uart_rd; input [63:0] a; input [7:0] rbr; input dr; input dlab; input thr_full;
       integer b2; reg [2:0] off;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
          off=(a-UART_BASE+b2)&3'h7;
-         uart_rd[b2*8 +: 8] = (off==3'd5) ? (8'h60 | (dr?8'h01:8'h00))      // LSR: THRE|TEMT|DR
+         uart_rd[b2*8 +: 8] = (off==3'd5) ? ((thr_full?8'h00:8'h60) | (dr?8'h01:8'h00)) // LSR: THRE|TEMT|DR
                             : (off==3'd0 && !dlab) ? rbr                     // RBR
                             : 8'h00; end end
    endfunction
    wire [63:0] dev_rdata = is_clint_r ? clint_rdata
-                         : is_uart_r  ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7])
+                         : is_uart_r  ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
                          : is_plic_r  ? plic_rdata  : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
@@ -274,6 +289,11 @@ module soc_top #(
 
    // local SRAM responder (on-chip BRAM)
    reg [7:0] lram [0:LSIZE-1];
+   // FPGA: bake the monitor image into the BRAM at elaboration (one byte per hex line).
+   // Sim TBs instead load dut.lram directly via +monhex, so guard on the compile-time define.
+`ifdef SOC_BOOT_HEX
+   initial $readmemh(`SOC_BOOT_HEX, lram);
+`endif
    reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_ad_q; reg [511:0] l_wd_q;
    reg [511:0] l_rdata; reg l_ack; integer kb; reg [63:0] l_base;
    wire l_req = m_req & m_is_local;

@@ -19,7 +19,8 @@ module tb;
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
       .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
-      .uart_rx_we(rx_we), .uart_rx_data(rx_data), .uart_rx_ready(rx_ready));
+      .uart_rx_we(rx_we), .uart_rx_data(rx_data), .uart_rx_ready(rx_ready),
+      .uart_tx_ready(1'b1));
 
    // behavioral DDR (16 MiB here -- the monitor itself does not touch DRAM)
    localparam DDR_BYTES = 1<<24;
