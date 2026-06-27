@@ -207,10 +207,12 @@ module csr_file
    wire csr_ro      = (upd_addr[11:10]==2'b11) & csr_writes;
    wire csr_nopriv  = upd_is_csr & (priv < upd_addr[9:8]);
    wire satp_tvm    = upd_is_csr & (upd_addr == SATP) & (priv == S) & tvm;
-   // Unimplemented CSR -> illegal (must trap, not silently read 0). mtopi is an AIA
-   // (Smaia) CSR; AIA is not in RVA22, and OpenSBI probes mtopi to detect it -- the
-   // trap is how it concludes AIA is absent. Add other unimplemented CSRs here as found.
-   wire csr_unimpl  = upd_is_csr & (upd_addr == MTOPI);
+   // Unimplemented CSR -> illegal (must trap, not silently read 0). OpenSBI probes optional
+   // extensions via trap-to-detect-absence: mtopi (AIA/Smaia, not in RVA22) and the
+   // m/sstateen0-3 family (Smstateen, also absent: 0x30C-0x30F / 0x10C-0x10F) -- the trap is
+   // how it concludes the extension is missing. Add other unimplemented CSRs here as found.
+   wire csr_stateen = (upd_addr[11:2]==10'h0C3) | (upd_addr[11:2]==10'h043);  // m/sstateen0-3
+   wire csr_unimpl  = upd_is_csr & ((upd_addr == MTOPI) | csr_stateen);
    // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
    // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
    wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
