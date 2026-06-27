@@ -129,6 +129,7 @@ module backend_top
    // ---- commit control ----
    wire               cc_commit, cc_rollback, cc_full;
    wire [CBITS-1:0]   cc_commit_idx, cc_rollback_idx, cc_committed;
+   wire [2:0]         cc_commit_count;   // # instructions retiring this cycle (-> minstret)
 
    // ---- per-slot memory-op classification (from the renamed payload) ----
    wire [IW-1:0]      slot_mem, slot_store, dl_is_load, dl_is_store;
@@ -478,7 +479,7 @@ module backend_top
       .create(), .empty(cc_empty),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
-      .committed_idx(cc_committed), .full(cc_full));
+      .committed_idx(cc_committed), .commit_count(cc_commit_count), .full(cc_full));
 
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
@@ -525,7 +526,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(cc_commit_count),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 

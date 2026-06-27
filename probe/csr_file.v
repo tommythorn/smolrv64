@@ -50,6 +50,7 @@ module csr_file
     // so software clears them only at the device (mtimecmp/msip), never via mip.
     input  wire [11:0] hw_ip,
     input  wire [63:0] mtime,       // free-running CLINT time (Sstc stimecmp compare); 0 in device-less TBs
+    input  wire [2:0]  retire_cnt,  // # instructions retiring this cycle (commit_ctl) -> minstret
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
@@ -73,7 +74,12 @@ module csr_file
                      SIP=12'h144, SATP=12'h180,
                      MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13,
                      FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003,
-                     STIMECMP=12'h14D, MENVCFG=12'h30A;
+                     STIMECMP=12'h14D, MENVCFG=12'h30A,
+                     // Zicntr: M-mode counters + their U/S read-only shadows. time is the
+                     // hardware-backed CLINT mtime (like SmolRV64); cycle/instret shadow
+                     // the free-running mcycle / retired-instruction minstret.
+                     MCYCLE=12'hB00, MINSTRET=12'hB02,
+                     CYCLE=12'hC00, TIME=12'hC01, INSTRET=12'hC02;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
@@ -106,6 +112,7 @@ module csr_file
               medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus,
               stimecmp, menvcfg;   // Sstc: supervisor timer-compare + menvcfg.STCE enable
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
+   reg [63:0] mcycle, minstret;      // Zicntr: free-running cycles + retired instructions
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
    assign o_fs_off = (mstatus[14:13] == 2'b00);
@@ -159,6 +166,9 @@ module csr_file
         FFLAGS:     rdata = {59'd0, fcsr[4:0]};
         FRM:        rdata = {61'd0, fcsr[7:5]};
         FCSR:       rdata = {56'd0, fcsr};
+        MCYCLE, CYCLE:     rdata = mcycle;
+        TIME:              rdata = mtime;     // hardware-backed CLINT mtime
+        MINSTRET, INSTRET: rdata = minstret;
         default:    rdata = 64'd0;   // mhartid/mvendorid/marchid/mimpid/unknown
       endcase
    end
@@ -380,6 +390,17 @@ module csr_file
       if (!reset && fp_fflags_we) begin
          fcsr[4:0]      <= fcsr[4:0] | fp_fflags;
          mstatus[14:13] <= 2'b11;
+      end
+      // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
+      // clocks; minstret adds the committing checkpoint's instruction count. An M-mode
+      // write to mcycle/minstret loads the value (this cycle's increment is dropped).
+      if (reset) begin
+         mcycle <= 64'd0; minstret <= 64'd0;
+      end else begin
+         mcycle   <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MCYCLE)
+                       ? newv : mcycle + 64'd1;
+         minstret <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MINSTRET)
+                       ? newv : minstret + {61'd0, retire_cnt};
       end
    end
 endmodule

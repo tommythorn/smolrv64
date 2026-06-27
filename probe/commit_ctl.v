@@ -56,14 +56,16 @@ module commit_ctl
     output wire [CBITS-1:0]      rollback_idx,
     output wire [CBITS-1:0]      committed_idx, // oldest live checkpoint (for serialize gating)
     output wire                  empty,         // no instructions in flight (-> precise fetch trap)
+    output wire [DCW-1:0]        commit_count,  // # instructions retiring this cycle (for minstret)
     output wire                  full);         // ring full -> stall dispatch
 
    reg [CNTW-1:0]  count [0:NCHK-1];
+   reg [DCW-1:0]   ninst [0:NCHK-1];            // bundle size of each checkpoint (for minstret)
    reg [CBITS-1:0] committed;
    integer i, s;
 
    initial begin
-      for (i = 0; i < NCHK; i = i + 1) count[i] = 0;
+      for (i = 0; i < NCHK; i = i + 1) begin count[i] = 0; ninst[i] = 0; end
       committed = 0;
    end
 
@@ -79,6 +81,9 @@ module commit_ctl
    assign committed_idx = committed;
    // empty = no live closed checkpoints AND the open one holds no outstanding ops.
    assign empty = (committed == cur) && (count[committed] == {CNTW{1'b0}});
+   // a committed checkpoint retires its whole (un-squashed) bundle -> its dispatched
+   // instruction count, captured at create. Drives minstret in csr_file.
+   assign commit_count = commit ? ninst[committed] : {DCW{1'b0}};
 
    // squashed checkpoints on rollback: [redirect_ckpt .. cur] inclusive
    reg [NCHK-1:0]  young;
@@ -118,6 +123,7 @@ module commit_ctl
                       : count[i] + ((disp_fire && (cur == i[CBITS-1:0])) ? disp_count : {DCW{1'b0}})
                                  - dec[i];
          if (commit) committed <= committed + 1'b1;
+         if (disp_fire) ninst[cur] <= disp_count;   // remember the bundle size for minstret
       end
    end
 endmodule
