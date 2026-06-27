@@ -8,12 +8,32 @@
 //   [0..8) data u64  -- DISPATCH: pc, WRITEBACK: wb_val
 //   [16] kind u8  [17] seqno u8  [18] ckpid u8  [19] rdv u8
 //   [20..22) pdst u16  [22..24) ps1 u16  [24..26) ps2 u16  [26..30) insn u32  [30..32) pad
-// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH.
+// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH 6=STALL 7=FETCH-EMPTY.
+//
+// Memory: the trace is STREAMED record-by-record (never the whole file in RAM) and
+// instructions live in a flat Vec<Insn> indexed by uid (no per-entry hash overhead),
+// with un-set cycle fields held as a u64::MAX sentinel rather than Option<u64>.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use clap::Parser;
+
+// uid links and cycle fields use sentinels instead of Option, to shrink Insn.
+const NIL: u32 = u32::MAX; // "no producer / no uid"
+const NONE: u64 = u64::MAX; // "event has not happened"
+#[inline]
+fn opt(v: u64) -> Option<u64> {
+    if v == NONE {
+        None
+    } else {
+        Some(v)
+    }
+}
 
 const KIND_DISP: u8 = 1;
 const KIND_SEL: u8 = 2;
@@ -128,22 +148,19 @@ CYCLE ACCOUNTING ("why aren't we dispatching?")
     %res = that PC's share of all residency. This is where to point an optimization.
 "#;
 
-#[derive(Default)]
-#[allow(dead_code)] // ps1/ps2 retained for future analyses
+// Packed to ~56 bytes: cycle fields use the NONE sentinel and producer links are u32
+// uids (NIL = none), so a multi-million-instruction window stays in a flat Vec.
 struct Insn {
+    pc: u64,
+    disp: u64,
+    sel: u64,   // NONE until selected
+    wb: u64,    // NONE until writeback
+    wbval: u64, // NONE until writeback
+    prod1: u32, // producer uid (NIL = operand ready at dispatch)
+    prod2: u32,
+    insn: u32,
     seqno: u8,
     ckpid: u8,
-    pc: u64,
-    insn: u32,
-    pdst: u16,
-    ps1: u16,
-    ps2: u16,
-    prod1: Option<u64>,
-    prod2: Option<u64>,
-    disp: u64,
-    sel: Option<u64>,
-    wb: Option<u64>,
-    wbval: Option<u64>,
     squashed: bool,
 }
 
@@ -214,41 +231,64 @@ impl Hist {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") || args.len() < 2 {
-        print!("{HELP}");
-        std::process::exit(if args.len() < 2 { 2 } else { 0 });
-    }
-    let path = &args[1];
-    let mut waterfall = 0usize;
-    if let Some(p) = args.iter().position(|a| a == "--waterfall") {
-        waterfall = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    }
-    let mut pipeview = 0usize;
-    if let Some(p) = args.iter().position(|a| a == "--pipeview") {
-        pipeview = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    }
-    let incl_squashed = args.iter().any(|a| a == "--include-squashed");
-    let interactive = args.iter().any(|a| a == "--interactive" || a == "-i");
+#[derive(Parser)]
+#[command(
+    name = "perftool",
+    about = "sharded-OoO performance event trace analyzer",
+    after_long_help = HELP
+)]
+struct Cli {
+    /// trace file (32-byte records from perf_trace.cpp)
+    trace: PathBuf,
+    /// show the first N dispatched instructions as a waterfall table
+    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "20")]
+    waterfall: Option<usize>,
+    /// show the first N dispatched instructions as a pipeline view
+    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "20")]
+    pipeview: Option<usize>,
+    /// scroll a window of the trace interactively (needs a terminal)
+    #[arg(short, long)]
+    interactive: bool,
+    /// include wrong-path (squashed) instructions in stats and views
+    #[arg(long)]
+    include_squashed: bool,
+    /// split the trace into chunks of N cycles and exit (writes <trace>.NNN.bin)
+    #[arg(long, value_name = "CYCLES")]
+    split_cycles: Option<u64>,
+}
 
-    let data = std::fs::read(path).unwrap_or_else(|e| {
+fn main() {
+    let cli = Cli::parse();
+    if let Some(cpc) = cli.split_cycles {
+        if let Err(e) = split_trace(&cli.trace, cpc) {
+            eprintln!("perftool: split failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let path = cli.trace.display().to_string();
+    let waterfall = cli.waterfall.unwrap_or(0);
+    let pipeview = cli.pipeview.unwrap_or(0);
+    let incl_squashed = cli.include_squashed;
+    let interactive = cli.interactive;
+
+    let file = File::open(&cli.trace).unwrap_or_else(|e| {
         eprintln!("perftool: cannot read {path}: {e}");
         std::process::exit(1);
     });
 
-    let mut insns: HashMap<u64, Insn> = HashMap::new();
-    let mut order: Vec<u64> = Vec::new();
-    let mut seq2uid: [Option<u64>; 256] = [None; 256];
-    let mut pdst2uid: HashMap<u16, u64> = HashMap::new();
-    let mut next_uid: u64 = 0;
+    // uid == index into `insns` (assigned monotonically at dispatch, so dispatch order
+    // is simply 0..insns.len()). seq2uid/pdst2uid map the live 8-bit seqno / physreg to it.
+    let mut insns: Vec<Insn> = Vec::new();
+    let mut seq2uid: [u32; 256] = [NIL; 256];
+    let mut pdst2uid: Vec<u32> = vec![NIL; 1 << 16]; // pdst is a u16 field -> heap, not stack
     // In-flight FIFO (program order) + per-bundle sizes, to mark squashed instructions
     // exactly like the hardware: a SQUASH(roll_seq=R) kills every in-flight op younger
     // than R (signed8(seq-R)>0); a COMMIT retires the oldest bundle. (Windowed traces
     // are approximate near the window start, where pre-window commits have no bundle.)
-    let mut inflight: VecDeque<u64> = VecDeque::new();
-    let mut bsize: VecDeque<usize> = VecDeque::new();
-    let mut cur_disp_cyc: Option<u64> = None;
+    let mut inflight: VecDeque<u32> = VecDeque::new();
+    let mut bsize: VecDeque<u32> = VecDeque::new();
+    let mut cur_disp_cyc: u64 = NONE;
     let mut stalls: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per stall cycle
     let mut fe_empty: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per frontend-empty cycle
     let mut disp_cycles: Vec<u64> = Vec::new(); // distinct dispatch cycles (sorted)
@@ -256,39 +296,47 @@ fn main() {
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
     let (mut min_cyc, mut max_cyc) = (u64::MAX, 0u64);
 
-    for rec in data.chunks_exact(32) {
-        let cyc = rd64(rec, 0);
-        let datum = rd64(rec, 8);
+    // Stream 32-byte records through a buffered reader -- the whole file is never resident.
+    let mut rdr = BufReader::with_capacity(1 << 20, file);
+    let mut rec = [0u8; 32];
+    loop {
+        match rdr.read_exact(&mut rec) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => {
+                eprintln!("perftool: read error: {e}");
+                std::process::exit(1);
+            }
+        }
+        let cyc = rd64(&rec, 0);
+        let datum = rd64(&rec, 8);
         let kind = rec[16];
         let seqno = rec[17];
         let ckpid = rec[18];
         let rdv = rec[19];
-        let pdst = rd16(rec, 20);
-        let ps1 = rd16(rec, 22);
-        let ps2 = rd16(rec, 24);
-        let iword = rd32(rec, 26);
+        let pdst = rd16(&rec, 20);
+        let ps1 = rd16(&rec, 22);
+        let ps2 = rd16(&rec, 24);
+        let iword = rd32(&rec, 26);
         min_cyc = min_cyc.min(cyc);
         max_cyc = max_cyc.max(cyc);
         match kind {
             KIND_DISP => {
                 n_disp += 1;
-                let uid = next_uid;
-                next_uid += 1;
-                let prod1 = if ps1 != 0 { pdst2uid.get(&ps1).copied() } else { None };
-                let prod2 = if ps2 != 0 { pdst2uid.get(&ps2).copied() } else { None };
-                insns.insert(
-                    uid,
-                    Insn { seqno, ckpid, pc: datum, insn: iword, pdst, ps1, ps2, prod1, prod2,
-                           disp: cyc, sel: None, wb: None, wbval: None, squashed: false },
-                );
-                order.push(uid);
-                seq2uid[seqno as usize] = Some(uid);
+                let uid = insns.len() as u32;
+                let prod1 = if ps1 != 0 { pdst2uid[ps1 as usize] } else { NIL };
+                let prod2 = if ps2 != 0 { pdst2uid[ps2 as usize] } else { NIL };
+                insns.push(Insn {
+                    pc: datum, disp: cyc, sel: NONE, wb: NONE, wbval: NONE,
+                    prod1, prod2, insn: iword, seqno, ckpid, squashed: false,
+                });
+                seq2uid[seqno as usize] = uid;
                 if rdv != 0 {
-                    pdst2uid.insert(pdst, uid);
+                    pdst2uid[pdst as usize] = uid;
                 }
-                if cur_disp_cyc != Some(cyc) {
+                if cur_disp_cyc != cyc {
                     bsize.push_back(0);
-                    cur_disp_cyc = Some(cyc);
+                    cur_disp_cyc = cyc;
                     disp_cycles.push(cyc);
                 }
                 inflight.push_back(uid);
@@ -296,22 +344,22 @@ fn main() {
             }
             KIND_SEL => {
                 n_sel += 1;
-                if let Some(uid) = seq2uid[seqno as usize] {
-                    if let Some(i) = insns.get_mut(&uid) {
-                        if i.sel.is_none() {
-                            i.sel = Some(cyc);
-                        }
+                let uid = seq2uid[seqno as usize];
+                if uid != NIL {
+                    let i = &mut insns[uid as usize];
+                    if i.sel == NONE {
+                        i.sel = cyc;
                     }
                 }
             }
             KIND_WB => {
                 n_wb += 1;
-                if let Some(uid) = seq2uid[seqno as usize] {
-                    if let Some(i) = insns.get_mut(&uid) {
-                        if i.wb.is_none() {
-                            i.wb = Some(cyc);
-                            i.wbval = Some(datum);
-                        }
+                let uid = seq2uid[seqno as usize];
+                if uid != NIL {
+                    let i = &mut insns[uid as usize];
+                    if i.wb == NONE {
+                        i.wb = cyc;
+                        i.wbval = datum;
                     }
                 }
             }
@@ -327,11 +375,9 @@ fn main() {
                 n_squash += 1;
                 let r = seqno; // roll_seq: kill in-flight ops younger than R
                 while let Some(&u) = inflight.back() {
-                    if (insns[&u].seqno.wrapping_sub(r) as i8) > 0 {
+                    if (insns[u as usize].seqno.wrapping_sub(r) as i8) > 0 {
                         inflight.pop_back();
-                        if let Some(i) = insns.get_mut(&u) {
-                            i.squashed = true;
-                        }
+                        insns[u as usize].squashed = true;
                         if let Some(b) = bsize.back_mut() {
                             *b -= 1;
                             if *b == 0 {
@@ -342,7 +388,7 @@ fn main() {
                         break;
                     }
                 }
-                cur_disp_cyc = None; // next dispatch starts a fresh bundle
+                cur_disp_cyc = NONE; // next dispatch starts a fresh bundle
             }
             KIND_STALL => stalls.push((cyc, seqno)), // seqno field carries the reason mask
             KIND_FEMPTY => fe_empty.push((cyc, seqno)), // seqno field carries the reason mask
@@ -357,7 +403,7 @@ fn main() {
         println!("records: disp={n_disp} sel={n_sel} wb={n_wb} commit={n_commit} squash={n_squash}");
         println!("cycle span: {cyc_span} ({min_cyc}..{max_cyc})");
         println!("dispatched IPC: {:.3}   selected IPC: {:.3}", n_disp as f64 / cyc_span as f64, sel_ipc);
-        let n_sq_insn = insns.values().filter(|i| i.squashed).count();
+        let n_sq_insn = insns.iter().filter(|i| i.squashed).count();
         if n_sq_insn > 0 {
             println!(
                 "squashed instructions: {} {}",
@@ -368,7 +414,8 @@ fn main() {
     }
 
     // instructions for stats/views: squashed (wrong-path) hidden unless requested
-    let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
+    let shown: Vec<u32> =
+        (0..insns.len() as u32).filter(|&u| incl_squashed || !insns[u as usize].squashed).collect();
 
     if interactive {
         interactive_mode(&shown, &insns, &stalls, &fe_empty, &disp_cycles);
@@ -395,11 +442,58 @@ fn main() {
     }
 
     if pipeview > 0 {
-        let v: Vec<u64> = shown.iter().take(pipeview).copied().collect();
+        let v: Vec<u32> = shown.iter().take(pipeview).copied().collect();
         println!("\n=== pipeview (first {pipeview} dispatched) ===");
         println!("legend: D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback");
         pipe_render(&v, &insns, usize::MAX);
     }
+}
+
+// Split a trace into chunks of `cpc` cycles. Records are emitted in cycle order, so we
+// rotate the output file whenever the cycle crosses the next chunk boundary. Fixed 32-byte
+// records make this a pure byte copy -- no parsing. Writes <trace>.000.bin, .001.bin, ...
+fn split_trace(path: &Path, cpc: u64) -> io::Result<()> {
+    if cpc == 0 {
+        eprintln!("perftool: --split-cycles must be > 0");
+        std::process::exit(2);
+    }
+    let mut rdr = BufReader::with_capacity(1 << 20, File::open(path)?);
+    let mut rec = [0u8; 32];
+    let stem = path.display().to_string();
+    let mut base: u64 = NONE; // first cycle seen (chunk 0 starts here)
+    let mut cur_idx: u64 = NONE;
+    let mut out: Option<BufWriter<File>> = None;
+    let mut nrec: u64 = 0;
+    let mut nchunks: u64 = 0;
+    loop {
+        match rdr.read_exact(&mut rec) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+        let cyc = rd64(&rec, 0);
+        if base == NONE {
+            base = cyc;
+        }
+        let idx = (cyc - base) / cpc;
+        if idx != cur_idx {
+            if let Some(w) = out.take() {
+                drop(w);
+            }
+            let name = format!("{stem}.{idx:03}.bin");
+            eprintln!("perftool: chunk {idx} -> {name} (from cyc {cyc})");
+            out = Some(BufWriter::with_capacity(1 << 20, File::create(&name)?));
+            cur_idx = idx;
+            nchunks += 1;
+        }
+        out.as_mut().unwrap().write_all(&rec)?;
+        nrec += 1;
+    }
+    if let Some(mut w) = out {
+        w.flush()?;
+    }
+    eprintln!("perftool: split {nrec} records into {nchunks} chunk(s)");
+    Ok(())
 }
 
 struct Hists {
@@ -412,7 +506,16 @@ struct Hists {
 
 // Build the five lifecycle histograms over an explicit list of uids (READY derived from
 // each op's producers' writeback). Used for both the whole trace and an interactive window.
-fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
+// Producer's writeback cycle (0 = no producer, or producer not yet written back in-window).
+fn prod_wb(insns: &[Insn], p: u32) -> u64 {
+    if p == NIL {
+        0
+    } else {
+        opt(insns[p as usize].wb).unwrap_or(0)
+    }
+}
+
+fn build_hists(uids: &[u32], insns: &[Insn]) -> Hists {
     let mut h = Hists {
         dep: Hist::new("DISPATCH->READY  (operands wait: dependency stall)"),
         wake: Hist::new("READY->SELECT    (select-bandwidth pressure)"),
@@ -421,14 +524,13 @@ fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
         exec: Hist::new("SELECT->WRITEBACK (execute latency)"),
     };
     for &uid in uids {
-        let i = &insns[&uid];
-        let sel = match i.sel {
+        let i = &insns[uid as usize];
+        let sel = match opt(i.sel) {
             Some(s) => s,
             None => continue,
         };
-        let wbc = |p: Option<u64>| -> u64 { p.and_then(|u| insns.get(&u)).and_then(|pi| pi.wb).unwrap_or(0) };
-        let pw1 = wbc(i.prod1);
-        let pw2 = wbc(i.prod2);
+        let pw1 = prod_wb(insns, i.prod1);
+        let pw2 = prod_wb(insns, i.prod2);
         let last_prod_wb = pw1.max(pw2);
         let ready = i.disp.max(pw1).max(pw2);
         h.dep.add(ready.saturating_sub(i.disp));
@@ -437,7 +539,7 @@ fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
         if last_prod_wb > 0 && sel >= last_prod_wb {
             h.wb2s.add(sel - last_prod_wb);
         }
-        if let Some(w) = i.wb {
+        if let Some(w) = opt(i.wb) {
             if w >= sel {
                 h.exec.add(w - sel);
             }
@@ -449,17 +551,16 @@ fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
 fn wf_header() {
     println!("{:>6} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
 }
-fn wf_row(uid: u64, insns: &HashMap<u64, Insn>) {
-    let i = &insns[&uid];
-    let s = i.sel.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-    let w = i.wb.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-    let v = i.wbval.map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
+fn wf_row(uid: u32, insns: &[Insn]) {
+    let i = &insns[uid as usize];
+    let s = opt(i.sel).map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let w = opt(i.wb).map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let v = opt(i.wbval).map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
     println!("{:>6} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
 }
 
-fn ready_of(insns: &HashMap<u64, Insn>, i: &Insn) -> u64 {
-    let wbc = |p: Option<u64>| -> u64 { p.and_then(|u| insns.get(&u)).and_then(|pi| pi.wb).unwrap_or(0) };
-    i.disp.max(wbc(i.prod1)).max(wbc(i.prod2))
+fn ready_of(insns: &[Insn], i: &Insn) -> u64 {
+    i.disp.max(prod_wb(insns, i.prod1)).max(prod_wb(insns, i.prod2))
 }
 
 // One character for what instruction (disp/ready/sel/wb) is doing at cycle c.
@@ -504,16 +605,16 @@ fn stage_char(c: u64, disp: u64, ready: u64, sel: Option<u64>, wb: Option<u64>) 
 // cycle across all rows -- overlap and stalls read off directly. The timeline is capped to
 // max_cols (terminal width) so it never wraps; the caller prints any title/legend.
 const PIPE_LEFTW: usize = 48; // must match the row prefix format below
-fn pipe_render(vis: &[u64], insns: &HashMap<u64, Insn>, max_cols: usize) {
+fn pipe_render(vis: &[u32], insns: &[Insn], max_cols: usize) {
     if vis.is_empty() {
         return;
     }
-    let c0 = vis.iter().map(|u| insns[u].disp).min().unwrap();
+    let c0 = vis.iter().map(|&u| insns[u as usize].disp).min().unwrap();
     let c1 = vis
         .iter()
-        .map(|u| {
-            let i = &insns[u];
-            i.wb.or(i.sel).unwrap_or(i.disp)
+        .map(|&u| {
+            let i = &insns[u as usize];
+            opt(i.wb).or(opt(i.sel)).unwrap_or(i.disp)
         })
         .max()
         .unwrap();
@@ -532,10 +633,11 @@ fn pipe_render(vis: &[u64], insns: &HashMap<u64, Insn>, max_cols: usize) {
     }
     println!("{}{}", " ".repeat(PIPE_LEFTW), String::from_utf8(ruler).unwrap());
 
-    for u in vis {
-        let i = &insns[u];
-        let ready = ready_of(insns, i).min(i.sel.unwrap_or(u64::MAX));
-        let tl: String = (0..tlcols).map(|col| stage_char(c0 + col as u64, i.disp, ready, i.sel, i.wb)).collect();
+    for &u in vis {
+        let i = &insns[u as usize];
+        let ready = ready_of(insns, i).min(opt(i.sel).unwrap_or(u64::MAX));
+        let tl: String =
+            (0..tlcols).map(|col| stage_char(c0 + col as u64, i.disp, ready, opt(i.sel), opt(i.wb))).collect();
         let mut dis = rvdisasm::disasm(i.insn, i.pc);
         dis.truncate(24);
         println!("{:>5} {:>3} {:>10x} {:<24} | {}", u, i.ckpid, i.pc, dis, tl);
@@ -678,7 +780,7 @@ fn print_time_bins(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64], 
 
 // Collapse millions of dynamic instructions into the few hot STATIC PCs, ranked by total
 // scheduler residency (DISPATCH->SELECT) contribution -- "which code costs the most cycles".
-fn print_pc_hotspots(uids: &[u64], insns: &HashMap<u64, Insn>, topn: usize) {
+fn print_pc_hotspots(uids: &[u32], insns: &[Insn], topn: usize) {
     struct Agg {
         cnt: u64,
         dep: u64,   // sum DISPATCH->READY
@@ -688,8 +790,8 @@ fn print_pc_hotspots(uids: &[u64], insns: &HashMap<u64, Insn>, topn: usize) {
     let mut m: HashMap<u64, Agg> = HashMap::new();
     let mut tot_resid = 0u64;
     for &uid in uids {
-        let i = &insns[&uid];
-        let sel = match i.sel {
+        let i = &insns[uid as usize];
+        let sel = match opt(i.sel) {
             Some(s) => s,
             None => continue,
         };
@@ -822,7 +924,7 @@ fn read_key() -> Key {
     }
 }
 
-fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
+fn interactive_mode(shown: &[u32], insns: &[Insn], stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
     if shown.is_empty() {
         eprintln!("perftool: no (non-squashed) instructions to show");
         return;
@@ -847,10 +949,10 @@ fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u
         let vis = &shown[start..end];
 
         let h = build_hists(vis, insns);
-        let wmin = vis.iter().map(|u| insns[u].disp).min().unwrap();
-        let wmax = vis.iter().map(|u| { let i = &insns[u]; i.wb.or(i.sel).unwrap_or(i.disp) }).max().unwrap();
+        let wmin = vis.iter().map(|&u| insns[u as usize].disp).min().unwrap();
+        let wmax = vis.iter().map(|&u| { let i = &insns[u as usize]; opt(i.wb).or(opt(i.sel)).unwrap_or(i.disp) }).max().unwrap();
         let wspan = (wmax - wmin + 1) as f64;
-        let nsel = vis.iter().filter(|u| insns[u].sel.is_some()).count();
+        let nsel = vis.iter().filter(|&&u| insns[u as usize].sel != NONE).count();
         let ipc = nsel as f64 / wspan;
         let (vd, _lever) = verdict(&h.dep, &h.wake, ipc);
 
