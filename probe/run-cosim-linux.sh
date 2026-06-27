@@ -30,10 +30,11 @@ STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time con
 
 [ -f "$SIMMERV_LIB" ] || (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
 
-# On macOS the simmerv static archive pulls in a vmnet shim; link the framework
-# (cargo's build.rs adds this for simmerv's own binaries, but a .a can't carry it).
-OSLIBS=
-[ "$(uname -s)" = Darwin ] && OSLIBS="-framework vmnet"
+# OS-specific link libs. Linux needs -ldl (dlopen) for the Rust static archive;
+# macOS has no libdl (dlopen is in libSystem) and instead needs the vmnet framework
+# the simmerv .a pulls in (cargo's build.rs adds it for simmerv's own binaries, but
+# a .a can't carry it).
+if [ "$(uname -s)" = Darwin ]; then OSLIBS="-framework vmnet"; else OSLIBS="-ldl"; fi
 
 # Decide whether to (re)build. The old check keyed ONLY on binary existence, so a
 # stale binary silently ran old RTL -- and MEM_LG2/VDEFS are compile-time -D's, so a
@@ -60,7 +61,7 @@ if [ "$need_build" = 1 ]; then
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC" \
-      -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $OSLIBS" \
+      -LDFLAGS "$SIMMERV_LIB -lpthread -lm $OSLIBS" \
       -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
       $srcs tb_cosim_linux.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp > /tmp/cosim_${NAME}_build.log 2>&1
