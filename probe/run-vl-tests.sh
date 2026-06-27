@@ -25,7 +25,7 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
    -I. -I../src --top-module tb --Mdir obj_dir_vl -o tb_vl \
-   $srcs tb_vl.v ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv \
+   $srcs tb_vl.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv \
    > /tmp/vlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/vlbuild.log; exit 1; fi
 BIN=$(pwd)/obj_dir_vl/tb_vl

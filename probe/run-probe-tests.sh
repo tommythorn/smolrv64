@@ -17,7 +17,7 @@ classes=("$@"); [ ${#classes[@]} -eq 0 ] && classes=(rv64ui-p)
 
 # compile harness once
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
-iverilog -g2012 -I. -I../src -s tb -o /tmp/probe_riscv.vvp $srcs tb_riscv.v ../src/alu.v || exit 1
+iverilog -g2012 -I. -I../src -s tb -o /tmp/probe_riscv.vvp $srcs tb_riscv.v ../src/alu.v ../src/smolrv64_sdpram.v || exit 1
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 pass=0; fail=0; to=0

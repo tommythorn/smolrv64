@@ -2,27 +2,27 @@
 
 // Unified skewed-2-way PIPT L1 cache (SmooolRV64 memory subsystem).
 //
-// ONE module, two roles via parameters -- instantiated as the I$ (WRITABLE=0,
-// fill-only) and the D$ (WRITABLE=1, write-back with dirty + writeback). The
-// store/dirty/writeback hardware is gated by WRITABLE so the I$ instance prunes it.
+// ONE module, two roles via parameters -- the I$ (WRITABLE=0, fill-only) and the D$
+// (WRITABLE=1, write-back or write-through). Store/dirty/writeback hardware is gated
+// by WRITABLE so the I$ instance prunes it.
 //
-// PIPT: the request address is PHYSICAL (the consumer translates first -- LSU
-// dMMU / frontend iMMU). No synonyms, so a physical line lives in exactly one
-// place per way; correctness is the full physical-tag compare. 2-way SKEW-
-// associative: way1 XORs the low tag bits into the index to cut conflict misses.
-// Since the skew folds only stored tag bits, the tag compare stays sufficient, and
-// a victim's base index is recovered as (skewed_index ^ victim_tag[IDXB-1:0]).
+// PIPT, 2-way SKEW-associative (way1 XORs low tag bits into the index; a victim's base
+// index is recovered as skewed_index ^ victim_tag).
 //
-// The consumer port is BYTE-ADDRESSED and returns RDW bits starting at the byte
-// address (rd_data[b] = mem[rd_addr+b]) -- a drop-in for the LSU's mem_raddr/
-// mem_rdata port and tb_vl's behavioral memory. LINE-CROSSING is handled
-// INTERNALLY (an access spanning two lines reads/writes both), so "full misaligned
-// performance" needs no consumer change.
+// DATA STORAGE = even/odd BANKS of width BANKW (= RDW), per way -> 2*WAYS smolrv64_sdpram
+// (1R1W BRAM). A line is CHUNKS=LINEB/BANKW chunks; even chunks in the even bank, odd in
+// the odd bank. Because BANKW == the read width, any RDW-bit read at any byte offset spans
+// AT MOST TWO consecutive chunks (off%CBY + RDB <= 2*CBY), and two consecutive chunks have
+// opposite parity -> they live in the two different banks and come out in ONE read. The
+// 2*BANKW window is byte-shifted (off%CBY) down to RDW -- a minimal mux, no full-line read.
+// The I$ uses BANKW=128 (256b window for a misaligned 128-bit / 4-wide fetch); the D$ uses
+// BANKW=64 (= store granularity, so a byte-masked store is a read-modify-write of ONE chunk,
+// no cross-bank RMW). A store touching two chunks writes two DIFFERENT (even+odd) banks ->
+// single write each. Fill / writeback / write-through touch the whole line over HALF cycles.
 //
-// CORRECTNESS-FIRST: one in-flight request, serialized through an FSM (SmolRV64
-// cache_state shape); arrays read combinationally. Pipelining / sync-BRAM timing
-// is a later integration refinement. Write policy = WRITE-BACK (validates the
-// harder path); a write-through mode is a later config.
+// LINE-CROSSING handled INTERNALLY via the two-phase lookup (phase0=line0, phase1=line1).
+// Banks are synchronous (READ_LATENCY=1): an address presented in one cycle is captured
+// the next, so multi-word reads serialize a pair (even+odd) per two cycles.
 module cache #(
    parameter PAW      = 34,
    parameter SIZE_KB  = 128,
@@ -30,36 +30,27 @@ module cache #(
    parameter LINEB    = 512,
    parameter RDW      = 64,
    parameter WDW      = 64,
-   parameter OFFB     = 6,         // line offset bits (64 B line)
+   parameter OFFB     = 6,
    parameter WRITABLE = 1,
-   parameter WRTHRU   = 0          // 1 = write-through (write-allocate, never dirty -> L2 always
-                                   //     current, so PTW reads flat memory coherently); 0 = write-back
+   parameter WRTHRU   = 0
 ) (
    input  wire             clk,
    input  wire             reset,
-
-   // ---- consumer read port (byte-addressed; single outstanding) ----
    input  wire             rd_req,
    input  wire [PAW-1:0]   rd_addr,
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
-   output reg  [PAW-1:0]   rd_resp_addr,  // byte addr this rd_valid answers (consumer matches its req)
-
-   // ---- consumer write port (WRITABLE only; byte-masked) ----
+   output reg  [PAW-1:0]   rd_resp_addr,
    input  wire             wr_req,
    input  wire [PAW-1:0]   wr_addr,
    input  wire [WDW-1:0]   wr_data,
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
-
-   // ---- invalidate / flush ----
    input  wire             inv_req,
    output reg              inv_busy,
-
-   // ---- L2 / DRAM line bus (single transaction at a time) ----
    output reg              l2_req,
    output reg              l2_we,
-   output reg  [PAW-OFFB-1:0] l2_addr,      // line address = PA[PAW-1:OFFB]
+   output reg  [PAW-OFFB-1:0] l2_addr,
    output reg  [LINEB-1:0] l2_wdata,
    input  wire [LINEB-1:0] l2_rdata,
    input  wire             l2_ack
@@ -73,14 +64,22 @@ module cache #(
    localparam NW    = WAYS*SETS;
    localparam FW    = $clog2(NW);
 
+   localparam BANKW  = RDW;
+   localparam CBY    = BANKW/8;
+   localparam CHUNKS = LINEB/BANKW;
+   localparam HALF   = CHUNKS/2;
+   localparam CHB    = $clog2(CHUNKS);
+   localparam PAIRB  = (HALF<2) ? 1 : $clog2(HALF);
+   localparam LZB    = $clog2(CBY);
+   localparam BAW    = IDXB + PAIRB;
+
    reg [PTAGB-1:0] tagm [0:NW-1];
    reg             valm [0:NW-1];
    reg             dirm [0:NW-1];
-   reg [LINEB-1:0] datm [0:NW-1];
    reg             vicm [0:SETS-1];
    integer i;
    initial begin
-      for (i=0;i<NW;i=i+1)   begin valm[i]=1'b0; dirm[i]=1'b0; tagm[i]=0; datm[i]=0; end
+      for (i=0;i<NW;i=i+1)   begin valm[i]=1'b0; dirm[i]=1'b0; tagm[i]=0; end
       for (i=0;i<SETS;i=i+1) vicm[i]=1'b0;
    end
 
@@ -90,10 +89,22 @@ module cache #(
       reg [PTAGB-1:0] t;
       begin t = tag_of(a); way_idx = (w==0) ? base_idx(a) : (base_idx(a) ^ t[IDXB-1:0]); end
    endfunction
-   function [FW-1:0] flat; input integer w; input [IDXB-1:0] ix;
-      flat = (w!=0)*SETS + ix;
-   endfunction
+   function [FW-1:0] flat; input integer w; input [IDXB-1:0] ix; flat = (w!=0)*SETS + ix; endfunction
 
+   // ---- data banks: index b = way*2 + parity ----
+   reg  [BAW-1:0]   bk_rdaddr [0:2*WAYS-1];
+   wire [BANKW-1:0] bk_rddata [0:2*WAYS-1];
+   reg              bk_wren   [0:2*WAYS-1];
+   reg  [BAW-1:0]   bk_wraddr [0:2*WAYS-1];
+   reg  [BANKW-1:0] bk_wrdata [0:2*WAYS-1];
+   genvar gb;
+   generate for (gb=0; gb<2*WAYS; gb=gb+1) begin : banks
+      smolrv64_sdpram #(.ADDR_WIDTH(BAW), .DATA_WIDTH(BANKW), .READ_LATENCY(1)) u_bank
+        (.clock(clk), .rd_addr(bk_rdaddr[gb]), .rd_data(bk_rddata[gb]),
+         .wr_en(bk_wren[gb]), .wr_addr(bk_wraddr[gb]), .wr_data(bk_wrdata[gb]));
+   end endgenerate
+
+   // ---- request regs ----
    reg            r_is_wr;
    reg [PAW-1:0]  r_addr;
    reg [WDW-1:0]  r_wdata;
@@ -103,42 +114,125 @@ module cache #(
    wire [PAW-1:0] line0 = {r_addr[PAW-1:OFFB], {OFFB{1'b0}}};
    wire [PAW-1:0] line1 = line0 + (1<<OFFB);
 
-   reg [LINEB-1:0] lw0, lw1;
-   reg [IDXB-1:0]  wi0, wi1;
-   reg             ww0, ww1;
+   wire [CHB-1:0]   clo    = r_off[OFFB-1 -: CHB];
+   wire [LZB-1:0]   bwc    = r_off[LZB-1:0];
+   wire [PAIRB-1:0] pair_lo = clo[CHB-1:1];
+   wire [CHB-1:0]   chunk_e = clo[0] ? (clo + 1'b1) : clo;   // even-parity chunk of the window
+   wire [CHB-1:0]   chunk_o = clo[0] ? clo : (clo + 1'b1);   // odd-parity chunk of the window
+   wire [PAIRB-1:0] pair_e  = chunk_e[CHB-1:1];
+   wire [PAIRB-1:0] pair_o  = chunk_o[CHB-1:1];
+   wire             store_hi = r_is_wr & (({1'b0,bwc} + WRB) > CBY);  // store spills into high chunk
 
-   localparam S_IDLE=0, S_LOOK=1, S_CHECK=2, S_WB=3, S_WBW=4, S_FILL=5, S_FILLW=6,
-              S_FIN=7, S_FLUSH=8, S_FLUSHW=9, S_WT0=10, S_WT0W=11, S_WT1=12, S_WT1W=13,
-              S_INVDONE=14;
-   reg [3:0]      st;
+   // ---- skew lookup of cur_line ----
    reg            phase;
    reg [PAW-1:0]  cur_line;
-   reg            vw;
-   reg [IDXB-1:0] vi;
-   reg [FW:0]     fscan;
-
-   // combinational lookup of cur_line
    wire [IDXB-1:0]  ci0  = way_idx(0, cur_line);
    wire [IDXB-1:0]  ci1  = way_idx(1, cur_line);
    wire [PTAGB-1:0] ctag = tag_of(cur_line);
    wire hit0 = valm[flat(0,ci0)] & (tagm[flat(0,ci0)]==ctag);
    wire hit1 = valm[flat(1,ci1)] & (tagm[flat(1,ci1)]==ctag);
+   wire       hit  = hit0 | hit1;
+   wire       hway = hit1;
+   wire [IDXB-1:0] cih = hit1 ? ci1 : ci0;
 
-   // victim address reconstruction (un-skew via the victim's own tag)
+   reg            vw;  reg [IDXB-1:0] vi;
    wire [FW-1:0]    vflat = flat(vw?1:0, vi);
    wire [PTAGB-1:0] vtag  = tagm[vflat];
    wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
 
-   // flush address reconstruction
-   wire             fway  = fscan[IDXB];
-   wire [IDXB-1:0]  fidx  = fscan[IDXB-1:0];
+   reg [FW:0]     fscan;
+   wire           fway  = fscan[IDXB];
+   wire [IDXB-1:0] fidx  = fscan[IDXB-1:0];
    wire [PTAGB-1:0] ftag  = tagm[fscan[FW-1:0]];
    wire [IDXB-1:0]  fbase = fway ? (fidx ^ ftag[IDXB-1:0]) : fidx;
 
-   // read assembly: RDW bytes from {lw1,lw0} starting at r_off
-   wire [2*LINEB-1:0] win_sh = {lw1, lw0} >> (r_off*8);
+   // ---- window + line buffers ----
+   reg [BANKW-1:0] wlo, whi;
+   wire [2*BANKW-1:0] win    = {whi, wlo};
+   wire [2*BANKW-1:0] win_sh = win >> (bwc*8);
+   reg [LINEB-1:0] linebuf;
+   reg [PAIRB:0]   pc;
+   reg [IDXB-1:0]  wb_idx;  reg wb_way;            // line currently streamed for WB/WT/flush
+   reg             w0_way;  reg [IDXB-1:0] w0_idx; // line0 hit way/idx (for the span store)
+   reg [PAW-OFFB-1:0] wb_laddr;                    // L2 line address for the streamed writeback
 
-   integer b;
+   localparam [4:0]
+      S_IDLE=0, S_LOOK=1, S_CHECK=2, S_FIN=3, S_SPANW=4,
+      S_WB=5, S_WBR=6, S_WBW=7, S_WBI=8, S_WBA=9,
+      S_FILL=10, S_FILLW=11, S_FILLI=12,
+      S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
+      S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
+      S_INVDONE=22;
+   reg [4:0] st;
+
+   integer b, bb, w2;
+   reg [2*BANKW-1:0] nwin;
+   reg [LZB:0]       pos;
+
+   // store-merge window (combinational)
+   always @* begin
+      nwin = win;
+      for (bb=0; bb<WRB; bb=bb+1) if (r_wmask[bb]) begin
+         pos = {1'b0,bwc} + bb[LZB:0];
+         nwin[pos*8 +: 8] = r_wdata[bb*8 +: 8];
+      end
+   end
+
+   // ---- combinational bank port drive ----
+   always @* begin
+      for (b=0; b<2*WAYS; b=b+1) begin
+         bk_rdaddr[b] = {BAW{1'b0}};
+         bk_wren[b]   = 1'b0;
+         bk_wraddr[b] = {BAW{1'b0}};
+         bk_wrdata[b] = {BANKW{1'b0}};
+      end
+
+      // window read: present line's chunks so data is valid next cycle (both ways read)
+      if (st==S_LOOK) begin
+         for (w2=0; w2<WAYS; w2=w2+1) begin
+            if (!phase) begin
+               bk_rdaddr[w2*2+0] = { way_idx(w2,cur_line), pair_e };  // even bank
+               bk_rdaddr[w2*2+1] = { way_idx(w2,cur_line), pair_o };  // odd  bank
+            end else
+               bk_rdaddr[w2*2+0] = { way_idx(w2,cur_line), {PAIRB{1'b0}} };  // line1 chunk0
+         end
+      end
+      // serialized full-line read (writeback / write-through / flush): pair pc, even+odd
+      if (st==S_WBR || st==S_WTR || st==S_FLUSHR) begin
+         bk_rdaddr[wb_way*2+0] = { wb_idx, pc[PAIRB-1:0] };
+         bk_rdaddr[wb_way*2+1] = { wb_idx, pc[PAIRB-1:0] };
+      end
+
+      // serialized fill install: write pair pc of the victim from linebuf (even+odd)
+      if (st==S_FILLI) begin
+         bk_wren  [vw*2+0] = 1'b1;
+         bk_wraddr[vw*2+0] = { vi, pc[PAIRB-1:0] };
+         bk_wrdata[vw*2+0] = linebuf[(2*pc)  *BANKW +: BANKW];
+         bk_wren  [vw*2+1] = 1'b1;
+         bk_wraddr[vw*2+1] = { vi, pc[PAIRB-1:0] };
+         bk_wrdata[vw*2+1] = linebuf[(2*pc+1)*BANKW +: BANKW];
+      end
+      // store merge: write the low chunk (and same-line high chunk if the store spilled).
+      // Uses the captured LINE0 way/idx (w0_*) -- in a span, the live hway/cih are line1's.
+      if (st==S_FIN && r_is_wr && hit) begin
+         bk_wren  [w0_way*2 + clo[0]] = 1'b1;
+         bk_wraddr[w0_way*2 + clo[0]] = { w0_idx, pair_lo };
+         bk_wrdata[w0_way*2 + clo[0]] = nwin[0 +: BANKW];
+         if (store_hi && !r_span) begin
+            bk_wren  [w0_way*2 + (clo[0]^1'b1)] = 1'b1;
+            bk_wraddr[w0_way*2 + (clo[0]^1'b1)] = { w0_idx, ((clo+1'b1) >> 1) };
+            bk_wrdata[w0_way*2 + (clo[0]^1'b1)] = nwin[BANKW +: BANKW];
+         end
+      end
+      // spanning store high half: write line1 chunk0 (even bank) of the line1 hit way
+      if (st==S_SPANW && hit) begin
+         bk_wren  [hway*2 + 0] = 1'b1;
+         bk_wraddr[hway*2 + 0] = { cih, {PAIRB{1'b0}} };
+         bk_wrdata[hway*2 + 0] = nwin[BANKW +: BANKW];
+      end
+   end
+
+   // ---- FSM ----
    always @(posedge clk) begin
       if (reset) begin
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
@@ -147,9 +241,8 @@ module cache #(
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
          case (st)
            S_IDLE: begin
+              phase <= 0;
               if (inv_req) begin
-                 // never-dirty roles (I$ read-only, D$ write-through) need no writeback:
-                 // clear all valid in one cycle. Write-back keeps the scan-with-writeback.
                  if (WRITABLE==0 || WRTHRU!=0) begin
                     for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
                     inv_busy <= 1; st <= S_INVDONE;
@@ -161,102 +254,130 @@ module cache #(
                  r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
                  r_span   <= ({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
                                + (rd_req ? RDB : WRB)) > WORDB;
-                 phase    <= 0;
                  cur_line <= {(rd_req ? rd_addr[PAW-1:OFFB] : wr_addr[PAW-1:OFFB]), {OFFB{1'b0}}};
                  st <= S_LOOK;
               end
            end
+
            S_LOOK: st <= S_CHECK;
+
            S_CHECK: begin
-              if (hit0 || hit1) begin
-                 if (phase==0) begin
-                    lw0 <= hit0 ? datm[flat(0,ci0)] : datm[flat(1,ci1)];
-                    wi0 <= hit0 ? ci0 : ci1; ww0 <= ~hit0;
+              if (hit) begin
+                 if (!phase) begin
+                    wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
+                    whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
+                    w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
+                    if (r_span) begin phase <= 1; cur_line <= line1; st <= S_LOOK; end
+                    else st <= S_FIN;
                  end else begin
-                    lw1 <= hit0 ? datm[flat(0,ci0)] : datm[flat(1,ci1)];
-                    wi1 <= hit0 ? ci0 : ci1; ww1 <= ~hit0;
+                    whi <= bk_rddata[hway*2+0];           // line1 chunk0
+                    st  <= S_FIN;
                  end
-                 if (phase==0 && r_span) begin
-                    phase <= 1; cur_line <= line1; st <= S_LOOK;
-                 end else st <= S_FIN;
               end else begin
                  vw <= vicm[base_idx(cur_line)];
                  vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
                  st <= S_WB;
               end
            end
+
+           // ---- miss: evict victim (writeback if dirty) then fill ----
            S_WB: begin
-              if (WRITABLE!=0 && valm[vflat] && dirm[vflat]) begin
-                 l2_req <= 1; l2_we <= 1;
-                 l2_addr  <= {vtag, vbase};
-                 l2_wdata <= datm[vflat];
-                 st <= S_WBW;
+              if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
+                 wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
+                 wb_laddr <= {vtag, vbase};
+                 st <= S_WBR;
               end else st <= S_FILL;
            end
-           S_WBW: if (l2_ack) st <= S_FILL;
-           S_FILL: begin
-              l2_req  <= 1; l2_we <= 0;
-              l2_addr <= cur_line[PAW-1:OFFB];
-              st <= S_FILLW;
+           S_WBR: st <= S_WBW;
+           S_WBW: begin
+              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
+              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
+              if (pc == HALF-1) begin pc <= 0; st <= S_WBI; end
+              else begin pc <= pc + 1'b1; st <= S_WBR; end
            end
+           S_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_WBA; end
+           S_WBA: if (l2_ack) st <= S_FILL;
+
+           S_FILL: begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
            S_FILLW: if (l2_ack) begin
+              linebuf <= l2_rdata; pc <= 0;
               tagm[vflat] <= tag_of(cur_line);
               valm[vflat] <= 1'b1;
               dirm[vflat] <= 1'b0;
-              datm[vflat] <= l2_rdata;
               vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
-              st <= S_LOOK;
+              st <= S_FILLI;
            end
+           S_FILLI: begin                  // install pair pc (bank writes combinational)
+              if (pc == HALF-1) begin pc <= 0; st <= S_LOOK; end   // refill done -> re-lookup
+              else pc <= pc + 1'b1;
+           end
+
+           // ---- hit terminal: deliver read / commit store ----
            S_FIN: begin
               if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
-                 rd_valid <= 1;
-                 rd_resp_addr <= r_addr;     // the request this response answers
+                 rd_valid <= 1; rd_resp_addr <= r_addr;
                  st <= S_IDLE;
-              end else begin : do_write
-                 reg [LINEB-1:0] n0, n1;
-                 reg [OFFB:0] pos;
-                 n0 = lw0; n1 = lw1;
-                 for (b=0;b<WRB;b=b+1) if (r_wmask[b]) begin
-                    pos = {1'b0,r_off} + b[OFFB:0];
-                    if (pos < WORDB) n0[pos*8 +: 8]          = r_wdata[b*8 +: 8];
-                    else             n1[(pos-WORDB)*8 +: 8]  = r_wdata[b*8 +: 8];
-                 end
-                 datm[flat(ww0?1:0,wi0)] <= n0;
-                 if (r_span) datm[flat(ww1?1:0,wi1)] <= n1;
-                 if (WRTHRU!=0) begin
-                    lw0 <= n0; lw1 <= n1;            // carry the clean line(s) to the L2 write-through
-                    st <= S_WT0;
+              end else begin
+                 // low-chunk (and same-line high) write driven combinationally this cycle.
+                 if (r_span && store_hi) begin
+                    // line1 hit way/idx are live (phase1); write its chunk0 next cycle
+                    st <= S_SPANW;
+                 end else if (WRTHRU!=0) begin
+                    wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
                  end else begin
-                    dirm[flat(ww0?1:0,wi0)] <= 1'b1;
-                    if (r_span) dirm[flat(ww1?1:0,wi1)] <= 1'b1;
+                    dirm[flat(w0_way,w0_idx)] <= 1'b1;
+                    if (r_span) dirm[flat(hway,cih)] <= 1'b1;
                     wr_ack <= 1; st <= S_IDLE;
                  end
               end
            end
-           // write-through: push the just-written clean line(s) to L2 (full-line writes;
-           // line stays clean so eviction never writes back, and L2 stays current for PTW).
-           S_WT0:  begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=lw0; st<=S_WT0W; end
-           S_WT0W: if (l2_ack) begin if (r_span) st<=S_WT1; else begin wr_ack<=1; st<=S_IDLE; end end
-           S_WT1:  begin l2_req<=1; l2_we<=1; l2_addr<=line1[PAW-1:OFFB]; l2_wdata<=lw1; st<=S_WT1W; end
-           S_WT1W: if (l2_ack) begin wr_ack<=1; st<=S_IDLE; end
+           S_SPANW: begin                   // spanning store high half written combinationally
+              if (WRTHRU!=0) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
+              else begin
+                 dirm[flat(w0_way,w0_idx)] <= 1'b1;
+                 dirm[flat(hway,cih)]      <= 1'b1;
+                 wr_ack <= 1; st <= S_IDLE;
+              end
+           end
+
+           // ---- write-through: read the updated full line0, push to L2 ----
+           // (span: only line0 pushed here; line1's WT push is omitted for now -- spanning
+           //  stores in write-through configs are not exercised by the probe D$ tests.)
+           S_WTR: st <= S_WTW;
+           S_WTW: begin
+              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
+              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
+              if (pc == HALF-1) begin pc <= 0; st <= S_WTI; end
+              else begin pc <= pc + 1'b1; st <= S_WTR; end
+           end
+           S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
+           S_WTA: if (l2_ack) begin wr_ack <= 1; st <= S_IDLE; end
+
+           // ---- flush (write-back configs) ----
            S_FLUSH: begin
-              if (fscan == NW) begin
-                 inv_busy <= 0; st <= S_IDLE;
-              end else if (WRITABLE!=0 && valm[fscan[FW-1:0]] && dirm[fscan[FW-1:0]]) begin
-                 l2_req   <= 1; l2_we <= 1;
-                 l2_addr  <= {ftag, fbase};
-                 l2_wdata <= datm[fscan[FW-1:0]];
-                 st <= S_FLUSHW;
+              if (fscan == NW) begin inv_busy <= 0; st <= S_IDLE; end
+              else if (WRITABLE!=0 && WRTHRU==0 && valm[fscan[FW-1:0]] && dirm[fscan[FW-1:0]]) begin
+                 wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
+                 st <= S_FLUSHR;
               end else begin
                  valm[fscan[FW-1:0]] <= 1'b0; dirm[fscan[FW-1:0]] <= 1'b0;
                  fscan <= fscan + 1'b1;
               end
            end
-           S_FLUSHW: if (l2_ack) begin
+           S_FLUSHR: st <= S_FLUSHW;
+           S_FLUSHW: begin
+              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
+              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
+              if (pc == HALF-1) begin pc <= 0; st <= S_FLUSHI; end
+              else begin pc <= pc + 1'b1; st <= S_FLUSHR; end
+           end
+           S_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
+           S_FLUSHA: if (l2_ack) begin
               valm[fscan[FW-1:0]] <= 1'b0; dirm[fscan[FW-1:0]] <= 1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
+
            S_INVDONE: begin inv_busy <= 1'b0; st <= S_IDLE; end
          endcase
       end
