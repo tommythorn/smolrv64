@@ -109,6 +109,21 @@ module rk_xcku5p(
       .O  (fpu_clk)
    );
 
+`ifdef PROBE_CORE
+   // Sharded-OoO probe core: modest-clock bring-up on a divided ui_clk (the integrated
+   // core's placed Fmax is ~67 MHz, so /8 ~= 41.7 MHz is a safe first close). The ddr_*
+   // line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc. Synchronous
+   // divide keeps probe_clk phase-related to ui_clk.
+   wire probe_clk;
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(8)) probe_clk_buf
+      (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
+   (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
+   always @(posedge probe_clk or posedge ui_cpu_reset)
+      if (ui_cpu_reset) probe_reset_sync <= 2'b11;
+      else              probe_reset_sync <= {probe_reset_sync[0], 1'b0};
+   wire probe_reset = probe_reset_sync[1];
+`endif
+
    wire         dbg_clk;
    wire [511:0] dbg_bus;
    wire         c0_ddr4_reset_n_int;
@@ -1281,6 +1296,7 @@ module rk_xcku5p(
    end
    endgenerate
 
+`ifndef PROBE_CORE
    smolrv64 smolrv64_inst(
       .clock                (core_clk),
       .mem_clock            (ui_clk),
@@ -1354,6 +1370,67 @@ module rk_xcku5p(
      (.clk(core_clk), .rst_n(~cpu_reset),
       .data(rx_data), .valid(rx_valid), .ready(1'b1),
       .rxd(rxd), .overflow());
+`else
+   // ===================== Sharded-OoO probe core (PROBE_CORE) =====================
+   // soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its 512-bit
+   // line port -> ddr_line_cdc -> ddr_line_axi -> the existing core_axi_* arbiter input
+   // (unchanged MIG path). virtio/ethernet/MMIO-bridge stay but idle (trimmed DTB).
+   wire        pddr_req, pddr_we;  wire [57:0] pddr_addr;  wire [511:0] pddr_wdata, pddr_rdata;  wire pddr_ack;
+   wire        mddr_req, mddr_we;  wire [57:0] mddr_addr;  wire [511:0] mddr_wdata, mddr_rdata;  wire mddr_ack;
+   wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
+   wire        prx_valid;  wire [7:0] prx_data;
+
+   soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
+      .clk(probe_clk), .reset(probe_reset),
+      .commit(), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
+      .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
+      .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
+      .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
+      .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready));
+
+   ddr_line_cdc probe_cdc (
+      .clk_p(probe_clk), .reset_p(probe_reset),
+      .p_req(pddr_req), .p_we(pddr_we), .p_addr(pddr_addr), .p_wdata(pddr_wdata),
+      .p_rdata(pddr_rdata), .p_ack(pddr_ack),
+      .clk_m(ui_clk), .reset_m(ui_cpu_reset),
+      .m_req(mddr_req), .m_we(mddr_we), .m_addr(mddr_addr), .m_wdata(mddr_wdata),
+      .m_rdata(mddr_rdata), .m_ack(mddr_ack));
+
+   ddr_line_axi probe_bridge (
+      .clk(ui_clk), .reset(ui_cpu_reset),
+      .ddr_req(mddr_req), .ddr_we(mddr_we), .ddr_addr(mddr_addr), .ddr_wdata(mddr_wdata),
+      .ddr_rdata(mddr_rdata), .ddr_ack(mddr_ack),
+      .m_axi_awid(core_axi_awid), .m_axi_awaddr(core_axi_awaddr), .m_axi_awlen(core_axi_awlen),
+      .m_axi_awsize(core_axi_awsize), .m_axi_awburst(core_axi_awburst), .m_axi_awlock(core_axi_awlock),
+      .m_axi_awcache(core_axi_awcache), .m_axi_awprot(core_axi_awprot), .m_axi_awqos(core_axi_awqos),
+      .m_axi_awvalid(core_axi_awvalid), .m_axi_awready(core_axi_awready),
+      .m_axi_wdata(core_axi_wdata), .m_axi_wstrb(core_axi_wstrb), .m_axi_wlast(core_axi_wlast),
+      .m_axi_wvalid(core_axi_wvalid), .m_axi_wready(core_axi_wready),
+      .m_axi_bid(core_axi_bid), .m_axi_bresp(core_axi_bresp), .m_axi_bvalid(core_axi_bvalid),
+      .m_axi_bready(core_axi_bready),
+      .m_axi_arid(core_axi_arid), .m_axi_araddr(core_axi_araddr), .m_axi_arlen(core_axi_arlen),
+      .m_axi_arsize(core_axi_arsize), .m_axi_arburst(core_axi_arburst), .m_axi_arlock(core_axi_arlock),
+      .m_axi_arcache(core_axi_arcache), .m_axi_arprot(core_axi_arprot), .m_axi_arqos(core_axi_arqos),
+      .m_axi_arvalid(core_axi_arvalid), .m_axi_arready(core_axi_arready),
+      .m_axi_rid(core_axi_rid), .m_axi_rdata(core_axi_rdata), .m_axi_rresp(core_axi_rresp),
+      .m_axi_rlast(core_axi_rlast), .m_axi_rvalid(core_axi_rvalid), .m_axi_rready(core_axi_rready));
+
+   // UART at probe_clk. 41.67 MHz / 115200 = 361.7 (~0.05% error); host: screen $TTY 115200.
+   // rs232tx.ready (output, ready-to-accept) feeds soc_top.uart_tx_ready directly.
+   rs232tx #(.CLK_FREQ(41_666_666), .BAUD(115200)) probe_tx
+     (.clk(probe_clk), .rst_n(~probe_reset),
+      .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
+   rs232rx #(.CLK_FREQ(41_666_666), .BAUD(115200)) probe_rx
+     (.clk(probe_clk), .rst_n(~probe_reset),
+      .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
+
+   // virtio/MMIO bridge is unused under PROBE_CORE: tie its core-side inputs idle.
+   assign core_mmio_address    = 20'd0;
+   assign core_mmio_read       = 1'b0;
+   assign core_mmio_write      = 1'b0;
+   assign core_mmio_writedata  = 32'd0;
+   assign core_mmio_byteenable = 4'd0;
+`endif
 endmodule
 
 module smolrv64_mmio_clock_bridge(

@@ -15,6 +15,12 @@ ifneq ($(strip $(PC_TRACE)),)
 export PC_TRACE
 endif
 
+# Optional: PROBE_CORE=1 swaps the scalar smolrv64 for the sharded-OoO probe core
+# (soc_top + DDR line/AXI bridge) via the `PROBE_CORE ifdef in rk_xcku5p.v.
+ifneq ($(strip $(PROBE_CORE)),)
+export PROBE_CORE
+endif
+
 .PHONY: all synth impl bit program load clean timing
 
 all: bit

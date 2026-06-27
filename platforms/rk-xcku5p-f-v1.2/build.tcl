@@ -11,9 +11,18 @@ foreach arg $argv {
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
+set probe_dir [file join $repo_root probe]
 set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
+
+# PROBE_CORE=1 swaps the scalar smolrv64 for the sharded-OoO probe core (soc_top +
+# DDR line/AXI bridge), gated by the `PROBE_CORE ifdef in rk_xcku5p.v.
+set probe_core 0
+if {[info exists env(PROBE_CORE)] && $env(PROBE_CORE) ne "" && $env(PROBE_CORE) ne "0"} {
+    set probe_core 1
+    puts "PROBE_CORE build: sharded-OoO core (soc_top) instead of smolrv64."
+}
 puts "Opening project: $xpr"
 open_project $xpr
 
@@ -115,6 +124,31 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     update_compile_order -fileset $fileset
 }
 
+# Add the sharded-OoO probe core RTL (soc_top + dependency set) to the fileset.
+# Mirrors the OOC source list: all probe/*.v except testbenches, cosim-only files,
+# flopwrap.v and rf_alu.v. fp_unit_synth.sv is the synth-clean FP tie-off (real
+# CVFPU is deferred — task 23). ddr_line_axi/cdc + smolrv64_sdpram come from src/.
+proc configure_probe_sources {repo_root src_dir probe_dir} {
+    set fileset [current_fileset]
+    foreach f [lsort [glob -nocomplain [file join $probe_dir *.v]]] {
+        set b [file tail $f]
+        if {[regexp {^tb_} $b]} continue
+        if {[string match *probe* $b]} continue
+        if {$b eq "flopwrap.v"} continue
+        if {$b eq "rf_alu.v"} continue
+        add_source_if_missing $fileset $f Verilog
+    }
+    add_source_if_missing $fileset [file join $probe_dir fp_unit_synth.sv] SystemVerilog
+    add_source_if_missing $fileset [file join $src_dir ddr_line_axi.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir ddr_line_cdc.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir smolrv64_sdpram.v] Verilog
+    # alu_ops.vh / smolrv64_fp_ops.vh live in src/; the probe set `include`s them
+    # with bare names, so both probe/ and src/ must be on the include path.
+    add_unique_property_value $fileset include_dirs [file normalize $probe_dir]
+    add_unique_property_value $fileset include_dirs [file normalize $src_dir]
+    update_compile_order -fileset $fileset
+}
+
 # Helper: launch a run only if it needs work
 proc run_if_needed {run_id to_step jobs} {
     global force
@@ -139,18 +173,30 @@ proc run_if_needed {run_id to_step jobs} {
 }
 
 # Set SRAM base to 0x70000000 for this platform (below the DDR4 range at 0x80000000)
-foreach image [list $sram_even $sram_odd] {
-    if {![file exists $image]} {
-        error "SRAM init file missing: $image\nRun 'make load' or build the workload images first."
+set vdefines [list "MEM_BASEADDR=64'h70000000"]
+if {$probe_core} {
+    # The probe boots its monitor from on-chip SRAM (lmem, 512-bit lines). Bake the
+    # monitor binary into BRAM via $readmemh of a 64-byte-per-line hex (SOC_BOOT_HEX).
+    set monitor_bin [file join $repo_root workloads monitor monitor.bin]
+    set boot_hex    [file join $src_dir mem.linehex]
+    if {![file exists $monitor_bin]} {
+        error "Monitor binary missing: $monitor_bin\nRun 'make -C workloads/monitor' first."
     }
+    puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
+    exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
+    lappend vdefines "PROBE_CORE"
+    lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
+} else {
+    foreach image [list $sram_even $sram_odd] {
+        if {![file exists $image]} {
+            error "SRAM init file missing: $image\nRun 'make load' or build the workload images first."
+        }
+    }
+    puts "SRAM init even: $sram_even"
+    puts "SRAM init odd:  $sram_odd"
+    lappend vdefines [format {SRAM_EVENHEX="%s"} $sram_even]
+    lappend vdefines [format {SRAM_ODDHEX="%s"} $sram_odd]
 }
-puts "SRAM init even: $sram_even"
-puts "SRAM init odd:  $sram_odd"
-
-set vdefines [list \
-    "MEM_BASEADDR=64'h70000000" \
-    [format {SRAM_EVENHEX="%s"} $sram_even] \
-    [format {SRAM_ODDHEX="%s"} $sram_odd]]
 set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]
 puts "Build stamp: $build_stamp"
 lappend vdefines "SMOLRV64_BUILD_STAMP=64'h$build_stamp"
@@ -175,6 +221,9 @@ if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir
+if {$probe_core} {
+    configure_probe_sources $repo_root $src_dir $probe_dir
+}
 
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {
