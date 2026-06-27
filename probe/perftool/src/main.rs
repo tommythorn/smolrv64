@@ -21,12 +21,16 @@ const KIND_SQUASH: u8 = 5;
 const HELP: &str = r#"perftool -- sharded-OoO performance event trace analyzer
 
 USAGE
-    perftool <trace.bin> [--waterfall N] [--help]
+    perftool <trace.bin> [--waterfall N] [--pipeview N] [--help]
 
     <trace.bin>     binary trace from a -DPERF_TRACE build (perf_trace.cpp).
                     Produce one with:  PERF_TRACE=1 ./run-vl-tests.sh <test>
                     (output path = $PERF_TRACE_OUT, default /tmp/perf_trace.bin)
     --waterfall N   dump the first N dispatched instructions' lifecycle + disasm
+    --pipeview N    per-cycle pipeline view (konata/O3PipeView style) of the first N,
+                    all rows on a shared cycle axis so overlap/stalls are visible:
+                      D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback
+                    Read down a column to see what every instruction is doing that cycle.
     --help          this text
 
 THE INSTRUCTION TIMELINE
@@ -164,6 +168,10 @@ fn main() {
     if let Some(p) = args.iter().position(|a| a == "--waterfall") {
         waterfall = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
     }
+    let mut pipeview = 0usize;
+    if let Some(p) = args.iter().position(|a| a == "--pipeview") {
+        pipeview = args.get(p + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
+    }
 
     let data = std::fs::read(path).unwrap_or_else(|e| {
         eprintln!("perftool: cannot read {path}: {e}");
@@ -292,6 +300,98 @@ fn main() {
             let v = i.wbval.map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
             println!("{:>6} {:>4} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.seqno, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
         }
+    }
+
+    if pipeview > 0 {
+        render_pipeview(&order, &insns, pipeview);
+    }
+}
+
+fn ready_of(insns: &HashMap<u64, Insn>, i: &Insn) -> u64 {
+    let wbc = |p: Option<u64>| -> u64 { p.and_then(|u| insns.get(&u)).and_then(|pi| pi.wb).unwrap_or(0) };
+    i.disp.max(wbc(i.prod1)).max(wbc(i.prod2))
+}
+
+// One character for what instruction (disp/ready/sel/wb) is doing at cycle c.
+fn stage_char(c: u64, disp: u64, ready: u64, sel: Option<u64>, wb: Option<u64>) -> char {
+    if c < disp {
+        return ' ';
+    }
+    if c == disp {
+        return 'D';
+    }
+    match sel {
+        Some(s) => {
+            if c < s {
+                if c < ready {
+                    '='
+                } else {
+                    '-'
+                }
+            } else if c == s {
+                'i'
+            } else {
+                match wb {
+                    Some(w) if c < w => 'e',
+                    Some(w) if c == w => 'w',
+                    // no writeback event (jump/branch/store, or wb past window): stop at issue
+                    _ => ' ',
+                }
+            }
+        }
+        None => {
+            if c < ready {
+                '='
+            } else {
+                '-'
+            }
+        }
+    }
+}
+
+// konata/O3PipeView-style per-cycle view: one row per instruction, all on a shared
+// cycle axis (origin = earliest dispatch), so a vertical column is one cycle across
+// all instructions -- overlap and stalls read off directly.
+fn render_pipeview(order: &[u64], insns: &HashMap<u64, Insn>, n: usize) {
+    let shown: Vec<u64> = order.iter().take(n).copied().collect();
+    if shown.is_empty() {
+        return;
+    }
+    let c0 = shown.iter().map(|u| insns[u].disp).min().unwrap();
+    let c1 = shown
+        .iter()
+        .map(|u| {
+            let i = &insns[u];
+            i.wb.or(i.sel).unwrap_or(i.disp)
+        })
+        .max()
+        .unwrap();
+    let span = (c1 - c0) as usize;
+    const LEFTW: usize = 48; // must match the row prefix format below
+
+    println!("\n=== pipeview (first {} dispatched), cycles {}..{} ===", shown.len(), c0, c1);
+    println!("legend: D=dispatch  ==dep-stall  -=issue-wait  i=issue  e=execute  w=writeback");
+
+    // cycle ruler: the cycle number written every 10 columns
+    let mut ruler = vec![b' '; span + 1];
+    for col in 0..=span {
+        if (c0 + col as u64) % 10 == 0 {
+            for (k, ch) in (c0 + col as u64).to_string().bytes().enumerate() {
+                if col + k < ruler.len() {
+                    ruler[col + k] = ch;
+                }
+            }
+        }
+    }
+    println!("{}{}", " ".repeat(LEFTW), String::from_utf8(ruler).unwrap());
+
+    for u in &shown {
+        let i = &insns[u];
+        let ready = ready_of(insns, i).min(i.sel.unwrap_or(u64::MAX));
+        let tl: String = (0..=span).map(|col| stage_char(c0 + col as u64, i.disp, ready, i.sel, i.wb)).collect();
+        let mut dis = rvdisasm::disasm(i.insn, i.pc);
+        dis.truncate(24);
+        println!("{:>5} {:>3} {:>10x} {:<24} | {}", u, i.seqno, i.pc, dis, tl);
     }
 }
 
