@@ -20,6 +20,10 @@ const KIND_SEL: u8 = 2;
 const KIND_WB: u8 = 3;
 const KIND_COMMIT: u8 = 4;
 const KIND_SQUASH: u8 = 5;
+const KIND_STALL: u8 = 6;
+// dispatch-stall reason bits (mask in the STALL record's seqno field; see backend_top.v)
+const STALL_LABELS: [&str; 7] =
+    ["checkpoints", "free-regs", "scheduler", "store-buf", "load-queue", "fault", "redirect"];
 
 const HELP: &str = r#"perftool -- sharded-OoO performance event trace analyzer
 
@@ -89,6 +93,25 @@ CAVEATS (step-1 model)
       for now low throughput + everything-at-0 is the frontend-starved tell.
     * On trap-heavy microtests the first ~hundreds of cycles are boot/CSR setup
       (squashes, seqno reuse); skip them with PERF_TRACE_WIN for steady-state numbers.
+
+CYCLE ACCOUNTING ("why aren't we dispatching?")
+    A top-down split of EVERY cycle in the window into one of three states:
+        dispatch        a bundle was dispatched this cycle (forward progress)
+        stall           a bundle was READY at the front but back-pressured (can't
+                        dispatch) -- the interesting bucket; see reasons below
+        frontend-empty  nothing was ready to dispatch (fetch bubble, redirect
+                        refetch, decode gap) -- a FRONTEND problem, not backend
+    When stalled, the hardware reports WHICH structure is full (a cycle can have
+    several at once, so reason %s may sum past the stall %):
+        checkpoints   out of CPR checkpoints (NCHK=4) -- too few in-flight branches
+        free-regs     physical register freelist empty
+        scheduler     issue queue won't accept the bundle (RS entries full)
+        store-buf     store buffer full
+        load-queue    load queue full
+        fault         dispatch frozen on a pending fault/replay
+        redirect      branch/exception redirect in flight (frontend re-steering)
+    This is the direct answer to "are we blocked on checkpoints vs free registers
+    vs something else?". In --interactive the split is window-local (current view).
 "#;
 
 #[derive(Default)]
@@ -212,6 +235,8 @@ fn main() {
     let mut inflight: VecDeque<u64> = VecDeque::new();
     let mut bsize: VecDeque<usize> = VecDeque::new();
     let mut cur_disp_cyc: Option<u64> = None;
+    let mut stalls: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per stall cycle
+    let mut disp_cycles: Vec<u64> = Vec::new(); // distinct dispatch cycles (sorted)
 
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
     let (mut min_cyc, mut max_cyc) = (u64::MAX, 0u64);
@@ -249,6 +274,7 @@ fn main() {
                 if cur_disp_cyc != Some(cyc) {
                     bsize.push_back(0);
                     cur_disp_cyc = Some(cyc);
+                    disp_cycles.push(cyc);
                 }
                 inflight.push_back(uid);
                 *bsize.back_mut().unwrap() += 1;
@@ -303,6 +329,7 @@ fn main() {
                 }
                 cur_disp_cyc = None; // next dispatch starts a fresh bundle
             }
+            KIND_STALL => stalls.push((cyc, seqno)), // seqno field carries the reason mask
             _ => {}
         }
     }
@@ -328,12 +355,13 @@ fn main() {
     let shown: Vec<u64> = order.iter().copied().filter(|u| incl_squashed || !insns[u].squashed).collect();
 
     if interactive {
-        interactive_mode(&shown, &insns);
+        interactive_mode(&shown, &insns, &stalls, &disp_cycles);
         return;
     }
 
     let h = build_hists(&shown, &insns);
     diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
+    print_accounting(min_cyc, max_cyc, &stalls, &disp_cycles);
     h.dep.print();
     h.wake.print();
     h.d2s.print();
@@ -401,14 +429,14 @@ fn build_hists(uids: &[u64], insns: &HashMap<u64, Insn>) -> Hists {
 }
 
 fn wf_header() {
-    println!("{:>6} {:>4} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "seq", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
+    println!("{:>6} {:>3} {:>10} {:>6} {:>6} {:>6} {:>18}  {}", "uid", "ck", "pc", "disp", "sel", "wb", "wbval", "insn");
 }
 fn wf_row(uid: u64, insns: &HashMap<u64, Insn>) {
     let i = &insns[&uid];
     let s = i.sel.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
     let w = i.wb.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
     let v = i.wbval.map(|v| format!("{v:#018x}")).unwrap_or_else(|| "-".into());
-    println!("{:>6} {:>4} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.seqno, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
+    println!("{:>6} {:>3} {:>10x} {:>6} {:>6} {:>6} {:>18}  {}", uid, i.ckpid, i.pc, i.disp, s, w, v, rvdisasm::disasm(i.insn, i.pc));
 }
 
 fn ready_of(insns: &HashMap<u64, Insn>, i: &Insn) -> u64 {
@@ -492,7 +520,7 @@ fn pipe_render(vis: &[u64], insns: &HashMap<u64, Insn>, max_cols: usize) {
         let tl: String = (0..tlcols).map(|col| stage_char(c0 + col as u64, i.disp, ready, i.sel, i.wb)).collect();
         let mut dis = rvdisasm::disasm(i.insn, i.pc);
         dis.truncate(24);
-        println!("{:>5} {:>3} {:>10x} {:<24} | {}", u, i.seqno, i.pc, dis, tl);
+        println!("{:>5} {:>3} {:>10x} {:<24} | {}", u, i.ckpid, i.pc, dis, tl);
     }
 }
 
@@ -537,6 +565,46 @@ fn diagnose(dep: &Hist, wake: &Hist, wb2s: &Hist, exec: &Hist, sel_ipc: f64, n_d
         "            dependent per-link ~{:.1}c (WB->SELECT {:.1} + execute {:.1}), squash {:.1}% of dispatched",
         per_link, wb2s.avg(), exec.avg(), squash_pct
     );
+}
+
+// Top-down cycle accounting over [lo,hi]: every cycle is dispatch / stall / frontend-empty.
+// Returns (total, dispatch_cyc, stall_cyc, empty_cyc, per-reason stall counts).
+fn accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64]) -> (u64, u64, u64, u64, [u64; 7]) {
+    let total = hi.saturating_sub(lo) + 1;
+    let dlo = disp_cycles.partition_point(|&c| c < lo);
+    let dhi = disp_cycles.partition_point(|&c| c <= hi);
+    let disp = (dhi - dlo) as u64;
+    let mut stall = 0u64;
+    let mut bits = [0u64; 7];
+    for &(c, m) in stalls {
+        if c >= lo && c <= hi {
+            stall += 1;
+            for (b, slot) in bits.iter_mut().enumerate() {
+                if m & (1 << b) != 0 {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+    let empty = total.saturating_sub(disp).saturating_sub(stall);
+    (total, disp, stall, empty, bits)
+}
+
+fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64]) {
+    let (total, disp, stall, empty, bits) = accounting(lo, hi, stalls, disp_cycles);
+    let pct = |x: u64| 100.0 * x as f64 / total.max(1) as f64;
+    println!("\n--- cycle accounting ({total} cycles): every cycle is one of ---");
+    println!("  dispatch       {:>10} ({:4.1}%)  -- a bundle dispatched", disp, pct(disp));
+    println!("  stall          {:>10} ({:4.1}%)  -- bundle ready but back-pressured", stall, pct(stall));
+    println!("  frontend-empty {:>10} ({:4.1}%)  -- no bundle ready (fetch bubble / redirect refetch)", empty, pct(empty));
+    if stall > 0 {
+        println!("  stall by reason (% of all cycles; a cycle may have several):");
+        for b in 0..7 {
+            if bits[b] > 0 {
+                println!("     {:<12} {:>10} ({:4.1}%)", STALL_LABELS[b], bits[b], pct(bits[b]));
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------- interactive TUI
@@ -646,7 +714,7 @@ fn read_key() -> Key {
     }
 }
 
-fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>) {
+fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>, stalls: &[(u64, u8)], disp_cycles: &[u64]) {
     if shown.is_empty() {
         eprintln!("perftool: no (non-squashed) instructions to show");
         return;
@@ -662,7 +730,7 @@ fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>) {
 
     loop {
         let (rows, cols) = term_size();
-        let header = 7usize; // concise header + ruler
+        let header = 8usize; // concise header + ruler
         let win = rows.saturating_sub(header + 1).max(1);
         if start > total.saturating_sub(1) {
             start = total.saturating_sub(1);
@@ -689,7 +757,21 @@ fn interactive_mode(shown: &[u64], insns: &HashMap<u64, Insn>) {
             "dep[D>R] {:.1} {}   sel[R>i] {:.1} {}   exec[i>w] {:.1} {}   link[w>i] {:.1} {}\n",
             h.dep.avg(), spark(&h.dep), h.wake.avg(), spark(&h.wake), h.exec.avg(), spark(&h.exec), h.wb2s.avg(), spark(&h.wb2s)
         ));
-        out.push_str("buckets: 0 1 2-3 4-7 8-15 16-31 32-63 64+    legend: D=disp ==dep -=wait i=issue e=exec w=wb\n\n");
+        out.push_str("buckets: 0 1 2-3 4-7 8-15 16-31 32-63 64+    legend: D=disp ==dep -=wait i=issue e=exec w=wb\n");
+        {
+            let (tot, disp, stall, empty, bits) = accounting(wmin, wmax, stalls, disp_cycles);
+            let pct = |x: u64| 100.0 * x as f64 / tot.max(1) as f64;
+            let mut reasons = String::new();
+            for b in 0..7 {
+                if bits[b] > 0 {
+                    reasons.push_str(&format!(" {}={:.0}%", STALL_LABELS[b], pct(bits[b])));
+                }
+            }
+            out.push_str(&format!(
+                "cycles: disp {:.0}%  stall {:.0}%  fe-empty {:.0}%  | stall:{}\n",
+                pct(disp), pct(stall), pct(empty), if reasons.is_empty() { " -".into() } else { reasons }
+            ));
+        }
         print!("{out}");
         let _ = io::stdout().flush();
 

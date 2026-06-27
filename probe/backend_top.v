@@ -1072,6 +1072,16 @@ module backend_top
       if (cc_commit) perf_ev(perf_cyc, 4, 0, {30'd0, cc_commit_idx}, 0, 0, 0, 0, 64'd0, 0);
       if (roll_v)    perf_ev(perf_cyc, 5, {24'd0, roll_seq}, {30'd0, roll_ckpt},
                              0, 0, 0, 0, 64'd0, 0);
+      // KIND 6 = dispatch STALL: a bundle is ready but can't dispatch. The `seq` field
+      // carries an 8-bit reason mask (the exact terms of can_dispatch):
+      //   b0 cc_full(checkpoints)  b1 fe_stall(free regs)  b2 !disp_ready(scheduler)
+      //   b3 sb_full(store buf)    b4 lq_full(load queue)  b5 dfault|ill(fault freeze)
+      //   b6 eb_redirect
+      if (any_valid && !can_dispatch)
+         perf_ev(perf_cyc, 6,
+                 {24'd0, 1'b0, eb_redirect, (lsu_dfault_v | ill_v), lq_full, sb_full,
+                  ~(&disp_ready), (|fe_stall), cc_full},
+                 0, 0, 0, 0, 0, 64'd0, 0);
    end
 `endif
 endmodule
