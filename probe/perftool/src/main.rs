@@ -112,6 +112,14 @@ CYCLE ACCOUNTING ("why aren't we dispatching?")
         redirect      branch/exception redirect in flight (frontend re-steering)
     This is the direct answer to "are we blocked on checkpoints vs free registers
     vs something else?". In --interactive the split is window-local (current view).
+
+    TIME-BINNED ACCOUNTING splits the window into 16 equal slices, one line each, so
+    phase changes (hash loop vs call/return vs memcpy) show up instead of averaging out.
+
+    PC HOTSPOTS collapses every dynamic instruction by static PC and ranks the top 25
+    by total scheduler residency (DISPATCH->SELECT) -- the few PCs that cost the most
+    cycles, with disassembly. avgDep = mean DISPATCH->READY (dependency wait) per hit;
+    %res = that PC's share of all residency. This is where to point an optimization.
 "#;
 
 #[derive(Default)]
@@ -362,11 +370,13 @@ fn main() {
     let h = build_hists(&shown, &insns);
     diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
     print_accounting(min_cyc, max_cyc, &stalls, &disp_cycles);
+    print_time_bins(min_cyc, max_cyc, &stalls, &disp_cycles, 16);
     h.dep.print();
     h.wake.print();
     h.d2s.print();
     h.wb2s.print();
     h.exec.print();
+    print_pc_hotspots(&shown, &insns, 25);
 
     if waterfall > 0 {
         println!("\n=== waterfall (first {waterfall} dispatched) ===");
@@ -604,6 +614,72 @@ fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64])
                 println!("     {:<12} {:>10} ({:4.1}%)", STALL_LABELS[b], bits[b], pct(bits[b]));
             }
         }
+    }
+}
+
+// Cycle accounting split into NBINS equal time slices, so phase changes over a long
+// window (hash loop vs call/return vs memcpy) show up instead of hiding in one average.
+fn print_time_bins(lo: u64, hi: u64, stalls: &[(u64, u8)], disp_cycles: &[u64], nbins: usize) {
+    let span = hi.saturating_sub(lo) + 1;
+    if span < nbins as u64 {
+        return; // window too short to bin meaningfully
+    }
+    let w = span / nbins as u64; // last bin absorbs the remainder
+    println!("\n=== time-binned cycle accounting ({nbins} bins of ~{w}c) ===");
+    println!("{:>12} {:>6} {:>6} {:>6}  {}", "cyc", "disp%", "stall%", "fe%", "dominant stall");
+    for k in 0..nbins {
+        let blo = lo + k as u64 * w;
+        let bhi = if k == nbins - 1 { hi } else { blo + w - 1 };
+        let (tot, disp, stall, empty, bits) = accounting(blo, bhi, stalls, disp_cycles);
+        let pct = |x: u64| 100.0 * x as f64 / tot.max(1) as f64;
+        let (mut bi, mut bv) = (0usize, 0u64);
+        for (b, &v) in bits.iter().enumerate() {
+            if v > bv {
+                bv = v;
+                bi = b;
+            }
+        }
+        let dom = if bv > 0 { format!("{} {:.0}%", STALL_LABELS[bi], pct(bv)) } else { "-".into() };
+        println!("{:>12} {:>5.0}% {:>5.0}% {:>5.0}%  {}", blo, pct(disp), pct(stall), pct(empty), dom);
+    }
+}
+
+// Collapse millions of dynamic instructions into the few hot STATIC PCs, ranked by total
+// scheduler residency (DISPATCH->SELECT) contribution -- "which code costs the most cycles".
+fn print_pc_hotspots(uids: &[u64], insns: &HashMap<u64, Insn>, topn: usize) {
+    struct Agg {
+        cnt: u64,
+        dep: u64,   // sum DISPATCH->READY
+        resid: u64, // sum DISPATCH->SELECT
+        insn: u32,
+    }
+    let mut m: HashMap<u64, Agg> = HashMap::new();
+    let mut tot_resid = 0u64;
+    for &uid in uids {
+        let i = &insns[&uid];
+        let sel = match i.sel {
+            Some(s) => s,
+            None => continue,
+        };
+        let resid = sel.saturating_sub(i.disp);
+        let dep = ready_of(insns, i).saturating_sub(i.disp);
+        tot_resid += resid;
+        let e = m.entry(i.pc).or_insert(Agg { cnt: 0, dep: 0, resid: 0, insn: i.insn });
+        e.cnt += 1;
+        e.dep += dep;
+        e.resid += resid;
+    }
+    let mut v: Vec<(u64, &Agg)> = m.iter().map(|(&pc, a)| (pc, a)).collect();
+    v.sort_by(|a, b| b.1.resid.cmp(&a.1.resid));
+    println!("\n=== PC hotspots (top {topn} by total scheduler residency = DISPATCH->SELECT) ===");
+    println!("{:>10} {:>8} {:>7} {:>7} {:>6}  {}", "pc", "count", "avgDep", "avgRes", "%res", "insn");
+    for (pc, a) in v.iter().take(topn) {
+        let pctr = 100.0 * a.resid as f64 / tot_resid.max(1) as f64;
+        println!(
+            "{:>10x} {:>8} {:>7.1} {:>7.1} {:>5.1}%  {}",
+            pc, a.cnt, a.dep as f64 / a.cnt as f64, a.resid as f64 / a.cnt as f64, pctr,
+            rvdisasm::disasm(a.insn, *pc)
+        );
     }
 }
 
