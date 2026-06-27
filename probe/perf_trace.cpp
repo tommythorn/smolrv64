@@ -47,8 +47,10 @@ struct Closer {                 // flush + report on normal $finish / exit
 //   [0..8) data u64  -- DISPATCH: pc,  WRITEBACK: wb_val
 //   [16] kind u8   [17] seqno u8   [18] ckpid u8   [19] rdv u8
 //   [20..22) pdst u16  [22..24) ps1 u16  [24..26) ps2 u16  [26..30) insn u32  [30..32) pad
-// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH 6=STALL 7=FETCH-EMPTY.
-// For 6/7 the reason mask travels in the seqno field (see backend_top.v).
+// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH 6=STALL 7=FETCH-EMPTY 8=CACHE.
+// For 6/7 the reason mask travels in the seqno field (see backend_top.v). For 8 (cache.v):
+// ckpid=cache id (0=I$,1=D$), seqno=subtype (0 hit/1 miss/2 fill/3 store), rdv=is_write,
+// data=physical address, insn=latency (fill: miss penalty; store: accept->ack).
 extern "C" void perf_ev(long long cyc, int kind, int seq, int ckp, int rdv,
                         int pdst, int ps1, int ps2, long long data, int insn) {
    if (!g_init) init();

@@ -32,7 +32,8 @@ module cache #(
    parameter WDW      = 64,
    parameter OFFB     = 6,
    parameter WRITABLE = 1,
-   parameter WRTHRU   = 0
+   parameter WRTHRU   = 0,
+   parameter PERF_ID  = 0          // perf-trace cache id (0=I$, 1=D$); see perf block
 ) (
    input  wire             clk,
    input  wire             reset,
@@ -384,6 +385,43 @@ module cache #(
          endcase
       end
    end
+
+`ifdef PERF_TRACE
+   // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
+   // (own perf_cyc, in lockstep with backend_top's since same clk/reset) into the shared
+   // perf_ev sink. KIND=8 CACHE; the `ckp` field = PERF_ID (0=I$, 1=D$), `rdv` = is_write,
+   // `data` = physical address, and `seq` = subtype:
+   //   0 HIT   a line lookup hit            (rate: hits vs misses; addr -> set index)
+   //   1 MISS  a line lookup missed -> fill (conflict-vs-capacity via set-index histogram)
+   //   2 FILL  refill complete; `insn` = miss penalty (miss-detect -> re-lookup, in cycles)
+   //   3 STORE store committed; `insn` = store latency (accept -> wr_ack). For the
+   //           write-through D$ this is the full L2 round-trip = the store-buffer drain rate.
+   import "DPI-C" function void perf_ev(input longint cyc, input int kind, input int seq,
+                                        input int ckp, input int rdv, input int pdst,
+                                        input int ps1, input int ps2, input longint data,
+                                        input int insn);
+   reg [63:0] perf_cyc, perf_miss_cyc, perf_st_cyc;
+   initial perf_cyc = 64'd0;
+   always @(posedge clk) if (!reset) begin
+      perf_cyc <= perf_cyc + 64'd1;
+      // lookup resolved this cycle (one event per line lookup; a span resolves twice)
+      if (st == S_CHECK) begin
+         perf_ev(perf_cyc, 8, hit ? 0 : 1, PERF_ID, {31'd0, r_is_wr},
+                 0, 0, 0, {{(64-PAW){1'b0}}, cur_line}, 0);
+         if (!hit) perf_miss_cyc <= perf_cyc;
+      end
+      // capture store accept (for the accept->ack latency)
+      if (st == S_IDLE && wr_req && !rd_req && WRITABLE != 0) perf_st_cyc <= perf_cyc;
+      // refill complete -> re-lookup: emit the miss penalty
+      if (st == S_FILLI && pc == HALF-1)
+         perf_ev(perf_cyc, 8, 2, PERF_ID, 0, 0, 0, 0, {{(64-PAW){1'b0}}, cur_line},
+                 (perf_cyc - perf_miss_cyc));
+      // store committed (wr_ack asserted last cycle; +1 constant offset, fine for a hist)
+      if (wr_ack)
+         perf_ev(perf_cyc, 8, 3, PERF_ID, 1, 0, 0, 0, {{(64-PAW){1'b0}}, r_addr},
+                 (perf_cyc - perf_st_cyc));
+   end
+`endif
 endmodule
 
 `default_nettype wire

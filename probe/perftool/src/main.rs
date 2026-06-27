@@ -8,7 +8,9 @@
 //   [0..8) data u64  -- DISPATCH: pc, WRITEBACK: wb_val
 //   [16] kind u8  [17] seqno u8  [18] ckpid u8  [19] rdv u8
 //   [20..22) pdst u16  [22..24) ps1 u16  [24..26) ps2 u16  [26..30) insn u32  [30..32) pad
-// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH 6=STALL 7=FETCH-EMPTY.
+// kind: 1=DISPATCH 2=SELECT 3=WRITEBACK 4=COMMIT 5=SQUASH 6=STALL 7=FETCH-EMPTY
+//       8=CACHE (ckpid=cache id 0=I$/1=D$, seqno=subtype 0 hit/1 miss/2 fill/3 store,
+//        rdv=is_write, data=addr, insn=latency; from cache.v).
 //
 // Memory: the trace is STREAMED record-by-record (never the whole file in RAM) and
 // instructions live in a flat Vec<Insn> indexed by uid (no per-entry hash overhead),
@@ -42,6 +44,8 @@ const KIND_COMMIT: u8 = 4;
 const KIND_SQUASH: u8 = 5;
 const KIND_STALL: u8 = 6;
 const KIND_FEMPTY: u8 = 7;
+const KIND_CACHE: u8 = 8; // step-2 memory-system event (cache.v); ckpid=cache id, seqno=subtype
+const NSETS_MAX: usize = 1 << 12; // per-set miss histogram size (config has 1024 sets)
 // dispatch-stall reason bits (mask in the STALL record's seqno field; see backend_top.v)
 const STALL_LABELS: [&str; 7] =
     ["checkpoints", "free-regs", "scheduler", "store-buf", "load-queue", "fault", "redirect"];
@@ -146,6 +150,17 @@ CYCLE ACCOUNTING ("why aren't we dispatching?")
     by total scheduler residency (DISPATCH->SELECT) -- the few PCs that cost the most
     cycles, with disassembly. avgDep = mean DISPATCH->READY (dependency wait) per hit;
     %res = that PC's share of all residency. This is where to point an optimization.
+
+CACHE (step-2 memory-system events, from cache.v)
+    For each cache (I$, D$): lookup hit/miss rate (and read-vs-write hit rate), MPKI
+    (misses per 1000 dispatched insns), and:
+      miss spread   how many sets the misses hit + the share in the hottest 16 sets.
+                    Concentrated -> CONFLICT misses (associativity/skew/victim helps);
+                    spread evenly -> CAPACITY misses (only a bigger cache helps).
+      fill latency  the miss penalty (miss-detect -> re-lookup), in cycles.
+      store latency D$ only: accept->ack. The D$ is WRITE-THROUGH, so this is the full
+                    L2 round-trip every store pays = the store-buffer drain rate. A big
+                    pile here quantifies how much a write-back D$ would save (note-2).
 "#;
 
 // Packed to ~56 bytes: cycle fields use the NONE sentinel and producer links are u32
@@ -231,6 +246,78 @@ impl Hist {
     }
 }
 
+// Step-2 cache (memory-system) stats, accumulated from KIND_CACHE records (cache.v).
+// One per cache instance (I$, D$). Hit/miss rates answer note-3 ("what are the hit
+// rates"); fill = miss penalty; store = the write-through L2 round-trip (note-2, the
+// store-buffer drain rate); miss_set classifies misses conflict-vs-capacity.
+struct CacheStats {
+    name: &'static str,
+    hit_r: u64,
+    hit_w: u64,
+    miss_r: u64,
+    miss_w: u64,
+    fill: Hist,
+    store: Hist,
+    miss_set: Vec<u32>, // per-set miss count (set index = addr[6 +: 12])
+}
+impl CacheStats {
+    fn new(name: &'static str) -> Self {
+        CacheStats {
+            name,
+            hit_r: 0,
+            hit_w: 0,
+            miss_r: 0,
+            miss_w: 0,
+            fill: Hist::new("fill latency (miss penalty, cycles)"),
+            store: Hist::new("store latency (accept->ack = write-through L2 round-trip)"),
+            miss_set: vec![0; NSETS_MAX],
+        }
+    }
+    fn print(&self, n_disp: u64) {
+        let hits = self.hit_r + self.hit_w;
+        let misses = self.miss_r + self.miss_w;
+        let acc = hits + misses;
+        if acc == 0 {
+            return;
+        }
+        let pct = |x: u64, d: u64| if d > 0 { 100.0 * x as f64 / d as f64 } else { 0.0 };
+        println!("\n=== {} cache ===", self.name);
+        println!(
+            "  lookups {acc}   hit {:.2}%   miss {:.2}%   MPKI {:.1}",
+            pct(hits, acc),
+            pct(misses, acc),
+            if n_disp > 0 { 1000.0 * misses as f64 / n_disp as f64 } else { 0.0 }
+        );
+        let rd = self.hit_r + self.miss_r;
+        let wr = self.hit_w + self.miss_w;
+        if rd > 0 {
+            println!("    read   {rd:>12}   hit {:.2}%", pct(self.hit_r, rd));
+        }
+        if wr > 0 {
+            println!("    write  {wr:>12}   hit {:.2}%", pct(self.hit_w, wr));
+        }
+        // conflict-vs-capacity: if a few sets soak up the misses it's conflict (assoc/skew
+        // helps); if misses spread evenly across most sets it's capacity (only size helps).
+        if misses > 0 {
+            let used = self.miss_set.iter().filter(|&&c| c > 0).count();
+            let mut top: Vec<u32> = self.miss_set.iter().copied().filter(|&c| c > 0).collect();
+            top.sort_unstable_by(|a, b| b.cmp(a));
+            let topn = 16.min(top.len());
+            let top_sum: u64 = top.iter().take(topn).map(|&c| c as u64).sum();
+            println!(
+                "    miss spread: {used} sets touched, hottest {topn} sets hold {:.1}% of misses",
+                pct(top_sum, misses)
+            );
+        }
+        if self.fill.n > 0 {
+            self.fill.print();
+        }
+        if self.store.n > 0 {
+            self.store.print();
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "perftool",
@@ -292,6 +379,7 @@ fn main() {
     let mut stalls: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per stall cycle
     let mut fe_empty: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per frontend-empty cycle
     let mut disp_cycles: Vec<u64> = Vec::new(); // distinct dispatch cycles (sorted)
+    let mut cstats = [CacheStats::new("I$"), CacheStats::new("D$")]; // step-2 cache events
 
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
     let (mut min_cyc, mut max_cyc) = (u64::MAX, 0u64);
@@ -392,6 +480,31 @@ fn main() {
             }
             KIND_STALL => stalls.push((cyc, seqno)), // seqno field carries the reason mask
             KIND_FEMPTY => fe_empty.push((cyc, seqno)), // seqno field carries the reason mask
+            KIND_CACHE => {
+                // ckpid = cache id (0=I$,1=D$); seqno = subtype; rdv = is_write; datum =
+                // addr; iword = latency. (See cache.v PERF_TRACE block.)
+                let c = &mut cstats[(ckpid as usize) & 1];
+                match seqno {
+                    0 => {
+                        if rdv != 0 {
+                            c.hit_w += 1
+                        } else {
+                            c.hit_r += 1
+                        }
+                    }
+                    1 => {
+                        if rdv != 0 {
+                            c.miss_w += 1
+                        } else {
+                            c.miss_r += 1
+                        }
+                        c.miss_set[((datum >> 6) as usize) & (NSETS_MAX - 1)] += 1;
+                    }
+                    2 => c.fill.add(iword as u64),
+                    3 => c.store.add(iword as u64),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -433,6 +546,9 @@ fn main() {
     h.wb2s.print();
     h.exec.print();
     print_pc_hotspots(&shown, &insns, 25);
+    for c in &cstats {
+        c.print(n_disp);
+    }
 
     if waterfall > 0 {
         println!("\n=== waterfall (first {waterfall} dispatched) ===");

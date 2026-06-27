@@ -180,7 +180,7 @@ module soc_top #(
    assign       dmem_rvalid = raw_rvalid | c_st_ok;
    assign       dmem_wready = is_dev_w ? dev_wack : dc_wr_ack;
 
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
+   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
@@ -220,7 +220,7 @@ module soc_top #(
    assign imem_data  = i_win;
    assign imem_avail = fi_stall ? 4'd0 : (i_match ? 4'd8 : 4'd0);
 
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0)) u_icache
+   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(),
