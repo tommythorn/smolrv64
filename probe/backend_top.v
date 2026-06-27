@@ -206,7 +206,18 @@ module backend_top
    wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
 
-   mmu #(.AW(56)) u_immu
+   // Valid-DRAM window for the MMU's unbacked-PA access-fault check. Enforced only under
+   // cosim (sized to the modeled DDR, so an OOR access faults exactly like simmerv); the
+   // FPGA/test default stays fully permissive (base 0, unbounded) -> no behavior change.
+`ifdef COSIM_MEM_SIZE_LG2
+   localparam [63:0] DRAM_BASE_P = 64'h8000_0000;
+   localparam [63:0] DRAM_TOP_P  = 64'h8000_0000 + (64'd1 << `COSIM_MEM_SIZE_LG2);
+`else
+   localparam [63:0] DRAM_BASE_P = 64'd0;
+   localparam [63:0] DRAM_TOP_P  = 64'hFFFF_FFFF_FFFF_FFFF;
+`endif
+
+   mmu #(.AW(56), .DRAM_BASE(DRAM_BASE_P), .DRAM_TOP(DRAM_TOP_P)) u_immu
      (.clk(clk), .reset(reset),
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
       .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
@@ -558,7 +569,8 @@ module backend_top
    end
 
    lsu #(.IW(IW), .SBITS(SBITS), .PBITS(PBITS), .SEQW(SEQW), .CBITS(CBITS), .AW(AW),
-         .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI)) u_lsu
+         .SBDEPTH(SBDEPTH), .SBI(SBI), .LQDEPTH(LQDEPTH), .LQI(LQI),
+         .DRAM_BASE(DRAM_BASE_P), .DRAM_TOP(DRAM_TOP_P)) u_lsu
      (.clk(clk), .reset(reset),
       .disp_fire(disp_fire), .disp_is_load(dl_is_load), .disp_is_store(dl_is_store),
       .disp_seq(r_seq), .disp_ckpt(disp_ckpt), .disp_pdst(pdst),

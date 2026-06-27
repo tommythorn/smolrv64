@@ -17,7 +17,13 @@
 module mmu
   #(parameter AW   = 56,           // physical address width produced
     parameter TLBN = 16,           // TLB entries (direct-mapped)
-    parameter TLBI = 4)            // clog2(TLBN)
+    parameter TLBI = 4,            // clog2(TLBN)
+    // Valid-DRAM window for the physical-address check below. Default is fully
+    // permissive (base 0, unbounded top) so unit TBs / FPGA see no new faults; the
+    // cosim build narrows it to the modeled DDR so an out-of-range PA access-faults
+    // exactly as the simmerv golden model does.
+    parameter [63:0] DRAM_BASE = 64'd0,
+    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF)
    (input  wire        clk,
     input  wire        reset,
     // request (combinational; held by the caller until t_ready)
@@ -54,6 +60,26 @@ module mmu
    // (matches SmolRV64's phys-region default case; PMP itself is intentionally unsupported.)
    wire [3:0]  af_cause = (req_access == 2'd0) ? 4'd1 :
                           (req_access == 2'd1) ? 4'd5 : 4'd7;
+
+   // -------- physical-address validity (mirrors the simmerv golden memory map) --------
+   // A resolved PA (identity in Bare, leaf in Sv39) that is neither RAM nor a mapped
+   // device is unaddressable -> ACCESS fault, exactly as simmerv's load/store_mmio returns
+   // Err for any PA outside {RAM | CLINT | PLIC | UART}.  The DRAM window is parameterized
+   // (cosim sizes it from the modeled DDR; default unbounded = no fault); the device ranges
+   // are fixed SoC constants mirrored from soc_top, and the on-chip boot SRAM at LBASE is
+   // included so the FPGA monitor's own fetches/loads don't fault (never touched in cosim).
+   localparam [63:0] CLINT_LO=64'h0200_0000, CLINT_HI=64'h0201_0000;   // 64 KiB
+   localparam [63:0] PLIC_LO =64'h0c00_0000, PLIC_HI =64'h1000_0000;   // 64 MiB
+   localparam [63:0] UART_LO =64'h1000_0000, UART_HI =64'h1000_0008;   // 8 NS16550 byte regs
+   localparam [63:0] LSRAM_LO=64'h7000_0000, LSRAM_HI=64'h7004_0000;   // 256 KiB on-chip SRAM
+   function pa_valid;
+      input [63:0] pa;
+      pa_valid = (pa >= DRAM_BASE && pa < DRAM_TOP)
+              || (pa >= CLINT_LO  && pa < CLINT_HI)
+              || (pa >= PLIC_LO   && pa < PLIC_HI)
+              || (pa >= UART_LO   && pa < UART_HI)
+              || (pa >= LSRAM_LO  && pa < LSRAM_HI);
+   endfunction
 
    // -------------------- TLB (direct-mapped on VPN[3:0] of vpn0) --------------------
    reg              tlb_v   [0:TLBN-1];
@@ -127,8 +153,15 @@ module mmu
    assign t_paddr = wdm      ? w_paddr :
                     !xlate    ? req_vaddr[AW-1:0] :
                                 leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr);
-   assign t_fault = wdm ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
-   assign t_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
+   // base (translation) fault: page/perm fault (Sv39) or non-canonical (Bare).
+   wire        base_fault = wdm ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
+   wire [3:0]  base_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
+   // PA-validity fault: only when the translation actually RESOLVES this cycle (t_ready) and
+   // didn't already fault -- an unbacked resolved PA is an access fault.  t_ready-gating is
+   // essential: mid-walk t_paddr is a stale leaf and must not raise a (spurious) fault.
+   wire        pa_ok = pa_valid({{(64-AW){1'b0}}, t_paddr});
+   assign t_fault = base_fault | (t_ready & ~pa_ok);
+   assign t_cause = base_fault ? base_cause : af_cause;
 
    // start a walk when the request can't resolve this cycle
    wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !wdm & (st==IDLE);

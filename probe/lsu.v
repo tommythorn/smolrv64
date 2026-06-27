@@ -45,7 +45,11 @@ module lsu
     parameter SBI     = 3,        // clog2(SBDEPTH)
     parameter LQDEPTH = 8,
     parameter LQI     = 3,        // clog2(LQDEPTH)
-    parameter [63:0] DEV_TOP = 64'h7000_0000)  // PA < DEV_TOP == MMIO (device) space; ==LBASE
+    parameter [63:0] DEV_TOP = 64'h7000_0000,  // PA < DEV_TOP == MMIO (device) space; ==LBASE
+    // valid-DRAM window for the load/store MMUs' unbacked-PA access-fault check (see mmu.v);
+    // default permissive -> no new faults for the unit TB.
+    parameter [63:0] DRAM_BASE = 64'd0,
+    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF)
    (input  wire                   clk,
     input  wire                   reset,
 
@@ -345,7 +349,7 @@ module lsu
    wire        ldx_ready, ldx_fault;
    wire [55:0] ldx_pa;
    wire [3:0]  ldx_cause;
-   mmu #(.AW(56)) u_ldmmu
+   mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_ldmmu
      (.clk(clk), .reset(reset),
       .req_valid(ld_sel_v), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
@@ -478,7 +482,7 @@ module lsu
    wire        stx_ready, stx_fault;
    wire [55:0] stx_pa;
    wire [3:0]  stx_cause;
-   mmu #(.AW(56)) u_stmmu
+   mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_stmmu
      (.clk(clk), .reset(reset),
       .req_valid(xlate & (amo_need_xl | ck_v)),
       .req_vaddr(amo_need_xl ? a_addr : sb_addr[ck_sel]),
