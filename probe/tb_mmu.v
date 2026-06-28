@@ -14,7 +14,7 @@ module tb;
    reg [63:0] satp; reg sum, mxr, flush;
    wire [AW-1:0] ptw_addr; wire ptw_read;
    reg  [63:0] ptw_rdata; reg ptw_rvalid;
-   wire t_ready; wire [AW-1:0] t_paddr; wire t_fault; wire [3:0] t_cause;
+   wire t_ready; wire [AW-1:0] t_paddr; wire t_fault; wire [3:0] t_cause; wire t_uncached;
    integer errs=0;
 
    mmu #(.AW(AW)) dut
@@ -22,7 +22,7 @@ module tb;
       .req_access(req_access), .priv(priv), .sum(sum), .mxr(mxr), .satp(satp),
       .flush(flush), .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata),
       .ptw_rvalid(ptw_rvalid), .t_ready(t_ready), .t_paddr(t_paddr),
-      .t_fault(t_fault), .t_cause(t_cause));
+      .t_fault(t_fault), .t_cause(t_cause), .t_uncached(t_uncached));
 
    // behavioral page table (registered read, 1-cycle latency)
    always @(posedge clk) begin
@@ -31,6 +31,7 @@ module tb;
          56'h80010000: ptw_rdata <= (64'h80011 << 10) | 64'd1;          // root[0] -> L1 table
          56'h80011000: ptw_rdata <= (64'h80012 << 10) | 64'd1;          // L1[0]   -> L0 table
          56'h80012008: ptw_rdata <= (64'h80003 << 10) | 64'hDF;         // L0[1]   leaf RWX U A D
+         56'h80012018: ptw_rdata <= (64'h80005 << 10) | 64'hDF | (64'd1<<61); // L0[3] leaf, Svpbmt NC
          default:      ptw_rdata <= 64'd0;                              // invalid (V=0)
       endcase
    end
@@ -53,10 +54,10 @@ module tb;
       // Sv39 on, root PPN = 0x80010
       satp = (64'd8 << 60) | 64'h80010;
 
-      // 1) VA 0x1000 load -> PA 0x80003000, no fault (TLB miss -> walk)
+      // 1) VA 0x1000 load -> PA 0x80003000, no fault (TLB miss -> walk); cacheable (PBMT=0)
       do_req(64'h1000, 2'd1);
-      if (t_fault || t_paddr !== 56'h80003000) begin
-         $display("FAIL xlate: fault=%b paddr=%h (exp 80003000)", t_fault, t_paddr); errs=errs+1; end
+      if (t_fault || t_paddr !== 56'h80003000 || t_uncached) begin
+         $display("FAIL xlate: fault=%b paddr=%h unc=%b (exp 80003000,0)", t_fault, t_paddr, t_uncached); errs=errs+1; end
       else if (waited==0) begin
          $display("FAIL xlate: expected a walk (waited=0)"); errs=errs+1; end
       else $display("  ok: VA 1000 -> PA %h (walk took %0d cyc)", t_paddr, waited);
@@ -80,6 +81,13 @@ module tb;
       do_req(64'h1000, 2'd2);
       if (t_fault) begin $display("FAIL store-perm: unexpected fault"); errs=errs+1; end
       else $display("  ok: store to RWX page allowed");
+      req_valid=0;
+
+      // 4b) Svpbmt: VA 0x3000 -> NC leaf (PBMT=01) -> t_uncached=1, no fault, PA 0x80005000
+      do_req(64'h3000, 2'd1);
+      if (t_fault || t_paddr !== 56'h80005000 || !t_uncached) begin
+         $display("FAIL NC leaf: fault=%b paddr=%h unc=%b (exp 80005000,1)", t_fault, t_paddr, t_uncached); errs=errs+1; end
+      else $display("  ok: VA 3000 NC leaf -> PA %h uncached=%b", t_paddr, t_uncached);
       req_valid=0;
 
       // 5) Bare mode -> identity, resolves combinationally

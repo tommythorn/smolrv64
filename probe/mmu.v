@@ -44,7 +44,8 @@ module mmu
     output wire        t_ready,       // translation resolved this cycle (else: walking)
     output wire [AW-1:0] t_paddr,
     output wire        t_fault,
-    output wire [3:0]  t_cause);      // 12=instr, 13=load, 15=store page fault
+    output wire [3:0]  t_cause,       // 12=instr, 13=load, 15=store page fault
+    output wire        t_uncached);   // Svpbmt: leaf PBMT(pte[62:61])!=0 -> NC/IO (don't cache)
 
    wire        xlate = (satp[63:60] == 4'd8);   // 8 = Sv39, else Bare (identity)
 
@@ -87,6 +88,7 @@ module mmu
    reg [43:0]       tlb_ppn [0:TLBN-1];   // page PPN (leaf)
    reg [1:0]        tlb_lvl [0:TLBN-1];   // leaf level (0=4K,1=2M,2=1G)
    reg [7:0]        tlb_perm[0:TLBN-1];   // PTE perm bits V,R,W,X,U,G,A,D
+   reg              tlb_nc  [0:TLBN-1];   // Svpbmt: leaf is NC/IO (PBMT pte[62:61] != 0)
    integer t;
    initial for (t=0;t<TLBN;t=t+1) tlb_v[t]=1'b0;
 
@@ -137,6 +139,7 @@ module mmu
    reg [AW-1:0] w_paddr;
    reg        w_fault;
    reg [3:0]  w_cause;
+   reg        w_nc;                  // Svpbmt: just-walked leaf is NC/IO
    initial begin st=IDLE; ptw_read=0; w_done=0; end
 
    wire hit_perm_fault = perm_fault({56'd0, tlb_perm[tlb_idx]}, req_access, priv, sum, mxr);
@@ -162,6 +165,9 @@ module mmu
    wire        pa_ok = pa_valid({{(64-AW){1'b0}}, t_paddr});
    assign t_fault = base_fault | (t_ready & ~pa_ok);
    assign t_cause = base_fault ? base_cause : af_cause;
+   // Svpbmt memory type: NC/IO leaf -> uncached. Bare/non-canonical = normal (cacheable);
+   // MMIO device regions are routed around the D$ by soc_top's address decode, not here.
+   assign t_uncached = wdm ? w_nc : (xlate & tlb_hit & tlb_nc[tlb_idx]);
 
    // start a walk when the request can't resolve this cycle
    wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !wdm & (st==IDLE);
@@ -203,12 +209,14 @@ module mmu
                  end else begin
                     w_paddr <= leaf_pa(ptw_rdata[53:10], lvl, va_q);
                     w_fault<=1'b0; w_done<=1'b1; st<=IDLE;
+                    w_nc   <= ptw_rdata[62] | ptw_rdata[61];   // Svpbmt PBMT != 0
                     // fill TLB
                     tlb_v[va_q[12+:TLBI]]   <= 1'b1;
                     tlb_tag[va_q[12+:TLBI]] <= va_q[38:12];
                     tlb_ppn[va_q[12+:TLBI]] <= ptw_rdata[53:10];
                     tlb_lvl[va_q[12+:TLBI]] <= lvl;
                     tlb_perm[va_q[12+:TLBI]]<= ptw_rdata[7:0];
+                    tlb_nc[va_q[12+:TLBI]]  <= ptw_rdata[62] | ptw_rdata[61];
                  end
               end else if (lvl==2'd0) begin
                  w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;    // no leaf at level 0

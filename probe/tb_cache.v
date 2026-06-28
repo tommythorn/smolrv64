@@ -19,6 +19,7 @@ module tb;
 
    // ---------------- D$ instance ----------------
    reg          d_rd_req, d_wr_req, d_inv_req;
+   reg          d_rd_uncached=0, d_wr_uncached=0;   // Svpbmt NC/IO qualifiers
    reg  [PAW-1:0] d_rd_addr, d_wr_addr;
    reg  [63:0]  d_wr_data;  reg [7:0] d_wr_mask;
    wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy;
@@ -29,7 +30,8 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
       .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
-      .wr_ack(d_wr_ack), .inv_req(d_inv_req), .inv_clean(1'b0), .inv_busy(d_inv_busy),
+      .wr_ack(d_wr_ack), .rd_uncached(d_rd_uncached), .wr_uncached(d_wr_uncached),
+      .inv_req(d_inv_req), .inv_clean(1'b0), .inv_busy(d_inv_busy),
       .l2_req(d_l2_req), .l2_we(d_l2_we), .l2_addr(d_l2_addr), .l2_wdata(d_l2_wdata),
       .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
 
@@ -58,7 +60,7 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(i_rd_req), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
       .wr_req(1'b0), .wr_addr(34'd0), .wr_data(64'd0), .wr_mask(8'd0),
-      .wr_ack(), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
+      .wr_ack(), .rd_uncached(1'b0), .wr_uncached(1'b0), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
       .l2_req(i_l2_req), .l2_we(i_l2_we), .l2_addr(i_l2_addr), .l2_wdata(i_l2_wdata),
       .l2_rdata(i_l2_rdata), .l2_ack(i_l2_ack));
    reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;  integer i_l2reads = 0;
@@ -187,6 +189,27 @@ module tb;
       if (i_l2reads == before_reads) begin
          $display("FAIL: inv during fill was DROPPED (0x100 still cached)"); errs=errs+1;
       end else $display("  ok  inv during fill honored (0x100 refilled)");
+
+      // ---- Svpbmt NC/IO: flush-around store + no-stale load (write-back D$) ----
+      // The hazard write-back introduces for non-coherent DMA: a dirty line is invisible to a
+      // DMA engine reading memory, and a DMA write is masked by a stale cached line. NC accesses
+      // must (a) push stores straight to L2 and (b) never keep the line, so DMA stays coherent.
+      $display("== Svpbmt NC: store flushes around to L2, load never goes stale ==");
+      d_wr_uncached = 1;
+      dwrite(34'h140, 64'hA5A5A5A5_5A5A5A5A, 8'hFF, 8);     // NC store
+      d_wr_uncached = 0;
+      for (k=0;k<8;k=k+1) if (l2mem[34'h140+k] !== refm[34'h140+k]) begin
+         $display("FAIL NC store: l2mem[%h]=%h exp=%h (did not flush around)",
+                  34'h140+k, l2mem[34'h140+k], refm[34'h140+k]); errs=errs+1;
+      end
+      if (errs==0) $display("  ok  NC store reached L2 immediately");
+      // NC load (fills, returns, invalidates), then a backdoor DMA write to L2, then NC load again
+      // -> must observe the DMA's NEW value (a surviving stale cached line would fail dread's check).
+      d_rd_uncached = 1;
+      dread(34'h140, 8);
+      for (k=0;k<8;k=k+1) begin l2mem[34'h140+k] = (k*13+1) & 8'hff; refm[34'h140+k] = (k*13+1) & 8'hff; end
+      dread(34'h140, 8);                                    // must see DMA's value, not the cached A5..
+      d_rd_uncached = 0;
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;

@@ -68,12 +68,14 @@ module backend_top
     // zero-latency memory (combinational read) -> bit-exact 1-cycle loads.
     output wire [AW-1:0]           dmem_raddr,
     output wire                    dmem_ren,
+    output wire                    dmem_runcached,     // Svpbmt: the read addr is NC/IO (don't cache)
     input  wire [63:0]             dmem_rdata,
     input  wire                    dmem_rvalid,
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
+    output wire                    dmem_wuncached,     // Svpbmt: the write addr is NC/IO (flush-around)
     input  wire                    dmem_wready,        // write accepted/done; tie 1 for 1-cycle writes
     output wire                    dmem_idle,          // LSU store buffer empty (mem current) -- fence.i ordering
     output wire                    ifence,             // FENCE.I redirecting this cycle -- invalidate the I$
@@ -594,8 +596,10 @@ module backend_top
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
-      .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
+      .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
+      .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
+      .mem_wuncached(dmem_wuncached),
       .mem_wready(dmem_wready),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),

@@ -132,12 +132,14 @@ module lsu
     // Tie mem_rvalid high for a zero-latency (combinational) memory -> 1-cycle loads.
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
     output reg                    mem_ren,            // read-request pulse (fresh mem_raddr)
+    output reg                    mem_runcached,      // Svpbmt: the read addr is NC/IO (don't cache)
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
     input  wire                   mem_rvalid,         // mem_rdata valid for mem_raddr this cycle
     output reg                    mem_wen,            // held until mem_wready (drain + AMO write)
     output reg  [AW-1:0]          mem_waddr,
     output reg  [63:0]            mem_wdata,
     output reg  [7:0]             mem_wmask,
+    output reg                    mem_wuncached,      // Svpbmt: the write addr is NC/IO (flush-around)
     input  wire                   mem_wready,         // write accepted/done; tie 1 for 1-cycle writes
 
     // ---- load writeback (to the owner shard's WB lane) + completion ----
@@ -183,6 +185,7 @@ module lsu
    reg [63:0]       sb_d0  [0:SBDEPTH-1];   // data laid into word-w0 byte lanes
    reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
    reg [AW-1:0]     sb_pa  [0:SBDEPTH-1];   // physical drain address (Bare: ==VA; Sv39: filled at check)
+   reg              sb_nc  [0:SBDEPTH-1];   // Svpbmt: NC/IO store -> flush-around at drain
    reg              sb_xck [0:SBDEPTH-1];   // translation checked (drainable; Bare: set at fill)
    reg              sb_xflt[0:SBDEPTH-1];   // store page-faults (reported via dfault, never drains)
 
@@ -334,6 +337,7 @@ module lsu
    reg [PBITS-1:0]  a_pdst;  reg [SBITS-1:0] a_own;  reg [CBITS-1:0] a_ck;  reg [SEQW-1:0] a_seq;
    reg [63:0]       a_rdval_q;
    reg [AW-1:0]     a_wpa;                             // translated (aligned) AMO phys addr
+   reg              a_wnc;                             // Svpbmt: the AMO target is NC/IO
    reg              rsv_v;   reg [WW-1:0] rsv_w;       // LR/SC reservation (word granularity)
    // registered AMO writeback (1-cycle pulse) -- aligns with wb_busy like a load's r_*
    reg              amo_wbv;
@@ -346,7 +350,7 @@ module lsu
 
    // load-path walker: translate the selected load's VA. A miss holds sel_fire off
    // (the load stays in the LQ) while the PTW walks; the fill makes it hit next cycle.
-   wire        ldx_ready, ldx_fault;
+   wire        ldx_ready, ldx_fault, ldx_uncached;
    wire [55:0] ldx_pa;
    wire [3:0]  ldx_cause;
    mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_ldmmu
@@ -354,7 +358,8 @@ module lsu
       .req_valid(ld_sel_v), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(ldp_addr), .ptw_read(ldp_read), .ptw_rdata(ldp_rdata), .ptw_rvalid(ldp_rvalid),
-      .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause));
+      .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause),
+      .t_uncached(ldx_uncached));
    // mmu resolves combinationally in Bare mode (no walk): a noncanon/out-of-range load
    // there yields ldx_fault with an ACCESS-fault cause (5), surfaced like any page fault.
    wire          ld_xok = ldx_ready & ~ldx_fault;
@@ -479,7 +484,7 @@ module lsu
    end
    wire        st_need_xl = xlate & ck_v & ~amo_need_xl;    // checking a store this cycle
 
-   wire        stx_ready, stx_fault;
+   wire        stx_ready, stx_fault, stx_uncached;
    wire [55:0] stx_pa;
    wire [3:0]  stx_cause;
    mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_stmmu
@@ -489,7 +494,8 @@ module lsu
       .req_access(amo_need_xl ? 2'd3 : 2'd2),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
-      .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause));
+      .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
+      .t_uncached(stx_uncached));
    wire          amo_xok   = ~xlate | (stx_ready & ~stx_fault);   // amo ok (valid when amo_need_xl)
    wire          amo_xflt  = xlate & amo_need_xl & stx_ready & stx_fault;
    wire [AW-1:0] amo_pa_al = xlate ? (({{(AW-56){1'b0}}, stx_pa}) & ~{{(AW-3){1'b0}}, 3'b111})
@@ -557,7 +563,7 @@ module lsu
    assign dfault_tval  = df_tval_r;
 
    always @(posedge clk) begin
-      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; end
+      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; mem_runcached <= 1'b0; end
       else begin
          amo_wbv <= 1'b0;                       // 1-cycle pulse unless A_WB sets it
          mem_ren <= 1'b0;                        // 1-cycle read-request pulse (set on a fresh mem_raddr)
@@ -568,6 +574,7 @@ module lsu
             p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
             p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
             mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
+            mem_runcached <= ldx_uncached;      // Svpbmt: NC/IO load -> don't cache
             mem_ren   <= 1'b1;                  // request the read (mem_raddr valid next cycle)
          end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
 
@@ -579,6 +586,7 @@ module lsu
                    end
            A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
                       mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; mem_ren <= 1'b1; ast<=A_RD;
+                      mem_runcached <= stx_uncached; a_wnc <= stx_uncached;   // Svpbmt: NC/IO AMO
                    end
            A_RD:   if (mem_rvalid) begin a_rdval_q <= a_rdval;  // RMW read data returned
                       if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
@@ -683,11 +691,13 @@ module lsu
          mem_waddr = a_wpa;                  // translated (aligned) physical address
          mem_wdata = a_wdata;
          mem_wmask = a_wmask;
+         mem_wuncached = a_wnc;
       end else begin
          mem_wen   = dr_v;                   // dr_v already requires the store be xck'd (translated)
          mem_waddr = sb_pa[dr_sel];          // physical address (Bare: == VA, filled at fill-time)
          mem_wdata = sb_data[dr_sel];
          mem_wmask = dr_mask;
+         mem_wuncached = sb_nc[dr_sel];
       end
    end
 
@@ -735,6 +745,7 @@ module lsu
                f_wbe  = {8'd0, f_be9[7:0]} << f_off;                // mask into lanes
                sb_addr[eidx] <= f_addr;
                sb_pa[eidx]   <= f_addr;          // default PA==VA (Bare); overwritten by the Sv39 check
+               sb_nc[eidx]   <= 1'b0;            // default cacheable (Bare); overwritten by the Sv39 check
                sb_xck[eidx]  <= ~xlate;          // Bare: drainable now; Sv39: await pre-commit check
                sb_xflt[eidx] <= 1'b0;
                sb_data[eidx] <= exe_st_data[i*64 +: 64];
@@ -763,7 +774,8 @@ module lsu
 
          // (2b) pre-commit store-check result (one store/cycle, Sv39): mark the checked
          //      store drainable (stash its PA) or faulting (-> dfault drives a precise trap).
-         if (st_ck_done) begin sb_xck[ck_sel] <= 1'b1; sb_pa[ck_sel] <= {{(AW-56){1'b0}}, stx_pa}; end
+         if (st_ck_done) begin sb_xck[ck_sel] <= 1'b1; sb_pa[ck_sel] <= {{(AW-56){1'b0}}, stx_pa};
+                               sb_nc[ck_sel] <= stx_uncached; end
          if (st_ck_flt)  begin sb_xck[ck_sel] <= 1'b1; sb_xflt[ck_sel] <= 1'b1; end
 
          // (3) the selected load advances into the MERGE stage (p_*) -- free its LQ entry

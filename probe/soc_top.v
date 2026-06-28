@@ -58,6 +58,7 @@ module soc_top #(
    wire [3:0]          imem_avail;
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
+   wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
    wire [63:0]         dmem_rdata;
    wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
    wire [55:0]         ptw_addr, ldptw_addr, stptw_addr;
@@ -70,8 +71,10 @@ module soc_top #(
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
-      .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
+      .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
+      .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
+      .dmem_wuncached(dmem_wuncached),
       .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .ldptw_addr(ldptw_addr), .ldptw_read(ldptw_read), .ldptw_rdata(ldptw_rdata), .ldptw_rvalid(ldptw_rvalid),
@@ -198,6 +201,9 @@ module soc_top #(
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
+      // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
+      // when c_rd_req is low). The store's NC bit qualifies the write port.
+      .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
@@ -264,7 +270,8 @@ module soc_top #(
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
-      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(),
+      .rd_uncached(1'b0),
+      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));

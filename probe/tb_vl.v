@@ -117,7 +117,8 @@ module tb;
    cache #(.PAW(64), .SIZE_KB(128), .RDW(HW*16), .WDW(64), .WRITABLE(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
-      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(),
+      .rd_uncached(1'b0),
+      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));
@@ -163,8 +164,9 @@ module tb;
    cache #(.PAW(64), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
+      .rd_uncached(1'b0),
       .wr_req(cache_en & dmem_wen & ~c_wr_ack), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
-      .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .inv_req(1'b0), .inv_clean(1'b0), .inv_busy(),
+      .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .wr_uncached(1'b0), .inv_req(1'b0), .inv_clean(1'b0), .inv_busy(),
       .l2_req(c_l2_req), .l2_we(c_l2_we), .l2_addr(c_l2_addr), .l2_wdata(c_l2_wdata),
       .l2_rdata(c_l2_rdata), .l2_ack(c_l2_ack));
 

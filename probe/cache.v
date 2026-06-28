@@ -42,11 +42,13 @@ module cache #(
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
    output reg  [PAW-1:0]   rd_resp_addr,
+   input  wire             rd_uncached, // Svpbmt: this read is NC/IO -> don't keep the line (flush-around)
    input  wire             wr_req,
    input  wire [PAW-1:0]   wr_addr,
    input  wire [WDW-1:0]   wr_data,
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
+   input  wire             wr_uncached, // Svpbmt: this store is NC/IO -> write through to L2 + invalidate
    input  wire             inv_req,
    input  wire             inv_clean,   // inv_req variant: write back dirty lines but KEEP them
                                         // valid+clean (PTW coherency on sfence; not a full flush)
@@ -109,6 +111,7 @@ module cache #(
 
    // ---- request regs ----
    reg            r_is_wr;
+   reg            r_uncached;          // Svpbmt: current access is NC/IO (flush-around)
    reg [PAW-1:0]  r_addr;
    reg [WDW-1:0]  r_wdata;
    reg [WRB-1:0]  r_wmask;
@@ -263,6 +266,7 @@ module cache #(
                  end else begin inv_busy <= 1; fscan <= 0; flush_clean <= inv_clean; st <= S_FLUSH; end
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
+                 r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
                  r_addr   <= rd_req ? rd_addr : wr_addr;
                  r_wdata  <= wr_data; r_wmask <= wr_mask;
                  r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
@@ -331,13 +335,21 @@ module cache #(
               if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
                  rd_valid <= 1; rd_resp_addr <= r_addr;
+                 // Svpbmt NC/IO load: return the (just-filled, current) word but don't keep the
+                 // line, so a later DMA write isn't masked by a stale hit on the next NC load.
+                 if (r_uncached) begin
+                    valm[flat(w0_way,w0_idx)] <= 1'b0;
+                    if (r_span) valm[flat(hway,cih)] <= 1'b0;
+                 end
                  st <= S_IDLE;
               end else begin
                  // low-chunk (and same-line high) write driven combinationally this cycle.
                  if (r_span && store_hi) begin
                     // line1 hit way/idx are live (phase1); write its chunk0 next cycle
                     st <= S_SPANW;
-                 end else if (WRTHRU!=0) begin
+                 end else if (WRTHRU!=0 || r_uncached) begin
+                    // write-through, OR a Svpbmt NC/IO store -> push to L2 (DMA sees it) and
+                    // invalidate the line at S_WTA so nothing dirty/stale lingers (flush-around).
                     wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
                  end else begin
                     dirm[flat(w0_way,w0_idx)] <= 1'b1;
@@ -347,7 +359,7 @@ module cache #(
               end
            end
            S_SPANW: begin                   // spanning store high half written combinationally
-              if (WRTHRU!=0) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
+              if (WRTHRU!=0 || r_uncached) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
               else begin
                  dirm[flat(w0_way,w0_idx)] <= 1'b1;
                  dirm[flat(hway,cih)]      <= 1'b1;
@@ -366,7 +378,10 @@ module cache #(
               else begin pc <= pc + 1'b1; st <= S_WTR; end
            end
            S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
-           S_WTA: if (l2_ack) begin wr_ack <= 1; st <= S_IDLE; end
+           S_WTA: if (l2_ack) begin
+              if (r_uncached) valm[flat(wb_way,wb_idx)] <= 1'b0;   // Svpbmt NC store: flush-around
+              wr_ack <= 1; st <= S_IDLE;
+           end
 
            // ---- flush (write-back configs) ----
            S_FLUSH: begin
