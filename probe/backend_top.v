@@ -827,8 +827,14 @@ module backend_top
          //    Runs FIRST so it acts on entries committed in a PRIOR cycle -- a 1-cycle
          //    lag past commit, by which time a CSR op's mepc/csr write has landed, so
          //    the LIVE mepc read here is the correct mepc-after-retire for normal ops.
+         //    GUARD: a trap being delivered THIS cycle (cot_fire) stamps the head entry
+         //    (pc==cot_epc) into a trap retire in section 5 below -- which runs AFTER this
+         //    emit. Without the guard, an interrupt pseudo-op (OP_IRQ, rk=0) at the head
+         //    drains RAW (trap=0/cause=0) before the stamp, leaking a bogus instruction
+         //    retire (the cosim interrupt-timing divergence). Hold the emit so the stamp wins.
          for (fl = 0; fl < QN; fl = fl + 1)
-            if (qn > 0 && q_cmt[0] && (q_trap[0] || q_rk[0] == 2'd0 || q_vok[0])) begin
+            if (qn > 0 && q_cmt[0] && (q_trap[0] || q_rk[0] == 2'd0 || q_vok[0])
+                && ~(cot_fire & ~q_trap[0] & (q_pc[0] == cot_epc))) begin
                // rename-correctness check (integer-source ops only; skip FP-source + traps)
                if (!q_trap[0]) begin
                   ck_op = q_insn[0][6:0];
