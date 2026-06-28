@@ -184,12 +184,10 @@ int csr_read_to_override(uint32_t insn) {
 void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
     simmerv_set_mtime(g_ctx, dut.mtime);
     const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
-    const unsigned long long STIP_CAUSE = 0x8000000000000005ULL;
-    const unsigned long long SEIP_CAUSE = 0x8000000000000009ULL;
     simmerv_set_mtimecmp(g_ctx, (dut.trapped && dut.trap_cause == MTIP_CAUSE) ? mtimecmp : ~0ULL);
-    simmerv_set_mtip_armed(g_ctx, dut.trapped && dut.trap_cause == MTIP_CAUSE);
-    simmerv_set_stip_armed(g_ctx, dut.trapped && dut.trap_cause == STIP_CAUSE);
-    simmerv_set_seip_armed(g_ctx, dut.trapped && dut.trap_cause == SEIP_CAUSE);
+    // Full interrupt DUT-follow: simmerv takes EXACTLY the interrupt the DUT took this
+    // retire (cause MSB set), or none. Replaces the per-type mtip/stip/seip armed gates.
+    simmerv_set_forced_interrupt(g_ctx, (dut.trapped && (dut.trap_cause >> 63)) ? dut.trap_cause : 0ULL);
     simmerv_set_seip(g_ctx, seip);
     simmerv_set_plic_ip(g_ctx, 10, seip);
     if (!dut.trapped && dut.rd_kind != 0) {
