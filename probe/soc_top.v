@@ -46,7 +46,19 @@ module soc_top #(
    // handshake). A sim TB ties uart_tx_ready=1 to drain instantly; $write still emits.
    output wire             uart_tx_valid,
    output wire [7:0]       uart_tx_data,
-   input  wire             uart_tx_ready
+   input  wire             uart_tx_ready,
+   // virtio-mmio passthrough: the sim-only block device (virtio_mmio + virtio_blk) lives
+   // in the TB wrapper. The CPU's 32-bit virtio register access is presented as a
+   // byte-offset addr[11:0] + 32b write data/byte-enable positioned by addr[2]; read data
+   // comes back 32b. virtio_irq raises PLIC source 1. The FPGA build leaves these
+   // unconnected (virtio_rdata/irq read 0) -- the region is never touched without a DTB node.
+   output wire [11:0]      virtio_addr,
+   output wire             virtio_read,
+   output wire             virtio_write,
+   output wire [31:0]      virtio_wdata,
+   output wire [3:0]       virtio_be,
+   input  wire [31:0]      virtio_rdata,
+   input  wire             virtio_irq
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -89,16 +101,25 @@ module soc_top #(
    // DDR latency HPM window (read-only counters; any write clears). NOT in the DTB -- read it
    // from a bare-metal tool / the monitor; the kernel never touches it.
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
+   localparam [63:0] VIRTIO_BASE = 64'h1000_1000;                 // virtio-mmio, 4 KiB window
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
    wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
-   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r;
+   wire is_virtio_r = (dmem_raddr & ~64'hfff)     == VIRTIO_BASE;
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r;
    wire is_clint_w = (dmem_waddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dmem_waddr & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_waddr & ~64'h3ff_ffff) == PLIC_BASE;
    wire is_hpm_w   = (dmem_waddr & ~64'hff)        == HPM_BASE;
-   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w;
+   wire is_virtio_w = (dmem_waddr & ~64'hfff)     == VIRTIO_BASE;
+   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
+   // virtio-mmio register access: 32-bit, positioned in the 64-bit data bus by addr[2].
+   assign virtio_addr  = (dmem_wen & is_virtio_w) ? dmem_waddr[11:0] : dmem_raddr[11:0];
+   assign virtio_read  = dmem_ren & is_virtio_r;
+   assign virtio_write = dmem_wen & is_virtio_w & ~dev_wack;
+   assign virtio_wdata = dmem_waddr[2] ? dmem_wdata[63:32] : dmem_wdata[31:0];
+   assign virtio_be    = dmem_waddr[2] ? dmem_wmask[7:4]   : dmem_wmask[3:0];
    // device read returns 1 cycle after the ren pulse (combinational device data, held addr);
    // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
    reg  dev_rvalid, dev_wack;
@@ -120,7 +141,7 @@ module soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src(64'd0), .meip(plic_meip), .seip(plic_seip));
+      .src({62'd0, virtio_irq, 1'b0}), .meip(plic_meip), .seip(plic_seip));   // virtio = PLIC source 1
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
    // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR (off 5) -> THRE|TEMT|DR;
@@ -162,10 +183,11 @@ module soc_top #(
                             : 8'h00; end end
    endfunction
    wire [63:0] hpm_rdata;
-   wire [63:0] dev_rdata = is_clint_r ? clint_rdata
-                         : is_uart_r  ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
-                         : is_plic_r  ? plic_rdata
-                         : is_hpm_r   ? hpm_rdata   : 64'd0;
+   wire [63:0] dev_rdata = is_clint_r  ? clint_rdata
+                         : is_uart_r   ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
+                         : is_plic_r   ? plic_rdata
+                         : is_virtio_r ? (dmem_raddr[2] ? {virtio_rdata, 32'd0} : {32'd0, virtio_rdata})
+                         : is_hpm_r    ? hpm_rdata   : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;

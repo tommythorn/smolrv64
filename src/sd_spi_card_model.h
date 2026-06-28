@@ -12,10 +12,37 @@
 #include <deque>
 #include <array>
 #include <vector>
+#include <unistd.h>
+#include <sys/types.h>
 
 struct SpiSdCard {
     std::map<uint32_t, std::array<uint8_t,512>> store;
     int miso = 1;
+
+    // Optional image-file backing: a fd opened O_RDWR by the harness. Sectors are
+    // loaded lazily on first access (sparse: a hole / past-EOF reads back as zero) and
+    // written through on store, so the disk persists across the run. fd<0 -> pure RAM.
+    int img_fd = -1;
+    void attach_image(int fd) {
+        img_fd = fd;
+        // Advertise the image's size via the CSD-v2 C_SIZE: capacity = (csd_csize+1)*1024
+        // sectors of 512B. Round the file down to the 512KB CSD granularity.
+        off_t sz = lseek(fd, 0, SEEK_END);
+        if (sz >= (off_t)512 * 1024) csd_csize = (uint32_t)(sz / (512 * 1024)) - 1;
+    }
+    std::array<uint8_t,512>& sect(uint32_t s) {
+        auto it = store.find(s);
+        if (it != store.end()) return it->second;
+        auto& blk = store[s];                       // default-constructs to zero
+        if (img_fd >= 0) {
+            ssize_t got = pread(img_fd, blk.data(), 512, (off_t)s * 512);
+            (void)got;                              // short/hole read -> remainder stays zero
+        }
+        return blk;
+    }
+    void writeback(uint32_t s) {
+        if (img_fd >= 0) (void)!pwrite(img_fd, store[s].data(), 512, (off_t)s * 512);
+    }
 
     // bit/byte framing
     int prev_sck = 0;
@@ -75,10 +102,10 @@ struct SpiSdCard {
                  for (int i = 0; i < 16; i++) txq.push_back(c[i]);
                  txq.push_back(0xff); txq.push_back(0xff);
                  break; }
-        case 17: txq.push_back(0x00); push_block(store[sector]); break;
+        case 17: txq.push_back(0x00); push_block(sect(sector)); break;
         case 18: txq.push_back(0x00);                              // READ_MULTIPLE_BLOCK
                  mread_active = true; mread_sector = sector;
-                 push_block(store[mread_sector++]); break;
+                 push_block(sect(mread_sector++)); break;
         case 12: mread_active = false; break;   // STOP_TRANSMISSION: stop refilling;
                  // the already-queued in-flight block drains, then the bus idles (0xFF) —
                  // modelling that a real card finishes the current block before going idle.
@@ -105,7 +132,7 @@ struct SpiSdCard {
         } else if (wr_state == 2) {          // CRC byte 1
             wr_state = 3;
         } else {                              // CRC byte 2 -> store + respond
-            store[wr_sector++] = wbuf;
+            uint32_t s = wr_sector++; store[s] = wbuf; writeback(s);
             txq.push_back(0x05);             // data-response: accepted
             txq.push_back(0x00);             // busy (one low byte)
             txq.push_back(0xff);             // released
@@ -128,7 +155,7 @@ struct SpiSdCard {
 
     uint8_t next_out() {
         if (txq.empty() && mread_active)       // keep the multi-read stream flowing
-            push_block(store[mread_sector++]);
+            push_block(sect(mread_sector++));
         if (txq.empty()) return 0xff;
         uint8_t b = txq.front(); txq.pop_front(); return b;
     }
