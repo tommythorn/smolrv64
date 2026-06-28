@@ -81,14 +81,19 @@ module soc_top #(
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
    localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
+   // DDR latency HPM window (read-only counters; any write clears). NOT in the DTB -- read it
+   // from a bare-metal tool / the monitor; the kernel never touches it.
+   localparam [63:0] HPM_BASE   = 64'h1800_0000;
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
-   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r;
+   wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r;
    wire is_clint_w = (dmem_waddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dmem_waddr & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_waddr & ~64'h3ff_ffff) == PLIC_BASE;
-   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w;
+   wire is_hpm_w   = (dmem_waddr & ~64'hff)        == HPM_BASE;
+   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w;
    // device read returns 1 cycle after the ren pulse (combinational device data, held addr);
    // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
    reg  dev_rvalid, dev_wack;
@@ -151,9 +156,11 @@ module soc_top #(
                             : (off==3'd0 && !dlab) ? rbr                     // RBR
                             : 8'h00; end end
    endfunction
+   wire [63:0] hpm_rdata;
    wire [63:0] dev_rdata = is_clint_r ? clint_rdata
                          : is_uart_r  ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
-                         : is_plic_r  ? plic_rdata  : 64'd0;
+                         : is_plic_r  ? plic_rdata
+                         : is_hpm_r   ? hpm_rdata   : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
@@ -320,6 +327,14 @@ module soc_top #(
    assign ddr_we    = m_we;
    assign ddr_addr  = m_addr;
    assign ddr_wdata = m_wdata;
+
+   // DDR latency HPM: time ddr_req->ddr_ack (core cycles) into read/write log2 histograms,
+   // read-only at HPM_BASE (any write clears). Observation-only; off the core critical path.
+   ddr_hpm u_ddr_hpm
+     (.clk(clk), .reset(reset),
+      .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_ack(ddr_ack),
+      .raddr(dmem_raddr[7:0]), .rdata(hpm_rdata),
+      .clr(dmem_wen & is_hpm_w & ~dev_wack));
 
    // response mux back to the arbiter (m_addr held by the arbiter through the transaction)
    assign m_ack   = m_is_local ? l_ack   : ddr_ack;

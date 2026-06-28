@@ -123,6 +123,16 @@ module tb;
 `endif
       end
       $display("COSIM-LINUX TIMEOUT after %0d cycles (pc~%h)", ncyc, dut.imem_addr);
+`ifdef HPM_DUMP
+      $display("DDR-HPM read : cnt=%0d sum=%0d  bins[1..7]=%0d %0d %0d %0d %0d %0d %0d",
+               dut.u_ddr_hpm.rd_cnt, dut.u_ddr_hpm.rd_sum, dut.u_ddr_hpm.rdb[1],
+               dut.u_ddr_hpm.rdb[2], dut.u_ddr_hpm.rdb[3], dut.u_ddr_hpm.rdb[4],
+               dut.u_ddr_hpm.rdb[5], dut.u_ddr_hpm.rdb[6], dut.u_ddr_hpm.rdb[7]);
+      $display("DDR-HPM write: cnt=%0d sum=%0d  bins[1..7]=%0d %0d %0d %0d %0d %0d %0d",
+               dut.u_ddr_hpm.wr_cnt, dut.u_ddr_hpm.wr_sum, dut.u_ddr_hpm.wrb[1],
+               dut.u_ddr_hpm.wrb[2], dut.u_ddr_hpm.wrb[3], dut.u_ddr_hpm.wrb[4],
+               dut.u_ddr_hpm.wrb[5], dut.u_ddr_hpm.wrb[6], dut.u_ddr_hpm.wrb[7]);
+`endif
       $finish;
    end
 endmodule
