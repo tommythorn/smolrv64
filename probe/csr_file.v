@@ -381,7 +381,10 @@ module csr_file
               SCAUSE:     scause  <= newv;
               STVAL:      stval   <= newv;
               SSCRATCH:   sscratch<= newv;
-              SATP:       satp    <= newv;
+              // satp.ASID is 10-bit WARL (matches SmolRV64 TLB_ASID_BITS=10 + simmerv):
+              // zero the unimplemented high ASID bits [59:54] so a read-back matches the
+              // reference (Linux probes ASID width by writing all-ones and reading back).
+              SATP:       satp    <= newv & ~64'h0FC0_0000_0000_0000;
               MNSTATUS:   mnstatus<= newv;
               STIMECMP:   stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
               MENVCFG:    menvcfg <= newv;
