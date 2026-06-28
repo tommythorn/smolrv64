@@ -49,6 +49,9 @@ module cache #(
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
    input  wire             wr_uncached, // Svpbmt: this store is NC/IO -> write through to L2 + invalidate
+   input  wire             cbo_req,     // Zicbom/Zicboz: this write-port request is a cache-maintenance op
+   input  wire             cbo_zero,    // cbo.zero: install a zero line (else clean/flush/inval)
+   input  wire             cbo_keep,    // cbo.clean: writeback but keep line valid (else invalidate)
    input  wire             inv_req,
    input  wire             inv_clean,   // inv_req variant: write back dirty lines but KEEP them
                                         // valid+clean (PTW coherency on sfence; not a full flush)
@@ -112,6 +115,7 @@ module cache #(
    // ---- request regs ----
    reg            r_is_wr;
    reg            r_uncached;          // Svpbmt: current access is NC/IO (flush-around)
+   reg            r_cbo, r_cbo_zero, r_cbo_keep;   // Zicbom/Zicboz maintenance op latched at accept
    reg [PAW-1:0]  r_addr;
    reg [WDW-1:0]  r_wdata;
    reg [WRB-1:0]  r_wmask;
@@ -171,7 +175,7 @@ module cache #(
       S_FILL=10, S_FILLW=11, S_FILLI=12,
       S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
       S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_INVDONE=22;
+      S_INVDONE=22, S_ZFILL=23;
    reg [4:0] st;
 
    integer b, bb, w2;
@@ -267,11 +271,13 @@ module cache #(
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
+                 r_cbo    <= cbo_req; r_cbo_zero <= cbo_zero; r_cbo_keep <= cbo_keep;   // Zicbom/Zicboz
                  r_addr   <= rd_req ? rd_addr : wr_addr;
                  r_wdata  <= wr_data; r_wmask <= wr_mask;
                  r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
-                 r_span   <= ({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
-                               + (rd_req ? RDB : WRB)) > WORDB;
+                 // a CBO is a single-line op (never spans)
+                 r_span   <= ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
+                               + (rd_req ? RDB : WRB)) > WORDB);
                  cur_line <= {(rd_req ? rd_addr[PAW-1:OFFB] : wr_addr[PAW-1:OFFB]), {OFFB{1'b0}}};
                  st <= S_LOOK;
               end
@@ -279,7 +285,29 @@ module cache #(
 
            S_LOOK: st <= S_CHECK;
 
-           S_CHECK: begin
+           S_CHECK: if (r_cbo) begin
+              // Zicbom/Zicboz: single-line maintenance on the addressed line.
+              if (hit) begin
+                 w0_way <= hway; w0_idx <= cih;
+                 if (r_cbo_zero) begin
+                    // cbo.zero: overwrite the resident line with zeros (install loop), mark dirty
+                    vw <= hway; vi <= cih; linebuf <= {LINEB{1'b0}}; pc <= 0; st <= S_FILLI;
+                 end else if (WRTHRU==0 && dirm[flat(hway,cih)]) begin
+                    // dirty -> write the line back to L2 (reuses the WT push path), then finalize
+                    wb_way <= hway; wb_idx <= cih; pc <= 0; st <= S_WTR;
+                 end else begin
+                    // clean line: flush/inval just invalidates; clean keeps it
+                    if (!r_cbo_keep) valm[flat(hway,cih)] <= 1'b0;
+                    wr_ack <= 1; st <= S_IDLE;
+                 end
+              end else begin
+                 if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
+                    vw <= vicm[base_idx(cur_line)];
+                    vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                    st <= S_WB;
+                 end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
+              end
+           end else begin
               if (hit) begin
                  if (!phase) begin
                     wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
@@ -304,7 +332,7 @@ module cache #(
                  wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
                  wb_laddr <= {vtag, vbase};
                  st <= S_WBR;
-              end else st <= S_FILL;
+              end else st <= r_cbo_zero ? S_ZFILL : S_FILL;
            end
            S_WBR: st <= S_WBW;
            S_WBW: begin
@@ -314,7 +342,16 @@ module cache #(
               else begin pc <= pc + 1'b1; st <= S_WBR; end
            end
            S_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_WBA; end
-           S_WBA: if (l2_ack) st <= S_FILL;
+           S_WBA: if (l2_ack) st <= r_cbo_zero ? S_ZFILL : S_FILL;
+
+           // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
+           S_ZFILL: begin
+              tagm[vflat] <= tag_of(cur_line);
+              valm[vflat] <= 1'b1;
+              vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              linebuf <= {LINEB{1'b0}}; pc <= 0;
+              st <= S_FILLI;
+           end
 
            S_FILL: begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
            S_FILLW: if (l2_ack) begin
@@ -326,8 +363,12 @@ module cache #(
               st <= S_FILLI;
            end
            S_FILLI: begin                  // install pair pc (bank writes combinational)
-              if (pc == HALF-1) begin pc <= 0; st <= S_LOOK; end   // refill done -> re-lookup
-              else pc <= pc + 1'b1;
+              if (pc == HALF-1) begin
+                 pc <= 0;
+                 // cbo.zero: the line is now zero -> mark dirty and finish; else re-lookup the refill
+                 if (r_cbo_zero) begin dirm[vflat] <= 1'b1; wr_ack <= 1; st <= S_IDLE; end
+                 else st <= S_LOOK;
+              end else pc <= pc + 1'b1;
            end
 
            // ---- hit terminal: deliver read / commit store ----
@@ -379,7 +420,10 @@ module cache #(
            end
            S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
            S_WTA: if (l2_ack) begin
-              if (r_uncached) valm[flat(wb_way,wb_idx)] <= 1'b0;   // Svpbmt NC store: flush-around
+              if (r_cbo) begin                                     // Zicbom writeback complete
+                 dirm[flat(wb_way,wb_idx)] <= 1'b0;                // it is now clean in L2
+                 if (!r_cbo_keep) valm[flat(wb_way,wb_idx)] <= 1'b0;  // flush/inval drop; clean keeps
+              end else if (r_uncached) valm[flat(wb_way,wb_idx)] <= 1'b0;  // Svpbmt NC store: flush-around
               wr_ack <= 1; st <= S_IDLE;
            end
 

@@ -16,8 +16,11 @@
 // F/D: carry the RVC-expanded 32-bit instruction so execute can re-run decode_fp for
 // the CVFPU control + operand routing (functional-first; cheaper than threading the 11
 // decoded fields -- optimise to decoded fields later if IQ area matters).
-`define PAYW        197
+`define PAYW        200
 `define PAY_INSN    196:165
+`define PAY_CBO     197                 // Zicbom/Zicboz CBO: store-path cache-maintenance op
+`define PAY_CBOZ    198                 // cbo.zero: install a zero line (else Zicbom clean/flush/inval)
+`define PAY_CBOK    199                 // cbo.clean: writeback but keep line valid (else invalidate)
 `define PAY_ALUOP   5:0
 `define PAY_W       6
 `define PAY_UW      7

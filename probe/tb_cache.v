@@ -20,6 +20,7 @@ module tb;
    // ---------------- D$ instance ----------------
    reg          d_rd_req, d_wr_req, d_inv_req;
    reg          d_rd_uncached=0, d_wr_uncached=0;   // Svpbmt NC/IO qualifiers
+   reg          d_cbo_req=0, d_cbo_zero=0, d_cbo_keep=0;   // Zicbom/Zicboz
    reg  [PAW-1:0] d_rd_addr, d_wr_addr;
    reg  [63:0]  d_wr_data;  reg [7:0] d_wr_mask;
    wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy;
@@ -31,12 +32,14 @@ module tb;
       .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
       .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
       .wr_ack(d_wr_ack), .rd_uncached(d_rd_uncached), .wr_uncached(d_wr_uncached),
+      .cbo_req(d_cbo_req), .cbo_zero(d_cbo_zero), .cbo_keep(d_cbo_keep),
       .inv_req(d_inv_req), .inv_clean(1'b0), .inv_busy(d_inv_busy),
       .l2_req(d_l2_req), .l2_we(d_l2_we), .l2_addr(d_l2_addr), .l2_wdata(d_l2_wdata),
       .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
 
    // D$ behavioral L2 (reads + writes l2mem, L2LAT cycles)
    reg dbusy; reg [3:0] dcnt; reg dwe_q; reg [PAW-OFFB-1:0] dad_q; reg [LINEB-1:0] dwd_q;
+   integer d_l2reads = 0;                          // count D$ L2 line reads (detect refill-on-miss)
    always @(posedge clk) begin
       d_l2_ack <= 0;
       if (reset) dbusy <= 0;
@@ -45,7 +48,8 @@ module tb;
       end else if (dbusy) begin
          if (dcnt==0) begin
             if (dwe_q) for (k=0;k<64;k=k+1) l2mem[(dad_q<<OFFB)+k] <= dwd_q[k*8 +: 8];
-            else       for (k=0;k<64;k=k+1) d_l2_rdata[k*8 +: 8] <= l2mem[(dad_q<<OFFB)+k];
+            else begin for (k=0;k<64;k=k+1) d_l2_rdata[k*8 +: 8] <= l2mem[(dad_q<<OFFB)+k];
+                       d_l2reads <= d_l2reads + 1; end
             d_l2_ack <= 1; dbusy <= 0;
          end else dcnt <= dcnt-1;
       end
@@ -60,7 +64,8 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(i_rd_req), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
       .wr_req(1'b0), .wr_addr(34'd0), .wr_data(64'd0), .wr_mask(8'd0),
-      .wr_ack(), .rd_uncached(1'b0), .wr_uncached(1'b0), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
+      .wr_ack(), .rd_uncached(1'b0), .wr_uncached(1'b0),
+      .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
       .l2_req(i_l2_req), .l2_we(i_l2_we), .l2_addr(i_l2_addr), .l2_wdata(i_l2_wdata),
       .l2_rdata(i_l2_rdata), .l2_ack(i_l2_ack));
    reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;  integer i_l2reads = 0;
@@ -114,6 +119,16 @@ module tb;
             $display("FAIL flush: l2mem[%0d]=%h refm=%h", k, l2mem[k], refm[k]); errs=errs+1;
          end
          $display("  ok  flush -> L2 matches refm");
+      end
+   endtask
+
+   task dcbo; input [PAW-1:0] a; input z; input keep;   // Zicbom/Zicboz maintenance op
+      begin
+         @(negedge clk); d_wr_req=1; d_cbo_req=1; d_cbo_zero=z; d_cbo_keep=keep;
+                         d_wr_addr=a; d_wr_data=0; d_wr_mask=0;
+         @(posedge clk); @(negedge clk); d_wr_req=0; d_cbo_req=0; d_cbo_zero=0; d_cbo_keep=0;
+         while (!d_wr_ack) @(posedge clk);
+         @(negedge clk);
       end
    endtask
 
@@ -210,6 +225,33 @@ module tb;
       for (k=0;k<8;k=k+1) begin l2mem[34'h140+k] = (k*13+1) & 8'hff; refm[34'h140+k] = (k*13+1) & 8'hff; end
       dread(34'h140, 8);                                    // must see DMA's value, not the cached A5..
       d_rd_uncached = 0;
+
+      // ---- Zicbom / Zicboz cache-maintenance ops (write-back D$) ----
+      $display("== Zicbom cbo.clean: writeback, keep line valid ==");
+      dwrite(34'h180, 64'h01234567_89ABCDEF, 8'hFF, 8);    // dirty line @0x180
+      dcbo  (34'h180, 1'b0, 1'b1);                          // cbo.clean (keep)
+      for (k=0;k<8;k=k+1) if (l2mem[34'h180+k] !== refm[34'h180+k]) begin
+         $display("FAIL cbo.clean: l2mem[%h]=%h exp=%h", 34'h180+k, l2mem[34'h180+k], refm[34'h180+k]); errs=errs+1; end
+      before_reads = d_l2reads;
+      dread (34'h180, 8);                                   // line kept valid -> no L2 refill
+      if (d_l2reads != before_reads) begin $display("FAIL cbo.clean: line not kept (refilled)"); errs=errs+1; end
+      else $display("  ok  cbo.clean wrote back + kept the line");
+
+      $display("== Zicbom cbo.flush: writeback + invalidate ==");
+      dwrite(34'h1C0, 64'hFEDCBA98_76543210, 8'hFF, 8);     // dirty line @0x1C0
+      dcbo  (34'h1C0, 1'b0, 1'b0);                          // cbo.flush (invalidate)
+      for (k=0;k<8;k=k+1) if (l2mem[34'h1C0+k] !== refm[34'h1C0+k]) begin
+         $display("FAIL cbo.flush: l2mem[%h]=%h exp=%h", 34'h1C0+k, l2mem[34'h1C0+k], refm[34'h1C0+k]); errs=errs+1; end
+      before_reads = d_l2reads;
+      dread (34'h1C0, 8);                                   // invalidated -> must refill from L2
+      if (d_l2reads == before_reads) begin $display("FAIL cbo.flush: line not invalidated"); errs=errs+1; end
+      else $display("  ok  cbo.flush wrote back + invalidated");
+
+      $display("== Zicboz cbo.zero: the addressed block becomes zero ==");
+      dcbo  (34'h200, 1'b1, 1'b0);                          // cbo.zero @0x200 (cold -> allocate+zero)
+      for (k=0;k<64;k=k+1) refm[34'h200+k] = 8'h00;         // golden: whole 64B block is now zero
+      dread (34'h200, 8); dread (34'h220, 8); dread (34'h238, 8);   // resident zero line
+      dflush();                                             // writeback -> L2 block is zero too
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;

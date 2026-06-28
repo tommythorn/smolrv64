@@ -76,6 +76,9 @@ module backend_top
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
     output wire                    dmem_wuncached,     // Svpbmt: the write addr is NC/IO (flush-around)
+    output wire                    dmem_cbo,           // Zicbom/Zicboz: cache-maintenance op at the write port
+    output wire                    dmem_cbo_zero,      // cbo.zero: install a zero line
+    output wire                    dmem_cbo_keep,      // cbo.clean: writeback but keep line valid
     input  wire                    dmem_wready,        // write accepted/done; tie 1 for 1-cycle writes
     output wire                    dmem_idle,          // LSU store buffer empty (mem current) -- fence.i ordering
     output wire                    ifence,             // FENCE.I redirecting this cycle -- invalidate the I$
@@ -500,6 +503,7 @@ module backend_top
    wire [IW*SEQW-1:0] wkq;          // per-lane writeback seqno (cosim seqno-matched capture)
    // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
    wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned, ex_fp;
+   wire [IW-1:0]      ex_cbo, ex_cbo_zero, ex_cbo_keep;
    wire [IW*SEQW-1:0] ex_seq;
    wire [IW*CBITS-1:0] ex_ckpt;
    wire [IW*MIDXW-1:0] ex_mem_idx;
@@ -519,6 +523,7 @@ module backend_top
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
+      .ex_cbo(ex_cbo), .ex_cbo_zero(ex_cbo_zero), .ex_cbo_keep(ex_cbo_keep),
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .redirect(eb_redirect), .redirect_target(eb_target),
@@ -540,8 +545,12 @@ module backend_top
    wire [IW*64-1:0]   exe_st_data;
    wire [IW*4-1:0]    exe_st_nb, exe_ld_nb;
    wire [IW-1:0]      exe_ld_sgn, exe_ld_fp;
+   wire [IW-1:0]      exe_st_cbo, exe_st_cbo_zero, exe_st_cbo_keep;
    generate for (gi = 0; gi < IW; gi = gi + 1) begin : exd
       assign exe_st_v[gi] = ex_valid[gi] & ex_mem[gi] &  ex_store[gi] & ~ex_fp_dis[gi];
+      assign exe_st_cbo[gi]      = ex_cbo[gi];
+      assign exe_st_cbo_zero[gi] = ex_cbo_zero[gi];
+      assign exe_st_cbo_keep[gi] = ex_cbo_keep[gi];
       assign exe_ld_v[gi] = ex_valid[gi] & ex_mem[gi] & ~ex_store[gi] & ~ex_fp_dis[gi];
       assign exe_st_idx[gi*SBI +: SBI] = ex_mem_idx[gi*MIDXW +: SBI];
       assign exe_ld_idx[gi*LQI +: LQI] = ex_mem_idx[gi*MIDXW +: LQI];
@@ -581,6 +590,7 @@ module backend_top
       .sb_full(sb_full), .lq_full(lq_full),
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
+      .exe_st_cbo(exe_st_cbo), .exe_st_cbo_zero(exe_st_cbo_zero), .exe_st_cbo_keep(exe_st_cbo_keep),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn), .exe_ld_fp(exe_ld_fp),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),
@@ -600,6 +610,7 @@ module backend_top
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .mem_wuncached(dmem_wuncached),
+      .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
       .mem_wready(dmem_wready),
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),

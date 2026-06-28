@@ -57,6 +57,9 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
     output wire [IW-1:0]         is_amo,
     output wire [IW*5-1:0]       amo_func,
     output wire [IW-1:0]         is_fencei,
+    output wire [IW-1:0]         is_cbo,
+    output wire [IW-1:0]         cbo_zero,
+    output wire [IW-1:0]         cbo_keep,
     output wire [IW-1:0]         illegal);
 
    genvar g;
@@ -80,7 +83,8 @@ module decode_stage #(parameter IW = 4, parameter SEQW = 8,
             .is_mul(is_mul[g]),
             .is_csr(is_csr[g]), .csr_func(csr_func[g*3 +: 3]), .is_serialize(is_serialize[g]),
             .is_amo(is_amo[g]), .amo_func(amo_func[g*5 +: 5]),
-            .is_fencei(is_fencei[g]), .illegal(illegal[g]));
+            .is_fencei(is_fencei[g]), .is_cbo(is_cbo[g]), .cbo_zero(cbo_zero[g]),
+            .cbo_keep(cbo_keep[g]), .illegal(illegal[g]));
       end
    endgenerate
 

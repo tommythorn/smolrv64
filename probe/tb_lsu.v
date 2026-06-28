@@ -59,6 +59,7 @@ module tb;
       .disp_sb_idx(disp_sb_idx), .disp_lq_idx(disp_lq_idx), .sb_full(sb_full), .lq_full(lq_full),
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
+      .exe_st_cbo({IW{1'b0}}), .exe_st_cbo_zero({IW{1'b0}}), .exe_st_cbo_keep({IW{1'b0}}),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn), .exe_ld_fp(exe_ld_fp),
       .amo_v(1'b0), .amo_func(5'd0), .amo_addr({AW{1'b0}}), .amo_data(64'd0),

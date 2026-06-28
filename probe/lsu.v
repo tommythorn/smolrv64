@@ -71,6 +71,9 @@ module lsu
     input  wire [IW*AW-1:0]       exe_st_addr,
     input  wire [IW*64-1:0]       exe_st_data,
     input  wire [IW*4-1:0]        exe_st_nb,          // store size in bytes (1..8)
+    input  wire [IW-1:0]          exe_st_cbo,         // Zicbom/Zicboz CBO (rides this store entry)
+    input  wire [IW-1:0]          exe_st_cbo_zero,    // cbo.zero (else clean/flush/inval)
+    input  wire [IW-1:0]          exe_st_cbo_keep,    // cbo.clean keep-valid (else invalidate)
     input  wire [IW-1:0]          exe_ld_v,
     input  wire [IW*LQI-1:0]      exe_ld_idx,
     input  wire [IW*AW-1:0]       exe_ld_addr,
@@ -140,6 +143,9 @@ module lsu
     output reg  [63:0]            mem_wdata,
     output reg  [7:0]             mem_wmask,
     output reg                    mem_wuncached,      // Svpbmt: the write addr is NC/IO (flush-around)
+    output reg                    mem_cbo,            // Zicbom/Zicboz: drain a cache-maintenance op (no data write)
+    output reg                    mem_cbo_zero,       // cbo.zero: install a zero line
+    output reg                    mem_cbo_keep,       // cbo.clean: writeback but keep line valid
     input  wire                   mem_wready,         // write accepted/done; tie 1 for 1-cycle writes
 
     // ---- load writeback (to the owner shard's WB lane) + completion ----
@@ -186,6 +192,9 @@ module lsu
    reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
    reg [AW-1:0]     sb_pa  [0:SBDEPTH-1];   // physical drain address (Bare: ==VA; Sv39: filled at check)
    reg              sb_nc  [0:SBDEPTH-1];   // Svpbmt: NC/IO store -> flush-around at drain
+   reg              sb_cbo [0:SBDEPTH-1];   // Zicbom/Zicboz: this entry is a CBO maintenance op
+   reg              sb_cboz[0:SBDEPTH-1];   // cbo.zero (else clean/flush/inval)
+   reg              sb_cbok[0:SBDEPTH-1];   // cbo.clean keep-valid (else invalidate)
    reg              sb_xck [0:SBDEPTH-1];   // translation checked (drainable; Bare: set at fill)
    reg              sb_xflt[0:SBDEPTH-1];   // store page-faults (reported via dfault, never drains)
 
@@ -686,6 +695,7 @@ module lsu
    // (dr_v/dr_sel/dr_mask are declared+computed above, before the atomic FSM, since the
    //  FSM's reservation-clear references them.)
    always @* begin
+      mem_cbo = 1'b0; mem_cbo_zero = 1'b0; mem_cbo_keep = 1'b0;
       if (amo_wr_now) begin                 // atomic RMW write (solo -> no drain conflict)
          mem_wen   = 1'b1;
          mem_waddr = a_wpa;                  // translated (aligned) physical address
@@ -696,8 +706,13 @@ module lsu
          mem_wen   = dr_v;                   // dr_v already requires the store be xck'd (translated)
          mem_waddr = sb_pa[dr_sel];          // physical address (Bare: == VA, filled at fill-time)
          mem_wdata = sb_data[dr_sel];
-         mem_wmask = dr_mask;
-         mem_wuncached = sb_nc[dr_sel];
+         // a CBO carries no store data: drive a maintenance command (wmask=0 so the cache's
+         // combinational store-write touches nothing) and let the cache act on its line.
+         mem_wmask = sb_cbo[dr_sel] ? 8'd0 : dr_mask;
+         mem_wuncached = sb_nc[dr_sel] & ~sb_cbo[dr_sel];
+         mem_cbo      = dr_v & sb_cbo[dr_sel];
+         mem_cbo_zero = sb_cboz[dr_sel];
+         mem_cbo_keep = sb_cbok[dr_sel];
       end
    end
 
@@ -750,6 +765,9 @@ module lsu
                sb_xflt[eidx] <= 1'b0;
                sb_data[eidx] <= exe_st_data[i*64 +: 64];
                sb_nb[eidx]   <= exe_st_nb[i*4 +: 4];
+               sb_cbo[eidx]  <= exe_st_cbo[i];
+               sb_cboz[eidx] <= exe_st_cbo_zero[i];
+               sb_cbok[eidx] <= exe_st_cbo_keep[i];
                sb_w0[eidx]   <= f_addr[PAW-1:3];
                sb_w1[eidx]   <= f_addr[PAW-1:3] + 1'b1;
                sb_d0[eidx]   <= f_wd[63:0];

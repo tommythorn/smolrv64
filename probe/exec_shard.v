@@ -55,6 +55,9 @@ module exec_shard
     input  wire                    is_serialize,
     input  wire                    is_fencei,
     input  wire                    is_amo,
+    input  wire                    is_cbo,        // Zicbom/Zicboz CBO (rides the store path)
+    input  wire                    cbo_zero,      // cbo.zero (else clean/flush/inval)
+    input  wire                    cbo_keep,      // cbo.clean keep-valid (else invalidate)
     input  wire [4:0]              amo_func,
     input  wire [2:0]              br_func,
     input  wire [63:0]             imm,
@@ -104,6 +107,9 @@ module exec_shard
     output wire [MIDXW-1:0]        ex_mem_idx,
     output wire                    ex_mem,
     output wire                    ex_store,
+    output wire                    ex_cbo,        // EX op is a CBO maintenance op
+    output wire                    ex_cbo_zero,
+    output wire                    ex_cbo_keep,
     output wire                    ex_fp,         // EX op is an FP instruction (FLW/FLD box at LSU)
     output wire [1:0]              ex_msize,
     output wire                    ex_msigned,
@@ -150,7 +156,8 @@ module exec_shard
    wire rr_kill = squash & older(squash_seq, iss_seq);
 
    reg              ex_v, ex_pdv, ex_w, ex_uw, ex_o2i, ex_link, ex_rvc, ex_memr,
-                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor, ex_fencei;
+                    ex_str, ex_msgn, ex_br, ex_jmp, ex_mulr, ex_csr, ex_ser, ex_amor, ex_fencei,
+                    ex_cbor, ex_cbozr, ex_cbokr;
    reg  [4:0]       ex_amof;
    reg  [PBITS-1:0] ex_pd, ex_p1, ex_p2, ex_p3;
    reg  [SEQW-1:0]  ex_sq;
@@ -182,6 +189,7 @@ module exec_shard
       ex_br  <= is_branch; ex_jmp <= is_jump; ex_mulr <= is_mul; ex_bf <= br_func;
       ex_csr <= is_csr; ex_csrf <= csr_func; ex_ser <= is_serialize;
       ex_amor <= is_amo; ex_amof <= amo_func; ex_fencei <= is_fencei;
+      ex_cbor <= is_cbo; ex_cbozr <= cbo_zero; ex_cbokr <= cbo_keep;
    end
 
    // ============================== EX stage ==============================
@@ -397,6 +405,9 @@ module exec_shard
    assign ex_mem_idx  = ex_mi;
    assign ex_mem      = ex_memr;
    assign ex_store    = ex_str;
+   assign ex_cbo      = ex_cbor;
+   assign ex_cbo_zero = ex_cbozr;
+   assign ex_cbo_keep = ex_cbokr;
    assign ex_fp       = (ex_insn[6:0]==7'b0000111);   // LOAD-FP (FLW/FLD) -> LSU NaN-boxes FLW
    assign ex_msize    = ex_msz;
    assign ex_msigned  = ex_msgn;

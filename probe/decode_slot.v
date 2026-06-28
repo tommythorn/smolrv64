@@ -46,6 +46,9 @@ module decode_slot #(parameter SEQW = 8)
     output wire             is_amo,
     output wire [4:0]       amo_func,
     output wire             is_fencei,
+    output wire             is_cbo,
+    output wire             cbo_zero,
+    output wire             cbo_keep,
     output wire             illegal);
 
    wire        is_c = (inst[1:0] != 2'b11);
@@ -68,7 +71,8 @@ module decode_slot #(parameter SEQW = 8)
       .is_store(is_store), .mem_size(mem_size), .mem_signed(mem_signed),
       .is_branch(is_branch), .br_func(br_func), .is_jump(is_jump),
       .is_csr(is_csr), .csr_func(csr_func), .is_serialize(is_serialize), .is_mul(is_mul),
-      .is_amo(is_amo), .amo_func(amo_func), .is_fp(), .is_fencei(is_fencei), .illegal(illegal));
+      .is_amo(is_amo), .amo_func(amo_func), .is_fp(), .is_fencei(is_fencei),
+      .is_cbo(is_cbo), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep), .illegal(illegal));
 
    assign valid    = in_valid;
    assign seq      = seq_in;

@@ -59,6 +59,7 @@ module soc_top #(
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
+   wire                dmem_cbo, dmem_cbo_zero, dmem_cbo_keep;  // Zicbom/Zicboz cache maintenance
    wire [63:0]         dmem_rdata;
    wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
    wire [55:0]         ptw_addr, ldptw_addr, stptw_addr;
@@ -75,6 +76,7 @@ module soc_top #(
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
+      .dmem_cbo(dmem_cbo), .dmem_cbo_zero(dmem_cbo_zero), .dmem_cbo_keep(dmem_cbo_keep),
       .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .ldptw_addr(ldptw_addr), .ldptw_read(ldptw_read), .ldptw_rdata(ldptw_rdata), .ldptw_rvalid(ldptw_rvalid),
@@ -204,6 +206,7 @@ module soc_top #(
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
       .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
+      .cbo_req(dmem_cbo & ~dc_wr_ack & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
@@ -272,6 +275,7 @@ module soc_top #(
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
+      .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));

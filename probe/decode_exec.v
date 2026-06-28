@@ -36,6 +36,9 @@ module decode_exec
    output reg  [4:0]  amo_func,    // AMO funct5 (insn[31:27]): LR/SC/swap/add/and/or/xor/min/max
    output reg         is_fp,       // F/D ext (deferred unit)
    output reg         is_fencei,   // FENCE.I -> serialize + redirect to refetch (I/D coherence)
+   output reg         is_cbo,      // Zicbom/Zicboz CBO: store-path maintenance op (no data write)
+   output reg         cbo_zero,    // Zicboz cbo.zero: install a zero line (else Zicbom)
+   output reg         cbo_keep,    // Zicbom cbo.clean: writeback but keep line valid (else invalidate)
    output reg         illegal);
 
    localparam [1:0] OP1_RS1 = 2'd0, OP1_PC = 2'd1, OP1_ZERO = 2'd2;
@@ -52,6 +55,7 @@ module decode_exec
       is_branch=0; br_func=f3; is_jump=0;
       is_csr=0; csr_func=f3; is_serialize=0;
       is_mul=0; is_amo=0; amo_func=insn[31:27]; is_fp=0; is_fencei=0; illegal=0;
+      is_cbo=0; cbo_zero=0; cbo_keep=0;
 
       if (insn[1:0] != 2'b11) illegal = 1'b1;   // not a 32-bit insn (should be expanded)
       else case (opc)
@@ -158,6 +162,19 @@ module decode_exec
         5'b00011: if (f3==3'b001) begin is_serialize=1; is_fencei=1; end // FENCE.I: serialize +
                       // refetch (the store-to-instruction must be visible to the refetch). Plain
                       // FENCE (f3=000) stays a NOP (single hart, in-order commit -> barrier free).
+                  else if (f3==3'b010) begin                             // Zicbom/Zicboz CBO
+                     // rides the store path (translated, fault-precise, commit-gated drain);
+                     // at drain the LSU issues a cache-maintenance command, not a data write.
+                     is_mem=1; is_store=1; op2_imm=1; alu_op=`ALU_ADD;   // addr = rs1 + 0
+                     is_cbo=1;
+                     case (insn[31:20])
+                       12'h000: ;                  // cbo.inval  -> writeback+invalidate (inval==flush)
+                       12'h001: cbo_keep=1;        // cbo.clean  -> writeback, keep valid
+                       12'h002: ;                  // cbo.flush  -> writeback+invalidate
+                       12'h004: cbo_zero=1;        // cbo.zero   -> install zero line (Zicboz)
+                       default: begin illegal=1; is_mem=0; is_store=0; is_cbo=0; end
+                     endcase
+                  end
 
         5'b01011: begin                                                // AMO (A ext)
            is_amo=1; is_serialize=1;            // serialized + solo (gate to oldest)
@@ -179,6 +196,7 @@ module decode_exec
       if (illegal) begin
          is_mem=0; is_store=0; is_branch=0; is_jump=0; res_link=0;
          is_csr=0; is_serialize=0; is_mul=0; is_amo=0; is_fp=0; is_fencei=0;
+         is_cbo=0; cbo_zero=0; cbo_keep=0;
       end
    end
 endmodule

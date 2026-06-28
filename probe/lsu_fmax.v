@@ -149,6 +149,8 @@ module lsu_fmax (input wire clk, output reg probe_out = 1'b0);
       .disp_sb_idx(disp_sb_idx), .disp_lq_idx(disp_lq_idx), .sb_full(sb_full), .lq_full(lq_full),
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
+      .exe_st_cbo({IW{1'b0}}), .exe_st_cbo_zero({IW{1'b0}}), .exe_st_cbo_keep({IW{1'b0}}),
+      .mem_cbo(), .mem_cbo_zero(), .mem_cbo_keep(),
       .exe_ld_v(exe_ld_v), .exe_ld_idx(exe_ld_idx), .exe_ld_addr(exe_ld_addr),
       .exe_ld_nb(exe_ld_nb), .exe_ld_sgn(exe_ld_sgn),
       .amo_v(amo_v), .amo_func(amo_func), .amo_addr(amo_addr), .amo_data(amo_data),

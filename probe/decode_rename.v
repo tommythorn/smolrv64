@@ -74,6 +74,7 @@ module decode_rename
    wire [IW*6-1:0]      d_alu_op;
    wire [IW*2-1:0]      d_op1_sel;
    wire [IW-1:0]        d_is_csr, d_is_serialize, d_is_amo, d_illegal, d_is_fencei;
+   wire [IW-1:0]        d_is_cbo, d_cbo_zero, d_cbo_keep;
    wire [IW*3-1:0]      d_csr_func;
    wire [IW*5-1:0]      d_amo_func;
 
@@ -91,7 +92,8 @@ module decode_rename
       .is_store(d_is_store), .mem_size(d_mem_size), .mem_signed(d_mem_signed),
       .is_branch(d_is_branch), .br_func(d_br_func), .is_jump(d_is_jump), .is_mul(d_is_mul),
       .is_csr(d_is_csr), .csr_func(d_csr_func), .is_serialize(d_is_serialize),
-      .is_amo(d_is_amo), .amo_func(d_amo_func), .is_fencei(d_is_fencei), .illegal(d_illegal));
+      .is_amo(d_is_amo), .amo_func(d_amo_func), .is_fencei(d_is_fencei),
+      .is_cbo(d_is_cbo), .cbo_zero(d_cbo_zero), .cbo_keep(d_cbo_keep), .illegal(d_illegal));
 
    // -------------------------------------------- decode/rename boundary reg
    reg [IW-1:0]        q_valid, q_rd_v, q_s1_is_slot, q_s2_is_slot, q_s3_is_slot, q_map_writer, q_d_is_slot;
@@ -109,6 +111,7 @@ module decode_rename
    reg [IW*6-1:0]      q_alu_op;
    reg [IW*2-1:0]      q_op1_sel;
    reg [IW-1:0]        q_is_csr, q_is_serialize, q_is_amo, q_illegal, q_is_fencei;
+   reg [IW-1:0]        q_is_cbo, q_cbo_zero, q_cbo_keep;
    reg [IW*3-1:0]      q_csr_func;
    reg [IW*5-1:0]      q_amo_func;
    initial begin
@@ -151,6 +154,7 @@ module decode_rename
          q_is_mul <= d_is_mul;
          q_is_csr <= d_is_csr; q_csr_func <= d_csr_func; q_is_serialize <= d_is_serialize;
          q_is_amo <= d_is_amo; q_amo_func <= d_amo_func;
+         q_is_cbo <= d_is_cbo; q_cbo_zero <= d_cbo_zero; q_cbo_keep <= d_cbo_keep;
          q_illegal <= d_illegal; q_is_fencei <= d_is_fencei;
       end
    end
@@ -180,7 +184,8 @@ module decode_rename
    genvar p;
    generate for (p = 0; p < IW; p = p + 1) begin : pay
       assign r_pay[p*`PAYW +: `PAYW] =
-        { q_insn[p*32 +: 32],
+        { q_cbo_keep[p], q_cbo_zero[p], q_is_cbo[p],
+          q_insn[p*32 +: 32],
           q_is_fencei[p], ill_ok[p],
           q_amo_func[p*5 +: 5], q_is_amo[p],
           q_is_serialize[p], q_csr_func[p*3 +: 3], q_is_csr[p],

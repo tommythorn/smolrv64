@@ -69,7 +69,7 @@ module decode_operands
         OPIMM, OPIMM32: begin has_rd=1'b1; has_rs1=1'b1; imm_sel=I; end
         OP, OP32:   begin has_rd=1'b1; has_rs1=1'b1; has_rs2=1'b1; end
         AMO:        begin has_rd=1'b1; has_rs1=1'b1; has_rs2=1'b1; end
-        MISCMEM:    ;
+        MISCMEM:    if (funct3==3'b010) has_rs1=1'b1;   // Zicbom/Zicboz CBO: rs1=base addr (no rs2/rd/imm)
         // ---- F/D ----
         LOADFP:     begin has_rd=1'b1; rd_fp=1'b1; has_rs1=1'b1; imm_sel=I; end   // FLW/FLD: fd, rs1=int base
         STOREFP:    begin has_rs1=1'b1; has_rs2=1'b1; rs2_fp=1'b1; imm_sel=S; end // FSW/FSD: rs1=int base, fs2 data
