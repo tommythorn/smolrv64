@@ -187,14 +187,42 @@ module soc_top #(
    assign       dmem_rvalid = raw_rvalid | c_st_ok;
    assign       dmem_wready = is_dev_w ? dev_wack : dc_wr_ack;
 
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1), .PERF_ID(1)) u_dcache
+   // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
+   // store buffer drains in ~1-2c instead of a full L2 round-trip. PTW reads are routed THROUGH
+   // the D$ (the dcr_* read-port arbiter below), so a page-table walk always sees dirty PTEs --
+   // the D$ is the coherency point. sfence.vma therefore needs NO D$ flush (just a TLB flush);
+   // only fence.i still clean-flushes (the I$ reads L2 directly) -- see the df_* FSM below.
+   wire        dcr_req;  wire [63:0] dcr_addr;     // muxed D$ read port (LSU + 3 PTW), assigned below
+   wire dc_inv_req, dc_inv_busy;
+   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
-      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(1'b0), .inv_busy(),
+      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack));
+
+   // D$ clean-flush on fence.i ONLY: drain the store buffer, then clean-flush the D$ (write back
+   // dirty lines, keep them valid). FENCE.I needs this because the I$ reads L2/DDR directly: with
+   // a write-back D$, freshly-stored code sits DIRTY in the D$, so the I$ would refetch STALE
+   // bytes after a bare invalidate -- the D$ must write back first. The I$-invalidate FSM (fi)
+   // below waits for this flush (df==DF_IDLE) before invalidating, so DDR is current before the
+   // refetch. sfence.vma does NOT trigger this: PTW reads go through the D$ (coherent), so the
+   // walk never sees stale memory -- sfence only flushes the TLB (in the MMU).
+   localparam DF_IDLE=0, DF_DRAIN=1, DF_INV=2, DF_WAIT=3;
+   reg [1:0] df;  wire df_stall = (df != DF_IDLE);
+   reg dc_inv_req_r;  assign dc_inv_req = dc_inv_req_r;
+   always @(posedge clk) if (reset) begin df<=DF_IDLE; dc_inv_req_r<=1'b0; end
+      else begin
+         dc_inv_req_r <= 1'b0;
+         case (df)
+           DF_IDLE:  if (ifence) df<=DF_DRAIN;
+           DF_DRAIN: if (dmem_idle) begin dc_inv_req_r<=1'b1; df<=DF_INV; end
+           DF_INV:   df<=DF_WAIT;
+           DF_WAIT:  if (!dc_inv_busy) df<=DF_IDLE;
+         endcase
+      end
 
    // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
    reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
@@ -219,45 +247,54 @@ module soc_top #(
          ic_inv_req <= 1'b0;
          case (fi)
            FI_IDLE:  if (ifence) fi<=FI_DRAIN;
-           FI_DRAIN: if (dmem_idle) begin ic_inv_req<=1'b1; fi<=FI_INV; end
+           // wait for the D$ clean-flush (df, also triggered by ifence) to finish so DDR holds
+           // the freshly-written code BEFORE invalidating the I$ -> the refetch can't be stale.
+           FI_DRAIN: if (dmem_idle & (df == DF_IDLE)) begin ic_inv_req<=1'b1; fi<=FI_INV; end
            FI_INV:   fi<=FI_WAIT;
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
       end
    assign imem_data  = i_win;
+   // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
+   // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
+   // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
+   // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
    assign imem_avail = fi_stall ? 4'd0 : (i_match ? 4'd8 : 4'd0);
 
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(),
-      .inv_req(ic_inv_req), .inv_busy(ic_inv_busy),
+      .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));
 
-   // ---------------- PTW line adapters (word read of a PTE via a line read) ----------------
-   // i=2 iPTW, 3 ldPTW, 4 stPTW. Each: on *_read (held until *_rvalid), request the
-   // containing line once, on ack extract the 8-byte word and pulse *_rvalid.
+   // ---------------- PTW adapters: PTE word reads routed THROUGH the D$ ----------------
+   // g=0 iPTW, 1 ldPTW, 2 stPTW. Each *_read is held (with a stable *_addr) until *_rvalid.
+   // A walk reads its 8-byte PTE through the D$ read port (shared with the LSU via the dcr_*
+   // arbiter below), so it always observes dirty PTEs -- no sfence.vma flush needed. pw_busy[g]
+   // marks an outstanding read; the response is matched by exact byte address (the cache echoes
+   // rd_resp_addr = the requested address). Same-address responses safely share data, so no
+   // owner tag is needed.
    wire [2:0]   pw_read   = {stptw_read, ldptw_read, ptw_read};
    wire [3*56-1:0] pw_addr = {stptw_addr, ldptw_addr, ptw_addr};
    reg  [2:0]   pw_busy;
-   reg  [55:0]  pw_a [0:2];
-   wire [2:0]   pw_req;
-   wire [2:0]   pw_ack;       // from arbiter
    reg  [2:0]   pw_rvalid;
    reg  [63:0]  pw_rdata [0:2];
+   wire [2:0]   pw_match;
    wire [511:0] arb_rdata;
    genvar g;
    generate for (g=0; g<3; g=g+1) begin : ptw_adapt
-      assign pw_req[g] = pw_read[g] & ~pw_busy[g];
+      assign pw_match[g] = dc_rd_valid & pw_busy[g]
+                         & (dc_rd_resp_addr == {8'd0, pw_addr[g*56 +: 56]});
       always @(posedge clk) if (reset) begin pw_busy[g]<=1'b0; pw_rvalid[g]<=1'b0; end
          else begin
             pw_rvalid[g] <= 1'b0;
-            if (pw_req[g]) begin pw_busy[g]<=1'b1; pw_a[g]<=pw_addr[g*56 +: 56]; end
-            if (pw_busy[g] & pw_ack[g]) begin
+            if (pw_read[g] & ~pw_busy[g] & ~pw_rvalid[g]) pw_busy[g] <= 1'b1;  // new request
+            if (pw_match[g]) begin
                pw_busy[g]  <= 1'b0;
                pw_rvalid[g]<= 1'b1;
-               pw_rdata[g] <= arb_rdata[ {pw_a[g][5:3],6'd0} +: 64 ];   // word within the line
+               pw_rdata[g] <= dc_rd_data;                  // the cache returns the 64-bit word
             end
          end
    end endgenerate
@@ -265,14 +302,26 @@ module soc_top #(
    assign ldptw_rdata=pw_rdata[1]; assign ldptw_rvalid=pw_rvalid[1];
    assign stptw_rdata=pw_rdata[2]; assign stptw_rvalid=pw_rvalid[2];
 
-   // ---------------- l2_arbiter (5 requesters) ----------------
-   localparam NREQ=5;
-   wire [NREQ-1:0]     a_req   = {pw_req[2], pw_req[1], pw_req[0], ic_l2_req, dc_l2_req};
-   wire [NREQ-1:0]     a_we    = {1'b0,1'b0,1'b0, 1'b0, dc_l2_we};
-   // PTW byte addr (56b) -> physical line addr PA[63:6] = {8'd0, ptw_addr[55:6]} (LAW=58b)
-   wire [NREQ*LAW-1:0] a_addr  = {{8'd0,pw_a[2][55:6]}, {8'd0,pw_a[1][55:6]}, {8'd0,pw_a[0][55:6]},
-                                  ic_l2_addr, dc_l2_addr};
-   wire [NREQ*512-1:0] a_wdata = {512'd0,512'd0,512'd0, ic_l2_wdata, dc_l2_wdata};
+   // D$ read-port arbiter: the LSU (c_rd_req/dmem_raddr) and the 3 PTW walks share the single D$
+   // read port. Fixed priority LSU > iPTW > ldPTW > stPTW. The cache samples rd_req only at its
+   // S_IDLE and self-serializes; each client holds its request until its response matches, so a
+   // purely combinational mux suffices (no accept handshake). No deadlock: a load needing ldPTW
+   // is itself blocked on translation and not issuing c_rd_req, so the walk gets the port.
+   assign dcr_req  = c_rd_req | (|pw_busy);
+   assign dcr_addr = c_rd_req    ? dmem_raddr
+                   : pw_busy[0]  ? {8'd0, pw_addr[0*56 +: 56]}
+                   : pw_busy[1]  ? {8'd0, pw_addr[1*56 +: 56]}
+                   :               {8'd0, pw_addr[2*56 +: 56]};
+
+   // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
+   // PTW reads no longer reach the arbiter -- they go through the D$ (dcr_* above), and a D$ miss
+   // on a PTE fills via dc_l2_* here like any other line. So the arbiter serves only the two
+   // caches' line refills/writebacks.
+   localparam NREQ=2;
+   wire [NREQ-1:0]     a_req   = {ic_l2_req, dc_l2_req};
+   wire [NREQ-1:0]     a_we    = {1'b0, dc_l2_we};
+   wire [NREQ*LAW-1:0] a_addr  = {ic_l2_addr, dc_l2_addr};
+   wire [NREQ*512-1:0] a_wdata = {ic_l2_wdata, dc_l2_wdata};
    wire [NREQ-1:0]     a_ack;
    wire                m_req, m_we;  wire [LAW-1:0] m_addr;  wire [511:0] m_wdata, m_rdata;  wire m_ack;
    l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
@@ -282,7 +331,6 @@ module soc_top #(
       .mem_rdata(m_rdata), .mem_ack(m_ack));
    assign dc_l2_ack = a_ack[0];  assign dc_l2_rdata = arb_rdata;
    assign ic_l2_ack = a_ack[1];  assign ic_l2_rdata = arb_rdata;
-   assign pw_ack    = a_ack[4:2];
 
    // ---------------- memory: internal local SRAM (BRAM) + EXTERNAL DDR port ----------------
    // The arbiter's single line transaction is region-decoded: the on-chip local SRAM at

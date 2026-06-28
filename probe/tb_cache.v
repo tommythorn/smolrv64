@@ -29,7 +29,7 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
       .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
-      .wr_ack(d_wr_ack), .inv_req(d_inv_req), .inv_busy(d_inv_busy),
+      .wr_ack(d_wr_ack), .inv_req(d_inv_req), .inv_clean(1'b0), .inv_busy(d_inv_busy),
       .l2_req(d_l2_req), .l2_we(d_l2_we), .l2_addr(d_l2_addr), .l2_wdata(d_l2_wdata),
       .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
 
@@ -58,7 +58,7 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(i_rd_req), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
       .wr_req(1'b0), .wr_addr(34'd0), .wr_data(64'd0), .wr_mask(8'd0),
-      .wr_ack(), .inv_req(i_inv_req), .inv_busy(i_inv_busy),
+      .wr_ack(), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
       .l2_req(i_l2_req), .l2_we(i_l2_we), .l2_addr(i_l2_addr), .l2_wdata(i_l2_wdata),
       .l2_rdata(i_l2_rdata), .l2_ack(i_l2_ack));
    reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;  integer i_l2reads = 0;

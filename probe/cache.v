@@ -48,6 +48,8 @@ module cache #(
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
    input  wire             inv_req,
+   input  wire             inv_clean,   // inv_req variant: write back dirty lines but KEEP them
+                                        // valid+clean (PTW coherency on sfence; not a full flush)
    output reg              inv_busy,
    output reg              l2_req,
    output reg              l2_we,
@@ -143,6 +145,7 @@ module cache #(
    wire [PTAGB-1:0] vtag  = tagm[vflat];
    wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
 
+   reg            flush_clean;        // current flush is clean-only (keep lines valid)
    reg [FW:0]     fscan;
    wire           fway  = fscan[IDXB];
    wire [IDXB-1:0] fidx  = fscan[IDXB-1:0];
@@ -257,7 +260,7 @@ module cache #(
                  if (WRITABLE==0 || WRTHRU!=0) begin
                     for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
                     inv_busy <= 1; st <= S_INVDONE;
-                 end else begin inv_busy <= 1; fscan <= 0; st <= S_FLUSH; end
+                 end else begin inv_busy <= 1; fscan <= 0; flush_clean <= inv_clean; st <= S_FLUSH; end
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_addr   <= rd_req ? rd_addr : wr_addr;
@@ -372,7 +375,8 @@ module cache #(
                  wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
                  st <= S_FLUSHR;
               end else begin
-                 valm[fscan[FW-1:0]] <= 1'b0; dirm[fscan[FW-1:0]] <= 1'b0;
+                 if (!flush_clean) valm[fscan[FW-1:0]] <= 1'b0;   // clean flush keeps lines valid
+                 dirm[fscan[FW-1:0]] <= 1'b0;
                  fscan <= fscan + 1'b1;
               end
            end
@@ -385,7 +389,8 @@ module cache #(
            end
            S_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
            S_FLUSHA: if (l2_ack) begin
-              valm[fscan[FW-1:0]] <= 1'b0; dirm[fscan[FW-1:0]] <= 1'b0;
+              if (!flush_clean) valm[fscan[FW-1:0]] <= 1'b0;       // clean flush: written back, stays valid+clean
+              dirm[fscan[FW-1:0]] <= 1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
 
