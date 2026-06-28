@@ -1,5 +1,12 @@
 `default_nettype none
 
+// mimpid = the truncated git commit of the build's HEAD, injected by the build
+// (build.tcl for FPGA, the sim run-scripts for simulation) -- mirrors SmolRV64's
+// SMOLRV64_GIT_COMMIT mechanism. Fallback 0 for an un-passed build.
+`ifndef SMOLRV64_GIT_COMMIT
+ `define SMOLRV64_GIT_COMMIT 32'h0
+`endif
+
 // Architectural CSR state for the sharded-OoO backend, M/S/U privilege model.
 // Read is combinational; a single update per cycle (one system op executes at a
 // time -- the scheduler gates a serializing op until its checkpoint is oldest, so
@@ -68,17 +75,17 @@ module csr_file
                      MIE=12'h304, MTVEC=12'h305, MCOUNTEREN=12'h306,
                      MSCRATCH=12'h340, MEPC=12'h341, MCAUSE=12'h342, MTVAL=12'h343,
                      MIP=12'h344, MHARTID=12'hF14, MTOPI=12'hFB0,
-                     PMPCFG0=12'h3A0, PMPADDR0=12'h3B0, MNSTATUS=12'h744,
+                     MNSTATUS=12'h744,
                      SSTATUS=12'h100, SIE=12'h104, STVEC=12'h105, SCOUNTEREN=12'h106,
                      SSCRATCH=12'h140, SEPC=12'h141, SCAUSE=12'h142, STVAL=12'h143,
-                     SIP=12'h144, SATP=12'h180,
+                     SIP=12'h144, SATP=12'h180, SENVCFG=12'h10A,
                      MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13,
                      FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003,
                      STIMECMP=12'h14D, MENVCFG=12'h30A,
                      // Zicntr: M-mode counters + their U/S read-only shadows. time is the
                      // hardware-backed CLINT mtime (like SmolRV64); cycle/instret shadow
                      // the free-running mcycle / retired-instruction minstret.
-                     MCYCLE=12'hB00, MINSTRET=12'hB02,
+                     MCYCLE=12'hB00, MTIME=12'hB01, MINSTRET=12'hB02,
                      CYCLE=12'hC00, TIME=12'hC01, INSTRET=12'hC02;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
@@ -109,8 +116,9 @@ module csr_file
 
    reg [1:0]  priv;
    reg [63:0] mstatus, mtvec, mepc, mcause, mtval, mscratch, mie, mip,
-              medeleg, mideleg, mcounteren, satp, pmpcfg0, pmpaddr0, mnstatus,
-              stimecmp, menvcfg;   // Sstc: supervisor timer-compare + menvcfg.STCE enable
+              medeleg, mideleg, mcounteren, satp, mnstatus,
+              stimecmp, menvcfg,   // Sstc: supervisor timer-compare + menvcfg.STCE enable
+              senvcfg;             // S-mode envcfg (FIOM + Zicbom/Zicboz U-mode CBO enables)
    reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
    reg [63:0] mcycle, minstret;      // Zicntr: free-running cycles + retired instructions
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
@@ -158,18 +166,28 @@ module csr_file
         STVAL:      rdata = stval;
         SSCRATCH:   rdata = sscratch;
         SATP:       rdata = satp;
-        PMPCFG0:    rdata = pmpcfg0;
-        PMPADDR0:   rdata = pmpaddr0;
         MNSTATUS:   rdata = mnstatus;
         STIMECMP:   rdata = stimecmp;
         MENVCFG:    rdata = menvcfg;
+        SENVCFG:    rdata = {56'd0, senvcfg[7:0]};
+        // machine ID CSRs -- match SmolRV64 (marchid=9 = YARVI lineage; vendor/hart=0;
+        // mimpid = the build's truncated HEAD commit).
+        MVENDORID:  rdata = 64'd0;
+        MARCHID:    rdata = 64'd9;
+        MIMPID:     rdata = {32'd0, `SMOLRV64_GIT_COMMIT};
+        MHARTID:    rdata = 64'd0;
         FFLAGS:     rdata = {59'd0, fcsr[4:0]};
         FRM:        rdata = {61'd0, fcsr[7:5]};
         FCSR:       rdata = {56'd0, fcsr};
         MCYCLE, CYCLE:     rdata = mcycle;
-        TIME:              rdata = mtime;     // hardware-backed CLINT mtime
+        TIME, MTIME:       rdata = mtime;     // hardware-backed CLINT mtime (0xC01 std + 0xB01 SmolRV64 alias)
         MINSTRET, INSTRET: rdata = minstret;
-        default:    rdata = 64'd0;   // mhartid/mvendorid/marchid/mimpid/unknown
+        // PMP (pmpcfg0-15 / pmpaddr0-63, 0x3A0-0x3FF) reads 0 here and ignores writes
+        // (no special case) -> 0 PMP entries implemented, matching SmolRV64. CRITICAL: a
+        // single writable entry would make OpenSBI report "PMP Count: 1" and then FAIL
+        // root-domain hart isolation ("insufficient PMP entries"); 0 entries makes it skip
+        // PMP isolation entirely (PMP is optional). All accesses are permitted (M-mode only).
+        default:    rdata = 64'd0;   // PMP / unimplemented optional CSRs (read 0)
       endcase
    end
 
@@ -320,9 +338,9 @@ module csr_file
       if (reset) begin
          priv<=M; mstatus<=0; mtvec<=0; mepc<=0; mcause<=0; mtval<=0; mscratch<=0;
          mie<=0; mip<=0; medeleg<=0; mideleg<=0; mcounteren<=0; satp<=0;
-         pmpcfg0<=0; pmpaddr0<=0; mnstatus<=0;
+         mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
-         fcsr<=0; stimecmp<=~64'd0; menvcfg<=64'd0;   // Sstc: stimecmp resets to "no deadline"
+         fcsr<=0; stimecmp<=~64'd0; menvcfg<=64'd0; senvcfg<=64'd0;   // Sstc: stimecmp resets to "no deadline"
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
          if (trap_to_s) begin
@@ -364,11 +382,10 @@ module csr_file
               STVAL:      stval   <= newv;
               SSCRATCH:   sscratch<= newv;
               SATP:       satp    <= newv;
-              PMPCFG0:    pmpcfg0 <= newv;
-              PMPADDR0:   pmpaddr0<= newv;
               MNSTATUS:   mnstatus<= newv;
               STIMECMP:   stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
               MENVCFG:    menvcfg <= newv;
+              SENVCFG:    senvcfg <= newv & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
               FFLAGS:     fcsr[4:0] <= newv[4:0];
               FRM:        fcsr[7:5] <= newv[2:0];
               FCSR:       fcsr      <= newv[7:0];
