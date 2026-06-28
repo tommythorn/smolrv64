@@ -711,8 +711,11 @@ module lsu
          mem_wmask = sb_cbo[dr_sel] ? 8'd0 : dr_mask;
          mem_wuncached = sb_nc[dr_sel] & ~sb_cbo[dr_sel];
          mem_cbo      = dr_v & sb_cbo[dr_sel];
-         mem_cbo_zero = sb_cboz[dr_sel];
-         mem_cbo_keep = sb_cbok[dr_sel];
+         // the zero/keep qualifiers are only meaningful for a CBO that is actually draining;
+         // gate them by mem_cbo so they can't leak onto a concurrent load's read request
+         // (cbo_zero leaking -> the read miss zero-fills the line instead of fetching it).
+         mem_cbo_zero = mem_cbo & sb_cboz[dr_sel];
+         mem_cbo_keep = mem_cbo & sb_cbok[dr_sel];
       end
    end
 
