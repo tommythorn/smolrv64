@@ -239,6 +239,23 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
 
 } // namespace
 
+// Called by the TB watchdog when the DUT's fetch is stuck (no retirement progress) -- dumps
+// the last RING_N retirements (DUT vs REF) so a HANG (which never reaches mismatch_abort) is
+// as diagnosable as a divergence.
+extern "C" void probe_dump_ring(unsigned long long fetch_pc) {
+    std::fprintf(stderr,
+        "\n*** cosim HANG: fetch stuck at pc=%016llx, no retirement (after retire #%llu) ***\n",
+        (unsigned long long)fetch_pc, (unsigned long long)g_seqno);
+    std::fprintf(stderr, "Last %zu retirements (DUT vs REF):\n", RING_N);
+    for (size_t i = 0; i < RING_N; i++) {
+        size_t idx = (g_ring_idx + i) % RING_N;
+        if (!g_ring[idx].valid) continue;
+        dump_retire("DUT", g_ring[idx].dut);
+        dump_retire("REF", g_ring[idx].ref);
+    }
+    std::fflush(stderr);
+}
+
 // DPI callback from backend_top.v (one per committed instruction or trap).
 extern "C" void probe_retire(
     unsigned long long pc,

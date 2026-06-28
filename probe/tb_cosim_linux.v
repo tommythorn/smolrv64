@@ -82,8 +82,16 @@ module tb;
    reg [8*256-1:0] fw, dtb, initrd;
    integer b2;
    reg [63:0] ncyc, c;        // 64-bit: cosim runs (gb5/sha256) exceed 2^32 cycles
+`ifdef PROBE_COSIM
+   import "DPI-C" function void probe_dump_ring(input longint fetch_pc);
+   reg [31:0] wedge_cnt;      // cycles the fetch PC has been unchanged (stuck fetch detector)
+   reg [63:0] prev_imem_addr;
+`endif
    initial begin
       ncyc = 200000000;
+`ifdef PROBE_COSIM
+      wedge_cnt = 0; prev_imem_addr = 64'hffffffffffffffff;
+`endif
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -100,6 +108,29 @@ module tb;
       for (c=0; (ncyc==0) || (c<ncyc); c=c+1) begin
          @(negedge clk);
          if ((c % 1000000) == 0) $display("[c=%0d]", c);
+`ifdef PROBE_COSIM
+         // fetch-stuck watchdog: code lives at >=0x8000_0000, so a fetch PC parked in
+         // unmapped low memory for >2k cycles is a wedge (trap loop / wild redirect that
+         // never retires -> no mismatch ever fires). Dump the retire ring and stop.
+         if (dut.imem_addr == prev_imem_addr) wedge_cnt = wedge_cnt + 1;
+         else begin wedge_cnt = 0; prev_imem_addr = dut.imem_addr; end
+         if (wedge_cnt == 32'd200000) begin
+            $display("COSIM-LINUX WEDGE: fetch PC unchanged %h for 200000 cyc (c=%0d)", dut.imem_addr, c);
+            $display("  DF: df=%0d df_stall=%b dmem_idle=%b dc_inv_req=%b dc_inv_busy=%b ifence=%b",
+                     dut.df, dut.df_stall, dut.dmem_idle, dut.dc_inv_req, dut.dc_inv_busy, dut.ifence);
+            $display("  FI: fi=%0d ifence=%b   PTW: pw_read=%b pw_busy=%b pw_match=%b",
+                     dut.fi, dut.ifence, dut.pw_read, dut.pw_busy, dut.pw_match);
+            $display("  REDIR: redirect=%b target=%h   satp=%h priv=%0d",
+                     dut.core.redirect, dut.core.redirect_target, dut.core.mmu_satp, dut.core.mmu_priv);
+            $display("  D$flush: st=%0d fscan=%0d inv_busy=%b inv_pend=%b  l2: req=%b we=%b ack=%b addr=%h",
+                     dut.u_dcache.st, dut.u_dcache.fscan, dut.u_dcache.inv_busy, dut.u_dcache.inv_pend,
+                     dut.dc_l2_req, dut.dc_l2_we, dut.dc_l2_ack, dut.dc_l2_addr);
+            $display("  I$: ic_rd_req=%b ic_l2_req=%b ic_l2_ack=%b i_rd_pend=%b  dcr: req=%b addr=%h",
+                     dut.ic_rd_req, dut.ic_l2_req, dut.ic_l2_ack, dut.i_rd_pend, dut.dcr_req, dut.dcr_addr);
+            probe_dump_ring(dut.imem_addr);
+            $finish;
+         end
+`endif
 `ifdef LSU_TAP
          // rename check (any cycle): store sd x8 @ ...8003ddb6 -> its rs2 physreg (ps2)
          // vs x8 producer addi x8 @ ...80002f40 -> its dest (pdst). Mismatch => rename bug.
