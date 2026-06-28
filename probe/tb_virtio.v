@@ -11,7 +11,11 @@
 //   +monhex=... +fw=... +dtb=... +initrd=... +disk=... [+cycles=N]
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
-   localparam        DDR_BYTES = 1<<28;            // 256 MiB
+`ifdef COSIM_MEM_SIZE_LG2
+   localparam [63:0] DDR_BYTES = 64'd1 << `COSIM_MEM_SIZE_LG2;
+`else
+   localparam [63:0] DDR_BYTES = 64'd1 << 31;       // 2 GiB (matches HW / ubuntu.dts memory node)
+`endif
    localparam [63:0] OFF_FW = 64'h000_0000, OFF_DTB = 64'h200_0000, OFF_INITRD = 64'h762_b000;
 
    reg clk=0; always #5 clk=~clk;
@@ -38,19 +42,24 @@ module tb;
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
       .virtio_rdata(virtio_rdata), .virtio_irq(virtio_irq));
 
-   // ---------------- behavioral DDR (256 MiB, 4-cycle line latency) ----------------
-   reg [7:0] ram [0:DDR_BYTES-1];
+   // ---------------- behavioral DDR (DDR_BYTES, 4-cycle line latency) ----------------
+   // 512-bit LINE array (ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 --
+   // stays under Verilator's ~1-billion array-dimension limit even at 2 GiB (a flat byte array
+   // overflows it). A line holds bytes little-endian: byte k at bits [k*8 +: 8].
+   localparam [63:0] NLINES = DDR_BYTES >> 6;
+   localparam [63:0] LBASE  = BASE >> 6;            // DDR base as a line address
+   reg [511:0] lram [0:NLINES-1];
    reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
-   integer kb; reg [63:0] d_base;
+   reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
       else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; end
       else if (d_busy) begin
          if (d_cnt==0) begin
-            d_base = (({{6{1'b0}},d_ad_q} << 6) - BASE) & (DDR_BYTES-1);
-            if (d_we_q) for (kb=0;kb<64;kb=kb+1) ram[d_base+kb] <= d_wd_q[kb*8 +: 8];
-            else        for (kb=0;kb<64;kb=kb+1) ddr_rdata[kb*8 +: 8] <= ram[d_base+kb];
+            line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
+            if (d_we_q) lram[line] <= d_wd_q;
+            else        ddr_rdata  <= lram[line];
             ddr_ack<=1'b1; d_busy<=1'b0;
          end else d_cnt <= d_cnt-1;
       end
@@ -111,9 +120,12 @@ module tb;
       .m_axi_rid(ax_rid), .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast),
       .m_axi_rvalid(ax_rvalid), .m_axi_rready(ax_rready));
 
-   // ---- behavioral always-ready single-beat AXI slave into ram[] (direct DDR = non-coherent) ----
+   // ---- behavioral always-ready single-beat AXI slave into lram[] (direct DDR = non-coherent) ----
    // ax_*addr[30:0] is already the DDR byte offset: guest_pa = BASE|off, so pa[30:0] = off = pa-BASE.
-   reg axi_rvalid, axi_bvalid;  reg [63:0] axi_rdata;  integer ka;  reg [30:0] aw_off;
+   // Each beat is 8 bytes (axsize=3, 8-aligned) so it lands within one 64-byte line: line = off>>6,
+   // byte position bp = (off&63). lram stores byte k at bit k*8, so the 8 bytes are lram[line][bp*8 +: 64].
+   reg axi_rvalid, axi_bvalid;  reg [63:0] axi_rdata;  integer ka;
+   reg [63:0] ar_line, aw_line;  reg [9:0] ar_bp, aw_bp;
    assign ax_arready = 1'b1; assign ax_awready = 1'b1; assign ax_wready = 1'b1;
    assign ax_rvalid = axi_rvalid; assign ax_rdata = axi_rdata; assign ax_rresp = 2'd0;
    assign ax_rlast = 1'b1; assign ax_rid = 3'd1;
@@ -123,13 +135,16 @@ module tb;
       else begin
          // read channel
          if (ax_arvalid && ax_arready && !axi_rvalid) begin
-            for (ka=0;ka<8;ka=ka+1) axi_rdata[ka*8 +: 8] <= ram[(ax_araddr & (DDR_BYTES-1)) + ka];
+            ar_line = ((ax_araddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            ar_bp   = (ax_araddr & 6'h3f) << 3;        // bit position of byte (off&63)
+            axi_rdata <= lram[ar_line][ar_bp +: 64];
             axi_rvalid <= 1'b1;
          end else if (axi_rvalid && ax_rready) axi_rvalid <= 1'b0;
          // write channel (address + data arrive together for this single-beat master)
          if (ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid) begin
-            aw_off = ax_awaddr & (DDR_BYTES-1);
-            for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) ram[aw_off + ka] <= ax_wdata[ka*8 +: 8];
+            aw_line = ((ax_awaddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            aw_bp   = (ax_awaddr & 6'h3f) << 3;
+            for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) lram[aw_line][aw_bp + ka*8 +: 8] <= ax_wdata[ka*8 +: 8];
             axi_bvalid <= 1'b1;
          end else if (axi_bvalid && ax_bready) axi_bvalid <= 1'b0;
       end
@@ -140,14 +155,24 @@ module tb;
    import "DPI-C" function int  sd_clock(input int sck, input int cs_n, input int mosi);
    always @(posedge clk) blk_miso <= sd_clock({31'd0, blk_sck}, {31'd0, blk_cs_n}, {31'd0, blk_mosi})>0 ? 1'b1 : 1'b0;
 
-   // ---------------- boot image load (reused from tb_linux) ----------------
+   // ---------------- boot image load (line array; reused from tb_cosim_linux) ----------------
+   // $fread fills each 512-bit element MSB-first, so reverse the 64 bytes of every loaded line
+   // back to the little-endian byte order the ddr_* port + AXI slave use.
    task load_bin; input [8*256-1:0] fname; input [63:0] off;
-      integer fd, n; begin
+      integer fd, n, j; reg [63:0] sl, nl, li; reg [7:0] t; begin
          fd = $fopen(fname, "rb");
          if (fd == 0) begin $display("FATAL: cannot open %0s", fname); $finish; end
-         n  = $fread(ram, fd, off, DDR_BYTES-off);
+         sl = off >> 6;
+         n  = $fread(lram, fd, sl, NLINES - sl);
          $fclose(fd);
-         $display("[tb_virtio: loaded %0d bytes @ DDR+%h]", n, off);
+         nl = (n + 63) >> 6;
+         for (li = sl; li < sl + nl; li = li + 1)
+            for (j = 0; j < 32; j = j + 1) begin
+               t = lram[li][j*8 +: 8];
+               lram[li][j*8 +: 8]      = lram[li][(63-j)*8 +: 8];
+               lram[li][(63-j)*8 +: 8] = t;
+            end
+         $display("[tb_virtio: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
       end
    endtask
 
