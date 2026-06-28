@@ -236,16 +236,24 @@ module cache #(
    end
 
    // ---- FSM ----
+   reg inv_pend;     // sticky: an inv_req that arrives while the cache is busy is remembered
    always @(posedge clk) begin
       if (reset) begin
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
-         l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0;
+         l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
       end else begin
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
+         // Latch + ACK an invalidate the cycle it is requested, even if the cache is mid-
+         // operation (inv_req is only acted on at S_IDLE). Without this a 1-cycle inv_req
+         // pulse arriving during a refill is silently dropped -> a stale line survives a
+         // fence.i / sfence flush. Raising inv_busy now also keeps the requester waiting
+         // until the invalidate actually runs (it polls !inv_busy).
+         if (inv_req) begin inv_pend <= 1'b1; inv_busy <= 1'b1; end
          case (st)
            S_IDLE: begin
               phase <= 0;
-              if (inv_req) begin
+              if (inv_req | inv_pend) begin
+                 inv_pend <= 1'b0;
                  if (WRITABLE==0 || WRTHRU!=0) begin
                     for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
                     inv_busy <= 1; st <= S_INVDONE;

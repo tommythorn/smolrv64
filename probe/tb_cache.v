@@ -15,7 +15,7 @@ module tb;
 
    reg  [7:0] l2mem [0:MEM-1];                     // backing store (== refm after flush)
    reg  [7:0] refm   [0:MEM-1];                     // golden architectural memory
-   integer k, errs=0;
+   integer k, errs=0, before_reads;
 
    // ---------------- D$ instance ----------------
    reg          d_rd_req, d_wr_req, d_inv_req;
@@ -61,7 +61,7 @@ module tb;
       .wr_ack(), .inv_req(i_inv_req), .inv_busy(i_inv_busy),
       .l2_req(i_l2_req), .l2_we(i_l2_we), .l2_addr(i_l2_addr), .l2_wdata(i_l2_wdata),
       .l2_rdata(i_l2_rdata), .l2_ack(i_l2_ack));
-   reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;
+   reg ibusy; reg [3:0] icnt; reg [PAW-OFFB-1:0] iad_q;  integer i_l2reads = 0;
    always @(posedge clk) begin
       i_l2_ack <= 0;
       if (reset) ibusy <= 0;
@@ -69,7 +69,7 @@ module tb;
       else if (ibusy) begin
          if (icnt==0) begin
             for (k=0;k<64;k=k+1) i_l2_rdata[k*8 +: 8] <= l2mem[(iad_q<<OFFB)+k];
-            i_l2_ack <= 1; ibusy <= 0;
+            i_l2_ack <= 1; ibusy <= 0; i_l2reads <= i_l2reads + 1;
          end else icnt <= icnt-1;
       end
    end
@@ -168,6 +168,25 @@ module tb;
       @(negedge clk); i_inv_req=1; @(posedge clk); @(negedge clk); i_inv_req=0;
       while (i_inv_busy) @(posedge clk); @(negedge clk);
       iread(34'h100);                                      // re-miss after invalidate
+
+      // regression for the dropped-inv race: a 1-cycle inv_req pulsed WHILE the cache is
+      // mid-refill must still invalidate (sticky inv). Old behavior dropped it -> a stale
+      // line survived (the fence.i I$-coherency bug seen at 76M of Linux boot).
+      $display("== I$: inv pulsed during a fill is not dropped ==");
+      iread(34'h100);                                      // re-cache line @0x100
+      @(negedge clk); i_rd_req=1; i_rd_addr=34'h2000;      // start a MISS -> fill begins
+      @(posedge clk); @(negedge clk); i_rd_req=0;
+      @(posedge clk);                                      // a cycle into the fill (cache busy)
+      @(negedge clk); i_inv_req=1; @(posedge clk); @(negedge clk); i_inv_req=0;  // 1-cyc pulse mid-fill
+      // settle: let the in-flight 0x2000 fill finish AND any deferred (sticky) inv run.
+      // NB: don't poll inv_busy here -- the unfixed cache never raises it, so polling would
+      // race the still-running fill's own L2 read and give a false pass.
+      repeat (40) @(posedge clk); @(negedge clk);
+      before_reads = i_l2reads;
+      iread(34'h100);                                      // must MISS (invalidated) -> an L2 refill
+      if (i_l2reads == before_reads) begin
+         $display("FAIL: inv during fill was DROPPED (0x100 still cached)"); errs=errs+1;
+      end else $display("  ok  inv during fill honored (0x100 refilled)");
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;
