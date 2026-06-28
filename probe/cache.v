@@ -271,7 +271,13 @@ module cache #(
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
-                 r_cbo    <= cbo_req; r_cbo_zero <= cbo_zero; r_cbo_keep <= cbo_keep;   // Zicbom/Zicboz
+                 // CBO flags qualify a write-port maintenance op only. Reads win arbitration
+                 // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
+                 // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
+                 // making its refill zero-fill the line instead of fetching it.
+                 r_cbo    <= (wr_req && !rd_req) & cbo_req;
+                 r_cbo_zero <= (wr_req && !rd_req) & cbo_zero;
+                 r_cbo_keep <= (wr_req && !rd_req) & cbo_keep;   // Zicbom/Zicboz
                  r_addr   <= rd_req ? rd_addr : wr_addr;
                  r_wdata  <= wr_data; r_wmask <= wr_mask;
                  r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
