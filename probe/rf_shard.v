@@ -39,13 +39,13 @@ module rf_shard
    initial begin
       for (ib = 0; ib < SHARDS; ib = ib + 1)
          for (ir = 0; ir < POOL; ir = ir + 1) bank[ib][ir] = 64'd0;
-`ifdef PROBE_COSIM
-      // cosim boot seed: a1 (x11 -> phys 11, identity arch map at reset) = DTB pointer,
-      // mirroring smolrv64's rf.hex. phys 11 lives at bank[11%SHARDS][11/SHARDS].
+      // boot seed: a1 (x11 -> phys 11, identity arch map at reset) = DTB pointer, mirroring
+      // smolrv64's rf.hex. phys 11 lives at bank[11%SHARDS][11/SHARDS]. Sim-only (an initial
+      // + $value$plusargs; synth ignores it) and inert unless a TB passes +a1= -- so any
+      // harness that resets straight to OpenSBI (cosim, tb_virtio) can seed the DTB pointer.
       begin : seed reg [63:0] a1v;
          if ($value$plusargs("a1=%h", a1v)) bank[11 % SHARDS][11 / SHARDS] = a1v;
       end
-`endif
    end
 
    // each bank written only by its owner lane (single write port per bank)

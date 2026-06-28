@@ -101,7 +101,7 @@ module soc_top #(
    // DDR latency HPM window (read-only counters; any write clears). NOT in the DTB -- read it
    // from a bare-metal tool / the monitor; the kernel never touches it.
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
-   localparam [63:0] VIRTIO_BASE = 64'h1000_1000;                 // virtio-mmio, 4 KiB window
+   localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio (DTS virtio_blk), 4 KiB
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
@@ -141,7 +141,7 @@ module soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({62'd0, virtio_irq, 1'b0}), .meip(plic_meip), .seip(plic_seip));   // virtio = PLIC source 1
+      .src({52'd0, virtio_irq, 11'd0}), .meip(plic_meip), .seip(plic_seip));   // virtio_blk = PLIC source 11 (DTS)
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
    // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR (off 5) -> THRE|TEMT|DR;
