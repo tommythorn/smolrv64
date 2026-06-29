@@ -177,6 +177,8 @@ struct Insn {
     seqno: u8,
     ckpid: u8,
     squashed: bool,
+    rd_v: bool, // has an architectural destination (allocated a physreg at dispatch)
+    gone: u64,  // commit or squash cycle (NONE until it leaves the machine)
 }
 
 fn rd16(b: &[u8], o: usize) -> u16 {
@@ -220,6 +222,19 @@ impl Hist {
             self.max = d;
         }
     }
+    // Add `d` with multiplicity `w` (used to weight an occupancy level by the number
+    // of cycles spent at it, so `n` becomes total cycles and `avg` the time-average).
+    fn add_weighted(&mut self, d: u64, w: u64) {
+        if w == 0 {
+            return;
+        }
+        self.b[bucket(d)] += w;
+        self.sum += d * w;
+        self.n += w;
+        if d > self.max {
+            self.max = d;
+        }
+    }
     fn avg(&self) -> f64 {
         if self.n > 0 {
             self.sum as f64 / self.n as f64
@@ -244,6 +259,72 @@ impl Hist {
             println!("  {:>6} {:>10} {:5.1}%  {}", BUCKET_LABELS[i], c, pct, "#".repeat(bar));
         }
     }
+}
+
+// Cycle-weighted occupancy histogram from a list of (cycle, +-1) enter/leave deltas.
+// Sorts the events, sweeps once maintaining the running count, and charges each
+// inter-event gap to the count held across it -- so n = total cycles and the bucket
+// distribution is the fraction of time spent at each occupancy level. O(events).
+fn occ_hist(name: &'static str, mut ev: Vec<(u64, i64)>) -> Hist {
+    let mut h = Hist::new(name);
+    if ev.is_empty() {
+        return h;
+    }
+    ev.sort_by_key(|e| e.0);
+    let mut cur: i64 = 0;
+    let mut prev = ev[0].0;
+    let mut i = 0;
+    while i < ev.len() {
+        let cyc = ev[i].0;
+        if cyc > prev {
+            h.add_weighted(cur.max(0) as u64, cyc - prev);
+            prev = cyc;
+        }
+        while i < ev.len() && ev[i].0 == cyc {
+            cur += ev[i].1;
+            i += 1;
+        }
+    }
+    h
+}
+
+// Scheduler IQ and physical-register occupancy, derived purely from the existing
+// dispatch/select/commit/squash events (no RTL change).  An instruction holds an IQ
+// entry [disp, leave) where leave = select (issued out) or, if squashed before issue,
+// its squash cycle.  A dest-producing instruction holds one physreg BEYOND committed
+// arch state for [disp, gone) -- gone = commit (pdst joins arch state as the displaced
+// pold frees) or squash.  Wrong-path (squashed) insns are INCLUDED: they consume real
+// IQ/physreg resources until the rollback frees them.
+fn print_occupancy(max_cyc: u64, insns: &[Insn]) {
+    let end = max_cyc + 1; // sentinel for entries still live at trace end
+    let mut iq: Vec<(u64, i64)> = Vec::new();
+    let mut pr: Vec<(u64, i64)> = Vec::new();
+    for ins in insns {
+        if ins.disp == NONE {
+            continue;
+        }
+        let leave = if ins.sel != NONE {
+            ins.sel
+        } else if ins.gone != NONE {
+            ins.gone
+        } else {
+            end
+        };
+        if leave > ins.disp {
+            iq.push((ins.disp, 1));
+            iq.push((leave, -1));
+        }
+        if ins.rd_v {
+            let g = if ins.gone != NONE { ins.gone } else { end };
+            if g > ins.disp {
+                pr.push((ins.disp, 1));
+                pr.push((g, -1));
+            }
+        }
+    }
+    println!("\n=== resource occupancy (cycle-weighted; cap context in the labels) ===");
+    occ_hist("scheduler IQ entries in flight  (cap = N per shard x SHARDS)", iq).print();
+    occ_hist("physregs in use beyond arch state  (cap = NPHYS - AREGS; freelist stalls at cap)", pr).print();
 }
 
 // Step-2 cache (memory-system) stats, accumulated from KIND_CACHE records (cache.v).
@@ -380,6 +461,7 @@ fn main() {
     let mut fe_empty: Vec<(u64, u8)> = Vec::new(); // (cycle, reason mask) per frontend-empty cycle
     let mut disp_cycles: Vec<u64> = Vec::new(); // distinct dispatch cycles (sorted)
     let mut cstats = [CacheStats::new("I$"), CacheStats::new("D$")]; // step-2 cache events
+    let mut imiss_win: Vec<(u64, u64)> = Vec::new(); // I$ miss-fill windows [start,end) to split the fempty "icache-miss" bucket
 
     let (mut n_disp, mut n_sel, mut n_wb, mut n_commit, mut n_squash) = (0u64, 0, 0, 0, 0);
     let (mut min_cyc, mut max_cyc) = (u64::MAX, 0u64);
@@ -417,6 +499,7 @@ fn main() {
                 insns.push(Insn {
                     pc: datum, disp: cyc, sel: NONE, wb: NONE, wbval: NONE,
                     prod1, prod2, insn: iword, seqno, ckpid, squashed: false,
+                    rd_v: rdv != 0, gone: NONE,
                 });
                 seq2uid[seqno as usize] = uid;
                 if rdv != 0 {
@@ -455,7 +538,9 @@ fn main() {
                 n_commit += 1;
                 if let Some(nb) = bsize.pop_front() {
                     for _ in 0..nb {
-                        inflight.pop_front();
+                        if let Some(u) = inflight.pop_front() {
+                            insns[u as usize].gone = cyc;
+                        }
                     }
                 }
             }
@@ -466,6 +551,7 @@ fn main() {
                     if (insns[u as usize].seqno.wrapping_sub(r) as i8) > 0 {
                         inflight.pop_back();
                         insns[u as usize].squashed = true;
+                        insns[u as usize].gone = cyc;
                         if let Some(b) = bsize.back_mut() {
                             *b -= 1;
                             if *b == 0 {
@@ -500,7 +586,15 @@ fn main() {
                         }
                         c.miss_set[((datum >> 6) as usize) & (NSETS_MAX - 1)] += 1;
                     }
-                    2 => c.fill.add(iword as u64),
+                    2 => {
+                        c.fill.add(iword as u64);
+                        // I$ fill completes at `cyc` after `iword` penalty cycles -> the miss
+                        // window was [cyc-lat, cyc). Used to tell a real fill stall apart from a
+                        // pure fetch bubble in the frontend-empty "icache-miss" bucket.
+                        if (ckpid as usize) & 1 == 0 {
+                            imiss_win.push((cyc.saturating_sub(iword as u64), cyc));
+                        }
+                    }
                     3 => c.store.add(iword as u64),
                     _ => {}
                 }
@@ -508,6 +602,8 @@ fn main() {
             _ => {}
         }
     }
+
+    imiss_win.sort_unstable(); // I$ fills are serial (single FSM) -> sorted, non-overlapping windows
 
     let cyc_span = max_cyc.saturating_sub(min_cyc) + 1;
     let sel_ipc = n_sel as f64 / cyc_span as f64;
@@ -536,9 +632,10 @@ fn main() {
     }
 
     let h = build_hists(&shown, &insns);
-    print_bottleneck(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles);
+    print_bottleneck(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles, &imiss_win);
     diagnose(&h.dep, &h.wake, &h.wb2s, &h.exec, sel_ipc, n_disp, n_squash);
-    print_accounting(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles);
+    print_accounting(min_cyc, max_cyc, &stalls, &fe_empty, &disp_cycles, &imiss_win);
+    print_occupancy(max_cyc, &insns);
     print_time_bins(min_cyc, max_cyc, &stalls, &disp_cycles, 16);
     h.dep.print();
     h.wake.print();
@@ -790,7 +887,32 @@ fn verdict(dep: &Hist, wake: &Hist, sel_ipc: f64) -> (&'static str, &'static str
 // Top-down verdict from CYCLE ACCOUNTING (every cycle), not the histograms (only the
 // cycles that dispatch). On a back-pressure/frontend-bound machine the histograms describe
 // a small minority of cycles, so this leads and the histogram diagnosis is secondary.
-fn print_bottleneck(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
+// Is cycle `c` inside an I$ miss-fill window? `wins` is sorted by start and (fills being
+// serial) non-overlapping, so only the window with the greatest start <= c can contain it.
+fn in_imiss(c: u64, wins: &[(u64, u64)]) -> bool {
+    let idx = wins.partition_point(|w| w.0 <= c);
+    idx > 0 && c < wins[idx - 1].1
+}
+
+// Split the frontend-empty "icache-miss" (b3) cycles into (real fill stall, fetch bubble):
+// a cycle inside an I$ miss-fill window is waiting on a real refill; outside one the I$ is
+// simply idle (hit but no bundle delivered = fetch-throughput / no-BP bubble), NOT a miss.
+fn split_imiss(lo: u64, hi: u64, fe: &[(u64, u8)], wins: &[(u64, u64)]) -> (u64, u64) {
+    let (mut fill, mut bubble) = (0u64, 0u64);
+    for &(c, m) in fe {
+        if c < lo || c > hi || m & (1 << 3) == 0 {
+            continue;
+        }
+        if in_imiss(c, wins) {
+            fill += 1
+        } else {
+            bubble += 1
+        }
+    }
+    (fill, bubble)
+}
+
+fn print_bottleneck(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64], imiss: &[(u64, u64)]) {
     let (total, disp, stall, empty, sbits) = accounting(lo, hi, stalls, disp_cycles);
     let fbits = reason_counts(lo, hi, fe_empty);
     let pct = |x: u64| 100.0 * x as f64 / total.max(1) as f64;
@@ -807,6 +929,15 @@ fn print_bottleneck(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8
         "  dominant loss: stall:{} {:.1}%   frontend:{} {:.1}%",
         STALL_LABELS[si], pct(sbits[si]), FEMPTY_LABELS[fi], pct(fbits[fi])
     );
+    // The "icache-miss" bucket conflates a real refill with fetch sitting idle on a hit; split
+    // it so a fetch-throughput / no-BP bubble isn't mistaken for a cache problem.
+    if fi == 3 {
+        let (fill, bubble) = split_imiss(lo, hi, fe_empty, imiss);
+        println!(
+            "    NB: \"icache-miss\" = {:.1}% real fill + {:.1}% fetch-bubble (I$ hit but no bundle: fetch-throughput / no BP, NOT a miss)",
+            pct(fill), pct(bubble)
+        );
+    }
     // Lead with whichever structural class loses the most cycles; the histogram diagnosis
     // (below) only characterizes the cycles we DO dispatch.
     let verdict = if pct(disp) >= 40.0 {
@@ -879,7 +1010,7 @@ fn reason_counts(lo: u64, hi: u64, events: &[(u64, u8)]) -> [u64; 8] {
     b
 }
 
-fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64]) {
+fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8)], disp_cycles: &[u64], imiss: &[(u64, u64)]) {
     let (total, disp, stall, empty, bits) = accounting(lo, hi, stalls, disp_cycles);
     let pct = |x: u64| 100.0 * x as f64 / total.max(1) as f64;
     println!("\n--- cycle accounting ({total} cycles): every cycle is one of ---");
@@ -898,7 +1029,17 @@ fn print_accounting(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8
     if fe.iter().take(5).any(|&x| x > 0) {
         println!("  frontend-empty by reason (% of all cycles):");
         for b in 0..5 {
-            if fe[b] > 0 {
+            if fe[b] == 0 {
+                continue;
+            }
+            if b == 3 {
+                // Split the conflated "icache-miss" bucket: real refill vs fetch idle on a hit.
+                let (fill, bubble) = split_imiss(lo, hi, fe_empty, imiss);
+                println!(
+                    "     {:<12} {:>10} ({:4.1}%)  [i$-fill {} ({:.1}%) + fetch-bubble {} ({:.1}%)]",
+                    FEMPTY_LABELS[b], fe[b], pct(fe[b]), fill, pct(fill), bubble, pct(bubble)
+                );
+            } else {
                 println!("     {:<12} {:>10} ({:4.1}%)", FEMPTY_LABELS[b], fe[b], pct(fe[b]));
             }
         }
