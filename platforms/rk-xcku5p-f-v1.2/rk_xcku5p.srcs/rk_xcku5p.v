@@ -113,10 +113,12 @@ module rk_xcku5p(
    // Sharded-OoO probe core: modest-clock bring-up on a divided ui_clk. Post-route timing
    // at /6 showed the global WNS pinned by virtio @333 MHz, with probe_clk absent from the
    // worst-5 setup paths -- i.e. the real probe setup Fmax sits above the ~67 MHz OOC
-   // estimate -- so we push to /5 = 66.7 MHz (was /8 = 41.7). The ddr_* line port crosses
-   // back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc. Synchronous divide keeps probe_clk
-   // phase-related to ui_clk.  NOTE: /5 ~= the OOC Fmax estimate; if a probe_clk SETUP path
-   // goes negative after route, fall back to /6.  The UART CLK_FREQ below MUST track this.
+   // estimate -- so we push to /5 = 66.7 MHz (was /8 = 41.7). /4 = 83.3 MHz was TRIED and
+   // FAILED routing (WNS -1.78 ns at the 12 ns target => real Fmax ~72.5 MHz; probe_clk paths
+   // dominate the failing set), so /5 stands until the redirect/wake/MMIO cones get pipelined.
+   // The ddr_* line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc.
+   // Synchronous divide keeps probe_clk phase-related to ui_clk.  The UART CLK_FREQ below AND
+   // the CLINT SCALE_DIV (probe/soc_top.v) MUST track this divider.
    wire probe_clk;
    BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
       (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
