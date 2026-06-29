@@ -15,8 +15,9 @@ ifneq ($(strip $(PC_TRACE)),)
 export PC_TRACE
 endif
 
-# Optional: PROBE_CORE=1 swaps the scalar smolrv64 for the sharded-OoO probe core
-# (soc_top + DDR line/AXI bridge) via the `PROBE_CORE ifdef in rk_xcku5p.v.
+# The sharded-OoO probe core is the DEFAULT build (soc_top + DDR line/AXI bridge,
+# via the `PROBE_CORE ifdef in rk_xcku5p.v).  Set PROBE_CORE=0 to build the legacy
+# scalar smolrv64 instead.  Exported here (incl. =0) so build.tcl sees it.
 ifneq ($(strip $(PROBE_CORE)),)
 export PROBE_CORE
 endif

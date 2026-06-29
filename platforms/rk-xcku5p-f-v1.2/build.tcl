@@ -16,12 +16,15 @@ set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
 
-# PROBE_CORE=1 swaps the scalar smolrv64 for the sharded-OoO probe core (soc_top +
-# DDR line/AXI bridge), gated by the `PROBE_CORE ifdef in rk_xcku5p.v.
-set probe_core 0
-if {[info exists env(PROBE_CORE)] && $env(PROBE_CORE) ne "" && $env(PROBE_CORE) ne "0"} {
-    set probe_core 1
-    puts "PROBE_CORE build: sharded-OoO core (soc_top) instead of smolrv64."
+# The sharded-OoO probe core (soc_top + DDR line/AXI bridge, gated by the
+# `PROBE_CORE ifdef in rk_xcku5p.v) is now the DEFAULT.  Set PROBE_CORE=0 to
+# build the legacy scalar smolrv64 instead.
+set probe_core 1
+if {[info exists env(PROBE_CORE)] && $env(PROBE_CORE) eq "0"} {
+    set probe_core 0
+    puts "PROBE_CORE=0: building the legacy scalar smolrv64 core."
+} else {
+    puts "Building the sharded-OoO probe core (soc_top) [default]."
 }
 puts "Opening project: $xpr"
 open_project $xpr
