@@ -24,7 +24,7 @@ if {[info exists env(PROBE_CORE)] && $env(PROBE_CORE) eq "0"} {
     set probe_core 0
     puts "PROBE_CORE=0: building the legacy scalar smolrv64 core."
 } else {
-    puts "Building the sharded-OoO probe core (soc_top) [default]."
+    puts "Building the sharded-OoO probe core (soc_top) -- default."
 }
 puts "Opening project: $xpr"
 open_project $xpr
