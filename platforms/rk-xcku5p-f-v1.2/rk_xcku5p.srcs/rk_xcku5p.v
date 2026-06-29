@@ -110,12 +110,15 @@ module rk_xcku5p(
    );
 
 `ifdef PROBE_CORE
-   // Sharded-OoO probe core: modest-clock bring-up on a divided ui_clk (the integrated
-   // core's placed Fmax is ~67 MHz, so /8 ~= 41.7 MHz is a safe first close). The ddr_*
-   // line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc. Synchronous
-   // divide keeps probe_clk phase-related to ui_clk.
+   // Sharded-OoO probe core: modest-clock bring-up on a divided ui_clk. Post-route timing
+   // at /6 showed the global WNS pinned by virtio @333 MHz, with probe_clk absent from the
+   // worst-5 setup paths -- i.e. the real probe setup Fmax sits above the ~67 MHz OOC
+   // estimate -- so we push to /5 = 66.7 MHz (was /8 = 41.7). The ddr_* line port crosses
+   // back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc. Synchronous divide keeps probe_clk
+   // phase-related to ui_clk.  NOTE: /5 ~= the OOC Fmax estimate; if a probe_clk SETUP path
+   // goes negative after route, fall back to /6.  The UART CLK_FREQ below MUST track this.
    wire probe_clk;
-   BUFGCE_DIV #(.BUFGCE_DIVIDE(8)) probe_clk_buf
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
       (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
    always @(posedge probe_clk or posedge ui_cpu_reset)
@@ -1416,13 +1419,15 @@ module rk_xcku5p(
       .m_axi_rlast(core_axi_rlast), .m_axi_rvalid(core_axi_rvalid), .m_axi_rready(core_axi_rready));
 
    // UART at probe_clk. rs232 ROUNDS the divisor (period=(CLK+BAUD/2)/BAUD), so at
-   // 41.67 MHz / 3 Mbaud -> period 14 -> 2.976 Mbaud (0.79% err, well within tolerance).
+   // 66.67 MHz (ui_clk/5) / 3 Mbaud -> period 22 -> 3.030 Mbaud (1.0% err, within tolerance).
+   // CLK_FREQ MUST track probe_clk's divider: a stale value skews the baud (leaving 41.67
+   // here while the clock runs /5 transmits ~60% too fast -> garbage on the wire).
    // Matches the scalar core + `make connect` (3 Mbaud); 26x faster fw load than 115200.
    // rs232tx.ready (output, ready-to-accept) feeds soc_top.uart_tx_ready directly.
-   rs232tx #(.CLK_FREQ(41_666_666), .BAUD(3_000_000)) probe_tx
+   rs232tx #(.CLK_FREQ(66_666_666), .BAUD(3_000_000)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
-   rs232rx #(.CLK_FREQ(41_666_666), .BAUD(3_000_000)) probe_rx
+   rs232rx #(.CLK_FREQ(66_666_666), .BAUD(3_000_000)) probe_rx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
