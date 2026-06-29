@@ -115,15 +115,22 @@ module csr_file
    localparam [63:0] HW_RO_MASK = 64'h0000_0000_0000_0888;
 
    reg [1:0]  priv;
-   reg [63:0] mstatus, mtvec, mepc, mcause, mtval, mscratch, mie, mip,
+   reg [63:0] mstatus, mtvec, mcause, mscratch, mie, mip,
               medeleg, mideleg, mcounteren, satp, mnstatus,
               stimecmp, menvcfg,   // Sstc: supervisor timer-compare + menvcfg.STCE enable
               senvcfg;             // S-mode envcfg (FIOM + Zicbom/Zicboz U-mode CBO enables)
-   reg [63:0] stvec, sepc, scause, stval, sscratch, scounteren;
+   reg [63:0] stvec, scause, sscratch, scounteren;
+   // VA-holding CSRs stored 40-bit Sv39-compressed (low 39 + non-canonical flag):
+   // mepc/sepc can capture a non-canonical fetch-fault target, mtval/stval the
+   // faulting VA -- both need the flag.  Non-VA tval values (illegal-instr encoding,
+   // 0) fit in 39 bits with bit38=0 so they round-trip exactly.  See va_codec.vh.
+   reg [39:0] mepc, mtval, sepc, stval;
    reg [63:0] mcycle, minstret;      // Zicntr: free-running cycles + retired instructions
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
    assign o_fs_off = (mstatus[14:13] == 2'b00);
+
+`include "va_codec.vh"
 
    // mstatus as seen on a read: force SXL=UXL=2, and derive SD (bit 63) = any of
    // FS/XS/VS == Dirty (read-only summary; not a stored bit). The riscv-tests v-handler
@@ -148,9 +155,9 @@ module csr_file
         SSTATUS:    rdata = mstatus_r & SSTATUS_RMASK;
         MISA:       rdata = MISA_VAL;
         MTVEC:      rdata = mtvec;
-        MEPC:       rdata = mepc;
+        MEPC:       rdata = `VA_UNPACK40(mepc);
         MCAUSE:     rdata = mcause;
-        MTVAL:      rdata = mtval;
+        MTVAL:      rdata = `VA_UNPACK40(mtval);
         MSCRATCH:   rdata = mscratch;
         MIE:        rdata = mie;
         MIP:        rdata = eff_mip;
@@ -161,9 +168,9 @@ module csr_file
         MCOUNTEREN: rdata = mcounteren;
         SCOUNTEREN: rdata = scounteren;
         STVEC:      rdata = stvec;
-        SEPC:       rdata = sepc;
+        SEPC:       rdata = `VA_UNPACK40(sepc);
         SCAUSE:     rdata = scause;
-        STVAL:      rdata = stval;
+        STVAL:      rdata = `VA_UNPACK40(stval);
         SSCRATCH:   rdata = sscratch;
         SATP:       rdata = satp;
         MNSTATUS:   rdata = mnstatus;
@@ -324,8 +331,8 @@ module csr_file
    wire [63:0] trap_tgt  = tvec_vec ? (tvec_base + {trap_cause[5:0], 2'b00}) : tvec_base;
    always @* begin
       if (xtrap_v)              redir_target = trap_tgt;
-      else if (do_mret)         redir_target = mepc;
-      else if (do_sret)         redir_target = sepc;
+      else if (do_mret)         redir_target = `VA_UNPACK40(mepc);
+      else if (do_sret)         redir_target = `VA_UNPACK40(sepc);
       else if (do_sfence)       redir_target = upd_pc + 64'd4;
       else if (do_fschg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else                      redir_target = trap_tgt;
@@ -344,16 +351,16 @@ module csr_file
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
          if (trap_to_s) begin
-            sepc   <= trap_epc;
+            sepc   <= `VA_PACK40(trap_epc);
             scause <= trap_cause;
-            stval  <= trap_tval;
+            stval  <= `VA_PACK40(trap_tval);
             mstatus[SPIE_B] <= mstatus[SIE_B]; mstatus[SIE_B] <= 1'b0;
             mstatus[SPP_B]  <= priv[0];
             priv <= S;
          end else begin
-            mepc   <= trap_epc;
+            mepc   <= `VA_PACK40(trap_epc);
             mcause <= trap_cause;
-            mtval  <= trap_tval;
+            mtval  <= `VA_PACK40(trap_tval);
             mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
             mstatus[12:11]  <= priv;
             priv <= M;
@@ -364,9 +371,9 @@ module csr_file
               MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
               SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
               MTVEC:      mtvec   <= newv;
-              MEPC:       mepc    <= newv;
+              MEPC:       mepc    <= `VA_PACK40(newv);
               MCAUSE:     mcause  <= newv;
-              MTVAL:      mtval   <= newv;
+              MTVAL:      mtval   <= `VA_PACK40(newv);
               MSCRATCH:   mscratch<= newv;
               MIE:        mie     <= newv;
               MIP:        mip     <= newv & ~HW_RO_MASK;  // MEIP/MTIP/MSIP read-only (device-owned)
@@ -377,9 +384,9 @@ module csr_file
               MCOUNTEREN: mcounteren <= newv;
               SCOUNTEREN: scounteren <= newv;
               STVEC:      stvec   <= newv;
-              SEPC:       sepc    <= newv;
+              SEPC:       sepc    <= `VA_PACK40(newv);
               SCAUSE:     scause  <= newv;
-              STVAL:      stval   <= newv;
+              STVAL:      stval   <= `VA_PACK40(newv);
               SSCRATCH:   sscratch<= newv;
               // satp.ASID is 10-bit WARL (matches SmolRV64 TLB_ASID_BITS=10 + simmerv):
               // zero the unimplemented high ASID bits [59:54] so a read-back matches the

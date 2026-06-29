@@ -1,4 +1,5 @@
 `include "exec_pay.vh"
+`include "va_codec.vh"
 `default_nettype none
 
 // PROBE_POOL: physregs per shard (default 64 -> NPHYS=256). Shrinking it (e.g.
@@ -801,7 +802,7 @@ module backend_top
    wire [63:0] cot_epc   = eb.u_csr.trap_epc;      // trapping/interrupted PC
    wire [63:0] cot_tval  = eb.u_csr.trap_tval;
    wire        cot_to_s  = eb.u_csr.trap_to_s;
-   wire [63:0] cot_mepc  = cot_to_s ? eb.u_csr.mepc : cot_epc;   // mepc after retire
+   wire [63:0] cot_mepc  = cot_to_s ? `VA_UNPACK40(eb.u_csr.mepc) : cot_epc;   // mepc after retire
    wire [1:0]  cot_prv   = eb.u_csr.priv;          // privilege BEFORE the trap
    wire        cot_intr  = cot_cause[63];
    // instruction-side faults retire no instruction (insn=0), like async interrupts
@@ -887,7 +888,7 @@ module backend_top
                probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
                   (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
                   {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
-                  64'd0, {64{1'b1}}, q_trap[0] ? q_mepc[0] : eb.u_csr.mepc, 8'd0);
+                  64'd0, {64{1'b1}}, q_trap[0] ? q_mepc[0] : `VA_UNPACK40(eb.u_csr.mepc), 8'd0);
                end
                for (fi = 0; fi < QN-1; fi = fi + 1) begin
                   q_seq[fi]=q_seq[fi+1]; q_ck[fi]=q_ck[fi+1]; q_pc[fi]=q_pc[fi+1];
