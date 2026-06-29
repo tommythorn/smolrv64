@@ -35,15 +35,26 @@ measured *rates* (unchanged by the ÷10); the score column is GB5's normalized n
 | Speech Recognition | 1.9 | 0.62 Words/sec | 1.8 | 0.57 Words/sec |
 | Machine Learning | 0.0 | 0.01 images/sec | 0.0 | 0.01 images/sec |
 
-## Read of the baseline (single-core profile)
+## What we care about
 
-- **Broad ~10x IPC sag** across all subtests (best are only ~1.5-3) = the CPI redirect bug
-  (backend discards the frontend's run-ahead every retire). Fixing it lifts the whole table.
-- **FP crater**: FP overall 0.0; Gaussian Blur 0.1, ML 0.0, Camera/SfM 0.3 -- ~10x below the
-  integer subtests. A specific FP-pipe problem (no FP bypass, exposed FPU/FMA latency) on top
-  of the general sag.
-- **Crypto crater**: AES-XTS 0.1 (1.48 MB/sec) -- software table-lookup AES, no Zkne/Zknd.
-- **No SMP scaling**: MC overall 1.0 vs SC 0.9 -- effectively one core of throughput.
+GOAL (Tommy): beat THIS baseline. GB5-RISC-V is a relative-to-itself yardstick only -- not
+comparable to x86/Arm (no crypto codegen, etc.); a low absolute score is expected and fine.
+Only the SINGLE-CORE INTEGER subtests matter -- **Clang is the headline number**, then SQLite /
+HTML5 / Text Compression / Navigation / PDF & Text Rendering. **Ignore the MC column entirely
+(no multicore). FP and Crypto are NOT priorities** (FP overall 0.0, AES-XTS 0.1 -- left here for
+record only; do not spend effort there).
 
-Priority levers: (1) CPI redirect bug (uniform multiplier), (2) FP bypass + latency-hiding,
-(3) branch prediction (YAGS+RAS) for branchy integer, (4) Zkne/Zknd AES if Crypto matters.
+## Read of the integer baseline (single-core)
+
+- **Broad ~10x IPC sag**: even the best integer subtests are only ~1.5-3 (Navigation 3.0, Text
+  Compression 2.6, Clang 1.5, SQLite 1.3). This flat tax is the CPI redirect bug (backend
+  discards the frontend's run-ahead every retire). Fixing it lifts every integer subtest.
+- **No branch prediction yet** (fetch = fall-through + redirect): every taken branch / call /
+  return is a redirect bubble. Clang/SQLite/HTML5 are branch- and call-heavy -> this is the
+  second big integer lever (RAS for compiler call/return depth especially).
+
+Integer priority levers (highest leverage first): (1) CPI redirect bug = uniform multiplier on
+every integer subtest; (2) branch prediction (YAGS direction + RAS) = Clang/SQLite/HTML5;
+(3) integer execution latency-hiding -- bypass network + load-use latency (LSU SELECT|MERGE +1)
+for the dependent-integer + pointer-chasing chains in Clang. Attribute per-subtest IPC loss
+with probe/perftool.
