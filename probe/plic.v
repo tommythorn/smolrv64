@@ -90,16 +90,18 @@ module plic #(parameter NSRC = 64)
       end
    end
 
-   // registered read (valid the cycle after `re`); claim returns best_irq
-   always @(posedge clk) begin
-      if (re) begin
-         if (addr <= 24'h0000FF)                            rdata <= {61'd0, prio[addr[7:2]]};
-         else if (addr >= 24'h001000 && addr <= 24'h00107F) rdata <= pending >> ({addr[6:0]} * 8);
-         else if (addr >= 24'h002080 && addr <= 24'h002087) rdata <= enabled;
-         else if (addr >= 24'h201000 && addr <= 24'h201003) rdata <= {61'd0, threshold};
-         else if (is_claim)                                 rdata <= {58'd0, best_irq};
-         else                                               rdata <= 64'd0;
-      end
+   // COMBINATIONAL read (valid the same cycle as `addr`): the probe soc_top latches device
+   // read data at the REQUEST cycle (dev_rdata_q, assuming combinational rdata like clint/uart).
+   // A registered rdata is captured a cycle too early -> the side-effecting CLAIM returns stale
+   // data, software never completes the IRQ, and the line wedges (in_service stuck). claim ->
+   // best_irq (the pipelined arbiter holds it valid while the source stays pending).
+   always @* begin
+      if      (addr <= 24'h0000FF)                       rdata = {61'd0, prio[addr[7:2]]};
+      else if (addr >= 24'h001000 && addr <= 24'h00107F) rdata = pending >> ({addr[6:0]} * 8);
+      else if (addr >= 24'h002080 && addr <= 24'h002087) rdata = enabled;
+      else if (addr >= 24'h201000 && addr <= 24'h201003) rdata = {61'd0, threshold};
+      else if (is_claim)                                 rdata = {58'd0, best_irq};
+      else                                               rdata = 64'd0;
    end
 endmodule
 
