@@ -114,17 +114,33 @@ module soc_top #(
    wire is_hpm_w   = (dmem_waddr & ~64'hff)        == HPM_BASE;
    wire is_virtio_w = (dmem_waddr & ~64'hfff)     == VIRTIO_BASE;
    wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
-   // virtio-mmio register access: 32-bit, positioned in the 64-bit data bus by addr[2].
+   // virtio-mmio register access: 32-bit. The probe LSU bus is byte-addressed and
+   // RIGHT-ALIGNED -- it presents/consumes "8 bytes @ mem_*addr" with the addressed
+   // bytes in the LOW lane and the byte mask low-aligned (store drain: sb_data=raw,
+   // dr_mask=low-nbytes). So a 32b reg always sits in [31:0] regardless of its offset;
+   // do NOT pick a lane by addr[2] (that picks the empty high lane for 0x014/0x038/...).
    assign virtio_addr  = (dmem_wen & is_virtio_w) ? dmem_waddr[11:0] : dmem_raddr[11:0];
-   assign virtio_read  = dmem_ren & is_virtio_r;
+   // Address-gated, NOT strobe-gated: virtio_mmio's read_data is combinational and reads 0
+   // when !read, but the probe samples device reads a cycle LATE via the registered dev_rvalid
+   // -- by then dmem_ren has dropped. Gate on the HELD address (like clint/uart/plic rdata) so
+   // read_data is still valid at the sample. (virtio reads have no side effects -- safe to hold.)
+   assign virtio_read  = is_virtio_r;
    assign virtio_write = dmem_wen & is_virtio_w & ~dev_wack;
-   assign virtio_wdata = dmem_waddr[2] ? dmem_wdata[63:32] : dmem_wdata[31:0];
-   assign virtio_be    = dmem_waddr[2] ? dmem_wmask[7:4]   : dmem_wmask[3:0];
-   // device read returns 1 cycle after the ren pulse (combinational device data, held addr);
-   // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
+   assign virtio_wdata = dmem_wdata[31:0];   // right-aligned: 32b store data is always low lane
+   assign virtio_be    = dmem_wmask[3:0];    // and its byte mask is low-aligned (see note above)
+   // device read returns 1 cycle after the ren pulse; device write accepts in 1 cycle
+   // (~dev_wack masks the held wen so it writes once).
+   // dev_rdata is combinational on the CURRENT cycle's address/device state, but the read
+   // result is delivered a cycle LATE (registered dev_rvalid). If a write follows the read
+   // immediately (e.g. read FEATURES word1, then write FEATURES_SEL=0), by the delivery cycle
+   // virtio_addr has switched to the write addr and device_features_sel has flipped -- so the
+   // late dev_rdata is stale. LATCH the read data at the REQUEST cycle (addr/sel stable here).
    reg  dev_rvalid, dev_wack;
+   reg [63:0] dev_rdata_q;
    always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
-      else begin dev_rvalid <= dmem_ren & is_dev_r; dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
+      else begin dev_rvalid <= dmem_ren & is_dev_r;
+                 if (dmem_ren & is_dev_r) dev_rdata_q <= dev_rdata;
+                 dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
    clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
      (.clk(clk), .reset(reset),
@@ -186,7 +202,7 @@ module soc_top #(
    wire [63:0] dev_rdata = is_clint_r  ? clint_rdata
                          : is_uart_r   ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
                          : is_plic_r   ? plic_rdata
-                         : is_virtio_r ? (dmem_raddr[2] ? {virtio_rdata, 32'd0} : {32'd0, virtio_rdata})
+                         : is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg replicated into both lanes: the LSU extracts the half for the load offset, so this is correct regardless of which lane it picks (all virtio-mmio regs are 32b, accessed 32b)
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
@@ -201,7 +217,7 @@ module soc_top #(
    // is discarded and the request re-issues for the new address.
    wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
    wire         raw_rvalid = is_dev_r ? dev_rvalid : dc_rv_ok;
-   wire [63:0]  raw_rdata  = is_dev_r ? dev_rdata  : dc_rd_data;
+   wire [63:0]  raw_rdata  = is_dev_r ? dev_rdata_q : dc_rd_data;  // registered at request, not stale-combinational
    wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;

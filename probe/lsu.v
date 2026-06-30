@@ -117,6 +117,12 @@ module lsu
     output wire [CBITS-1:0]       dfault_ckpt,
     output wire [3:0]             dfault_cause,
     output wire [AW-1:0]          dfault_tval, // faulting virtual address
+    // ---- device-load replay-to-solo: a read-side-effecting device load must not share a
+    //      checkpoint with an OLDER store (which can't drain before the load otherwise).
+    //      devld_v asks the backend to roll back + refetch the bundle one-op-per-bundle so
+    //      the load lands in its own (later) checkpoint; devld_fire_v ends that solo window. ----
+    output wire                   devld_v,
+    output wire                   devld_fire_v,
     // ---- store completion (deferred decrement, like ld_done): a store retires from
     //      commit_ctl's count only once its translation has been checked fault-free.
     //      Used only under Sv39 (backend defers store completion to the LSU then). ----
@@ -398,8 +404,36 @@ module lsu
    // could still annul it -- needs replay-to-solo; harmless for M-mode/Bare which never data-
    // faults, i.e. the monitor. Stores are already commit-gated, so only loads need this.)
    wire ld_is_dev = ld_pa < DEV_TOP;                     // DEV_TOP is a module parameter
-   wire ld_dev_ok = ~ld_is_dev | (lq_ck[ld_sel] == committed);
+   // A read-side-effecting device load must observe every OLDER store's effect, so it cannot
+   // execute while an older store is still buffered. ld_olds_any = an older store is in the SB;
+   // ld_olds_same = that store shares the load's checkpoint. When the load is oldest, an older
+   // store in an EARLIER checkpoint is just mid-drain (commits/drains independently) -> WAIT for
+   // it; an older store in the SAME checkpoint can never drain first (sb_cmt is set at retire,
+   // which needs the load done) -> the backend must REPLAY-TO-SOLO (devld_v) to separate them.
+   reg ld_olds_any, ld_olds_same; integer od;
+   always @* begin ld_olds_any = 1'b0; ld_olds_same = 1'b0;
+      for (od = 0; od < SBDEPTH; od = od + 1)
+         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel])) begin
+            ld_olds_any = 1'b1;
+            if (sb_ck[od] == lq_ck[ld_sel]) ld_olds_same = 1'b1;
+         end
+   end
+   wire ld_dev_ok = ~ld_is_dev | ((lq_ck[ld_sel] == committed) & ~ld_olds_any);
    wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
+   // REGISTER devld_v (like dfault_v): it feeds backend_top's roll_v, which feeds our own
+   // `rollback`, and the load select that produces it is itself gated by `rollback` -- a
+   // combinational devld_v would chase its own replay rollback in a zero-delay loop. Latching
+   // breaks it; cleared by the replay's own rollback (or any rollback) that squashes the load.
+   wire dv_now = ld_is_dev & ld_sel_v & ld_xok & (lq_ck[ld_sel] == committed)
+                 & ld_olds_same & (ast == A_IDLE) & ~amo_v;
+   reg  dv_v; initial dv_v = 1'b0;
+   always @(posedge clk) begin
+      if (reset)         dv_v <= 1'b0;
+      else if (rollback) dv_v <= 1'b0;
+      else if (dv_now)   dv_v <= 1'b1;
+   end
+   assign devld_v      = dv_v;
+   assign devld_fire_v = sel_fire & ld_is_dev;
 
    // ====================== atomic (A ext) FSM ======================
    // Atomics are serialized + solo (issue only when oldest), so when one executes every

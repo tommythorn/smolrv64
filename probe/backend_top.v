@@ -161,6 +161,10 @@ module backend_top
    wire               lsu_dfault_v;          // data page-fault latched in the LSU (declared early: gates dispatch)
    reg                replay_v;              // fault-replay: refetch the faulting bundle one-op-per-bundle
    initial replay_v = 1'b0;                  // (so the faulting op becomes solo -> precise trap, declared early: feeds frontend)
+   wire               lsu_devld_v;           // device load wants replay-to-solo (older store shares its ckpt)
+   wire               lsu_devld_fire_v;      // a device load fired (ends the device-load solo window)
+   reg                devld_solo_v;          // device-load solo replay active (drives solo_all like replay_v)
+   initial devld_solo_v = 1'b0;
    reg                ill_v;                 // illegal-instruction fault latched (declared early: gates dispatch)
    reg  [SEQW-1:0]    ill_seq;               // its seqno + checkpoint (set at issue, below)
    reg  [CBITS-1:0]   ill_ckpt;
@@ -295,7 +299,7 @@ module backend_top
               .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
-      .redirect_seq(fe_red_seq), .solo_all(replay_v), .irq_inject(irq_inject),
+      .redirect_seq(fe_red_seq), .solo_all(replay_v | devld_solo_v), .irq_inject(irq_inject),
       .imem_addr(imem_va), .imem_ipc(imem_ipc), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
@@ -606,6 +610,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
+      .devld_v(lsu_devld_v), .devld_fire_v(lsu_devld_fire_v),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
@@ -678,6 +683,15 @@ module backend_top
    assign dflt_epc   = chk_pc[flt_ckpt];
    assign dflt_tval  = flt_tval;
 
+   // device-load replay-to-solo (phase-1-style, NO trap): the LSU reports a device load that is
+   // oldest but shares its checkpoint with an older store. Roll back to that checkpoint's start
+   // and refetch one-op-per-bundle (devld_solo_v -> solo_all), so the store lands in an earlier,
+   // committable+drainable checkpoint and the now-separated load reads the post-store device
+   // state. The load's checkpoint is the oldest live one, so its start is chk_*[cc_committed].
+   // Lower priority than faults/fetch-faults/branch redirects (they reshape the pipe anyway).
+   wire devld_replay = lsu_devld_v & ~devld_solo_v & ~replay_v & ~dflt_ready
+                       & ~iflt_fire & ~eb_redirect & ~ill_v & ~lsu_dfault_v;
+
    // ---- interrupt injection (precise, via the irq_take pseudo-op) ----
    // When an interrupt is enabled+pending, inject a synthetic solo SYSTEM op at the current
    // fetch PC (fetch holds PC). It renames/schedules like an ecall, becomes the oldest, and
@@ -688,7 +702,7 @@ module backend_top
    // One pseudo-op in flight at a time: inject_inflight latches at injection and clears when
    // the op resolves (its own trap, or any rollback squashes it) or the interrupt clears.
    reg inject_inflight; initial inject_inflight = 1'b0;
-   assign irq_inject = csr_irq_v & ~inject_inflight & ~replay_v & ~pend_iflt & ~lsu_dfault_v
+   assign irq_inject = csr_irq_v & ~inject_inflight & ~replay_v & ~devld_solo_v & ~pend_iflt & ~lsu_dfault_v
                        & ~ill_v & ~eb_redirect & ~dflt_replay & ~dflt_fire & ~iflt_fire & ~roll_v;
    always @(posedge clk) begin
       if (reset)                    inject_inflight <= 1'b0;
@@ -711,23 +725,37 @@ module backend_top
       else if (dflt_replay)            replay_v <= 1'b1;  // entered solo replay
    end
 
+   // device-load solo window: set on the replay, cleared when a device load fires solo. (A
+   // device load needing replay is, by construction, not firing this cycle, so the two never
+   // collide; clear-first matches replay_v's shape.)
+   always @(posedge clk) begin
+      if (reset)                  devld_solo_v <= 1'b0;
+      else if (lsu_devld_fire_v)  devld_solo_v <= 1'b0;
+      else if (devld_replay)      devld_solo_v <= 1'b1;
+   end
+
    // unified redirect distribution. A fetch fault fires only when empty, so its rollback
    // is a no-op functionally but keeps the frontend flush paired with a rename rollback
    // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
-   assign roll_v     = eb_redirect | dflt_roll | iflt_fire;
-   assign roll_seq   = iflt_fire ? fe_cur_seq
-                     : dflt_roll ? (chk_seq[flt_ckpt] - 1'b1) : eb_rseq;
-   assign roll_ckpt  = iflt_fire ? cc_committed
-                     : dflt_roll ? flt_ckpt : rb_idx;
+   assign roll_v     = eb_redirect | dflt_roll | iflt_fire | devld_replay;
+   assign roll_seq   = iflt_fire    ? fe_cur_seq
+                     : dflt_roll    ? (chk_seq[flt_ckpt]    - 1'b1)
+                     : devld_replay ? (chk_seq[cc_committed] - 1'b1) : eb_rseq;
+   assign roll_ckpt  = iflt_fire    ? cc_committed
+                     : dflt_roll    ? flt_ckpt
+                     : devld_replay ? cc_committed : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
-   // phase 2 / fetch-fault redirect to the trap vector; phase 1 refetches the start.
+   // phase 2 / fetch-fault redirect to the trap vector; phase 1 (data fault OR device-load
+   // replay) refetches the checkpoint start.
    // (an interrupt's redirect rides eb_target -- the irq_take pseudo-op's SYSTEM redirect.)
    assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt
                      : dflt_replay             ? chk_pc[flt_ckpt]
+                     : devld_replay            ? chk_pc[cc_committed]
                      :                           eb_target;
-   assign fe_red_seq = iflt_fire ? fe_cur_seq
-                     : dflt_roll ? chk_seq[flt_ckpt]
+   assign fe_red_seq = iflt_fire    ? fe_cur_seq
+                     : dflt_roll    ? chk_seq[flt_ckpt]
+                     : devld_replay ? chk_seq[cc_committed]
                      : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;
