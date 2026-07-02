@@ -121,18 +121,27 @@ module soc_top #(
    // dr_mask=low-nbytes). So a 32b reg always sits in [31:0] regardless of its offset;
    // do NOT pick a lane by addr[2] (that picks the empty high lane for 0x014/0x038/...).
    assign virtio_addr  = (dmem_wen & is_virtio_w) ? dmem_waddr[11:0] : dmem_raddr[11:0];
-   // virtio read is a REQ/RSP handshake (the FPGA wrapper routes this through a probe_clk<->
-   // ui_clk CDC bridge with multi-cycle latency; the sim drives virtio_rvalid 1 cycle later).
-   // Pulse virtio_read once per load (held dmem_ren would re-enqueue the CDC FIFO), latch the
-   // request via vio_pending, and complete on virtio_rvalid. The LSU tolerates the latency.
-   reg  vio_pending;  initial vio_pending = 1'b0;
-   wire vio_req = dmem_ren & is_virtio_r & ~vio_pending;
+   // virtio read AND write are BOTH REQ/RSP: the FPGA wrapper routes them through a probe_clk<->
+   // ui_clk CDC bridge with multi-cycle latency (the sim models it, writes included, via virtio_rvalid
+   // a few cycles later). A write MUST block until the bridge DELIVERS it: a fire-and-forget write
+   // leaves the store buffer in 1 cycle while still in flight through the CDC FIFO, so the device-scope
+   // fence releases the following device read, which then OVERTAKES the write at the device (ILA-
+   // confirmed: the driver's DeviceFeaturesSel write reached virtio AFTER its DeviceFeatures read ->
+   // read saw stale features -> VERSION_1 -22). Holding the store until virtio_rvalid makes "the read
+   // waits for an older device store to DRAIN" == "waits for it to be DELIVERED", so reads can't
+   // overtake writes. One virtio op is outstanding at a time (LSU is single-outstanding + the fence
+   // serialises device ops), so the single virtio_rvalid completes whichever of read/write is pending.
+   reg  vio_pending, vio_wpending;  initial begin vio_pending = 1'b0; vio_wpending = 1'b0; end
+   wire vio_req  = dmem_ren & is_virtio_r & ~vio_pending & ~vio_wpending;
+   wire vio_wreq = dmem_wen & is_virtio_w & ~vio_wpending & ~vio_pending;
    always @(posedge clk)
-      if (reset)              vio_pending <= 1'b0;
-      else if (vio_req)       vio_pending <= 1'b1;
-      else if (virtio_rvalid) vio_pending <= 1'b0;
+      if (reset) begin vio_pending <= 1'b0; vio_wpending <= 1'b0; end
+      else begin
+         if (vio_req)  vio_pending  <= 1'b1;  else if (virtio_rvalid) vio_pending  <= 1'b0;
+         if (vio_wreq) vio_wpending <= 1'b1;  else if (virtio_rvalid) vio_wpending <= 1'b0;
+      end
    assign virtio_read  = vio_req;
-   assign virtio_write = dmem_wen & is_virtio_w & ~dev_wack;
+   assign virtio_write = vio_wreq;
    assign virtio_wdata = dmem_wdata[31:0];   // right-aligned: 32b store data is always low lane
    assign virtio_be    = dmem_wmask[3:0];    // and its byte mask is low-aligned (see note above)
    // clint/uart/plic: combinational rdata valid the cycle after the ren pulse (fixed 1-cycle
@@ -141,7 +150,7 @@ module soc_top #(
    reg  dev_rvalid, dev_wack;
    always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
       else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
-                 dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
+                 dev_wack <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
    clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
      (.clk(clk), .reset(reset),
@@ -220,7 +229,7 @@ module soc_top #(
    // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
    // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
    // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
-   wire         raw_rvalid = is_virtio_r ? virtio_rvalid
+   wire         raw_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
                            : is_dev_r    ? dev_rvalid
                            : dc_rv_ok;
    wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
@@ -236,7 +245,10 @@ module soc_top #(
    wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
    assign       dmem_rdata  = c_st_ok ? c_rdd_st : raw_rdata;
    assign       dmem_rvalid = raw_rvalid | c_st_ok;
-   assign       dmem_wready = is_dev_w ? dev_wack : dc_wr_ack;
+   // virtio store completes only when the bridge has DELIVERED it (virtio_rvalid) -- blocking, so the
+   // fence-released next read cannot overtake it; other device writes accept in 1 cycle (dev_wack).
+   assign       dmem_wready = is_virtio_w ? (virtio_rvalid & vio_wpending)
+                            : is_dev_w    ? dev_wack : dc_wr_ack;
 
    // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
    // store buffer drains in ~1-2c instead of a full L2 round-trip. PTW reads are routed THROUGH

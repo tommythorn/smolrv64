@@ -1656,6 +1656,9 @@ module smolrv64_mmio_clock_bridge(
                  ui_read <= cmd_is_read;
                  if (cmd_is_read)
                     ui_state <= UI_WAIT_RSP;
+                 else if (cmd_is_write)
+                    ui_state <= UI_SEND_RSP;   // writes send a completion too, so soc_top can BLOCK the
+                                               // store until delivery (rsp data is don't-care for a write)
               end
            end
            UI_WAIT_RSP: begin

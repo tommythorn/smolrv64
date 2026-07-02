@@ -30,14 +30,15 @@ module tb;
    wire [11:0] virtio_addr;  wire virtio_read, virtio_write;
    wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [31:0] virtio_rdata_comb; wire virtio_irq;
-   // Model the FPGA probe_clk<->ui_clk CDC bridge: a virtio read is a 1-cycle req pulse, the
-   // response (latched read_data) returns several cycles later with virtio_rvalid. This stresses
-   // soc_top's req/rsp handshake (it must wait for rvalid, not assume a fixed latency).
+   // Model the FPGA probe_clk<->ui_clk CDC bridge: a virtio read OR write is a 1-cycle req pulse, the
+   // completion returns several cycles later with virtio_rvalid (read: latched read_data; write: a
+   // delivery ack -- data don't-care). This stresses soc_top's req/rsp handshake (it must wait for
+   // rvalid, not assume a fixed latency) AND the blocking-write ordering that the bridge enforces.
    reg [31:0] virtio_rd_q;  reg virtio_rvalid;  reg [2:0] vio_lat;
    always @(posedge clk) begin
       virtio_rvalid <= 1'b0;
       if (reset) vio_lat <= 3'd0;
-      else if (virtio_read) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
+      else if (virtio_read || virtio_write) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
       else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
    end
 
