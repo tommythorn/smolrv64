@@ -636,6 +636,22 @@ module rk_xcku5p(
       .ui_readdata         (ui_mmio_readdata)
    );
 
+`ifdef ILA_VIRTIO
+   // Debug (ILA_VIRTIO=1): capture the virtio-mmio access stream on the bridge ui-side (ui_clk).
+   // Trigger on a DeviceFeatures read (probe2 ui_read=1 & probe0 addr==0x010) to see whether the
+   // preceding DeviceFeaturesSel write (probe1 ui_write=1, addr 0x014, probe3 wdata=1) reached the
+   // device first, and what the device returns (probe4 ui_readdata) -- root-cause VERSION_1 -22.
+   ila_virtio u_ila_virtio_bridge (
+      .clk    (ui_clk),
+      .probe0 (ui_mmio_address[11:0]),   // reg offset: DeviceFeatures=0x010, DeviceFeaturesSel=0x014
+      .probe1 (ui_mmio_write),
+      .probe2 (ui_mmio_read),
+      .probe3 (ui_mmio_writedata),       // Sel value on a write
+      .probe4 (ui_mmio_readdata),        // what virtio returns (expect 0x3 for Features w/ Sel=1)
+      .probe5 (ui_mmio_readdatavalid)
+   );
+`endif
+
    /* The legacy mmc-spi controller (sd_spi_oc_tiny + sd_gpio CS) is gone; the
     * SD card is now driven in SPI mode by sd_spi_host inside virtio_blk_backend. */
 

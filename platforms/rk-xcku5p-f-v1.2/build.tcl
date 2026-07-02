@@ -229,6 +229,29 @@ if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"
     puts "Enabling PC_TRACE debug tracer."
     lappend vdefines "PC_TRACE"
 }
+# ILA_VIRTIO=1: insert an ILA on the MMIO clock-bridge ui-side (virtio-mmio access + read data),
+# sampled on ui_clk. Lets us capture the driver's DeviceFeaturesSel-write / DeviceFeatures-read
+# sequence on hardware and see what virtio actually returns (probe VERSION_1 -22 root-cause).
+if {[info exists env(ILA_VIRTIO)] && $env(ILA_VIRTIO) ne "" && $env(ILA_VIRTIO) ne "0"} {
+    puts "Enabling ILA_VIRTIO: MMIO bridge ui-side debug core (ila_virtio)."
+    lappend vdefines "ILA_VIRTIO"
+    if {[llength [get_ips -quiet ila_virtio]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_virtio
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {6} \
+            CONFIG.C_PROBE0_WIDTH {12} \
+            CONFIG.C_PROBE1_WIDTH {1} \
+            CONFIG.C_PROBE2_WIDTH {1} \
+            CONFIG.C_PROBE3_WIDTH {32} \
+            CONFIG.C_PROBE4_WIDTH {32} \
+            CONFIG.C_PROBE5_WIDTH {1} \
+            CONFIG.C_DATA_DEPTH {4096} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_virtio]
+        generate_target {instantiation_template synthesis} [get_ips ila_virtio]
+    }
+}
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir

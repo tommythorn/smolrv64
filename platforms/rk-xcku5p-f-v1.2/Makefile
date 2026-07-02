@@ -30,6 +30,13 @@ ifneq ($(strip $(PROBE_DIAG)),)
 export PROBE_DIAG
 endif
 
+# Debug: ILA_VIRTIO=1 inserts an ILA on the MMIO clock-bridge ui-side (virtio-mmio access +
+# device read data), on ui_clk. Capture the driver's DeviceFeaturesSel/DeviceFeatures sequence
+# to see whether the Sel write reaches virtio before the Features read (probe VERSION_1 -22).
+ifneq ($(strip $(ILA_VIRTIO)),)
+export ILA_VIRTIO
+endif
+
 .PHONY: all synth impl bit program load clean timing
 
 all: bit
