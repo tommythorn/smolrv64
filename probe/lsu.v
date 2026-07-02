@@ -197,6 +197,8 @@ module lsu
    reg [63:0]       sb_d0  [0:SBDEPTH-1];   // data laid into word-w0 byte lanes
    reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
    reg [AW-1:0]     sb_pa  [0:SBDEPTH-1];   // physical drain address (Bare: ==VA; Sv39: filled at check)
+   reg              sb_dev [0:SBDEPTH-1];   // this store targets device MMIO (sb_pa < DEV_TOP) -- precomputed
+                                            // so the device-load ordering fence is a 1-bit test, not a hot compare
    reg              sb_nc  [0:SBDEPTH-1];   // Svpbmt: NC/IO store -> flush-around at drain
    reg              sb_cbo [0:SBDEPTH-1];   // Zicbom/Zicboz: this entry is a CBO maintenance op
    reg              sb_cboz[0:SBDEPTH-1];   // cbo.zero (else clean/flush/inval)
@@ -395,27 +397,32 @@ module lsu
    // cycle (~amo_v). The latter keeps any load out of the MERGE stage during the atomic, so
    // a load's ld_done never collides with the atomic's (single completion port).
    // Strong I/O ordering (TT principle): a load hitting UNCACHED device memory (MMIO: pa < DEV_TOP
-   // == CLINT/PLIC/UART/virtio regs) must execute in a SOLO, COMMITTED checkpoint with the store
-   // buffer drained of every older store -- i.e. a full memory fence sits ahead of it. This is the
-   // only correct model: (a) a read-side-effecting device load (UART RBR pops a byte, PLIC claim
-   // pops an interrupt) must NOT run speculatively, else a branch-mispredict squash consumes state
-   // the program never receives (== swallowed input); (b) a device read must observe every older
-   // write's effect (e.g. virtio DeviceFeaturesSel write before the DeviceFeatures read). Gate on
-   // the already-translated PHYSICAL address (correct under Bare and Sv39). Costly -- a rollback per
-   // speculative device access, so a tight poll/delay loop replays each iteration -- but rare in
-   // steady state; a future pass can predict solo-needing memops at fetch and skip the rollback.
-   // Stores need no solo: the SB drains in seqno order (older writes reach memory/device first) and
-   // stores are commit-gated (a squashed speculative store never drains) -- so both store ordering
-   // and non-speculation already hold.
+   // == CLINT/PLIC/UART/virtio regs) must execute NON-SPECULATIVELY -- in the oldest-live (committed)
+   // checkpoint. Two reasons: (a) a read-side-effecting device load (UART RBR pops a byte, PLIC claim
+   // pops an interrupt) must not run then get squashed by a branch-mispredict, or it consumes state
+   // the program never receives (== swallowed input); (b) it must observe every older DEVICE write's
+   // effect (e.g. virtio DeviceFeaturesSel write before the DeviceFeatures read). Gate on the already-
+   // translated PHYSICAL address (correct under Bare and Sv39). Costly -- a rollback per speculative
+   // device access, so a tight poll/delay loop replays each iteration -- but rare; a future pass can
+   // predict solo-needing memops at fetch and skip the rollback. Stores need no solo: the SB drains
+   // in seqno order (older writes reach memory/device first) and stores are commit-gated (a squashed
+   // speculative store never drains) -- so store ordering and non-speculation already hold.
+   //
+   // The ordering fence is w.r.t. older DEVICE stores ONLY, not all memory. A device READ has no true
+   // dependence on a memory write (a device register is not a function of DRAM); fencing it against
+   // memory stores is a FALSE dependence that serializes I/O reads behind unrelated memory traffic --
+   // e.g. XMODEM streaming received data to DRAM would stall every UART read behind those writes and
+   // fall behind the sender once the working set passes the D$. It is deadlock-free either way (older
+   // stores are finite and drain), but the false dependence cripples I/O throughput. So: DEVICE stores.
    wire ld_is_dev = ld_pa < DEV_TOP;                     // DEV_TOP is a module parameter (== LBASE)
-   // The fence is w.r.t. ALL memory: ld_olds_any = an older store (any) is still buffered;
-   // ld_olds_same = one shares the load's checkpoint. An older store in an EARLIER checkpoint is
-   // mid-drain -> the (committed) load just WAITS for it. One in the SAME checkpoint can never drain
-   // first (sb_cmt sets at retire, which needs the load done) -> must REPLAY-TO-SOLO to separate them.
+   // ld_olds_any = an older DEVICE store is still buffered; ld_olds_same = one shares the load's
+   // checkpoint. An older device store in an EARLIER (already-committed) checkpoint is mid-drain ->
+   // the load just WAITS for it. One in the SAME checkpoint can never drain first (sb_cmt sets at
+   // retire, which needs the load done) -> must REPLAY-TO-SOLO to separate them.
    reg ld_olds_any, ld_olds_same; integer od;
    always @* begin ld_olds_any = 1'b0; ld_olds_same = 1'b0;
       for (od = 0; od < SBDEPTH; od = od + 1)
-         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel])) begin
+         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel]) && sb_dev[od]) begin
             ld_olds_any = 1'b1;
             if (sb_ck[od] == lq_ck[ld_sel]) ld_olds_same = 1'b1;
          end
@@ -809,6 +816,7 @@ module lsu
                f_wbe  = {8'd0, f_be9[7:0]} << f_off;                // mask into lanes
                sb_addr[eidx] <= f_addr;
                sb_pa[eidx]   <= f_addr;          // default PA==VA (Bare); overwritten by the Sv39 check
+               sb_dev[eidx]  <= (f_addr < DEV_TOP);  // default (Bare); overwritten by the Sv39 check
                sb_nc[eidx]   <= 1'b0;            // default cacheable (Bare); overwritten by the Sv39 check
                sb_xck[eidx]  <= ~xlate;          // Bare: drainable now; Sv39: await pre-commit check
                sb_xflt[eidx] <= 1'b0;
@@ -842,6 +850,7 @@ module lsu
          // (2b) pre-commit store-check result (one store/cycle, Sv39): mark the checked
          //      store drainable (stash its PA) or faulting (-> dfault drives a precise trap).
          if (st_ck_done) begin sb_xck[ck_sel] <= 1'b1; sb_pa[ck_sel] <= {{(AW-56){1'b0}}, stx_pa};
+                               sb_dev[ck_sel] <= ({{(AW-56){1'b0}}, stx_pa} < DEV_TOP);
                                sb_nc[ck_sel] <= stx_uncached; end
          if (st_ck_flt)  begin sb_xck[ck_sel] <= 1'b1; sb_xflt[ck_sel] <= 1'b1; end
 
