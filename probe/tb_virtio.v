@@ -29,7 +29,17 @@ module tb;
    // ---- virtio MMIO passthrough nets (soc_top <-> virtio_mmio) ----
    wire [11:0] virtio_addr;  wire virtio_read, virtio_write;
    wire [31:0] virtio_wdata; wire [3:0] virtio_be;
-   wire [31:0] virtio_rdata; wire virtio_irq;
+   wire [31:0] virtio_rdata_comb; wire virtio_irq;
+   // Model the FPGA probe_clk<->ui_clk CDC bridge: a virtio read is a 1-cycle req pulse, the
+   // response (latched read_data) returns several cycles later with virtio_rvalid. This stresses
+   // soc_top's req/rsp handshake (it must wait for rvalid, not assume a fixed latency).
+   reg [31:0] virtio_rd_q;  reg virtio_rvalid;  reg [2:0] vio_lat;
+   always @(posedge clk) begin
+      virtio_rvalid <= 1'b0;
+      if (reset) vio_lat <= 3'd0;
+      else if (virtio_read) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
+      else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
+   end
 
    soc_top #(.RESET_PC(64'h8000_0000)) dut    // reset straight to OpenSBI (a1=DTB via +a1=)
      (.clk(clk), .reset(reset), .commit(commit),
@@ -40,7 +50,7 @@ module tb;
       .uart_tx_ready(1'b1),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(virtio_rdata), .virtio_irq(virtio_irq));
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq));
 
    // ---------------- behavioral DDR (DDR_BYTES, 4-cycle line latency) ----------------
    // 512-bit LINE array (ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 --
@@ -75,7 +85,7 @@ module tb;
 
    virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
      (.clock(clk), .reset(reset),
-      .address(virtio_addr), .read(virtio_read), .read_data(virtio_rdata),
+      .address(virtio_addr), .read(virtio_read), .read_data(virtio_rdata_comb),
       .write(virtio_write), .write_data(virtio_wdata), .byteenable(virtio_be),
       .config_capacity_sectors(v_capacity),
       .irq(virtio_irq),
@@ -176,8 +186,29 @@ module tb;
       end
    endtask
 
+   // ---- virtio-blk / SD diagnosis taps ----
+   reg [63:0] c;
+   reg        sderr_q, vblk_done_q;
+   reg [5:0]  vbstate_q;
+   always @(posedge clk) begin
+      if (reset) begin sderr_q <= 1'b0; vbstate_q <= 6'd0; end
+      else begin
+         // virtio_blk verdict on entry to S_WRITE_STATUS (state 31): status 0=OK/1=IOERR/2=UNSUPP
+         vbstate_q <= u_vblk.state;
+         if (u_vblk.state == 6'd31 && vbstate_q != 6'd31)
+            $display("[VBLK c=%0d STATUS=%0d type=%0d sec=%0d secleft=%0d sderr=%b dmaerr=%b]",
+                     c, u_vblk.status_byte, u_vblk.req_type, u_vblk.req_sector,
+                     u_vblk.sectors_left, u_vblk.sd_error, u_vblk.dma_rsp_error);
+         // sd_error edge: capture which SPI step / sector failed
+         sderr_q <= u_vblk.sd_error;
+         if (u_vblk.sd_error & ~sderr_q)
+            $display("[SDERR c=%0d vblkstate=%0d blk_sector=%0d secleft=%0d spistate=%0d]",
+                     c, u_vblk.state, u_vblk.blk_sector, u_vblk.sectors_left, u_vblk.sd.dbg_state);
+      end
+   end
+
    reg [8*256-1:0] fw, dtb, initrd, disk;
-   reg [63:0] ncyc, c;
+   reg [63:0] ncyc;
    initial begin
       rx_we=0; rx_data=0; ncyc=200000000; blk_miso=1'b1;
       if (!$value$plusargs("fw=%s", fw))         begin $display("FATAL: +fw"); $finish; end

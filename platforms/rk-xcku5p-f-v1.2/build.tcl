@@ -189,6 +189,14 @@ if {$probe_core} {
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
     lappend vdefines "PROBE_CORE"
     lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
+    if {[info exists env(NO_VIRTIO_WIRE)] && $env(NO_VIRTIO_WIRE) ne "" && $env(NO_VIRTIO_WIRE) ne "0"} {
+        puts "NO_VIRTIO_WIRE: deactivating virtio wrapper wiring (isolation experiment)."
+        lappend vdefines "NO_VIRTIO_WIRE"
+    }
+    if {[info exists env(PROBE_DIAG)] && $env(PROBE_DIAG) ne "" && $env(PROBE_DIAG) ne "0"} {
+        puts "PROBE_DIAG: decouple probe_clk from ui_rst + LED cal/clock heartbeats (diagnostic)."
+        lappend vdefines "PROBE_DIAG"
+    }
 } else {
     foreach image [list $sram_even $sram_odd] {
         if {![file exists $image]} {

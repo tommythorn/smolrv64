@@ -58,6 +58,7 @@ module soc_top #(
    output wire [31:0]      virtio_wdata,
    output wire [3:0]       virtio_be,
    input  wire [31:0]      virtio_rdata,
+   input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq
 );
    localparam SIZE = 1<<RAM_LG2;
@@ -120,26 +121,26 @@ module soc_top #(
    // dr_mask=low-nbytes). So a 32b reg always sits in [31:0] regardless of its offset;
    // do NOT pick a lane by addr[2] (that picks the empty high lane for 0x014/0x038/...).
    assign virtio_addr  = (dmem_wen & is_virtio_w) ? dmem_waddr[11:0] : dmem_raddr[11:0];
-   // Address-gated, NOT strobe-gated: virtio_mmio's read_data is combinational and reads 0
-   // when !read, but the probe samples device reads a cycle LATE via the registered dev_rvalid
-   // -- by then dmem_ren has dropped. Gate on the HELD address (like clint/uart/plic rdata) so
-   // read_data is still valid at the sample. (virtio reads have no side effects -- safe to hold.)
-   assign virtio_read  = is_virtio_r;
+   // virtio read is a REQ/RSP handshake (the FPGA wrapper routes this through a probe_clk<->
+   // ui_clk CDC bridge with multi-cycle latency; the sim drives virtio_rvalid 1 cycle later).
+   // Pulse virtio_read once per load (held dmem_ren would re-enqueue the CDC FIFO), latch the
+   // request via vio_pending, and complete on virtio_rvalid. The LSU tolerates the latency.
+   reg  vio_pending;  initial vio_pending = 1'b0;
+   wire vio_req = dmem_ren & is_virtio_r & ~vio_pending;
+   always @(posedge clk)
+      if (reset)              vio_pending <= 1'b0;
+      else if (vio_req)       vio_pending <= 1'b1;
+      else if (virtio_rvalid) vio_pending <= 1'b0;
+   assign virtio_read  = vio_req;
    assign virtio_write = dmem_wen & is_virtio_w & ~dev_wack;
    assign virtio_wdata = dmem_wdata[31:0];   // right-aligned: 32b store data is always low lane
    assign virtio_be    = dmem_wmask[3:0];    // and its byte mask is low-aligned (see note above)
-   // device read returns 1 cycle after the ren pulse; device write accepts in 1 cycle
-   // (~dev_wack masks the held wen so it writes once).
-   // dev_rdata is combinational on the CURRENT cycle's address/device state, but the read
-   // result is delivered a cycle LATE (registered dev_rvalid). If a write follows the read
-   // immediately (e.g. read FEATURES word1, then write FEATURES_SEL=0), by the delivery cycle
-   // virtio_addr has switched to the write addr and device_features_sel has flipped -- so the
-   // late dev_rdata is stale. LATCH the read data at the REQUEST cycle (addr/sel stable here).
+   // clint/uart/plic: combinational rdata valid the cycle after the ren pulse (fixed 1-cycle
+   // dev_rvalid). virtio is EXCLUDED here -- it completes via the virtio_rvalid req/rsp above.
+   // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
    reg  dev_rvalid, dev_wack;
-   reg [63:0] dev_rdata_q;
    always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
-      else begin dev_rvalid <= dmem_ren & is_dev_r;
-                 if (dmem_ren & is_dev_r) dev_rdata_q <= dev_rdata;
+      else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
                  dev_wack <= dmem_wen & is_dev_w & ~dev_wack; end
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
    clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
@@ -216,8 +217,15 @@ module soc_top #(
    // response address to the current request (like the I$ does with i_pa); a non-matching response
    // is discarded and the request re-issues for the new address.
    wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
-   wire         raw_rvalid = is_dev_r ? dev_rvalid : dc_rv_ok;
-   wire [63:0]  raw_rdata  = is_dev_r ? dev_rdata_q : dc_rd_data;  // registered at request, not stale-combinational
+   // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
+   // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
+   // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
+   wire         raw_rvalid = is_virtio_r ? virtio_rvalid
+                           : is_dev_r    ? dev_rvalid
+                           : dc_rv_ok;
+   wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
+                           : is_dev_r    ? dev_rdata
+                           : dc_rd_data;
    wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;

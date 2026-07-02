@@ -69,7 +69,9 @@ module rk_xcku5p(
    reg  [1:0] cpu_reset_core_sync = 2'b11;
    wire cpu_reset = cpu_reset_core_sync[1];
 
+`ifndef PROBE_DIAG
    assign led = 4'b0000;
+`endif
 
    // Run the CPU-side pipeline and hit path at half the DDR4 UI clock.  The
    // cache refill/writeback engine inside smolrv64 still uses ui_clk through
@@ -120,6 +122,30 @@ module rk_xcku5p(
    // Synchronous divide keeps probe_clk phase-related to ui_clk.  The UART CLK_FREQ below AND
    // the CLINT SCALE_DIV (probe/soc_top.v) MUST track this divider.
    wire probe_clk;
+`ifdef PROBE_DIAG
+   // DIAGNOSTIC: decouple probe_clk/probe_reset from ui_rst (= DDR-cal-gated). A local POR
+   // deasserts after ui_clk has run 1024 cycles (PLL locked; ui_clk runs post-lock independent
+   // of DDR calibration on UltraScale), so the BRAM monitor boots REGARDLESS of DDR cal. If the
+   // banner appears only with this build, the "dead core" was probe_clk held off by ui_rst
+   // (cal/reset gating -- physical); if still dead, the core is genuinely functionally dead.
+   reg [9:0] probe_por_cnt = 10'd0;
+   reg       probe_por = 1'b1;
+   always @(posedge ui_clk) begin
+      if (probe_por_cnt != 10'h3ff) probe_por_cnt <= probe_por_cnt + 1'b1;
+      else                          probe_por <= 1'b0;
+   end
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
+      (.I(ui_clk), .CE(1'b1), .CLR(probe_por), .O(probe_clk));
+   (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
+   always @(posedge probe_clk or posedge probe_por)
+      if (probe_por) probe_reset_sync <= 2'b11;
+      else           probe_reset_sync <= {probe_reset_sync[0], 1'b0};
+   wire probe_reset = probe_reset_sync[1];
+   // LEDs (core-independent): observe cal/clock health at a glance.
+   reg [26:0] hb_ui = 27'd0;    always @(posedge ui_clk)    hb_ui  <= hb_ui  + 1'b1;
+   reg [23:0] hb_pr = 24'd0;    always @(posedge probe_clk) hb_pr  <= hb_pr  + 1'b1;
+   assign led = {hb_ui[26], hb_pr[23], ui_rst, init_calib_complete};
+`else
    BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
       (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
@@ -127,6 +153,7 @@ module rk_xcku5p(
       if (ui_cpu_reset) probe_reset_sync <= 2'b11;
       else              probe_reset_sync <= {probe_reset_sync[0], 1'b0};
    wire probe_reset = probe_reset_sync[1];
+`endif
 `endif
 
    wire         dbg_clk;
@@ -576,9 +603,21 @@ module rk_xcku5p(
    assign ui_mmio_readdatavalid = mmio_read_d2;
    assign ui_mmio_readdata = mmio_readdata_q;
 
+   // Under PROBE_CORE the bridge's core side is driven by the probe soc_top's virtio passthrough
+   // at probe_clk (not the scalar core_clk); the async FIFOs handle probe_clk<->ui_clk CDC.
+`ifdef PROBE_CORE
+ `ifdef NO_VIRTIO_WIRE
+   // Experiment: deactivate the virtio path -- bridge idle on core_clk (banner-build baseline).
+   wire mmio_bridge_clk = core_clk;    wire mmio_bridge_rst = cpu_reset;
+ `else
+   wire mmio_bridge_clk = probe_clk;   wire mmio_bridge_rst = probe_reset;
+ `endif
+`else
+   wire mmio_bridge_clk = core_clk;    wire mmio_bridge_rst = cpu_reset;
+`endif
    smolrv64_mmio_clock_bridge mmio_clock_bridge_inst(
-      .core_clock          (core_clk),
-      .core_reset          (cpu_reset),
+      .core_clock          (mmio_bridge_clk),
+      .core_reset          (mmio_bridge_rst),
       .core_address        (core_mmio_address),
       .core_read           (core_mmio_read),
       .core_write          (core_mmio_write),
@@ -1385,13 +1424,29 @@ module rk_xcku5p(
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
+   wire [11:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;
+   wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
+   // virtio_blk IRQ (ui_clk) synchronized into probe_clk for soc_top's internal PLIC (src 11).
+   (* async_reg = "true" *) reg p_virtio_irq_meta = 1'b0, p_virtio_irq = 1'b0;
+   always @(posedge probe_clk) begin p_virtio_irq_meta <= virtio_blk_irq; p_virtio_irq <= p_virtio_irq_meta; end
+
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
       .commit(), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
       .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
       .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
-      .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready));
+      .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
+      // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
+      .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
+      .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
+`ifdef NO_VIRTIO_WIRE
+      .virtio_rdata(32'd0), .virtio_rvalid(1'b0),
+      .virtio_irq(1'b0));
+`else
+      .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
+      .virtio_irq(p_virtio_irq));
+`endif
 
    ddr_line_cdc probe_cdc (
       .clk_p(probe_clk), .reset_p(probe_reset),
@@ -1433,12 +1488,22 @@ module rk_xcku5p(
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
-   // virtio/MMIO bridge is unused under PROBE_CORE: tie its core-side inputs idle.
+   // Drive the MMIO bridge core side from the probe soc_top's virtio passthrough. soc_top emits
+   // the 12-bit offset within its 0x1000_2000 virtio region; map to {8'h02, offset} so the ui
+   // side's virtio_blk_sel (ui_mmio_address[19:12]==0x02) routes it to virtio_blk_inst.
+`ifdef NO_VIRTIO_WIRE
    assign core_mmio_address    = 20'd0;
    assign core_mmio_read       = 1'b0;
    assign core_mmio_write      = 1'b0;
    assign core_mmio_writedata  = 32'd0;
    assign core_mmio_byteenable = 4'd0;
+`else
+   assign core_mmio_address    = {8'h02, p_virtio_addr};
+   assign core_mmio_read       = p_virtio_read;
+   assign core_mmio_write      = p_virtio_write;
+   assign core_mmio_writedata  = p_virtio_wdata;
+   assign core_mmio_byteenable = p_virtio_be;
+`endif
 `endif
 endmodule
 

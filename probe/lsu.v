@@ -197,6 +197,8 @@ module lsu
    reg [63:0]       sb_d0  [0:SBDEPTH-1];   // data laid into word-w0 byte lanes
    reg [63:0]       sb_d1  [0:SBDEPTH-1];   // data laid into word-w1 byte lanes
    reg [AW-1:0]     sb_pa  [0:SBDEPTH-1];   // physical drain address (Bare: ==VA; Sv39: filled at check)
+   reg              sb_dev [0:SBDEPTH-1];   // this store targets device MMIO (sb_pa < DEV_TOP) -- precomputed
+                                            // so the device-load replay gate is a 1-bit test, not a hot-cone compare
    reg              sb_nc  [0:SBDEPTH-1];   // Svpbmt: NC/IO store -> flush-around at drain
    reg              sb_cbo [0:SBDEPTH-1];   // Zicbom/Zicboz: this entry is a CBO maintenance op
    reg              sb_cboz[0:SBDEPTH-1];   // cbo.zero (else clean/flush/inval)
@@ -404,28 +406,45 @@ module lsu
    // could still annul it -- needs replay-to-solo; harmless for M-mode/Bare which never data-
    // faults, i.e. the monitor. Stores are already commit-gated, so only loads need this.)
    wire ld_is_dev = ld_pa < DEV_TOP;                     // DEV_TOP is a module parameter
-   // A read-side-effecting device load must observe every OLDER store's effect, so it cannot
-   // execute while an older store is still buffered. ld_olds_any = an older store is in the SB;
-   // ld_olds_same = that store shares the load's checkpoint. When the load is oldest, an older
-   // store in an EARLIER checkpoint is just mid-drain (commits/drains independently) -> WAIT for
-   // it; an older store in the SAME checkpoint can never drain first (sb_cmt is set at retire,
-   // which needs the load done) -> the backend must REPLAY-TO-SOLO (devld_v) to separate them.
+   // A read-side-effecting device load must observe every OLDER *device* store's effect (a
+   // memory store to DRAM can't affect device state, so it is NOT a hazard and must NOT throttle
+   // the load -- else tight device-poll loops with interleaved memory stores, e.g. the monitor's
+   // XMODEM RX or any kernel MMIO loop, replay/stall per iteration and cannot keep up). So only
+   // older DEVICE stores (sb_pa < DEV_TOP; valid here since the load acts only when committed,
+   // by which point all older same/earlier-checkpoint stores are checked) count. ld_olds_any =
+   // an older device store is in the SB; ld_olds_same = it shares the load's checkpoint. An older
+   // device store in an EARLIER checkpoint is mid-drain -> WAIT; one in the SAME checkpoint can
+   // never drain first (sb_cmt sets at retire, which needs the load done) -> REPLAY-TO-SOLO.
    reg ld_olds_any, ld_olds_same; integer od;
    always @* begin ld_olds_any = 1'b0; ld_olds_same = 1'b0;
       for (od = 0; od < SBDEPTH; od = od + 1)
-         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel])) begin
+         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel]) && sb_dev[od]) begin
             ld_olds_any = 1'b1;
             if (sb_ck[od] == lq_ck[ld_sel]) ld_olds_same = 1'b1;
          end
    end
-   wire ld_dev_ok = ~ld_is_dev | ((lq_ck[ld_sel] == committed) & ~ld_olds_any);
+   // A device load may fire once no OLDER DEVICE STORE precedes it (ordering: it must observe the
+   // store's effect, e.g. virtio DeviceFeaturesSel-write before DeviceFeatures-read). It need NOT
+   // wait for its checkpoint to be committed: gating idempotent device reads (CLINT mtime, UART
+   // LSR) on `committed` made every speculative such read replay-to-solo under tight poll/delay
+   // loops (calibrate_delay's mtime spin, uart_putc's LSR spin) -> a replay STORM that stalls boot.
+   // (Cost: a speculatively-fetched side-effecting read -- UART RBR / PLIC claim -- could pop state
+   // that a mispredict then squashes. RARE; revisit by gating only those two addresses. TT: #40.)
+   wire ld_dev_ok = ~ld_is_dev | ~ld_olds_any;
    wire sel_fire     = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
-   // REGISTER devld_v (like dfault_v): it feeds backend_top's roll_v, which feeds our own
-   // `rollback`, and the load select that produces it is itself gated by `rollback` -- a
-   // combinational devld_v would chase its own replay rollback in a zero-delay loop. Latching
-   // breaks it; cleared by the replay's own rollback (or any rollback) that squashes the load.
-   wire dv_now = ld_is_dev & ld_sel_v & ld_xok & (lq_ck[ld_sel] == committed)
-                 & ld_olds_same & (ast == A_IDLE) & ~amo_v;
+   // Any selected device load that CANNOT fire (~ld_dev_ok: it is speculative -- not the oldest
+   // live checkpoint -- OR an older device store precedes it) replays-to-solo instead of LINGERING
+   // in the LQ. Lingering was the bug: a gated device load sitting in the LQ across a tight MMIO
+   // poll loop's mispredicting branches accumulated speculatively and leaked commit_ctl's per-
+   // checkpoint op count (checkpoint index reuse), deadlocking commit -> dark core. Replay-to-solo
+   // rolls back to cc_committed and refetches one-op-per-bundle, so the load reaches the head with
+   // NO speculation/lingering (no leak), and side-effecting reads still never execute speculatively.
+   // The backend gates devld_replay by ~devld_solo_v, so once solo is armed this won't re-trigger
+   // (no livelock); the load fires when its solo checkpoint commits, clearing solo (devld_fire_v).
+   // REGISTER devld_v (like dfault_v): it feeds backend_top's roll_v -> our own `rollback`, and the
+   // load select that produces it is itself gated by `rollback` -- a combinational devld_v would
+   // chase its own replay rollback in a zero-delay loop. Latching breaks it; cleared by any rollback.
+   wire dv_now = ld_is_dev & ld_sel_v & ld_xok & ~ld_dev_ok & (ast == A_IDLE) & ~amo_v;
    reg  dv_v; initial dv_v = 1'b0;
    always @(posedge clk) begin
       if (reset)         dv_v <= 1'b0;
@@ -797,6 +816,7 @@ module lsu
                f_wbe  = {8'd0, f_be9[7:0]} << f_off;                // mask into lanes
                sb_addr[eidx] <= f_addr;
                sb_pa[eidx]   <= f_addr;          // default PA==VA (Bare); overwritten by the Sv39 check
+               sb_dev[eidx]  <= (f_addr < DEV_TOP);  // default (Bare); overwritten by the Sv39 check
                sb_nc[eidx]   <= 1'b0;            // default cacheable (Bare); overwritten by the Sv39 check
                sb_xck[eidx]  <= ~xlate;          // Bare: drainable now; Sv39: await pre-commit check
                sb_xflt[eidx] <= 1'b0;
@@ -830,6 +850,7 @@ module lsu
          // (2b) pre-commit store-check result (one store/cycle, Sv39): mark the checked
          //      store drainable (stash its PA) or faulting (-> dfault drives a precise trap).
          if (st_ck_done) begin sb_xck[ck_sel] <= 1'b1; sb_pa[ck_sel] <= {{(AW-56){1'b0}}, stx_pa};
+                               sb_dev[ck_sel] <= ({{(AW-56){1'b0}}, stx_pa} < DEV_TOP);
                                sb_nc[ck_sel] <= stx_uncached; end
          if (st_ck_flt)  begin sb_xck[ck_sel] <= 1'b1; sb_xflt[ck_sel] <= 1'b1; end
 

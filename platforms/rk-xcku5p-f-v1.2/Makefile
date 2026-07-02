@@ -21,6 +21,14 @@ endif
 ifneq ($(strip $(PROBE_CORE)),)
 export PROBE_CORE
 endif
+# Isolation experiment: NO_VIRTIO_WIRE=1 deactivates the virtio wrapper wiring.
+ifneq ($(strip $(NO_VIRTIO_WIRE)),)
+export NO_VIRTIO_WIRE
+endif
+# Diagnostic: PROBE_DIAG=1 decouples probe_clk from ui_rst + drives LED cal/clock heartbeats.
+ifneq ($(strip $(PROBE_DIAG)),)
+export PROBE_DIAG
+endif
 
 .PHONY: all synth impl bit program load clean timing
 
