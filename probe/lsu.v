@@ -415,16 +415,23 @@ module lsu
    // fall behind the sender once the working set passes the D$. It is deadlock-free either way (older
    // stores are finite and drain), but the false dependence cripples I/O throughput. So: DEVICE stores.
    wire ld_is_dev = ld_pa < DEV_TOP;                     // DEV_TOP is a module parameter (== LBASE)
-   // ld_olds_any = an older DEVICE store is still buffered; ld_olds_same = one shares the load's
-   // checkpoint. An older device store in an EARLIER (already-committed) checkpoint is mid-drain ->
-   // the load just WAITS for it. One in the SAME checkpoint can never drain first (sb_cmt sets at
-   // retire, which needs the load done) -> must REPLAY-TO-SOLO to separate them.
+   // ld_olds_any = the device load must WAIT behind an older store that is a DEVICE store OR not yet
+   // address-checked. The ~sb_xck term is essential: in Sv39 sb_dev/sb_pa are only valid AFTER the
+   // store-check (translation), so a committed-but-unchecked older store has stale sb_dev=0 and the
+   // fence would MISS it -- the read then fires and overtakes the store at the device (ILA-confirmed:
+   // the driver's DeviceFeaturesSel write, still unchecked when the Features read selected, reached
+   // virtio AFTER the read -> stale features -> VERSION_1 -22). Treat an unchecked older store as a
+   // possible device store until it resolves; once checked it is either a real device store (keep
+   // waiting) or a memory store (sb_dev=0, sb_xck=1 -> released). In Bare (monitor) sb_xck sets at
+   // fill, so this never stalls there. ld_olds_same (a CHECKED device store sharing the checkpoint,
+   // which can never drain first) still drives the REPLAY-TO-SOLO; an unchecked one just holds until
+   // its check, then either replays or releases.
    reg ld_olds_any, ld_olds_same; integer od;
    always @* begin ld_olds_any = 1'b0; ld_olds_same = 1'b0;
       for (od = 0; od < SBDEPTH; od = od + 1)
-         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel]) && sb_dev[od]) begin
-            ld_olds_any = 1'b1;
-            if (sb_ck[od] == lq_ck[ld_sel]) ld_olds_same = 1'b1;
+         if (sb_v[od] && older(sb_seq[od], lq_seq[ld_sel])) begin
+            if (sb_dev[od] | ~sb_xck[od])                       ld_olds_any  = 1'b1;
+            if (sb_dev[od] &  sb_xck[od] & (sb_ck[od] == lq_ck[ld_sel])) ld_olds_same = 1'b1;
          end
    end
    wire ld_committed = (lq_ck[ld_sel] == committed);     // in the oldest live checkpoint == non-speculative
