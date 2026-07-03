@@ -53,14 +53,14 @@ module aligner
    // commit-count machinery, and a SYSTEM op's commit-time redirect can squash the
    // (younger) fall-through. The straggling tail simply reappears as slot 0 of the
    // next window (consumed stops at the terminator, like the straddle case).
-   function is_cti(input [15:0] h0, input is32);
-      if (is32)
+   function is_cti(input [15:0] h0);
+      if (h0[1:0] == 2'b11)                 // base 32-bit op (h0[1:0]==11 IS the old `is32` input)
          is_cti = (h0[6:0] == 7'b1100011)   // BRANCH
                 | (h0[6:0] == 7'b1101111)   // JAL
                 | (h0[6:0] == 7'b1100111)   // JALR
                 | (h0[6:0] == 7'b1110011)   // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence)
                 | (h0[6:0] == 7'b0101111)   // AMO (atomic: solo, serialized RMW)
-                | ((h0[6:0] == 7'b0001111) & (h0[14:12] == 3'b001)); // FENCE.I (serialize+refetch)
+                | ((h0[6:0] == 7'b0001111) & (h0[14:13] == 2'b00)); // FENCE / FENCE.I (barrier; excl CBO f3=010)
       else case (h0[1:0])
          2'b01:   is_cti = (h0[15:13] == 3'b101)    // C.J
                          | (h0[15:13] == 3'b110)    // C.BEQZ
@@ -92,13 +92,14 @@ module aligner
          is32 = (h0[1:0] == 2'b11);
          // all needed halfwords present?  first always, second only if 32-bit
          have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
-         // A SYSTEM op (ecall/ebreak/csr/xret) or an AMO is SOLO in its bundle: terminate
-         // the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo SYSTEM
-         // lets a trap roll back TO that checkpoint and precisely annul the faulting op's
-         // rd (e.g. a priv-violating csrr). Solo AMO means that when it issues (gated to
-         // oldest) every older store has drained, so its direct-memory RMW is coherent.
+         // A SYSTEM op (ecall/ebreak/csr/xret), an AMO, or a FENCE is SOLO in its bundle:
+         // terminate the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo
+         // SYSTEM lets a trap roll back TO that checkpoint and precisely annul the faulting op's
+         // rd (e.g. a priv-violating csrr). Solo AMO/FENCE means that when it issues (gated to
+         // oldest) every older store has drained, so an AMO's direct-memory RMW is coherent and a
+         // FENCE is a true ordering point (older writes precede any younger store, incl. a DMA notify).
          is_sys = is32 && ((h0[6:0] == 7'b1110011) || (h0[6:0] == 7'b0101111)
-                           || ((h0[6:0] == 7'b0001111) && (h0[14:12] == 3'b001))); // FENCE.I solo
+                           || ((h0[6:0] == 7'b0001111) && (h0[14:13] == 2'b00))); // FENCE / FENCE.I solo
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
          sqv[k] = base_seq + k[SEQW-1:0];
@@ -108,7 +109,7 @@ module aligner
             v[k] = run & have;
             if (v[k]) begin
                pos = pos + (is32 ? 2'd2 : 2'd1);
-               if (is_cti(h0, is32)) run = 1'b0;  // CTI / SYSTEM ends the bundle (youngest)
+               if (is_cti(h0)) run = 1'b0;  // CTI / SYSTEM / FENCE ends the bundle (youngest)
             end else run = 1'b0;               // prefix: stop at first that doesn't fit
          end
       end

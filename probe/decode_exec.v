@@ -159,9 +159,14 @@ module decode_exec
                       // every CSR op serializes (issues only when oldest) -- simplest
                       // correct rule; a read-only CSR is rare enough that the drain is free
         end
-        5'b00011: if (f3==3'b001) begin is_serialize=1; is_fencei=1; end // FENCE.I: serialize +
-                      // refetch (the store-to-instruction must be visible to the refetch). Plain
-                      // FENCE (f3=000) stays a NOP (single hart, in-order commit -> barrier free).
+        5'b00011: if (f3[2:1]==2'b00) begin is_serialize=1; is_fencei=f3[0]; end
+                      // FENCE (f3=000) / FENCE.I (f3=001): a serializing barrier -- the aligner makes
+                      // it a solo checkpoint. FENCE.I also refetches (the store-to-instruction must be
+                      // visible). A plain FENCE is free for CPU-visible ordering on one hart, but NOT
+                      // for DMA: the notify store (fast CDC-bridge path) can beat older NC ring writes
+                      // to DDR (slow ddr_line_cdc+AXI path) -> the device would DMA a stale avail_idx.
+                      // Serializing makes it an ordering point (a drain-wait for global DDR visibility
+                      // may still be needed -- ILA_ORD watches the race).
                   else if (f3==3'b010) begin                             // Zicbom/Zicboz CBO
                      // rides the store path (translated, fault-precise, commit-gated drain);
                      // at drain the LSU issues a cache-maintenance command, not a data write.

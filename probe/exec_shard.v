@@ -345,7 +345,11 @@ module exec_shard
    // ---- CSR/system unit: read addr + update request + redirect ----
    assign csr_rd_addr    = ex_imm[11:0];                       // combinational read
    wire [63:0] csr_src   = ex_csrf[2] ? {59'b0, ex_imm[16:12]} : op1f;  // zimm | rs1
-   assign csr_req_v      = ex_v & ex_ser & ~ex_amor & ~ex_fencei; // SYSTEM/CSR only (not AMO/FENCE.I)
+   assign csr_req_v      = ex_v & ex_ser & (ex_insn[6:0]==7'b1110011); // SYSTEM opcode only:
+                       // a serializing op is SYSTEM (ecall/ebreak/xret/csr/wfi/sfence, opcode 1110011),
+                       // AMO (0101111), or FENCE/FENCE.I (0001111). Only SYSTEM addresses the csr_file;
+                       // gating on the opcode (not just ~amo/~fencei) keeps a plain FENCE -- which shares
+                       // ex_ser and every other flag with a real SYSTEM op -- from being mis-decoded as one.
    assign csr_req_is_csr = ex_csr;
    assign csr_req_func   = ex_csrf;
    assign csr_req_addr   = ex_imm[11:0];
