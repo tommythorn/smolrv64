@@ -59,7 +59,8 @@ module soc_top #(
    output wire [3:0]       virtio_be,
    input  wire [31:0]      virtio_rdata,
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
-   input  wire             virtio_irq
+   input  wire             virtio_irq,
+   output wire [17:0]      irq_dbg          // interrupt-path debug for the wrapper ILA (probe_clk)
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -161,13 +162,17 @@ module soc_top #(
    // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller. No real sources yet
    // (the UART is output-only and there is no virtio), so src=0 -- but the kernel still
    // probes/initialises the region at boot, which would otherwise fault as unmapped.
-   wire [63:0] plic_rdata;  wire plic_meip, plic_seip;
+   wire [63:0] plic_rdata;  wire plic_meip, plic_seip;  wire [11:0] plic_dbg;
    wire [63:0] plic_addr = (dmem_wen & is_plic_w) ? dmem_waddr : dmem_raddr;
    plic u_plic
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({52'd0, virtio_irq, 11'd0}), .meip(plic_meip), .seip(plic_seip));   // virtio_blk = PLIC source 11 (DTS)
+      .src({52'd0, virtio_irq, 11'd0}), .meip(plic_meip), .seip(plic_seip),
+      .dbg(plic_dbg));   // virtio_blk = PLIC source 11 (DTS)
+   // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
+   // access strobe + its low addr nibble to time claim(0x004)/complete}.
+   assign irq_dbg = {dmem_ren & is_plic_r, dmem_wen & is_plic_w, plic_addr[3:0], plic_dbg};
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
    // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR (off 5) -> THRE|TEMT|DR;

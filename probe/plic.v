@@ -30,7 +30,10 @@ module plic #(parameter NSRC = 64)
    output reg  [63:0]      rdata,
    input  wire [NSRC-1:0]  src,           // level-triggered sources (bit i; bit 0 unused)
    output wire             meip,
-   output wire             seip);
+   output wire             seip,
+   // debug tap for the interrupt-path ILA (src 11 = virtio_blk lifecycle):
+   //   {complete_evt, do_claim, seip, in_service[11], pending[11], source_level[11], best_irq[5:0]}
+   output wire [11:0]      dbg);
 
    reg [2:0]  prio [0:NSRC-1];
    reg [63:0] pending, enabled, in_service;
@@ -60,6 +63,9 @@ module plic #(parameter NSRC = 64)
    wire [63:0] source_level = {{(64-NSRC){1'b0}}, src} & ~64'd1;   // source 0 unused
    wire        is_claim = (addr >= 24'h201004) && (addr <= 24'h201007);
    wire        do_claim = re & is_claim & has_irq;
+   // a COMPLETE write (rearm gateway) for a nonzero source -- src-11's completes clear in_service[11]
+   wire        complete_evt = we & is_claim & (wdata[5:0] != 6'd0);
+   assign      dbg = {complete_evt, do_claim, seip, in_service[11], pending[11], source_level[11], best_irq};
 
    // next pending = gateway set, minus the just-claimed source
    reg [63:0] n_pending;

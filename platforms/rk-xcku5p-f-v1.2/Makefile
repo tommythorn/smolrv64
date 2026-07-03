@@ -37,6 +37,12 @@ ifneq ($(strip $(ILA_VIRTIO)),)
 export ILA_VIRTIO
 endif
 
+# Debug: ILA_IRQ=1 inserts an ILA on the probe-clk interrupt path (plic src-11 lifecycle from
+# soc_top's irq_dbg bus) -- to see whether the virtio_blk completion IRQ is raised/serviced or lost.
+ifneq ($(strip $(ILA_IRQ)),)
+export ILA_IRQ
+endif
+
 .PHONY: all synth impl bit program load clean timing
 
 all: bit

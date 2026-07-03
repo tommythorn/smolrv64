@@ -252,6 +252,24 @@ if {[info exists env(ILA_VIRTIO)] && $env(ILA_VIRTIO) ne "" && $env(ILA_VIRTIO) 
         generate_target {instantiation_template synthesis} [get_ips ila_virtio]
     }
 }
+# ILA_IRQ=1: insert an ILA on the probe-clk interrupt path (plic src-11 lifecycle bus from soc_top),
+# to diagnose the root-mount hang (does the virtio completion IRQ raise/pend/seip/claim/complete or
+# get lost with in_service stuck?).
+if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
+    puts "Enabling ILA_IRQ: probe-clk interrupt-path debug core (ila_irq)."
+    lappend vdefines "ILA_IRQ"
+    if {[llength [get_ips -quiet ila_irq]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_irq
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {1} \
+            CONFIG.C_PROBE0_WIDTH {18} \
+            CONFIG.C_DATA_DEPTH {4096} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_irq]
+        generate_target {instantiation_template synthesis} [get_ips ila_irq]
+    }
+}
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir

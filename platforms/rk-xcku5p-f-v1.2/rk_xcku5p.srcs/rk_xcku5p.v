@@ -1446,6 +1446,7 @@ module rk_xcku5p(
    (* async_reg = "true" *) reg p_virtio_irq_meta = 1'b0, p_virtio_irq = 1'b0;
    always @(posedge probe_clk) begin p_virtio_irq_meta <= virtio_blk_irq; p_virtio_irq <= p_virtio_irq_meta; end
 
+   wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
       .commit(), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
@@ -1453,6 +1454,7 @@ module rk_xcku5p(
       .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
+      .irq_dbg(probe_irq_dbg),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
@@ -1462,6 +1464,19 @@ module rk_xcku5p(
 `else
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
       .virtio_irq(p_virtio_irq));
+`endif
+
+`ifdef ILA_IRQ
+   // Debug (ILA_IRQ=1): capture the virtio_blk interrupt lifecycle on probe_clk. probe_irq_dbg =
+   //   [17]=plic_re [16]=plic_we [15:12]=plic_addr[3:0] (claim/complete=0x4)
+   //   [11]=complete_evt [10]=do_claim [9]=seip [8]=in_service[11] [7]=pending[11]
+   //   [6]=src_level[11] (device raising IRQ) [5:0]=best_irq
+   // Diagnose the root-mount hang: does the device raise IRQ (bit6), does it pend (bit7)+seip(bit9),
+   // is in_service[11] stuck (bit8), does a claim(bit10)/complete(bit11) happen?
+   ila_irq u_ila_irq (
+      .clk    (probe_clk),
+      .probe0 (probe_irq_dbg)
+   );
 `endif
 
    ddr_line_cdc probe_cdc (
