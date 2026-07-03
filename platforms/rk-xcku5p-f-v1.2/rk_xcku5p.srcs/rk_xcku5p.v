@@ -246,6 +246,7 @@ module rk_xcku5p(
    // reported to the guest via virtio config.
    wire [31:0] virtio_blk_capacity;
    wire [31:0] virtio_blk_debug_word;   // SD/blk debug overlay at 0x10002f00
+   wire [21:0] virtio_blk_dbg;          // always-on backend FSM/SD/DMA state for ILA_DEV
 
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
@@ -714,6 +715,7 @@ module rk_xcku5p(
       .sd_fast_half            (spi_fast_half),
       .debug_sel               (ui_mmio_address[3:2]),
       .debug_word              (virtio_blk_debug_word),
+      .dbg                     (virtio_blk_dbg),
       .sd_sck                  (blk_sck),
       .sd_mosi                 (blk_mosi),
       .sd_miso                 (blk_miso),
@@ -757,6 +759,24 @@ module rk_xcku5p(
       .m_axi_rvalid            (virtio_blk_axi_rvalid),
       .m_axi_rready            (virtio_blk_axi_rready)
    );
+
+`ifdef ILA_DEV
+   // Debug (ILA_DEV=1): capture the virtio_blk backend on ui_clk to see WHERE a block request wedges
+   // (the IRQ ILA proved the device never raises the completion IRQ -> it's stuck mid-request).
+   //   probe0 = virtio_blk_dbg[21:0]: [21:16]=state [15:9]=sd_spi_state [8]=sd_busy [7]=sd_done
+   //            [6]=sd_error [5]=sd_ready [4]=dma_rsp_error [3:0]=sectors_left[3:0]
+   //   probe1 = DMA AXI handshakes (is the DMA stalled on the DDR arbiter?)
+   //   probe2 = SD SPI pins (is the SPI clock toggling = active, or idle?)
+   ila_dev u_ila_dev (
+      .clk    (ui_clk),
+      .probe0 (virtio_blk_dbg),
+      .probe1 ({virtio_blk_axi_awvalid, virtio_blk_axi_awready, virtio_blk_axi_wvalid,
+                virtio_blk_axi_wready, virtio_blk_axi_wlast, virtio_blk_axi_bvalid,
+                virtio_blk_axi_bready, virtio_blk_axi_arvalid, virtio_blk_axi_arready,
+                virtio_blk_axi_rvalid, virtio_blk_axi_rready, virtio_blk_axi_rlast}),
+      .probe2 ({blk_sck, blk_cs_n, blk_mosi, blk_miso})
+   );
+`endif
 
    virtio_mmio #(
       .DEVICE_ID(32'd1), /* Network device with a minimal TX-drop backend. */

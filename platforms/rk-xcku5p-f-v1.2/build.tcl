@@ -270,6 +270,25 @@ if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
         generate_target {instantiation_template synthesis} [get_ips ila_irq]
     }
 }
+# ILA_DEV=1: insert an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA handshakes +
+# SD SPI pins) to see WHERE a block request wedges (the IRQ ILA proved the device never completes).
+if {[info exists env(ILA_DEV)] && $env(ILA_DEV) ne "" && $env(ILA_DEV) ne "0"} {
+    puts "Enabling ILA_DEV: ui-clk virtio_blk backend debug core (ila_dev)."
+    lappend vdefines "ILA_DEV"
+    if {[llength [get_ips -quiet ila_dev]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_dev
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {3} \
+            CONFIG.C_PROBE0_WIDTH {22} \
+            CONFIG.C_PROBE1_WIDTH {12} \
+            CONFIG.C_PROBE2_WIDTH {4} \
+            CONFIG.C_DATA_DEPTH {4096} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_dev]
+        generate_target {instantiation_template synthesis} [get_ips ila_dev]
+    }
+}
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir

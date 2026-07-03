@@ -44,6 +44,10 @@ module virtio_blk #(
     // Debug readout (parent muxes into an MMIO overlay).
     input  wire [ 1:0] debug_sel,
     output wire [31:0] debug_word,
+    // Always-on hang-diagnosis bus for the device-side ILA (ui_clk):
+    //   [21:16]=state  [15:9]=sd_spi_state  [8]=sd_busy [7]=sd_done [6]=sd_error [5]=sd_ready
+    //   [4]=dma_rsp_error  [3:0]=sectors_left[3:0]
+    output wire [21:0] dbg,
 
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
@@ -209,6 +213,7 @@ module virtio_blk #(
    assign debug_word = (debug_sel == 2'd0) ? sd_capacity     :
                        (debug_sel == 2'd1) ? dbg_state_word  :
                                              {16'd0, sd_spi_io};
+   assign dbg = {state, sd_spi_state, sd_busy, sd_done, sd_error, sd_ready, dma_rsp_error, sectors_left[3:0]};
 
    function [15:0] get16;
       input [63:0] word;
