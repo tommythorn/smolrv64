@@ -379,8 +379,18 @@ module lsu
       .t_uncached(ldx_uncached));
    // mmu resolves combinationally in Bare mode (no walk): a noncanon/out-of-range load
    // there yields ldx_fault with an ACCESS-fault cause (5), surfaced like any page fault.
-   wire          ld_xok = ldx_ready & ~ldx_fault;
-   wire          ld_xflt = ldx_ready & ldx_fault;                  // selected load page/access-faults
+   // Page-crossing misaligned load: the byte span [addr[11:0] .. +nb) exceeds 0x1000, so its high
+   // bytes fall in a DIFFERENT page than the one this single dTLB lookup translated. Serving it via
+   // the w0/w1 lanes reads contiguous PHYSICAL bytes across a boundary that is only contiguous in the
+   // identity (Bare) map -- wrong under Sv39, where the next virtual page maps elsewhere. Match
+   // SmolRV64/simmerv: trap it as address-misaligned (load cause 4, tval=VA) via the precise dfault
+   // path. Gated on `xlate`: in Bare/M-mode (satp forced 0 below M) the identity map makes the
+   // contiguous read correct and the monitor/OpenSBI depend on it; in-page misalignment stays in HW.
+   wire          ld_xpage = xlate & ld_sel_v &
+                            (({1'b0, lq_addr[ld_sel][11:0]} + lq_nb[ld_sel]) > 13'h1000);
+   wire          ld_xok  = ldx_ready & ~ldx_fault & ~ld_xpage;
+   wire          ld_xflt = (ldx_ready & ldx_fault) | ld_xpage;     // selected load page/access-faults OR page-crosses
+   wire [3:0]    ld_fcau = ld_xpage ? 4'd4 : ldx_cause;            // page-cross -> misaligned (4), priority over MMU cause
    wire [AW-1:0] ld_pa  = {{(AW-56){1'b0}}, ldx_pa};
 
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
@@ -570,8 +580,11 @@ module lsu
    wire [AW-1:0] amo_pa_al = xlate ? (({{(AW-56){1'b0}}, stx_pa}) & ~{{(AW-3){1'b0}}, 3'b111})
                                    : a_waddr;
    // store-check outcome this cycle (valid when st_need_xl)
-   wire          st_ck_done = st_need_xl & stx_ready & ~stx_fault;   // translated OK -> completes
-   wire          st_ck_flt  = st_need_xl & stx_ready &  stx_fault;   // page-faults -> precise trap
+   wire          st_xpage   = st_need_xl &
+                              (({1'b0, sb_addr[ck_sel][11:0]} + sb_nb[ck_sel]) > 13'h1000); // page-cross (see ld_xpage)
+   wire          st_ck_done = st_need_xl & stx_ready & ~stx_fault & ~st_xpage; // translated OK, in-page -> completes
+   wire          st_ck_flt  = (st_need_xl & stx_ready & stx_fault) | st_xpage; // page-fault OR page-cross -> precise trap
+   wire [3:0]    st_fcau    = st_xpage ? 4'd6 : stx_cause;           // page-cross -> misaligned (6), priority over MMU cause
 
    // fence.i ordering: the store buffer is empty (all stores drained+written-through to memory,
    // since an entry frees on mem_wready which the D$ asserts only after its L2 write completes)
@@ -598,7 +611,7 @@ module lsu
    wire             pick_ld  = ~pick_am & ld_xflt & (~st_ck_flt | older(lq_seq[ld_sel], sb_seq[ck_sel]));
    wire [SEQW-1:0]  df_nseq  = pick_am ? a_seq     : pick_ld ? lq_seq [ld_sel] : sb_seq [ck_sel];
    wire [CBITS-1:0] df_nck   = pick_am ? a_ck      : pick_ld ? lq_ck  [ld_sel] : sb_ck  [ck_sel];
-   wire [3:0]       df_ncau  = pick_am ? stx_cause : pick_ld ? ldx_cause       : stx_cause;
+   wire [3:0]       df_ncau  = pick_am ? stx_cause : pick_ld ? ld_fcau         : st_fcau;
    wire [AW-1:0]    df_ntval = pick_am ? a_addr    : pick_ld ? lq_addr[ld_sel] : sb_addr[ck_sel];
 
    // Register the report. dfault_v feeds backend_top's roll_v, which feeds our own
