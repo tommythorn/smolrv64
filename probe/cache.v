@@ -61,7 +61,9 @@ module cache #(
    output reg  [PAW-OFFB-1:0] l2_addr,
    output reg  [LINEB-1:0] l2_wdata,
    input  wire [LINEB-1:0] l2_rdata,
-   input  wire             l2_ack
+   input  wire             l2_ack,
+   output wire             perf_access, // 1-cycle: a line lookup resolved (hit or miss) this cycle
+   output wire             perf_miss    // 1-cycle: that lookup missed -> Zihpm cache-miss event
 );
    localparam WORDB = LINEB/8;
    localparam SETS  = (SIZE_KB*1024)/(WAYS*WORDB);
@@ -465,6 +467,11 @@ module cache #(
    end
 
 `ifdef PERF_TRACE
+   // Zihpm hardware cache events (always-on, unlike the PERF_TRACE DPI trace below): one pulse
+   // per resolved line lookup (S_CHECK), and per miss. soc_top taps these -> backend_top hpm_ev.
+   assign perf_access = (st == S_CHECK);
+   assign perf_miss   = (st == S_CHECK) & ~hit;
+
    // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
    // (own perf_cyc, in lockstep with backend_top's since same clk/reset) into the shared
    // perf_ev sink. KIND=8 CACHE; the `ckp` field = PERF_ID (0=I$, 1=D$), `rdv` = is_write,

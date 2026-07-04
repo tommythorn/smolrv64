@@ -86,6 +86,7 @@ module soc_top #(
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
@@ -262,6 +263,8 @@ module soc_top #(
    // only fence.i still clean-flushes (the I$ reads L2 directly) -- see the df_* FSM below.
    wire        dcr_req;  wire [63:0] dcr_addr;     // muxed D$ read port (LSU + 3 PTW), assigned below
    wire dc_inv_req, dc_inv_busy;
+   // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
+   wire dc_access, dc_miss, ic_access, ic_miss;
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
@@ -273,7 +276,8 @@ module soc_top #(
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
-      .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack));
+      .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
+      .perf_access(dc_access), .perf_miss(dc_miss));
 
    // D$ clean-flush on fence.i ONLY: drain the store buffer, then clean-flush the D$ (write back
    // dirty lines, keep them valid). FENCE.I needs this because the I$ reads L2/DDR directly: with
@@ -341,7 +345,8 @@ module soc_top #(
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
-      .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack));
+      .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
+      .perf_access(ic_access), .perf_miss(ic_miss));
 
    // ---------------- PTW adapters: PTE word reads routed THROUGH the D$ ----------------
    // g=0 iPTW, 1 ldPTW, 2 stPTW. Each *_read is held (with a stable *_addr) until *_rvalid.

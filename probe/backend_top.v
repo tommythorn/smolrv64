@@ -63,6 +63,8 @@ module backend_top
     // MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). Tie to 0 in device-less testbenches.
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,            // free-running CLINT time (Sstc); 0 in device-less TBs
+    // Zihpm cache-event pulses from soc_top's D$/I$ (0 in device-less TBs, which have no cache).
+    input  wire                    hpm_dc_access, hpm_dc_miss, hpm_ic_access, hpm_ic_miss,
     // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
     // request/response handshake so a multi-cycle D$ can stall: dmem_ren pulses on a fresh
     // dmem_raddr, dmem_rvalid signals dmem_rdata is valid. Tie dmem_rvalid=1 for a
@@ -515,10 +517,11 @@ module backend_top
    wire [IW*MIDXW-1:0] ex_mem_idx;
    wire [IW*2-1:0]    ex_msize;
 
-   // Zihpm event pulses -> csr_file (mhpmcounterN counts its mhpmeventN-selected one). Backend-local
-   // now: [0]load [1]store (LSU completions) [2]redirect (any pipe flush/branch mispredict). Cache
-   // events [6:3] = 0 until soc_top taps the D$/I$ (Phase 2b).
-   wire [6:0] hpm_ev = {4'd0, roll_v, lsu_st_done, lsu_ld_done};
+   // Zihpm event pulses -> csr_file (mhpmcounterN counts its mhpmeventN-selected one):
+   // [0]load [1]store (LSU completions) [2]redirect (pipe flush/branch mispredict)
+   // [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss (D$/I$ line lookups, from soc_top).
+   wire [6:0] hpm_ev = {hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
+                        roll_v, lsu_st_done, lsu_ld_done};
 
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
                  .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
