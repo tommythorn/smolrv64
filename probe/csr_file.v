@@ -86,7 +86,14 @@ module csr_file
                      // hardware-backed CLINT mtime (like SmolRV64); cycle/instret shadow
                      // the free-running mcycle / retired-instruction minstret.
                      MCYCLE=12'hB00, MTIME=12'hB01, MINSTRET=12'hB02,
-                     CYCLE=12'hC00, TIME=12'hC01, INSTRET=12'hC02;
+                     CYCLE=12'hC00, TIME=12'hC01, INSTRET=12'hC02,
+                     // Zihpm: mcountinhibit + programmable mhpmcounter3.. / mhpmevent3.. and
+                     // their U/S read-only shadows hpmcounter3.. . SmolRV64 layout + event
+                     // encoding so the DTB pmu node and OpenSBI's SBI-PMU work unchanged --
+                     // without real (WARL, readback) counter CSRs, pmu_sbi_devinit hangs
+                     // because its counter start/stop writes vanish into the read-0 default.
+                     MCOUNTINHIBIT=12'h320, MHPMEVENT3=12'h323,
+                     MHPMCOUNTER3=12'hB03, HPMCOUNTER3=12'hC03;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
@@ -126,6 +133,17 @@ module csr_file
    // 0) fit in 39 bits with bit38=0 so they round-trip exactly.  See va_codec.vh.
    reg [39:0] mepc, mtval, sepc, stval;
    reg [63:0] mcycle, minstret;      // Zicntr: free-running cycles + retired instructions
+
+   // Zihpm: HPMN programmable counters mhpmcounter3 .. mhpmcounter(2+HPMN) (matches the DTB's
+   // event->counter map, counters 3..15). Each counterN adds, per cycle, the retire-count or 1
+   // for its mhpmeventN-selected event (SmolRV64 encoding); events not yet tapped read as 0 so
+   // the counter simply stays put -- a clean extension point (Phase 2 wires branch/cache/TLB).
+   localparam integer HPMN = 13;                                     // counters 3..15
+   localparam [63:0]  HPM_INHIBIT_MASK = (((64'h1 << (HPMN+3)) - 1) & ~64'h2); // 0,2,3..15 (not TIME)
+   localparam [15:0]  HPMEV_CYCLES = 16'h0001, HPMEV_INSTRET = 16'h0002;
+   reg [63:0] mcountinhibit;
+   reg [63:0] mhpmevent  [0:HPMN-1];
+   reg [63:0] mhpmcounter[0:HPMN-1];
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
    assign o_fs_off = (mstatus[14:13] == 2'b00);
@@ -147,6 +165,18 @@ module csr_file
    wire        stip_sstc = menvcfg[63] & (mtime >= stimecmp);
    wire [63:0] base_mip  = mip | {52'd0, hw_ip};
    wire [63:0] eff_mip   = menvcfg[63] ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
+
+   // ---- Zihpm read decode: mhpmevent3.. / mhpmcounter3.. / hpmcounter3.. (0xC03 shadow) ----
+   wire        is_ev = (raddr >= MHPMEVENT3)   && (raddr <= MHPMEVENT3   + 12'd28);
+   wire        is_mc = (raddr >= MHPMCOUNTER3) && (raddr <= MHPMCOUNTER3 + 12'd28);
+   wire        is_hc = (raddr >= HPMCOUNTER3)  && (raddr <= HPMCOUNTER3  + 12'd28);
+   wire [4:0]  hpm_ri = is_ev ? (raddr - MHPMEVENT3)
+                      : is_mc ? (raddr - MHPMCOUNTER3) : (raddr - HPMCOUNTER3);
+   wire        hpm_sel   = is_ev | is_mc | is_hc;
+   wire [3:0]  hpm_rix   = (hpm_ri < HPMN) ? hpm_ri[3:0] : 4'd0;       // clamp to a valid entry
+   wire [63:0] hpm_rdata = (hpm_ri >= HPMN) ? 64'd0                    // counters 16..31 hardwired 0
+                         : is_ev            ? mhpmevent  [hpm_rix]
+                                            : mhpmcounter[hpm_rix];
 
    // ---- combinational read ----
    always @* begin
@@ -194,7 +224,10 @@ module csr_file
         // single writable entry would make OpenSBI report "PMP Count: 1" and then FAIL
         // root-domain hart isolation ("insufficient PMP entries"); 0 entries makes it skip
         // PMP isolation entirely (PMP is optional). All accesses are permitted (M-mode only).
-        default:    rdata = 64'd0;   // PMP / unimplemented optional CSRs (read 0)
+        MCOUNTINHIBIT: rdata = mcountinhibit & HPM_INHIBIT_MASK;
+        // Zihpm mhpmevent3.. / mhpmcounter3.. / hpmcounter3.. resolve via hpm_sel (decoded
+        // above); otherwise PMP / unimplemented optional CSRs read 0.
+        default:    rdata = hpm_sel ? hpm_rdata : 64'd0;
       endcase
    end
 
@@ -440,9 +473,31 @@ module csr_file
          mcycle <= 64'd0; minstret <= 64'd0;
       end else begin
          mcycle   <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MCYCLE)
-                       ? newv : mcycle + 64'd1;
+                       ? newv : mcycle   + (mcountinhibit[0] ? 64'd0 : 64'd1);
          minstret <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MINSTRET)
-                       ? newv : minstret + {61'd0, retire_cnt};
+                       ? newv : minstret + (mcountinhibit[2] ? 64'd0 : {61'd0, retire_cnt});
+      end
+      // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
+      // mhpmeventN-selected event's count this cycle unless inhibited (mcountinhibit[N]); an
+      // M-mode write loads the value (that cycle's increment dropped). mhpmeventN + mcountinhibit
+      // are plain WARL. Only CYCLES/INSTRET are tapped in Phase 1; other event codes contribute
+      // 0 (the counter holds) -- the extension point for branch/cache/TLB events.
+      if (reset) begin
+         mcountinhibit <= 64'd0;
+         for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
+      end else begin
+         if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==MCOUNTINHIBIT)
+            mcountinhibit <= newv & HPM_INHIBIT_MASK;
+         for (i=0; i<HPMN; i=i+1) begin
+            if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMEVENT3+i))
+               mhpmevent[i] <= newv;
+            if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMCOUNTER3+i))
+               mhpmcounter[i] <= newv;
+            else if (!mcountinhibit[i+3])
+               mhpmcounter[i] <= mhpmcounter[i]
+                  + ((mhpmevent[i][15:0]==HPMEV_CYCLES)  ? 64'd1
+                   : (mhpmevent[i][15:0]==HPMEV_INSTRET) ? {61'd0, retire_cnt} : 64'd0);
+         end
       end
    end
 endmodule
