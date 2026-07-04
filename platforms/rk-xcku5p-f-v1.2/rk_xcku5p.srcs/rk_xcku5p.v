@@ -1460,7 +1460,7 @@ module rk_xcku5p(
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
-   wire [11:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;
+   wire [12:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // bit12: blk(0)/net(1)
    wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
    // virtio_blk IRQ (ui_clk) synchronized into probe_clk for soc_top's internal PLIC (src 11).
    (* async_reg = "true" *) reg p_virtio_irq_meta = 1'b0, p_virtio_irq = 1'b0;
@@ -1540,8 +1540,9 @@ module rk_xcku5p(
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
    // Drive the MMIO bridge core side from the probe soc_top's virtio passthrough. soc_top emits
-   // the 12-bit offset within its 0x1000_2000 virtio region; map to {8'h02, offset} so the ui
-   // side's virtio_blk_sel (ui_mmio_address[19:12]==0x02) routes it to virtio_blk_inst.
+   // the 13-bit offset within its 0x1000_2000 virtio region (8 KiB); addr[12] selects the device
+   // (0 -> blk page 0x02, 1 -> net page 0x03) so ui_mmio_address[19:12] routes it to virtio_blk_inst
+   // (0x02) or virtio_net_inst (0x03). virtio_net_irq is already wired to PLIC src 12 (ext_irq[11]).
 `ifdef NO_VIRTIO_WIRE
    assign core_mmio_address    = 20'd0;
    assign core_mmio_read       = 1'b0;
@@ -1549,7 +1550,7 @@ module rk_xcku5p(
    assign core_mmio_writedata  = 32'd0;
    assign core_mmio_byteenable = 4'd0;
 `else
-   assign core_mmio_address    = {8'h02, p_virtio_addr};
+   assign core_mmio_address    = {p_virtio_addr[12] ? 8'h03 : 8'h02, p_virtio_addr[11:0]};
    assign core_mmio_read       = p_virtio_read;
    assign core_mmio_write      = p_virtio_write;
    assign core_mmio_writedata  = p_virtio_wdata;

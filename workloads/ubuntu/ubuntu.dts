@@ -144,14 +144,10 @@
 			interrupts = <12>;
 			interrupt-parent = <&plic>;
 			dma-noncoherent;
-			/* DISABLED: the probe core's virtio MMIO path is blk-only --
-			   rk_xcku5p.v:1552 hardwires core_mmio_address = {8'h02, addr},
-			   so page 0x03 (this net device) is never selected -> the kernel
-			   reads magic 0 and complains "Wrong magic value". To ENABLE net,
-			   soc_top must pass a 13-bit addr over an 8 KiB region and the
-			   wrapper must derive the page from bit 12 (blk=0x02 / net=0x03),
-			   plus wire virtio_net_irq -> PLIC src 12. Not needed to boot. */
-			status = "disabled";
+			/* ENABLED: soc_top now decodes an 8 KiB virtio region and passes a 13-bit
+			   offset; the wrapper derives the page from addr[12] (blk=0x02 / net=0x03).
+			   virtio_net_irq is wired to PLIC src 12 (ext_irq[11]). */
+			status = "okay";
 		};
 	};
 
