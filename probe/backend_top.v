@@ -505,6 +505,7 @@ module backend_top
    wire [PBITS-1:0]   lsu_ld_wb_pdst;
    wire [63:0]        lsu_ld_wb_val;
    wire [SEQW-1:0]    lsu_ld_wb_seq;
+   wire               lsu_fp_dirty;   // FP-dest load (FLW/FLD) wrote back -> mstatus.FS Dirty
    wire [IW*SEQW-1:0] wkq;          // per-lane writeback seqno (cosim seqno-matched capture)
    // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
    wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned, ex_fp;
@@ -524,7 +525,8 @@ module backend_top
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
-      .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .lsu_wb_seq(lsu_ld_wb_seq), .wb_busy(eb_wb_busy),
+      .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .lsu_wb_seq(lsu_ld_wb_seq),
+      .lsu_fp_dirty(lsu_fp_dirty), .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
@@ -621,6 +623,7 @@ module backend_top
       .wb_busy(eb_wb_busy),
       .ld_wb_v(lsu_ld_wb_v), .ld_wb_pdst(lsu_ld_wb_pdst), .ld_wb_owner(lsu_ld_wb_owner),
       .ld_wb_val(lsu_ld_wb_val), .ld_wb_seq(lsu_ld_wb_seq), .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .fp_dirty(lsu_fp_dirty),
       .commit(cc_commit), .commit_idx(cc_commit_idx), .committed(cc_committed),
       .rollback(roll_v), .rollback_seq(roll_seq), .dfault_taken(dflt_fire));
 

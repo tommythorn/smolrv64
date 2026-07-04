@@ -127,6 +127,8 @@ module exec_shard
     output wire [CBITS-1:0]        fp_done_ckpt,
     output wire                    fp_flags_we,       // an FP op produced exception flags this cycle
     output wire [4:0]              fp_flags,          // those flags (CVFPU completion OR in-core compare)
+    output wire                    fp_dirty,          // this shard wrote FP state -> set mstatus.FS Dirty
+                                                      // (arith/compare via fp_flags_we + in-core FSGNJ/FMV.x.X)
     input  wire [2:0]              i_frm,             // fcsr.frm for dynamic rounding (rm==111)
     input  wire                    i_fs_off,          // mstatus.FS==Off -> suppress FP exec (trapped)
     // next-cycle writeback on this shard's lane (for the LSU's lane reservation)
@@ -327,6 +329,11 @@ module exec_shard
    // the new owner's value and re-wakes its consumer (the leaked-writeback bug, task #30).
    // The LSU has the equivalent guard (merge_squash); the ALU/CSR path was missing it.
    wire        ex_squash = squash & older(squash_seq, ex_sq);
+   // FS-dirty: any FP-register write. fp_flags_we already covers CVFPU arith + compares; add the
+   // flag-less in-core FP-dest moves (FSGNJ ex_fpcls=1, FMV.x.X ex_fpcls=4), non-squashed. FP
+   // loads dirty via the LSU. (FMV.X.x / FCLASS write an INT reg -> correctly excluded.)
+   assign      fp_dirty = fp_flags_we
+                        | (fp_incore_wb & (ex_fpcls==3'd1 | ex_fpcls==3'd4) & ~ex_squash);
    wire        csr_wb    = ex_v & ex_csr & ex_pdv & ~csr_illegal & ~ex_squash;
    // an atomic's rd comes from the LSU (ld_wb), not the ALU result -> exclude it here.
    // FP ops also don't take the ALU result: FPU-arith writes via fp_complete (below);

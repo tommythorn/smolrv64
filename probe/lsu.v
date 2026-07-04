@@ -167,6 +167,7 @@ module lsu
     output wire [SEQW-1:0]        ld_wb_seq,          // seqno of this writeback (cosim capture)
     output wire                   ld_done,            // -> commit_ctl decrement
     output wire [CBITS-1:0]       ld_done_ckpt,
+    output wire                   fp_dirty,           // an FP-dest load (FLW/FLD) wrote back -> mstatus.FS Dirty
 
     // ---- commit / rollback (CPR) ----
     input  wire                   commit,
@@ -741,13 +742,13 @@ module lsu
    reg [SBITS-1:0] r_owner;
    reg [63:0]     r_val;
    reg [SEQW-1:0] r_seq;
-   reg [CBITS-1:0] r_ck;
+   reg [CBITS-1:0] r_ck;  reg r_fp;   // r_fp: the writing-back load is FP-dest (FLW/FLD)
    initial r_v = 1'b0;
    always @(posedge clk) begin
       if (reset) r_v <= 1'b0;
       else begin
          r_v     <= merge_fire;
-         r_pdst  <= p_pdst;  r_owner <= p_owner;
+         r_pdst  <= p_pdst;  r_owner <= p_owner;  r_fp <= p_fp;
          r_val   <= c_val;   r_seq   <= p_seq;  r_ck <= p_ck;
       end
    end
@@ -763,6 +764,8 @@ module lsu
    assign ld_wb_seq    = amo_wbv ? amo_wbsq : r_seq;
    assign ld_done      = amo_wbv ? 1'b1     : (r_v & ~r_kill);
    assign ld_done_ckpt = amo_wbv ? amo_wbck : r_ck;
+   // FS-dirty: a non-squashed FP-dest load (FLW/FLD) wrote back this cycle.
+   assign fp_dirty     = r_v & ~r_kill & r_fp;
 
    // ------------------------------ drain --------------------------------
    // (dr_v/dr_sel/dr_mask are declared+computed above, before the atomic FSM, since the

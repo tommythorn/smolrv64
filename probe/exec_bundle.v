@@ -43,6 +43,7 @@ module exec_bundle
     input  wire [PBITS-1:0]        lsu_wb_pr,
     input  wire [63:0]             lsu_wb_val,
     input  wire [SEQW-1:0]         lsu_wb_seq,     // seqno of the LSU writeback (cosim)
+    input  wire                    lsu_fp_dirty,   // an FP-dest load (FLW/FLD) wrote back -> FS Dirty
     output wire [SHARDS-1:0]       wb_busy,        // per-shard ALU wb valid (-> LSU defer)
     // registered writeback broadcast out (RF write feed + scheduler wake)
     output wire [SHARDS-1:0]       wb_valid,
@@ -138,6 +139,7 @@ module exec_bundle
    wire [SHARDS*64-1:0] csr_req_src, csr_req_pc;
    wire [SHARDS*5-1:0]  fp_fflags_sh;        // per-shard FP flags (valid with fp_flags_we_sh)
    wire [SHARDS-1:0]    fp_flags_we_sh;
+   wire [SHARDS-1:0]    fp_dirty_sh;
    wire [2:0]           csr_frm;             // fcsr.frm (from u_csr) -> shards
    // OR-reduce the flags of every shard raising FP flags this cycle into one accumulate pulse
    reg  [4:0] fp_fflags_or; integer fk;
@@ -147,6 +149,9 @@ module exec_bundle
          if (fp_flags_we_sh[fk]) fp_fflags_or = fp_fflags_or | fp_fflags_sh[fk*5 +: 5];
    end
    wire fp_fflags_we = |fp_flags_we_sh;
+   // mstatus.FS -> Dirty: any shard wrote FP state (arith/compare/in-core move) OR an FP-dest
+   // load wrote back in the LSU. Broader than fp_fflags_we (flag-producing ops only).
+   wire fp_dirty = (|fp_dirty_sh) | lsu_fp_dirty;
 
    genvar i;
    generate for (i = 0; i < SHARDS; i = i + 1) begin : lane
@@ -197,6 +202,7 @@ module exec_bundle
          .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]),
          .fp_done(fp_done[i]), .fp_done_ckpt(fp_done_ckpt[i*CBITS +: CBITS]),
          .fp_flags_we(fp_flags_we_sh[i]), .fp_flags(fp_fflags_sh[i*5 +: 5]),
+         .fp_dirty(fp_dirty_sh[i]),
          .i_frm(csr_frm), .i_fs_off(fs_off), .wb_next(wbn[i]));
    end endgenerate
 
@@ -221,6 +227,7 @@ module exec_bundle
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_tlb_flush(mmu_flush),
       .o_frm(csr_frm), .o_fs_off(fs_off), .fp_fflags_we(fp_fflags_we), .fp_fflags(fp_fflags_or),
+      .fp_dirty(fp_dirty),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt),
