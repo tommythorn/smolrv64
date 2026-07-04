@@ -34,7 +34,10 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		timebase-frequency = <500000>; /* 500 kHz, a 5X lie */
+		timebase-frequency = <5000000>; /* 5 MHz claimed vs ~501 kHz real CLINT mtime = ~10x LIE:
+		   dilate guest time so the ~50x-slow probe core doesn't trip wall-clock timeouts/watchdogs.
+		   (The old "500 kHz, a 5X lie" was STALE -- the probe CLINT was retuned to 501 kHz, which made
+		   500 kHz *honest*; that lost the lie the scalar tests relied on. TT flagged 2026-07-03.) */
 
 		cpu-map {
 			cluster0 {
@@ -49,12 +52,12 @@
 			reg = <0>;
 			status = "okay";
 			compatible = "riscv";
-			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_zba_zbb_zbs_zicond_zicbom_zicbop_zicboz_sscofpmf_svpbmt";
+			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_zba_zbb_zbs_zicond_zicbom_zicbop_zicboz_svpbmt";
 			riscv,isa-base = "rv64i";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicntr", "zicsr", "zifencei", "zihpm",
 				"zba", "zbb", "zbs", "zicond",
-				"zicbom", "zicbop", "zicboz", "sscofpmf", "svpbmt";
+				"zicbom", "zicbop", "zicboz", "svpbmt";
 			riscv,cbom-block-size = <64>;
 			riscv,cbop-block-size = <64>;
 			riscv,cboz-block-size = <64>;
@@ -141,7 +144,14 @@
 			interrupts = <12>;
 			interrupt-parent = <&plic>;
 			dma-noncoherent;
-			status = "okay";
+			/* DISABLED: the probe core's virtio MMIO path is blk-only --
+			   rk_xcku5p.v:1552 hardwires core_mmio_address = {8'h02, addr},
+			   so page 0x03 (this net device) is never selected -> the kernel
+			   reads magic 0 and complains "Wrong magic value". To ENABLE net,
+			   soc_top must pass a 13-bit addr over an 8 KiB region and the
+			   wrapper must derive the page from bit 12 (blk=0x02 / net=0x03),
+			   plus wire virtio_net_irq -> PLIC src 12. Not needed to boot. */
+			status = "disabled";
 		};
 	};
 

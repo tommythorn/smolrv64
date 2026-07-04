@@ -11,7 +11,7 @@
 #   FW DTB INITRD   image paths (absolute; this script cd's to probe/)
 #   OFF_DTB OFF_INITRD   load offsets from 0x8000_0000, hex no-0x (default linux 2000000 / 762b000)
 #   A1         DTB physical address seeded into a1, hex no-0x (default 82000000)
-#   CYC        cycle cap (default 200000000);  BUILD=1 forces a rebuild
+#   CYC        cycle cap (default 2000000000000);  BUILD=1 forces a rebuild
 set -u
 cd "$(dirname "$0")"
 
@@ -24,7 +24,7 @@ MEM_LG2=${MEM_LG2:-28}
 W=../workloads/linux
 FW=${FW:-$W/fw_payload.bin}; DTB=${DTB:-$W/dts.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
 OFF_DTB=${OFF_DTB:-2000000}; OFF_INITRD=${OFF_INITRD:-762b000}; A1=${A1:-82000000}
-CYC=${CYC:-200000000}
+CYC=${CYC:-2000000000000}
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
 
