@@ -93,6 +93,7 @@ module exec_bundle
     input  wire [11:0]             hw_ip,            // hardware interrupt-pending (CLINT/PLIC)
     input  wire [63:0]             mtime,            // free-running CLINT time (Sstc stimecmp compare)
     input  wire [2:0]              retire_cnt,       // # instructions retiring this cycle (-> minstret)
+    input  wire [6:0]              hpm_ev,           // Zihpm event pulses (ld/st/redir/dc/ic) -> csr_file
     output wire                    irq_v,            // an interrupt is deliverable now
     output wire [3:0]              irq_cause,
     output wire                    csr_redir_v,      // csr_file redirect this cycle (trap/xret)
@@ -230,7 +231,7 @@ module exec_bundle
       .fp_dirty(fp_dirty),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt), .hpm_ev(hpm_ev),
       .irq_v(irq_v), .irq_cause(irq_cause),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));

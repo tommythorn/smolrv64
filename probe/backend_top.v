@@ -515,6 +515,11 @@ module backend_top
    wire [IW*MIDXW-1:0] ex_mem_idx;
    wire [IW*2-1:0]    ex_msize;
 
+   // Zihpm event pulses -> csr_file (mhpmcounterN counts its mhpmeventN-selected one). Backend-local
+   // now: [0]load [1]store (LSU completions) [2]redirect (any pipe flush/branch mispredict). Cache
+   // events [6:3] = 0 until soc_top taps the D$/I$ (Phase 2b).
+   wire [6:0] hpm_ev = {4'd0, roll_v, lsu_st_done, lsu_ld_done};
+
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
                  .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
      (.clk(clk), .reset(reset),
@@ -540,7 +545,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(cc_commit_count),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(cc_commit_count), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 

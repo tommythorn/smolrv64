@@ -62,6 +62,9 @@ module csr_file
     input  wire [11:0] hw_ip,
     input  wire [63:0] mtime,       // free-running CLINT time (Sstc stimecmp compare); 0 in device-less TBs
     input  wire [2:0]  retire_cnt,  // # instructions retiring this cycle (commit_ctl) -> minstret
+    // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
+    // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
+    input  wire [6:0]  hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
@@ -144,7 +147,27 @@ module csr_file
    // the counter simply stays put -- a clean extension point (Phase 2 wires branch/cache/TLB).
    localparam integer HPMN = 13;                                     // counters 3..15
    localparam [63:0]  HPM_INHIBIT_MASK = (((64'h1 << (HPMN+3)) - 1) & ~64'h2); // 0,2,3..15 (not TIME)
-   localparam [15:0]  HPMEV_CYCLES = 16'h0001, HPMEV_INSTRET = 16'h0002;
+   localparam [15:0]  HPMEV_CYCLES = 16'h0001, HPMEV_INSTRET = 16'h0002,
+                      HPMEV_LOAD   = 16'h0003, HPMEV_STORE    = 16'h0004,
+                      HPMEV_REDIR  = 16'h0005,                              // branch/pipe redirect
+                      HPMEV_DCACC  = 16'h0100, HPMEV_DCMISS   = 16'h0102,   // D$ access / miss
+                      HPMEV_ICACC  = 16'h0110, HPMEV_ICMISS   = 16'h0112;   // I$ access / miss
+   // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
+   function [2:0] hpm_inc;
+      input [15:0] ev;
+      case (ev)
+        HPMEV_CYCLES:  hpm_inc = 3'd1;
+        HPMEV_INSTRET: hpm_inc = retire_cnt;
+        HPMEV_LOAD:    hpm_inc = {2'd0, hpm_ev[0]};
+        HPMEV_STORE:   hpm_inc = {2'd0, hpm_ev[1]};
+        HPMEV_REDIR:   hpm_inc = {2'd0, hpm_ev[2]};
+        HPMEV_DCACC:   hpm_inc = {2'd0, hpm_ev[3]};
+        HPMEV_DCMISS:  hpm_inc = {2'd0, hpm_ev[4]};
+        HPMEV_ICACC:   hpm_inc = {2'd0, hpm_ev[5]};
+        HPMEV_ICMISS:  hpm_inc = {2'd0, hpm_ev[6]};
+        default:       hpm_inc = 3'd0;   // unimplemented event -> counter holds
+      endcase
+   endfunction
    reg [63:0] mcountinhibit;
    reg [63:0] mhpmevent  [0:HPMN-1];
    reg [63:0] mhpmcounter[0:HPMN-1];
@@ -503,9 +526,7 @@ module csr_file
             if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMCOUNTER3+i))
                mhpmcounter[i] <= newv;
             else if (!mcountinhibit[i+3])
-               mhpmcounter[i] <= mhpmcounter[i]
-                  + ((mhpmevent[i][15:0]==HPMEV_CYCLES)  ? 64'd1
-                   : (mhpmevent[i][15:0]==HPMEV_INSTRET) ? {61'd0, retire_cnt} : 64'd0);
+               mhpmcounter[i] <= mhpmcounter[i] + {61'd0, hpm_inc(mhpmevent[i][15:0])};
          end
       end
    end
