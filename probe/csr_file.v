@@ -318,9 +318,23 @@ module csr_file
                           ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
                           | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
 
+   // Likewise, a write that changes a DATA-TRANSLATION context bit of mstatus -- MPRV(17),
+   // MPP(12:11, the priv MPRV borrows), SUM(18), MXR(19) -- must redirect to fall-through:
+   // o_dpriv/o_sum/o_mxr are combinational on live mstatus, so a younger load/store already in
+   // flight was translated against the OLD context. Refetch them to re-translate. Without this,
+   // OpenSBI's misaligned-emulation reader (csrrs mstatus,MPRV|MXR; lhu 0(faulting_pc)) runs the
+   // lhu under stale MPRV=0 -> an M-mode Bare access to a kernel VA -> spurious access fault (a
+   // cosim divergence vs simmerv, which applies the write in order). Same fall-through cost as FS.
+   localparam [63:0] MSTATUS_DXMASK = 64'h0000_0000_000E_1800;   // MXR|SUM|MPRV | MPP
+   wire [63:0] newms_m = (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
+   wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
+   wire        do_dxchg = upd_valid & upd_is_csr & ~csr_illegal &
+                          ( ((upd_addr==MSTATUS) & (((newms_m ^ mstatus) & MSTATUS_DXMASK) != 64'd0))
+                          | ((upd_addr==SSTATUS) & (((newms_s ^ mstatus) & MSTATUS_DXMASK) != 64'd0)) );
+
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg;
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg;
    assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
@@ -335,6 +349,7 @@ module csr_file
       else if (do_sret)         redir_target = `VA_UNPACK40(sepc);
       else if (do_sfence)       redir_target = upd_pc + 64'd4;
       else if (do_fschg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
+      else if (do_dxchg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else                      redir_target = trap_tgt;
    end
 
