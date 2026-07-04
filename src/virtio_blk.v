@@ -148,6 +148,7 @@ module virtio_blk #(
    reg [15:0] last_avail_idx;
    reg [15:0] avail_idx;       /* last published avail.idx (for draining a batch) */
    reg        notify_pending;  /* a notify seen while busy; re-poll on completion */
+   reg        notify_ever, left_idle_ever, returned_idle_ever;  // ILA_DEV sticky diagnostics
    reg [15:0] used_idx;
    reg [15:0] head_desc;
    reg [15:0] desc1_index;
@@ -213,7 +214,17 @@ module virtio_blk #(
    assign debug_word = (debug_sel == 2'd0) ? sd_capacity     :
                        (debug_sel == 2'd1) ? dbg_state_word  :
                                              {16'd0, sd_spi_io};
-   assign dbg = {state, sd_spi_state, sd_busy, sd_done, sd_error, sd_ready, dma_rsp_error, sectors_left[3:0]};
+   // ILA_DEV overlay (22b): WHY the backend won't service the mount read. The 3 STICKY bits answer
+   // the fork with a static trigger_now capture: notify_ever=0 -> the queue-notify never reached the
+   // device (MMIO path broken; explains why the fence had no effect); notify_ever=1 & left_idle_ever=0
+   // -> notify came but the S_IDLE gate blocked (see driver_ok/queue_configured/sd_ready); returned_
+   // idle_ever=1 -> backend started but read a STALE avail_idx and bounced (the DDR ring-write race).
+   // driver_ok/queue_configured are forward net refs (declared below), legal for a continuous assign.
+   // [21]dma_err [20]returned_idle_ev [19]left_idle_ev [18]notify_ev [17:14]avail[3:0]
+   // [13:10]last_avail[3:0] [9]sd_ready [8]notify [7]queue_cfg [6]driver_ok [5:0]state
+   assign dbg = {dma_rsp_error, returned_idle_ever, left_idle_ever, notify_ever,
+                 avail_idx[3:0], last_avail_idx[3:0], sd_ready,
+                 blk_notify | notify_pending, queue_configured, driver_ok, state};
 
    function [15:0] get16;
       input [63:0] word;
@@ -294,6 +305,7 @@ module virtio_blk #(
          last_avail_idx <= 16'd0;
          avail_idx <= 16'd0;
          notify_pending <= 1'b0;
+         notify_ever <= 1'b0; left_idle_ever <= 1'b0; returned_idle_ever <= 1'b0;  // ILA_DEV sticky
          used_idx <= 16'd0;
          head_desc <= 16'd0;
          desc1_index <= 16'd0;
@@ -321,8 +333,10 @@ module virtio_blk #(
          sd_req_sector <= 32'd0;
          sd_req_last <= 1'b1;
       end else begin
-         if (blk_notify)
+         if (blk_notify) begin
             notify_pending <= 1'b1;
+            notify_ever    <= 1'b1;   // ILA_DEV: a queue-notify EVER reached the device
+         end
 
          case (state)
            S_IDLE: begin
@@ -331,6 +345,7 @@ module virtio_blk #(
               if (queue_configured && driver_ok && sd_ready &&
                   (blk_notify || notify_pending)) begin
                  notify_pending <= 1'b0;
+                 left_idle_ever <= 1'b1;   // ILA_DEV: backend EVER started servicing a notify
                  state <= S_READ_AVAIL;
               end
            end
@@ -345,9 +360,10 @@ module virtio_blk #(
               if (dma_rsp_valid) begin
                  avail_idx <= get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd2) & 3'h7);
                  if (dma_rsp_error ||
-                     get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx)
+                     get16(dma_rsp_rdata, (queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx) begin
+                    returned_idle_ever <= 1'b1;   // ILA_DEV: bounced back to IDLE on a STALE avail_idx
                     state <= S_IDLE;
-                 else
+                 end else
                     state <= S_READ_RING;
               end
            end
