@@ -206,6 +206,48 @@ module backend_top
       for (dc = 0; dc < IW; dc = dc + 1) disp_count = disp_count + r_valid[dc];
    end
 
+`ifdef DISP_STATS
+   // sim-only dispatch/stall attribution: one cause per non-dispatching cycle
+   // (else-chain priority) + bundle-size histogram. Dumped every 20M cycles.
+   integer st_cyc, st_disp, st_insn, st_nofe, st_icym, st_ccfull, st_sbfull, st_lqfull,
+           st_roll, st_dflt, st_ill, st_rs, st_festall, st_red;
+   integer st_bs [1:4];
+   initial begin
+      st_cyc=0; st_disp=0; st_insn=0; st_nofe=0; st_icym=0; st_ccfull=0; st_sbfull=0;
+      st_lqfull=0; st_roll=0; st_dflt=0; st_ill=0; st_rs=0; st_festall=0; st_red=0;
+      st_bs[1]=0; st_bs[2]=0; st_bs[3]=0; st_bs[4]=0;
+   end
+   always @(posedge clk) if (!reset) begin
+      st_cyc = st_cyc + 1;
+      if (disp_fire) begin
+         st_disp = st_disp + 1; st_insn = st_insn + disp_count;
+         st_bs[disp_count] = st_bs[disp_count] + 1;
+      end
+      else if (!any_valid) begin                           // frontend supplied no bundle:
+         st_nofe = st_nofe + 1;                            // split I$/iMMU starvation from
+         if (imem_avail_g == 0) st_icym = st_icym + 1;     // decode/redirect bubbles
+      end
+      else if (roll_v)         st_roll    = st_roll + 1;
+      else if (cc_full)        st_ccfull  = st_ccfull + 1; // NCHK ring full
+      else if (sb_full)        st_sbfull  = st_sbfull + 1;
+      else if (lq_full)        st_lqfull  = st_lqfull + 1;
+      else if (lsu_dfault_v)   st_dflt    = st_dflt + 1;
+      else if (ill_v)          st_ill     = st_ill + 1;
+      else if (!(&disp_ready)) st_rs      = st_rs + 1;     // scheduler: serialize gate / RS full
+      else if (|fe_stall)      st_festall = st_festall + 1;
+      if (eb_redirect) st_red = st_red + 1;
+      if ((st_cyc % 20000000) == 0)
+         $display("[DSTAT] cyc=%0d IPC=%f disp%%=%f | noFE%%=%f (icym%%=%f) roll%%=%f ccfull%%=%f sbfull%%=%f lqfull%%=%f dflt%%=%f ill%%=%f sched%%=%f fe%%=%f | bs1=%0d bs2=%0d bs3=%0d bs4=%0d avgBS=%f | redirs=%0d",
+            st_cyc, 1.0*st_insn/st_cyc, 100.0*st_disp/st_cyc,
+            100.0*st_nofe/st_cyc, 100.0*st_icym/st_cyc,
+            100.0*st_roll/st_cyc, 100.0*st_ccfull/st_cyc,
+            100.0*st_sbfull/st_cyc, 100.0*st_lqfull/st_cyc, 100.0*st_dflt/st_cyc,
+            100.0*st_ill/st_cyc, 100.0*st_rs/st_cyc, 100.0*st_festall/st_cyc,
+            st_bs[1], st_bs[2], st_bs[3], st_bs[4],
+            1.0*st_insn/((st_disp>0)?st_disp:1), st_red);
+   end
+`endif
+
    // a mispredicting branch/xret reopens the span just AFTER its own bundle (keep it);
    // an EXCEPTION reopens its OWN span (eb_rckpt) so the faulting (solo) op is squashed
    // and its rd allocation annulled -- precise trap.
