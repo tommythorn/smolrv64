@@ -160,63 +160,120 @@ module soc_top #(
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
       .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
-   // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller. No real sources yet
-   // (the UART is output-only and there is no virtio), so src=0 -- but the kernel still
-   // probes/initialises the region at boot, which would otherwise fault as unmapped.
+   // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller.
+   // Sources: 10 = UART (DTS interrupts=<10>), 11 = virtio_blk.
    wire [63:0] plic_rdata;  wire plic_meip, plic_seip;  wire [11:0] plic_dbg;
    wire [63:0] plic_addr = (dmem_wen & is_plic_w) ? dmem_waddr : dmem_raddr;
+   wire        uart_irq;
    plic u_plic
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({52'd0, virtio_irq, 11'd0}), .meip(plic_meip), .seip(plic_seip),
-      .dbg(plic_dbg));   // virtio_blk = PLIC source 11 (DTS)
+      .src({52'd0, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
+      .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
    assign irq_dbg = {dmem_ren & is_plic_r, dmem_wen & is_plic_w, plic_addr[3:0], plic_dbg};
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
-   // minimal NS16550A UART: THR write (off 0, DLAB=0) -> emit; LSR (off 5) -> THRE|TEMT|DR;
-   // RBR read (off 0, DLAB=0) -> the received byte (clears DR). LCR.DLAB(bit7) gates off 0.
+   // NS16550A UART. Semantics ported from the scalar core's Ubuntu-proven model
+   // (src/smolrv64.v): full register file (IER/IIR/FCR/MCR/SCR readback), the THRE-pending
+   // protocol (set when the THR drains or on a THRI enable edge with the THR empty; cleared
+   // by a THR write, THRI disable, or reading IIR while THRE is the reported cause), and an
+   // interrupt (RX-DR | THRE) to PLIC source 10. Interrupt-driven TX is load-bearing: the
+   // DTS declares the IRQ, so the 8250 driver waits for a THRE interrupt to drain its xmit
+   // buffer -- without it userspace wedges in its first console write() while polled printk
+   // still looks healthy. DTS fifo-size=<1> makes the 1-deep THR/RBR compliant.
+   reg [3:0] uart_ier;  reg uart_fcr_fifo;  reg [4:0] uart_mcr;  reg [7:0] uart_scr;
    reg [7:0] uart_lcr;  integer ub;
    reg [7:0] uart_rbr;  reg uart_dr;       // RX holding register + data-ready
    reg [7:0] uart_thr;  reg uart_thr_full; // TX holding register + pending flag
+   reg       uart_thre_pending;
    assign    uart_rx_ready = ~uart_dr;
    // TX byte stream: hold the THR byte until rs232tx accepts it (FPGA backpressure).
    // In a sim TB uart_tx_ready is tied 1, so the byte drains next cycle (THRE stays high).
    assign    uart_tx_valid = uart_thr_full;
    assign    uart_tx_data  = uart_thr;
-   // RBR read strobe: a load to offset 0 with DLAB clear consumes the byte
-   wire      uart_off0  = ((dmem_raddr - UART_BASE) & 64'h7) == 64'd0;
-   wire      uart_rbr_rd = dmem_ren & is_uart_r & uart_off0 & ~uart_lcr[7];
-   always @(posedge clk) if (reset) begin uart_lcr<=8'd0; uart_dr<=1'b0; uart_rbr<=8'd0;
-                                          uart_thr<=8'd0; uart_thr_full<=1'b0; end
+   wire      uart_rx_ip    = uart_ier[0] & uart_dr;
+   wire      uart_thre_ip  = uart_ier[1] & uart_thre_pending;
+   wire      uart_iir_thre = ~uart_rx_ip & uart_thre_ip;
+   // IIR: bit0=1 means NO interrupt pending; RX-DR (0x4) outranks THRE (0x2); [7:6]=FIFO en
+   wire [7:0] uart_iir = uart_rx_ip    ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4}
+                       : uart_iir_thre ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2}
+                       :                 {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h1};
+   assign    uart_irq = uart_rx_ip | uart_thre_ip;
+   // Read strobes: UART_BASE is 16-aligned and is_uart_r bounds the window, so the register
+   // offset is just the low address bits. RBR read pops DR; IIR read clears THRE-pending
+   // when THRE is the cause being reported.
+   wire [2:0] uart_roff   = dmem_raddr[2:0];
+   wire      uart_rbr_rd = dmem_ren & is_uart_r & (uart_roff == 3'd0) & ~uart_lcr[7];
+   wire      uart_iir_rd = dmem_ren & is_uart_r & (uart_roff == 3'd2);
+   // Like the PLIC claim, read data REGISTERS at the ren strobe and delivers on the 1-cycle-
+   // later dev_rvalid, so a side-effecting read returns its pre-side-effect value.
+   reg [63:0] uart_rdata_q;
+   always @(posedge clk) if (reset) begin
+         uart_ier<=4'd0; uart_fcr_fifo<=1'b0; uart_mcr<=5'd0; uart_scr<=8'd0;
+         uart_lcr<=8'd0; uart_dr<=1'b0; uart_rbr<=8'd0;
+         uart_thr<=8'd0; uart_thr_full<=1'b0; uart_thre_pending<=1'b0; uart_rdata_q<=64'd0;
+      end
       else begin
-         if (uart_thr_full & uart_tx_ready) uart_thr_full <= 1'b0;  // serializer took the byte
+         if (uart_thr_full & uart_tx_ready) begin
+            uart_thr_full <= 1'b0;             // serializer took the byte -> THR empty
+            uart_thre_pending <= 1'b1;
+         end
+         if (dmem_ren & is_uart_r) begin
+            uart_rdata_q <= uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr, uart_thr_full,
+                                    uart_ier, uart_iir, uart_mcr, uart_scr);
+            if (uart_iir_rd & uart_iir_thre) uart_thre_pending <= 1'b0;
+         end
          if (dmem_wen & is_uart_w & ~dev_wack)
             for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
                case ((dmem_waddr - UART_BASE + ub) & 3'h7)
-                  3'd0: if (!uart_lcr[7]) begin
+                  3'd0: if (!uart_lcr[7]) begin // THR
                            uart_thr <= dmem_wdata[ub*8 +: 8]; uart_thr_full <= 1'b1;
+                           uart_thre_pending <= 1'b0;
                            $write("%c", dmem_wdata[ub*8 +: 8]);   // sim-only; synth ignores
                         end
+                  3'd1: if (!uart_lcr[7]) begin // IER: THRI enable edge w/ room -> immediate THRE
+                           uart_ier <= dmem_wdata[ub*8 +: 4];
+                           if (!dmem_wdata[ub*8+1])                 uart_thre_pending <= 1'b0;
+                           else if (!uart_ier[1] && !uart_thr_full) uart_thre_pending <= 1'b1;
+                        end
+                  3'd2: begin                   // FCR (write-only): FIFO enable + RX/TX resets
+                           uart_fcr_fifo <= dmem_wdata[ub*8];
+                           if (dmem_wdata[ub*8+1]) uart_dr <= 1'b0;
+                           if (dmem_wdata[ub*8+2]) begin
+                              uart_thr_full <= 1'b0;
+                              if (uart_ier[1]) uart_thre_pending <= 1'b1;
+                           end
+                        end
                   3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
+                  3'd4: uart_mcr <= dmem_wdata[ub*8 +: 5];
+                  3'd7: uart_scr <= dmem_wdata[ub*8 +: 8];
                   default: ;
                endcase
          if (uart_rx_we & ~uart_dr) begin uart_rbr <= uart_rx_data; uart_dr <= 1'b1; end
          else if (uart_rbr_rd)      uart_dr <= 1'b0;
       end
-   function [63:0] uart_rd; input [63:0] a; input [7:0] rbr; input dr; input dlab; input thr_full;
+   function [63:0] uart_rd;
+      input [63:0] a; input [7:0] rbr; input dr; input [7:0] lcr; input thr_full;
+      input [3:0] ier; input [7:0] iir; input [4:0] mcr; input [7:0] scr;
       integer b2; reg [2:0] off;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
          off=(a-UART_BASE+b2)&3'h7;
-         uart_rd[b2*8 +: 8] = (off==3'd5) ? ((thr_full?8'h00:8'h60) | (dr?8'h01:8'h00)) // LSR: THRE|TEMT|DR
-                            : (off==3'd0 && !dlab) ? rbr                     // RBR
-                            : 8'h00; end end
+         uart_rd[b2*8 +: 8] =
+              (off==3'd0) ? (lcr[7] ? 8'h00 : rbr)                       // RBR (DLL if DLAB)
+            : (off==3'd1) ? (lcr[7] ? 8'h00 : {4'd0, ier})               // IER (DLM if DLAB)
+            : (off==3'd2) ? iir                                          // IIR
+            : (off==3'd3) ? lcr                                          // LCR
+            : (off==3'd4) ? {3'd0, mcr}                                  // MCR
+            : (off==3'd5) ? ((thr_full?8'h00:8'h60) | (dr?8'h01:8'h00))  // LSR: TEMT|THRE|DR
+            : (off==3'd6) ? 8'hB0                                        // MSR: CTS+DSR+CD
+            :               scr; end end                                 // SCR
    endfunction
    wire [63:0] hpm_rdata;
    wire [63:0] dev_rdata = is_clint_r  ? clint_rdata
-                         : is_uart_r   ? uart_rd(dmem_raddr, uart_rbr, uart_dr, uart_lcr[7], uart_thr_full)
+                         : is_uart_r   ? uart_rdata_q
                          : is_plic_r   ? plic_rdata
                          : is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg replicated into both lanes: the LSU extracts the half for the load offset, so this is correct regardless of which lane it picks (all virtio-mmio regs are 32b, accessed 32b)
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
