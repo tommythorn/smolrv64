@@ -84,13 +84,12 @@ module tb;
    reg [63:0] ncyc, c;        // 64-bit: cosim runs (gb5/sha256) exceed 2^32 cycles
 `ifdef PROBE_COSIM
    import "DPI-C" function void probe_dump_ring(input longint fetch_pc);
-   reg [31:0] wedge_cnt;      // cycles the fetch PC has been unchanged (stuck fetch detector)
-   reg [63:0] prev_imem_addr;
+   reg [31:0] wedge_cnt;      // cycles without a commit (stuck-pipeline detector)
 `endif
    initial begin
       ncyc = 200000000;
 `ifdef PROBE_COSIM
-      wedge_cnt = 0; prev_imem_addr = 64'hffffffffffffffff;
+      wedge_cnt = 0;
 `endif
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
@@ -109,13 +108,14 @@ module tb;
          @(negedge clk);
          if ((c % 1000000) == 0) $display("[c=%0d]", c);
 `ifdef PROBE_COSIM
-         // fetch-stuck watchdog: code lives at >=0x8000_0000, so a fetch PC parked in
-         // unmapped low memory for >2k cycles is a wedge (trap loop / wild redirect that
-         // never retires -> no mismatch ever fires). Dump the retire ring and stop.
-         if (dut.imem_addr == prev_imem_addr) wedge_cnt = wedge_cnt + 1;
-         else begin wedge_cnt = 0; prev_imem_addr = dut.imem_addr; end
+         // stuck-pipeline watchdog: 200k cycles without a single commit is a wedge
+         // (wild redirect / interlock deadlock -> no mismatch ever fires). Keyed on
+         // commit, NOT on the fetch PC: with the branch predictor a hot self-targeting
+         // loop bundle (e.g. the kernel's BSS-clear sd/addi/bltu) legitimately parks
+         // the fetch PC on one address for millions of cycles while retiring fine.
+         if (dut.core.cc_commit) wedge_cnt = 0; else wedge_cnt = wedge_cnt + 1;
          if (wedge_cnt == 32'd200000) begin
-            $display("COSIM-LINUX WEDGE: fetch PC unchanged %h for 200000 cyc (c=%0d)", dut.imem_addr, c);
+            $display("COSIM-LINUX WEDGE: no commit for 200000 cyc, fetch pc=%h (c=%0d)", dut.imem_addr, c);
             $display("  DF: df=%0d df_stall=%b dmem_idle=%b dc_inv_req=%b dc_inv_busy=%b ifence=%b",
                      dut.df, dut.df_stall, dut.dmem_idle, dut.dc_inv_req, dut.dc_inv_busy, dut.ifence);
             $display("  FI: fi=%0d ifence=%b   PTW: pw_read=%b pw_busy=%b pw_match=%b",
