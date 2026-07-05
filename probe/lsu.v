@@ -571,7 +571,9 @@ module lsu
      (.clk(clk), .reset(reset),
       .req_valid(xlate & (amo_need_xl | ck_v)),
       .req_vaddr(amo_need_xl ? a_addr : sb_addr[ck_sel]),
-      .req_access(amo_need_xl ? 2'd3 : 2'd2),
+      // LR reads memory -> a page fault on it is a LOAD fault (cause 13), like Spike/simmerv;
+      // SC/AMO write -> Store/AMO fault (cause 15). (Non-AMO store checks use store access 2.)
+      .req_access(amo_need_xl ? (a_islr ? 2'd1 : 2'd3) : 2'd2),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
       .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
