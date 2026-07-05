@@ -69,6 +69,19 @@ module exec_bundle
     output wire [SHARDS-1:0]       ex_amo,
     output wire [SHARDS*5-1:0]     ex_amo_func,
     output wire [SHARDS*PBITS-1:0] ex_amo_pdst,
+    // per-checkpoint pred_npc: written at dispatch (one bundle == one ckpt == at
+    // most one CTI), read at EX by the op's ckpt tag -- the mispredict reference
+    // for branch_unit without widening the IQ payload.
+    input  wire                    disp_v,
+    input  wire [CBITS-1:0]        disp_ckpt,
+    input  wire [63:0]             disp_pnpc,
+    // oldest genuinely-resolved CTI this cycle -> predictor training/repair
+    output reg                     res_v,
+    output reg                     res_cbr,
+    output reg                     res_taken,
+    output reg  [CBITS-1:0]        res_ckpt,
+    output reg  [63:0]             res_tgt,
+    output reg                     res_mispred,        // this resolve IS the redirecting op
     // oldest mispredicting branch this cycle -> redirect
     output reg                     redirect,
     output reg  [63:0]             redirect_target,
@@ -112,6 +125,14 @@ module exec_bundle
    wire [SHARDS*SEQW-1:0]  brs;
    wire [SHARDS*CBITS-1:0] brc;          // EX-stage ckpt of each shard (for redirect)
    wire [SHARDS-1:0]       brtr;         // per-shard "redirect is a trap"
+   wire [SHARDS-1:0]       rsv;          // per-shard resolved-CTI (predictor training)
+   wire [SHARDS-1:0]       rscb, rstk;
+   wire [SHARDS*64-1:0]    rstg;
+
+   // dispatch-time pred_npc, indexed by checkpoint (written >=2 cycles before any
+   // op of that bundle reaches EX; a ckpt is only reused after its span commits).
+   reg [63:0] pnpc [0:(1<<CBITS)-1];
+   always @(posedge clk) if (disp_v) pnpc[disp_ckpt] <= disp_pnpc;
 
    // effective per-lane registered writeback = ALU/M result, else the LSU load.
    wire [SHARDS-1:0]       ewbv;
@@ -192,9 +213,11 @@ module exec_bundle
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
          .wb_seq(wbsq[i*SEQW +: SEQW]),
+         .pred_npc(pnpc[brc[i*CBITS +: CBITS]]),
          .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_pc(brp[i*64 +: 64]),
          .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
          .br_is_trap(brtr[i]),
+         .res_v(rsv[i]), .res_cbr(rscb[i]), .res_taken(rstk[i]), .res_tgt(rstg[i*64 +: 64]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),
          .ex_fp(ex_fp[i]), .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
@@ -269,6 +292,31 @@ module exec_bundle
             redirect_is_trap = brtr[j];
             redirect_src_pc  = brp[j*64 +: 64];
          end
+   end
+
+   // oldest resolved CTI -> one predictor training write per cycle. Anything older
+   // than the redirect (or the redirecting branch itself) is a genuine resolution;
+   // a resolve YOUNGER than a same-cycle redirect (e.g. an older lane's ecall) is
+   // wrong-path and suppressed. Losing a younger-of-two-resolves is only a missed
+   // hint update.
+   integer rj;
+   reg [SEQW-1:0] res_seq;
+   always @* begin
+      res_v = 1'b0; res_cbr = 1'b0; res_taken = 1'b0; res_mispred = 1'b0;
+      res_ckpt = {CBITS{1'b0}}; res_tgt = 64'd0; res_seq = {SEQW{1'b0}};
+      for (rj = 0; rj < SHARDS; rj = rj + 1)
+         if (rsv[rj] && (!res_v || $signed(brs[rj*SEQW +: SEQW] - res_seq) < 0)) begin
+            res_v     = 1'b1;
+            res_cbr   = rscb[rj];
+            res_taken = rstk[rj];
+            res_ckpt  = brc[rj*CBITS +: CBITS];
+            res_tgt   = rstg[rj*64 +: 64];
+            res_seq   = brs[rj*SEQW +: SEQW];
+         end
+      if (res_v && redirect) begin
+         if ($signed(redirect_seq - res_seq) < 0) res_v = 1'b0;   // wrong-path resolve
+         else res_mispred = (res_seq == redirect_seq);            // it IS the redirect
+      end
    end
 endmodule
 

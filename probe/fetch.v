@@ -1,9 +1,10 @@
 `default_nettype none
 
 // Minimal fetch unit: sequences the PC, reads an HW-halfword window starting at
-// PC, and aligns it into a bundle for decode. No branch prediction yet -- it
-// runs fall-through and is corrected by `redirect` (branch mispredict /
-// exception / CPR rollback). PC is the only architectural state here.
+// PC, and aligns it into a bundle for decode. Runs fall-through unless the
+// frontend predictor overrides (pred_v/pred_tgt, for a bundle ending on a
+// predicted-taken CTI); corrected by `redirect` (branch mispredict / exception /
+// CPR rollback). PC is the only architectural state here.
 //
 // Carry-free windowing: the window always *starts at PC*, and PC advances by
 // 2*consumed. The aligner excludes a window-straddling 32-bit op from
@@ -49,6 +50,16 @@ module fetch
     // instruction) at the current PC, WITHOUT advancing PC -- the displaced real
     // instruction re-fetches after the handler returns (mepc = this PC).
     input  wire                    irq_inject,
+    // branch prediction: when the presented bundle ends on a predicted-taken CTI,
+    // the predictor overrides the fall-through advance. `npc` is the computed
+    // next PC (all arms, redirect included) -- the predictor's BTB read address.
+    // `pred_npc` is the next PC actually chosen for the PRESENTED bundle; it
+    // rides to dispatch and is the exec-side mispredict reference (branch_unit
+    // redirects iff actual_npc != pred_npc).
+    input  wire                    pred_v,
+    input  wire [PCW-1:0]          pred_tgt,
+    output wire [PCW-1:0]          npc,
+    output wire [PCW-1:0]          pred_npc,
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
@@ -128,6 +139,24 @@ module fetch
       for (c = 0; c < IW; c = c + 1) nvalid = nvalid + slot_valid[c];
    end
 
+   // normal-path advance: predicted-taken CTI -> target, else fall-through. The
+   // straddle/irq arms of the advance chain come first, so pred_v is naturally
+   // ignored there (the straddle FSM owns its +4; the pseudo-op holds PC).
+   wire [PCW-1:0] ft_npc   = pc_q + {{(PCW-PBW-1){1'b0}}, al_consumed, 1'b0};  // += 2*consumed
+   wire [PCW-1:0] norm_npc = pred_v ? pred_tgt : ft_npc;
+   // the presented bundle's chosen next PC (mispredict reference at execute)
+   assign pred_npc = irq_inject ? pc_q
+                   : strad      ? (pc_q + 64'd4)
+                   :              norm_npc;
+   // computed next PC, mirroring the advance chain's priorities exactly -- this
+   // is the predictor's BTB read address (registered there, rule A1).
+   assign npc = reset        ? RESET_PC
+              : redirect     ? redirect_pc
+              : irq_inject   ? pc_q
+              : strad        ? (fire ? (pc_q + 64'd4) : pc_q)
+              : straddle_det ? pc_q
+              : fire         ? norm_npc : pc_q;
+
    always @(posedge clk) begin
       if (reset) begin
          pc_q  <= RESET_PC; seq_q <= 0; strad <= 1'b0;
@@ -145,7 +174,7 @@ module fetch
          // enter straddle: latch the low halfword, hold PC (the op is not consumed yet).
          strad <= 1'b1; strad_lo <= imem_data[15:0];
       end else if (fire) begin
-         pc_q  <= pc_q + {{(PCW-PBW-1){1'b0}}, al_consumed, 1'b0};  // += 2*consumed
+         pc_q  <= norm_npc;
          seq_q <= seq_q + nvalid;
       end
    end

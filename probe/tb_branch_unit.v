@@ -11,10 +11,15 @@ module tb;
    wire [63:0] target;
    integer errs=0;
 
+   // pred_npc = fall-through (a never-predicting frontend): the redirect/target
+   // expectations below are exactly the old (is_branch & taken) | is_jump ones.
+   wire [63:0] pred_npc = pc + 64'd4;
    branch_unit dut
-     (.is_branch(is_branch), .is_jump(is_jump), .is_jalr(is_jalr), .br_func(br_func),
+     (.is_branch(is_branch), .is_jump(is_jump), .is_jalr(is_jalr), .is_rvc(1'b0),
+      .br_func(br_func),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .pc(pc), .imm(imm), .agu_addr(agu_addr), .redirect(redirect), .target(target));
+      .pc(pc), .imm(imm), .agu_addr(agu_addr), .pred_npc(pred_npc),
+      .redirect(redirect), .target(target), .taken_o(), .taken_tgt());
 
    task chk(input [127:0] nm, input er, input [63:0] et);
       begin #1;

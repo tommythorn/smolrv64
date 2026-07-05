@@ -94,12 +94,18 @@ module exec_shard
     output reg  [63:0]             wb_val,
     output reg  [SEQW-1:0]         wb_seq,         // seqno of this writeback (cosim capture)
     // ---- EX: branch/jump resolution ----
+    input  wire [63:0]             pred_npc,      // frontend's chosen next PC for this op's bundle
     output wire                    br_redirect,
     output wire [63:0]             br_target,
     output wire [63:0]             br_pc,         // PC of the redirecting op (debug: control-flow trace)
     output wire                    fencei_redir_o,     // this shard is redirecting for a FENCE.I
     output wire [SEQW-1:0]         br_seq,
     output wire                    br_is_trap,    // redirect is an exception (roll back TO ckpt)
+    // resolve/training port (predictor): a genuine CTI resolved on this lane
+    output wire                    res_v,
+    output wire                    res_cbr,       // conditional branch (vs jump)
+    output wire                    res_taken,     // resolved direction (jumps: 1)
+    output wire [63:0]             res_tgt,       // resolved taken-target
     // ---- EX: LSU drive (aligned with agu/st_data) ----
     output wire                    ex_valid,
     output wire [SEQW-1:0]         ex_seq,
@@ -379,12 +385,19 @@ module exec_shard
    // branch/jump resolution (EX, bypassed operands). The system op's redirect (trap/
    // xret/CSR-barrier) folds into the same per-lane redirect port: a lane is either a
    // branch or a system op, never both, and exec_bundle's oldest-select handles order.
-   wire bu_redirect; wire [63:0] bu_target;
+   wire bu_redirect, bu_taken; wire [63:0] bu_target, bu_taken_tgt;
    branch_unit bu
-     (.is_branch(ex_br), .is_jump(ex_jmp), .is_jalr(ex_jmp & ex_o2i),
+     (.is_branch(ex_br), .is_jump(ex_jmp), .is_jalr(ex_jmp & ex_o2i), .is_rvc(ex_rvc),
       .br_func(ex_bf), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr),
-      .redirect(bu_redirect), .target(bu_target));
+      .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr), .pred_npc(pred_npc),
+      .redirect(bu_redirect), .target(bu_target),
+      .taken_o(bu_taken), .taken_tgt(bu_taken_tgt));
+   // predictor training: every genuinely-executing CTI (redirecting or not);
+   // wrong-path ops killed by a squash in flight must not train.
+   assign res_v     = ex_v & (ex_br | ex_jmp) & ~ex_squash;
+   assign res_cbr   = ex_br;
+   assign res_taken = bu_taken;
+   assign res_tgt   = bu_taken_tgt;
    // FENCE.I redirects to its fall-through (pc+4) once it issues -- and it issues only when
    // oldest (is_serialize), so every prior store has committed + drained to memory. The
    // refetch of pc+4 onward then sees the new instruction bytes (I/D coherence). Like the

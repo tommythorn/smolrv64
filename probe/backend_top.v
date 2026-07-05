@@ -125,6 +125,11 @@ module backend_top
    wire [PCW-1:0]     fe_red_pc;
    assign redirect        = fe_red_v;
    assign redirect_target = fe_red_pc;
+   // predictor resolve/training port (exec_bundle -> frontend) + GHR repair strobe
+   wire               eb_res_v, eb_res_cbr, eb_res_taken, eb_res_mispred;
+   wire [CBITS-1:0]   eb_res_ckpt;
+   wire [63:0]        eb_res_tgt;
+   wire               bp_rep;
 
    // ---- frontend: fetch -> decode -> rename ----
    wire [IW-1:0]      r_valid, r_rd_v, r_is_branch, fe_stall;
@@ -132,6 +137,7 @@ module backend_top
    wire [IW*ABITS-1:0] r_rd;
    wire [IW*PBITS-1:0] ps1, ps2, ps3, pdst;
    wire [IW*`PAYW-1:0] r_pay;
+   wire [PCW-1:0]     fe_pred_npc;
    wire [CBITS-1:0]   r_ckpt, cur;
 
    // ---- commit control ----
@@ -306,10 +312,13 @@ module backend_top
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
+      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_taken(eb_res_taken),
+      .res_ckpt(eb_res_ckpt), .res_tgt(eb_res_tgt), .res_rep(bp_rep),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst),
       .r_is_branch(r_is_branch),
-      .r_pay(r_pay), .r_ckpt(r_ckpt), .cur(cur), .cur_seq(fe_cur_seq), .stall(fe_stall));
+      .r_pay(r_pay), .r_pred_npc(fe_pred_npc),
+      .r_ckpt(r_ckpt), .cur(cur), .cur_seq(fe_cur_seq), .stall(fe_stall));
 
    // ---- scheduler bundle ----
    wire [IW-1:0]       iss_valid, iss_pdst_v;
@@ -541,6 +550,9 @@ module backend_top
       .ex_cbo(ex_cbo), .ex_cbo_zero(ex_cbo_zero), .ex_cbo_keep(ex_cbo_keep),
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
+      .disp_v(disp_fire), .disp_ckpt(r_ckpt), .disp_pnpc(fe_pred_npc),
+      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_taken(eb_res_taken),
+      .res_ckpt(eb_res_ckpt), .res_tgt(eb_res_tgt), .res_mispred(eb_res_mispred),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
       .ifence(ifence),
@@ -750,6 +762,12 @@ module backend_top
    // (decode_rename restores its map on rollback) -- an unpaired flush leaves the map/
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
    assign roll_v     = eb_redirect | dflt_roll | iflt_fire | devld_replay;
+   // GHR LSB repair (plan B2): only when THIS rollback is the resolved cond-branch's
+   // own mispredict -- i.e. the eb redirect won the rollback priority below AND the
+   // exported (oldest) resolve is the redirecting op. All other rollback causes
+   // (traps, faults, replays) restore the snapshot verbatim.
+   assign bp_rep     = eb_res_v & eb_res_cbr & eb_res_mispred
+                     & ~iflt_fire & ~dflt_roll & ~devld_replay;
    assign roll_seq   = iflt_fire    ? fe_cur_seq
                      : dflt_roll    ? (chk_seq[flt_ckpt]    - 1'b1)
                      : devld_replay ? (chk_seq[cc_committed] - 1'b1) : eb_rseq;

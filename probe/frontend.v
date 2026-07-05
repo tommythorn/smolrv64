@@ -51,6 +51,13 @@ module frontend
     input  wire [CBITS-1:0]        commit_idx,
     input  wire                    rollback,
     input  wire [CBITS-1:0]        rollback_idx,
+    // branch resolve/training port (EX domain; oldest resolved CTI this cycle)
+    input  wire                    res_v,
+    input  wire                    res_cbr,
+    input  wire                    res_taken,
+    input  wire [CBITS-1:0]        res_ckpt,
+    input  wire [PCW-1:0]          res_tgt,
+    input  wire                    res_rep,     // resolve caused this rollback -> GHR LSB repair
     // renamed bundle out (one cycle after fetch), aligned with r_valid/r_seq
     output wire [IW-1:0]           r_valid,
     output wire [IW*SEQW-1:0]      r_seq,
@@ -62,6 +69,7 @@ module frontend
     output wire [IW*PBITS-1:0]     pdst,
     output wire [IW-1:0]           r_is_branch,
     output wire [IW*`PAYW-1:0]     r_pay,
+    output wire [PCW-1:0]          r_pred_npc,  // dispatching bundle's chosen next PC
     output wire [CBITS-1:0]        r_ckpt,
     output wire [CBITS-1:0]        cur,
     output wire [SEQW-1:0]         cur_seq,     // fetch PC's seqno (for trap resume)
@@ -72,20 +80,35 @@ module frontend
    wire [IW*PCW-1:0]  f_pc;
    wire [IW*SEQW-1:0] f_seq;
    wire               f_valid;
+   wire               bp_v;
+   wire [PCW-1:0]     bp_tgt, f_npc, f_pnpc;
 
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .solo_all(solo_all), .irq_inject(irq_inject),
+      .pred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .pred_npc(f_pnpc),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
       .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
+
+   // branch predictor: taps the presented bundle + the checkpoint wires the
+   // renamer already consumes (create/cur/rollback/rollback_idx); trains on the
+   // resolve port threaded up from branch_unit. imem_ipc = pc_q = bundle base.
+   predictor #(.IW(IW), .PCW(PCW), .CBITS(CBITS), .NCHK(NCHK)) u_bp
+     (.clk(clk), .reset(reset),
+      .npc(f_npc), .fire(accept & f_valid), .base_pc(imem_ipc),
+      .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc),
+      .pred_v(bp_v), .pred_tgt(bp_tgt),
+      .create(create), .cur(cur), .rollback(rollback), .rollback_idx(rollback_idx),
+      .res_v(res_v), .res_cbr(res_cbr), .res_taken(res_taken),
+      .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep));
 
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .AREGS(AREGS),
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),
                    .SBITS(SBITS), .NCHK(NCHK), .CBITS(CBITS)) u_dr
      (.clk(clk), .reset(reset), .flush(redirect), .accept(accept),
       .inst(f_inst), .in_valid(f_slot_valid),
-      .seq_in(f_seq), .pc_in(f_pc),
+      .seq_in(f_seq), .pc_in(f_pc), .pred_npc_in(f_pnpc), .r_pred_npc(r_pred_npc),
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),

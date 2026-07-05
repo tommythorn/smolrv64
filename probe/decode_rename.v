@@ -37,6 +37,7 @@ module decode_rename
     input  wire [IW-1:0]        in_valid,
     input  wire [IW*SEQW-1:0]   seq_in,
     input  wire [IW*64-1:0]     pc_in,    // per-slot PC (for the execute payload)
+    input  wire [63:0]          pred_npc_in, // fetch's chosen next PC for this bundle
     // checkpoint / commit control (already in the rename time domain)
     input  wire                 create,
     input  wire                 commit,
@@ -54,6 +55,8 @@ module decode_rename
     output wire [IW*PBITS-1:0]  pdst,
     output wire [IW-1:0]        r_is_branch,  // for speculative checkpoint creation
     output wire [IW*`PAYW-1:0]  r_pay,    // packed execute payload (ctl+imm+pc+branch)
+    output wire [63:0]          r_pred_npc, // the bundle's chosen next PC (one CTI/bundle ->
+                                            // bundle-scalar; recorded per ckpt at dispatch)
     output wire [CBITS-1:0]     r_ckpt,   // the renamed bundle's checkpoint (= cur)
     output wire [CBITS-1:0]     cur,      // freelist's open span (for commit_ctl)
     output wire [IW-1:0]        stall);
@@ -108,6 +111,7 @@ module decode_rename
    reg [IW-1:0]        q_is_branch, q_is_jump, q_is_mul;
    reg [IW*3-1:0]      q_br_func;
    reg [IW*64-1:0]     q_imm, q_pc;
+   reg [63:0]          q_pnpc;
    reg [IW*6-1:0]      q_alu_op;
    reg [IW*2-1:0]      q_op1_sel;
    reg [IW-1:0]        q_is_csr, q_is_serialize, q_is_amo, q_illegal, q_is_fencei;
@@ -146,7 +150,7 @@ module decode_rename
          q_s2_is_slot <= d_s2_is_slot; q_s2_slot  <= d_s2_slot;
          q_s3_is_slot <= d_s3_is_slot; q_s3_slot  <= d_s3_slot;
          q_d_is_slot  <= d_d_is_slot;   q_d_slot   <= d_d_slot;
-         q_imm <= d_imm; q_pc <= pc_in;
+         q_imm <= d_imm; q_pc <= pc_in; q_pnpc <= pred_npc_in;
          q_alu_op <= d_alu_op; q_alu_w <= d_alu_w; q_alu_uw <= d_alu_uw;
          q_op1_sel <= d_op1_sel; q_op2_imm <= d_op2_imm; q_res_link <= d_res_link;
          q_is_rvc <= d_is_rvc; q_is_mem <= d_is_mem;
@@ -161,6 +165,7 @@ module decode_rename
 
    assign r_valid = q_valid;
    assign r_seq   = q_seq;
+   assign r_pred_npc = q_pnpc;
    assign r_rd    = q_rd;
    assign r_rd_v  = q_rd_v;
    assign r_is_branch = q_is_branch;
