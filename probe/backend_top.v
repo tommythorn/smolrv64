@@ -185,8 +185,17 @@ module backend_top
    // checkpoint's chk_seq/chk_pc before delivery. Freezing preserves them. Cannot deadlock:
    // older checkpoints still complete + commit independently of dispatch, so committed
    // advances to the fault's checkpoint and dflt_fire clears the latch.
+   // !roll_v: no dispatch in ANY rollback cycle (branch redirect, data-fault replay,
+   // fetch fault, device-load replay). A bundle dispatched the same cycle a replay
+   // rolls back is wrong-path-by-construction: the hardware squashes it by seqno,
+   // but it still runs through the create/freelist path only to be half-cancelled
+   // by rollback priority, and the cosim retire FIFO (squash-then-push order) kept
+   // it OUT OF PROGRAM ORDER ahead of the replayed refetch -- the frontend flush
+   // kills the same bundle anyway, so dispatching it is pure downside. (Previously
+   // only !eb_redirect; the replay paths were exposed once the predictor removed
+   // the taken-branch bubble ahead of the UART lb's devld_replay.)
    wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
-                                     && !sb_full && !lq_full && !eb_redirect && !lsu_dfault_v && !ill_v;
+                                     && !sb_full && !lq_full && !roll_v && !lsu_dfault_v && !ill_v;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
