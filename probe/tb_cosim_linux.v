@@ -27,13 +27,27 @@ module tb;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
    wire        rx_ready;
 
+   // Model the hardware's 3 Mbps serializer instead of an instant drain: a 10-bit
+   // frame at 66.67MHz is ~222 probe_clk cycles, so uart_tx_ready stays low that
+   // long after each accepted byte. THR then stays full between characters and
+   // THRE interrupts land while the kernel is BUSY -- the interrupt pacing the
+   // FPGA sees and a tied-high ready never exercises. (UART is hardwired 3Mbps.)
+   localparam TX_DRAIN = 222;
+   reg  [7:0]  txcnt = 8'd0;
+   wire        uart_tx_v;
+   wire        uart_tx_rdy = (txcnt == 8'd0);
+   always @(posedge clk)
+      if (reset)                     txcnt <= 8'd0;
+      else if (uart_tx_v & uart_tx_rdy) txcnt <= TX_DRAIN[7:0];
+      else if (txcnt != 8'd0)        txcnt <= txcnt - 8'd1;
+
    soc_top #(.RESET_PC(64'h8000_0000)) dut
      (.clk(clk), .reset(reset), .commit(commit),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
       .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready),
-      .uart_tx_ready(1'b1));
+      .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy));
 
    // behavioral DDR (DDR_BYTES, 4-cycle line latency). Modeled as a 512-bit LINE array (the
    // ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 -- which stays under
