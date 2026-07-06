@@ -800,7 +800,16 @@ module backend_top
    wire [3:0]       flt_cause = df_oldest ? lsu_dfault_cause : 4'd2;       // 2 = illegal instruction
    wire [AW-1:0]    flt_tval  = df_oldest ? lsu_dfault_tval  : {AW{1'b0}}; // mtval=0 for illegal
 
-   assign dflt_ready  = flt_v & ~iflt_fire;
+   // ~eb_redirect: a same-cycle EX redirect can come from an OLDER op whose checkpoint
+   // already committed -- a serialized CSR write counts at ISSUE, so its ckpt commits
+   // 1-2 cycles before its EX-time redirect (do_dxchg/do_satp/do_sfence) asserts. In
+   // that window `committed` reaches the faulting op's ckpt and a latched fault whose
+   // verdict is STALE (e.g. a store check-translated under pre-csrw sstatus.SUM=0)
+   // would deliver first (dflt_roll outranks eb below). Defer one cycle: an older
+   // redirect then squashes+clears the latch (lsu df_v rollback arm) and the refetched
+   // op re-translates; a younger redirect leaves the latch set and the fault delivers
+   // next cycle. Same guard devld_replay already carries.
+   assign dflt_ready  = flt_v & ~iflt_fire & ~eb_redirect;
    // already first in its bundle (no older siblings to commit) -> precise directly, no replay
    wire   dflt_solo   = (flt_seq == chk_seq[flt_ckpt]);
    assign dflt_replay = dflt_ready & ~dflt_solo & ~replay_v;   // phase 1 (mid-bundle fault only)
