@@ -341,7 +341,16 @@ module backend_top
    // instruction in an unmapped page past a fetch-window boundary. Let iflt fire (and clear
    // replay_v, below); else replay_v sticks (dflt_fire never comes) and blocks all faults.
    wire replay_to_iflt = replay_v & cc_empty & pend_iflt & ~lsu_dfault_v & ~ill_v;
-   assign iflt_fire = pend_iflt & cc_empty & (~replay_v | replay_to_iflt);
+   // ~any_valid: the fault must also wait out any UNDISPATCHED bundle at the rename
+   // boundary. Pre-predictor, a frontier fetch PC could only come from an executed
+   // redirect, so cc_empty alone proved the fault was for the true next PC. With the
+   // BTB, the frontier can be WRONG-PATH-BY-PREDICTION while the mispredicted branch
+   // -- whose redirect would drop this fault as stale -- is still sitting uncounted
+   // at the boundary; firing then delivers a phantom page fault at the wild predicted
+   // target (seen live: a stale VA/PA-aliased BTB entry sent fetch to 0x8000bf7c under
+   // Sv39 and the kernel took cause=12 at a bare-physical epc). Letting the bundle
+   // dispatch first either redirects (fault dropped) or drains to a genuine fire.
+   assign iflt_fire = pend_iflt & cc_empty & ~any_valid & (~replay_v | replay_to_iflt);
 
    wire [3:0]         dflt_cause;
    wire [63:0]        dflt_epc, dflt_tval;

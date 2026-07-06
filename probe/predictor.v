@@ -87,7 +87,16 @@ module predictor
    reg [PCW-1:0]  btb_qpc;                   // address the read was for
    initial begin btb_v = {NBTB{1'b0}}; btb_qv = 1'b0; btb_qpc = {PCW{1'b0}}; end
 
-   function [TAGW-1:0] btag(input [PCW-1:0] a); btag = a[BTBB+TAGW:BTBB+1]; endfunction
+   // Tag folds higher PC bits in (XOR) so addresses that agree in [20:1] but differ
+   // above still miss. Load-bearing across the paging transition: the kernel's
+   // pre-MMU execution at PA 0x802xxxxx aliases its post-MMU VAs 0xffffffff80xxxxxx
+   // in bits [20:1] exactly (the virtual-to-load offset is 2MB-aligned), so without
+   // the fold every early-boot-trained branch leaves a stale physical-target twin
+   // that hits under Sv39 and steers fetch to an unmapped bare address.
+   function [TAGW-1:0] btag(input [PCW-1:0] a);
+      btag = a[BTBB+TAGW:BTBB+1] ^ a[BTBB+2*TAGW:BTBB+TAGW+1]
+           ^ {{(TAGW-1){1'b0}}, a[63]};
+   endfunction
    function [BTBB-1:0] bidx(input [PCW-1:0] a); bidx = a[BTBB:1];           endfunction
 
    // ------------------------------------------------- speculative state {ghr,ras}
