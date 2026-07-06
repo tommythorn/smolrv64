@@ -154,11 +154,21 @@ module mmu
    // (started under SUM=0) completed after the refetch and its stale perm-fault
    // verdict (perm_fault uses the _q context, and a faulting walk fills no TLB)
    // was delivered against the now-legal refetched store: spurious cause-15,
-   // Ubuntu cosim divergence @111.6M. On mismatch the result drops and the walk
-   // reruns under the live context.
-   wire req_match = (va_q == req_vaddr) & (acc_q == req_access)
-                  & (prv_q == priv) & (sum_q == sum) & (mxr_q == mxr)
-                  & (satp_q == satp);
+   // Ubuntu cosim divergence @111.6M. On a poisoned result the walk reruns under
+   // the live context.
+   //
+   // The context compare is REGISTERED (ctx_poison), not part of the combinational
+   // req_match: t_ready feeds the fetch/LSU stall cones, and a 64-bit live satp
+   // equality there cost WNS -0.23/TNS -159 on the FPGA. The flop delays staleness
+   // detection by one cycle; the only exposure is a walk COMPLETING the very cycle
+   // after the CSR write's own EX edge, and that cycle is already covered by the
+   // squash-side guards (lsu df_set suppresses a same-cycle-rollback latch, and
+   // dflt_ready & ~eb_redirect defers delivery past an older redirect) -- the
+   // refetched op's re-request arrives many cycles after the pulse regardless.
+   reg ctx_poison;
+   initial ctx_poison = 1'b0;
+   wire ctx_stale = (prv_q != priv) | (sum_q != sum) | (mxr_q != mxr) | (satp_q != satp);
+   wire req_match = (va_q == req_vaddr) & (acc_q == req_access) & ~ctx_poison;
 
    // ---- combinational translation result ----
    // resolves this cycle on: Bare, non-canonical, a TLB hit, or a just-finished walk.
@@ -198,7 +208,7 @@ module mmu
          case (st)
            IDLE: if (start_walk) begin
               va_q<=req_vaddr; acc_q<=req_access; prv_q<=priv; sum_q<=sum; mxr_q<=mxr;
-              satp_q<=satp;
+              satp_q<=satp; ctx_poison<=1'b0;
               walk_ppn<=satp[43:0]; lvl<=2'd2; st<=REQ;
            end
            REQ: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
@@ -237,6 +247,10 @@ module mmu
               end
            end
          endcase
+         // context-staleness tracking (registered; see req_match). Runs every cycle
+         // except a walk start (whose fresh _q latch + poison clear wins), including
+         // the w_done presentation cycle after st has returned to IDLE.
+         if (!(st==IDLE && start_walk) && ctx_stale) ctx_poison <= 1'b1;
       end
    end
 endmodule
