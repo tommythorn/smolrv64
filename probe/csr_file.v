@@ -392,9 +392,19 @@ module csr_file
                           ( ((upd_addr==MSTATUS) & (((newms_m ^ mstatus) & MSTATUS_DXMASK) != 64'd0))
                           | ((upd_addr==SSTATUS) & (((newms_s ^ mstatus) & MSTATUS_DXMASK) != 64'd0)) );
 
+   // A satp WRITE redirects to fall-through: everything younger was FETCHED under the
+   // old translation. The kernel's relocate trick depends on this precisely: csrw satp
+   // with stvec pre-pointed at the VA continuation, expecting the NEXT sequential fetch
+   // to page-fault under the new satp -- no identity mapping, no sfence in between. A
+   // frontend that has already fetched past the csrw (easy at a ~3-cycle window supply)
+   // would otherwise execute those stale bare-fetched bytes instead of faulting. Same
+   // fall-through recipe as FS/MPRV; satp writes are context-switch-rare.
+   wire        do_satp  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
+                        & (upd_addr == SATP);
+
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg;
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp;
    assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
@@ -410,6 +420,7 @@ module csr_file
       else if (do_sfence)       redir_target = upd_pc + 64'd4;
       else if (do_fschg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else if (do_dxchg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
+      else if (do_satp)         redir_target = upd_pc + 64'd4;   // refetch under the new satp
       else                      redir_target = trap_tgt;
    end
 
