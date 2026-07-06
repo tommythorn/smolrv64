@@ -20,6 +20,9 @@ SIMMERV_LIB=$SIMMERV_DIR/target/release/libsimmerv_cosim.a
 SIMMERV_INC=$SIMMERV_DIR/cosim
 
 NAME=${NAME:-linux}
+THREADS=${THREADS:-1}   # verilator --threads. MEASURED 2026-07-06: 4 threads is ~2.4x SLOWER
+                        # (622s -> 1505s per 100M cyc; per-retire DPI + timing coroutines
+                        # partition badly). Streams bit-identical. Keep 1.
 MEM_LG2=${MEM_LG2:-28}
 W=../workloads/linux
 FW=${FW:-$W/fw_payload.bin}; DTB=${DTB:-$W/dts.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
@@ -50,7 +53,7 @@ PERFOPT=""; PERFSRC=""
 #   - the compile-time config (MEM_LG2 + VDEFS) differs from what's baked in, or
 #   - any source under probe/ or ../src/ is newer than the binary.
 # (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
-want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-}"
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-} THREADS=$THREADS"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
@@ -62,7 +65,7 @@ fi
 if [ "$need_build" = 1 ]; then
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
    echo "building obj_dir_cosim_${NAME}/tb_cosim_${NAME} (MEM_LG2=$MEM_LG2) ..."
-   verilator --binary --timing -j 0 -sv -Wall \
+   verilator --binary --timing -j 0 --threads $THREADS -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
