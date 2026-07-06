@@ -880,10 +880,22 @@ module backend_top
    // device-load solo window: set on the replay, cleared when a device load fires solo. (A
    // device load needing replay is, by construction, not firing this cycle, so the two never
    // collide; clear-first matches replay_v's shape.)
+   //
+   // ALSO cleared by any LATER rollback: the window is armed for a specific refetched
+   // load, and if that load gets squashed (a mispredict inside the window) no device
+   // load may ever fire again on the new path -- the window then latches FOREVER, and
+   // since irq_inject is gated ~devld_solo_v, ALL interrupt delivery is vetoed for the
+   // rest of time. Seen on FPGA: /init wedged on its first console write with the ILA
+   // showing UART src_level=1, PLIC pending[10]=1, seip=1 held, and the core never
+   // claiming -- the injected-pseudo-op path was permanently blocked. A cleared window
+   // re-arms cleanly: the (still-live) device load re-requests devld_replay when
+   // re-selected, and older work commits between arms, so no livelock. (~devld_replay
+   // excludes the ARMING pulse itself, which drives roll_v the same cycle.)
    always @(posedge clk) begin
-      if (reset)                  devld_solo_v <= 1'b0;
-      else if (lsu_devld_fire_v)  devld_solo_v <= 1'b0;
-      else if (devld_replay)      devld_solo_v <= 1'b1;
+      if (reset)                        devld_solo_v <= 1'b0;
+      else if (lsu_devld_fire_v)        devld_solo_v <= 1'b0;
+      else if (roll_v & ~devld_replay)  devld_solo_v <= 1'b0;
+      else if (devld_replay)            devld_solo_v <= 1'b1;
    end
 
    // unified redirect distribution. A fetch fault fires only when empty, so its rollback
