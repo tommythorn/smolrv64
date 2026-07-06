@@ -65,7 +65,9 @@ module plic #(parameter NSRC = 64)
    wire        do_claim = re & is_claim & has_irq;
    // a COMPLETE write (rearm gateway) for a nonzero source -- src-11's completes clear in_service[11]
    wire        complete_evt = we & is_claim & (wdata[5:0] != 6'd0);
-   assign      dbg = {complete_evt, do_claim, seip, in_service[11], pending[11], source_level[11], best_irq};
+   // dbg source index: 10 = UART THRE/RDA (the /init console-write wedge under
+   // investigation); was 11 (virtio-blk) during the root-mount-hang hunt.
+   assign      dbg = {complete_evt, do_claim, seip, in_service[10], pending[10], source_level[10], best_irq};
 
    // next pending = gateway set, minus the just-claimed source
    reg [63:0] n_pending;
