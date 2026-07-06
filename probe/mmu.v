@@ -132,6 +132,7 @@ module mmu
    reg [63:0] va_q;
    reg [1:0]  acc_q, prv_q;
    reg        sum_q, mxr_q;
+   reg [63:0] satp_q;
    // cause for the in-flight walk (access type was latched at start)
    wire [3:0] pf_cause_q = (acc_q == 2'd0) ? 4'd12 : (acc_q == 2'd1) ? 4'd13 : 4'd15;
    // registered result of a just-completed walk (presented for one cycle)
@@ -144,10 +145,20 @@ module mmu
 
    wire hit_perm_fault = perm_fault({56'd0, tlb_perm[tlb_idx]}, req_access, priv, sum, mxr);
 
-   // the in-flight (or just-finished) walk is for va_q; only honor its result when the
-   // current request still matches (a redirect can change req_vaddr mid-walk -> the stale
-   // walk must not be reported against the new request).
-   wire req_match = (va_q == req_vaddr);
+   // The in-flight (or just-finished) walk latched its whole CONTEXT (va, access,
+   // priv, SUM/MXR, satp) at start; only honor its result while the current request
+   // still matches ALL of it. Address alone is NOT enough: a serialized CSR write
+   // can change the translation context mid-walk while the redirect's REFETCHED op
+   // -- same instruction, same vaddr -- already holds the request. Observed: the
+   // kernel's uaccess `csrw sstatus(SUM=1); sd <user-va>` -- the squashed sd's walk
+   // (started under SUM=0) completed after the refetch and its stale perm-fault
+   // verdict (perm_fault uses the _q context, and a faulting walk fills no TLB)
+   // was delivered against the now-legal refetched store: spurious cause-15,
+   // Ubuntu cosim divergence @111.6M. On mismatch the result drops and the walk
+   // reruns under the live context.
+   wire req_match = (va_q == req_vaddr) & (acc_q == req_access)
+                  & (prv_q == priv) & (sum_q == sum) & (mxr_q == mxr)
+                  & (satp_q == satp);
 
    // ---- combinational translation result ----
    // resolves this cycle on: Bare, non-canonical, a TLB hit, or a just-finished walk.
@@ -187,6 +198,7 @@ module mmu
          case (st)
            IDLE: if (start_walk) begin
               va_q<=req_vaddr; acc_q<=req_access; prv_q<=priv; sum_q<=sum; mxr_q<=mxr;
+              satp_q<=satp;
               walk_ppn<=satp[43:0]; lvl<=2'd2; st<=REQ;
            end
            REQ: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
