@@ -95,6 +95,7 @@ module exec_shard
     output reg  [SEQW-1:0]         wb_seq,         // seqno of this writeback (cosim capture)
     // ---- EX: branch/jump resolution ----
     input  wire [63:0]             pred_npc,      // frontend's chosen next PC for this op's bundle
+                                                  // (RR-time value; compares precomputed at RR)
     output wire                    br_redirect,
     output wire [63:0]             br_target,
     output wire [63:0]             br_pc,         // PC of the redirecting op (debug: control-flow trace)
@@ -104,6 +105,8 @@ module exec_shard
     // resolve/training port (predictor): a genuine CTI resolved on this lane
     output wire                    res_v,
     output wire                    res_cbr,       // conditional branch (vs jump)
+    output wire                    res_call,      // jump with a link dest (rd in {x1,x5})
+    output wire                    res_ret,       // JALR return (rs1 link, rd not)
     output wire                    res_taken,     // resolved direction (jumps: 1)
     output wire [63:0]             res_tgt,       // resolved taken-target
     // ---- EX: LSU drive (aligned with agu/st_data) ----
@@ -182,6 +185,10 @@ module exec_shard
    reg              fp_dst32;             // in-flight op's result is FP32 -> NaN-box the writeback
    reg              ex_fs_off;            // this op executed with FS==Off -> suppress FP, it traps
    reg  [31:0]      ex_insn;
+   // mispredict compares precomputed at RR (both candidate next-PCs are payload-
+   // static for branches/JAL) -> the EX redirect bit is a mux, not a 64b compare.
+   reg              ex_mist, ex_misn;
+   reg  [63:0]      ex_pnpc;              // for the JALR-only EX-time compare
    always @(posedge clk) begin
       ex_fpv<=fp_v_d; ex_fpu<=fp_use_d; ex_fpcls<=fp_cls_d; ex_fpsrc<=fp_src_d; ex_fpdst<=fp_dst_d;
       ex_fprnd<=fp_rnd_d; ex_fpop<=fp_op_d; ex_fpmod<=fp_mod_d; ex_fpint<=fp_int_d;
@@ -198,6 +205,9 @@ module exec_shard
       ex_csr <= is_csr; ex_csrf <= csr_func; ex_ser <= is_serialize;
       ex_amor <= is_amo; ex_amof <= amo_func; ex_fencei <= is_fencei;
       ex_cbor <= is_cbo; ex_cbozr <= cbo_zero; ex_cbokr <= cbo_keep;
+      ex_mist <= ((pc + imm) != pred_npc);
+      ex_misn <= ((pc + (is_rvc ? 64'd2 : 64'd4)) != pred_npc);
+      ex_pnpc <= pred_npc;
    end
 
    // ============================== EX stage ==============================
@@ -389,13 +399,19 @@ module exec_shard
    branch_unit bu
      (.is_branch(ex_br), .is_jump(ex_jmp), .is_jalr(ex_jmp & ex_o2i), .is_rvc(ex_rvc),
       .br_func(ex_bf), .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr), .pred_npc(pred_npc),
+      .pc(ex_pc), .imm(ex_imm), .agu_addr(agu_addr),
+      .mis_taken(ex_mist), .mis_nt(ex_misn), .pred_npc(ex_pnpc),
       .redirect(bu_redirect), .target(bu_target),
       .taken_o(bu_taken), .taken_tgt(bu_taken_tgt));
    // predictor training: every genuinely-executing CTI (redirecting or not);
-   // wrong-path ops killed by a squash in flight must not train.
+   // wrong-path ops killed by a squash in flight must not train. Call/return
+   // class comes from the executed (RVC-expanded) instruction bytes here, OFF
+   // the fetch critical path -- the predictor stores it in the BTB type.
+   function islink(input [4:0] r); islink = (r == 5'd1) || (r == 5'd5); endfunction
    assign res_v     = ex_v & (ex_br | ex_jmp) & ~ex_squash;
    assign res_cbr   = ex_br;
+   assign res_call  = ex_jmp & islink(ex_insn[11:7]);
+   assign res_ret   = ex_jmp & ex_o2i & ~islink(ex_insn[11:7]) & islink(ex_insn[19:15]);
    assign res_taken = bu_taken;
    assign res_tgt   = bu_taken_tgt;
    // FENCE.I redirects to its fall-through (pc+4) once it issues -- and it issues only when

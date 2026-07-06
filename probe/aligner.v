@@ -36,7 +36,9 @@ module aligner
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
     output wire [IW*SEQW-1:0]      seq,
-    output wire [$clog2(HW+2)-1:0] consumed);
+    output wire [$clog2(HW+2)-1:0] consumed,
+    output wire                    br_term);  // bundle ends on a genuine branch/jump (not a
+                                              // window cut or a SYSTEM/AMO/FENCE terminator)
 
    localparam PBW = $clog2(HW+2);        // holds a position 0..HW (+1 for lookahead)
 
@@ -71,11 +73,33 @@ module aligner
       endcase
    endfunction
 
+   // Genuine branch/jump (the ops branch_unit's actual_npc != pred_npc compare
+   // covers). The predictor may only steer fetch off a bundle ending in one of
+   // these: a prediction on any other bundle shape (a stale BTB entry over
+   // changed code, a SYSTEM/AMO/FENCE terminator, C.EBREAK) would have NO
+   // corrective compare at execute and the wrong path would retire.
+   function is_br(input [15:0] h0);
+      if (h0[1:0] == 2'b11)
+         is_br = (h0[6:0] == 7'b1100011)    // BRANCH
+               | (h0[6:0] == 7'b1101111)    // JAL
+               | (h0[6:0] == 7'b1100111);   // JALR
+      else case (h0[1:0])
+         2'b01:   is_br = (h0[15:13] == 3'b101)    // C.J
+                        | (h0[15:13] == 3'b110)    // C.BEQZ
+                        | (h0[15:13] == 3'b111);   // C.BNEZ
+         2'b10:   is_br = (h0[15:13] == 3'b100)    // C.JR / C.JALR
+                        & (h0[6:2] == 5'd0)
+                        & (h0[11:7] != 5'd0);      // rs1==0 is C.EBREAK
+         default: is_br = 1'b0;
+      endcase
+   endfunction
+
    reg  [IW-1:0]    v;
    reg  [31:0]      ir   [0:IW-1];
    reg  [PCW-1:0]   pcv  [0:IW-1];
    reg  [SEQW-1:0]  sqv  [0:IW-1];
    reg  [PBW-1:0]   cons;
+   reg              bt;
 
    integer k;
    reg [PBW-1:0] pos;
@@ -87,6 +111,7 @@ module aligner
    always @(hwin or avail or base_pc or base_seq or solo_all) begin
       pos = 0;
       run = 1'b1;
+      bt  = 1'b0;
       for (k = 0; k < IW; k = k + 1) begin
          h0   = hwr(pos);
          is32 = (h0[1:0] == 2'b11);
@@ -110,6 +135,7 @@ module aligner
             if (v[k]) begin
                pos = pos + (is32 ? 2'd2 : 2'd1);
                if (is_cti(h0)) run = 1'b0;  // CTI / SYSTEM / FENCE ends the bundle (youngest)
+               if (is_br(h0))  bt  = 1'b1;  // ... and it is a real branch/jump (is_br implies is_cti)
             end else run = 1'b0;               // prefix: stop at first that doesn't fit
          end
       end
@@ -126,6 +152,7 @@ module aligner
    endgenerate
    assign valid    = v;
    assign consumed = cons;
+   assign br_term  = bt;
 endmodule
 
 `default_nettype wire

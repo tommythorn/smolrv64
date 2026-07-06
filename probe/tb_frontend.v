@@ -36,7 +36,7 @@ module tb;
       .imem_avail(imem_avail), .accept(accept),
       .create(create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
-      .res_v(1'b0), .res_cbr(1'b0), .res_taken(1'b0),
+      .res_v(1'b0), .res_cbr(1'b0), .res_call(1'b0), .res_ret(1'b0), .res_taken(1'b0),
       .res_ckpt(2'd0), .res_tgt(64'd0), .res_rep(1'b0),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .pdst(pdst),

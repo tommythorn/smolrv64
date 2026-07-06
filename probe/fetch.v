@@ -60,6 +60,9 @@ module fetch
     input  wire [PCW-1:0]          pred_tgt,
     output wire [PCW-1:0]          npc,
     output wire [PCW-1:0]          pred_npc,
+    output wire [PCW-1:0]          ft_npc,      // presented bundle's fall-through (RAS ret addr)
+    output wire                    br_term,     // presented bundle ends on a real branch/jump
+                                                // (prediction is only safe on such bundles)
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
@@ -104,10 +107,15 @@ module fetch
    wire [IW*32-1:0]  al_inst;
    wire [IW*PCW-1:0] al_pc;
    wire [IW*SEQW-1:0] al_seq;
+   wire al_br_term;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(eff_avail), .base_pc(pc_q), .base_seq(seq_q),
       .solo_all(solo_all),
-      .valid(al_valid), .inst(al_inst), .pc(al_pc), .seq(al_seq), .consumed(al_consumed));
+      .valid(al_valid), .inst(al_inst), .pc(al_pc), .seq(al_seq), .consumed(al_consumed),
+      .br_term(al_br_term));
+   // straddle/irq bundles bypass the aligner: never predict on them (the straddle
+   // FSM owns its +4 advance; the pseudo-op holds PC).
+   assign br_term = al_br_term & ~strad & ~irq_inject;
 
    // slot-0 page-boundary straddler: pc_q at the last halfword, a 32-bit op (low2==11),
    // and that low halfword actually present (an I$ hit). The aligner excludes it (the
@@ -142,14 +150,19 @@ module fetch
    // normal-path advance: predicted-taken CTI -> target, else fall-through. The
    // straddle/irq arms of the advance chain come first, so pred_v is naturally
    // ignored there (the straddle FSM owns its +4; the pseudo-op holds PC).
-   wire [PCW-1:0] ft_npc   = pc_q + {{(PCW-PBW-1){1'b0}}, al_consumed, 1'b0};  // += 2*consumed
+   assign         ft_npc   = pc_q + {{(PCW-PBW-1){1'b0}}, al_consumed, 1'b0};  // += 2*consumed
    wire [PCW-1:0] norm_npc = pred_v ? pred_tgt : ft_npc;
    // the presented bundle's chosen next PC (mispredict reference at execute)
    assign pred_npc = irq_inject ? pc_q
                    : strad      ? (pc_q + 64'd4)
                    :              norm_npc;
    // computed next PC, mirroring the advance chain's priorities exactly -- this
-   // is the predictor's BTB read address (registered there, rule A1).
+   // is the predictor's BTB read address (registered there, rule A1). The
+   // redirect arm MUST be included: without it the first bundle at a redirect
+   // target never gets a valid BTB read, and a hot loop re-entered by its own
+   // mispredict never re-engages prediction (perpetual mispredict). Only
+   // npc[8:1] reaches the BTB address pins (synthesis slices the mux), so the
+   // redirect cone's contribution here is a few address bits, not a 64-bit bus.
    assign npc = reset        ? RESET_PC
               : redirect     ? redirect_pc
               : irq_inject   ? pc_q

@@ -13,12 +13,16 @@ module tb;
 
    // pred_npc = fall-through (a never-predicting frontend): the redirect/target
    // expectations below are exactly the old (is_branch & taken) | is_jump ones.
-   wire [63:0] pred_npc = pc + 64'd4;
+   // mis_taken/mis_nt arrive precomputed (RR-time in the real pipe).
+   wire [63:0] pred_npc  = pc + 64'd4;
+   wire        mis_taken = (pc + imm) != pred_npc;
+   wire        mis_nt    = (pc + 64'd4) != pred_npc;
    branch_unit dut
      (.is_branch(is_branch), .is_jump(is_jump), .is_jalr(is_jalr), .is_rvc(1'b0),
       .br_func(br_func),
       .cmp_eq(cmp_eq), .cmp_lt(cmp_lt), .cmp_ltu(cmp_ltu),
-      .pc(pc), .imm(imm), .agu_addr(agu_addr), .pred_npc(pred_npc),
+      .pc(pc), .imm(imm), .agu_addr(agu_addr),
+      .mis_taken(mis_taken), .mis_nt(mis_nt), .pred_npc(pred_npc),
       .redirect(redirect), .target(target), .taken_o(), .taken_tgt());
 
    task chk(input [127:0] nm, input er, input [63:0] et);

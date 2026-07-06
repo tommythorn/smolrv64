@@ -54,6 +54,8 @@ module frontend
     // branch resolve/training port (EX domain; oldest resolved CTI this cycle)
     input  wire                    res_v,
     input  wire                    res_cbr,
+    input  wire                    res_call,
+    input  wire                    res_ret,
     input  wire                    res_taken,
     input  wire [CBITS-1:0]        res_ckpt,
     input  wire [PCW-1:0]          res_tgt,
@@ -80,28 +82,30 @@ module frontend
    wire [IW*PCW-1:0]  f_pc;
    wire [IW*SEQW-1:0] f_seq;
    wire               f_valid;
-   wire               bp_v;
-   wire [PCW-1:0]     bp_tgt, f_npc, f_pnpc;
+   wire               bp_v, f_brt;
+   wire [PCW-1:0]     bp_tgt, f_npc, f_pnpc, f_ftn;
 
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .solo_all(solo_all), .irq_inject(irq_inject),
-      .pred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .pred_npc(f_pnpc),
+      .pred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .pred_npc(f_pnpc), .ft_npc(f_ftn),
+      .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
       .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
 
-   // branch predictor: taps the presented bundle + the checkpoint wires the
-   // renamer already consumes (create/cur/rollback/rollback_idx); trains on the
-   // resolve port threaded up from branch_unit. imem_ipc = pc_q = bundle base.
-   predictor #(.IW(IW), .PCW(PCW), .CBITS(CBITS), .NCHK(NCHK)) u_bp
+   // branch predictor: predicts from registered BTB/RAS state only (no byte
+   // inspection -- CTI class is trained at resolve), on the checkpoint wires the
+   // renamer already consumes (create/cur/rollback/rollback_idx). imem_ipc =
+   // pc_q = bundle base; ft_npc doubles as the call return address.
+   predictor #(.PCW(PCW), .CBITS(CBITS), .NCHK(NCHK)) u_bp
      (.clk(clk), .reset(reset),
-      .npc(f_npc), .fire(accept & f_valid), .base_pc(imem_ipc),
-      .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc),
+      .npc(f_npc), .fire(accept & f_valid), .base_pc(imem_ipc), .ft_npc(f_ftn),
+      .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
       .create(create), .cur(cur), .rollback(rollback), .rollback_idx(rollback_idx),
-      .res_v(res_v), .res_cbr(res_cbr), .res_taken(res_taken),
-      .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep));
+      .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
+      .res_taken(res_taken), .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep));
 
    decode_rename #(.IW(IW), .SEQW(SEQW), .ABITS(ABITS), .AREGS(AREGS),
                    .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR(HPTR),

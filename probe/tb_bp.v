@@ -17,8 +17,9 @@
 // (every mispredict rollback restored the map/GHR/RAS correctly); (b) the total
 // redirect count collapses: unpredicted this program redirects >= 21 times (19
 // taken bne + call + ret + park...); with the BTB+RAS working it is the cold
-// bne, the loop exit, the cold call, the cold park -- ret predicts via RAS from
-// day one. Budget <= 6 (some slack for weak-counter warmup).
+// bne (twice: entry bundle + loop-head bundle are different BTB entries), the
+// loop exit, the cold call, the cold ret (one TY_RET training pass -- class
+// lives in the BTB now, not the bytes), the cold park. Budget <= 7.
 module tb;
    localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
 
@@ -68,7 +69,7 @@ module tb;
       end
 
       if (!saw120) begin $display("FAIL: x28=120 never written (loop count wrong / squash broke arch state)"); errs=errs+1; end
-      if (redirs > 6)  begin $display("FAIL: %0d redirects -- predictor not engaging (unpredicted would be >=21)", redirs); errs=errs+1; end
+      if (redirs > 7)  begin $display("FAIL: %0d redirects -- predictor not engaging (unpredicted would be >=21)", redirs); errs=errs+1; end
       if (redirs == 0) begin $display("FAIL: zero redirects -- test not exercising resolution at all"); errs=errs+1; end
 
       if (errs==0) $display("bp: ALL TESTS PASSED (%0d redirects for 19 taken branches + call/ret/park)", redirs);

@@ -78,6 +78,8 @@ module exec_bundle
     // oldest genuinely-resolved CTI this cycle -> predictor training/repair
     output reg                     res_v,
     output reg                     res_cbr,
+    output reg                     res_call,
+    output reg                     res_ret,
     output reg                     res_taken,
     output reg  [CBITS-1:0]        res_ckpt,
     output reg  [63:0]             res_tgt,
@@ -126,7 +128,7 @@ module exec_bundle
    wire [SHARDS*CBITS-1:0] brc;          // EX-stage ckpt of each shard (for redirect)
    wire [SHARDS-1:0]       brtr;         // per-shard "redirect is a trap"
    wire [SHARDS-1:0]       rsv;          // per-shard resolved-CTI (predictor training)
-   wire [SHARDS-1:0]       rscb, rstk;
+   wire [SHARDS-1:0]       rscb, rstk, rscl, rsrt;
    wire [SHARDS*64-1:0]    rstg;
 
    // dispatch-time pred_npc, indexed by checkpoint (written >=2 cycles before any
@@ -213,11 +215,12 @@ module exec_bundle
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
          .wb_seq(wbsq[i*SEQW +: SEQW]),
-         .pred_npc(pnpc[brc[i*CBITS +: CBITS]]),
+         .pred_npc(pnpc[iss_ckpt[i*CBITS +: CBITS]]),   // RR-time read (compares flop into EX)
          .br_redirect(brd[i]), .br_target(brt[i*64 +: 64]), .br_pc(brp[i*64 +: 64]),
          .fencei_redir_o(fnci[i]), .br_seq(brs[i*SEQW +: SEQW]),
          .br_is_trap(brtr[i]),
-         .res_v(rsv[i]), .res_cbr(rscb[i]), .res_taken(rstk[i]), .res_tgt(rstg[i*64 +: 64]),
+         .res_v(rsv[i]), .res_cbr(rscb[i]), .res_call(rscl[i]), .res_ret(rsrt[i]),
+         .res_taken(rstk[i]), .res_tgt(rstg[i*64 +: 64]),
          .ex_valid(ex_valid[i]), .ex_seq(ex_seq[i*SEQW +: SEQW]), .ex_ckpt(brc[i*CBITS +: CBITS]),
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),
          .ex_fp(ex_fp[i]), .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
@@ -302,12 +305,15 @@ module exec_bundle
    integer rj;
    reg [SEQW-1:0] res_seq;
    always @* begin
-      res_v = 1'b0; res_cbr = 1'b0; res_taken = 1'b0; res_mispred = 1'b0;
+      res_v = 1'b0; res_cbr = 1'b0; res_call = 1'b0; res_ret = 1'b0;
+      res_taken = 1'b0; res_mispred = 1'b0;
       res_ckpt = {CBITS{1'b0}}; res_tgt = 64'd0; res_seq = {SEQW{1'b0}};
       for (rj = 0; rj < SHARDS; rj = rj + 1)
          if (rsv[rj] && (!res_v || $signed(brs[rj*SEQW +: SEQW] - res_seq) < 0)) begin
             res_v     = 1'b1;
             res_cbr   = rscb[rj];
+            res_call  = rscl[rj];
+            res_ret   = rsrt[rj];
             res_taken = rstk[rj];
             res_ckpt  = brc[rj*CBITS +: CBITS];
             res_tgt   = rstg[rj*64 +: 64];

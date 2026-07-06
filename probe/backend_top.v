@@ -126,7 +126,7 @@ module backend_top
    assign redirect        = fe_red_v;
    assign redirect_target = fe_red_pc;
    // predictor resolve/training port (exec_bundle -> frontend) + GHR repair strobe
-   wire               eb_res_v, eb_res_cbr, eb_res_taken, eb_res_mispred;
+   wire               eb_res_v, eb_res_cbr, eb_res_call, eb_res_ret, eb_res_taken, eb_res_mispred;
    wire [CBITS-1:0]   eb_res_ckpt;
    wire [63:0]        eb_res_tgt;
    wire               bp_rep;
@@ -363,7 +363,8 @@ module backend_top
       .accept(accept),
       .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
-      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_taken(eb_res_taken),
+      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_call(eb_res_call), .res_ret(eb_res_ret),
+      .res_taken(eb_res_taken),
       .res_ckpt(eb_res_ckpt), .res_tgt(eb_res_tgt), .res_rep(bp_rep),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst),
@@ -602,7 +603,8 @@ module backend_top
       .agu_addr(eb_agu), .st_data(eb_stdata),
       .ex_amo(eb_amo), .ex_amo_func(eb_amo_func), .ex_amo_pdst(eb_amo_pdst),
       .disp_v(disp_fire), .disp_ckpt(r_ckpt), .disp_pnpc(fe_pred_npc),
-      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_taken(eb_res_taken),
+      .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_call(eb_res_call), .res_ret(eb_res_ret),
+      .res_taken(eb_res_taken),
       .res_ckpt(eb_res_ckpt), .res_tgt(eb_res_tgt), .res_mispred(eb_res_mispred),
       .redirect(eb_redirect), .redirect_target(eb_target),
       .redirect_seq(eb_rseq), .redirect_ckpt(eb_rckpt), .redirect_is_trap(eb_rtrap),
