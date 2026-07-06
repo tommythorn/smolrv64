@@ -95,7 +95,20 @@ module virtio_mmio #(
    reg [63:0] queue1_device_q;
 
    wire [11:0] reg_addr = address & 12'hffc;
-   wire       write_word = write && &byteenable;
+   // WRITE path pipelined one cycle: the CDC bridge's registered address travels a
+   // long route to this decode, and the address->CE cone (queue*_q clock enables)
+   // was a chronic -0.003ns setup endpoint. Writes are posted through the bridge
+   // with multi-cycle turnaround, so applying them one clock later is invisible
+   // (a subsequent read of the written register arrives several cycles after).
+   // READS stay on the live address -- the read mux was not the failing cone.
+   reg  [11:0] wr_addr_q;
+   reg  [31:0] wr_data_q;
+   reg         wr_word_q;
+   always @(posedge clock) begin
+      wr_addr_q <= address & 12'hffc;
+      wr_data_q <= write_data;
+      wr_word_q <= write && (&byteenable) && !reset;
+   end
    wire       queue0_selected = queue_sel == 32'd0 && QUEUE_COUNT >= 32'd1;
    wire       queue1_selected = queue_sel == 32'd1 && QUEUE_COUNT >= 32'd2;
    wire       active_queue_selected = queue0_selected || queue1_selected;
@@ -185,37 +198,37 @@ module virtio_mmio #(
          if (config_change_interrupt)
             interrupt_status[1] <= 1'b1;
 
-         if (write_word) begin
-            case (reg_addr)
-              REG_DEVICE_FEAT_SEL: device_features_sel <= write_data;
-              REG_DRIVER_FEAT_SEL: driver_features_sel <= write_data;
+         if (wr_word_q) begin
+            case (wr_addr_q)
+              REG_DEVICE_FEAT_SEL: device_features_sel <= wr_data_q;
+              REG_DRIVER_FEAT_SEL: driver_features_sel <= wr_data_q;
               REG_DRIVER_FEATURES: begin
                  if (driver_features_sel == 32'd0)
-                    driver_features_0 <= write_data;
+                    driver_features_0 <= wr_data_q;
                  else if (driver_features_sel == 32'd1)
-                    driver_features_1 <= write_data;
+                    driver_features_1 <= wr_data_q;
               end
-              REG_QUEUE_SEL: queue_sel <= write_data;
+              REG_QUEUE_SEL: queue_sel <= wr_data_q;
               REG_QUEUE_NUM: begin
                  if (queue0_selected)
-                    queue0_num_q <= write_data;
+                    queue0_num_q <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_num_q <= write_data;
+                    queue1_num_q <= wr_data_q;
               end
               REG_QUEUE_READY: begin
                  if (queue0_selected)
-                    queue0_ready_q <= write_data[0];
+                    queue0_ready_q <= wr_data_q[0];
                  else if (queue1_selected)
-                    queue1_ready_q <= write_data[0];
+                    queue1_ready_q <= wr_data_q[0];
               end
               REG_QUEUE_NOTIFY: begin
                  queue_notify_pulse <= 1'b1;
-                 queue_notify_value <= write_data;
+                 queue_notify_value <= wr_data_q;
               end
-              REG_INTERRUPT_ACK: interrupt_status <= interrupt_status & ~write_data[1:0];
+              REG_INTERRUPT_ACK: interrupt_status <= interrupt_status & ~wr_data_q[1:0];
               REG_STATUS: begin
-                 device_status <= write_data[7:0];
-                 if (write_data[7:0] == 8'd0) begin
+                 device_status <= wr_data_q[7:0];
+                 if (wr_data_q[7:0] == 8'd0) begin
                     driver_features_0 <= 32'd0;
                     driver_features_1 <= 32'd0;
                     queue_sel <= 32'd0;
@@ -234,39 +247,39 @@ module virtio_mmio #(
               end
               REG_QUEUE_DESC_LOW: begin
                  if (queue0_selected)
-                    queue0_desc_q[31:0] <= write_data;
+                    queue0_desc_q[31:0] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_desc_q[31:0] <= write_data;
+                    queue1_desc_q[31:0] <= wr_data_q;
               end
               REG_QUEUE_DESC_HIGH: begin
                  if (queue0_selected)
-                    queue0_desc_q[63:32] <= write_data;
+                    queue0_desc_q[63:32] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_desc_q[63:32] <= write_data;
+                    queue1_desc_q[63:32] <= wr_data_q;
               end
               REG_QUEUE_AVAIL_LOW: begin
                  if (queue0_selected)
-                    queue0_driver_q[31:0] <= write_data;
+                    queue0_driver_q[31:0] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_driver_q[31:0] <= write_data;
+                    queue1_driver_q[31:0] <= wr_data_q;
               end
               REG_QUEUE_AVAIL_HIGH: begin
                  if (queue0_selected)
-                    queue0_driver_q[63:32] <= write_data;
+                    queue0_driver_q[63:32] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_driver_q[63:32] <= write_data;
+                    queue1_driver_q[63:32] <= wr_data_q;
               end
               REG_QUEUE_USED_LOW: begin
                  if (queue0_selected)
-                    queue0_device_q[31:0] <= write_data;
+                    queue0_device_q[31:0] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_device_q[31:0] <= write_data;
+                    queue1_device_q[31:0] <= wr_data_q;
               end
               REG_QUEUE_USED_HIGH: begin
                  if (queue0_selected)
-                    queue0_device_q[63:32] <= write_data;
+                    queue0_device_q[63:32] <= wr_data_q;
                  else if (queue1_selected)
-                    queue1_device_q[63:32] <= write_data;
+                    queue1_device_q[63:32] <= wr_data_q;
               end
               default: begin
               end

@@ -264,6 +264,36 @@ module virtio_net #(
    wire [15:0] avail_slot = last_avail_idx & ring_mask;
    wire [15:0] used_slot  = used_idx & ring_mask;
 
+   /* Registered queue-base copies + a precomputed range check. The bases arrive
+    * from virtio_mmio's registers over a long route, and a DMA address used to be
+    * base + ring offset through a 64b carry chain AND a 33b magnitude compare in
+    * the dma_cmd_addr cycle -- the chronic -0.003ns setup endpoint
+    * (queue1_device_q -> dma_cmd_addr). Bases only change during queue setup
+    * (before queue_ready; MMIO writes are many cycles apart through the CDC
+    * bridge), so 1-cycle-stale copies are safe. The check matches the tasks'
+    * addr[63:31] <= 1 clamp exactly, except it also requires the base below the
+    * top 4 KiB of the 2 GiB window so no ring offset (< 4 KiB) can carry out of
+    * bit 30 -- a ring up there couldn't fit anyway. Descriptor-sourced buffer
+    * addresses (desc_addr/rx_waddr, locally registered from DMA data) keep the
+    * inline clamp in the 64b tasks. */
+   reg  [30:0] txq_drv_b, txq_desc_b, txq_dev_b, rxq_drv_b, rxq_desc_b, rxq_dev_b;
+   reg         txq_drv_ok, txq_desc_ok, txq_dev_ok, rxq_drv_ok, rxq_desc_ok, rxq_dev_ok;
+   localparam [30:0] BASE_MAX = 31'h7FFF_F000;   // 2 GiB - 4 KiB
+   always @(posedge clock) begin
+      txq_drv_b   <= tx_queue_driver[30:0];
+      txq_desc_b  <= tx_queue_desc[30:0];
+      txq_dev_b   <= tx_queue_device[30:0];
+      rxq_drv_b   <= rx_queue_driver[30:0];
+      rxq_desc_b  <= rx_queue_desc[30:0];
+      rxq_dev_b   <= rx_queue_device[30:0];
+      txq_drv_ok  <= (tx_queue_driver[63:32] == 32'd0) && (tx_queue_driver[30:0] <= BASE_MAX);
+      txq_desc_ok <= (tx_queue_desc[63:32]   == 32'd0) && (tx_queue_desc[30:0]   <= BASE_MAX);
+      txq_dev_ok  <= (tx_queue_device[63:32] == 32'd0) && (tx_queue_device[30:0] <= BASE_MAX);
+      rxq_drv_ok  <= (rx_queue_driver[63:32] == 32'd0) && (rx_queue_driver[30:0] <= BASE_MAX);
+      rxq_desc_ok <= (rx_queue_desc[63:32]   == 32'd0) && (rx_queue_desc[30:0]   <= BASE_MAX);
+      rxq_dev_ok  <= (rx_queue_device[63:32] == 32'd0) && (rx_queue_device[30:0] <= BASE_MAX);
+   end
+
    assign debug_status = {device_status, 14'd0, rx_frame_valid, notify_pending,
                           tx_queue_configured, driver_ok, state};
    assign debug_notify_count = notify_count;
@@ -288,6 +318,35 @@ module virtio_net #(
          dma_cmd_addr <= addr[63:31] <= 33'd1 ? addr[30:0] : 31'd0;
          dma_cmd_wdata <= 64'd0;
          dma_cmd_wstrb <= 8'd0;
+      end
+   endtask
+
+   // pre-checked-base variants: the range clamp was resolved at base-register
+   // time (see *_ok above), so dma_cmd_addr sees only a 31-bit add + a 2:1 mux
+   // on a registered select -- no 64b carry chain, no magnitude compare.
+   task start_read31;
+      input        ok;
+      input [30:0] a31;
+      begin
+         dma_cmd_valid <= 1'b1;
+         dma_cmd_write <= 1'b0;
+         dma_cmd_addr <= ok ? a31 : 31'd0;
+         dma_cmd_wdata <= 64'd0;
+         dma_cmd_wstrb <= 8'd0;
+      end
+   endtask
+
+   task start_write31;
+      input        ok;
+      input [30:0] a31;
+      input [63:0] data;
+      input [7:0]  strobe;
+      begin
+         dma_cmd_valid <= 1'b1;
+         dma_cmd_write <= 1'b1;
+         dma_cmd_addr <= ok ? a31 : 31'd0;
+         dma_cmd_wdata <= data;
+         dma_cmd_wstrb <= strobe;
       end
    endtask
 
@@ -369,7 +428,7 @@ module virtio_net #(
 
            S_READ_AVAIL: begin
               if (dma_cmd_ready) begin
-                 start_read64(tx_queue_driver);
+                 start_read31(txq_drv_ok, txq_drv_b);
                  state <= S_WAIT_AVAIL;
               end
            end
@@ -406,7 +465,7 @@ module virtio_net #(
 
            S_READ_RING: begin
               if (dma_cmd_ready) begin
-                 start_read64(tx_queue_driver + 64'd4 + {47'd0, avail_slot, 1'b0});
+                 start_read31(txq_drv_ok, txq_drv_b + 31'd4 + {14'd0, avail_slot, 1'b0});
                  state <= S_WAIT_RING;
               end
            end
@@ -434,7 +493,7 @@ module virtio_net #(
            // (hdr 8..11 in the low 4), and later words are 8 frame bytes each.
            S_DESC_A: begin
               if (dma_cmd_ready) begin
-                 start_read64(tx_queue_desc + {44'd0, head_desc, 4'd0});
+                 start_read31(txq_desc_ok, txq_desc_b + {11'd0, head_desc, 4'd0});
                  state <= S_WAIT_DESC_A;
               end
            end
@@ -447,7 +506,7 @@ module virtio_net #(
            end
            S_DESC_B: begin
               if (dma_cmd_ready) begin
-                 start_read64(tx_queue_desc + {44'd0, head_desc, 4'd0} + 64'd8);
+                 start_read31(txq_desc_ok, txq_desc_b + {11'd0, head_desc, 4'd0} + 31'd8);
                  state <= S_WAIT_DESC_B;
               end
            end
@@ -524,7 +583,7 @@ module virtio_net #(
 
            S_WRITE_USED_ID: begin
               if (dma_cmd_ready) begin
-                 start_write(tx_queue_device + 64'd4 + {45'd0, used_slot, 3'd0},
+                 start_write31(txq_dev_ok, txq_dev_b + 31'd4 + {12'd0, used_slot, 3'd0},
                              write_shift({48'd0, head_desc}, (tx_queue_device[2:0] + 3'd4) & 3'h7),
                              write_strobe((tx_queue_device[2:0] + 3'd4) & 3'h7, 4'd4));
                  state <= S_WAIT_USED_ID;
@@ -540,7 +599,7 @@ module virtio_net #(
 
            S_WRITE_USED_LEN: begin
               if (dma_cmd_ready) begin
-                 start_write(tx_queue_device + 64'd8 + {45'd0, used_slot, 3'd0},
+                 start_write31(txq_dev_ok, txq_dev_b + 31'd8 + {12'd0, used_slot, 3'd0},
                              write_shift(64'd0, tx_queue_device[2:0]),
                              write_strobe(tx_queue_device[2:0], 4'd4));
                  state <= S_WAIT_USED_LEN;
@@ -556,7 +615,7 @@ module virtio_net #(
 
            S_WRITE_USED_IDX: begin
               if (dma_cmd_ready) begin
-                 start_write(tx_queue_device,
+                 start_write31(txq_dev_ok, txq_dev_b,
                              write_shift({32'd0, used_idx + 16'd1, 16'd0}, tx_queue_device[2:0]),
                              write_strobe(tx_queue_device[2:0], 4'd4));
                  state <= S_WAIT_USED_IDX;
@@ -589,7 +648,7 @@ module virtio_net #(
            // ---- RX delivery (queue 0): take a buffer, DMA hdr+frame in -----
            S_RX_AVAIL: begin
               if (dma_cmd_ready) begin
-                 start_read64(rx_queue_driver);          // avail flags+idx
+                 start_read31(rxq_drv_ok, rxq_drv_b);          // avail flags+idx
                  state <= S_RX_WAIT_AVAIL;
               end
            end
@@ -606,7 +665,7 @@ module virtio_net #(
            end
            S_RX_RING: begin
               if (dma_cmd_ready) begin
-                 start_read64(rx_queue_driver + 64'd4 + {47'd0, rx_avail_slot, 1'b0});
+                 start_read31(rxq_drv_ok, rxq_drv_b + 31'd4 + {14'd0, rx_avail_slot, 1'b0});
                  state <= S_RX_WAIT_RING;
               end
            end
@@ -621,7 +680,7 @@ module virtio_net #(
            end
            S_RX_DESC: begin
               if (dma_cmd_ready) begin
-                 start_read64(rx_queue_desc + {44'd0, rx_head_desc, 4'd0});
+                 start_read31(rxq_desc_ok, rxq_desc_b + {11'd0, rx_head_desc, 4'd0});
                  state <= S_RX_WAIT_DESC;
               end
            end
@@ -660,7 +719,7 @@ module virtio_net #(
            end
            S_RX_USED_ID: begin
               if (dma_cmd_ready) begin
-                 start_write(rx_queue_device + 64'd4 + {45'd0, rx_used_slot, 3'd0},
+                 start_write31(rxq_dev_ok, rxq_dev_b + 31'd4 + {12'd0, rx_used_slot, 3'd0},
                              write_shift({48'd0, rx_head_desc}, (rx_queue_device[2:0] + 3'd4) & 3'h7),
                              write_strobe((rx_queue_device[2:0] + 3'd4) & 3'h7, 4'd4));
                  state <= S_RX_WAIT_USED_ID;
@@ -674,7 +733,7 @@ module virtio_net #(
            end
            S_RX_USED_LEN: begin
               if (dma_cmd_ready) begin
-                 start_write(rx_queue_device + 64'd8 + {45'd0, rx_used_slot, 3'd0},
+                 start_write31(rxq_dev_ok, rxq_dev_b + 31'd8 + {12'd0, rx_used_slot, 3'd0},
                              write_shift({53'd0, rx_total}, rx_queue_device[2:0]),
                              write_strobe(rx_queue_device[2:0], 4'd4));
                  state <= S_RX_WAIT_USED_LEN;
@@ -688,7 +747,7 @@ module virtio_net #(
            end
            S_RX_USED_IDX: begin
               if (dma_cmd_ready) begin
-                 start_write(rx_queue_device,
+                 start_write31(rxq_dev_ok, rxq_dev_b,
                              write_shift({32'd0, rx_used_idx + 16'd1, 16'd0}, rx_queue_device[2:0]),
                              write_strobe(rx_queue_device[2:0], 4'd4));
                  state <= S_RX_WAIT_USED_IDX;
