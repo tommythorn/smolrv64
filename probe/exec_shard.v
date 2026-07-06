@@ -339,11 +339,20 @@ module exec_shard
         default: fp_incore_res = 64'd0;
       endcase
    end
-   wire fp_incore_wb = ex_v & ex_fpv & ~ex_fpu & ex_pdv & ~fp_dis;
+   // ~ex_squash_fp (same term as ex_squash below, needed before its declaration point):
+   // the in-core FP paths were MISSING the task-#30 EX-squash gate the ALU/CSR paths
+   // have. Ungated, a wrong-path in-core FP op at EX still (a) wrote its physreg --
+   // which rollback may already have freed+reused (the leaked-writeback corruption
+   // class), (b) OR'd its compare NV flag into fcsr (fcsr must reflect RETIRED ops
+   // only), and (c) set mstatus.FS=Dirty via fp_dirty -- spec-legal conservatism but
+   // a divergence vs the in-order cosim model (gb5 @3.07B retirements: DUT FS=Dirty,
+   // simmerv FS=Clean on the kernel's sstatus read).
+   wire ex_squash_fp = squash & older(squash_seq, ex_sq);
+   wire fp_incore_wb = ex_v & ex_fpv & ~ex_fpu & ex_pdv & ~fp_dis & ~ex_squash_fp;
    // FP exception flags to fcsr: from a CVFPU completion, or an in-core compare's NV bit.
    // (in-core ops other than compares raise no flags.) fp_incore raises flags even when rd=x0
    // is dropped (a compare always has rd, but gate on the op being valid, not on ex_pdv).
-   wire       fp_icmp   = ex_v & ex_fpv & ~ex_fpu & (ex_fpcls==3'd2) & ~fp_dis;
+   wire       fp_icmp   = ex_v & ex_fpv & ~ex_fpu & (ex_fpcls==3'd2) & ~fp_dis & ~ex_squash_fp;
    wire       fp_icmp_nv= ex_fpd ? cmp_d2[1] : cmp_s2[1];
    assign     fp_flags_we = fp_complete | fp_icmp;
    assign     fp_flags    = fp_complete ? fp_fflags : {fp_icmp_nv, 4'd0};
