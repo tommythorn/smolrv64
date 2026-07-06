@@ -785,6 +785,22 @@ module backend_top
       else if (irq_inject & accept) inject_inflight <= 1'b1;   // pseudo-op entered the pipe
       else if (roll_v | ~csr_irq_v) inject_inflight <= 1'b0;   // squashed/delivered/cleared
    end
+`ifdef IRQDBG
+   integer dbg_cyc; initial dbg_cyc = 0;
+   wire dbgw = (dbg_cyc > `IRQDBG_T0);
+   always @(posedge clk) begin
+      dbg_cyc <= dbg_cyc + 1;
+      if (dbgw & irq_inject & accept)
+         $display("[IRQD] INJ c=%0d pc=%h cause=%0d cur=%0d committed=%0d", dbg_cyc, imem_ipc,
+                  csr_irq_cause, cur, cc_committed);
+      if (dbgw & inject_inflight & ~csr_irq_v & ~roll_v)
+         $display("[IRQD] CLR-cause-gone c=%0d (pseudo-op in flight, irq deasserted)", dbg_cyc);
+      if (dbgw & roll_v)
+         $display("[IRQD] ROLL c=%0d eb=%b iflt=%b dfltR=%b dfltF=%b devld=%b seq=%0d ck=%0d infl=%b",
+                  dbg_cyc, eb_redirect, iflt_fire, dflt_replay, dflt_fire, devld_replay,
+                  roll_seq, roll_ckpt, inject_inflight);
+   end
+`endif
 
    always @(posedge clk) begin
       if (reset) ill_v <= 1'b0;
@@ -968,6 +984,10 @@ module backend_top
             // harness question is deferred -- see project_cosim_irq_orphan.)
             if (q_insn[0] == 32'h7f000073 && ~q_trap[0]) begin
                // drop: fall through to the shift below, no probe_retire / arch_phys update
+`ifdef IRQDBG
+               $display("[IRQD] ORPHAN-DROP c=%0d seq=%0d ck=%0d pc=%h qn=%0d", dbg_cyc,
+                        q_seq[0], q_ck[0], q_pc[0], qn);
+`endif
             end else begin
                // rename-correctness check (integer-source ops only; skip FP-source + traps)
                if (!q_trap[0]) begin
@@ -1039,6 +1059,11 @@ module backend_top
          // 4. dispatch: push each valid slot in program order
          if (disp_fire)
             for (fl = 0; fl < IW; fl = fl + 1) if (r_valid[fl]) begin
+`ifdef IRQDBG
+               if (dbgw && r_pay[fl*`PAYW + 165 +: 32] == 32'h7f000073)
+                  $display("[IRQD] QPUSH-OPIRQ c=%0d seq=%0d ck=%0d pc=%h qn=%0d", dbg_cyc,
+                           r_seq[fl*SEQW +: SEQW], cur, r_pay[fl*`PAYW + 78 +: 64], qn);
+`endif
                q_seq [qn] = r_seq[fl*SEQW +: SEQW];
                q_ck  [qn] = cur;
                q_pc  [qn] = r_pay[fl*`PAYW + 78  +: 64];   // PAY_PC
@@ -1068,9 +1093,18 @@ module backend_top
             for (fi = 0; fi < QN; fi = fi + 1)
                if (!cot_found && (fi < qn) && !q_trap[fi] && (q_pc[fi] == cot_epc)) begin
                   q_trap[fi] = 1'b1; q_cmt[fi] = 1'b1; q_vok[fi] = 1'b1; q_rk[fi] = 2'd0;
+`ifdef IRQDBG
+                  if (dbgw) $display("[IRQD] STAMP c=%0d epc=%h cause=%h at fifo[%0d] seq=%0d ck=%0d insn-was=%h qn=%0d",
+                           dbg_cyc, cot_epc, cot_cause, fi, q_seq[fi], q_ck[fi], q_insn[fi], qn);
+`endif
                   q_insn[fi] = cot_insn; q_prv[fi] = cot_prv; q_mepc[fi] = cot_mepc;
                   q_cause[fi] = cot_cause; q_tval[fi] = cot_tval; cot_found = 1'b1;
                end
+`ifdef IRQDBG
+            if (dbgw & !cot_found)
+               $display("[IRQD] STAMP-MISS c=%0d epc=%h cause=%h qn=%0d head pc=%h insn=%h (fresh-push fallback)",
+                        dbg_cyc, cot_epc, cot_cause, qn, q_pc[0], q_insn[0]);
+`endif
             if (!cot_found) begin
                q_seq [qn] = {SEQW{1'b0}};  q_ck[qn] = {CBITS{1'b0}};
                q_pc  [qn] = cot_epc;       q_insn[qn] = cot_insn;
