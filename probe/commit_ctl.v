@@ -125,6 +125,15 @@ module commit_ctl
          if (commit) committed <= committed + 1'b1;
          if (disp_fire) ninst[cur] <= disp_count;   // remember the bundle size for minstret
       end
+`ifdef CCDBG
+      if (disp_fire) $display("[CC] t=%0t DISP ck=%0d +%0d", $time, cur, disp_count);
+      for (i = 0; i < NCHK; i = i + 1)
+         if (dec[i] != 0) $display("[CC] t=%0t DEC  ck=%0d -%0d (ld=%b st=%b div=%b fp=%b iss=%b%b%b%b)",
+                                   $time, i, dec[i], ld_done, st_done, |div_done, |fp_done,
+                                   iss_valid[0], iss_valid[1], iss_valid[2], iss_valid[3]);
+      if (redirect) $display("[CC] t=%0t ROLL young=%b (idx=%0d cur=%0d)", $time, young, redirect_ckpt, cur);
+      if (commit)   $display("[CC] t=%0t COMMIT ck=%0d", $time, committed);
+`endif
    end
 endmodule
 

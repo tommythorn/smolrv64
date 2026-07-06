@@ -42,8 +42,13 @@ module backend_top
                                  // cap (N12=3.17 N16=4.49ns) until the age compare was
                                  // coarsened (low 4 seqno bits dropped) -> N16=2.55ns,
                                  // RS no longer the limiter (shared scoreboard write is).
-    parameter CBITS = 2,
-    parameter NCHK  = 4,
+    parameter CBITS = 3,             // NCHK=8: at 4 the ring was full 14-23% of boot cycles
+    parameter NCHK  = 8,             // (DISP_STATS ccfull) -- too few bundles in flight to
+                                     // cover the dispatch->commit latency. All per-ckpt state
+                                     // is shallow LUTRAM-class (chk_map 64x8b/shard, snapshots,
+                                     // pnpc/pdet, GHR/RAS clones), so 8 deepens arrays without
+                                     // touching a critical cone; seq window: 8x4=32 in-flight
+                                     // ops << the +/-128 wrap-compare bound (SEQW=8).
     parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
     parameter NPHYS = IW * POOL,     // total physregs (SHARDS=IW)
     parameter DCW   = 3,         // clog2(IW+1)
@@ -179,6 +184,10 @@ module backend_top
    initial ill_v = 1'b0;
    wire [IW-1:0]      disp_ready;
    wire               any_valid    = |r_valid;
+   // AMO dispatch gap (set/cleared below, after the exec bundle's eb_amo exists):
+   // order younger loads behind a dispatched-but-not-yet-executing AMO.
+   reg                amo_gap;  reg [SEQW-1:0] amo_gap_seq;
+   initial amo_gap = 1'b0;
    // Freeze dispatch while a data page-fault is latched but not yet delivered: it is
    // delivered late (when its checkpoint becomes oldest), and with only NCHK checkpoints
    // wrong-path speculation can wrap the ring and reuse -- thus overwrite -- the faulting
@@ -195,7 +204,8 @@ module backend_top
    // only !eb_redirect; the replay paths were exposed once the predictor removed
    // the taken-branch bubble ahead of the UART lb's devld_replay.)
    wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
-                                     && !sb_full && !lq_full && !roll_v && !lsu_dfault_v && !ill_v;
+                                     && !sb_full && !lq_full && !roll_v && !lsu_dfault_v && !ill_v
+                                     && !amo_gap;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
@@ -539,8 +549,11 @@ module backend_top
    assign sched_wake_v  = {sel_wake_v, wkv};        // [hi]=select, [lo]=completion
    assign sched_wake_pr = {sel_wake_pr, wkp};
 
-   // a divide heading to / running on a shard's divider stalls that shard's issue
-   assign busy_to_sched = q_iss_is_mul | eb_exec_busy;
+   // a divide heading to / running on a shard's divider stalls that shard's issue.
+   // q_iss_is_fp closes the same 1-cycle RR window for FP ops: EX has no hold, so an
+   // FP op arriving at EX while the CVFPU is busy with the FP op issued one cycle
+   // earlier would evaporate (its deferred count never decs -> checkpoint wedge).
+   assign busy_to_sched = q_iss_is_mul | q_iss_is_fp | eb_exec_busy;
 
    // ---- commit control: count by completion (loads at LSU), commit in order ----
    wire               lsu_ld_done;
@@ -628,6 +641,24 @@ module backend_top
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(cc_commit_count), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
+
+   // ---- AMO dispatch gap (reg declared at the dispatch gate) ----
+   // The LSU's load-select gate (ast==A_IDLE & ~amo_v) only sees an AMO at/after EX.
+   // A younger load dispatched in the gap between the AMO's dispatch and its
+   // serialized (oldest-only) issue can be selected while ast is still A_IDLE and
+   // read pre-RMW memory. NCHK=4 masked this by accident -- the shallow ring could
+   // not dispatch the load's span until the AMO was already executing; NCHK=8
+   // dispatches it ~4 spans earlier (rv64ua test5: the lw after amoadd read stale
+   // memory). Freeze dispatch from the AMO's own dispatch (it is solo, slot 0)
+   // until it reaches EX -- from there the LSU gate owns the ordering. AMOs are
+   // already serialize-when-oldest, so the frozen window is the pipe drain they
+   // pay anyway.
+   always @(posedge clk) begin
+      if (reset)                                        amo_gap <= 1'b0;
+      else if (disp_fire & r_pay[`PAY_AMO])             begin amo_gap <= 1'b1; amo_gap_seq <= r_seq[SEQW-1:0]; end
+      else if (|eb_amo)                                 amo_gap <= 1'b0;  // at EX: LSU gate takes over
+      else if (roll_v & ($signed(roll_seq - amo_gap_seq) < 0)) amo_gap <= 1'b0;  // the AMO itself was squashed
+   end
 
    // ---- LSU execute-port drive (EX stage: bypassed AGU/store-data + EX control) ----
    wire [IW-1:0]      exe_st_v, exe_ld_v;

@@ -265,6 +265,12 @@ module exec_shard
    wire fp_arith = ex_v & ex_fpv & ex_fpu & ~fp_dis;
    wire fp_squash_now = squash & older(squash_seq, ex_sq);
    wire fp_abort = fpu_inflight & squash & older(squash_seq, fp_seq);
+   // A squashed in-flight FP op is NEVER flushed out of the CVFPU -- a mid-op flush
+   // leaves the pipe corrupt (observed: the flushed op's result still emerges, and a
+   // cleanly restarted I2F then computes a NaN). Instead the op DRAINS: fp_zomb marks
+   // it dead, fpu_inflight stays up (the scheduler stalls this shard via munit_busy)
+   // and the eventual result is dropped.
+   reg  fp_zomb;  initial fp_zomb = 1'b0;
    // a fresh FP op may start only when the unit is free and nothing older is squashing it.
    wire fp_start = fp_arith & ~fpu_inflight & ~mbusy & ~dbusy & ~fp_squash_now;
    function [63:0] fpsel; input [1:0] s; input [63:0] a, b, c;
@@ -290,13 +296,21 @@ module exec_shard
       .iss_int_fmt(ex_fpint), .iss_rnd(ex_fprnd==3'b111 ? i_frm : ex_fprnd),  // dyn rm (rm=111) -> fcsr.frm
       .iss_operands({fpo2,fpo1,fpo0}), .iss_tag(1'b0),
       .res_valid(fp_res_valid), .res_ready(1'b1), .res_data(fp_res_data), .res_fflags(fp_fflags),
-      .res_tag(), .flush(fp_abort), .busy(fpu_busyo));
+      .res_tag(), .flush(1'b0), .busy(fpu_busyo));
    always @(posedge clk) begin
-      if (fp_start & fp_iss_ready) begin fpu_inflight<=1'b1; fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_dst32<=(ex_fpdst==3'd0); end
-      else if (fp_abort)                       fpu_inflight<=1'b0;
-      else if (fp_res_valid & fpu_inflight)    fpu_inflight<=1'b0;
+      if (fp_start & fp_iss_ready) begin fpu_inflight<=1'b1; fp_zomb<=1'b0;
+                                         fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_dst32<=(ex_fpdst==3'd0); end
+      else if (fp_res_valid & fpu_inflight)    begin fpu_inflight<=1'b0; fp_zomb<=1'b0; end
+      else if (fp_abort)                       fp_zomb<=1'b1;   // drain, don't flush
+`ifdef FPDBG
+      if (fp_start)     $display("[FPD %m] START t=%0t seq=%0d ck=%0d op=%0d fpo0=%h rdy=%b infl=%b zomb=%b", $time, ex_sq, ex_ck, ex_fpop, fpo0, fp_iss_ready, fpu_inflight, fp_zomb);
+      if (fp_arith & ~fp_start) $display("[FPD %m] NOSTART t=%0t seq=%0d ck=%0d infl=%b mb=%b db=%b sqn=%b", $time, ex_sq, ex_ck, fpu_inflight, mbusy, dbusy, fp_squash_now);
+      if (fp_start & ~fp_iss_ready) $display("[FPD %m] NORDY t=%0t seq=%0d", $time, ex_sq);
+      if (fp_abort)     $display("[FPD %m] ABORT t=%0t fpseq=%0d fpck=%0d sqseq=%0d infl=%b zomb=%b", $time, fp_seq, fp_ck, squash_seq, fpu_inflight, fp_zomb);
+      if (fp_res_valid) $display("[FPD %m] RES   t=%0t data=%h infl=%b zomb=%b fpseq=%0d fpck=%0d", $time, fp_res_data, fpu_inflight, fp_zomb, fp_seq, fp_ck);
+`endif
    end
-   wire        fp_complete = fp_res_valid & fpu_inflight & ~fp_abort;
+   wire        fp_complete = fp_res_valid & fpu_inflight & ~fp_zomb & ~fp_abort;
    assign      fp_done      = fp_complete;
    assign      fp_done_ckpt = fp_ck;
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
@@ -388,7 +402,12 @@ module exec_shard
 
    // busy = unit running OR an M-op in EX about to start it (so no second M-op is
    // selected in the gap before munit_busy rises). RR-stage M-ops stall via q_iss_is_mul.
-   assign exec_busy     = munit_busy | (ex_v & ex_mulr & ~m_squash_now);
+   // an M-op or FP-op sitting at EX hasn't raised its unit's busy yet (that happens on
+   // the next edge) -- both must assert exec_busy for their EX cycle, or a same-unit op
+   // issued right behind them arrives at EX with the unit busy and evaporates (EX has
+   // no hold; a lost deferred op leaves its checkpoint count stuck -> commit wedge).
+   assign exec_busy     = munit_busy | (ex_v & ex_mulr & ~m_squash_now)
+                                     | (fp_arith & ~fp_squash_now);
    assign div_done      = m_complete;
    assign div_done_ckpt = m_ck;
 

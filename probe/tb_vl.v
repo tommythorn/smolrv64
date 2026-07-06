@@ -250,6 +250,24 @@ module tb;
          end
       end
       $display("RISCV-TEST TIMEOUT after %0d cycles (pc~%h)", ncyc, imem_addr);
+      $display("  DISP: any_valid=%b ccfull=%b dispready=%b festall=%b sbfull=%b lqfull=%b rollv=%b dflt=%b ill=%b amogap=%b",
+               dut.any_valid, dut.cc_full, &dut.disp_ready, |dut.fe_stall,
+               dut.sb_full, dut.lq_full, dut.roll_v, dut.lsu_dfault_v, dut.ill_v, dut.amo_gap);
+      $display("  IFLT: pend=%b ccempty=%b replay=%b devldsolo=%b injinfl=%b csr_irq=%b",
+               dut.pend_iflt, dut.cc_empty, dut.replay_v, dut.devld_solo_v,
+               dut.inject_inflight, dut.csr_irq_v);
+      $display("  CC: cur=%0d committed=%0d cnt=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d",
+               dut.cur, dut.cc_committed, dut.cc.count[0], dut.cc.count[1], dut.cc.count[2], dut.cc.count[3],
+               dut.cc.count[4], dut.cc.count[5], dut.cc.count[6], dut.cc.count[7]);
+      begin : rsdump
+         integer e;
+         for (e = 0; e < 16; e = e + 1) begin
+            if (dut.sb.lane[0].sh.v[e]) $display("  RS0[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[0].sh.sq[e], dut.sb.lane[0].sh.ck[e], dut.sb.lane[0].sh.r1[e], dut.sb.lane[0].sh.r2[e], dut.sb.lane[0].sh.r3[e], dut.sb.lane[0].sh.py[e][196:165]);
+            if (dut.sb.lane[1].sh.v[e]) $display("  RS1[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[1].sh.sq[e], dut.sb.lane[1].sh.ck[e], dut.sb.lane[1].sh.r1[e], dut.sb.lane[1].sh.r2[e], dut.sb.lane[1].sh.r3[e], dut.sb.lane[1].sh.py[e][196:165]);
+            if (dut.sb.lane[2].sh.v[e]) $display("  RS2[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[2].sh.sq[e], dut.sb.lane[2].sh.ck[e], dut.sb.lane[2].sh.r1[e], dut.sb.lane[2].sh.r2[e], dut.sb.lane[2].sh.r3[e], dut.sb.lane[2].sh.py[e][196:165]);
+            if (dut.sb.lane[3].sh.v[e]) $display("  RS3[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[3].sh.sq[e], dut.sb.lane[3].sh.ck[e], dut.sb.lane[3].sh.r1[e], dut.sb.lane[3].sh.r2[e], dut.sb.lane[3].sh.r3[e], dut.sb.lane[3].sh.py[e][196:165]);
+         end
+      end
       $finish;
    end
 
