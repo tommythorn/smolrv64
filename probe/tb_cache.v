@@ -195,10 +195,12 @@ module tb;
       @(posedge clk); @(negedge clk); i_rd_req=0;
       @(posedge clk);                                      // a cycle into the fill (cache busy)
       @(negedge clk); i_inv_req=1; @(posedge clk); @(negedge clk); i_inv_req=0;  // 1-cyc pulse mid-fill
-      // settle: let the in-flight 0x2000 fill finish AND any deferred (sticky) inv run.
-      // NB: don't poll inv_busy here -- the unfixed cache never raises it, so polling would
-      // race the still-running fill's own L2 read and give a false pass.
-      repeat (40) @(posedge clk); @(negedge clk);
+      // settle: let the in-flight 0x2000 fill finish, then wait out the deferred (sticky)
+      // inv -- it now WALKS the sets (one line/cycle behind inv_busy) instead of the old
+      // one-cycle full clear, so a fixed 40-cycle settle no longer covers it. The cache
+      // raises inv_busy the cycle the pulse lands (sticky), so polling it is sound.
+      repeat (40) @(posedge clk);
+      while (i_inv_busy) @(posedge clk); @(negedge clk);
       before_reads = i_l2reads;
       iread(34'h100);                                      // must MISS (invalidated) -> an L2 refill
       if (i_l2reads == before_reads) begin

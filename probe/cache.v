@@ -183,7 +183,7 @@ module cache #(
       S_FILL=10, S_FILLW=11, S_FILLI=12,
       S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
       S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_INVDONE=22, S_ZFILL=23, S_PFI=24;
+      S_NCI=22, S_ZFILL=23, S_PFI=24;
 
    // ---- next-line prefetch (PREFETCH!=0; the I$): single-line stream buffer ----
    // A demand fill of line L arms a prefetch of L+1. The prefetch runs as a
@@ -215,6 +215,19 @@ module cache #(
    integer b, bb, w2;
    reg [2*BANKW-1:0] nwin;
    reg [LZB:0]       pos;
+
+   // ---- single-write-port staging for the status arrays (valm/dirm/vicm) ----
+   // Scattered indexed NBA writes (plus a one-cycle full-clear loop) defeat RAM
+   // inference: every status flop grew a ~15-LUT write decoder -- valm+dirm
+   // synthesized to 63k LUTs, a third of the FPGA. Each FSM site now stages one
+   // (we, addr, data) per array per cycle (blocking assigns inside the case);
+   // the single write statement at the bottom of the FSM block applies it, so
+   // the arrays infer as distributed RAM (~hundreds of LUTs). The full clear
+   // (fence.i / inv on the I$) walks S_FLUSH like the write-back flush does.
+   reg             v_we, d_we, k_we;
+   reg [FW-1:0]    v_wa, d_wa;
+   reg [IDXB-1:0]  k_wa;
+   reg             v_wd, d_wd, k_wd;
 
    // store-merge window (combinational)
    always @* begin
@@ -304,6 +317,10 @@ module cache #(
    // ---- FSM ----
    reg inv_pend;     // sticky: an inv_req that arrives while the cache is busy is remembered
    always @(posedge clk) begin
+      // status-array write ports: default idle every cycle (blocking; sites override)
+      v_we = 1'b0; d_we = 1'b0; k_we = 1'b0;
+      v_wa = {FW{1'b0}}; d_wa = {FW{1'b0}}; k_wa = {IDXB{1'b0}};
+      v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
@@ -343,10 +360,12 @@ module cache #(
                  inv_pend <= 1'b0;
                  pf_val <= 0; pf_want <= 0;      // prefetch buffer shares the cache's fate
                  if (pf_infl) pf_drop <= 1;      // in-flight line predates the flush: land it dead
-                 if (WRITABLE==0 || WRTHRU!=0) begin
-                    for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
-                    inv_busy <= 1; st <= S_INVDONE;
-                 end else begin inv_busy <= 1; fscan <= 0; flush_clean <= inv_clean; st <= S_FLUSH; end
+                 // Every config walks S_FLUSH (one line/cycle behind inv_busy, which all
+                 // requesters already poll). For WRITABLE==0/WRTHRU the dirty-writeback
+                 // branch is compile-time dead, leaving a pure valid-clear scan -- the
+                 // old one-cycle full clear was what broke the valm RAM inference.
+                 inv_busy <= 1; fscan <= 0; flush_clean <= (WRITABLE!=0 && WRTHRU==0) & inv_clean;
+                 st <= S_FLUSH;
               end else if (rd_req || (wr_req && WRITABLE!=0)) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
@@ -382,7 +401,7 @@ module cache #(
                     wb_way <= hway; wb_idx <= cih; pc <= 0; st <= S_WTR;
                  end else begin
                     // clean line: flush/inval just invalidates; clean keeps it
-                    if (!r_cbo_keep) valm[flat(hway,cih)] <= 1'b0;
+                    if (!r_cbo_keep) begin v_we=1; v_wa=flat(hway,cih); v_wd=1'b0; end
                     wr_ack <= 1; st <= S_IDLE;
                  end
               end else begin
@@ -446,8 +465,8 @@ module cache #(
            // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
            S_ZFILL: begin
               tagm[vflat] <= tag_of(cur_line);
-              valm[vflat] <= 1'b1;
-              vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              v_we=1; v_wa=vflat; v_wd=1'b1;
+              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               linebuf <= {LINEB{1'b0}}; pc <= 0;
               st <= S_FILLI;
            end
@@ -464,9 +483,9 @@ module cache #(
            S_FILLW: if (l2_ack) begin
               linebuf <= l2_rdata; pc <= 0;
               tagm[vflat] <= tag_of(cur_line);
-              valm[vflat] <= 1'b1;
-              dirm[vflat] <= 1'b0;
-              vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              v_we=1; v_wa=vflat; v_wd=1'b1;
+              d_we=1; d_wa=vflat; d_wd=1'b0;
+              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               st <= S_FILLI;
               if (PF_EN && !r_uncached && !r_cbo_zero) begin
                  pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;  // arm next-line
@@ -481,9 +500,9 @@ module cache #(
            S_PFI: begin
               pc <= 0;
               tagm[vflat] <= tag_of(cur_line);
-              valm[vflat] <= 1'b1;
-              dirm[vflat] <= 1'b0;
-              vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              v_we=1; v_wa=vflat; v_wd=1'b1;
+              d_we=1; d_wa=vflat; d_wd=1'b0;
+              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;
               st <= S_FILLI;
            end
@@ -491,7 +510,7 @@ module cache #(
               if (pc == HALF-1) begin
                  pc <= 0;
                  // cbo.zero: the line is now zero -> mark dirty and finish; else re-lookup the refill
-                 if (r_cbo_zero) begin dirm[vflat] <= 1'b1; wr_ack <= 1; st <= S_IDLE; end
+                 if (r_cbo_zero) begin d_we=1; d_wa=vflat; d_wd=1'b1; wr_ack <= 1; st <= S_IDLE; end
                  else st <= S_LOOK;
               end else pc <= pc + 1'b1;
            end
@@ -503,32 +522,36 @@ module cache #(
                  rd_valid <= 1; rd_resp_addr <= r_addr;
                  // Svpbmt NC/IO load: return the (just-filled, current) word but don't keep the
                  // line, so a later DMA write isn't masked by a stale hit on the next NC load.
-                 if (r_uncached) begin
-                    valm[flat(w0_way,w0_idx)] <= 1'b0;
-                    if (r_span) valm[flat(hway,cih)] <= 1'b0;
-                 end
-                 st <= S_IDLE;
+                 // A span clears line1 in S_NCI (one status write per cycle; data already out).
+                 if (r_uncached) begin v_we=1; v_wa=flat(w0_way,w0_idx); v_wd=1'b0; end
+                 st <= (r_uncached && r_span) ? S_NCI : S_IDLE;
               end else begin
                  // low-chunk (and same-line high) write driven combinationally this cycle.
                  if (r_span && store_hi) begin
-                    // line1 hit way/idx are live (phase1); write its chunk0 next cycle
+                    // line1 hit way/idx are live (phase1); write its chunk0 next cycle.
+                    // line0's dirty is staged here, line1's in S_SPANW (one write/cycle).
+                    if (WRTHRU==0 && !r_uncached) begin d_we=1; d_wa=flat(w0_way,w0_idx); d_wd=1'b1; end
                     st <= S_SPANW;
                  end else if (WRTHRU!=0 || r_uncached) begin
                     // write-through, OR a Svpbmt NC/IO store -> push to L2 (DMA sees it) and
                     // invalidate the line at S_WTA so nothing dirty/stale lingers (flush-around).
                     wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
                  end else begin
-                    dirm[flat(w0_way,w0_idx)] <= 1'b1;
-                    if (r_span) dirm[flat(hway,cih)] <= 1'b1;
+                    // (a line-crossing store always has store_hi -> the S_SPANW arm above,
+                    // so no second dirty write can be needed here)
+                    d_we=1; d_wa=flat(w0_way,w0_idx); d_wd=1'b1;
                     wr_ack <= 1; st <= S_IDLE;
                  end
               end
            end
+           S_NCI: begin                     // NC span load: drop line1 too (flush-around)
+              v_we=1; v_wa=flat(hway,cih); v_wd=1'b0;
+              st <= S_IDLE;
+           end
            S_SPANW: begin                   // spanning store high half written combinationally
               if (WRTHRU!=0 || r_uncached) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
               else begin
-                 dirm[flat(w0_way,w0_idx)] <= 1'b1;
-                 dirm[flat(hway,cih)]      <= 1'b1;
+                 d_we=1; d_wa=flat(hway,cih); d_wd=1'b1;   // line0's dirty was staged at S_FIN
                  wr_ack <= 1; st <= S_IDLE;
               end
            end
@@ -546,9 +569,9 @@ module cache #(
            S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
            S_WTA: if (l2_ack) begin
               if (r_cbo) begin                                     // Zicbom writeback complete
-                 dirm[flat(wb_way,wb_idx)] <= 1'b0;                // it is now clean in L2
-                 if (!r_cbo_keep) valm[flat(wb_way,wb_idx)] <= 1'b0;  // flush/inval drop; clean keeps
-              end else if (r_uncached) valm[flat(wb_way,wb_idx)] <= 1'b0;  // Svpbmt NC store: flush-around
+                 d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
+                 if (!r_cbo_keep) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // flush/inval drop
+              end else if (r_uncached) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // NC store: flush-around
               wr_ack <= 1; st <= S_IDLE;
            end
 
@@ -559,8 +582,8 @@ module cache #(
                  wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
                  st <= S_FLUSHR;
               end else begin
-                 if (!flush_clean) valm[fscan[FW-1:0]] <= 1'b0;   // clean flush keeps lines valid
-                 dirm[fscan[FW-1:0]] <= 1'b0;
+                 if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush keeps lines valid
+                 d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
                  fscan <= fscan + 1'b1;
               end
            end
@@ -573,14 +596,22 @@ module cache #(
            end
            S_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
            S_FLUSHA: if (l2_ack) begin
-              if (!flush_clean) valm[fscan[FW-1:0]] <= 1'b0;       // clean flush: written back, stays valid+clean
-              dirm[fscan[FW-1:0]] <= 1'b0;
+              if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush: written back, stays valid+clean
+              d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
-
-           S_INVDONE: begin inv_busy <= 1'b0; st <= S_IDLE; end
          endcase
       end
+      // the single write port of each status array (see staging decl above)
+      if (v_we) valm[v_wa] <= v_wd;
+      if (d_we) dirm[d_wa] <= d_wd;
+      if (k_we) vicm[k_wa] <= k_wd;
+`ifdef CDBG
+      if (st==S_FLUSH && (fscan[3:0]==0 || fscan==NW))
+         $display("[CDBG %m] t=%0t S_FLUSH fscan=%0d/%0d invb=%b", $time, fscan, NW, inv_busy);
+      if (st==S_IDLE && (inv_req|inv_pend))
+         $display("[CDBG %m] t=%0t IDLE->inv (pend=%b)", $time, inv_pend);
+`endif
    end
 
 `ifdef PERF_TRACE
