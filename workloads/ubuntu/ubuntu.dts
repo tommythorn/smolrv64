@@ -4,23 +4,23 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmolRV64 Ubuntu 2GiB New";
+	model = "SmooolRV64 w/2048 MiB";
 
 	chosen {
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/vda1 rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
-                /* Development-only static seed: replace with per-boot random bytes later. */
-                rng-seed = [
-                        6f 2c 91 7a 44 1e d3 b8
-                        0a cc 59 32 f4 81 25 9d
-                        e7 10 ba 6c 38 5f 02 c1
-                        93 d4 76 af 20 8b ee 41
-                        15 62 9a cd 57 03 b4 f8
-                        80 2d 11 6e a9 4c 73 05
-                        dc 37 f1 98 24 bb 60 0f
-                        4a e2 7d 36 c5 19 8c a0
-                ];
+		/* Development-only static seed: replace with per-boot random bytes later. */
+		rng-seed = [
+			6f 2c 91 7a 44 1e d3 b8
+			0a cc 59 32 f4 81 25 9d
+			e7 10 ba 6c 38 5f 02 c1
+			93 d4 76 af 20 8b ee 41
+			15 62 9a cd 57 03 b4 f8
+			80 2d 11 6e a9 4c 73 05
+			dc 37 f1 98 24 bb 60 0f
+			4a e2 7d 36 c5 19 8c a0
+		];
 	};
 
 	uart@10000000 {
@@ -34,10 +34,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		timebase-frequency = <5000000>; /* 5 MHz claimed vs ~501 kHz real CLINT mtime = ~10x LIE:
-		   dilate guest time so the ~50x-slow probe core doesn't trip wall-clock timeouts/watchdogs.
-		   (The old "500 kHz, a 5X lie" was STALE -- the probe CLINT was retuned to 501 kHz, which made
-		   500 kHz *honest*; that lost the lie the scalar tests relied on. TT flagged 2026-07-03.) */
+                timebase-frequency = <501253>; /* Honest ui_clk/5/133 */
 
 		cpu-map {
 			cluster0 {
@@ -62,7 +59,7 @@
 			riscv,cbop-block-size = <64>;
 			riscv,cboz-block-size = <64>;
 			mmu-type = "riscv,sv39";
-			clock-frequency = <166666666>;
+			clock-frequency = <66666666>;
 
 			cpu_intc: interrupt-controller {
 				#interrupt-cells = <1>;
@@ -146,9 +143,6 @@
 			interrupts = <12>;
 			interrupt-parent = <&plic>;
 			dma-noncoherent;
-			/* ENABLED: soc_top now decodes an 8 KiB virtio region and passes a 13-bit
-			   offset; the wrapper derives the page from addr[12] (blk=0x02 / net=0x03).
-			   virtio_net_irq is wired to PLIC src 12 (ext_irq[11]). */
 			status = "okay";
 		};
 	};
