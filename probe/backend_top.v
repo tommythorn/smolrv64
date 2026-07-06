@@ -2,12 +2,20 @@
 `include "va_codec.vh"
 `default_nettype none
 
-// PROBE_POOL: physregs per shard (default 64 -> NPHYS=256). Shrinking it (e.g.
+// PROBE_POOL: physregs per shard (default 80 -> NPHYS=320). Shrinking it (e.g.
 // -DPROBE_POOL=20) forces aggressive physreg reuse, exposing physreg-lifetime /
 // operand-capture bugs in short tests instead of millions of instructions in. The
 // freelist needs ARSH=AREGS/SHARDS=16 reserved arch regs/shard, so POOL>=18.
+//
+// POOL MUST EXCEED AREGS(=64): a dest physreg comes from the DISPATCH lane's shard
+// (RF bank = producing lane), while slot-0 carries every solo bundle (CSR/AMO/
+// serialize) plus each bundle's first op -- so shard 0 slowly captures the arch
+// mappings. With POOL==AREGS all 64 arch regs can map into one shard (observed at
+// tiny128 relocate: free=0/64/64/64), and once the machine drains empty with the
+// next bundle needing that shard, nothing can ever commit to return a pold ->
+// rename deadlocks forever. POOL=80 keeps >=16 free at quiescence: unreachable.
 `ifndef PROBE_POOL
- `define PROBE_POOL 64
+ `define PROBE_POOL 80
 `endif
 
 // Full sharded-OoO core (frontend + backend), ALU + LSU subset, with commit/CPR:
@@ -37,7 +45,7 @@ module backend_top
     parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter ABITS = 6,
-    parameter PBITS = 8,
+    parameter PBITS = 9,             // {ridx[clog2(POOL)-1:0], shard[SBITS-1:0]}
     parameter SCHED_N = 16,      // CAM RS entries/shard. Sweep @3ns: select path was the
                                  // cap (N12=3.17 N16=4.49ns) until the age compare was
                                  // coarsened (low 4 seqno bits dropped) -> N16=2.55ns,
@@ -376,7 +384,7 @@ module backend_top
    wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;  // faulting VA
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
-              .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
+              .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR($clog2(POOL)),
               .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
@@ -415,7 +423,7 @@ module backend_top
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
    wire [IW-1:0]      sched_disp_valid = r_valid & {IW{disp_fire}};
 
-   sched_bundle #(.SHARDS(IW), .PBITS(PBITS), .SEQW(SEQW), .N(SCHED_N),
+   sched_bundle #(.SHARDS(IW), .NPHYS(NPHYS), .PBITS(PBITS), .SEQW(SEQW), .N(SCHED_N),
                   .CBITS(CBITS), .MIDXW(MIDXW)) sb
      (.clk(clk), .reset(reset),
       .disp_valid(sched_disp_valid), .disp_seq(r_seq), .disp_pdst(pdst), .disp_pdst_v(r_rd_v),
@@ -610,7 +618,7 @@ module backend_top
                         roll_v, lsu_st_done, lsu_ld_done};
 
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),
-                 .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
+                 .IDXB($clog2(POOL)), .SEQW(SEQW), .CBITS(CBITS), .MIDXW(MIDXW)) eb
      (.clk(clk), .reset(reset),
       .iss_valid(q_iss_valid), .iss_seq(q_iss_seq), .iss_pdst(q_iss_pdst),
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2), .iss_ps3(q_iss_ps3),

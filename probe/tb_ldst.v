@@ -12,7 +12,7 @@
 // byte 256 after the store commits and drains. If forwarding failed the load would
 // read the memory sentinel and a3 would not be 0xAC.
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4, AW=64;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4, AW=64;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

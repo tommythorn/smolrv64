@@ -10,7 +10,7 @@
 // Expected (pr,val) writebacks:
 //   (64,11)(65,22)(66,33)(67,44)  then  (68,12)(69,23)(70,34)(71,45)
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

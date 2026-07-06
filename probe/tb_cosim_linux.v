@@ -147,9 +147,15 @@ module tb;
             $display("  IFLT: pend=%b epc=%h ccempty=%b replay=%b devldsolo=%b injinfl=%b csr_irq=%b",
                      dut.core.pend_iflt, dut.core.iflt_epc, dut.core.cc_empty, dut.core.replay_v,
                      dut.core.devld_solo_v, dut.core.inject_inflight, dut.core.csr_irq_v);
-            $display("  CC: cur=%0d committed=%0d cnt0=%0d cnt1=%0d cnt2=%0d cnt3=%0d",
+            $display("  CC: cur=%0d committed=%0d cnt0=%0d cnt1=%0d cnt2=%0d cnt3=%0d cnt4=%0d cnt5=%0d cnt6=%0d cnt7=%0d",
                      dut.core.cur, dut.core.cc_committed, dut.core.cc.count[0], dut.core.cc.count[1],
-                     dut.core.cc.count[2], dut.core.cc.count[3]);
+                     dut.core.cc.count[2], dut.core.cc.count[3], dut.core.cc.count[4], dut.core.cc.count[5],
+                     dut.core.cc.count[6], dut.core.cc.count[7]);
+            $display("  FL: stall=%b free=%0d/%0d/%0d/%0d dvalid=%b create=%b",
+                     dut.core.fe.u_dr.stall,
+                     dut.core.fe.u_dr.rn.lane[0].sh.fl.free_count, dut.core.fe.u_dr.rn.lane[1].sh.fl.free_count,
+                     dut.core.fe.u_dr.rn.lane[2].sh.fl.free_count, dut.core.fe.u_dr.rn.lane[3].sh.fl.free_count,
+                     dut.core.fe.u_dr.rn.lane[0].sh.d_valid, dut.core.fe.u_dr.rn.lane[0].sh.create);
             probe_dump_ring(dut.imem_addr);
             $finish;
          end

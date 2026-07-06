@@ -13,7 +13,7 @@
 // Loads a flat image (+hex), runs until a store to `tohost` (+tohost): 1 => PASS.
 // MMIO is 64-bit-aligned only here (sub-word lane alignment lands with UART/PLIC).
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9;
    localparam [63:0] BASE      = 64'h8000_0000;
    localparam [63:0] CLINT_BASE= 64'h0200_0000;
    localparam        SIZE      = 1<<21;          // 2 MiB

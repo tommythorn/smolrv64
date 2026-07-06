@@ -7,7 +7,7 @@
 // interrupt (mcause = (1<<63)|7) and run the handler, which stores 1 to tohost.
 // PASS = a store of 1 to +tohost; FAIL = wrong cause / timeout. Bare mode (no PTW).
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9;
    localparam [63:0] BASE = 64'h8000_0000;
    localparam        SIZE = 1<<20;
 

@@ -17,7 +17,7 @@
 // impossible without reclamation. Correctness: the writeback value stream must be
 // exactly {1,2,...,N} (each instruction's result, each in a distinct physreg).
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4, N=64;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4, N=64;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

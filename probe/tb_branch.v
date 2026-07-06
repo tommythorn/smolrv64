@@ -13,7 +13,7 @@
 //                                          (98/99 would give 131/132 -> squash failed)
 // Checks: redirect fired to 0x30; consumer value 88 present; 131 and 132 absent.
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

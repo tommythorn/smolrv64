@@ -18,7 +18,7 @@
 // decrement the checkpoint's outstanding count -> in-order commit DEADLOCKS. So
 // `commit` firing is the discriminator that proves the generalization works.
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

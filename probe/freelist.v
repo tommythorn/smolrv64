@@ -133,6 +133,26 @@ module freelist
          curr <= rollback ? rollback_idx : (create ? nxt : curr);
       end
    end
+`ifdef FLDBG
+   integer flc; initial flc = 0;
+   reg [POOL-1:0] aun; integer fda, fdk; integer acnt, ucnt, rcnt;
+   always @(posedge clk) begin
+      flc <= flc + 1;
+      if (SH == 0 && (flc % 100000 == 0)) $display("[FLC] c=%0d free=%0d", flc, cnt);
+      if (SH == 0 && flc > `FLDBG_T0 && flc < `FLDBG_T1
+          && (do_alloc || rollback || commit || create)) begin
+         aun = {POOL{1'b0}};
+         for (fdk = 0; fdk < NCHK; fdk = fdk + 1) aun = aun | A[fdk];
+         acnt = 0; ucnt = 0; rcnt = 0;
+         for (fda = 0; fda < POOL; fda = fda + 1) begin
+            acnt = acnt + free[fda]; ucnt = ucnt + aun[fda]; rcnt = rcnt + roll_union[fda];
+         end
+         $display("[FLD] c=%0d free=%0d unionA=%0d alloc=%b(r%0d) roll=%b(idx=%0d yng=%b run=%0d) cmt=%b(idx=%0d) crt=%b curr=%0d",
+                  flc, acnt, ucnt, do_alloc, ridx, rollback, rollback_idx, young, rcnt,
+                  commit, commit_idx, create, curr);
+      end
+   end
+`endif
 
 `ifdef FL_DBLALLOC
    // Double-alloc detector. We hand out alloc_pr (idx ridx) this cycle and clear

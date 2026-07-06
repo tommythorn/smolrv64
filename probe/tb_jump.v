@@ -18,7 +18,7 @@
 // Checks: both redirects fire to the right targets (0x10, 0x2c); x5=4, x6=24, x7=4
 // appear (the link values are next_pc, written and correctly restored/read).
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

@@ -21,7 +21,7 @@
 // checkpoints, in-order commit drains through several branch-checkpoints, and a
 // younger branch's recovery is selective (older work survives).
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

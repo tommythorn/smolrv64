@@ -11,7 +11,7 @@
 //   PC16 addi x10,x0,42
 //   PC20 addi x11,x10,1   -> 43  (correct-path consumer)
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=8, PBW=4;
+   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9, PBW=4;
 
    reg                clk=0; always #5 clk=~clk;
    reg                reset;

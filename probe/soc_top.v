@@ -14,7 +14,7 @@
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module soc_top #(
-   parameter IW=4, HW=8, PCW=64, SEQW=8, PBITS=8,
+   parameter IW=4, HW=8, PCW=64, SEQW=8, PBITS=9,
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
