@@ -33,6 +33,7 @@ module cache #(
    parameter OFFB     = 6,
    parameter WRITABLE = 1,
    parameter WRTHRU   = 0,
+   parameter PREFETCH = 0,         // next-line prefetch (I$): single-line stream buffer
    parameter PERF_ID  = 0          // perf-trace cache id (0=I$, 1=D$); see perf block
 ) (
    input  wire             clk,
@@ -165,6 +166,11 @@ module cache #(
    reg [BANKW-1:0] wlo, whi;
    wire [2*BANKW-1:0] win    = {whi, wlo};
    wire [2*BANKW-1:0] win_sh = win >> (bwc*8);
+   // live-window variant for the S_CHECK fast read delivery (same bytes that are
+   // being registered into wlo/whi this edge)
+   wire [BANKW-1:0]   fwlo    = clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
+   wire [BANKW-1:0]   fwhi    = clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
+   wire [2*BANKW-1:0] fast_sh = {fwhi, fwlo} >> (bwc*8);
    reg [LINEB-1:0] linebuf;
    reg [PAIRB:0]   pc;
    reg [IDXB-1:0]  wb_idx;  reg wb_way;            // line currently streamed for WB/WT/flush
@@ -177,7 +183,33 @@ module cache #(
       S_FILL=10, S_FILLW=11, S_FILLI=12,
       S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
       S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_INVDONE=22, S_ZFILL=23;
+      S_INVDONE=22, S_ZFILL=23, S_PFI=24;
+
+   // ---- next-line prefetch (PREFETCH!=0; the I$): single-line stream buffer ----
+   // A demand fill of line L arms a prefetch of L+1. The prefetch runs as a
+   // PARALLEL engine borrowing the (otherwise idle) L2 port while the FSM is in
+   // request-service states -- the I$ front door is never idle during streaming
+   // (the frontend holds rd_req continuously), so an idle-launched prefetch
+   // would simply starve. Interlock: S_FILL stalls while a prefetch is in
+   // flight (one L2 round trip, the classic bounded cost) -- and if that
+   // in-flight prefetch IS the missing line, S_FILL consumes it on landing
+   // instead of re-reading. A later miss matching the buffer installs it via
+   // S_PFI -> S_FILLI, skipping the L2 read entirely, and re-arms for the NEXT
+   // line -- consumption-chained streaming pipelines fetch-of-L with
+   // fill-of-L+1 (DISP_STATS: I$ starvation was 49% of boot cycles). The
+   // buffer is a pure hint-holder: invalidated with the cache (fence.i), never
+   // dirty, and a line installed from it is bit-identical to a demand L2 read.
+   reg              pf_val, pf_want, pf_infl, pf_drop;
+   reg [PAW-OFFB-1:0] pf_addr, pf_next, pf_ia;   // pf_ia = the address actually ISSUED:
+                     // pf_next can be re-armed (S_PFI) while a fetch is in flight, so the
+                     // ack must be stamped with the issued address, never the live pf_next
+   reg [LINEB-1:0]  pf_line;
+   localparam PF_EN = (PREFETCH != 0) && (WRITABLE == 0);  // engine is I$-shaped only: its
+                     // interlocks assume the FSM's only L2 state is the S_FILL fill path
+   // PF_EN implies WRITABLE==0: the pf-hit install path (S_PFI) skips S_WB, sound
+   // only when a victim can never be dirty -- i.e. the I$.
+   wire pf_hit = PF_EN & pf_val & (pf_addr == cur_line[PAW-1:OFFB])
+               & ~r_uncached & ~r_cbo;
    reg [4:0] st;
 
    integer b, bb, w2;
@@ -193,6 +225,17 @@ module cache #(
       end
    end
 
+   // live (accept-cycle) window geometry: same derivation as the registered
+   // clo/pair_e/pair_o but from the request inputs, so the banks can be
+   // addressed in the SAME cycle the request is accepted -- data then lands at
+   // S_CHECK with S_LOOK skipped entirely (the 2-cycle hit path).
+   wire [PAW-1:0]  a_live    = rd_req ? rd_addr : wr_addr;
+   wire [CHB-1:0]  a_clo     = a_live[OFFB-1 -: CHB];
+   wire [CHB-1:0]  a_chunk_e = a_clo[0] ? (a_clo + 1'b1) : a_clo;
+   wire [CHB-1:0]  a_chunk_o = a_clo[0] ? a_clo : (a_clo + 1'b1);
+   wire [PAIRB-1:0] a_pair_e = a_chunk_e[CHB-1:1];
+   wire [PAIRB-1:0] a_pair_o = a_chunk_o[CHB-1:1];
+
    // ---- combinational bank port drive ----
    always @* begin
       for (b=0; b<2*WAYS; b=b+1) begin
@@ -202,7 +245,18 @@ module cache #(
          bk_wrdata[b] = {BANKW{1'b0}};
       end
 
+      // accept-cycle read: address the banks from the LIVE request (way_idx of the
+      // full address == way_idx of its line: the index/tag bits exclude the offset).
+      // No invalidate guard needed: if the FSM takes the inv arm instead, the read
+      // data is simply never consumed.
+      if (st==S_IDLE && (rd_req || (wr_req && WRITABLE!=0))) begin
+         for (w2=0; w2<WAYS; w2=w2+1) begin
+            bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
+            bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
+         end
+      end
       // window read: present line's chunks so data is valid next cycle (both ways read)
+      // (still used by the span phase-1 lookup and the post-fill re-lookup)
       if (st==S_LOOK) begin
          for (w2=0; w2<WAYS; w2=w2+1) begin
             if (!phase) begin
@@ -253,8 +307,29 @@ module cache #(
       if (reset) begin
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
+         pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
       end else begin
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
+         // parallel prefetch engine: issue on the idle L2 port during hit-path
+         // states (they never touch L2); mutual exclusion with demand fills is
+         // by construction -- S_FILL stalls while pf_infl, l2_req is only ever
+         // raised in states outside the issue set, and PF_EN excludes the
+         // writeback/write-through/flush L2 states entirely.
+         if (PF_EN) begin
+            if (!pf_infl && pf_want && !l2_req
+                && (st==S_IDLE || st==S_LOOK || st==S_CHECK || st==S_FIN)) begin
+               l2_req <= 1; l2_we <= 0; l2_addr <= pf_next;
+               pf_ia <= pf_next;
+               pf_infl <= 1; pf_want <= 0;
+            end
+            if (pf_infl && l2_ack) begin
+               // pf_drop: an invalidate ran while this read was in flight -- the
+               // line predates the flush, so land it DEAD (else a stale line
+               // survives fence.i through the buffer).
+               pf_line <= l2_rdata; pf_addr <= pf_ia; pf_val <= ~pf_drop;
+               pf_infl <= 0; pf_drop <= 0;
+            end
+         end
          // Latch + ACK an invalidate the cycle it is requested, even if the cache is mid-
          // operation (inv_req is only acted on at S_IDLE). Without this a 1-cycle inv_req
          // pulse arriving during a refill is silently dropped -> a stale line survives a
@@ -266,6 +341,8 @@ module cache #(
               phase <= 0;
               if (inv_req | inv_pend) begin
                  inv_pend <= 1'b0;
+                 pf_val <= 0; pf_want <= 0;      // prefetch buffer shares the cache's fate
+                 if (pf_infl) pf_drop <= 1;      // in-flight line predates the flush: land it dead
                  if (WRITABLE==0 || WRTHRU!=0) begin
                     for (b=0;b<NW;b=b+1) valm[b] <= 1'b0;
                     inv_busy <= 1; st <= S_INVDONE;
@@ -287,7 +364,7 @@ module cache #(
                  r_span   <= ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
                                + (rd_req ? RDB : WRB)) > WORDB);
                  cur_line <= {(rd_req ? rd_addr[PAW-1:OFFB] : wr_addr[PAW-1:OFFB]), {OFFB{1'b0}}};
-                 st <= S_LOOK;
+                 st <= S_CHECK;    // banks already addressed this cycle (live drive above)
               end
            end
 
@@ -322,6 +399,14 @@ module cache #(
                     whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
                     w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
                     if (r_span) begin phase <= 1; cur_line <= line1; st <= S_LOOK; end
+                    else if (!r_is_wr && !r_uncached) begin
+                       // fast read delivery: the window is live on the bank outputs
+                       // (the same values registering into wlo/whi this edge) -- skip
+                       // S_FIN. NC reads keep the slow path (S_FIN's flush-around).
+                       rd_data  <= fast_sh[RDW-1:0];
+                       rd_valid <= 1; rd_resp_addr <= r_addr;
+                       st <= S_IDLE;
+                    end
                     else st <= S_FIN;
                  end else begin
                     whi <= bk_rddata[hway*2+0];           // line1 chunk0
@@ -330,7 +415,13 @@ module cache #(
               end else begin
                  vw <= vicm[base_idx(cur_line)];
                  vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
-                 st <= S_WB;
+                 // stream-buffer hit: skip the L2 round trip. Capture the line AND
+                 // consume the buffer AT THIS EDGE: a prefetch ack can land this very
+                 // cycle and overwrite pf_line/pf_addr with a DIFFERENT line -- the
+                 // nonblocking reads here take the pre-ack values pf_hit was computed
+                 // on (a same-edge ack's fresh line is discarded: hint loss only).
+                 if (pf_hit) begin linebuf <= pf_line; pf_val <= 0; end
+                 st <= pf_hit ? S_PFI : S_WB;
               end
            end
 
@@ -361,13 +452,39 @@ module cache #(
               st <= S_FILLI;
            end
 
-           S_FILL: begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
+           S_FILL: if (PF_EN && pf_hit) begin
+              // the missing line is in (or just landed in) the buffer: install it.
+              // Same decision-edge capture/consume as the S_CHECK shortcut.
+              linebuf <= pf_line; pf_val <= 0;
+              st <= S_PFI;
+           end else if (PF_EN && pf_infl) begin
+              // a prefetch is mid-flight on the L2 port: wait it out (it may be
+              // exactly the missing line, caught by the branch above on landing).
+           end else begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
            S_FILLW: if (l2_ack) begin
               linebuf <= l2_rdata; pc <= 0;
               tagm[vflat] <= tag_of(cur_line);
               valm[vflat] <= 1'b1;
               dirm[vflat] <= 1'b0;
               vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              st <= S_FILLI;
+              if (PF_EN && !r_uncached && !r_cbo_zero) begin
+                 pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;  // arm next-line
+              end
+           end
+
+           // ---- prefetch: victim already chosen at S_CHECK; install the buffered line
+           // (same bookkeeping as S_FILLW but sourced from pf_line, no L2), then re-arm
+           // for the line after -- consumption-chained streaming.
+           // prefetch install: linebuf was captured (and the buffer consumed) at the
+           // decision edge in S_CHECK/S_FILL; here only the line bookkeeping + re-arm.
+           S_PFI: begin
+              pc <= 0;
+              tagm[vflat] <= tag_of(cur_line);
+              valm[vflat] <= 1'b1;
+              dirm[vflat] <= 1'b0;
+              vicm[base_idx(cur_line)] <= ~vicm[base_idx(cur_line)];
+              pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;
               st <= S_FILLI;
            end
            S_FILLI: begin                  // install pair pc (bank writes combinational)

@@ -361,7 +361,7 @@ module soc_top #(
    reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
    wire         i_match = i_have & (i_pa == imem_addr);
    wire         i_need  = ~i_match;
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
    wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
    wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
@@ -387,16 +387,23 @@ module soc_top #(
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
       end
-   assign imem_data  = i_win;
+   // Arrival bypass: serve the window COMBINATIONALLY the cycle the I$ delivers it
+   // (ic_rd_data is a register inside the cache, so this adds a mux, not logic
+   // depth from the arrays). Guard with the response address: a redirect can move
+   // pc while a window is in flight, and the stale response must read as a miss.
+   wire         i_arr = ic_rd_valid & (ic_rd_resp_addr == imem_addr);
+   assign imem_data  = i_arr ? ic_rd_data : i_win;
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = fi_stall ? 4'd0 : (i_match ? 4'd8 : 4'd0);
+   assign imem_avail = fi_stall ? 4'd0 : ((i_match | i_arr) ? 4'd8 : 4'd0);
 
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PERF_ID(0)) u_icache
+   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
+           .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_resp_addr(ic_rd_resp_addr),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
