@@ -141,6 +141,15 @@ module tb;
                      dut.dc_l2_req, dut.dc_l2_we, dut.dc_l2_ack, dut.dc_l2_addr);
             $display("  I$: ic_rd_req=%b ic_l2_req=%b ic_l2_ack=%b i_rd_pend=%b  dcr: req=%b addr=%h",
                      dut.ic_rd_req, dut.ic_l2_req, dut.ic_l2_ack, dut.i_rd_pend, dut.dcr_req, dut.dcr_addr);
+            $display("  DISP: any_valid=%b ccfull=%b dispready=%b festall=%b sbfull=%b lqfull=%b rollv=%b dflt=%b ill=%b",
+                     dut.core.any_valid, dut.core.cc_full, &dut.core.disp_ready, |dut.core.fe_stall,
+                     dut.core.sb_full, dut.core.lq_full, dut.core.roll_v, dut.core.lsu_dfault_v, dut.core.ill_v);
+            $display("  IFLT: pend=%b epc=%h ccempty=%b replay=%b devldsolo=%b injinfl=%b csr_irq=%b",
+                     dut.core.pend_iflt, dut.core.iflt_epc, dut.core.cc_empty, dut.core.replay_v,
+                     dut.core.devld_solo_v, dut.core.inject_inflight, dut.core.csr_irq_v);
+            $display("  CC: cur=%0d committed=%0d cnt0=%0d cnt1=%0d cnt2=%0d cnt3=%0d",
+                     dut.core.cur, dut.core.cc_committed, dut.core.cc.count[0], dut.core.cc.count[1],
+                     dut.core.cc.count[2], dut.core.cc.count[3]);
             probe_dump_ring(dut.imem_addr);
             $finish;
          end

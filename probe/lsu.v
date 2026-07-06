@@ -631,12 +631,19 @@ module lsu
    reg [3:0]        df_cau_r;
    reg [AW-1:0]     df_tval_r;
    initial df_v = 1'b0;
+   // A fault report racing the rollback that squashes its op must NOT latch: with df_v
+   // still clear, the clear-branch below can't run, and an orphaned latch is a total
+   // deadlock -- dispatch freezes on dfault_v while delivery waits for cc_committed to
+   // reach a checkpoint that (dispatch frozen, pipe drained) never advances. Seen live:
+   // a wrong-path load down a stale-RAS predicted return faulted in the same cycle the
+   // JALR mispredict rolled it back, wedging the machine with an empty pipeline.
+   wire             df_set = df_now && !(rollback && older(rollback_seq, df_nseq));
    always @(posedge clk) begin
       if (reset) df_v <= 1'b0;
       // clear when our own trap is taken (one-cycle pulse, robust to checkpoint-index reuse
       // corrupting the seqno compare) OR when a branch rollback squashes the faulting op.
       else if (df_v && (dfault_taken || (rollback && older(rollback_seq, df_seq_r)))) df_v <= 1'b0;
-      else if (df_now && (!df_v || older(df_nseq, df_seq_r))) begin
+      else if (df_set && (!df_v || older(df_nseq, df_seq_r))) begin
          df_v <= 1'b1; df_seq_r <= df_nseq; df_ck_r <= df_nck;
          df_cau_r <= df_ncau; df_tval_r <= df_ntval;
       end
