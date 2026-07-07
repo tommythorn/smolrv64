@@ -1,0 +1,87 @@
+/* sandbox-stress (nolibc): reproduce systemd's generator-sandbox shape.
+ * Round: fork manager -> unshare(CLONE_NEWNS) + private tmpfs -> spawn NGEN
+ * re-exec'd children (COW churn + tmpfs writes) -> waitall -> pipe barrier.
+ * No libc: raw ecall shims only (the host cross-glibc is next-baseline/V-
+ * tainted and must never touch the board). */
+#include "nolibc.h"
+#define ROUNDS 50
+#define NGEN   16
+#define COWSZ  (256*1024)
+
+static const char *selfpath;
+
+static int be_generator(int idx) {
+    char *m = xmmap(COWSZ);
+    if ((long)m < 0) return 2;
+    for (ulong i = 0; i < COWSZ; i += 4096) m[i] = (char)i;
+    long c = xfork();
+    if (c == 0) { for (ulong i = 0; i < COWSZ; i += 4096) m[i]++; xexit(0); }
+    char path[24] = "/tmp/sbx/gXX";
+    path[10] = '0' + idx / 10; path[11] = '0' + idx % 10;
+    long fd = xopenc(path);
+    if (fd >= 0) { xwrite(fd, path, 12); xclose(fd); }
+    int st = -1; xwait4(c, &st);
+    xmunmap(m, COWSZ);
+    return (st == 0) ? 0 : 3;
+}
+
+int main(int argc, char **argv) {
+    selfpath = argv[0];
+    if (argc == 3 && argv[1][0]=='-' && argv[1][1]=='g')
+        return be_generator((argv[2][0]-'0')*10 + (argv[2][1]-'0'));
+    puts1("sandbox-stress(nolibc): 50 rounds x 16 generators\n");
+    for (int r = 0; r < ROUNDS; r++) {
+        int rp[2];
+        if (xpipe2(rp)) { puts1("pipe fail\n"); return 1; }
+        long mgr = xfork();
+        if (mgr == 0) {
+            xclose(rp[0]);
+            if (xunshare(CLONE_NEWNS))                          { xwrite(rp[1],"U",1); xexit(10); }
+            if (xmount("none","/",0,MS_REC|MS_PRIVATE,0))       { xwrite(rp[1],"P",1); xexit(11); }
+            if (xmount("tmpfs","/tmp","tmpfs",0,"size=4m"))     { xwrite(rp[1],"T",1); xexit(12); }
+            if (xmkdir("/tmp/sbx"))                             { xwrite(rp[1],"D",1); xexit(13); }
+            long g[NGEN]; char nb[3] = "00";
+            for (int i = 0; i < NGEN; i++) {
+                g[i] = xfork();
+                if (g[i] == 0) {
+                    nb[0] = '0' + i/10; nb[1] = '0' + i%10;
+                    char *av[4]; av[0]=(char*)selfpath; av[1]="-g"; av[2]=nb; av[3]=0;
+                    xexecve(selfpath, av, 0);
+                    xexit(9);
+                }
+            }
+            int bad = 0;
+            for (int i = 0; i < NGEN; i++) { int st=-1; xwait4(g[i], &st); if (st) bad++; }
+            xwrite(rp[1], bad ? "B" : "K", 1);
+            xexit(bad ? 14 : 0);
+        }
+        xclose(rp[1]);
+        char ack = 0;
+        xread(rp[0], &ack, 1);
+        xclose(rp[0]);
+        int st = -1; xwait4(mgr, &st);
+        if (ack != 'K') { puts1("\nFAIL ack\n"); return 1; }
+        xwrite(1, ".", 1);
+    }
+    puts1("\nsandbox-stress PASS\n");
+    return 0;
+}
+
+/* entry: set up argc/argv from the initial stack, call main, exit */
+__asm__(
+    ".global _start\n"
+    "_start:\n"
+    "  ld   a0, 0(sp)\n"        /* argc */
+    "  addi a1, sp, 8\n"        /* argv */
+    "  andi sp, sp, -16\n"
+    "  call main\n"
+    "  j    exit_shim\n");
+void exit_shim(void) { register long a0 __asm__("a0"); xexit((int)a0); }
+
+/* gcc may synthesize calls to these; provide scalar versions locally */
+void *memset(void *d, int c, unsigned long n) {
+    char *p = d; while (n--) *p++ = (char)c; return d;
+}
+void *memcpy(void *d, const void *s, unsigned long n) {
+    char *p = d; const char *q = s; while (n--) *p++ = *q++; return d;
+}
