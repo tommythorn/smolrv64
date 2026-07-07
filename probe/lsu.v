@@ -179,7 +179,21 @@ module lsu
 
    integer i, j, b;
 
-   localparam WW = PAW - 3;        // word-address width (8-byte words)
+   // Word-address width for the store->load forwarding / ordering compares.
+   // MUST cover the FULL virtual address, not PAW: sb_w0/lq_w0 are captured
+   // from the UNTRANSLATED address at fill, and kernel VAs routinely differ
+   // only ABOVE the physical width -- the vmalloc stack (ffffffc6_xxxx) and
+   // the direct map (ffffffd6_xxxx) differ at bit 36. Truncated at PAW=34,
+   // `sd ra,8(sp)` collided with a direct-map load of a DIFFERENT physical
+   // page and forwarded the ra spill into the scheduler's rbtree walk:
+   // silent kernel corruption (tiny128-stress cosim @564,883,274; FPGA
+   // oopses in __rb_insert_augmented/finish_task_switch). Equality compares
+   // only -- no carry chains -- so full width is timing-benign at 66MHz.
+   // (Residual, tracked separately: two DIFFERENT VAs of the SAME physical
+   // page correctly DON'T match here, so a load can miss forwarding from an
+   // SB-resident aliased store -- PA-based forwarding after translation is
+   // the eventual fix for that.)
+   localparam WW = AW - 3;         // word-address width (8-byte words)
 
    // ============================ store buffer ============================
    reg              sb_v   [0:SBDEPTH-1];
@@ -197,7 +211,7 @@ module lsu
    reg [63:0]       sb_data[0:SBDEPTH-1];   // raw data    (drain only)
    reg [3:0]        sb_nb  [0:SBDEPTH-1];   // size 1..8   (drain only)
    // forwarding view (computed at fill, off the critical path): 2-word representation
-   reg [WW-1:0]     sb_w0  [0:SBDEPTH-1];   // low word address  = addr[PAW-1:3]
+   reg [WW-1:0]     sb_w0  [0:SBDEPTH-1];   // low word address  = addr[AW-1:3]
    reg [WW-1:0]     sb_w1  [0:SBDEPTH-1];   // high word address = w0 + 1 (spill word)
    reg [7:0]        sb_be0 [0:SBDEPTH-1];   // byte-enables in word w0
    reg [7:0]        sb_be1 [0:SBDEPTH-1];   // byte-enables in word w1
@@ -484,7 +498,7 @@ module lsu
    // the RMW is non-speculative and sees coherent memory. As cheap as in-order. States:
    //   IDLE -> WAIT(older stores drain) -> RD(read+compute+write) -> WB(write rd back).
    wire [AW-1:0]    a_waddr = a_addr & ~{{(AW-3){1'b0}}, 3'b111};   // 8-byte aligned
-   wire [WW-1:0]    a_word  = a_addr[PAW-1:3];
+   wire [WW-1:0]    a_word  = a_addr[AW-1:3];
    wire             a_islr  = (a_func == 5'b00010);
    wire             a_issc  = (a_func == 5'b00011);
    wire             a_isw   = (a_sz == 2'd2);
@@ -698,7 +712,7 @@ module lsu
                    end
          endcase
          // an intervening store to the reserved word breaks the reservation
-         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][PAW-1:3] == rsv_w)) rsv_v <= 1'b0;
+         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][AW-1:3] == rsv_w)) rsv_v <= 1'b0;
          // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
          // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic. Driven here
          // (priority-last in the FSM's own block) so ast/rsv_v have a SINGLE driver.
@@ -863,8 +877,8 @@ module lsu
                sb_cbo[eidx]  <= exe_st_cbo[i];
                sb_cboz[eidx] <= exe_st_cbo_zero[i];
                sb_cbok[eidx] <= exe_st_cbo_keep[i];
-               sb_w0[eidx]   <= f_addr[PAW-1:3];
-               sb_w1[eidx]   <= f_addr[PAW-1:3] + 1'b1;
+               sb_w0[eidx]   <= f_addr[AW-1:3];
+               sb_w1[eidx]   <= f_addr[AW-1:3] + 1'b1;
                sb_d0[eidx]   <= f_wd[63:0];
                sb_d1[eidx]   <= f_wd[127:64];
                sb_be0[eidx]  <= f_wbe[7:0];
@@ -878,8 +892,8 @@ module lsu
                lq_nb[lidx]   <= exe_ld_nb[i*4 +: 4];
                lq_sgn[lidx]  <= exe_ld_sgn[i];
                lq_fp[lidx]   <= exe_ld_fp[i];
-               lq_w0[lidx]   <= f_addr[PAW-1:3];
-               lq_w1[lidx]   <= f_addr[PAW-1:3] + 1'b1;
+               lq_w0[lidx]   <= f_addr[AW-1:3];
+               lq_w1[lidx]   <= f_addr[AW-1:3] + 1'b1;
                lq_lb[lidx]   <= f_addr[2:0];
                lq_rdy[lidx]  <= 1'b1;
             end
