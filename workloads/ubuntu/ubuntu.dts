@@ -35,11 +35,11 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-                timebase-frequency = <1002506>; /* 2x LIE (real: ui_clk/5/133 = 501253 Hz). Kernel-seconds run
-		                                   at HALF real time so systemd's 90s generator deadline becomes
-		                                   180 real seconds -- the sandboxed generator run needs >91s at
+                timebase-frequency = <5012530>; /* 10x LIE (real: ui_clk/5/133 = 501253 Hz). Kernel-seconds run
+		                                   at ONE-TENTH real time so systemd's 90s generator deadline becomes
+		                                   ~900 real seconds -- the sandboxed generator run outlived the 2x lie's 181s at
 		                                   66MHz (measured: EPROTO kill at exactly Hostname+91s, 2 boots).
-		                                   Revert to honesty when the core is ~2x faster or the image's
+		                                   Revert to honesty when the core is ~10x faster or the image's
 		                                   DefaultTimeoutStartSec is raised. */
 
 		cpu-map {
