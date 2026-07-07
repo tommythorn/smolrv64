@@ -31,6 +31,7 @@
 		clock-frequency = <0x384000>;
 		reg = <0 0x10000000 0 0x100>;
 		compatible = "ns16550a";
+		fifo-size = <1>;
 	};
 
 	cpus {
