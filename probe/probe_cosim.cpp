@@ -152,6 +152,21 @@ void dump_retire(const char* label, const SimmervRetire& r) {
     std::fprintf(stderr, "Diverging retire:\n");
     dump_retire("DUT", dut);
     dump_retire("REF", ref);
+    // Reference-side GPRs at the divergence: registers matched through the
+    // previous retire, so these recover operand values for the diverging op --
+    // e.g. a load's base register pins the exact poisoned memory address for a
+    // follow-up write-watchpoint run.
+    static const char* rn[32] = {
+        "x0","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1","a2","a3",
+        "a4","a5","a6","a7","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11",
+        "t3","t4","t5","t6"};
+    std::fprintf(stderr, "REF GPRs at divergence:\n");
+    for (int i = 0; i < 32; i += 4)
+        std::fprintf(stderr, "  %-3s=%016llx %-3s=%016llx %-3s=%016llx %-3s=%016llx\n",
+            rn[i],   (unsigned long long)simmerv_read_register(g_ctx, i),
+            rn[i+1], (unsigned long long)simmerv_read_register(g_ctx, i+1),
+            rn[i+2], (unsigned long long)simmerv_read_register(g_ctx, i+2),
+            rn[i+3], (unsigned long long)simmerv_read_register(g_ctx, i+3));
     std::fflush(stderr);
     std::abort();
 }
