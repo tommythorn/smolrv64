@@ -81,4 +81,5 @@ fi
 
 echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=$INITRD@+$OFF_INITRD a1=$A1) ==="
 "$BIN" +fw="$FW" +dtb="$DTB" +initrd="$INITRD" \
-       +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC
+       +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC \
+       ${WATCHPA:+"+watchpa=$WATCHPA"}

@@ -186,6 +186,12 @@ module lsu
    reg              sb_rdy [0:SBDEPTH-1];   // filled (addr+data) — M1: addr==data ready
    reg              sb_cmt [0:SBDEPTH-1];   // its checkpoint has committed (drainable)
    reg [SEQW-1:0]   sb_seq [0:SBDEPTH-1];
+`ifndef SYNTHESIS
+   // +watchpa=<hex> store watchpoint (see the [WP] prints below, task #10)
+   reg        wp_en;   reg [63:0] wp_addr;
+   initial begin wp_addr = 64'd0; wp_en = ($value$plusargs("watchpa=%h", wp_addr) != 0); end
+`endif
+
    reg [CBITS-1:0]  sb_ck  [0:SBDEPTH-1];
    reg [AW-1:0]     sb_addr[0:SBDEPTH-1];   // byte address (drain only)
    reg [63:0]       sb_data[0:SBDEPTH-1];   // raw data    (drain only)
@@ -885,6 +891,29 @@ module lsu
                                sb_dev[ck_sel] <= ({{(AW-56){1'b0}}, stx_pa} < DEV_TOP);
                                sb_nc[ck_sel] <= stx_uncached; end
          if (st_ck_flt)  begin sb_xck[ck_sel] <= 1'b1; sb_xflt[ck_sel] <= 1'b1; end
+
+`ifndef SYNTHESIS
+         // +watchpa=<hex>: trace every store touching a watched location through its
+         // three lives -- AGU/SB-fill (VA), check-translate (VA->PA), and drain (PA).
+         // Keyed on addr[27:0] so both VAs of an aliased/one-bit-flipped pair match
+         // (used to catch the sd-ra-to-wrong-page corruption, task #10).
+         if (wp_en) begin
+            for (i = 0; i < IW; i = i + 1)
+               if (exe_st_v[i] && (exe_st_addr[i*AW +: 28] == wp_addr[27:0]))
+                  $display("[WP] FILL  t=%0t seq=%0d idx=%0d va=%h data=%h nb=%0d",
+                           $time, sb_seq[exe_st_idx[i*SBI +: SBI]],
+                           exe_st_idx[i*SBI +: SBI], exe_st_addr[i*AW +: AW],
+                           exe_st_data[i*64 +: 64], exe_st_nb[i*4 +: 4]);
+            if (st_ck_done && (sb_addr[ck_sel][27:0] == wp_addr[27:0] ||
+                               stx_pa[27:0] == wp_addr[27:0]))
+               $display("[WP] XLATE t=%0t seq=%0d idx=%0d va=%h pa=%h",
+                        $time, sb_seq[ck_sel], ck_sel, sb_addr[ck_sel], stx_pa);
+            if (dr_v && (sb_pa[dr_sel][27:0] == wp_addr[27:0]))
+               $display("[WP] DRAIN t=%0t seq=%0d idx=%0d va=%h pa=%h data=%h",
+                        $time, sb_seq[dr_sel], dr_sel, sb_addr[dr_sel],
+                        sb_pa[dr_sel], sb_data[dr_sel]);
+         end
+`endif
 
          // (3) the selected load advances into the MERGE stage (p_*) -- free its LQ entry
          //     when SELECT fires (it then lives in the pipeline, not the queue).
