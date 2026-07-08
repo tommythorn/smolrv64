@@ -299,6 +299,13 @@ if {$probe_core} {
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {
     puts "\n=== Running Synthesis ==="
+    # Cap Vivado's worker threads. The design's peak (~31 GB) overshoots this box's
+    # 29 GB RAM by ~2 GB, so at the default 8 threads it thrashes swap and gets
+    # pressure-killed by systemd-oomd. Fewer threads -> less per-thread working memory
+    # (fits in RAM) AND deterministic P&R (no more timing lottery). Env MAXTHREADS overrides.
+    set maxthr [expr {([info exists env(MAXTHREADS)] && $env(MAXTHREADS) ne "") ? $env(MAXTHREADS) : 4}]
+    puts "Vivado maxThreads: $maxthr"
+    set_param general.maxThreads $maxthr
     # The SRAM workload is loaded with $readmemh, so the hex file contents are
     # part of the bitstream even when the RTL text is unchanged. Vivado's
     # auto-incremental synthesis can reuse BRAM INIT values from the reference
@@ -308,14 +315,27 @@ if {$step in {synth impl bit}} {
         set_property INCREMENTAL_CHECKPOINT "" [get_runs synth_1]
     }
     set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+    set more_opts ""
+    # Control-set reduction. The design uses only ~62% LUTs but ~89% of CLB slices:
+    # ~1670 control sets (many single-register, incl. replicated ui_cpu_reset nets)
+    # scatter flops into separate slices, starving the placer of room and turning
+    # 333 MHz closure into a lottery. Raising the control-set fanout threshold absorbs
+    # low-fanout enables/resets into LUT logic (we have LUT headroom) -> fewer control
+    # sets -> tighter slice packing -> placement freedom. Default 16, env CSOT overrides.
+    set csot [expr {([info exists env(CSOT)] && $env(CSOT) ne "") ? $env(CSOT) : 16}]
+    puts "Synth control_set_opt_threshold: $csot"
+    append more_opts " -control_set_opt_threshold $csot"
     # Optional global fanout limit: the frontend enqueue path (pre_npc ->
     # rf_decode_pc_q, rf_decode_predicted_pc_q) is route-dominated by a couple of
     # high-fanout nets (fo>150). Forcing replication shortens those routes; it is
     # functionally identical (same logic, replicated drivers). Set via env.
     if {[info exists env(FANOUT_LIMIT)] && $env(FANOUT_LIMIT) ne ""} {
         puts "Synth fanout limit: $env(FANOUT_LIMIT)"
+        append more_opts " -fanout_limit $env(FANOUT_LIMIT)"
+    }
+    if {$more_opts ne ""} {
         set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
-            -value "-fanout_limit $env(FANOUT_LIMIT)" -objects [get_runs synth_1]
+            -value [string trim $more_opts] -objects [get_runs synth_1]
     }
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
