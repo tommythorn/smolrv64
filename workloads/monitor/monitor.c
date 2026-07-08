@@ -51,6 +51,12 @@ typedef unsigned long      uint64_t;
 #define SD_CS_GPIO_BASE ((volatile uint32_t *)0x10001100)
 #define SD_CD_GPIO_BASE ((volatile uint32_t *)0x10001200)
 
+// Platform build-id block (rk_xcku5p.v @ 0x1000F000). Same registers Linux userland
+// can read via /dev/mem. Layout: [0]="SMOL" magic, [1]=version, [2:3]=RTL build stamp,
+// [4]=git commit (truncated HEAD), [5]=source-dirty flag.
+#define BUILD_ID_BASE   ((volatile uint32_t *)0x1000F000)
+#define BUILD_ID_MAGIC  0x534d4f4cu
+
 #define SD_SPI_RXDATA   0
 #define SD_SPI_TXDATA   1
 #define SD_SPI_STATUS   2
@@ -127,6 +133,11 @@ static void puthex64(uint64_t v)
 
 static uint64_t read_build_stamp(void)
 {
+    // Prefer the platform build-id MMIO block: it works on both cores, whereas the
+    // probe core (which runs this monitor on the FPGA) doesn't implement the 0xfde
+    // stamp CSR -- reading it there yields zeros. Fall back to the CSR (scalar/sim).
+    if (BUILD_ID_BASE[0] == BUILD_ID_MAGIC)
+        return ((uint64_t)BUILD_ID_BASE[3] << 32) | BUILD_ID_BASE[2];
     uint64_t build_stamp;
     asm volatile ("csrr %0, 0xfde" : "=r"(build_stamp));
     return build_stamp;
@@ -778,6 +789,12 @@ int main(void)
     puthex64(read_build_stamp());
     puts_(" fw=");
     puthex64(MONITOR_BUILD_STAMP);
+    if (BUILD_ID_BASE[0] == BUILD_ID_MAGIC) {
+        puts_(" commit=");
+        puthex32(BUILD_ID_BASE[4]);
+        if (BUILD_ID_BASE[5] & 1)
+            putc_('+');            // source tree was dirty at build time
+    }
     putc_('\n');
 
     for (;;) {
