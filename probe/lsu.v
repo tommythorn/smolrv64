@@ -193,7 +193,13 @@ module lsu
    // page correctly DON'T match here, so a load can miss forwarding from an
    // SB-resident aliased store -- PA-based forwarding after translation is
    // the eventual fix for that.)
-   localparam WW = AW - 3;         // word-address width (8-byte words)
+   // Sv39 canonicality bounds the needed width: bits [63:39] of a canonical VA
+   // mirror bit 38 (non-canonical addresses fault in the mmu before any
+   // forwarding matters), and Bare-mode PAs fit in 34 bits -- so [38:3] compares
+   // distinguish every address pair the full width would, at half the register/
+   // compare cost on the load-select CE cone (61b endpoints missed timing by
+   // -0.49). Revisit for Sv48.
+   localparam WW = 39 - 3;         // word-address width (8-byte words)
 
    // ============================ store buffer ============================
    reg              sb_v   [0:SBDEPTH-1];
@@ -498,7 +504,7 @@ module lsu
    // the RMW is non-speculative and sees coherent memory. As cheap as in-order. States:
    //   IDLE -> WAIT(older stores drain) -> RD(read+compute+write) -> WB(write rd back).
    wire [AW-1:0]    a_waddr = a_addr & ~{{(AW-3){1'b0}}, 3'b111};   // 8-byte aligned
-   wire [WW-1:0]    a_word  = a_addr[AW-1:3];
+   wire [WW-1:0]    a_word  = a_addr[38:3];
    wire             a_islr  = (a_func == 5'b00010);
    wire             a_issc  = (a_func == 5'b00011);
    wire             a_isw   = (a_sz == 2'd2);
@@ -712,7 +718,7 @@ module lsu
                    end
          endcase
          // an intervening store to the reserved word breaks the reservation
-         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][AW-1:3] == rsv_w)) rsv_v <= 1'b0;
+         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w)) rsv_v <= 1'b0;
          // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
          // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic. Driven here
          // (priority-last in the FSM's own block) so ast/rsv_v have a SINGLE driver.
@@ -877,8 +883,8 @@ module lsu
                sb_cbo[eidx]  <= exe_st_cbo[i];
                sb_cboz[eidx] <= exe_st_cbo_zero[i];
                sb_cbok[eidx] <= exe_st_cbo_keep[i];
-               sb_w0[eidx]   <= f_addr[AW-1:3];
-               sb_w1[eidx]   <= f_addr[AW-1:3] + 1'b1;
+               sb_w0[eidx]   <= f_addr[38:3];
+               sb_w1[eidx]   <= f_addr[38:3] + 1'b1;
                sb_d0[eidx]   <= f_wd[63:0];
                sb_d1[eidx]   <= f_wd[127:64];
                sb_be0[eidx]  <= f_wbe[7:0];
@@ -892,8 +898,8 @@ module lsu
                lq_nb[lidx]   <= exe_ld_nb[i*4 +: 4];
                lq_sgn[lidx]  <= exe_ld_sgn[i];
                lq_fp[lidx]   <= exe_ld_fp[i];
-               lq_w0[lidx]   <= f_addr[AW-1:3];
-               lq_w1[lidx]   <= f_addr[AW-1:3] + 1'b1;
+               lq_w0[lidx]   <= f_addr[38:3];
+               lq_w1[lidx]   <= f_addr[38:3] + 1'b1;
                lq_lb[lidx]   <= f_addr[2:0];
                lq_rdy[lidx]  <= 1'b1;
             end
