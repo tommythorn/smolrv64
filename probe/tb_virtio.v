@@ -217,7 +217,10 @@ module tb;
       if ($value$plusargs("cycles=%d", ncyc)) ;
       if (ncyc == 0) ncyc = ~64'd0;   // +cycles=0 = no cap
       // Echo the EFFECTIVE cap: a run must prove what it consumed, not what was passed.
+      // $fflush: stdout is FULLY buffered when redirected to a file, so without explicit
+      // flushes a fresh run shows nothing (only the DPI's stderr) for minutes.
       $display("[tb_virtio: cycle cap = %0d]", ncyc);
+      $fflush;
       if ($value$plusargs("disk=%s", disk)) sd_attach(disk);
       else $display("[tb_virtio: no +disk -- virtio-blk has no media]");
       load_bin(fw,  OFF_FW);
@@ -228,7 +231,10 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
-         if ((c % 1000000) == 0) $display("[c=%0d pc=%h]", c, dut.imem_addr);
+         if ((c % 1000000) == 0) begin
+            $display("[c=%0d pc=%h]", c, dut.imem_addr);
+            $fflush;   // keep file-redirected logs live (also drains buffered UART text)
+         end
       end
       $display("\n[tb_virtio: %0d cycles done]", ncyc);
       $finish;
