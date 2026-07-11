@@ -137,12 +137,13 @@ module ddr_line_axi #(
                     m_axi_rready  <= 1'b1;
                     state         <= S_RD;
                  end
+           // shift each beat in from the top -> final layout = beat_i at [i*AXI_DW],
+           // identical to the old beat-indexed write but with no variable mux.
            S_RD: if (m_axi_rvalid) begin
-                    buf_data[beat*AXI_DW +: AXI_DW] <= m_axi_rdata;
-                    beat <= beat + 1'b1;
+                    buf_data <= {m_axi_rdata, buf_data[LINE_BITS-1:AXI_DW]};
                     if (m_axi_rlast) begin
                        m_axi_rready <= 1'b0;
-                       ddr_rdata    <= {m_axi_rdata, buf_data[LINE_BITS-AXI_DW-1:0]};
+                       ddr_rdata    <= {m_axi_rdata, buf_data[LINE_BITS-1:AXI_DW]};
                        ddr_ack      <= 1'b1;
                        state        <= S_IDLE;
                     end
@@ -151,7 +152,8 @@ module ddr_line_axi #(
            // ---- write: address, then BEATS data beats, then response ----
            S_AW: if (m_axi_awready) begin
                     m_axi_awvalid <= 1'b0;
-                    m_axi_wdata   <= buf_data[0 +: AXI_DW];
+                    m_axi_wdata   <= buf_data[0 +: AXI_DW];   // beat 0
+                    buf_data      <= buf_data >> AXI_DW;      // next beat -> low
                     m_axi_wvalid  <= 1'b1;
                     m_axi_wlast   <= (BEATS == 1);
                     state         <= S_WD;
@@ -164,7 +166,8 @@ module ddr_line_axi #(
                        state        <= S_B;
                     end else begin
                        beat        <= beat + 1'b1;
-                       m_axi_wdata <= buf_data[(beat+1)*AXI_DW +: AXI_DW];
+                       m_axi_wdata <= buf_data[0 +: AXI_DW];  // shifted low = next beat
+                       buf_data    <= buf_data >> AXI_DW;
                        m_axi_wlast <= (beat + 1'b1 == BEATS-1);
                     end
                  end
