@@ -55,3 +55,21 @@ static inline void xexit(int c)                          { sysc(SYS_exit_group,c
 static inline ulong xstrlen(const char*s){ ulong n=0; while(s[n]) n++; return n; }
 static inline void puts1(const char*s){ xwrite(1,s,xstrlen(s)); }
 #endif
+/* v2 additions: sandbox-shaped syscalls beyond fork/mount/unshare */
+#define SYS_ppoll 73
+#define SYS_prctl 167
+#define SYS_seccomp 277
+#define SYS_close_range 436
+#define PR_SET_NO_NEW_PRIVS 38
+#define SECCOMP_SET_MODE_FILTER 1
+#define MS_MOVE 8192
+struct xpollfd { int fd; short events; short revents; };
+struct xtimespec { long sec; long nsec; };
+struct xsock_filter { unsigned short code; unsigned char jt, jf; unsigned int k; };
+struct xsock_fprog { unsigned short len; const struct xsock_filter *filter; };
+static inline long xppoll(struct xpollfd *f, ulong n, struct xtimespec *ts) {
+    return sysc(SYS_ppoll, (long)f, n, (long)ts, 0, 8, 0);   /* sigsetsize=8, no mask */
+}
+static inline long xprctl(long op, long a) { return sysc(SYS_prctl, op, a, 0,0,0,0); }
+static inline long xseccomp(ulong op, ulong fl, const void *p) { return sysc(SYS_seccomp, op, fl, (long)p,0,0,0); }
+static inline long xclose_range(ulong lo, ulong hi, ulong fl) { return sysc(SYS_close_range, lo, hi, fl,0,0,0); }
