@@ -323,8 +323,12 @@ if {$step in {synth impl bit}} {
     # low-fanout enables/resets into LUT logic (we have LUT headroom) -> fewer control
     # sets -> tighter slice packing -> placement freedom. Default 16, env CSOT overrides.
     set csot [expr {([info exists env(CSOT)] && $env(CSOT) ne "") ? $env(CSOT) : 16}]
-    puts "Synth control_set_opt_threshold: $csot"
-    append more_opts " -control_set_opt_threshold $csot"
+    if {$csot eq "off"} {
+        puts "Synth control_set_opt_threshold: (default, override disabled)"
+    } else {
+        puts "Synth control_set_opt_threshold: $csot"
+        append more_opts " -control_set_opt_threshold $csot"
+    }
     # Optional global fanout limit: the frontend enqueue path (pre_npc ->
     # rf_decode_pc_q, rf_decode_predicted_pc_q) is route-dominated by a couple of
     # high-fanout nets (fo>150). Forcing replication shortens those routes; it is

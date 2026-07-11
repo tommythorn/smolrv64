@@ -53,12 +53,13 @@ module ddr_line_cdc (
       if (reset_m) begin ms<=M_IDLE; m_req<=1'b0; m_done<=1'b0; end
       else begin
          m_req <= 1'b0;
+         // m_ack pulses only during M_REQ, so gating the 512-bit read capture on
+         // m_ack alone (not the FSM one-hot) is equivalent and drops the state
+         // decode from its CE -- the same class of ui_clk path as m_wdata.
+         if (m_ack) m_rdata_q <= m_rdata;
          case (ms)
-           M_IDLE: if (req_m) begin           // capture the (stable) request payload
-                      m_we<=p_we_m; m_addr<=p_addr_m; m_wdata<=p_wdata_m;
-                      m_req<=1'b1; ms<=M_REQ;
-                   end
-           M_REQ:  if (m_ack) begin m_rdata_q<=m_rdata; m_done<=1'b1; ms<=M_DONE; end
+           M_IDLE: if (req_m) begin m_req<=1'b1; ms<=M_REQ; end
+           M_REQ:  if (m_ack) begin m_done<=1'b1; ms<=M_DONE; end
            M_DONE: if (!req_m) begin m_done<=1'b0; ms<=M_IDLE; end   // consumer dropped req
          endcase
       end
@@ -66,6 +67,11 @@ module ddr_line_cdc (
    always @(posedge clk_m) begin
       req_m0 <= p_busy; req_m1 <= req_m0;
       p_we_m <= p_we; p_addr_m <= p_addr; p_wdata_m <= p_wdata;
+      // Present the (stable) payload to the bridge every cycle -- same value at the
+      // same edge as the old M_IDLE latch, but the 512-bit m_wdata capture enable is
+      // now constant instead of an FSM_onehot decode (that was the -0.287 ns ui_clk
+      // path). The bridge samples these only at the m_req pulse.
+      m_we <= p_we_m; m_addr <= p_addr_m; m_wdata <= p_wdata_m;
    end
 
    // ---------- clk_m -> clk_p: done level ----------
