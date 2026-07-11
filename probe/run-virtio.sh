@@ -4,7 +4,7 @@
 # the device DMAs DIRECTLY into the behavioral DDR (bypassing the D$) = non-coherent DMA
 # the kernel handles with Svpbmt NC rings + Zicbom CMO. Resets straight to OpenSBI with
 # a1=DTB (rf_shard +a1= seed). Builds the one verilated binary once, then runs it.
-#   ./run-virtio.sh [class]          env: CYC, FW, DTB, INITRD, DISK, A1, BUILD=1
+#   ./run-virtio.sh [class]          env: CYC (0 = no cap, DEFAULT), FW, DTB, INITRD, DISK, A1, BUILD=1
 set -u
 cd "$(dirname "$0")"
 
@@ -18,11 +18,16 @@ DTB=${DTB:-$U/ubuntu.dtb}
 INITRD=${INITRD:-}                     # Ubuntu mounts root=/dev/vda1 directly; no initrd
 DISK=${DISK:-$U/ubuntu-25.04-preinstalled-server-riscv64.img}
 A1=${A1:-82000000}                     # DTB loaded at DDR off 0x0200_0000 = guest 0x8200_0000
-CYC=${CYC:-2000000000}                 # 2G cyc cap (~100 min @ ~330k cyc/s); Ctrl-C any time
+CYC=${CYC:-0}                          # DEFAULT = NO CAP (tb: +cycles=0 = run forever; Ctrl-C /
+                                       # kill when done). CYC=N for a finite cap. A 2G default
+                                       # once silently expired an interactive boot at [c=1999...].
 BIN=obj_dir_virtio/tb_virtio
 
-# ---- build once (or on BUILD=1 / missing binary) ----
-if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ]; then
+# ---- build on BUILD=1 / missing binary / any source newer than the binary ----
+# (the old existence-only check silently ran stale RTL/tb; same fix as run-cosim-linux.sh)
+if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || \
+   find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.cpp' -o -name '*.f' \) \
+        -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    echo "building $BIN ..."
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
    extra="../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \

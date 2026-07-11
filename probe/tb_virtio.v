@@ -215,6 +215,9 @@ module tb;
       if (!$value$plusargs("fw=%s", fw))         begin $display("FATAL: +fw"); $finish; end
       if (!$value$plusargs("dtb=%s", dtb))       begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
+      if (ncyc == 0) ncyc = ~64'd0;   // +cycles=0 = no cap
+      // Echo the EFFECTIVE cap: a run must prove what it consumed, not what was passed.
+      $display("[tb_virtio: cycle cap = %0d]", ncyc);
       if ($value$plusargs("disk=%s", disk)) sd_attach(disk);
       else $display("[tb_virtio: no +disk -- virtio-blk has no media]");
       load_bin(fw,  OFF_FW);
