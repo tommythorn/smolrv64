@@ -215,4 +215,61 @@ module axi_two_master_arbiter(
    assign s1_axi_rvalid  = read_sel ? m_axi_rvalid : 1'b0;
 endmodule
 
+// Single-entry AXI read-response (R channel) register slice / skid buffer.
+// Registers the forward path (rvalid/rid/rdata/rresp/rlast) so a downstream
+// consumer no longer sees a combinational function of the arbiter's grant
+// (which combinationally depends on the *other* master's arvalid). Breaks the
+// long cross-die path from the virtio DMA FSM to the 512-bit line-buffer
+// capture enable, at the cost of one cycle of read latency (invisible to
+// block DMA / cache-line fills). Full throughput: accepts a beat every cycle
+// the downstream consumes one (no bubble).
+module axi_r_reg_slice #(
+   parameter IDW = 3,
+   parameter DW  = 64
+)(
+   input  wire            clock,
+   input  wire            reset,
+   // upstream: from arbiter s0 R output
+   input  wire [IDW-1:0]  s_rid,
+   input  wire [DW-1:0]   s_rdata,
+   input  wire [1:0]      s_rresp,
+   input  wire            s_rlast,
+   input  wire            s_rvalid,
+   output wire            s_rready,
+   // downstream: to the line-buffer master
+   output wire [IDW-1:0]  m_rid,
+   output wire [DW-1:0]   m_rdata,
+   output wire [1:0]      m_rresp,
+   output wire            m_rlast,
+   output wire            m_rvalid,
+   input  wire            m_rready
+);
+   reg            full;
+   reg [IDW-1:0]  rid_q;
+   reg [DW-1:0]   rdata_q;
+   reg [1:0]      rresp_q;
+   reg            rlast_q;
+
+   assign s_rready = !full || m_rready;   // can accept when empty or draining
+   assign m_rvalid = full;
+   assign m_rid    = rid_q;
+   assign m_rdata  = rdata_q;
+   assign m_rresp  = rresp_q;
+   assign m_rlast  = rlast_q;
+
+   always @(posedge clock) begin
+      if (reset) begin
+         full <= 1'b0;
+      end else if (s_rvalid && s_rready) begin
+         rid_q   <= s_rid;
+         rdata_q <= s_rdata;
+         rresp_q <= s_rresp;
+         rlast_q <= s_rlast;
+         full    <= 1'b1;
+      end else if (m_rready) begin
+         full    <= 1'b0;
+      end
+   end
+endmodule
+
 `default_nettype wire

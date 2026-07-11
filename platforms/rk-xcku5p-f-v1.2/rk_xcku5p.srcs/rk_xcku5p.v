@@ -1213,6 +1213,16 @@ module rk_xcku5p(
       .m_axi_rready   (device_axi_rready)
    );
 
+   // ddr4 arbiter s0 (core) R channel goes through a register slice below, so
+   // core_axi_r* to probe_bridge is registered (breaks the virtio-FSM -> grant
+   // -> 512-bit capture-enable cross-die path). Intermediate = arbiter output.
+   wire [2:0]  core_axi_rid_arb;
+   wire [63:0] core_axi_rdata_arb;
+   wire [1:0]  core_axi_rresp_arb;
+   wire        core_axi_rlast_arb;
+   wire        core_axi_rvalid_arb;
+   wire        core_axi_rready_arb;
+
    axi_two_master_arbiter ddr4_arbiter_inst(
       .clock          (ui_clk),
       .reset          (ui_cpu_reset),
@@ -1248,12 +1258,12 @@ module rk_xcku5p(
       .s0_axi_arqos   (core_axi_arqos),
       .s0_axi_arvalid (core_axi_arvalid),
       .s0_axi_arready (core_axi_arready),
-      .s0_axi_rid     (core_axi_rid),
-      .s0_axi_rdata   (core_axi_rdata),
-      .s0_axi_rresp   (core_axi_rresp),
-      .s0_axi_rlast   (core_axi_rlast),
-      .s0_axi_rvalid  (core_axi_rvalid),
-      .s0_axi_rready  (core_axi_rready),
+      .s0_axi_rid     (core_axi_rid_arb),
+      .s0_axi_rdata   (core_axi_rdata_arb),
+      .s0_axi_rresp   (core_axi_rresp_arb),
+      .s0_axi_rlast   (core_axi_rlast_arb),
+      .s0_axi_rvalid  (core_axi_rvalid_arb),
+      .s0_axi_rready  (core_axi_rready_arb),
 
       .s1_axi_awid    (device_axi_awid),
       .s1_axi_awaddr  (device_axi_awaddr),
@@ -1331,6 +1341,16 @@ module rk_xcku5p(
       .m_axi_rvalid   (m_axi_rvalid),
       .m_axi_rready   (m_axi_rready)
    );
+
+   // Register slice on the core-side read response: arbiter s0 R (_arb) -> core_axi_r*.
+   axi_r_reg_slice #(.IDW(3), .DW(64)) core_r_slice (
+      .clock    (ui_clk),        .reset    (ui_cpu_reset),
+      .s_rid    (core_axi_rid_arb),   .s_rdata (core_axi_rdata_arb),
+      .s_rresp  (core_axi_rresp_arb), .s_rlast (core_axi_rlast_arb),
+      .s_rvalid (core_axi_rvalid_arb), .s_rready (core_axi_rready_arb),
+      .m_rid    (core_axi_rid),       .m_rdata (core_axi_rdata),
+      .m_rresp  (core_axi_rresp),     .m_rlast (core_axi_rlast),
+      .m_rvalid (core_axi_rvalid),    .m_rready (core_axi_rready));
    end else begin : gen_ddr_direct
       assign m_axi_awid        = core_axi_awid;
       assign m_axi_awaddr      = core_axi_awaddr;
