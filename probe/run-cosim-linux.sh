@@ -4,13 +4,16 @@
 # with a1=DTB, and locksteps every committed instruction against simmerv -- aborts on the
 # first divergence (the high-signal output for an overnight run).
 #
-# Defaults run workloads/linux (tiny128). Override via env for other workloads -- the
-# gb5/gb6 dirs ship a `make pcosim` that sets these:
+# Defaults = the GOLDEN 6.x config that boots to login: workloads/ubuntu/fw_payload.bin
+# (OpenSBI + the Ubuntu 6.x kernel -- the ONLY blessed kernel; the old workloads/linux
+# 5.4 payload dies with "FATAL: kernel too old" against the tiny128 userspace) +
+# tiny128 rootfs + workloads/tiny128/tiny128-cosim.dtb (virtio-free, honest timebase).
+# Override via env for other workloads -- the gb5/gb6 dirs ship a `make pcosim`:
 #   NAME       per-workload binary/obj-dir tag (default linux)
-#   MEM_LG2    log2(DDR bytes); sizes the RTL ram[], the C bound, AND simmerv (default 28=256MiB)
+#   MEM_LG2    log2(DDR bytes); sizes the RTL ram[], the C bound, AND simmerv (default 29=512MiB)
 #   FW DTB INITRD   image paths (absolute; this script cd's to probe/)
-#   OFF_DTB OFF_INITRD   load offsets from 0x8000_0000, hex no-0x (default linux 2000000 / 762b000)
-#   A1         DTB physical address seeded into a1, hex no-0x (default 82000000)
+#   OFF_DTB OFF_INITRD   load offsets from 0x8000_0000, hex no-0x (default 1ff00000 / 1f52c000)
+#   A1         DTB physical address seeded into a1, hex no-0x (default 9ff00000)
 #   CYC        cycle cap (default 2000000000000);  BUILD=1 forces a rebuild
 set -u
 cd "$(dirname "$0")"
@@ -23,10 +26,10 @@ NAME=${NAME:-linux}
 THREADS=${THREADS:-1}   # verilator --threads. MEASURED 2026-07-06: 4 threads is ~2.4x SLOWER
                         # (622s -> 1505s per 100M cyc; per-retire DPI + timing coroutines
                         # partition badly). Streams bit-identical. Keep 1.
-MEM_LG2=${MEM_LG2:-28}
-W=../workloads/linux
-FW=${FW:-$W/fw_payload.bin}; DTB=${DTB:-$W/dts.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
-OFF_DTB=${OFF_DTB:-2000000}; OFF_INITRD=${OFF_INITRD:-762b000}; A1=${A1:-82000000}
+MEM_LG2=${MEM_LG2:-29}
+W=../workloads/tiny128
+FW=${FW:-../workloads/ubuntu/fw_payload.bin}; DTB=${DTB:-$W/tiny128-cosim.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
+OFF_DTB=${OFF_DTB:-1ff00000}; OFF_INITRD=${OFF_INITRD:-1f52c000}; A1=${A1:-9ff00000}
 CYC=${CYC:-2000000000000}
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
