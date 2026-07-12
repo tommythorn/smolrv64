@@ -38,6 +38,19 @@ if [ -n "${STRESS:-}" ]; then
    NAME=stress; INITRD=$W/tiny128-stress.cpio; DTB=$W/tiny128-cosim-stress.dtb
    OFF_INITRD=1f400000
 fi
+# Refuse overlapping initrd/dtb load regions. The initrd loads LAST, so an oversized cpio
+# at the golden offset silently clobbers the DTB -- and OpenSBI parses the FDT before it
+# brings up the console (uart addr comes FROM the dtb), so the boot dies with NO output.
+# Bit twice with tiny128-stress.cpio + the default layout; STRESS=1 is the supported form.
+if [ -f "$INITRD" ] && [ -f "$DTB" ]; then
+   isz=$(wc -c < "$INITRD"); dsz=$(wc -c < "$DTB")
+   i0=$((16#$OFF_INITRD)); d0=$((16#$OFF_DTB))
+   if [ "$((i0 < d0 + dsz && d0 < i0 + isz))" = 1 ]; then
+      echo "ERROR: initrd [0x$OFF_INITRD +$isz) overlaps dtb [0x$OFF_DTB +$dsz)." >&2
+      echo "       (oversized cpio? use STRESS=1, or set OFF_INITRD/OFF_DTB explicitly)" >&2
+      exit 1
+   fi
+fi
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
 
