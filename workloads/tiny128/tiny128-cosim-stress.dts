@@ -8,7 +8,7 @@
 
 	chosen {
 		linux,initrd-start = <0 0x9f400000>;
-		linux,initrd-end   = <0 0x9fdd5600>; /* exact: tiny128-stress.cpio (10311168 B, v2 stressor) */
+		linux,initrd-end   = <0 0x9fdd5600>; /* exact: tiny128-stress.cpio (10311168 B, auto-stamped) */
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 

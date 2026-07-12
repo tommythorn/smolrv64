@@ -13,8 +13,14 @@ sandbox-stress: sandbox-stress.c nolibc.h
 tiny128-stress.cpio: sandbox-stress
 	rm -rf ov && mkdir -p ov/bin ov/etc/init.d
 	cp sandbox-stress ov/bin/
-	printf '#!/bin/sh\necho "=== S99stress ==="\n/bin/sandbox-stress\necho "=== S99stress: exit $$? ==="\n' > ov/etc/init.d/S99stress
+	printf '#!/bin/sh\necho "=== S99stress ==="\ncp /bin/sandbox-stress /tmp/ss && X=/tmp/ss || X=/bin/sandbox-stress\n$$X\necho "=== S99stress: exit $$? ==="\n' > ov/etc/init.d/S99stress
 	chmod +x ov/etc/init.d/S99stress ov/bin/sandbox-stress
 	cd ov && find . | cpio -o -H newc > ../overlay.cpio 2>/dev/null
 	cat ../tiny128/tiny128.cpio overlay.cpio > ../tiny128/tiny128-stress.cpio
-	@echo "initrd-end must be 0x9f400000 + $$(wc -c < ../tiny128/tiny128-stress.cpio)"
+	# Stamp the EXACT initrd-end into the cosim-stress dts + regen the dtb, so the
+	# size can never skew from the archive again (the manual-update treadmill bit twice).
+	@sz=$$(wc -c < ../tiny128/tiny128-stress.cpio); end=$$(printf '0x%x' $$((0x9f400000 + sz))); \
+	 sed -i "s|linux,initrd-end   = <0 0x[0-9a-f]*>;.*|linux,initrd-end   = <0 $$end>; /* exact: tiny128-stress.cpio ($$sz B, auto-stamped) */|" \
+	     ../tiny128/tiny128-cosim-stress.dts; \
+	 dtc -I dts -O dtb -o ../tiny128/tiny128-cosim-stress.dtb ../tiny128/tiny128-cosim-stress.dts 2>/dev/null; \
+	 echo "initrd-end auto-stamped: 0x9f400000 + $$sz = $$end"
