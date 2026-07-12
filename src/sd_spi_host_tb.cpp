@@ -1,7 +1,7 @@
 // Build & run:
 //   verilator --cc --exe --build -Mdir obj_dir_spi \
 //     -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNUSEDSIGNAL \
-//     -GSLOW_HALF=2 -GFAST_HALF=1 -GINIT_BYTES=4 \
+//     -GSLOW_HALF=3 -GFAST_HALF=4 -GINIT_BYTES=4   (halves >=3: miso_sync margin) \
 //     --top-module sd_spi_host src/sd_spi_host.v src/sd_spi_host_tb.cpp
 //   ./obj_dir_spi/Vsd_spi_host
 //

@@ -1,8 +1,8 @@
 // Build & run:
 //   verilator --cc --exe --build -Mdir obj_dir_blk \
 //     -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNUSEDSIGNAL \
-//     -GSD_SLOW_HALF=3 -GSD_FAST_HALF=1 -GSD_INIT_TICKS=20 \
-//     --top-module virtio_blk src/virtio_blk.v src/sd_host.v \
+//     -GSD_SLOW_HALF=3 -GSD_FAST_HALF=4 -GSD_INIT_TICKS=20   (halves >=3: miso_sync margin) \
+//     --top-module virtio_blk src/virtio_blk.v src/sd_spi_host.v \
 //     src/axi_single_beat_master.v src/virtio_blk_tb.cpp
 //   ./obj_dir_blk/Vvirtio_blk
 //

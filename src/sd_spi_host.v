@@ -92,6 +92,18 @@ module sd_spi_host #(
    always @(posedge clock) miso_sync <= reset ? 2'b11 : {miso_sync[0], miso};
    wire miso_s = miso_sync[1];
 
+`ifndef SYNTHESIS
+   // The 2-FF miso_sync (+ the registered SCK->model->miso loop in closed-loop sims)
+   // costs 3-4 clocks, so the rising-edge sample only sees the CURRENT bit when the
+   // half period covers it: half >= 3. Below that, any bit that just changed reads
+   // stale -- 0xFF/0x00 survive, data/tokens corrupt. That was the sim-only vda
+   // "sector 0 I/O error" (read token 0xFE misread -> TO_READ timeout -> IOERR).
+   // Fail loudly instead of lying; HW (half=40) is unaffected.
+   always @(posedge clock)
+      if (!reset && bx_go && !bx_active && half < 16'd3)
+         $fatal(1, "sd_spi_host: half=%0d < 3 violates the miso sampling margin", half);
+`endif
+
    always @(posedge clock) begin
       bx_done <= 1'b0;
       if (reset) begin

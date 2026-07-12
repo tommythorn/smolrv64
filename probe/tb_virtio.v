@@ -117,7 +117,7 @@ module tb;
       .queue_num(v_q0_num), .queue_ready(v_q0_ready), .queue_desc(v_q0_desc),
       .queue_driver(v_q0_driver), .queue_device(v_q0_device),
       .device_status(v_dev_status), .used_buffer_interrupt(v_used_irq),
-      .capacity_sectors(v_capacity), .sd_fast_half(16'd2),
+      .capacity_sectors(v_capacity), .sd_fast_half(16'd4),  // >=3: miso_sync sampling margin
       .debug_sel(2'd0), .debug_word(),
       .sd_sck(blk_sck), .sd_mosi(blk_mosi), .sd_miso(blk_miso), .sd_cs_n(blk_cs_n),
       .m_axi_awid(ax_awid), .m_axi_awaddr(ax_awaddr), .m_axi_awlen(ax_awlen), .m_axi_awsize(ax_awsize),
