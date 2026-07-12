@@ -73,13 +73,15 @@ module mmu
    localparam [63:0] PLIC_LO =64'h0c00_0000, PLIC_HI =64'h1000_0000;   // 64 MiB
    localparam [63:0] UART_LO =64'h1000_0000, UART_HI =64'h1000_0008;   // 8 NS16550 byte regs
    localparam [63:0] LSRAM_LO=64'h7000_0000, LSRAM_HI=64'h7004_0000;   // 256 KiB on-chip SRAM
+   localparam [63:0] VIRTIO_LO=64'h1000_2000, VIRTIO_HI=64'h1000_4000; // virtio-mmio 8 KiB (blk+net)
    function pa_valid;
       input [63:0] pa;
       pa_valid = (pa >= DRAM_BASE && pa < DRAM_TOP)
               || (pa >= CLINT_LO  && pa < CLINT_HI)
               || (pa >= PLIC_LO   && pa < PLIC_HI)
               || (pa >= UART_LO   && pa < UART_HI)
-              || (pa >= LSRAM_LO  && pa < LSRAM_HI);
+              || (pa >= LSRAM_LO  && pa < LSRAM_HI)
+              || (pa >= VIRTIO_LO && pa < VIRTIO_HI);
    endfunction
 
    // -------------------- TLB (direct-mapped on VPN[3:0] of vpn0) --------------------
