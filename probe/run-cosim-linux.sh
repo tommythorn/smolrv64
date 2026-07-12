@@ -31,6 +31,13 @@ W=../workloads/tiny128
 FW=${FW:-../workloads/ubuntu/fw_payload.bin}; DTB=${DTB:-$W/tiny128-cosim.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
 OFF_DTB=${OFF_DTB:-1ff00000}; OFF_INITRD=${OFF_INITRD:-1f52c000}; A1=${A1:-9ff00000}
 CYC=${CYC:-2000000000000}
+# STRESS=1 = the sandbox-stress run (systemd generator-child stall chase). The stress cpio
+# is bigger than the flush-packed golden slot (initrd-end == DTB base), so it loads LOWER
+# with its own dtb (tiny128-cosim-stress.dts: initrd @ 0x9f400000). Overrides the above.
+if [ -n "${STRESS:-}" ]; then
+   NAME=stress; INITRD=$W/tiny128-stress.cpio; DTB=$W/tiny128-cosim-stress.dtb
+   OFF_INITRD=1f400000
+fi
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
 

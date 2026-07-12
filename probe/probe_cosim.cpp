@@ -62,7 +62,13 @@ bool load_bin_at(const char* path, uint64_t off) {
     if (!in) { std::fprintf(stderr, "cosim: cannot open %s\n", path); return false; }
     std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-    if (off + buf.size() > MEM_BYTES) { std::fprintf(stderr, "cosim: %s overflows DDR\n", path); return false; }
+    if (off + buf.size() > MEM_BYTES) {
+        // Print the baked-in bound: "overflows" with off < the intended DDR size means
+        // the binary was compiled with a smaller MEM_LG2 (stale build).
+        std::fprintf(stderr, "cosim: %s overflows DDR (off=%llx size=%zu MEM_BYTES=%llx)\n",
+                     path, (unsigned long long)off, buf.size(), (unsigned long long)MEM_BYTES);
+        return false;
+    }
     if (simmerv_write_memory(g_ctx, AXI_BASE + off, buf.data(), buf.size()) != 0) {
         std::fprintf(stderr, "cosim: simmerv_write_memory(%s) failed\n", path); return false;
     }
