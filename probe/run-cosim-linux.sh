@@ -42,7 +42,17 @@ fi
 # at the golden offset silently clobbers the DTB -- and OpenSBI parses the FDT before it
 # brings up the console (uart addr comes FROM the dtb), so the boot dies with NO output.
 # Bit twice with tiny128-stress.cpio + the default layout; STRESS=1 is the supported form.
-if [ -f "$INITRD" ] && [ -f "$DTB" ]; then
+# UBUNTU=1 = the disk-root Ubuntu boot UNDER THE ORACLE (the systemd-generator
+# corruption chase): 2 GiB, no initrd, virtio-blk backed by DISK (default = the
+# repro image). The oracle diverges at the FIRST architecturally-wrong load --
+# hours before GLib's g_hash_table probe loop ever spins on the corruption.
+if [ -n "${UBUNTU:-}" ]; then
+   NAME=ubuntu; MEM_LG2=31
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu/ubuntu.dtb; INITRD=
+   OFF_DTB=2000000; A1=82000000
+   DISK=${DISK:-$HOME/simmerv/linux/ubuntu-25.04-preinstalled-server-riscv64.img}
+fi
+if [ -n "${INITRD:-}" ] && [ -f "$INITRD" ] && [ -f "$DTB" ]; then
    isz=$(wc -c < "$INITRD"); dsz=$(wc -c < "$DTB")
    i0=$((16#$OFF_INITRD)); d0=$((16#$OFF_DTB))
    if [ "$((i0 < d0 + dsz && d0 < i0 + isz))" = 1 ]; then
@@ -54,7 +64,9 @@ fi
 BIN=$(pwd)/obj_dir_cosim_${NAME}/tb_cosim_${NAME}
 STAMP=$(pwd)/obj_dir_cosim_${NAME}/.build_stamp   # records the compile-time config baked in
 
-[ -f "$SIMMERV_LIB" ] || (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
+# Always cargo-build (no-op when clean, ~0.2s): the old existence-only check silently
+# ran a STALE lib after simmerv source changes -- same footgun class as the binary check.
+(cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
 
 # OS-specific link libs. Linux needs -ldl (dlopen) for the Rust static archive;
 # macOS has no libdl (dlopen is in libSystem) and instead needs the vmnet framework
@@ -97,12 +109,15 @@ if [ "$need_build" = 1 ]; then
       -LDFLAGS "$SIMMERV_LIB -lpthread -lm $OSLIBS" \
       -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
       $srcs tb_cosim_linux.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      fp_unit.sv ../src/smolrv64_plic_arbiter.v probe_cosim.cpp $PERFSRC > /tmp/cosim_${NAME}_build.log 2>&1
+      fp_unit.sv ../src/smolrv64_plic_arbiter.v \
+      ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \
+      probe_cosim.cpp sd_dpi.cpp $PERFSRC > /tmp/cosim_${NAME}_build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosim_${NAME}_build.log | head; exit 1; fi
    echo "$want" > "$STAMP"
 fi
 
-echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=$INITRD@+$OFF_INITRD a1=$A1) ==="
-"$BIN" +fw="$FW" +dtb="$DTB" +initrd="$INITRD" \
+echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=${INITRD:-none}@+$OFF_INITRD disk=${DISK:-none} a1=$A1) ==="
+"$BIN" +fw="$FW" +dtb="$DTB" \
+       ${INITRD:+"+initrd=$INITRD"} ${DISK:+"+disk=$DISK"} \
        +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC \
        ${WATCHPA:+"+watchpa=$WATCHPA"}

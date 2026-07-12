@@ -41,13 +41,28 @@ module tb;
       else if (uart_tx_v & uart_tx_rdy) txcnt <= TX_DRAIN[7:0];
       else if (txcnt != 8'd0)        txcnt <= txcnt - 8'd1;
 
+   // ---- virtio MMIO passthrough nets + FPGA-CDC-shaped latency (from tb_virtio) ----
+   wire [11:0] virtio_addr;  wire virtio_read, virtio_write;
+   wire [31:0] virtio_wdata; wire [3:0] virtio_be;
+   wire [31:0] virtio_rdata_comb; wire virtio_irq;
+   reg [31:0] virtio_rd_q;  reg virtio_rvalid;  reg [2:0] vio_lat;
+   always @(posedge clk) begin
+      virtio_rvalid <= 1'b0;
+      if (reset) vio_lat <= 3'd0;
+      else if (virtio_read || virtio_write) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
+      else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
+   end
+
    soc_top #(.RESET_PC(64'h8000_0000)) dut
      (.clk(clk), .reset(reset), .commit(commit),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
       .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready),
-      .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy));
+      .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
+      .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
+      .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq));
 
    // behavioral DDR (DDR_BYTES, 4-cycle line latency). Modeled as a 512-bit LINE array (the
    // ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 -- which stays under
@@ -72,6 +87,113 @@ module tb;
       end
    end
 
+   // ==================== virtio-blk subsystem (from tb_virtio; oracle-aware) ====================
+   // Device DMA lands in lram[] AND is mirrored into simmerv via cosim_dma_write (DPI-order
+   // exact: probe_cosim drains the queue between the retires the write chronologically
+   // separates). MMIO loads on the REF side adopt DUT values (simmerv armed-load path);
+   // REF device-store side effects are swallowed (simmerv cosim_inert_devstore).
+   wire        v_notify_pulse;   wire [31:0] v_notify_value;
+   wire        v_used_irq;       wire [31:0] v_capacity;
+   wire  [7:0] v_dev_status;
+   wire [31:0] v_q0_num;  wire v_q0_ready;
+   wire [63:0] v_q0_desc, v_q0_driver, v_q0_device;
+
+   virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
+     (.clock(clk), .reset(reset),
+      .address(virtio_addr), .read(virtio_read), .read_data(virtio_rdata_comb),
+      .write(virtio_write), .write_data(virtio_wdata), .byteenable(virtio_be),
+      .config_capacity_sectors(v_capacity),
+      .irq(virtio_irq),
+      .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
+      .used_buffer_interrupt(v_used_irq), .config_change_interrupt(1'b0),
+      .driver_features_0(), .driver_features_1(),
+      .queue_num(), .queue_ready(), .queue_desc(), .queue_driver(), .queue_device(),
+      .queue0_num(v_q0_num), .queue0_ready(v_q0_ready), .queue0_desc(v_q0_desc),
+      .queue0_driver(v_q0_driver), .queue0_device(v_q0_device),
+      .queue1_num(), .queue1_ready(), .queue1_desc(), .queue1_driver(), .queue1_device(),
+      .device_status(v_dev_status));
+
+   wire [2:0]  ax_awid;   wire [30:0] ax_awaddr; wire [7:0] ax_awlen;  wire [2:0] ax_awsize;
+   wire [1:0]  ax_awburst; wire ax_awlock; wire [3:0] ax_awcache; wire [2:0] ax_awprot;
+   wire [3:0]  ax_awqos;  wire ax_awvalid;  wire ax_awready;
+   wire [63:0] ax_wdata;  wire [7:0] ax_wstrb; wire ax_wlast; wire ax_wvalid; wire ax_wready;
+   wire [2:0]  ax_bid;    wire [1:0] ax_bresp; wire ax_bvalid; wire ax_bready;
+   wire [2:0]  ax_arid;   wire [30:0] ax_araddr; wire [7:0] ax_arlen;  wire [2:0] ax_arsize;
+   wire [1:0]  ax_arburst; wire ax_arlock; wire [3:0] ax_arcache; wire [2:0] ax_arprot;
+   wire [3:0]  ax_arqos;  wire ax_arvalid;  wire ax_arready;
+   wire [2:0]  ax_rid;    wire [63:0] ax_rdata; wire [1:0] ax_rresp; wire ax_rlast; wire ax_rvalid; wire ax_rready;
+   wire        blk_sck, blk_mosi, blk_cs_n;  reg blk_miso;
+
+   virtio_blk #(.QUEUE_SIZE(32'd8), .SD_SLOW_HALF(16'd4), .SD_FAST_HALF(16'd2), .SD_INIT_TICKS(16'd10)) u_vblk
+     (.clock(clk), .reset(reset),
+      .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
+      .queue_num(v_q0_num), .queue_ready(v_q0_ready), .queue_desc(v_q0_desc),
+      .queue_driver(v_q0_driver), .queue_device(v_q0_device),
+      .device_status(v_dev_status), .used_buffer_interrupt(v_used_irq),
+      .capacity_sectors(v_capacity), .sd_fast_half(16'd4),  // >=3: miso_sync sampling margin
+      .debug_sel(2'd0), .debug_word(),
+      .sd_sck(blk_sck), .sd_mosi(blk_mosi), .sd_miso(blk_miso), .sd_cs_n(blk_cs_n),
+      .m_axi_awid(ax_awid), .m_axi_awaddr(ax_awaddr), .m_axi_awlen(ax_awlen), .m_axi_awsize(ax_awsize),
+      .m_axi_awburst(ax_awburst), .m_axi_awlock(ax_awlock), .m_axi_awcache(ax_awcache),
+      .m_axi_awprot(ax_awprot), .m_axi_awqos(ax_awqos), .m_axi_awvalid(ax_awvalid), .m_axi_awready(ax_awready),
+      .m_axi_wdata(ax_wdata), .m_axi_wstrb(ax_wstrb), .m_axi_wlast(ax_wlast), .m_axi_wvalid(ax_wvalid), .m_axi_wready(ax_wready),
+      .m_axi_bid(ax_bid), .m_axi_bresp(ax_bresp), .m_axi_bvalid(ax_bvalid), .m_axi_bready(ax_bready),
+      .m_axi_arid(ax_arid), .m_axi_araddr(ax_araddr), .m_axi_arlen(ax_arlen), .m_axi_arsize(ax_arsize),
+      .m_axi_arburst(ax_arburst), .m_axi_arlock(ax_arlock), .m_axi_arcache(ax_arcache),
+      .m_axi_arprot(ax_arprot), .m_axi_arqos(ax_arqos), .m_axi_arvalid(ax_arvalid), .m_axi_arready(ax_arready),
+      .m_axi_rid(ax_rid), .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast),
+      .m_axi_rvalid(ax_rvalid), .m_axi_rready(ax_rready));
+
+   // behavioral always-ready single-beat AXI slave into lram[] (non-coherent DMA);
+   // ax_*addr[30:0] is the DDR byte offset (guest_pa - BASE).
+   reg axi_rvalid, axi_bvalid;  reg [63:0] axi_rdata;  integer ka;
+   reg [63:0] ar_line, aw_line;  reg [9:0] ar_bp, aw_bp;
+   assign ax_arready = 1'b1; assign ax_awready = 1'b1; assign ax_wready = 1'b1;
+   assign ax_rvalid = axi_rvalid; assign ax_rdata = axi_rdata; assign ax_rresp = 2'd0;
+   assign ax_rlast = 1'b1; assign ax_rid = 3'd1;
+   assign ax_bvalid = axi_bvalid; assign ax_bresp = 2'd0; assign ax_bid = 3'd1;
+`ifdef PROBE_COSIM
+   import "DPI-C" function void cosim_dma_write(input longint off, input longint data, input byte strb);
+`endif
+   always @(posedge clk) begin
+      if (reset) begin axi_rvalid<=1'b0; axi_bvalid<=1'b0; end
+      else begin
+         if (ax_arvalid && ax_arready && !axi_rvalid) begin
+            ar_line = ((ax_araddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            ar_bp   = (ax_araddr & 6'h3f) << 3;
+            axi_rdata <= lram[ar_line][ar_bp +: 64];
+            axi_rvalid <= 1'b1;
+         end else if (axi_rvalid && ax_rready) axi_rvalid <= 1'b0;
+         if (ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid) begin
+            aw_line = ((ax_awaddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            aw_bp   = (ax_awaddr & 6'h3f) << 3;
+            for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) lram[aw_line][aw_bp + ka*8 +: 8] <= ax_wdata[ka*8 +: 8];
+`ifdef PROBE_COSIM
+            cosim_dma_write({33'd0, ax_awaddr}, ax_wdata, ax_wstrb);   // mirror into simmerv
+`endif
+            axi_bvalid <= 1'b1;
+         end else if (axi_bvalid && ax_bready) axi_bvalid <= 1'b0;
+      end
+   end
+
+   // ---- DPI: file-backed SpiSdCard clocked by the SD-SPI pins each cycle ----
+   import "DPI-C" function void sd_attach(input string path);
+   import "DPI-C" function int  sd_clock(input int sck, input int cs_n, input int mosi);
+   always @(posedge clk) blk_miso <= sd_clock({31'd0, blk_sck}, {31'd0, blk_cs_n}, {31'd0, blk_mosi})>0 ? 1'b1 : 1'b0;
+
+   // virtio-blk request verdicts (entry to S_WRITE_STATUS: 0=OK/1=IOERR/2=UNSUPP)
+   reg [5:0] vbstate_q;
+   always @(posedge clk) begin
+      if (reset) vbstate_q <= 6'd0;
+      else begin
+         vbstate_q <= u_vblk.state;
+         if (u_vblk.state == 6'd31 && vbstate_q != 6'd31)
+            $display("[VBLK c=%0d STATUS=%0d type=%0d sec=%0d secleft=%0d sderr=%b dmaerr=%b]",
+                     c, u_vblk.status_byte, u_vblk.req_type, u_vblk.req_sector,
+                     u_vblk.sectors_left, u_vblk.sd_error, u_vblk.dma_rsp_error);
+      end
+   end
+
    // Load a raw image at byte offset `off` (64-byte aligned for all workloads). $fread fills
    // each 512-bit element MSB-first, so reverse the 64 bytes of every loaded line back to the
    // little-endian byte order the ddr_* port (and the byte-array model it replaced) uses.
@@ -93,7 +215,7 @@ module tb;
       end
    endtask
 
-   reg [8*256-1:0] fw, dtb, initrd;
+   reg [8*256-1:0] fw, dtb, initrd, disk;
    integer b2;
    reg [63:0] ncyc, c;        // 64-bit: cosim runs (gb5/sha256) exceed 2^32 cycles
 `ifdef PROBE_COSIM
@@ -114,6 +236,7 @@ module tb;
       load_bin(fw,  OFF_FW);
       load_bin(dtb, off_dtb);
       if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
+      if ($value$plusargs("disk=%s", disk)) sd_attach(disk);   // virtio-blk media (ubuntu)
 
       // +cycles=0 (or CYC=0) runs UNBOUNDED -- stop only on a cosim divergence (the C
       // harness abort()s) or an external interrupt. Any nonzero value is a hard cycle cap.

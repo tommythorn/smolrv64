@@ -269,7 +269,31 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
     if (!ok) mismatch_abort(dut, ref);
 }
 
+// ---- device-DMA mirror (virtio-blk writes into DUT DDR) ----------------------------
+// The TB forwards every device AXI write beat here in DPI order. Applying immediately
+// would be one retire EARLY (probe_retire holds one retire to learn next_pc), so the
+// beats queue and drain right after step_compare() -- i.e. between exactly the two
+// retires the write chronologically separates. Keeps simmerv RAM == DUT DDR for
+// non-coherent DMA without ever racing an in-flight compare.
+struct DmaBeat { uint64_t off; uint64_t data; uint8_t strb; };
+static std::vector<DmaBeat> g_dmaq;
+
+void drain_dma_queue() {
+    for (const auto& w : g_dmaq)
+        for (int k = 0; k < 8; k++)
+            if (w.strb & (1u << k)) {
+                uint8_t b = (uint8_t)(w.data >> (8 * k));
+                simmerv_write_memory(g_ctx, AXI_BASE + w.off + k, &b, 1);
+            }
+    g_dmaq.clear();
+}
+
 } // namespace
+
+extern "C" void cosim_dma_write(unsigned long long off, unsigned long long data,
+                                unsigned char strb) {
+    g_dmaq.push_back({off, data, strb});
+}
 
 // Called by the TB watchdog when the DUT's fetch is stuck (no retirement progress) -- dumps
 // the last RING_N retirements (DUT vs REF) so a HANG (which never reaches mismatch_abort) is
@@ -317,6 +341,7 @@ extern "C" void probe_retire(
         g_prev.seqno = g_seqno;
         step_compare(g_prev, g_prev_mtimecmp, g_prev_seip);
     }
+    drain_dma_queue();                  // DMA beats older than the retire just held
     g_prev = e;
     g_prev_mtimecmp = mtimecmp;
     g_prev_seip = (seip != 0);
