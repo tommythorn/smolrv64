@@ -119,7 +119,10 @@ if [ "$need_build" = 1 ]; then
 fi
 
 echo "=== cosim '$NAME' (mem=$((1<<(MEM_LG2-20)))MiB fw=$FW dtb=$DTB@+$OFF_DTB initrd=${INITRD:-none}@+$OFF_INITRD disk=${DISK:-none} a1=$A1) ==="
+# Snapshot by default: sim runs used to WRITE the image (journal replay, systemd state),
+# so every run mutated it and copies diverged across machines. DISK_RW=1 opts back in.
+DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"
 "$BIN" +fw="$FW" +dtb="$DTB" \
-       ${INITRD:+"+initrd=$INITRD"} ${DISK:+"+disk=$DISK"} \
+       ${INITRD:+"+initrd=$INITRD"} ${DISK:+"+disk=$DISK"} $DISKRO_ARG \
        +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC \
        ${WATCHPA:+"+watchpa=$WATCHPA"}

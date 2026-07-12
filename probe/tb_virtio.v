@@ -168,6 +168,7 @@ module tb;
    // ---- DPI: file-backed SpiSdCard clocked by the SD-SPI pins each cycle ----
    import "DPI-C" function void sd_attach(input string path);
    import "DPI-C" function int  sd_clock(input int sck, input int cs_n, input int mosi);
+   import "DPI-C" function void sd_readonly();
    always @(posedge clk) blk_miso <= sd_clock({31'd0, blk_sck}, {31'd0, blk_cs_n}, {31'd0, blk_mosi})>0 ? 1'b1 : 1'b0;
 
    // ---------------- boot image load (line array; reused from tb_cosim_linux) ----------------
@@ -226,6 +227,7 @@ module tb;
       $display("[tb_virtio: cycle cap = %0d]", ncyc);
       $fflush;
       if ($value$plusargs("disk=%s", disk)) sd_attach(disk);
+      if ($test$plusargs("disk_ro")) begin sd_readonly(); $display("[sd: SNAPSHOT mode -- image writes stay in RAM]"); end
       else $display("[tb_virtio: no +disk -- virtio-blk has no media]");
       load_bin(fw,  OFF_FW);
       load_bin(dtb, OFF_DTB);

@@ -23,6 +23,7 @@ struct SpiSdCard {
     // loaded lazily on first access (sparse: a hole / past-EOF reads back as zero) and
     // written through on store, so the disk persists across the run. fd<0 -> pure RAM.
     int img_fd = -1;
+    bool readonly = false;   // snapshot mode: writes stay in `store` (RAM), never pwrite
     void attach_image(int fd) {
         img_fd = fd;
         // Advertise the image's size via the CSD-v2 C_SIZE: capacity = (csd_csize+1)*1024
@@ -41,7 +42,7 @@ struct SpiSdCard {
         return blk;
     }
     void writeback(uint32_t s) {
-        if (img_fd >= 0) (void)!pwrite(img_fd, store[s].data(), 512, (off_t)s * 512);
+        if (img_fd >= 0 && !readonly) (void)!pwrite(img_fd, store[s].data(), 512, (off_t)s * 512);
     }
 
     // bit/byte framing

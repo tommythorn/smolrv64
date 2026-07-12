@@ -187,6 +187,7 @@ module tb;
    // ---- DPI: file-backed SpiSdCard clocked by the SD-SPI pins each cycle ----
    import "DPI-C" function void sd_attach(input string path);
    import "DPI-C" function int  sd_clock(input int sck, input int cs_n, input int mosi);
+   import "DPI-C" function void sd_readonly();
    always @(posedge clk) blk_miso <= sd_clock({31'd0, blk_sck}, {31'd0, blk_cs_n}, {31'd0, blk_mosi})>0 ? 1'b1 : 1'b0;
 
    // virtio-blk request verdicts (entry to S_WRITE_STATUS: 0=OK/1=IOERR/2=UNSUPP)
@@ -244,7 +245,8 @@ module tb;
       load_bin(fw,  OFF_FW);
       load_bin(dtb, off_dtb);
       if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
-      if ($value$plusargs("disk=%s", disk)) sd_attach(disk);   // virtio-blk media (ubuntu)
+      if ($value$plusargs("disk=%s", disk)) sd_attach(disk);
+      if ($test$plusargs("disk_ro")) begin sd_readonly(); $display("[sd: SNAPSHOT mode -- image writes stay in RAM]"); end   // virtio-blk media (ubuntu)
 
       // +cycles=0 (or CYC=0) runs UNBOUNDED -- stop only on a cosim divergence (the C
       // harness abort()s) or an external interrupt. Any nonzero value is a hard cycle cap.

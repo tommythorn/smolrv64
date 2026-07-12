@@ -19,6 +19,8 @@ extern "C" void sd_attach(const char* path) {
             path, (long long)sz, (unsigned)((g_card.csd_csize + 1) * 1024));
 }
 
+extern "C" void sd_readonly(void) { g_card.readonly = true; }
+
 extern "C" int sd_clock(int sck, int cs_n, int mosi) {
     g_card.clock_edge(sck & 1, cs_n & 1, mosi & 1);
     return g_card.miso & 1;
