@@ -42,15 +42,23 @@ module tb;
       else if (txcnt != 8'd0)        txcnt <= txcnt - 8'd1;
 
    // ---- virtio MMIO passthrough nets + FPGA-CDC-shaped latency (from tb_virtio) ----
-   wire [11:0] virtio_addr;  wire virtio_read, virtio_write;
+   // soc_top's window is 8 KiB: addr[12] selects blk(+0)/net(+0x1000). The sim has no net
+   // backend: net-window reads return 0 (magic 0 -> the kernel skips the node cleanly);
+   // truncating bit 12 instead aliased net onto blk = ghost vdb probe (seen in tb_virtio).
+   wire [12:0] virtio_addr;  wire virtio_read, virtio_write;
    wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [31:0] virtio_rdata_comb; wire virtio_irq;
+   wire        vio_net = virtio_addr[12];
+   wire [31:0] vio_rdata = vio_net ? 32'd0 : virtio_rdata_comb;
    reg [31:0] virtio_rd_q;  reg virtio_rvalid;  reg [2:0] vio_lat;
    always @(posedge clk) begin
       virtio_rvalid <= 1'b0;
       if (reset) vio_lat <= 3'd0;
-      else if (virtio_read || virtio_write) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
+      else if (virtio_read || virtio_write) begin virtio_rd_q <= vio_rdata; vio_lat <= 3'd3; end
       else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
+      if (virtio_read || virtio_write)   // low-rate (probe/config only); logs every MMIO txn
+         $display("[VIO c=%0d %s a=%h d=%h]", c, virtio_read ? "R" : "W", virtio_addr,
+                  virtio_read ? vio_rdata : virtio_wdata);
    end
 
    soc_top #(.RESET_PC(64'h8000_0000)) dut
@@ -100,8 +108,8 @@ module tb;
 
    virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
      (.clock(clk), .reset(reset),
-      .address(virtio_addr), .read(virtio_read), .read_data(virtio_rdata_comb),
-      .write(virtio_write), .write_data(virtio_wdata), .byteenable(virtio_be),
+      .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
+      .write(virtio_write && !vio_net), .write_data(virtio_wdata), .byteenable(virtio_be),
       .config_capacity_sectors(v_capacity),
       .irq(virtio_irq),
       .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),

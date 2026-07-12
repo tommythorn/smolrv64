@@ -27,9 +27,13 @@ module tb;
    reg          rx_we;  reg [7:0] rx_data;  wire rx_ready;
 
    // ---- virtio MMIO passthrough nets (soc_top <-> virtio_mmio) ----
-   wire [11:0] virtio_addr;  wire virtio_read, virtio_write;
+   // 8 KiB window: addr[12] selects blk(+0)/net(+0x1000). No net backend in sim: the net
+   // window reads 0 (kernel skips the node); truncating bit 12 aliased net onto blk and
+   // enumerated a ghost vdb ("virtio_blk virtio1 ... error -2").
+   wire [12:0] virtio_addr;  wire virtio_read, virtio_write;
    wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [31:0] virtio_rdata_comb; wire virtio_irq;
+   wire        vio_net = virtio_addr[12];
    // Model the FPGA probe_clk<->ui_clk CDC bridge: a virtio read OR write is a 1-cycle req pulse, the
    // completion returns several cycles later with virtio_rvalid (read: latched read_data; write: a
    // delivery ack -- data don't-care). This stresses soc_top's req/rsp handshake (it must wait for
@@ -38,7 +42,7 @@ module tb;
    always @(posedge clk) begin
       virtio_rvalid <= 1'b0;
       if (reset) vio_lat <= 3'd0;
-      else if (virtio_read || virtio_write) begin virtio_rd_q <= virtio_rdata_comb; vio_lat <= 3'd3; end
+      else if (virtio_read || virtio_write) begin virtio_rd_q <= vio_net ? 32'd0 : virtio_rdata_comb; vio_lat <= 3'd3; end
       else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
    end
 
@@ -86,8 +90,8 @@ module tb;
 
    virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
      (.clock(clk), .reset(reset),
-      .address(virtio_addr), .read(virtio_read), .read_data(virtio_rdata_comb),
-      .write(virtio_write), .write_data(virtio_wdata), .byteenable(virtio_be),
+      .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
+      .write(virtio_write && !vio_net), .write_data(virtio_wdata), .byteenable(virtio_be),
       .config_capacity_sectors(v_capacity),
       .irq(virtio_irq),
       .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),

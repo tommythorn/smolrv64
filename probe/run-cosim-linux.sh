@@ -48,7 +48,9 @@ fi
 # hours before GLib's g_hash_table probe loop ever spins on the corruption.
 if [ -n "${UBUNTU:-}" ]; then
    NAME=ubuntu; MEM_LG2=31
-   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu/ubuntu.dtb; INITRD=
+   # ubuntu-cosim.dtb = ubuntu.dts minus the virtio-net node: the sim has no net backend
+   # and the oracle wants no unbacked-window traffic (DUT faulted at 0x10003000 there).
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu/ubuntu-cosim.dtb; INITRD=
    OFF_DTB=2000000; A1=82000000
    DISK=${DISK:-$HOME/simmerv/linux/ubuntu-25.04-preinstalled-server-riscv64.img}
 fi
