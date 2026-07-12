@@ -105,7 +105,12 @@ int main(int argc, char **argv) {
         xread(rp[0], &ack, 1);
         xclose(rp[0]);
         int st = -1; xwait4(mgr, &st);
-        if (ack != 'K') { puts1("\nFAIL ack\n"); return 1; }
+        if (ack != 'K') {                       /* name the failing stage: U/P/T/D/B or 0=no byte */
+            char msg[] = "\nFAIL ack=?\n";
+            msg[10] = ack ? ack : '0';
+            xwrite(1, msg, sizeof(msg) - 1);
+            return 1;
+        }
         xwrite(1, ".", 1);
     }
     puts1("\nsandbox-stress PASS\n");

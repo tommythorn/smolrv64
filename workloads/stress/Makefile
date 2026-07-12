@@ -13,7 +13,9 @@ sandbox-stress: sandbox-stress.c nolibc.h
 tiny128-stress.cpio: sandbox-stress
 	rm -rf ov && mkdir -p ov/bin ov/etc/init.d
 	cp sandbox-stress ov/bin/
-	printf '#!/bin/sh\necho "=== S99stress ==="\ncp /bin/sandbox-stress /tmp/ss && X=/tmp/ss || X=/bin/sandbox-stress\n$$X\necho "=== S99stress: exit $$? ==="\n' > ov/etc/init.d/S99stress
+	# copy target must NOT be under /tmp: the stressor's manager mounts tmpfs over /tmp
+	# before re-exec'ing itself, which vanished the copy (FAIL ack=B, ENOENT execve).
+	printf '#!/bin/sh\necho "=== S99stress ==="\ncp /bin/sandbox-stress /ss && X=/ss || X=/bin/sandbox-stress\n$$X\necho "=== S99stress: exit $$? ==="\n' > ov/etc/init.d/S99stress
 	chmod +x ov/etc/init.d/S99stress ov/bin/sandbox-stress
 	cd ov && find . | cpio -o -H newc > ../overlay.cpio 2>/dev/null
 	cat ../tiny128/tiny128.cpio overlay.cpio > ../tiny128/tiny128-stress.cpio
