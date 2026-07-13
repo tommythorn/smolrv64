@@ -1,6 +1,6 @@
 SRC_DIR  = ../../src
 SIMMERV = $(HOME)/simmerv
-FW=fw_payload.bin-1.7+v7.1-rc1
+FW=fw_payload.bin
 
 ifeq ($(shell uname -o),Darwin)
   RV=riscv64-elf-
@@ -51,16 +51,11 @@ cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-cosim
 %: %.xz
 	xz -d < $^ > $@
 
-fw_payload.elf-6.15.0: fw_payload.elf-6.15.0.xz
-
 tiny128.cpio: tiny128.cpio.xz
 
 tiny128.dtb: tiny128.dts
 	dtc -I dts -O dtb < $^ > $@
 
-$(FW): fw_payload.elf-6.15.0
-	$(RV)objcopy -O binary $^ $@
-
 ref: tiny128.dtb $(FW) tiny128.cpio
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -m 512 -d tiny128.dtb,0x9ff00000 $(FW),0x80000000 tiny128.cpio,0x9f52c000
+	$(SIMMERV)/target/release/simmerv_cli -m 512 -d tiny128-simmerv.dtb,0x9ff00000 $(FW),0x80000000 tiny128.cpio,0x9f52c000
