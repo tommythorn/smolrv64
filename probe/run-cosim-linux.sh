@@ -54,6 +54,15 @@ if [ -n "${UBUNTU:-}" ]; then
    OFF_DTB=2000000; A1=82000000
    DISK=${DISK:-$HOME/simmerv/linux/ubuntu-25.04-preinstalled-server-riscv64.img}
 fi
+# RAM=1 = ubuntu-mini initramfs boot UNDER THE ORACLE: same systemd/GLib/generator stack,
+# rootfs entirely in RAM -- no SD, no virtio, no non-coherent DMA (the storage-path
+# discriminator). Artifact + dtb from workloads/ubuntu-mini/build-mini.sh.
+if [ -n "${RAM:-}" ]; then
+   NAME=ram; MEM_LG2=31
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu-mini/ubuntu-ram.dtb
+   INITRD=../workloads/ubuntu-mini/ubuntu-mini.cpio.gz
+   OFF_DTB=2000000; OFF_INITRD=68000000; A1=82000000; DISK=
+fi
 if [ -n "${INITRD:-}" ] && [ -f "$INITRD" ] && [ -f "$DTB" ]; then
    isz=$(wc -c < "$INITRD"); dsz=$(wc -c < "$DTB")
    i0=$((16#$OFF_INITRD)); d0=$((16#$OFF_DTB))

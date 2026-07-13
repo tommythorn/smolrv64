@@ -72,3 +72,9 @@ cat devnodes.cpio main.cpio > ubuntu-mini.cpio
 rm -f devnodes.cpio main.cpio
 gzip -1 -kf ubuntu-mini.cpio
 ls -la ubuntu-mini.cpio ubuntu-mini.cpio.gz
+
+# ---- stamp the exact initrd range (the .gz at guest 0xE800_0000) into ubuntu-ram.dts ----
+sz=$(wc -c < ubuntu-mini.cpio.gz); end=$(printf '0x%x' $((0xe8000000 + sz)))
+sed -i "s|linux,initrd-end   = <0 0x[0-9a-f]*>;.*|linux,initrd-end   = <0 $end>; /* exact: ubuntu-mini.cpio.gz ($sz B, auto-stamped) */|" ubuntu-ram.dts
+dtc -I dts -O dtb -o ubuntu-ram.dtb ubuntu-ram.dts 2>/dev/null
+echo "initrd range stamped: 0xe8000000 + $sz = $end"

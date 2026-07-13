@@ -214,7 +214,7 @@ module tb;
    end
 
    reg [8*256-1:0] fw, dtb, initrd, disk;
-   reg [63:0] ncyc;
+   reg [63:0] ncyc, off_initrd;
    initial begin
       rx_we=0; rx_data=0; ncyc=200000000; blk_miso=1'b1;
       if (!$value$plusargs("fw=%s", fw))         begin $display("FATAL: +fw"); $finish; end
@@ -231,7 +231,9 @@ module tb;
       else $display("[tb_virtio: no +disk -- virtio-blk has no media]");
       load_bin(fw,  OFF_FW);
       load_bin(dtb, OFF_DTB);
-      if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, OFF_INITRD);
+      off_initrd = OFF_INITRD;
+      if ($value$plusargs("initrd_off=%h", off_initrd)) ;
+      if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
       // a1 (=DTB pointer) is seeded into the RF by rf_shard's +a1= plusarg; reset jumps to OpenSBI.
 
       reset=1; @(negedge clk); @(negedge clk); reset=0;

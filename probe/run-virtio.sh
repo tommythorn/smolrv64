@@ -44,5 +44,7 @@ fi
 
 echo "=== virtio boot (fw=$FW dtb=$DTB disk=$DISK a1=$A1 cycles=$CYC) ==="
 INITRD_ARG=""; [ -n "$INITRD" ] && INITRD_ARG="+initrd=$INITRD"
-DISKRO_ARG=""; [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"   # snapshot by default
-exec "$BIN" +fw="$FW" +dtb="$DTB" $INITRD_ARG +disk="$DISK" $DISKRO_ARG +a1="$A1" +cycles="$CYC"
+DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"   # snapshot by default
+DISK_ARG=""; [ -n "${DISK:-}" ] && DISK_ARG="+disk=$DISK"
+IOFF_ARG=""; [ -n "${INITRD_OFF:-}" ] && IOFF_ARG="+initrd_off=$INITRD_OFF"
+exec "$BIN" +fw="$FW" +dtb="$DTB" $INITRD_ARG $IOFF_ARG $DISK_ARG $DISKRO_ARG +a1="$A1" +cycles="$CYC"
