@@ -13,6 +13,7 @@
 set -eu
 cd "$(dirname "$0")"
 R=rootfs
+ZSTD=${ZSTD:-0}   # 1 = zstd-compress the initrd (needs a CONFIG_RD_ZSTD fw_payload); default uncompressed
 
 # ---- usrmerge: rdump materialized the /lib,/bin,/sbin symlinks as full copies ----
 for d in lib lib64 bin sbin; do
@@ -70,13 +71,23 @@ EOF
 ( cd "$R" && find . | LC_ALL=C sort | cpio -o -H newc -R +0:+0 --quiet ) > main.cpio
 cat devnodes.cpio main.cpio > ubuntu-mini.cpio
 rm -f devnodes.cpio main.cpio
-gzip -1 -kf ubuntu-mini.cpio
-ls -la ubuntu-mini.cpio ubuntu-mini.cpio.gz
+# ---- compression. The fw_payload kernel decompresses zstd natively IFF built with
+# CONFIG_RD_ZSTD (format is magic-sniffed -- no bootarg, no dtb flag). gzip is never usable
+# here (and pointless in 2026). ZSTD=1 emits the .zst; the default stays uncompressed so it
+# boots the stock firmware. Presence of the .zst is the single source of truth for which
+# initrd the dtb was stamped for -- a default build deletes any stale .zst so it can't lie.
+if [ "$ZSTD" = 1 ]; then
+   zstd -19 -T0 -f -q ubuntu-mini.cpio -o ubuntu-mini.cpio.zst
+   INITRD=ubuntu-mini.cpio.zst
+else
+   rm -f ubuntu-mini.cpio.zst
+   INITRD=ubuntu-mini.cpio
+fi
+ls -la "$INITRD"
 
-# ---- stamp the exact initrd range into ubuntu-ram.dts. UNCOMPRESSED at guest 0x9000_0000:
-# the fw kernel's gzip initramfs path returns 'decompressor failed' on valid streams
-# (SOFTWARE behavior -- oracle-verified architecture-clean on the DUT), so no compression.
-sz=$(wc -c < ubuntu-mini.cpio); end=$(printf '0x%x' $((0x90000000 + sz)))
-sed -i "s|linux,initrd-end   = <0 0x[0-9a-f]*>;.*|linux,initrd-end   = <0 $end>; /* exact: ubuntu-mini.cpio ($sz B, auto-stamped) */|" ubuntu-ram.dts
+# ---- stamp the exact initrd range into ubuntu-ram.dts (verbatim blob at guest 0x9000_0000;
+# the kernel sniffs the format). initrd-end spans the ON-DISK (possibly compressed) size.
+sz=$(wc -c < "$INITRD"); end=$(printf '0x%x' $((0x90000000 + sz)))
+sed -i "s|linux,initrd-end   = <0 0x[0-9a-f]*>;.*|linux,initrd-end   = <0 $end>; /* exact: $INITRD ($sz B, auto-stamped) */|" ubuntu-ram.dts
 dtc -I dts -O dtb -o ubuntu-ram.dtb ubuntu-ram.dts 2>/dev/null
-echo "initrd range stamped: 0x90000000 + $sz = $end"
+echo "initrd ($INITRD) stamped: 0x90000000 + $sz = $end"

@@ -61,6 +61,7 @@ if [ -n "${RAM:-}" ]; then
    NAME=ram; MEM_LG2=31
    FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu-mini/ubuntu-ram.dtb
    INITRD=../workloads/ubuntu-mini/ubuntu-mini.cpio
+   [ -f "$INITRD.zst" ] && INITRD=$INITRD.zst   # zstd build present (CONFIG_RD_ZSTD fw) -> dtb is stamped for it
    OFF_DTB=2000000; OFF_INITRD=10000000; A1=82000000; DISK=
 fi
 if [ -n "${INITRD:-}" ] && [ -f "$INITRD" ] && [ -f "$DTB" ]; then
