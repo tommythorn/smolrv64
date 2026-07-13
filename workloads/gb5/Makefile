@@ -1,6 +1,6 @@
 SRC_DIR  = ../../src
 SIMMERV = $(HOME)/simmerv
-FW=fw_payload-7.1.0-rc6.bin
+FW=fw_payload.bin
 
 ifeq ($(shell uname -s),Darwin)
   RV=riscv64-elf-
