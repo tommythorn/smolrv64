@@ -189,6 +189,7 @@ module tb;
                lram[li][(63-j)*8 +: 8] = t;
             end
          $display("[tb_virtio: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
+         $display("[tb_virtio:   head=%h tail=%h]", lram[sl][63:0], lram[sl+nl-1][63:0]);
       end
    endtask
 

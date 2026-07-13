@@ -221,6 +221,7 @@ module tb;
                lram[li][(63-j)*8 +: 8] = t;
             end
          $display("[cosim-linux: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
+         $display("[cosim-linux:   head=%h tail=%h]", lram[sl][63:0], lram[sl+nl-1][63:0]);
       end
    endtask
 
