@@ -65,7 +65,9 @@ member.ino = 721
 out  = member("dev",         0o040755)
 out += member("dev/console", 0o020600, 5, 1)
 out += member("dev/null",    0o020666, 1, 3)
-out += member("TRAILER!!!",  0)
+# NO trailer here: these members are prepended INTO main.cpio to form ONE archive with a
+# SINGLE trailer (main.cpio's). A self-terminated devnodes archive makes the kernel stop at
+# its early TRAILER!!! and never unpack main.cpio -> no /init -> VFS unknown-block(0,0) panic.
 open("devnodes.cpio", "wb").write(out)
 EOF
 ( cd "$R" && find . | LC_ALL=C sort | cpio -o -H newc -R +0:+0 --quiet ) > main.cpio

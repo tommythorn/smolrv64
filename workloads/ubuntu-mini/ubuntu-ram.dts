@@ -8,7 +8,7 @@
 
 	chosen {
 		linux,initrd-start = <0 0x90000000>;
-		linux,initrd-end   = <0 0xc78e87e4>; /* exact: ubuntu-mini.cpio (932087780 B, auto-stamped) */
+		linux,initrd-end   = <0 0xc78e8768>; /* exact: ubuntu-mini.cpio (932087656 B, auto-stamped) */
 		bootargs = "console=ttyS0 earlycon=sbi ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
