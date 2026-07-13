@@ -163,6 +163,11 @@ module rk_xcku5p(
 
    // AXI4 wires between smolrv64 and the DDR4 IP (64-bit data, 31-bit byte addr,
    // 3-bit ID, 8-byte beats, single-beat bursts).
+   // arbiter->MIG AW/W skid nets (slice instance sits by the R slice below)
+   wire [2:0]  mig_awid;   wire [30:0] mig_awaddr; wire [7:0] mig_awlen; wire [2:0] mig_awsize;
+   wire [1:0]  mig_awburst; wire mig_awlock; wire [3:0] mig_awcache; wire [2:0] mig_awprot;
+   wire [3:0]  mig_awqos;  wire mig_awvalid; wire mig_awready;
+   wire [63:0] mig_wdata;  wire [7:0] mig_wstrb; wire mig_wlast; wire mig_wvalid; wire mig_wready;
    wire [ 2:0] m_axi_awid;
    wire [30:0] m_axi_awaddr;
    wire [ 7:0] m_axi_awlen;
@@ -1345,10 +1350,6 @@ module rk_xcku5p(
    // Register slice on the core-side read response: arbiter s0 R (_arb) -> core_axi_r*.
    // AW/W skid into the MIG: breaks the arbiter->upsizer setup cones (-0.57ns class),
    // same recipe as the R slice below. AR passes through (read-address cone was clean).
-   wire [2:0]  mig_awid;   wire [30:0] mig_awaddr; wire [7:0] mig_awlen; wire [2:0] mig_awsize;
-   wire [1:0]  mig_awburst; wire mig_awlock; wire [3:0] mig_awcache; wire [2:0] mig_awprot;
-   wire [3:0]  mig_awqos;  wire mig_awvalid; wire mig_awready;
-   wire [63:0] mig_wdata;  wire [7:0] mig_wstrb; wire mig_wlast; wire mig_wvalid; wire mig_wready;
    axi_aww_reg_slice #(.IDW(3), .AW(31), .DW(64)) mig_aww_slice (
       .clock(ui_clk), .reset(ui_cpu_reset),
       .s_awid(m_axi_awid), .s_awaddr(m_axi_awaddr), .s_awlen(m_axi_awlen), .s_awsize(m_axi_awsize),
