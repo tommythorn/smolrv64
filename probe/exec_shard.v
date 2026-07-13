@@ -182,7 +182,8 @@ module exec_shard
    reg              ex_fpv, ex_fpu;  reg [2:0] ex_fpcls, ex_fpsrc, ex_fpdst, ex_fprnd;
    reg  [3:0]       ex_fpop;  reg ex_fpmod;  reg [1:0] ex_fpint, ex_fpo0, ex_fpo1, ex_fpo2;  reg ex_fpo0i;
    reg              fpu_inflight = 1'b0;  reg [SEQW-1:0] fp_seq;  reg [PBITS-1:0] fp_pd;  reg [CBITS-1:0] fp_ck;
-   reg              fp_dst32;             // in-flight op's result is FP32 -> NaN-box the writeback
+   reg              fp_dst32;             // in-flight op's FP32 result to an F-REG -> NaN-box the writeback
+   reg              ex_fpwrfp;            // dest is an f-register (decode wr_fp; F2I writes an x-reg)
    reg              ex_fs_off;            // this op executed with FS==Off -> suppress FP, it traps
    reg  [31:0]      ex_insn;
    // mispredict compares precomputed at RR (both candidate next-PCs are payload-
@@ -193,6 +194,7 @@ module exec_shard
       ex_fpv<=fp_v_d; ex_fpu<=fp_use_d; ex_fpcls<=fp_cls_d; ex_fpsrc<=fp_src_d; ex_fpdst<=fp_dst_d;
       ex_fprnd<=fp_rnd_d; ex_fpop<=fp_op_d; ex_fpmod<=fp_mod_d; ex_fpint<=fp_int_d;
       ex_fpo0<=fp_o0_d; ex_fpo1<=fp_o1_d; ex_fpo2<=fp_o2_d;  ex_fpo0i<=fp_o0i_d;  ex_insn<=iss_insn;
+      ex_fpwrfp<=fp_wrfp_d;
       ex_fs_off<=i_fs_off;
       ex_v   <= iss_valid & ~rr_kill;
       ex_pdv <= iss_pdst_v; ex_pd <= iss_pdst; ex_p1 <= iss_ps1; ex_p2 <= iss_ps2; ex_p3 <= iss_ps3;
@@ -299,7 +301,7 @@ module exec_shard
       .res_tag(), .flush(1'b0), .busy(fpu_busyo));
    always @(posedge clk) begin
       if (fp_start & fp_iss_ready) begin fpu_inflight<=1'b1; fp_zomb<=1'b0;
-                                         fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_dst32<=(ex_fpdst==3'd0); end
+                                         fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_dst32<=(ex_fpdst==3'd0) & ex_fpwrfp; end
       else if (fp_res_valid & fpu_inflight)    begin fpu_inflight<=1'b0; fp_zomb<=1'b0; end
       else if (fp_abort)                       fp_zomb<=1'b1;   // drain, don't flush
 `ifdef FPDBG
