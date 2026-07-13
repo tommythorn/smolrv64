@@ -273,3 +273,66 @@ module axi_r_reg_slice #(
 endmodule
 
 `default_nettype wire
+
+// axi_aww_reg_slice -- single-entry skid buffers on the AW and W channels (independent,
+// both lossless and order-preserving). Breaks the arbiter->MIG-upsizer setup paths at
+// 333 MHz (the -0.57 device-DMA wdata / awaddr cones), same recipe as axi_r_reg_slice.
+module axi_aww_reg_slice #(parameter IDW = 3, AW = 31, DW = 64)
+  (input  wire            clock,
+   input  wire            reset,
+   // slave side (from the arbiter)
+   input  wire [IDW-1:0]  s_awid,
+   input  wire [AW-1:0]   s_awaddr,
+   input  wire [7:0]      s_awlen,
+   input  wire [2:0]      s_awsize,
+   input  wire [1:0]      s_awburst,
+   input  wire            s_awlock,
+   input  wire [3:0]      s_awcache,
+   input  wire [2:0]      s_awprot,
+   input  wire [3:0]      s_awqos,
+   input  wire            s_awvalid,
+   output wire            s_awready,
+   input  wire [DW-1:0]   s_wdata,
+   input  wire [DW/8-1:0] s_wstrb,
+   input  wire            s_wlast,
+   input  wire            s_wvalid,
+   output wire            s_wready,
+   // master side (to the MIG)
+   output reg  [IDW-1:0]  m_awid,
+   output reg  [AW-1:0]   m_awaddr,
+   output reg  [7:0]      m_awlen,
+   output reg  [2:0]      m_awsize,
+   output reg  [1:0]      m_awburst,
+   output reg             m_awlock,
+   output reg  [3:0]      m_awcache,
+   output reg  [2:0]      m_awprot,
+   output reg  [3:0]      m_awqos,
+   output wire            m_awvalid,
+   input  wire            m_awready,
+   output reg  [DW-1:0]   m_wdata,
+   output reg  [DW/8-1:0] m_wstrb,
+   output reg             m_wlast,
+   output wire            m_wvalid,
+   input  wire            m_wready);
+
+   reg aw_full, w_full;
+   assign s_awready = !aw_full || m_awready;
+   assign m_awvalid = aw_full;
+   assign s_wready  = !w_full  || m_wready;
+   assign m_wvalid  = w_full;
+   always @(posedge clock) begin
+      if (reset) begin aw_full <= 1'b0; w_full <= 1'b0; end
+      else begin
+         if (s_awvalid && s_awready) begin
+            m_awid <= s_awid; m_awaddr <= s_awaddr; m_awlen <= s_awlen;
+            m_awsize <= s_awsize; m_awburst <= s_awburst; m_awlock <= s_awlock;
+            m_awcache <= s_awcache; m_awprot <= s_awprot; m_awqos <= s_awqos;
+            aw_full <= 1'b1;
+         end else if (m_awready) aw_full <= 1'b0;
+         if (s_wvalid && s_wready) begin
+            m_wdata <= s_wdata; m_wstrb <= s_wstrb; m_wlast <= s_wlast;
+            w_full <= 1'b1;
+         end else if (m_wready) w_full <= 1'b0;
+      end
+   end
+endmodule

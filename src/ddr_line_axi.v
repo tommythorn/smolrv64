@@ -87,6 +87,18 @@ module ddr_line_axi #(
    assign m_axi_arqos   = 4'b0000;
    assign m_axi_wstrb   = {(AXI_DW/8){1'b1}};   // full-line writes
 
+   // Input register stage for the CONTROL side (req pulse / we / addr): the CDC's
+   // m_* regs can place far from this FSM at 333 MHz (the -0.59 cdc->awaddr-CE path).
+   // ddr_wdata is NOT re-registered (512b duplicate): the CDC holds it stable until
+   // ack, so the S_IDLE capture one cycle later still samples held data.
+   reg         i_req, i_we;
+   reg [57:0]  i_addr;
+   always @(posedge clk) begin
+      i_req  <= reset ? 1'b0 : ddr_req;
+      i_we   <= ddr_we;
+      i_addr <= ddr_addr;
+   end
+
    localparam [2:0] S_IDLE=3'd0, S_RA=3'd1, S_RD=3'd2, S_AW=3'd3, S_WD=3'd4, S_B=3'd5, S_ACK=3'd6;
    reg [2:0]          state;
    reg [BCW-1:0]      beat;
@@ -94,7 +106,7 @@ module ddr_line_axi #(
    reg [AXI_AW-1:0]   req_addr;
 
    // line base byte address into the MIG: drop the line's low 6 bits (always 0)
-   wire [AXI_AW-1:0]  line_byte_addr = {ddr_addr[AXI_AW-7:0], 6'b0};
+   wire [AXI_AW-1:0]  line_byte_addr = {i_addr[AXI_AW-7:0], 6'b0};
 
    always @(posedge clk) begin
       if (reset) begin
@@ -116,10 +128,10 @@ module ddr_line_axi #(
          case (state)
            S_IDLE: begin
               beat <= 0;
-              if (ddr_req) begin
+              if (i_req) begin
                  req_addr <= line_byte_addr;
                  buf_data <= ddr_wdata;
-                 if (ddr_we) begin
+                 if (i_we) begin
                     m_axi_awaddr  <= line_byte_addr;
                     m_axi_awvalid <= 1'b1;
                     state         <= S_AW;

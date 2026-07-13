@@ -275,22 +275,22 @@ module rk_xcku5p(
       .dbg_clk                        (dbg_clk),
 
       .c0_ddr4_aresetn                (~ui_rst),
-      .c0_ddr4_s_axi_awid             (m_axi_awid),
-      .c0_ddr4_s_axi_awaddr           (m_axi_awaddr),
-      .c0_ddr4_s_axi_awlen            (m_axi_awlen),
-      .c0_ddr4_s_axi_awsize           (m_axi_awsize),
-      .c0_ddr4_s_axi_awburst          (m_axi_awburst),
-      .c0_ddr4_s_axi_awlock           (m_axi_awlock),
-      .c0_ddr4_s_axi_awcache          (m_axi_awcache),
-      .c0_ddr4_s_axi_awprot           (m_axi_awprot),
-      .c0_ddr4_s_axi_awqos            (m_axi_awqos),
-      .c0_ddr4_s_axi_awvalid          (m_axi_awvalid),
-      .c0_ddr4_s_axi_awready          (m_axi_awready),
-      .c0_ddr4_s_axi_wdata            (m_axi_wdata),
-      .c0_ddr4_s_axi_wstrb            (m_axi_wstrb),
-      .c0_ddr4_s_axi_wlast            (m_axi_wlast),
-      .c0_ddr4_s_axi_wvalid           (m_axi_wvalid),
-      .c0_ddr4_s_axi_wready           (m_axi_wready),
+      .c0_ddr4_s_axi_awid(mig_awid),
+      .c0_ddr4_s_axi_awaddr(mig_awaddr),
+      .c0_ddr4_s_axi_awlen(mig_awlen),
+      .c0_ddr4_s_axi_awsize(mig_awsize),
+      .c0_ddr4_s_axi_awburst(mig_awburst),
+      .c0_ddr4_s_axi_awlock(mig_awlock),
+      .c0_ddr4_s_axi_awcache(mig_awcache),
+      .c0_ddr4_s_axi_awprot(mig_awprot),
+      .c0_ddr4_s_axi_awqos(mig_awqos),
+      .c0_ddr4_s_axi_awvalid(mig_awvalid),
+      .c0_ddr4_s_axi_awready(mig_awready),
+      .c0_ddr4_s_axi_wdata(mig_wdata),
+      .c0_ddr4_s_axi_wstrb(mig_wstrb),
+      .c0_ddr4_s_axi_wlast(mig_wlast),
+      .c0_ddr4_s_axi_wvalid(mig_wvalid),
+      .c0_ddr4_s_axi_wready(mig_wready),
       .c0_ddr4_s_axi_bid              (m_axi_bid),
       .c0_ddr4_s_axi_bresp            (m_axi_bresp),
       .c0_ddr4_s_axi_bvalid           (m_axi_bvalid),
@@ -1343,6 +1343,25 @@ module rk_xcku5p(
    );
 
    // Register slice on the core-side read response: arbiter s0 R (_arb) -> core_axi_r*.
+   // AW/W skid into the MIG: breaks the arbiter->upsizer setup cones (-0.57ns class),
+   // same recipe as the R slice below. AR passes through (read-address cone was clean).
+   wire [2:0]  mig_awid;   wire [30:0] mig_awaddr; wire [7:0] mig_awlen; wire [2:0] mig_awsize;
+   wire [1:0]  mig_awburst; wire mig_awlock; wire [3:0] mig_awcache; wire [2:0] mig_awprot;
+   wire [3:0]  mig_awqos;  wire mig_awvalid; wire mig_awready;
+   wire [63:0] mig_wdata;  wire [7:0] mig_wstrb; wire mig_wlast; wire mig_wvalid; wire mig_wready;
+   axi_aww_reg_slice #(.IDW(3), .AW(31), .DW(64)) mig_aww_slice (
+      .clock(ui_clk), .reset(ui_cpu_reset),
+      .s_awid(m_axi_awid), .s_awaddr(m_axi_awaddr), .s_awlen(m_axi_awlen), .s_awsize(m_axi_awsize),
+      .s_awburst(m_axi_awburst), .s_awlock(m_axi_awlock), .s_awcache(m_axi_awcache),
+      .s_awprot(m_axi_awprot), .s_awqos(m_axi_awqos), .s_awvalid(m_axi_awvalid), .s_awready(m_axi_awready),
+      .s_wdata(m_axi_wdata), .s_wstrb(m_axi_wstrb), .s_wlast(m_axi_wlast),
+      .s_wvalid(m_axi_wvalid), .s_wready(m_axi_wready),
+      .m_awid(mig_awid), .m_awaddr(mig_awaddr), .m_awlen(mig_awlen), .m_awsize(mig_awsize),
+      .m_awburst(mig_awburst), .m_awlock(mig_awlock), .m_awcache(mig_awcache),
+      .m_awprot(mig_awprot), .m_awqos(mig_awqos), .m_awvalid(mig_awvalid), .m_awready(mig_awready),
+      .m_wdata(mig_wdata), .m_wstrb(mig_wstrb), .m_wlast(mig_wlast),
+      .m_wvalid(mig_wvalid), .m_wready(mig_wready));
+
    axi_r_reg_slice #(.IDW(3), .DW(64)) core_r_slice (
       .clock    (ui_clk),        .reset    (ui_cpu_reset),
       .s_rid    (core_axi_rid_arb),   .s_rdata (core_axi_rdata_arb),
@@ -1487,9 +1506,10 @@ module rk_xcku5p(
    always @(posedge probe_clk) begin p_virtio_irq_meta <= virtio_blk_irq; p_virtio_irq <= p_virtio_irq_meta; end
 
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
+   wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
-      .commit(), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
+      .commit(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
       .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
       .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
@@ -1516,6 +1536,23 @@ module rk_xcku5p(
    ila_irq u_ila_irq (
       .clk    (probe_clk),
       .probe0 (probe_irq_dbg)
+   );
+`endif
+
+`ifdef ILA_CORE
+   // Debug (ILA_CORE=1): capture the probe-clk core/DDR-line steady state to localize a
+   // post-root-mount wedge (e.g. systemd "Hostname set"). Intended use is a -trigger_now
+   // capture AFTER the board has visibly wedged: the frozen probe levels disambiguate
+   //   - probe1={req,we,ack} stuck at req=1,ack=0  -> DDR-line path deadlock (CDC/bridge/skid)
+   //   - probe0 commit frozen + probe3 irq pending, never claimed -> interrupt livelock
+   //   - probe0 commit still toggling -> core alive, spinning in userspace (SW / rare-insn)
+   //   probe2 = pddr_addr[23:0]: which line the LSU/cache is blocked on (region id).
+   ila_core u_ila_core (
+      .clk    (probe_clk),
+      .probe0 (core_commit),                 // 1: retire pulse
+      .probe1 ({pddr_req, pddr_we, pddr_ack}),// 3: line handshake
+      .probe2 (pddr_addr[23:0]),             // 24: stuck line address (low bits)
+      .probe3 (probe_irq_dbg)                // 18: interrupt-path bus (reused decode)
    );
 `endif
 
