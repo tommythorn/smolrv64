@@ -32,9 +32,14 @@ module commit_ctl
     input  wire [IW-1:0]         iss_is_div,    // divides also defer (iterative) -> count at div_done
     input  wire [IW-1:0]         iss_is_fp,     // FPU-arith defers (CVFPU) -> count at fp_done
     input  wire [IW*CBITS-1:0]   iss_ckpt,
+    // issue-time in-core FP dirty (per shard, aligned with iss_valid): FSGNJ / compare /
+    // FMV.x.X write FP state -> mstatus.FS=Dirty, but recorded per-checkpoint here and
+    // applied only at commit (never speculatively -- a squashed FP op must not dirty FS).
+    input  wire [IW-1:0]         iss_fp_dirty,
     // load completion from the LSU (the deferred decrement)
     input  wire                  ld_done,
     input  wire [CBITS-1:0]      ld_done_ckpt,
+    input  wire                  ld_fp_dirty,   // the completing load is FP-dest (FLW/FLD) -> FS Dirty
     // store completion from the LSU (deferred decrement; only under Sv39, where stores are
     // excluded from the issue-time count and complete after their translation check)
     input  wire                  st_done,
@@ -57,16 +62,18 @@ module commit_ctl
     output wire [CBITS-1:0]      committed_idx, // oldest live checkpoint (for serialize gating)
     output wire                  empty,         // no instructions in flight (-> precise fetch trap)
     output wire [DCW-1:0]        commit_count,  // # instructions retiring this cycle (for minstret)
+    output wire                  fp_dirty_commit, // a retiring checkpoint held an FP-state writer -> FS Dirty
     output wire                  full);         // ring full -> stall dispatch
 
    reg [CNTW-1:0]  count [0:NCHK-1];
    reg [DCW-1:0]   ninst [0:NCHK-1];            // bundle size of each checkpoint (for minstret)
+   reg [NCHK-1:0]  fp_pend;                      // per-ckpt: a retiring FP-state writer -> mstatus.FS Dirty
    reg [CBITS-1:0] committed;
    integer i, s;
 
    initial begin
       for (i = 0; i < NCHK; i = i + 1) begin count[i] = 0; ninst[i] = 0; end
-      committed = 0;
+      committed = 0; fp_pend = 0;
    end
 
    // live checkpoints = committed..cur (inclusive); full when all NCHK are live
@@ -113,15 +120,41 @@ module commit_ctl
       end
    end
 
+   // ---- per-checkpoint pending FS-dirty (commit-gated mstatus.FS=Dirty) ----
+   // FS must go Dirty only when an FP-state-writing op RETIRES, never speculatively: a
+   // squashed FP op leaking Dirty diverges from the in-order model and is a speculative-
+   // visible-state leak. Set a pending bit per checkpoint from the SAME completion events
+   // that decrement its count -- issue-time in-core FP (compare/FSGNJ/FMV.x.X), CVFPU arith
+   // (fp_done, every one dirties), FP loads (ld_fp_dirty) -- WIPE it on rollback (a squashed
+   // checkpoint never dirties) and APPLY at commit. Each set-cycle == that source's decrement
+   // cycle, so the bit is registered a full cycle before its checkpoint can commit (commit
+   // needs count==0) -> the commit read below is a plain registered lookup, no bypass.
+   reg [NCHK-1:0] fp_set;
+   always @* begin
+      fp_set = 0;
+      for (s = 0; s < IW; s = s + 1) begin
+         if (iss_fp_dirty[s]) fp_set[iss_ckpt[s*CBITS +: CBITS]]     = 1'b1;
+         if (fp_done[s])      fp_set[fp_done_ckpt[s*CBITS +: CBITS]] = 1'b1;
+      end
+      if (ld_fp_dirty) fp_set[ld_done_ckpt] = 1'b1;
+   end
+   assign fp_dirty_commit = commit && fp_pend[committed];
+
    always @(posedge clk) begin
       if (reset) begin
-         for (i = 0; i < NCHK; i = i + 1) count[i] <= 0;
+         for (i = 0; i < NCHK; i = i + 1) begin count[i] <= 0; fp_pend[i] <= 1'b0; end
          committed <= 0;
       end else begin
-         for (i = 0; i < NCHK; i = i + 1)
+         for (i = 0; i < NCHK; i = i + 1) begin
             count[i] <= (redirect && young[i]) ? {CNTW{1'b0}}
                       : count[i] + ((disp_fire && (cur == i[CBITS-1:0])) ? disp_count : {DCW{1'b0}})
                                  - dec[i];
+            // pending FS-dirty: wipe on rollback (squashed -> never dirties) or at commit
+            // (applied to mstatus this cycle; clears the slot for reuse), else accumulate.
+            fp_pend[i] <= (redirect && young[i])                 ? 1'b0
+                        : (commit && (committed == i[CBITS-1:0])) ? 1'b0
+                        : fp_pend[i] | fp_set[i];
+         end
          if (commit) committed <= committed + 1'b1;
          if (disp_fire) ninst[cur] <= disp_count;   // remember the bundle size for minstret
       end

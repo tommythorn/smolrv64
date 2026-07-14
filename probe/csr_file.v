@@ -42,10 +42,10 @@ module csr_file
     // (pre-reduced across shards in backend_top at FP completion).
     input  wire        fp_fflags_we,
     input  wire [4:0]  fp_fflags,
-    // mstatus.FS -> Dirty when any FP state is written: an f-register (FP arith/compare, the
-    // in-core FSGNJ/FMV.x.X moves, AND FP loads FLW/FLD) or an FP CSR. Broader than fp_fflags_we
-    // (which only covers flag-producing ops) -- flag-less FP-reg writes must dirty FS too.
-    input  wire        fp_dirty,
+    // mstatus.FS -> Dirty when an FP-state writer RETIRES: commit_ctl raises this at the commit
+    // of any checkpoint that held an f-register write (FP arith/compare, in-core FSGNJ/FMV.x.X,
+    // FP loads FLW/FLD). Commit-gated (never speculative) so a squashed FP op never dirties FS.
+    input  wire        fp_dirty_commit,
     output wire        o_tlb_flush,   // 1-cycle: sfence.vma or satp write -> flush TLBs
     // ---- external trap injection (page faults from the iMMU/LSU; precise) ----
     // Fired by backend_top once the fault is the oldest (fetch: pipeline empty; data:
@@ -502,12 +502,12 @@ module csr_file
       // also dirty mstatus.FS (-> SD); harmless when FP is idle.
       // fcsr exception flags accumulate on flag-producing FP ops only.
       if (!reset && fp_fflags_we) fcsr[4:0] <= fcsr[4:0] | fp_fflags;
-      // FS -> Dirty on ANY FP-state write: an f-register (fp_dirty: FP arith/compare + in-core
-      // FSGNJ/FMV.x.X moves + FP loads FLW/FLD) or an FP CSR write (fcsr/fflags/frm). Broader than
-      // fp_fflags_we, which misses flag-less FP-reg writes. Guarded to FP-enabled (FS != Off).
+      // FS -> Dirty when a retiring op wrote FP state: an f-register (fp_dirty_commit, raised at
+      // commit by commit_ctl for FP arith/compare + in-core FSGNJ/FMV.x.X + FP loads) or an FP CSR
+      // write (fcsr/fflags/frm, itself commit-serialized). Guarded to FP-enabled (FS != Off).
       if (!reset && (mstatus[14:13] != 2'b00) &&
-          (fp_dirty | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
-                       & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
+          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
+                              & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
          mstatus[14:13] <= 2'b11;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
       // clocks; minstret adds the committing checkpoint's instruction count. An M-mode

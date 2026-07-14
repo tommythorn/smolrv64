@@ -568,6 +568,9 @@ module backend_top
    wire [CBITS-1:0]   lsu_ld_done_ckpt;
    wire               lsu_st_done;
    wire [CBITS-1:0]   lsu_st_done_ckpt;
+   wire               lsu_fp_dirty;       // FP-dest load (FLW/FLD) wrote back -> mstatus.FS Dirty
+   wire [IW-1:0]      eb_iss_fp_dirty;    // per-shard issue-time in-core FP writer (-> commit_ctl)
+   wire               cc_fp_dirty_commit; // commit_ctl: FS-dirty applied at commit (-> u_csr)
    // ---- data page-fault report from the LSU (-> precise trap, below) ----
    wire [SEQW-1:0]    lsu_dfault_seq;
    wire [CBITS-1:0]   lsu_dfault_ckpt;
@@ -578,14 +581,16 @@ module backend_top
       .disp_fire(disp_fire), .disp_count(disp_count),
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul),
       .iss_is_fp(q_iss_is_fp), .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt), .iss_ckpt(q_iss_ckpt),
-      .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt),
+      .iss_fp_dirty(eb_iss_fp_dirty),
+      .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt), .ld_fp_dirty(lsu_fp_dirty),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(roll_v), .redirect_ckpt(roll_ckpt),
       .create(), .empty(cc_empty),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
-      .committed_idx(cc_committed), .commit_count(cc_commit_count), .full(cc_full));
+      .committed_idx(cc_committed), .commit_count(cc_commit_count),
+      .fp_dirty_commit(cc_fp_dirty_commit), .full(cc_full));
 
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
@@ -601,7 +606,6 @@ module backend_top
    wire [PBITS-1:0]   lsu_ld_wb_pdst;
    wire [63:0]        lsu_ld_wb_val;
    wire [SEQW-1:0]    lsu_ld_wb_seq;
-   wire               lsu_fp_dirty;   // FP-dest load (FLW/FLD) wrote back -> mstatus.FS Dirty
    wire [IW*SEQW-1:0] wkq;          // per-lane writeback seqno (cosim seqno-matched capture)
    // EX-stage LSU control (from exec_bundle, aligned with eb_agu/eb_stdata)
    wire [IW-1:0]      ex_valid, ex_mem, ex_store, ex_msigned, ex_fp;
@@ -626,9 +630,10 @@ module backend_top
       .squash(roll_v), .squash_seq(roll_seq),
       .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt),
+      .iss_fp_dirty(eb_iss_fp_dirty), .fp_dirty_commit(cc_fp_dirty_commit),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .lsu_wb_seq(lsu_ld_wb_seq),
-      .lsu_fp_dirty(lsu_fp_dirty), .wb_busy(eb_wb_busy),
+      .wb_busy(eb_wb_busy),
       .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
