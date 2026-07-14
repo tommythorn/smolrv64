@@ -462,6 +462,9 @@ module rk_xcku5p(
    wire        virtio_net_axi_rlast;
    wire        virtio_net_axi_rvalid;
    wire        virtio_net_axi_rready;
+   // Net debug-overlay word (0x10003f00+); declared out here so it stays visible when
+   // NO_VIRTIO_NET compiles the net block below out.
+   reg  [31:0] virtio_net_debug_word;
 
    // virtio-blk backend DMA master + the device-side arbiter output that merges
    // net + blk into one master before the existing core-vs-device arbiter.
@@ -783,6 +786,7 @@ module rk_xcku5p(
    );
 `endif
 
+`ifndef NO_VIRTIO_NET
    virtio_mmio #(
       .DEVICE_ID(32'd1), /* Network device with a minimal TX-drop backend. */
       .QUEUE_NUM_MAX(32'd256), /* virtio-net needs > MAX_SKB_FRAGS+2 (=19) TX slots */
@@ -1060,7 +1064,6 @@ module rk_xcku5p(
 
    // Debug overlay: reads to 0x10003f00..f7c return TX/RX bring-up state
    // (devmem from Linux).  Word index = ui_mmio_address[7:2].
-   reg [31:0] virtio_net_debug_word;
    always @(*) begin
       case (ui_mmio_address[7:2])
         6'd0:  virtio_net_debug_word = virtio_net_debug_status;
@@ -1092,6 +1095,32 @@ module rk_xcku5p(
         default: virtio_net_debug_word = 32'd0;
       endcase
    end
+`else
+   // ================= NO_VIRTIO_NET =================
+   // virtio-net + the RGMII eth MAC are compiled out to relieve ui_clk routing
+   // congestion (the -0.57ns device-DMA cone + the router collapse sit in the
+   // net-adjacent logic). Blk-only device DMA: hold the device arbiter's net s0
+   // idle so it passes virtio-blk straight through; the net MMIO window reads 0 and
+   // the net IRQ never fires, so Linux finds no net device (same as the sim TBs).
+   assign virtio_net_readdata = 32'd0;
+   assign virtio_net_irq      = 1'b0;
+   always @(*) virtio_net_debug_word = 32'd0;
+   assign eth_txc = 1'b0;  assign eth_txd = 4'd0;  assign eth_tx_ctl = 1'b0;
+   assign virtio_net_axi_awid    = 3'd0;   assign virtio_net_axi_awaddr  = 31'd0;
+   assign virtio_net_axi_awlen   = 8'd0;   assign virtio_net_axi_awsize  = 3'd0;
+   assign virtio_net_axi_awburst = 2'd0;   assign virtio_net_axi_awlock  = 1'b0;
+   assign virtio_net_axi_awcache = 4'd0;   assign virtio_net_axi_awprot  = 3'd0;
+   assign virtio_net_axi_awqos   = 4'd0;   assign virtio_net_axi_awvalid = 1'b0;
+   assign virtio_net_axi_wdata   = 64'd0;  assign virtio_net_axi_wstrb   = 8'd0;
+   assign virtio_net_axi_wlast   = 1'b0;   assign virtio_net_axi_wvalid  = 1'b0;
+   assign virtio_net_axi_bready  = 1'b1;
+   assign virtio_net_axi_arid    = 3'd0;   assign virtio_net_axi_araddr  = 31'd0;
+   assign virtio_net_axi_arlen   = 8'd0;   assign virtio_net_axi_arsize  = 3'd0;
+   assign virtio_net_axi_arburst = 2'd0;   assign virtio_net_axi_arlock  = 1'b0;
+   assign virtio_net_axi_arcache = 4'd0;   assign virtio_net_axi_arprot  = 3'd0;
+   assign virtio_net_axi_arqos   = 4'd0;   assign virtio_net_axi_arvalid = 1'b0;
+   assign virtio_net_axi_rready  = 1'b1;
+`endif
 
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter

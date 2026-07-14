@@ -193,6 +193,10 @@ if {$probe_core} {
         puts "NO_VIRTIO_WIRE: deactivating virtio wrapper wiring (isolation experiment)."
         lappend vdefines "NO_VIRTIO_WIRE"
     }
+    if {[info exists env(NO_VIRTIO_NET)] && $env(NO_VIRTIO_NET) ne "" && $env(NO_VIRTIO_NET) ne "0"} {
+        puts "NO_VIRTIO_NET: dropping virtio-net + eth MAC (blk-only) to relieve ui_clk congestion."
+        lappend vdefines "NO_VIRTIO_NET"
+    }
     if {[info exists env(PROBE_DIAG)] && $env(PROBE_DIAG) ne "" && $env(PROBE_DIAG) ne "0"} {
         puts "PROBE_DIAG: decouple probe_clk from ui_rst + LED cal/clock heartbeats (diagnostic)."
         lappend vdefines "PROBE_DIAG"
@@ -287,6 +291,27 @@ if {[info exists env(ILA_DEV)] && $env(ILA_DEV) ne "" && $env(ILA_DEV) ne "0"} {
             CONFIG.C_ADV_TRIGGER {true} \
         ] [get_ips ila_dev]
         generate_target {instantiation_template synthesis} [get_ips ila_dev]
+    }
+}
+# ILA_CORE=1: insert an ILA on the probe-clk core/DDR-line steady state (commit pulse + line
+# handshake + stuck line addr + irq bus) to localize a post-root-mount wedge with a -trigger_now
+# capture of the frozen levels (DDR-path deadlock vs interrupt livelock vs userspace spin).
+if {[info exists env(ILA_CORE)] && $env(ILA_CORE) ne "" && $env(ILA_CORE) ne "0"} {
+    puts "Enabling ILA_CORE: probe-clk core/DDR-line debug core (ila_core)."
+    lappend vdefines "ILA_CORE"
+    if {[llength [get_ips -quiet ila_core]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_core
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {4} \
+            CONFIG.C_PROBE0_WIDTH {1} \
+            CONFIG.C_PROBE1_WIDTH {3} \
+            CONFIG.C_PROBE2_WIDTH {24} \
+            CONFIG.C_PROBE3_WIDTH {18} \
+            CONFIG.C_DATA_DEPTH {4096} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_core]
+        generate_target {instantiation_template synthesis} [get_ips ila_core]
     }
 }
 lappend vdefines "SMOLRV64_USE_XPM"

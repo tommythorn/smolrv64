@@ -49,7 +49,14 @@ ifneq ($(strip $(ILA_DEV)),)
 export ILA_DEV
 endif
 
-.PHONY: all synth impl bit program load clean timing
+# Debug: ILA_CORE=1 inserts an ILA on the probe-clk core/DDR-line steady state (commit pulse +
+# line req/we/ack + stuck line addr + irq bus) -- for a -trigger_now capture of a FROZEN wedge
+# (post-root-mount, e.g. systemd "Hostname set"): DDR-path deadlock vs irq livelock vs SW spin.
+ifneq ($(strip $(ILA_CORE)),)
+export ILA_CORE
+endif
+
+.PHONY: all synth impl bit program load clean timing ila-capture
 
 all: bit
 
@@ -71,8 +78,19 @@ program:
 timing:
 	$(VIVADO) $(VFLAGS) -source report_timing.tcl
 
+# Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
+# (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
+physopt:
+	$(VIVADO) $(VFLAGS) -source physopt_close.tcl
+
 cdc:
 	$(VIVADO) $(VFLAGS) -source report_cdc.tcl
+
+# Headless ILA capture of the CURRENT (frozen) hardware state over JTAG. Requires a bit built
+# with an ILA_* flag already programmed and the board wedged. Writes a CSV next to the script.
+# CSV=<path> overrides the output. No GUI. See ila_capture.tcl.
+ila-capture:
+	$(VIVADO) $(VFLAGS) -source ila_capture.tcl $(if $(CSV),-tclargs $(CSV),)
 
 load:
 	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000
