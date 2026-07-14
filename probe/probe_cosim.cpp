@@ -35,7 +35,7 @@ bool        g_inited = false;
 uint64_t    g_seqno = 0;
 
 struct RingEntry { SimmervRetire dut; SimmervRetire ref; bool valid; };
-constexpr size_t RING_N = 32;
+constexpr size_t RING_N = 320;
 RingEntry g_ring[RING_N] = {};
 size_t    g_ring_idx = 0;
 
