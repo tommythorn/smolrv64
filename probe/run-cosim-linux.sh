@@ -98,12 +98,15 @@ PERFOPT=""; PERFSRC=""
 # size change (e.g. gb5 1->2 GiB) was inert until a manual BUILD=1. Now rebuild when:
 #   - the binary is missing, or BUILD=1, or
 #   - the compile-time config (MEM_LG2 + VDEFS) differs from what's baked in, or
-#   - any source under probe/ or ../src/ is newer than the binary.
+#   - any source under probe/ or ../src/ is newer than the binary, or
+#   - the simmerv cosim lib (.a) is newer than the binary -- a simmerv-only change rebuilds
+#     the .a (cargo, above) but touches no probe/ file, so this is its ONLY relink trigger.
 # (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-} THREADS=$THREADS"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
+elif [ "$SIMMERV_LIB" -nt "$BIN" ]; then need_build=1; echo "simmerv lib newer than binary -> relink (simmerv-only change)"
 elif find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.vh' -o -name '*.cpp' -o -name '*.f' \) \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    need_build=1; echo "source newer than binary -> rebuild"
