@@ -564,6 +564,14 @@ module lsu
       dr_mask = 8'd0;
       for (b = 0; b < 8; b = b + 1) if (b < sb_nb[dr_sel]) dr_mask[b] = 1'b1;
    end
+   // drain-vs-in-flight-load interlock: a load in MERGE (p_v) has ALREADY issued its memory read
+   // for words p_w0/p_w1. Draining a store that writes one of those words now -- freeing its SB
+   // entry AND writing memory -- lets the load's in-flight read race the drain-write and, with the
+   // store gone from the SB, byte-merge STALE memory (there is no memory-order replay). Hold that
+   // store's drain until the load leaves MERGE; it stays SB-resident so the load forwards it.
+   // Word-granular + conservative; sits on the cool drain cone, not the hot forward cone.
+   wire dr_hold = p_v & ( (sb_w0[dr_sel] == p_w0) | (sb_w1[dr_sel] == p_w0)
+                        | (sb_w0[dr_sel] == p_w1) | (sb_w1[dr_sel] == p_w1) );
    // debug-only: the VIRTUAL address of the store driving mem this cycle (cosim store log)
    wire [AW-1:0] dbg_st_va = amo_wr_now ? a_addr : sb_addr[dr_sel];
 
@@ -718,7 +726,7 @@ module lsu
                    end
          endcase
          // an intervening store to the reserved word breaks the reservation
-         if (dr_v && mem_wready && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w)) rsv_v <= 1'b0;
+         if (dr_v && mem_wready && ~dr_hold && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w)) rsv_v <= 1'b0;
          // an in-flight AMO squashed by a rollback (its own page-fault trap rolls back to
          // a_ck) must reset the FSM -- else it sticks mid-RMW for a dead atomic. Driven here
          // (priority-last in the FSM's own block) so ast/rsv_v have a SINGLE driver.
@@ -814,14 +822,14 @@ module lsu
          mem_wmask = a_wmask;
          mem_wuncached = a_wnc;
       end else begin
-         mem_wen   = dr_v;                   // dr_v already requires the store be xck'd (translated)
+         mem_wen   = dr_v & ~dr_hold;        // hold if it would race an in-flight same-word load read
          mem_waddr = sb_pa[dr_sel];          // physical address (Bare: == VA, filled at fill-time)
          mem_wdata = sb_data[dr_sel];
          // a CBO carries no store data: drive a maintenance command (wmask=0 so the cache's
          // combinational store-write touches nothing) and let the cache act on its line.
          mem_wmask = sb_cbo[dr_sel] ? 8'd0 : dr_mask;
          mem_wuncached = sb_nc[dr_sel] & ~sb_cbo[dr_sel];
-         mem_cbo      = dr_v & sb_cbo[dr_sel];
+         mem_cbo      = dr_v & sb_cbo[dr_sel] & ~dr_hold;
          // the zero/keep qualifiers are only meaningful for a CBO that is actually draining;
          // gate them by mem_cbo so they can't leak onto a concurrent load's read request
          // (cbo_zero leaking -> the read miss zero-fills the line instead of fetching it).
@@ -947,7 +955,7 @@ module lsu
          // (5) drain: retire the selected store from the buffer once the write is ACCEPTED
          //     (mem_wready). mem_wen=dr_v stays asserted, re-selecting the same store, until
          //     a multi-cycle D$ accepts it. (Tie mem_wready=1 -> frees next cycle, as before.)
-         if (dr_v && mem_wready) sb_v[dr_sel] <= 1'b0;
+         if (dr_v && mem_wready && ~dr_hold) sb_v[dr_sel] <= 1'b0;
 
          // (6) rollback: squash wrong-path entries (newer than the branch)
          if (rollback) begin
