@@ -281,6 +281,8 @@ module tb;
    generate for (gsh = 0; gsh < IW; gsh = gsh + 1) begin : rsdump
       always @(posedge rs_dump) begin : d
          integer e;
+         $display("  SH%0d free_count=%0d rn_stall=%b", gsh,
+                  dut.fe.u_dr.rn.lane[gsh].sh.fl.free_count, dut.fe.u_dr.rn.lane[gsh].sh.stall);
          for (e = 0; e < 16; e = e + 1)
             if (dut.sb.lane[gsh].sh.v[e])
                $display("  RS%0d[%0d] seq=%0d ck=%0d rdy=%b%b%b s1=%0d s2=%0d pd=%0d insn=%h", gsh, e,

@@ -50,7 +50,11 @@
 // unique checkpoint (deferred; the M1 tests don't use them).
 module backend_top
   #(parameter IW    = `PROBE_IW,   // issue/shard width -- the ONE knob; all widths below derive
-    parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
+    // physregs/shard (freelist + RF bank depth). Must exceed the arch regs homed per shard
+    // (AREGS/SHARDS) by a healthy free margin (~48) or the freelist deadlocks. PROBE_POOL=80
+    // covers IW>=2 (ARSH<=32); at IW=1 all 64 arch regs pile into the lone shard (ARSH=64),
+    // so scale POOL up. (Only IW=1 exceeds the 80 floor; IW>=2 stay at PROBE_POOL unchanged.)
+    parameter POOL  = (`PROBE_POOL >= 64/IW + 48) ? `PROBE_POOL : 64/IW + 48,
     parameter SBITS = ($clog2(IW) < 1) ? 1 : $clog2(IW),   // shard-id width, >=1 (IW=1 = 2^0 still needs a 1b field)
     parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
     parameter PCW   = 64,
