@@ -265,6 +265,12 @@ module exec_shard
    always @(posedge clk) if (m_start) begin m_pdst <= ex_pd; m_seq <= ex_sq; m_ck <= ex_ck; end
    wire        m_complete = (mdone | ddone) & ~m_abort;
    wire [63:0] m_res = mdone ? mres : dres;
+`ifdef MUL_TRACE
+   always @(posedge clk) begin
+      if (m_start & mul_op)  $display("[MULS] seq=%0d op1=%h op2=%h f3=%b w=%b", ex_sq, op1f, op2f, ex_bf, ex_w);
+      if (m_complete & mdone) $display("[MULC] seq=%0d res=%h pd=%0d", m_seq, m_res, m_pdst);
+   end
+`endif
 
    // ---- per-shard FP-arith unit (CVFPU): one op in flight, deferred like the divider ----
    // FS-disabled: this FP op executed with mstatus.FS==Off -> it raises an illegal trap
@@ -444,6 +450,10 @@ module exec_shard
    function islink(input [4:0] r); islink = (r == 5'd1) || (r == 5'd5); endfunction
    assign res_v     = ex_v & (ex_br | ex_jmp) & ~ex_squash;
    assign res_cbr   = ex_br;
+`ifdef BR_TRACE
+   always @(posedge clk) if (ex_v & ex_br & ~ex_squash)
+      $display("[BR] seq=%0d op1=%h op2=%h p1=%0d p2=%0d f3=%b taken=%b", ex_sq, op1f, op2f, ex_p1, ex_p2, ex_bf, bu_taken);
+`endif
    assign res_call  = ex_jmp & islink(ex_insn[11:7]);
    assign res_ret   = ex_jmp & ex_o2i & ~islink(ex_insn[11:7]) & islink(ex_insn[19:15]);
    assign res_taken = bu_taken;

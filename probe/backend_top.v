@@ -152,6 +152,9 @@ module backend_top
    wire [PCW-1:0]     fe_red_pc;
    assign redirect        = fe_red_v;
    assign redirect_target = fe_red_pc;
+`ifdef REDIR_TRACE
+   always @(posedge clk) if (fe_red_v) $display("[REDIR] seq=%0d tgt=%h", fe_red_seq, fe_red_pc);
+`endif
    // predictor resolve/training port (exec_bundle -> frontend) + GHR repair strobe
    wire               eb_res_v, eb_res_cbr, eb_res_call, eb_res_ret, eb_res_taken, eb_res_mispred;
    wire [CBITS-1:0]   eb_res_ckpt;

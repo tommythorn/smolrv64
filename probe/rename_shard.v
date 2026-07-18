@@ -85,14 +85,16 @@ module rename_shard
    reg [PBITS-1:0] map     [0:AREGS-1];               // replicated architectural map
    reg [PBITS-1:0] chk_map [0:NCHK-1][0:AREGS-1];     // per-checkpoint snapshot (rollback)
 
-   // Init: arch reg a -> phys a (map[a]=a), so phys 0..AREGS-1 are the live initial
-   // mappings (reserved in the freelist; phys 0 is x0). Once displaced + committed
-   // they rejoin the pool.
+   // Init: arch reg a -> its HOME physreg {shard=a%SHARDS, ridx=a/SHARDS} = the reserved
+   // freelist head, i.e. (a%SHARDS) + ((a/SHARDS)<<SBITS). This equals a exactly when
+   // SHARDS==2^SBITS (power-of-2 IW); for non-power-of-2 IW (1,3,5) the shard field is
+   // wider than SHARDS, so a bare `map[a]=a` would place odd arch regs in a NON-EXISTENT
+   // shard and alias live physregs (observed: IW=1 mul read a stale result). phys 0 is x0.
    integer b, r;
    initial begin
-      for (r = 0; r < AREGS; r = r + 1) map[r] = r[PBITS-1:0];
+      for (r = 0; r < AREGS; r = r + 1) map[r] = (r % SHARDS) + ((r / SHARDS) << SBITS);
       for (b = 0; b < NCHK; b = b + 1)
-         for (r = 0; r < AREGS; r = r + 1) chk_map[b][r] = r[PBITS-1:0];
+         for (r = 0; r < AREGS; r = r + 1) chk_map[b][r] = (r % SHARDS) + ((r / SHARDS) << SBITS);
    end
 
    // ------------------------------------------------------------- unpack buses
