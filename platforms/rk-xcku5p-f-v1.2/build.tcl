@@ -201,6 +201,10 @@ if {$probe_core} {
         puts "PROBE_DIAG: decouple probe_clk from ui_rst + LED cal/clock heartbeats (diagnostic)."
         lappend vdefines "PROBE_DIAG"
     }
+    if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
+        puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."
+        lappend vdefines "PROBE_IW=$env(PROBE_IW)"
+    }
 } else {
     foreach image [list $sram_even $sram_odd] {
         if {![file exists $image]} {

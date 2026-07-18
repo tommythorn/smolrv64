@@ -30,6 +30,11 @@ ifneq ($(strip $(PROBE_DIAG)),)
 export PROBE_DIAG
 endif
 
+# Width: PROBE_IW=1 (or 4, ...) overrides the RTL default (2). e.g. `make bit PROBE_IW=1`.
+ifneq ($(strip $(PROBE_IW)),)
+export PROBE_IW
+endif
+
 # Debug: ILA_VIRTIO=1 inserts an ILA on the MMIO clock-bridge ui-side (virtio-mmio access +
 # device read data), on ui_clk. Capture the driver's DeviceFeaturesSel/DeviceFeatures sequence
 # to see whether the Sel write reaches virtio before the Features read (probe VERSION_1 -22).
