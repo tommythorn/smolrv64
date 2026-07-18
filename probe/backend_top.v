@@ -51,7 +51,7 @@
 module backend_top
   #(parameter IW    = `PROBE_IW,   // issue/shard width -- the ONE knob; all widths below derive
     parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
-    parameter SBITS = $clog2(IW),    // clog2(IW) -- owner-shard id width (SHARDS = IW)
+    parameter SBITS = ($clog2(IW) < 1) ? 1 : $clog2(IW),   // shard-id width, >=1 (IW=1 = 2^0 still needs a 1b field)
     parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
     parameter PCW   = 64,
     parameter SEQW  = 8,
@@ -68,7 +68,8 @@ module backend_top
                                      // pnpc/pdet, GHR/RAS clones), so 8 deepens arrays without
                                      // touching a critical cone; seq window: 8*IW in-flight
                                      // ops << the +/-128 wrap-compare bound (SEQW=8).
-    parameter NPHYS = IW * POOL,     // total physregs (SHARDS=IW)
+    parameter NPHYS = (1 << SBITS) * POOL,   // pr = {ridx, shard[SBITS-1:0]} spans 2^SBITS*POOL
+                                             // (= IW*POOL for power-of-2 IW; sparse/larger for 3,5)
     parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW
     parameter CNTW  = $clog2(IW+1),  // per-checkpoint outstanding count 0..IW
     parameter AW    = 64,

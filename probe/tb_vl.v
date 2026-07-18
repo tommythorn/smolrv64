@@ -20,7 +20,8 @@
 // from that one memory, and watches for the riscv-test exit (a store to `tohost`):
 // tohost==1 => PASS, else FAIL with test# = tohost>>1. Times out after +cycles.
 module tb;
-   localparam IW=`PROBE_IW, HW=2*IW, PCW=64, SEQW=8, PBITS=$clog2(`PROBE_POOL)+$clog2(IW);
+   localparam IW=`PROBE_IW, HW=2*IW, PCW=64, SEQW=8,
+              PBITS=$clog2(`PROBE_POOL)+(($clog2(IW)<1)?1:$clog2(IW));   // SBITS>=1
    localparam [63:0] BASE = 64'h8000_0000;
    localparam        SIZE = 1<<21;             // 2 MiB (covers the -v demand-paging pool)
 

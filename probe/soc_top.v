@@ -25,7 +25,7 @@
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module soc_top #(
    parameter IW=`PROBE_IW, POOL=`PROBE_POOL, HW=2*IW, PCW=64, SEQW=8,
-   parameter PBITS=$clog2(POOL)+$clog2(IW),   // {ridx[clog2(POOL)-1:0], shard[clog2(IW)-1:0]}
+   parameter PBITS=$clog2(POOL)+(($clog2(IW)<1)?1:$clog2(IW)),   // {ridx, shard[SBITS-1:0]}, SBITS>=1
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
