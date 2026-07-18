@@ -9,6 +9,17 @@
 `ifndef PROBE_POOL
  `define PROBE_POOL 80
 `endif
+// Build-id block (0x1000_F000) exposed to the PROBE core. Guarded so the FPGA build's
+// -verilog_define git-commit/stamp/dirty reach it (build.tcl); sim/cosim default to 0.
+`ifndef SMOLRV64_GIT_COMMIT
+ `define SMOLRV64_GIT_COMMIT 32'h0
+`endif
+`ifndef SMOLRV64_BUILD_STAMP
+ `define SMOLRV64_BUILD_STAMP 64'h0
+`endif
+`ifndef SMOLRV64_GIT_DIRTY
+ `define SMOLRV64_GIT_DIRTY 1'b0
+`endif
 
 // Synthesizable SoC top: the sharded-OoO core (backend_top) + unified I$/D$ (cache.v)
 // + l2_arbiter merging all memory traffic onto ONE line memory port + a behavioral
@@ -116,12 +127,14 @@ module soc_top #(
    // from a bare-metal tool / the monitor; the kernel never touches it.
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
    localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio, 8 KiB: blk @+0x0000, net @+0x1000
+   localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
    wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
    wire is_virtio_r = (dmem_raddr & ~64'h1fff)    == VIRTIO_BASE;   // 8 KiB: blk(+0) + net(+0x1000)
-   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r;
+   wire is_buildid_r = (dmem_raddr & ~64'hff)     == BUILDID_BASE;  // 256 B window (read-only)
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r | is_buildid_r;
    wire is_clint_w = (dmem_waddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dmem_waddr & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_waddr & ~64'h3ff_ffff) == PLIC_BASE;
@@ -283,10 +296,27 @@ module soc_top #(
             :               scr; end end                                 // SCR
    endfunction
    wire [63:0] hpm_rdata;
+   // build-id: 32b words @ 0x1000_F0{00,04,08,0c,10,14}, replicated into both 64b lanes so the
+   // LSU extracts the correct half for the load offset (same trick as virtio above). The defines
+   // land in localparams first -- part-selecting a bare `define literal isn't legal in Vivado.
+   localparam [63:0] BID_STAMP  = `SMOLRV64_BUILD_STAMP;
+   localparam [31:0] BID_COMMIT = `SMOLRV64_GIT_COMMIT;
+   localparam        BID_DIRTY  = `SMOLRV64_GIT_DIRTY;
+   reg [31:0] build_id_word;
+   always @* case (dmem_raddr[5:2])
+      4'h0:    build_id_word = 32'h534d_4f4c;   // "SMOL" magic -- monitor gates the block on this
+      4'h1:    build_id_word = 32'h0000_0001;   // version
+      4'h2:    build_id_word = BID_STAMP[31:0];
+      4'h3:    build_id_word = BID_STAMP[63:32];
+      4'h4:    build_id_word = BID_COMMIT;      // <- rtl= identity (the loaded RTL commit)
+      4'h5:    build_id_word = {31'd0, BID_DIRTY};
+      default: build_id_word = 32'd0;
+   endcase
    wire [63:0] dev_rdata = is_clint_r  ? clint_rdata
                          : is_uart_r   ? uart_rdata_q
                          : is_plic_r   ? plic_rdata
                          : is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg replicated into both lanes: the LSU extracts the half for the load offset, so this is correct regardless of which lane it picks (all virtio-mmio regs are 32b, accessed 32b)
+                         : is_buildid_r ? {build_id_word, build_id_word}
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------

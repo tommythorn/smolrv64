@@ -785,16 +785,19 @@ int main(void)
     // Flush any spurious chars received during init or terminal connect
     while (UART0_BASE[UART_LSR] & LSR_DR)
         (void)UART0_BASE[UART_RBR];
+    // rtl= identifies the loaded RTL by its git commit (read from the build-id MMIO block,
+    // now probe-core-readable via soc_top). Falls back to the RTL build-stamp CSR on the
+    // scalar core / sim, where the block isn't present (magic mismatch).
     puts_("\nsmolrv64 monitor  rtl=");
-    puthex64(read_build_stamp());
+    if (BUILD_ID_BASE[0] == BUILD_ID_MAGIC) {
+        puthex32(BUILD_ID_BASE[4]);   // git commit
+        if (BUILD_ID_BASE[5] & 1)
+            putc_('+');               // source tree was dirty at build time
+    } else {
+        puthex64(read_build_stamp()); // scalar/sim fallback: the 0xfde build-stamp CSR
+    }
     puts_(" fw=");
     puthex64(MONITOR_BUILD_STAMP);
-    if (BUILD_ID_BASE[0] == BUILD_ID_MAGIC) {
-        puts_(" commit=");
-        puthex32(BUILD_ID_BASE[4]);
-        if (BUILD_ID_BASE[5] & 1)
-            putc_('+');            // source tree was dirty at build time
-    }
     putc_('\n');
 
     for (;;) {
