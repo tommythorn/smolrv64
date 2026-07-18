@@ -252,7 +252,7 @@ module exec_shard
    wire        mbusy, mdone;  wire [63:0] mres;
    wire        dbusy, ddone;  wire [63:0] dres;
    wire        munit_busy = mbusy | dbusy | fpu_inflight;
-   reg  [PBITS-1:0] m_pdst;  reg [SEQW-1:0] m_seq;  reg [CBITS-1:0] m_ck;
+   reg  [PBITS-1:0] m_pdst;  reg [SEQW-1:0] m_seq;  reg [CBITS-1:0] m_ck;  reg m_pdv;
    wire m_squash_now = squash & older(squash_seq, ex_sq);
    wire m_start = ex_v & ex_mulr & ~munit_busy & ~m_squash_now;
    wire m_abort = munit_busy & squash & older(squash_seq, m_seq);
@@ -262,7 +262,7 @@ module exec_shard
    divider dv (.clk(clk), .reset(1'b0), .start(m_start & div_op), .abort(m_abort),
                .rs1(op1f), .rs2(op2f), .f3(ex_bf), .is_w(ex_w),
                .busy(dbusy), .done(ddone), .result(dres));
-   always @(posedge clk) if (m_start) begin m_pdst <= ex_pd; m_seq <= ex_sq; m_ck <= ex_ck; end
+   always @(posedge clk) if (m_start) begin m_pdst <= ex_pd; m_seq <= ex_sq; m_ck <= ex_ck; m_pdv <= ex_pdv; end
    wire        m_complete = (mdone | ddone) & ~m_abort;
    wire [63:0] m_res = mdone ? mres : dres;
 `ifdef MUL_TRACE
@@ -390,9 +390,9 @@ module exec_shard
    // FP ops also don't take the ALU result: FPU-arith writes via fp_complete (below);
    // in-core FP ops (CMP/SGNJ/MV/FCLASS) are handled separately (TODO -- not yet).
    wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr & ~ex_amor & ~ex_fpv & ~ex_squash;
-   assign      wb_next   = ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
+   assign      wb_next   = ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_complete | fp_incore_wb;   // m_pdv: a mul/div with no dest (x0) must NOT write back (its pdst is a stale don't-care) -- div_done still fires for the commit count
    always @(posedge clk) begin
-      wb_valid <= ex_alu_wb | m_complete | csr_wb | fp_complete | fp_incore_wb;
+      wb_valid <= ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_complete | fp_incore_wb;   // m_pdv: a mul/div with no dest (x0) must NOT write back (its pdst is a stale don't-care) -- div_done still fires for the commit count
       wb_seq   <= fp_complete ? fp_seq : (m_complete ? m_seq : ex_sq);
       wb_pr    <= fp_complete ? fp_pd : (m_complete ? m_pdst : ex_pd);
       wb_val   <= fp_complete ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
@@ -451,8 +451,11 @@ module exec_shard
    assign res_v     = ex_v & (ex_br | ex_jmp) & ~ex_squash;
    assign res_cbr   = ex_br;
 `ifdef BR_TRACE
-   always @(posedge clk) if (ex_v & ex_br & ~ex_squash)
-      $display("[BR] seq=%0d op1=%h op2=%h p1=%0d p2=%0d f3=%b taken=%b", ex_sq, op1f, op2f, ex_p1, ex_p2, ex_bf, bu_taken);
+   always @(posedge clk) begin
+      if (ex_v & ex_br & ~ex_squash)
+         $display("[BR t=%0t] seq=%0d op1=%h op2=%h p1=%0d p2=%0d f3=%b taken=%b", $time, ex_sq, op1f, op2f, ex_p1, ex_p2, ex_bf, bu_taken);
+      if (wb_valid) $display("[WB t=%0t] pr=%0d val=%h seq=%0d", $time, wb_pr, wb_val, wb_seq);
+   end
 `endif
    assign res_call  = ex_jmp & islink(ex_insn[11:7]);
    assign res_ret   = ex_jmp & ex_o2i & ~islink(ex_insn[11:7]) & islink(ex_insn[19:15]);

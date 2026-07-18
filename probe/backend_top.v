@@ -439,6 +439,15 @@ module backend_top
 
    wire [IW*CBITS-1:0] disp_ckpt = {IW{r_ckpt}};
    wire [IW-1:0]      sched_disp_valid = r_valid & {IW{disp_fire}};
+`ifdef RN_TRACE
+   integer dl_;
+   always @(posedge clk) begin
+      for (dl_ = 0; dl_ < IW; dl_ = dl_ + 1) if (sched_disp_valid[dl_])
+         $display("[RN t=%0t] seq=%0d ck=%0d pdst=%0d pv=%b ps1=%0d ps2=%0d", $time, r_seq[dl_*SEQW+:SEQW],
+                  r_ckpt, pdst[dl_*PBITS+:PBITS], r_rd_v[dl_], ps1[dl_*PBITS+:PBITS], ps2[dl_*PBITS+:PBITS]);
+      if (roll_v) $display("[ROLL t=%0t] seq=%0d ck=%0d", $time, roll_seq, roll_ckpt);
+   end
+`endif
 
    sched_bundle #(.SHARDS(IW), .NPHYS(NPHYS), .PBITS(PBITS), .SEQW(SEQW), .N(SCHED_N),
                   .CBITS(CBITS), .MIDXW(MIDXW)) sb
