@@ -1,6 +1,15 @@
 `timescale 1ns/1ps
 `default_nettype none
 
+// Width knobs (guarded; -DPROBE_IW/-DPROBE_POOL override). The regression tracks the
+// core's default width -- HW/PBITS derive from IW/POOL just like backend_top/soc_top.
+`ifndef PROBE_IW
+ `define PROBE_IW 2
+`endif
+`ifndef PROBE_POOL
+ `define PROBE_POOL 80
+`endif
+
 // Parallel-regression harness (verilated) for the sharded-OoO probe backend, a
 // companion to iverilog's tb_riscv.v -- this one carries NO hierarchical/trace refs so it
 // verilates cleanly, and is built once into a single binary that the parallel
@@ -11,7 +20,7 @@
 // from that one memory, and watches for the riscv-test exit (a store to `tohost`):
 // tohost==1 => PASS, else FAIL with test# = tohost>>1. Times out after +cycles.
 module tb;
-   localparam IW=4, HW=8, PCW=64, SEQW=8, PBITS=9;
+   localparam IW=`PROBE_IW, HW=2*IW, PCW=64, SEQW=8, PBITS=$clog2(`PROBE_POOL)+$clog2(IW);
    localparam [63:0] BASE = 64'h8000_0000;
    localparam        SIZE = 1<<21;             // 2 MiB (covers the -v demand-paging pool)
 
@@ -22,7 +31,7 @@ module tb;
    reg  [HW*16-1:0]    imem_data;
    wire                dmem_idle, ifence;
    // fence.i ordering: stall fetch while a fence.i flush is in progress.
-   wire [3:0]          imem_avail = !icache_en ? 4'd8 : (fi_stall ? 4'd0 : (i_match ? 4'd8 : 4'd0));
+   wire [$clog2(HW+2)-1:0] imem_avail = !icache_en ? HW : (fi_stall ? 0 : (i_match ? HW : 0));
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    reg  [63:0]         dmem_rdata;
@@ -259,17 +268,28 @@ module tb;
       $display("  CC: cur=%0d committed=%0d cnt=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d",
                dut.cur, dut.cc_committed, dut.cc.count[0], dut.cc.count[1], dut.cc.count[2], dut.cc.count[3],
                dut.cc.count[4], dut.cc.count[5], dut.cc.count[6], dut.cc.count[7]);
-      begin : rsdump
-         integer e;
-         for (e = 0; e < 16; e = e + 1) begin
-            if (dut.sb.lane[0].sh.v[e]) $display("  RS0[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[0].sh.sq[e], dut.sb.lane[0].sh.ck[e], dut.sb.lane[0].sh.r1[e], dut.sb.lane[0].sh.r2[e], dut.sb.lane[0].sh.r3[e], dut.sb.lane[0].sh.py[e][196:165]);
-            if (dut.sb.lane[1].sh.v[e]) $display("  RS1[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[1].sh.sq[e], dut.sb.lane[1].sh.ck[e], dut.sb.lane[1].sh.r1[e], dut.sb.lane[1].sh.r2[e], dut.sb.lane[1].sh.r3[e], dut.sb.lane[1].sh.py[e][196:165]);
-            if (dut.sb.lane[2].sh.v[e]) $display("  RS2[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[2].sh.sq[e], dut.sb.lane[2].sh.ck[e], dut.sb.lane[2].sh.r1[e], dut.sb.lane[2].sh.r2[e], dut.sb.lane[2].sh.r3[e], dut.sb.lane[2].sh.py[e][196:165]);
-            if (dut.sb.lane[3].sh.v[e]) $display("  RS3[%0d] seq=%0d ck=%0d rdy=%b%b%b insn=%h", e, dut.sb.lane[3].sh.sq[e], dut.sb.lane[3].sh.ck[e], dut.sb.lane[3].sh.r1[e], dut.sb.lane[3].sh.r2[e], dut.sb.lane[3].sh.r3[e], dut.sb.lane[3].sh.py[e][196:165]);
-         end
-      end
+      rs_dump = 1'b1; #1;   // fire the per-shard RS dump (module-scope generate below; tracks IW)
       $finish;
    end
+
+   // Per-shard RS dump for the timeout diagnostic. A runtime lane index can't select a
+   // hierarchical path, so unroll over the shards with a genvar (tracks IW); the timeout
+   // initial pulses rs_dump just before $finish.
+   reg rs_dump = 1'b0;
+   genvar gsh;
+   generate for (gsh = 0; gsh < IW; gsh = gsh + 1) begin : rsdump
+      always @(posedge rs_dump) begin : d
+         integer e;
+         for (e = 0; e < 16; e = e + 1)
+            if (dut.sb.lane[gsh].sh.v[e])
+               $display("  RS%0d[%0d] seq=%0d ck=%0d rdy=%b%b%b s1=%0d s2=%0d pd=%0d insn=%h", gsh, e,
+                        dut.sb.lane[gsh].sh.sq[e], dut.sb.lane[gsh].sh.ck[e],
+                        dut.sb.lane[gsh].sh.r1[e], dut.sb.lane[gsh].sh.r2[e],
+                        dut.sb.lane[gsh].sh.r3[e], dut.sb.lane[gsh].sh.s1[e],
+                        dut.sb.lane[gsh].sh.s2[e], dut.sb.lane[gsh].sh.pd[e],
+                        dut.sb.lane[gsh].sh.py[e][196:165]);
+      end
+   end endgenerate
 
    // apply stores to memory (direct path only; with the cache, write-through updates `mem`)
    always @(posedge clk) if (!reset && !cache_en && dmem_wen) begin

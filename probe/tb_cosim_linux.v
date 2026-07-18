@@ -285,10 +285,10 @@ module tb;
                      dut.core.cur, dut.core.cc_committed, dut.core.cc.count[0], dut.core.cc.count[1],
                      dut.core.cc.count[2], dut.core.cc.count[3], dut.core.cc.count[4], dut.core.cc.count[5],
                      dut.core.cc.count[6], dut.core.cc.count[7]);
-            $display("  FL: stall=%b free=%0d/%0d/%0d/%0d dvalid=%b create=%b",
+            // shards 0,1 always exist (IW>=2); higher shards omitted so the dump is width-safe
+            $display("  FL: stall=%b free[0,1]=%0d,%0d dvalid=%b create=%b",
                      dut.core.fe.u_dr.stall,
                      dut.core.fe.u_dr.rn.lane[0].sh.fl.free_count, dut.core.fe.u_dr.rn.lane[1].sh.fl.free_count,
-                     dut.core.fe.u_dr.rn.lane[2].sh.fl.free_count, dut.core.fe.u_dr.rn.lane[3].sh.fl.free_count,
                      dut.core.fe.u_dr.rn.lane[0].sh.d_valid, dut.core.fe.u_dr.rn.lane[0].sh.create);
             probe_dump_ring(dut.imem_addr);
             $finish;

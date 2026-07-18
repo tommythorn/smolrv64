@@ -1,5 +1,15 @@
 `default_nettype none
 
+// Width knobs (guarded so -DPROBE_IW / -DPROBE_POOL override; see backend_top.v). soc_top
+// sizes its own I$ window (HW*16) and writeback bus (IW*PBITS), so it derives HW/PBITS from
+// the same IW/POOL as the core -- one knob reconfigures both.
+`ifndef PROBE_IW
+ `define PROBE_IW 2
+`endif
+`ifndef PROBE_POOL
+ `define PROBE_POOL 80
+`endif
+
 // Synthesizable SoC top: the sharded-OoO core (backend_top) + unified I$/D$ (cache.v)
 // + l2_arbiter merging all memory traffic onto ONE line memory port + a behavioral
 // line RAM. This lifts the proven tb_vl cache adapters (sticky-rvalid read port,
@@ -14,7 +24,8 @@
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module soc_top #(
-   parameter IW=4, HW=8, PCW=64, SEQW=8, PBITS=9,
+   parameter IW=`PROBE_IW, POOL=`PROBE_POOL, HW=2*IW, PCW=64, SEQW=8,
+   parameter PBITS=$clog2(POOL)+$clog2(IW),   // {ridx[clog2(POOL)-1:0], shard[clog2(IW)-1:0]}
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
@@ -69,7 +80,7 @@ module soc_top #(
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
    wire [HW*16-1:0]    imem_data;
-   wire [3:0]          imem_avail;
+   wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
@@ -397,7 +408,7 @@ module soc_top #(
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = fi_stall ? 4'd0 : ((i_match | i_arr) ? 4'd8 : 4'd0);
+   assign imem_avail = fi_stall ? 0 : ((i_match | i_arr) ? HW : 0);   // HW halfwords when the line is present
 
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache

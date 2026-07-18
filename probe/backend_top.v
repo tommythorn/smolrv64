@@ -18,6 +18,15 @@
  `define PROBE_POOL 80
 `endif
 
+// PROBE_IW: issue/shard width -- the ONE width knob. SBITS, PBITS, HW, DCW, CNTW,
+// NPHYS (and WAKEN, downstream) all DERIVE from it. Was hardwired 4; default is now 2:
+// at probe_clk=66.7 MHz even a perfect IPC=4 is only 267 MIPS (a scalar's reach), so a
+// narrower core that closes timing at a higher Fmax wins. Build the 4-wide core with
+// -DPROBE_IW=4 (verilator/iverilog) or the RTL default edit (Vivado).
+`ifndef PROBE_IW
+ `define PROBE_IW 2
+`endif
+
 // Full sharded-OoO core (frontend + backend), ALU + LSU subset, with commit/CPR:
 //   PC -> fetch/align -> decode -> [reg] -> rename -> dispatch
 //      -> scheduler (scoreboard issue queues) -> execute (RF + ALU + AGU)
@@ -40,12 +49,14 @@
 // decrement, counted via ld_done). TODO: serialize fences/atomics/MMIO via a forced
 // unique checkpoint (deferred; the M1 tests don't use them).
 module backend_top
-  #(parameter IW    = 4,
-    parameter HW    = 8,
+  #(parameter IW    = `PROBE_IW,   // issue/shard width -- the ONE knob; all widths below derive
+    parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
+    parameter SBITS = $clog2(IW),    // clog2(IW) -- owner-shard id width (SHARDS = IW)
+    parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
     parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter ABITS = 6,
-    parameter PBITS = 9,             // {ridx[clog2(POOL)-1:0], shard[SBITS-1:0]}
+    parameter PBITS = $clog2(POOL)+SBITS,  // {ridx[clog2(POOL)-1:0], shard[SBITS-1:0]}
     parameter SCHED_N = 16,      // CAM RS entries/shard. Sweep @3ns: select path was the
                                  // cap (N12=3.17 N16=4.49ns) until the age compare was
                                  // coarsened (low 4 seqno bits dropped) -> N16=2.55ns,
@@ -55,13 +66,11 @@ module backend_top
                                      // cover the dispatch->commit latency. All per-ckpt state
                                      // is shallow LUTRAM-class (chk_map 64x8b/shard, snapshots,
                                      // pnpc/pdet, GHR/RAS clones), so 8 deepens arrays without
-                                     // touching a critical cone; seq window: 8x4=32 in-flight
+                                     // touching a critical cone; seq window: 8*IW in-flight
                                      // ops << the +/-128 wrap-compare bound (SEQW=8).
-    parameter POOL  = `PROBE_POOL,   // physregs/shard (freelist + RF bank depth)
     parameter NPHYS = IW * POOL,     // total physregs (SHARDS=IW)
-    parameter DCW   = 3,         // clog2(IW+1)
-    parameter CNTW  = 3,         // per-checkpoint outstanding count width
-    parameter SBITS = 2,         // clog2(IW) -- owner-shard id width
+    parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW
+    parameter CNTW  = $clog2(IW+1),  // per-checkpoint outstanding count 0..IW
     parameter AW    = 64,
     parameter SBDEPTH= 4, parameter SBI = 2,   // small store buffer -> shallow byte-merge
     parameter LQDEPTH= 4, parameter LQI = 2,
@@ -384,7 +393,7 @@ module backend_top
    wire [63:0]        xtrap_tval  = iflt_fire ? iflt_va    : dflt_tval;  // faulting VA
 
    frontend #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .ABITS(ABITS),
-              .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR($clog2(POOL)),
+              .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL), .HPTR($clog2(POOL)), .SBITS(SBITS),
               .NCHK(NCHK), .CBITS(CBITS), .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset),
       .redirect(fe_red_v), .redirect_pc(fe_red_pc),
