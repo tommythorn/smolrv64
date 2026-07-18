@@ -22,13 +22,16 @@ CYC=${CYC:-0}                          # DEFAULT = NO CAP (tb: +cycles=0 = run f
                                        # kill when done). CYC=N for a finite cap. A 2G default
                                        # once silently expired an interactive boot at [c=1999...].
 BIN=obj_dir_virtio/tb_virtio
+VDEFS=${VDEFS:-}                                              # extra verilator defines, e.g. -DPROBE_IW=1
+[ -n "${PROBE_IW:-}" ] && VDEFS="$VDEFS -DPROBE_IW=$PROBE_IW" # PROBE_IW=N convenience (matches the Makefile)
+STAMP=obj_dir_virtio/.built_vdefs                            # the defines the current binary was built with
 
-# ---- build on BUILD=1 / missing binary / any source newer than the binary ----
+# ---- build on BUILD=1 / missing binary / changed VDEFS / any source newer than the binary ----
 # (the old existence-only check silently ran stale RTL/tb; same fix as run-cosim-linux.sh)
-if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || \
+if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$VDEFS" ] || \
    find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.cpp' -o -name '*.f' \) \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
-   echo "building $BIN ..."
+   echo "building $BIN (VDEFS='${VDEFS:-<none; PROBE_IW defaults to 2>}') ..."
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
    extra="../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \
           ../src/alu.v ../src/smolrv64_sdpram.v fp_unit_stub.sv ../src/smolrv64_plic_arbiter.v"
@@ -37,12 +40,13 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || \
       -Wno-fatal -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL \
       -Wno-UNUSEDPARAM -Wno-DECLFILENAME -Wno-TIMESCALEMOD -Wno-UNOPTFLAT -Wno-LATCH \
       -Wno-PINMISSING -Wno-WIDTHCONCAT -Wno-IMPLICIT -I. -I../src \
-      "+define+SMOLRV64_GIT_COMMIT=32'h$GITC" \
+      "+define+SMOLRV64_GIT_COMMIT=32'h$GITC" $VDEFS \
       --top-module tb -o tb_virtio --Mdir obj_dir_virtio \
       $srcs tb_virtio.v $extra sd_dpi.cpp || exit 1
+   echo "$VDEFS" > "$STAMP"
 fi
 
-echo "=== virtio boot (fw=$FW dtb=$DTB disk=$DISK a1=$A1 cycles=$CYC) ==="
+echo "=== virtio boot (fw=$FW dtb=$DTB disk=$DISK a1=$A1 cycles=$CYC defs='$(cat "$STAMP" 2>/dev/null)') ==="
 INITRD_ARG=""; [ -n "$INITRD" ] && INITRD_ARG="+initrd=$INITRD"
 DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"   # snapshot by default
 DISK_ARG=""; [ -n "${DISK:-}" ] && DISK_ARG="+disk=$DISK"
