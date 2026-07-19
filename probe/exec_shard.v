@@ -189,6 +189,7 @@ module exec_shard
    reg              ex_fpv, ex_fpu;  reg [2:0] ex_fpcls, ex_fpsrc, ex_fpdst, ex_fprnd;
    reg  [3:0]       ex_fpop;  reg ex_fpmod;  reg [1:0] ex_fpint, ex_fpo0, ex_fpo1, ex_fpo2;  reg ex_fpo0i;
    reg              fpu_inflight = 1'b0;  reg [SEQW-1:0] fp_seq;  reg [PBITS-1:0] fp_pd;  reg [CBITS-1:0] fp_ck;
+   reg              fp_pdv;               // in-flight op has a real dest (ex_pdv): an F2I to x0 must NOT write back
    reg              fp_dst32;             // in-flight op's FP32 result to an F-REG -> NaN-box the writeback
    reg              ex_fpwrfp;            // dest is an f-register (decode wr_fp; F2I writes an x-reg)
    reg              ex_fs_off;            // this op executed with FS==Off -> suppress FP, it traps
@@ -314,7 +315,7 @@ module exec_shard
       .res_tag(), .flush(1'b0), .busy(fpu_busyo));
    always @(posedge clk) begin
       if (fp_start & fp_iss_ready) begin fpu_inflight<=1'b1; fp_zomb<=1'b0;
-                                         fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_dst32<=(ex_fpdst==3'd0) & ex_fpwrfp; end
+                                         fp_seq<=ex_sq; fp_pd<=ex_pd; fp_ck<=ex_ck; fp_pdv<=ex_pdv; fp_dst32<=(ex_fpdst==3'd0) & ex_fpwrfp; end
       else if (fp_res_valid & fpu_inflight)    begin fpu_inflight<=1'b0; fp_zomb<=1'b0; end
       else if (fp_abort)                       fp_zomb<=1'b1;   // drain, don't flush
 `ifdef FPDBG
@@ -326,7 +327,8 @@ module exec_shard
 `endif
    end
    wire        fp_complete = fp_res_valid & fpu_inflight & ~fp_zomb & ~fp_abort;
-   assign      fp_done      = fp_complete;
+   wire        fp_wb        = fp_complete & fp_pdv;   // writeback only when there's a real dest (F2I to x0 => no wb)
+   assign      fp_done      = fp_complete;            // commit-count + fflags still fire for x0-dest ops
    assign      fp_done_ckpt = fp_ck;
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
    wire       ex_fpd = ex_insn[25];          // 0=single 1=double
@@ -390,12 +392,12 @@ module exec_shard
    // FP ops also don't take the ALU result: FPU-arith writes via fp_complete (below);
    // in-core FP ops (CMP/SGNJ/MV/FCLASS) are handled separately (TODO -- not yet).
    wire        ex_alu_wb = ex_v & ex_pdv & ~ex_memr & ~ex_mulr & ~ex_csr & ~ex_amor & ~ex_fpv & ~ex_squash;
-   assign      wb_next   = ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_complete | fp_incore_wb;   // m_pdv: a mul/div with no dest (x0) must NOT write back (its pdst is a stale don't-care) -- div_done still fires for the commit count
+   assign      wb_next   = ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_wb | fp_incore_wb;   // m_pdv/fp_pdv: a mul/div/F2I with no dest (x0) must NOT write back (stale don't-care pdst) -- done pulse still fires for the commit count
    always @(posedge clk) begin
-      wb_valid <= ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_complete | fp_incore_wb;   // m_pdv: a mul/div with no dest (x0) must NOT write back (its pdst is a stale don't-care) -- div_done still fires for the commit count
-      wb_seq   <= fp_complete ? fp_seq : (m_complete ? m_seq : ex_sq);
-      wb_pr    <= fp_complete ? fp_pd : (m_complete ? m_pdst : ex_pd);
-      wb_val   <= fp_complete ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
+      wb_valid <= ex_alu_wb | (m_complete & m_pdv) | csr_wb | fp_wb | fp_incore_wb;   // m_pdv/fp_pdv: a mul/div/F2I with no dest (x0) must NOT write back (stale don't-care pdst) -- done pulse still fires for the commit count
+      wb_seq   <= fp_wb ? fp_seq : (m_complete ? m_seq : ex_sq);
+      wb_pr    <= fp_wb ? fp_pd : (m_complete ? m_pdst : ex_pd);
+      wb_val   <= fp_wb ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
                 : fp_incore_wb ? fp_incore_res
                 : (m_complete ? m_res : (csr_wb ? csr_rdata : result));
    end
