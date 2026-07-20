@@ -50,7 +50,7 @@ if [ -n "${UBUNTU:-}" ]; then
    NAME=ubuntu; MEM_LG2=31
    # ubuntu-cosim.dtb = ubuntu.dts minus the virtio-net node: the sim has no net backend
    # and the oracle wants no unbacked-window traffic (DUT faulted at 0x10003000 there).
-   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu/ubuntu-cosim.dtb; INITRD=
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=${DTB:-../workloads/ubuntu/ubuntu-cosim.dtb}; INITRD=
    OFF_DTB=2000000; A1=82000000
    DISK=${DISK:-$HOME/simmerv/linux/ubuntu-25.04-preinstalled-server-riscv64.img}
 fi
@@ -59,9 +59,10 @@ fi
 # discriminator). Artifact + dtb from workloads/ubuntu-mini/build-mini.sh.
 if [ -n "${RAM:-}" ]; then
    NAME=ram; MEM_LG2=31
-   FW=../workloads/ubuntu/fw_payload.bin; DTB=../workloads/ubuntu-mini/ubuntu-ram.dtb
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=${DTB:-../workloads/ubuntu-mini/ubuntu-ram.dtb}
+   # UNCOMPRESSED cpio for sim/cosim (zstd decompress = ~16B insns, impractical in RTL);
+   # the .zst is for FPGA (serial-upload dominated). Override via INITRD=.
    INITRD=../workloads/ubuntu-mini/ubuntu-mini.cpio
-   [ -f "$INITRD.zst" ] && INITRD=$INITRD.zst   # zstd build present (CONFIG_RD_ZSTD fw) -> dtb is stamped for it
    OFF_DTB=2000000; OFF_INITRD=10000000; A1=82000000; DISK=
 fi
 if [ -n "${INITRD:-}" ] && [ -f "$INITRD" ] && [ -f "$DTB" ]; then

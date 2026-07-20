@@ -26,7 +26,9 @@ rm -rf "$R"/usr/lib/firmware "$R"/usr/lib/modules "$R"/usr/src "$R"/usr/include 
        "$R"/var/backups/* "$R"/var/tmp/* "$R"/usr/libexec/gcc "$R"/usr/libexec/emacs \
        "$R"/usr/lib/gcc "$R"/usr/lib/riscv64-linux-gnu/guile \
        "$R"/usr/lib/riscv64-linux-gnu/perl "$R"/usr/lib/riscv64-linux-gnu/perl-base \
-       "$R"/snap "$R"/var/lib/snapd
+       "$R"/snap "$R"/var/lib/snapd \
+       "$R"/usr/lib/snapd "$R"/usr/lib/llvm-* "$R"/usr/lib/git-core "$R"/usr/lib/grub \
+       "$R"/usr/lib/debug "$R"/usr/lib/udev/hwdb.bin "$R"/usr/lib/udev/hwdb.d "$R"/usr/share/fwupd
 for s in emacs vim doc man info locale python-babel-localedata perl perl5 icons i18n \
          ieee-data fonts lintian bug gdb git gitweb yosys aclocal autoconf automake* \
          build-essential; do rm -rf "$R/usr/share/$s"; done
