@@ -63,6 +63,8 @@ if [ -n "${RAM:-}" ]; then
    # UNCOMPRESSED cpio for sim/cosim (zstd decompress = ~16B insns, impractical in RTL);
    # the .zst is for FPGA (serial-upload dominated). Override via INITRD=.
    INITRD=../workloads/ubuntu-mini/ubuntu-mini.cpio
+   # only the .zst is committed (LFS); derive the uncompressed cpio on demand.
+   [ -f "$INITRD" ] || { echo "deriving $INITRD from .zst ..."; unzstd -q -k "$INITRD.zst"; }
    OFF_DTB=2000000; OFF_INITRD=10000000; A1=82000000; DISK=
 fi
 if [ -n "${INITRD:-}" ] && [ -f "$INITRD" ] && [ -f "$DTB" ]; then
