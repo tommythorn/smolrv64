@@ -35,7 +35,7 @@ bool        g_inited = false;
 uint64_t    g_seqno = 0;
 
 struct RingEntry { SimmervRetire dut; SimmervRetire ref; bool valid; };
-constexpr size_t RING_N = 320;
+constexpr size_t RING_N = 65536;   // widened for +tracepc window dumps (was 320)
 RingEntry g_ring[RING_N] = {};
 size_t    g_ring_idx = 0;
 
@@ -44,6 +44,11 @@ bool          g_have_prev = false;
 SimmervRetire g_prev{};
 uint64_t      g_prev_mtimecmp = ~0ULL;
 bool          g_prev_seip = false;
+
+// +tracepc=<hexVA>: dump the DUT-vs-REF ring window the FIRST time this PC retires.
+uint64_t      g_tracepc   = 0;
+bool          g_tp_parsed = false;
+bool          g_traced    = false;
 
 const char* plusarg(const char* key) {
     // verilated --binary parsed the args; fetch "+key=...". Match "key=" (not just the
@@ -288,6 +293,22 @@ void drain_dma_queue() {
     g_dmaq.clear();
 }
 
+// +tracepc trigger: dump the ring (last RING_N retirements, DUT vs REF) the first time the
+// target PC retires -- the failure window for a bug that trips neither mismatch_abort (no
+// divergence) nor the hang watchdog (boot continues past it).
+void dump_ring_window(const char* why, unsigned long long pc) {
+    std::fprintf(stderr,
+        "\n*** cosim TRACE (%s) pc=%016llx at retire #%llu -- last %zu retirements (DUT vs REF):\n",
+        why, pc, (unsigned long long)g_seqno, RING_N);
+    for (size_t i = 0; i < RING_N; i++) {
+        size_t idx = (g_ring_idx + i) % RING_N;
+        if (!g_ring[idx].valid) continue;
+        dump_retire("DUT", g_ring[idx].dut);
+        dump_retire("REF", g_ring[idx].ref);
+    }
+    std::fflush(stderr);
+}
+
 } // namespace
 
 extern "C" void cosim_dma_write(unsigned long long off, unsigned long long data,
@@ -329,6 +350,11 @@ extern "C" void probe_retire(
     unsigned char      seip)
 {
     if (!g_inited) cosim_init();
+
+    if (!g_tp_parsed) { g_tp_parsed = true;
+        const char* t = plusarg("tracepc");
+        if (t) g_tracepc = std::strtoull(t, nullptr, 16); }
+    if (g_tracepc && pc == g_tracepc && !g_traced) { g_traced = true; dump_ring_window("tracepc", pc); }
 
     SimmervRetire e{};
     e.pc = pc; e.insn = insn; e.rd_kind = rd_kind; e.rd_idx = rd_idx;
