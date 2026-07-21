@@ -9,7 +9,7 @@
 	chosen {
 		linux,initrd-start = <0 0x90000000>;
 		linux,initrd-end   = <0 0xb897a5ec>; /* exact: ubuntu-mini.cpio (681027052 B) */
-		bootargs = "console=ttyS0 earlycon=sbi ignore_loglevel random.trust_bootloader=on";
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
