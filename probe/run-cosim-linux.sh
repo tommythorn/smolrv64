@@ -96,6 +96,11 @@ if [ "$(uname -s)" = Darwin ]; then OSLIBS="-framework vmnet"; else OSLIBS="-ldl
 PERFOPT=""; PERFSRC=""
 [ -n "${PERF_TRACE:-}" ] && { PERFOPT="-DPERF_TRACE"; PERFSRC="perf_trace.cpp"; }
 
+# VCD=1: build verilator --trace + -DVCD_WIN; the tb opens $dumpvars(dut)->cosim_win.vcd
+# once cycle >= +vcdstart (windowed, so only the last N cycles before a divergence dump).
+TRACEOPT=""; VCDDEF=""
+[ -n "${VCD:-}" ] && { TRACEOPT="--trace"; VCDDEF="-DVCD_WIN"; }
+
 # Decide whether to (re)build. The old check keyed ONLY on binary existence, so a
 # stale binary silently ran old RTL -- and MEM_LG2/VDEFS are compile-time -D's, so a
 # size change (e.g. gb5 1->2 GiB) was inert until a manual BUILD=1. Now rebuild when:
@@ -105,7 +110,7 @@ PERFOPT=""; PERFSRC=""
 #   - the simmerv cosim lib (.a) is newer than the binary -- a simmerv-only change rebuilds
 #     the .a (cargo, above) but touches no probe/ file, so this is its ONLY relink trigger.
 # (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
-want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-} THREADS=$THREADS"
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-} VCD=${VCD:-} THREADS=$THREADS"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
@@ -122,7 +127,7 @@ if [ "$need_build" = 1 ]; then
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
-      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} $PERFOPT \
+      -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} $PERFOPT $TRACEOPT $VCDDEF \
       -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC -I$(cd ../src && pwd)" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -lm $OSLIBS" \
       -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
@@ -141,4 +146,4 @@ DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_
 "$BIN" +fw="$FW" +dtb="$DTB" \
        ${INITRD:+"+initrd=$INITRD"} ${DISK:+"+disk=$DISK"} $DISKRO_ARG \
        +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC \
-       ${WATCHPA:+"+watchpa=$WATCHPA"} ${TRACEPC:+"+tracepc=$TRACEPC"}
+       ${WATCHPA:+"+watchpa=$WATCHPA"} ${TRACEPC:+"+tracepc=$TRACEPC"} ${VCDSTART:+"+vcdstart=$VCDSTART"}

@@ -228,6 +228,9 @@ module tb;
    reg [8*256-1:0] fw, dtb, initrd, disk;
    integer b2;
    reg [63:0] ncyc, c;        // 64-bit: cosim runs (gb5/sha256) exceed 2^32 cycles
+`ifdef VCD_WIN
+   reg [63:0] vcd_start; reg vcd_on;   // windowed waveform: $dumpvars(dut) once c>=+vcdstart
+`endif
 `ifdef PROBE_COSIM
    import "DPI-C" function void probe_dump_ring(input longint fetch_pc);
    reg [31:0] wedge_cnt;      // cycles without a commit (stuck-pipeline detector)
@@ -240,6 +243,10 @@ module tb;
       if (!$value$plusargs("fw=%s", fw))  begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
+`ifdef VCD_WIN
+      vcd_on = 0; vcd_start = 64'hffff_ffff_ffff_ffff;
+      if ($value$plusargs("vcdstart=%d", vcd_start)) ;
+`endif
       off_dtb = OFF_DTB_DEF; off_initrd = OFF_INITRD_DEF;
       if ($value$plusargs("dtb_off=%h",    off_dtb))    ;
       if ($value$plusargs("initrd_off=%h", off_initrd)) ;
@@ -254,6 +261,12 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
       for (c=0; (ncyc==0) || (c<ncyc); c=c+1) begin
          @(negedge clk);
+`ifdef VCD_WIN
+         if (!vcd_on && c >= vcd_start) begin
+            $dumpfile("cosim_win.vcd"); $dumpvars(0, dut); vcd_on = 1;
+            $display("[VCD] window open at c=%0d -> cosim_win.vcd (scope=dut)", c);
+         end
+`endif
          if ((c % 1000000) == 0) $display("[c=%0d]", c);
 `ifdef PROBE_COSIM
          // stuck-pipeline watchdog: 200k cycles without a single commit is a wedge
