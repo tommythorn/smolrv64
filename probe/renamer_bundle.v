@@ -54,7 +54,8 @@ module renamer_bundle
     input  wire [SHARDS-1:0]       d_is_slot,
     input  wire [SHARDS*SBITS-1:0] d_slot,
     // checkpoint / commit control
-    input  wire                    create,
+    input  wire                    create,       // per-bundle dispatch (alloc/MAP/pold)
+    input  wire                    ckpt_create,  // per-checkpoint close (coarse CPR: span + chk_map)
     input  wire                    commit,
     input  wire [CBITS-1:0]        commit_idx,
     input  wire                    rollback,
@@ -98,7 +99,7 @@ module renamer_bundle
             .wr_arch(wr_arch), .wr_phys(wr_phys), .wr_valid(wr_valid),
             .al_phys(al_phys),
             .pold_valid(pold_valid), .pold_bus(pold_bus),
-            .create(create), .commit(commit), .commit_idx(commit_idx),
+            .create(create), .ckpt_create(ckpt_create), .commit(commit), .commit_idx(commit_idx),
             .rollback(rollback), .rollback_idx(rollback_idx),
             .ps1(ps1[i*PBITS +: PBITS]), .ps2(ps2[i*PBITS +: PBITS]),
             .ps3(ps3[i*PBITS +: PBITS]),

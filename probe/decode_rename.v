@@ -39,7 +39,8 @@ module decode_rename
     input  wire [IW*64-1:0]     pc_in,    // per-slot PC (for the execute payload)
     input  wire [63:0]          pred_npc_in, // fetch's chosen next PC for this bundle
     // checkpoint / commit control (already in the rename time domain)
-    input  wire                 create,
+    input  wire                 create,       // per-bundle dispatch
+    input  wire                 ckpt_create,  // per-checkpoint close (coarse CPR)
     input  wire                 commit,
     input  wire [CBITS-1:0]     commit_idx,
     input  wire                 rollback,
@@ -212,7 +213,7 @@ module decode_rename
       .s2_is_slot(q_s2_is_slot), .s2_slot(q_s2_slot),
       .s3_is_slot(q_s3_is_slot), .s3_slot(q_s3_slot), .map_writer(q_map_writer),
       .d_is_slot(q_d_is_slot), .d_slot(q_d_slot),
-      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .create(create), .ckpt_create(ckpt_create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
       .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst), .cur(cur), .stall(stall));
 

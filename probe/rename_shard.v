@@ -64,7 +64,8 @@ module rename_shard
     input  wire [SHARDS-1:0]       pold_valid,
     input  wire [SHARDS*PBITS-1:0] pold_bus,
     // checkpoint / commit control (driven in lockstep across all shards)
-    input  wire                  create,         // open a new span (cur++); snapshot MAP[cur]
+    input  wire                  create,         // per-BUNDLE dispatch: alloc / MAP update / pold
+    input  wire                  ckpt_create,    // per-CHECKPOINT close: span cur++ + chk_map snapshot
     input  wire                  commit,
     input  wire [CBITS-1:0]      commit_idx,
     input  wire                  rollback,        // branch redirect / exception
@@ -118,7 +119,7 @@ module rename_shard
      (.clk(clk), .reset(reset),
       .alloc_en(d_valid & create), .alloc_pr(alloc_pr), .alloc_ok(alloc_ok), .free_count(),
       .pold_valid(pold_valid), .pold_pr(pold_bus),
-      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .create(ckpt_create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx), .cur(cur));
 
    assign stall = d_valid && !alloc_ok;
@@ -165,11 +166,17 @@ module rename_shard
       // cycle leaves it untouched.
       if (rollback) begin
          for (k = 0; k < AREGS; k = k + 1) map[k] <= chk_map[rollback_idx][k];
-      end else if (create) begin
-         for (k = 0; k < AREGS; k = k + 1) begin
-            map[k]        <= nmap[k];
-            chk_map[nxt][k] <= nmap[k];   // post-bundle map -> reopened-span slot
-         end
+      end else begin
+         // MAP advances on every dispatched BUNDLE (create=disp_fire); the chk_map
+         // snapshot is taken only when a CHECKPOINT closes (ckpt_create), capturing the
+         // post-close map (= the reopened span's start) into the next span's slot.
+         if (create)      for (k = 0; k < AREGS; k = k + 1) map[k]          <= nmap[k];
+         // chk_map[nxt] = the reopened span's START map = the map AS OF this cycle's end.
+         // Normally a checkpoint closes ON a dispatched bundle (create), so that is nmap. But a
+         // FORCE-CLOSE (irq/barrier/solo: ckpt_create with disp_fire/create=0) closes with NO
+         // dispatch -- the stalled op dispatches INTO nxt next cycle, so its rename writes (nmap)
+         // must NOT be captured; nxt starts at the current map. Use the same value `map` takes.
+         if (ckpt_create) for (k = 0; k < AREGS; k = k + 1) chk_map[nxt][k] <= create ? nmap[k] : map[k];
       end
    end
 endmodule

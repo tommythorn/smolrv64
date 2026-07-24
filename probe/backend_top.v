@@ -74,8 +74,9 @@ module backend_top
                                      // ops << the +/-128 wrap-compare bound (SEQW=8).
     parameter NPHYS = (1 << SBITS) * POOL,   // pr = {ridx, shard[SBITS-1:0]} spans 2^SBITS*POOL
                                              // (= IW*POOL for power-of-2 IW; sparse/larger for 3,5)
-    parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW
-    parameter CNTW  = $clog2(IW+1),  // per-checkpoint outstanding count 0..IW
+    parameter CKMAX = 2,             // max instructions per checkpoint (coarse CPR; see commit_ctl)
+    parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW (one bundle)
+    parameter CNTW  = $clog2(CKMAX+IW+1),  // per-checkpoint count: up to CKMAX (+bundle overshoot)
     parameter AW    = 64,
     parameter SBDEPTH= 4, parameter SBI = 2,   // small store buffer -> shallow byte-merge
     parameter LQDEPTH= 4, parameter LQI = 2,
@@ -153,7 +154,8 @@ module backend_top
    assign redirect        = fe_red_v;
    assign redirect_target = fe_red_pc;
 `ifdef REDIR_TRACE
-   always @(posedge clk) if (fe_red_v) $display("[REDIR] seq=%0d tgt=%h", fe_red_seq, fe_red_pc);
+   always @(posedge clk) if (fe_red_v) $display("[REDIR] tgt=%h rckpt=%0d chkpc=%h chkseq=%0d rtrap=%b ebtgt=%h ebrseq=%0d cur=%0d",
+      fe_red_pc, eb_rckpt, chk_pc[eb_rckpt], chk_seq[eb_rckpt], eb_rtrap, eb_target, eb_rseq, cur);
 `endif
    // predictor resolve/training port (exec_bundle -> frontend) + GHR repair strobe
    wire               eb_res_v, eb_res_cbr, eb_res_call, eb_res_ret, eb_res_taken, eb_res_mispred;
@@ -171,9 +173,9 @@ module backend_top
    wire [CBITS-1:0]   r_ckpt, cur;
 
    // ---- commit control ----
-   wire               cc_commit, cc_rollback, cc_full;
+   wire               cc_commit, cc_rollback, cc_full, cc_create;
    wire [CBITS-1:0]   cc_commit_idx, cc_rollback_idx, cc_committed;
-   wire [2:0]         cc_commit_count;   // # instructions retiring this cycle (-> minstret)
+   wire [CNTW-1:0]    cc_commit_count;   // # instructions retiring this cycle (-> minstret)
 
    // ---- per-slot memory-op classification (from the renamed payload) ----
    wire [IW-1:0]      slot_mem, slot_store, dl_is_load, dl_is_store;
@@ -230,7 +232,7 @@ module backend_top
    // the taken-branch bubble ahead of the UART lb's devld_replay.)
    wire               can_dispatch = !cc_full && (&disp_ready) && !(|fe_stall)
                                      && !sb_full && !lq_full && !roll_v && !lsu_dfault_v && !ill_v
-                                     && !amo_gap;
+                                     && !amo_gap && !cc_stall_barrier;
    wire               disp_fire    = any_valid && can_dispatch;
    wire               accept       = !any_valid || can_dispatch;   // else freeze frontend
 
@@ -239,6 +241,31 @@ module backend_top
    always @* begin
       disp_count = {DCW{1'b0}};
       for (dc = 0; dc < IW; dc = dc + 1) disp_count = disp_count + r_valid[dc];
+   end
+
+   // Coarse CPR (approach B): a bundle ENDS its checkpoint if it carries a CTI (branch/jump)
+   // or a serialize/CSR/fence/AMO/CBO op. Closing on CTIs keeps ONE CTI per checkpoint, so the
+   // per-checkpoint mispredict-reference (pnpc) + predictor train-details (pdet) stay correct
+   // and recovery is PRECISE (no replay) -- while the straight-line run between CTIs still
+   // coarsens into one checkpoint (window grows ~basic-block-length x). commit_ctl also caps
+   // at CKMAX. (Not-taken branches riding along -> per-branch pnpc/pdet, a later step.)
+   reg  disp_close;  reg disp_barrier;  integer dcl;
+   wire cc_ckpt_open;  wire cc_stall_barrier;
+   always @* begin
+      disp_close = 1'b0;  disp_barrier = 1'b0;
+      for (dcl = 0; dcl < IW; dcl = dcl + 1) begin
+         if (r_valid[dcl] & (r_pay[dcl*`PAYW + `PAY_BR]  | r_pay[dcl*`PAYW + `PAY_JMP]
+                           | r_pay[dcl*`PAYW + `PAY_SER] | r_pay[dcl*`PAYW + `PAY_CSR]
+                           | r_pay[dcl*`PAYW + `PAY_AMO] | r_pay[dcl*`PAYW + `PAY_CBO]
+                           | r_pay[dcl*`PAYW + `PAY_FENCEI]))
+            disp_close = 1'b1;
+         // memory-barrier ops (NON-branch closers): must open a fresh checkpoint so older stores
+         // drain first (see commit_ctl). Branches/jumps do NOT need this -- they carry no ordering.
+         if (r_valid[dcl] & (r_pay[dcl*`PAYW + `PAY_SER] | r_pay[dcl*`PAYW + `PAY_CSR]
+                           | r_pay[dcl*`PAYW + `PAY_AMO] | r_pay[dcl*`PAYW + `PAY_CBO]
+                           | r_pay[dcl*`PAYW + `PAY_FENCEI]))
+            disp_barrier = 1'b1;
+      end
    end
 
 `ifdef DISP_STATS
@@ -408,7 +435,7 @@ module backend_top
       .redirect_seq(fe_red_seq), .solo_all(replay_v | devld_solo_v), .irq_inject(irq_inject),
       .imem_addr(imem_va), .imem_ipc(imem_ipc), .imem_data(imem_data), .imem_avail(imem_avail_g),
       .accept(accept),
-      .create(disp_fire), .commit(cc_commit), .commit_idx(cc_commit_idx),
+      .create(disp_fire), .ckpt_create(cc_create), .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .res_v(eb_res_v), .res_cbr(eb_res_cbr), .res_call(eb_res_call), .res_ret(eb_res_ret),
       .res_taken(eb_res_taken),
@@ -602,9 +629,11 @@ module backend_top
    wire [CBITS-1:0]   lsu_dfault_ckpt;
    wire [3:0]         lsu_dfault_cause;
    wire [AW-1:0]      lsu_dfault_tval;
-   commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CNTW(CNTW), .DCW(DCW)) cc
+   commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CKMAX(CKMAX), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
-      .disp_fire(disp_fire), .disp_count(disp_count),
+      .disp_fire(disp_fire), .disp_count(disp_count), .disp_close(disp_close),
+      .irq_req(irq_inject & accept), .solo(replay_v | devld_solo_v),
+      .barrier(disp_barrier), .stall_barrier(cc_stall_barrier),
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul),
       .iss_is_fp(q_iss_is_fp), .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt), .iss_ckpt(q_iss_ckpt),
       .iss_fp_dirty(eb_iss_fp_dirty),
@@ -612,7 +641,7 @@ module backend_top
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(roll_v), .redirect_ckpt(roll_ckpt),
-      .create(), .empty(cc_empty),
+      .create(cc_create), .ckpt_open(cc_ckpt_open), .empty(cc_empty),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .committed_idx(cc_committed), .commit_count(cc_commit_count),
@@ -677,7 +706,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(cc_commit_count), .hpm_ev(hpm_ev),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({{(6-CNTW){1'b0}}, cc_commit_count}), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
@@ -786,7 +815,7 @@ module backend_top
    reg  [PCW-1:0]  chk_pc  [0:NCHK-1];
    reg  [SEQW-1:0] chk_seq [0:NCHK-1];
    wire [PCW-1:0]  disp_base_pc = r_pay[`PAY_PC];   // slot-0 PC = the bundle's oldest op
-   always @(posedge clk) if (disp_fire) begin
+   always @(posedge clk) if (cc_ckpt_open) begin   // only the checkpoint's FIRST bundle sets its start
       chk_pc [cur] <= disp_base_pc;
       chk_seq[cur] <= r_seq[SEQW-1:0];
    end
@@ -935,9 +964,9 @@ module backend_top
    // checkpoint state stale (count[] -> X). Roll back to the committed (== open) ckpt.
    assign roll_v     = eb_redirect | dflt_roll | iflt_fire | devld_replay;
    // GHR LSB repair (plan B2): only when THIS rollback is the resolved cond-branch's
-   // own mispredict -- i.e. the eb redirect won the rollback priority below AND the
-   // exported (oldest) resolve is the redirecting op. All other rollback causes
-   // (traps, faults, replays) restore the snapshot verbatim.
+   // own mispredict. Approach B: CTIs close their checkpoint, so a branch is the last op
+   // of its checkpoint -> recovery stays PRECISE (roll to eb_rckpt+1, redirect to eb_target),
+   // no replay. All other rollback causes (traps, faults, replays) restore verbatim.
    assign bp_rep     = eb_res_v & eb_res_cbr & eb_res_mispred
                      & ~iflt_fire & ~dflt_roll & ~devld_replay;
    assign roll_seq   = iflt_fire    ? fe_cur_seq
@@ -1009,6 +1038,12 @@ module backend_top
    reg              q_trap [0:QN-1];
    reg  [63:0]      q_cause[0:QN-1];
    reg  [63:0]      q_tval [0:QN-1];
+   // mepc reported in RETIRE ORDER: updated only when a mepc-changing instruction actually
+   // emits (a trap -> its cot_mepc, or a CSR write to mepc -> the landed value). A YOUNGER
+   // op's out-of-order mepc write (e.g. an ebreak/interrupt that becomes oldest right after
+   // an older op commits) cannot perturb it until that op retires in order -- so an older
+   // normal retire never leaks the younger trap's mepc (the cosim harness read-race).
+   reg  [63:0]      mepc_retire; initial mepc_retire = 64'd0;
    reg  [PBITS-1:0] q_ps1  [0:QN-1];   // renamed source physregs (rename-correctness check)
    reg  [PBITS-1:0] q_ps2  [0:QN-1];
    reg  [4:0]       q_rs1  [0:QN-1];   // source arch regs (from the insn fields)
@@ -1048,7 +1083,7 @@ module backend_top
 
    integer fi, fl, cut;
    always @(posedge clk) begin
-      if (reset) qn = 0;
+      if (reset) begin qn = 0; mepc_retire = 64'd0; end
       else begin
          // ISS-CHK: the registered issued source physregs (what execute reads) must equal
          // the dispatched ps for the same seqno -- catches the scheduler corrupting/swapping
@@ -1111,6 +1146,13 @@ module backend_top
                   ck_da = (q_rk[0]==2'd2) ? (32 + q_ri[0]) : {1'b0, q_ri[0]};
                   arch_phys[ck_da] = q_prd[0];
                end
+               // advance retire-order mepc: a trap -> its own mepc; a CSR write to mepc
+               // (csr 0x341, SYSTEM funct3!=0) -> the now-landed value; else unchanged.
+               if (q_trap[0])
+                  mepc_retire = q_mepc[0];
+               else if ((q_insn[0][6:0]==7'h73) && (q_insn[0][14:12]!=3'd0)
+                        && (q_insn[0][31:20]==12'h341))
+                  mepc_retire = `VA_UNPACK40(eb.u_csr.mepc);
 `ifdef STDATA_TAP
                // print each committed STORE's SB data (read back at retire, pre-drain) ->
                // 0 = operand/PRF-read bug; correct value = ordering/memory bug.
@@ -1121,7 +1163,7 @@ module backend_top
                probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
                   (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
                   {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
-                  64'd0, {64{1'b1}}, q_trap[0] ? q_mepc[0] : `VA_UNPACK40(eb.u_csr.mepc), 8'd0);
+                  64'd0, {64{1'b1}}, mepc_retire, 8'd0);   // mepc in retire order (immune to younger writes)
                end
                for (fi = 0; fi < QN-1; fi = fi + 1) begin
                   q_seq[fi]=q_seq[fi+1]; q_ck[fi]=q_ck[fi+1]; q_pc[fi]=q_pc[fi+1];
@@ -1158,7 +1200,9 @@ module backend_top
          // 3. commit: mark this bundle's (so-far uncommitted) entries committed
          if (cc_commit)
             for (fi = 0; fi < QN; fi = fi + 1)
-               if ((fi < qn) && !q_cmt[fi] && (q_ck[fi] == cc_commit_idx)) q_cmt[fi] = 1'b1;
+               if ((fi < qn) && !q_cmt[fi] && (q_ck[fi] == cc_commit_idx)) begin
+                  q_cmt[fi] = 1'b1;
+               end
          // 4. dispatch: push each valid slot in program order
          if (disp_fire)
             for (fl = 0; fl < IW; fl = fl + 1) if (r_valid[fl]) begin
@@ -1182,7 +1226,7 @@ module backend_top
                q_rs2 [qn] = r_pay[fl*`PAYW + 165 + 20 +: 5];   // insn[24:20]
                q_sbidx[qn] = disp_sb_idx[fl*SBI +: SBI];
                q_prv [qn] = mmu_priv;
-               q_mepc[qn] = 64'd0;          // filled at commit (mepc-after-retire)
+               q_mepc[qn] = 64'd0;          // filled at commit+1 (mepc-after-retire) or trap stamp
                q_val [qn] = 64'd0;  q_vok[qn] = 1'b0;  q_cmt[qn] = 1'b0;
                q_trap[qn] = 1'b0;   q_cause[qn] = 64'd0; q_tval[qn] = 64'd0;
                qn = qn + 1;

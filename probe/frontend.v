@@ -46,7 +46,8 @@ module frontend
     // back-pressure: accept a new bundle this cycle (else freeze fetch + boundary)
     input  wire                    accept,
     // checkpoint / commit control (rename time domain)
-    input  wire                    create,
+    input  wire                    create,       // per-bundle dispatch (alloc/MAP/pold)
+    input  wire                    ckpt_create,  // per-checkpoint close (coarse CPR: span + chk_map)
     input  wire                    commit,
     input  wire [CBITS-1:0]        commit_idx,
     input  wire                    rollback,
@@ -103,7 +104,7 @@ module frontend
       .npc(f_npc), .fire(accept & f_valid), .base_pc(imem_ipc), .ft_npc(f_ftn),
       .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .create(create), .cur(cur), .rollback(rollback), .rollback_idx(rollback_idx),
+      .create(ckpt_create), .cur(cur), .rollback(rollback), .rollback_idx(rollback_idx),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep));
 
@@ -113,7 +114,7 @@ module frontend
      (.clk(clk), .reset(reset), .flush(redirect), .accept(accept),
       .inst(f_inst), .in_valid(f_slot_valid),
       .seq_in(f_seq), .pc_in(f_pc), .pred_npc_in(f_pnpc), .r_pred_npc(r_pred_npc),
-      .create(create), .commit(commit), .commit_idx(commit_idx),
+      .create(create), .ckpt_create(ckpt_create), .commit(commit), .commit_idx(commit_idx),
       .rollback(rollback), .rollback_idx(rollback_idx),
       .r_valid(r_valid), .r_seq(r_seq), .r_rd(r_rd), .r_rd_v(r_rd_v),
       .ps1(ps1), .ps2(ps2), .ps3(ps3), .pdst(pdst),

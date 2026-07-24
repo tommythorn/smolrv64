@@ -61,7 +61,8 @@ module csr_file
     // so software clears them only at the device (mtimecmp/msip), never via mip.
     input  wire [11:0] hw_ip,
     input  wire [63:0] mtime,       // free-running CLINT time (Sstc stimecmp compare); 0 in device-less TBs
-    input  wire [2:0]  retire_cnt,  // # instructions retiring this cycle (commit_ctl) -> minstret
+    input  wire [5:0]  retire_cnt,  // # instructions retiring this cycle (commit_ctl) -> minstret
+                                    // (a coarse checkpoint retires up to CKMAX at once)
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
     input  wire [6:0]  hpm_ev,
@@ -518,7 +519,7 @@ module csr_file
          mcycle   <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MCYCLE)
                        ? newv : mcycle   + (mcountinhibit[0] ? 64'd0 : 64'd1);
          minstret <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MINSTRET)
-                       ? newv : minstret + (mcountinhibit[2] ? 64'd0 : {61'd0, retire_cnt});
+                       ? newv : minstret + (mcountinhibit[2] ? 64'd0 : {58'd0, retire_cnt});
       end
       // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
       // mhpmeventN-selected event's count this cycle unless inhibited (mcountinhibit[N]); an

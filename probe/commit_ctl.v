@@ -16,14 +16,34 @@ module commit_ctl
   #(parameter NCHK  = 4,
     parameter CBITS = 2,
     parameter IW    = 4,
-    parameter CNTW  = 3,         // per-ckpt outstanding count (<= IW per bundle)
-    parameter DCW   = 3)         // clog2(IW+1)
+    parameter CKMAX = 8,         // soft cap: max instructions accumulated per checkpoint. The
+                                 // open checkpoint absorbs plain ALU/mem ops and closes on a
+                                 // control/serialize op or at CKMAX -> the window is bounded by
+                                 // physregs/LSU, not by NCHK (the timing-critical checkpoint arrays).
+    parameter CNTW  = 4,         // per-ckpt outstanding count 0..CKMAX (+ one-bundle overshoot)
+    parameter DCW   = 3)         // clog2(IW+1), per-bundle dispatch count
    (input  wire                  clk,
     input  wire                  reset,
     input  wire [CBITS-1:0]      cur,          // freelist's current open checkpoint
     // dispatch: a bundle (tagged `cur`) with disp_count valid instructions
     input  wire                  disp_fire,
     input  wire [DCW-1:0]        disp_count,
+    input  wire                  disp_close,   // this bundle must end the checkpoint: a serialize/
+                                               // CSR/fence/AMO/CBO/system op (commit-time effects
+                                               // need a boundary). Branches do NOT close -- a
+                                               // mispredict replays from chk_pc (Option A).
+    input  wire                  irq_req,      // an interrupt pseudo-op is being injected (fetch this
+                                               // cycle, dispatches next) -> force-close the open
+                                               // checkpoint so the pseudo-op is solo in its own.
+    input  wire                  barrier,      // incoming bundle carries a memory-barrier op that must
+                                               // see older stores drained -> open it in a fresh ckpt.
+    output wire                  stall_barrier,// hold dispatch this cycle while the open ckpt closes
+                                               // (barrier waits for open_inst==0 so it dispatches solo).
+    input  wire                  solo,         // fault/device-load REPLAY-TO-SOLO active (frontend is
+                                               // refetching one-op-per-bundle): close a checkpoint per
+                                               // bundle so the replayed faulting op becomes solo in its
+                                               // OWN checkpoint (else coarsening re-groups it and the
+                                               // dflt_solo test never passes -> the trap never delivers).
     // issue completions (per shard) + their checkpoint. ALU/branch/store complete
     // at issue; LOADS do not (they complete at the LSU) -> excluded here via
     // iss_is_load and counted by the ld_done port instead.
@@ -54,32 +74,58 @@ module commit_ctl
     input  wire                  redirect,
     input  wire [CBITS-1:0]      redirect_ckpt,
     // to freelist + frontend
-    output wire                  create,        // open a new checkpoint (advance cur)
+    output wire                  create,        // close the open checkpoint / advance cur
+    output wire                  ckpt_open,     // this bundle is the FIRST of its checkpoint
+                                                // (gates the chk_pc/chk_seq snapshot to the start)
     output wire                  commit,
     output wire [CBITS-1:0]      commit_idx,
     output wire                  rollback,
     output wire [CBITS-1:0]      rollback_idx,
     output wire [CBITS-1:0]      committed_idx, // oldest live checkpoint (for serialize gating)
     output wire                  empty,         // no instructions in flight (-> precise fetch trap)
-    output wire [DCW-1:0]        commit_count,  // # instructions retiring this cycle (for minstret)
+    output wire [CNTW-1:0]       commit_count,  // # instructions retiring this cycle (for minstret)
     output wire                  fp_dirty_commit, // a retiring checkpoint held an FP-state writer -> FS Dirty
     output wire                  full);         // ring full -> stall dispatch
 
    reg [CNTW-1:0]  count [0:NCHK-1];
-   reg [DCW-1:0]   ninst [0:NCHK-1];            // bundle size of each checkpoint (for minstret)
+   reg [CNTW-1:0]  ninst [0:NCHK-1];            // total instruction count of each checkpoint (minstret)
+   reg [CNTW-1:0]  open_inst;                   // instructions in the currently-open checkpoint
    reg [NCHK-1:0]  fp_pend;                      // per-ckpt: a retiring FP-state writer -> mstatus.FS Dirty
    reg [CBITS-1:0] committed;
    integer i, s;
 
    initial begin
       for (i = 0; i < NCHK; i = i + 1) begin count[i] = 0; ninst[i] = 0; end
-      committed = 0; fp_pend = 0;
+      committed = 0; fp_pend = 0; open_inst = 0;
    end
 
    // live checkpoints = committed..cur (inclusive); full when all NCHK are live
    wire [CBITS-1:0] live_m1 = (cur - committed) & (NCHK-1);
    assign full     = (live_m1 == (NCHK-1));
-   assign create   = disp_fire;                 // frontend gates disp_fire by !full
+   // Coarse checkpoints: accumulate plain ops into the open checkpoint; close it on a
+   // serialize/control op (disp_close) or when it reaches CKMAX. open_inst = instructions
+   // already in the open checkpoint (before this bundle); open_next includes this bundle.
+   wire [CNTW-1:0] open_next = open_inst + {{(CNTW-DCW){1'b0}}, disp_count};
+   wire            create_n  = disp_fire && (disp_close || (open_next >= CKMAX[CNTW-1:0]) || solo);
+   // value the open checkpoint would hold after this cycle's dispatch (0 if it closes now)
+   wire [CNTW-1:0] post_open = create_n ? {CNTW{1'b0}} : (disp_fire ? open_next : open_inst);
+   // an injected interrupt pseudo-op dispatches NEXT cycle and its trap rolls back TO its own
+   // checkpoint's start (rb_idx=eb_rckpt); any older sibling sharing that checkpoint would be
+   // squashed but skipped by mepc (= the pseudo-op's PC) and thus LOST. Force-close the open
+   // checkpoint now (unless already fresh) so the pseudo-op opens a clean one and -- since it
+   // also closes it (disp_close/PAY_SER) -- is solo. Restores the per-bundle-checkpoint invariant.
+   // memory-barrier ops (fence / fence.i / sfence.vma / AMO / CBO / satp-csr) must observe all
+   // OLDER stores as DRAINED before they take effect. Under coarse checkpoints a page-table store
+   // sharing the barrier's checkpoint has not committed (hence not drained to memory) when the
+   // barrier redirects, so the refetched hardware page-table walk reads a STALE PTE -> wrong
+   // mapping. Stall the barrier one cycle and force-close the open checkpoint so the older store
+   // lands in an EARLIER checkpoint that commits + drains first -- the per-bundle (CKMAX=1)
+   // ordering that is correct. disp_close then closes it too, so the barrier is solo.
+   wire            barrier_fc = barrier && (open_inst != {CNTW{1'b0}});
+   assign stall_barrier = barrier_fc;
+   wire            force_close = (irq_req && (post_open != {CNTW{1'b0}})) || barrier_fc;
+   assign create    = create_n || force_close;
+   assign ckpt_open = disp_fire && (open_inst == {CNTW{1'b0}});
    assign rollback = redirect;
    assign rollback_idx = redirect_ckpt;
    // commit the oldest once it is closed (newer ckpt exists) and drained
@@ -90,7 +136,7 @@ module commit_ctl
    assign empty = (committed == cur) && (count[committed] == {CNTW{1'b0}});
    // a committed checkpoint retires its whole (un-squashed) bundle -> its dispatched
    // instruction count, captured at create. Drives minstret in csr_file.
-   assign commit_count = commit ? ninst[committed] : {DCW{1'b0}};
+   assign commit_count = commit ? ninst[committed] : {CNTW{1'b0}};
 
    // squashed checkpoints on rollback: [redirect_ckpt .. cur] inclusive
    reg [NCHK-1:0]  young;
@@ -143,7 +189,7 @@ module commit_ctl
    always @(posedge clk) begin
       if (reset) begin
          for (i = 0; i < NCHK; i = i + 1) begin count[i] <= 0; fp_pend[i] <= 1'b0; end
-         committed <= 0;
+         committed <= 0; open_inst <= 0;
       end else begin
          for (i = 0; i < NCHK; i = i + 1) begin
             count[i] <= (redirect && young[i]) ? {CNTW{1'b0}}
@@ -156,7 +202,13 @@ module commit_ctl
                         : fp_pend[i] | fp_set[i];
          end
          if (commit) committed <= committed + 1'b1;
-         if (disp_fire) ninst[cur] <= disp_count;   // remember the bundle size for minstret
+         // accumulate the open checkpoint's instruction count; reset on create (fresh
+         // checkpoint) or redirect (reopened empty). ninst[cur] mirrors it for minstret.
+         open_inst <= redirect ? {CNTW{1'b0}}
+                    : create   ? {CNTW{1'b0}}       // closed (normal or IRQ force-close) -> fresh
+                    : disp_fire ? open_next
+                    : open_inst;
+         if (disp_fire) ninst[cur] <= open_next;    // running total of the open checkpoint
       end
 `ifdef CCDBG
       if (disp_fire) $display("[CC] t=%0t DISP ck=%0d +%0d", $time, cur, disp_count);
