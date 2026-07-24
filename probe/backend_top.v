@@ -1058,6 +1058,12 @@ module backend_top
    // store reading a wrong-mapped x8) -- pinpointing the rename/chk_map bug locally.
    reg [PBITS-1:0]  arch_phys [0:63];
    integer          api; initial for (api = 0; api < 64; api = api + 1) arch_phys[api] = api[PBITS-1:0];
+   // Shadow-ARF VALUE: last committed writer's result per arch reg. REN-CHK proves the physreg
+   // MAPPING is right; STVAL-CHK (below) proves the physreg's VALUE is right -- catching a
+   // stale/lost PRF value under a correct mapping (the class the freelist/rename invariants can't
+   // see; this is what caught the original boot corruption on main at c=33.95B).
+   reg [63:0]       arch_val  [0:63];
+   integer          avi; initial for (avi = 0; avi < 64; avi = avi + 1) arch_val[avi] = 64'd0;
    reg [6:0]        ck_op;  reg ck_u1, ck_u2;  integer ck_da;
 
    // ---- trap-fire fields (combinational, sampled at the delivery edge) ----
@@ -1141,11 +1147,32 @@ module backend_top
                   if (ck_u2 && (arch_phys[q_rs2[0]] != q_ps2[0]))
                      $display("[%0t] *** REN-CHK pc=%h insn=%h rs2=x%0d ps2=%0d != live=%0d",
                         $time, q_pc[0], q_insn[0], q_rs2[0], q_ps2[0], arch_phys[q_rs2[0]]);
+                  // STVAL-CHK: a full-word store's committed data (read back from the SB at
+                  // retire) MUST equal its rs2's shadow-ARF VALUE (last committed writer). Fires
+                  // at a wrong PRF value under a correct map -- the store-blind-spot bug that
+                  // survives REN-CHK + the freelist assertions.
+                  if ((ck_op==7'h23) && (q_insn[0][14:12]==3'b011) && (q_rs2[0]!=5'd0)
+                      && (u_lsu.sb_data[q_sbidx[0]] !== arch_val[{1'b0,q_rs2[0]}]))
+                     $display("[%0t] *** STVAL-CHK pc=%h insn=%h rs2=x%0d sb_data=%h != arch_val=%h (map OK -> PRF value bug)",
+                        $time, q_pc[0], q_insn[0], q_rs2[0], u_lsu.sb_data[q_sbidx[0]], arch_val[{1'b0,q_rs2[0]}]);
                end
-               if (q_rk[0] != 2'd0) begin            // update tracked arch->phys
+               if (q_rk[0] != 2'd0) begin            // update tracked arch->phys (+ value)
                   ck_da = (q_rk[0]==2'd2) ? (32 + q_ri[0]) : {1'b0, q_ri[0]};
                   arch_phys[ck_da] = q_prd[0];
+                  arch_val [ck_da] = q_val[0];
                end
+`ifdef PRFVAL_CHK
+               // PRFVAL-CHK (IW=1): at an int-writer's retire the PRF entry for its physreg MUST
+               // hold its committed value -- fires if the writeback was LOST/overwritten (the
+               // leaked-writeback class), distinguishing lost-writeback (here, at the writer)
+               // from valid-then-clobbered (STVAL-CHK, later, at the reader). Perf geometry:
+               // physreg pr lives at bank[pr[SBITS-1:0]][pr>>SBITS].
+               if (q_rk[0]==2'd1 && q_ri[0]!=5'd0
+                   && (eb.lane[0].sh.rf.bank[q_prd[0][SBITS-1:0]][q_prd[0][PBITS-1:SBITS]] !== q_val[0]))
+                  $display("[%0t] *** PRFVAL-CHK pc=%h rd=x%0d prd=%0d PRF=%h != q_val=%h",
+                     $time, q_pc[0], q_ri[0], q_prd[0],
+                     eb.lane[0].sh.rf.bank[q_prd[0][SBITS-1:0]][q_prd[0][PBITS-1:SBITS]], q_val[0]);
+`endif
                // advance retire-order mepc: a trap -> its own mepc; a CSR write to mepc
                // (csr 0x341, SYSTEM funct3!=0) -> the now-landed value; else unchanged.
                if (q_trap[0])
