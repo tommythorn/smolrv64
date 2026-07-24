@@ -212,7 +212,7 @@ module exec_bundle
          .csr_req_func(csr_req_func[i*3 +: 3]), .csr_req_addr(csr_req_addr[i*12 +: 12]),
          .csr_req_src(csr_req_src[i*64 +: 64]), .csr_req_pc(csr_req_pc[i*64 +: 64]),
          .csr_rd_addr(csr_rd_addr[i*12 +: 12]),
-         .wb_valid_in(ewbv), .wb_pr_in(ewbp), .wb_val_in(ewbd),      // RF write (incl. load)
+         .wb_valid_in(ewbv_g), .wb_pr_in(ewbp), .wb_val_in(ewbd),    // RF write (incl. load), owner-guarded
          .byp_valid(wbv), .byp_pr(wbp), .byp_val(wbd),               // 1-ahead forward (ALU/M)
          .fw2_valid(fw2v), .fw2_pr(fw2p), .fw2_val(fw2d),            // 2-ahead forward (ALU/M)
          .wb_valid(wbv[i]), .wb_pr(wbp[i*PBITS +: PBITS]), .wb_val(wbd[i*64 +: 64]),
@@ -278,7 +278,45 @@ module exec_bundle
       assign ewbsq[k*SEQW +: SEQW]  = wbv[k] ? wbsq[k*SEQW +: SEQW]  : lsu_wb_seq;
    end endgenerate
 
-   assign wb_valid = ewbv;
+   // ---- leaked-writeback guard (physreg owner check) ------------------------------------
+   // A deferred op (load / mul / div / FP) that is squashed can still write back a cycle or two
+   // AFTER its dest physreg was freed and REALLOCATED to a younger op -- clobbering that op's
+   // value. Seen as a rare (~1-in-billions) PRF corruption during boot (SEQROB FAULTY-WRITEBACK:
+   // "op abs=X writes phys P, but it is owned by abs=Y"). The per-unit squash gates only test the
+   // 1-cycle rollback pulse and miss a writeback that lands later. Guard robustly: track each
+   // physreg's current owner (the seqno of the op that took it as a dest, captured at ISSUE) and
+   // DROP any writeback whose seqno no longer matches -- a stale wrong-path write onto a live reg.
+   // No rollback needed: a stale owner is either overwritten before the reg is reused, or the write
+   // lands on a free reg (harmless); suppression fires exactly when a live reuser owns it.
+   reg [SEQW-1:0] pown [0:NPHYS-1];
+   integer pw;
+   initial for (pw = 0; pw < NPHYS; pw = pw + 1) pown[pw] = {SEQW{1'b0}};
+   always @(posedge clk)
+      for (pw = 0; pw < SHARDS; pw = pw + 1)
+         if (iss_valid[pw] & iss_pdst_v[pw])
+            pown[iss_pdst[pw*PBITS +: PBITS]] <= iss_seq[pw*SEQW +: SEQW];
+   // phys 0 is x0's reserved reg -- never allocated/reused, so never a leak target; leave its
+   // (harmless, ignored) writebacks alone and only guard real physregs.
+   wire [SHARDS-1:0] ewbv_g;
+   genvar gk;
+   generate for (gk = 0; gk < SHARDS; gk = gk + 1) begin : wbguard
+      assign ewbv_g[gk] = ewbv[gk]
+                        & ((ewbp[gk*PBITS +: PBITS] == {PBITS{1'b0}})
+                           | (pown[ewbp[gk*PBITS +: PBITS]] == ewbsq[gk*SEQW +: SEQW]));
+   end endgenerate
+
+`ifdef WBGUARD_DBG
+   integer wg_n, wg_i; initial wg_n = 0;
+   always @(posedge clk) if (!reset)
+      for (wg_i = 0; wg_i < SHARDS; wg_i = wg_i + 1)
+         if (ewbv[wg_i] & ~ewbv_g[wg_i] & (wg_n < 40)) begin
+            wg_n = wg_n + 1;
+            $display("[%0t] WBGUARD suppress #%0d: phys %0d wbseq=%0d owner=%0d (leaked wrong-path writeback dropped)",
+               $time, wg_n, ewbp[wg_i*PBITS +: PBITS], ewbsq[wg_i*SEQW +: SEQW], pown[ewbp[wg_i*PBITS +: PBITS]]);
+         end
+`endif
+
+   assign wb_valid = ewbv_g;
    assign wb_pr    = ewbp;
    assign wb_val   = ewbd;
    assign wb_seq   = ewbsq;
