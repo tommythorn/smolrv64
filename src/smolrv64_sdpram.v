@@ -10,6 +10,23 @@ module smolrv64_sdpram #(
    input  wire [ADDR_WIDTH-1:0] wr_addr,
    input  wire [DATA_WIDTH-1:0] wr_data
 );
+   // ---- hardware-proven-geometry guard (added after the wide-I$ RDW=128 regression) ----
+   // A 128-bit sdpram I$ bank passed EVERY verilator test (behavioral reg-array model, below)
+   // yet fetched garbage on real BRAM. DATA_WIDTH beyond one RAMB36 SDP word (72b) forces BRAM
+   // WIDTH-cascade, whose read-latency/mux behavior neither the behavioral nor the XPM sim model
+   // reflects -- so no verilator run can validate it. Hard-fail SYNTHESIS on an unproven-wide
+   // geometry so it can never silently reach a bit; a deliberate experiment sets SDPRAM_ALLOW_WIDE
+   // and MUST be post-synth / HW smoke-tested before trust. See project_sdpram_behavioral_vs_xpm.
+   localparam PROVEN_MAX_W = 72;   // single RAMB36 SDP word; wider needs width-cascade
+   initial if (DATA_WIDTH > PROVEN_MAX_W) begin
+`ifdef SDPRAM_ALLOW_WIDE
+      $display("[sdpram %m] NOTE: DATA_WIDTH=%0d > %0d (BRAM width-cascade) allowed via SDPRAM_ALLOW_WIDE", DATA_WIDTH, PROVEN_MAX_W);
+`elsif SYNTHESIS
+      $fatal(1, "smolrv64_sdpram %m: DATA_WIDTH=%0d > %0d needs BRAM width-cascade and is NOT hardware-proven (this class killed the wide-I$ bit). Post-synth/HW smoke-test it, then synthesize with -DSDPRAM_ALLOW_WIDE.", DATA_WIDTH, PROVEN_MAX_W);
+`else
+      $warning("[sdpram %m] DATA_WIDTH=%0d > %0d is a BRAM width-cascade geometry sim CANNOT validate; it will HARD-FAIL synthesis unless -DSDPRAM_ALLOW_WIDE. (wide-I$ regression)", DATA_WIDTH, PROVEN_MAX_W);
+`endif
+   end
 `ifdef SMOLRV64_USE_XPM
    wire [0:0] wr_en_vec = wr_en;
 
