@@ -99,6 +99,29 @@ module predictor
    endfunction
    function [BTBB-1:0] bidx(input [PCW-1:0] a); bidx = a[BTBB:1];           endfunction
 
+   // ------------------------------------------------------------ YAGS corrector
+   // Phase 1: a tagged direction corrector indexed by PC^GHR, consulted only for a
+   // known conditional branch. On a tag hit it OVERRIDES the BTB's context-free
+   // bimodal weight -- capturing the history-correlated branches bimodal aliases.
+   // Trained at resolve from the carried predict details (yidx/ytag), same 1R1W +
+   // write-forward discipline as the BTB. Holds only bimodal-exceptions: allocate
+   // on a bimodal miss, refine on a corrector hit.
+   localparam YBITS = 10, NYAGS = 1 << YBITS, YTAGW = 8, YEW = YTAGW + 2;
+   function [YBITS-1:0]  yidx (input [PCW-1:0] a, input [GHL-1:0] h);
+      yidx  = a[YBITS:1] ^ h[YBITS-1:0] ^ {{(YBITS-2){1'b0}}, h[GHL-1:YBITS]};
+   endfunction
+   function [YTAGW-1:0] ytagf(input [PCW-1:0] a);
+      ytagf = a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
+   endfunction
+   reg [YEW-1:0]   ycorr [0:NYAGS-1];
+   reg [NYAGS-1:0] ycorr_v;
+   reg [YEW-1:0]   ycorr_q;  reg ycorr_qv;
+   integer yi;
+   initial begin
+      ycorr_v = {NYAGS{1'b0}}; ycorr_qv = 1'b0;
+      for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {YEW{1'b0}};
+   end
+
    // ------------------------------------------------- speculative state {ghr,ras}
    reg [GHL-1:0]  ghr;
    reg [PCW-1:0]  ras [0:RASN-1];
@@ -126,17 +149,24 @@ module predictor
    wire            p_cbr    = hit & ~q_type[2];             // known conditional branch
    wire            p_call   = hit & (q_type == TY_CALL);
    wire            p_ret    = hit & (q_type == TY_RET);
-   assign pred_v   = hit & (q_type[2] | q_type[1]);         // uncond, or bimodal says taken
+   // YAGS: a tag-hitting corrector overrides the bimodal weight for a conditional
+   wire            yhit     = p_cbr & ycorr_qv & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
+   wire            cbr_taken= yhit ? ycorr_q[1] : q_type[1];
+   assign pred_v   = hit & (q_type[2] | (p_cbr & cbr_taken)); // uncond, or predicted-taken cond
    assign pred_tgt = p_ret ? ras[ras_ptr] : btb_tgt;
-   wire            pred_dir = q_type[1];                    // GHR shift bit for a known cond
+   wire            pred_dir = cbr_taken;                    // GHR shifts the committed direction
 
    // ------------------------- per-checkpoint predict details (for training/repair)
    // captured at fetch (cycle T), written to pdet[cur] at the bundle's create
    // (T+1) -- the same one-stage lag as the {ghr,ras} snapshot (plan B1).
-   localparam PDW = 1 + 2 + BTBB + TAGW;                    // {hit, ctr, idx, tag}
+   //   bimodal [BIMW-1:0] = {hit,ctr,bidx,btag}  ·  yags [PDW-1 -: YW] = {yhit,yctr,yidx,ytag}
+   localparam BIMW = 1 + 2 + BTBB + TAGW;
+   localparam YW   = 1 + 2 + YBITS + YTAGW;
+   localparam PDW  = BIMW + YW;
    reg [PDW-1:0] pdet_f;
    reg [PDW-1:0] pdet [0:NCHK-1];
-   wire [1:0]    ctr_eff = hit ? q_type[1:0] : 2'b01;       // miss -> install weakly-not-taken base
+   wire [1:0]    ctr_eff  = hit  ? q_type[1:0]  : 2'b01;    // miss -> install weakly-not-taken base
+   wire [1:0]    yctr_eff = yhit ? ycorr_q[1:0] : 2'b01;
    initial pdet_f = {PDW{1'b0}};
 
    // ------------------------------------------------- speculate / snapshot / restore
@@ -163,7 +193,8 @@ module predictor
             if (p_cbr)  ghr <= {ghr[GHL-2:0], pred_dir};
             if (p_call) begin ras[ras_ptr + 1'b1] <= ft_npc; ras_ptr <= ras_ptr + 1'b1; end
             if (p_ret)  ras_ptr <= ras_ptr - 1'b1;
-            pdet_f <= {hit, ctr_eff, bidx(base_pc), btag(base_pc)};
+            pdet_f <= {yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
+                       hit,  ctr_eff,  bidx(base_pc),      btag(base_pc)};
          end
          if (create) begin                   // snapshot the dispatching bundle's post-state
             chk_ghr[nxt]  <= ghr;            // (registered values = post-state of the bundle
@@ -180,8 +211,8 @@ module predictor
    // direction; uncond: record the class (call/return classified at resolve
    // from the executed instruction); target: the resolved taken-target.
    wire [PDW-1:0]  td      = pdet[res_ckpt];
-   wire            t_hit   = td[PDW-1];
-   wire [1:0]      t_ctr   = td[PDW-2 -: 2];
+   wire            t_hit   = td[BIMW-1];
+   wire [1:0]      t_ctr   = td[BIMW-2 -: 2];
    wire [BTBB-1:0] t_idx   = td[TAGW +: BTBB];
    wire [TAGW-1:0] t_tag   = td[TAGW-1:0];
    wire [1:0]      t_base  = t_hit ? t_ctr : (res_taken ? 2'b10 : 2'b01);  // miss -> install weak
@@ -190,20 +221,40 @@ module predictor
    wire [2:0]      t_type  = res_cbr  ? {1'b0, t_nudge}
                            : res_ret  ? TY_RET
                            : res_call ? TY_CALL : TY_JMP;
+   // YAGS corrector training: decode carried predict details, nudge, decide (re)alloc.
+   // Update when the corrector was consulted (yc_hit) OR the bimodal mispredicted this
+   // conditional -- so the corrector holds exactly the bimodal-exceptions.
+   wire [YW-1:0]    yd     = td[PDW-1 -: YW];
+   wire             yc_hit = yd[YW-1];
+   wire [1:0]       yc_ctr = yd[YW-2 -: 2];
+   wire [YBITS-1:0] yc_idx = yd[YTAGW +: YBITS];
+   wire [YTAGW-1:0] yc_tag = yd[YTAGW-1:0];
+   wire [1:0]       y_base = yc_hit ? yc_ctr : (res_taken ? 2'b10 : 2'b01);
+   wire [1:0]       y_nudge= res_taken ? ((y_base == 2'b11) ? 2'b11 : y_base + 1'b1)
+                                       : ((y_base == 2'b00) ? 2'b00 : y_base - 1'b1);
+   wire             bim_pred = t_hit & t_ctr[1];            // bimodal predicted-taken (miss = NT)
+   wire             y_wr   = res_v & res_cbr & (yc_hit | (bim_pred != res_taken));
 
    // write-forward: a mispredict's redirected refetch reads the BTB the same edge
    // its own training write lands -- without forwarding the retrained entry is
    // invisible to that first refetch and every cold-taken CTI mispredicts twice.
    wire t_fwd = res_v && (t_idx == bidx(npc));
+   wire y_fwd = y_wr  && (yc_idx == yidx(npc, ghr));        // same write-forward for the corrector
    always @(posedge clk) begin
       btb_q   <= t_fwd ? {t_tag, t_type, res_tgt[TGTW:1]} : btb[bidx(npc)];
       btb_qv  <= t_fwd ? 1'b1 : btb_v[bidx(npc)];
       btb_qpc <= npc;
+      ycorr_q  <= y_fwd ? {yc_tag, y_nudge} : ycorr[yidx(npc, ghr)];
+      ycorr_qv <= y_fwd ? 1'b1              : ycorr_v[yidx(npc, ghr)];
       if (res_v) begin
          btb[t_idx]   <= {t_tag, t_type, res_tgt[TGTW:1]};
          btb_v[t_idx] <= 1'b1;
       end
-      if (reset) btb_v <= {NBTB{1'b0}};
+      if (y_wr) begin
+         ycorr[yc_idx]   <= {yc_tag, y_nudge};
+         ycorr_v[yc_idx] <= 1'b1;
+      end
+      if (reset) begin btb_v <= {NBTB{1'b0}}; ycorr_v <= {NYAGS{1'b0}}; end
    end
 endmodule
 

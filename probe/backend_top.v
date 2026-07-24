@@ -1353,8 +1353,10 @@ module backend_top
                  {{(32-PBITS){1'b0}}, wkp[pti*PBITS +: PBITS]}, 0, 0,
                  wb_val[pti*64 +: 64], 0);
       if (cc_commit) perf_ev(perf_cyc, 4, 0, {30'd0, cc_commit_idx}, 0, 0, 0, 0, 64'd0, 0);
+      // rdv field carries the roll cause: 0=branch-mispredict 1=data-fault 3=trap 2=other
       if (roll_v)    perf_ev(perf_cyc, 5, {24'd0, roll_seq}, {30'd0, roll_ckpt},
-                             0, 0, 0, 0, 64'd0, 0);
+                             (dflt_roll ? 32'd1 : eb_rtrap ? 32'd3 : eb_redirect ? 32'd0 : 32'd2),
+                             0, 0, 0, 64'd0, 0);
       // KIND 6 = dispatch STALL: a bundle is ready but can't dispatch. The `seq` field
       // carries an 8-bit reason mask (the exact terms of can_dispatch):
       //   b0 cc_full(checkpoints)  b1 fe_stall(free regs)  b2 !disp_ready(scheduler)

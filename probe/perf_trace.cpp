@@ -3,7 +3,10 @@
 // verilator command; the RTL (backend_top.v, under `ifdef PERF_TRACE) calls perf_ev()
 // once per pipeline event. Records are fixed 32-byte little-endian; perftool/ (Rust)
 // reads them. Configured by environment (no plusarg plumbing):
-//   PERF_TRACE_OUT   output path (default /tmp/perf_trace.bin)
+//   PERF_TRACE_OUT   output path (default /tmp/perf_trace.bin). A ".zst" suffix streams
+//                    records through `zstd -19` (bounds disk on long/branchy runs; the
+//                    pipe back-pressures the sim rather than filling the disk). Read back
+//                    with `zstd -dc file.zst | perftool ...`.
 //   PERF_TRACE_WIN   "start,len" in cycles -- capture only [start, start+len);
 //                    unset = capture everything (use a short workload / window long runs!)
 #include <cstdint>
@@ -13,6 +16,7 @@
 
 namespace {
 FILE*    g_fp   = nullptr;
+bool     g_pipe = false;        // g_fp is a popen'd zstd pipe -> pclose, not fclose
 bool     g_init = false;
 bool     g_on   = false;        // tracing compiled + file opened ok
 uint64_t g_lo   = 0;
@@ -23,7 +27,16 @@ void init() {
    g_init = true;
    const char* out = std::getenv("PERF_TRACE_OUT");
    if (!out) out = "/tmp/perf_trace.bin";
-   g_fp = std::fopen(out, "wb");
+   size_t olen = std::strlen(out);
+   if (olen >= 4 && std::strcmp(out + olen - 4, ".zst") == 0) {
+      // stream through zstd -19 (single-thread: core-friendly next to other sims)
+      char cmd[4096];
+      std::snprintf(cmd, sizeof cmd, "zstd -19 -q -c > '%s'", out);
+      g_fp = popen(cmd, "w");
+      g_pipe = true;
+   } else {
+      g_fp = std::fopen(out, "wb");
+   }
    if (!g_fp) { std::fprintf(stderr, "perf_trace: cannot open %s\n", out); return; }
    const char* win = std::getenv("PERF_TRACE_WIN");
    if (win) {
@@ -37,7 +50,7 @@ void init() {
 
 struct Closer {                 // flush + report on normal $finish / exit
    ~Closer() {
-      if (g_fp) { std::fflush(g_fp); std::fclose(g_fp); g_fp = nullptr; }
+      if (g_fp) { std::fflush(g_fp); if (g_pipe) pclose(g_fp); else std::fclose(g_fp); g_fp = nullptr; }
       if (g_on) std::fprintf(stderr, "perf_trace: %llu records\n", (unsigned long long)g_n);
    }
 } g_closer;
