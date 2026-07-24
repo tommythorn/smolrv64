@@ -629,6 +629,18 @@ module backend_top
    wire [CBITS-1:0]   lsu_dfault_ckpt;
    wire [3:0]         lsu_dfault_cause;
    wire [AW-1:0]      lsu_dfault_tval;
+   // Owner-guard for the deferred LOAD count decrement. The original leaked-writeback bug is a
+   // squashed load whose r_v writeback (and matching ld_done count decrement) fires a cycle or
+   // two after r_kill's 1-cycle rollback pulse -- so ld_done can decrement a reused checkpoint's
+   // count. Gate it by exec_bundle's per-shard owner-check (eb_ewb_ok), exactly what already
+   // guards the RF write: ld_done is aligned with the load's writeback (same cycle; x0->phys0 =>
+   // ewb_ok=1), and a legit load matches its owner, so there is no false-suppress / no deadlock.
+   // div/fp need NO count gate: mul3/divider .abort resets the unit (no ddone/mdone) and FP's
+   // fp_zomb persistently drains a squashed op (no fp_done) -- both cancel at the source. Their
+   // done pulses are also combinational while the writeback is registered (1 cycle later) and
+   // fire for x0-dest ops, so ewb_ok would misalign and false-suppress them (=> deadlock).
+   wire [IW-1:0]      eb_ewb_ok;
+   wire               lsu_ld_done_g = lsu_ld_done & eb_ewb_ok[lsu_ld_wb_owner];
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CKMAX(CKMAX), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count), .disp_close(disp_close),
@@ -637,7 +649,7 @@ module backend_top
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul),
       .iss_is_fp(q_iss_is_fp), .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt), .iss_ckpt(q_iss_ckpt),
       .iss_fp_dirty(eb_iss_fp_dirty),
-      .ld_done(lsu_ld_done), .ld_done_ckpt(lsu_ld_done_ckpt), .ld_fp_dirty(lsu_fp_dirty),
+      .ld_done(lsu_ld_done_g), .ld_done_ckpt(lsu_ld_done_ckpt), .ld_fp_dirty(lsu_fp_dirty),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(roll_v), .redirect_ckpt(roll_ckpt),
@@ -689,7 +701,7 @@ module backend_top
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
       .lsu_wb_pr(lsu_ld_wb_pdst), .lsu_wb_val(lsu_ld_wb_val), .lsu_wb_seq(lsu_ld_wb_seq),
       .wb_busy(eb_wb_busy),
-      .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq),
+      .wb_valid(wkv), .wb_pr(wkp), .wb_val(wb_val), .wb_seq(wkq), .ewb_ok(eb_ewb_ok),
       .ex_valid(ex_valid), .ex_seq(ex_seq), .ex_ckpt(ex_ckpt), .ex_mem_idx(ex_mem_idx),
       .ex_mem(ex_mem), .ex_store(ex_store), .ex_fp(ex_fp), .ex_msize(ex_msize), .ex_msigned(ex_msigned),
       .ex_cbo(ex_cbo), .ex_cbo_zero(ex_cbo_zero), .ex_cbo_keep(ex_cbo_keep),

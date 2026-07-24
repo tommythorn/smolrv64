@@ -51,6 +51,7 @@ module exec_bundle
     output wire [SHARDS*PBITS-1:0] wb_pr,
     output wire [SHARDS*64-1:0]    wb_val,
     output wire [SHARDS*SEQW-1:0]  wb_seq,         // per-lane writeback seqno (cosim capture)
+    output wire [SHARDS-1:0]       ewb_ok,         // per-shard owner-check (gates the deferred ld_done count decrement)
     // EX-stage LSU drive (aligned with agu/st_data)
     output wire [SHARDS-1:0]       ex_valid,
     output wire [SHARDS*SEQW-1:0]  ex_seq,
@@ -297,12 +298,15 @@ module exec_bundle
             pown[iss_pdst[pw*PBITS +: PBITS]] <= iss_seq[pw*SEQW +: SEQW];
    // phys 0 is x0's reserved reg -- never allocated/reused, so never a leak target; leave its
    // (harmless, ignored) writebacks alone and only guard real physregs.
+   // ewb_ok[k] = shard k's writeback this cycle owns its physreg (or writes x0). Gates the RF
+   // write/wake below AND -- exported -- the aligned deferred ld_done count decrement in
+   // backend_top, so a leaked squashed load cannot corrupt its (reused) checkpoint's count.
    wire [SHARDS-1:0] ewbv_g;
    genvar gk;
    generate for (gk = 0; gk < SHARDS; gk = gk + 1) begin : wbguard
-      assign ewbv_g[gk] = ewbv[gk]
-                        & ((ewbp[gk*PBITS +: PBITS] == {PBITS{1'b0}})
-                           | (pown[ewbp[gk*PBITS +: PBITS]] == ewbsq[gk*SEQW +: SEQW]));
+      assign ewb_ok[gk] = (ewbp[gk*PBITS +: PBITS] == {PBITS{1'b0}})
+                        | (pown[ewbp[gk*PBITS +: PBITS]] == ewbsq[gk*SEQW +: SEQW]);
+      assign ewbv_g[gk] = ewbv[gk] & ewb_ok[gk];
    end endgenerate
 
 `ifdef WBGUARD_DBG
