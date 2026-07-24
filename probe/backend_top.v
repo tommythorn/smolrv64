@@ -74,7 +74,10 @@ module backend_top
                                      // ops << the +/-128 wrap-compare bound (SEQW=8).
     parameter NPHYS = (1 << SBITS) * POOL,   // pr = {ridx, shard[SBITS-1:0]} spans 2^SBITS*POOL
                                              // (= IW*POOL for power-of-2 IW; sparse/larger for 3,5)
-    parameter CKMAX = 2,             // max instructions per checkpoint (coarse CPR; see commit_ctl)
+    parameter CKMAX = 1,             // per-bundle. CKMAX>=2 (coarse CPR window growth) has a
+                                     // rollback-reopen count-accounting wedge on the ubuntu-mini
+                                     // RAM boot -- DEFERRED (repro + notes in commit_ctl /
+                                     // project_coarse_checkpoints). CKMAX=1 = proven baseline.
     parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW (one bundle)
     parameter CNTW  = $clog2(CKMAX+IW+1),  // per-checkpoint count: up to CKMAX (+bundle overshoot)
     parameter AW    = 64,
