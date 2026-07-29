@@ -252,7 +252,18 @@ module exec_shard
    wire div_op = ex_mulr &  ex_bf[2];
    wire        mbusy, mdone;  wire [63:0] mres;
    wire        dbusy, ddone;  wire [63:0] dres;
-   wire        munit_busy = mbusy | dbusy | fpu_inflight;
+   // CVFPU status (declared here: munit_busy consumes it)
+   wire fp_iss_ready, fp_res_valid, fpu_busyo;  wire [63:0] fp_res_data;  wire [4:0] fp_fflags;
+   // munit_busy MUST include the FPU's OWN busy/not-ready, not just our single-op
+   // fpu_inflight tracker: EX has no hold, so an FP op that arrives when the unit
+   // cannot accept it EVAPORATES (never starts, never writes back) and its consumer
+   // then reads the destination physreg's STALE value. The window is the tail of an
+   // iterative op (fpnew's divsqrt is not pipelined): our fpu_inflight clears when the
+   // divide's result returns while the unit is still internally busy, so the very next
+   // FP op is lost. Seen on FPGA as grep's `fdiv.s; ...; fcvt.lu.s s1` retiring with s1
+   // holding a stale NaN-boxed {ffffffff,1} -> gnulib next_prime grinds forever (the
+   // ubuntu boot "hang"). fpu_busyo was wired up but never consumed.
+   wire        munit_busy = mbusy | dbusy | fpu_inflight | fpu_busyo | ~fp_iss_ready;
    reg  [PBITS-1:0] m_pdst;  reg [SEQW-1:0] m_seq;  reg [CBITS-1:0] m_ck;  reg m_pdv;
    wire m_squash_now = squash & older(squash_seq, ex_sq);
    wire m_start = ex_v & ex_mulr & ~munit_busy & ~m_squash_now;
@@ -304,7 +315,6 @@ module exec_shard
    wire [63:0] fpo0  = (src32 & ~ex_fpo0i) ? {32'hffffffff, unbox_s(fpo0r)} : fpo0r;
    wire [63:0] fpo1  = src32 ? {32'hffffffff, unbox_s(fpo1r)} : fpo1r;
    wire [63:0] fpo2  = src32 ? {32'hffffffff, unbox_s(fpo2r)} : fpo2r;
-   wire fp_iss_ready, fp_res_valid, fpu_busyo;  wire [63:0] fp_res_data;  wire [4:0] fp_fflags;
    fp_unit #(.TAGW(1)) u_fpu
      (.clk(clk), .reset(1'b0),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
