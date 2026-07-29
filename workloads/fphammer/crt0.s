@@ -9,4 +9,12 @@ _start: li   sp, 0x80100000        # 1 MiB of headroom below; payload is tiny
         .option norelax
         la   gp, __global_pointer$
         .option pop
-        j    main
+        # zero .bss: nothing else does, and the XMODEM uploader pads its last block
+        # with 0x1a -- uninitialized statics otherwise start life holding that padding.
+        la   t0, __bss_start
+        la   t1, _end
+1:      bgeu t0, t1, 2f
+        sd   zero, 0(t0)
+        addi t0, t0, 8
+        j    1b
+2:      j    main
