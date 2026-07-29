@@ -41,6 +41,28 @@ static void trap_handler(void) {
     irq_count++;
 }
 
+// v2: operands come FROM MEMORY like grep's real code (ld count / flw threshold from
+// the tuning struct), so this covers the LSU load path + NaN-boxing, not just FP arith.
+// tune[] is volatile so every call re-loads; a bad load shows up as a wrong result AND
+// (separately) as a bit-pattern mismatch on the reloaded float.
+static volatile float    tune_threshold = 0.8f;
+static volatile uint64_t tune_count;
+static uint64_t bad_load;
+
+static inline uint64_t chain_mem(uint64_t c) {
+    float f, q, d; uint64_t r, guard, dbits;
+    tune_count = c;
+    __asm__ volatile ("ld  %0, %1"            : "=r"(c) : "m"(tune_count));
+    __asm__ volatile ("flw %0, %1"            : "=f"(d) : "m"(tune_threshold));
+    __asm__ volatile ("fmv.x.w %0, %1"        : "=r"(dbits) : "f"(d));
+    if ((uint32_t)dbits != 0x3f4ccccdu) bad_load++;      // 0.8f bit pattern
+    __asm__ volatile ("fcvt.s.lu %0, %1"      : "=f"(f) : "r"(c));
+    __asm__ volatile ("fdiv.s    %0, %1, %2"  : "=f"(q) : "f"(f), "f"(d));
+    __asm__ volatile ("fle.s     %0, %1, %2"  : "=r"(guard) : "f"(f), "f"(q));
+    __asm__ volatile ("fcvt.lu.s %0, %1, rtz" : "=r"(r) : "f"(q));
+    return r + (guard << 63);
+}
+
 // the exact gnulib-shaped chain, pinned to real instructions
 static inline uint64_t chain(uint64_t c, float divisor) {
     float f, q; uint64_t r, guard;
@@ -81,7 +103,7 @@ int main(void) {
     for (;;) {
         for (int i = 0; i < NSEED; i++) {
             uint64_t a = chain(seeds[i], divisor);
-            uint64_t b = chain(seeds[i], divisor);
+            uint64_t b = chain_mem(seeds[i]);
             if ((a != expect[i] || b != expect[i]) && bad < 16) {
                 bad++;
                 puts_("MISMATCH iter="); puthex(iter);
@@ -90,6 +112,7 @@ int main(void) {
                 puts_(" b=");     puthex(b);
                 puts_(" exp=");   puthex(expect[i]);
                 puts_(" irqs=");  puthex(irq_count);
+                puts_(" badld="); puthex(bad_load);
                 puts_("\n");
             }
         }
@@ -97,6 +120,7 @@ int main(void) {
             puts_("H iter="); puthex(iter);
             puts_(" irqs=");  puthex(irq_count);
             puts_(" bad=");   puthex(bad);
+            puts_(" badld="); puthex(bad_load);
             puts_("\n");
         }
     }
