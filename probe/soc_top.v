@@ -83,7 +83,8 @@ module soc_top #(
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq,
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
-   output wire [63:0]      timer_dbg        // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
+   output wire [63:0]      timer_dbg,       // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
+   output wire [63:0]      pc_dbg           // fetch PA (probe_clk) -- ILA_TIMER probe1: spin-loop PC histogram
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -91,6 +92,7 @@ module soc_top #(
 
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
+   assign pc_dbg = {{(64-PCW){1'b0}}, imem_addr};
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;

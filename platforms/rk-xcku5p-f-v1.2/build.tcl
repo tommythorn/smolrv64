@@ -286,15 +286,17 @@ if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne 
     lappend vdefines "ILA_TIMER"
     if {[llength [get_ips -quiet ila_timer]] == 0} {
         create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
-        set_property -dict [list \
-            CONFIG.C_NUM_OF_PROBES {1} \
-            CONFIG.C_PROBE0_WIDTH {64} \
-            CONFIG.C_DATA_DEPTH {8192} \
-            CONFIG.C_INPUT_PIPE_STAGES {2} \
-            CONFIG.C_ADV_TRIGGER {true} \
-        ] [get_ips ila_timer]
-        generate_target {instantiation_template synthesis} [get_ips ila_timer]
     }
+    # config applied unconditionally so probe-set changes take effect on an existing IP
+    set_property -dict [list \
+        CONFIG.C_NUM_OF_PROBES {2} \
+        CONFIG.C_PROBE0_WIDTH {64} \
+        CONFIG.C_PROBE1_WIDTH {64} \
+        CONFIG.C_DATA_DEPTH {8192} \
+        CONFIG.C_INPUT_PIPE_STAGES {2} \
+        CONFIG.C_ADV_TRIGGER {true} \
+    ] [get_ips ila_timer]
+    generate_target {instantiation_template synthesis} [get_ips ila_timer]
 }
 # ILA_DEV=1: insert an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA handshakes +
 # SD SPI pins) to see WHERE a block request wedges (the IRQ ILA proved the device never completes).
