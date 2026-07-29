@@ -1582,11 +1582,27 @@ module rk_xcku5p(
    // Two uses: (a) -trigger_now on a wedged board -- does HW show the sim storm signature
    // (STIP held, ecall cycling, no stimecmp strobes)? (b) armed trigger on probe0[7]&&
    // !probe0[18] (mscratch written with a non-OpenSBI value) to catch the corruption live.
+   // mtvec-stranding detector: OpenSBI installs __sbi_expected_trap only for the few
+   // dozen cycles of sbi_get_insn()'s MPRV read, so mtvec sitting there for thousands of
+   // cycles means a trap skipped the restoring `csrw mtvec` and stranded the vector --
+   // after which every kernel ecall is swallowed. Flag it in probe2[63] so the ILA can
+   // trigger on the STRANDING (with pre-trigger history showing the install), not on the
+   // steady state. SBI_PROBE_TRAP is fw_payload-specific (byte-verified 0x80000738).
+   localparam [31:0] SBI_PROBE_TRAP = 32'h80000738;
+   reg [15:0] mtvec_at_probe;  reg mtvec_stranded;
+   always @(posedge probe_clk) begin
+      if (probe_mtvec_dbg[31:0] == SBI_PROBE_TRAP) begin
+         if (~&mtvec_at_probe) mtvec_at_probe <= mtvec_at_probe + 16'd1;
+      end else
+         mtvec_at_probe <= 16'd0;
+      mtvec_stranded <= (mtvec_at_probe > 16'd2000);
+   end
+
    ila_timer u_ila_timer (
       .clk    (probe_clk),
       .probe0 (probe_timer_dbg),
       .probe1 (probe_pc_dbg),    // fetch PA: -trigger_now histogram identifies a spinning task's code
-      .probe2 (probe_mtvec_dbg)  // mtvec: catches it left at OpenSBI's __sbi_expected_trap
+      .probe2 ({mtvec_stranded, probe_mtvec_dbg[62:0]})  // [63]=stranded flag, [62:0]=mtvec
    );
 `endif
 
