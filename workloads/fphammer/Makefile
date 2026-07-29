@@ -38,3 +38,10 @@ csrtest.bin: csrtest.elf
 csrtest.elf: csrtest.c crt0.s fphammer.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tfphammer.ld -O2 crt0.s csrtest.c -o csrtest.elf
+
+probetrap.bin: probetrap.elf
+	$(RV)objcopy -O binary probetrap.elf probetrap.bin
+
+probetrap.elf: probetrap.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s probetrap.c -o probetrap.elf
