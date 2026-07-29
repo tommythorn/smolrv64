@@ -17,6 +17,7 @@ FW=${FW:-$U/fw_payload.bin}
 DTB=${DTB:-$U/ubuntu.dtb}
 INITRD=${INITRD:-}                     # Ubuntu mounts root=/dev/vda1 directly; no initrd
 DISK=${DISK:-$U/ubuntu-25.04-preinstalled-server-riscv64.img}
+[ "${DISK:-}" = none ] && DISK=""      # DISK=none -> no media (RAM/initrd root, e.g. ubuntu-mini)
 A1=${A1:-82000000}                     # DTB loaded at DDR off 0x0200_0000 = guest 0x8200_0000
 CYC=${CYC:-0}                          # DEFAULT = NO CAP (tb: +cycles=0 = run forever; Ctrl-C /
                                        # kill when done). CYC=N for a finite cap. A 2G default
@@ -33,8 +34,14 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    echo "building $BIN (VDEFS='${VDEFS:-<none; PROBE_IW defaults to 2>}') ..."
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+   # REAL CVFPU, not fp_unit_stub: the stub has no conversions (FCVT falls through to
+   # rr=ra => F2I returns the RAW FLOAT BITS as the int result) and treats every op as
+   # double -- ubuntu userspace FP (glibc/gnulib hash sizing via fdiv.s+fcvt.lu.s) gets
+   # silent garbage that WEDGES the boot in the systemd-generator window, masquerading
+   # as the FPGA hang. Same file set as run-vl-tests.sh.
    extra="../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \
-          ../src/alu.v ../src/smolrv64_sdpram.v fp_unit_stub.sv ../src/smolrv64_plic_arbiter.v"
+          ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
+          -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv"
    GITC=$(git rev-parse --short=8 HEAD 2>/dev/null || echo 0)   # mimpid = truncated HEAD commit
    verilator --binary --timing -j 0 -sv -CFLAGS -I"$(cd ../src && pwd)" \
       -Wno-fatal -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL \
@@ -42,13 +49,15 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
       -Wno-PINMISSING -Wno-WIDTHCONCAT -Wno-IMPLICIT -I. -I../src \
       "+define+SMOLRV64_GIT_COMMIT=32'h$GITC" $VDEFS \
       --top-module tb -o tb_virtio --Mdir obj_dir_virtio \
-      $srcs tb_virtio.v $extra sd_dpi.cpp || exit 1
+      $srcs tb_virtio.v $extra sd_dpi.cpp ckpt_dpi.cpp || exit 1
    echo "$VDEFS" > "$STAMP"
 fi
 
 echo "=== virtio boot (fw=$FW dtb=$DTB disk=$DISK a1=$A1 cycles=$CYC defs='$(cat "$STAMP" 2>/dev/null)') ==="
+CKPT_ARG=""; [ -n "${CKPT:-}" ] && CKPT_ARG="+ckpt=$CKPT +ckpt_cmd=${CKPT_CMD:-/tmp/probe-ckpt-cmd}"  # fork-checkpoint server
+[ -n "${WATCH_VAL:-}" ] && CKPT_ARG="$CKPT_ARG +watch_val=$WATCH_VAL"  # from-reset store-value fingerprint watch
 INITRD_ARG=""; [ -n "$INITRD" ] && INITRD_ARG="+initrd=$INITRD"
 DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"   # snapshot by default
 DISK_ARG=""; [ -n "${DISK:-}" ] && DISK_ARG="+disk=$DISK"
 IOFF_ARG=""; [ -n "${INITRD_OFF:-}" ] && IOFF_ARG="+initrd_off=$INITRD_OFF"
-exec "$BIN" +fw="$FW" +dtb="$DTB" $INITRD_ARG $IOFF_ARG $DISK_ARG $DISKRO_ARG +a1="$A1" +cycles="$CYC"
+exec "$BIN" +fw="$FW" +dtb="$DTB" $INITRD_ARG $IOFF_ARG $DISK_ARG $DISKRO_ARG $CKPT_ARG +a1="$A1" +cycles="$CYC"

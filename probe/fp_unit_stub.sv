@@ -46,6 +46,17 @@ module fp_unit #(parameter TAGW = 24)
       endcase
       result_c = $realtobits(rr);
    end
+   // REFUSE what the stub cannot compute -- silent garbage here cost days: FCVT fell
+   // through to rr=ra (F2I returned RAW FLOAT BITS as the int result) and every single-
+   // precision op was computed as a double, wedging the ubuntu boot in the systemd-
+   // generator window in a way that mimicked the FPGA hang. Double-only ADD/SUB/MUL/DIV
+   // is all it honestly implements; anything else must fail LOUDLY at first use.
+   always @(posedge clk) if (iss_valid & iss_ready) begin
+      if (!(iss_op == 4'd2 || iss_op == 4'd3 || iss_op == 4'd4))
+         $fatal(1, "fp_unit_stub: unimplemented fpnew op %0d (conversions/sqrt/minmax return garbage) -- use the real CVFPU", iss_op);
+      if (iss_src_fmt != 3'd1 || iss_dst_fmt != 3'd1)
+         $fatal(1, "fp_unit_stub: non-double fmt src=%0d dst=%0d (stub computes double only) -- use the real CVFPU", iss_src_fmt, iss_dst_fmt);
+   end
 
    // shift-register pipe carrying valid/result/tag for LAT cycles
    reg [LAT-1:0]   v_pipe;

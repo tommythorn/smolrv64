@@ -734,6 +734,77 @@ module lsu
       end
    end
 
+`ifdef SCDBG
+   // SC-livelock tracer (ubuntu "Hostname set" wedge): a healthy single-hart SC never
+   // fails many times in a row. Once a streak passes 20, log every SC outcome, every
+   // LR, and every reservation-clear event (with its cause) until the print budget runs
+   // out -- one wedged run names the per-iteration reservation killer.
+   reg [31:0] scdbg_streak;  initial scdbg_streak = 0;
+   reg [31:0] scdbg_nprint;  initial scdbg_nprint = 0;
+   wire scdbg_on = (scdbg_streak >= 32'd20) && (scdbg_nprint < 32'd5000);
+   always @(posedge clk) begin
+      if (ast == A_RD && mem_rvalid && a_issc) begin
+         scdbg_streak <= a_scok ? 32'd0 : scdbg_streak + 32'd1;
+         if (scdbg_on) begin
+            $display("[SCDBG t=%0t SC-%s streak=%0d va=%h rsv_v=%b rsv_w=%h a_word=%h seq=%0d]",
+                     $time, a_scok ? "OK" : "FAIL", scdbg_streak, a_addr, rsv_v, rsv_w, a_word, a_seq);
+            scdbg_nprint <= scdbg_nprint + 32'd1;
+         end
+      end
+      if (scdbg_on) begin
+         if (ast == A_RD && mem_rvalid && a_islr)
+            $display("[SCDBG t=%0t LR va=%h word=%h seq=%0d]", $time, a_addr, a_word, a_seq);
+         if (dr_v && mem_wready && ~dr_hold && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w))
+            $display("[SCDBG t=%0t RSV-CLR drain st_va=%h st_pa=%h]",
+                     $time, sb_addr[dr_sel], sb_pa[dr_sel]);
+         if (rollback && ast != A_IDLE && older(rollback_seq, a_seq))
+            $display("[SCDBG t=%0t RSV-CLR rollback rbseq=%0d a_seq=%0d ast=%0d islr=%b issc=%b]",
+                     $time, rollback_seq, a_seq, ast, a_islr, a_issc);
+      end
+   end
+   // USER-address SC failures + user-reservation clears, unconditional (own budget).
+   // Healthy single-hart user SCs basically never fail, so any burst here IS the story.
+   // Sv39: user VA bit38==0 -> rsv_w/a_word bit 35 distinguishes user from kernel.
+   reg [31:0] scdbg_unprint; initial scdbg_unprint = 0;
+   always @(posedge clk) if (scdbg_unprint < 32'd30000) begin
+      if (ast == A_RD && mem_rvalid && a_issc && !a_scok && !a_addr[38]) begin
+         $display("[SCUSR t=%0t SC-FAIL va=%h rsv_v=%b rsv_w=%h a_word=%h seq=%0d]",
+                  $time, a_addr, rsv_v, rsv_w, a_word, a_seq);
+         scdbg_unprint <= scdbg_unprint + 32'd1;
+      end
+      if (rsv_v && !rsv_w[35]) begin   // a USER reservation is live -> log its killers
+         if (dr_v && mem_wready && ~dr_hold && (sb_addr[dr_sel][38:3] == rsv_w)) begin
+            $display("[SCUSR t=%0t RSV-CLR drain st_va=%h st_pa=%h rsv_w=%h]",
+                     $time, sb_addr[dr_sel], sb_pa[dr_sel], rsv_w);
+            scdbg_unprint <= scdbg_unprint + 32'd1;
+         end
+         if (rollback && ast != A_IDLE && older(rollback_seq, a_seq)) begin
+            $display("[SCUSR t=%0t RSV-CLR rollback rbseq=%0d a_seq=%0d ast=%0d islr=%b issc=%b rsv_w=%h]",
+                     $time, rollback_seq, a_seq, ast, a_islr, a_issc, rsv_w);
+            scdbg_unprint <= scdbg_unprint + 32'd1;
+         end
+      end
+   end
+   // SC health heartbeat: starts vs completions vs fails vs mid-FSM squashes, every 200M
+   // cycles. A squash storm (starts >> completions) never trips the streak tracer above --
+   // this line is the only place it shows.
+   reg [63:0] scs_cyc, scs_start, scs_comp, scs_fail, scs_squash;
+   initial begin scs_cyc=0; scs_start=0; scs_comp=0; scs_fail=0; scs_squash=0; end
+   always @(posedge clk) begin
+      scs_cyc <= scs_cyc + 1;
+      if (ast == A_IDLE && amo_v && amo_func == 5'b00011) scs_start  <= scs_start + 1;
+      if (ast == A_RD && mem_rvalid && a_issc)            scs_comp   <= scs_comp + 1;
+      if (ast == A_RD && mem_rvalid && a_issc && !a_scok) scs_fail   <= scs_fail + 1;
+      if (rollback && ast != A_IDLE && a_issc && older(rollback_seq, a_seq))
+                                                          scs_squash <= scs_squash + 1;
+      if (scs_cyc[27:0] == 28'd0 && (scs_start | scs_comp) != 64'd0) begin
+         $display("[SCSTAT c=%0d start=%0d comp=%0d fail=%0d squash=%0d]",
+                  scs_cyc, scs_start, scs_comp, scs_fail, scs_squash);
+         scs_start<=0; scs_comp<=0; scs_fail<=0; scs_squash<=0;
+      end
+   end
+`endif
+
    // ----------------------- MERGE (byte merge) -----------------------
    // The held load (p_*) is reduced (at fill) to {w0,w1,lb}. For load byte mb the absolute
    // position is lb+mb, which falls in word lwb (= w0 or w1) at byte lane `posw`. A store

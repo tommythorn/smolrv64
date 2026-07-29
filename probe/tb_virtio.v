@@ -214,6 +214,181 @@ module tb;
       end
    end
 
+   // ---- console-silence watchdog (ubuntu "Hostname set" wedge instrumentation) ----
+   // Once the UART has been quiet for WDOG_QUIET cycles, dump the full interrupt/timer
+   // state every 10M cycles. One dump discriminates the three wedge classes:
+   //   (a) csr_irq_v=1 but inject blocked -> a gate term below is latched high (name it);
+   //   (b) irq_v=0 with mtime>=stimecmp & STIE & deleg -> pending/enable plumbing lost it;
+   //   (c) no armed timer at all -> software state already wedged earlier (memory bug).
+   localparam [63:0] WDOG_QUIET = 64'd50_000_000;
+   reg [63:0] last_tx_c; initial last_tx_c = 0;
+   always @(posedge clk) if (dut.uart_tx_valid) last_tx_c <= c;
+   // Distinct U-mode fetch PAGES seen at dump instants (imem_addr is a PHYSICAL address):
+   // at the wedge these pages are hexdumped so the spinning user code can be disassembled
+   // and matched byte-for-byte against the initrd cpio's binaries (-> binary + symbol).
+   reg [63:0] wdog_pg [0:7]; integer wdog_npg; initial wdog_npg = 0;
+   integer wpi; reg wpi_hit;
+   task wdog_dump;
+      begin
+         if (dut.core.eb.u_csr.priv == 2'd0 && wdog_npg < 8) begin
+            wpi_hit = 0;
+            for (wpi = 0; wpi < wdog_npg; wpi = wpi + 1)
+               if (wdog_pg[wpi] == (dut.imem_addr >> 12)) wpi_hit = 1;
+            if (!wpi_hit) begin wdog_pg[wdog_npg] = dut.imem_addr >> 12; wdog_npg = wdog_npg + 1; end
+         end
+         $display("[WDOG c=%0d silent=%0dM pc=%h priv=%0d irq_v=%b cause=%0d infl=%b gate: rpl=%b devld=%b piflt=%b dflt=%b ill=%b red=%b roll=%b]",
+                  c, (c - last_tx_c)/1000000, dut.imem_addr,
+                  dut.core.eb.u_csr.priv, dut.core.csr_irq_v, dut.core.csr_irq_cause,
+                  dut.core.inject_inflight, dut.core.replay_v, dut.core.devld_solo_v,
+                  dut.core.pend_iflt, dut.core.lsu_dfault_v, dut.core.ill_v,
+                  dut.core.eb_redirect, dut.core.roll_v);
+         $display("[WDOG mip=%h mie=%h mideleg=%h mstatus=%h mtime=%h mtimecmp=%h stimecmp=%h stce=%b satp=%h]",
+                  dut.core.eb.u_csr.eff_mip, dut.core.eb.u_csr.mie, dut.core.eb.u_csr.mideleg,
+                  dut.core.eb.u_csr.mstatus, dut.u_clint.mtime, dut.u_clint.mtimecmp,
+                  dut.core.eb.u_csr.stimecmp, dut.core.eb.u_csr.menvcfg[63],
+                  dut.core.eb.u_csr.satp);
+         // last S-trap: scause=8 + sepc=<user PC> = the syscall sites feeding the kernel copies
+         $display("[WDOG scause=%h sepc=%h stval=%h]",
+                  dut.core.eb.u_csr.scause, dut.core.eb.u_csr.sepc, dut.core.eb.u_csr.stval);
+         // retire progress + LSU/AMO/store-buffer stuck-state: discriminates "loops retire
+         // normally" vs "AMO stalls mid-FSM" vs "AMO never issues (operand never ready)"
+         $display("[WDOG instret=%0d ast=%0d amo_v=%b amo_pend=%b p_v=%b sb_v=%b%b%b%b%b%b%b%b sb_cmt=%b%b%b%b%b%b%b%b dr_v=%b]",
+                  dut.core.eb.u_csr.minstret, dut.core.u_lsu.ast, dut.core.amo_v,
+                  dut.core.u_lsu.amo_pend, dut.core.u_lsu.p_v,
+                  dut.core.u_lsu.sb_v[0], dut.core.u_lsu.sb_v[1], dut.core.u_lsu.sb_v[2],
+                  dut.core.u_lsu.sb_v[3], dut.core.u_lsu.sb_v[4], dut.core.u_lsu.sb_v[5],
+                  dut.core.u_lsu.sb_v[6], dut.core.u_lsu.sb_v[7],
+                  dut.core.u_lsu.sb_cmt[0], dut.core.u_lsu.sb_cmt[1], dut.core.u_lsu.sb_cmt[2],
+                  dut.core.u_lsu.sb_cmt[3], dut.core.u_lsu.sb_cmt[4], dut.core.u_lsu.sb_cmt[5],
+                  dut.core.u_lsu.sb_cmt[6], dut.core.u_lsu.sb_cmt[7],
+                  dut.core.u_lsu.dr_v);
+         wdog_sched;
+         $fflush;
+      end
+   endtask
+   // scheduler-entry dump: names WHY a waiting op can't issue (sched_shard eligibility =
+   // v & r1 & r2 & r3 & (~ser | ck==committed)). At the wedge this discriminates
+   // operand-never-ready (a dropped wake/writeback) vs never-oldest (an older op never
+   // completing) vs the amo_gap dispatch freeze.
+   task wdog_sched;
+      integer e;
+      begin
+         $display("[WSCHED amo_gap=%b committed=%0d cur=%0d]",
+                  dut.core.amo_gap, dut.core.cc_committed, dut.core.cur);
+         for (e = 0; e < 16; e = e + 1) begin
+            if (dut.core.sb.lane[0].sh.v[e])
+               $display("[WSCHED s0e%0d seq=%0d ck=%0d r=%b%b%b ser=%b ps1=%0d ps2=%0d]",
+                        e, dut.core.sb.lane[0].sh.sq[e], dut.core.sb.lane[0].sh.ck[e],
+                        dut.core.sb.lane[0].sh.r1[e], dut.core.sb.lane[0].sh.r2[e],
+                        dut.core.sb.lane[0].sh.r3[e], dut.core.sb.lane[0].sh.py[e][156],
+                        dut.core.sb.lane[0].sh.s1[e], dut.core.sb.lane[0].sh.s2[e]);
+            if (dut.core.sb.lane[1].sh.v[e])
+               $display("[WSCHED s1e%0d seq=%0d ck=%0d r=%b%b%b ser=%b ps1=%0d ps2=%0d]",
+                        e, dut.core.sb.lane[1].sh.sq[e], dut.core.sb.lane[1].sh.ck[e],
+                        dut.core.sb.lane[1].sh.r1[e], dut.core.sb.lane[1].sh.r2[e],
+                        dut.core.sb.lane[1].sh.r3[e], dut.core.sb.lane[1].sh.py[e][156],
+                        dut.core.sb.lane[1].sh.s1[e], dut.core.sb.lane[1].sh.s2[e]);
+         end
+         $fflush;
+      end
+   endtask
+   // ---- IRQs-off-forever detector (run-7 terminal state: kernel inside the S-timer ISR,
+   // SIE=0 continuously from c~10.8B to the 22.3B stop, satp/stimecmp frozen, STIP pending,
+   // instret advancing -- a livelock over corrupted timer state). No legitimate S-mode
+   // IRQs-off section lasts 100M cycles: when the streak hits that, dump a fine PC ring
+   // (512 consecutive fetches = the loop body), a coarse ring (every 64K cycles = the
+   // macro path in), full state, and stop.
+   reg [63:0] pcring  [0:511];  reg [8:0]  pcring_w;  initial pcring_w  = 9'd0;
+   reg [63:0] pcringc [0:511];  reg [8:0]  pcringc_w; initial pcringc_w = 9'd0;
+   reg [63:0] sie_off_streak;   initial sie_off_streak = 64'd0;
+   reg        sie_trig;         initial sie_trig = 1'b0;
+   integer wri;
+   always @(posedge clk) begin
+      pcring[pcring_w] <= dut.imem_addr; pcring_w <= pcring_w + 9'd1;
+      if (c[15:0] == 16'd0) begin pcringc[pcringc_w] <= dut.imem_addr; pcringc_w <= pcringc_w + 9'd1; end
+      // streak = cycles with S-interrupts NOT deliverable: resets on (S && SIE=1) or U-mode
+      // (S-ints deliver from U regardless of SIE); M-mode excursions (OpenSBI misaligned
+      // fixups inside the wedge loop) keep counting -- run-8's priv==S-only condition reset
+      // on those and never fired.
+      if ((dut.core.eb.u_csr.priv == 2'd1 && dut.core.eb.u_csr.mstatus[1])
+          || dut.core.eb.u_csr.priv == 2'd0)
+           sie_off_streak <= 64'd0;
+      else sie_off_streak <= sie_off_streak + 64'd1;
+      // belt: masked-streak trigger; suspenders: hard cycle trigger mid-wedge (the wedge is
+      // proven deterministic: run 8 replayed run 7 bit-for-bit).
+      // hard cycle trigger only in checkpoint-server mode (children): a standalone
+      // validation boot must be free to run past 11.5B (it killed the first healthy
+      // nohz=off run at the wedge-autopsy cycle).
+      if (!sie_trig && ((sie_off_streak > 64'd100_000_000 && c > 64'd4_000_000_000)
+                        || (c == 64'd11_500_000_000 && ckpt_c != 64'd0))) begin
+         sie_trig <= 1'b1;
+         $display("[SIEWEDGE c=%0d pc=%h streak=%0d]", c, dut.imem_addr, sie_off_streak);
+         for (wri = 0; wri < 512; wri = wri + 1)
+            $display("[SIERING %0d pc=%h]", wri, pcring[(pcring_w + wri[8:0]) & 9'h1ff]);
+         for (wri = 0; wri < 512; wri = wri + 1)
+            $display("[SIERINGC %0d pc=%h]", wri, pcringc[(pcringc_w + wri[8:0]) & 9'h1ff]);
+         wdog_dump;
+         $fflush;
+         $finish;
+      end
+   end
+   // hexdump one 4K page from the behavioral DDR (64 lines of 64B; bytes little-endian
+   // within a line: byte k at bits [k*8 +: 8])
+   task wdog_pgdump(input [63:0] pg);
+      integer i; reg [63:0] pa;
+      begin
+         for (i = 0; i < 64; i = i + 1) begin
+            pa = (pg << 12) + i*64;
+            if ((pa >> 6) >= LBASE && (pa >> 6) < LBASE + NLINES)
+               $display("[WMEM %h %h]", pa, lram[(pa >> 6) - LBASE]);
+         end
+         $fflush;
+      end
+   endtask
+
+   // ---- fork-based checkpoint server (ckpt_dpi.cpp) ----
+   // +ckpt=<cycle> turns the run into a reusable time machine: at that cycle the sim
+   // blocks on a command file; each command forks a child that inherits the FULL sim
+   // state, enables an optional store write-watch, runs <extra> more cycles into its own
+   // log, and exits -- experiments then cost minutes, not the 5.5h replay from reset.
+   import "DPI-C" function int ckpt_wait_cmd(input string path,
+      output longint wlo, output longint whi, output longint wcyc, output longint wsval);
+   reg [63:0] ckpt_c;  string ckpt_cmd;
+   longint    ck_wlo, ck_whi, ck_wcyc, ck_sval;
+   reg [63:0] watch_lo, watch_hi;  initial begin watch_lo = 0; watch_hi = 0; end
+   // +watch_val=<hex>: from CYCLE 0, log any full-width store of this 64-bit value
+   // ANYWHERE (corruptor fingerprint hunt -- run-7/childB: the poison expiry
+   // 0x189e8ae282285be3 predates the 10.0B checkpoint, so the warm-up run itself
+   // must hunt the store that plants it).
+   reg [63:0] watch_val; initial watch_val = 64'd0;
+   always @(posedge clk) begin
+      if (watch_hi != 64'd0 && dmem_wen && dmem_waddr >= watch_lo && dmem_waddr < watch_hi) begin
+         $display("[WATCH c=%0d pa=%h data=%h mask=%h pc=%h priv=%0d]", c, dmem_waddr,
+                  dmem_wdata, dmem_wmask, dut.imem_addr, dut.core.eb.u_csr.priv);
+         $fflush;
+      end
+      if (watch_val != 64'd0 && dmem_wen && dmem_wdata == watch_val) begin
+         $display("[VWATCH c=%0d pa=%h data=%h mask=%h pc=%h priv=%0d satp=%h]", c, dmem_waddr,
+                  dmem_wdata, dmem_wmask, dut.imem_addr, dut.core.eb.u_csr.priv,
+                  dut.core.eb.u_csr.satp);
+         $fflush;
+      end
+   end
+   // child memory scan: locate every 8-aligned copy of a 64-bit value in DDR
+   task ckpt_scan(input [63:0] val);
+      reg [63:0] li; integer lk; reg [511:0] line_v;
+      begin
+         $display("[SCAN for %h]", val);
+         for (li = 0; li < NLINES; li = li + 1) begin
+            line_v = lram[li];
+            for (lk = 0; lk < 8; lk = lk + 1)
+               if (line_v[lk*64 +: 64] == val)
+                  $display("[SCANHIT pa=%h]", ((li + LBASE) << 6) + lk*8);
+         end
+         $display("[SCAN done]"); $fflush;
+      end
+   endtask
+
    reg [8*256-1:0] fw, dtb, initrd, disk;
    reg [63:0] ncyc, off_initrd;
    initial begin
@@ -222,6 +397,12 @@ module tb;
       if (!$value$plusargs("dtb=%s", dtb))       begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
       if (ncyc == 0) ncyc = ~64'd0;   // +cycles=0 = no cap
+      ckpt_c = 64'd0;
+      if ($value$plusargs("ckpt=%d", ckpt_c)) ;
+      if (!$value$plusargs("ckpt_cmd=%s", ckpt_cmd)) ckpt_cmd = "/tmp/probe-ckpt-cmd";
+      if (ckpt_c != 0) $display("[tb_virtio: checkpoint server armed at c=%0d]", ckpt_c);
+      if ($value$plusargs("watch_val=%h", watch_val))
+         $display("[tb_virtio: value-watch armed for %h]", watch_val);
       // Echo the EFFECTIVE cap: a run must prove what it consumed, not what was passed.
       // $fflush: stdout is FULLY buffered when redirected to a file, so without explicit
       // flushes a fresh run shows nothing (only the DPI's stderr) for minutes.
@@ -240,9 +421,32 @@ module tb;
       reset=1; @(negedge clk); @(negedge clk); reset=0;
       for (c=0; c<ncyc; c=c+1) begin
          @(negedge clk);
+         if (ckpt_c != 0 && c == ckpt_c) begin
+            $display("[ckpt: serving commands from %0s]", ckpt_cmd); $fflush;
+            if (ckpt_wait_cmd(ckpt_cmd, ck_wlo, ck_whi, ck_wcyc, ck_sval) == 0) begin
+               $display("[ckpt: quit]"); $finish;
+            end
+            // child: apply the experiment and bound its run
+            watch_lo = ck_wlo; watch_hi = ck_whi;
+            ncyc = c + ck_wcyc;
+            $display("[ckpt-child c=%0d watch=%h..%h run-to=%0d scan=%h]", c, watch_lo, watch_hi, ncyc, ck_sval);
+            $fflush;
+            if (ck_sval != 0) ckpt_scan(ck_sval);
+         end
          if ((c % 1000000) == 0) begin
             $display("[c=%0d pc=%h]", c, dut.imem_addr);
             $fflush;   // keep file-redirected logs live (also drains buffered UART text)
+            if ((c % 10000000) == 0 && c - last_tx_c > WDOG_QUIET) wdog_dump;
+            // Unambiguous wedge: longest legitimate quiet stretch is the initramfs unpack
+            // (~6-8B cycles). 12B of silence = frozen; stop so the run self-terminates.
+            if (c - last_tx_c > 64'd12_000_000_000) begin
+               $display("[WDOG: %0d cycles of console silence -- declaring wedge, stopping]", c - last_tx_c);
+               for (wpi = 0; wpi < wdog_npg; wpi = wpi + 1) begin
+                  $display("[WMEM-PAGE %h]", wdog_pg[wpi] << 12);
+                  wdog_pgdump(wdog_pg[wpi]);
+               end
+               $finish;
+            end
          end
       end
       $display("\n[tb_virtio: %0d cycles done]", ncyc);
