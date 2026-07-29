@@ -284,10 +284,12 @@ if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
 if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne "0"} {
     puts "Enabling ILA_TIMER: probe-clk csr timer-path debug core (ila_timer)."
     lappend vdefines "ILA_TIMER"
-    if {[llength [get_ips -quiet ila_timer]] == 0} {
-        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
+    # recreate from scratch each time: set_property on an existing generated IP leaves
+    # stale output products (a 1-probe stub broke the probe1 hookup with Synth 8-11365)
+    if {[llength [get_ips -quiet ila_timer]] > 0} {
+        remove_files [get_files -quiet -of [get_ips ila_timer]]
     }
-    # config applied unconditionally so probe-set changes take effect on an existing IP
+    create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
     set_property -dict [list \
         CONFIG.C_NUM_OF_PROBES {2} \
         CONFIG.C_PROBE0_WIDTH {64} \
