@@ -95,6 +95,7 @@ module backend_top
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,            // free-running CLINT time (Sstc); 0 in device-less TBs
     output wire [63:0]             dbg_timer,        // csr_file timer/irq debug bus (ILA_TIMER; pruned unused)
+    output wire [63:0]             dbg_mtvec,        // csr_file mtvec (ILA probe2)
     // Zihpm cache-event pulses from soc_top's D$/I$ (0 in device-less TBs, which have no cache).
     input  wire                    hpm_dc_access, hpm_dc_miss, hpm_ic_access, hpm_ic_miss,
     // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
@@ -723,7 +724,7 @@ module backend_top
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({{(6-CNTW){1'b0}}, cc_commit_count}), .hpm_ev(hpm_ev),
-      .irq_v(csr_irq_v), .irq_cause(csr_irq_cause), .dbg_timer(dbg_timer),
+      .irq_v(csr_irq_v), .irq_cause(csr_irq_cause), .dbg_timer(dbg_timer), .dbg_mtvec(dbg_mtvec),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
    // ---- AMO dispatch gap (reg declared at the dispatch gate) ----

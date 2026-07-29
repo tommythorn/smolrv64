@@ -115,7 +115,8 @@ module exec_bundle
     output wire [3:0]              irq_cause,
     output wire                    csr_redir_v,      // csr_file redirect this cycle (trap/xret)
     output wire [63:0]             csr_redir_tgt,
-    output wire [63:0]             dbg_timer);   // csr_file timer/irq debug bus (ILA_TIMER)
+    output wire [63:0]             dbg_timer,    // csr_file timer/irq debug bus (ILA_TIMER)
+    output wire [63:0]             dbg_mtvec);   // csr_file mtvec (ILA probe2)
 
    wire [SHARDS-1:0]       wbv;          // per-shard registered ALU/M writeback valid
    wire [SHARDS*PBITS-1:0] wbp;
@@ -252,7 +253,7 @@ module exec_bundle
       end
    end
    csr_file u_csr
-     (.clk(clk), .reset(reset), .dbg_timer(dbg_timer),            // squash must NOT reset CSR state (only reset does)
+     (.clk(clk), .reset(reset), .dbg_timer(dbg_timer), .dbg_mtvec(dbg_mtvec),            // squash must NOT reset CSR state (only reset does)
       .raddr(s_rdaddr), .rdata(csr_rdata), .redir_target(csr_redir_target),
       .redir_valid(csr_redir_valid), .redir_is_trap(csr_redir_is_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),

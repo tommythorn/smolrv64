@@ -1538,6 +1538,7 @@ module rk_xcku5p(
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire [63:0] probe_timer_dbg; // csr_file timer/irq debug (probe_clk) for ILA_TIMER
    wire [63:0] probe_pc_dbg;    // fetch PA (probe_clk) for ILA_TIMER probe1
+   wire [63:0] probe_mtvec_dbg; // M trap vector (probe_clk) for ILA_TIMER probe2
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
@@ -1546,7 +1547,7 @@ module rk_xcku5p(
       .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
-      .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg),
+      .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
@@ -1584,7 +1585,8 @@ module rk_xcku5p(
    ila_timer u_ila_timer (
       .clk    (probe_clk),
       .probe0 (probe_timer_dbg),
-      .probe1 (probe_pc_dbg)     // fetch PA: -trigger_now histogram identifies a spinning task's code
+      .probe1 (probe_pc_dbg),    // fetch PA: -trigger_now histogram identifies a spinning task's code
+      .probe2 (probe_mtvec_dbg)  // mtvec: catches it left at OpenSBI's __sbi_expected_trap
    );
 `endif
 

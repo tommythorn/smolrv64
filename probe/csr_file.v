@@ -68,6 +68,9 @@ module csr_file
     input  wire [6:0]  hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
+    output wire [63:0] dbg_mtvec,     // M trap vector (ILA probe2): catches mtvec left at
+                                      // OpenSBI's __sbi_expected_trap, which silently skips
+                                      // every ecall (SBI calls no-op -> timer never armed)
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
     // single update (driven at EX by the oldest system op -> non-speculative)
@@ -230,6 +233,7 @@ module csr_file
    // wrapper doesn't consume it). Layout documented in rk_xcku5p.v's ila_timer block. ----
    wire dbgt_stw  = upd_valid & upd_is_csr & (upd_addr == STIMECMP);
    wire dbgt_msw  = upd_valid & upd_is_csr & (upd_addr == MSCRATCH);
+   assign dbg_mtvec = mtvec;
    assign dbg_timer = {
       stimecmp[19:0],                        // [63:44] deadline (low bits)
       mtime[23:0],                           // [43:20] now (low bits)

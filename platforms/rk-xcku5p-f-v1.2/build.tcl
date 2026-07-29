@@ -312,9 +312,10 @@ if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne 
     if {[llength [get_ips -quiet ila_timer]] == 0} {
     create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
     set_property -dict [list \
-        CONFIG.C_NUM_OF_PROBES {2} \
+        CONFIG.C_NUM_OF_PROBES {3} \
         CONFIG.C_PROBE0_WIDTH {64} \
         CONFIG.C_PROBE1_WIDTH {64} \
+        CONFIG.C_PROBE2_WIDTH {64} \
         CONFIG.C_DATA_DEPTH {8192} \
         CONFIG.C_INPUT_PIPE_STAGES {2} \
         CONFIG.C_ADV_TRIGGER {true} \
