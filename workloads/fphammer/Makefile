@@ -17,3 +17,10 @@ fphammer.elf: fphammer.c crt0.s fphammer.ld
 
 clean:
 	rm -f fphammer.elf fphammer.bin
+
+misalign.bin: misalign.elf
+	$(RV)objcopy -O binary misalign.elf misalign.bin
+
+misalign.elf: misalign.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s misalign.c -o misalign.elf
