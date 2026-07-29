@@ -48,6 +48,10 @@ ifneq ($(strip $(ILA_IRQ)),)
 export ILA_IRQ
 endif
 
+# Debug: NO_SSTC=1 hides Sstc (stimecmp traps) so OpenSBI uses the CLINT timer path.
+ifneq ($(strip $(NO_SSTC)),)
+export NO_SSTC
+endif
 # Debug: ILA_TIMER=1 inserts an ILA on the probe-clk csr_file timer/interrupt path (the
 # ubuntu post-generator freeze: STIP level, stimecmp/mscratch write strobes, trap/xret).
 ifneq ($(strip $(ILA_TIMER)),)
