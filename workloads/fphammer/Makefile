@@ -31,3 +31,10 @@ fpseq.bin: fpseq.elf
 fpseq.elf: fpseq.c crt0.s fphammer.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tfphammer.ld -O2 crt0.s fpseq.c -o fpseq.elf
+
+csrtest.bin: csrtest.elf
+	$(RV)objcopy -O binary csrtest.elf csrtest.bin
+
+csrtest.elf: csrtest.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s csrtest.c -o csrtest.elf
