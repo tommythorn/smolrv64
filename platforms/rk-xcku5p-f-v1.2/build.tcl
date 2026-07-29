@@ -141,7 +141,16 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
         if {$b eq "rf_alu.v"} continue
         add_source_if_missing $fileset $f Verilog
     }
-    add_source_if_missing $fileset [file join $probe_dir fp_unit_synth.sv] SystemVerilog
+    # REAL CVFPU, not the passthrough tie-off. fp_unit_synth.sv returns
+    # iss_operands[63:0] unchanged, so every FP arithmetic op on the FPGA produced its
+    # own first operand: grep's gnulib hash sizing (fcvt.s.lu -> fdiv.s -> fcvt.lu.s)
+    # yielded {ffffffff, candidate} instead of the quotient, and next_prime then
+    # trial-divided a ~1.8e19 candidate forever -- THE ubuntu boot "hang". It was only
+    # ever meant for an integer-core Fmax check (task 23), but was added unconditionally.
+    # Simulation always built the real unit, which is why no sim/cosim ever reproduced it.
+    # (the CVFPU library + smolrv64_cvfpu.sv are already added by
+    # configure_cvfpu_sources; only this wrapper choice was wrong.)
+    add_source_if_missing $fileset [file join $probe_dir fp_unit.sv] SystemVerilog
     add_source_if_missing $fileset [file join $src_dir ddr_line_axi.v] Verilog
     add_source_if_missing $fileset [file join $src_dir ddr_line_cdc.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_sdpram.v] Verilog
