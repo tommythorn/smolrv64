@@ -245,9 +245,9 @@ module csr_file
       priv };                                // [1:0]
    // Sstc: when menvcfg.STCE, sip/mip.STIP(5) is driven by the stimecmp deadline
    // (read-only to software); otherwise it is the software-/device-written bit.
-   wire        stip_sstc = menvcfg[63] & (mtime >= stimecmp);
+   wire        stip_sstc = menvcfg[63] & ~SSTC_HIDDEN & (mtime >= stimecmp);
    wire [63:0] base_mip  = mip | {52'd0, hw_ip};
-   wire [63:0] eff_mip   = menvcfg[63] ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
+   wire [63:0] eff_mip   = (menvcfg[63] & ~SSTC_HIDDEN) ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
 
    // ---- Zihpm read decode: mhpmevent3.. / mhpmcounter3.. / hpmcounter3.. (0xC03 shadow) ----
    wire        is_ev = (raddr >= MHPMEVENT3)   && (raddr <= MHPMEVENT3   + 12'd28);
@@ -363,7 +363,18 @@ module csr_file
    // m/sstateen0-3 family (Smstateen, also absent: 0x30C-0x30F / 0x10C-0x10F) -- the trap is
    // how it concludes the extension is missing. Add other unimplemented CSRs here as found.
    wire csr_stateen = (upd_addr[11:2]==10'h0C3) | (upd_addr[11:2]==10'h043);  // m/sstateen0-3
-   wire csr_unimpl  = upd_is_csr & ((upd_addr == MTOPI) | csr_stateen);
+`ifdef NO_SSTC
+   // Diagnostic (-DNO_SSTC): hide Sstc entirely so OpenSBI's probe traps and it falls
+   // back to the CLINT (mtimecmp -> MTIP -> M-mode forwards mip.STIP) timer path.
+   // Motivation: with STCE=1 this core drives mip.STIP SOLELY from the stimecmp
+   // comparator, so if OpenSBI ever stops programming stimecmp, STIP is pinned high
+   // forever and no CLINT-based re-arm can clear it -- the observed S-timer storm.
+   localparam SSTC_HIDDEN = 1'b1;
+`else
+   localparam SSTC_HIDDEN = 1'b0;
+`endif
+   wire csr_unimpl  = upd_is_csr & ((upd_addr == MTOPI) | csr_stateen
+                                    | (SSTC_HIDDEN & (upd_addr == STIMECMP)));
    // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
    // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
    wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
