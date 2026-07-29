@@ -334,6 +334,13 @@ module exec_shard
       if (fp_start & ~fp_iss_ready) $display("[FPD %m] NORDY t=%0t seq=%0d", $time, ex_sq);
       if (fp_abort)     $display("[FPD %m] ABORT t=%0t fpseq=%0d fpck=%0d sqseq=%0d infl=%b zomb=%b", $time, fp_seq, fp_ck, squash_seq, fpu_inflight, fp_zomb);
       if (fp_res_valid) $display("[FPD %m] RES   t=%0t data=%h infl=%b zomb=%b fpseq=%0d fpck=%0d", $time, fp_res_data, fpu_inflight, fp_zomb, fp_seq, fp_ck);
+      if (wb_valid && wb_val[63:32]==32'hffffffff)
+         $display("[FPD %m] BOXWB t=%0t pd=%0d val=%h seq=%0d", $time, wb_pr, wb_val, wb_seq);
+      if (fp_wb) $display("[FPD %m] WB    t=%0t pd=%0d pdv=%b dst32=%b res=%h -> val=%h", $time,
+                          fp_pd, fp_pdv, fp_dst32, fp_res_data,
+                          (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data));
+      if (fp_start & fp_iss_ready) $display("[FPD %m] LATCH t=%0t seq=%0d fpdst=%0d wrfp=%b -> dst32=%b", $time,
+                          ex_sq, ex_fpdst, ex_fpwrfp, (ex_fpdst==3'd0) & ex_fpwrfp);
 `endif
    end
    wire        fp_complete = fp_res_valid & fpu_inflight & ~fp_zomb & ~fp_abort;
