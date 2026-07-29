@@ -67,6 +67,7 @@ module csr_file
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
     input  wire [6:0]  hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
+    output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        irq_v,         // an enabled+pending interrupt is deliverable now
     output wire [3:0]  irq_cause,     // its cause number (highest priority)
     // single update (driven at EX by the oldest system op -> non-speculative)
@@ -188,6 +189,60 @@ module csr_file
 
    // effective mip = software-held bits OR the hardware-driven device lines (CLINT/PLIC).
    // hw_ip is 0 when no device is wired (current TB) -> eff_mip == mip, no behavior change.
+`ifdef SCDBG
+   // Trap/xret tracer (storm-onset autopsy): every delivered trap + sret/mret, budgeted,
+   // gated from `SCDBG_T0 (ps). With STCW + IRQDBG this reconstructs the exact
+   // interrupt-vs-arm interleaving that drives the clockevent state machine into the
+   // stopped-with-pending-level-STIP corner.
+`ifndef SCDBG_T0
+ `define SCDBG_T0 0
+`endif
+   reg [31:0] trp_np; initial trp_np = 0;
+   reg [31:0] mscw_np; initial mscw_np = 0;
+   always @(posedge clk) if ($time > `SCDBG_T0 && trp_np < 32'd60000) begin
+      if (trap_v) begin
+         $display("[TRAP t=%0t cause=%h epc=%h to_s=%b priv=%0d mtime=%h stip=%b]",
+                  $time, trap_cause, trap_epc, trap_to_s, priv, mtime, eff_mip[5]);
+         trp_np <= trp_np + 1;
+      end else if (do_sret | do_mret) begin
+         $display("[XRET t=%0t %s to=%h priv=%0d mtime=%h stip=%b sie_after=%b]",
+                  $time, do_sret ? "sret" : "mret", redir_target, priv, mtime, eff_mip[5],
+                  do_sret ? mstatus[SPIE_B] : mstatus[MPIE_B]);
+         trp_np <= trp_np + 1;
+      end
+   end
+   // TIME-read anomaly tracer (hrtimer-storm hunt): every executed TIME/CYCLE csr read,
+   // flagged when non-monotonic or jumping > 1M ticks vs the previous read. A glitched
+   // time read poisons hrtimer basenow -> the handler never exits (cosim CANNOT see
+   // this: counter/TIME reads are DUT-follow there, unchecked).
+   reg [63:0] timr_last;  initial timr_last = 64'd0;
+   reg [31:0] timr_nprint; initial timr_nprint = 0;
+   always @(posedge clk)
+      if (upd_valid && upd_is_csr && (upd_addr == TIME || upd_addr == MTIME)) begin
+         if ((mtime < timr_last || mtime - timr_last > 64'd1_000_000) && timr_nprint < 32'd20000) begin
+            $display("[TIMR-ANOM t=%0t pc=%h rd=%h last=%h]", $time, upd_pc, mtime, timr_last);
+            timr_nprint <= timr_nprint + 1;
+         end
+         timr_last <= mtime;
+      end
+`endif
+   // ---- timer/interrupt-path debug bus (ILA_TIMER; assembled always, pruned when the
+   // wrapper doesn't consume it). Layout documented in rk_xcku5p.v's ila_timer block. ----
+   wire dbgt_stw  = upd_valid & upd_is_csr & (upd_addr == STIMECMP);
+   wire dbgt_msw  = upd_valid & upd_is_csr & (upd_addr == MSCRATCH);
+   assign dbg_timer = {
+      stimecmp[19:0],                        // [63:44] deadline (low bits)
+      mtime[23:0],                           // [43:20] now (low bits)
+      (mtime >= stimecmp),                   // [19]    raw Sstc comparator (= STIP level w/ STCE)
+      (mscratch[63:20] == 44'h00000000800),  // [18]    mscratch inside OpenSBI (0x800xxxxx)
+      menvcfg[63],                           // [17]    STCE
+      do_sret, do_mret,                      // [16:15]
+      trap_cause[3:0],                       // [14:11]
+      trap_is_intr, trap_to_s, trap_v,       // [10:8]
+      dbgt_msw, dbgt_stw,                    // [7:6]   mscratch / stimecmp write strobes
+      mie[5], eff_mip[5],                    // [5:4]   STIE / STIP
+      mstatus[8], mstatus[1],                // [3:2]   SPP / SIE
+      priv };                                // [1:0]
    // Sstc: when menvcfg.STCE, sip/mip.STIP(5) is driven by the stimecmp deadline
    // (read-only to software); otherwise it is the software-/device-written bit.
    wire        stip_sstc = menvcfg[63] & (mtime >= stimecmp);
@@ -461,7 +516,20 @@ module csr_file
               MEPC:       mepc    <= `VA_PACK40(newv);
               MCAUSE:     mcause  <= newv;
               MTVAL:      mtval   <= `VA_PACK40(newv);
-              MSCRATCH:   mscratch<= newv;
+              MSCRATCH:   begin
+                 mscratch<= newv;
+`ifdef SCDBG
+                 // corruption hunt: mscratch should be written ONCE at OpenSBI init and
+                 // then only by the trap-entry/exit csrrw swap pairs. Log every write
+                 // late in boot (budgeted -- the storm ecalls swap it constantly) -- a
+                 // swap pair that doesn't restore the scratch pointer (replay/double-
+                 // execution) is the suspected corruption at c~10.7413B.
+                 if ($time > `SCDBG_T0 && mscw_np < 32'd120000) begin
+                    $display("[MSCW t=%0t pc=%h new=%h priv=%0d]", $time, upd_pc, newv, priv);
+                    mscw_np <= mscw_np + 1;
+                 end
+`endif
+              end
               MIE:        mie     <= newv;
               MIP:        mip     <= newv & ~HW_RO_MASK;  // MEIP/MTIP/MSIP read-only (device-owned)
               SIE:        mie     <= (mie & ~S_INT_MASK) | (newv & S_INT_MASK);
@@ -480,7 +548,15 @@ module csr_file
               // reference (Linux probes ASID width by writing all-ones and reading back).
               SATP:       satp    <= newv & ~64'h0FC0_0000_0000_0000;
               MNSTATUS:   mnstatus<= newv;
-              STIMECMP:   stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
+              STIMECMP:   begin
+                 stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
+`ifdef SCDBG
+                 // storm autopsy: every stimecmp arm, with the deadline's relation to now.
+                 // "the kernel stopped re-arming" vs "the DUT lost the write" discriminator.
+                 $display("[STCW t=%0t pc=%h new=%h mtime=%h %s]", $time, upd_pc, newv, mtime,
+                          (newv > mtime) ? "future" : "PAST");
+`endif
+              end
               MENVCFG:    menvcfg <= newv;
               SENVCFG:    senvcfg <= newv & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
               FFLAGS:     fcsr[4:0] <= newv[4:0];

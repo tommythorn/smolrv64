@@ -278,6 +278,24 @@ if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
         generate_target {instantiation_template synthesis} [get_ips ila_irq]
     }
 }
+# ILA_TIMER=1: insert an ILA on the probe-clk csr_file timer/interrupt path (dbg_timer bus
+# from csr_file via soc_top.timer_dbg) -- the ubuntu post-generator freeze: STIP level vs
+# stimecmp/mscratch write strobes + trap/xret events. Layout documented in rk_xcku5p.v.
+if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne "0"} {
+    puts "Enabling ILA_TIMER: probe-clk csr timer-path debug core (ila_timer)."
+    lappend vdefines "ILA_TIMER"
+    if {[llength [get_ips -quiet ila_timer]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {1} \
+            CONFIG.C_PROBE0_WIDTH {64} \
+            CONFIG.C_DATA_DEPTH {8192} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_timer]
+        generate_target {instantiation_template synthesis} [get_ips ila_timer]
+    }
+}
 # ILA_DEV=1: insert an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA handshakes +
 # SD SPI pins) to see WHERE a block request wedges (the IRQ ILA proved the device never completes).
 if {[info exists env(ILA_DEV)] && $env(ILA_DEV) ne "" && $env(ILA_DEV) ne "0"} {

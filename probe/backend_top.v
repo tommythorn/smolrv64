@@ -94,6 +94,7 @@ module backend_top
     // MEIP(11)/SEIP(9)/MTIP(7)/STIP(5)/MSIP(3). Tie to 0 in device-less testbenches.
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,            // free-running CLINT time (Sstc); 0 in device-less TBs
+    output wire [63:0]             dbg_timer,        // csr_file timer/irq debug bus (ILA_TIMER; pruned unused)
     // Zihpm cache-event pulses from soc_top's D$/I$ (0 in device-less TBs, which have no cache).
     input  wire                    hpm_dc_access, hpm_dc_miss, hpm_ic_access, hpm_ic_miss,
     // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
@@ -722,7 +723,7 @@ module backend_top
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({{(6-CNTW){1'b0}}, cc_commit_count}), .hpm_ev(hpm_ev),
-      .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
+      .irq_v(csr_irq_v), .irq_cause(csr_irq_cause), .dbg_timer(dbg_timer),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
    // ---- AMO dispatch gap (reg declared at the dispatch gate) ----
@@ -921,16 +922,21 @@ module backend_top
       else if (roll_v | ~csr_irq_v) inject_inflight <= 1'b0;   // squashed/delivered/cleared
    end
 `ifdef IRQDBG
-   integer dbg_cyc; initial dbg_cyc = 0;
+   // dbg_cyc MUST be 64-bit: as a 32-bit integer it wrapped negative at c=2.1B and the
+   // unsigned comparison against the unsized `IRQDBG_T0 literal read as always-true --
+   // the per-rollback ROLL print then produced ~1GB/B-cycles of log (2x 8.5GiB overnight).
+   // ROLL is also gated to inject_inflight: only rollbacks that can interact with an
+   // in-flight interrupt pseudo-op matter for interrupt debugging.
+   reg [63:0] dbg_cyc; initial dbg_cyc = 0;
    wire dbgw = (dbg_cyc > `IRQDBG_T0);
    always @(posedge clk) begin
-      dbg_cyc <= dbg_cyc + 1;
+      dbg_cyc <= dbg_cyc + 64'd1;
       if (dbgw & irq_inject & accept)
          $display("[IRQD] INJ c=%0d pc=%h cause=%0d cur=%0d committed=%0d", dbg_cyc, imem_ipc,
                   csr_irq_cause, cur, cc_committed);
       if (dbgw & inject_inflight & ~csr_irq_v & ~roll_v)
          $display("[IRQD] CLR-cause-gone c=%0d (pseudo-op in flight, irq deasserted)", dbg_cyc);
-      if (dbgw & roll_v)
+      if (dbgw & roll_v & inject_inflight)
          $display("[IRQD] ROLL c=%0d eb=%b iflt=%b dfltR=%b dfltF=%b devld=%b seq=%0d ck=%0d infl=%b",
                   dbg_cyc, eb_redirect, iflt_fire, dflt_replay, dflt_fire, devld_replay,
                   roll_seq, roll_ckpt, inject_inflight);

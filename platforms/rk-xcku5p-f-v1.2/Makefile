@@ -48,6 +48,11 @@ ifneq ($(strip $(ILA_IRQ)),)
 export ILA_IRQ
 endif
 
+# Debug: ILA_TIMER=1 inserts an ILA on the probe-clk csr_file timer/interrupt path (the
+# ubuntu post-generator freeze: STIP level, stimecmp/mscratch write strobes, trap/xret).
+ifneq ($(strip $(ILA_TIMER)),)
+export ILA_TIMER
+endif
 # Debug: ILA_DEV=1 inserts an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA
 # handshakes + SD SPI pins) -- to see which block request / SPI-DMA step wedges during the root mount.
 ifneq ($(strip $(ILA_DEV)),)

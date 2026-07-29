@@ -1536,6 +1536,7 @@ module rk_xcku5p(
    always @(posedge probe_clk) begin p_virtio_irq_meta <= virtio_blk_irq; p_virtio_irq <= p_virtio_irq_meta; end
 
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
+   wire [63:0] probe_timer_dbg; // csr_file timer/irq debug (probe_clk) for ILA_TIMER
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
@@ -1544,7 +1545,7 @@ module rk_xcku5p(
       .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
-      .irq_dbg(probe_irq_dbg),
+      .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
@@ -1566,6 +1567,22 @@ module rk_xcku5p(
    ila_irq u_ila_irq (
       .clk    (probe_clk),
       .probe0 (probe_irq_dbg)
+   );
+`endif
+
+`ifdef ILA_TIMER
+   // Debug (ILA_TIMER=1): the ubuntu post-generator freeze. probe_timer_dbg (from csr_file):
+   //   [63:44]=stimecmp[19:0] [43:20]=mtime[23:0] [19]=mtime>=stimecmp (raw STIP level)
+   //   [18]=mscratch in 0x800xxxxx (OpenSBI range) [17]=menvcfg.STCE [16]=sret [15]=mret
+   //   [14:11]=trap cause[3:0] [10]=trap_is_intr [9]=trap_to_s [8]=trap_v
+   //   [7]=mscratch-write strobe [6]=stimecmp-write strobe [5]=STIE [4]=STIP(eff)
+   //   [3]=SPP [2]=SIE [1:0]=priv
+   // Two uses: (a) -trigger_now on a wedged board -- does HW show the sim storm signature
+   // (STIP held, ecall cycling, no stimecmp strobes)? (b) armed trigger on probe0[7]&&
+   // !probe0[18] (mscratch written with a non-OpenSBI value) to catch the corruption live.
+   ila_timer u_ila_timer (
+      .clk    (probe_clk),
+      .probe0 (probe_timer_dbg)
    );
 `endif
 

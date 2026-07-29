@@ -82,7 +82,8 @@ module soc_top #(
    input  wire [31:0]      virtio_rdata,
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq,
-   output wire [17:0]      irq_dbg          // interrupt-path debug for the wrapper ILA (probe_clk)
+   output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
+   output wire [63:0]      timer_dbg        // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -107,7 +108,7 @@ module soc_top #(
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .dbg_timer(timer_dbg), .mtime(clint_mtime),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
