@@ -287,7 +287,9 @@ if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne 
     # recreate from scratch each time: set_property on an existing generated IP leaves
     # stale output products (a 1-probe stub broke the probe1 hookup with Synth 8-11365)
     if {[llength [get_ips -quiet ila_timer]] > 0} {
-        remove_files [get_files -quiet -of [get_ips ila_timer]]
+        set ila_xci [get_property IP_FILE [get_ips ila_timer]]
+        remove_files $ila_xci
+        file delete -force [file dirname $ila_xci]
     }
     create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
     set_property -dict [list \
