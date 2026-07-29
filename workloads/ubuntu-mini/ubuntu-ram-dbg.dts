@@ -4,10 +4,12 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmooolRV64 w/2048 MiB";
+	model = "SmooolRV64 w/2048 MiB RAM-root";
 
 	chosen {
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/vda1 rw ignore_loglevel random.trust_bootloader=on";
+		linux,initrd-start = <0 0x90000000>;
+		linux,initrd-end   = <0 0xb897a5ec>; /* exact: ubuntu-mini.cpio (681027052 B) */
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on systemd.log_level=debug systemd.log_target=console";
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
@@ -129,23 +131,7 @@
 			reg = <0 0x1000f000 0 0x100>;
 		};
 
-		virtio_blk: virtio@10002000 {
-			compatible = "virtio,mmio";
-			reg = <0 0x10002000 0 0x1000>;
-			interrupts = <11>;
-			interrupt-parent = <&plic>;
-			dma-noncoherent;
-			status = "okay";
-		};
 
-		virtio_net: virtio@10003000 {
-			compatible = "virtio,mmio";
-			reg = <0 0x10003000 0 0x1000>;
-			interrupts = <12>;
-			interrupt-parent = <&plic>;
-			dma-noncoherent;
-			status = "okay";
-		};
 	};
 
 	memory@80000000 {
