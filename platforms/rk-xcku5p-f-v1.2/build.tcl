@@ -150,6 +150,14 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
     # Simulation always built the real unit, which is why no sim/cosim ever reproduced it.
     # (the CVFPU library + smolrv64_cvfpu.sv are already added by
     # configure_cvfpu_sources; only this wrapper choice was wrong.)
+    # The .xpr is persistent (and tracked), so a previously-added tie-off stays in the
+    # fileset and Vivado keeps synthesizing IT (both files define module `fp_unit`).
+    # Remove it explicitly before adding the real wrapper.
+    set tieoff [get_files -quiet */probe/fp_unit_synth.sv]
+    if {[llength $tieoff]} {
+        puts "Removing FP tie-off from the fileset: $tieoff"
+        remove_files $tieoff
+    }
     add_source_if_missing $fileset [file join $probe_dir fp_unit.sv] SystemVerilog
     add_source_if_missing $fileset [file join $src_dir ddr_line_axi.v] Verilog
     add_source_if_missing $fileset [file join $src_dir ddr_line_cdc.v] Verilog
