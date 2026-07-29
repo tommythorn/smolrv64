@@ -284,13 +284,11 @@ if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
 if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne "0"} {
     puts "Enabling ILA_TIMER: probe-clk csr timer-path debug core (ila_timer)."
     lappend vdefines "ILA_TIMER"
-    # recreate from scratch each time: set_property on an existing generated IP leaves
-    # stale output products (a 1-probe stub broke the probe1 hookup with Synth 8-11365)
-    if {[llength [get_ips -quiet ila_timer]] > 0} {
-        set ila_xci [get_property IP_FILE [get_ips ila_timer]]
-        remove_files $ila_xci
-        file delete -force [file dirname $ila_xci]
-    }
+    # Create only when absent. Do NOT remove+recreate: deleting the .xci leaves the name
+    # claimed in the .xpr ("IP name 'ila_timer' is already in use"). To CHANGE the probe
+    # set, delete the IP dirs AND restore the tracked .xpr (git checkout) first -- an
+    # in-place set_property leaves stale output products (Synth 8-11365 on a new probe).
+    if {[llength [get_ips -quiet ila_timer]] == 0} {
     create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
     set_property -dict [list \
         CONFIG.C_NUM_OF_PROBES {2} \
@@ -301,6 +299,7 @@ if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne 
         CONFIG.C_ADV_TRIGGER {true} \
     ] [get_ips ila_timer]
     generate_target {instantiation_template synthesis} [get_ips ila_timer]
+    }
 }
 # ILA_DEV=1: insert an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA handshakes +
 # SD SPI pins) to see WHERE a block request wedges (the IRQ ILA proved the device never completes).
