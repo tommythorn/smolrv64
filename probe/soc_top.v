@@ -85,7 +85,8 @@ module soc_top #(
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
    output wire [63:0]      timer_dbg,       // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
    output wire [63:0]      pc_dbg,          // fetch PA (probe_clk) -- ILA_TIMER probe1: spin-loop PC histogram
-   output wire [63:0]      mtvec_dbg        // M trap vector (probe_clk) -- ILA_TIMER probe2
+   output wire [63:0]      mtvec_dbg,       // M trap vector (probe_clk) -- ILA_TIMER probe2
+   output wire             mtvec_we_dbg     // mtvec write strobe -- ILA_TIMER probe4
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -111,7 +112,7 @@ module soc_top #(
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .dbg_timer(timer_dbg), .dbg_mtvec(mtvec_dbg), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .dbg_timer(timer_dbg), .dbg_mtvec(mtvec_dbg), .dbg_mtvec_we(mtvec_we_dbg), .mtime(clint_mtime),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),

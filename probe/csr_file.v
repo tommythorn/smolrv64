@@ -68,6 +68,7 @@ module csr_file
     input  wire [6:0]  hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
+    output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
     output wire [63:0] dbg_mtvec,     // M trap vector (ILA probe2): catches mtvec left at
                                       // OpenSBI's __sbi_expected_trap, which silently skips
                                       // every ecall (SBI calls no-op -> timer never armed)
@@ -234,6 +235,11 @@ module csr_file
    wire dbgt_stw  = upd_valid & upd_is_csr & (upd_addr == STIMECMP);
    wire dbgt_msw  = upd_valid & upd_is_csr & (upd_addr == MSCRATCH);
    assign dbg_mtvec = mtvec;
+   // 1-cycle strobe when an executing CSR op writes mtvec. Distinguishes "the restore
+   // was LOST" (no strobe) from "the restore RAN but wrote the probe-handler address
+   // back" (strobe, mtvec unchanged) -- the latter is what a re-executed `csrrw x12,
+   // mtvec, x12` swap produces, since the swap is NOT idempotent.
+   assign dbg_mtvec_we = upd_valid & upd_is_csr & ~csr_illegal & (upd_addr == MTVEC);
    assign dbg_timer = {
       stimecmp[19:0],                        // [63:44] deadline (low bits)
       mtime[23:0],                           // [43:20] now (low bits)
