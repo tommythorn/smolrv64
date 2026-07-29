@@ -1600,13 +1600,14 @@ module rk_xcku5p(
 
    ila_timer u_ila_timer (
       .clk    (probe_clk),
-      // probe0 bit 18 carries the stranded flag (it replaces the mscratch-in-SBI bit,
-      // which served its purpose). It must live on probe0, not on a mtvec/PC probe:
-      // those have constant upper bits, so Vivado trims them and a flag placed in the
-      // MSB silently never reaches the ILA (probe2 came back as [62:0], flag gone).
-      .probe0 ({probe_timer_dbg[63:19], mtvec_stranded, probe_timer_dbg[17:0]}),
+      // NEVER pack a debug flag into a concatenation: Vivado trims constant bits and
+      // SPLITS concats into separate probe segments, so the bit you trigger on is not
+      // the bit you wired (seen twice: probe2 arrived as [62:0] with the flag gone, then
+      // probe0 as two segments [63:19]+[17:0]). Give the flag its own named 1-bit probe.
+      .probe0 (probe_timer_dbg),
       .probe1 (probe_pc_dbg),    // fetch PA: -trigger_now histogram identifies a spinning task's code
-      .probe2 (probe_mtvec_dbg)  // mtvec value
+      .probe2 (probe_mtvec_dbg), // mtvec value
+      .probe3 (mtvec_stranded)   // 1 = mtvec parked at the probe handler >2000 cycles
    );
 `endif
 
