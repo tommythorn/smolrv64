@@ -402,6 +402,21 @@ module exec_shard
                 : (m_complete ? m_res : (csr_wb ? csr_rdata : result));
    end
 
+`ifdef SCDBG
+   // TIME-read writeback bracket (pairs with csr_file's [TIMR-ANOM]): the same read's
+   // value as it enters the wb flop. csr_file-clean + here-anomalous => corruption
+   // between rdata and writeback.
+   reg [63:0] twb_last; initial twb_last = 64'd0;
+   reg [31:0] twb_np;   initial twb_np = 0;
+   always @(posedge clk)
+      if (csr_wb && ex_imm[11:0] == 12'hC01) begin
+         if ((csr_rdata < twb_last || csr_rdata - twb_last > 64'd1_000_000) && twb_np < 32'd20000) begin
+            $display("[TIMWB-ANOM t=%0t pc=%h val=%h last=%h]", $time, ex_pc, csr_rdata, twb_last);
+            twb_np <= twb_np + 1;
+         end
+         twb_last <= csr_rdata;
+      end
+`endif
    // ---- CSR/system unit: read addr + update request + redirect ----
    assign csr_rd_addr    = ex_imm[11:0];                       // combinational read
    wire [63:0] csr_src   = ex_csrf[2] ? {59'b0, ex_imm[16:12]} : op1f;  // zimm | rs1
@@ -477,7 +492,18 @@ module exec_shard
    assign br_is_trap  = sys_redirect & csr_redir_is_trap;   // exception -> precise (TO ckpt)
    assign st_data     = op2f;
    // atomic drive: addr = agu_addr (rs1+0), data = st_data (rs2), size = ex_msz, sign = ex_msgn
-   assign ex_amo      = ex_v & ex_amor;
+   // ~ex_squash: task-#30 EX-squash gate (ALU/CSR/in-core-FP have it; the AMO drive was
+   // MISSED). Ungated, a wrong-path atomic at EX in the same cycle an older rollback fires
+   // still enters the LSU FSM (whose own squash guard checks ast!=A_IDLE and so misses the
+   // latch cycle) and then executes fully: a memory WRITE with wrong-path address/data plus
+   // a writeback to a possibly-reallocated physreg. Seen as the ubuntu generator-storm
+   // memory corruption (grep/glib hash-size victims).
+   assign ex_amo      = ex_v & ex_amor & ~ex_squash;
+`ifdef SCDBG
+   // count the would-have-been-dead atomics the gate now kills (mechanism evidence)
+   always @(posedge clk) if (ex_v & ex_amor & ex_squash)
+      $display("[AMOSQ %m t=%0t seq=%0d squash_seq=%0d]", $time, ex_sq, squash_seq);
+`endif
    assign ex_amo_func = ex_amof;
    // An AMO with rd=x0 (amoor/amoadd.d x0,... -- atomic update discarding the result,
    // common in kernels) has ex_pdv=0 and no allocated dest, so ex_pd is the renamer's
