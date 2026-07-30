@@ -530,12 +530,21 @@ module exec_shard
    // OpenSBI's restore then writes THAT to mtvec -- the observed stranding, with every
    // instruction having executed. Flag any squash that discards an already-executed CSR op
    // (squash_seq older than, or equal to, its seq).
-   reg [SEQW-1:0] csr_done_seq;  reg csr_done_v;
+   // The seq comparison is only meaningful while the op is recent: seq is SEQW bits and
+   // wraps, so a stale entry eventually looks "younger" than any squash and fires forever.
+   // Age it out well inside half a wrap -- a rollback that discards the op arrives within
+   // a few cycles of its execution, long before then.
+   reg [SEQW-1:0] csr_done_seq;  reg csr_done_v;  reg [6:0] csr_age;
    reg [63:0]     csr_done_pc;   reg [11:0] csr_done_addr;
-   initial begin csr_done_v = 1'b0; csr_done_seq = 0; csr_done_pc = 0; csr_done_addr = 0; end
+   initial begin csr_done_v = 1'b0; csr_done_seq = 0; csr_done_pc = 0; csr_done_addr = 0; csr_age = 0; end
    always @(posedge clk) begin
+      if (csr_done_v) begin
+         csr_age <= csr_age + 7'd1;
+         if (csr_age == 7'd63) csr_done_v <= 1'b0;
+      end
       if (csr_req_v & ex_csr & ~ex_squash) begin
-         csr_done_v <= 1'b1; csr_done_seq <= ex_sq; csr_done_pc <= ex_pc; csr_done_addr <= ex_imm[11:0];
+         csr_done_v <= 1'b1; csr_age <= 7'd0;
+         csr_done_seq <= ex_sq; csr_done_pc <= ex_pc; csr_done_addr <= ex_imm[11:0];
       end
       if (squash & csr_done_v & ~older(csr_done_seq, squash_seq)) begin
          $display("[CSRRE %m t=%0t] executed CSR op pc=%h addr=%h seq=%0d DISCARDED by squash_seq=%0d -> it will re-execute with its write already applied",
