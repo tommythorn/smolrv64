@@ -666,6 +666,13 @@ module backend_top
    // fire for x0-dest ops, so ewb_ok would misalign and false-suppress them (=> deadlock).
    wire [IW-1:0]      eb_ewb_ok;
    wire               lsu_ld_done_g = lsu_ld_done & eb_ewb_ok[lsu_ld_wb_owner];
+   // The owner-guard is claimed never to false-suppress a legitimate load. If it ever does, that
+   // load's checkpoint count can never reach zero -> commit stalls -> cc_full -> the frontend
+   // freezes (exactly the observed wedge: count[committed]=1 with the LQ/SB/units/RS all empty).
+   // Count the suppressions (saturating) so the ILA can say whether this is the leak.
+   wire               ld_done_supp = lsu_ld_done & ~eb_ewb_ok[lsu_ld_wb_owner];
+   reg  [3:0]         ld_supp_cnt; initial ld_supp_cnt = 4'd0;
+   always @(posedge clk) if (ld_done_supp && ld_supp_cnt != 4'hf) ld_supp_cnt <= ld_supp_cnt + 4'd1;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CKMAX(CKMAX), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count), .disp_close(disp_close),
@@ -1523,7 +1530,9 @@ module backend_top
    // missing completion is a deferred LSU/unit op still outstanding, or an op that never issued
    // at all (a live scheduler entry that never became eligible = a lost operand wakeup).
    assign dbg_wedge = {
-      11'd0,
+      7'd0,
+      ld_supp_cnt,              // [56:53] saturating count of ld_done decrements EATEN by the
+                                //         owner guard -- a false-suppress leaks the count forever
       eb_dbg_evap,              // [52:50] STICKY evaporation: [50] mul/div, [51] FP-unit-busy,
                                 //         [52] CVFPU not iss_ready. Any of these = a deferred op
                                 //         vanished at EX and its checkpoint count can never reach 0.

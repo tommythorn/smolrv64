@@ -67,6 +67,8 @@ def main(path):
     print(f"committed ckpt: {dict(cmt)}")
     cnt = collections.Counter((v >> 48) & 0x3 for v in vals)
     print(f"count[committed] : {dict(cnt)}   (commit fires only at 0)")
+    supp = collections.Counter((v >> 53) & 0xF for v in vals)
+    print(f"ld_done suppressed by owner-guard (saturating): {dict(supp)}")
     commits = sum((v >> 14) & 1 for v in vals)
     print(f"cc_commit pulses in window: {commits}")
     if commits == 0 and len(cmt) == 1:
