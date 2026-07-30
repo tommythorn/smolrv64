@@ -225,6 +225,7 @@ module backend_top
    wire [3:0]         lsu_dbg_defer;         // {lq_any, sb_any, amo_busy, devrd_pending}
    wire [IW-1:0]      sch_dbg_any_v, sch_dbg_stuck;
    wire [CNTW-1:0]    cc_dbg_cnt;            // count[committed]: what commit is waiting on
+   wire [2:0]         eb_dbg_evap;           // sticky: a deferred op evaporated at EX
    wire               lsu_devld_fire_v;      // a device load fired (ends the device-load solo window)
    reg                devld_solo_v;          // device-load solo replay active (drives solo_all like replay_v)
    initial devld_solo_v = 1'b0;
@@ -719,7 +720,7 @@ module backend_top
       .iss_pdst_v(q_iss_pdst_v), .iss_ps1(q_iss_ps1), .iss_ps2(q_iss_ps2), .iss_ps3(q_iss_ps3),
       .iss_ckpt(q_iss_ckpt), .iss_mem_idx(q_iss_mem_idx), .iss_pay(q_iss_pay),
       .squash(roll_v), .squash_seq(roll_seq),
-      .exec_busy(eb_exec_busy), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
+      .exec_busy(eb_exec_busy), .dbg_evap(eb_dbg_evap), .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt),
       .iss_fp_dirty(eb_iss_fp_dirty), .fp_dirty_commit(cc_fp_dirty_commit),
       .lsu_wb_v(lsu_ld_wb_v), .lsu_wb_owner(lsu_ld_wb_owner),
@@ -1522,7 +1523,10 @@ module backend_top
    // missing completion is a deferred LSU/unit op still outstanding, or an op that never issued
    // at all (a live scheduler entry that never became eligible = a lost operand wakeup).
    assign dbg_wedge = {
-      14'd0,
+      11'd0,
+      eb_dbg_evap,              // [52:50] STICKY evaporation: [50] mul/div, [51] FP-unit-busy,
+                                //         [52] CVFPU not iss_ready. Any of these = a deferred op
+                                //         vanished at EX and its checkpoint count can never reach 0.
       cc_dbg_cnt,               // [49:48] count[committed] (CNTW=2)
       |sch_dbg_stuck,           // [47] a live RS entry that is NOT eligible (never issues)
       |sch_dbg_any_v,           // [46] any live RS entry at all

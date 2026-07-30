@@ -32,6 +32,7 @@ module exec_bundle
     input  wire                    squash,
     input  wire [SEQW-1:0]         squash_seq,
     // per-shard M-unit status -> scheduler stall + commit_ctl completion
+    output wire [2:0]              dbg_evap,     // OR of the per-shard sticky evaporation flags
     output wire [SHARDS-1:0]       exec_busy,
     output wire [SHARDS-1:0]       div_done,
     output wire [SHARDS*CBITS-1:0] div_done_ckpt,
@@ -162,6 +163,13 @@ module exec_bundle
    always @(posedge clk) begin fw2v <= wbv; fw2p <= wbp; fw2d <= wbd; end
 
    // ---- CSR file (shared; one system op executes at a time -> single port) ----
+   wire [SHARDS*3-1:0]  dbg_evap_sh;
+   reg  [2:0]           dbg_evap_r;  integer de;
+   always @* begin
+      dbg_evap_r = 3'd0;
+      for (de = 0; de < SHARDS; de = de + 1) dbg_evap_r = dbg_evap_r | dbg_evap_sh[de*3 +: 3];
+   end
+   assign dbg_evap = dbg_evap_r;
    wire [63:0]          csr_rdata, csr_redir_target;
    wire                 csr_redir_valid, csr_redir_is_trap, csr_illegal;
    wire [SHARDS-1:0]    csr_req_v, csr_req_is_csr;
@@ -233,7 +241,7 @@ module exec_bundle
          .ex_mem_idx(ex_mem_idx[i*MIDXW +: MIDXW]), .ex_mem(ex_mem[i]), .ex_store(ex_store[i]),
          .ex_fp(ex_fp[i]), .ex_msize(ex_msize[i*2 +: 2]), .ex_msigned(ex_msigned[i]),
          .agu_addr(agu_addr[i*64 +: 64]), .st_data(st_data[i*64 +: 64]),
-         .exec_busy(exec_busy[i]), .div_done(div_done[i]),
+         .exec_busy(exec_busy[i]), .dbg_evap(dbg_evap_sh[i*3 +: 3]), .div_done(div_done[i]),
          .div_done_ckpt(div_done_ckpt[i*CBITS +: CBITS]),
          .fp_done(fp_done[i]), .fp_done_ckpt(fp_done_ckpt[i*CBITS +: CBITS]),
          .fp_flags_we(fp_flags_we_sh[i]), .fp_flags(fp_fflags_sh[i*5 +: 5]),

@@ -29,6 +29,8 @@ BITS = [
     (39, "cc_stall_barrier"), (40, "amo_gap"),     (41, "devrd_pending"),
     (42, "amo_busy"),       (43, "sb_any"),        (44, "lq_any"),
     (45, "unit_busy"),      (46, "rs_any_live"),   (47, "rs_stuck_not_elig"),
+    # STICKY: a deferred op reached EX and its unit refused it -> it vanished
+    (50, "EVAP_muldiv"),    (51, "EVAP_fp_unit_busy"), (52, "EVAP_fp_not_ready"),
 ]
 
 

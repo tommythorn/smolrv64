@@ -129,6 +129,13 @@ module exec_shard
     output wire [4:0]              ex_amo_func,
     output wire [PBITS-1:0]        ex_amo_pdst,
     // ---- M-unit status ----
+    output wire [2:0]              dbg_evap,     // STICKY: a deferred op reached EX and its unit
+                                  // refused it. EX has no hold, so the op simply vanishes -- and a
+                                  // deferred op that never completes never decrements its
+                                  // checkpoint's count, so commit stalls forever (cc_full wedge).
+                                  // [0] mul/div arrived while munit_busy
+                                  // [1] FP arith arrived while the FPU/M-unit was busy
+                                  // [2] FP start attempted but CVFPU was not iss_ready
     output wire                    exec_busy,
     output wire                    div_done,
     output wire [CBITS-1:0]        div_done_ckpt,
@@ -268,6 +275,15 @@ module exec_shard
    wire m_squash_now = squash & older(squash_seq, ex_sq);
    wire m_start = ex_v & ex_mulr & ~munit_busy & ~m_squash_now;
    wire m_abort = munit_busy & squash & older(squash_seq, m_seq);
+   // ---- deferred-op evaporation detectors (sticky; see dbg_evap) ----
+   wire evap_mul = ex_v & ex_mulr & munit_busy & ~m_squash_now;
+   reg [2:0] evap_s; initial evap_s = 3'd0;
+   always @(posedge clk) begin
+      if (evap_mul)                       evap_s[0] <= 1'b1;
+      if (fp_arith & (fpu_inflight | mbusy | dbusy) & ~fp_squash_now) evap_s[1] <= 1'b1;
+      if (fp_start & ~fp_iss_ready)       evap_s[2] <= 1'b1;
+   end
+   assign dbg_evap = evap_s;
    mul3 mu (.clk(clk), .reset(1'b0), .start(m_start & mul_op), .abort(m_abort),
             .rs1(op1f), .rs2(op2f), .f3(ex_bf), .is_w(ex_w),
             .busy(mbusy), .done(mdone), .result(mres));
