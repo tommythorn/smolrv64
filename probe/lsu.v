@@ -122,6 +122,14 @@ module lsu
     //      devld_v asks the backend to roll back + refetch the bundle one-op-per-bundle so
     //      the load lands in its own (later) checkpoint; devld_fire_v ends that solo window. ----
     output wire                   devld_v,
+    output wire [CBITS-1:0]       devld_ckpt,   // ...and WHICH checkpoint that load is in: the
+                                  // rollback must target the LOAD's checkpoint, exactly as the
+                                  // data-fault path targets flt_ckpt. Rolling back to the oldest
+                                  // live checkpoint instead re-executes every op in between --
+                                  // including a serializing CSR op whose CSR write is applied at
+                                  // EX and is NOT undone by the rollback, so a `csrrw rd,csr,rd`
+                                  // swap (OpenSBI's mtvec probe install) reads back the value it
+                                  // just installed and strands mtvec.
     output wire                   devld_fire_v,
     // ---- store completion (deferred decrement, like ld_done): a store retires from
     //      commit_ctl's count only once its translation has been checked fault-free.
@@ -490,12 +498,14 @@ module lsu
    wire dv_now = ld_is_dev & ld_sel_v & ld_xok & (ast == A_IDLE) & ~amo_v
                  & (~ld_committed | ld_olds_same);
    reg  dv_v; initial dv_v = 1'b0;
+   reg [CBITS-1:0] dv_ck; initial dv_ck = {CBITS{1'b0}};
    always @(posedge clk) begin
       if (reset)         dv_v <= 1'b0;
       else if (rollback) dv_v <= 1'b0;
-      else if (dv_now)   dv_v <= 1'b1;
+      else if (dv_now) begin dv_v <= 1'b1; dv_ck <= lq_ck[ld_sel]; end
    end
    assign devld_v      = dv_v;
+   assign devld_ckpt   = dv_ck;
    assign devld_fire_v = sel_fire & ld_is_dev;
 
    // ====================== atomic (A ext) FSM ======================

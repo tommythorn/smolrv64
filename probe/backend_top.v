@@ -211,6 +211,7 @@ module backend_top
    reg                replay_v;              // fault-replay: refetch the faulting bundle one-op-per-bundle
    initial replay_v = 1'b0;                  // (so the faulting op becomes solo -> precise trap, declared early: feeds frontend)
    wire               lsu_devld_v;           // device load wants replay-to-solo (older store shares its ckpt)
+   wire [CBITS-1:0]   lsu_devld_ckpt;        // ...the checkpoint THAT LOAD is in (the rollback target)
    wire               lsu_devld_fire_v;      // a device load fired (ends the device-load solo window)
    reg                devld_solo_v;          // device-load solo replay active (drives solo_all like replay_v)
    initial devld_solo_v = 1'b0;
@@ -817,7 +818,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
-      .devld_v(lsu_devld_v), .devld_fire_v(lsu_devld_fire_v),
+      .devld_v(lsu_devld_v), .devld_ckpt(lsu_devld_ckpt), .devld_fire_v(lsu_devld_fire_v),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
@@ -900,11 +901,21 @@ module backend_top
    assign dflt_epc   = chk_pc[flt_ckpt];
    assign dflt_tval  = flt_tval;
 
-   // device-load replay-to-solo (phase-1-style, NO trap): the LSU reports a device load that is
-   // oldest but shares its checkpoint with an older store. Roll back to that checkpoint's start
-   // and refetch one-op-per-bundle (devld_solo_v -> solo_all), so the store lands in an earlier,
-   // committable+drainable checkpoint and the now-separated load reads the post-store device
-   // state. The load's checkpoint is the oldest live one, so its start is chk_*[cc_committed].
+   // device-load replay-to-solo (phase-1-style, NO trap): the LSU reports a device load that
+   // either is still speculative or shares its checkpoint with an older store. Roll back to
+   // THAT LOAD'S checkpoint (lsu_devld_ckpt) and refetch one-op-per-bundle (devld_solo_v ->
+   // solo_all), so an older store lands in an earlier committable+drainable checkpoint and the
+   // now-separated load reads the post-store device state.
+   // The target MUST be the load's own checkpoint, exactly like the data-fault path's flt_ckpt.
+   // It used to be chk_*[cc_committed] on the assumption that the load always sits in the oldest
+   // live checkpoint -- true only for the shares-with-older-store case. For a merely speculative
+   // load (lsu.v `~ld_committed`) the load is in a YOUNGER checkpoint, so rewinding to the oldest
+   // live one re-executed everything in between. A serializing CSR op there had already applied
+   // its CSR write (applied at EX, NOT undone by rollback) while the rollback restored its source
+   // register, so OpenSBI's `csrrw a2,mtvec,a2` probe install re-ran and swapped a2 against the
+   // value it had just installed: a2 came back holding __sbi_expected_trap, the paired restore
+   // wrote THAT to mtvec, and every later S-mode ecall was swallowed -- SBI calls silently
+   // no-op'd, the timer was never re-armed, and the Ubuntu boot died with the core still running.
    // Lower priority than faults/fetch-faults/branch redirects (they reshape the pipe anyway).
    wire devld_replay = lsu_devld_v & ~devld_solo_v & ~replay_v & ~dflt_ready
                        & ~iflt_fire & ~eb_redirect & ~ill_v & ~lsu_dfault_v;
@@ -997,21 +1008,21 @@ module backend_top
                      & ~iflt_fire & ~dflt_roll & ~devld_replay;
    assign roll_seq   = iflt_fire    ? fe_cur_seq
                      : dflt_roll    ? (chk_seq[flt_ckpt]    - 1'b1)
-                     : devld_replay ? (chk_seq[cc_committed] - 1'b1) : eb_rseq;
+                     : devld_replay ? (chk_seq[lsu_devld_ckpt] - 1'b1) : eb_rseq;
    assign roll_ckpt  = iflt_fire    ? cc_committed
                      : dflt_roll    ? flt_ckpt
-                     : devld_replay ? cc_committed : rb_idx;
+                     : devld_replay ? lsu_devld_ckpt : rb_idx;
    assign fe_red_v   = roll_v | iflt_fire;
    // phase 2 / fetch-fault redirect to the trap vector; phase 1 (data fault OR device-load
    // replay) refetches the checkpoint start.
    // (an interrupt's redirect rides eb_target -- the irq_take pseudo-op's SYSTEM redirect.)
    assign fe_red_pc  = (iflt_fire | dflt_fire) ? csr_redir_tgt
                      : dflt_replay             ? chk_pc[flt_ckpt]
-                     : devld_replay            ? chk_pc[cc_committed]
+                     : devld_replay            ? chk_pc[lsu_devld_ckpt]
                      :                           eb_target;
    assign fe_red_seq = iflt_fire    ? fe_cur_seq
                      : dflt_roll    ? chk_seq[flt_ckpt]
-                     : devld_replay ? chk_seq[cc_committed]
+                     : devld_replay ? chk_seq[lsu_devld_ckpt]
                      : (eb_rseq + 1'b1);
 
    assign wb_valid = wkv;
