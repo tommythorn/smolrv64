@@ -1,4 +1,14 @@
 `timescale 1ns / 1ps
+
+// ---- probe-core clock divider (ui_clk 333.33 MHz / PROBE_CLK_DIV) -------------------
+// ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
+// probe/soc_top.v are DERIVED from it, so a sweep cannot silently skew the console baud
+// or the timebase (both bit us before -- see the comments at each site).
+// BUFGCE_DIV supports 1..8. Override from build.tcl via env PROBE_CLK_DIV.
+`ifndef PROBE_CLK_DIV
+ `define PROBE_CLK_DIV 5
+`endif
+`define PROBE_CLK_HZ (333_333_333 / `PROBE_CLK_DIV)
 `default_nettype none
 
 `ifndef SMOLRV64_BUILD_STAMP
@@ -134,7 +144,7 @@ module rk_xcku5p(
       if (probe_por_cnt != 10'h3ff) probe_por_cnt <= probe_por_cnt + 1'b1;
       else                          probe_por <= 1'b0;
    end
-   BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(`PROBE_CLK_DIV)) probe_clk_buf
       (.I(ui_clk), .CE(1'b1), .CLR(probe_por), .O(probe_clk));
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
    always @(posedge probe_clk or posedge probe_por)
@@ -146,7 +156,7 @@ module rk_xcku5p(
    reg [23:0] hb_pr = 24'd0;    always @(posedge probe_clk) hb_pr  <= hb_pr  + 1'b1;
    assign led = {hb_ui[26], hb_pr[23], ui_rst, init_calib_complete};
 `else
-   BUFGCE_DIV #(.BUFGCE_DIVIDE(5)) probe_clk_buf
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(`PROBE_CLK_DIV)) probe_clk_buf
       (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
    always @(posedge probe_clk or posedge ui_cpu_reset)
@@ -1679,10 +1689,10 @@ module rk_xcku5p(
    // here while the clock runs /5 transmits ~60% too fast -> garbage on the wire).
    // Matches the scalar core + `make connect` (3 Mbaud); 26x faster fw load than 115200.
    // rs232tx.ready (output, ready-to-accept) feeds soc_top.uart_tx_ready directly.
-   rs232tx #(.CLK_FREQ(66_666_666), .BAUD(3_000_000)) probe_tx
+   rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(3_000_000)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
-   rs232rx #(.CLK_FREQ(66_666_666), .BAUD(3_000_000)) probe_rx
+   rs232rx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(3_000_000)) probe_rx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 

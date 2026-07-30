@@ -222,6 +222,13 @@ if {$probe_core} {
         puts "NO_SSTC: hiding Sstc (stimecmp traps) so OpenSBI uses the CLINT timer path."
         lappend vdefines "NO_SSTC"
     }
+    # Fmax sweep knob: probe_clk = ui_clk(333.33MHz)/PROBE_CLK_DIV. The UART baud and the CLINT
+    # timebase are DERIVED from it in RTL, so they cannot drift out of sync with a sweep.
+    if {[info exists env(PROBE_CLK_DIV)] && $env(PROBE_CLK_DIV) ne ""} {
+        set _mhz [expr {333.333 / $env(PROBE_CLK_DIV)}]
+        puts [format "PROBE_CLK_DIV override: probe_clk = ui_clk/%s = %.1f MHz (RTL default is 5 = 66.7 MHz)." $env(PROBE_CLK_DIV) $_mhz]
+        lappend vdefines "PROBE_CLK_DIV=$env(PROBE_CLK_DIV)"
+    }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."
         lappend vdefines "PROBE_IW=$env(PROBE_IW)"

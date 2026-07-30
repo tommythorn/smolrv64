@@ -1,4 +1,7 @@
 `default_nettype none
+`ifndef PROBE_CLK_DIV
+ `define PROBE_CLK_DIV 5
+`endif
 
 // Width knobs (guarded so -DPROBE_IW / -DPROBE_POOL override; see backend_top.v). soc_top
 // sizes its own I$ window (HW*16) and writeback bus (IW*PBITS), so it derives HW/PBITS from
@@ -187,7 +190,11 @@ module soc_top #(
       else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
                  dev_wack <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
-   clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
+   // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV sweep: the DTB's
+   // timebase-frequency (501253) must stay valid or every kernel deadline is wrong (a 40x lie
+   // here once made healthy boots look permanently stalled). 333.33MHz/DIV/501253:
+   // DIV=5 -> 133 (66.67MHz), DIV=4 -> 166 (83.33MHz), DIV=3 -> 221 (111.1MHz); all within 0.3%.
+   clint #(.SCALE_DIV((333_333_333 / `PROBE_CLK_DIV) / 501_253)) u_clint
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
