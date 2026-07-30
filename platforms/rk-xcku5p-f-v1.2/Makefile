@@ -70,7 +70,7 @@ ifneq ($(strip $(ILA_CORE)),)
 export ILA_CORE
 endif
 
-.PHONY: all synth impl bit program load clean timing ila-capture
+.PHONY: all synth impl bit program load clean timing ila-capture ila-strand
 
 all: bit
 
@@ -105,6 +105,12 @@ cdc:
 # CSV=<path> overrides the output. No GUI. See ila_capture.tcl.
 ila-capture:
 	$(VIVADO) $(VFLAGS) -source ila_capture.tcl $(if $(CSV),-tclargs $(CSV),)
+
+# ARMED capture: waits for the mtvec-stranding event (mtvec parked at OpenSBI's probe
+# handler) and dumps the window that caused it, with the system-op probes. Run it while
+# the board is booting; it blocks until the trigger fires. See ila_strand.tcl.
+ila-strand:
+	$(VIVADO) $(VFLAGS) -source ila_strand.tcl $(if $(CSV),-tclargs $(CSV),)
 
 load:
 	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000
