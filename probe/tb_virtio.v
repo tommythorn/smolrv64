@@ -452,6 +452,43 @@ module tb;
       $display("\n[tb_virtio: %0d cycles done]", ncyc);
       $finish;
    end
+
+`ifdef STRAND
+   // Sim analogue of the FPGA mtvec-stranding ILA trigger. OpenSBI installs
+   // __sbi_expected_trap (0x80000738) only for the five instructions of its MPRV accessor,
+   // so mtvec sitting there is a restore that never executed -- after which every S-mode
+   // ecall is swallowed. Keep a ring of the system ops that actually reached the CSR unit
+   // (exec_bundle's oldest-select port), so the dump says which of the window's four
+   // executed:  e828 csrrw mtvec / e82c csrrs mstatus / e834 csrw mstatus / e838 csrw mtvec.
+   localparam [63:0] SBI_PROBE_TRAP = 64'h0000_0000_8000_0738;
+   reg [63:0] so_pc [0:63];
+   reg [63:0] so_c  [0:63];
+   reg [11:0] so_ad [0:63];
+   reg [2:0]  so_fn [0:63];
+   reg        so_cs [0:63];
+   reg [5:0]  so_wp;      initial so_wp = 0;
+   reg [31:0] strand_cnt; initial strand_cnt = 0;
+   reg        strand_done;initial strand_done = 0;
+   integer si, sj;
+   always @(posedge clk) if (!reset) begin
+      if (dut.core.eb.sv) begin
+         so_pc[so_wp] <= dut.core.eb.s_pc;    so_ad[so_wp] <= dut.core.eb.s_addr;
+         so_fn[so_wp] <= dut.core.eb.s_func;  so_cs[so_wp] <= dut.core.eb.s_iscsr;
+         so_c [so_wp] <= c;                   so_wp        <= so_wp + 6'd1;
+      end
+      strand_cnt <= (dut.core.eb.u_csr.mtvec == SBI_PROBE_TRAP) ? strand_cnt + 32'd1 : 32'd0;
+      if (strand_cnt > 32'd200000 && !strand_done) begin
+         strand_done <= 1'b1;
+         $display("[STRAND c=%0d mtvec parked at __sbi_expected_trap for %0d cycles]", c, strand_cnt);
+         for (si = 0; si < 64; si = si + 1) begin
+            sj = (so_wp + si) % 64;                       // oldest first
+            $display("[STRAND-OP c=%0d pc=%h %s addr=%h func=%0d]",
+                     so_c[sj], so_pc[sj], so_cs[sj] ? "csr" : "sys", so_ad[sj], so_fn[sj]);
+         end
+         wdog_dump;
+      end
+   end
+`endif
 endmodule
 
 `default_nettype wire
