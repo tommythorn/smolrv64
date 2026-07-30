@@ -99,6 +99,7 @@ module backend_top
     output wire                    dbg_mtvec_we,     // mtvec write strobe (ILA probe4)
     output wire [63:0]             dbg_csrop,        // executing system op {pc,addr,func,is_csr} (ILA probe5)
     output wire                    dbg_csrop_v,      // ...its strobe (ILA probe6)
+    output wire [63:0]             dbg_wedge,        // frontend/dispatch/interrupt state (ILA probe7)
     // Zihpm cache-event pulses from soc_top's D$/I$ (0 in device-less TBs, which have no cache).
     input  wire                    hpm_dc_access, hpm_dc_miss, hpm_ic_access, hpm_ic_miss,
     // data memory port (flat byte-addressable stub; real D$ later). The READ port is a
@@ -1484,6 +1485,45 @@ module backend_top
       end
    end
 `endif
+   // ---- wedge bus (ILA probe7) ----------------------------------------------------
+   // The board freezes in U-mode with a pending+enabled S-timer interrupt it never takes,
+   // fetch parked on one PA. Interrupts here are a frontend-INJECTED pseudo-op gated by
+   // `accept`, so a frontend that never accepts (or an inject_inflight that never clears)
+   // blocks delivery forever -- userspace is never preempted and every systemd job times
+   // out. These bits say which of the two it is, and why. The dispatch-stall and
+   // fetch-empty reason bits are the SAME encodings the PERF_TRACE KIND 6/7 events use.
+   assign dbg_wedge = {
+      26'd0,
+      cc_committed[3:0],        // [37:34] oldest live checkpoint
+      cur[3:0],                 // [33:30] newest checkpoint
+      iflt_fire,                // [29]
+      dflt_fire,                // [28]
+      dflt_replay,              // [27]
+      pend_iflt,                // [26]
+      devld_solo_v,             // [25]
+      replay_v,                 // [24]
+      roll_v,                   // [23]
+      irq_inject,               // [22] injection allowed THIS cycle
+      inject_inflight,          // [21] a pseudo-op is already in flight (blocks new ones)
+      csr_irq_v,                // [20] an enabled+pending interrupt is deliverable
+      (imem_avail == 0),        // [19] fetch-empty: I$ returned nothing
+      immu_fault,               // [18] fetch-empty: page/access fault pending
+      immu_ready,               // [17] fetch-empty: 0 = iTLB miss / PTW in progress
+      fe_red_v,                 // [16] fetch-empty: frontend being re-steered
+      cc_empty,                 // [15]
+      cc_commit,                // [14]
+      ill_v,                    // [13]
+      lsu_dfault_v,             // [12]
+      eb_redirect,              // [11]
+      lq_full,                  // [10] dispatch-stall reasons (PERF_TRACE KIND 6 mask)
+      sb_full,                  // [9]
+      ~(&disp_ready),           // [8]
+      (|fe_stall),              // [7]
+      cc_full,                  // [6]
+      accept,                   // [5]  0 = frontend frozen (no injection can land)
+      can_dispatch,             // [4]
+      any_valid,                // [3]
+      3'd0 };
 endmodule
 
 `default_nettype wire

@@ -1542,6 +1542,7 @@ module rk_xcku5p(
    wire        probe_mtvec_we;  // mtvec write strobe for ILA_TIMER probe4
    wire [63:0] probe_csrop;     // executing system op {pc,addr,func,is_csr} for ILA_TIMER probe5
    wire        probe_csrop_v;   // ...its strobe for ILA_TIMER probe6
+   wire [63:0] probe_wedge;     // frontend/dispatch/interrupt state for ILA_TIMER probe7
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
@@ -1551,7 +1552,7 @@ module rk_xcku5p(
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg), .mtvec_we_dbg(probe_mtvec_we),
-      .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v),
+      .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v), .wedge_dbg(probe_wedge),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
@@ -1618,7 +1619,10 @@ module rk_xcku5p(
       // `csrrw x12,mtvec,x12` reached the CSR unit at all. Present => its write was
       // dropped inside csr_file; absent => the instruction never got there.
       .probe5 (probe_csrop),
-      .probe6 (probe_csrop_v)
+      .probe6 (probe_csrop_v),
+      // Why the core is frozen: frontend accept / dispatch-stall reasons / fetch-empty
+      // reasons / interrupt-injection state. See backend_top's dbg_wedge for the layout.
+      .probe7 (probe_wedge)
    );
 `endif
 
