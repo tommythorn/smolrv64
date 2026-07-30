@@ -45,3 +45,10 @@ probetrap.bin: probetrap.elf
 probetrap.elf: probetrap.c crt0.s fphammer.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tfphammer.ld -O2 crt0.s probetrap.c -o probetrap.elf
+
+csrreplay.bin: csrreplay.elf
+	$(RV)objcopy -O binary csrreplay.elf csrreplay.bin
+
+csrreplay.elf: csrreplay.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s csrreplay.c -o csrreplay.elf
