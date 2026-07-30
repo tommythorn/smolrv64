@@ -520,11 +520,14 @@ module exec_shard
    // count the would-have-been-dead atomics the gate now kills (mechanism evidence)
    always @(posedge clk) if (ex_v & ex_amor & ex_squash)
       $display("[AMOSQ %m t=%0t seq=%0d squash_seq=%0d]", $time, ex_sq, squash_seq);
+`endif
+`ifdef SERSQ
    // A serializing op issues only when its checkpoint is the committed one -- nothing
    // older is left to squash it -- so this should be unreachable. If it IS reachable,
    // the op half-executes: csr_req_v (no squash gate) still drives the csr_file, while
    // csr_wb (squash-gated) drops the rd write. Hardware shows the opposite half missing,
-   // so either way this is the first thing to rule in or out.
+   // so either way this is the first thing to rule in or out. Own define: the SCDBG
+   // tracers ([TRAP]/[XRET]/...) flood a full boot log.
    always @(posedge clk) if (ex_v & ex_ser & ex_squash)
       $display("[SERSQ %m t=%0t pc=%h insn=%h seq=%0d squash_seq=%0d req=%b]",
                $time, ex_pc, ex_insn, ex_sq, squash_seq, ex_v & ex_ser & (ex_insn[6:0]==7'b1110011));
