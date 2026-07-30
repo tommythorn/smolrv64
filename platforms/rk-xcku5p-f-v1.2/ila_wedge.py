@@ -25,6 +25,10 @@ BITS = [
     (21, "inject_inflight"),(22, "irq_inject"),    (23, "roll_v"),
     (24, "replay_v"),       (25, "devld_solo_v"),  (26, "pend_iflt"),
     (27, "dflt_replay"),    (28, "dflt_fire"),     (29, "iflt_fire"),
+    # what commit is waiting on (see backend_top dbg_wedge [49:38])
+    (39, "cc_stall_barrier"), (40, "amo_gap"),     (41, "devrd_pending"),
+    (42, "amo_busy"),       (43, "sb_any"),        (44, "lq_any"),
+    (45, "unit_busy"),      (46, "rs_any_live"),   (47, "rs_stuck_not_elig"),
 ]
 
 
@@ -59,6 +63,8 @@ def main(path):
     cmt = collections.Counter((v >> 34) & 0xF for v in vals)
     print(f"\ncur ckpt      : {dict(cur)}")
     print(f"committed ckpt: {dict(cmt)}")
+    cnt = collections.Counter((v >> 48) & 0x3 for v in vals)
+    print(f"count[committed] : {dict(cnt)}   (commit fires only at 0)")
     commits = sum((v >> 14) & 1 for v in vals)
     print(f"cc_commit pulses in window: {commits}")
     if commits == 0 and len(cmt) == 1:

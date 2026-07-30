@@ -131,6 +131,9 @@ module lsu
                                   // swap (OpenSBI's mtvec probe install) reads back the value it
                                   // just installed and strands mtvec.
     output wire                   devld_fire_v,
+    // ---- wedge debug: which deferred work is still outstanding. A load/store that never
+    //      completes never decrements its checkpoint's count -> commit never fires. ----
+    output wire [3:0]             dbg_defer,   // {lq_any, sb_any, amo_busy, devrd_pending}
     // ---- store completion (deferred decrement, like ld_done): a store retires from
     //      commit_ctl's count only once its translation has been checked fault-free.
     //      Used only under Sv39 (backend defers store completion to the LSU then). ----
@@ -504,6 +507,14 @@ module lsu
       else if (rollback) dv_v <= 1'b0;
       else if (dv_now) begin dv_v <= 1'b1; dv_ck <= lq_ck[ld_sel]; end
    end
+   // OR-reduce the queues (arrays -> a procedural reduce, like the selects above)
+   reg dbg_lq_any, dbg_sb_any; integer dq;
+   always @* begin
+      dbg_lq_any = 1'b0; dbg_sb_any = 1'b0;
+      for (dq = 0; dq < LQDEPTH; dq = dq + 1) if (lq_v[dq]) dbg_lq_any = 1'b1;
+      for (dq = 0; dq < SBDEPTH; dq = dq + 1) if (sb_v[dq]) dbg_sb_any = 1'b1;
+   end
+   assign dbg_defer    = {dbg_lq_any, dbg_sb_any, (ast != A_IDLE), p_v};
    assign devld_v      = dv_v;
    assign devld_ckpt   = dv_ck;
    assign devld_fire_v = sel_fire & ld_is_dev;

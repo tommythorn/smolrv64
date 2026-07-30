@@ -71,7 +71,12 @@ module sched_shard
     output wire [PBITS-1:0]        iss_ps3,
     output wire [CBITS-1:0]        iss_ckpt,
     output wire [MIDXW-1:0]        iss_mem_idx,
-    output wire [PAYW-1:0]         iss_pay);
+    output wire [PAYW-1:0]         iss_pay,
+    // ---- wedge debug: a live entry that is NOT eligible (operands never became ready, or a
+    //      serializing entry whose checkpoint never became the committed one). An op stuck here
+    //      never issues, so it never decrements its checkpoint's count -> commit wedge. ----
+    output wire                    dbg_any_v,
+    output wire                    dbg_stuck);
 
    localparam NW = (N <= 2) ? 1 : $clog2(N);   // entry-index width (tracks N)
 
@@ -156,6 +161,17 @@ module sched_shard
    wire [NW-1:0] dst = inv_avail ? inv_idx : sel;       // where a new dispatch lands
    assign disp_ready = inv_avail | issue;
 
+   // v is an unpacked array -> reduce procedurally (elig is packed, indexed to match).
+   reg dbg_anyv_r, dbg_stuck_r; integer dv;
+   always @* begin
+      dbg_anyv_r = 1'b0; dbg_stuck_r = 1'b0;
+      for (dv = 0; dv < N; dv = dv + 1) if (v[dv]) begin
+         dbg_anyv_r = 1'b1;
+         if (!elig[dv]) dbg_stuck_r = 1'b1;
+      end
+   end
+   assign dbg_any_v  = dbg_anyv_r;
+   assign dbg_stuck  = dbg_stuck_r;
    assign iss_valid  = issue;
    assign iss_seq    = sq [sel];
    assign iss_pdst   = pd [sel];

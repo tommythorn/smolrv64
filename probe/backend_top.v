@@ -222,6 +222,9 @@ module backend_top
    initial replay_v = 1'b0;                  // (so the faulting op becomes solo -> precise trap, declared early: feeds frontend)
    wire               lsu_devld_v;           // device load wants replay-to-solo (older store shares its ckpt)
    wire [CBITS-1:0]   lsu_devld_ckpt;        // ...the checkpoint THAT LOAD is in (the rollback target)
+   wire [3:0]         lsu_dbg_defer;         // {lq_any, sb_any, amo_busy, devrd_pending}
+   wire [IW-1:0]      sch_dbg_any_v, sch_dbg_stuck;
+   wire [CNTW-1:0]    cc_dbg_cnt;            // count[committed]: what commit is waiting on
    wire               lsu_devld_fire_v;      // a device load fired (ends the device-load solo window)
    reg                devld_solo_v;          // device-load solo replay active (drives solo_all like replay_v)
    initial devld_solo_v = 1'b0;
@@ -510,7 +513,8 @@ module backend_top
       .iss_valid(iss_valid), .iss_pdst(iss_pdst), .iss_pdst_v(iss_pdst_v),
       .iss_ps1(iss_ps1), .iss_ps2(iss_ps2), .iss_ps3(iss_ps3),     // ps3 = FMA 3rd operand
       .iss_seq(iss_seq),
-      .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx), .iss_pay(iss_pay));
+      .iss_ckpt(iss_ckpt), .iss_mem_idx(iss_mem_idx),
+      .dbg_any_v(sch_dbg_any_v), .dbg_stuck(sch_dbg_stuck), .iss_pay(iss_pay));
 
    // ---- per-issue memory-op decode (from the payload, for the LSU execute drive) ----
    wire [IW-1:0]      iss_mem, iss_store, iss_is_load, iss_is_mul, iss_is_amo, iss_is_fp;
@@ -677,7 +681,7 @@ module backend_top
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .committed_idx(cc_committed), .commit_count(cc_commit_count),
-      .fp_dirty_commit(cc_fp_dirty_commit), .full(cc_full));
+      .fp_dirty_commit(cc_fp_dirty_commit), .dbg_cnt(cc_dbg_cnt), .full(cc_full));
 
    assign commit     = cc_commit;
    assign commit_idx = cc_commit_idx;
@@ -828,7 +832,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
-      .devld_v(lsu_devld_v), .devld_ckpt(lsu_devld_ckpt), .devld_fire_v(lsu_devld_fire_v),
+      .devld_v(lsu_devld_v), .devld_ckpt(lsu_devld_ckpt), .devld_fire_v(lsu_devld_fire_v), .dbg_defer(lsu_dbg_defer),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
@@ -1513,8 +1517,20 @@ module backend_top
    // blocks delivery forever -- userspace is never preempted and every systemd job times
    // out. These bits say which of the two it is, and why. The dispatch-stall and
    // fetch-empty reason bits are the SAME encodings the PERF_TRACE KIND 6/7 events use.
+   // [63:50] reserved. [49:38] name WHAT commit is waiting on: cc_full alone only says "a
+   // checkpoint's count never reached zero". dbg_cnt IS that count, and the rest say whether the
+   // missing completion is a deferred LSU/unit op still outstanding, or an op that never issued
+   // at all (a live scheduler entry that never became eligible = a lost operand wakeup).
    assign dbg_wedge = {
-      26'd0,
+      14'd0,
+      cc_dbg_cnt,               // [49:48] count[committed] (CNTW=2)
+      |sch_dbg_stuck,           // [47] a live RS entry that is NOT eligible (never issues)
+      |sch_dbg_any_v,           // [46] any live RS entry at all
+      |eb_exec_busy,            // [45] a mul/div/FP unit still running
+      lsu_dbg_defer,            // [44:41] {lq_any, sb_any, amo_busy, devrd_pending}
+      amo_gap,                  // [40] AMO dispatch freeze
+      cc_stall_barrier,         // [39] barrier store-drain stall
+      1'b0,                     // [38]
       {{(4-CBITS){1'b0}}, cc_committed},  // [37:34] oldest live checkpoint (CBITS<=4)
       {{(4-CBITS){1'b0}}, cur},           // [33:30] newest checkpoint
       iflt_fire,                // [29]

@@ -85,6 +85,7 @@ module commit_ctl
     output wire                  empty,         // no instructions in flight (-> precise fetch trap)
     output wire [CNTW-1:0]       commit_count,  // # instructions retiring this cycle (for minstret)
     output wire                  fp_dirty_commit, // a retiring checkpoint held an FP-state writer -> FS Dirty
+    output wire [CNTW-1:0]       dbg_cnt,         // count[committed]: what commit is waiting on
     output wire                  full);         // ring full -> stall dispatch
 
    reg [CNTW-1:0]  count [0:NCHK-1];
@@ -185,6 +186,9 @@ module commit_ctl
       if (ld_fp_dirty) fp_set[ld_done_ckpt] = 1'b1;
    end
    assign fp_dirty_commit = commit && fp_pend[committed];
+   // The oldest checkpoint's outstanding-op count. commit fires only at 0, so a frozen nonzero
+   // value names the wedge: that many ops were counted in at dispatch and never completed.
+   assign dbg_cnt = count[committed];
 
    always @(posedge clk) begin
       if (reset) begin

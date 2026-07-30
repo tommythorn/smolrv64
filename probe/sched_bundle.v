@@ -52,6 +52,8 @@ module sched_bundle
     output wire [SHARDS*SEQW-1:0]  iss_seq,
     output wire [SHARDS*CBITS-1:0] iss_ckpt,
     output wire [SHARDS*MIDXW-1:0] iss_mem_idx,
+    output wire [SHARDS-1:0]       dbg_any_v,   // per-shard: any live RS entry
+    output wire [SHARDS-1:0]       dbg_stuck,   // per-shard: a live entry that is NOT eligible
     output wire [SHARDS*PAYW-1:0]  iss_pay);
 
    // clr broadcast: a dispatched dest clears its scoreboard bit (new value pending)
@@ -114,7 +116,8 @@ module sched_bundle
          .iss_ps3(iss_ps3[i*PBITS +: PBITS]),
          .iss_ckpt(iss_ckpt[i*CBITS +: CBITS]),
          .iss_mem_idx(iss_mem_idx[i*MIDXW +: MIDXW]),
-         .iss_pay(iss_pay[i*PAYW +: PAYW]));
+         .iss_pay(iss_pay[i*PAYW +: PAYW]),
+         .dbg_any_v(dbg_any_v[i]), .dbg_stuck(dbg_stuck[i]));
    end endgenerate
 endmodule
 
