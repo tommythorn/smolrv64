@@ -337,7 +337,16 @@ module lsu
       for (i = 0; i < LQDEPTH; i = i + 1) begin
          // not squashed this cycle: a wrong-path load (seq newer than the branch's
          // rollback_seq) must not be selected even in the squash cycle itself.
-         if (lq_v[i] && lq_rdy[i] && !(rollback && older(rollback_seq, lq_seq[i]))) begin
+         // ALSO skip a load whose fault is ALREADY latched in df_v: everything the trap needs
+         // (seq/ckpt/cause/tval) is recorded, so re-selecting it only re-walks the page tables
+         // forever and STARVES the shared walker. Measured deadlock: a younger faulting load
+         // (ckpt 2, seq 24) re-walked every ~24 cycles while the OLDER store (ckpt 1, seq 22)
+         // in the committed checkpoint never got `stx_ready`, so st_done never fired, commit
+         // never advanced to ckpt 2, and the load's own fault could therefore never be
+         // delivered (df_oldest false) -- while lsu_dfault_v froze dispatch. The op is dropped
+         // from selection only; it stays in the LQ and is flushed when its trap is taken.
+         if (lq_v[i] && lq_rdy[i] && !(rollback && older(rollback_seq, lq_seq[i]))
+             && !(df_v && (lq_seq[i] == df_seq_r))) begin
             blocked = 1'b0;          // order-safe? no older unfilled store
             for (j = 0; j < SBDEPTH; j = j + 1)
                if (sb_v[j] && !sb_rdy[j] && older(sb_seq[j], lq_seq[i])) blocked = 1'b1;
