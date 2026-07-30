@@ -22,7 +22,9 @@ foreach c [get_clocks] {
     set name   [get_property NAME $c]
     set period [get_property PERIOD $c]
     if {$period <= 0} { continue }
-    set paths [get_timing_paths -from_clock $c -to_clock $c -delay_type max -max_paths 1 -quiet]
+    # path groups are named after their capture clock; -group selects them (there is no
+    # -from_clock/-to_clock on get_timing_paths).
+    set paths [get_timing_paths -delay_type max -max_paths 1 -group $c -quiet]
     if {[llength $paths] == 0} {
         puts [format "%-22s %10.3f %10.1f %10s %12s" $name $period [expr {1000.0/$period}] "-" "(no intra path)"]
         continue
@@ -34,6 +36,6 @@ foreach c [get_clocks] {
 }
 
 puts "\n=== Worst 5 setup paths overall (which domain actually limits the design) ==="
-report_timing -max_paths 5 -delay_type max -sort_by slack -no_header
+report_timing -max_paths 8 -delay_type max -sort_by slack
 
 close_project
