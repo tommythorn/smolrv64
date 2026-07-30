@@ -78,6 +78,16 @@ module backend_top
                                      // rollback-reopen count-accounting wedge on the ubuntu-mini
                                      // RAM boot -- DEFERRED (repro + notes in commit_ctl /
                                      // project_coarse_checkpoints). CKMAX=1 = proven baseline.
+                                     // CKMAX=1 ALSO carries a correctness invariant: the aligner
+                                     // makes a SYSTEM op solo in its bundle, so at CKMAX=1 a CSR
+                                     // op is alone in its CHECKPOINT and no rollback that targets
+                                     // some other op's checkpoint can re-execute it. That matters
+                                     // because a CSR write is applied at EX and is NOT undone by a
+                                     // rollback, so re-executing `csrrw rd,csr,rd` (a swap) reads
+                                     // back the value it just installed -- the mtvec-stranding bug.
+                                     // CKMAX>=2 would let a CSR op share a checkpoint with a
+                                     // replayable load and reintroduce it; make CSR writes a
+                                     // commit-time effect before raising CKMAX.
     parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW (one bundle)
     parameter CNTW  = $clog2(CKMAX+IW+1),  // per-checkpoint count: up to CKMAX (+bundle overshoot)
     parameter AW    = 64,
