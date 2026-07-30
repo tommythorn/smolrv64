@@ -234,6 +234,9 @@ module backend_top
    reg  [CBITS-1:0]   ill_ckpt;
    initial ill_v = 1'b0;
    wire [IW-1:0]      disp_ready;
+   function automatic older_seq;      // a strictly older than b (wrap-safe), as in exec_shard
+      input [SEQW-1:0] a, bb; older_seq = ($signed(a - bb) < 0);
+   endfunction
    wire               any_valid    = |r_valid;
    // AMO dispatch gap (set/cleared below, after the exec bundle's eb_amo exists):
    // order younger loads behind a dispatched-but-not-yet-executing AMO.
@@ -665,12 +668,21 @@ module backend_top
    // done pulses are also combinational while the writeback is registered (1 cycle later) and
    // fire for x0-dest ops, so ewb_ok would misalign and false-suppress them (=> deadlock).
    wire [IW-1:0]      eb_ewb_ok;
-   wire               lsu_ld_done_g = lsu_ld_done & eb_ewb_ok[lsu_ld_wb_owner];
-   // The owner-guard is claimed never to false-suppress a legitimate load. If it ever does, that
-   // load's checkpoint count can never reach zero -> commit stalls -> cc_full -> the frontend
-   // freezes (exactly the observed wedge: count[committed]=1 with the LQ/SB/units/RS all empty).
-   // Count the suppressions (saturating) so the ILA can say whether this is the leak.
-   wire               ld_done_supp = lsu_ld_done & ~eb_ewb_ok[lsu_ld_wb_owner];
+   // The hazard this guards is a load whose ld_done lands AFTER its checkpoint index was reused,
+   // decrementing the NEW occupant's count. The physreg owner-check (eb_ewb_ok) is the right gate
+   // for the RF WRITE -- a leaked writeback must not clobber a reallocated physreg -- but it is
+   // the wrong one for the COUNT: whether the physreg is still owned says nothing about whether
+   // this checkpoint still needs its decrement, and it false-suppressed a legitimate load. One
+   // eaten decrement leaves count[ckpt] stuck at 1 forever -> commit stalls -> cc_full -> the
+   // frontend freezes with the LQ/SB/units/RS all empty (measured on hardware: exactly one
+   // suppression, exactly one stuck count).
+   // Test the ACTUAL condition instead: chk_seq[c] is checkpoint c's first seqno, rewritten when
+   // the index is reused. A load older than its checkpoint's current start is therefore a
+   // late pulse for a REUSED instance -> drop it. A live load is never older than its own
+   // checkpoint's start, so it can never be false-suppressed.
+   wire               ld_done_stale = older_seq(lsu_ld_wb_seq, chk_seq[lsu_ld_done_ckpt]);
+   wire               lsu_ld_done_g = lsu_ld_done & ~ld_done_stale;
+   wire               ld_done_supp  = lsu_ld_done & ld_done_stale;
    reg  [3:0]         ld_supp_cnt; initial ld_supp_cnt = 4'd0;
    always @(posedge clk) if (ld_done_supp && ld_supp_cnt != 4'hf) ld_supp_cnt <= ld_supp_cnt + 4'd1;
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CKMAX(CKMAX), .CNTW(CNTW), .DCW(DCW)) cc
