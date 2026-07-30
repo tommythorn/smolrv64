@@ -69,6 +69,12 @@ module csr_file
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
+    output wire        dbg_csrop_v,   // 1-cycle: ANY system op reaches this update port (ILA probe6)
+    output wire [63:0] dbg_csrop,     // ...and which one: {pc, addr, func, is_csr} (ILA probe5).
+                                      // Splits the stranding hypothesis in two: if the lost
+                                      // `csrrw x12,mtvec,x12` shows up here, its write was dropped
+                                      // inside csr_file; if it never appears, the op never reached
+                                      // EX and was lost in fetch/issue/squash.
     output wire [63:0] dbg_mtvec,     // M trap vector (ILA probe2): catches mtvec left at
                                       // OpenSBI's __sbi_expected_trap, which silently skips
                                       // every ecall (SBI calls no-op -> timer never armed)
@@ -240,6 +246,11 @@ module csr_file
    // back" (strobe, mtvec unchanged) -- the latter is what a re-executed `csrrw x12,
    // mtvec, x12` swap produces, since the swap is NOT idempotent.
    assign dbg_mtvec_we = upd_valid & upd_is_csr & ~csr_illegal & (upd_addr == MTVEC);
+   // Every system op that reaches the update port, tagged with its PC: the ILA can then
+   // say whether a given instruction executed at all, independent of whether it changed
+   // any state. pc[31:0] is enough -- OpenSBI lives at 0x8000_xxxx.
+   assign dbg_csrop_v = upd_valid;
+   assign dbg_csrop   = {upd_pc[31:0], 16'h0, upd_addr[11:0], upd_func, upd_is_csr};
    assign dbg_timer = {
       stimecmp[19:0],                        // [63:44] deadline (low bits)
       mtime[23:0],                           // [43:20] now (low bits)
