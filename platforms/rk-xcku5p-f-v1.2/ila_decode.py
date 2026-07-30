@@ -53,7 +53,9 @@ def main(path):
     # names the sample index column.
     hdr = next(i for i, r in enumerate(rows) if r and "Sample in Buffer" in r[0])
     cols = rows[hdr]
-    data = [r for r in rows[hdr + 1:] if r and len(r) == len(cols)]
+    # Vivado writes a "Radix - ..." row between the header and the samples.
+    data = [r for r in rows[hdr + 1:]
+            if r and len(r) == len(cols) and not r[0].startswith("Radix")]
 
     c_samp = cols[0]
     c_op = find(cols, "csrop", "probe5")
