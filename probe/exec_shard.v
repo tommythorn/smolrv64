@@ -521,6 +521,29 @@ module exec_shard
    always @(posedge clk) if (ex_v & ex_amor & ex_squash)
       $display("[AMOSQ %m t=%0t seq=%0d squash_seq=%0d]", $time, ex_sq, squash_seq);
 `endif
+`ifdef CSRDBG
+   // A CSR write is applied at EX and is NOT undone by a rollback -- the design's premise
+   // being that a serializing op issues only when its checkpoint is committed, so nothing
+   // can roll it back afterwards. If that premise ever breaks, the op is re-fetched and
+   // re-executed with its CSR write already applied, and `csrrw a2,mtvec,a2` (a SWAP, not
+   // idempotent) reads back the value it just installed: a2 becomes the probe handler, and
+   // OpenSBI's restore then writes THAT to mtvec -- the observed stranding, with every
+   // instruction having executed. Flag any squash that discards an already-executed CSR op
+   // (squash_seq older than, or equal to, its seq).
+   reg [SEQW-1:0] csr_done_seq;  reg csr_done_v;
+   reg [63:0]     csr_done_pc;   reg [11:0] csr_done_addr;
+   initial begin csr_done_v = 1'b0; csr_done_seq = 0; csr_done_pc = 0; csr_done_addr = 0; end
+   always @(posedge clk) begin
+      if (csr_req_v & ex_csr & ~ex_squash) begin
+         csr_done_v <= 1'b1; csr_done_seq <= ex_sq; csr_done_pc <= ex_pc; csr_done_addr <= ex_imm[11:0];
+      end
+      if (squash & csr_done_v & ~older(csr_done_seq, squash_seq)) begin
+         $display("[CSRRE %m t=%0t] executed CSR op pc=%h addr=%h seq=%0d DISCARDED by squash_seq=%0d -> it will re-execute with its write already applied",
+                  $time, csr_done_pc, csr_done_addr, csr_done_seq, squash_seq);
+         csr_done_v <= 1'b0;
+      end
+   end
+`endif
 `ifdef SERSQ
    // A serializing op issues only when its checkpoint is the committed one -- nothing
    // older is left to squash it -- so this should be unreachable. If it IS reachable,
