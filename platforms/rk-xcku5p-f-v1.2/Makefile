@@ -70,7 +70,7 @@ ifneq ($(strip $(ILA_CORE)),)
 export ILA_CORE
 endif
 
-.PHONY: all synth impl bit program load clean timing ila-capture ila-strand
+.PHONY: all synth impl bit program load clean timing ila-capture ila-strand fmax-report
 
 all: bit
 
@@ -109,6 +109,11 @@ ila-capture:
 # ARMED capture: waits for the mtvec-stranding event (mtvec parked at OpenSBI's probe
 # handler) and dumps the window that caused it, with the system-op probes. Run it while
 # the board is booting; it blocks until the trigger fires. See ila_strand.tcl.
+# Per-clock achievable Fmax from the routed checkpoint. Global WNS is often pinned by the
+# virtio/MIG ui_clk domain, so this is the number that tells us what the CORE can clock.
+fmax-report:
+	$(VIVADO) $(VFLAGS) -source fmax_report.tcl
+
 ila-strand:
 	$(VIVADO) $(VFLAGS) -source ila_strand.tcl $(if $(CSV),-tclargs $(CSV),)
 
