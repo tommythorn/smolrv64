@@ -1494,8 +1494,8 @@ module backend_top
    // fetch-empty reason bits are the SAME encodings the PERF_TRACE KIND 6/7 events use.
    assign dbg_wedge = {
       26'd0,
-      cc_committed[3:0],        // [37:34] oldest live checkpoint
-      cur[3:0],                 // [33:30] newest checkpoint
+      {{(4-CBITS){1'b0}}, cc_committed},  // [37:34] oldest live checkpoint (CBITS<=4)
+      {{(4-CBITS){1'b0}}, cur},           // [33:30] newest checkpoint
       iflt_fire,                // [29]
       dflt_fire,                // [28]
       dflt_replay,              // [27]
