@@ -46,6 +46,13 @@ probetrap.elf: probetrap.c crt0.s fphammer.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tfphammer.ld -O2 crt0.s probetrap.c -o probetrap.elf
 
+csrirq.bin: csrirq.elf
+	$(RV)objcopy -O binary csrirq.elf csrirq.bin
+
+csrirq.elf: csrirq.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s csrirq.c -o csrirq.elf
+
 csrmprv.bin: csrmprv.elf
 	$(RV)objcopy -O binary csrmprv.elf csrmprv.bin
 
