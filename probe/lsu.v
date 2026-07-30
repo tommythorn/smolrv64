@@ -134,6 +134,11 @@ module lsu
     // ---- wedge debug: which deferred work is still outstanding. A load/store that never
     //      completes never decrements its checkpoint's count -> commit never fires. ----
     output wire [3:0]             dbg_defer,   // {lq_any, sb_any, amo_busy, devrd_pending}
+    // ---- full LSU state (ILA probe5). A latched data fault whose checkpoint is not the oldest
+    //      cannot be delivered, and meanwhile freezes dispatch: if the OLDEST checkpoint's
+    //      load/store then never completes, commit can never reach the faulting checkpoint.
+    //      These bits say exactly which op is stuck and why (lsu.v:657 documents the class). ----
+    output wire [63:0]            dbg_lsu,
     // ---- store completion (deferred decrement, like ld_done): a store retires from
     //      commit_ctl's count only once its translation has been checked fault-free.
     //      Used only under Sv39 (backend defers store completion to the LSU then). ----
@@ -515,6 +520,20 @@ module lsu
       for (dq = 0; dq < SBDEPTH; dq = dq + 1) if (sb_v[dq]) dbg_sb_any = 1'b1;
    end
    assign dbg_defer    = {dbg_lq_any, dbg_sb_any, (ast != A_IDLE), p_v};
+   assign dbg_lsu = {
+      5'd0,
+      rollback, xlate,                                    // [58:57]
+      df_seq_r,                                           // [56:49] latched fault seq
+      sb_seq[ck_sel],                                     // [48:41] selected store seq
+      lq_seq[ld_sel],                                     // [40:33] selected load seq
+      {{(3-CBITS){1'b0}}, df_ck_r},                       // [32:30] latched fault ckpt
+      {{(3-CBITS){1'b0}}, sb_ck[ck_sel]},                 // [29:27] selected store ckpt
+      {{(3-CBITS){1'b0}}, lq_ck[ld_sel]},                 // [26:24] selected load ckpt
+      amo_need_xl, ld_xflt, df_v, st_ck_flt, st_ck_done,  // [23:19]
+      st_xpage, stx_fault, stx_ready, st_need_xl, ck_v,   // [18:14]
+      amo_v, mem_rvalid, p_v, merge_adv, sel_fire,        // [13:9]
+      ld_olds_same, ld_olds_any, ld_committed, ld_is_dev, // [8:5]
+      ld_xok, ld_xpage, ldx_fault, ldx_ready, ld_sel_v }; // [4:0]
    assign devld_v      = dv_v;
    assign devld_ckpt   = dv_ck;
    assign devld_fire_v = sel_fire & ld_is_dev;

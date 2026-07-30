@@ -107,7 +107,9 @@ module backend_top
     output wire [63:0]             dbg_timer,        // csr_file timer/irq debug bus (ILA_TIMER; pruned unused)
     output wire [63:0]             dbg_mtvec,        // csr_file mtvec (ILA probe2)
     output wire                    dbg_mtvec_we,     // mtvec write strobe (ILA probe4)
-    output wire [63:0]             dbg_csrop,        // executing system op {pc,addr,func,is_csr} (ILA probe5)
+    output wire [63:0]             dbg_lsu,          // full LSU state (ILA probe5; replaces dbg_csrop,
+                                                     // whose mtvec-stranding hunt is finished)
+    output wire [63:0]             dbg_csrop,        // executing system op {pc,addr,func,is_csr}
     output wire                    dbg_csrop_v,      // ...its strobe (ILA probe6)
     output wire [63:0]             dbg_wedge,        // frontend/dispatch/interrupt state (ILA probe7)
     // Zihpm cache-event pulses from soc_top's D$/I$ (0 in device-less TBs, which have no cache).
@@ -223,6 +225,7 @@ module backend_top
    wire               lsu_devld_v;           // device load wants replay-to-solo (older store shares its ckpt)
    wire [CBITS-1:0]   lsu_devld_ckpt;        // ...the checkpoint THAT LOAD is in (the rollback target)
    wire [3:0]         lsu_dbg_defer;         // {lq_any, sb_any, amo_busy, devrd_pending}
+   wire [63:0]        lsu_dbg_lsu;           // full LSU state (ILA probe5)
    wire [IW-1:0]      sch_dbg_any_v, sch_dbg_stuck;
    wire [CNTW-1:0]    cc_dbg_cnt;            // count[committed]: what commit is waiting on
    wire [2:0]         eb_dbg_evap;           // sticky: a deferred op evaporated at EX
@@ -852,7 +855,7 @@ module backend_top
       .dfault_v(lsu_dfault_v), .dfault_seq(lsu_dfault_seq),
       .dfault_ckpt(lsu_dfault_ckpt), .dfault_cause(lsu_dfault_cause),
       .dfault_tval(lsu_dfault_tval),
-      .devld_v(lsu_devld_v), .devld_ckpt(lsu_devld_ckpt), .devld_fire_v(lsu_devld_fire_v), .dbg_defer(lsu_dbg_defer),
+      .devld_v(lsu_devld_v), .devld_ckpt(lsu_devld_ckpt), .devld_fire_v(lsu_devld_fire_v), .dbg_defer(lsu_dbg_defer), .dbg_lsu(lsu_dbg_lsu),
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
@@ -1541,6 +1544,7 @@ module backend_top
    // checkpoint's count never reached zero". dbg_cnt IS that count, and the rest say whether the
    // missing completion is a deferred LSU/unit op still outstanding, or an op that never issued
    // at all (a live scheduler entry that never became eligible = a lost operand wakeup).
+   assign dbg_lsu = lsu_dbg_lsu;
    assign dbg_wedge = {
       7'd0,
       ld_supp_cnt,              // [56:53] saturating count of ld_done decrements EATEN by the

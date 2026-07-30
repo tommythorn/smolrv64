@@ -1543,6 +1543,7 @@ module rk_xcku5p(
    wire [63:0] probe_csrop;     // executing system op {pc,addr,func,is_csr} for ILA_TIMER probe5
    wire        probe_csrop_v;   // ...its strobe for ILA_TIMER probe6
    wire [63:0] probe_wedge;     // frontend/dispatch/interrupt state for ILA_TIMER probe7
+   wire [63:0] probe_lsu;       // full LSU state for ILA_TIMER probe5
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
@@ -1552,7 +1553,7 @@ module rk_xcku5p(
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg), .mtvec_we_dbg(probe_mtvec_we),
-      .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v), .wedge_dbg(probe_wedge),
+      .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v), .wedge_dbg(probe_wedge), .lsu_dbg(probe_lsu),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
@@ -1618,7 +1619,9 @@ module rk_xcku5p(
       // capture shows mtvec never taking the install; this says whether the installing
       // `csrrw x12,mtvec,x12` reached the CSR unit at all. Present => its write was
       // dropped inside csr_file; absent => the instruction never got there.
-      .probe5 (probe_csrop),
+      // probe5 now carries the LSU state: the mtvec-stranding hunt that csrop was built for is
+      // finished, and the live bug is a fault-delivery deadlock inside the LSU.
+      .probe5 (probe_lsu),
       .probe6 (probe_csrop_v),
       // Why the core is frozen: frontend accept / dispatch-stall reasons / fetch-empty
       // reasons / interrupt-injection state. See backend_top's dbg_wedge for the layout.

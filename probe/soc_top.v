@@ -89,7 +89,8 @@ module soc_top #(
    output wire             mtvec_we_dbg,    // mtvec write strobe -- ILA_TIMER probe4
    output wire [63:0]      csrop_dbg,       // executing system op {pc,addr,func,is_csr} -- ILA_TIMER probe5
    output wire             csrop_v_dbg,     // ...its 1-cycle strobe -- ILA_TIMER probe6
-   output wire [63:0]      wedge_dbg        // frontend/dispatch/interrupt state -- ILA_TIMER probe7
+   output wire [63:0]      wedge_dbg,       // frontend/dispatch/interrupt state -- ILA_TIMER probe7
+   output wire [63:0]      lsu_dbg          // full LSU state -- ILA_TIMER probe5
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -115,7 +116,7 @@ module soc_top #(
 
    backend_top #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .PBITS(PBITS), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .dbg_timer(timer_dbg), .dbg_mtvec(mtvec_dbg), .dbg_mtvec_we(mtvec_we_dbg), .dbg_csrop(csrop_dbg), .dbg_csrop_v(csrop_v_dbg), .dbg_wedge(wedge_dbg), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .dbg_timer(timer_dbg), .dbg_mtvec(mtvec_dbg), .dbg_mtvec_we(mtvec_we_dbg), .dbg_csrop(csrop_dbg), .dbg_csrop_v(csrop_v_dbg), .dbg_wedge(wedge_dbg), .dbg_lsu(lsu_dbg), .mtime(clint_mtime),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
