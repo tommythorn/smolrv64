@@ -1541,9 +1541,20 @@ module rk_xcku5p(
 
    wire [12:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // bit12: blk(0)/net(1)
    wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
-   // virtio_blk IRQ (ui_clk) synchronized into probe_clk for soc_top's internal PLIC (src 11).
+   // virtio IRQs (ui_clk) synchronized into probe_clk for soc_top's internal PLIC.
+   // blk -> src 11, net -> src 12 (both match the DTB `interrupts` properties).
+   // The net one was MISSING: virtio_net_irq was only synced on core_clk into the SCALAR SoC's
+   // ext_irq, so the probe core never saw it. Measured symptom: virtio-net InterruptStatus stuck
+   // at 1 (asserted, unacknowledged) with `virtio1: 0` in /proc/interrupts while virtio-blk on
+   // src 11 took 44k -- the driver never harvested the RX ring, so DHCP never got a reply.
+   // Both are LEVEL interrupts (virtio_mmio: irq = interrupt_status != 0), so a 2-FF sync is
+   // sufficient -- no pulse to lose.
    (* async_reg = "true" *) reg p_virtio_irq_meta = 1'b0, p_virtio_irq = 1'b0;
-   always @(posedge probe_clk) begin p_virtio_irq_meta <= virtio_blk_irq; p_virtio_irq <= p_virtio_irq_meta; end
+   (* async_reg = "true" *) reg p_virtio_net_irq_meta = 1'b0, p_virtio_net_irq = 1'b0;
+   always @(posedge probe_clk) begin
+      p_virtio_irq_meta     <= virtio_blk_irq;  p_virtio_irq     <= p_virtio_irq_meta;
+      p_virtio_net_irq_meta <= virtio_net_irq;  p_virtio_net_irq <= p_virtio_net_irq_meta;
+   end
 
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire [63:0] probe_timer_dbg; // csr_file timer/irq debug (probe_clk) for ILA_TIMER
@@ -1569,10 +1580,10 @@ module rk_xcku5p(
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
 `ifdef NO_VIRTIO_WIRE
       .virtio_rdata(32'd0), .virtio_rvalid(1'b0),
-      .virtio_irq(1'b0));
+      .virtio_irq(1'b0), .virtio_net_irq(1'b0));
 `else
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq));
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
 `endif
 
 `ifdef ILA_IRQ

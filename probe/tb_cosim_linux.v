@@ -70,7 +70,7 @@ module tb;
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq));
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq), .virtio_net_irq(1'b0));
 
    // behavioral DDR (DDR_BYTES, 4-cycle line latency). Modeled as a 512-bit LINE array (the
    // ddr_* port is 64-byte lines), so the element count is DDR_BYTES/64 -- which stays under

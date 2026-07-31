@@ -84,7 +84,13 @@ module soc_top #(
    output wire [3:0]       virtio_be,
    input  wire [31:0]      virtio_rdata,
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
-   input  wire             virtio_irq,
+   input  wire             virtio_irq,      // virtio-blk  -> PLIC source 11 (DTB interrupts=11)
+   input  wire             virtio_net_irq,  // virtio-net  -> PLIC source 12 (DTB interrupts=12).
+                                            // Was missing entirely: src[12] read a hardwired 0, so
+                                            // the net device asserted its level forever and Linux
+                                            // took ZERO interrupts on it (blk on src 11 worked), the
+                                            // driver never harvested the RX ring, and DHCP got no
+                                            // reply -> eth0 stuck without an IPv4 address.
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
    output wire [63:0]      timer_dbg,       // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
    output wire [63:0]      pc_dbg,          // fetch PA (probe_clk) -- ILA_TIMER probe1: spin-loop PC histogram
@@ -209,7 +215,7 @@ module soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({52'd0, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
