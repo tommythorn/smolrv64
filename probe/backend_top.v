@@ -62,13 +62,7 @@ module backend_top
     parameter POOL_MIN = (`PROBE_POOL >= 64/IW + 48) ? `PROBE_POOL : 64/IW + 48,
     parameter POOL  = 1 << $clog2(POOL_MIN),
     parameter SBITS = ($clog2(IW) < 1) ? 1 : $clog2(IW),   // shard-id width, >=1 (IW=1 = 2^0 still needs a 1b field)
-    // Fetch-window halfwords. MUST cover one full bundle (2*IW), but is otherwise DECOUPLED
-    // from IW: tying it to the issue width made IW=1 fetch only 4 bytes at a time, and with
-    // soc_top's exact-address window match every PC advance then missed -- a dead cycle per
-    // instruction. Measured at IW=1: 32.8% of ALL cycles were fetch-bubble (I$ hit, no bundle)
-    // against just 0.8% real I$ fills. Floor it at 8 halfwords (16 bytes) so sequential fetch
-    // walks a latched window instead of re-requesting the same line per instruction.
-    parameter HW    = (2*IW >= 8) ? 2*IW : 8,
+    parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
     parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter ABITS = 6,
