@@ -980,8 +980,37 @@ module lsu
       if (p_v && !mem_rvalid)                      lqs_memw = lqs_memw + 1;
       if (p_v &&  mem_rvalid && wb_busy[p_owner])  lqs_wbb  = lqs_wbb  + 1;
    end
-   final $display("[LSU-LQ] ready-but-unselected=%0d  ord_block=%0d merge_busy=%0d xlate_wait=%0d other=%0d | in-MERGE: mem_wait=%0d wb_busy=%0d",
-                  lqs_stall, lqs_ord, lqs_merge, lqs_xlate, lqs_other, lqs_memw, lqs_wbb);
+   // mem_ren -> mem_rvalid, bucketed. A blocking-cache HIT should be a tight mode near the
+   // best case; a broad/bimodal spread instead means the return is contended (the D$ read
+   // port is shared with three PTW ports, soc_top.v:390) rather than intrinsically slow.
+   integer rl_cnt, rl_sum, rl_b1, rl_b2, rl_b3, rl_b4, rl_b5, rl_b6;
+   initial begin rl_cnt=0; rl_sum=0; rl_b1=0; rl_b2=0; rl_b3=0; rl_b4=0; rl_b5=0; rl_b6=0; end
+   integer rl_age; reg rl_act;
+   initial begin rl_age=0; rl_act=1'b0; end
+   always @(posedge clk) if (!reset) begin
+      if (mem_ren) begin rl_act <= 1'b1; rl_age <= 0; end
+      else if (rl_act) begin
+         if (mem_rvalid) begin
+            rl_act <= 1'b0; rl_cnt = rl_cnt + 1; rl_sum = rl_sum + rl_age + 1;
+            case (1'b1)
+              (rl_age <  1): rl_b1 = rl_b1 + 1;   // 1 cycle
+              (rl_age <  2): rl_b2 = rl_b2 + 1;   // 2
+              (rl_age <  4): rl_b3 = rl_b3 + 1;   // 3-4
+              (rl_age <  8): rl_b4 = rl_b4 + 1;   // 5-8
+              (rl_age < 16): rl_b5 = rl_b5 + 1;   // 9-16
+              default:       rl_b6 = rl_b6 + 1;   // 17+
+            endcase
+         end else rl_age <= rl_age + 1;
+      end
+   end
+   final begin
+      $display("[LSU-LQ] ready-but-unselected=%0d  ord_block=%0d merge_busy=%0d xlate_wait=%0d other=%0d | in-MERGE: mem_wait=%0d wb_busy=%0d",
+               lqs_stall, lqs_ord, lqs_merge, lqs_xlate, lqs_other, lqs_memw, lqs_wbb);
+      if (rl_cnt > 0)
+         $display("[LSU-RD] reads=%0d avg=%0d.%02d cyc | 1c=%0d 2c=%0d 3-4c=%0d 5-8c=%0d 9-16c=%0d 17+c=%0d",
+                  rl_cnt, rl_sum/rl_cnt, ((rl_sum*100)/rl_cnt)%100,
+                  rl_b1, rl_b2, rl_b3, rl_b4, rl_b5, rl_b6);
+   end
 `endif
 
    // present the registered result; a rollback that squashes this load the cycle it would
