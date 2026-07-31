@@ -6,6 +6,13 @@
 // flush, checking every read against a golden byte memory `refm`, and checking
 // writeback correctness by comparing the behavioral L2 (`l2mem`) to `refm` after a
 // flush. Then a brief I$-mode (WRITABLE=0, 128-bit read) check.
+//
+// The pipelined-stream phases at the end drive the read port like a PIPELINED
+// requester (next different-address read presented the cycle after each accept,
+// found white-box via u_d.pipe_take/st): an all-hit stream must be accepted
+// back-to-back at one hit/cycle, a miss/span/NC mid-stream must drain through the
+// FSM and keep responses in accept order, and a level-held same-address request
+// (the soc_top/tb_vl protocol) must get exactly one response (dup-accept guard).
 module tb;
    localparam PAW = 34, LINEB = 512, OFFB = 6, L2LAT = 2;
    localparam MEM = 'h30000;                       // test memory (covers distinct-tag set probes)
@@ -24,12 +31,14 @@ module tb;
    reg  [PAW-1:0] d_rd_addr, d_wr_addr;
    reg  [63:0]  d_wr_data;  reg [7:0] d_wr_mask;
    wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy;
+   wire [PAW-1:0] d_rd_resp_addr;
    wire         d_l2_req, d_l2_we;  wire [PAW-OFFB-1:0] d_l2_addr;
    wire [LINEB-1:0] d_l2_wdata;  reg [LINEB-1:0] d_l2_rdata;  reg d_l2_ack;
 
    cache #(.PAW(PAW), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1)) u_d
      (.clk(clk), .reset(reset),
       .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
+      .rd_resp_addr(d_rd_resp_addr),
       .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
       .wr_ack(d_wr_ack), .rd_uncached(d_rd_uncached), .wr_uncached(d_wr_uncached),
       .cbo_req(d_cbo_req), .cbo_zero(d_cbo_zero), .cbo_keep(d_cbo_keep),
@@ -80,6 +89,73 @@ module tb;
          end else icnt <= icnt-1;
       end
    end
+
+   // ---------------- pipelined-stream driver (white-box accept detect) ----------------
+   // Accept = the S_IDLE take (reads win arbitration; no inv during stream phases)
+   // or the back-to-back fast-hit take. d_acc_q reflects "accepted at the last
+   // posedge": the driver presents the NEXT address at the following negedge, so a
+   // request is level-held (stable) from presentation until its accept -- the
+   // requester contract -- and changes only afterwards, like a pipelined LSU would.
+   wire d_acc = (u_d.st == 5'd0 && d_rd_req && !d_inv_req && !u_d.inv_pend) || u_d.pipe_take;
+   reg  d_acc_q = 0;
+   integer b2b_cnt = 0, s_cyc;
+   always @(posedge clk) begin
+      d_acc_q <= !reset && d_acc;
+      if (!reset && u_d.pipe_take) b2b_cnt = b2b_cnt + 1;
+   end
+   reg [PAW-1:0] s_addr [0:15];  reg s_nc [0:15];
+
+   // Stream s_addr[0..n-1]/s_nc[0..n-1] as a pipelined requester; every response is
+   // checked IN ACCEPT ORDER (identity via rd_resp_addr) against refm.
+   task dstream; input integer n;
+      integer ip, op, j; reg [63:0] exp;
+      begin
+         ip = 1; op = 0; s_cyc = 0;
+         @(negedge clk); d_rd_req=1; d_rd_addr=s_addr[0]; d_rd_uncached=s_nc[0];
+         while (op < n) begin
+            @(negedge clk); s_cyc = s_cyc + 1;
+            if (d_rd_valid) begin
+               if (d_rd_resp_addr !== s_addr[op]) begin
+                  $display("FAIL stream: resp %h out of order (exp %h)", d_rd_resp_addr, s_addr[op]); errs=errs+1; end
+               exp = 0; for (j=0;j<8;j=j+1) exp[j*8 +: 8] = refm[s_addr[op]+j];
+               if (d_rd_data !== exp) begin
+                  $display("FAIL stream: data @%h got=%h exp=%h", s_addr[op], d_rd_data, exp); errs=errs+1; end
+               op = op + 1;
+            end
+            if (d_acc_q) begin
+               if (ip < n) begin d_rd_addr = s_addr[ip]; d_rd_uncached = s_nc[ip]; ip = ip + 1; end
+               else d_rd_req = 0;
+            end
+         end
+         d_rd_req = 0; d_rd_uncached = 0;
+         for (j=0;j<6;j=j+1) begin        // the pipe must deliver EXACTLY n responses
+            @(negedge clk);
+            if (d_rd_valid) begin $display("FAIL stream: stray rd_valid @%h", d_rd_resp_addr); errs=errs+1; end
+         end
+      end
+   endtask
+
+   // Classic level-held request (soc_top/tb_vl protocol): rd_req stays up with the
+   // SAME address through the lookup, masked off on the valid cycle. The
+   // same-address guard must not re-accept it -> exactly one response.
+   task dread_held; input [PAW-1:0] a;
+      integer j, vcnt; reg [63:0] exp;
+      begin
+         @(negedge clk); d_rd_req=1; d_rd_addr=a; vcnt=0;
+         for (j=0;j<10;j=j+1) begin
+            @(negedge clk);
+            if (d_rd_valid) begin
+               vcnt = vcnt + 1;
+               d_rd_req = 0;                     // requester deasserts on the valid cycle
+               exp = 0; for (k=0;k<8;k=k+1) exp[k*8 +: 8] = refm[a+k];
+               if (d_rd_data !== exp) begin
+                  $display("FAIL held read @%h got=%h exp=%h", a, d_rd_data, exp); errs=errs+1; end
+            end
+         end
+         if (vcnt !== 1) begin $display("FAIL held read @%h: %0d responses (want 1)", a, vcnt); errs=errs+1; end
+         else $display("  ok  held read @%h: single response", a);
+      end
+   endtask
 
    // ---------------- helpers ----------------
    task dread; input [PAW-1:0] a; input integer nb; // read nb bytes, check vs refm
@@ -254,6 +330,33 @@ module tb;
       for (k=0;k<64;k=k+1) refm[34'h200+k] = 8'h00;         // golden: whole 64B block is now zero
       dread (34'h200, 8); dread (34'h220, 8); dread (34'h238, 8);   // resident zero line
       dflush();                                             // writeback -> L2 block is zero too
+
+      // ---- pipelined read-hit path ----
+      $display("== pipelined stream: all-hit reads accepted back-to-back ==");
+      dread(34'h300, 8); dread(34'h340, 8); dread(34'h380, 8); dread(34'h3C0, 8);  // warm 4 lines
+      s_addr[0]=34'h300; s_addr[1]=34'h348; s_addr[2]=34'h388; s_addr[3]=34'h3C8;
+      s_addr[4]=34'h310; s_addr[5]=34'h350; s_addr[6]=34'h390; s_addr[7]=34'h3D0;
+      for (k=0;k<8;k=k+1) s_nc[k]=0;
+      before_reads = b2b_cnt;
+      dstream(8);
+      if (b2b_cnt - before_reads !== 7)
+         begin $display("FAIL: all-hit stream b2b=%0d (want 7)", b2b_cnt-before_reads); errs=errs+1; end
+      else if (s_cyc > 11)                       // 8 reads: n+2 cycles at 1 hit/cycle
+         begin $display("FAIL: all-hit stream took %0d cyc (want <=11)", s_cyc); errs=errs+1; end
+      else $display("  ok  8-read hit stream: b2b=7, %0d cyc", s_cyc);
+
+      $display("== pipelined stream: miss/span/NC drain in order ==");
+      s_addr[0]=34'h300;   s_nc[0]=0;            // hit
+      s_addr[1]=34'h28000; s_nc[1]=0;            // cold -> miss mid-stream (fill, resume)
+      s_addr[2]=34'h340;   s_nc[2]=0;            // hit right behind the fill
+      s_addr[3]=34'h37C;   s_nc[3]=0;            // line-crossing read 0x37C..0x383
+      s_addr[4]=34'h388;   s_nc[4]=1;            // NC read (S_FIN slow path, flush-around)
+      s_addr[5]=34'h3C8;   s_nc[5]=0;            // hit after the NC drop
+      dstream(6);
+      $display("  ok  mixed stream: 6 in-order responses");
+
+      $display("== held same-address request: dup-accept guard ==");
+      dread_held(34'h300);
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;

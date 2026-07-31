@@ -211,25 +211,40 @@ module cache #(
    wire pf_hit = PF_EN & pf_val & (pf_addr == cur_line[PAW-1:OFFB])
                & ~r_uncached & ~r_cbo;
    reg [4:0] st;
+   reg inv_pend;     // sticky: an inv_req that arrives while the cache is busy is remembered
+
+   // ---- read-hit pipeline: accept a NEW read at the fast-hit delivery edge ----
+   // Requesters hold rd_req level-high until rd_valid, so at a delivering S_CHECK a
+   // held rd_req with the SAME address is the request being answered right now (its
+   // response is one edge away) -- only a DIFFERENT address is a new request. Such a
+   // read is latched at the delivery edge and the FSM stays in S_CHECK: one hit per
+   // cycle, 2-cycle latency, identity preserved via rd_resp_addr. Anything else --
+   // miss, write, span, NC, CBO, pending invalidate -- declines the accept and falls
+   // back to S_IDLE, so every slow op drains the pipe and runs the FSM unchanged.
+   wire pipe_take = (st==S_CHECK) & hit & ~phase & ~r_cbo & ~r_span & ~r_is_wr
+                  & ~r_uncached & rd_req & (rd_addr != r_addr) & ~inv_req & ~inv_pend;
 
 `ifdef CACHE_BLOCK_STATS
    // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
    // read waits out whatever the FSM is already doing. This splits that wait by what is
    // holding the FSM: a line fill (miss, anyone's -- incl. a PTW's PTE miss), a write-back,
    // or an ordinary lookup already in progress. Sizes the win from an FSM bypass for hits.
-   integer cb_pend, cb_fill, cb_wb, cb_look, cb_other;
-   initial begin cb_pend=0; cb_fill=0; cb_wb=0; cb_look=0; cb_other=0; end
-   always @(posedge clk) if (!reset && rd_req && st != S_IDLE) begin
-      cb_pend = cb_pend + 1;
-      if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI)
-                                                    cb_fill  = cb_fill  + 1;
-      else if (st>=S_WB   && st<=S_WBA)             cb_wb    = cb_wb    + 1;
-      else if (st==S_LOOK || st==S_CHECK || st==S_FIN) cb_look = cb_look + 1;
-      else                                          cb_other = cb_other + 1;
+   integer cb_pend, cb_fill, cb_wb, cb_look, cb_other, cb_b2b;
+   initial begin cb_pend=0; cb_fill=0; cb_wb=0; cb_look=0; cb_other=0; cb_b2b=0; end
+   always @(posedge clk) if (!reset) begin
+      if (pipe_take) cb_b2b = cb_b2b + 1;
+      if (rd_req && st != S_IDLE) begin
+         cb_pend = cb_pend + 1;
+         if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI)
+                                                       cb_fill  = cb_fill  + 1;
+         else if (st>=S_WB   && st<=S_WBA)             cb_wb    = cb_wb    + 1;
+         else if (st==S_LOOK || st==S_CHECK || st==S_FIN) cb_look = cb_look + 1;
+         else                                          cb_other = cb_other + 1;
+      end
    end
    final if (cb_pend > 0)
-      $display("[CACHE-BLK id=%0d] read pending while FSM busy=%0d  fill=%0d writeback=%0d lookup=%0d other=%0d",
-               PERF_ID, cb_pend, cb_fill, cb_wb, cb_look, cb_other);
+      $display("[CACHE-BLK id=%0d] read pending while FSM busy=%0d  fill=%0d writeback=%0d lookup=%0d other=%0d b2b-accepts=%0d",
+               PERF_ID, cb_pend, cb_fill, cb_wb, cb_look, cb_other, cb_b2b);
 `endif
 
    integer b, bb, w2;
@@ -282,7 +297,11 @@ module cache #(
       // full address == way_idx of its line: the index/tag bits exclude the offset).
       // No invalidate guard needed: if the FSM takes the inv arm instead, the read
       // data is simply never consumed.
-      if (st==S_IDLE && (rd_req || (wr_req && WRITABLE!=0))) begin
+      // Also driven at S_CHECK: the read ports are idle there, so a read accepted at
+      // the fast-hit delivery edge (pipe_take) has its data ready one cycle later --
+      // one hit per cycle. If the FSM doesn't accept, the data is never consumed.
+      if ((st==S_IDLE && (rd_req || (wr_req && WRITABLE!=0)))
+          || (st==S_CHECK && rd_req)) begin
          for (w2=0; w2<WAYS; w2=w2+1) begin
             bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
             bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
@@ -335,7 +354,6 @@ module cache #(
    end
 
    // ---- FSM ----
-   reg inv_pend;     // sticky: an inv_req that arrives while the cache is busy is remembered
    always @(posedge clk) begin
       // status-array write ports: default idle every cycle (blocking; sites override)
       v_we = 1'b0; d_we = 1'b0; k_we = 1'b0;
@@ -444,7 +462,19 @@ module cache #(
                        // S_FIN. NC reads keep the slow path (S_FIN's flush-around).
                        rd_data  <= fast_sh[RDW-1:0];
                        rd_valid <= 1; rd_resp_addr <= r_addr;
-                       st <= S_IDLE;
+                       if (pipe_take) begin
+                          // back-to-back accept (see pipe_take): banks are already
+                          // addressed from the live request; latch its identity and
+                          // stay in S_CHECK. Write fields stay stale -- a read never
+                          // reads them (nwin/store-merge are write-op-only).
+                          r_is_wr    <= 1'b0;
+                          r_uncached <= rd_uncached;
+                          r_cbo <= 1'b0; r_cbo_zero <= 1'b0; r_cbo_keep <= 1'b0;
+                          r_addr <= rd_addr; r_off <= rd_addr[OFFB-1:0];
+                          r_span <= (({1'b0, rd_addr[OFFB-1:0]} + RDB) > WORDB);
+                          cur_line <= {rd_addr[PAW-1:OFFB], {OFFB{1'b0}}};
+                       end else
+                          st <= S_IDLE;
                     end
                     else st <= S_FIN;
                  end else begin
