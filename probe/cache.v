@@ -212,6 +212,26 @@ module cache #(
                & ~r_uncached & ~r_cbo;
    reg [4:0] st;
 
+`ifdef CACHE_BLOCK_STATS
+   // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
+   // read waits out whatever the FSM is already doing. This splits that wait by what is
+   // holding the FSM: a line fill (miss, anyone's -- incl. a PTW's PTE miss), a write-back,
+   // or an ordinary lookup already in progress. Sizes the win from an FSM bypass for hits.
+   integer cb_pend, cb_fill, cb_wb, cb_look, cb_other;
+   initial begin cb_pend=0; cb_fill=0; cb_wb=0; cb_look=0; cb_other=0; end
+   always @(posedge clk) if (!reset && rd_req && st != S_IDLE) begin
+      cb_pend = cb_pend + 1;
+      if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI)
+                                                    cb_fill  = cb_fill  + 1;
+      else if (st>=S_WB   && st<=S_WBA)             cb_wb    = cb_wb    + 1;
+      else if (st==S_LOOK || st==S_CHECK || st==S_FIN) cb_look = cb_look + 1;
+      else                                          cb_other = cb_other + 1;
+   end
+   final if (cb_pend > 0)
+      $display("[CACHE-BLK id=%0d] read pending while FSM busy=%0d  fill=%0d writeback=%0d lookup=%0d other=%0d",
+               PERF_ID, cb_pend, cb_fill, cb_wb, cb_look, cb_other);
+`endif
+
    integer b, bb, w2;
    reg [2*BANKW-1:0] nwin;
    reg [LZB:0]       pos;
