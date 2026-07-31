@@ -1039,6 +1039,7 @@ fn print_exec_by_class(uids: &[u32], insns: &[Insn]) {
 fn print_dep_link(uids: &[u32], insns: &[Insn]) {
     use std::collections::HashMap;
     let mut agg: HashMap<&'static str, (u64, u64, u64, u64)> = HashMap::new(); // (n, sum, min, max)
+    let mut samp: HashMap<&'static str, Vec<u64>> = HashMap::new();            // for percentiles
     for &uid in uids {
         let i = &insns[uid as usize];
         let Some(cs) = opt(i.sel) else { continue };
@@ -1053,11 +1054,13 @@ fn print_dep_link(uids: &[u32], insns: &[Insn]) {
                 continue;
             }
             let d = cs - ps;
-            let e = agg.entry(op_class(pr.insn)).or_insert((0, 0, u64::MAX, 0));
+            let cls = op_class(pr.insn);
+            let e = agg.entry(cls).or_insert((0, 0, u64::MAX, 0));
             e.0 += 1;
             e.1 += d;
             e.2 = e.2.min(d);
             e.3 = e.3.max(d);
+            samp.entry(cls).or_default().push(d);
         }
     }
     let tot_n: u64 = agg.values().map(|v| v.0).sum();
@@ -1073,14 +1076,25 @@ fn print_dep_link(uids: &[u32], insns: &[Insn]) {
         tot_c as f64 / tot_n as f64,
         tot_n
     );
-    println!("  {:<12} {:>9} {:>8} {:>5} {:>6}  {:>7}", "producer", "links", "avg(c)", "min", "max", "share");
+    // Percentiles separate a LONG TAIL (a few misses) from a BROAD SHIFT (queueing): if p50
+    // sits at the floor the extra is tail, if p50 is well above it the whole distribution moved.
+    println!(
+        "  {:<12} {:>9} {:>8} {:>5} {:>5} {:>5} {:>5} {:>6}  {:>7}",
+        "producer", "links", "avg(c)", "min", "p50", "p90", "p99", "max", "share"
+    );
     for (name, (n, sum, mn, mx)) in rows {
+        let v = samp.get_mut(name).unwrap();
+        v.sort_unstable();
+        let q = |f: f64| v[((v.len() as f64 * f) as usize).min(v.len() - 1)];
         println!(
-            "  {:<12} {:>9} {:>8.2} {:>5} {:>6}  {:>6.1}%",
+            "  {:<12} {:>9} {:>8.2} {:>5} {:>5} {:>5} {:>5} {:>6}  {:>6.1}%",
             name,
             n,
             sum as f64 / n as f64,
             mn,
+            q(0.50),
+            q(0.90),
+            q(0.99),
             mx,
             100.0 * sum as f64 / tot_c as f64
         );
