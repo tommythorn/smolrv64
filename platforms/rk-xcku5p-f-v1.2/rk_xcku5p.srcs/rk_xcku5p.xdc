@@ -209,3 +209,17 @@ set_property PACKAGE_PIN M25 [get_ports eth_txc]
 set_false_path \
     -from [get_cells mmio_clock_bridge_inst/fifo_reset_q_reg] \
     -through [get_pins -hier -filter {NAME =~ *mmio_clock_bridge_inst*xpm_fifo_rst_inst*/D}]
+
+# ---- probe-core floorplan -------------------------------------------------------------
+# Measured 2026-07-30: with no floorplan the placer spread exec_bundle over the ENTIRE die
+# (65457 cells, SLICE_X0..X112 / Y0..Y239), and the critical path (eb/fw2p -> u_lsu fault
+# latch) came out 72% ROUTE / 28% logic -- 9.1 ns of the 12.7 ns was wire. The core's own
+# Fmax was 78 MHz while its logic depth alone would allow far more.
+# Confine backend_top (exec_bundle + LSU + scheduler + rename + commit -- i.e. both ends of
+# that path) to a contiguous region so the cone stays local. Sized ~half the device: the
+# design is only 51% LUTs, so this is loose enough not to fight the placer, while removing
+# the full-die span. The caches/frontend stay unconstrained and place adjacent.
+# Guarded with -quiet so a non-PROBE_CORE build (cells absent) is a no-op.
+create_pblock -quiet pb_probe_core
+add_cells_to_pblock -quiet [get_pblocks pb_probe_core] [get_cells -quiet probe_core/core]
+resize_pblock -quiet [get_pblocks pb_probe_core] -add {SLICE_X0Y0:SLICE_X112Y119}
