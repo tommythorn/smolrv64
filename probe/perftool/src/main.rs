@@ -642,6 +642,8 @@ fn main() {
     h.d2s.print();
     h.wb2s.print();
     h.exec.print();
+    print_exec_by_class(&shown, &insns);
+    print_dep_link(&shown, &insns);
     print_pc_hotspots(&shown, &insns, 25);
     for c in &cstats {
         c.print(n_disp);
@@ -948,6 +950,141 @@ fn print_bottleneck(lo: u64, hi: u64, stalls: &[(u64, u8)], fe_empty: &[(u64, u8
         "FRONTEND-BOUND -- no bundle to dispatch; fix fetch/I$/redirects before the backend"
     };
     println!("  => {verdict}");
+}
+
+// ---- SELECT->WRITEBACK broken down by op class ----------------------------------------
+// The aggregate "execute" average is a blend: one slow class (a D$-missing load, a divide)
+// can set it while most ops retire in 1-2c. This says WHICH class owns the cycles, so the
+// lever is "shorten X" rather than "shorten execute". `share` is count*avg / total exec
+// cycles -- the fraction of all execute time this class is responsible for, which is what
+// picks the lever (a rare 60-cycle divide matters less than a common 6-cycle load).
+fn op_class(insn: u32) -> &'static str {
+    // The core expands RVC before dispatch, so this sees 32-bit encodings.
+    let op = insn & 0x7f;
+    let f3 = (insn >> 12) & 0x7;
+    let f7 = (insn >> 25) & 0x7f;
+    match op {
+        0x03 => "load",
+        0x07 => "load-fp",
+        0x23 => "store",
+        0x27 => "store-fp",
+        0x2f => "amo",
+        0x63 => "branch",
+        0x67 | 0x6f => "jump",
+        0x0f => "fence/cbo",
+        0x73 => "system/csr",
+        0x37 | 0x17 => "lui/auipc",
+        0x13 | 0x1b => "alu-imm",
+        0x33 | 0x3b => {
+            if f7 == 0x01 {
+                if f3 < 4 { "mul" } else { "div/rem" }
+            } else {
+                "alu-reg"
+            }
+        }
+        0x43 | 0x47 | 0x4b | 0x4f => "fp-fma",
+        0x53 => "fp-op",
+        _ => "other",
+    }
+}
+
+fn print_exec_by_class(uids: &[u32], insns: &[Insn]) {
+    use std::collections::HashMap;
+    let mut agg: HashMap<&'static str, (u64, u64, u64)> = HashMap::new(); // (n, sum, max)
+    for &uid in uids {
+        let i = &insns[uid as usize];
+        let (Some(s), Some(w)) = (opt(i.sel), opt(i.wb)) else { continue };
+        if w < s {
+            continue;
+        }
+        let e = agg.entry(op_class(i.insn)).or_insert((0, 0, 0));
+        e.0 += 1;
+        e.1 += w - s;
+        e.2 = e.2.max(w - s);
+    }
+    let tot_cyc: u64 = agg.values().map(|v| v.1).sum();
+    let tot_n: u64 = agg.values().map(|v| v.0).sum();
+    if tot_n == 0 {
+        return;
+    }
+    let mut rows: Vec<_> = agg.into_iter().collect();
+    rows.sort_by_key(|(_, v)| std::cmp::Reverse(v.1)); // by total execute cycles owned
+    println!("\n=== SELECT->WRITEBACK by op class (who owns the execute latency) ===");
+    println!(
+        "  overall avg {:.2}c over {} ops\n",
+        tot_cyc as f64 / tot_n as f64,
+        tot_n
+    );
+    println!("  {:<12} {:>9} {:>7} {:>8} {:>6}  {:>7}", "class", "count", "%ops", "avg(c)", "max", "share");
+    for (name, (n, sum, mx)) in rows {
+        println!(
+            "  {:<12} {:>9} {:>6.1}% {:>8.2} {:>6}  {:>6.1}%",
+            name,
+            n,
+            100.0 * n as f64 / tot_n as f64,
+            sum as f64 / n as f64,
+            mx,
+            100.0 * sum as f64 / tot_cyc as f64
+        );
+    }
+}
+
+// ---- true dependent-link latency: producer SELECT -> consumer SELECT ------------------
+// THE number for serial code: how many cycles a dependency chain advances per link. The
+// wb2s histogram cannot answer this -- it only counts links where the consumer selected
+// at-or-after the producer's WRITEBACK, which by construction throws away every genuine
+// back-to-back pair (select-time wake, backend_top.v sel_wake_v, lets an ALU consumer
+// select BEFORE its producer writes back). Bucketed by the PRODUCER's class, since that
+// is what sets the latency.
+fn print_dep_link(uids: &[u32], insns: &[Insn]) {
+    use std::collections::HashMap;
+    let mut agg: HashMap<&'static str, (u64, u64, u64, u64)> = HashMap::new(); // (n, sum, min, max)
+    for &uid in uids {
+        let i = &insns[uid as usize];
+        let Some(cs) = opt(i.sel) else { continue };
+        for p in [i.prod1, i.prod2] {
+            if p == NIL {
+                continue;
+            }
+            let pr = &insns[p as usize];
+            let Some(ps) = opt(pr.sel) else { continue };
+            // only links the consumer actually waited on (producer still in flight at dispatch)
+            if opt(pr.wb).map_or(true, |w| w <= i.disp) || cs < ps {
+                continue;
+            }
+            let d = cs - ps;
+            let e = agg.entry(op_class(pr.insn)).or_insert((0, 0, u64::MAX, 0));
+            e.0 += 1;
+            e.1 += d;
+            e.2 = e.2.min(d);
+            e.3 = e.3.max(d);
+        }
+    }
+    let tot_n: u64 = agg.values().map(|v| v.0).sum();
+    let tot_c: u64 = agg.values().map(|v| v.1).sum();
+    if tot_n == 0 {
+        return;
+    }
+    let mut rows: Vec<_> = agg.into_iter().collect();
+    rows.sort_by_key(|(_, v)| std::cmp::Reverse(v.1));
+    println!("\n=== dependent-link latency: producer SELECT -> consumer SELECT ===");
+    println!(
+        "  overall avg {:.2}c over {} waited-on links\n",
+        tot_c as f64 / tot_n as f64,
+        tot_n
+    );
+    println!("  {:<12} {:>9} {:>8} {:>5} {:>6}  {:>7}", "producer", "links", "avg(c)", "min", "max", "share");
+    for (name, (n, sum, mn, mx)) in rows {
+        println!(
+            "  {:<12} {:>9} {:>8.2} {:>5} {:>6}  {:>6.1}%",
+            name,
+            n,
+            sum as f64 / n as f64,
+            mn,
+            mx,
+            100.0 * sum as f64 / tot_c as f64
+        );
+    }
 }
 
 // First-approximation diagnosis from the histograms. Refine once occupancy lands (step 2).
