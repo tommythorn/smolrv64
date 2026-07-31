@@ -866,6 +866,7 @@ module lsu
    reg [3:0]      m_lp;
    reg [2:0]      m_posw;
    reg [WW-1:0]   m_lwb;
+   reg [7:0]      m_fwdmask;       // per-byte: forwarded from the SB (LSU_FWD_STATS)
    reg [SBDEPTH-1:0] s_use;        // store is valid+ready+older-than-load (byte-independent)
    integer        mb, mj;
    reg [63:0]     c_val;
@@ -891,6 +892,7 @@ module lsu
             end
          end
          m_mrg[mb*8 +: 8] = m_byt;
+         m_fwdmask[mb] = m_fwd;          // this byte came from the SB, not memory
       end
       c_val = (p_nb==4'd1) ? (p_sgn ? {{56{m_mrg[7]}},  m_mrg[7:0]}  : {56'd0, m_mrg[7:0]})
             : (p_nb==4'd2) ? (p_sgn ? {{48{m_mrg[15]}}, m_mrg[15:0]} : {48'd0, m_mrg[15:0]})
@@ -915,6 +917,31 @@ module lsu
          r_val   <= c_val;   r_seq   <= p_seq;  r_ck <= p_ck;
       end
    end
+`ifdef LSU_FWD_STATS
+   // How many loads actually NEED store-to-load forwarding? Gates whether the SB CAM has to
+   // sit on the load fast path at all: if most loads forward NO bytes, the merge can become
+   // detect-and-replay (fast path = raw memory) instead of merge-always.
+   integer fs_n, fs_none, fs_part, fs_all, fs_bytes, fs_nbytes;
+   initial begin fs_n=0; fs_none=0; fs_part=0; fs_all=0; fs_bytes=0; fs_nbytes=0; end
+   reg [7:0] fs_need, fs_got; integer fs_i, fs_c;
+   always @(posedge clk) if (!reset && merge_fire) begin
+      fs_need = 8'd0;
+      for (fs_i = 0; fs_i < 8; fs_i = fs_i + 1) if (fs_i < p_nb) fs_need[fs_i] = 1'b1;
+      fs_got = m_fwdmask & fs_need;
+      fs_c = 0;
+      for (fs_i = 0; fs_i < 8; fs_i = fs_i + 1) fs_c = fs_c + fs_got[fs_i];
+      fs_n = fs_n + 1; fs_bytes = fs_bytes + fs_c; fs_nbytes = fs_nbytes + p_nb;
+      if (fs_c == 0)          fs_none = fs_none + 1;
+      else if (fs_got != fs_need) fs_part = fs_part + 1;
+      else                    fs_all  = fs_all  + 1;
+   end
+   final if (fs_n > 0) begin
+      $display("[LSU-FWD] loads=%0d  no-fwd=%0d (%0d%%)  partial=%0d (%0d%%)  full=%0d (%0d%%)  bytes_fwd=%0d/%0d (%0d%%)",
+               fs_n, fs_none, (100*fs_none)/fs_n, fs_part, (100*fs_part)/fs_n,
+               fs_all, (100*fs_all)/fs_n, fs_bytes, fs_nbytes, (100*fs_bytes)/fs_nbytes);
+   end
+`endif
+
    // present the registered result; a rollback that squashes this load the cycle it would
    // write back suppresses it (the MERGE-stage squash covers the cycle before).
    wire r_kill = rollback & older(rollback_seq, r_seq);
