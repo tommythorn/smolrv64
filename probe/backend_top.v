@@ -62,7 +62,9 @@ module backend_top
     parameter POOL_MIN = (`PROBE_POOL >= 64/IW + 48) ? `PROBE_POOL : 64/IW + 48,
     parameter POOL  = 1 << $clog2(POOL_MIN),
     parameter SBITS = ($clog2(IW) < 1) ? 1 : $clog2(IW),   // shard-id width, >=1 (IW=1 = 2^0 still needs a 1b field)
-    parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
+    // Fetch-window halfwords: covers a bundle (2*IW) but floored at 8 (16 bytes) so it is
+    // DECOUPLED from issue width -- HW=2*IW made IW=1 fetch 4 bytes at a time.
+    parameter HW    = (2*IW >= 8) ? 2*IW : 8,
     parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter ABITS = 6,
