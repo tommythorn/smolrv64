@@ -282,12 +282,16 @@ module tb;
                         dut.core.sb.lane[0].sh.r1[e], dut.core.sb.lane[0].sh.r2[e],
                         dut.core.sb.lane[0].sh.r3[e], dut.core.sb.lane[0].sh.py[e][156],
                         dut.core.sb.lane[0].sh.s1[e], dut.core.sb.lane[0].sh.s2[e]);
+`ifndef PROBE_IW_1
+            // lane[1] exists only at IW>=2; referencing it hierarchically at IW=1 is an
+            // elaboration error, so run-virtio.sh defines PROBE_IW_1 for the 1-wide build.
             if (dut.core.sb.lane[1].sh.v[e])
                $display("[WSCHED s1e%0d seq=%0d ck=%0d r=%b%b%b ser=%b ps1=%0d ps2=%0d]",
                         e, dut.core.sb.lane[1].sh.sq[e], dut.core.sb.lane[1].sh.ck[e],
                         dut.core.sb.lane[1].sh.r1[e], dut.core.sb.lane[1].sh.r2[e],
                         dut.core.sb.lane[1].sh.r3[e], dut.core.sb.lane[1].sh.py[e][156],
                         dut.core.sb.lane[1].sh.s1[e], dut.core.sb.lane[1].sh.s2[e]);
+`endif
          end
          $fflush;
       end

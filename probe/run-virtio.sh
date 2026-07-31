@@ -24,7 +24,9 @@ CYC=${CYC:-0}                          # DEFAULT = NO CAP (tb: +cycles=0 = run f
                                        # once silently expired an interactive boot at [c=1999...].
 BIN=obj_dir_virtio/tb_virtio
 VDEFS=${VDEFS:-}                                              # extra verilator defines, e.g. -DPROBE_IW=1
-[ -n "${PROBE_IW:-}" ] && VDEFS="$VDEFS -DPROBE_IW=$PROBE_IW" # PROBE_IW=N convenience (matches the Makefile)
+[ -n "${PROBE_IW:-}" ] && VDEFS="$VDEFS -DPROBE_IW=$PROBE_IW"
+# tb debug dumps reference lane[1] hierarchically; that lane does not exist at IW=1.
+[ "${PROBE_IW:-}" = 1 ] && VDEFS="$VDEFS -DPROBE_IW_1" # PROBE_IW=N convenience (matches the Makefile)
 # PERF_TRACE (VDEFS=-DPERF_TRACE) needs its DPI implementation compiled in; the RTL taps in
 # backend_top.v/cache.v call perf_ev(). PERF_TRACE_OUT picks the output path (.zst streams).
 PERFSRC=""; case "$VDEFS" in *PERF_TRACE*) PERFSRC=perf_trace.cpp ;; esac
