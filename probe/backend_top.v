@@ -18,6 +18,28 @@
  `define PROBE_POOL 80
 `endif
 
+// PROBE_SBDEPTH: store-buffer entries. An entry is allocated at DISPATCH and freed only
+// once its checkpoint has COMMITTED and the D$ has acked, so this is not a bandwidth knob
+// -- it is the cap on in-flight stores in the whole OoO window. At 4 a plain function
+// prologue (sd ra/s0/s1/s2/s3...) fills the buffer and dispatch stalls dead.
+//
+// MEASURED (2026-07-31, IW=1, ubuntu-ro kernel init @190M, 4M-cycle window): raising it
+// 4 -> 8 is NOT worth any timing. It does relieve the SB itself, but the machine is
+// FRONTEND-BOUND, so every cycle recovered is re-spent waiting for instructions:
+//        SBDEPTH        4        8
+//   dispatched IPC   0.370    0.372    +0.5% (noise)
+//   stall            30.2%    26.4%
+//     store-buf       8.8%     3.7%    -5.1  <- the stall really does halve...
+//     checkpoints    18.2%    19.5%    +1.3
+//   frontend-empty   32.9%    36.4%    +3.5  <- ...and lands here instead
+// Do not spend Fmax on this until the frontend can actually feed the machine. The
+// dominant back-pressure is the NCHK=8 / CKMAX=1 checkpoint ring (18.2%), 2x the SB.
+// Raising the depth also widens the SB-forwarding compare (the hot load cone) and the
+// dispatch-time free-slot find; lsu_fmax.v tracks this same define for that A/B.
+`ifndef PROBE_SBDEPTH
+ `define PROBE_SBDEPTH 4
+`endif
+
 // PROBE_IW: issue/shard width -- the ONE width knob. SBITS, PBITS, HW, DCW, CNTW,
 // NPHYS (and WAKEN, downstream) all DERIVE from it. Was hardwired 4; default is now 2:
 // at probe_clk=66.7 MHz even a perfect IPC=4 is only 267 MIPS (a scalar's reach), so a
@@ -99,9 +121,9 @@ module backend_top
     parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW (one bundle)
     parameter CNTW  = $clog2(CKMAX+IW+1),  // per-checkpoint count: up to CKMAX (+bundle overshoot)
     parameter AW    = 64,
-    parameter SBDEPTH= 4, parameter SBI = 2,   // small store buffer -> shallow byte-merge
+    parameter SBDEPTH= `PROBE_SBDEPTH, parameter SBI = $clog2(SBDEPTH),
     parameter LQDEPTH= 4, parameter LQI = 2,
-    parameter MIDXW = 2,         // = max(SBI, LQI)
+    parameter MIDXW = (SBI > LQI) ? SBI : LQI,
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,

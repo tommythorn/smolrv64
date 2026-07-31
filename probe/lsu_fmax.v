@@ -30,7 +30,13 @@
 module lsu_fmax (input wire clk, output reg probe_out = 1'b0);
 
    localparam IW = 4, SBITS = 2, PBITS = 8, SEQW = 8, CBITS = 2, AW = 64;
-   localparam SBDEPTH = 4, SBI = 2, LQDEPTH = 4, LQI = 2;
+   // SBDEPTH tracks backend_top's PROBE_SBDEPTH so the store-buffer depth A/B
+   // (payoff in sim, cost here) is driven by ONE flag: -DPROBE_SBDEPTH=N.
+`ifndef PROBE_SBDEPTH
+ `define PROBE_SBDEPTH 4
+`endif
+   localparam SBDEPTH = `PROBE_SBDEPTH, SBI = $clog2(SBDEPTH);
+   localparam LQDEPTH = 4, LQI = 2;
 
    // ---- total input bit-width (symbolic sum: single source of truth) ----
    localparam IN_W =
