@@ -955,6 +955,35 @@ module lsu
    end
 `endif
 
+`ifdef LSU_LQ_STATS
+   // Where do a ready load's cycles go between lq_rdy and merge_fire? Splits the measured
+   // median (p50 10 vs a 7-cycle floor) into its causes, using the existing scan signals:
+   //   ld_sel_v=0 while a ready load exists -> the store-ORDERING barrier rejected them all
+   //   ld_sel_v=1 but !merge_adv            -> MERGE occupied (the single-outstanding pipe)
+   //   ld_sel_v=1, merge_adv, !ld_xok       -> translation (dTLB miss / PTW)
+   // plus, for the load already in MERGE: waiting on memory vs blocked by its WB lane.
+   integer lqs_stall, lqs_ord, lqs_merge, lqs_xlate, lqs_other, lqs_memw, lqs_wbb;
+   initial begin lqs_stall=0; lqs_ord=0; lqs_merge=0; lqs_xlate=0; lqs_other=0;
+                 lqs_memw=0; lqs_wbb=0; end
+   reg lqs_any; integer lq_i;
+   always @(posedge clk) if (!reset) begin
+      lqs_any = 1'b0;
+      for (lq_i = 0; lq_i < LQDEPTH; lq_i = lq_i + 1)
+         if (lq_v[lq_i] && lq_rdy[lq_i]) lqs_any = 1'b1;
+      if (lqs_any && !sel_fire) begin
+         lqs_stall = lqs_stall + 1;
+         if      (!ld_sel_v)  lqs_ord   = lqs_ord   + 1;
+         else if (!merge_adv) lqs_merge = lqs_merge + 1;
+         else if (!ld_xok)    lqs_xlate = lqs_xlate + 1;
+         else                 lqs_other = lqs_other + 1;
+      end
+      if (p_v && !mem_rvalid)                      lqs_memw = lqs_memw + 1;
+      if (p_v &&  mem_rvalid && wb_busy[p_owner])  lqs_wbb  = lqs_wbb  + 1;
+   end
+   final $display("[LSU-LQ] ready-but-unselected=%0d  ord_block=%0d merge_busy=%0d xlate_wait=%0d other=%0d | in-MERGE: mem_wait=%0d wb_busy=%0d",
+                  lqs_stall, lqs_ord, lqs_merge, lqs_xlate, lqs_other, lqs_memw, lqs_wbb);
+`endif
+
    // present the registered result; a rollback that squashes this load the cycle it would
    // write back suppresses it (the MERGE-stage squash covers the cycle before).
    wire r_kill = rollback & older(rollback_seq, r_seq);
