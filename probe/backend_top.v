@@ -649,6 +649,19 @@ module backend_top
       assign q_iss_is_fp[gi] = q_iss_valid[gi] & qi_fpu;
    end endgenerate
 
+`ifdef LSU_FWD_STATS
+   // Debug-only: the issued op's PC carried to the EX stage, so the LSU can attribute a
+   // store-to-load forward to a static PC (is aliasing PC-predictable?). Same EX alignment
+   // as ex_fp_dis below. Exists only under LSU_FWD_STATS -- never synthesized.
+   wire [IW*64-1:0] q_iss_pc_dbg;
+   generate for (gi = 0; gi < IW; gi = gi + 1) begin : qpcd
+      assign q_iss_pc_dbg[gi*64 +: 64] = q_iss_pay[gi*`PAYW + 78 +: 64];   // PAY_PC
+   end endgenerate
+   reg [IW*64-1:0] ex_pc_dbg;
+   initial ex_pc_dbg = {(IW*64){1'b0}};
+   always @(posedge clk) ex_pc_dbg <= q_iss_pc_dbg;
+`endif
+
    // FP-disabled flag aligned to the EX stage (gates the LSU FP load/store dispatch so a
    // disabled FLW/FSW makes no memory access; it is held + trapped via q_iss_is_ill_eff).
    reg [IW-1:0] ex_fp_dis;
@@ -868,6 +881,9 @@ module backend_top
       .disp_seq(r_seq), .disp_ckpt(disp_ckpt), .disp_pdst(pdst),
       .disp_sb_idx(disp_sb_idx), .disp_lq_idx(disp_lq_idx),
       .sb_full(sb_full), .lq_full(lq_full),
+`ifdef LSU_FWD_STATS
+      .exe_ld_pc(ex_pc_dbg),
+`endif
       .exe_st_v(exe_st_v), .exe_st_idx(exe_st_idx), .exe_st_addr(exe_st_addr),
       .exe_st_data(exe_st_data), .exe_st_nb(exe_st_nb),
       .exe_st_cbo(exe_st_cbo), .exe_st_cbo_zero(exe_st_cbo_zero), .exe_st_cbo_keep(exe_st_cbo_keep),

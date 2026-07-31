@@ -74,6 +74,9 @@ module lsu
     input  wire [IW-1:0]          exe_st_cbo,         // Zicbom/Zicboz CBO (rides this store entry)
     input  wire [IW-1:0]          exe_st_cbo_zero,    // cbo.zero (else clean/flush/inval)
     input  wire [IW-1:0]          exe_st_cbo_keep,    // cbo.clean keep-valid (else invalidate)
+`ifdef LSU_FWD_STATS
+    input  wire [IW*64-1:0]       exe_ld_pc,   // debug-only: PC of the op resolving at EX
+`endif
     input  wire [IW-1:0]          exe_ld_v,
     input  wire [IW*LQI-1:0]      exe_ld_idx,
     input  wire [IW*AW-1:0]       exe_ld_addr,
@@ -748,6 +751,9 @@ module lsu
             p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
             p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
             p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
+`ifdef LSU_FWD_STATS
+            p_pc    <= lq_pc [ld_sel];
+`endif
             mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
             mem_runcached <= ldx_uncached;      // Svpbmt: NC/IO load -> don't cache
             mem_ren   <= 1'b1;                  // request the read (mem_raddr valid next cycle)
@@ -866,6 +872,10 @@ module lsu
    reg [3:0]      m_lp;
    reg [2:0]      m_posw;
    reg [WW-1:0]   m_lwb;
+`ifdef LSU_FWD_STATS
+   reg [63:0]     lq_pc [0:LQDEPTH-1];   // debug-only: load PC, carried LQ -> MERGE
+   reg [63:0]     p_pc;
+`endif
    reg [7:0]      m_fwdmask;       // per-byte: forwarded from the SB (LSU_FWD_STATS)
    reg [SBDEPTH-1:0] s_use;        // store is valid+ready+older-than-load (byte-independent)
    integer        mb, mj;
@@ -934,6 +944,9 @@ module lsu
       if (fs_c == 0)          fs_none = fs_none + 1;
       else if (fs_got != fs_need) fs_part = fs_part + 1;
       else                    fs_all  = fs_all  + 1;
+      // one line per FORWARDING load: is aliasing concentrated on a few static PCs?
+      // (post-process: grep FWD-PC | sort | uniq -c | sort -rn)
+      if (fs_c != 0) $display("[FWD-PC] %h %0s", p_pc, (fs_got != fs_need) ? "part" : "full");
    end
    final if (fs_n > 0) begin
       $display("[LSU-FWD] loads=%0d  no-fwd=%0d (%0d%%)  partial=%0d (%0d%%)  full=%0d (%0d%%)  bytes_fwd=%0d/%0d (%0d%%)",
@@ -1057,6 +1070,9 @@ module lsu
                lq_w1[lidx]   <= f_addr[38:3] + 1'b1;
                lq_lb[lidx]   <= f_addr[2:0];
                lq_rdy[lidx]  <= 1'b1;
+`ifdef LSU_FWD_STATS
+               lq_pc[lidx]   <= exe_ld_pc[i*64 +: 64];
+`endif
             end
          end
 
