@@ -25,6 +25,9 @@ CYC=${CYC:-0}                          # DEFAULT = NO CAP (tb: +cycles=0 = run f
 BIN=obj_dir_virtio/tb_virtio
 VDEFS=${VDEFS:-}                                              # extra verilator defines, e.g. -DPROBE_IW=1
 [ -n "${PROBE_IW:-}" ] && VDEFS="$VDEFS -DPROBE_IW=$PROBE_IW" # PROBE_IW=N convenience (matches the Makefile)
+# PERF_TRACE (VDEFS=-DPERF_TRACE) needs its DPI implementation compiled in; the RTL taps in
+# backend_top.v/cache.v call perf_ev(). PERF_TRACE_OUT picks the output path (.zst streams).
+PERFSRC=""; case "$VDEFS" in *PERF_TRACE*) PERFSRC=perf_trace.cpp ;; esac
 STAMP=obj_dir_virtio/.built_vdefs                            # the defines the current binary was built with
 
 # ---- build on BUILD=1 / missing binary / changed VDEFS / any source newer than the binary ----
@@ -49,7 +52,7 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
       -Wno-PINMISSING -Wno-WIDTHCONCAT -Wno-IMPLICIT -I. -I../src \
       "+define+SMOLRV64_GIT_COMMIT=32'h$GITC" $VDEFS \
       --top-module tb -o tb_virtio --Mdir obj_dir_virtio \
-      $srcs tb_virtio.v $extra sd_dpi.cpp ckpt_dpi.cpp || exit 1
+      $srcs tb_virtio.v $extra sd_dpi.cpp ckpt_dpi.cpp $PERFSRC || exit 1
    echo "$VDEFS" > "$STAMP"
 fi
 
