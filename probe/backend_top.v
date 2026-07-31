@@ -54,7 +54,13 @@ module backend_top
     // (AREGS/SHARDS) by a healthy free margin (~48) or the freelist deadlocks. PROBE_POOL=80
     // covers IW>=2 (ARSH<=32); at IW=1 all 64 arch regs pile into the lone shard (ARSH=64),
     // so scale POOL up. (Only IW=1 exceeds the 80 floor; IW>=2 stay at PROBE_POOL unchanged.)
-    parameter POOL  = (`PROBE_POOL >= 64/IW + 48) ? `PROBE_POOL : 64/IW + 48,
+    // ...then ROUND UP TO A POWER OF TWO: PBITS below is $clog2(POOL)+SBITS, so the physreg
+    // index is already that wide -- $clog2(112) and $clog2(80) are both 7, addressing 128 either
+    // way. Taking the rest of that space costs nothing in the datapath (and nothing in LUTRAM,
+    // whose depth granularity is 32/64/128), while giving every width the same, larger rename
+    // pool. It also makes POOL independent of IW.
+    parameter POOL_MIN = (`PROBE_POOL >= 64/IW + 48) ? `PROBE_POOL : 64/IW + 48,
+    parameter POOL  = 1 << $clog2(POOL_MIN),
     parameter SBITS = ($clog2(IW) < 1) ? 1 : $clog2(IW),   // shard-id width, >=1 (IW=1 = 2^0 still needs a 1b field)
     parameter HW    = 2*IW,          // window halfwords (2*IW = one full 32b bundle/cycle)
     parameter PCW   = 64,
