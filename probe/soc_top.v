@@ -38,7 +38,7 @@
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module soc_top #(
-   parameter IW=`PROBE_IW, POOL=`PROBE_POOL, HW=2*IW, PCW=64, SEQW=8,
+   parameter IW=`PROBE_IW, POOL=`PROBE_POOL, HW=(2*IW >= 8) ? 2*IW : 8, PCW=64, SEQW=8,
    parameter PBITS=$clog2(POOL)+(($clog2(IW)<1)?1:$clog2(IW)),   // {ridx, shard[SBITS-1:0]}, SBITS>=1
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
@@ -422,7 +422,16 @@ module soc_top #(
 
    // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
    reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
-   wire         i_match = i_have & (i_pa == imem_addr);
+   // CONTAINMENT, not equality: the latched window covers HW halfwords starting at i_pa, so a
+   // sequential PC anywhere inside it is a HIT -- served by shifting the window rather than
+   // re-requesting the same cache line one instruction at a time. With the old exact-address
+   // compare every PC advance missed, costing a dead cycle per instruction: measured at IW=1,
+   // 32.8% of ALL cycles were fetch-bubble (I$ hit but avail=0) vs only 0.8% real fills.
+   // Unsigned wrap does the lower-bound check for free: if imem_addr < i_pa the subtraction
+   // wraps huge and fails the < HW*2 test.
+   wire [63:0]  i_off_b = imem_addr - i_pa;                    // byte offset into the window
+   wire         i_match = i_have & (i_off_b < (HW*2));
+   wire [$clog2(HW)-1:0] i_off_hw = i_off_b[$clog2(HW):1];     // halfword offset within it
    wire         i_need  = ~i_match;
    wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
    wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
@@ -455,12 +464,16 @@ module soc_top #(
    // depth from the arrays). Guard with the response address: a redirect can move
    // pc while a window is in flight, and the stale response must read as a miss.
    wire         i_arr = ic_rd_valid & (ic_rd_resp_addr == imem_addr);
-   assign imem_data  = i_arr ? ic_rd_data : i_win;
+   // Serve from the offset the PC actually sits at. Halfwords above imem_avail are don't-care --
+   // the aligner bounds itself by avail.
+   assign imem_data  = i_arr ? ic_rd_data : (i_win >> {i_off_hw, 4'd0});
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = fi_stall ? 0 : ((i_match | i_arr) ? HW : 0);   // HW halfwords when the line is present
+   // ...and only the halfwords remaining from that offset to the end of the window are valid.
+   // (An arriving window is addressed exactly, so it always yields the full HW.)
+   assign imem_avail = fi_stall ? 0 : i_arr ? HW : (i_match ? (HW - i_off_hw) : 0);
 
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
