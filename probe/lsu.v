@@ -151,18 +151,24 @@ module lsu
 
     // ---- data memory READ port: request/response handshake (real D$ can stall) ----
     // mem_ren pulses for one cycle when a fresh address is registered on mem_raddr
-    // (a load entering MERGE, or an atomic entering its RMW read). mem_raddr then
-    // HOLDS until the access completes. mem_rvalid signals mem_rdata is valid for the
+    // (a load entering the pipe, or an atomic entering its RMW read). Up to TWO load
+    // reads may be outstanding (head p_* + shadow s_*): mem_rdy backpressures issue,
+    // and each response carries its identity in mem_resp_addr (the PA it answers) --
+    // responses may return OUT of issue order (a hit under a miss) and are matched
+    // per-entry by PA. mem_raddr still holds the LAST issued address (device decode
+    // and the solo atomic rely on it). mem_rvalid signals mem_rdata is valid for the
     // currently-presented mem_raddr -- it may arrive 1+ cycles later (cache miss/fill).
-    // The merge/RMW stall (hold p_*/mem_raddr) until mem_rvalid. Single-outstanding:
-    // a new mem_ren supersedes any prior unfinished read, and mem_rdata must always
-    // reflect the address held at the cycle mem_rvalid asserts (no stale-data hazard).
-    // Tie mem_rvalid high for a zero-latency (combinational) memory -> 1-cycle loads.
+    // An abandoned (squashed) read's response matches no live entry and is ignored.
+    // Tie mem_rvalid high and mem_resp_addr=mem_raddr for a zero-latency
+    // (combinational) memory -> 1-cycle loads; tie mem_rdy high when the memory
+    // never backpressures.
     output reg  [AW-1:0]          mem_raddr,          // registered: the selected load's addr
     output reg                    mem_ren,            // read-request pulse (fresh mem_raddr)
     output reg                    mem_runcached,      // Svpbmt: the read addr is NC/IO (don't cache)
     input  wire [63:0]            mem_rdata,          // 8 bytes @ mem_raddr (little-endian)
-    input  wire                   mem_rvalid,         // mem_rdata valid for mem_raddr this cycle
+    input  wire                   mem_rvalid,         // mem_rdata valid this cycle (see mem_resp_addr)
+    input  wire                   mem_rdy,            // memory can take a new read request this cycle
+    input  wire [AW-1:0]          mem_resp_addr,      // response identity: the PA mem_rdata answers
     output reg                    mem_wen,            // held until mem_wready (drain + AMO write)
     output reg  [AW-1:0]          mem_waddr,
     output reg  [63:0]            mem_wdata,
@@ -373,6 +379,28 @@ module lsu
    reg [2:0]      p_lb;
    initial p_v = 1'b0;
 
+   // ---- depth-2 in-flight: head (p_*, at MERGE) + shadow (s_*, behind it) ----
+   // Responses are matched per entry by PA and CAPTURED raw (p_data/s_data); the
+   // byte-merge/WB datapath exists once, at the head. Writeback is in ISSUE order
+   // (the shadow promotes when the head retires); response ARRIVAL order is free --
+   // a hit returns under an older miss parked in the cache's MSHR.
+   reg            p_done;  reg [AW-1:0] p_pa;  reg [63:0] p_data;
+   reg            s_v, s_done, s_sgn, s_fp;
+   reg [PBITS-1:0] s_pdst;
+   reg [SBITS-1:0] s_owner;
+   reg [SEQW-1:0] s_seq;
+   reg [CBITS-1:0] s_ck;
+   reg [3:0]      s_nb;
+   reg [WW-1:0]   s_w0, s_w1;
+   reg [2:0]      s_lb;
+   reg [AW-1:0]   s_pa;
+   reg [63:0]     s_data;
+   initial begin s_v = 1'b0; p_done = 1'b0; end
+   wire presp = p_v & mem_rvalid & (mem_resp_addr == p_pa);
+   wire sresp = s_v & mem_rvalid & (mem_resp_addr == s_pa);
+   // the solo atomic's RMW read response (mem_raddr still holds its PA)
+   wire aresp = mem_rvalid & (mem_resp_addr == mem_raddr);
+
 `ifdef LSU_ASSERT
    // In-module assertions (local signals -> no hierarchical-observation problem).
    integer az;
@@ -451,12 +479,16 @@ module lsu
    // MERGE fire/stall: the held load writes back next cycle iff its owner lane is free
    // next cycle (wb_busy) and it is not squashed; squash drops it; otherwise stall.
    wire merge_squash = rollback & older(rollback_seq, p_seq);
-   // a held load merges only once its memory read returns (mem_rvalid) AND its owner
-   // WB lane is free next cycle; otherwise STALL (hold p_*/mem_raddr). A squash drops it
-   // even mid-miss (the abandoned read's response is simply never consumed).
-   wire merge_fire   = p_v & mem_rvalid & ~wb_busy[p_owner] & ~merge_squash;
+   // a held load merges only once its memory read has returned (captured p_done, or
+   // arriving right now: presp) AND its owner WB lane is free next cycle; otherwise
+   // STALL. A squash drops it even mid-miss (the abandoned read's response then
+   // matches no live entry and is ignored).
+   wire merge_fire   = p_v & (p_done | presp) & ~wb_busy[p_owner] & ~merge_squash;
    wire merge_drop   = p_v & merge_squash;
    wire merge_adv    = ~p_v | merge_fire | merge_drop;   // MERGE stage empties next cycle
+   wire s_squash     = rollback & older(rollback_seq, s_seq);
+   wire promote      = merge_adv & s_v & ~s_squash;      // shadow moves up as the head empties
+   wire slot_free    = merge_adv | ~s_v | s_squash;      // an issue slot exists this cycle
    // a younger load must not bypass an in-flight (older) atomic's RMW write -> hold load
    // selection while the atomic FSM is busy (ast != A_IDLE) OR an atomic is arriving this
    // cycle (~amo_v). The latter keeps any load out of the MERGE stage during the atomic, so
@@ -502,7 +534,7 @@ module lsu
    wire ld_committed = (lq_ck[ld_sel] == committed);     // in the oldest live checkpoint == non-speculative
    // fire a device load only when committed (non-speculative) AND fenced (no older store buffered).
    wire ld_dev_ok = ~ld_is_dev | (ld_committed & ~ld_olds_any);
-   wire sel_fire  = merge_adv & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
+   wire sel_fire  = slot_free & mem_rdy & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
    // Roll a device load back to solo when it can't reach committed+fenced by merely WAITING: it is
    // speculative (~committed -> a squash could annul it after a side effect), or it shares its
    // checkpoint with an older store (that store can't drain first -> deadlock). A committed load
@@ -531,7 +563,7 @@ module lsu
       for (dq = 0; dq < LQDEPTH; dq = dq + 1) if (lq_v[dq]) dbg_lq_any = 1'b1;
       for (dq = 0; dq < SBDEPTH; dq = dq + 1) if (sb_v[dq]) dbg_sb_any = 1'b1;
    end
-   assign dbg_defer    = {dbg_lq_any, dbg_sb_any, (ast != A_IDLE), p_v};
+   assign dbg_defer    = {dbg_lq_any, dbg_sb_any, (ast != A_IDLE), p_v | s_v};
    assign dbg_lsu = {
       5'd0,
       rollback, xlate,                                    // [58:57]
@@ -561,7 +593,13 @@ module lsu
    wire             a_issc  = (a_func == 5'b00011);
    wire             a_isw   = (a_sz == 2'd2);
    wire             a_half  = a_addr[2];
-   wire [31:0]      a_old32 = a_half ? mem_rdata[63:32] : mem_rdata[31:0];
+   // AMO read data: LIVE at the aresp edge (A_RD), CAPTURED after -- mem_rdata is
+   // a transient per-response bus under the multi-outstanding contract, so a PTW
+   // PTE response landing between A_RD and A_WR would otherwise clobber the RMW
+   // operand (seen live: an AMO wrote ppn|flags into a kernel stack slot).
+   reg  [63:0]      a_memq;
+   wire [63:0]      a_mem   = (ast == A_RD) ? mem_rdata : a_memq;
+   wire [31:0]      a_old32 = a_half ? a_mem[63:32] : a_mem[31:0];
    wire [31:0]      a_d32   = a_data[31:0];
    wire             a_scok  = rsv_v && (rsv_w == a_word);
    // committed stores still in the buffer must drain before the RMW reads memory
@@ -574,23 +612,23 @@ module lsu
    always @* begin
       case (a_func)
         5'b00001: a_resv = a_data;                                                    // swap
-        5'b00000: a_resv = a_isw ? {32'b0, a_old32 + a_d32}            : mem_rdata + a_data;
-        5'b00100: a_resv = a_isw ? {32'b0, a_old32 ^ a_d32}            : mem_rdata ^ a_data;
-        5'b01100: a_resv = a_isw ? {32'b0, a_old32 & a_d32}            : mem_rdata & a_data;
-        5'b01000: a_resv = a_isw ? {32'b0, a_old32 | a_d32}            : mem_rdata | a_data;
+        5'b00000: a_resv = a_isw ? {32'b0, a_old32 + a_d32}            : a_mem + a_data;
+        5'b00100: a_resv = a_isw ? {32'b0, a_old32 ^ a_d32}            : a_mem ^ a_data;
+        5'b01100: a_resv = a_isw ? {32'b0, a_old32 & a_d32}            : a_mem & a_data;
+        5'b01000: a_resv = a_isw ? {32'b0, a_old32 | a_d32}            : a_mem | a_data;
         5'b10000: a_resv = a_isw ? {32'b0, ($signed(a_old32)<$signed(a_d32))?a_old32:a_d32}
-                                 : ($signed(mem_rdata)<$signed(a_data))?mem_rdata:a_data;   // min
+                                 : ($signed(a_mem)<$signed(a_data))?a_mem:a_data;   // min
         5'b10100: a_resv = a_isw ? {32'b0, ($signed(a_old32)>$signed(a_d32))?a_old32:a_d32}
-                                 : ($signed(mem_rdata)>$signed(a_data))?mem_rdata:a_data;   // max
+                                 : ($signed(a_mem)>$signed(a_data))?a_mem:a_data;   // max
         5'b11000: a_resv = a_isw ? {32'b0, (a_old32<a_d32)?a_old32:a_d32}
-                                 : (mem_rdata<a_data)?mem_rdata:a_data;                      // minu
+                                 : (a_mem<a_data)?a_mem:a_data;                      // minu
         5'b11100: a_resv = a_isw ? {32'b0, (a_old32>a_d32)?a_old32:a_d32}
-                                 : (mem_rdata>a_data)?mem_rdata:a_data;                      // maxu
+                                 : (a_mem>a_data)?a_mem:a_data;                      // maxu
         5'b00011: a_resv = a_data;                                                    // SC stores rs2
-        default:  a_resv = mem_rdata;                                                 // LR: no write
+        default:  a_resv = a_mem;                                                 // LR: no write
       endcase
    end
-   wire [63:0] a_oldv   = a_isw ? {{32{a_old32[31]}}, a_old32} : mem_rdata;
+   wire [63:0] a_oldv   = a_isw ? {{32{a_old32[31]}}, a_old32} : a_mem;
    wire [63:0] a_rdval  = a_issc ? (a_scok ? 64'd0 : 64'd1) : a_oldv;     // SC: 0=ok 1=fail
    wire        a_dowr   = a_islr ? 1'b0 : a_issc ? a_scok : 1'b1;         // who writes memory
    wire        amo_wr_now = (ast == A_WR);   // RMW write held through A_WR until mem_wready
@@ -622,8 +660,10 @@ module lsu
    // store gone from the SB, byte-merge STALE memory (there is no memory-order replay). Hold that
    // store's drain until the load leaves MERGE; it stays SB-resident so the load forwards it.
    // Word-granular + conservative; sits on the cool drain cone, not the hot forward cone.
-   wire dr_hold = p_v & ( (sb_w0[dr_sel] == p_w0) | (sb_w1[dr_sel] == p_w0)
-                        | (sb_w0[dr_sel] == p_w1) | (sb_w1[dr_sel] == p_w1) );
+   wire dr_hold = (p_v & ( (sb_w0[dr_sel] == p_w0) | (sb_w1[dr_sel] == p_w0)
+                         | (sb_w0[dr_sel] == p_w1) | (sb_w1[dr_sel] == p_w1) ))
+                | (s_v & ( (sb_w0[dr_sel] == s_w0) | (sb_w1[dr_sel] == s_w0)
+                         | (sb_w0[dr_sel] == s_w1) | (sb_w1[dr_sel] == s_w1) ));
    // debug-only: the VIRTUAL address of the store driving mem this cycle (cosim store log)
    wire [AW-1:0] dbg_st_va = amo_wr_now ? a_addr : sb_addr[dr_sel];
 
@@ -635,7 +675,7 @@ module lsu
    // One store checked per cycle (single MMU port) -- matches the single st_done port. AMO
    // (solo + oldest) shares the port and wins: when it needs translation no younger store
    // can be pending a check (older stores already drained, nothing younger in flight).
-   wire amo_need_xl = (ast == A_WAIT) & ~amo_pend & ~p_v;   // about to read the RMW location
+   wire amo_need_xl = (ast == A_WAIT) & ~amo_pend & ~p_v & ~s_v;   // about to read the RMW location
 
    // oldest store still needing a translation check
    reg            ck_v;
@@ -741,23 +781,53 @@ module lsu
    assign dfault_tval  = df_tval_r;
 
    always @(posedge clk) begin
-      if (reset) begin p_v <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; mem_runcached <= 1'b0; end
+      if (reset) begin p_v <= 1'b0; s_v <= 1'b0; p_done <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; mem_runcached <= 1'b0; end
       else begin
          amo_wbv <= 1'b0;                       // 1-cycle pulse unless A_WB sets it
          mem_ren <= 1'b0;                        // 1-cycle read-request pulse (set on a fresh mem_raddr)
-         if (sel_fire) begin
+         // per-entry response capture (raw memory word; byte-merged later at the head)
+         if (presp & ~p_done) begin p_data <= mem_rdata; p_done <= 1'b1; end
+         if (sresp & ~s_done) begin s_data <= mem_rdata; s_done <= 1'b1; end
+         if (s_squash) s_v <= 1'b0;
+         if (promote) begin                     // head retired: the shadow moves up
             p_v <= 1'b1;
-            p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
-            p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
-            p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
-            p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
+            p_pdst <= s_pdst; p_owner <= s_owner; p_seq <= s_seq; p_ck <= s_ck;
+            p_nb   <= s_nb;   p_sgn   <= s_sgn;   p_fp  <= s_fp;
+            p_w0   <= s_w0;   p_w1    <= s_w1;    p_lb  <= s_lb;
+            p_pa   <= s_pa;
+            p_done <= s_done | sresp;            // a response landing this very edge counts
+            p_data <= s_done ? s_data : mem_rdata;
 `ifdef LSU_FWD_STATS
-            p_pc    <= lq_pc [ld_sel];
+            p_pc   <= s_pc;
 `endif
+            s_v <= 1'b0;
+         end else if (merge_adv) begin p_v <= 1'b0; p_done <= 1'b0; end
+         if (sel_fire) begin
+            if (merge_adv & ~promote) begin      // head slot open: fill it directly
+               p_v <= 1'b1; p_done <= 1'b0;
+               p_pdst  <= lq_pd [ld_sel]; p_owner <= lq_own[ld_sel];
+               p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
+               p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
+               p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
+               p_pa    <= ld_pa;
+`ifdef LSU_FWD_STATS
+               p_pc    <= lq_pc [ld_sel];
+`endif
+            end else begin                       // head busy/promoting: fill the shadow
+               s_v <= 1'b1; s_done <= 1'b0;
+               s_pdst  <= lq_pd [ld_sel]; s_owner <= lq_own[ld_sel];
+               s_seq   <= lq_seq[ld_sel]; s_ck    <= lq_ck [ld_sel];
+               s_nb    <= lq_nb [ld_sel]; s_sgn   <= lq_sgn[ld_sel]; s_fp <= lq_fp[ld_sel];
+               s_w0    <= lq_w0 [ld_sel]; s_w1    <= lq_w1 [ld_sel]; s_lb <= lq_lb[ld_sel];
+               s_pa    <= ld_pa;
+`ifdef LSU_FWD_STATS
+               s_pc    <= lq_pc [ld_sel];
+`endif
+            end
             mem_raddr <= ld_pa;                 // physical address (Bare: == VA)
             mem_runcached <= ldx_uncached;      // Svpbmt: NC/IO load -> don't cache
             mem_ren   <= 1'b1;                  // request the read (mem_raddr valid next cycle)
-         end else if (merge_adv) p_v <= 1'b0;   // MERGE emptied, nothing to load (else: stall)
+         end
 
          // ---- atomic FSM (solo: never overlaps a load's mem_raddr/p_*) ----
          case (ast)
@@ -765,11 +835,11 @@ module lsu
                       a_addr<=amo_addr; a_data<=amo_data; a_func<=amo_func; a_sz<=amo_sz;
                       a_pdst<=amo_pdst; a_own<=amo_owner; a_ck<=amo_ckpt; a_seq<=amo_seq; ast<=A_WAIT;
                    end
-           A_WAIT: if (!amo_pend && !p_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
+           A_WAIT: if (!amo_pend && !p_v && !s_v && amo_xok) begin   // stores drained, load pipe empty, xlate ok
                       mem_raddr <= amo_pa_al; a_wpa <= amo_pa_al; mem_ren <= 1'b1; ast<=A_RD;
                       mem_runcached <= stx_uncached; a_wnc <= stx_uncached;   // Svpbmt: NC/IO AMO
                    end
-           A_RD:   if (mem_rvalid) begin a_rdval_q <= a_rdval;  // RMW read data returned
+           A_RD:   if (aresp) begin a_rdval_q <= a_rdval; a_memq <= mem_rdata;  // RMW read data returned
                       if (a_islr) begin rsv_v<=1'b1; rsv_w<=a_word; end
                       if (a_issc) rsv_v<=1'b0;
                       ast <= a_dowr ? A_WR : A_WB;   // write phase only if this AMO writes memory
@@ -798,7 +868,7 @@ module lsu
    reg [31:0] scdbg_nprint;  initial scdbg_nprint = 0;
    wire scdbg_on = (scdbg_streak >= 32'd20) && (scdbg_nprint < 32'd5000);
    always @(posedge clk) begin
-      if (ast == A_RD && mem_rvalid && a_issc) begin
+      if (ast == A_RD && aresp && a_issc) begin
          scdbg_streak <= a_scok ? 32'd0 : scdbg_streak + 32'd1;
          if (scdbg_on) begin
             $display("[SCDBG t=%0t SC-%s streak=%0d va=%h rsv_v=%b rsv_w=%h a_word=%h seq=%0d]",
@@ -807,7 +877,7 @@ module lsu
          end
       end
       if (scdbg_on) begin
-         if (ast == A_RD && mem_rvalid && a_islr)
+         if (ast == A_RD && aresp && a_islr)
             $display("[SCDBG t=%0t LR va=%h word=%h seq=%0d]", $time, a_addr, a_word, a_seq);
          if (dr_v && mem_wready && ~dr_hold && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w))
             $display("[SCDBG t=%0t RSV-CLR drain st_va=%h st_pa=%h]",
@@ -822,7 +892,7 @@ module lsu
    // Sv39: user VA bit38==0 -> rsv_w/a_word bit 35 distinguishes user from kernel.
    reg [31:0] scdbg_unprint; initial scdbg_unprint = 0;
    always @(posedge clk) if (scdbg_unprint < 32'd30000) begin
-      if (ast == A_RD && mem_rvalid && a_issc && !a_scok && !a_addr[38]) begin
+      if (ast == A_RD && aresp && a_issc && !a_scok && !a_addr[38]) begin
          $display("[SCUSR t=%0t SC-FAIL va=%h rsv_v=%b rsv_w=%h a_word=%h seq=%0d]",
                   $time, a_addr, rsv_v, rsv_w, a_word, a_seq);
          scdbg_unprint <= scdbg_unprint + 32'd1;
@@ -848,8 +918,8 @@ module lsu
    always @(posedge clk) begin
       scs_cyc <= scs_cyc + 1;
       if (ast == A_IDLE && amo_v && amo_func == 5'b00011) scs_start  <= scs_start + 1;
-      if (ast == A_RD && mem_rvalid && a_issc)            scs_comp   <= scs_comp + 1;
-      if (ast == A_RD && mem_rvalid && a_issc && !a_scok) scs_fail   <= scs_fail + 1;
+      if (ast == A_RD && aresp && a_issc)            scs_comp   <= scs_comp + 1;
+      if (ast == A_RD && aresp && a_issc && !a_scok) scs_fail   <= scs_fail + 1;
       if (rollback && ast != A_IDLE && a_issc && older(rollback_seq, a_seq))
                                                           scs_squash <= scs_squash + 1;
       if (scs_cyc[27:0] == 28'd0 && (scs_start | scs_comp) != 64'd0) begin
@@ -874,8 +944,10 @@ module lsu
    reg [WW-1:0]   m_lwb;
 `ifdef LSU_FWD_STATS
    reg [63:0]     lq_pc [0:LQDEPTH-1];   // debug-only: load PC, carried LQ -> MERGE
-   reg [63:0]     p_pc;
+   reg [63:0]     p_pc, s_pc;
 `endif
+   // head merge data: the captured response, or the one arriving this very cycle
+   wire [63:0]    p_mrdata = p_done ? p_data : mem_rdata;
    reg [7:0]      m_fwdmask;       // per-byte: forwarded from the SB (LSU_FWD_STATS)
    reg [SBDEPTH-1:0] s_use;        // store is valid+ready+older-than-load (byte-independent)
    integer        mb, mj;
@@ -891,7 +963,7 @@ module lsu
          m_posw = m_lp[2:0];
          m_lwb  = m_lp[3] ? p_w1 : p_w0;               // which word this load byte is in
          m_fwd  = 1'b0; m_bseq = {SEQW{1'b0}};
-         m_byt  = mem_rdata[mb*8 +: 8];                // default: memory (read @ mem_raddr)
+         m_byt  = p_mrdata[mb*8 +: 8];                 // default: memory (the head's response)
          for (mj = 0; mj < SBDEPTH; mj = mj + 1) begin
             m_c0 = s_use[mj] && (sb_w0[mj] == m_lwb) && sb_be0[mj][m_posw];
             m_c1 = s_use[mj] && (sb_w1[mj] == m_lwb) && sb_be1[mj][m_posw];
@@ -959,7 +1031,7 @@ module lsu
    // Where do a ready load's cycles go between lq_rdy and merge_fire? Splits the measured
    // median (p50 10 vs a 7-cycle floor) into its causes, using the existing scan signals:
    //   ld_sel_v=0 while a ready load exists -> the store-ORDERING barrier rejected them all
-   //   ld_sel_v=1 but !merge_adv            -> MERGE occupied (the single-outstanding pipe)
+   //   ld_sel_v=1 but no slot/mem_rdy       -> load pipe full (both in-flight slots busy)
    //   ld_sel_v=1, merge_adv, !ld_xok       -> translation (dTLB miss / PTW)
    // plus, for the load already in MERGE: waiting on memory vs blocked by its WB lane.
    integer lqs_stall, lqs_ord, lqs_merge, lqs_xlate, lqs_other, lqs_memw, lqs_wbb;
@@ -973,12 +1045,12 @@ module lsu
       if (lqs_any && !sel_fire) begin
          lqs_stall = lqs_stall + 1;
          if      (!ld_sel_v)  lqs_ord   = lqs_ord   + 1;
-         else if (!merge_adv) lqs_merge = lqs_merge + 1;
+         else if (!slot_free || !mem_rdy) lqs_merge = lqs_merge + 1;
          else if (!ld_xok)    lqs_xlate = lqs_xlate + 1;
          else                 lqs_other = lqs_other + 1;
       end
-      if (p_v && !mem_rvalid)                      lqs_memw = lqs_memw + 1;
-      if (p_v &&  mem_rvalid && wb_busy[p_owner])  lqs_wbb  = lqs_wbb  + 1;
+      if (p_v && !(p_done | presp))                     lqs_memw = lqs_memw + 1;
+      if (p_v &&  (p_done | presp) && wb_busy[p_owner]) lqs_wbb  = lqs_wbb  + 1;
    end
    // mem_ren -> mem_rvalid, bucketed. A blocking-cache HIT should be a tight mode near the
    // best case; a broad/bimodal spread instead means the return is contended (the D$ read
@@ -986,23 +1058,35 @@ module lsu
    integer rl_cnt, rl_b1, rl_b2, rl_b3, rl_b4, rl_b5, rl_b6;
    reg [63:0] rl_sum;        // 64-bit: rl_sum*100 overflows a 32-bit integer
    initial begin rl_cnt=0; rl_sum=0; rl_b1=0; rl_b2=0; rl_b3=0; rl_b4=0; rl_b5=0; rl_b6=0; end
-   integer rl_age; reg rl_act;
-   initial begin rl_age=0; rl_act=1'b0; end
-   always @(posedge clk) if (!reset) begin
-      if (mem_ren) begin rl_act <= 1'b1; rl_age <= 0; end
-      else if (rl_act) begin
-         if (mem_rvalid) begin
-            rl_act <= 1'b0; rl_cnt = rl_cnt + 1; rl_sum = rl_sum + rl_age + 1;
-            case (1'b1)
-              (rl_age <  1): rl_b1 = rl_b1 + 1;   // 1 cycle
-              (rl_age <  2): rl_b2 = rl_b2 + 1;   // 2
-              (rl_age <  4): rl_b3 = rl_b3 + 1;   // 3-4
-              (rl_age <  8): rl_b4 = rl_b4 + 1;   // 5-8
-              (rl_age < 16): rl_b5 = rl_b5 + 1;   // 9-16
-              default:       rl_b6 = rl_b6 + 1;   // 17+
-            endcase
-         end else rl_age <= rl_age + 1;
+   // Per-ENTRY issue->response ages (a single global tracker mismeasures under
+   // multi-outstanding: a second issue restarts it and the overlapped response
+   // ends it early). rl_pa/rl_sa follow the head/shadow entries; promotion moves
+   // the shadow's age to the head. Sampled at each entry's own response.
+   integer rl_pa, rl_sa;
+   initial begin rl_pa=0; rl_sa=0; end
+   task rl_rec(input integer a);
+      begin
+         rl_cnt = rl_cnt + 1; rl_sum = rl_sum + a;
+         case (1'b1)
+           (a <= 1): rl_b1 = rl_b1 + 1;   // 1 cycle
+           (a <= 2): rl_b2 = rl_b2 + 1;   // 2
+           (a <= 4): rl_b3 = rl_b3 + 1;   // 3-4
+           (a <= 8): rl_b4 = rl_b4 + 1;   // 5-8
+           (a <= 16): rl_b5 = rl_b5 + 1;  // 9-16
+           default:  rl_b6 = rl_b6 + 1;   // 17+
+         endcase
       end
+   endtask
+   always @(posedge clk) if (!reset) begin
+      if (presp & ~p_done) rl_rec(rl_pa + 1);
+      if (sresp & ~s_done) rl_rec(rl_sa + 1);
+      if (sel_fire) begin
+         if (merge_adv & ~promote) rl_pa <= 0;
+         else                      rl_sa <= 0;
+      end
+      if (promote) rl_pa <= rl_sa + 1;
+      else if (p_v && !p_done && !presp) rl_pa <= rl_pa + 1;
+      if (s_v && !s_done && !sresp && !(sel_fire && !(merge_adv & ~promote))) rl_sa <= rl_sa + 1;
    end
    final begin
       $display("[LSU-LQ] ready-but-unselected=%0d  ord_block=%0d merge_busy=%0d xlate_wait=%0d other=%0d | in-MERGE: mem_wait=%0d wb_busy=%0d",

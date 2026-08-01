@@ -89,7 +89,7 @@ module tb;
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
       .hw_ip(hw_ip), .mtime(clint_mtime),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren),
-      .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1),
+      .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1), .dmem_rdy(1'b1), .dmem_resp_addr(dmem_raddr),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),

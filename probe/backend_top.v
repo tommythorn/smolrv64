@@ -153,6 +153,8 @@ module backend_top
     output wire                    dmem_runcached,     // Svpbmt: the read addr is NC/IO (don't cache)
     input  wire [63:0]             dmem_rdata,
     input  wire                    dmem_rvalid,
+    input  wire                    dmem_rdy,           // memory can take a new read request (multi-outstanding)
+    input  wire [AW-1:0]           dmem_resp_addr,     // response identity: PA dmem_rdata answers
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
@@ -905,6 +907,7 @@ module backend_top
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt), .sb_empty(dmem_idle),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
+      .mem_rdy(dmem_rdy), .mem_resp_addr(dmem_resp_addr),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata), .mem_wmask(dmem_wmask),
       .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),

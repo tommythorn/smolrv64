@@ -56,6 +56,7 @@ module tb;
       .hw_ip(12'd0), .mtime(64'd0),        // no CLINT/PLIC in this device-less harness
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
+      .dmem_rdy(dmem_rdy), .dmem_resp_addr(dmem_resp_addr),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask), .dmem_wready(dmem_wready),
       .dmem_idle(dmem_idle), .ifence(ifence),
@@ -153,38 +154,26 @@ module tb;
    // +cache=1 routes loads/stores through the unified PIPT cache; mem stays current via
    // write-through so the PTW/imem (which read mem directly) remain coherent.
    reg          cache_en;  initial cache_en = 1'b0;
-   reg          c_rd_pend;                                  // a load is outstanding (ren -> rvalid)
-   reg          c_infl;                                     // accepted by the cache, data in flight
-   // ready/valid request channel: present the load until the rd_req&rd_rdy
-   // handshake (c_infl set there), then stop -- re-requesting a granted read would
-   // be a NEW request to the pipelined cache and would return a second response.
-   wire         c_rd_req = cache_en & (dmem_ren | c_rd_pend) & ~c_infl;
+   // The LSU is multi-outstanding (2 reads) and matches responses by PA
+   // (dmem_resp_addr) itself: this adapter only holds an UNGRANTED request in a
+   // 1-deep issue register (av/aaddr) until the rd_req&rd_rdy handshake --
+   // dmem_rdy backpressures the LSU while it is full -- and forwards the cache's
+   // raw address-tagged responses (no pend/sticky machinery).
+   reg          av;  reg [63:0] aaddr;
+   wire         c_rd_req  = cache_en & (av | dmem_ren);
+   wire [63:0]  c_rd_addr = av ? aaddr : dmem_raddr;
    wire [63:0]  c_rd_data;  wire c_rd_valid, c_wr_ack, c_rd_rdy;
+   wire [63:0]  c_rd_resp_addr;
    wire         c_l2_req, c_l2_we;  wire [57:0] c_l2_addr;  // PAW=64 -> line addr [63:6]
    wire [511:0] c_l2_wdata;  reg [511:0] c_l2_rdata;  reg c_l2_ack;
-   always @(posedge clk) if (reset) c_rd_pend<=1'b0;
-      else if (dmem_ren) c_rd_pend<=1'b1; else if (c_rd_valid) c_rd_pend<=1'b0;
-   always @(posedge clk) if (reset) c_infl<=1'b0;
-      else begin
-         if (dmem_ren) c_infl <= 1'b0;
-         if (c_rd_req & c_rd_rdy) c_infl <= 1'b1;
-         else if (c_rd_valid) c_infl <= 1'b0;
-      end
-   // STICKY rd result: the LSU MERGE consumes mem_rvalid only when its WB lane is free, and
-   // it expects rvalid/rdata to STAY valid until then (the +memlat model holds it high until
-   // the next ren). The cache pulses rd_valid for one cycle, so latch it and hold until the
-   // next dmem_ren clears it -- otherwise a load whose WB lane is busy that cycle wedges.
-   reg          c_rdv_st;  reg [63:0] c_rdd_st;
-   always @(posedge clk) if (reset) c_rdv_st<=1'b0;
-      else if (dmem_ren) c_rdv_st<=1'b0;
-      else if (c_rd_valid) begin c_rdv_st<=1'b1; c_rdd_st<=c_rd_data; end
-   // the held result is valid only while NO newer read is issuing (dmem_ren) or in flight
-   // (c_rd_pend) -- else the previous load's sticky would leak into the next load's MERGE.
-   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
+   always @(posedge clk) if (reset) av<=1'b0;
+      else if (c_rd_req & c_rd_rdy) av<=1'b0;
+      else if (cache_en & dmem_ren & ~c_rd_rdy) begin av<=1'b1; aaddr<=dmem_raddr; end
 
    cache #(.PAW(64), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(c_rd_req), .rd_rdy(c_rd_rdy), .rd_addr(dmem_raddr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
+      .rd_req(c_rd_req), .rd_rdy(c_rd_rdy), .rd_addr(c_rd_addr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
+      .rd_resp_addr(c_rd_resp_addr),
       .rd_uncached(1'b0),
       .wr_req(cache_en & dmem_wen & ~c_wr_ack), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .wr_uncached(1'b0),
@@ -210,26 +199,39 @@ module tb;
       end
    end
 
-   always @(dmem_raddr or wtick or cache_en or c_rd_data or c_rdv_st or c_rdd_st)
-      dmem_rdata = cache_en ? (c_st_ok ? c_rdd_st : c_rd_data) : rd64(dmem_raddr);
-
-   // ---- variable load-read latency (proves the LSU miss-stall path) ----
-   // +memlat=0 (default): dmem_rvalid==1 always -> combinational memory, bit-exact 1-cycle
-   // loads. +memlat=N (N>=1): each load read returns N cycles after its dmem_ren pulse.
-   // dmem_rdata stays combinational on the (held) dmem_raddr, so it reflects the address
-   // live at the cycle rvalid asserts -- the single-outstanding contract the LSU relies on.
+   // ---- nocache read return: combinational (memlat=0) or a 2-entry latency pipe ----
+   // +memlat=N: each read returns N cycles after its ren, with data AND address
+   // sampled at ren (safe: the LSU holds store drains while loads are in flight).
+   // Two entries match the LSU's two in-flight slots; entry 0 presents first.
    reg  [15:0] memlat;
-   reg         lat_busy; reg [15:0] lat_cnt;
-   initial begin memlat = 16'd0; lat_busy = 1'b0; lat_cnt = 16'd0; end
-   wire dmem_rvalid = cache_en ? (c_rd_valid | c_st_ok)
-                    : (memlat == 16'd0) ? 1'b1
-                    : (dmem_ren ? 1'b0 : (lat_busy && lat_cnt == 16'd0));
-   wire dmem_wready = cache_en ? c_wr_ack : 1'b1;
+   reg         le_v [0:1];  reg [15:0] le_cnt [0:1];  reg [63:0] le_a [0:1], le_d [0:1];
+   initial begin memlat = 16'd0; le_v[0]=1'b0; le_v[1]=1'b0; end
+   wire le0_hit = le_v[0] && le_cnt[0]==16'd0;
+   wire le1_hit = le_v[1] && le_cnt[1]==16'd0 && !le0_hit;
    always @(posedge clk) begin
-      if (reset)            begin lat_busy <= 1'b0; lat_cnt <= 16'd0; end
-      else if (dmem_ren)    begin lat_busy <= 1'b1; lat_cnt <= (memlat==16'd0)?16'd0:(memlat-16'd1); end
-      else if (lat_busy && lat_cnt != 16'd0) lat_cnt <= lat_cnt - 16'd1;
+      if (reset) begin le_v[0]<=1'b0; le_v[1]<=1'b0; end
+      else begin
+         if (le0_hit) le_v[0]<=1'b0; else if (le_v[0] && le_cnt[0]!=16'd0) le_cnt[0]<=le_cnt[0]-16'd1;
+         if (le1_hit) le_v[1]<=1'b0; else if (le_v[1] && le_cnt[1]!=16'd0) le_cnt[1]<=le_cnt[1]-16'd1;
+         if (!cache_en && memlat!=16'd0 && dmem_ren) begin
+            if (!le_v[0] || le0_hit) begin le_v[0]<=1'b1; le_cnt[0]<=memlat-16'd1; le_a[0]<=dmem_raddr; le_d[0]<=rd64(dmem_raddr); end
+            else begin le_v[1]<=1'b1; le_cnt[1]<=memlat-16'd1; le_a[1]<=dmem_raddr; le_d[1]<=rd64(dmem_raddr); end
+         end
+      end
    end
+   always @* dmem_rdata = cache_en ? c_rd_data
+                        : (memlat==16'd0) ? rd64(dmem_raddr)
+                        : le0_hit ? le_d[0] : le_d[1];
+   wire dmem_rvalid = cache_en ? c_rd_valid
+                    : (memlat == 16'd0) ? 1'b1
+                    : (le0_hit | le1_hit);
+   wire [63:0] dmem_resp_addr = cache_en ? c_rd_resp_addr
+                              : (memlat==16'd0) ? dmem_raddr
+                              : le0_hit ? le_a[0] : le_a[1];
+   // rdy drops during a live-but-ungranted request cycle too (av sets at the edge):
+   // else the LSU fires into a full skid and the request is silently lost.
+   wire dmem_rdy    = cache_en ? (~av & ~(dmem_ren & ~c_rd_rdy)) : 1'b1;
+   wire dmem_wready = cache_en ? c_wr_ack : 1'b1;
 
    always @(posedge clk) begin
       ptw_rvalid <= ptw_read;

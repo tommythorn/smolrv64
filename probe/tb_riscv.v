@@ -43,7 +43,7 @@ module tb;
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
       .hw_ip(12'd0), .mtime(64'd0),        // no CLINT/PLIC in this device-less harness
-      .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1), .dmem_wready(1'b1),
+      .dmem_raddr(dmem_raddr), .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1), .dmem_rdy(1'b1), .dmem_resp_addr(dmem_raddr), .dmem_wready(1'b1),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),

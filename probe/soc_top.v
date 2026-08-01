@@ -115,7 +115,8 @@ module soc_top #(
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
    wire                dmem_cbo, dmem_cbo_zero, dmem_cbo_keep;  // Zicbom/Zicboz cache maintenance
    wire [63:0]         dmem_rdata;
-   wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
+   wire                dmem_rvalid, dmem_wready, dmem_idle, ifence, dmem_rdy;
+   wire [63:0]         dmem_resp_addr;
    wire [55:0]         ptw_addr, ldptw_addr, stptw_addr;
    wire                ptw_read, ldptw_read, stptw_read;
    wire [63:0]         ptw_rdata, ldptw_rdata, stptw_rdata;
@@ -129,6 +130,7 @@ module soc_top #(
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
+      .dmem_rdy(dmem_rdy), .dmem_resp_addr(dmem_resp_addr),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
       .dmem_cbo(dmem_cbo), .dmem_cbo_zero(dmem_cbo_zero), .dmem_cbo_keep(dmem_cbo_keep),
@@ -341,50 +343,39 @@ module soc_top #(
                          : is_buildid_r ? {build_id_word, build_id_word}
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
-   // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
-   reg          c_rd_pend;
+   // ---------------- D$ + read/write adapters, device-muxed ----------------
+   // The LSU is MULTI-OUTSTANDING (up to 2 reads in flight) and matches responses
+   // itself by PA (dmem_resp_addr): the old pend/infl/sticky/dc_rv_ok machinery is
+   // gone. This adapter only (a) holds an UNGRANTED cache request in a 1-deep issue
+   // register (av/aaddr/anc) until the rd_req&rd_rdy handshake -- dmem_rdy
+   // backpressures the LSU while it is full -- and (b) forwards the cache's raw
+   // address-tagged responses. A squash-abandoned response matches no live LSU
+   // entry and is ignored there; PTW responses on the shared port are filtered the
+   // same way (a same-address collision safely shares data). Device loads are solo
+   // (never concurrent with cache reads): their completion keeps the dmem_raddr
+   // identity (the LSU holds the last-issued address).
    wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_rd_rdy;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
-   // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
-   // ("a new mem_ren supersedes any prior unfinished read"). The cache, already committed to the
-   // squashed address, would otherwise deliver that stale line to the new load. Match the cache's
-   // response address to the current request (like the I$ does with i_pa); a non-matching response
-   // is discarded and the request re-issues for the new address.
-   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
-   // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
-   // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
-   // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
-   wire         raw_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
-                           : is_dev_r    ? dev_rvalid
-                           : dc_rv_ok;
-   wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
-                           : is_dev_r    ? dev_rdata
-                           : dc_rd_data;
-   // The D$ read port is a ready/valid request channel (dc_rd_rdy): present the
-   // load until the rd_req&rd_rdy handshake, then stop -- c_infl marks "accepted,
-   // data still in flight". A superseding dmem_ren clears c_infl so the NEW address
-   // is presented immediately, even while the abandoned read is still in flight
-   // (its response is dropped by the dc_rv_ok address match above). With c_infl
-   // lowering c_rd_req after the grant, the dcr arbiter below can hand the port
-   // to a PTW while the LSU's data returns -- walks no longer serialize behind loads.
-   reg          c_infl;
-   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~c_infl & ~dc_rv_ok & ~is_dev_r;
-   always @(posedge clk) if (reset) c_rd_pend<=1'b0;
-      else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
-   always @(posedge clk) if (reset) c_infl<=1'b0;
-      else begin
-         if (dmem_ren) c_infl <= 1'b0;
-         if (c_rd_req & dc_rd_rdy) c_infl <= 1'b1;
-         else if (dc_rv_ok) c_infl <= 1'b0;
-      end
-   reg          c_rdv_st;  reg [63:0] c_rdd_st;
-   always @(posedge clk) if (reset) c_rdv_st<=1'b0;
-      else if (dmem_ren) c_rdv_st<=1'b0;
-      else if (raw_rvalid) begin c_rdv_st<=1'b1; c_rdd_st<=raw_rdata; end
-   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
-   assign       dmem_rdata  = c_st_ok ? c_rdd_st : raw_rdata;
-   assign       dmem_rvalid = raw_rvalid | c_st_ok;
+   reg          av;  reg [63:0] aaddr;  reg avnc;
+   wire         c_rd_req = av | (dmem_ren & ~is_dev_r);
+   wire [63:0]  c_rd_addr = av ? aaddr : dmem_raddr;
+   wire         c_rd_nc   = av ? avnc  : dmem_runcached;
+   always @(posedge clk) if (reset) av<=1'b0;
+      else if (c_rd_req & dc_rd_rdy) av<=1'b0;                       // granted
+      else if (dmem_ren & ~is_dev_r & ~dc_rd_rdy)                    // ungranted: hold it
+         begin av<=1'b1; aaddr<=dmem_raddr; avnc<=dmem_runcached; end
+   // rdy must also drop during a live-but-UNGRANTED request cycle (av sets only at
+   // the edge): otherwise the LSU can fire again into a full skid and that second
+   // request's address is neither presented nor latched -- a silent lost load.
+   assign       dmem_rdy = ~av & ~(dmem_ren & ~is_dev_r & ~dc_rd_rdy);
+   assign       dmem_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
+                            : is_dev_r    ? dev_rvalid
+                            : dc_rd_valid;
+   assign       dmem_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
+                            : is_dev_r    ? dev_rdata
+                            : dc_rd_data;
+   assign       dmem_resp_addr = (is_virtio_r | is_dev_r) ? dmem_raddr : dc_rd_resp_addr;
    // virtio store completes only when the bridge has DELIVERED it (virtio_rvalid) -- blocking, so the
    // fence-released next read cannot overtake it; other device writes accept in 1 cycle (dev_wack).
    assign       dmem_wready = is_virtio_w ? (virtio_rvalid & vio_wpending)
@@ -405,7 +396,7 @@ module soc_top #(
       .rd_resp_addr(dc_rd_resp_addr),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
-      .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
+      .rd_uncached(c_rd_nc), .wr_uncached(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_ack & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
@@ -549,7 +540,7 @@ module soc_top #(
    always @(posedge clk) if (reset) pw_issued <= 3'd0;
       else pw_issued <= (pw_issued | pw_gnt) & ~pw_match;
    assign dcr_req  = c_rd_req | (|pw_want);
-   assign dcr_addr = c_rd_req    ? dmem_raddr
+   assign dcr_addr = c_rd_req    ? c_rd_addr
                    : pw_want[0]  ? {8'd0, pw_addr[0*56 +: 56]}
                    : pw_want[1]  ? {8'd0, pw_addr[1*56 +: 56]}
                    :               {8'd0, pw_addr[2*56 +: 56]};

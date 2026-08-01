@@ -170,6 +170,31 @@ exists -- capture could run during msh_infl), multi-entry MSHR with LSU
 multi-outstanding (step 4), and the I$ (HUM is D$-only; the frontend is still a
 single-outstanding client).
 
+## Step 4 results: LSU multi-outstanding, depth 2 (2026-07-31)
+
+Head (`p_*`) + shadow (`s_*`) in-flight slots: responses are matched per entry by PA
+(`mem_resp_addr`) and captured raw; writeback stays in issue order (shadow promotes on
+head retire); response ARRIVAL order is free (a hit returns under a miss in the MSHR).
+New `mem_rdy`/`mem_resp_addr` ports; the soc/tb adapters shrink to a 1-deep issue skid +
+raw address-tagged response forwarding (`dc_rv_ok`/pend/sticky machinery deleted -- a
+squashed load's response matches no live entry). The drain interlock, atomics and device
+loads gate on both slots. Two bugs found on the way: (1) `mem_rdy` must drop during a
+live-but-ungranted request cycle or the second issue is silently lost; (2) the AMO RMW
+result (`a_resv`) consumed LIVE `mem_rdata` at A_WR -- legal when adapters held rdata
+stable, but under raw forwarding a PTW PTE response landing between A_RD and A_WR became
+the RMW operand (cosim caught an `amoor` writing `ppn|flags` into a kernel stack slot at
+8.75M retires). Fixed by capturing at `aresp` (`a_memq`). The `LSU-RD` histogram is now
+per-entry (the old single tracker mismeasured under overlap; scale moved +1: it now
+counts from the issue edge).
+
+200M-cycle boot, IW=1, vs 3b: loads completed 9.70M -> 9.75M, mean ~3.6c (unchanged --
+one ready load at a time at IW=1; the win is capacity), pipe-full stalls
+(`merge_busy`) 8.08M -> 1.33M cyc, ready-but-unselected 12.0M -> 5.44M, in-MERGE
+mem_wait 34.8M -> 29.9M, D$ b2b-accepts 188k -> 1.81M (loads now stream through the
+pipelined cache back-to-back). Cosim: 200M cycles lockstep vs simmerv, 0 divergences.
+Re-measure at IW=2/4 where multiple ready loads exist; frontend streaming (I$) remains
+the open client-side item.
+
 ## Validation
 
 * `run-vl-tests.sh` (215/215) after every step -- covers the LSU/D$ through `backend_top`.
