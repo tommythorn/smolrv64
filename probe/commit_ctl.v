@@ -196,6 +196,18 @@ module commit_ctl
          committed <= 0; open_inst <= 0;
       end else begin
          for (i = 0; i < NCHK; i = i + 1) begin
+`ifndef SYNTHESIS
+            // A dec with no matching outstanding op is the rollback-reopen leak class
+            // (a stale completion hitting a zeroed/reused index): the count would wrap
+            // (CNTW is narrow) and stick non-zero -> the checkpoint never commits ->
+            // ring fills -> fetch wedge, 100k+ cycles downstream of the actual bug.
+            // Fail LOUDLY at the leak instead (d2674b9's CKMAX>=2 wedge class).
+            if (!(redirect && young[i])
+                && (dec[i] > (count[i] + ((disp_fire && (cur == i[CBITS-1:0])) ? disp_count : {DCW{1'b0}}))))
+               $fatal(1, "[CC] count underflow ck=%0d count=%0d dec=%0d (dispatching=%0d)",
+                      i, count[i], dec[i],
+                      (disp_fire && (cur == i[CBITS-1:0])) ? disp_count : {DCW{1'b0}});
+`endif
             count[i] <= (redirect && young[i]) ? {CNTW{1'b0}}
                       : count[i] + ((disp_fire && (cur == i[CBITS-1:0])) ? disp_count : {DCW{1'b0}})
                                  - dec[i];

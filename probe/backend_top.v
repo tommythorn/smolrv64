@@ -40,6 +40,12 @@
  `define PROBE_SBDEPTH 4
 `endif
 
+// PROBE_CKMAX: instructions accumulated per checkpoint (coarse CPR). 1 = per-bundle
+// baseline; >=2 grows the in-flight window (see the CKMAX parameter notes below).
+`ifndef PROBE_CKMAX
+ `define PROBE_CKMAX 1
+`endif
+
 // PROBE_IW: issue/shard width -- the ONE width knob. SBITS, PBITS, HW, DCW, CNTW,
 // NPHYS (and WAKEN, downstream) all DERIVE from it. Was hardwired 4; default is now 2:
 // at probe_clk=66.7 MHz even a perfect IPC=4 is only 267 MIPS (a scalar's reach), so a
@@ -104,20 +110,23 @@ module backend_top
                                      // ops << the +/-128 wrap-compare bound (SEQW=8).
     parameter NPHYS = (1 << SBITS) * POOL,   // pr = {ridx, shard[SBITS-1:0]} spans 2^SBITS*POOL
                                              // (= IW*POOL for power-of-2 IW; sparse/larger for 3,5)
-    parameter CKMAX = 1,             // per-bundle. CKMAX>=2 (coarse CPR window growth) has a
-                                     // rollback-reopen count-accounting wedge on the ubuntu-mini
-                                     // RAM boot -- DEFERRED (repro + notes in commit_ctl /
-                                     // project_coarse_checkpoints). CKMAX=1 = proven baseline.
-                                     // CKMAX=1 ALSO carries a correctness invariant: the aligner
-                                     // makes a SYSTEM op solo in its bundle, so at CKMAX=1 a CSR
-                                     // op is alone in its CHECKPOINT and no rollback that targets
-                                     // some other op's checkpoint can re-execute it. That matters
-                                     // because a CSR write is applied at EX and is NOT undone by a
-                                     // rollback, so re-executing `csrrw rd,csr,rd` (a swap) reads
-                                     // back the value it just installed -- the mtvec-stranding bug.
-                                     // CKMAX>=2 would let a CSR op share a checkpoint with a
-                                     // replayable load and reintroduce it; make CSR writes a
-                                     // commit-time effect before raising CKMAX.
+    parameter CKMAX = `PROBE_CKMAX,  // per-bundle at 1 (proven baseline); >=2 = coarse CPR
+                                     // window growth. The two historical CKMAX>=2 blockers:
+                                     //  - CSR-solo: a CSR write applies at EX and is NOT undone
+                                     //    by rollback, so a replay-reopen re-executing it (e.g.
+                                     //    `csrrw rd,csr,rd` reading back its own write -- the
+                                     //    mtvec-stranding bug) must be impossible. HOLDS at any
+                                     //    CKMAX since 513564b: the aligner makes SYSTEM ops solo
+                                     //    in their bundle, disp_barrier force-closes the open
+                                     //    checkpoint ahead of them, and disp_close ends it behind
+                                     //    them -- a CSR op is ALWAYS alone in its checkpoint, and
+                                     //    it executes oldest-gated (nothing older in flight).
+                                     //  - the d2674b9 rollback-reopen count-accounting wedge
+                                     //    (ubuntu-mini, c=254139): repro LOST to artifact drift
+                                     //    (2026-08-01: neither HEAD nor d2674b9 itself wedges on
+                                     //    current fw/cpio). The leak class (a stale completion
+                                     //    decrementing a reused checkpoint index) is now a loud
+                                     //    $fatal in commit_ctl instead of a silent wrap.
     parameter DCW   = $clog2(IW+1),  // dispatch count 0..IW (one bundle)
     parameter CNTW  = $clog2(CKMAX+IW+1),  // per-checkpoint count: up to CKMAX (+bundle overshoot)
     parameter AW    = 64,
