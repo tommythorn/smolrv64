@@ -106,6 +106,29 @@ Two results that reorder the work:
 5. Separately re-measure the frontend after step 2 -- if `fetch-bubble` drops, the I$ FSM
    was the cause and the branch-predictor work is deprioritized accordingly.
 
+## Step 2 results (f371fa1 + a20a719, 2026-07-31)
+
+The read port is now a ready/valid request channel (`rd_req`/`rd_rdy`) + address-tagged
+response; all clients (soc I$ adapter, LSU `c_infl`, PTW `pw_issued` arbiter, tb_vl,
+tb_cache) handshake and stop presenting after the grant. Hits stream 1/cycle via
+`pipe_take` (same-address b2b legal). Same 200M-cycle boot, before -> after:
+
+| `LSU-RD` | IW=1 before | IW=1 after | IW=2 before | IW=2 after |
+| --- | --- | --- | --- | --- |
+| 2c mode | 82.1% | 83.0% | 71.8% | 73.4% |
+| 3-4c | 5.1% | 4.2% | 21.4% | 19.8% |
+| 17+c tail | 12.07% | 12.07% | 5.87% | 5.86% |
+| mean | 6.72c | 6.71c | 4.20c | 4.19c |
+
+The 3-4c shoulder (lookup serialization) moved into the 2c mode; b2b-accepts = 136k
+(IW=1) / 210k (IW=2), mostly PTE-under-load + squash reissue; I$ b2b = 0 (frontend
+still a single-outstanding client). The 17+c tail did not move a single point -- it is
+fill/write-back occupancy, step 3's target, and owns ~72% of the IW=1 mean (~40c/tail
+load). NOTE: `CACHE-BLK` semantics changed at a20a719 -- clients no longer hold rd_req
+during their own service, so the counter now measures only genuine cross-blocking
+(D$ IW=2: 5.2M cyc; fill 0.55M, wb 0.48M, lookup 4.14M). Not comparable to the
+baseline table above.
+
 ## Validation
 
 * `run-vl-tests.sh` (215/215) after every step -- covers the LSU/D$ through `backend_top`.
