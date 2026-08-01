@@ -321,7 +321,7 @@ module backend_top
    // coarsens into one checkpoint (window grows ~basic-block-length x). commit_ctl also caps
    // at CKMAX. (Not-taken branches riding along -> per-branch pnpc/pdet, a later step.)
    reg  disp_close;  reg disp_barrier;  integer dcl;
-   wire cc_ckpt_open;  wire cc_stall_barrier;
+   wire cc_ckpt_open;  wire cc_stall_barrier;  wire cc_fresh;
    always @* begin
       disp_close = 1'b0;  disp_barrier = 1'b0;
       for (dcl = 0; dcl < IW; dcl = dcl + 1) begin
@@ -487,7 +487,11 @@ module backend_top
    // target (seen live: a stale VA/PA-aliased BTB entry sent fetch to 0x8000bf7c under
    // Sv39 and the kernel took cause=12 at a bare-physical epc). Letting the bundle
    // dispatch first either redirects (fault dropped) or drains to a genuine fire.
-   assign iflt_fire = pend_iflt & cc_empty & ~any_valid & (~replay_v | replay_to_iflt);
+   // cc_fresh: the open span must hold NO dispatched work -- iflt's rollback restores
+   // chk_map[committed] as a "no-op", which discards live renames of executed-but-
+   // unretired bundles otherwise (CKMAX>=2 stale-map divergence, GB5 @2.23B cycles).
+   // pend_iflt force-closes the open span in commit_ctl (iflt_req), so this converges.
+   assign iflt_fire = pend_iflt & cc_empty & cc_fresh & ~any_valid & (~replay_v | replay_to_iflt);
 
    wire [3:0]         dflt_cause;
    wire [63:0]        dflt_epc, dflt_tval;
@@ -746,7 +750,7 @@ module backend_top
    commit_ctl #(.NCHK(NCHK), .CBITS(CBITS), .IW(IW), .CKMAX(CKMAX), .CNTW(CNTW), .DCW(DCW)) cc
      (.clk(clk), .reset(reset), .cur(cur),
       .disp_fire(disp_fire), .disp_count(disp_count), .disp_close(disp_close),
-      .irq_req(irq_inject & accept), .solo(replay_v | devld_solo_v),
+      .irq_req(irq_inject & accept), .iflt_req(pend_iflt), .solo(replay_v | devld_solo_v),
       .barrier(disp_barrier), .stall_barrier(cc_stall_barrier),
       .iss_valid(q_iss_valid), .iss_is_load(q_iss_defer), .iss_is_div(q_iss_is_mul),
       .iss_is_fp(q_iss_is_fp), .fp_done(eb_fp_done), .fp_done_ckpt(eb_fp_done_ckpt), .iss_ckpt(q_iss_ckpt),
@@ -755,7 +759,7 @@ module backend_top
       .st_done(lsu_st_done), .st_done_ckpt(lsu_st_done_ckpt),
       .div_done(eb_div_done), .div_done_ckpt(eb_div_done_ckpt),
       .redirect(roll_v), .redirect_ckpt(roll_ckpt),
-      .create(cc_create), .ckpt_open(cc_ckpt_open), .empty(cc_empty),
+      .create(cc_create), .ckpt_open(cc_ckpt_open), .ckpt_fresh(cc_fresh), .empty(cc_empty),
       .commit(cc_commit), .commit_idx(cc_commit_idx),
       .rollback(cc_rollback), .rollback_idx(cc_rollback_idx),
       .committed_idx(cc_committed), .commit_count(cc_commit_count),
@@ -1120,6 +1124,23 @@ module backend_top
                      : dflt_roll    ? chk_seq[flt_ckpt]
                      : devld_replay ? chk_seq[lsu_devld_ckpt]
                      : (eb_rseq + 1'b1);
+
+`ifdef MAPDBG
+   // Companion to rename_shard's MAPDBG: rollback causes + commit stream in the same
+   // window, to identify WHAT rolled back to a given span and whether it was live.
+   integer rdc; initial rdc = 0;
+   always @(posedge clk) begin
+      rdc <= rdc + 1;
+      if (rdc > `MAPDBG_T0 && rdc < `MAPDBG_T1) begin
+         if (roll_v)
+            $display("[ROLLD] c=%0d idx=%0d causes(eb=%b tr=%b ifl=%b dfl=%b dev=%b) ebck=%0d rseq=%0d committed=%0d cur=%0d tgt=%h",
+                     rdc, roll_ckpt, eb_redirect, eb_rtrap, iflt_fire, dflt_roll, devld_replay,
+                     eb_rckpt, roll_seq, cc_committed, cur, fe_red_pc);
+         if (cc_commit)   $display("[ROLLD] c=%0d COMMIT idx=%0d", rdc, cc_commit_idx);
+         if (irq_inject)  $display("[ROLLD] c=%0d IRQINJ cur=%0d committed=%0d accept=%b", rdc, cur, cc_committed, accept);
+      end
+   end
+`endif
 
    assign wb_valid = wkv;
    assign wb_pr    = wkp;

@@ -179,6 +179,29 @@ module rename_shard
          if (ckpt_create) for (k = 0; k < AREGS; k = k + 1) chk_map[nxt][k] <= create ? nmap[k] : map[k];
       end
    end
+
+`ifdef MAPDBG
+   // One-shot divergence hunt (shard 0, arch reg `MAPDBG_AR): full history of the
+   // tracked register's map -- renames, snapshot writes, rollback restores -- in a
+   // cycle window. The restore that installs a stale physreg names the bad snapshot.
+   integer mdc; initial mdc = 0;
+   always @(posedge clk) begin
+      mdc <= mdc + 1;
+      if (SH == 0 && mdc > `MAPDBG_T0 && mdc < `MAPDBG_T1) begin
+         if (rollback)
+            $display("[MAPD] c=%0d ROLL idx=%0d map%0d<=%0d", mdc, rollback_idx,
+                     `MAPDBG_AR, chk_map[rollback_idx][`MAPDBG_AR]);
+         else begin
+            if (create && (nmap[`MAPDBG_AR] != map[`MAPDBG_AR]))
+               $display("[MAPD] c=%0d REN map%0d %0d->%0d (cur=%0d)", mdc,
+                        `MAPDBG_AR, map[`MAPDBG_AR], nmap[`MAPDBG_AR], cur);
+            if (ckpt_create)
+               $display("[MAPD] c=%0d SNAP[%0d]%0d<=%0d (create=%b cur=%0d)", mdc, nxt,
+                        `MAPDBG_AR, create ? nmap[`MAPDBG_AR] : map[`MAPDBG_AR], create, cur);
+         end
+      end
+   end
+`endif
 endmodule
 
 `default_nettype wire

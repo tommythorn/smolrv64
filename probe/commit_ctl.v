@@ -35,6 +35,8 @@ module commit_ctl
     input  wire                  irq_req,      // an interrupt pseudo-op is being injected (fetch this
                                                // cycle, dispatches next) -> force-close the open
                                                // checkpoint so the pseudo-op is solo in its own.
+    input  wire                  iflt_req,     // a fetch-fault trap is pending -> force-close the open
+                                               // checkpoint so delivery sees ckpt_fresh (see force_close).
     input  wire                  barrier,      // incoming bundle carries a memory-barrier op that must
                                                // see older stores drained -> open it in a fresh ckpt.
     output wire                  stall_barrier,// hold dispatch this cycle while the open ckpt closes
@@ -75,6 +77,8 @@ module commit_ctl
     input  wire [CBITS-1:0]      redirect_ckpt,
     // to freelist + frontend
     output wire                  create,        // close the open checkpoint / advance cur
+    output wire                  ckpt_fresh,    // the open checkpoint holds NO dispatched work: a
+                                                // rollback restoring chk_map[committed] is a true no-op
     output wire                  ckpt_open,     // this bundle is the FIRST of its checkpoint
                                                 // (gates the chk_pc/chk_seq snapshot to the start)
     output wire                  commit,
@@ -124,9 +128,19 @@ module commit_ctl
    // ordering that is correct. disp_close then closes it too, so the barrier is solo.
    wire            barrier_fc = barrier && (open_inst != {CNTW{1'b0}});
    assign stall_barrier = barrier_fc;
-   wire            force_close = (irq_req && (post_open != {CNTW{1'b0}})) || barrier_fc;
+   // iflt_req: a pending FETCH-fault trap must deliver into a FRESH span. Its rollback
+   // restores chk_map[committed] as a "functional no-op" -- which is only a no-op when
+   // the open span holds no dispatched work (ckpt_fresh below). At CKMAX>=2 the open
+   // span can hold executed-but-unretired bundles with count==0 (ALU ops dec at issue),
+   // and restoring the span-START map would DISCARD their live renames (GB5 @2.23B:
+   // trap-save store renamed x14 from a span-start snapshot, pre-increment physreg).
+   // Force-close like the irq arm; count==0 lets it commit immediately; fetch is dead
+   // (the fault froze it), so no new dispatch races the close. At CKMAX=1 open_inst is
+   // always 0 here and this arm never fires.
+   wire            force_close = ((irq_req || iflt_req) && (post_open != {CNTW{1'b0}})) || barrier_fc;
    assign create    = create_n || force_close;
    assign ckpt_open = disp_fire && (open_inst == {CNTW{1'b0}});
+   assign ckpt_fresh = (open_inst == {CNTW{1'b0}});
    assign rollback = redirect;
    assign rollback_idx = redirect_ckpt;
    // commit the oldest once it is closed (newer ckpt exists) and drained
