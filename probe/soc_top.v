@@ -425,32 +425,90 @@ module soc_top #(
          endcase
       end
 
-   // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
-   reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
-   // CONTAINMENT, not equality: the latched window covers HW halfwords from i_pa, so a PC
-   // anywhere inside it is a HIT, served by shifting -- instead of re-requesting the same cache
-   // line once per instruction (measured: 32.8% of ALL cycles were fetch-bubble at IW=1 vs 0.8%
-   // real fills). Unsigned wrap gives the lower bound: imem_addr < i_pa wraps huge and fails.
-   // The (HW - i_off_hw) >= 2 guard is REQUIRED: a PC on the last halfword yields avail=1, which
-   // cannot feed a 32-bit op, and with i_need = ~i_match fetch would never refetch -> deadlock.
-   wire [63:0]  i_off_b = imem_addr - i_pa;
-   wire [$clog2(HW)-1:0] i_off_hw = i_off_b[$clog2(HW):1];
-   wire         i_match = i_have & (i_off_b < (HW*2)) & ((HW - i_off_hw) >= 2);
-   wire         i_need  = ~i_match;
+   // ---------------- I$ (read-only) + streaming fetch adapter + fence.i FSM ----------------
+   // Two PA-keyed window buffers: i_* serves the PC, p_* holds the NEXT sequential
+   // window, prefetched while i_* is consumed. The I$ read port pipelines (one accept
+   // per cycle, 2-cycle hit), but the old single-window client serialized
+   // request -> wait -> serve and fetch-bubbled 27% of all cycles at IW=2 (zero
+   // back-to-back accepts across every run). Streaming rules:
+   //  - CONTAINMENT, not equality, decides a hit in either window (and in an arriving
+   //    response). The (HW - off_hw) >= 2 guard is REQUIRED: a PC on the last halfword
+   //    yields avail=1, which cannot feed a 32-bit op, and the client would never
+   //    refetch -> deadlock. That guard is also why the prefetch stride is WINB-2:
+   //    the next window starts at the FIRST halfword the current one cannot serve
+   //    (the PC exits at offset WINB-2 or WINB; both land in the prefetched window).
+   //  - Windows and responses are hints keyed by PA: a redirect just misses
+   //    containment, and a stale response installs harmlessly (tag-matched to its
+   //    slot via rd_resp_addr; unsigned wrap gives the lower containment bound).
+   //    I$ content changes only at fence.i, which clears both windows (ic_inv_req)
+   //    and gates installs/promotes (fi_stall) so a pre-fence in-flight response
+   //    cannot linger past the invalidate.
+   //  - When the PC walks into p_*, it is PROMOTED (copied) into i_*, freeing p_*
+   //    for the next prefetch. Prefetch never crosses the 4 KiB page: beyond it the
+   //    PA is a new translation (fetch caps its window there anyway).
+   //  - Cost: a prefetch that MISSES the I$ occupies the FSM (no HUM on the I$), so a
+   //    demand issued during that fill waits it out -- bounded, and the prefetched
+   //    line is the demand's next window in the common fall-through case.
+   localparam WINB = HW*2;                       // window size in bytes
+   reg          i_have, i_rd_pend, p_have, p_rd_pend;
+   reg [63:0]   i_pa, i_reqpa, p_pa, p_reqpa;
+   reg [HW*16-1:0] i_win, p_win;
    wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy, ic_rd_rdy;  wire [63:0] ic_rd_resp_addr;
-   // ready/valid request channel: present the fetch until the rd_req&rd_rdy
-   // handshake (i_reqpa latched there), then wait for the response. An unaccepted
-   // request may be retracted/re-addressed freely (redirect before the grant).
-   wire         ic_rd_req  = i_need & ~i_rd_pend;
-   wire [63:0]  ic_rd_addr = imem_addr;
+   reg          ic_inv_req;
+
+   wire [63:0]  i_off_b = imem_addr - i_pa;
+   wire [63:0]  p_off_b = imem_addr - p_pa;
+   wire [63:0]  a_off_b = imem_addr - ic_rd_resp_addr;
+   wire [$clog2(HW)-1:0] i_off_hw = i_off_b[$clog2(HW):1];
+   wire [$clog2(HW)-1:0] p_off_hw = p_off_b[$clog2(HW):1];
+   wire [$clog2(HW)-1:0] a_off_hw = a_off_b[$clog2(HW):1];
+   wire         i_match = i_have & (i_off_b < WINB) & ((HW - i_off_hw) >= 2);
+   wire         p_match = p_have & (p_off_b < WINB) & ((HW - p_off_hw) >= 2);
+   // arrival bypass: serve an arriving response COMBINATIONALLY (ic_rd_data is a
+   // register inside the cache, so this adds a mux, not array logic depth) -- by
+   // containment, so a prefetch landing with the PC already mid-window serves too.
+   wire         a_serve = ic_rd_valid & (a_off_b < WINB) & ((HW - a_off_hw) >= 2);
+   wire         serve   = a_serve | i_match | p_match;
+   wire [$clog2(HW)-1:0] s_off = a_serve ? a_off_hw : i_match ? i_off_hw : p_off_hw;
+   wire [HW*16-1:0]      s_win = a_serve ? ic_rd_data : i_match ? i_win : p_win;
+
+   // request channel (present until the rd_req&rd_rdy grant; retracting or
+   // re-addressing an ungranted request is legal). Demand: nothing serves the PC
+   // and no in-flight prefetch is about to (pf_cover). Prefetch: while serving
+   // from i_*, keep p_* one window ahead.
+   wire [63:0]  c_off_b  = imem_addr - p_reqpa;
+   wire         pf_cover = p_rd_pend & (c_off_b < WINB) & ((HW - c_off_b[$clog2(HW):1]) >= 2);
+   wire         dem_req  = ~serve & ~pf_cover & ~i_rd_pend & ~fi_stall;
+   wire [63:0]  pf_tgt   = i_pa + (WINB-2);
+   wire         pf_req   = i_match & ~p_rd_pend & ~fi_stall
+                         & (pf_tgt[63:12] == i_pa[63:12])       // same 4 KiB page only
+                         & ~(p_have & (p_pa == pf_tgt));
+   wire         ic_rd_req  = dem_req | pf_req;
+   wire [63:0]  ic_rd_addr = dem_req ? imem_addr : pf_tgt;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
-   reg          ic_inv_req;
-   always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
-      else begin
-         if (ic_inv_req) i_have<=1'b0;
-         if (ic_rd_req & ic_rd_rdy) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
-         if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
+   always @(posedge clk) if (reset) begin
+         i_have<=1'b0; p_have<=1'b0; i_rd_pend<=1'b0; p_rd_pend<=1'b0;
+      end else begin
+         if (ic_inv_req) begin i_have<=1'b0; p_have<=1'b0; end
+         if (ic_rd_req & ic_rd_rdy) begin
+            if (dem_req) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
+            else         begin p_rd_pend<=1'b1; p_reqpa<=pf_tgt;    end
+         end
+         if (ic_rd_valid) begin
+            if (i_rd_pend & (ic_rd_resp_addr == i_reqpa)) begin
+               i_rd_pend <= 1'b0;
+               if (!fi_stall) begin i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
+            end else if (p_rd_pend & (ic_rd_resp_addr == p_reqpa)) begin
+               p_rd_pend <= 1'b0;
+               if (!fi_stall) begin p_have<=1'b1; p_pa<=p_reqpa; p_win<=ic_rd_data; end
+            end
+         end
+         // promote LAST: if a redirect lands in p_* while a stale demand response
+         // returns this same cycle, the promoted (serving) window must win i_*.
+         if (p_match & ~i_match & ~fi_stall) begin
+            i_have<=1'b1; i_pa<=p_pa; i_win<=p_win;
+         end
       end
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  wire fi_stall = (fi != FI_IDLE);
@@ -466,17 +524,13 @@ module soc_top #(
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
       end
-   // Arrival bypass: serve the window COMBINATIONALLY the cycle the I$ delivers it
-   // (ic_rd_data is a register inside the cache, so this adds a mux, not logic
-   // depth from the arrays). Guard with the response address: a redirect can move
-   // pc while a window is in flight, and the stale response must read as a miss.
-   wire         i_arr = ic_rd_valid & (ic_rd_resp_addr == imem_addr);
-   assign imem_data  = i_arr ? ic_rd_data : (i_win >> {i_off_hw, 4'd0});
+   assign imem_data  = s_win >> {s_off, 4'd0};
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = fi_stall ? 0 : i_arr ? HW : (i_match ? (HW - i_off_hw) : 0);
+   assign imem_avail = (fi_stall | ~serve) ? {$clog2(HW+2){1'b0}}
+                     : (HW[$clog2(HW+2)-1:0] - {1'b0, s_off});
 
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
