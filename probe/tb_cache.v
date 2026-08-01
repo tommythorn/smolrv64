@@ -107,23 +107,34 @@ module tb;
       if (!reset && d_acc && d_acc_q) b2b_cnt = b2b_cnt + 1;
    end
    reg [PAW-1:0] s_addr [0:15];  reg s_nc [0:15];
+   integer       s_seq  [0:15];    // per-entry completion order (-1 = pending)
 
-   // Stream s_addr[0..n-1]/s_nc[0..n-1] as a pipelined requester; every response is
-   // checked IN ACCEPT ORDER (identity via rd_resp_addr) against refm.
+   // Stream s_addr[0..n-1]/s_nc[0..n-1] as a pipelined requester. With
+   // hit-under-miss, responses may complete OUT of accept order (a hit overtakes
+   // an outstanding fill) -- identity is by rd_resp_addr, so the scoreboard is
+   // set-based: every entry must complete exactly once with refm's data, and
+   // s_seq records the completion order for the caller to assert on.
    task dstream; input integer n;
-      integer ip, op, j; reg [63:0] exp;
+      integer ip, j, m, done, seq; reg [63:0] exp; reg matched;
       begin
-         ip = 1; op = 0; s_cyc = 0;
+         for (j=0;j<n;j=j+1) s_seq[j] = -1;
+         ip = 1; done = 0; seq = 0; s_cyc = 0;
          @(negedge clk); d_rd_req=1; d_rd_addr=s_addr[0]; d_rd_uncached=s_nc[0];
-         while (op < n) begin
+         while (done < n) begin
             @(negedge clk); s_cyc = s_cyc + 1;
+            if (s_cyc > 500) begin
+               $display("FAIL stream: timeout (%0d/%0d done)", done, n); errs=errs+1; done = n;
+            end
             if (d_rd_valid) begin
-               if (d_rd_resp_addr !== s_addr[op]) begin
-                  $display("FAIL stream: resp %h out of order (exp %h)", d_rd_resp_addr, s_addr[op]); errs=errs+1; end
-               exp = 0; for (j=0;j<8;j=j+1) exp[j*8 +: 8] = refm[s_addr[op]+j];
-               if (d_rd_data !== exp) begin
-                  $display("FAIL stream: data @%h got=%h exp=%h", s_addr[op], d_rd_data, exp); errs=errs+1; end
-               op = op + 1;
+               matched = 0;
+               for (j=0;j<n;j=j+1) if (!matched && s_seq[j] == -1 && d_rd_resp_addr === s_addr[j]) begin
+                  matched = 1; s_seq[j] = seq; seq = seq + 1; done = done + 1;
+                  exp = 0; for (m=0;m<8;m=m+1) exp[m*8 +: 8] = refm[s_addr[j]+m];
+                  if (d_rd_data !== exp) begin
+                     $display("FAIL stream: data @%h got=%h exp=%h", s_addr[j], d_rd_data, exp); errs=errs+1; end
+               end
+               if (!matched) begin
+                  $display("FAIL stream: unexpected resp @%h", d_rd_resp_addr); errs=errs+1; end
             end
             if (d_acc_q) begin
                if (ip < n) begin d_rd_addr = s_addr[ip]; d_rd_uncached = s_nc[ip]; ip = ip + 1; end
@@ -155,12 +166,15 @@ module tb;
       end
    endtask
 
+   // Write-port requests are LEVEL-HELD until wr_ack, masked off on the ack cycle
+   // (the store-buffer protocol): with the MSHR, a store's ack can come at S_MSHI
+   // while its install still occupies the FSM, so a 1-cycle pulse could be missed.
    task dwrite; input [PAW-1:0] a; input [63:0] d; input [7:0] m; input integer nb;
       integer j;
       begin
          @(negedge clk); d_wr_req=1; d_wr_addr=a; d_wr_data=d; d_wr_mask=m;
-         @(posedge clk); @(negedge clk); d_wr_req=0;
-         while (!d_wr_ack) @(posedge clk);
+         @(negedge clk); while (!d_wr_ack) @(negedge clk);
+         d_wr_req=0;
          for (j=0;j<nb;j=j+1) if (m[j]) refm[a+j] = d[j*8 +: 8];
          $display("  ok  write @%h data=%h mask=%b", a, d, m);
          @(negedge clk);
@@ -184,8 +198,8 @@ module tb;
       begin
          @(negedge clk); d_wr_req=1; d_cbo_req=1; d_cbo_zero=z; d_cbo_keep=keep;
                          d_wr_addr=a; d_wr_data=0; d_wr_mask=0;
-         @(posedge clk); @(negedge clk); d_wr_req=0; d_cbo_req=0; d_cbo_zero=0; d_cbo_keep=0;
-         while (!d_wr_ack) @(posedge clk);
+         @(negedge clk); while (!d_wr_ack) @(negedge clk);
+         d_wr_req=0; d_cbo_req=0; d_cbo_zero=0; d_cbo_keep=0;
          @(negedge clk);
       end
    endtask
@@ -336,7 +350,7 @@ module tb;
       s_addr[4]=34'h388;   s_nc[4]=1;            // NC read (S_FIN slow path, flush-around)
       s_addr[5]=34'h3C8;   s_nc[5]=0;            // hit after the NC drop
       dstream(6);
-      $display("  ok  mixed stream: 6 in-order responses");
+      $display("  ok  mixed stream: 6 responses, all matched");
 
       $display("== pipelined stream: same-address back-to-back reads ==");
       for (k=0;k<4;k=k+1) begin s_addr[k]=34'h300; s_nc[k]=0; end
@@ -346,24 +360,38 @@ module tb;
          begin $display("FAIL: same-addr stream b2b=%0d (want 3)", b2b_cnt-before_reads); errs=errs+1; end
       else $display("  ok  4x same-address reads accepted back-to-back");
 
-      // ---- write-back buffer ----
-      // Streamed so no S_IDLE cycle intervenes between the evicting miss and the
-      // re-read: the re-read MUST find the victim in the buffer (deterministic
-      // bounce), and the NC variant MUST drain it to L2 instead of bouncing.
-      $display("== WB buffer: dirty eviction off the miss path + bounce ==");
-      dwrite(34'h000C0, 64'h5555AAAA_3333CCCC, 8'hFF, 8);   // dirty A (idx 3)
-      dread (34'h100C0, 8);                                  // B fills the other way
-      s_addr[0]=34'h200C0; s_nc[0]=0;                        // C: evicts dirty A -> buffer, fills
-      s_addr[1]=34'h000C0; s_nc[1]=0;                        // A again: bounce from the buffer
-      dstream(2);
-      dflush();                                              // bounce kept A dirty -> flush pushes it; L2==refm
+      // ---- write-back buffer + hit-under-miss ----
+      // One stream, no idle gaps, so the internal state is deterministic:
+      // C misses into the MSHR (victim = dirty A, pinned), A HITS UNDER the
+      // outstanding miss (must complete first), X is a second miss that parks
+      // and then takes the MSHR after C's install (which evicts A into the
+      // wb-buffer, undrained -- the port stays busy with X's fill), and the
+      // final re-read of A finds it ONLY in the buffer: a serialized BOUNCE.
+      // A wrong bounce returns stale L2 bytes; a lost dirty bit fails dflush.
+      $display("== HUM + WB buffer: hit overtakes miss; evicted line bounces ==");
+      dwrite(34'h000C0, 64'h5555AAAA_3333CCCC, 8'hFF, 8);   // dirty A (idx 3, way0)
+      dread (34'h100C0, 8);                                  // B fills way1
+      s_addr[0]=34'h200C0; s_nc[0]=0;                        // C: miss -> MSHR, victim A
+      s_addr[1]=34'h000C0; s_nc[1]=0;                        // A: hit under the miss
+      s_addr[2]=34'h28080; s_nc[2]=0;                        // X: 2nd miss -> parks, then MSHR
+      s_addr[3]=34'h000C0; s_nc[3]=0;                        // A again: evicted by now -> bounce
+      dstream(4);
+      if (!(s_seq[1] < s_seq[0]))
+         begin $display("FAIL: hit did not overtake the miss (seq %0d vs %0d)", s_seq[1], s_seq[0]); errs=errs+1; end
+      else $display("  ok  hit completed under the outstanding miss (seq %0d < %0d)", s_seq[1], s_seq[0]);
+      dflush();                                              // bounce kept A dirty; L2==refm
 
-      $display("== WB buffer: NC fill of the buffered line drains first ==");
-      dwrite(34'h00100, 64'h0123456789ABCDEE, 8'hFF, 8);     // dirty A' (idx 4)
-      dread (34'h10100, 8);
-      s_addr[0]=34'h20100; s_nc[0]=0;                        // C': evicts dirty A' -> buffer
-      s_addr[1]=34'h00100; s_nc[1]=1;                        // NC read of A': drain, fill fresh, flush-around
-      dstream(2);
+      // Same shape, but the re-read is NC: it must NOT bounce (the flush-around
+      // drop would lose the dirty line) -- it parks, the buffer drains to L2,
+      // and the fill reads it back fresh. Data + dflush catch either failure.
+      $display("== HUM + WB buffer: NC re-read of the buffered line drains first ==");
+      dwrite(34'h00100, 64'h0123456789ABCDEE, 8'hFF, 8);     // dirty A2 (idx 4, way0)
+      dread (34'h10100, 8);                                  // B2 fills way1
+      s_addr[0]=34'h20100; s_nc[0]=0;                        // C2: miss -> MSHR, victim A2
+      s_addr[1]=34'h10100; s_nc[1]=0;                        // B2: hit under the miss
+      s_addr[2]=34'h280C0; s_nc[2]=0;                        // X2: 2nd miss -> parks, then MSHR
+      s_addr[3]=34'h00100; s_nc[3]=1;                        // NC read of A2: drain + fresh fill
+      dstream(4);
       dflush();                                              // nothing may be lost; L2==refm
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);

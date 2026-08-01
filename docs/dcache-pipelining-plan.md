@@ -142,6 +142,34 @@ tail load, `CACHE-BLK` D$ writeback 9.78M -> 4.41M cyc. Remaining for step 3b
 and the 8-cycle victim capture is still on the miss path (could overlap the fill's
 L2 read with an ack catcher).
 
+## Step 3b results: fill side-path / hit-under-miss (2026-07-31)
+
+Single MSHR (D$ WB config): a plain cacheable non-span miss moves its context to
+`msh_*` and FREES the FSM -- hits and stores are served under the outstanding miss
+(the read-hit pipe keeps streaming) while parallel launcher/catcher engines run the
+L2 read. The install preempts at the next idle or parked-S_CHECK boundary: victim
+capture (deferred to install, so under-miss stores to the victim are included) then
+`S_MSHI`, which delivers straight from the caught line (window cut combinationally,
+store bytes merged at the catch -- no re-lookup) and streams it into the banks.
+Serializing misses (CBO/NC/span/wbb-bounce) and second misses park at S_CHECK;
+a parked op resumes via S_LOOK and usually hits the just-installed line.
+
+Same 200M-cycle boot, IW=1 (baseline -> step 2 -> 3a -> 3b):
+
+| | base | step 2 | 3a | **3b** |
+| --- | --- | --- | --- | --- |
+| `LSU-RD` mean | 6.72c | 6.71c | 5.59c | **3.60c** |
+| 2c mode | 82.1% | 83.0% | 83.0% | **87.9%** |
+| 17+c tail | 12.07% | 12.07% | 11.05% | **5.71%** (~27.6c/load) |
+| reads completed | 8.62M | 8.62M | 9.47M | **9.70M** |
+| D$ blocked cyc (fill/wb) | -- | 7.46M/9.78M | 7.51M/4.41M | **0.21M/0.09M** |
+
+Cosim: 200M-cycle Linux boot lockstep vs simmerv, 0 divergences. Remaining ideas:
+overlap the 8-cycle victim capture with the fill's L2 read (ack catcher already
+exists -- capture could run during msh_infl), multi-entry MSHR with LSU
+multi-outstanding (step 4), and the I$ (HUM is D$-only; the frontend is still a
+single-outstanding client).
+
 ## Validation
 
 * `run-vl-tests.sh` (215/215) after every step -- covers the LSU/D$ through `backend_top`.

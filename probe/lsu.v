@@ -983,7 +983,8 @@ module lsu
    // mem_ren -> mem_rvalid, bucketed. A blocking-cache HIT should be a tight mode near the
    // best case; a broad/bimodal spread instead means the return is contended (the D$ read
    // port is shared with three PTW ports, soc_top.v:390) rather than intrinsically slow.
-   integer rl_cnt, rl_sum, rl_b1, rl_b2, rl_b3, rl_b4, rl_b5, rl_b6;
+   integer rl_cnt, rl_b1, rl_b2, rl_b3, rl_b4, rl_b5, rl_b6;
+   reg [63:0] rl_sum;        // 64-bit: rl_sum*100 overflows a 32-bit integer
    initial begin rl_cnt=0; rl_sum=0; rl_b1=0; rl_b2=0; rl_b3=0; rl_b4=0; rl_b5=0; rl_b6=0; end
    integer rl_age; reg rl_act;
    initial begin rl_age=0; rl_act=1'b0; end

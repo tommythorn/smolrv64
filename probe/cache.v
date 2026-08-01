@@ -156,9 +156,13 @@ module cache #(
    wire [IDXB-1:0] cih = hit1 ? ci1 : ci0;
 
    reg            vw;  reg [IDXB-1:0] vi;
-   wire [FW-1:0]    vflat = flat(vw?1:0, vi);
+   // effective victim: during the MSHR install (msh_ins) the victim pinned at
+   // allocation is used; vw/vi stay owned by a possibly-parked second request
+   wire             eff_vw = (WRITABLE!=0 && WRTHRU==0 && msh_ins) ? msh_vw : vw;
+   wire [IDXB-1:0]  eff_vi = (WRITABLE!=0 && WRTHRU==0 && msh_ins) ? msh_vi : vi;
+   wire [FW-1:0]    vflat = flat(eff_vw?1:0, eff_vi);
    wire [PTAGB-1:0] vtag  = tagm[vflat];
-   wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
+   wire [IDXB-1:0]  vbase = eff_vw ? (eff_vi ^ vtag[IDXB-1:0]) : eff_vi;
 
    reg            flush_clean;        // current flush is clean-only (keep lines valid)
    reg [FW:0]     fscan;
@@ -188,7 +192,7 @@ module cache #(
       S_FILL=10, S_FILLW=11, S_FILLI=12,
       S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
       S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_NCI=22, S_ZFILL=23, S_PFI=24, S_WBBI=25;
+      S_NCI=22, S_ZFILL=23, S_PFI=24, S_WBBI=25, S_MSHI=26;
 
    // ---- write-back buffer (WRITABLE&&!WRTHRU; the D$) ----
    // A dirty victim is CAPTURED here (S_WBR/S_WBW) instead of being pushed to L2 on
@@ -204,6 +208,30 @@ module cache #(
    reg                wbb_val, wbb_infl;
    reg [PAW-OFFB-1:0] wbb_addr;
    reg [LINEB-1:0]    wbb_data;
+
+   // ---- miss-status holding register: hit-under-miss (WBUF configs) ----
+   // A plain cacheable non-span miss parks HERE instead of holding the FSM: its
+   // context moves to msh_* and the FSM returns to S_IDLE, serving hits and
+   // stores under the outstanding miss (the read-hit pipe keeps streaming). The
+   // fill is launched/caught by parallel engines on the L2 port (msh_launch /
+   // msh_infl&l2_ack). When the data lands (msh_rdy), the INSTALL preempts at the
+   // next idle or parked-S_CHECK boundary: victim capture (S_WB -- deferred to
+   // install time, so stores that dirtied the victim under the miss are included)
+   // then S_MSHI, which delivers straight out of msh_line (window cut
+   // combinationally; a store-miss's bytes were merged at the catch) and streams
+   // the line into the banks via S_FILLI. No re-lookup: r_* may hold a PARKED
+   // second request the whole time (context split r_* vs msh_*), and cur_line is
+   // never touched by the install, so the parked op resumes via S_LOOK
+   // (msh_ret=1) and re-evaluates -- often hitting the just-installed line.
+   // Serializing misses (CBO/NC/span/wbb-bounce) and a second plain miss park at
+   // S_CHECK until the MSHR frees; flush waits for it at the inv arm.
+   localparam HUM = WBUF;
+   reg              msh_val, msh_infl, msh_rdy, msh_ins, msh_ret, msh_is_wr;
+   reg  [PAW-1:0]   msh_addr;
+   reg  [WDW-1:0]   msh_wdata;
+   reg  [WRB-1:0]   msh_wmask;
+   reg              msh_vw;  reg [IDXB-1:0] msh_vi;
+   reg  [LINEB-1:0] msh_line;
 
    // ---- next-line prefetch (PREFETCH!=0; the I$): single-line stream buffer ----
    // A demand fill of line L arms a prefetch of L+1. The prefetch runs as a
@@ -247,20 +275,39 @@ module cache #(
    // drop rd_rdy and fall back to S_IDLE, so every slow op drains the pipe and
    // runs today's FSM unchanged.
    wire chk_deliver = (st==S_CHECK) & hit & ~phase & ~r_cbo & ~r_span & ~r_is_wr & ~r_uncached;
-   assign rd_rdy    = ~reset & ~inv_req & ~inv_pend & ((st==S_IDLE) | chk_deliver);
-   wire pipe_take   = chk_deliver & rd_req & ~inv_req & ~inv_pend;
+   // msh_rdy gates accepts: the returned fill's install has priority at the next
+   // idle/delivery boundary (it is the oldest operation in the cache)
+   assign rd_rdy    = ~reset & ~inv_req & ~inv_pend & ~((HUM!=0) & msh_rdy)
+                    & ((st==S_IDLE) | chk_deliver);
+   wire pipe_take   = chk_deliver & rd_req & ~inv_req & ~inv_pend & ~((HUM!=0) & msh_rdy);
 
    // write-back buffer status + drain-issue policy: push on any idle-port cycle
    // (S_IDLE), or wherever the FSM is parked ON the buffer -- each park below has
    // its matching term here, so every park terminates at the drain's L2 ack.
+   // The MSHR fill (demand) outranks the drain: wbb_do defers to msh_launch and
+   // to an in-flight fill (single-outstanding L2 port).
    wire vic_dirty = (WRITABLE!=0) && (WRTHRU==0) && valm[vflat] && dirm[vflat];
    wire wbb_match = wbb_val && (wbb_addr == cur_line[PAW-1:OFFB]);
+   wire msh_ok     = (HUM!=0) && !r_cbo && !r_uncached && !r_span && !phase && !wbb_match;
+   wire msh_launch = (HUM!=0) && msh_val && !msh_infl && !msh_rdy && !l2_req && !wbb_infl
+                   && st != S_WTI && st != S_WTA;   // states with FSM L2 traffic under the MSHR
    wire wbb_do    = WBUF && wbb_val && !wbb_infl && !l2_req
+                  && !((HUM!=0) && (msh_infl || msh_launch))
                   && (  st == S_IDLE
                      || (st == S_WB    && vic_dirty)                // miss needs the buffer free
                      || (st == S_FILL  && wbb_match && r_uncached)  // NC fill must read L2 fresh
                      || (st == S_CHECK && r_cbo && wbb_match)       // CBO publishes to L2
                      || (st == S_FLUSH && fscan == NW));            // flush exit waits on drain
+   // store-miss bytes merged into the caught fill line; read window cut from it
+   reg [LINEB-1:0] msh_mrg;  integer mb;
+   always @* begin
+      msh_mrg = l2_rdata;
+      if (msh_is_wr) begin
+         for (mb=0; mb<WRB; mb=mb+1) if (msh_wmask[mb])
+            msh_mrg[(msh_addr[OFFB-1:0]+mb)*8 +: 8] = msh_wdata[mb*8 +: 8];
+      end
+   end
+   wire [LINEB-1:0] msh_shift = msh_line >> {msh_addr[OFFB-1:0], 3'b000};
 
 `ifdef CACHE_BLOCK_STATS
    // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
@@ -274,7 +321,7 @@ module cache #(
       if (rd_req && st != S_IDLE) begin
          cb_pend = cb_pend + 1;
          if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI
-                             || st==S_WBBI)            cb_fill  = cb_fill  + 1;
+                             || st==S_WBBI || st==S_MSHI) cb_fill  = cb_fill  + 1;
          else if (st>=S_WB   && st<=S_WBA)             cb_wb    = cb_wb    + 1;
          else if (st==S_LOOK || st==S_CHECK || st==S_FIN) cb_look = cb_look + 1;
          else                                          cb_other = cb_other + 1;
@@ -363,13 +410,14 @@ module cache #(
       end
 
       // serialized fill install: write pair pc of the victim from linebuf (even+odd)
+      // (eff_*: an MSHR install targets the victim pinned at allocation)
       if (st==S_FILLI) begin
-         bk_wren  [vw*2+0] = 1'b1;
-         bk_wraddr[vw*2+0] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+0] = linebuf[(2*pc)  *BANKW +: BANKW];
-         bk_wren  [vw*2+1] = 1'b1;
-         bk_wraddr[vw*2+1] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+1] = linebuf[(2*pc+1)*BANKW +: BANKW];
+         bk_wren  [eff_vw*2+0] = 1'b1;
+         bk_wraddr[eff_vw*2+0] = { eff_vi, pc[PAIRB-1:0] };
+         bk_wrdata[eff_vw*2+0] = linebuf[(2*pc)  *BANKW +: BANKW];
+         bk_wren  [eff_vw*2+1] = 1'b1;
+         bk_wraddr[eff_vw*2+1] = { eff_vi, pc[PAIRB-1:0] };
+         bk_wrdata[eff_vw*2+1] = linebuf[(2*pc+1)*BANKW +: BANKW];
       end
       // store merge: write the low chunk (and same-line high chunk if the store spilled).
       // Uses the captured LINE0 way/idx (w0_*) -- in a span, the live hway/cih are line1's.
@@ -402,6 +450,7 @@ module cache #(
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
          wbb_val <= 0; wbb_infl <= 0;
+         msh_val <= 0; msh_infl <= 0; msh_rdy <= 0; msh_ins <= 0; msh_ret <= 0;
       end else begin
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
          // write-back buffer drain: borrow the L2 port (see wbb_do for the policy);
@@ -413,6 +462,18 @@ module cache #(
                wbb_infl <= 1;
             end
             if (wbb_infl && l2_ack) begin wbb_infl <= 0; wbb_val <= 0; end
+         end
+         // MSHR fill launcher + catcher: run the outstanding miss's L2 read while
+         // the FSM serves hits. msh_launch excludes every FSM-issue state and the
+         // drain; a store-miss's bytes are merged into the line at the catch.
+         if (HUM) begin
+            if (msh_launch) begin
+               l2_req <= 1; l2_we <= 0; l2_addr <= msh_addr[PAW-1:OFFB];
+               msh_infl <= 1;
+            end
+            if (msh_infl && l2_ack) begin
+               msh_line <= msh_mrg; msh_infl <= 0; msh_rdy <= 1;
+            end
          end
          // parallel prefetch engine: issue on the idle L2 port during hit-path
          // states (they never touch L2); mutual exclusion with demand fills is
@@ -443,7 +504,12 @@ module cache #(
          case (st)
            S_IDLE: begin
               phase <= 0;
-              if (inv_req | inv_pend) begin
+              if (HUM && msh_rdy) begin
+                 // returned fill: the install (oldest op) preempts at the idle
+                 // boundary. S_WB captures the victim if dirty, then S_MSHI.
+                 msh_ins <= 1; msh_ret <= 0; st <= S_WB;
+              end else if (inv_req | inv_pend) begin
+                 if (!(HUM && msh_val)) begin
                  inv_pend <= 1'b0;
                  pf_val <= 0; pf_want <= 0;      // prefetch buffer shares the cache's fate
                  if (pf_infl) pf_drop <= 1;      // in-flight line predates the flush: land it dead
@@ -453,7 +519,11 @@ module cache #(
                  // old one-cycle full clear was what broke the valm RAM inference.
                  inv_busy <= 1; fscan <= 0; flush_clean <= (WRITABLE!=0 && WRTHRU==0) & inv_clean;
                  st <= S_FLUSH;
-              end else if (rd_req || (wr_req && WRITABLE!=0)) begin
+                 end
+                 // else: an outstanding miss must land + install first (inv_busy
+                 // is already up, so the requester keeps waiting)
+              end else if (rd_req || (wr_req && WRITABLE!=0
+                                      && !(HUM && msh_val && msh_is_wr))) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
                  // CBO flags qualify a write-port maintenance op only. Reads win arbitration
@@ -476,7 +546,13 @@ module cache #(
 
            S_LOOK: st <= S_CHECK;
 
-           S_CHECK: if (r_cbo) begin
+           S_CHECK: if (HUM && msh_rdy && !hit) begin
+              // returned fill preempts a PARKED op (a miss that cannot proceed):
+              // install it, then resume this op via S_LOOK (msh_ret) -- it
+              // re-evaluates and often hits the just-installed line. cur_line
+              // and r_* are untouched by the install, so nothing is lost.
+              msh_ins <= 1; msh_ret <= 1; st <= S_WB;
+           end else if (r_cbo) begin
               // Zicbom/Zicboz: single-line maintenance on the addressed line.
               if (hit) begin
                  w0_way <= hway; w0_idx <= cih;
@@ -493,6 +569,10 @@ module cache #(
                  end
               end else begin
                  if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
+                    if (HUM && msh_val) begin
+                       // park: this install could collide with the MSHR's pinned
+                       // victim slot; the preempt above resolves the MSHR first
+                    end else begin
                     vw <= vicm[base_idx(cur_line)];
                     vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
                     // cancel a buffered stale copy of this line: the zero line
@@ -500,6 +580,7 @@ module cache #(
                     // data would clobber a newer cbo.flush/eviction write in L2
                     if (WBUF && wbb_match && !wbb_infl) wbb_val <= 0;
                     st <= S_WB;
+                    end
                  end else if (WBUF && wbb_match) begin
                     // clean/flush/inval of the buffered line: hold until the drain
                     // lands (wbb_do has a term for this park) -- the no-op ack below
@@ -541,6 +622,20 @@ module cache #(
               end else begin
                  vw <= vicm[base_idx(cur_line)];
                  vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                 if (msh_ok && !msh_val) begin
+                    // divert the miss to the MSHR and FREE the FSM: hits and
+                    // stores are served under it, the launcher/catcher run the
+                    // fill, and the install preempts at the next boundary.
+                    msh_val <= 1; msh_addr <= r_addr; msh_is_wr <= r_is_wr;
+                    msh_wdata <= r_wdata; msh_wmask <= r_wmask;
+                    msh_vw <= vicm[base_idx(cur_line)];
+                    msh_vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                    st <= S_IDLE;
+                 end else if (HUM && msh_val) begin
+                    // MSHR busy (second miss), or a serializing miss (NC/span/
+                    // wbb-bounce) that must drain it first: park; the preempt at
+                    // the top of S_CHECK runs the install, then this re-evaluates
+                 end else begin
                  // stream-buffer hit: skip the L2 round trip. Capture the line AND
                  // consume the buffer AT THIS EDGE: a prefetch ack can land this very
                  // cycle and overwrite pf_line/pf_addr with a DIFFERENT line -- the
@@ -548,6 +643,7 @@ module cache #(
                  // on (a same-edge ack's fresh line is discarded: hint loss only).
                  if (pf_hit) begin linebuf <= pf_line; pf_val <= 0; end
                  st <= pf_hit ? S_PFI : S_WB;
+                 end
               end
            end
 
@@ -556,12 +652,12 @@ module cache #(
            S_WB: begin
               if (vic_dirty) begin
                  if (!wbb_val) begin          // buffer free: stream the victim into it
-                    wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
+                    wb_way <= eff_vw; wb_idx <= eff_vi; pc <= 0;
                     wb_laddr <= {vtag, vbase};
                     st <= S_WBR;
                  end
                  // else parked: the drain engine (wbb_do) is pushing the previous line
-              end else st <= r_cbo_zero ? S_ZFILL : S_FILL;
+              end else st <= (HUM && msh_ins) ? S_MSHI : (r_cbo_zero ? S_ZFILL : S_FILL);
            end
            S_WBR: st <= S_WBW;
            S_WBW: begin
@@ -569,8 +665,24 @@ module cache #(
               wbb_data[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
               if (pc == HALF-1) begin
                  pc <= 0; wbb_val <= 1'b1; wbb_addr <= wb_laddr;
-                 st <= r_cbo_zero ? S_ZFILL : S_FILL;
+                 st <= (HUM && msh_ins) ? S_MSHI : (r_cbo_zero ? S_ZFILL : S_FILL);
               end else begin pc <= pc + 1'b1; st <= S_WBR; end
+           end
+           // MSHR install: deliver straight from the caught line -- the window is
+           // cut combinationally and a store's bytes were merged at the catch --
+           // then stream it into the banks (S_FILLI). No re-lookup needed.
+           S_MSHI: begin
+              if (!msh_is_wr) begin
+                 rd_data  <= msh_shift[RDW-1:0];
+                 rd_valid <= 1; rd_resp_addr <= msh_addr;
+              end else wr_ack <= 1;
+              tagm[vflat] <= tag_of(msh_addr);
+              v_we=1; v_wa=vflat; v_wd=1'b1;
+              d_we=1; d_wa=vflat; d_wd=msh_is_wr;
+              k_we=1; k_wa=base_idx(msh_addr); k_wd=~vicm[base_idx(msh_addr)];
+              linebuf <= msh_line; pc <= 0;
+              msh_val <= 0; msh_rdy <= 0;
+              st <= S_FILLI;
            end
 
            // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
@@ -641,8 +753,16 @@ module cache #(
            S_FILLI: begin                  // install pair pc (bank writes combinational)
               if (pc == HALF-1) begin
                  pc <= 0;
+                 // MSHR install done: already delivered at S_MSHI -- resume the
+                 // parked op (S_LOOK re-addresses its banks) or go idle. The
+                 // r_cbo_zero belongs to a possibly-PARKED op, so it must not
+                 // be consulted while msh_ins.
+                 if (HUM && msh_ins) begin
+                    msh_ins <= 0;
+                    st <= msh_ret ? S_LOOK : S_IDLE;
+                 end
                  // cbo.zero: the line is now zero -> mark dirty and finish; else re-lookup the refill
-                 if (r_cbo_zero) begin d_we=1; d_wa=vflat; d_wd=1'b1; wr_ack <= 1; st <= S_IDLE; end
+                 else if (r_cbo_zero) begin d_we=1; d_wa=vflat; d_wd=1'b1; wr_ack <= 1; st <= S_IDLE; end
                  else st <= S_LOOK;
               end else pc <= pc + 1'b1;
            end
@@ -698,7 +818,7 @@ module cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_WTI; end
               else begin pc <= pc + 1'b1; st <= S_WTR; end
            end
-           S_WTI: if (!(WBUF && wbb_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
+           S_WTI: if (!(WBUF && wbb_infl) && !(HUM && msh_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
            S_WTA: if (l2_ack) begin
               if (r_cbo) begin                                     // Zicbom writeback complete
                  d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
@@ -753,8 +873,12 @@ module cache #(
 `ifdef PERF_TRACE
    // Zihpm hardware cache events (always-on, unlike the PERF_TRACE DPI trace below): one pulse
    // per resolved line lookup (S_CHECK), and per miss. soc_top taps these -> backend_top hpm_ev.
-   assign perf_access = (st == S_CHECK);
-   assign perf_miss   = (st == S_CHECK) & ~hit;
+   // A PARKED S_CHECK (miss waiting on the MSHR / a CBO waiting on the wb-buffer)
+   // loops in S_CHECK without resolving anything -- mask it or misses overcount.
+   wire chk_park = (st == S_CHECK) & ~hit
+                 & ((((HUM!=0) ? msh_val : 1'b0)) | (WBUF && r_cbo && wbb_match));
+   assign perf_access = (st == S_CHECK) & ~chk_park;
+   assign perf_miss   = (st == S_CHECK) & ~hit & ~chk_park;
 
    // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
    // (own perf_cyc, in lockstep with backend_top's since same clk/reset) into the shared
@@ -773,8 +897,9 @@ module cache #(
    initial perf_cyc = 64'd0;
    always @(posedge clk) if (!reset) begin
       perf_cyc <= perf_cyc + 64'd1;
-      // lookup resolved this cycle (one event per line lookup; a span resolves twice)
-      if (st == S_CHECK) begin
+      // lookup resolved this cycle (one event per line lookup; a span resolves twice;
+      // parked S_CHECK cycles are masked -- they resolve nothing)
+      if (st == S_CHECK && !chk_park) begin
          perf_ev(perf_cyc, 8, hit ? 0 : 1, PERF_ID, {31'd0, r_is_wr},
                  0, 0, 0, {{(64-PAW){1'b0}}, cur_line}, 0);
          if (!hit) perf_miss_cyc <= perf_cyc;
