@@ -1,5 +1,12 @@
 # D$ pipelining plan
 
+**STATUS: COMPLETE (2026-07-31).** All stages landed: f371fa1 + a20a719 (step 2,
+read-hit pipe + ready/valid port), 7c77429 (3a, write-back buffer), 37e8a93 (3b,
+MSHR / hit-under-miss), 3a4c9c1 (step 4, LSU depth-2 multi-outstanding). Results
+per stage below; end-to-end at IW=2: IPC +13.1%, `LSU-RD` mean 6.72c -> ~3.6c at
+IW=1. Step-5 verdict: I$ supply is now the top stall -> frontend streaming/BP is
+the next perf item. Outstanding acceptance: an FPGA build (TT-side).
+
 Decision (TT, 2026-07-31): pipeline the D$ unconditionally. The present design is
 architecturally indefensible for an OoO core and is upstream of every other load-path
 improvement.
@@ -94,16 +101,16 @@ Two results that reorder the work:
 
 ## Staging
 
-1. Baseline captured (above).
-2. Pipeline the **read hit path only**; every miss/write/maintenance op drains the pipe and
+1. ~~Baseline captured~~ (above). DONE.
+2. DONE (f371fa1, a20a719). Pipeline the **read hit path only**; every miss/write/maintenance op drains the pipe and
    uses today's FSM unchanged. Removes back-to-back hit serialization: 79.3% of the I$'s
    blocking and 27.6% of the D$'s. Do this first -- it is the shared win and the smallest
    change.
-3. Write-back buffer (D$ 41.0%) and fill-as-side-path / hit-under-miss (D$ 31.3%). Joint
+3. DONE (7c77429, 37e8a93). Write-back buffer (D$ 41.0%) and fill-as-side-path / hit-under-miss (D$ 31.3%). Joint
    second; write-back is marginally the larger. The 12.1% `LSU-RD` tail is waiting on both.
-4. Re-measure `CACHE-BLK` + `LSU-RD`; only then revisit LSU multiple-outstanding (#2a),
+4. DONE (3a4c9c1). Re-measure `CACHE-BLK` + `LSU-RD`; only then revisit LSU multiple-outstanding (#2a),
    which needs step 2-3 to mean anything.
-5. Separately re-measure the frontend after step 2 -- if `fetch-bubble` drops, the I$ FSM
+5. DONE (see wrap-up; verdict: it did NOT drop). Separately re-measure the frontend after step 2 -- if `fetch-bubble` drops, the I$ FSM
    was the cause and the branch-predictor work is deprioritized accordingly.
 
 ## Step 2 results (f371fa1 + a20a719, 2026-07-31)
