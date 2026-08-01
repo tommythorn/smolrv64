@@ -98,15 +98,17 @@ module tb;
    reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
    wire         i_match  = icache_en & i_have & (i_pa == imem_addr);
    wire         i_need   = icache_en & ~i_match;
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;
-   wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
-   wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy, ic_rd_rdy;
+   // ready/valid request channel: present until the rd_req&rd_rdy handshake
+   // (i_reqpa latched there), then wait for the response.
+   wire         ic_rd_req  = i_need & ~i_rd_pend;
+   wire [63:0]  ic_rd_addr = imem_addr;
    wire         ic_l2_req, ic_l2_we;  wire [57:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    reg  [511:0] ic_l2_rdata;  reg ic_l2_ack;
    always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
       else begin
          if (ic_inv_req) i_have<=1'b0;   // fence.i flush -> drop the held window, force a refill
-         if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
+         if (ic_rd_req & ic_rd_rdy) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
          if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
       end
    // fence.i ordering FSM: on a fence.i redirect, stall fetch until the D$ has drained to memory
@@ -126,7 +128,7 @@ module tb;
       end
    cache #(.PAW(64), .SIZE_KB(128), .RDW(HW*16), .WDW(64), .WRITABLE(0)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_req(ic_rd_req), .rd_rdy(ic_rd_rdy), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
@@ -151,15 +153,23 @@ module tb;
    // +cache=1 routes loads/stores through the unified PIPT cache; mem stays current via
    // write-through so the PTW/imem (which read mem directly) remain coherent.
    reg          cache_en;  initial cache_en = 1'b0;
-   reg          c_rd_pend;                                  // hold rd_req from the ren pulse
-   // hold rd_req from the dmem_ren pulse until rd_valid; mask OFF on the valid cycle so the
-   // cache doesn't re-accept the same (still-held) address and emit a spurious 2nd rd_valid.
-   wire         c_rd_req = cache_en & (dmem_ren | c_rd_pend) & ~c_rd_valid;
-   wire [63:0]  c_rd_data;  wire c_rd_valid, c_wr_ack;
+   reg          c_rd_pend;                                  // a load is outstanding (ren -> rvalid)
+   reg          c_infl;                                     // accepted by the cache, data in flight
+   // ready/valid request channel: present the load until the rd_req&rd_rdy
+   // handshake (c_infl set there), then stop -- re-requesting a granted read would
+   // be a NEW request to the pipelined cache and would return a second response.
+   wire         c_rd_req = cache_en & (dmem_ren | c_rd_pend) & ~c_infl;
+   wire [63:0]  c_rd_data;  wire c_rd_valid, c_wr_ack, c_rd_rdy;
    wire         c_l2_req, c_l2_we;  wire [57:0] c_l2_addr;  // PAW=64 -> line addr [63:6]
    wire [511:0] c_l2_wdata;  reg [511:0] c_l2_rdata;  reg c_l2_ack;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (c_rd_valid) c_rd_pend<=1'b0;
+   always @(posedge clk) if (reset) c_infl<=1'b0;
+      else begin
+         if (dmem_ren) c_infl <= 1'b0;
+         if (c_rd_req & c_rd_rdy) c_infl <= 1'b1;
+         else if (c_rd_valid) c_infl <= 1'b0;
+      end
    // STICKY rd result: the LSU MERGE consumes mem_rvalid only when its WB lane is free, and
    // it expects rvalid/rdata to STAY valid until then (the +memlat model holds it high until
    // the next ren). The cache pulses rd_valid for one cycle, so latch it and hold until the
@@ -174,7 +184,7 @@ module tb;
 
    cache #(.PAW(64), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(c_rd_req), .rd_addr(dmem_raddr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
+      .rd_req(c_rd_req), .rd_rdy(c_rd_rdy), .rd_addr(dmem_raddr), .rd_data(c_rd_data), .rd_valid(c_rd_valid),
       .rd_uncached(1'b0),
       .wr_req(cache_en & dmem_wen & ~c_wr_ack), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .wr_uncached(1'b0),

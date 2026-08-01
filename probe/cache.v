@@ -39,6 +39,7 @@ module cache #(
    input  wire             clk,
    input  wire             reset,
    input  wire             rd_req,
+   output wire             rd_rdy,      // request-channel ready: rd_req&rd_rdy = accepted this edge
    input  wire [PAW-1:0]   rd_addr,
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
@@ -213,16 +214,22 @@ module cache #(
    reg [4:0] st;
    reg inv_pend;     // sticky: an inv_req that arrives while the cache is busy is remembered
 
-   // ---- read-hit pipeline: accept a NEW read at the fast-hit delivery edge ----
-   // Requesters hold rd_req level-high until rd_valid, so at a delivering S_CHECK a
-   // held rd_req with the SAME address is the request being answered right now (its
-   // response is one edge away) -- only a DIFFERENT address is a new request. Such a
-   // read is latched at the delivery edge and the FSM stays in S_CHECK: one hit per
-   // cycle, 2-cycle latency, identity preserved via rd_resp_addr. Anything else --
-   // miss, write, span, NC, CBO, pending invalidate -- declines the accept and falls
-   // back to S_IDLE, so every slow op drains the pipe and runs the FSM unchanged.
-   wire pipe_take = (st==S_CHECK) & hit & ~phase & ~r_cbo & ~r_span & ~r_is_wr
-                  & ~r_uncached & rd_req & (rd_addr != r_addr) & ~inv_req & ~inv_pend;
+   // ---- read request-channel ready + the read-hit pipeline take ----
+   // The read port is a ready/valid pair on each end: request = rd_req/rd_rdy
+   // (accepted at the edge where both are high), response = rd_valid + rd_data
+   // tagged with rd_resp_addr. A client presents a request until the handshake and
+   // then moves on; retracting or re-addressing an UNaccepted request is legal (the
+   // cache samples only at the accepting edge), and a request held PAST its accept
+   // is a NEW request -- same-address back-to-back reads are legal and stream.
+   // chk_deliver is the fast-hit delivery edge: the one S_CHECK shape that both
+   // delivers this cycle AND can take a successor (plain cacheable non-span read
+   // hit). The successor is latched at that edge and the FSM stays in S_CHECK: one
+   // hit per cycle at 2-cycle latency. Miss/write/span/NC/CBO/pending-invalidate
+   // drop rd_rdy and fall back to S_IDLE, so every slow op drains the pipe and
+   // runs today's FSM unchanged.
+   wire chk_deliver = (st==S_CHECK) & hit & ~phase & ~r_cbo & ~r_span & ~r_is_wr & ~r_uncached;
+   assign rd_rdy    = ~reset & ~inv_req & ~inv_pend & ((st==S_IDLE) | chk_deliver);
+   wire pipe_take   = chk_deliver & rd_req & ~inv_req & ~inv_pend;
 
 `ifdef CACHE_BLOCK_STATS
    // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
@@ -463,10 +470,10 @@ module cache #(
                        rd_data  <= fast_sh[RDW-1:0];
                        rd_valid <= 1; rd_resp_addr <= r_addr;
                        if (pipe_take) begin
-                          // back-to-back accept (see pipe_take): banks are already
-                          // addressed from the live request; latch its identity and
-                          // stay in S_CHECK. Write fields stay stale -- a read never
-                          // reads them (nwin/store-merge are write-op-only).
+                          // back-to-back accept (rd_req&rd_rdy at the delivery edge):
+                          // banks are already addressed from the live request; latch
+                          // its identity and stay in S_CHECK. Write fields stay stale
+                          // -- a read never reads them (nwin/store-merge are write-op-only).
                           r_is_wr    <= 1'b0;
                           r_uncached <= rd_uncached;
                           r_cbo <= 1'b0; r_cbo_zero <= 1'b0; r_cbo_keep <= 1'b0;

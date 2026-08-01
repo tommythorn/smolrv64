@@ -343,7 +343,7 @@ module soc_top #(
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
-   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;  wire [63:0] dc_rd_resp_addr;
+   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_rd_rdy;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
    // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
@@ -361,9 +361,23 @@ module soc_top #(
    wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
                            : is_dev_r    ? dev_rdata
                            : dc_rd_data;
-   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
+   // The D$ read port is a ready/valid request channel (dc_rd_rdy): present the
+   // load until the rd_req&rd_rdy handshake, then stop -- c_infl marks "accepted,
+   // data still in flight". A superseding dmem_ren clears c_infl so the NEW address
+   // is presented immediately, even while the abandoned read is still in flight
+   // (its response is dropped by the dc_rv_ok address match above). With c_infl
+   // lowering c_rd_req after the grant, the dcr arbiter below can hand the port
+   // to a PTW while the LSU's data returns -- walks no longer serialize behind loads.
+   reg          c_infl;
+   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~c_infl & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
+   always @(posedge clk) if (reset) c_infl<=1'b0;
+      else begin
+         if (dmem_ren) c_infl <= 1'b0;
+         if (c_rd_req & dc_rd_rdy) c_infl <= 1'b1;
+         else if (dc_rv_ok) c_infl <= 1'b0;
+      end
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
    always @(posedge clk) if (reset) c_rdv_st<=1'b0;
       else if (dmem_ren) c_rdv_st<=1'b0;
@@ -387,7 +401,7 @@ module soc_top #(
    wire dc_access, dc_miss, ic_access, ic_miss;
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_req(dcr_req), .rd_rdy(dc_rd_rdy), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
@@ -432,16 +446,19 @@ module soc_top #(
    wire [$clog2(HW)-1:0] i_off_hw = i_off_b[$clog2(HW):1];
    wire         i_match = i_have & (i_off_b < (HW*2)) & ((HW - i_off_hw) >= 2);
    wire         i_need  = ~i_match;
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
-   wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
-   wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy, ic_rd_rdy;  wire [63:0] ic_rd_resp_addr;
+   // ready/valid request channel: present the fetch until the rd_req&rd_rdy
+   // handshake (i_reqpa latched there), then wait for the response. An unaccepted
+   // request may be retracted/re-addressed freely (redirect before the grant).
+   wire         ic_rd_req  = i_need & ~i_rd_pend;
+   wire [63:0]  ic_rd_addr = imem_addr;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
    reg          ic_inv_req;
    always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
       else begin
          if (ic_inv_req) i_have<=1'b0;
-         if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
+         if (ic_rd_req & ic_rd_rdy) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
          if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
       end
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
@@ -473,7 +490,7 @@ module soc_top #(
    cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_req(ic_rd_req), .rd_rdy(ic_rd_rdy), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
@@ -517,14 +534,24 @@ module soc_top #(
    assign stptw_rdata=pw_rdata[2]; assign stptw_rvalid=pw_rvalid[2];
 
    // D$ read-port arbiter: the LSU (c_rd_req/dmem_raddr) and the 3 PTW walks share the single D$
-   // read port. Fixed priority LSU > iPTW > ldPTW > stPTW. The cache samples rd_req only at its
-   // S_IDLE and self-serializes; each client holds its request until its response matches, so a
-   // purely combinational mux suffices (no accept handshake). No deadlock: a load needing ldPTW
-   // is itself blocked on translation and not issuing c_rd_req, so the walk gets the port.
-   assign dcr_req  = c_rd_req | (|pw_busy);
+   // read port. Fixed priority LSU > iPTW > ldPTW > stPTW. The port is a ready/valid
+   // request channel: the selected client's request is accepted where dcr_req &
+   // dc_rd_rdy, and pw_issued[g] stops a granted walk from re-requesting while its
+   // PTE is in flight (responses de-mux by address match, so in-flight reads from
+   // different clients can overlap in the pipelined cache). No deadlock: a load
+   // needing ldPTW is itself blocked on translation and not issuing c_rd_req.
+   reg  [2:0] pw_issued;
+   wire [2:0] pw_want = pw_busy & ~pw_issued;
+   wire [2:0] pw_gnt;
+   assign pw_gnt[0] = ~c_rd_req & pw_want[0] & dc_rd_rdy;
+   assign pw_gnt[1] = ~c_rd_req & ~pw_want[0] & pw_want[1] & dc_rd_rdy;
+   assign pw_gnt[2] = ~c_rd_req & ~pw_want[0] & ~pw_want[1] & pw_want[2] & dc_rd_rdy;
+   always @(posedge clk) if (reset) pw_issued <= 3'd0;
+      else pw_issued <= (pw_issued | pw_gnt) & ~pw_match;
+   assign dcr_req  = c_rd_req | (|pw_want);
    assign dcr_addr = c_rd_req    ? dmem_raddr
-                   : pw_busy[0]  ? {8'd0, pw_addr[0*56 +: 56]}
-                   : pw_busy[1]  ? {8'd0, pw_addr[1*56 +: 56]}
+                   : pw_want[0]  ? {8'd0, pw_addr[0*56 +: 56]}
+                   : pw_want[1]  ? {8'd0, pw_addr[1*56 +: 56]}
                    :               {8'd0, pw_addr[2*56 +: 56]};
 
    // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------

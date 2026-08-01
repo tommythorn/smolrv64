@@ -7,12 +7,12 @@
 // writeback correctness by comparing the behavioral L2 (`l2mem`) to `refm` after a
 // flush. Then a brief I$-mode (WRITABLE=0, 128-bit read) check.
 //
-// The pipelined-stream phases at the end drive the read port like a PIPELINED
-// requester (next different-address read presented the cycle after each accept,
-// found white-box via u_d.pipe_take/st): an all-hit stream must be accepted
-// back-to-back at one hit/cycle, a miss/span/NC mid-stream must drain through the
-// FSM and keep responses in accept order, and a level-held same-address request
-// (the soc_top/tb_vl protocol) must get exactly one response (dup-accept guard).
+// The read port is a ready/valid request channel (rd_req/rd_rdy: accepted where
+// both are high, retract/re-address freely before that) plus an address-tagged
+// response (rd_valid/rd_resp_addr). The pipelined-stream phases at the end present
+// the next read the cycle after each accept: an all-hit stream -- including
+// same-address back-to-back -- must be accepted at one hit/cycle, and a miss/span/
+// NC mid-stream must drain through the FSM and keep responses in accept order.
 module tb;
    localparam PAW = 34, LINEB = 512, OFFB = 6, L2LAT = 2;
    localparam MEM = 'h30000;                       // test memory (covers distinct-tag set probes)
@@ -30,14 +30,14 @@ module tb;
    reg          d_cbo_req=0, d_cbo_zero=0, d_cbo_keep=0;   // Zicbom/Zicboz
    reg  [PAW-1:0] d_rd_addr, d_wr_addr;
    reg  [63:0]  d_wr_data;  reg [7:0] d_wr_mask;
-   wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy;
+   wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy, d_rd_rdy;
    wire [PAW-1:0] d_rd_resp_addr;
    wire         d_l2_req, d_l2_we;  wire [PAW-OFFB-1:0] d_l2_addr;
    wire [LINEB-1:0] d_l2_wdata;  reg [LINEB-1:0] d_l2_rdata;  reg d_l2_ack;
 
    cache #(.PAW(PAW), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1)) u_d
      (.clk(clk), .reset(reset),
-      .rd_req(d_rd_req), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
+      .rd_req(d_rd_req), .rd_rdy(d_rd_rdy), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
       .rd_resp_addr(d_rd_resp_addr),
       .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
       .wr_ack(d_wr_ack), .rd_uncached(d_rd_uncached), .wr_uncached(d_wr_uncached),
@@ -66,12 +66,12 @@ module tb;
 
    // ---------------- I$ instance (read-only, 128-bit) ----------------
    reg          i_rd_req, i_inv_req;  reg [PAW-1:0] i_rd_addr;
-   wire [127:0] i_rd_data;  wire i_rd_valid, i_inv_busy;
+   wire [127:0] i_rd_data;  wire i_rd_valid, i_inv_busy, i_rd_rdy;
    wire         i_l2_req, i_l2_we;  wire [PAW-OFFB-1:0] i_l2_addr;
    wire [LINEB-1:0] i_l2_wdata;  reg [LINEB-1:0] i_l2_rdata;  reg i_l2_ack;
    cache #(.PAW(PAW), .SIZE_KB(64), .RDW(128), .WDW(64), .WRITABLE(0)) u_i
      (.clk(clk), .reset(reset),
-      .rd_req(i_rd_req), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
+      .rd_req(i_rd_req), .rd_rdy(i_rd_rdy), .rd_addr(i_rd_addr), .rd_data(i_rd_data), .rd_valid(i_rd_valid),
       .wr_req(1'b0), .wr_addr(34'd0), .wr_data(64'd0), .wr_mask(8'd0),
       .wr_ack(), .rd_uncached(1'b0), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0), .inv_req(i_inv_req), .inv_clean(1'b0), .inv_busy(i_inv_busy),
@@ -90,18 +90,21 @@ module tb;
       end
    end
 
-   // ---------------- pipelined-stream driver (white-box accept detect) ----------------
-   // Accept = the S_IDLE take (reads win arbitration; no inv during stream phases)
-   // or the back-to-back fast-hit take. d_acc_q reflects "accepted at the last
-   // posedge": the driver presents the NEXT address at the following negedge, so a
-   // request is level-held (stable) from presentation until its accept -- the
-   // requester contract -- and changes only afterwards, like a pipelined LSU would.
-   wire d_acc = (u_d.st == 5'd0 && d_rd_req && !d_inv_req && !u_d.inv_pend) || u_d.pipe_take;
-   reg  d_acc_q = 0;
+   // ---------------- pipelined-stream driver ----------------
+   // Accept = the rd_req&rd_rdy handshake, straight off the ports. d_acc_q reflects
+   // "accepted at the last posedge": the driver presents the NEXT address at the
+   // following negedge, so a request is stable from presentation until its accept
+   // and changes only afterwards, like a pipelined LSU would. Accepts on
+   // CONSECUTIVE posedges are by construction pipelined takes (S_IDLE cannot
+   // accept twice in a row -- the first accept leaves it), counted as b2b_cnt.
+   wire d_acc = d_rd_req & d_rd_rdy;
+   wire i_acc = i_rd_req & i_rd_rdy;
+   reg  d_acc_q = 0, i_acc_q = 0;
    integer b2b_cnt = 0, s_cyc;
    always @(posedge clk) begin
       d_acc_q <= !reset && d_acc;
-      if (!reset && u_d.pipe_take) b2b_cnt = b2b_cnt + 1;
+      i_acc_q <= !reset && i_acc;
+      if (!reset && d_acc && d_acc_q) b2b_cnt = b2b_cnt + 1;
    end
    reg [PAW-1:0] s_addr [0:15];  reg s_nc [0:15];
 
@@ -135,34 +138,13 @@ module tb;
       end
    endtask
 
-   // Classic level-held request (soc_top/tb_vl protocol): rd_req stays up with the
-   // SAME address through the lookup, masked off on the valid cycle. The
-   // same-address guard must not re-accept it -> exactly one response.
-   task dread_held; input [PAW-1:0] a;
-      integer j, vcnt; reg [63:0] exp;
-      begin
-         @(negedge clk); d_rd_req=1; d_rd_addr=a; vcnt=0;
-         for (j=0;j<10;j=j+1) begin
-            @(negedge clk);
-            if (d_rd_valid) begin
-               vcnt = vcnt + 1;
-               d_rd_req = 0;                     // requester deasserts on the valid cycle
-               exp = 0; for (k=0;k<8;k=k+1) exp[k*8 +: 8] = refm[a+k];
-               if (d_rd_data !== exp) begin
-                  $display("FAIL held read @%h got=%h exp=%h", a, d_rd_data, exp); errs=errs+1; end
-            end
-         end
-         if (vcnt !== 1) begin $display("FAIL held read @%h: %0d responses (want 1)", a, vcnt); errs=errs+1; end
-         else $display("  ok  held read @%h: single response", a);
-      end
-   endtask
-
    // ---------------- helpers ----------------
    task dread; input [PAW-1:0] a; input integer nb; // read nb bytes, check vs refm
       integer j; reg [63:0] got, exp;
       begin
          @(negedge clk); d_rd_req=1; d_rd_addr=a;
-         @(posedge clk); @(negedge clk); d_rd_req=0;
+         @(negedge clk); while (!d_acc_q) @(negedge clk);   // hold until granted
+         d_rd_req=0;
          while (!d_rd_valid) @(posedge clk);
          got = d_rd_data;
          exp = 0; for (j=0;j<nb;j=j+1) exp[j*8 +: 8] = refm[a+j];
@@ -212,7 +194,8 @@ module tb;
       integer j; reg [127:0] got, exp;
       begin
          @(negedge clk); i_rd_req=1; i_rd_addr=a;
-         @(posedge clk); @(negedge clk); i_rd_req=0;
+         @(negedge clk); while (!i_acc_q) @(negedge clk);   // hold until granted
+         i_rd_req=0;
          while (!i_rd_valid) @(posedge clk);
          got = i_rd_data;
          exp = 0; for (j=0;j<16;j=j+1) exp[j*8 +: 8] = refm[a+j];
@@ -355,8 +338,13 @@ module tb;
       dstream(6);
       $display("  ok  mixed stream: 6 in-order responses");
 
-      $display("== held same-address request: dup-accept guard ==");
-      dread_held(34'h300);
+      $display("== pipelined stream: same-address back-to-back reads ==");
+      for (k=0;k<4;k=k+1) begin s_addr[k]=34'h300; s_nc[k]=0; end
+      before_reads = b2b_cnt;
+      dstream(4);
+      if (b2b_cnt - before_reads !== 3)
+         begin $display("FAIL: same-addr stream b2b=%0d (want 3)", b2b_cnt-before_reads); errs=errs+1; end
+      else $display("  ok  4x same-address reads accepted back-to-back");
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;
