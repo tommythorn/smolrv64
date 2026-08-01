@@ -346,6 +346,26 @@ module tb;
          begin $display("FAIL: same-addr stream b2b=%0d (want 3)", b2b_cnt-before_reads); errs=errs+1; end
       else $display("  ok  4x same-address reads accepted back-to-back");
 
+      // ---- write-back buffer ----
+      // Streamed so no S_IDLE cycle intervenes between the evicting miss and the
+      // re-read: the re-read MUST find the victim in the buffer (deterministic
+      // bounce), and the NC variant MUST drain it to L2 instead of bouncing.
+      $display("== WB buffer: dirty eviction off the miss path + bounce ==");
+      dwrite(34'h000C0, 64'h5555AAAA_3333CCCC, 8'hFF, 8);   // dirty A (idx 3)
+      dread (34'h100C0, 8);                                  // B fills the other way
+      s_addr[0]=34'h200C0; s_nc[0]=0;                        // C: evicts dirty A -> buffer, fills
+      s_addr[1]=34'h000C0; s_nc[1]=0;                        // A again: bounce from the buffer
+      dstream(2);
+      dflush();                                              // bounce kept A dirty -> flush pushes it; L2==refm
+
+      $display("== WB buffer: NC fill of the buffered line drains first ==");
+      dwrite(34'h00100, 64'h0123456789ABCDEE, 8'hFF, 8);     // dirty A' (idx 4)
+      dread (34'h10100, 8);
+      s_addr[0]=34'h20100; s_nc[0]=0;                        // C': evicts dirty A' -> buffer
+      s_addr[1]=34'h00100; s_nc[1]=1;                        // NC read of A': drain, fill fresh, flush-around
+      dstream(2);
+      dflush();                                              // nothing may be lost; L2==refm
+
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;
    end

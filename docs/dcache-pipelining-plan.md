@@ -129,6 +129,19 @@ during their own service, so the counter now measures only genuine cross-blockin
 (D$ IW=2: 5.2M cyc; fill 0.55M, wb 0.48M, lookup 4.14M). Not comparable to the
 baseline table above.
 
+## Step 3a results: write-back buffer (2026-07-31)
+
+Dirty victims capture into a single-entry buffer (`wbb_*`); the demand fill no longer
+waits for the L2 write, which drains in the background on idle port cycles. A miss on
+the buffered line bounces it back in as dirty (no L2 trip); NC fills and CBO ops
+targeting it drain it first; flush holds `inv_busy` until the buffer is empty. Same
+200M-cycle boot, IW=1, vs the step-2 numbers: **reads completed 8.62M -> 9.47M (+9.9%
+progress in the same window), `LSU-RD` mean 6.71 -> 5.59c**, tail ~40c -> ~33.5c per
+tail load, `CACHE-BLK` D$ writeback 9.78M -> 4.41M cyc. Remaining for step 3b
+(fill-as-side-path / hit-under-miss): fill is now the largest D$ blocker (7.51M cyc),
+and the 8-cycle victim capture is still on the miss path (could overlap the fill's
+L2 read with an ack catcher).
+
 ## Validation
 
 * `run-vl-tests.sh` (215/215) after every step -- covers the LSU/D$ through `backend_top`.

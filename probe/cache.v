@@ -23,6 +23,10 @@
 // LINE-CROSSING handled INTERNALLY via the two-phase lookup (phase0=line0, phase1=line1).
 // Banks are synchronous (READ_LATENCY=1): an address presented in one cycle is captured
 // the next, so multi-word reads serialize a pair (even+odd) per two cycles.
+//
+// WRITE-BACK BUFFER (D$): a dirty victim is captured into a single-entry buffer and
+// its L2 write drains in the background -- the demand fill no longer waits for it.
+// See the WBUF declaration block for the full policy (bounce, NC/CBO/flush drains).
 module cache #(
    parameter PAW      = 34,
    parameter SIZE_KB  = 128,
@@ -184,7 +188,22 @@ module cache #(
       S_FILL=10, S_FILLW=11, S_FILLI=12,
       S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
       S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_NCI=22, S_ZFILL=23, S_PFI=24;
+      S_NCI=22, S_ZFILL=23, S_PFI=24, S_WBBI=25;
+
+   // ---- write-back buffer (WRITABLE&&!WRTHRU; the D$) ----
+   // A dirty victim is CAPTURED here (S_WBR/S_WBW) instead of being pushed to L2 on
+   // the miss path: the fill proceeds immediately and the L2 write drains in the
+   // background on idle port cycles, or while the FSM is parked on this buffer.
+   // Single entry, so L2 write order == capture order by construction. A miss on
+   // the buffered line BOUNCES it back into the cache as DIRTY (S_WBBI -- its data
+   // never reached L2, so the dirty bit restores the invariant); NC fills and CBO
+   // ops targeting it drain it first (their semantics publish data to L2), and a
+   // flush holds inv_busy until the buffer is empty. wbb_val stays set while the
+   // drain is in flight (wbb_infl); it clears only at the L2 ack.
+   localparam WBUF = (WRITABLE != 0) && (WRTHRU == 0);
+   reg                wbb_val, wbb_infl;
+   reg [PAW-OFFB-1:0] wbb_addr;
+   reg [LINEB-1:0]    wbb_data;
 
    // ---- next-line prefetch (PREFETCH!=0; the I$): single-line stream buffer ----
    // A demand fill of line L arms a prefetch of L+1. The prefetch runs as a
@@ -231,6 +250,18 @@ module cache #(
    assign rd_rdy    = ~reset & ~inv_req & ~inv_pend & ((st==S_IDLE) | chk_deliver);
    wire pipe_take   = chk_deliver & rd_req & ~inv_req & ~inv_pend;
 
+   // write-back buffer status + drain-issue policy: push on any idle-port cycle
+   // (S_IDLE), or wherever the FSM is parked ON the buffer -- each park below has
+   // its matching term here, so every park terminates at the drain's L2 ack.
+   wire vic_dirty = (WRITABLE!=0) && (WRTHRU==0) && valm[vflat] && dirm[vflat];
+   wire wbb_match = wbb_val && (wbb_addr == cur_line[PAW-1:OFFB]);
+   wire wbb_do    = WBUF && wbb_val && !wbb_infl && !l2_req
+                  && (  st == S_IDLE
+                     || (st == S_WB    && vic_dirty)                // miss needs the buffer free
+                     || (st == S_FILL  && wbb_match && r_uncached)  // NC fill must read L2 fresh
+                     || (st == S_CHECK && r_cbo && wbb_match)       // CBO publishes to L2
+                     || (st == S_FLUSH && fscan == NW));            // flush exit waits on drain
+
 `ifdef CACHE_BLOCK_STATS
    // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
    // read waits out whatever the FSM is already doing. This splits that wait by what is
@@ -242,8 +273,8 @@ module cache #(
       if (pipe_take) cb_b2b = cb_b2b + 1;
       if (rd_req && st != S_IDLE) begin
          cb_pend = cb_pend + 1;
-         if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI)
-                                                       cb_fill  = cb_fill  + 1;
+         if      (st==S_FILL || st==S_FILLW || st==S_FILLI || st==S_ZFILL || st==S_PFI
+                             || st==S_WBBI)            cb_fill  = cb_fill  + 1;
          else if (st>=S_WB   && st<=S_WBA)             cb_wb    = cb_wb    + 1;
          else if (st==S_LOOK || st==S_CHECK || st==S_FIN) cb_look = cb_look + 1;
          else                                          cb_other = cb_other + 1;
@@ -370,8 +401,19 @@ module cache #(
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
+         wbb_val <= 0; wbb_infl <= 0;
       end else begin
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
+         // write-back buffer drain: borrow the L2 port (see wbb_do for the policy);
+         // mutual exclusion with FSM issues: every FSM L2-issue site waits for
+         // !wbb_infl, and wbb_do only fires in states that never touch the port.
+         if (WBUF) begin
+            if (wbb_do) begin
+               l2_req <= 1; l2_we <= 1; l2_addr <= wbb_addr; l2_wdata <= wbb_data;
+               wbb_infl <= 1;
+            end
+            if (wbb_infl && l2_ack) begin wbb_infl <= 0; wbb_val <= 0; end
+         end
          // parallel prefetch engine: issue on the idle L2 port during hit-path
          // states (they never touch L2); mutual exclusion with demand fills is
          // by construction -- S_FILL stalls while pf_infl, l2_req is only ever
@@ -453,7 +495,15 @@ module cache #(
                  if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
                     vw <= vicm[base_idx(cur_line)];
                     vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                    // cancel a buffered stale copy of this line: the zero line
+                    // supersedes it (dirty in cache), and a LATER drain of the old
+                    // data would clobber a newer cbo.flush/eviction write in L2
+                    if (WBUF && wbb_match && !wbb_infl) wbb_val <= 0;
                     st <= S_WB;
+                 end else if (WBUF && wbb_match) begin
+                    // clean/flush/inval of the buffered line: hold until the drain
+                    // lands (wbb_do has a term for this park) -- the no-op ack below
+                    // promises L2 is current
                  end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
               end
            end else begin
@@ -501,23 +551,27 @@ module cache #(
               end
            end
 
-           // ---- miss: evict victim (writeback if dirty) then fill ----
+           // ---- miss: evict victim (dirty -> CAPTURE into the write-back buffer,
+           // the L2 write happens off the miss path) then fill ----
            S_WB: begin
-              if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
-                 wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
-                 wb_laddr <= {vtag, vbase};
-                 st <= S_WBR;
+              if (vic_dirty) begin
+                 if (!wbb_val) begin          // buffer free: stream the victim into it
+                    wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
+                    wb_laddr <= {vtag, vbase};
+                    st <= S_WBR;
+                 end
+                 // else parked: the drain engine (wbb_do) is pushing the previous line
               end else st <= r_cbo_zero ? S_ZFILL : S_FILL;
            end
            S_WBR: st <= S_WBW;
            S_WBW: begin
-              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
-              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
-              if (pc == HALF-1) begin pc <= 0; st <= S_WBI; end
-              else begin pc <= pc + 1'b1; st <= S_WBR; end
+              wbb_data[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
+              wbb_data[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
+              if (pc == HALF-1) begin
+                 pc <= 0; wbb_val <= 1'b1; wbb_addr <= wb_laddr;
+                 st <= r_cbo_zero ? S_ZFILL : S_FILL;
+              end else begin pc <= pc + 1'b1; st <= S_WBR; end
            end
-           S_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_WBA; end
-           S_WBA: if (l2_ack) st <= r_cbo_zero ? S_ZFILL : S_FILL;
 
            // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
            S_ZFILL: begin
@@ -528,7 +582,18 @@ module cache #(
               st <= S_FILLI;
            end
 
-           S_FILL: if (PF_EN && pf_hit) begin
+           S_FILL: if (WBUF && wbb_infl) begin
+              // the L2 port is carrying the buffer drain: wait for its ack
+           end else if (WBUF && wbb_match && !r_uncached) begin
+              // the missing line IS the buffered victim: bounce it back in as a
+              // DIRTY line (its data never reached L2) -- no L2 round trip at all
+              linebuf <= wbb_data; wbb_val <= 0;
+              st <= S_WBBI;
+           end else if (WBUF && wbb_match && r_uncached) begin
+              // NC fill of the buffered line: a bounce would mark it dirty and the
+              // NC flush-around drop would then LOSE it. Park; wbb_do drains it to
+              // L2, after which the normal fill below reads it back fresh.
+           end else if (PF_EN && pf_hit) begin
               // the missing line is in (or just landed in) the buffer: install it.
               // Same decision-edge capture/consume as the S_CHECK shortcut.
               linebuf <= pf_line; pf_val <= 0;
@@ -561,6 +626,16 @@ module cache #(
               d_we=1; d_wa=vflat; d_wd=1'b0;
               k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;
+              st <= S_FILLI;
+           end
+           // install the bounced write-back-buffer line: same bookkeeping as a fill
+           // but marked DIRTY -- L2 never saw this data
+           S_WBBI: begin
+              pc <= 0;
+              tagm[vflat] <= tag_of(cur_line);
+              v_we=1; v_wa=vflat; v_wd=1'b1;
+              d_we=1; d_wa=vflat; d_wd=1'b1;
+              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               st <= S_FILLI;
            end
            S_FILLI: begin                  // install pair pc (bank writes combinational)
@@ -623,7 +698,7 @@ module cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_WTI; end
               else begin pc <= pc + 1'b1; st <= S_WTR; end
            end
-           S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
+           S_WTI: if (!(WBUF && wbb_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
            S_WTA: if (l2_ack) begin
               if (r_cbo) begin                                     // Zicbom writeback complete
                  d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
@@ -634,7 +709,11 @@ module cache #(
 
            // ---- flush (write-back configs) ----
            S_FLUSH: begin
-              if (fscan == NW) begin inv_busy <= 0; st <= S_IDLE; end
+              if (fscan == NW) begin
+                 // hold inv_busy until the write-back buffer drains: flush/fence
+                 // semantics promise L2 is current when inv_busy drops
+                 if (!(WBUF && (wbb_val || wbb_infl))) begin inv_busy <= 0; st <= S_IDLE; end
+              end
               else if (WRITABLE!=0 && WRTHRU==0 && valm[fscan[FW-1:0]] && dirm[fscan[FW-1:0]]) begin
                  wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
                  st <= S_FLUSHR;
@@ -651,7 +730,7 @@ module cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_FLUSHI; end
               else begin pc <= pc + 1'b1; st <= S_FLUSHR; end
            end
-           S_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
+           S_FLUSHI: if (!(WBUF && wbb_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
            S_FLUSHA: if (l2_ack) begin
               if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush: written back, stays valid+clean
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
