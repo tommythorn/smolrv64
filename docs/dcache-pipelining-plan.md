@@ -195,6 +195,36 @@ pipelined cache back-to-back). Cosim: 200M cycles lockstep vs simmerv, 0 diverge
 Re-measure at IW=2/4 where multiple ready loads exist; frontend streaming (I$) remains
 the open client-side item.
 
+## Series wrap-up: IW=2 end-to-end + step 5 verdict (2026-07-31)
+
+Same 200M-cycle boot at the default IW=2, pre-series (c5a84da) vs post-series (3a4c9c1):
+
+| | before | after |
+| --- | --- | --- |
+| IPC | 0.365 | **0.413 (+13.1%)** |
+| loads completed | 9.86M | **11.51M (+16.8%)** |
+| `LSU-RD` mean (old ren-based scale) | 4.20c | **~3.69c** |
+| 17+c tail | 5.87% | 5.09% |
+| sbfull% (dispatch blocked on SB) | 34.1% | 28.4% |
+| ccfull% | 12.3% | 10.1% |
+| noFE% (frontend supplied nothing) | 31.2% | 36.0% |
+| icym% (I$-supply starved) | 23.5% | **27.2%** |
+
+**Step 5 verdict: fetch-bubble did NOT drop -- it grew,** absolutely (46.9M -> 54.3M
+cyc) and as a share. The pipelined I$ cannot help while the fetch client is
+single-outstanding (one window request at a time, granted at S_IDLE, zero
+b2b-accepts on the I$ across every run); with the load/store side ~fixed, I$ supply
+is now the single largest stall at 27.2% of all cycles. Conclusion: the frontend
+work (streaming fetch client / FTQ + branch prediction, see `project_cpi_breakdown`
+and the basic-block-BP note) stays the top perf item, and it has a ready-made
+consumer: the I$ already accepts one request per cycle.
+
+Series complete: steps 2 (f371fa1 + a20a719), 3a (7c77429), 3b (37e8a93),
+4 (3a4c9c1). IW=1 `LSU-RD` mean 6.72c -> ~3.6c. Remaining ideas parked: victim
+capture overlapping the fill's L2 read, multi-entry MSHR, response-side ready.
+FPGA build/timing = acceptance on the hardware side (rd_rdy + MSHR muxes sit near
+the hit cone; `project_fpga_timing_margin` applies).
+
 ## Validation
 
 * `run-vl-tests.sh` (215/215) after every step -- covers the LSU/D$ through `backend_top`.
