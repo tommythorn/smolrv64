@@ -333,9 +333,10 @@ module backend_top
 `ifdef DISP_STATS
    // sim-only dispatch/stall attribution: one cause per non-dispatching cycle
    // (else-chain priority) + bundle-size histogram. Dumped every 20M cycles.
-   integer st_cyc, st_disp, st_insn, st_nofe, st_icym, st_immu, st_ccfull, st_sbfull,
+   // longint: a >2.1B-cycle run (gb5 = 8B) wraps 32-bit `integer` negative -> negative IPC
+   longint st_cyc, st_disp, st_insn, st_nofe, st_icym, st_immu, st_ccfull, st_sbfull,
            st_lqfull, st_roll, st_dflt, st_ill, st_rs, st_festall, st_red;
-   integer st_bs [1:4];
+   longint st_bs [1:4];
    initial begin
       st_cyc=0; st_disp=0; st_insn=0; st_nofe=0; st_icym=0; st_immu=0; st_ccfull=0;
       st_sbfull=0; st_lqfull=0; st_roll=0; st_dflt=0; st_ill=0; st_rs=0; st_festall=0;
