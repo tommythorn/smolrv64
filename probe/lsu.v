@@ -385,6 +385,7 @@ module lsu
    // (the shadow promotes when the head retires); response ARRIVAL order is free --
    // a hit returns under an older miss parked in the cache's MSHR.
    reg            p_done;  reg [AW-1:0] p_pa;  reg [63:0] p_data;
+   reg            p_dev, s_dev;   // in-flight slot holds a DEVICE load (see dev_infl)
    reg            s_v, s_done, s_sgn, s_fp;
    reg [PBITS-1:0] s_pdst;
    reg [SBITS-1:0] s_owner;
@@ -532,9 +533,20 @@ module lsu
          end
    end
    wire ld_committed = (lq_ck[ld_sel] == committed);     // in the oldest live checkpoint == non-speculative
-   // fire a device load only when committed (non-speculative) AND fenced (no older store buffered).
-   wire ld_dev_ok = ~ld_is_dev | (ld_committed & ~ld_olds_any);
-   wire sel_fire  = slot_free & mem_rdy & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok;
+   // fire a device load only when committed (non-speculative) AND fenced (no older store buffered)
+   // AND the load pipe is EMPTY. Empty-pipe + the dev_infl gate below make a device load truly
+   // SOLO at the memory port for its whole request->response lifetime. The device response has no
+   // identity of its own: the soc adapter routes it by decoding the LIVE mem_raddr (is_dev_r) and
+   // stamps mem_resp_addr = mem_raddr. If any other load issues while a device read is in flight,
+   // mem_raddr moves on, is_dev_r drops, and the device's rvalid pulse is muxed away -- the head
+   // load then waits forever (wedged Linux console output at 90M retirements: p_pa=0x10000005,
+   // the UART LSR poll, with the shadow slot already completed on a RAM load). Oldest-first,
+   // exclusive load selection makes the empty-pipe wait livelock-free: once the device load is
+   // the selected oldest, nothing younger fires and the pipe drains to it.
+   wire ld_dev_ok = ~ld_is_dev | (ld_committed & ~ld_olds_any & ~p_v & ~s_v);
+   wire dev_infl  = (p_v & p_dev & ~(p_done | presp)) | (s_v & s_dev & ~(s_done | sresp));
+   wire sel_fire  = slot_free & mem_rdy & ld_sel_v & (ast == A_IDLE) & ~amo_v & ld_xok & ld_dev_ok
+                  & ~dev_infl;
    // Roll a device load back to solo when it can't reach committed+fenced by merely WAITING: it is
    // speculative (~committed -> a squash could annul it after a side effect), or it shares its
    // checkpoint with an older store (that store can't drain first -> deadlock). A committed load
@@ -781,7 +793,7 @@ module lsu
    assign dfault_tval  = df_tval_r;
 
    always @(posedge clk) begin
-      if (reset) begin p_v <= 1'b0; s_v <= 1'b0; p_done <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; mem_runcached <= 1'b0; end
+      if (reset) begin p_v <= 1'b0; s_v <= 1'b0; p_done <= 1'b0; ast <= A_IDLE; rsv_v <= 1'b0; amo_wbv <= 1'b0; mem_ren <= 1'b0; mem_runcached <= 1'b0; p_dev <= 1'b0; s_dev <= 1'b0; end
       else begin
          amo_wbv <= 1'b0;                       // 1-cycle pulse unless A_WB sets it
          mem_ren <= 1'b0;                        // 1-cycle read-request pulse (set on a fresh mem_raddr)
@@ -794,7 +806,7 @@ module lsu
             p_pdst <= s_pdst; p_owner <= s_owner; p_seq <= s_seq; p_ck <= s_ck;
             p_nb   <= s_nb;   p_sgn   <= s_sgn;   p_fp  <= s_fp;
             p_w0   <= s_w0;   p_w1    <= s_w1;    p_lb  <= s_lb;
-            p_pa   <= s_pa;
+            p_pa   <= s_pa;   p_dev   <= s_dev;
             p_done <= s_done | sresp;            // a response landing this very edge counts
             p_data <= s_done ? s_data : mem_rdata;
 `ifdef LSU_FWD_STATS
@@ -809,7 +821,7 @@ module lsu
                p_seq   <= lq_seq[ld_sel]; p_ck    <= lq_ck [ld_sel];
                p_nb    <= lq_nb [ld_sel]; p_sgn   <= lq_sgn[ld_sel]; p_fp <= lq_fp[ld_sel];
                p_w0    <= lq_w0 [ld_sel]; p_w1    <= lq_w1 [ld_sel]; p_lb <= lq_lb[ld_sel];
-               p_pa    <= ld_pa;
+               p_pa    <= ld_pa;          p_dev   <= ld_is_dev;
 `ifdef LSU_FWD_STATS
                p_pc    <= lq_pc [ld_sel];
 `endif
@@ -819,7 +831,8 @@ module lsu
                s_seq   <= lq_seq[ld_sel]; s_ck    <= lq_ck [ld_sel];
                s_nb    <= lq_nb [ld_sel]; s_sgn   <= lq_sgn[ld_sel]; s_fp <= lq_fp[ld_sel];
                s_w0    <= lq_w0 [ld_sel]; s_w1    <= lq_w1 [ld_sel]; s_lb <= lq_lb[ld_sel];
-               s_pa    <= ld_pa;
+               s_pa    <= ld_pa;          s_dev   <= ld_is_dev;   // unreachable for a device load
+                                          // (empty-pipe gate -> head fill) -- kept for symmetry
 `ifdef LSU_FWD_STATS
                s_pc    <= lq_pc [ld_sel];
 `endif

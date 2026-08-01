@@ -298,6 +298,17 @@ module tb;
                      dut.core.cur, dut.core.cc_committed, dut.core.cc.count[0], dut.core.cc.count[1],
                      dut.core.cc.count[2], dut.core.cc.count[3], dut.core.cc.count[4], dut.core.cc.count[5],
                      dut.core.cc.count[6], dut.core.cc.count[7]);
+            // LSU in-flight/AMO/store-buffer state: which op is the one that never completes
+            $display("  LSU: p_v=%b p_done=%b p_pa=%h  s_v=%b s_done=%b s_pa=%h  ast=%0d amo_pend=%b  mem_ren=%b mem_rdy=%b mem_raddr=%h",
+                     dut.core.u_lsu.p_v, dut.core.u_lsu.p_done, dut.core.u_lsu.p_pa,
+                     dut.core.u_lsu.s_v, dut.core.u_lsu.s_done, dut.core.u_lsu.s_pa,
+                     dut.core.u_lsu.ast, dut.core.u_lsu.amo_pend,
+                     dut.core.u_lsu.mem_ren, dut.core.u_lsu.mem_rdy, dut.core.u_lsu.mem_raddr);
+            $display("  LSU2: sb_v=%b%b%b%b sb_rdy=%b%b%b%b sb_cmt=%b%b%b%b dr_hold=%b  skid: av=%b aaddr=%h  wb_busy=%b",
+                     dut.core.u_lsu.sb_v[0], dut.core.u_lsu.sb_v[1], dut.core.u_lsu.sb_v[2], dut.core.u_lsu.sb_v[3],
+                     dut.core.u_lsu.sb_rdy[0], dut.core.u_lsu.sb_rdy[1], dut.core.u_lsu.sb_rdy[2], dut.core.u_lsu.sb_rdy[3],
+                     dut.core.u_lsu.sb_cmt[0], dut.core.u_lsu.sb_cmt[1], dut.core.u_lsu.sb_cmt[2], dut.core.u_lsu.sb_cmt[3],
+                     dut.core.u_lsu.dr_hold, dut.av, dut.aaddr, dut.core.u_lsu.wb_busy);
             // lane[0] always exists (IW>=1); higher lanes omitted so the dump is width-safe (incl IW=1)
             $display("  FL: stall=%b free[0]=%0d dvalid=%b create=%b",
                      dut.core.fe.u_dr.stall,
