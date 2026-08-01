@@ -28,6 +28,11 @@ THREADS=${THREADS:-1}   # verilator --threads. MEASURED 2026-07-06: 4 threads is
                         # partition badly). Streams bit-identical. Keep 1.
 MEM_LG2=${MEM_LG2:-29}
 W=../workloads/tiny128
+# Capture an EXPLICIT DTB= before the generic default below: the UBUNTU/RAM mode
+# blocks default their own dtb via ${USER_DTB:-...} -- with ${DTB:-...} there, the
+# tiny128 default already set here always won, and UBUNTU=1 silently booted the
+# virtio-free tiny128 dtb -> no root disk -> mount panic.
+USER_DTB=${DTB:-}
 FW=${FW:-../workloads/ubuntu/fw_payload.bin}; DTB=${DTB:-$W/tiny128-cosim.dtb}; INITRD=${INITRD:-$W/tiny128.cpio}
 OFF_DTB=${OFF_DTB:-1ff00000}; OFF_INITRD=${OFF_INITRD:-1f52c000}; A1=${A1:-9ff00000}
 CYC=${CYC:-2000000000000}
@@ -50,7 +55,7 @@ if [ -n "${UBUNTU:-}" ]; then
    NAME=ubuntu; MEM_LG2=31
    # ubuntu-cosim.dtb = ubuntu.dts minus the virtio-net node: the sim has no net backend
    # and the oracle wants no unbacked-window traffic (DUT faulted at 0x10003000 there).
-   FW=../workloads/ubuntu/fw_payload.bin; DTB=${DTB:-../workloads/ubuntu/ubuntu-cosim.dtb}; INITRD=
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=${USER_DTB:-../workloads/ubuntu/ubuntu-cosim.dtb}; INITRD=
    OFF_DTB=2000000; A1=82000000
    DISK=${DISK:-$HOME/simmerv/linux/ubuntu-25.04-preinstalled-server-riscv64.img}
 fi
@@ -59,7 +64,7 @@ fi
 # discriminator). Artifact + dtb from workloads/ubuntu-mini/build-mini.sh.
 if [ -n "${RAM:-}" ]; then
    NAME=ram; MEM_LG2=31
-   FW=../workloads/ubuntu/fw_payload.bin; DTB=${DTB:-../workloads/ubuntu-mini/ubuntu-ram.dtb}
+   FW=../workloads/ubuntu/fw_payload.bin; DTB=${USER_DTB:-../workloads/ubuntu-mini/ubuntu-ram.dtb}
    # UNCOMPRESSED cpio for sim/cosim (zstd decompress = ~16B insns, impractical in RTL);
    # the .zst is for FPGA (serial-upload dominated). Override via INITRD=.
    INITRD=../workloads/ubuntu-mini/ubuntu-mini.cpio
