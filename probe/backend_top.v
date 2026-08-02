@@ -41,9 +41,12 @@
 `endif
 
 // PROBE_CKMAX: instructions accumulated per checkpoint (coarse CPR). 1 = per-bundle
-// baseline; >=2 grows the in-flight window (see the CKMAX parameter notes below).
+// (the old baseline); 2 = default since the iflt fresh-span fix (68d6f87): GB5 8B-cycle
+// soak clean, +2.9% retired throughput. Approach B still closes checkpoints on every
+// CTI, so >=2 only coarsens straight-line runs -- the larger win is confidence-gated
+// branch inclusion (branches riding inside checkpoints), which builds on this.
 `ifndef PROBE_CKMAX
- `define PROBE_CKMAX 1
+ `define PROBE_CKMAX 2
 `endif
 
 // PROBE_IW: issue/shard width -- the ONE width knob. SBITS, PBITS, HW, DCW, CNTW,
