@@ -565,6 +565,16 @@ module lsu
    reg [CBITS-1:0] dv_ck; initial dv_ck = {CBITS{1'b0}};
    always @(posedge clk) begin
       if (reset)         dv_v <= 1'b0;
+      // The armed-for device load FIRED: a stale dv_v must not survive the window
+      // close. dv_now keeps pulsing while the replayed load waits for the commit
+      // pointer (~ld_committed until its solo span is oldest -- multi-cycle at
+      // CKMAX>=2), re-latching dv_v under the armed window; devld_fire_v then closes
+      // the window and the stale latch fired a SECOND replay one cycle after the
+      // load's side effect (PLIC claim consumed, re-execution read 0, the handler
+      // never completed -> gateway blocked forever -- the post-mount boot stall,
+      // and the probable July 'Hostname set' wedge: same race, marginal at CKMAX=1).
+      // sel_fire&ld_is_dev and dv_now are mutually exclusive (ld_dev_ok vs ~ld_committed).
+      else if (sel_fire & ld_is_dev) dv_v <= 1'b0;
       else if (rollback) dv_v <= 1'b0;
       else if (dv_now) begin dv_v <= 1'b1; dv_ck <= lq_ck[ld_sel]; end
    end
@@ -741,6 +751,15 @@ module lsu
                      sb_v[0],sb_v[1],sb_v[2],sb_v[3],sb_v[4],sb_v[5],sb_v[6],sb_v[7],
                      sb_cmt[0],sb_cmt[1],sb_cmt[2],sb_cmt[3],sb_cmt[4],sb_cmt[5],sb_cmt[6],sb_cmt[7],
                      sb_w0[0], sb_w0[1], sb_w0[2], sb_w0[3]);
+         if (dv_now)
+            $display("[DVN c=%0d sel=%0d seq=%0d ck=%0d committed=%0d cmt=%b olds=%b pv=%b pdev=%b sv=%b va=%h]",
+                     sxc, ld_sel, lq_seq[ld_sel], lq_ck[ld_sel], committed,
+                     ld_committed, ld_olds_same, p_v, p_dev, s_v, lq_addr[ld_sel]);
+         if (sel_fire & ld_is_dev)
+            $display("[DVF c=%0d sel=%0d seq=%0d ck=%0d va=%h]",
+                     sxc, ld_sel, lq_seq[ld_sel], lq_ck[ld_sel], lq_addr[ld_sel]);
+         if (presp & p_dev)
+            $display("[DVR c=%0d p_seq=%0d p_pa=%h data=%h]", sxc, p_seq, p_pa, mem_rdata);
          if (st_need_xl & stx_ready & stx_fault)
             $display("[STXI c=%0d st=%0d tlbhit=%b permflt=%b noncanon=%b wdone=%b reqmatch=%b poison=%b vaq=%h]",
                      sxc, u_stmmu.st, u_stmmu.tlb_hit, u_stmmu.hit_perm_fault,

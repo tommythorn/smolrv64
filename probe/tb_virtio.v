@@ -221,6 +221,15 @@ module tb;
                $display("[VMMIO c=%0d RD addr=%h]", c, dut.virtio_addr);
             if (virtio_irq_q != u_vmmio.irq)
                $display("[VMMIO c=%0d IRQ %b->%b]", c, virtio_irq_q, u_vmmio.irq);
+            // PLIC side: claim reads / complete writes / seip + src-11 gateway state
+            if (dut.dmem_ren & dut.is_plic_r)
+               $display("[PLIC c=%0d RD a=%h rdata=%h seip=%b pend11=%b insvc11=%b]", c,
+                        dut.dmem_raddr[23:0], dut.plic_rdata, dut.plic_seip,
+                        dut.u_plic.pending[11], dut.u_plic.in_service[11]);
+            if (dut.dmem_wen & dut.is_plic_w)
+               $display("[PLIC c=%0d WR a=%h wdata=%h seip=%b pend11=%b insvc11=%b]", c,
+                        dut.dmem_waddr[23:0], dut.dmem_wdata, dut.plic_seip,
+                        dut.u_plic.pending[11], dut.u_plic.in_service[11]);
          end
 `endif
       end
