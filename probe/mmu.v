@@ -173,14 +173,24 @@ module mmu
    wire req_match = (va_q == req_vaddr) & (acc_q == req_access) & ~ctx_poison;
 
    // ---- combinational translation result ----
-   // resolves this cycle on: Bare, non-canonical, a TLB hit, or a just-finished walk.
-   assign t_ready = req_valid & (!xlate | noncanon | tlb_hit | (w_done & req_match));
+   // A TLB hit whose PERM check fails is treated as a MISS (tlb_ok): the fault is
+   // delivered only from a FRESH walk. The cached perms can be stale-in-memory --
+   // software A/D management (RVA22) has the kernel set A/D in the PTE on the
+   // fault path and RETRY WITHOUT sfence.vma (same contract as "invalid PTEs are
+   // never cached"). Serving the fault from the cached entry livelocked the Ubuntu
+   // EXT4 mount: a LOAD (needs A only) filled the TLB while the PTE had D=0, the
+   // journal STORE then perm-faulted from the cache forever while the kernel set
+   // D=1 in memory each iteration (found via STXTRACE: zero re-walks, zero sfence).
+   // A faulting walk still fills no TLB, so fault delivery always reflects memory.
+   wire tlb_ok = tlb_hit & ~hit_perm_fault;
+   // resolves this cycle on: Bare, non-canonical, a clean TLB hit, or a just-finished walk.
+   assign t_ready = req_valid & (!xlate | noncanon | tlb_ok | (w_done & req_match));
    wire wdm = w_done & req_match;
    assign t_paddr = wdm      ? w_paddr :
                     !xlate    ? req_vaddr[AW-1:0] :
                                 leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr);
-   // base (translation) fault: page/perm fault (Sv39) or non-canonical (Bare).
-   wire        base_fault = wdm ? w_fault : (noncanon | (tlb_hit & hit_perm_fault));
+   // base (translation) fault: page/perm fault (Sv39, fresh-walk only) or non-canonical.
+   wire        base_fault = wdm ? w_fault : noncanon;
    wire [3:0]  base_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
    // PA-validity fault: only when the translation actually RESOLVES this cycle (t_ready) and
    // didn't already fault -- an unbacked resolved PA is an access fault.  t_ready-gating is
@@ -193,7 +203,7 @@ module mmu
    assign t_uncached = wdm ? w_nc : (xlate & tlb_hit & tlb_nc[tlb_idx]);
 
    // start a walk when the request can't resolve this cycle
-   wire start_walk = req_valid & xlate & !noncanon & !tlb_hit & !wdm & (st==IDLE);
+   wire start_walk = req_valid & xlate & !noncanon & !tlb_ok & !wdm & (st==IDLE);
 
    // PTE address = (table_ppn << 12) | (vpn[lvl] << 3)
    wire [8:0] vpn_lvl = (lvl==2'd2) ? va_q[38:30] : (lvl==2'd1) ? va_q[29:21] : va_q[20:12];
