@@ -320,6 +320,29 @@ module cache #(
    end
    wire [LINEB-1:0] msh_shift = msh_line >> {msh_addr[OFFB-1:0], 3'b000};
 
+`ifdef CACHEWATCH
+   // Targeted line microscope: every write-port request/ack and FSM activity touching
+   // the watched line (PA page in CACHEWATCH_PA<<12), with hit/way/WBB/MSHR context.
+   integer cwc; initial cwc = 0;
+   wire cw_wr = wr_req && (wr_addr[PAW-1:12] == `CACHEWATCH_PA);
+   wire cw_rd = rd_req && (rd_addr[PAW-1:12] == `CACHEWATCH_PA);
+   always @(posedge clk) begin
+      cwc <= cwc + 1;
+      if (PERF_ID == 1 && cwc > `CACHEWATCH_T0 && cwc < `CACHEWATCH_T1) begin
+         if (cw_wr | cw_rd)
+            $display("[CW c=%0d %s a=%h d=%h m=%h st=%0d hit=%b ack=%b rdy=%b cbo=%b%b span=%b wbbv=%b wbbA=%h mshv=%b mshA=%h",
+                     cwc, cw_wr ? "WR" : "RD", cw_wr ? wr_addr : rd_addr, wr_data, wr_mask,
+                     st, hit, wr_ack, rd_rdy, cbo_req, cbo_zero, r_span,
+                     wbb_val, {wbb_addr, {OFFB{1'b0}}}, msh_val, msh_addr);
+         if (st == S_FIN && r_is_wr && (r_addr[PAW-1:12] == `CACHEWATCH_PA))
+            $display("[CW c=%0d FIN a=%h hit=%b w0way=%0d nwin=%h]", cwc, r_addr, hit, w0_way, nwin);
+         if ((st == S_CHECK || st == S_FIN) && (cur_line[PAW-1:12] == `CACHEWATCH_PA))
+            $display("[CW c=%0d CHK line=%h hit0=%b hit1=%b hway=%b v0=%b t0=%h v1=%b t1=%h ctag=%h]",
+                     cwc, cur_line, hit0, hit1, hway,
+                     valm[flat(0,ci0)], tagm[flat(0,ci0)], valm[flat(1,ci1)], tagm[flat(1,ci1)], ctag);
+      end
+   end
+`endif
 `ifdef CACHE_BLOCK_STATS
    // A read request can only be ACCEPTED at S_IDLE (see the S_IDLE arm below), so a pending
    // read waits out whatever the FSM is already doing. This splits that wait by what is

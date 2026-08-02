@@ -394,9 +394,15 @@ module soc_top #(
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_rdy(dc_rd_rdy), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
-      // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
-      // when c_rd_req is low). The store's NC bit qualifies the write port.
-      .rd_uncached(c_rd_nc), .wr_uncached(dmem_wuncached),
+      // Svpbmt: only a LSU load read can be NC -- the attribute must be QUALIFIED BY THE
+      // GRANT (c_rd_req): c_rd_nc falls through to dmem_runcached, a REGISTERED last-load
+      // attribute that lingers high after an NC load completes. Unqualified, a PTW read
+      // granted while it lingered was mis-tagged NC and took the flush-around path --
+      // INVALIDATING the (dirty) line it read. During EXT4 mount the kernel polls NC
+      // virtio rings constantly, so page-table walks randomly destroyed just-written PTE
+      // lines; the refill pulled stale L2 zeros -> kernel store-fault livelock ("hangs
+      // after 'clk: Disabling unused clocks'", board + tb_virtio, CKMAX-timing sensitive).
+      .rd_uncached(c_rd_req & c_rd_nc), .wr_uncached(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_ack & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),

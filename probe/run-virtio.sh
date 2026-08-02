@@ -61,6 +61,7 @@ fi
 echo "=== virtio boot (fw=$FW dtb=$DTB disk=$DISK a1=$A1 cycles=$CYC defs='$(cat "$STAMP" 2>/dev/null)') ==="
 CKPT_ARG=""; [ -n "${CKPT:-}" ] && CKPT_ARG="+ckpt=$CKPT +ckpt_cmd=${CKPT_CMD:-/tmp/probe-ckpt-cmd}"  # fork-checkpoint server
 [ -n "${WATCH_VAL:-}" ] && CKPT_ARG="$CKPT_ARG +watch_val=$WATCH_VAL"  # from-reset store-value fingerprint watch
+[ -n "${WATCH_LO:-}" ] && CKPT_ARG="$CKPT_ARG +watchlo=$WATCH_LO +watchhi=$WATCH_HI"  # from-reset PA-range store+DMA watch
 INITRD_ARG=""; [ -n "$INITRD" ] && INITRD_ARG="+initrd=$INITRD"
 DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_ro"   # snapshot by default
 DISK_ARG=""; [ -n "${DISK:-}" ] && DISK_ARG="+disk=$DISK"

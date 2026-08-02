@@ -211,8 +211,24 @@ module tb;
          if (u_vblk.sd_error & ~sderr_q)
             $display("[SDERR c=%0d vblkstate=%0d blk_sector=%0d secleft=%0d spistate=%0d]",
                      c, u_vblk.state, u_vblk.blk_sector, u_vblk.sectors_left, u_vblk.sd.dbg_state);
+`ifdef VIRTIO_MMIO_TRACE
+         // ---- kick/IRQ/MMIO ordering trace (windowed): splits "kernel never kicked" vs
+         // "device never completed" vs "completion never reached the kernel" on a wedge.
+         if (c > `VIRTIO_MMIO_T0) begin
+            if (dut.virtio_write)
+               $display("[VMMIO c=%0d WR addr=%h data=%h be=%b]", c, dut.virtio_addr, dut.virtio_wdata, dut.virtio_be);
+            if (dut.virtio_read)
+               $display("[VMMIO c=%0d RD addr=%h]", c, dut.virtio_addr);
+            if (virtio_irq_q != u_vmmio.irq)
+               $display("[VMMIO c=%0d IRQ %b->%b]", c, virtio_irq_q, u_vmmio.irq);
+         end
+`endif
       end
    end
+`ifdef VIRTIO_MMIO_TRACE
+   reg virtio_irq_q; initial virtio_irq_q = 1'b0;
+   always @(posedge clk) virtio_irq_q <= u_vmmio.irq;
+`endif
 
    // ---- console-silence watchdog (ubuntu "Hostname set" wedge instrumentation) ----
    // Once the UART has been quiet for WDOG_QUIET cycles, dump the full interrupt/timer
@@ -359,7 +375,14 @@ module tb;
       output longint wlo, output longint whi, output longint wcyc, output longint wsval);
    reg [63:0] ckpt_c;  string ckpt_cmd;
    longint    ck_wlo, ck_whi, ck_wcyc, ck_sval;
-   reg [63:0] watch_lo, watch_hi;  initial begin watch_lo = 0; watch_hi = 0; end
+   reg [63:0] watch_lo, watch_hi;
+   initial begin
+      watch_lo = 0; watch_hi = 0;
+      // +watchlo/+watchhi (hex PA range): CPU-store + device-DMA watch from cycle 0
+      // (the ckpt command channel below can also set it mid-run).
+      if (!$value$plusargs("watchlo=%h", watch_lo)) watch_lo = 0;
+      if (!$value$plusargs("watchhi=%h", watch_hi)) watch_hi = 0;
+   end
    // +watch_val=<hex>: from CYCLE 0, log any full-width store of this 64-bit value
    // ANYWHERE (corruptor fingerprint hunt -- run-7/childB: the poison expiry
    // 0x189e8ae282285be3 predates the 10.0B checkpoint, so the warm-up run itself
@@ -369,6 +392,15 @@ module tb;
       if (watch_hi != 64'd0 && dmem_wen && dmem_waddr >= watch_lo && dmem_waddr < watch_hi) begin
          $display("[WATCH c=%0d pa=%h data=%h mask=%h pc=%h priv=%0d]", c, dmem_waddr,
                   dmem_wdata, dmem_wmask, dut.imem_addr, dut.core.eb.u_csr.priv);
+         $fflush;
+      end
+      // device-DMA writes into the watch range (DMA bypasses the D$: a hit here on a
+      // page the CPU also caches is an incoherence/misdirected-DMA smoking gun)
+      if (watch_hi != 64'd0 && ax_awvalid && ax_awready && ax_wvalid && ax_wready
+          && ((64'h80000000 | (ax_awaddr & (DDR_BYTES-1))) >= watch_lo)
+          && ((64'h80000000 | (ax_awaddr & (DDR_BYTES-1))) <  watch_hi)) begin
+         $display("[WATCH-DMA c=%0d pa=%h data=%h strb=%h]", c,
+                  64'h80000000 | (ax_awaddr & (DDR_BYTES-1)), ax_wdata, ax_wstrb);
          $fflush;
       end
       if (watch_val != 64'd0 && dmem_wen && dmem_wdata == watch_val) begin

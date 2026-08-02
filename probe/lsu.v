@@ -727,6 +727,31 @@ module lsu
    wire          st_ck_flt  = (st_need_xl & stx_ready & stx_fault) | st_xpage; // page-fault OR page-cross -> precise trap
    wire [3:0]    st_fcau    = st_xpage ? 4'd6 : stx_cause;           // page-cross -> misaligned (6), priority over MMU cause
 
+`ifdef STXTRACE
+   // Windowed store-translation trace (fault-livelock hunt): every store-check verdict,
+   // every stPTW PTE fetch, every dTLB flush. Shows whether a repeating store fault is
+   // walking stale PTEs, never re-walking (stale TLB), or mis-judging a valid PTE.
+   integer sxc; initial sxc = 0;
+   always @(posedge clk) begin
+      sxc <= sxc + 1;
+      if (sxc > `STXTRACE_T0) begin
+         if (st_need_xl & stx_ready)
+            $display("[STX c=%0d va=%h fault=%b cause=%0d pa=%h dr_hold=%b sb_v=%b%b%b%b%b%b%b%b cmt=%b%b%b%b%b%b%b%b w0_3=%h %h %h %h]",
+                     sxc, sb_addr[ck_sel], stx_fault, stx_cause, stx_pa, dr_hold,
+                     sb_v[0],sb_v[1],sb_v[2],sb_v[3],sb_v[4],sb_v[5],sb_v[6],sb_v[7],
+                     sb_cmt[0],sb_cmt[1],sb_cmt[2],sb_cmt[3],sb_cmt[4],sb_cmt[5],sb_cmt[6],sb_cmt[7],
+                     sb_w0[0], sb_w0[1], sb_w0[2], sb_w0[3]);
+         if (st_need_xl & stx_ready & stx_fault)
+            $display("[STXI c=%0d st=%0d tlbhit=%b permflt=%b noncanon=%b wdone=%b reqmatch=%b poison=%b vaq=%h]",
+                     sxc, u_stmmu.st, u_stmmu.tlb_hit, u_stmmu.hit_perm_fault,
+                     u_stmmu.noncanon, u_stmmu.w_done, u_stmmu.req_match, u_stmmu.ctx_poison, u_stmmu.va_q);
+         if (stp_rvalid)
+            $display("[STPTW c=%0d a=%h pte=%h lvl=%0d]", sxc, stp_addr, stp_rdata, u_stmmu.lvl);
+         if (xl_flush) $display("[STX c=%0d SFENCE]", sxc);
+      end
+   end
+`endif
+
    // fence.i ordering: the store buffer is empty (all stores drained+written-through to memory,
    // since an entry frees on mem_wready which the D$ asserts only after its L2 write completes)
    // and no atomic is mid-RMW -> memory is current and safe to refetch from.
