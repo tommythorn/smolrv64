@@ -113,11 +113,22 @@ module cache #(
    reg              bk_wren   [0:2*WAYS-1];
    reg  [BAW-1:0]   bk_wraddr [0:2*WAYS-1];
    reg  [BANKW-1:0] bk_wrdata [0:2*WAYS-1];
-   genvar gb;
+   // Each logical bank is SLICED into <=64-bit physical sdpram instances: one RAMB36
+   // SDP word is 72b, and a wider single instance (BRAM width-cascade) is the geometry
+   // that killed the wide-I$ bit (d3d09157) -- the behavioral sdpram cannot validate
+   // it in sim, and smolrv64_sdpram hard-fails synthesis on it. Slicing keeps every
+   // physical RAM in the hardware-proven class: the D$ (BANKW=64) is one slice, the
+   // I$ (BANKW=128) two. Shared address/enable, disjoint data bits -- bit-identical.
+   localparam SLICEW  = 64;
+   localparam NSLICES = (BANKW + SLICEW-1)/SLICEW;
+   genvar gb, gs;
    generate for (gb=0; gb<2*WAYS; gb=gb+1) begin : banks
-      smolrv64_sdpram #(.ADDR_WIDTH(BAW), .DATA_WIDTH(BANKW), .READ_LATENCY(1)) u_bank
-        (.clock(clk), .rd_addr(bk_rdaddr[gb]), .rd_data(bk_rddata[gb]),
-         .wr_en(bk_wren[gb]), .wr_addr(bk_wraddr[gb]), .wr_data(bk_wrdata[gb]));
+      for (gs=0; gs<NSLICES; gs=gs+1) begin : slice
+         localparam W = (gs == NSLICES-1) ? (BANKW - gs*SLICEW) : SLICEW;
+         smolrv64_sdpram #(.ADDR_WIDTH(BAW), .DATA_WIDTH(W), .READ_LATENCY(1)) u_bank
+           (.clock(clk), .rd_addr(bk_rdaddr[gb]), .rd_data(bk_rddata[gb][gs*SLICEW +: W]),
+            .wr_en(bk_wren[gb]), .wr_addr(bk_wraddr[gb]), .wr_data(bk_wrdata[gb][gs*SLICEW +: W]));
+      end
    end endgenerate
 
    // ---- request regs ----
