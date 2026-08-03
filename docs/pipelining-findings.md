@@ -153,7 +153,7 @@ This, not the RTL strategy, is why a month produced nothing.
 
 ## Doc status (2026-06-17)
 
-- This file is the orientation. The longer narrative is `PIPELINING.md` (still
+- This file is the orientation. The longer narrative is `docs/PIPELINING.md` (still
   directionally valid: independent frontend + retiring backend).
 - DELETED as superseded: `PIPELINING_PLAN_C.md` (its stage-contract +
   no-bare-overlap methodology is folded into "Working rules" above).
