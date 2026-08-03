@@ -64,13 +64,33 @@ module tb;
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;            // DDR base as a line address
    reg [511:0] lram [0:NLINES-1];
-   reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   // +ddr_real: latency-realistic DDR -- MIG-scale base latency with LFSR jitter,
+   // periodic refresh stalls (tREFI/tRFC scaled to probe_clk), and core-vs-DMA
+   // CONTENTION (one memory: each port's op stalls the other). The board-only
+   // corruption class lives in exactly these interleaving windows; the default
+   // instant/fixed-latency model cannot produce them. Default (+ddr_real absent)
+   // is bit-identical to the old behavior.
+   reg        ddr_real;  reg [63:0] ddr_lat;
+   initial begin
+      ddr_real = $test$plusargs("ddr_real") ? 1'b1 : 1'b0;
+      if (!$value$plusargs("ddr_lat=%d", ddr_lat)) ddr_lat = 64'd24;
+   end
+   reg [15:0] dlfsr; initial dlfsr = 16'hACE1;
+   reg [9:0]  refc;  initial refc  = 10'd0;
+   wire       refresh_stall = ddr_real && (refc < 10'd24);   // ~24-cycle tRFC every ~520 (tREFI)
+   always @(posedge clk) if (!reset && ddr_real) refc <= (refc == 10'd519) ? 10'd0 : refc + 1'b1;
+   reg d_busy; reg [6:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   reg axi_infl;   // device-DMA op in flight (declared here for the contention cross-stall)
    reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
-      else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; end
-      else if (d_busy) begin
+      else if (!d_busy && ddr_req && !(ddr_real && axi_infl)) begin
+         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         if (ddr_real) begin d_cnt <= ddr_lat[6:0] + {4'd0, dlfsr[2:0]}; dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]}; end
+         else d_cnt <= 7'd4;
+      end
+      else if (d_busy && !refresh_stall) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
             if (d_we_q) lram[line] <= d_wd_q;
@@ -141,26 +161,39 @@ module tb;
    // byte position bp = (off&63). lram stores byte k at bit k*8, so the 8 bytes are lram[line][bp*8 +: 64].
    reg axi_rvalid, axi_bvalid;  reg [63:0] axi_rdata;  integer ka;
    reg [63:0] ar_line, aw_line;  reg [9:0] ar_bp, aw_bp;
-   assign ax_arready = 1'b1; assign ax_awready = 1'b1; assign ax_wready = 1'b1;
+   // +ddr_real contention: the device shares the one memory with the core -- hold
+   // off accepting a DMA beat while the core's line op is in flight, and delay the
+   // response by ~half the line latency (single beat vs full line).
+   reg [6:0] a_cnt; reg axi_rd_infl; initial begin axi_infl = 1'b0; axi_rd_infl = 1'b0; a_cnt = 7'd0; end
+   wire axi_ok = !ddr_real || (!d_busy && !refresh_stall);
+   assign ax_arready = axi_ok; assign ax_awready = axi_ok; assign ax_wready = axi_ok;
    assign ax_rvalid = axi_rvalid; assign ax_rdata = axi_rdata; assign ax_rresp = 2'd0;
    assign ax_rlast = 1'b1; assign ax_rid = 3'd1;
    assign ax_bvalid = axi_bvalid; assign ax_bresp = 2'd0; assign ax_bid = 3'd1;
    always @(posedge clk) begin
       if (reset) begin axi_rvalid<=1'b0; axi_bvalid<=1'b0; end
       else begin
+         // response-delay countdown (+ddr_real; 0 = respond this cycle as before)
+         if (a_cnt != 0 && !refresh_stall) a_cnt <= a_cnt - 1'b1;
          // read channel
-         if (ax_arvalid && ax_arready && !axi_rvalid) begin
+         if (ax_arvalid && ax_arready && !axi_rvalid && !axi_infl) begin
             ar_line = ((ax_araddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
             ar_bp   = (ax_araddr & 6'h3f) << 3;        // bit position of byte (off&63)
             axi_rdata <= lram[ar_line][ar_bp +: 64];
-            axi_rvalid <= 1'b1;
+            if (ddr_real) begin axi_infl <= 1'b1; axi_rd_infl <= 1'b1; a_cnt <= {1'b0, ddr_lat[6:1]} + {5'd0, dlfsr[1:0]}; end
+            else axi_rvalid <= 1'b1;
+         end else if (axi_infl && axi_rd_infl && a_cnt == 0 && !axi_rvalid) begin
+            axi_rvalid <= 1'b1; axi_infl <= 1'b0;
          end else if (axi_rvalid && ax_rready) axi_rvalid <= 1'b0;
          // write channel (address + data arrive together for this single-beat master)
-         if (ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid) begin
+         if (ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid && !axi_infl) begin
             aw_line = ((ax_awaddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
             aw_bp   = (ax_awaddr & 6'h3f) << 3;
             for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) lram[aw_line][aw_bp + ka*8 +: 8] <= ax_wdata[ka*8 +: 8];
-            axi_bvalid <= 1'b1;
+            if (ddr_real) begin axi_infl <= 1'b1; axi_rd_infl <= 1'b0; a_cnt <= {1'b0, ddr_lat[6:1]} + {5'd0, dlfsr[1:0]}; end
+            else axi_bvalid <= 1'b1;
+         end else if (axi_infl && !axi_rd_infl && a_cnt == 0 && !axi_bvalid) begin
+            axi_bvalid <= 1'b1; axi_infl <= 1'b0;
          end else if (axi_bvalid && ax_bready) axi_bvalid <= 1'b0;
       end
    end

@@ -320,6 +320,26 @@ module cache #(
    end
    wire [LINEB-1:0] msh_shift = msh_line >> {msh_addr[OFFB-1:0], 3'b000};
 
+`ifndef SYNTHESIS
+   // Duplicate-line tripwire: the same physical line valid in BOTH ways is a
+   // structural fault -- hway=hit1 would silently shadow way 0's (possibly dirty,
+   // newer) copy on every access. No install site cross-checks the other way (fills
+   // assume miss-implies-absent), so enforce the invariant continuously: round-robin
+   // one way-0 set per cycle, reconstruct its line, and check way 1's alias slot.
+   // Full sweep every SETS cycles; a real duplicate persists far longer than that.
+   reg [IDXB-1:0] dupscan; initial dupscan = 0;
+   always @(posedge clk) if (!reset) begin
+      dupscan <= dupscan + 1'b1;
+      if (valm[flat(0, dupscan)]) begin : dupchk
+         reg [PTAGB-1:0] t0; reg [IDXB-1:0] i1;
+         t0 = tagm[flat(0, dupscan)];
+         i1 = dupscan ^ t0[IDXB-1:0];
+         if (valm[flat(1, i1)] && (tagm[flat(1, i1)] == t0))
+            $fatal(1, "[cache id=%0d] DUPLICATE LINE: tag=%h way0 idx=%h / way1 idx=%h",
+                   PERF_ID, t0, dupscan, i1);
+      end
+   end
+`endif
 `ifdef CACHEWATCH
    // Targeted line microscope: every write-port request/ack and FSM activity touching
    // the watched line (PA page in CACHEWATCH_PA<<12), with hit/way/WBB/MSHR context.
