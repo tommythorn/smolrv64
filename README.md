@@ -1,104 +1,150 @@
 # SmolRV64
 
-SmolRV64 is a 64-bit RVA22+ compliant RISC-V application-class soft
-SoC.  It is regularly tested with Ubuntu and its applications, but
-has booted Debian in the past and should be able to run any OS
-targeting RVA20+.  The core started out as a small sequential
-implementation, thus the name.  The name is now ironic as this is not
-a small core.
+SmolRV64 is a 64-bit RVA22-class RISC-V application SoC, written from
+scratch in Verilog, that boots stock Ubuntu — on an FPGA and in full-RTL
+simulation.  The core started out as a small sequential implementation,
+thus the name.  The name is now ironic: the current core is a clustered
+out-of-order design, and the SoC around it carries the full weight of a
+modern OS — Sv39 virtual memory, an FPU, non-coherent virtio DMA with
+cache-maintenance operations, and a complete interrupt stack.
 
-# Implementation Status
+## Highlights
 
-Full RVA22 support + Zicond extension.  The FPU courtesy of CV-FPU.
+- **Runs real software.** Boots unmodified Ubuntu 25.04 (OpenSBI +
+  mainline kernels) to a multi-user login on the FPGA target, from a
+  virtio-blk root filesystem on SD card, with working virtio-net
+  (DHCP/ping over RGMII).  The same images boot in RTL simulation.
+- **Out-of-order core.** A clustered ("sharded") OoO machine:
+  configurable 1–4 wide (default 2), register renaming with checkpoint
+  repair (CPR), scoreboard scheduling, a two-deep out-of-order load
+  pipe with store-buffer forwarding, and a BTB + bimodal + RAS branch
+  predictor feeding a streaming instruction-fetch client.
+- **A real memory system.** Skewed 2-way VHPR L1 caches (128 KiB each,
+  a design of this project — see appendix); the write-back D$ is
+  pipelined (one op/cycle, 2-cycle hit) with a miss-status register
+  for hit-under-miss and a write-back buffer.  Page-table walks go
+  *through* the D$, making it the coherency point: `sfence.vma` never
+  flushes a cache.
+- **Verification as a first-class artifact.** Every committed
+  instruction is compared in lockstep against an independent ISA-level
+  reference model ([Simmerv](https://github.com/tommythorn/simmerv)),
+  through multi-billion-cycle Linux boots and benchmark runs.  Bugs
+  get root-caused, not worked around; the debugging instrumentation
+  ships in the tree.
 
-The core has a 64 KiB skewed 2-way VHPR L1 instruction cache and a
-64 KiB skewed 2-way VHPR L1 data cache (coherent), as well as
-256 entry 4K TLB and a 64? entry 2M TLB.
+## Architecture
 
-RK-XCKU5P-F FPGA dev boards are directly supported.
+**ISA.** `rv64imafdc` + Zicsr, Zifencei, Zicntr, Zihpm, Zba/Zbb/Zbs,
+Zicond, Zicbom, Zicboz, Zicbop, Svpbmt — RVA22 with software A/D page
+management.  F/D floating point via
+[CV-FPU](https://github.com/openhwgroup/cvfpu), with commit-gated
+`mstatus.FS` dirty tracking (architectural state never goes dirty on a
+squashed path).
 
-Devices:
-- UART (NS16550 compatible)
-- CLINT
-- PLIC
-- Virtio Blk (backed by SD card)
-- Virtio Ethernet
+**Core** (`probe/`).  Fetch translates through a dedicated iMMU and
+aligns variable-length RVC bundles; decode/rename dispatches into
+per-shard schedulers; execution clusters own their register-file
+shards with a broadcast bypass; commit is in-order over coarse CPR
+checkpoints (rollback restores rename maps from per-checkpoint
+snapshots).  Interrupts are delivered by injecting a pseudo-op into
+the normal trap path — one mechanism for traps, faults, and IRQs.
+Device loads execute exactly once, non-speculatively, in program
+order; replayed side effects are structurally impossible.
 
-Board notes:
-- The RK UART is hardwired for 3,000,000 baud.  Use `make connect` in
-  `platforms/rk-xcku5p-f-v1.2` or run `screen /dev/ttyUSB1 3000000`.
-- The Ubuntu device tree intentionally advertises a faster CLINT
-  timebase than the hardware would otherwise imply, so Linux does not
-  give up on the machine for being too slow during boot.
+**Memory system.**  Three independent Sv39 MMUs (fetch / load / store)
+with private TLBs and hardware page-table walkers arbitrating for the
+D$ read port.  Svpbmt non-cacheable mappings and Zicbom/Zicboz
+cache-maintenance ops support the kernel's non-coherent virtio DMA
+rings.  Misaligned loads and stores within a page are handled in
+hardware, in both caches — uncommon anywhere, rare in a softcore.
+
+**SoC.**  CLINT, PLIC, NS16550A UART, virtio-blk backed by a real SD
+card (SPI host), and virtio-net on RGMII.  One 64-byte-line arbiter
+merges all instruction, data, walker, and DMA traffic onto DDR4.
+
+## Verification and debugging
+
+The bar for any change: it boots Linux under the oracle.
+
+- **Lockstep cosimulation** — the RTL runs with a DPI bridge that
+  steps Simmerv one instruction per retirement and compares every
+  architectural effect (PC, register writes, traps, CSRs).  A
+  divergence aborts with the register state and a 65k-entry
+  retirement history.  Ubuntu boots have run past four billion
+  retirements in lockstep.  ([docs/cosim.md](docs/cosim.md))
+- **Full-system RTL simulation** — the identical SoC boots the
+  identical disk image under Verilator with a file-backed SD model,
+  real interrupt latencies and non-coherent DMA, deep into systemd.
+- **riscv-tests** (240 programs) as the fast gate, plus a parallel
+  Verilator harness that runs the suite in seconds.
+- **Performance observability** — pipeline event tracing into a Rust
+  analysis tool (`probe/perftool`) that produces per-instruction
+  waterfalls, stall attribution, and cycle accounting; hardware
+  performance counters (Zicntr/Zihpm) on the FPGA.
+- The plan/findings documents in [docs/](docs/) record how each
+  subsystem was designed, measured, and debugged — including the
+  wrong turns.
 
 ## Performance
 
-Performance is now an active area of work.  The RK target runs the
-core from the DDR4 UI clock at about 9.4 CPI @ 166 MHz.  The current
-RK implementation closes timing with a small margin.
+Performance work is ongoing and measured, not guessed: every change is
+justified by cycle-accounting data from the trace tooling, and the
+docs record the numbers.  Recent examples: pipelining the D$ raised
+boot IPC 13%; a streaming fetch client raised it another 14%.
+Current cycle accounting puts the next wins in branch-handling and
+checkpoint capacity — both in progress.  The original sequential core
+ran at ~9.4 CPI; the OoO core is at ~0.5 IPC (2-wide) and climbing,
+with the roadmap below aimed at the remaining stalls.
 
-# Milestones
+## FPGA target
 
-## M1: Boot a minimal Linux
+The supported board is the RK-XCKU5P-F (AMD Kintex UltraScale+,
+DDR4).  The build is fully scripted (`make bit` in
+`platforms/rk-xcku5p-f-v1.2/`) and closes timing; the core runs at
+66.7 MHz with the DDR4 controller at 333 MHz.
 
-SmolRV64 targets 100% compatibility with
-[Simmerv](https://github.com/tommythorn/simmerv) (an ISA-level
-reference model which already boots full Ubuntu).  This means we are
-reusing the same OpenSBI, device tree, kernel, and file system images.
-For simulation, everything is preloaded into memory; for FPGA, a tiny
-bootloader will load from flash/UART.
+Board notes:
+- The UART is hardwired to 3,000,000 baud: `make connect`, or
+  `screen /dev/ttyUSB1 3000000`.
+- `make load WORKLOAD=...` builds a payload, rebuilds the bitstream,
+  and programs the board over JTAG.
 
-What's needed:
-- [x] Sv39 page table walk with software A/D (RVA22)
-- [x] Ssvnapot (64 KiB NAPOT pages)
-- [x] Cross-page instruction fetch
-- [x] CLINT (mtime, mtimecmp, msip) — timer interrupts
-- [x] PLIC — external interrupt routing (UART RX at minimum)
-- [x] UART — Linux console (NS16550A model)
-- [x] DDR4 support on RK-XCKU5P-F
-- [x] Cosim harness against Simmerv for lockstep debugging
-      ([docs/cosim.md](docs/cosim.md))
-- [x] Bring up OpenSBI (great incremental test for CSR/privilege bugs)
-- [x] Boot Linux with serial console
+## Repository layout
 
-## M2: Run Ubuntu
+| Path | Contents |
+|---|---|
+| `probe/` | The out-of-order core, SoC, testbenches, cosim harness, perftool |
+| `src/` | Shared components (caches' RAM primitives, virtio devices, SD/SPI, FPU wrapper) and the original sequential core |
+| `platforms/rk-xcku5p-f-v1.2/` | FPGA build: sources, constraints, scripted Vivado flow |
+| `workloads/` | Linux/Ubuntu/Geekbench images, device trees, boot scripts |
+| `docs/` | Design plans, measurements, and debugging findings |
 
-- [x] SDcard interface for permanent storage
-- [x] Full Compliant Floating point (F+D)
-- [x] Split direct-mapped TLBs for 4 KiB and 2 MiB pages
-- [x] Direct-mapped physical write-back cache (64-byte lines)
-- [x] Close timing with cache, TLB, fetch buffer, and CVFPU enabled
+## Roadmap
 
-## Beyond: Making it fast
+- Branch prediction phase 2 and confidence-gated checkpoint formation
+  (letting predicted branches ride inside checkpoints — the largest
+  measured stall source in benchmark code)
+- Larger effective out-of-order window via coarser checkpoints
+- RVA23 (vector is the main gap)
 
-- [ ] More advanced TLBs after the direct-mapped design is characterized
-- [x] Skew-associative virtually indexed frontend/cache (VHPR)
-- [ ] Out-of-order (before pipelining for ease of debugging)
-- [ ] 4-wide superscalar
-- [ ] Branch prediction
-- [ ] Pipelining
+## Novelties
 
-These last four are being pursued together as a sharded (clustered)
-out-of-order design that replaces the inner core and frontend while
-reusing the existing caches, TLBs, devices, and SoC infrastructure.
-See [docs/sharded-ooo-plan.md](docs/sharded-ooo-plan.md).
+- **VHPR caches** — a cache organization devised for this project
+  (below).
+- **First-class misalignment** in both L1 caches.
+- **Interrupts as injected pseudo-ops** — external interrupts reuse
+  the precise-exception machinery instead of adding a parallel
+  delivery path.
+- **Walker-through-cache coherency** — page-table walks read the D$
+  itself, so page-table stores are visible without any flush
+  protocol.
 
-- [x] RVA22 + Zicond (basically RVA23 except for Vector)
-- [ ] RVA23 (incl. vector)
+## Appendix: Skewed VHPR (Virtually Hashed, Physically Resolved)
 
-# Novelties
-- Both I and D caches have 1st class misalignment support (uncommon,
-  and unheard of in a softcore)
-- The VHPR cache is a new invention
-
-
-
-# Appendix: Skewed VHPR (Virtually Hashed Physically Resolved cache)
-
-The VHPR cache uses a hashed virtual index, giving a fast access
-without needing TLB.  To avoid the problems usually associated with
-VIVT caches, each line have a physical tag as well and the cache
-guarantees that no two aliases can be resident at once.  Thus, from
-the outside the cache looks like a standard VIPT cache.  We use
-different hashes for each way which gives excellent alias resiliency,
-almost as good as a traditional 4-way cache.
+The VHPR cache indexes with a hash of the virtual address, giving a
+TLB-free fast path, but each line also carries a physical tag and the
+cache guarantees that no two aliases of the same physical line are
+ever resident at once.  From the outside it behaves exactly like a
+standard VIPT cache.  Each way uses a different hash, which gives
+alias resiliency close to a conventional 4-way design from 2-way
+hardware.
