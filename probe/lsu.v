@@ -721,7 +721,15 @@ module lsu
       .req_vaddr(amo_need_xl ? a_addr : sb_addr[ck_sel]),
       // LR reads memory -> a page fault on it is a LOAD fault (cause 13), like Spike/simmerv;
       // SC/AMO write -> Store/AMO fault (cause 15). (Non-AMO store checks use store access 2.)
-      .req_access(amo_need_xl ? (a_islr ? 2'd1 : 2'd3) : 2'd2),
+      // Zicbom permission class: cbo.clean/flush require only READ permission -- the kernel
+      // legitimately cleans its RO-aliased linear map for DMA (mark_rodata_ro'd kernel image
+      // pages; first seen at EXT4 online resize: arch_sync_dma_for_device Oops'd on a W=0
+      // 2M leaf, cause=15). Check non-zero CBOs as loads: cbo.zero stays store-class, and
+      // cbo.inval -- implemented as flush (writeback+invalidate, never destructive) -- rides
+      // the R-class check consistently with those upgraded semantics.
+      .req_access(amo_need_xl ? (a_islr ? 2'd1 : 2'd3)
+                : (sb_cbo[ck_sel] & ~sb_cboz[ck_sel]) ? 2'd1
+                : 2'd2),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
       .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
@@ -735,7 +743,12 @@ module lsu
                               (({1'b0, sb_addr[ck_sel][11:0]} + sb_nb[ck_sel]) > 13'h1000); // page-cross (see ld_xpage)
    wire          st_ck_done = st_need_xl & stx_ready & ~stx_fault & ~st_xpage; // translated OK, in-page -> completes
    wire          st_ck_flt  = (st_need_xl & stx_ready & stx_fault) | st_xpage; // page-fault OR page-cross -> precise trap
-   wire [3:0]    st_fcau    = st_xpage ? 4'd6 : stx_cause;           // page-cross -> misaligned (6), priority over MMU cause
+   // CBO faults REPORT as store/AMO faults (CMO spec) even though clean/flush are
+   // permission-CHECKED as loads above: remap the load-class causes back to store-class.
+   wire [3:0]    st_cau_cbo = (stx_cause == 4'd13) ? 4'd15 : (stx_cause == 4'd5) ? 4'd7 : stx_cause;
+   wire [3:0]    st_fcau    = st_xpage ? 4'd6
+                            : (sb_cbo[ck_sel] & ~sb_cboz[ck_sel]) ? st_cau_cbo
+                            : stx_cause;   // page-cross -> misaligned (6), priority over MMU cause
 
 `ifdef STXTRACE
    // Windowed store-translation trace (fault-livelock hunt): every store-check verdict,
