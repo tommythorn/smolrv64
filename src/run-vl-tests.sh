@@ -29,8 +29,8 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} $PERFOPT \
-   -I. -I../src --top-module tb --Mdir obj_dir_vl -o tb_vl \
-   $srcs tb_vl.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv $PERFSRC \
+   -I. --top-module tb --Mdir obj_dir_vl -o tb_vl \
+   $srcs tb_vl.v ./alu.v ./smolrv64_sdpram.v -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv $PERFSRC \
    > /tmp/vlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/vlbuild.log; exit 1; fi
 BIN=$(pwd)/obj_dir_vl/tb_vl

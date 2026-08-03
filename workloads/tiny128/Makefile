@@ -14,39 +14,15 @@ endif
 mem.even mem.odd: tiny128.dtb $(FW) tiny128.cpio
 	$(SRC_DIR)/mkhex.py mem 0:$(FW) 1f52c000:tiny128.cpio 1ff00000:tiny128.dtb
 
-$(SRC_DIR)/smolrv64-tiny128-verbose: $(SRC_DIR)/smolrv64.v
-	$(MAKE) -C $(SRC_DIR) smolrv64-tiny128-verbose
 
-sim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-verbose
-	cd $(SRC_DIR) && ./smolrv64-tiny128-verbose \
-		+sram_even=$(CURDIR)/mem.even \
-		+sram_odd=$(CURDIR)/mem.odd \
-		+rf=$(CURDIR)/rf.hex
 
 .PHONY: sim
 
-$(SRC_DIR)/smolrv64-tiny128-vl:
-	$(MAKE) -C $(SRC_DIR) smolrv64-tiny128-vl
 
-run: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-vl
-	@cd $(SRC_DIR) && ./smolrv64-tiny128-vl \
-		+sram_even=$(CURDIR)/mem.even \
-		+sram_odd=$(CURDIR)/mem.odd \
-		+rf=$(CURDIR)/rf.hex
 
-$(SRC_DIR)/smolrv64-tiny128-cosim:
-	$(MAKE) -C $(SRC_DIR) smolrv64-tiny128-cosim
 
-cosim: mem.even mem.odd $(SRC_DIR)/smolrv64-tiny128-cosim
-	@cd $(SRC_DIR) && ./smolrv64-tiny128-cosim \
-		+even=$(CURDIR)/mem.even \
-		+odd=$(CURDIR)/mem.odd \
-		+sram_even=$(CURDIR)/mem.even \
-		+sram_odd=$(CURDIR)/mem.odd \
-		+rf=$(CURDIR)/rf.hex
 
 .PHONY: cosim
-.PHONY: $(SRC_DIR)/smolrv64-tiny128-verbose $(SRC_DIR)/smolrv64-tiny128-vl $(SRC_DIR)/smolrv64-tiny128-cosim
 
 %: %.xz
 	xz -d < $^ > $@

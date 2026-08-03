@@ -41,7 +41,7 @@ management.  F/D floating point via
 `mstatus.FS` dirty tracking (architectural state never goes dirty on a
 squashed path).
 
-**Core** (`probe/`).  Fetch translates through a dedicated iMMU and
+**Core** (`src/`).  Fetch translates through a dedicated iMMU and
 aligns variable-length RVC bundles; decode/rename dispatches into
 per-shard schedulers; execution clusters own their register-file
 shards with a broadcast bypass; commit is in-order over coarse CPR
@@ -75,10 +75,10 @@ The bar for any change: it boots Linux under the oracle.
 - **Full-system RTL simulation** — the identical SoC boots the
   identical disk image under Verilator with a file-backed SD model,
   real interrupt latencies and non-coherent DMA, deep into systemd.
-- **riscv-tests** (240 programs) as the fast gate, plus a parallel
-  Verilator harness that runs the suite in seconds.
+- **riscv-tests** (215 programs across the rv64 suites) as the fast
+  gate — one parallel Verilator harness runs them all in seconds.
 - **Performance observability** — pipeline event tracing into a Rust
-  analysis tool (`probe/perftool`) that produces per-instruction
+  analysis tool (`src/perftool`) that produces per-instruction
   waterfalls, stall attribution, and cycle accounting; hardware
   performance counters (Zicntr/Zihpm) on the FPGA.
 - The plan/findings documents in [docs/](docs/) record how each
@@ -113,8 +113,7 @@ Board notes:
 
 | Path | Contents |
 |---|---|
-| `probe/` | The out-of-order core, SoC, testbenches, cosim harness, perftool |
-| `src/` | Shared components (caches' RAM primitives, virtio devices, SD/SPI, FPU wrapper) and the original sequential core |
+| `src/` | The core, SoC, devices, testbenches, cosim harness, run scripts, and perftool (files named `*_probe.v` are the module-level Fmax probing harnesses) |
 | `platforms/rk-xcku5p-f-v1.2/` | FPGA build: sources, constraints, scripted Vivado flow |
 | `workloads/` | Linux/Ubuntu/Geekbench images, device trees, boot scripts |
 | `docs/` | Design plans, measurements, and debugging findings |

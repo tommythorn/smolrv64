@@ -17,13 +17,13 @@ foreach f [glob *.v] {
    if {$f eq "renamer.v"}               continue
    lappend files $f
 }
-lappend files ../src/alu.v
+lappend files ./alu.v
 puts "=== sanity: synth backend_top @ ${period}ns ==="
 puts "    files: $files"
 
 foreach f $files { read_verilog $f }
 synth_design -top backend_top -part $part -mode out_of_context \
-   -include_dirs {. ../src} -flatten_hierarchy rebuilt
+   -include_dirs {.} -flatten_hierarchy rebuilt
 
 create_clock -name clk -period $period [get_ports clk]
 

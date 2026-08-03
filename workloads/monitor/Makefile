@@ -27,18 +27,8 @@ monitor.even: monitor.bin
 monitor.odd: monitor.bin
 	$(SRC_DIR)/evenodd.py $< 1 > $@
 
-$(SRC_DIR)/smolrv64-linux-vl: $(SRC_DIR)/smolrv64.v $(SRC_DIR)/sim_main.cpp
-	$(MAKE) -C $(SRC_DIR) smolrv64-linux-vl
 
-sim: monitor.even monitor.odd $(SRC_DIR)/smolrv64-sim
-	cd $(SRC_DIR) && ./smolrv64-sim \
-		+even=$(CURDIR)/monitor.even \
-		+odd=$(CURDIR)/monitor.odd
 
-run: monitor.even monitor.odd $(SRC_DIR)/smolrv64-linux-vl
-	cd $(SRC_DIR) && ./smolrv64-linux-vl \
-		+even=$(CURDIR)/monitor.even \
-		+odd=$(CURDIR)/monitor.odd
 
 load: monitor.bin
 	$(SRC_DIR)/evenodd.py monitor.bin 0 > $(SRC_DIR)/mem.even

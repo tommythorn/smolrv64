@@ -111,16 +111,16 @@ TRACEOPT=""; VCDDEF=""
 # size change (e.g. gb5 1->2 GiB) was inert until a manual BUILD=1. Now rebuild when:
 #   - the binary is missing, or BUILD=1, or
 #   - the compile-time config (MEM_LG2 + VDEFS) differs from what's baked in, or
-#   - any source under probe/ or ../src/ is newer than the binary, or
+#   - any source under probe/ or ./ is newer than the binary, or
 #   - the simmerv cosim lib (.a) is newer than the binary -- a simmerv-only change rebuilds
 #     the .a (cargo, above) but touches no probe/ file, so this is its ONLY relink trigger.
-# (../src is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
+# (. is scanned at maxdepth 1; the stable cvfpu subtree is intentionally excluded.)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} PERF=${PERF_TRACE:-} VCD=${VCD:-} THREADS=$THREADS"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then need_build=1; echo "config changed ($want) -> rebuild"
 elif [ "$SIMMERV_LIB" -nt "$BIN" ]; then need_build=1; echo "simmerv lib newer than binary -> relink (simmerv-only change)"
-elif find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.vh' -o -name '*.cpp' -o -name '*.f' \) \
+elif find . . -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.vh' -o -name '*.cpp' -o -name '*.f' \) \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    need_build=1; echo "source newer than binary -> rebuild"
 fi
@@ -133,12 +133,12 @@ if [ "$need_build" = 1 ]; then
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DPROBE_COSIM -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} $PERFOPT $TRACEOPT $VCDDEF \
-      -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC -I$(cd ../src && pwd)" \
+      -CFLAGS "-O2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 -I$SIMMERV_INC -I$(pwd)" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -lm $OSLIBS" \
-      -I. -I../src --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
-      $srcs tb_cosim_linux.v ../src/alu.v ../src/smolrv64_sdpram.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      fp_unit.sv ../src/smolrv64_plic_arbiter.v \
-      ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \
+      -I. --top-module tb --Mdir obj_dir_cosim_${NAME} -o tb_cosim_${NAME} \
+      $srcs tb_cosim_linux.v ./alu.v ./smolrv64_sdpram.v -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv \
+      fp_unit.sv ./smolrv64_plic_arbiter.v \
+      ./virtio_blk.v ./virtio_mmio.v ./sd_spi_host.v ./axi_single_beat_master.v \
       probe_cosim.cpp sd_dpi.cpp $PERFSRC > /tmp/cosim_${NAME}_build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosim_${NAME}_build.log | head; exit 1; fi
    echo "$want" > "$STAMP"

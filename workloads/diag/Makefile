@@ -22,13 +22,7 @@ diag.even: diag.bin
 diag.odd: diag.bin
 	$(SRC_DIR)/evenodd.py $< 1 > $@
 
-$(SRC_DIR)/smolrv64-run: $(SRC_DIR)/smolrv64.v
-	$(MAKE) -C $(SRC_DIR) smolrv64-run
 
-run: diag.even diag.odd $(SRC_DIR)/smolrv64-run
-	cd $(SRC_DIR) && ./smolrv64-run \
-		+even=$(CURDIR)/diag.even \
-		+odd=$(CURDIR)/diag.odd
 
 load: diag.bin
 	$(SRC_DIR)/evenodd.py diag.bin 0 > $(SRC_DIR)/mem.even

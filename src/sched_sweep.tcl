@@ -17,10 +17,10 @@ foreach f [glob *.v] {
    if {$f eq "renamer.v"}               continue
    lappend files $f
 }
-lappend files ../src/alu.v
+lappend files ./alu.v
 foreach f $files { read_verilog $f }
 synth_design -top backend_top -part $part -mode out_of_context \
-   -include_dirs {. ../src} -flatten_hierarchy rebuilt -generic SCHED_N=$n
+   -include_dirs {.} -flatten_hierarchy rebuilt -generic SCHED_N=$n
 create_clock -name clk -period 3.0 [get_ports clk]
 
 set u [report_utilization -return_string]

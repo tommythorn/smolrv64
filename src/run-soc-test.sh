@@ -12,7 +12,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
 # build the harness once
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
-iverilog -g2012 -I. -I../src -s tb -o "$T/tb_soc.vvp" $srcs tb_soc.v ../src/alu.v ../src/smolrv64_sdpram.v fp_unit_stub.sv ../src/smolrv64_plic_arbiter.v
+iverilog -g2012 -I. -s tb -o "$T/tb_soc.vvp" $srcs tb_soc.v ./alu.v ./smolrv64_sdpram.v fp_unit_stub.sv ./smolrv64_plic_arbiter.v
 
 run_one() {
    local name="$1"

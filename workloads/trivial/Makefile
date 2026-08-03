@@ -21,13 +21,7 @@ trivial.even: trivial.bin
 trivial.odd: trivial.bin
 	$(SRC_DIR)/evenodd.py $< 1 > $@
 
-$(SRC_DIR)/smolrv64-sim: $(SRC_DIR)/smolrv64.v
-	$(MAKE) -C $(SRC_DIR) smolrv64-sim
 
-sim: trivial.even trivial.odd $(SRC_DIR)/smolrv64-sim
-	cd $(SRC_DIR) && ./smolrv64-sim \
-		+even=$(CURDIR)/trivial.even \
-		+odd=$(CURDIR)/trivial.odd
 
 load: trivial.bin
 	$(SRC_DIR)/evenodd.py trivial.bin 0 > $(SRC_DIR)/mem.even

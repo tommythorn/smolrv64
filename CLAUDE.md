@@ -9,12 +9,12 @@
 - Builds and simulations can be slow; prefer targeted verification
   over full rebuilds.
 
-- Always verify before committing that of riscv-test in passing as
-  passing as expeced (currently `(make)|&grep 'Test Passed'|wc -l`
-  returning 240 is success). On macOS the `run-riscv-tests.sh` script
-  needs a `flock` shim (it isn't present); count passes with
-  `PATH=/tmp/flockshim:$PATH ./run-riscv-tests.sh passes 2>/dev/null |
-  grep -c 'Test Passed'`.
+- Always verify before committing that riscv-tests pass: run
+  `src/run-vl-tests.sh` (or the `tests/run-riscv-tests.sh` wrapper) —
+  success is `failures: 0` (215 tests). For cache-path changes also run
+  `CACHE=1 src/run-vl-tests.sh` (rv64si-p-dirty is a known pre-existing
+  failure there). The old sequential core and its 240-test harness were
+  retired when the OoO core migrated from probe/ into src/ (2026-08-03).
 
 ## Code Change Conventions
 

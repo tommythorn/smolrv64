@@ -12,5 +12,5 @@ $GCC -nostdlib -fno-pic -mcmodel=medany -march=rv64imac_zicsr -mabi=lp64 -static
 $OC -O binary "$T/irq.elf" "$T/irq.bin"; od -An -v -tx1 "$T/irq.bin" > "$T/irq.hex"
 TH=$($NM "$T/irq.elf" | awk '/ tohost$/{print $1}')
 srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
-iverilog -g2012 -I. -I../src -s tb -o "$T/tb_irq.vvp" $srcs tb_irq.v ../src/alu.v ../src/smolrv64_sdpram.v fp_unit_stub.sv ../src/smolrv64_plic_arbiter.v
+iverilog -g2012 -I. -s tb -o "$T/tb_irq.vvp" $srcs tb_irq.v ./alu.v ./smolrv64_sdpram.v fp_unit_stub.sv ./smolrv64_plic_arbiter.v
 vvp "$T/tb_irq.vvp" +hex="$T/irq.hex" +tohost=$TH +cycles=6000

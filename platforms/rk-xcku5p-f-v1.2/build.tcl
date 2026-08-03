@@ -11,7 +11,7 @@ foreach arg $argv {
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
-set probe_dir [file join $repo_root probe]
+set probe_dir [file join $repo_root src]
 set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
@@ -113,17 +113,9 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
 
     add_source_if_missing $fileset [file join $src_dir alu.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir smolrv64_alu.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_plic_arbiter.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_async_fifo.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir smolrv64_l2_boundary.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir smolrv64_mem_engine.v] SystemVerilog
-    add_source_if_missing $fileset [file join $src_dir smolrv64_frontend.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_sdpram.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir regfile.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir fregfile.v] Verilog
-    # smolrv64.v uses SystemVerilog (the always-on CV-FPU interface).
-    add_source_if_missing $fileset [file join $src_dir smolrv64.v] SystemVerilog
     update_compile_order -fileset $fileset
 }
 
@@ -139,6 +131,8 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
         if {[string match *probe* $b]} continue
         if {$b eq "flopwrap.v"} continue
         if {$b eq "rf_alu.v"} continue
+        if {[string match "*_loop_top.v" $b]} continue
+        if {$b eq "eth_loop_top.v"} continue
         add_source_if_missing $fileset $f Verilog
     }
     # REAL CVFPU, not the passthrough tie-off. fp_unit_synth.sv returns
@@ -153,7 +147,7 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
     # The .xpr is persistent (and tracked), so a previously-added tie-off stays in the
     # fileset and Vivado keeps synthesizing IT (both files define module `fp_unit`).
     # Remove it explicitly before adding the real wrapper.
-    set tieoff [get_files -quiet */probe/fp_unit_synth.sv]
+    set tieoff [get_files -quiet */src/fp_unit_synth.sv]
     if {[llength $tieoff]} {
         puts "Removing FP tie-off from the fileset: $tieoff"
         remove_files $tieoff

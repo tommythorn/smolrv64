@@ -33,8 +33,8 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DPROBE_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm" \
-      -I. -I../src --top-module tb --Mdir obj_dir_cosim -o tb_cosim \
-      $srcs tb_vl.v ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv \
+      -I. --top-module tb --Mdir obj_dir_cosim -o tb_cosim \
+      $srcs tb_vl.v ./alu.v -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv \
       probe_cosim.cpp > /tmp/cosimbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/cosimbuild.log | head; exit 1; fi
 fi

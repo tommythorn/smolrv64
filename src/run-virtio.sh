@@ -35,7 +35,7 @@ STAMP=obj_dir_virtio/.built_vdefs                            # the defines the c
 # ---- build on BUILD=1 / missing binary / changed VDEFS / any source newer than the binary ----
 # (the old existence-only check silently ran stale RTL/tb; same fix as run-cosim-linux.sh)
 if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$VDEFS" ] || \
-   find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.cpp' -o -name '*.f' \) \
+   find . . -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.cpp' -o -name '*.f' \) \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    echo "building $BIN (VDEFS='${VDEFS:-<none; PROBE_IW defaults to 2>}') ..."
    srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
@@ -44,14 +44,14 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
    # double -- ubuntu userspace FP (glibc/gnulib hash sizing via fdiv.s+fcvt.lu.s) gets
    # silent garbage that WEDGES the boot in the systemd-generator window, masquerading
    # as the FPGA hang. Same file set as run-vl-tests.sh.
-   extra="../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v \
-          ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
-          -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv fp_unit.sv"
+   extra="./virtio_blk.v ./virtio_mmio.v ./sd_spi_host.v ./axi_single_beat_master.v \
+          ./alu.v ./smolrv64_sdpram.v ./smolrv64_plic_arbiter.v \
+          -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv"
    GITC=$(git rev-parse --short=8 HEAD 2>/dev/null || echo 0)   # mimpid = truncated HEAD commit
-   verilator --binary --timing -j 0 -sv -CFLAGS -I"$(cd ../src && pwd)" \
+   verilator --binary --timing -j 0 -sv -CFLAGS -I"$(pwd)" \
       -Wno-fatal -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL \
       -Wno-UNUSEDPARAM -Wno-DECLFILENAME -Wno-TIMESCALEMOD -Wno-UNOPTFLAT -Wno-LATCH \
-      -Wno-PINMISSING -Wno-WIDTHCONCAT -Wno-IMPLICIT -I. -I../src \
+      -Wno-PINMISSING -Wno-WIDTHCONCAT -Wno-IMPLICIT -I. \
       "+define+SMOLRV64_GIT_COMMIT=32'h$GITC" $VDEFS \
       --top-module tb -o tb_virtio --Mdir obj_dir_virtio \
       $srcs tb_virtio.v $extra sd_dpi.cpp ckpt_dpi.cpp $PERFSRC || exit 1

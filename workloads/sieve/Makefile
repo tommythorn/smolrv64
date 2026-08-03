@@ -21,13 +21,7 @@ sieve.even: sieve.bin
 sieve.odd: sieve.bin
 	$(SRC_DIR)/evenodd.py $< 1 > $@
 
-$(SRC_DIR)/smolrv64-sim: $(SRC_DIR)/smolrv64.v
-	$(MAKE) -C $(SRC_DIR) smolrv64-sim
 
-sim: sieve.even sieve.odd $(SRC_DIR)/smolrv64-sim
-	cd $(SRC_DIR) && ./smolrv64-sim \
-		+even=$(CURDIR)/sieve.even \
-		+odd=$(CURDIR)/sieve.odd
 
 load: sieve.bin
 	$(SRC_DIR)/evenodd.py sieve.bin 0 > $(SRC_DIR)/mem.even
