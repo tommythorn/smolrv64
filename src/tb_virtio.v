@@ -85,9 +85,15 @@ module tb;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
-      else if (!d_busy && ddr_req && !(ddr_real && axi_infl)) begin
+      // ddr_req is a 1-CYCLE PULSE by contract (see l2_arbiter): the memory MUST
+      // capture it. Contention/refresh may only DELAY the ack -- dropping the pulse
+      // hangs the requester forever (cost me a false "RTL wedge" at c=325M).
+      else if (!d_busy && ddr_req) begin
          d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
-         if (ddr_real) begin d_cnt <= ddr_lat[6:0] + {4'd0, dlfsr[2:0]}; dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]}; end
+         if (ddr_real) begin
+            d_cnt <= ddr_lat[6:0] + {4'd0, dlfsr[2:0]} + (axi_infl ? 7'd12 : 7'd0);   // DMA contention = extra latency
+            dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
+         end
          else d_cnt <= 7'd4;
       end
       else if (d_busy && !refresh_stall) begin
@@ -164,8 +170,11 @@ module tb;
    // +ddr_real contention: the device shares the one memory with the core -- hold
    // off accepting a DMA beat while the core's line op is in flight, and delay the
    // response by ~half the line latency (single beat vs full line).
+   // AXI (unlike the core's line port) is a proper valid/ready handshake, so
+   // back-pressuring the device master here is legal -- it retries. Only the core's
+   // pulse-contract port must never be refused.
    reg [6:0] a_cnt; reg axi_rd_infl; initial begin axi_infl = 1'b0; axi_rd_infl = 1'b0; a_cnt = 7'd0; end
-   wire axi_ok = !ddr_real || (!d_busy && !refresh_stall);
+   wire axi_ok = !ddr_real || (!refresh_stall && !axi_infl);
    assign ax_arready = axi_ok; assign ax_awready = axi_ok; assign ax_wready = axi_ok;
    assign ax_rvalid = axi_rvalid; assign ax_rdata = axi_rdata; assign ax_rresp = 2'd0;
    assign ax_rlast = 1'b1; assign ax_rid = 3'd1;
@@ -294,6 +303,13 @@ module tb;
                if (wdog_pg[wpi] == (dut.imem_addr >> 12)) wpi_hit = 1;
             if (!wpi_hit) begin wdog_pg[wdog_npg] = dut.imem_addr >> 12; wdog_npg = wdog_npg + 1; end
          end
+         $display("[WDOGC dcst=%0d icst=%0d dc_l2(req=%b ack=%b) ic_l2(req=%b ack=%b) wbb(v=%b i=%b) msh(v=%b i=%b r=%b) ddr(req=%b ack=%b dbusy=%b) axi(infl=%b rd=%b acnt=%0d) dcr_req=%b wr(req=%b ack=%b)]",
+                  dut.u_dcache.st, dut.u_icache.st,
+                  dut.dc_l2_req, dut.dc_l2_ack, dut.ic_l2_req, dut.ic_l2_ack,
+                  dut.u_dcache.wbb_val, dut.u_dcache.wbb_infl,
+                  dut.u_dcache.msh_val, dut.u_dcache.msh_infl, dut.u_dcache.msh_rdy,
+                  ddr_req, ddr_ack, d_busy, axi_infl, axi_rd_infl, a_cnt,
+                  dut.dcr_req, dut.dmem_wen, dut.dc_wr_ack);
          $display("[WDOG c=%0d silent=%0dM pc=%h priv=%0d irq_v=%b cause=%0d infl=%b gate: rpl=%b devld=%b piflt=%b dflt=%b ill=%b red=%b roll=%b]",
                   c, (c - last_tx_c)/1000000, dut.imem_addr,
                   dut.core.eb.u_csr.priv, dut.core.csr_irq_v, dut.core.csr_irq_cause,
