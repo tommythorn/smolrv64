@@ -126,7 +126,7 @@ fmax-report:
 # Blocks until an array returns a word that is not what was stored -- the moment of
 # corruption. Run it while the board boots. See ila_parity.tcl.
 ila-parity:
-	$(VIVADO) $(VFLAGS) -source ila_parity.tcl $(if $(CSV),-tclargs $(CSV),)
+	$(VIVADO) $(VFLAGS) -source ila_parity.tcl -tclargs $(if $(CSV),$(CSV),ila_parity.csv) $(if $(HOURS),$(HOURS),0)
 
 ila-strand:
 	$(VIVADO) $(VFLAGS) -source ila_strand.tcl $(if $(CSV),-tclargs $(CSV),)

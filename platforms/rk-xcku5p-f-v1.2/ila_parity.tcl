@@ -10,10 +10,13 @@
 # so the capture is almost entirely PRE-trigger history: what the caches, fetch PA and
 # LSU were doing in the ~4000 cycles leading to the bad read.
 #
-#   Usage: vivado -mode batch -source ila_parity.tcl [-tclargs <out.csv>]
-#   (or:   make ila-parity [CSV=<out.csv>])
+#   Usage: vivado -mode batch -source ila_parity.tcl [-tclargs <out.csv> [<max_hours>]]
+#   (or:   make ila-parity [CSV=<out.csv>] [HOURS=<n>])
 #
-# Blocks until the trigger fires (1 hour timeout). Run it while the board boots.
+# Waits INDEFINITELY by default: the event is the stop condition, not a clock. The
+# corruption has taken tens of minutes of uptime to appear, and an armed ILA that
+# gives up at an arbitrary deadline just loses the capture. This re-waits in a loop,
+# printing a heartbeat, until the trigger fires (or max_hours, if given, elapses).
 # NO TRIGGER = the cache arrays never lied: a decisive negative that exonerates the
 # data path on real BRAM and moves the hunt to the core/LSU/MMU.
 
@@ -50,8 +53,31 @@ set ps [lindex [get_hw_probes -of $ila *par_err*] 0]
 set_property TRIGGER_COMPARE_VALUE neq2'b00 $ps
 set_property CONTROL.TRIGGER_POSITION 3800 $ila
 
+set max_hours [expr {[llength $argv] > 1 ? [lindex $argv 1] : 0}]   ;# 0 = forever
+
 run_hw_ila $ila
-wait_on_hw_ila -timeout 3600 $ila
+puts "PARITY-ARMED: waiting for a cache parity error[expr {$max_hours > 0 ? \" (max ${max_hours}h)\" : \" (no deadline)\"}]"
+flush stdout
+
+set waited 0
+while {1} {
+    # Short waits in a loop: a timeout here does NOT disarm the core, so re-waiting
+    # keeps the capture alive indefinitely while giving us a liveness heartbeat.
+    wait_on_hw_ila -timeout 5 $ila
+    set st [get_property CORE_STATUS $ila]
+    if {[string match -nocase "*full*" $st] || [string match -nocase "*trigger*" $st]} { break }
+    incr waited 5
+    if {$max_hours > 0 && $waited >= $max_hours * 3600} {
+        puts "PARITY-NO-TRIGGER after ${max_hours}h -- cache arrays never returned bad data."
+        puts "  (decisive negative: exonerates the data path on real BRAM)"
+        exit 0
+    }
+    if {$waited % 300 == 0} {
+        puts "  ... armed [expr {$waited / 60}] min, status: $st"
+        flush stdout
+    }
+}
+
 upload_hw_ila_data $ila
 write_hw_ila_data -csv_file -force $outcsv [current_hw_ila_data]
 puts "PARITY-TRIG-DONE -> $outcsv"
