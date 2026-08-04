@@ -778,6 +778,23 @@ module rk_xcku5p(
       .m_axi_rready            (virtio_blk_axi_rready)
    );
 
+`ifdef ILA_PARITY
+   // Debug (ILA_PARITY=1): cache data-array integrity. TRIGGER on probe0 != 0 -- the
+   // cycle a cache data array returned a word whose parity did not match what was
+   // stored. With 4096-deep capture and the trigger positioned late, the window holds
+   // the surrounding cache/fetch/LSU activity that produced the bad read.
+   //   probe0 = {I$,D$} parity-error pulse (the trigger)
+   //   probe1 = sticky/bank/addr snapshot of the FIRST failure (survives the pulse)
+   //   probe2 = fetch PA        probe3 = LSU state
+   ila_parity u_ila_parity (
+      .clk    (probe_clk),
+      .probe0 (probe_par_err),
+      .probe1 (probe_par_dbg),
+      .probe2 (probe_pc_dbg),
+      .probe3 (probe_lsu)
+   );
+`endif
+
 `ifdef ILA_DEV
    // Debug (ILA_DEV=1): capture the virtio_blk backend on ui_clk to see WHERE a block request wedges
    // (the IRQ ILA proved the device never raises the completion IRQ -> it's stuck mid-request).
@@ -1556,6 +1573,8 @@ module rk_xcku5p(
       p_virtio_net_irq_meta <= virtio_net_irq;  p_virtio_net_irq <= p_virtio_net_irq_meta;
    end
 
+   wire [1:0]  probe_par_err;   // cache data-array parity error pulses {I$,D$} (-DCACHE_PARITY)
+   wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire [63:0] probe_timer_dbg; // csr_file timer/irq debug (probe_clk) for ILA_TIMER
    wire [63:0] probe_pc_dbg;    // fetch PA (probe_clk) for ILA_TIMER probe1
@@ -1575,6 +1594,7 @@ module rk_xcku5p(
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg), .mtvec_we_dbg(probe_mtvec_we),
       .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v), .wedge_dbg(probe_wedge), .lsu_dbg(probe_lsu),
+      .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
       // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),

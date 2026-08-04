@@ -57,6 +57,14 @@ endif
 ifneq ($(strip $(ILA_TIMER)),)
 export ILA_TIMER
 endif
+# Debug: ILA_PARITY=1 builds with -DCACHE_PARITY (parity bit per cache-bank word,
+# checked on every read) and inserts an ILA triggered by the error pulse -- catching a
+# bad cache-array read AT THE MOMENT it happens, instead of the kernel Oops millions of
+# cycles later. If it never fires while the board still corrupts, the cache data path is
+# exonerated on real BRAM.
+ifneq ($(strip $(ILA_PARITY)),)
+export ILA_PARITY
+endif
 # Debug: ILA_DEV=1 inserts an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA
 # handshakes + SD SPI pins) -- to see which block request / SPI-DMA step wedges during the root mount.
 ifneq ($(strip $(ILA_DEV)),)

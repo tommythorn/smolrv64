@@ -300,6 +300,36 @@ if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
         generate_target {instantiation_template synthesis} [get_ips ila_irq]
     }
 }
+# ILA_PARITY=1: the cache data-array integrity core. Builds the design with
+# -DCACHE_PARITY (a parity bit per bank word, written on every bank write and checked
+# on every bank read) and captures on probe_clk with the error pulse as the TRIGGER.
+# This exists because the board's corruption is silent: by the time the kernel Oopses
+# we are millions of cycles past the bad read, far beyond any pre-trigger depth. The
+# parity check makes the hardware say "this array just returned something other than
+# what was stored" in the cycle it happens -- and if it NEVER fires while the board
+# still corrupts, the cache data path is exonerated on real BRAM and the fault is
+# elsewhere (core/LSU/MMU). Either outcome is decisive.
+#   probe0 = {I$,D$} error pulses (TRIGGER on != 0)
+#   probe1 = sticky/bank/addr snapshot   probe2 = fetch PA   probe3 = LSU state
+if {[info exists env(ILA_PARITY)] && $env(ILA_PARITY) ne "" && $env(ILA_PARITY) ne "0"} {
+    puts "Enabling ILA_PARITY: cache data-array integrity core (ila_parity) + -DCACHE_PARITY."
+    lappend vdefines "ILA_PARITY"
+    lappend vdefines "CACHE_PARITY"
+    if {[llength [get_ips -quiet ila_parity]] == 0} {
+        create_ip -name ila -vendor xilinx.com -library ip -module_name ila_parity
+        set_property -dict [list \
+            CONFIG.C_NUM_OF_PROBES {4} \
+            CONFIG.C_PROBE0_WIDTH {2} \
+            CONFIG.C_PROBE1_WIDTH {64} \
+            CONFIG.C_PROBE2_WIDTH {64} \
+            CONFIG.C_PROBE3_WIDTH {64} \
+            CONFIG.C_DATA_DEPTH {4096} \
+            CONFIG.C_INPUT_PIPE_STAGES {2} \
+            CONFIG.C_ADV_TRIGGER {true} \
+        ] [get_ips ila_parity]
+        generate_target {instantiation_template synthesis} [get_ips ila_parity]
+    }
+}
 # ILA_TIMER=1: insert an ILA on the probe-clk csr_file timer/interrupt path (dbg_timer bus
 # from csr_file via soc_top.timer_dbg) -- the ubuntu post-generator freeze: STIP level vs
 # stimecmp/mscratch write strobes + trap/xret events. Layout documented in rk_xcku5p.v.

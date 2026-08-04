@@ -320,6 +320,61 @@ module cache #(
    end
    wire [LINEB-1:0] msh_shift = msh_line >> {msh_addr[OFFB-1:0], 3'b000};
 
+`ifdef CACHE_PARITY
+   // ---- data-array integrity check (ILA trigger source) ----------------------------
+   // The behavioral sdpram (simulation) and XPM/BRAM (synthesis) are the ONE element of
+   // the data path no simulation can validate -- and the board's corruption looks exactly
+   // like "a read returned the wrong bytes". This gives the hardware a way to SAY SO at
+   // the moment it happens, instead of leaving a kernel Oops millions of cycles later as
+   // the only evidence (unreachable by any ILA pre-trigger depth).
+   //
+   // A parallel parity array (1 bit per bank word, distributed RAM -- no BRAM geometry
+   // change, no data-path change) is written on every bank write and checked on every
+   // bank read. A mismatch means the array handed back something other than what was
+   // stored. `par_err` is a 1-cycle pulse for the ILA trigger; par_sticky/par_addr latch
+   // the first failure for post-mortem readout.
+   //
+   // Deliberately opt-in (-DCACHE_PARITY): it costs LUTRAM and a read-path XOR reduce,
+   // and this is a diagnostic bitstream, not the production one.
+   reg  par_mem [0:2*WAYS-1][0:(1<<BAW)-1];
+   reg  par_rd_v [0:2*WAYS-1];
+   reg  par_exp  [0:2*WAYS-1];
+   reg  [BAW-1:0] par_rd_a [0:2*WAYS-1];
+   integer pb, pi;
+   initial begin
+      for (pb=0; pb<2*WAYS; pb=pb+1) begin
+         par_rd_v[pb] = 1'b0; par_exp[pb] = 1'b0; par_rd_a[pb] = {BAW{1'b0}};
+         for (pi=0; pi<(1<<BAW); pi=pi+1) par_mem[pb][pi] = 1'b0;
+      end
+   end
+   reg par_err;  reg par_sticky;  reg [BAW-1:0] par_addr;  reg [2:0] par_bank;
+   initial begin par_err=1'b0; par_sticky=1'b0; par_addr={BAW{1'b0}}; par_bank=3'd0; end
+   always @(posedge clk) begin
+      par_err <= 1'b0;
+      for (pb=0; pb<2*WAYS; pb=pb+1) begin
+         // write side: store the parity of every word written into a bank
+         if (bk_wren[pb]) par_mem[pb][bk_wraddr[pb]] <= ^bk_wrdata[pb];
+         // read side: the address presented this cycle yields data NEXT cycle
+         // (READ_LATENCY=1), so carry the expectation forward one cycle.
+         par_rd_a[pb] <= bk_rdaddr[pb];
+         // NBA read of par_mem yields the OLD parity -- which is exactly what
+         // read_first semantics return on the data side for a same-cycle write.
+         par_exp [pb] <= par_mem[pb][bk_rdaddr[pb]];
+         par_rd_v[pb] <= 1'b1;
+         if (par_rd_v[pb] && (^bk_rddata[pb] != par_exp[pb])) begin
+            par_err <= 1'b1;
+            if (!par_sticky) begin
+               par_sticky <= 1'b1; par_addr <= par_rd_a[pb]; par_bank <= pb[2:0];
+            end
+`ifndef SYNTHESIS
+            $display("[cache id=%0d] PARITY ERROR bank=%0d addr=%h data=%h exp_par=%b",
+                     PERF_ID, pb, par_rd_a[pb], bk_rddata[pb], par_exp[pb]);
+`endif
+         end
+      end
+   end
+`endif
+
 `ifndef SYNTHESIS
    // Duplicate-line tripwire: the same physical line valid in BOTH ways is a
    // structural fault -- hway=hit1 would silently shadow way 0's (possibly dirty,

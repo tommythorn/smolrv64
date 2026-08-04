@@ -99,7 +99,13 @@ module soc_top #(
    output wire [63:0]      csrop_dbg,       // executing system op {pc,addr,func,is_csr} -- ILA_TIMER probe5
    output wire             csrop_v_dbg,     // ...its 1-cycle strobe -- ILA_TIMER probe6
    output wire [63:0]      wedge_dbg,       // frontend/dispatch/interrupt state -- ILA_TIMER probe7
-   output wire [63:0]      lsu_dbg          // full LSU state -- ILA_TIMER probe5
+   output wire [63:0]      lsu_dbg,         // full LSU state -- ILA_TIMER probe5
+   // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; ties to 0
+   // otherwise). cache_par_err is the ILA TRIGGER: it pulses in the cycle a cache data
+   // array returns a word whose parity does not match what was stored -- the moment of
+   // corruption, rather than the kernel Oops millions of cycles downstream.
+   output wire [1:0]       cache_par_err,   // {I$, D$} 1-cycle error pulse
+   output wire [63:0]      cache_par_dbg    // {sticky, bank, addr} of the first failure
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -550,6 +556,18 @@ module soc_top #(
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss));
+
+   // ---- cache data-array integrity taps (see the port comment; -DCACHE_PARITY) ----
+`ifdef CACHE_PARITY
+   assign cache_par_err = {u_icache.par_err, u_dcache.par_err};
+   assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
+                           2'd0, u_dcache.par_bank, u_icache.par_bank,
+                           {(64-8-2*16){1'b0}},
+                           u_dcache.par_addr[15:0], u_icache.par_addr[15:0]};
+`else
+   assign cache_par_err = 2'b00;
+   assign cache_par_dbg = 64'd0;
+`endif
 
    // ---------------- PTW adapters: PTE word reads routed THROUGH the D$ ----------------
    // g=0 iPTW, 1 ldPTW, 2 stPTW. Each *_read is held (with a stable *_addr) until *_rvalid.
