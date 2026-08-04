@@ -563,7 +563,7 @@ module soc_top #(
    assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
                            2'd0, u_dcache.par_bank, u_icache.par_bank,
                            {(64-8-2*16){1'b0}},
-                           u_dcache.par_addr[15:0], u_icache.par_addr[15:0]};
+                           u_dcache.par_addr16, u_icache.par_addr16};
 `else
    assign cache_par_err = 2'b00;
    assign cache_par_dbg = 64'd0;

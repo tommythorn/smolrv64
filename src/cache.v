@@ -348,6 +348,8 @@ module cache #(
       end
    end
    reg par_err;  reg par_sticky;  reg [BAW-1:0] par_addr;  reg [2:0] par_bank;
+   // fixed-width view for the debug bus (BAW is 12 here; consumers must not assume a width)
+   wire [15:0] par_addr16 = {{(16-BAW){1'b0}}, par_addr};
    initial begin par_err=1'b0; par_sticky=1'b0; par_addr={BAW{1'b0}}; par_bank=3'd0; end
    always @(posedge clk) begin
       par_err <= 1'b0;
