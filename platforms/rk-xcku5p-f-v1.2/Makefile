@@ -122,6 +122,12 @@ ila-capture:
 fmax-report:
 	$(VIVADO) $(VFLAGS) -source fmax_report.tcl
 
+# ARMED capture on a cache data-array parity failure (needs a bit built ILA_PARITY=1).
+# Blocks until an array returns a word that is not what was stored -- the moment of
+# corruption. Run it while the board boots. See ila_parity.tcl.
+ila-parity:
+	$(VIVADO) $(VFLAGS) -source ila_parity.tcl $(if $(CSV),-tclargs $(CSV),)
+
 ila-strand:
 	$(VIVADO) $(VFLAGS) -source ila_strand.tcl $(if $(CSV),-tclargs $(CSV),)
 
