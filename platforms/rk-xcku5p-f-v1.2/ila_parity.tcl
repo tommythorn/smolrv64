@@ -56,7 +56,11 @@ set_property CONTROL.TRIGGER_POSITION 3800 $ila
 set max_hours [expr {[llength $argv] > 1 ? [lindex $argv 1] : 0}]   ;# 0 = forever
 
 run_hw_ila $ila
-puts "PARITY-ARMED: waiting for a cache parity error[expr {$max_hours > 0 ? \" (max ${max_hours}h)\" : \" (no deadline)\"}]"
+if {$max_hours > 0} {
+    puts "PARITY-ARMED: waiting for a cache parity error (max ${max_hours}h)"
+} else {
+    puts "PARITY-ARMED: waiting for a cache parity error (no deadline)"
+}
 flush stdout
 
 set waited 0
