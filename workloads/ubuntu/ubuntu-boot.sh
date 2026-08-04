@@ -103,5 +103,14 @@ send_file "$DTB_ADDR"    "$DTB"    $((base + 1))
 # SD loader is dead — XMODEM the firmware to FW_ADDR instead of the old SD load
 # (`SL2800 ffff 80000000` / wait_for_loaded), which now fails "SD init failed".
 send_file "$FW_ADDR"     "$FW"     $((base + 2))
+# Optional initramfs. The old SD-loader path used to place this; when that died the
+# upload was dropped but the banner above kept advertising it, so a DTB declaring
+# linux,initrd-start/end would point the kernel at STALE DDR ("Freeing initrd memory"
+# then panic, with nothing actually loaded). Send it when INITRD names a real file.
+n=2
+if [[ -n "${INITRD:-}" && -f "$INITRD" ]]; then
+    n=3
+    send_file "$INITRD_ADDR" "$INITRD" $((base + 3))
+fi
 send_line "X${FW_ADDR} 0 ${DTB_ADDR}"
 echo "[ubuntu-boot] done"
