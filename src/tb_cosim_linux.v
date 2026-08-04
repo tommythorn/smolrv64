@@ -79,13 +79,33 @@ module tb;
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;            // DDR base as a line address
    reg [511:0] lram [0:NLINES-1];
-   reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   // +ddr_real: MIG-scale latency with jitter + refresh stalls, so the ORACLE finally
+   // runs in the board's memory regime. Every cosim to date used the 4-cycle instant
+   // model, so a latency-sensitive core/LSU/MSHR corner (one that only opens when a
+   // miss takes ~30 cycles) has never been oracle-checked. ddr_req is a 1-cycle PULSE
+   // (l2_arbiter contract): always capture it, never refuse -- latency only.
+   reg        ddr_real;  reg [63:0] ddr_lat;
+   initial begin
+      ddr_real = $test$plusargs("ddr_real") ? 1'b1 : 1'b0;
+      if (!$value$plusargs("ddr_lat=%d", ddr_lat)) ddr_lat = 64'd24;
+   end
+   reg [15:0] dlfsr; initial dlfsr = 16'hBEEF;
+   reg [9:0]  refc;  initial refc  = 10'd0;
+   wire       refresh_stall = ddr_real && (refc < 10'd24);      // ~tRFC every ~tREFI
+   always @(posedge clk) if (!reset && ddr_real) refc <= (refc == 10'd519) ? 10'd0 : refc + 1'b1;
+   reg d_busy; reg [6:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
    reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
-      else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; end
-      else if (d_busy) begin
+      else if (!d_busy && ddr_req) begin
+         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         if (ddr_real) begin
+            d_cnt <= ddr_lat[6:0] + {4'd0, dlfsr[2:0]};
+            dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
+         end else d_cnt <= 7'd4;
+      end
+      else if (d_busy && !refresh_stall) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
             if (d_we_q) lram[line] <= d_wd_q;

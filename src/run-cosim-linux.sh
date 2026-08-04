@@ -151,4 +151,4 @@ DISKRO_ARG=""; [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && DISKRO_ARG="+disk_
 "$BIN" +fw="$FW" +dtb="$DTB" \
        ${INITRD:+"+initrd=$INITRD"} ${DISK:+"+disk=$DISK"} $DISKRO_ARG \
        +a1=$A1 +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +cycles=$CYC \
-       ${WATCHPA:+"+watchpa=$WATCHPA"} ${TRACEPC:+"+tracepc=$TRACEPC"} ${VCDSTART:+"+vcdstart=$VCDSTART"}
+       ${WATCHPA:+"+watchpa=$WATCHPA"} ${TRACEPC:+"+tracepc=$TRACEPC"} ${VCDSTART:+"+vcdstart=$VCDSTART"} "$@"
