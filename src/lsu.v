@@ -1312,7 +1312,9 @@ module lsu
                                stx_pa[27:0] == wp_addr[27:0]))
                $display("[WP] XLATE t=%0t seq=%0d idx=%0d va=%h pa=%h",
                         $time, sb_seq[ck_sel], ck_sel, sb_addr[ck_sel], stx_pa);
-            if (dr_v && (sb_pa[dr_sel][27:0] == wp_addr[27:0]))
+            // line-granular match: a store anywhere in the watched 64-byte line (the
+            // word-exact compare misses the stores that actually dirty the line)
+            if (dr_v && (sb_pa[dr_sel][27:6] == wp_addr[27:6]))
                $display("[WP] DRAIN t=%0t seq=%0d idx=%0d va=%h pa=%h data=%h",
                         $time, sb_seq[dr_sel], dr_sel, sb_addr[dr_sel],
                         sb_pa[dr_sel], sb_data[dr_sel]);

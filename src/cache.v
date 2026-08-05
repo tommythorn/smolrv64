@@ -378,6 +378,94 @@ module cache #(
 `endif
 
 `ifndef SYNTHESIS
+   // STORE-SLOT invariant: a store merge (S_FIN) must write the slot that actually
+   // holds ITS line -- w0_way/w0_idx were captured at the LINE0 lookup, and the tag
+   // there must equal the store's own tag. If it ever does not, the store is being
+   // merged into an unrelated resident line: silent memory corruption that only
+   // surfaces when that other line is read back (or written back to DDR), which is
+   // exactly the board's failure shape. Fires at the corruption, not the symptom.
+   always @(posedge clk) if (!reset && (WRITABLE != 0))
+      // NOT for spanning stores: there w0_* legitimately names LINE0's slot while
+      // cur_line has advanced to line1 (the high half goes via S_SPANW).
+      if ((st == S_FIN) && r_is_wr && hit && !r_span && !phase && valm[flat(w0_way, w0_idx)]
+          && (tagm[flat(w0_way, w0_idx)] != tag_of(cur_line)))
+         $fatal(1, "[cache id=%0d] STORE-SLOT MISMATCH: store line=%h (tag=%h) merging into way=%0d idx=%h which holds tag=%h",
+                PERF_ID, cur_line, tag_of(cur_line), w0_way, w0_idx, tagm[flat(w0_way, w0_idx)]);
+
+   // SPAN-LOW invariant: a spanning store's LOW half must land in line0's own slot.
+   // It used to be written at S_FIN from w0_way/w0_idx -- a slot named at the phase-0
+   // lookup and then carried across the phase-1 lookup, which can miss and let an MSHR
+   // install (victim pinned long before) reallocate that slot underneath the store.
+   // That merged code bytes into an unrelated line, marked it dirty, and published the
+   // word to DRAM under the innocent line's address. The write now happens at line0's
+   // own live lookup, so this holds by construction; it stays as a regression guard.
+   always @(posedge clk) if (!reset && (WRITABLE != 0))
+      if ((st == S_CHECK) && !phase && hit && r_is_wr && r_span
+          && (tagm[flat(hway, cih)] != tag_of(line0)))
+         $fatal(1, "[cache id=%0d] SPAN-LOW SLOT MISMATCH: line0=%h (tag=%h) merging into way=%0d idx=%h which holds tag=%h",
+                PERF_ID, line0, tag_of(line0), hway, cih, tagm[flat(hway, cih)]);
+
+   // SPAN invariant: a line-crossing store writes its high half into the slot named by
+   // the LIVE phase-1 lookup (hway/cih). If a fill/install lands between that lookup and
+   // this write, hway/cih can name a slot that no longer holds line1 -- the high half then
+   // lands in an unrelated line. Same class as the S_FIN check but on the path realistic
+   // memory timing actually disturbs (the corrupted word sits at a line's last 8 bytes).
+   always @(posedge clk) if (!reset && (WRITABLE != 0))
+      if ((st == S_SPANW) && hit && valm[flat(hway, cih)]
+          && (tagm[flat(hway, cih)] != tag_of(line1)))
+         $fatal(1, "[cache id=%0d] SPAN-SLOT MISMATCH: line1=%h (tag=%h) writing way=%0d idx=%h which holds tag=%h (line0=%h)",
+                PERF_ID, line1, tag_of(line1), hway, cih, tagm[flat(hway, cih)], line0);
+
+   // LOST-DIRTY-LINE detector. The established failure is that a dirty line's data
+   // never reaches DRAM: memory keeps serving the pre-store content while the cache
+   // copy (holding the store) is quietly dropped. Track, per slot, whether the dirty
+   // data has been CAPTURED into the write-back buffer since it was last dirtied; an
+   // install over a still-uncaptured dirty slot destroys committed stores.
+   reg cap_ok [0:NW-1];
+   integer ci;
+   initial for (ci = 0; ci < NW; ci = ci + 1) cap_ok[ci] = 1'b1;
+   always @(posedge clk) if (!reset && (WRITABLE != 0) && (WRTHRU == 0)) begin
+      if (d_we && d_wd)                       cap_ok[d_wa] <= 1'b0;   // slot just went dirty
+      if ((st == S_WBW) && (pc == HALF-1))    cap_ok[flat(wb_way, wb_idx)] <= 1'b1;
+      // The line being installed is the MSHR's when msh_ins is set, else cur_line --
+      // comparing against the wrong one flags a legitimate refill of the same line.
+      if ((st == S_FILLI) && (pc == 0) && valm[vflat] && dirm[vflat] && !cap_ok[vflat]
+          && (tagm[vflat] != tag_of(((HUM!=0) && msh_ins) ? msh_addr : cur_line)))
+         $fatal(1, "[cache id=%0d] LOST DIRTY LINE: installing %h over way=%b idx=%h holding tag=%h (dirty, never captured)\n   msh_ins=%b msh_vw=%b msh_vi=%h  vw=%b vi=%h  wbb(v=%b addr=%h)  msh(val=%b addr=%h is_wr=%b)",
+                PERF_ID, cur_line, eff_vw, eff_vi, tagm[vflat],
+                (HUM!=0) && msh_ins, msh_vw, msh_vi, vw, vi,
+                wbb_val, {wbb_addr, {OFFB{1'b0}}}, msh_val, msh_addr, msh_is_wr);
+   end
+
+   // SINGLE-OUTSTANDING L2 invariant. Four independent users share one untagged L2
+   // port -- the FSM fill (S_FILLW), the write-through/flush pushes (S_WTA/S_FLUSHA),
+   // the MSHR launcher, the prefetch engine and the write-back drain -- and their
+   // mutual exclusion is only implied by scattered state conditions. If two are ever
+   // outstanding, BOTH catchers fire on the same untagged l2_ack and one of them
+   // adopts the other's line: a cache line silently filled with another address's
+   // bytes, which is precisely the corruption shape (line correct except for words
+   // that belong somewhere else).
+   wire [2:0] l2_out = {2'd0, (st == S_FILLW)} + {2'd0, (st == S_WTA)} + {2'd0, (st == S_FLUSHA)}
+                     + {2'd0, ((HUM!=0) && msh_infl)} + {2'd0, (PF_EN && pf_infl)}
+                     + {2'd0, (WBUF && wbb_infl)};
+   always @(posedge clk) if (!reset && (l2_out > 3'd1))
+      $fatal(1, "[cache id=%0d] TWO L2 TRANSACTIONS OUTSTANDING: st=%0d msh_infl=%b pf_infl=%b wbb_infl=%b (one untagged ack feeds both)",
+             PERF_ID, st, msh_infl, pf_infl, wbb_infl);
+
+   // WRITE-BACK ADDRESS check. The capture (S_WBR/S_WBW) reads the banks at
+   // wb_way/wb_idx and the drain publishes them under wb_laddr, which was computed
+   // from that slot's tag back at S_WB. If the slot's tag no longer matches
+   // wb_laddr when the data is read, the write-back is publishing one line's bytes
+   // under another line's address -- memory then holds bytes no store ever wrote,
+   // which is the measured symptom. No shadow bookkeeping, so no false positives
+   // from paths I failed to model.
+   always @(posedge clk) if (!reset && (WRITABLE != 0) && (WRTHRU == 0))
+      if ((st == S_WBW) && valm[flat(wb_way, wb_idx)]
+          && (tagm[flat(wb_way, wb_idx)] != wb_laddr[PAW-OFFB-1 -: PTAGB]))
+         $fatal(1, "[cache id=%0d] WRITE-BACK ADDRESS MISMATCH: reading way=%0d idx=%h (tag=%h) but publishing as laddr=%h (tag=%h)",
+                PERF_ID, wb_way, wb_idx, tagm[flat(wb_way, wb_idx)],
+                {wb_laddr, {OFFB{1'b0}}}, wb_laddr[PAW-OFFB-1 -: PTAGB]);
+
    // Duplicate-line tripwire: the same physical line valid in BOTH ways is a
    // structural fault -- hway=hit1 would silently shadow way 0's (possibly dirty,
    // newer) copy on every access. No install site cross-checks the other way (fills
@@ -403,6 +491,13 @@ module cache #(
    integer cwc; initial cwc = 0;
    wire cw_wr = wr_req && (wr_addr[PAW-1:12] == `CACHEWATCH_PA);
    wire cw_rd = rd_req && (rd_addr[PAW-1:12] == `CACHEWATCH_PA);
+`ifdef CACHEWATCH_IDX
+   // Watch a SET rather than a page: a conflict-thrash bug cycles many different
+   // lines through one index, so the set is the axis the corruption lives on.
+   wire cw_set = (base_idx(cur_line) == `CACHEWATCH_IDX) || (eff_vi == `CACHEWATCH_IDX);
+`else
+   wire cw_set = 1'b0;
+`endif
    always @(posedge clk) begin
       cwc <= cwc + 1;
       if (PERF_ID == 1 && cwc > `CACHEWATCH_T0 && cwc < `CACHEWATCH_T1) begin
@@ -413,6 +508,26 @@ module cache #(
                      wbb_val, {wbb_addr, {OFFB{1'b0}}}, msh_val, msh_addr);
          if (st == S_FIN && r_is_wr && (r_addr[PAW-1:12] == `CACHEWATCH_PA))
             $display("[CW c=%0d FIN a=%h hit=%b w0way=%0d nwin=%h]", cwc, r_addr, hit, w0_way, nwin);
+         // FILL PATH: every state the FSM occupies while cur_line is in the watched page,
+         // plus the selectors that decide WHERE the installed line's data comes from --
+         // fresh L2 read, write-back-buffer bounce (wbb_match), MSHR merge (msh_ins) or
+         // prefetch buffer (pf_hit). A line that ends up half-stale was assembled here.
+         if ((cur_line[PAW-1:12] == `CACHEWATCH_PA) || cw_set)
+            $display("[CWF c=%0d st=%0d line=%h pc=%0d wbbm=%b wbbv=%b wbbA=%h mshins=%b mshA=%h pfhit=%b vicd=%b vw=%b vi=%h lb0=%h lb7=%h]",
+                     cwc, st, cur_line, pc, wbb_match, wbb_val, {wbb_addr, {OFFB{1'b0}}},
+                     (HUM!=0) && msh_ins, msh_addr, pf_hit, vic_dirty, eff_vw, eff_vi,
+                     linebuf[63:0], linebuf[511:448]);
+         // data actually delivered to the client for a watched line
+         if (rd_valid && ((rd_resp_addr[PAW-1:12] == `CACHEWATCH_PA) || cw_set))
+            $display("[CWD c=%0d resp=%h data=%h]", cwc, rd_resp_addr, rd_data);
+         // INSTALL journal: the cycle a line is committed into a slot, with the source
+         // that supplied linebuf. This is what a half-stale line has to be traced to.
+         if ((st == S_FILLI) && (pc == HALF-1) && ((cur_line[PAW-1:12] == `CACHEWATCH_PA) || cw_set))
+            $display("[CWI c=%0d INSTALL way=%b idx=%h tag=%h src=%s cur=%h mshA=%h wbbA=%h lb0=%h lb7=%h]",
+                     cwc, eff_vw, eff_vi, tagm[vflat],
+                     ((HUM!=0) && msh_ins) ? "MSHR" : wbb_match ? "WBB " : pf_hit ? "PF  " : "L2  ",
+                     cur_line, msh_addr, {wbb_addr, {OFFB{1'b0}}},
+                     linebuf[63:0], linebuf[511:448]);
          if ((st == S_CHECK || st == S_FIN) && (cur_line[PAW-1:12] == `CACHEWATCH_PA))
             $display("[CW c=%0d CHK line=%h hit0=%b hit1=%b hway=%b v0=%b t0=%h v1=%b t1=%h ctag=%h]",
                      cwc, cur_line, hit0, hit1, hway,
@@ -459,6 +574,20 @@ module cache #(
    reg [FW-1:0]    v_wa, d_wa;
    reg [IDXB-1:0]  k_wa;
    reg             v_wd, d_wd, k_wd;
+
+   // live store-merge window: the same merge applied to the bank outputs as they are
+   // being registered into wlo/whi. Lets a spanning store commit line0's chunk in the
+   // cycle its lookup is live, instead of naming that slot again cycles later.
+   integer fbb;
+   reg [LZB:0] fpos;
+   reg [2*BANKW-1:0] fnwin;
+   always @* begin
+      fnwin = {fwhi, fwlo};
+      for (fbb=0; fbb<WRB; fbb=fbb+1) if (r_wmask[fbb]) begin
+         fpos = {1'b0,bwc} + fbb[LZB:0];
+         fnwin[fpos*8 +: 8] = r_wdata[fbb*8 +: 8];
+      end
+   end
 
    // store-merge window (combinational)
    always @* begin
@@ -522,6 +651,13 @@ module cache #(
 
       // serialized fill install: write pair pc of the victim from linebuf (even+odd)
       // (eff_*: an MSHR install targets the victim pinned at allocation)
+      // spanning store: commit line0's chunk HERE, at line0's live lookup
+      if ((WRITABLE!=0) && (st==S_CHECK) && !phase && hit && r_is_wr && r_span) begin
+         bk_wren  [hway*2 + clo[0]] = 1'b1;
+         bk_wraddr[hway*2 + clo[0]] = { cih, pair_lo };
+         bk_wrdata[hway*2 + clo[0]] = fnwin[0 +: BANKW];
+      end
+
       if (st==S_FILLI) begin
          bk_wren  [eff_vw*2+0] = 1'b1;
          bk_wraddr[eff_vw*2+0] = { eff_vi, pc[PAIRB-1:0] };
@@ -704,7 +840,18 @@ module cache #(
                     wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
                     whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
                     w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
-                    if (r_span) begin phase <= 1; cur_line <= line1; st <= S_LOOK; end
+                    if (r_span) begin
+                       // line0's data write is driven combinationally this cycle; its
+                       // status write and any NC/WT push slot are staged here too, so
+                       // nothing about line0 outlives its own lookup.
+                       if (r_is_wr) begin
+                          if (WRTHRU==0 && !r_uncached) begin d_we=1; d_wa=flat(hway,cih); d_wd=1'b1; end
+                          else begin wb_way <= hway; wb_idx <= cih; end
+                       end else if (r_uncached) begin
+                          v_we=1; v_wa=flat(hway,cih); v_wd=1'b0;   // NC load: drop line0
+                       end
+                       phase <= 1; cur_line <= line1; st <= S_LOOK;
+                    end
                     else if (!r_is_wr && !r_uncached) begin
                        // fast read delivery: the window is live on the bank outputs
                        // (the same values registering into wlo/whi this edge) -- skip
@@ -886,15 +1033,18 @@ module cache #(
                  // Svpbmt NC/IO load: return the (just-filled, current) word but don't keep the
                  // line, so a later DMA write isn't masked by a stale hit on the next NC load.
                  // A span clears line1 in S_NCI (one status write per cycle; data already out).
-                 if (r_uncached) begin v_we=1; v_wa=flat(w0_way,w0_idx); v_wd=1'b0; end
+                 // (a span dropped line0 at its own lookup; S_NCI drops line1)
+                 if (r_uncached && !r_span) begin v_we=1; v_wa=flat(w0_way,w0_idx); v_wd=1'b0; end
                  st <= (r_uncached && r_span) ? S_NCI : S_IDLE;
               end else begin
                  // low-chunk (and same-line high) write driven combinationally this cycle.
                  if (r_span && store_hi) begin
                     // line1 hit way/idx are live (phase1); write its chunk0 next cycle.
-                    // line0's dirty is staged here, line1's in S_SPANW (one write/cycle).
-                    if (WRTHRU==0 && !r_uncached) begin d_we=1; d_wa=flat(w0_way,w0_idx); d_wd=1'b1; end
+                    // line0 was written+dirtied at its own lookup (phase 0).
                     st <= S_SPANW;
+                 end else if (r_span) begin
+                    // line0-only span (the width test ignores the byte mask): done
+                    wr_ack <= 1; st <= S_IDLE;
                  end else if (WRTHRU!=0 || r_uncached) begin
                     // write-through, OR a Svpbmt NC/IO store -> push to L2 (DMA sees it) and
                     // invalidate the line at S_WTA so nothing dirty/stale lingers (flush-around).
@@ -912,7 +1062,7 @@ module cache #(
               st <= S_IDLE;
            end
            S_SPANW: begin                   // spanning store high half written combinationally
-              if (WRTHRU!=0 || r_uncached) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
+              if (WRTHRU!=0 || r_uncached) begin pc <= 0; st <= S_WTR; end   // wb_* captured at phase 0
               else begin
                  d_we=1; d_wa=flat(hway,cih); d_wd=1'b1;   // line0's dirty was staged at S_FIN
                  wr_ack <= 1; st <= S_IDLE;
