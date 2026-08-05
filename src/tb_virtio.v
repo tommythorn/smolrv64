@@ -64,21 +64,41 @@ module tb;
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;            // DDR base as a line address
    reg [511:0] lram [0:NLINES-1];
-   // +ddr_real: latency-realistic DDR -- MIG-scale base latency with LFSR jitter,
-   // periodic refresh stalls (tREFI/tRFC scaled to probe_clk), and core-vs-DMA
-   // CONTENTION (one memory: each port's op stalls the other). The board-only
-   // corruption class lives in exactly these interleaving windows; the default
-   // instant/fixed-latency model cannot produce them. Default (+ddr_real absent)
-   // is bit-identical to the old behavior.
+   // ---- DDR line-port model ----------------------------------------------------
+   // +ddr_real: MEASURED on the RK-XCKU5P board (2026-08-04, src/ddr_hpm.v read via
+   // busybox devmem under Linux; 8.2M reads / 3.0M writes):
+   //     read : mean 13.31 cyc -- 96.20% in 8-15, 2.21% in 16-31, 1.59% in 32-63
+   //     write: mean  8.69 cyc -- 95.87% in 8-15, 3.56% in 16-31, 0.58% in 32-63
+   //   NOTHING beyond 63 cycles in either direction.
+   // Reads and writes differ (writes post at the bridge), so they are modelled
+   // separately. The tail is reproduced by occasional excursions rather than a wide
+   // uniform spread: that thin 16-63 band is the refresh/bank-conflict behaviour.
+   // (Before this measurement the model used an invented flat ~24-31 cycles for both
+   //  directions -- roughly 2x the real read latency and the wrong shape.)
    reg        ddr_real;  reg [63:0] ddr_lat;
    initial begin
       ddr_real = $test$plusargs("ddr_real") ? 1'b1 : 1'b0;
-      if (!$value$plusargs("ddr_lat=%d", ddr_lat)) ddr_lat = 64'd24;
+      if (!$value$plusargs("ddr_lat=%d", ddr_lat)) ddr_lat = 64'd0;   // 0 = use measured
    end
-   reg [15:0] dlfsr; initial dlfsr = 16'hACE1;
-   reg [9:0]  refc;  initial refc  = 10'd0;
-   wire       refresh_stall = ddr_real && (refc < 10'd24);   // ~24-cycle tRFC every ~520 (tREFI)
-   always @(posedge clk) if (!reset && ddr_real) refc <= (refc == 10'd519) ? 10'd0 : refc + 1'b1;
+   reg [15:0] dlfsr; initial dlfsr = 16'hBEEF;
+   // measured-shape latency draw: base 8..15, ~3% 16-31, ~1.5% 32-63 (reads);
+   // writes sit ~4.5 cycles lower. ddr_lat=N overrides with a flat N.
+   function [6:0] ddr_draw;
+      input is_wr;
+      reg [9:0] r;
+      begin
+         r = {dlfsr[9:0]};
+         if (ddr_lat != 0)            ddr_draw = ddr_lat[6:0];
+         else if (r[9:4] == 6'd0)     ddr_draw = 7'd34 + {3'd0, r[3:0]};   // ~1.5%: 32-63 tail
+         else if (r[9:6] == 4'd0)     ddr_draw = 7'd18 + {3'd0, r[3:0]};   // ~3%: 16-31
+         else if (is_wr)              ddr_draw = 7'd8  + {4'd0, r[2:0]};   // writes: 8-15, mean ~8.7
+         else                         ddr_draw = 7'd11 + {4'd0, r[2:0]};   // reads:  8-15, mean ~13.3
+      end
+   endfunction
+   // No separate refresh model: the measured distribution is END-TO-END, so refresh
+   // and bank conflicts are already the 16-63 tail. Stacking a synthetic tRFC on top
+   // would exceed the 63-cycle maximum the hardware never crosses.
+   wire       refresh_stall = 1'b0;
    reg d_busy; reg [6:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
    reg axi_infl;   // device-DMA op in flight (declared here for the contention cross-stall)
    reg [63:0] line;
@@ -91,7 +111,7 @@ module tb;
       else if (!d_busy && ddr_req) begin
          d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
          if (ddr_real) begin
-            d_cnt <= ddr_lat[6:0] + {4'd0, dlfsr[2:0]} + (axi_infl ? 7'd12 : 7'd0);   // DMA contention = extra latency
+            d_cnt <= ddr_draw(ddr_we);   // measured end-to-end: refresh/bank/DMA already in it
             dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
          end
          else d_cnt <= 7'd4;
