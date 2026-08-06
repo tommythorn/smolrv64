@@ -13,28 +13,30 @@ module tb;
    wire        commit, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
+   wire [63:0] ddr_wmask;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
 
    soc_top dut (.clk(clk), .reset(reset), .commit(commit),
                 .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr),
                 .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
                 .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-                .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+                .ddr_wdata(ddr_wdata), .ddr_wmask(ddr_wmask), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
                 .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(),
                 .uart_tx_ready(1'b1));
 
    // behavioral DDR (line port, 4-cycle latency): cache-backed DRAM at BASE
    reg [7:0] ram [0:(1<<21)-1];
    reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   reg [63:0] d_wm_q;
    integer kb; reg [63:0] d_base;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
-      else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; end
+      else if (!d_busy && ddr_req) begin d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; d_wm_q<=ddr_wmask; end
       else if (d_busy) begin
          if (d_cnt==0) begin
             d_base = ({{6{1'b0}},d_ad_q} << 6) - BASE;
-            if (d_we_q) for (kb=0;kb<64;kb=kb+1) ram[d_base+kb] <= d_wd_q[kb*8 +: 8];
+            if (d_we_q) for (kb=0;kb<64;kb=kb+1) ram[d_base+kb] <= d_wm_q[kb] ? d_wd_q[kb*8 +: 8] : ram[d_base+kb];
             else        for (kb=0;kb<64;kb=kb+1) ddr_rdata[kb*8 +: 8] <= ram[d_base+kb];
             ddr_ack<=1'b1; d_busy<=1'b0;
          end else d_cnt <= d_cnt-1;

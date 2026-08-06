@@ -1553,6 +1553,7 @@ module rk_xcku5p(
    // (unchanged MIG path). virtio/ethernet/MMIO-bridge stay but idle (trimmed DTB).
    wire        pddr_req, pddr_we;  wire [57:0] pddr_addr;  wire [511:0] pddr_wdata, pddr_rdata;  wire pddr_ack;
    wire        mddr_req, mddr_we;  wire [57:0] mddr_addr;  wire [511:0] mddr_wdata, mddr_rdata;  wire mddr_ack;
+   wire [63:0] pddr_wmask, mddr_wmask;   // per-byte line strobes (NC stores push only their own bytes)
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
@@ -1589,7 +1590,7 @@ module rk_xcku5p(
       .clk(probe_clk), .reset(probe_reset),
       .commit(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
       .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
-      .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
+      .ddr_wmask(pddr_wmask), .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg), .mtvec_we_dbg(probe_mtvec_we),
@@ -1690,15 +1691,15 @@ module rk_xcku5p(
    ddr_line_cdc probe_cdc (
       .clk_p(probe_clk), .reset_p(probe_reset),
       .p_req(pddr_req), .p_we(pddr_we), .p_addr(pddr_addr), .p_wdata(pddr_wdata),
-      .p_rdata(pddr_rdata), .p_ack(pddr_ack),
+      .p_wmask(pddr_wmask), .p_rdata(pddr_rdata), .p_ack(pddr_ack),
       .clk_m(ui_clk), .reset_m(ui_cpu_reset),
       .m_req(mddr_req), .m_we(mddr_we), .m_addr(mddr_addr), .m_wdata(mddr_wdata),
-      .m_rdata(mddr_rdata), .m_ack(mddr_ack));
+      .m_wmask(mddr_wmask), .m_rdata(mddr_rdata), .m_ack(mddr_ack));
 
    ddr_line_axi probe_bridge (
       .clk(ui_clk), .reset(ui_cpu_reset),
       .ddr_req(mddr_req), .ddr_we(mddr_we), .ddr_addr(mddr_addr), .ddr_wdata(mddr_wdata),
-      .ddr_rdata(mddr_rdata), .ddr_ack(mddr_ack),
+      .ddr_wmask(mddr_wmask), .ddr_rdata(mddr_rdata), .ddr_ack(mddr_ack),
       .m_axi_awid(core_axi_awid), .m_axi_awaddr(core_axi_awaddr), .m_axi_awlen(core_axi_awlen),
       .m_axi_awsize(core_axi_awsize), .m_axi_awburst(core_axi_awburst), .m_axi_awlock(core_axi_awlock),
       .m_axi_awcache(core_axi_awcache), .m_axi_awprot(core_axi_awprot), .m_axi_awqos(core_axi_awqos),

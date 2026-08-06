@@ -165,7 +165,7 @@ module tb;
    wire [63:0]  c_rd_data;  wire c_rd_valid, c_wr_ack, c_rd_rdy;
    wire [63:0]  c_rd_resp_addr;
    wire         c_l2_req, c_l2_we;  wire [57:0] c_l2_addr;  // PAW=64 -> line addr [63:6]
-   wire [511:0] c_l2_wdata;  reg [511:0] c_l2_rdata;  reg c_l2_ack;
+   wire [511:0] c_l2_wdata;  wire [63:0] c_l2_wmask;  reg [511:0] c_l2_rdata;  reg c_l2_ack;
    always @(posedge clk) if (reset) av<=1'b0;
       else if (c_rd_req & c_rd_rdy) av<=1'b0;
       else if (cache_en & dmem_ren & ~c_rd_rdy) begin av<=1'b1; aaddr<=dmem_raddr; end
@@ -179,20 +179,21 @@ module tb;
       .wr_mask(dmem_wmask), .wr_ack(c_wr_ack), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0), .inv_req(1'b0), .inv_clean(1'b0), .inv_busy(),
       .l2_req(c_l2_req), .l2_we(c_l2_we), .l2_addr(c_l2_addr), .l2_wdata(c_l2_wdata),
-      .l2_rdata(c_l2_rdata), .l2_ack(c_l2_ack));
+      .l2_wmask(c_l2_wmask), .l2_rdata(c_l2_rdata), .l2_ack(c_l2_ack));
 
    // cache L2 responder: line read/write of `mem` (based at BASE), 2-cycle latency
    reg c_l2busy; reg [3:0] c_l2cnt; reg c_l2we_q; reg [57:0] c_l2ad_q; reg [511:0] c_l2wd_q;
+   reg [63:0] c_l2wm_q;
    integer kk; reg [63:0] c_l2base;
    always @(posedge clk) begin
       c_l2_ack <= 1'b0;
       if (reset) c_l2busy <= 1'b0;
       else if (!c_l2busy && c_l2_req) begin
-         c_l2busy<=1'b1; c_l2cnt<=4'd2; c_l2we_q<=c_l2_we; c_l2ad_q<=c_l2_addr; c_l2wd_q<=c_l2_wdata;
+         c_l2busy<=1'b1; c_l2cnt<=4'd2; c_l2we_q<=c_l2_we; c_l2ad_q<=c_l2_addr; c_l2wd_q<=c_l2_wdata; c_l2wm_q<=c_l2_wmask;
       end else if (c_l2busy) begin
          if (c_l2cnt==0) begin
             c_l2base = ({{6{1'b0}},c_l2ad_q} << 6) - BASE;
-            if (c_l2we_q) for (kk=0;kk<64;kk=kk+1) mem[c_l2base+kk] <= c_l2wd_q[kk*8 +: 8];
+            if (c_l2we_q) for (kk=0;kk<64;kk=kk+1) mem[c_l2base+kk] <= c_l2wm_q[kk] ? c_l2wd_q[kk*8 +: 8] : mem[c_l2base+kk];
             else          for (kk=0;kk<64;kk=kk+1) c_l2_rdata[kk*8 +: 8] <= mem[c_l2base+kk];
             c_l2_ack<=1'b1; c_l2busy<=1'b0;
          end else c_l2cnt <= c_l2cnt-1;

@@ -29,7 +29,7 @@ module tb;
    ddr_line_axi dut (
       .clk(clk), .reset(reset),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-      .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+      .ddr_wdata(ddr_wdata), .ddr_wmask({64{1'b1}}), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .m_axi_awid(awid), .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
       .m_axi_awburst(awburst), .m_axi_awlock(awlock), .m_axi_awcache(awcache),
       .m_axi_awprot(awprot), .m_axi_awqos(awqos), .m_axi_awvalid(awvalid), .m_axi_awready(awready),

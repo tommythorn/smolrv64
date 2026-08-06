@@ -22,7 +22,7 @@ module tb;
 
    reg  [7:0] l2mem [0:MEM-1];                     // backing store (== refm after flush)
    reg  [7:0] refm   [0:MEM-1];                     // golden architectural memory
-   integer k, errs=0, before_reads;
+   integer k, j2, cmb, errs=0, before_reads;
 
    // ---------------- D$ instance ----------------
    reg          d_rd_req, d_wr_req, d_inv_req;
@@ -33,30 +33,32 @@ module tb;
    wire [63:0]  d_rd_data;  wire d_rd_valid, d_wr_ack, d_inv_busy, d_rd_rdy;
    wire [PAW-1:0] d_rd_resp_addr;
    wire         d_l2_req, d_l2_we;  wire [PAW-OFFB-1:0] d_l2_addr;
-   wire [LINEB-1:0] d_l2_wdata;  reg [LINEB-1:0] d_l2_rdata;  reg d_l2_ack;
+   wire [LINEB-1:0] d_l2_wdata;  wire [LINEB/8-1:0] d_l2_wmask;
+   reg [LINEB-1:0] d_l2_rdata;  reg d_l2_ack;
 
    cache #(.PAW(PAW), .SIZE_KB(128), .RDW(64), .WDW(64), .WRITABLE(1)) u_d
      (.clk(clk), .reset(reset),
       .rd_req(d_rd_req), .rd_rdy(d_rd_rdy), .rd_addr(d_rd_addr), .rd_data(d_rd_data), .rd_valid(d_rd_valid),
       .rd_resp_addr(d_rd_resp_addr),
-      .wr_req(d_wr_req), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
+      .wr_req(d_wr_req & ~d_wr_ack), .wr_addr(d_wr_addr), .wr_data(d_wr_data), .wr_mask(d_wr_mask),
       .wr_ack(d_wr_ack), .rd_uncached(d_rd_uncached), .wr_uncached(d_wr_uncached),
       .cbo_req(d_cbo_req), .cbo_zero(d_cbo_zero), .cbo_keep(d_cbo_keep),
       .inv_req(d_inv_req), .inv_clean(1'b0), .inv_busy(d_inv_busy),
       .l2_req(d_l2_req), .l2_we(d_l2_we), .l2_addr(d_l2_addr), .l2_wdata(d_l2_wdata),
-      .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
+      .l2_wmask(d_l2_wmask), .l2_rdata(d_l2_rdata), .l2_ack(d_l2_ack));
 
    // D$ behavioral L2 (reads + writes l2mem, L2LAT cycles)
    reg dbusy; reg [3:0] dcnt; reg dwe_q; reg [PAW-OFFB-1:0] dad_q; reg [LINEB-1:0] dwd_q;
+   reg [LINEB/8-1:0] dwm_q;
    integer d_l2reads = 0;                          // count D$ L2 line reads (detect refill-on-miss)
    always @(posedge clk) begin
       d_l2_ack <= 0;
       if (reset) dbusy <= 0;
       else if (!dbusy && d_l2_req) begin
-         dbusy<=1; dcnt<=L2LAT; dwe_q<=d_l2_we; dad_q<=d_l2_addr; dwd_q<=d_l2_wdata;
+         dbusy<=1; dcnt<=L2LAT; dwe_q<=d_l2_we; dad_q<=d_l2_addr; dwd_q<=d_l2_wdata; dwm_q<=d_l2_wmask;
       end else if (dbusy) begin
          if (dcnt==0) begin
-            if (dwe_q) for (k=0;k<64;k=k+1) l2mem[(dad_q<<OFFB)+k] <= dwd_q[k*8 +: 8];
+            if (dwe_q) for (k=0;k<64;k=k+1) l2mem[(dad_q<<OFFB)+k] <= dwm_q[k] ? dwd_q[k*8 +: 8] : l2mem[(dad_q<<OFFB)+k];
             else begin for (k=0;k<64;k=k+1) d_l2_rdata[k*8 +: 8] <= l2mem[(dad_q<<OFFB)+k];
                        d_l2reads <= d_l2reads + 1; end
             d_l2_ack <= 1; dbusy <= 0;
@@ -180,6 +182,24 @@ module tb;
          @(negedge clk);
       end
    endtask
+
+   // Back-to-back store burst, LSU-style: wr_req is held CONTINUOUSLY and the next
+   // store's payload is presented on the negedge right after each ack -- no idle
+   // gap between FSM ops (the store-buffer drain pattern the boot runs).
+   task dwburst; input integer n;   // uses s_addr[], burst data derived from index
+      integer j, b;
+      begin
+         @(negedge clk); d_wr_req=1;
+         for (j=0;j<n;j=j+1) begin
+            d_wr_addr=s_addr[j]; d_wr_data=bd[j]; d_wr_mask=bm[j];
+            @(negedge clk); while (!d_wr_ack) @(negedge clk);
+            for (b=0;b<8;b=b+1) if (bm[j][b]) refm[s_addr[j]+b] = bd[j][b*8 +: 8];
+         end
+         d_wr_req=0;
+         @(negedge clk);
+      end
+   endtask
+   reg [63:0] bd [0:15];  reg [7:0] bm [0:15];
 
    task dflush;
       begin
@@ -393,6 +413,85 @@ module tb;
       s_addr[3]=34'h00100; s_nc[3]=1;                        // NC read of A2: drain + fresh fill
       dstream(4);
       dflush();                                              // nothing may be lost; L2==refm
+
+      // ---- NC store whose WIDTH spans the line end (r_span=1) but whose byte mask
+      // does not spill (the virtio desc3.flags case: 2 bytes at line offset 60/62) --
+      // and the genuinely-spilling variant. All four residency combos of line A/B:
+      // the Ubuntu boot corruption was a flags store whose bytes never reached DDR.
+      $display("== Svpbmt NC: width-span store at line offset 60/62 (all residency combos) ==");
+      for (cmb=0;cmb<4;cmb=cmb+1) begin
+         dflush();                                            // reset residency (clobbers k)
+         if (cmb[0]) dread(34'h2400, 8);                      // pre-cache line A (clean)
+         if (cmb[1]) dread(34'h2440, 8);                      // pre-cache line B (clean)
+         d_wr_uncached = 1;
+         dwrite(34'h2400+60, 64'h0000000000000001 + cmb, 8'h03, 2); // "flags" store, no spill
+         dwrite(34'h2400+62, 64'h00000000BEEF0000 + cmb, 8'h0F, 4); // spills 2 bytes into B
+         d_wr_uncached = 0;
+         for (j2=0;j2<128;j2=j2+1) if (l2mem[34'h2400+j2] !== refm[34'h2400+j2]) begin
+            $display("FAIL NC width-span combo=%0d: l2mem[%h]=%h exp=%h",
+                     cmb, 34'h2400+j2, l2mem[34'h2400+j2], refm[34'h2400+j2]); errs=errs+1;
+         end
+         if (errs==0) $display("  ok  combo=%0d (A cached=%0d B cached=%0d)", cmb, cmb[0], cmb[1]);
+      end
+      // dirty-A variant: the NC push must carry the dirty line's bytes too
+      $display("== Svpbmt NC: width-span store onto a DIRTY line ==");
+      dflush();
+      dwrite(34'h2480, 64'h1122334455667788, 8'hFF, 8);       // dirty A'
+      d_wr_uncached = 1;
+      dwrite(34'h2480+60, 64'h0000000000000007, 8'h03, 2);
+      d_wr_uncached = 0;
+      for (j2=0;j2<64;j2=j2+1) if (l2mem[34'h2480+j2] !== refm[34'h2480+j2]) begin
+         $display("FAIL NC dirty width-span: l2mem[%h]=%h exp=%h",
+                  34'h2480+j2, l2mem[34'h2480+j2], refm[34'h2480+j2]); errs=errs+1;
+      end
+      if (errs==0) $display("  ok  dirty-line NC width-span push");
+      dflush();
+
+      // ---- back-to-back NC store burst (store-buffer drain pattern): the boot's
+      // virtio descriptor build is 2/4/8-byte NC stores to one line with NO idle
+      // cycles between FSM ops, including the width-span flags/next stores. The
+      // lost desc3.flags corruption appeared only in this adjacency.
+      $display("== Svpbmt NC: back-to-back store burst incl. width-span offsets ==");
+      for (cmb=0;cmb<2;cmb=cmb+1) begin
+         dflush();
+         if (cmb[0]) begin dread(34'h2500, 8); dread(34'h2540, 8); end   // resident variant
+         d_wr_uncached = 1;
+         s_addr[0]=34'h2500+62; bd[0]=64'h0000000000000002; bm[0]=8'h03;  // prev-req "next" (span)
+         s_addr[1]=34'h2500+60; bd[1]=64'h0000000000000001; bm[1]=8'h03;  // flags (width-span)
+         s_addr[2]=34'h2500+48; bd[2]=64'h0000000081d796f0; bm[2]=8'hFF;  // addr
+         s_addr[3]=34'h2500+56; bd[3]=64'h0000000000000010; bm[3]=8'h0F;  // len
+         s_addr[4]=34'h2500+62; bd[4]=64'h0000000000000004; bm[4]=8'h03;  // next (width-span)
+         s_addr[5]=34'h2500+32; bd[5]=64'h1111111122222222; bm[5]=8'hFF;  // desc2 fields
+         s_addr[6]=34'h2500+40; bd[6]=64'h0003000200000200; bm[6]=8'hFF;
+         dwburst(7);
+         d_wr_uncached = 0;
+         for (j2=0;j2<128;j2=j2+1) if (l2mem[34'h2500+j2] !== refm[34'h2500+j2]) begin
+            $display("FAIL NC burst cmb=%0d: l2mem[%h]=%h exp=%h",
+                     cmb, 34'h2500+j2, l2mem[34'h2500+j2], refm[34'h2500+j2]); errs=errs+1;
+         end
+         if (errs==0) $display("  ok  NC b2b burst cmb=%0d", cmb);
+      end
+
+      // ---- THE descriptor-table clobber (Ubuntu disk-root boot wedge): a spanning
+      // NC store whose line1 fill evicts a DIRTY victim. The victim capture (S_WB)
+      // reused wb_way/wb_idx -- the very registers holding the line0 push slot -- so
+      // S_WTR then streamed the victim's slot (now holding line1) and pushed a WHOLE
+      // WRONG LINE under line0's address. Setup: A resident; C dirty at line-B's
+      // index; D fills the other way so B's victim is C's (dirty) slot.
+      $display("== Svpbmt NC: span store + line1 fill evicting a dirty victim ==");
+      dflush();
+      dread (34'h02600, 8);                                  // A resident clean (idx 0x98)
+      dwrite(34'h12640, 64'hD1D1D1D1D1D1D1D1, 8'hFF, 8);     // C: dirty at idx 0x99, way w
+      dread (34'h22640, 8);                                  // D: fills the other way, vicm -> w
+      d_wr_uncached = 1;
+      dwrite(34'h02600+60, 64'h0000000000000001, 8'h03, 2);  // the desc3.flags store
+      d_wr_uncached = 0;
+      for (j2=0;j2<128;j2=j2+1) if (l2mem[34'h02600+j2] !== refm[34'h02600+j2]) begin
+         $display("FAIL NC span dirty-victim: l2mem[%h]=%h exp=%h",
+                  34'h02600+j2, l2mem[34'h02600+j2], refm[34'h02600+j2]); errs=errs+1;
+      end
+      if (errs==0) $display("  ok  span NC push survives a dirty-victim line1 fill");
+      dflush();
 
       if (errs==0) $display("CACHE-TB: ALL TESTS PASSED"); else $display("CACHE-TB FAIL (%0d errors)", errs);
       $finish;

@@ -13,8 +13,8 @@
 // Line address: ddr_addr is the physical line index PA[63:6]. The MIG slave is
 // mapped with DDR at BASE, so the AXI byte address is (PA - BASE) truncated to
 // AXI_AW bits. With BASE=0x8000_0000 and a 2 GiB window that is just PA[30:0],
-// i.e. {ddr_addr[AXI_AW-7:0], 6'b0}. Writes use full byte strobes: the cache
-// hands over a complete merged line (write-through), so every byte is valid.
+// i.e. {ddr_addr[AXI_AW-7:0], 6'b0}. Writes carry the line's per-byte strobes
+// (ddr_wmask) through to WSTRB: an NC store pushes only its own bytes.
 module ddr_line_axi #(
    parameter AXI_AW   = 31,            // MIG slave byte-address width (2 GiB)
    parameter integer LINE_BITS = 512,  // cache line width
@@ -28,6 +28,7 @@ module ddr_line_axi #(
    input  wire                  ddr_we,
    input  wire [57:0]           ddr_addr,    // line address PA[63:6]
    input  wire [LINE_BITS-1:0]  ddr_wdata,
+   input  wire [LINE_BITS/8-1:0] ddr_wmask,
    output reg  [LINE_BITS-1:0]  ddr_rdata,
    output reg                   ddr_ack,     // 1-cycle pulse; ddr_rdata valid same cycle for reads
 
@@ -44,7 +45,7 @@ module ddr_line_axi #(
    output reg                   m_axi_awvalid,
    input  wire                  m_axi_awready,
    output reg  [AXI_DW-1:0]     m_axi_wdata,
-   output wire [AXI_DW/8-1:0]   m_axi_wstrb,
+   output reg  [AXI_DW/8-1:0]   m_axi_wstrb,
    output reg                   m_axi_wlast,
    output reg                   m_axi_wvalid,
    input  wire                  m_axi_wready,
@@ -85,7 +86,6 @@ module ddr_line_axi #(
    assign m_axi_arprot  = 3'b000;
    assign m_axi_awqos   = 4'b0000;
    assign m_axi_arqos   = 4'b0000;
-   assign m_axi_wstrb   = {(AXI_DW/8){1'b1}};   // full-line writes
 
    // Input register stage for the CONTROL side (req pulse / we / addr): the CDC's
    // m_* regs can place far from this FSM at 333 MHz (the -0.59 cdc->awaddr-CE path).
@@ -103,6 +103,7 @@ module ddr_line_axi #(
    reg [2:0]          state;
    reg [BCW-1:0]      beat;
    reg [LINE_BITS-1:0] buf_data;        // write data shifted out / read data shifted in
+   reg [LINE_BITS/8-1:0] buf_strb;      // write strobes, shifted in lockstep with buf_data
    reg [AXI_AW-1:0]   req_addr;
 
    // line base byte address into the MIG: drop the line's low 6 bits (always 0)
@@ -118,6 +119,7 @@ module ddr_line_axi #(
          m_axi_awvalid <= 1'b0;
          m_axi_wvalid  <= 1'b0;
          m_axi_wlast   <= 1'b0;
+         m_axi_wstrb   <= {(AXI_DW/8){1'b0}};
          m_axi_bready  <= 1'b0;
          m_axi_awid    <= 3'd0; m_axi_arid <= 3'd0; m_axi_bid <= 3'd0;
          m_axi_awsize  <= SIZE; m_axi_arsize <= SIZE;
@@ -131,6 +133,7 @@ module ddr_line_axi #(
               if (i_req) begin
                  req_addr <= line_byte_addr;
                  buf_data <= ddr_wdata;
+                 buf_strb <= ddr_wmask;   // held stable by the CDC, same as ddr_wdata
                  if (i_we) begin
                     m_axi_awaddr  <= line_byte_addr;
                     m_axi_awvalid <= 1'b1;
@@ -165,7 +168,9 @@ module ddr_line_axi #(
            S_AW: if (m_axi_awready) begin
                     m_axi_awvalid <= 1'b0;
                     m_axi_wdata   <= buf_data[0 +: AXI_DW];   // beat 0
+                    m_axi_wstrb   <= buf_strb[0 +: AXI_DW/8];
                     buf_data      <= buf_data >> AXI_DW;      // next beat -> low
+                    buf_strb      <= buf_strb >> (AXI_DW/8);
                     m_axi_wvalid  <= 1'b1;
                     m_axi_wlast   <= (BEATS == 1);
                     state         <= S_WD;
@@ -179,7 +184,9 @@ module ddr_line_axi #(
                     end else begin
                        beat        <= beat + 1'b1;
                        m_axi_wdata <= buf_data[0 +: AXI_DW];  // shifted low = next beat
+                       m_axi_wstrb <= buf_strb[0 +: AXI_DW/8];
                        buf_data    <= buf_data >> AXI_DW;
+                       buf_strb    <= buf_strb >> (AXI_DW/8);
                        m_axi_wlast <= (beat + 1'b1 == BEATS-1);
                     end
                  end

@@ -60,6 +60,7 @@ module soc_top #(
    output wire             ddr_we,
    output wire [57:0]      ddr_addr,     // line address PA[63:6]
    output wire [511:0]     ddr_wdata,
+   output wire [63:0]      ddr_wmask,    // per-byte write strobes (partial on NC/WT store pushes)
    input  wire [511:0]     ddr_rdata,
    input  wire             ddr_ack,
    // UART receive: the TB/host pushes a byte (uart_rx_we while uart_rx_ready) -> the core
@@ -362,6 +363,7 @@ module soc_top #(
    // identity (the LSU holds the last-issued address).
    wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_rd_rdy;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
+   wire [63:0]  dc_l2_wmask;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
    reg          av;  reg [63:0] aaddr;  reg avnc;
    wire         c_rd_req = av | (dmem_ren & ~is_dev_r);
@@ -413,6 +415,7 @@ module soc_top #(
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
+      .l2_wmask(dc_l2_wmask),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
       .perf_access(dc_access), .perf_miss(dc_miss));
 
@@ -498,6 +501,7 @@ module soc_top #(
    wire         ic_rd_req  = dem_req | pf_req;
    wire [63:0]  ic_rd_addr = dem_req ? imem_addr : pf_tgt;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
+   wire [63:0]  ic_l2_wmask;   // all-ones (the I$ never writes; reset value holds)
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
    always @(posedge clk) if (reset) begin
          i_have<=1'b0; p_have<=1'b0; i_rd_pend<=1'b0; p_rd_pend<=1'b0;
@@ -554,6 +558,7 @@ module soc_top #(
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
+      .l2_wmask(ic_l2_wmask),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss));
 
@@ -632,13 +637,16 @@ module soc_top #(
    wire [NREQ-1:0]     a_we    = {1'b0, dc_l2_we};
    wire [NREQ*LAW-1:0] a_addr  = {ic_l2_addr, dc_l2_addr};
    wire [NREQ*512-1:0] a_wdata = {ic_l2_wdata, dc_l2_wdata};
+   wire [NREQ*64-1:0]  a_wmask = {ic_l2_wmask, dc_l2_wmask};
    wire [NREQ-1:0]     a_ack;
    wire                m_req, m_we;  wire [LAW-1:0] m_addr;  wire [511:0] m_wdata, m_rdata;  wire m_ack;
+   wire [63:0]         m_wmask;
    l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
      (.clk(clk), .reset(reset),
-      .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .ack(a_ack), .rdata(arb_rdata),
+      .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .wmask(a_wmask),
+      .ack(a_ack), .rdata(arb_rdata),
       .mem_req(m_req), .mem_we(m_we), .mem_addr(m_addr), .mem_wdata(m_wdata),
-      .mem_rdata(m_rdata), .mem_ack(m_ack));
+      .mem_wmask(m_wmask), .mem_rdata(m_rdata), .mem_ack(m_ack));
    assign dc_l2_ack = a_ack[0];  assign dc_l2_rdata = arb_rdata;
    assign ic_l2_ack = a_ack[1];  assign ic_l2_rdata = arb_rdata;
 
@@ -664,19 +672,28 @@ module soc_top #(
    initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
    reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_li_q; reg [511:0] l_wd_q;
-   reg [511:0] l_rdata; reg l_ack;
+   reg [63:0] l_wm_q;
+   reg [511:0] l_rdata; reg l_ack; reg [511:0] l_rd;
    wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
    wire l_req = m_req & m_is_local;
+   // masked write = read-modify-write across the l_cnt wait (single read site + single
+   // write site keeps the SDP BRAM inference; no other master writes lmem, so the RMW
+   // has no coherence window here -- unlike DDR, where DMA forces real byte strobes)
+   wire [511:0] l_merged;
+   genvar lb;
+   generate for (lb=0; lb<64; lb=lb+1) begin : lmrg
+      assign l_merged[8*lb +: 8] = l_wm_q[lb] ? l_wd_q[8*lb +: 8] : l_rd[8*lb +: 8];
+   end endgenerate
    always @(posedge clk) begin
       l_ack <= 1'b0;
       if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; end
+      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; l_wm_q<=m_wmask; end
       else if (l_busy) begin
          if (l_cnt==0) begin
-            if (l_we_q) lmem[l_li_q] <= l_wd_q;
-            else        l_rdata     <= lmem[l_li_q];
+            if (l_we_q) lmem[l_li_q] <= l_merged;
+            else        l_rdata     <= l_rd;
             l_ack<=1'b1; l_busy<=1'b0;
-         end else l_cnt <= l_cnt-1;
+         end else begin l_rd <= lmem[l_li_q]; l_cnt <= l_cnt-1; end
       end
    end
 
@@ -685,6 +702,7 @@ module soc_top #(
    assign ddr_we    = m_we;
    assign ddr_addr  = m_addr;
    assign ddr_wdata = m_wdata;
+   assign ddr_wmask = m_wmask;
 
    // DDR latency HPM: time ddr_req->ddr_ack (core cycles) into read/write log2 histograms,
    // read-only at HPM_BASE (any write clears). Observation-only; off the core critical path.

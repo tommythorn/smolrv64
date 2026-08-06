@@ -66,6 +66,7 @@ module cache #(
    output reg              l2_we,
    output reg  [PAW-OFFB-1:0] l2_addr,
    output reg  [LINEB-1:0] l2_wdata,
+   output reg  [LINEB/8-1:0] l2_wmask,   // per-byte write strobes (all-ones except NC/WT store pushes)
    input  wire [LINEB-1:0] l2_rdata,
    input  wire             l2_ack,
    output wire             perf_access, // 1-cycle: a line lookup resolved (hit or miss) this cycle
@@ -143,6 +144,16 @@ module cache #(
    wire [PAW-1:0] line0 = {r_addr[PAW-1:OFFB], {OFFB{1'b0}}};
    wire [PAW-1:0] line1 = line0 + (1<<OFFB);
 
+   // Store byte mask laid out on the line: store byte bb lands at line byte r_off+bb.
+   // An NC/WT store push presents ONLY these strobes to L2 -- pushing the whole 64-byte
+   // line rewrote its neighbours from the cache's snapshot, and any staleness in that
+   // snapshot silently destroyed bytes nothing ever stored to (a driver's own NC
+   // descriptor stores zeroed adjacent virtqueue descriptors: the 2026-08 boot wedge).
+   // stm1 = the bytes that spill into line1 on a spanning store.
+   wire [WORDB+WRB-1:0] stm  = {{WORDB{1'b0}}, r_wmask} << r_off;
+   wire [WORDB-1:0]     stm0 = stm[WORDB-1:0];
+   wire [WRB-1:0]       stm1 = stm[WORDB+WRB-1:WORDB];
+
    wire [CHB-1:0]   clo    = r_off[OFFB-1 -: CHB];
    wire [LZB-1:0]   bwc    = r_off[LZB-1:0];
    wire [PAIRB-1:0] pair_lo = clo[CHB-1:1];
@@ -196,6 +207,8 @@ module cache #(
    reg [IDXB-1:0]  wb_idx;  reg wb_way;            // line currently streamed for WB/WT/flush
    reg             w0_way;  reg [IDXB-1:0] w0_idx; // line0 hit way/idx (for the span store)
    reg [PAW-OFFB-1:0] wb_laddr;                    // L2 line address for the streamed writeback
+   reg [WORDB-1:0] wtm;                            // strobes for the pending S_WTI push
+   reg             wt2;                            // WT/NC push pass 2: line1 of a spanning store
 
    localparam [4:0]
       S_IDLE=0, S_LOOK=1, S_CHECK=2, S_FIN=3, S_SPANW=4,
@@ -559,6 +572,12 @@ module cache #(
 `endif
 
    integer b, bb, w2;
+`ifdef WTCHK
+   integer wtb, wtt;
+   // per-op FSM history ring for the span-NC store under WTCHK: recorded every
+   // cycle from accept to ack, dumped when the push-integrity check trips.
+   reg [63:0] wtrc [0:63];  integer wtrn;  initial wtrn = 0;
+`endif
    reg [2*BANKW-1:0] nwin;
    reg [LZB:0]       pos;
 
@@ -652,7 +671,9 @@ module cache #(
       // serialized fill install: write pair pc of the victim from linebuf (even+odd)
       // (eff_*: an MSHR install targets the victim pinned at allocation)
       // spanning store: commit line0's chunk HERE, at line0's live lookup
-      if ((WRITABLE!=0) && (st==S_CHECK) && !phase && hit && r_is_wr && r_span) begin
+      // (gated off while the span store is PARKED against a live MSHR)
+      if ((WRITABLE!=0) && (st==S_CHECK) && !phase && hit && r_is_wr && r_span
+          && !((HUM!=0) && (msh_val | msh_rdy))) begin
          bk_wren  [hway*2 + clo[0]] = 1'b1;
          bk_wraddr[hway*2 + clo[0]] = { cih, pair_lo };
          bk_wrdata[hway*2 + clo[0]] = fnwin[0 +: BANKW];
@@ -666,13 +687,15 @@ module cache #(
          bk_wraddr[eff_vw*2+1] = { eff_vi, pc[PAIRB-1:0] };
          bk_wrdata[eff_vw*2+1] = linebuf[(2*pc+1)*BANKW +: BANKW];
       end
-      // store merge: write the low chunk (and same-line high chunk if the store spilled).
-      // Uses the captured LINE0 way/idx (w0_*) -- in a span, the live hway/cih are line1's.
-      if (st==S_FIN && r_is_wr && hit) begin
+      // store merge: write the low chunk (and same-line high chunk if the store
+      // spilled). Spans are EXCLUDED: line0's chunk was already committed at its own
+      // phase-0 lookup above, and re-writing it here lands in whatever the slot holds
+      // by now (line1's fill ran in between).
+      if (st==S_FIN && r_is_wr && hit && !r_span) begin
          bk_wren  [w0_way*2 + clo[0]] = 1'b1;
          bk_wraddr[w0_way*2 + clo[0]] = { w0_idx, pair_lo };
          bk_wrdata[w0_way*2 + clo[0]] = nwin[0 +: BANKW];
-         if (store_hi && !r_span) begin
+         if (store_hi) begin
             bk_wren  [w0_way*2 + (clo[0]^1'b1)] = 1'b1;
             bk_wraddr[w0_way*2 + (clo[0]^1'b1)] = { w0_idx, pair_hi };
             bk_wrdata[w0_way*2 + (clo[0]^1'b1)] = nwin[BANKW +: BANKW];
@@ -694,7 +717,7 @@ module cache #(
       v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
          st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
-         l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
+         l2_req <= 0; l2_we <= 0; l2_wmask <= {WORDB{1'b1}}; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
          wbb_val <= 0; wbb_infl <= 0;
          msh_val <= 0; msh_infl <= 0; msh_rdy <= 0; msh_ins <= 0; msh_ret <= 0;
@@ -706,6 +729,7 @@ module cache #(
          if (WBUF) begin
             if (wbb_do) begin
                l2_req <= 1; l2_we <= 1; l2_addr <= wbb_addr; l2_wdata <= wbb_data;
+               l2_wmask <= {WORDB{1'b1}};
                wbb_infl <= 1;
             end
             if (wbb_infl && l2_ack) begin wbb_infl <= 0; wbb_val <= 0; end
@@ -793,11 +817,13 @@ module cache #(
 
            S_LOOK: st <= S_CHECK;
 
-           S_CHECK: if (HUM && msh_rdy && !hit) begin
+           S_CHECK: if (HUM && msh_rdy && (!hit || (r_is_wr && r_span && !phase))) begin
               // returned fill preempts a PARKED op (a miss that cannot proceed):
               // install it, then resume this op via S_LOOK (msh_ret) -- it
               // re-evaluates and often hits the just-installed line. cur_line
               // and r_* are untouched by the install, so nothing is lost.
+              // A span store parks even on a HIT while the MSHR is live (below), so
+              // the preempt must also fire for it or the park would deadlock.
               msh_ins <= 1; msh_ret <= 1; st <= S_WB;
            end else if (r_cbo) begin
               // Zicbom/Zicboz: single-line maintenance on the addressed line.
@@ -808,7 +834,8 @@ module cache #(
                     vw <= hway; vi <= cih; linebuf <= {LINEB{1'b0}}; pc <= 0; st <= S_FILLI;
                  end else if (WRTHRU==0 && dirm[flat(hway,cih)]) begin
                     // dirty -> write the line back to L2 (reuses the WT push path), then finalize
-                    wb_way <= hway; wb_idx <= cih; pc <= 0; st <= S_WTR;
+                    wb_way <= hway; wb_idx <= cih; pc <= 0;
+                    wtm <= {WORDB{1'b1}}; wt2 <= 1'b0; st <= S_WTR;
                  end else begin
                     // clean line: flush/inval just invalidates; clean keeps it
                     if (!r_cbo_keep) begin v_we=1; v_wa=flat(hway,cih); v_wd=1'b0; end
@@ -841,16 +868,23 @@ module cache #(
                     whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
                     w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
                     if (r_span) begin
+                       if ((HUM!=0) && r_is_wr && (msh_val | msh_rdy)) begin
+                          // span store serializes against the MSHR: an install preempt
+                          // AFTER the phase-0 merge could reallocate line0's slot under
+                          // the op (w0_* would name a dead slot). Park before merging;
+                          // the preempt arm above installs a landed fill and re-enters.
+                       end else begin
                        // line0's data write is driven combinationally this cycle; its
-                       // status write and any NC/WT push slot are staged here too, so
-                       // nothing about line0 outlives its own lookup.
-                       if (r_is_wr) begin
-                          if (WRTHRU==0 && !r_uncached) begin d_we=1; d_wa=flat(hway,cih); d_wd=1'b1; end
-                          else begin wb_way <= hway; wb_idx <= cih; end
-                       end else if (r_uncached) begin
+                       // status write is staged here too, so nothing about line0
+                       // outlives its own lookup (the WT/NC push slot is re-derived
+                       // from w0_* at S_SPANW -- wb_* does not survive a line1 fill).
+                       if (r_is_wr && WRTHRU==0 && !r_uncached) begin
+                          d_we=1; d_wa=flat(hway,cih); d_wd=1'b1;
+                       end else if (!r_is_wr && r_uncached) begin
                           v_we=1; v_wa=flat(hway,cih); v_wd=1'b0;   // NC load: drop line0
                        end
                        phase <= 1; cur_line <= line1; st <= S_LOOK;
+                       end
                     end
                     else if (!r_is_wr && !r_uncached) begin
                        // fast read delivery: the window is live on the bank outputs
@@ -1048,7 +1082,11 @@ module cache #(
                  end else if (WRTHRU!=0 || r_uncached) begin
                     // write-through, OR a Svpbmt NC/IO store -> push to L2 (DMA sees it) and
                     // invalidate the line at S_WTA so nothing dirty/stale lingers (flush-around).
-                    wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
+                    // Strobes: only the store's own bytes -- unless the line was dirty, in
+                    // which case the push doubles as its writeback and every byte is ours.
+                    wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0;
+                    wtm <= dirm[flat(w0_way,w0_idx)] ? {WORDB{1'b1}} : stm0;
+                    wt2 <= 1'b0; st <= S_WTR;
                  end else begin
                     // (a line-crossing store always has store_hi -> the S_SPANW arm above,
                     // so no second dirty write can be needed here)
@@ -1062,16 +1100,24 @@ module cache #(
               st <= S_IDLE;
            end
            S_SPANW: begin                   // spanning store high half written combinationally
-              if (WRTHRU!=0 || r_uncached) begin pc <= 0; st <= S_WTR; end   // wb_* captured at phase 0
+              if (WRTHRU!=0 || r_uncached) begin
+                 // Push slot = line0's OWN slot (w0_*, stable since phase 0). wb_* is
+                 // NOT usable here: a line1 miss with a dirty victim reuses wb_* for
+                 // the victim capture (S_WB), and pushing the slot it then names
+                 // published a WHOLE WRONG LINE under line0's address -- the virtqueue
+                 // descriptor-table clobber behind the Ubuntu disk-root boot wedge.
+                 wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0;
+                 wtm <= dirm[flat(w0_way,w0_idx)] ? {WORDB{1'b1}} : stm0;
+                 wt2 <= 1'b0; st <= S_WTR;
+              end
               else begin
                  d_we=1; d_wa=flat(hway,cih); d_wd=1'b1;   // line0's dirty was staged at S_FIN
                  wr_ack <= 1; st <= S_IDLE;
               end
            end
 
-           // ---- write-through: read the updated full line0, push to L2 ----
-           // (span: only line0 pushed here; line1's WT push is omitted for now -- spanning
-           //  stores in write-through configs are not exercised by the probe D$ tests.)
+           // ---- write-through / NC push: read the updated line (line0, or line1 on
+           // the wt2 pass of a spanning store) out of the banks, push it with wtm ----
            S_WTR: st <= S_WTW;
            S_WTW: begin
               linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
@@ -1079,13 +1125,53 @@ module cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_WTI; end
               else begin pc <= pc + 1'b1; st <= S_WTR; end
            end
-           S_WTI: if (!(WBUF && wbb_infl) && !(HUM && msh_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
+           S_WTI: if (!(WBUF && wbb_infl) && !(HUM && msh_infl)) begin
+              l2_req<=1; l2_we<=1; l2_addr <= wt2 ? line1[PAW-1:OFFB] : line0[PAW-1:OFFB];
+              l2_wdata<=linebuf; l2_wmask<=wtm; st<=S_WTA;
+`ifdef WTCHK
+              // push integrity: a WT/NC store push must carry the store's own bytes
+              if (r_is_wr && !r_cbo) begin
+                 for (wtb=0; wtb<WRB; wtb=wtb+1) if (r_wmask[wtb]) begin
+                    if (!wt2 && ({1'b0,r_off}+wtb) < WORDB
+                        && linebuf[({1'b0,r_off}+wtb)*8 +: 8] !== r_wdata[wtb*8 +: 8]) begin
+                       $display("[WTCHK id=%0d c=%0t] PUSH BYTE MISMATCH a=%h off=%0d+%0d wtm=%h got=%h want=%h span=%b hit=%b wbw=%0d wbi=%0d",
+                                PERF_ID, $time/10, r_addr, r_off, wtb, wtm,
+                                linebuf[({1'b0,r_off}+wtb)*8 +: 8], r_wdata[wtb*8 +: 8],
+                                r_span, hit, wb_way, wb_idx);
+                       for (wtt=0; wtt<wtrn && wtt<64; wtt=wtt+1)
+                          $display("[WTRC %0d] st=%0d ph=%b hit=%b hway=%b cih=%0d vw=%b vi=%0d pc=%0d msh(v=%b r=%b i=%b f=%b) wbb(v=%b i=%b) l2(r=%b a=%b) wb=%0d/%0d",
+                                   wtt, wtrc[wtt][4:0], wtrc[wtt][5], wtrc[wtt][6], wtrc[wtt][7],
+                                   wtrc[wtt][17:8], wtrc[wtt][18], wtrc[wtt][28:19], wtrc[wtt][31:29],
+                                   wtrc[wtt][32], wtrc[wtt][33], wtrc[wtt][34], wtrc[wtt][35],
+                                   wtrc[wtt][36], wtrc[wtt][37], wtrc[wtt][38], wtrc[wtt][39],
+                                   wtrc[wtt][40], wtrc[wtt][50:41]);
+                    end
+                    if (wt2 && ({1'b0,r_off}+wtb) >= WORDB
+                        && linebuf[(({1'b0,r_off}+wtb)-WORDB)*8 +: 8] !== r_wdata[wtb*8 +: 8])
+                       $display("[WTCHK id=%0d c=%0t] PUSH2 BYTE MISMATCH a=%h off=%0d+%0d wtm=%h got=%h want=%h",
+                                PERF_ID, $time/10, r_addr, r_off, wtb, wtm,
+                                linebuf[(({1'b0,r_off}+wtb)-WORDB)*8 +: 8], r_wdata[wtb*8 +: 8]);
+                 end
+              end
+`endif
+           end
            S_WTA: if (l2_ack) begin
               if (r_cbo) begin                                     // Zicbom writeback complete
                  d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
                  if (!r_cbo_keep) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // flush/inval drop
-              end else if (r_uncached) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // NC store: flush-around
-              wr_ack <= 1; st <= S_IDLE;
+                 wr_ack <= 1; st <= S_IDLE;
+              end else begin
+                 if (r_uncached) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // NC store: flush-around (this pass's line)
+                 if (!wt2 && r_span && stm1 != {WRB{1'b0}}) begin
+                    // spanning WT/NC store: line0's bytes just landed -- push line1's
+                    // spill the same way. line1 is still the live lookup (cur_line
+                    // advanced at the span), so hway/cih name it, and its banks hold
+                    // the merged data from S_SPANW.
+                    wb_way <= hway; wb_idx <= cih; pc <= 0;
+                    wtm <= dirm[flat(hway,cih)] ? {WORDB{1'b1}} : {{(WORDB-WRB){1'b0}}, stm1};
+                    wt2 <= 1'b1; st <= S_WTR;
+                 end else begin wr_ack <= 1; st <= S_IDLE; end
+              end
            end
 
            // ---- flush (write-back configs) ----
@@ -1111,7 +1197,7 @@ module cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_FLUSHI; end
               else begin pc <= pc + 1'b1; st <= S_FLUSHR; end
            end
-           S_FLUSHI: if (!(WBUF && wbb_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
+           S_FLUSHI: if (!(WBUF && wbb_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; l2_wmask<={WORDB{1'b1}}; st<=S_FLUSHA; end
            S_FLUSHA: if (l2_ack) begin
               if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush: written back, stays valid+clean
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
@@ -1130,6 +1216,23 @@ module cache #(
          $display("[CDBG %m] t=%0t IDLE->inv (pend=%b)", $time, inv_pend);
 `endif
    end
+
+`ifdef WTCHK
+   // history recorder for the WTCHK dump: one packed record per cycle while a
+   // span-NC/WT store owns the FSM (reset whenever the FSM idles)
+   wire [9:0] wt_cih = 10'd0 | cih;
+   wire [9:0] wt_vi  = 10'd0 | vi;
+   wire [9:0] wt_wbi = 10'd0 | wb_idx;
+   always @(posedge clk) begin
+      if (reset || st == S_IDLE) wtrn <= 0;
+      else if (r_is_wr && (r_uncached || WRTHRU!=0) && r_span && wtrn < 64) begin
+         wtrc[wtrn] <= { 13'd0, wt_wbi, wb_way, l2_req, l2_ack,
+                         wbb_infl, wbb_val, msh_infl, msh_ins, msh_rdy, msh_val,
+                         pc[2:0], wt_vi, vw, wt_cih, hway, hit, phase, st };
+         wtrn <= wtrn + 1;
+      end
+   end
+`endif
 
 `ifdef PERF_TRACE
    // Zihpm hardware cache events (always-on, unlike the PERF_TRACE DPI trace below): one pulse

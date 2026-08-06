@@ -21,8 +21,9 @@ module tb;
 
    l2_arbiter #(.NREQ(NREQ), .AW(AW), .DW(DW)) dut
      (.clk(clk), .reset(reset), .req(req), .we(we), .addr(addr), .wdata(wdata),
+      .wmask({(NREQ*DW/8){1'b1}}),
       .ack(ack), .rdata(rdata), .mem_req(mem_req), .mem_we(mem_we), .mem_addr(mem_addr),
-      .mem_wdata(mem_wdata), .mem_rdata(mem_rdata), .mem_ack(mem_ack));
+      .mem_wmask(), .mem_wdata(mem_wdata), .mem_rdata(mem_rdata), .mem_ack(mem_ack));
 
    // behavioral line memory: 2-cycle latency, pulse-req/ack
    reg [DW-1:0] m [0:(1<<AW)-1];

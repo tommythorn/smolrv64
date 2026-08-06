@@ -13,13 +13,14 @@ module tb;
    wire [511:0] p_rdata; wire p_ack;
    // cdc <-> bridge (clk_m)
    wire         m_req, m_we; wire [57:0] m_addr; wire [511:0] m_wdata;
+   wire [63:0]  m_wmask;
    wire [511:0] m_rdata; wire m_ack;
 
    ddr_line_cdc u_cdc (
       .clk_p(clk_p), .reset_p(reset), .p_req(p_req), .p_we(p_we), .p_addr(p_addr),
-      .p_wdata(p_wdata), .p_rdata(p_rdata), .p_ack(p_ack),
+      .p_wdata(p_wdata), .p_wmask({64{1'b1}}), .p_rdata(p_rdata), .p_ack(p_ack),
       .clk_m(clk_m), .reset_m(reset), .m_req(m_req), .m_we(m_we), .m_addr(m_addr),
-      .m_wdata(m_wdata), .m_rdata(m_rdata), .m_ack(m_ack));
+      .m_wdata(m_wdata), .m_wmask(m_wmask), .m_rdata(m_rdata), .m_ack(m_ack));
 
    // AXI nets
    wire [2:0] awid; wire [30:0] awaddr; wire [7:0] awlen; wire [2:0] awsize; wire [1:0] awburst;
@@ -33,7 +34,7 @@ module tb;
    ddr_line_axi u_br (
       .clk(clk_m), .reset(reset),
       .ddr_req(m_req), .ddr_we(m_we), .ddr_addr(m_addr), .ddr_wdata(m_wdata),
-      .ddr_rdata(m_rdata), .ddr_ack(m_ack),
+      .ddr_wmask(m_wmask), .ddr_rdata(m_rdata), .ddr_ack(m_ack),
       .m_axi_awid(awid), .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
       .m_axi_awburst(awburst), .m_axi_awlock(awlock), .m_axi_awcache(awcache), .m_axi_awprot(awprot),
       .m_axi_awqos(awqos), .m_axi_awvalid(awvalid), .m_axi_awready(awready),

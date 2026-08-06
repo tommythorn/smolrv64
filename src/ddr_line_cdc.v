@@ -21,6 +21,7 @@ module ddr_line_cdc (
    input  wire         p_we,
    input  wire [57:0]  p_addr,
    input  wire [511:0] p_wdata,
+   input  wire [63:0]  p_wmask,
    output reg  [511:0] p_rdata,
    output reg          p_ack,        // 1-cycle pulse in clk_p
 
@@ -31,6 +32,7 @@ module ddr_line_cdc (
    output reg          m_we,
    output reg  [57:0]  m_addr,
    output reg  [511:0] m_wdata,
+   output reg  [63:0]  m_wmask,
    input  wire [511:0] m_rdata,
    input  wire         m_ack
 );
@@ -49,6 +51,7 @@ module ddr_line_cdc (
    (* async_reg="true" *) reg        p_we_m;
    (* async_reg="true" *) reg [57:0] p_addr_m;
    (* async_reg="true" *) reg [511:0] p_wdata_m;
+   (* async_reg="true" *) reg [63:0]  p_wmask_m;
    always @(posedge clk_m) begin
       if (reset_m) begin ms<=M_IDLE; m_req<=1'b0; m_done<=1'b0; end
       else begin
@@ -66,12 +69,12 @@ module ddr_line_cdc (
    end
    always @(posedge clk_m) begin
       req_m0 <= p_busy; req_m1 <= req_m0;
-      p_we_m <= p_we; p_addr_m <= p_addr; p_wdata_m <= p_wdata;
+      p_we_m <= p_we; p_addr_m <= p_addr; p_wdata_m <= p_wdata; p_wmask_m <= p_wmask;
       // Present the (stable) payload to the bridge every cycle -- same value at the
       // same edge as the old M_IDLE latch, but the 512-bit m_wdata capture enable is
       // now constant instead of an FSM_onehot decode (that was the -0.287 ns ui_clk
       // path). The bridge samples these only at the m_req pulse.
-      m_we <= p_we_m; m_addr <= p_addr_m; m_wdata <= p_wdata_m;
+      m_we <= p_we_m; m_addr <= p_addr_m; m_wdata <= p_wdata_m; m_wmask <= p_wmask_m;
    end
 
    // ---------- clk_m -> clk_p: done level ----------

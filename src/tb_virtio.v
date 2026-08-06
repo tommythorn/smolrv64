@@ -23,6 +23,7 @@ module tb;
    wire        commit, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
+   wire [63:0] ddr_wmask;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
    reg          rx_we;  reg [7:0] rx_data;  wire rx_ready;
 
@@ -50,7 +51,7 @@ module tb;
      (.clk(clk), .reset(reset), .commit(commit),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-      .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+      .ddr_wdata(ddr_wdata), .ddr_wmask(ddr_wmask), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(rx_we), .uart_rx_data(rx_data), .uart_rx_ready(rx_ready),
       .uart_tx_ready(1'b1),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
@@ -100,8 +101,14 @@ module tb;
    // would exceed the 63-cycle maximum the hardware never crosses.
    wire       refresh_stall = 1'b0;
    reg d_busy; reg [6:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   reg [63:0] d_wm_q;
    reg axi_infl;   // device-DMA op in flight (declared here for the contention cross-stall)
    reg [63:0] line;
+   // expand a 64-bit byte mask to 512 bits (masked line merge; the guarded
+   // per-byte NBA loop form miscompiles under Verilator 5.050)
+   function [511:0] wmexp; input [63:0] m; integer wb; begin
+      for (wb=0; wb<64; wb=wb+1) wmexp[8*wb +: 8] = {8{m[wb]}};
+   end endfunction
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
@@ -109,7 +116,7 @@ module tb;
       // capture it. Contention/refresh may only DELAY the ack -- dropping the pulse
       // hangs the requester forever (cost me a false "RTL wedge" at c=325M).
       else if (!d_busy && ddr_req) begin
-         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; d_wm_q<=ddr_wmask;
          if (ddr_real) begin
             d_cnt <= ddr_draw(ddr_we);   // measured end-to-end: refresh/bank/DMA already in it
             dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
@@ -119,8 +126,13 @@ module tb;
       else if (d_busy && !refresh_stall) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
-            if (d_we_q) lram[line] <= d_wd_q;
+            if (d_we_q) lram[line] <= (d_wd_q & wmexp(d_wm_q)) | (lram[line] & ~wmexp(d_wm_q));
             else        ddr_rdata  <= lram[line];
+`ifdef DESCWATCH
+            if (d_we_q && dw_armed && line == dw_line)
+               $display("[DESCW-CPU c=%0d wm=%h st=%0d d3w={%h %h}]", $time/10, d_wm_q,
+                        dut.u_dcache.st, d_wd_q[511:448], d_wd_q[447:384]);
+`endif
             ddr_ack<=1'b1; d_busy<=1'b0;
          end else d_cnt <= d_cnt-1;
       end
@@ -206,6 +218,24 @@ module tb;
       .m_axi_rid(ax_rid), .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast),
       .m_axi_rvalid(ax_rvalid), .m_axi_rready(ax_rready));
 
+`ifdef DESCWATCH
+   // Catch ANY writer of the descriptor-table line: compare it every cycle. desc3 =
+   // bytes 48-63 = [511:384] (the measured victim of the NC line clobber).
+   reg [511:0] dw_prev;  reg dw_armed;  initial dw_armed = 1'b0;
+   wire [63:0] dw_line = ((u_vblk.queue_desc >> 6) - LBASE) & (NLINES-1);
+   reg [7:0] dw_chg; integer dwk;
+   always @(posedge clk) if (!reset && u_vblk.queue_configured && u_vblk.queue_desc != 64'd0) begin
+      if (!dw_armed) begin dw_armed <= 1'b1; dw_prev <= lram[dw_line]; end
+      else if (lram[dw_line] !== dw_prev) begin
+         dw_chg = 8'd0;
+         for (dwk=0; dwk<8; dwk=dwk+1) dw_chg[dwk] = (lram[dw_line][dwk*64 +: 64] !== dw_prev[dwk*64 +: 64]);
+         $display("[DESCW c=%0d chg=%b d3={%h %h} was={%h %h}]", $time/10, dw_chg,
+                  lram[dw_line][511:448], lram[dw_line][447:384], dw_prev[511:448], dw_prev[447:384]);
+         dw_prev <= lram[dw_line];
+      end
+   end
+`endif
+
    // ---- behavioral always-ready single-beat AXI slave into lram[] (direct DDR = non-coherent) ----
    // ax_*addr[30:0] is already the DDR byte offset: guest_pa = BASE|off, so pa[30:0] = off = pa-BASE.
    // Each beat is 8 bytes (axsize=3, 8-aligned) so it lands within one 64-byte line: line = off>>6,
@@ -244,6 +274,10 @@ module tb;
             aw_line = ((ax_awaddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
             aw_bp   = (ax_awaddr & 6'h3f) << 3;
             for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) lram[aw_line][aw_bp + ka*8 +: 8] <= ax_wdata[ka*8 +: 8];
+`ifdef DESCWATCH
+            if (dw_armed && aw_line == dw_line)
+               $display("[DESCW-DEV c=%0d a=%h strb=%h d=%h]", $time/10, ax_awaddr, ax_wstrb, ax_wdata);
+`endif
             if (ddr_real) begin axi_infl <= 1'b1; axi_rd_infl <= 1'b0; a_cnt <= {1'b0, ddr_lat[6:1]} + {5'd0, dlfsr[1:0]}; end
             else axi_bvalid <= 1'b1;
          end else if (axi_infl && !axi_rd_infl && a_cnt == 0 && !axi_bvalid) begin

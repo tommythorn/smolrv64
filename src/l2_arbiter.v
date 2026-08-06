@@ -24,6 +24,7 @@ module l2_arbiter #(
    input  wire [NREQ-1:0]    we,         // 1 = write
    input  wire [NREQ*AW-1:0] addr,       // held until ack
    input  wire [NREQ*DW-1:0] wdata,      // held until ack
+   input  wire [NREQ*DW/8-1:0] wmask,    // per-byte write strobes, held until ack
    output reg  [NREQ-1:0]    ack,        // 1-cycle to the granted requester
    output reg  [DW-1:0]      rdata,      // valid with ack (read data)
    // ---- single memory line port ----
@@ -31,6 +32,7 @@ module l2_arbiter #(
    output reg                mem_we,
    output reg  [AW-1:0]      mem_addr,
    output reg  [DW-1:0]      mem_wdata,
+   output reg  [DW/8-1:0]    mem_wmask,
    input  wire [DW-1:0]      mem_rdata,
    input  wire               mem_ack
 );
@@ -63,6 +65,7 @@ module l2_arbiter #(
               mem_we    <= we[sel];
               mem_addr  <= addr [sel*AW +: AW];
               mem_wdata <= wdata[sel*DW +: DW];
+              mem_wmask <= wmask[sel*(DW/8) +: DW/8];
               state     <= S_BUSY;
            end
            S_BUSY: if (mem_ack) begin

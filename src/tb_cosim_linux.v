@@ -24,6 +24,7 @@ module tb;
    wire        commit, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
+   wire [63:0] ddr_wmask;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
    wire        rx_ready;
 
@@ -65,7 +66,7 @@ module tb;
      (.clk(clk), .reset(reset), .commit(commit),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-      .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+      .ddr_wdata(ddr_wdata), .ddr_wmask(ddr_wmask), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready),
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
@@ -115,12 +116,18 @@ module tb;
    // 63-cycle maximum the hardware never crosses.
    wire       refresh_stall = 1'b0;
    reg d_busy; reg [6:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   reg [63:0] d_wm_q;
    reg [63:0] line;
+   // expand a 64-bit byte mask to 512 bits (masked line merge; the guarded
+   // per-byte NBA loop form miscompiles under Verilator 5.050)
+   function [511:0] wmexp; input [63:0] m; integer wb; begin
+      for (wb=0; wb<64; wb=wb+1) wmexp[8*wb +: 8] = {8{m[wb]}};
+   end endfunction
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy<=1'b0;
       else if (!d_busy && ddr_req) begin
-         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         d_busy<=1'b1; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata; d_wm_q<=ddr_wmask;
          if (ddr_real) begin
             d_cnt <= ddr_draw(ddr_we);
             dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
@@ -129,7 +136,7 @@ module tb;
       else if (d_busy && !refresh_stall) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);   // ddr_addr is the 64-byte line index
-            if (d_we_q) lram[line] <= d_wd_q;
+            if (d_we_q) lram[line] <= (d_wd_q & wmexp(d_wm_q)) | (lram[line] & ~wmexp(d_wm_q));
             else        ddr_rdata  <= lram[line];
             ddr_ack<=1'b1; d_busy<=1'b0;
          end else d_cnt <= d_cnt-1;
