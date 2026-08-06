@@ -409,9 +409,18 @@ module virtio_blk #(
                  desc0_len <= dma_rsp_rdata[31:0];
                  desc0_flags <= dma_rsp_rdata[47:32];
                  desc1_index <= dma_rsp_rdata[63:48];
-                 if (dma_rsp_error || (dma_rsp_rdata[47:32] & VRING_DESC_F_NEXT) == 16'd0)
+                 if (dma_rsp_error)
                     state <= S_IDLE;
-                 else
+                 else if ((dma_rsp_rdata[47:32] & VRING_DESC_F_NEXT) == 16'd0) begin
+                    // Malformed chain (a blk request is always 3 descriptors): COMPLETE it
+                    // with an empty used entry so the driver learns, instead of silently
+                    // dropping it -- a silent drop here turned a corrupted descriptor into
+                    // a permanent boot hang. The status byte cannot be written (its
+                    // descriptor was never reached).  $display is sim-only.
+                    $display("[virtio_blk] malformed chain at head desc %0d (no NEXT): completing empty", head_desc);
+                    used_len <= 32'd0;
+                    state <= S_WRITE_USED_ID;
+                 end else
                     state <= S_READ_DESC1_ADDR;
               end
            end
@@ -439,9 +448,14 @@ module virtio_blk #(
                  desc1_len <= dma_rsp_rdata[31:0];
                  desc1_flags <= dma_rsp_rdata[47:32];
                  desc2_index <= dma_rsp_rdata[63:48];
-                 if (dma_rsp_error || (dma_rsp_rdata[47:32] & VRING_DESC_F_NEXT) == 16'd0)
+                 if (dma_rsp_error)
                     state <= S_IDLE;
-                 else
+                 else if ((dma_rsp_rdata[47:32] & VRING_DESC_F_NEXT) == 16'd0) begin
+                    // Malformed chain: complete-with-error, same as the desc0 case above.
+                    $display("[virtio_blk] malformed chain at desc %0d (no NEXT): completing empty", desc1_index);
+                    used_len <= 32'd0;
+                    state <= S_WRITE_USED_ID;
+                 end else
                     state <= S_READ_DESC2_ADDR;
               end
            end
