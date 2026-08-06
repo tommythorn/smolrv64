@@ -1,10 +1,30 @@
 # Handoff — NC-store line clobber → Ubuntu disk-root boot wedge
 
-**Status 2026-08-06: root-caused, NOT fixed.** Diagnosis is complete and every link
-below was measured, not inferred. The fix touches the L2 write interface and was
-deliberately left for a fresh session.
+**Status 2026-08-06 (evening): FIXED — root cause was one level deeper than below.**
+The full-line push was the *blast radius*, not the trigger. The trigger, caught by a
+push-integrity checker (`-DWTCHK` in cache.v) plus an FSM history ring during the
+boot repro: a **spanning NC store whose line1 fill evicts a DIRTY victim**. The
+victim capture (`S_WB`) reuses `wb_way/wb_idx` — the same registers that held the
+line0 push slot — so `S_WTR` then streamed the *victim's* slot (which by then held
+the freshly installed line1) and `S_WTI` pushed that whole wrong line under line0's
+address. The virtqueue desc3.flags store (2 bytes at line offset 60) takes the span
+path via the width-based `r_span` test, which is why the descriptor table was the
+recurring victim: desc3 → zeros = desc4-7's (zero) line content.
 
-HEAD = `9ce7d11`. Related memory: `project_ubuntu_boot_wedge_2026_08`.
+Fixes, all in `cache.v` (+`tb_cache.v` regression that reproduces the exact scenario):
+1. `S_SPANW` re-derives the push slot from `w0_*` (stable since phase 0) — never `wb_*`.
+2. Span stores serialize against the MSHR at phase 0 (an install preempt after the
+   phase-0 merge could reallocate line0's slot the same way).
+3. The redundant `S_FIN` low-chunk rewrite for spans is gone (it landed in whatever
+   the slot holds after the line1 fill).
+Plus, defense in depth: the whole L2/DDR write path now carries per-byte strobes
+(`l2_wmask` → `l2_arbiter` → `ddr_wmask` → CDC → AXI WSTRB → all TB DRAM models), so
+an NC/WT store push writes ONLY its own bytes (full mask only when the line was
+dirty = combined writeback). And `virtio_blk.v` completes an unparseable chain with
+an empty used entry instead of silently dropping it.
+
+Previous HEAD = `9ce7d11`. Related memory: `project_ubuntu_boot_wedge_2026_08`.
+The original (superseded) analysis follows for the record.
 
 ---
 
@@ -121,6 +141,10 @@ All `ifdef`-gated, none active by default. Keep or drop as you prefer:
    both `console` and `kmsg` targets). Use baseline bootargs.
 5. `dmem_wen` is held across cycles — raw store counts in traces are inflated;
    collapse duplicates before drawing conclusions.
+6. Verilator 5.050 MISCOMPILES `for (i) if (mask[i]) mem[base+i] <= x;` (guarded NBA
+   to a memory in a loop) in some blocks — it corrupted an UNRELATED read path in
+   tb_vl, deterministically, with an all-ones mask. Write TB masked memory updates
+   as `mem[i] <= mask[i] ? new : mem[i]` or a full-word and/or merge instead.
 
 ## Also open (unrelated)
 
