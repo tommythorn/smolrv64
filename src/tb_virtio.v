@@ -127,6 +127,31 @@ module tb;
    end
 
    // ==================== virtio-blk subsystem ====================
+`ifdef NOTIFYCHECK
+   // Did virtio-blk DROP a queue notification?
+   //
+   // The device goes S_IDLE only when it believes there is nothing left to do. The driver's
+   // position is avail.idx, in DDR at queue_driver+2; the device's consumed position is
+   // last_avail_idx. If the driver is AHEAD while the device sits idle, the device owns a
+   // request it will never process -- the driver waits forever and the kernel idles, which
+   // is exactly the observed wedge. DDR and the device's own register are the truth here.
+   wire [63:0] nc_qd    = u_vblk.queue_driver;
+   wire [63:0] nc_line  = nc_qd >> 6;
+   wire [63:0] nc_word  = lram[nc_line - LBASE][{nc_qd[5:3], 6'd0} +: 64];
+   wire [15:0] nc_avail = nc_word[31:16];          // avail.idx sits at queue_driver+2
+   reg  [31:0] nc_stuck;
+   initial nc_stuck = 0;
+   always @(posedge clk) if (!reset) begin
+      if (u_vblk.state == 6'd0 && u_vblk.queue_configured
+          && nc_avail !== u_vblk.last_avail_idx) begin
+         nc_stuck <= nc_stuck + 1;
+         if (nc_stuck == 32'd200000)
+            $display("[NOTIFY DROPPED c=%0t device IDLE for 200k cycles with work pending: driver avail.idx=%0d, device last_avail_idx=%0d (queue_driver=%h notify_pending=%b)]",
+                     $time/10, nc_avail, u_vblk.last_avail_idx, nc_qd, u_vblk.notify_pending);
+      end else nc_stuck <= 0;
+   end
+`endif
+
    // control-plane registers (virtio_mmio) <-> backend DMA/SD engine (virtio_blk)
    wire        v_notify_pulse;   wire [31:0] v_notify_value;
    wire        v_used_irq;       wire [31:0] v_capacity;

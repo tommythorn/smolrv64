@@ -98,6 +98,37 @@ module plic #(parameter NSRC = 64)
       end
    end
 
+`ifdef PLIC_TRACE
+   // Claim/complete pairing trace + the LOST-INTERRUPT detector.
+   //
+   // The gateway is `n_pending = pending | (source_level & ~in_service)`. So a source
+   // left in_service -- claimed but never completed, or completed with a different id --
+   // can NEVER re-pend: every later interrupt from it is dropped on the floor and the
+   // waiter sleeps forever while the kernel idles. That is the shape of the wedge, so
+   // detect it directly rather than inferring it from the console.
+   always @(posedge clk) if (!reset) begin
+      if (do_claim)
+         $display("[PLIC c=%0t CLAIM irq=%0d pend=%h insvc=%h lvl=%h]",
+                  $time/10, best_irq, pending, in_service, source_level);
+      if (we && is_claim)
+         $display("[PLIC c=%0t COMPL irq=%0d pend=%h insvc=%h lvl=%h]%s",
+                  $time/10, wdata[5:0], pending, in_service, source_level,
+                  (wdata[5:0] == 6'd0) ? "  <-- id 0: clears NOTHING" : "");
+   end
+
+   integer si;
+   reg [31:0] stuck [0:63];
+   initial for (si = 0; si < 64; si = si + 1) stuck[si] = 0;
+   always @(posedge clk) if (!reset)
+      for (si = 1; si < 64; si = si + 1)
+         if (in_service[si] & source_level[si]) begin
+            stuck[si] <= stuck[si] + 1;
+            if (stuck[si] == 32'd2000000)
+               $display("[PLIC LOST c=%0t irq=%0d asserting its level while held in_service for 2M cycles -- it can no longer re-pend; every further interrupt from it is dropped (insvc=%h lvl=%h en=%h)]",
+                        $time/10, si, in_service, source_level, enabled);
+         end else stuck[si] <= 0;
+`endif
+
    // registered read (valid the cycle after `re`); claim returns best_irq
    always @(posedge clk) begin
       if (re) begin
