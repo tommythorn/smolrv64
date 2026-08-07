@@ -979,15 +979,38 @@ module rk_xcku5p(
    wire        eth_rx_frame_ack;
    wire [15:0] eth_rx_drop_count;
 
-   // Reset for the gmii_rx_clk domain: synchronize the CPU reset in.  If the
-   // PHY isn't supplying rxc (no link) the domain simply stays in reset.
+   // RX-capture MMCM supervision: MMCME4 does not reliably relock after its
+   // input clock (the PHY's rxc) is interrupted -- link renegotiation -- without
+   // a reset pulse.  If LOCKED stays low for ~1.5ms, pulse RST for 16 ui_clks
+   // and retry periodically until it locks.
+   wire eth_mmcm_locked;
+   reg  [19:0] eth_mmcm_wd = 20'd0;
+   reg         eth_mmcm_rst = 1'b0;
+   (* async_reg = "true" *) reg [1:0] eth_lock_sync = 2'b00;
+   always @(posedge ui_clk) begin
+      eth_lock_sync <= {eth_lock_sync[0], eth_mmcm_locked};
+      if (eth_lock_sync[1]) begin
+         eth_mmcm_wd  <= 20'd0;
+         eth_mmcm_rst <= 1'b0;
+      end else begin
+         eth_mmcm_wd  <= eth_mmcm_wd + 20'd1;
+         eth_mmcm_rst <= &eth_mmcm_wd[19:4];   // top 16 counts of each lap
+      end
+   end
+
+   // Reset for the gmii_rx_clk domain: synchronize the CPU reset in, and hold
+   // the domain in reset until the capture MMCM locks.  If the PHY isn't
+   // supplying rxc (no link) the domain simply stays in reset.
+   wire gmii_arst = ui_cpu_reset | ~eth_mmcm_locked;
    (* async_reg = "true" *) reg [1:0] gmii_rst_sync = 2'b11;
-   always @(posedge gmii_rx_clk or posedge ui_cpu_reset)
-      if (ui_cpu_reset) gmii_rst_sync <= 2'b11;
-      else              gmii_rst_sync <= {gmii_rst_sync[0], 1'b0};
+   always @(posedge gmii_rx_clk or posedge gmii_arst)
+      if (gmii_arst) gmii_rst_sync <= 2'b11;
+      else           gmii_rst_sync <= {gmii_rst_sync[0], 1'b0};
    wire gmii_rst = gmii_rst_sync[1];
 
    gmii_to_rgmii gmii_to_rgmii_inst(
+      .mmcm_rst     (eth_mmcm_rst),
+      .mmcm_locked  (eth_mmcm_locked),
       .gmii_rx_clk  (gmii_rx_clk),
       .gmii_rx_dv   (gmii_rx_dv),
       .gmii_rxd     (gmii_rxd),

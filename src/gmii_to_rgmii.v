@@ -12,6 +12,9 @@ module gmii_to_rgmii(
     output wire        gmii_tx_clk,
     input  wire        gmii_tx_en,
     input  wire [7:0]  gmii_txd,
+    // RX-capture MMCM supervision (see rgmii_rx)
+    input  wire        mmcm_rst,
+    output wire        mmcm_locked,
     // RGMII (to/from the PHY pins)
     input  wire        rgmii_rxc,
     input  wire        rgmii_rx_ctl,
@@ -28,6 +31,8 @@ module gmii_to_rgmii(
       .rgmii_rxc    (rgmii_rxc),
       .rgmii_rx_ctl (rgmii_rx_ctl),
       .rgmii_rxd    (rgmii_rxd),
+      .mmcm_rst     (mmcm_rst),
+      .mmcm_locked  (mmcm_locked),
       .gmii_rx_clk  (gmii_rx_clk),
       .gmii_rx_dv   (gmii_rx_dv),
       .gmii_rxd     (gmii_rxd)

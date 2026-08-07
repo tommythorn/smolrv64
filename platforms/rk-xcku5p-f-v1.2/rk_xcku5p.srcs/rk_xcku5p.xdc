@@ -168,11 +168,21 @@ set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 # RGMII to the RTL8211F-CG Ethernet PHY. Pins copied from the board's
 # 12_UDP_TEST design (LVCMOS18). No MDIO/MDC or PHY-reset pins — the PHY uses
 # strapping defaults, matching the reference design. The MAC datapath runs in
-# the recovered RX clock (eth_rxc, 125 MHz -> BUFG gmii_rx_clk); the PHY adds
-# the RGMII RX/TX delays internally (strapping), so no IDELAY here. eth_rxc is
+# the recovered RX clock (eth_rxc, 125 MHz), deskewed + phase-centered by the
+# MMCM in rgmii_rx (see there for why: unconstrained BUFG capture had ~0.2ns
+# of eye margin and broke RX per-build). eth_rxc and its generated clocks are
 # declared async to the DDR/core clocks in cvfpu_timing.tcl (eth_tx_engine
 # crosses with 2-FF synchronizers + an async-read frame RAM).
 create_clock -period 8.000 -name eth_rxc [get_ports eth_rxc]
+
+# RGMII-ID RX inputs: the PHY centers rxc in each data eye; RGMII v2.0 TskewR
+# guarantees the data valid >=1.2ns before and after the pin clock edge.
+# Standard center-aligned DDR source-synchronous template: data for a capture
+# edge is launched by the PREVIOUS (opposite) edge 4ns earlier.
+set_input_delay -clock eth_rxc -max 2.800 [get_ports {eth_rxd[*] eth_rx_ctl}]
+set_input_delay -clock eth_rxc -min 1.200 [get_ports {eth_rxd[*] eth_rx_ctl}]
+set_input_delay -clock eth_rxc -clock_fall -max 2.800 -add_delay [get_ports {eth_rxd[*] eth_rx_ctl}]
+set_input_delay -clock eth_rxc -clock_fall -min 1.200 -add_delay [get_ports {eth_rxd[*] eth_rx_ctl}]
 set_property IOSTANDARD LVCMOS18 [get_ports eth_rxc]
 set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[3]}]
 set_property IOSTANDARD LVCMOS18 [get_ports {eth_rxd[2]}]
