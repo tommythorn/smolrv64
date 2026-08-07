@@ -142,6 +142,68 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Test 6: read CRC error is detected and retried (CMD17) -----------
+    if (dut->ready) {
+        std::array<uint8_t,512> pat;
+        for (int i = 0; i < 512; i++) pat[i] = (uint8_t)(0x11 + i*7);
+        card.store[5555] = pat;
+        card.corrupt_reads = 1;   // first attempt returns a bit-flipped block
+        if (!run_request(0, 5555, 1, 5000000)) { printf("FAIL: crc-retry read did not complete\n"); failures++; }
+        else {
+            int bad = 0;
+            for (int w = 0; w < 64; w++) {
+                dut->buf_addr = w; dut->eval();
+                uint64_t word = dut->buf_rdata;
+                for (int k = 0; k < 8; k++)
+                    if ((uint8_t)(word >> (k*8)) != pat[w*8+k]) bad++;
+            }
+            if (bad) { printf("FAIL: crc-retry read data mismatch (%d bytes)\n", bad); failures++; }
+            else if (!(dut->dbg_io & (1 << 10))) { printf("FAIL: dbg crc_err not set\n"); failures++; }
+            else if (!(dut->dbg_io & (1 << 9)))  { printf("FAIL: dbg retried not set\n"); failures++; }
+            else printf("ok: read CRC error detected, retried, data clean\n");
+        }
+    }
+
+    // ---- Test 7: persistent read corruption errors out (no silent data) ---
+    if (dut->ready) {
+        card.corrupt_reads = 100;  // more than the 1+7 attempts
+        if (run_request(0, 5555, 1, 50000000)) { printf("FAIL: persistently corrupt read reported success\n"); failures++; }
+        else printf("ok: persistent CRC corruption -> error after retries\n");
+        card.corrupt_reads = 0;
+    }
+
+    // ---- Test 8: mid-multi-block CRC error is retried invisibly -----------
+    if (dut->ready) {
+        std::array<uint8_t,512> p[3];
+        for (int s = 0; s < 3; s++) {
+            for (int i = 0; i < 512; i++) p[s][i] = (uint8_t)(0xC3 - i*11 + s*29);
+            card.store[6000 + s] = p[s];
+        }
+        card.corrupt_reads = 1;   // hits the first streamed block of the run
+        int bad = 0;
+        for (int s = 0; s < 3; s++) {
+            if (!run_request(0, 6000 + s, s == 2, 50000000)) { printf("FAIL: mb crc-retry blk %d\n", s); failures++; bad = -1; break; }
+            for (int w = 0; w < 64; w++) {
+                dut->buf_addr = w; dut->eval();
+                uint64_t word = dut->buf_rdata;
+                for (int k = 0; k < 8; k++)
+                    if ((uint8_t)(word >> (k*8)) != p[s][w*8+k]) bad++;
+            }
+        }
+        if (bad > 0) { printf("FAIL: mb crc-retry data mismatch (%d bytes)\n", bad); failures++; }
+        else if (bad == 0) printf("ok: mid-multi-block CRC error retried, run completes clean\n");
+    }
+
+    // ---- Test 9: persistent corruption in a multi-block run errors out ----
+    if (dut->ready) {
+        card.corrupt_reads = 100;
+        if (run_request(0, 6000, 0, 50000000)) { printf("FAIL: persistently corrupt mb read reported success\n"); failures++; }
+        else printf("ok: persistent mb corruption -> error after retries\n");
+        card.corrupt_reads = 0;
+        if (!run_request(0, 6000, 1, 5000000)) { printf("FAIL: clean read after mb error failed\n"); failures++; }
+        else printf("ok: clean read after mb error\n");
+    }
+
     printf("sd_spi_host: %s (%d failure(s))\n", failures ? "FAIL" : "PASS", failures);
     delete dut;
     return failures ? 1 : 0;

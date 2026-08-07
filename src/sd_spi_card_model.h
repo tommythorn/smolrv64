@@ -72,10 +72,24 @@ struct SpiSdCard {
     void reset_transfer() { bitpos = 0; in_byte = 0; out_byte = 0xff; miso = 1;
                             st = IDLE; cmd_pos = 0; txq.clear(); mread_active = false; }
 
+    // CRC16-CCITT (poly 0x1021, init 0) — a real card always sends it on read data.
+    static uint16_t crc16(const uint8_t* d, int n) {
+        uint16_t c = 0;
+        for (int i = 0; i < n; i++) {
+            c ^= (uint16_t)d[i] << 8;
+            for (int b = 0; b < 8; b++) c = (c & 0x8000) ? (c << 1) ^ 0x1021 : (c << 1);
+        }
+        return c;
+    }
+
+    int corrupt_reads = 0;   // test hook: bit-flip a data byte in this many upcoming read blocks
+
     void push_block(const std::array<uint8_t,512>& d) {
         txq.push_back(0xFE);
         for (int i = 0; i < 512; i++) txq.push_back(d[i]);
-        txq.push_back(0xff); txq.push_back(0xff);   // 2 CRC bytes
+        uint16_t c = crc16(d.data(), 512);          // CRC of the clean data...
+        if (corrupt_reads > 0) { corrupt_reads--; txq[txq.size() - 256] ^= 0x10; }  // ...then flip a wire bit
+        txq.push_back(c >> 8); txq.push_back(c & 0xff);
     }
 
     void process_command() {

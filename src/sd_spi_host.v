@@ -49,7 +49,7 @@ module sd_spi_host #(
     output reg         cs_n,
 
     output wire [ 6:0] dbg_state,   // SPI FSM state, for an MMIO debug overlay
-    output wire [15:0] dbg_io       // {7'b0, rd_token_timeout, last_io_R1}
+    output wire [15:0] dbg_io       // {5'b0, rd_crc_err, retried, rd_token_timeout, last_io_R1}
 );
    // ---------------------------------------------------------------------
    // 512-byte block buffer: 64 x 64-bit LE words, sync write / async read.
@@ -189,7 +189,6 @@ module sd_spi_host #(
    reg        op_write;
    reg [31:0] op_sector;
    reg        op_last;    // this block is the last (or only) of the run
-   reg        op_multi;   // run uses CMD18/25 multi-block (disables single-block retry)
    reg        cmd_open;   // a multi-block command is open (CS held, card streaming)
    reg        io_ok;
 
@@ -203,10 +202,25 @@ module sd_spi_host #(
    reg [7:0] dbg_r1;       // R1 of the last block command
    reg       dbg_rd_to;    // sticky: a read-token poll timed out
    reg       dbg_retried;  // sticky: a read was retried after a failure
+   reg       dbg_crc_err;  // sticky: a read block failed the data CRC16
    reg [2:0] io_retry;     // remaining read retries
    assign busy = (state != S_READY);
    assign dbg_state = state;
-   assign dbg_io = {6'd0, dbg_retried, dbg_rd_to, dbg_r1};
+   assign dbg_io = {5'd0, dbg_crc_err, dbg_retried, dbg_rd_to, dbg_r1};
+
+   // CRC16-CCITT (x^16+x^12+x^5+1, init 0) over read data — the card always
+   // transmits it after each block even with SPI CRC checking off.
+   reg [15:0] rd_crc;
+   function [15:0] crc16_byte(input [15:0] c, input [7:0] d);
+      integer k;
+      reg [15:0] x;
+      begin
+         x = c ^ {d, 8'd0};
+         for (k = 0; k < 8; k = k + 1)
+            x = {x[14:0], 1'b0} ^ (x[15] ? 16'h1021 : 16'h0000);
+         crc16_byte = x;
+      end
+   endfunction
 
    integer i;
    always @(posedge clock) begin
@@ -218,7 +232,7 @@ module sd_spi_host #(
       if (reset) begin
          state <= S_RESET; ready <= 1'b0; cs_n <= 1'b1;
          capacity_sectors <= 32'd0; v2_card <= 1'b0; to_cnt <= 28'd0;
-         cmd_open <= 1'b0; op_multi <= 1'b0;
+         cmd_open <= 1'b0;
          // dbg_r1/dbg_rd_to/dbg_retried deliberately NOT reset here, so the last
          // read's failure mode survives a key[1] soft-reset and can be read from
          // the monitor at 0x10002F08 after a boot failure.
@@ -345,7 +359,6 @@ module sd_spi_host #(
               c_arg <= ocr[30] ? op_sector : (op_sector << 9);  // CCS: block vs byte addr
               c_crc<=8'h01; c_extra<=3'd0; c_keepcs<=1'b1;
               c_ret<=S_IO_CMDD; state<=S_CMD_BUILD;
-              op_multi <= !op_last;
               if (!op_last) cmd_open <= 1'b1;
            end
         end
@@ -365,14 +378,15 @@ module sd_spi_host #(
            end
         end
 
-        // ---- read: wait token 0xFE, read 512 bytes, 2 CRC ----
+        // ---- read: wait token 0xFE, read 512 bytes, check 2 CRC bytes ----
         S_RD_TOK: begin
-           if (bx_rx == 8'hFE) begin byte_idx<=9'd0; cur_word<=64'd0; bx_tx<=8'hff; bx_ret<=S_RD_DATA; state<=S_BX; end
-           else if (to_cnt==28'd0) begin io_ok<=1'b0; dbg_rd_to<=1'b1; state<=S_IO_TAIL; end
+           if (bx_rx == 8'hFE) begin byte_idx<=9'd0; cur_word<=64'd0; rd_crc<=16'd0; bx_tx<=8'hff; bx_ret<=S_RD_DATA; state<=S_BX; end
+           else if (to_cnt==28'd0) begin io_ok<=1'b0; dbg_rd_to<=1'b1; state<=S_IO_BLK_END; end
            else begin bx_tx<=8'hff; bx_ret<=S_RD_TOK; state<=S_BX; end
         end
         S_RD_DATA: begin
            cur_word[{bb_lane, 3'b000} +: 8] <= bx_rx;
+           rd_crc <= crc16_byte(rd_crc, bx_rx);
            if (bb_lane == 3'd7) begin
               eng_we<=1'b1; eng_addr<=bb_word;
               eng_wdata <= {bx_rx, cur_word[55:0]};        // complete the word
@@ -381,6 +395,12 @@ module sd_spi_host #(
            else begin byte_idx<=byte_idx+9'd1; bx_tx<=8'hff; bx_ret<=S_RD_DATA; state<=S_BX; end
         end
         S_RD_CRC: begin
+           // hi byte arrives with poll_cnt==1, lo with 0; a mismatch means a bit
+           // flipped somewhere on the wire — fail the block so it gets retried
+           // instead of letting the corruption pass as good data
+           if (bx_rx != (poll_cnt==16'd1 ? rd_crc[15:8] : rd_crc[7:0])) begin
+              io_ok <= 1'b0; dbg_crc_err <= 1'b1;
+           end
            if (poll_cnt==16'd0) state<=S_IO_BLK_END;       // both CRC bytes consumed
            else begin poll_cnt<=poll_cnt-16'd1; bx_tx<=8'hff; bx_ret<=S_RD_CRC; state<=S_BX; end
         end
@@ -449,9 +469,12 @@ module sd_spi_host #(
 
         S_IO_TAIL: begin cs_n<=1'b1; bx_tx<=8'hff; bx_ret<=S_IO_IDLE; state<=S_BX; end
         S_IO_IDLE: begin
-           if (!io_ok && !op_write && !op_multi && io_retry != 3'd0) begin
+           if (!io_ok && !op_write && io_retry != 3'd0) begin
+              // re-read op_sector from scratch; a failed multi-block run was
+              // CMD12-closed above, so this reopens CMD18 at the failed block
+              // and the caller's run continues as if nothing happened
               io_retry <= io_retry - 3'd1; io_ok <= 1'b1;
-              dbg_retried <= 1'b1; state <= S_IO_CMD;   // retry a lone-block read
+              dbg_retried <= 1'b1; state <= S_IO_CMD;
            end else
               state <= io_ok ? S_COMPLETE : S_ERROR;
         end
