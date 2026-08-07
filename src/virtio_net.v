@@ -189,6 +189,15 @@ module virtio_net #(
    reg [31:0] rx_deliver_count;
    reg [31:0] rx_nobuf_count;
 
+   // VRING_AVAIL_F_NO_INTERRUPT (avail ring flags bit 0), captured on each
+   // avail-word read.  NAPI sets it on the first IRQ and polls; a device that
+   // ignores it interrupts per frame, which at 67 MHz under an NFS retransmit
+   // storm is an IRQ livelock that freezes the whole system (console + ping
+   // dead).  Suppression is a hint, so a one-frame-stale value is fine — the
+   // driver re-checks the ring after re-enabling.
+   reg        tx_no_irq;
+   reg        rx_no_irq;
+
    assign debug_rx_deliver_count = rx_deliver_count;
    assign debug_rx_nobuf_count   = rx_nobuf_count;
 
@@ -389,6 +398,8 @@ module virtio_net #(
          rx_rd_addr <= 11'd0;
          rx_deliver_count <= 32'd0;
          rx_nobuf_count <= 32'd0;
+         tx_no_irq <= 1'b0;
+         rx_no_irq <= 1'b0;
          last_avail_idx <= 16'd0;
          avail_idx <= 16'd0;
          used_idx <= 16'd0;
@@ -438,6 +449,7 @@ module virtio_net #(
                  last_avail_word <= dma_rsp_rdata;
                  if (dma_rsp_error)
                     dma_error_count <= dma_error_count + 32'd1;
+                 tx_no_irq <= |(get16(dma_rsp_rdata, tx_queue_driver[2:0] & 3'h7) & 16'h0001);
                  avail_idx <= get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7);
                  if (dma_rsp_error)
                     state <= S_IDLE;
@@ -632,9 +644,9 @@ module virtio_net #(
            S_COMPLETE: begin
               used_idx <= used_idx + 16'd1;
               last_avail_idx <= next_avail_idx;
-              used_buffer_interrupt <= 1'b1;
+              used_buffer_interrupt <= ~tx_no_irq;
               complete_count <= complete_count + 32'd1;
-              irq_count <= irq_count + 32'd1;
+              if (!tx_no_irq) irq_count <= irq_count + 32'd1;
               if (next_avail_idx != avail_idx)
                  state <= S_READ_RING;
               else if (notify_pending) begin
@@ -655,6 +667,7 @@ module virtio_net #(
            S_RX_WAIT_AVAIL: begin
               if (dma_rsp_valid) begin
                  if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 rx_no_irq    <= |(get16(dma_rsp_rdata, rx_queue_driver[2:0] & 3'h7) & 16'h0001);
                  rx_avail_idx <= get16(dma_rsp_rdata, (rx_queue_driver[2:0] + 3'd2) & 3'h7);
                  if (dma_rsp_error ||
                      get16(dma_rsp_rdata, (rx_queue_driver[2:0] + 3'd2) & 3'h7) == rx_last_avail_idx)
@@ -762,8 +775,8 @@ module virtio_net #(
            S_RX_COMPLETE: begin
               rx_used_idx       <= rx_used_idx + 16'd1;
               rx_last_avail_idx <= rx_next_avail_idx;
-              used_buffer_interrupt <= 1'b1;
-              irq_count         <= irq_count + 32'd1;
+              used_buffer_interrupt <= ~rx_no_irq;
+              if (!rx_no_irq) irq_count <= irq_count + 32'd1;
               rx_deliver_count  <= rx_deliver_count + 32'd1;
               rx_frame_ack      <= 1'b1;               // release engine buffer
               state <= S_IDLE;
