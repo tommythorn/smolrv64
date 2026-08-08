@@ -336,13 +336,22 @@ module csr_file
    end
 
    // ---- CSR rmw new-value from funct3 ----
+   // MIP/SIP read as (mip | hw_ip): the live device lines are OR'd into the
+   // read value. A csrrs/csrrc based on that READ latches a transient device
+   // bit (SEIP while a blk IRQ is in flight, STIP from Sstc) into the stored
+   // register -- a stale SEIP then storms spurious external interrupts (PLIC
+   // claim reads 0, kernel re-traps forever; the perf-stat board wedge, since
+   // OpenSBI's SBI PMU path RMWs mip under IRQ load). Per the priv spec,
+   // set/clear on aliased bits must operate on the software-writable bit
+   // only, so the RMW base for MIP/SIP is the RAW register; reads keep the OR.
+   wire [63:0] rmw_base = (upd_addr == MIP || upd_addr == SIP) ? mip : rdata;
    reg [63:0] newv;
    always @* begin
       case (upd_func[1:0])
-        2'b01:   newv = upd_src;             // csrrw/wi
-        2'b10:   newv = rdata | upd_src;     // csrrs/si
-        2'b11:   newv = rdata & ~upd_src;    // csrrc/ci
-        default: newv = rdata;
+        2'b01:   newv = upd_src;                // csrrw/wi
+        2'b10:   newv = rmw_base | upd_src;     // csrrs/si
+        2'b11:   newv = rmw_base & ~upd_src;    // csrrc/ci
+        default: newv = rmw_base;
       endcase
    end
 

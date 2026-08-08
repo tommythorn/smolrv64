@@ -26,7 +26,6 @@ static int perf_open(int pid, unsigned type, unsigned long long config, int grou
    a.type = type;
    a.config = config;
    a.disabled = (group == -1);
-   a.exclude_hv = 1;
    int fd = syscall(__NR_perf_event_open, &a, pid, -1, group, 0);
    if (fd < 0) { perror("perf_event_open"); exit(1); }
    return fd;
@@ -52,19 +51,24 @@ int main(int argc, char **argv)
    }
 
    close(gate[0]);
+   // No perf group: the riscv SBI-PMU driver rejects grouped counters
+   // (EINVAL) since each maps to an independent SBI counter. Two separate
+   // events, enabled back-to-back, skew ~us -- fine at these run lengths.
    int fd_cyc = perf_open(pid, PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, -1);
-   int fd_ins = perf_open(pid, PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, fd_cyc);
+   int fd_ins = perf_open(pid, PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, -1);
 
    struct timeval t0, t1;
    gettimeofday(&t0, NULL);
-   ioctl(fd_cyc, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+   ioctl(fd_cyc, PERF_EVENT_IOC_ENABLE, 0);
+   ioctl(fd_ins, PERF_EVENT_IOC_ENABLE, 0);
    if (write(gate[1], "g", 1) != 1) { perror("write"); return 1; }
    close(gate[1]);
 
    int st;
    waitpid(pid, &st, 0);
    gettimeofday(&t1, NULL);
-   ioctl(fd_cyc, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+   ioctl(fd_cyc, PERF_EVENT_IOC_DISABLE, 0);
+   ioctl(fd_ins, PERF_EVENT_IOC_DISABLE, 0);
 
    long long cyc = 0, ins = 0;
    if (read(fd_cyc, &cyc, 8) != 8 || read(fd_ins, &ins, 8) != 8) {
