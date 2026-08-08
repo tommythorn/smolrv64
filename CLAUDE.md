@@ -35,6 +35,37 @@
 - Only change what was explicitly requested - e.g., if user asks to
   tune dTLB, do not also modify iTLB.
 
+## RTL defect rules
+
+`docs/rtl-rules.md` is the full rule set, derived from the project's own
+defect record with the commits that paid for each rule. Read it before
+touching the core, cache, LSU or MMU. The non-negotiable ones:
+
+- Invariant checks are ALWAYS ON (`$fatal`/`$display`, no `` `ifdef ``).
+  Only flood-volume tracers and stats are gated. Every FSM `case` gets a
+  `default` that asserts. "This cannot happen" is an assertion or it is
+  deleted.
+
+- Anything the design currently drops silently must assert instead —
+  unmatched response, request accepted while busy, out-of-range index.
+  Detection latency, not defect rate, is what costs days here.
+
+- A response is matched by a tag the requester allocated, not by address
+  and not by "only one in flight". A slot name (`{way,idx}`, freelist or
+  queue index) captured now and dereferenced later carries its tag, or its
+  slot is pinned against reallocation.
+
+- A precondition that applies to N units is computed once and applied at
+  one site. A new functional unit routes through the existing gate; never
+  add a parallel path to the writeback or redirect port.
+
+- Widths: no wide expression truncated at an array bracket, no width
+  mismatch across a hierarchy boundary. Lint waivers are file-scoped in
+  `verilator.vlt`, never global `-Wno-` flags.
+
+- Fix the generator, not the instance. If a bug is the Nth of a class, the
+  deliverable is the rule that makes N+1 impossible.
+
 ## Debugging Approach
 
 - Always identify the root cause before running builds, simulations,
