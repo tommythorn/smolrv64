@@ -16,6 +16,16 @@
   failure there). The old sequential core and its 240-test harness were
   retired when the OoO core migrated from probe/ into src/ (2026-08-03).
 
+- Also run `src/lint.sh` before committing RTL — success is `lint: clean`.
+  It gates the load-bearing Verilator rules (width truncation, incomplete
+  case, latch, comb loop, undriven, duplicate module). Waivers go in
+  `src/verilator.vlt` and must name a file; never add a global `-Wno-`.
+
+- `src/run-vl-tests.sh` builds the heavy invariant checkers in by default
+  (`CHECKS=-DFL_ASSERT -DSEQROB`, under 2% cost). Pass `CHECKS=` to drop
+  them for a long soak. Known off-default state: `PROBE_IW=1` has 5
+  pre-existing failures; IW=2 and IW=4 are clean.
+
 ## Code Change Conventions
 
 - Always think really hard about simplifying the problem and the
