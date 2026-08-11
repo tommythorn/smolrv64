@@ -6,8 +6,11 @@
 # as acceptable. rv64si-p-dirty is the one long-standing known CACHE=1 failure.
 1      1      0      0
 1      1      1      1      # rv64si-p-dirty (long-standing, all CACHE=1 points)
-1      2      0      5      # IW=1 breaks with coarse checkpoints; clean at CKMAX=1
-1      2      1      86     # ...and far worse with the cache. CKMAX=2 x IW=1 is broken.
+1      2      0      5      # commit wedge, NOT wrong values. Repro: rv64uf-p-fcmp, cycle ~132.
+1      2      1      86     #   A load rolled back and RE-dispatched into the same, just-zeroed
+                            #   checkpoint index issues and never decrements it -> ring fills.
+                            #   Missing-dec mirror of the commit_ctl.v:214 reopen leak, so the
+                            #   underflow guard cannot see it. Not CKMAX>IW: IW=2 x CKMAX=3 clean.
 2      1      0      0
 2      1      1      1      # rv64si-p-dirty
 2      2      0      0      # <-- the default configuration
