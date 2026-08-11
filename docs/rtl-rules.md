@@ -299,9 +299,25 @@ Passed is not consumed. `20acd8c` (every run was silently `IW=2`), `7cf760e`,
 **G2. A stale binary is a build error, never a silent run.** `c0cb6ee`.
 
 **G3. The config space is swept, not just the default point.**
-`IW ∈ {1,2,3,4}` × `CACHE ∈ {0,1}` × `CKMAX ∈ {1,2}`. `023a5df`, `61f7d0a`,
-`41061b8`, `9444f81` all only exist off-default. The Verilator gate is ~8s;
-the matrix is minutes.
+`src/sweep.sh` runs `IW ∈ {1,2,3,4}` × `CKMAX ∈ {1,2}` × `CACHE ∈ {0,1}` and
+compares against `src/sweep-expected.txt`; a cell worse than recorded fails.
+Known breakage is written down *with a reason* rather than silently tolerated —
+an unexplained non-zero entry is a bug someone owes an explanation for, not a
+passing test. `--record` carries the reasons across a re-record, because the
+first re-record after a fix would otherwise erase why every other cell is
+broken.
+
+`023a5df`, `61f7d0a`, `41061b8`, `9444f81` all only existed off-default and all
+were found by a person tripping over them. The first run of this sweep found a
+fifth: `ARSH = AREGS/SHARDS` truncated instead of taking the ceiling, so at
+`SHARDS=3` the freelist left arch r63's home physreg marked free and the first
+allocation handed out a live architectural mapping — every `IW=3` test dead at
+25ns. Two more defects are recorded and unfixed (`IW=1 × CKMAX=2`, and `IW=3` +
+cache starving the frontend), the second of which was unreachable while `IW=3`
+failed outright.
+
+Sweeping only power-of-2 points is not sweeping. The bugs live where the
+arithmetic stops dividing evenly.
 
 ---
 

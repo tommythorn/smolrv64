@@ -23,8 +23,13 @@
 
 - `src/run-vl-tests.sh` builds the heavy invariant checkers in by default
   (`CHECKS=-DFL_ASSERT -DSEQROB`, under 2% cost). Pass `CHECKS=` to drop
-  them for a long soak. Known off-default state: `PROBE_IW=1` has 5
-  pre-existing failures; IW=2 and IW=4 are clean.
+  them for a long soak.
+
+- For width/checkpoint-sensitive changes run `src/sweep.sh` (IW × CKMAX ×
+  CACHE, ~25 min) — it compares against `src/sweep-expected.txt` and fails
+  only on a cell worse than recorded. That file lists the known-broken
+  configs with reasons; `IW=1 × CKMAX=2`, `IW=3` + cache, and `IW=5 -v` are
+  open pre-existing defects, so read it before assuming a cell is your fault.
 
 ## Code Change Conventions
 
