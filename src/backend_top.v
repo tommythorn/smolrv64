@@ -1035,10 +1035,25 @@ module backend_top
    reg inject_inflight; initial inject_inflight = 1'b0;
    assign irq_inject = csr_irq_v & ~inject_inflight & ~replay_v & ~devld_solo_v & ~pend_iflt & ~lsu_dfault_v
                        & ~ill_v & ~eb_redirect & ~dflt_replay & ~dflt_fire & ~iflt_fire & ~roll_v;
+   // Orphan self-heal: an OP_IRQ can COMMIT WITHOUT its trap firing (the CPR
+   // commit-count orphan, cosim-proven at retire 84.17M and HW-proven by the
+   // 2026-08-10 ILA capture: seip=1 held with ZERO PLIC claims, core parked in
+   // wfi). That path leaves inject_inflight latched -- no rollback comes, and
+   // csr_irq_v stays high because the never-run handler can't clear the level
+   // source -- so injection is vetoed forever and the whole system freezes at
+   // the next wfi. Holding the commit until the trap (June attempt) deadlocked
+   // the other way. Until commit-side orphan detection exists, a bounded
+   // watchdog re-arms injection: no legitimate pseudo-op stays unresolved for
+   // 64k cycles (solo drain is LSU-bounded), and a false trip merely causes a
+   // duplicate delivery whose spurious PLIC claim Linux tolerates.
+   reg [15:0] inj_wd;
+   wire inj_orphan = inject_inflight & (&inj_wd);
+   always @(posedge clk) inj_wd <= (reset | ~inject_inflight) ? 16'd0 : inj_wd + 16'd1;
    always @(posedge clk) begin
       if (reset)                    inject_inflight <= 1'b0;
       else if (irq_inject & accept) inject_inflight <= 1'b1;   // pseudo-op entered the pipe
-      else if (roll_v | ~csr_irq_v) inject_inflight <= 1'b0;   // squashed/delivered/cleared
+      else if (roll_v | ~csr_irq_v | inj_orphan)
+                                    inject_inflight <= 1'b0;   // squashed/delivered/cleared/orphaned
    end
 `ifdef IRQDBG
    // dbg_cyc MUST be 64-bit: as a 32-bit integer it wrapped negative at c=2.1B and the
