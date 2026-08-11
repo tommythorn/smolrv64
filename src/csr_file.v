@@ -274,8 +274,9 @@ module csr_file
    wire        is_ev = (raddr >= MHPMEVENT3)   && (raddr <= MHPMEVENT3   + 12'd28);
    wire        is_mc = (raddr >= MHPMCOUNTER3) && (raddr <= MHPMCOUNTER3 + 12'd28);
    wire        is_hc = (raddr >= HPMCOUNTER3)  && (raddr <= HPMCOUNTER3  + 12'd28);
-   wire [4:0]  hpm_ri = is_ev ? (raddr - MHPMEVENT3)
-                      : is_mc ? (raddr - MHPMCOUNTER3) : (raddr - HPMCOUNTER3);
+   wire [11:0] hpm_ri12 = is_ev ? (raddr - MHPMEVENT3)
+                        : is_mc ? (raddr - MHPMCOUNTER3) : (raddr - HPMCOUNTER3);
+   wire [4:0]  hpm_ri   = hpm_ri12[4:0];   // 0..28; the 12-bit difference is sliced, not truncated
    wire        hpm_sel   = is_ev | is_mc | is_hc;
    wire [3:0]  hpm_rix   = (hpm_ri < HPMN) ? hpm_ri[3:0] : 4'd0;       // clamp to a valid entry
    wire [63:0] hpm_rdata = (hpm_ri >= HPMN) ? 64'd0                    // counters 16..31 hardwired 0
@@ -469,8 +470,10 @@ module csr_file
    // already in flight were evaluated against the old FS, so refetch them to re-evaluate the
    // FS-disabled illegal-instruction trap. FS-changes are rare (context switch) so the cost is
    // negligible; the FP arithmetic tests set FS once at startup and never trip this.
-   wire [1:0]  newfs_m = (((mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK)) >> 13);
-   wire [1:0]  newfs_s = (((mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK)) >> 13);
+   wire [63:0] newms_m = (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
+   wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
+   wire [1:0]  newfs_m = newms_m[14:13];   // mstatus.FS, sliced rather than shift-truncated
+   wire [1:0]  newfs_s = newms_s[14:13];
    wire        do_fschg = upd_valid & upd_is_csr & ~csr_illegal &
                           ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
                           | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
@@ -483,8 +486,7 @@ module csr_file
    // lhu under stale MPRV=0 -> an M-mode Bare access to a kernel VA -> spurious access fault (a
    // cosim divergence vs simmerv, which applies the write in order). Same fall-through cost as FS.
    localparam [63:0] MSTATUS_DXMASK = 64'h0000_0000_000E_1800;   // MXR|SUM|MPRV | MPP
-   wire [63:0] newms_m = (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
-   wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
+   // newms_m/newms_s are declared with the FS check above -- one definition, two users.
    wire        do_dxchg = upd_valid & upd_is_csr & ~csr_illegal &
                           ( ((upd_addr==MSTATUS) & (((newms_m ^ mstatus) & MSTATUS_DXMASK) != 64'd0))
                           | ((upd_addr==SSTATUS) & (((newms_s ^ mstatus) & MSTATUS_DXMASK) != 64'd0)) );

@@ -65,7 +65,7 @@ module ddr_hpm #(
    // ---- log2 bin of the completed latency (highest set bit + 1, capped at 7) ----
    function [2:0] binof; input [LW-1:0] v; integer i; begin
       binof = 3'd0;
-      for (i = 0; i < LW; i = i + 1) if (v[i]) binof = (i >= 6) ? 3'd7 : (i + 1);
+      for (i = 0; i < LW; i = i + 1) if (v[i]) binof = (i >= 6) ? 3'd7 : (i[2:0] + 3'd1);
    end endfunction
    wire [2:0] bin = binof(stb_lat);
 

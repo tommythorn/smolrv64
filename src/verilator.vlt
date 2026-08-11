@@ -1,0 +1,30 @@
+// Lint waivers -- FILE-SCOPED, never global (docs/rtl-rules.md E1).
+//
+// The build used to quiet imported RTL with global -Wno-WIDTHTRUNC/-Wno-WIDTH/
+// -Wno-LATCH/-Wno-CASEINCOMPLETE/-Wno-UNOPTFLAT flags, which switched those rules
+// off for OUR code too. That is why a run of width bugs reached a bitstream or a
+// wrong measurement: e552aab (BAW is 12, not 16), c629047 (bank-addr truncation),
+// 4ac3d92 (CBITS=3, not 4), f157d1d (dropped SBITS), 857dfc8 (negative IPC).
+//
+// Anything added here must name a file. If a waiver would have to name one of our
+// own modules, fix the RTL instead.
+
+`verilator_config
+
+// ---- imported third-party RTL (CVFPU + pulp common_cells) ----
+lint_off -rule WIDTH          -file "*third_party*"
+lint_off -rule WIDTHEXPAND    -file "*third_party*"
+lint_off -rule WIDTHTRUNC     -file "*third_party*"
+lint_off -rule CASEINCOMPLETE -file "*third_party*"
+lint_off -rule LATCH          -file "*third_party*"
+lint_off -rule UNOPTFLAT      -file "*third_party*"
+lint_off -rule UNDRIVEN       -file "*third_party*"
+lint_off -rule PINMISSING     -file "*third_party*"
+lint_off -rule SYNCASYNCNET   -file "*third_party*"
+lint_off -rule VARHIDDEN      -file "*third_party*"
+
+// smolrv64_cvfpu.sv / fp_unit.sv are our thin wrappers over CVFPU: they inherit its
+// width conventions at the boundary.
+lint_off -rule WIDTH          -file "*smolrv64_cvfpu.sv"
+lint_off -rule WIDTHEXPAND    -file "*smolrv64_cvfpu.sv"
+lint_off -rule WIDTHTRUNC     -file "*smolrv64_cvfpu.sv"

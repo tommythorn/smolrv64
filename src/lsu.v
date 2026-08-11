@@ -288,7 +288,7 @@ module lsu
    reg               sb_ok, lq_ok, fnd;
    always @* begin
       sb_take = {SBDEPTH{1'b0}}; lq_take = {LQDEPTH{1'b0}};
-      sb_ok = 1'b1; lq_ok = 1'b1;
+      sb_ok = 1'b1; lq_ok = 1'b1; fnd = 1'b0;   // fnd: loop temp, seeded so it is not a latch
       for (i = 0; i < IW; i = i + 1) begin
          sb_as[i] = {SBI{1'b0}}; lq_as[i] = {LQI{1'b0}};
          if (disp_is_store[i]) begin
@@ -342,7 +342,7 @@ module lsu
    reg [SEQW-1:0] ld_best;
    reg            blocked;
    always @* begin
-      ld_sel_v = 1'b0; ld_sel = {LQI{1'b0}}; ld_best = {SEQW{1'b0}};
+      ld_sel_v = 1'b0; ld_sel = {LQI{1'b0}}; ld_best = {SEQW{1'b0}}; blocked = 1'b0;
       for (i = 0; i < LQDEPTH; i = i + 1) begin
          // not squashed this cycle: a wrong-path load (seq newer than the branch's
          // rollback_seq) must not be selected even in the squash cycle itself.

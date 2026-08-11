@@ -1643,14 +1643,22 @@ module backend_top
    // missing completion is a deferred LSU/unit op still outstanding, or an op that never issued
    // at all (a live scheduler entry that never became eligible = a lost operand wakeup).
    assign dbg_lsu = lsu_dbg_lsu;
+   // The concatenation MUST total exactly 64 bits. It totalled 65 -- cc_dbg_cnt is CNTW
+   // bits and CNTW = $clog2(CKMAX+IW+1) grew from 2 to 3 when CKMAX defaulted to 2
+   // (2964cdd), while the pad above it stayed 7'd0 and the comments kept saying CNTW=2.
+   // The overflow bit fell off the top (harmless, it was pad), but the field map below it
+   // was wrong by one from that commit onward -- so every hand-decode of eb_dbg_evap and
+   // ld_supp_cnt off this bus, the two fields that name a deferred-op evaporation, read
+   // the wrong bits. cc_dbg_cnt is now zero-padded to a fixed 4 like cc_committed/cur, so
+   // the map no longer moves when CNTW tracks CKMAX or IW.
    assign dbg_wedge = {
-      7'd0,
-      ld_supp_cnt,              // [56:53] saturating count of ld_done decrements EATEN by the
+      5'd0,                     // [63:59]
+      ld_supp_cnt,              // [58:55] saturating count of ld_done decrements EATEN by the
                                 //         owner guard -- a false-suppress leaks the count forever
-      eb_dbg_evap,              // [52:50] STICKY evaporation: [50] mul/div, [51] FP-unit-busy,
-                                //         [52] CVFPU not iss_ready. Any of these = a deferred op
+      eb_dbg_evap,              // [54:52] STICKY evaporation: [52] mul/div, [53] FP-unit-busy,
+                                //         [54] CVFPU not iss_ready. Any of these = a deferred op
                                 //         vanished at EX and its checkpoint count can never reach 0.
-      cc_dbg_cnt,               // [49:48] count[committed] (CNTW=2)
+      {{(4-CNTW){1'b0}}, cc_dbg_cnt},     // [51:48] count[committed] (CNTW<=4)
       |sch_dbg_stuck,           // [47] a live RS entry that is NOT eligible (never issues)
       |sch_dbg_any_v,           // [46] any live RS entry at all
       |eb_exec_busy,            // [45] a mul/div/FP unit still running

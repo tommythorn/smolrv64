@@ -105,7 +105,7 @@ module commit_ctl
    end
 
    // live checkpoints = committed..cur (inclusive); full when all NCHK are live
-   wire [CBITS-1:0] live_m1 = (cur - committed) & (NCHK-1);
+   wire [CBITS-1:0] live_m1 = (cur - committed) & {CBITS{1'b1}};  // NCHK is 2**CBITS
    assign full     = (live_m1 == (NCHK-1));
    // Coarse checkpoints: accumulate plain ops into the open checkpoint; close it on a
    // serialize/control op (disp_close) or when it reaches CKMAX. open_inst = instructions

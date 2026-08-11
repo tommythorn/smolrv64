@@ -615,7 +615,7 @@ module cache #(
    reg [LZB:0] fpos;
    reg [2*BANKW-1:0] fnwin;
    always @* begin
-      fnwin = {fwhi, fwlo};
+      fnwin = {fwhi, fwlo}; fpos = {(LZB+1){1'b0}};   // fpos: loop temp, seeded (not a latch)
       for (fbb=0; fbb<WRB; fbb=fbb+1) if (r_wmask[fbb]) begin
          fpos = {1'b0,bwc} + fbb[LZB:0];
          fnwin[fpos*8 +: 8] = r_wdata[fbb*8 +: 8];
@@ -624,7 +624,7 @@ module cache #(
 
    // store-merge window (combinational)
    always @* begin
-      nwin = win;
+      nwin = win; pos = {(LZB+1){1'b0}};              // pos: loop temp, seeded (not a latch)
       for (bb=0; bb<WRB; bb=bb+1) if (r_wmask[bb]) begin
          pos = {1'b0,bwc} + bb[LZB:0];
          nwin[pos*8 +: 8] = r_wdata[bb*8 +: 8];

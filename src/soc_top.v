@@ -313,9 +313,10 @@ module soc_top #(
    function [63:0] uart_rd;
       input [63:0] a; input [7:0] rbr; input dr; input [7:0] lcr; input thr_full;
       input [3:0] ier; input [7:0] iir; input [4:0] mcr; input [7:0] scr;
-      integer b2; reg [2:0] off;
+      integer b2; reg [2:0] off; reg [63:0] boff;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
-         off=(a-UART_BASE+b2)&3'h7;
+         boff = a - UART_BASE + b2;
+         off  = boff[2:0];          // byte lane within the 8-byte window (sliced, not truncated)
          uart_rd[b2*8 +: 8] =
               (off==3'd0) ? (lcr[7] ? 8'h00 : rbr)                       // RBR (DLL if DLAB)
             : (off==3'd1) ? (lcr[7] ? 8'h00 : {4'd0, ier})               // IER (DLM if DLAB)
@@ -664,14 +665,15 @@ module soc_top #(
    // line-granular) so it infers a clean single-read/single-write BRAM -- a byte array
    // with a 64-byte for-loop access does NOT (Vivado can't template it).
    localparam NLLINE = LSIZE/64;                 // number of 64-byte lines
-   localparam [LAW-1:0] LLBASE = LBASE >> 6;     // local SRAM base as a line address
+   localparam LIW    = $clog2(NLLINE);           // ...and the index width lmem actually has
+   localparam [LAW-1:0] LLBASE = LBASE[6 +: LAW]; // local SRAM base as a line address
    reg [511:0] lmem [0:NLLINE-1];
    // FPGA: bake the monitor image into the BRAM at elaboration (one 64-byte line per hex
    // line). Sim TBs instead pack dut.lmem directly via +monhex, so guard on the define.
 `ifdef SOC_BOOT_HEX
    initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
-   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_li_q; reg [511:0] l_wd_q;
+   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LIW-1:0] l_li_q; reg [511:0] l_wd_q;
    reg [63:0] l_wm_q;
    reg [511:0] l_rdata; reg l_ack; reg [511:0] l_rd;
    wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
@@ -696,7 +698,7 @@ module soc_top #(
    always @(posedge clk) begin
       l_ack <= 1'b0;
       if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; l_wm_q<=m_wmask; end
+      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line[LIW-1:0]; l_wd_q<=m_wdata; l_wm_q<=m_wmask; end
       else if (l_busy) begin
          if (l_cnt==0) begin
             if (l_we_q) lmem[l_li_q] <= l_merged;
