@@ -282,6 +282,24 @@ module tb;
       $display("  CC: cur=%0d committed=%0d cnt=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d",
                dut.cur, dut.cc_committed, dut.cc.count[0], dut.cc.count[1], dut.cc.count[2], dut.cc.count[3],
                dut.cc.count[4], dut.cc.count[5], dut.cc.count[6], dut.cc.count[7]);
+      // A stuck count[committed] means a deferred op never completed. These sticky bits
+      // name WHICH deferral lost it -- without them the dump says "commit is waiting" and
+      // stops exactly where the interesting part starts.
+      $display("  EVAP: muldiv=%b fpbusy=%b cvfpu_nrdy=%b | exec_busy=%b ldsupp=%0d",
+               dut.eb_dbg_evap[0], dut.eb_dbg_evap[1], dut.eb_dbg_evap[2],
+               |dut.eb_exec_busy, dut.ld_supp_cnt);
+      // An op counted into a checkpoint but absent from every RS is either in the LSU or
+      // lost. The dump used to stop at the RS, which is exactly where that question starts.
+      for (di = 0; di < 8; di = di + 1)
+         if (dut.u_lsu.lq_v[di])
+            $display("  LQ[%0d] seq=%0d rdy=%b", di, dut.u_lsu.lq_seq[di], dut.u_lsu.lq_rdy[di]);
+      for (di = 0; di < 8; di = di + 1)
+         if (dut.u_lsu.sb_v[di])
+            $display("  SB[%0d] seq=%0d rdy=%b cmt=%b", di, dut.u_lsu.sb_seq[di],
+                     dut.u_lsu.sb_rdy[di], dut.u_lsu.sb_cmt[di]);
+      $display("  LSU: p_v=%b p_seq=%0d s_v=%b s_seq=%0d ast=%0d dfv=%b",
+               dut.u_lsu.p_v, dut.u_lsu.p_seq, dut.u_lsu.s_v, dut.u_lsu.s_seq,
+               dut.u_lsu.ast, dut.u_lsu.df_v);
       rs_dump = 1'b1; #1;   // fire the per-shard RS dump (module-scope generate below; tracks IW)
       $finish;
    end
@@ -289,9 +307,21 @@ module tb;
    // Per-shard RS dump for the timeout diagnostic. A runtime lane index can't select a
    // hierarchical path, so unroll over the shards with a genvar (tracks IW); the timeout
    // initial pulses rs_dump just before $finish.
+   integer di;
    reg rs_dump = 1'b0;
    genvar gsh;
    generate for (gsh = 0; gsh < IW; gsh = gsh + 1) begin : rsdump
+`ifdef RS_TRACE
+      // Per-cycle RS occupancy: answers "did this seq ever reach the scheduler at all?",
+      // which the wedge-time dump structurally cannot.
+      always @(posedge clk) if (!reset) begin : rt
+         integer e;
+         for (e = 0; e < 16; e = e + 1)
+            if (dut.sb.lane[gsh].sh.v[e])
+               $display("[RS t=%0t] sh%0d[%0d] seq=%0d ck=%0d", $time, gsh, e,
+                        dut.sb.lane[gsh].sh.sq[e], dut.sb.lane[gsh].sh.ck[e]);
+      end
+`endif
       always @(posedge rs_dump) begin : d
          integer e;
          $display("  SH%0d free_count=%0d rn_stall=%b", gsh,
