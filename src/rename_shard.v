@@ -80,7 +80,15 @@ module rename_shard
     output wire [CBITS-1:0]      cur,            // freelist's open span (for tagging)
     output wire                  stall);
 
-   localparam ARSH = AREGS / SHARDS;   // arch regs owned per shard = reserved freelist head
+   // Arch regs owned per shard = the reserved freelist head. CEILING, not truncation:
+   // arch reg a lives at index a/SHARDS, so the largest index in use is (AREGS-1)/SHARDS
+   // and the reservation must cover it. Plain AREGS/SHARDS is right only when SHARDS
+   // divides AREGS -- at SHARDS=3 (AREGS=64) it reserved 21 while arch r63 maps to index
+   // 21, so freelist idx 21 started FREE while it was already r63's live mapping and the
+   // first allocation handed out a register the arch map still pointed at. Every IW=3 test
+   // failed at 25ns. Same shape as 61f7d0a; the non-power-of-2 widths are the ones that
+   // expose it (3 and 5), which is why the power-of-2 sweep points never showed it.
+   localparam ARSH = (AREGS + SHARDS - 1) / SHARDS;
 
    // ---------------------------------------------------------------- MAP state
    reg [PBITS-1:0] map     [0:AREGS-1];               // replicated architectural map
