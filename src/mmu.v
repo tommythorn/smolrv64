@@ -258,6 +258,9 @@ module mmu
                  walk_ppn<=ptw_rdata[53:10]; lvl<=lvl-1'b1; st<=REQ;           // descend
               end
            end
+           // st is 2 bits; encoding 3 is unused. Without an arm the walker parks there
+           // forever and every translation stalls behind it -- a silent whole-core wedge.
+           default: if (^st !== 1'bx) $fatal(1, "[mmu] ILLEGAL FSM STATE st=%0d", st);
          endcase
          // context-staleness tracking (registered; see req_match). Runs every cycle
          // except a walk start (whose fresh _q latch + poison clear wins), including

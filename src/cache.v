@@ -1203,6 +1203,12 @@ module cache #(
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
+           // No arm = the FSM would hold this state forever: a silent wedge indistinguishable
+           // from a hundred other causes. S_WBI/S_WBA are declared (they bound the cb_wb stats
+           // range) but never entered, so they land here too. X-guard: pre-reset `st` is X
+           // under iverilog, and `if (reset)` treats X as false.
+           default: if (^st !== 1'bx)
+              $fatal(1, "[cache id=%0d] ILLEGAL FSM STATE st=%0d", PERF_ID, st);
          endcase
       end
       // the single write port of each status array (see staging decl above)
@@ -1234,16 +1240,20 @@ module cache #(
    end
 `endif
 
-`ifdef PERF_TRACE
-   // Zihpm hardware cache events (always-on, unlike the PERF_TRACE DPI trace below): one pulse
-   // per resolved line lookup (S_CHECK), and per miss. soc_top taps these -> backend_top hpm_ev.
+   // Zihpm hardware cache events -- ALWAYS ON (they feed architectural counters, unlike the
+   // PERF_TRACE DPI trace below): one pulse per resolved line lookup (S_CHECK), and per miss.
+   // soc_top taps these -> backend_top hpm_ev.
    // A PARKED S_CHECK (miss waiting on the MSHR / a CBO waiting on the wb-buffer)
    // loops in S_CHECK without resolving anything -- mask it or misses overcount.
+   // These used to sit INSIDE `ifdef PERF_TRACE despite the comment claiming otherwise, so
+   // every build without -DPERF_TRACE -- every regression run and every bitstream -- left
+   // perf_access/perf_miss undriven and mhpmcounter D$/I$ access+miss reading zero.
    wire chk_park = (st == S_CHECK) & ~hit
                  & ((((HUM!=0) ? msh_val : 1'b0)) | (WBUF && r_cbo && wbb_match));
    assign perf_access = (st == S_CHECK) & ~chk_park;
    assign perf_miss   = (st == S_CHECK) & ~hit & ~chk_park;
 
+`ifdef PERF_TRACE
    // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
    // (own perf_cyc, in lockstep with backend_top's since same clk/reset) into the shared
    // perf_ev sink. KIND=8 CACHE; the `ckp` field = PERF_ID (0=I$, 1=D$), `rdv` = is_write,

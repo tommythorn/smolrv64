@@ -154,8 +154,10 @@ module freelist
    end
 `endif
 
-`ifdef FL_DBLALLOC
-   // Double-alloc detector. We hand out alloc_pr (idx ridx) this cycle and clear
+   // Double-alloc detector -- ALWAYS ON (docs/rtl-rules.md A1): one wire and one bit
+   // test, and it catches the freelist-leak class (f592200) at the allocating cycle
+   // rather than as a value divergence millions of instructions downstream.
+   // We hand out alloc_pr (idx ridx) this cycle and clear
    // free[ridx] via `& ~alloc_bit`. But a same-cycle commit-P or rollback-union
    // can re-OR that bit. If the NEXT free-set still marks ridx free, then the reg
    // we just handed to this instruction is also free -> the next alloc hands out
@@ -165,14 +167,11 @@ module freelist
    wire [POOL-1:0] nfree_dbg = (free & ~alloc_bit)
                              | (commit   ? P[commit_idx] : {POOL{1'b0}})
                              | (rollback ? roll_union    : {POOL{1'b0}});
-   always @(posedge clk) if (!reset && do_alloc && nfree_dbg[ridx]) begin
-      $display("[%0t] *** FL-DBLALLOC sh%0d: phys %0d (idx %0d) handed out but stays FREE | commit=%b cmt_idx=%0d P[ci][r]=%b | rollback=%b rb_idx=%0d roll_union[r]=%b | curr=%0d",
-               $time, SH, alloc_pr, ridx, commit, commit_idx,
+   always @(posedge clk) if (!reset && do_alloc && nfree_dbg[ridx])
+      $fatal(1, "*** FL-DBLALLOC sh%0d: phys %0d (idx %0d) handed out but stays FREE | commit=%b cmt_idx=%0d P[ci][r]=%b | rollback=%b rb_idx=%0d roll_union[r]=%b | curr=%0d",
+               SH, alloc_pr, ridx, commit, commit_idx,
                commit ? P[commit_idx][ridx] : 1'b0,
                rollback, rollback_idx, rollback ? roll_union[ridx] : 1'b0, curr);
-      $finish;
-   end
-`endif
 endmodule
 
 `default_nettype wire

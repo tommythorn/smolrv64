@@ -402,8 +402,12 @@ module lsu
    // the solo atomic's RMW read response (mem_raddr still holds its PA)
    wire aresp = mem_rvalid & (mem_resp_addr == mem_raddr);
 
-`ifdef LSU_ASSERT
    // In-module assertions (local signals -> no hierarchical-observation problem).
+   // ALWAYS ON (docs/rtl-rules.md A1): these are O(SBDEPTH) and gated on p_v, and they
+   // detect the stale-load class (c3dc86f) AT THE CYCLE instead of as a boot wedge tens
+   // of millions of cycles later. They used to sit behind `ifdef LSU_ASSERT, which the
+   // 215-test gate never defined -- so the check that covers this LSU's worst bug class
+   // ran in exactly zero regression runs.
    integer az;
    always @(posedge clk) if (!reset) begin
       // ORDER-SAFETY: a load held in MERGE must have NO older UNFILLED store in the SB
@@ -411,18 +415,26 @@ module lsu
       if (p_v)
          for (az = 0; az < SBDEPTH; az = az + 1)
             if (sb_v[az] && !sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0))
-               $display("[%0t] *** LSU-ORD: load p_seq=%0d w0=%h merges w/ older UNFILLED store sb[%0d] seq=%0d addr=%h",
-                  $time, p_seq, p_w0, az, sb_seq[az], sb_addr[az]);
-      // FORWARD: an aligned 8-byte load whose word is fully covered by an older filled
-      // 8-byte store MUST get that store's data. If c_val != sb_d0 -> byte-merge dropout.
+               $fatal(1, "*** LSU-ORD: load p_seq=%0d w0=%h merges w/ older UNFILLED store sb[%0d] seq=%0d addr=%h",
+                  p_seq, p_w0, az, sb_seq[az], sb_addr[az]);
+   end
+
+`ifdef LSU_ASSERT
+   // DIAGNOSTICS (NOT invariants -- they stay opt-in). Both of these are true only in the
+   // narrow scenario they were written to debug, so neither can be promoted to always-on:
+   //   FWD-MISS assumes the older covering store is also the YOUNGEST one covering the
+   //   word, and compares against c_val, which is the post-transform result (sign-extend /
+   //   zero-extend / NaN-box), not the raw merged word. A legal `fld` over a word whose
+   //   halves came from two different stores trips it (seen on rv64ud-p-ldst, CACHE=1).
+   always @(posedge clk) if (!reset) begin
       if (p_v && (p_nb == 4'd8) && (p_lb == 3'd0))
          for (az = 0; az < SBDEPTH; az = az + 1)
             if (sb_v[az] && sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0)
                 && (sb_w0[az] == p_w0) && (sb_be0[az] == 8'hff) && (c_val != sb_d0[az]))
                $display("[%0t] *** LSU-FWD-MISS: load p_seq=%0d w0=%h c_val=%h != store sb[%0d] seq=%0d d0=%h (mem_rdata=%h s_use=%b)",
                   $time, p_seq, p_w0, c_val, az, sb_seq[az], sb_d0[az], mem_rdata, s_use);
-      // DIAGNOSTIC: a load that returns 0 while an older filled NONZERO store sits in the
-      // SB -> dump words to see if the store's sb_w0 matches the load's p_w0 (it should).
+      // a load that returns 0 while an older filled NONZERO store sits in the SB -> dump
+      // words to see if the store's sb_w0 matches the load's p_w0 (it should).
       if (p_v && (c_val == 64'd0) && (p_nb == 4'd8))
          for (az = 0; az < SBDEPTH; az = az + 1)
             if (sb_v[az] && sb_rdy[az] && ($signed(sb_seq[az] - p_seq) < 0) && (sb_d0[az] != 64'd0))
@@ -919,6 +931,10 @@ module lsu
                       amo_wbv<=1'b1; amo_wbpd<=a_pdst; amo_wbow<=a_own;
                       amo_wbvl<=a_rdval_q; amo_wbck<=a_ck; amo_wbsq<=a_seq; ast<=A_IDLE;
                    end
+           // ast is 3 bits and the encoding is sparse (A_WR=4, A_WB=3), so 5..7 are unused.
+           // The AMO FSM is solo: parking it in an unhandled state wedges every atomic, and
+           // through them commit.
+           default: if (^ast !== 1'bx) $fatal(1, "[lsu] ILLEGAL AMO FSM STATE ast=%0d", ast);
          endcase
          // an intervening store to the reserved word breaks the reservation
          if (dr_v && mem_wready && ~dr_hold && rsv_v && (sb_addr[dr_sel][38:3] == rsv_w)) rsv_v <= 1'b0;
