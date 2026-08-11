@@ -126,7 +126,7 @@ elif find . . -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.vh' -o -nam
 fi
 
 if [ "$need_build" = 1 ]; then
-   srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+   srcs=$(. ./rtl-sources.sh; rtl_sources)
    echo "building obj_dir_cosim_${NAME}/tb_cosim_${NAME} (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 --threads $THREADS -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \

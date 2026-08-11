@@ -11,7 +11,7 @@ GCC=${GCC:-riscv64-linux-gnu-gcc}; OC=${OC:-riscv64-linux-gnu-objcopy}; NM=${NM:
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
 # build the harness once
-srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+srcs=$(. ./rtl-sources.sh; rtl_sources)
 iverilog -g2012 -I. -s tb -o "$T/tb_soc.vvp" $srcs tb_soc.v ./alu.v ./smolrv64_sdpram.v fp_unit_stub.sv ./smolrv64_plic_arbiter.v
 
 run_one() {

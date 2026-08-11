@@ -14,19 +14,20 @@
 set -u
 cd "$(dirname "$0")"
 
-srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+srcs=$(. ./rtl-sources.sh; rtl_sources)
 
-# Rules that fail the gate. WIDTHEXPAND (benign zero-extension) and PINMISSING are
-# reported but not fatal yet -- they still carry pre-existing hits in experimental
-# files. Shrink that list, do not grow this one.
+# Rules that fail the gate. Only WIDTHEXPAND (87 benign zero-extensions) is still
+# advisory. PINMISSING was promoted once the probe-only variants left the source list
+# and the one real hit -- the iMMU's t_uncached -- was named-and-empty on purpose.
+# Shrink the advisory list, do not grow this one.
 ERRS="-Werror-WIDTHTRUNC -Werror-CASEINCOMPLETE -Werror-LATCH -Werror-UNOPTFLAT
       -Werror-UNDRIVEN -Werror-MODDUP -Werror-IMPLICIT -Werror-PINNOTFOUND
-      -Werror-BLKANDNBLK -Werror-MULTIDRIVEN"
+      -Werror-BLKANDNBLK -Werror-MULTIDRIVEN -Werror-PINMISSING"
 
 # Style/noise: off by name, so the list is auditable.
 OFF="-Wno-TIMESCALEMOD -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME
      -Wno-ASCRANGE -Wno-UNSIGNED -Wno-VARHIDDEN -Wno-SYNCASYNCNET -Wno-GENUNNAMED
-     -Wno-PINCONNECTEMPTY -Wno-PROCASSINIT -Wno-BLKSEQ -Wno-WIDTHEXPAND -Wno-PINMISSING"
+     -Wno-PINCONNECTEMPTY -Wno-PROCASSINIT -Wno-BLKSEQ -Wno-WIDTHEXPAND"
 
 echo "lint: verilator $(verilator --version 2>&1 | head -1)"
 verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \

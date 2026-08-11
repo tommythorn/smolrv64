@@ -38,7 +38,7 @@ if [ -n "${BUILD:-}" ] || [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
    find . . -maxdepth 1 \( -name '*.v' -o -name '*.sv' -o -name '*.cpp' -o -name '*.f' \) \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .; then
    echo "building $BIN (VDEFS='${VDEFS:-<none; PROBE_IW defaults to 2>}') ..."
-   srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+   srcs=$(. ./rtl-sources.sh; rtl_sources)
    # REAL CVFPU, not fp_unit_stub: the stub has no conversions (FCVT falls through to
    # rr=ra => F2I returns the RAW FLOAT BITS as the int result) and treats every op as
    # double -- ubuntu userspace FP (glibc/gnulib hash sizing via fdiv.s+fcvt.lu.s) gets

@@ -16,7 +16,7 @@ CYC=${CYC:-200000}
 classes=("$@"); [ ${#classes[@]} -eq 0 ] && classes=(rv64ui-p)
 
 # compile harness once
-srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+srcs=$(. ./rtl-sources.sh; rtl_sources)
 iverilog -g2012 -I. -s tb -o /tmp/probe_riscv.vvp $srcs tb_riscv.v ./alu.v ./smolrv64_sdpram.v || exit 1
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

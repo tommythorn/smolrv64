@@ -432,6 +432,12 @@ module backend_top
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
       .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
+      // t_uncached deliberately unconnected: the LSU honours Svpbmt NC on data accesses
+      // (lsu.v ldx_uncached/stx_uncached), but instruction fetch always goes through the
+      // I$ regardless of a leaf's PBMT. Executing from a device page is not a thing this
+      // system does. Named-and-empty rather than omitted, so PINMISSING stays an error
+      // and the next unconnected port is a finding rather than more of the same noise.
+      .t_uncached(),
       .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
 
    // ---- precise page-fault trap injection ----

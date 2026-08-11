@@ -23,7 +23,7 @@ classes=("$@")
                                      rv64ui-v rv64um-v rv64ua-v rv64uc-v)
 
 # ---- build the verilated binary once ----
-srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+srcs=$(. ./rtl-sources.sh; rtl_sources)
 # PERF_TRACE=1 builds the perf event trace in (backend_top.v taps + perf_trace.cpp DPI
 # sink); force JOBS=1 so a single run owns the one PERF_TRACE_OUT file.
 PERFOPT=""; PERFSRC=""

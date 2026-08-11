@@ -25,7 +25,7 @@ if [ ! -f "$SIMMERV_LIB" ]; then
 fi
 
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
-   srcs=$(ls *.v | grep -vE '^tb_|probe|^flopwrap.v$|^rf_alu.v')
+   srcs=$(. ./rtl-sources.sh; rtl_sources)
    echo "building obj_dir_cosim/tb_cosim ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
