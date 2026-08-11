@@ -569,17 +569,19 @@ module exec_shard
       end
    end
 `endif
-`ifdef SERSQ
-   // A serializing op issues only when its checkpoint is the committed one -- nothing
-   // older is left to squash it -- so this should be unreachable. If it IS reachable,
-   // the op half-executes: csr_req_v (no squash gate) still drives the csr_file, while
-   // csr_wb (squash-gated) drops the rd write. Hardware shows the opposite half missing,
-   // so either way this is the first thing to rule in or out. Own define: the SCDBG
-   // tracers ([TRAP]/[XRET]/...) flood a full boot log.
+   // ALWAYS ON (docs/rtl-rules.md A3): a serializing op issues only when its checkpoint is
+   // the committed one -- nothing older is left to squash it -- so this is unreachable BY
+   // ASSUMPTION. csr_req_v above carries no squash gate, so if the assumption ever breaks
+   // the op HALF-executes: csr_req_v still drives the csr_file (a CSR write is applied at
+   // EX and is NOT undone by rollback) while csr_wb drops the rd write. The op is then
+   // re-fetched and re-executed with its write already applied, and `csrrw a2,mtvec,a2` --
+   // a swap, not idempotent -- reads back what it just installed. That is the observed
+   // OpenSBI mtvec stranding, with every instruction having executed correctly.
+   // This check spent its whole life behind `ifdef SERSQ, which nothing defined, so the
+   // question it was written to answer was never actually asked.
    always @(posedge clk) if (ex_v & ex_ser & ex_squash)
-      $display("[SERSQ %m t=%0t pc=%h insn=%h seq=%0d squash_seq=%0d req=%b]",
-               $time, ex_pc, ex_insn, ex_sq, squash_seq, ex_v & ex_ser & (ex_insn[6:0]==7'b1110011));
-`endif
+      $fatal(1, "[SERSQ %m] squash DISCARDED an executing serializing op: pc=%h insn=%h seq=%0d squash_seq=%0d csr_req=%b -- its CSR write is already applied and cannot be rolled back",
+             ex_pc, ex_insn, ex_sq, squash_seq, ex_v & ex_ser & (ex_insn[6:0]==7'b1110011));
    assign ex_amo_func = ex_amof;
    // An AMO with rd=x0 (amoor/amoadd.d x0,... -- atomic update discarding the result,
    // common in kernels) has ex_pdv=0 and no allocated dest, so ex_pd is the renamer's

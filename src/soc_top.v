@@ -676,6 +676,15 @@ module soc_top #(
    reg [511:0] l_rdata; reg l_ack; reg [511:0] l_rd;
    wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
    wire l_req = m_req & m_is_local;
+   // Index-range link. l_line is LAW bits but lmem has only NLLINE entries, so the array
+   // bracket truncates whatever it is given: an m_addr below LLBASE wraps the subtraction
+   // and the truncation lands it on a VALID boot-SRAM line instead of faulting. m_is_local
+   // is supposed to make that unreachable, but it is derived from m_pa independently of the
+   // index arithmetic, so nothing today connects the guard to the thing it guards.
+   always @(posedge clk)
+      if (!reset && l_req && (l_line >= NLLINE))
+         $fatal(1, "[soc_top] LOCAL SRAM INDEX OUT OF RANGE: m_addr=%h LLBASE=%h l_line=%h NLLINE=%0d",
+                m_addr, LLBASE, l_line, NLLINE);
    // masked write = read-modify-write across the l_cnt wait (single read site + single
    // write site keeps the SDP BRAM inference; no other master writes lmem, so the RMW
    // has no coherence window here -- unlike DDR, where DMA forces real byte strobes)

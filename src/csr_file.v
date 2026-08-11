@@ -165,19 +165,19 @@ module csr_file
                       HPMEV_DCACC  = 16'h0100, HPMEV_DCMISS   = 16'h0102,   // D$ access / miss
                       HPMEV_ICACC  = 16'h0110, HPMEV_ICMISS   = 16'h0112;   // I$ access / miss
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
-   function [2:0] hpm_inc;
+   function [5:0] hpm_inc;
       input [15:0] ev;
       case (ev)
-        HPMEV_CYCLES:  hpm_inc = 3'd1;
+        HPMEV_CYCLES:  hpm_inc = 6'd1;
         HPMEV_INSTRET: hpm_inc = retire_cnt;
-        HPMEV_LOAD:    hpm_inc = {2'd0, hpm_ev[0]};
-        HPMEV_STORE:   hpm_inc = {2'd0, hpm_ev[1]};
-        HPMEV_REDIR:   hpm_inc = {2'd0, hpm_ev[2]};
-        HPMEV_DCACC:   hpm_inc = {2'd0, hpm_ev[3]};
-        HPMEV_DCMISS:  hpm_inc = {2'd0, hpm_ev[4]};
-        HPMEV_ICACC:   hpm_inc = {2'd0, hpm_ev[5]};
-        HPMEV_ICMISS:  hpm_inc = {2'd0, hpm_ev[6]};
-        default:       hpm_inc = 3'd0;   // unimplemented event -> counter holds
+        HPMEV_LOAD:    hpm_inc = {5'd0, hpm_ev[0]};
+        HPMEV_STORE:   hpm_inc = {5'd0, hpm_ev[1]};
+        HPMEV_REDIR:   hpm_inc = {5'd0, hpm_ev[2]};
+        HPMEV_DCACC:   hpm_inc = {5'd0, hpm_ev[3]};
+        HPMEV_DCMISS:  hpm_inc = {5'd0, hpm_ev[4]};
+        HPMEV_ICACC:   hpm_inc = {5'd0, hpm_ev[5]};
+        HPMEV_ICMISS:  hpm_inc = {5'd0, hpm_ev[6]};
+        default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction
    reg [63:0] mcountinhibit;
@@ -655,7 +655,7 @@ module csr_file
             if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMCOUNTER3+i))
                mhpmcounter[i] <= newv;
             else if (!mcountinhibit[i+3])
-               mhpmcounter[i] <= mhpmcounter[i] + {61'd0, hpm_inc(mhpmevent[i][15:0])};
+               mhpmcounter[i] <= mhpmcounter[i] + {58'd0, hpm_inc(mhpmevent[i][15:0])};
          end
       end
    end

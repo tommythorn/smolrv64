@@ -110,7 +110,13 @@ module exec_bundle
     input  wire [63:0]             xtrap_tval,
     input  wire [11:0]             hw_ip,            // hardware interrupt-pending (CLINT/PLIC)
     input  wire [63:0]             mtime,            // free-running CLINT time (Sstc stimecmp compare)
-    input  wire [2:0]              retire_cnt,       // # instructions retiring this cycle (-> minstret)
+    // # instructions retiring this cycle (-> minstret). 6 bits to match csr_file's port and
+    // backend_top's zero-extend: this was [2:0], so the 6-bit value backend_top builds was
+    // truncated here and zero-extended back on the far side. CNTW = $clog2(CKMAX+IW+1) is 3
+    // at the default CKMAX=2/IW=2, so nothing was lost yet -- but at CKMAX+IW > 7 a
+    // checkpoint retiring >=8 would have added (count mod 8) to minstret. It drops 8, it
+    // does not saturate, and cosim takes DUT values for HPM counters so nothing could see it.
+    input  wire [5:0]              retire_cnt,
     input  wire [6:0]              hpm_ev,           // Zihpm event pulses (ld/st/redir/dc/ic) -> csr_file
     output wire                    irq_v,            // an interrupt is deliverable now
     output wire [3:0]              irq_cause,

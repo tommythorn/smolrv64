@@ -465,6 +465,20 @@ module cache #(
       $fatal(1, "[cache id=%0d] TWO L2 TRANSACTIONS OUTSTANDING: st=%0d msh_infl=%b pf_infl=%b wbb_infl=%b (one untagged ack feeds both)",
              PERF_ID, st, msh_infl, pf_infl, wbb_infl);
 
+   // PREFETCH FATE-SHARING. The prefetch buffer is a SECOND copy of a line that the tag
+   // array does not track, so the duplicate-line tripwire cannot see it. Holding a
+   // duplicate is sound here -- PF_EN implies WRITABLE==0, so both copies are clean and
+   // identical -- but the copy MUST share the array's invalidation fate, or a fence.i /
+   // sfence leaves a stale line reachable through pf_hit while the array is clean. That
+   // fate-sharing is what pf_drop and the S_IDLE `pf_val<=0` exist for, spread across
+   // three sites; this asserts the property they are collectively supposed to deliver:
+   // when a flush completes, nothing that predates it may still be buffered.
+   always @(posedge clk)
+      if (!reset && PF_EN && (st == S_FLUSH) && (fscan == NW)
+          && !(WBUF && (wbb_val || wbb_infl)) && (pf_val || (pf_infl && !pf_drop)))
+         $fatal(1, "[cache id=%0d] PREFETCH SURVIVED A FLUSH: pf_val=%b pf_infl=%b pf_drop=%b pf_addr=%h",
+                PERF_ID, pf_val, pf_infl, pf_drop, pf_addr);
+
    // WRITE-BACK ADDRESS check. The capture (S_WBR/S_WBW) reads the banks at
    // wb_way/wb_idx and the drain publishes them under wb_laddr, which was computed
    // from that slot's tag back at S_WB. If the slot's tag no longer matches
