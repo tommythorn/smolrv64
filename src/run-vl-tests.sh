@@ -11,6 +11,13 @@ TESTDIR=../tests/riscv-tests/passes
 NM=$(command -v riscv64-unknown-elf-nm || command -v riscv64-elf-nm || command -v riscv64-linux-gnu-nm)
 CYC=${CYC:-200000}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 8)}
+# Heavy invariant checkers (docs/rtl-rules.md A1). The cheap ones are unconditional in
+# the RTL; these two sweep O(AREGS*SHARDS) per cycle or carry a shadow ROB, so they are
+# defines -- but the GATE always builds them in. Measured cost on this suite: under 2%.
+#   FL_ASSERT the architectural map must never point at a free physreg
+#   SEQROB    a consumer must not read before its producer has written back
+# CHECKS= disables them for a multi-hour soak where the per-cycle cost does matter.
+CHECKS=${CHECKS--DFL_ASSERT -DSEQROB}
 classes=("$@")
 [ ${#classes[@]} -eq 0 ] && classes=(rv64ui-p rv64um-p rv64uc-p rv64ua-p rv64uf-p rv64ud-p rv64mi-p rv64si-p \
                                      rv64ui-v rv64um-v rv64ua-v rv64uc-v)
@@ -25,10 +32,13 @@ if [ -n "${PERF_TRACE:-}" ]; then PERFOPT="-DPERF_TRACE"; PERFSRC="perf_trace.cp
 echo "building obj_dir_vl/tb_vl ..."
 # The core embeds the CVFPU (smolrv64_cvfpu.sv via fp_unit.sv) for the F/D extensions, so
 # the FP source list + SystemVerilog + the cvfpu-specific -Wno flags are always needed.
+# These suppressions are for BUILDING ONLY -- ./lint.sh is the gate that enforces the
+# load-bearing rules with file-scoped waivers (verilator.vlt). Do not read the -Wno list
+# below as "these rules do not apply"; that reading is what let a run of width bugs ship.
 verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
-   -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} $PERFOPT \
+   -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT $CHECKS ${VDEFS:-} $PERFOPT \
    -I. --top-module tb --Mdir obj_dir_vl -o tb_vl \
    $srcs tb_vl.v -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv $PERFSRC \
    > /tmp/vlbuild.log 2>&1

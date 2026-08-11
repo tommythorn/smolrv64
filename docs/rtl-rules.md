@@ -8,6 +8,12 @@ than to catch its next instance by review.
 Every rule cites the commits that paid for it. If a rule looks like overhead,
 read the commits.
 
+**Enforced today:** `src/lint.sh` (load-bearing lint rules, file-scoped waivers
+in `src/verilator.vlt`); always-on invariants in the RTL; `CHECKS` in
+`run-vl-tests.sh` (the O(N) checkers, default on). **Not yet enforced:** the
+config sweep (G3) is manual, and there is no formal flow (H3). Rules marked
+against a defect with no assertion behind them are the backlog.
+
 ---
 
 ## The six generators
@@ -47,16 +53,42 @@ read the commits.
 
 **A1. Checks are always on. Tracers are optional.**
 A `$display` tracer or a stats counter belongs behind an `` `ifdef ``. An
-invariant check does not. The default 215-test gate defines no `VDEFS`, so
-every check written behind `LSU_ASSERT`, `WTCHK`, `FL_ASSERT`, `FL_DBLALLOC`,
-`PRFVAL_CHK`, `SEQROB`, `SERSQ`, `CSRDBG`, `WBGUARD_DBG` is compiled out of
-every regression run. `21e9fe5` is titled *"keep the two invariants that found
-the boot wedge"* — and CI does not compile them. Move checks to always-on
-`$fatal`/`$display`; keep only the flood-volume tracers gated.
+invariant check does not. The 215-test gate defines no `VDEFS`, so every check
+written behind `LSU_ASSERT`, `WTCHK`, `FL_ASSERT`, `FL_DBLALLOC`, `PRFVAL_CHK`,
+`SEQROB`, `SERSQ`, `CSRDBG` used to be compiled out of every regression run.
+`21e9fe5` is titled *"keep the two invariants that found the boot wedge"* — and
+CI did not compile them.
+
+Two tiers, because cost is real and a dogmatic rule gets quietly disabled:
+
+- **O(1) per cycle → unconditional in the RTL.** No define, no opt-out. The
+  freelist double-alloc detector, the LSU order-safety check, the two-L2-
+  transactions tripwire, illegal-FSM-state defaults.
+- **O(N) sweeps and shadow models → a define the GATE always builds in.**
+  `FL_ASSERT` (arch map vs free set, `AREGS×SHARDS` per cycle) and `SEQROB`
+  (shadow ROB) are in `run-vl-tests.sh`'s `CHECKS`, default on, measured under
+  2% on the suite. `CHECKS=` turns them off for a multi-hour soak.
 
 The model to copy is already in the tree: `cache.v:462` `$fatal`s if two L2
 transactions are ever outstanding, unconditionally, because the ack is
 untagged. That is how every assumed-impossible condition should be written.
+
+**A1a. A debugging aid is not an invariant.**
+Promoting one is how you get a false failure and lose trust in the whole layer.
+A check earns always-on status only if it is true for *every* legal execution,
+not just the scenario it was written to debug. `LSU_ASSERT`'s FWD-MISS check
+looked like an invariant and is not: it assumes the older covering store is
+also the youngest one covering the word, and it compares against `c_val`, which
+is the post-transform result (sign-extend / zero-extend / NaN-box) rather than
+the raw merged word. A legal `fld` over a word written by two different stores
+trips it — `rv64ud-p-ldst` under `CACHE=1` does exactly that. It stays opt-in.
+
+Same trap on the other side: the exclusivity invariant "no line is valid in both
+the array and the prefetch buffer" reads like B4 but is false here — `PF_EN`
+implies `WRITABLE==0`, both copies are clean and identical, and the prefetcher
+arms `cur_line+1` without probing the tags, so duplicates are routine. The
+property that *is* true, and worth asserting, is fate-sharing: no pre-flush line
+may survive into the buffer.
 
 **A2. Every FSM `case` has a `default` that asserts.**
 `cache.v:775`, `mmu.v:220`, `lsu.v:903` have none. An FSM that lands on an
@@ -109,11 +141,17 @@ generalise it into a function all dereferences go through), or make the victim
 chooser unable to select a slot that an outstanding op has named. Never
 dereference a bare `{way, idx}` across a state in which an install can run.
 
-**B4. A second copy of a line is a coherence problem.**
-The prefetch buffer (`pf_val`/`pf_addr`/`pf_line`) holds a line that is not in
-the tag array and is not covered by the duplicate-line tripwire (`24f7dd3`).
-There must be an always-on assertion that no line is valid in both the array
-and the prefetch buffer.
+**B4. A second copy of a line must share the original's invalidation fate, and
+that fate must be asserted.**
+The prefetch buffer (`pf_val`/`pf_addr`/`pf_line`) holds a line the tag array
+does not track, so the duplicate-line tripwire (`24f7dd3`) cannot see it.
+Duplication itself is fine here — `PF_EN` implies `WRITABLE==0`, so both copies
+are clean and identical — but the copy must die when the array does, or a
+`fence.i` leaves a stale line reachable through `pf_hit` while the array reads
+clean. `pf_drop` and the `S_IDLE` clear deliver that across three separate
+sites and nothing checked the property they collectively provide; it is now
+asserted at flush completion. Where a design keeps a shadow copy, name the
+fate-sharing property and assert it — do not assert exclusivity you do not have.
 
 ---
 
@@ -133,6 +171,19 @@ LSU. If the gate is in the way, move the gate — do not go around it.
 Visible state (`mstatus.FS`, `fcsr`, BP tables, CSRs) updates at retire. See
 `8fc57f1`; `fcsr` flags are the remaining latent case.
 
+**C4. A derived read must never feed its own read-modify-write.**
+Where a register's read value is an overlay of stored state and live hardware,
+name the raw register as the RMW base explicitly. `mip` reads as
+`(mip | hw_ip)` because the spec requires the device lines to OR into the read;
+`8585044` computed `csrrs`/`csrrc`'s new value from that *read*, so any M-mode
+RMW of `mip` while a device line happened to be high latched the transient into
+the software register. A stale SEIP then storms spurious external interrupts
+forever — trap, PLIC CLAIM returns 0, return, SEIP still reads 1, re-trap: a
+~1300-cycle loop that starves commit and presents as a full-system hang. It
+needed counters plus external-IRQ load to reproduce, which is why 15 minutes of
+plain NFS traffic never found it. Audit every CSR whose read differs from its
+stored value.
+
 ---
 
 ## D. Staleness
@@ -149,22 +200,41 @@ receiver.**
 `804f3ea` (`inv_req` during a refill), `4239971` (line-port request pulse).
 The receiver latches; the sender does not retry.
 
+**D3. An in-flight flag needs a completion guarantee, and an assertion on its
+age.**
+A flag that says "something is outstanding" and is cleared only by that
+something completing will wedge the whole machine if the completion can be
+lost. `4db98a0`: an injected `OP_IRQ` can commit without its trap firing, which
+leaves `inject_inflight` latched; no rollback ever comes, `csr_irq_v` cannot
+fall because the handler that would clear the level source never runs, every
+future injection is vetoed, and once the kernel reaches `wfi` the machine
+freezes solid — console, ping, everything. It took an ILA capture on hardware
+and a cosim run to 84.17M retires to see it. The fix in place is a 64k-cycle
+watchdog, which is a mitigation: it is stated in its own commit message as
+something commit-side orphan detection should replace. Either way the age bound
+is known, so assert it — a wedge that announces itself costs minutes.
+
 ---
 
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**
-`WIDTHTRUNC`, `WIDTHEXPAND`, `WIDTH`, `CASEINCOMPLETE`, `LATCH`, `UNOPTFLAT`,
-`UNDRIVEN`, `MODDUP`, `PINMISSING`. Waivers are file-scoped in a
-`verilator.vlt` config, never global `-Wno-` flags — the current build
-suppresses all of these globally in order to quiet imported CVFPU, and that is
-why `e552aab`, `c629047`, `4ac3d92`, `f157d1d` and `857dfc8` reached a
-bitstream or a wrong measurement. `-Wno-fatal` means none of it stops a build
+`src/lint.sh` is the gate: `WIDTHTRUNC`, `CASEINCOMPLETE`, `LATCH`,
+`UNOPTFLAT`, `UNDRIVEN`, `MODDUP`, `IMPLICIT`, `PINNOTFOUND`, `BLKANDNBLK`,
+`MULTIDRIVEN` are errors. Waivers are file-scoped in `src/verilator.vlt` and
+must name a file; if a waiver would have to name one of our own modules, fix
+the RTL instead. Never a global `-Wno-`: the build carried global suppressions
+to quiet imported CVFPU, which switched the same rules off for our code, and
+that is why `e552aab`, `c629047`, `4ac3d92`, `f157d1d` and `857dfc8` reached a
+bitstream or a wrong measurement. `-Wno-fatal` meant none of it stopped a build
 anyway.
 
 Style rules (`TIMESCALEMOD`, `UNUSEDSIGNAL`, `UNUSEDPARAM`, `DECLFILENAME`,
-`ASCRANGE`, `UNSIGNED`) stay off. Six of the twelve suppressions are
-load-bearing; the rest are noise.
+`ASCRANGE`, `UNSIGNED`, `BLKSEQ`, `GENUNNAMED`, `PROCASSINIT`,
+`PINCONNECTEMPTY`) stay off, by name, so the list stays auditable.
+`WIDTHEXPAND` and `PINMISSING` are advisory until their pre-existing hits in
+the experimental files are cleared — shrink that list, do not grow the error
+list back down.
 
 **E2. An array index is the array's index width.**
 No wide expression truncated at the bracket. `soc_top.v:693` indexes a
@@ -203,9 +273,14 @@ same file. `d3d09157` killed a bitstream that was clean across 238 tests and a
 full boot cosim.
 
 **F2. No module name defined twice in the source list.**
-`rs232.v` defines `rs232rx` and `rs232tx`; so do `rs232rx.v` and `rs232tx.v`,
-with *different ports and different default baud*. Which definition wins is
-tool-dependent. This is the console.
+`rs232.v` defined `rs232rx`/`rs232tx` a second time, with a different `rs232rx`
+port list and a different default baud. Verilator's glob took `rs232.v` first,
+so every simulation build bound a *different UART than the board*:
+`rk_xcku5p.v` instantiates the standalone pair with `.ready()`/`.overflow()`,
+which `rs232.v`'s five-port `rs232rx` does not have. It was harmless only
+because no sim TB instantiates the UART — the testbench drives
+`uart_rx_we`/`uart_tx_ready` directly. `rs232.v` is deleted; `MODDUP` is now a
+lint error.
 
 **F3. A constraint that affects function has a sim-side equivalent or a
 checked-in check.**
