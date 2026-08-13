@@ -138,6 +138,19 @@ Board notes:
   itself, so page-table stores are visible without any flush
   protocol.
 
+## Licensing
+
+SmolRV64 is released under the **Apache License, Version 2.0**.  See
+[LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for copyright
+and third-party attribution.
+
+The floating-point unit in [`third_party/cvfpu`](third_party/cvfpu)
+(CVFPU / FPnew, ETH Zurich and University of Bologna) is released under
+the *SolderPad Hardware License, version 0.51*, a permissive license
+based on Apache 2.0 that expressly permits the licensee to treat the
+work as licensed under Apache 2.0.  The T-Head E906 and C910 DivSqrt
+units vendored within CVFPU are released under Apache 2.0 directly.
+
 ## Appendix: Skewed VHPR (Virtually Hashed, Physically Resolved)
 
 The VHPR cache indexes with a hash of the virtual address, giving a
