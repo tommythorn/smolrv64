@@ -30,6 +30,12 @@ ifneq ($(strip $(PROBE_DIAG)),)
 export PROBE_DIAG
 endif
 
+# INO_CORE=1 builds the IN-ORDER core (inorder/ino_soc_top) instead of the OoO
+# soc_top.  e.g. `make bit INO_CORE=1`.
+ifneq ($(strip $(INO_CORE)),)
+export INO_CORE
+endif
+
 # Width: PROBE_IW=1 (or 4, ...) overrides the RTL default (2). e.g. `make bit PROBE_IW=1`.
 ifneq ($(strip $(PROBE_IW)),)
 export PROBE_IW

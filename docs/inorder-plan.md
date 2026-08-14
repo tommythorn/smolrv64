@@ -215,7 +215,7 @@ core needs around it:
   construction, where the OoO core routes an issue-time flag through `commit_ctl`.
 - Operands need no special path: the regfile is the unified 64-entry file the
   decoders already address, so `rs1/rs2/rs3` *are* the FP sources.
-- ~~`probe/mmu.v` does not implement Ssvnapot~~ — **fixed in `probe/mmu.v`**, so
+- ~~`src/mmu.v` does not implement Ssvnapot~~ — **fixed in `src/mmu.v`**, so
   both cores get it. Found via this core: `mmu.v`'s `leaf_pa()` used the PTE's PPN
   verbatim for a 4 KiB leaf with no `pte[63]` (N) handling, so a 64 KiB NAPOT page
   resolved to the NAPOT-encoded PPN instead of substituting the VA's `VPN[3:0]`.
@@ -321,7 +321,41 @@ is ready. Samples taken mid-walk show a stale PA — e.g. `va=ffffffff80515748
 pa=0000000080515748` alongside `va=ffffffff8051582c pa=000000008071582c` for the
 same 4 KiB page. That is a sampling artifact, not a translation inconsistency.)
 
-## Open: unimplemented CSRs do not trap (shared `probe/csr_file.v`)
+## Pinned memory subsystem (decision, 2026-08-14)
+
+`inorder/` carries its **own** cache and L2 arbiter — `ino_cache.v` and
+`ino_l2_arbiter.v`, the last known-good versions — instead of `src/cache.v` /
+`src/l2_arbiter.v`. `src/` is left untouched for the OoO core.
+
+**Why.** Rebasing onto the current `src/` tree regressed the Linux boot: kernel
+panic at `of_clk_init`/`time_init` (~91M cycles), load page fault on a wild
+pointer. Bisected by controlled experiment:
+
+| Configuration | Result |
+|---|---|
+| old src + old kernel | boots to `login:` |
+| new src + new kernel | panic |
+| new src + **old kernel** | **same panic** → the kernel is not the variable |
+| new src + **old cache/l2 + old SoC/LSU** | **boots to `login:`** |
+
+The last row keeps upstream's new `predictor.v`, `csr_file.v` and `mmu.v`, so the
+regression is in the D$/memory rework (pipelined multi-outstanding `cache.v`,
++710/−61, with `l2_arbiter` and the `soc_top` D$ adapter).
+
+**Caveat:** that experiment reverted those together (and with them `HW` 8→2 and the
+`mem_rdy`/`mem_resp_addr` adoption), so it isolates the rework *as a whole* — it
+does **not** prove `cache.v` is itself buggy. It may equally be that a blocking LSU
+fails some further requirement of the new pipelined contract.
+
+**Why pinning is the right call regardless** (TT concurred): the new cache is a
+*performance* rework — pipelined reads, multi-outstanding, write-back buffer. This
+LSU is blocking by design: one memory op in flight, whole pipe stalls on a miss.
+Multi-outstanding reads buy it nothing, so the in-order core would pay all the
+complexity and risk for zero gain — and that complexity shares a lineage with the
+deep Ubuntu wedge the OoO core still has. Revisit deliberately later if the LSU
+ever goes non-blocking.
+
+## Open: unimplemented CSRs do not trap (shared `src/csr_file.v`)
 
 The first cosim sweep found one divergence in 131 `-p` tests:
 `rv64mi-p-breakpoint` retire #81, `csrrs x0, tdata2, a1` (CSR **0x7A5**, a

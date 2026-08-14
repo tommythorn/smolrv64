@@ -23,10 +23,7 @@
 // SERIALIZATION. A CSR/system/fence op lets nothing follow it into X until it has
 // left M, so CSR values, privilege, satp and mstatus.FS are never read stale.
 `ifndef INO_HW
- // Fetch window halfwords. A scalar core only consumes one instruction per bundle, so
- // 2 would do -- but soc_top floors its I$ read width at HW*16 = 128 bits and cache.v
- // is tuned for that, so keep 8 and let the aligner discard the tail.
- `define INO_HW 8
+ `define INO_HW 2                 // fetch window halfwords (one 32-bit instruction)
 `endif
 module ino_core
   #(parameter PCW  = 64,
@@ -52,8 +49,6 @@ module ino_core
     output wire                    dmem_runcached,
     input  wire [63:0]             dmem_rdata,
     input  wire                    dmem_rvalid,
-    input  wire                    dmem_rdy,           // D$ read port can take a request
-    input  wire [AW-1:0]           dmem_resp_addr,     // PA that dmem_rdata answers
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
     output wire [63:0]             dmem_wdata,
@@ -260,7 +255,6 @@ module ino_core
       .ptw_rdata(dptw_rdata), .ptw_rvalid(dptw_rvalid),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
-      .mem_rdy(dmem_rdy), .mem_resp_addr(dmem_resp_addr),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata),
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
@@ -423,7 +417,7 @@ module ino_core
       .o_tlb_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 3'd1 : 3'd0), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       .upd_valid(m_is_sys), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
       .upd_addr(m_imm[11:0]),

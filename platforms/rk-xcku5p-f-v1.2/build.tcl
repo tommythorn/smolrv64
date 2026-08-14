@@ -12,6 +12,7 @@ set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
 set probe_dir [file join $repo_root src]
+set inorder_dir [file join $repo_root inorder]
 set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
@@ -163,6 +164,21 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
     update_compile_order -fileset $fileset
 }
 
+# In-order core (INO_CORE=1): ino_soc_top + its modules. It pins its OWN memory
+# subsystem (ino_cache / ino_l2_arbiter) rather than src/cache.v -- see
+# docs/inorder-plan.md. src/'s modules stay in the fileset but are unreachable from
+# the top under INO_CORE, so Vivado elaborates and drops them.
+proc configure_inorder_sources {repo_root src_dir inorder_dir} {
+    set fileset [current_fileset]
+    foreach f [lsort [glob -nocomplain [file join $inorder_dir *.v]]] {
+        set b [file tail $f]
+        if {[regexp {^tb_} $b]} continue
+        add_source_if_missing $fileset $f Verilog
+    }
+    add_unique_property_value $fileset include_dirs [file normalize $inorder_dir]
+    update_compile_order -fileset $fileset
+}
+
 # Helper: launch a run only if it needs work
 proc run_if_needed {run_id to_step jobs} {
     global force
@@ -199,6 +215,11 @@ if {$probe_core} {
     puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
     lappend vdefines "PROBE_CORE"
+    if {[info exists env(INO_CORE)] && $env(INO_CORE) ne "" && $env(INO_CORE) ne "0"} {
+        puts "INO_CORE: building the in-order core (ino_soc_top) instead of the OoO soc_top."
+        lappend vdefines "INO_CORE"
+        configure_inorder_sources $repo_root $src_dir $inorder_dir
+    }
     lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
     if {[info exists env(NO_VIRTIO_WIRE)] && $env(NO_VIRTIO_WIRE) ne "" && $env(NO_VIRTIO_WIRE) ne "0"} {
         puts "NO_VIRTIO_WIRE: deactivating virtio wrapper wiring (isolation experiment)."

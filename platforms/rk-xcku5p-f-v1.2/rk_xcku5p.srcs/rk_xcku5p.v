@@ -1609,6 +1609,40 @@ module rk_xcku5p(
    wire [63:0] probe_wedge;     // frontend/dispatch/interrupt state for ILA_TIMER probe7
    wire [63:0] probe_lsu;       // full LSU state for ILA_TIMER probe5
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
+`ifdef INO_CORE
+   // ---------------- In-order core (INO_CORE=1) ----------------
+   // ino_soc_top pins its own memory subsystem (ino_cache / ino_l2_arbiter) -- see
+   // docs/inorder-plan.md -- so it has neither the newer soc_top's per-byte DDR write
+   // strobes nor its ILA debug buses. It only ever pushes WHOLE lines, so wmask is
+   // all-ones; the debug buses tie off (their ILAs are PROBE_CORE-only diagnostics).
+   assign pddr_wmask      = {64{1'b1}};
+   assign probe_par_err   = 2'd0;
+   assign probe_par_dbg   = 64'd0;
+   assign probe_timer_dbg = 64'd0;
+   assign probe_pc_dbg    = 64'd0;
+   assign probe_mtvec_dbg = 64'd0;
+   assign probe_mtvec_we  = 1'b0;
+   assign probe_csrop     = 64'd0;
+   assign probe_csrop_v   = 1'b0;
+   assign probe_wedge     = 64'd0;
+   assign probe_lsu       = 64'd0;
+   ino_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
+      .clk(probe_clk), .reset(probe_reset),
+      .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
+      .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
+      .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
+      .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
+      .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
+      .irq_dbg(probe_irq_dbg),
+      .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
+      .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
+`ifdef NO_VIRTIO_WIRE
+      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0));
+`else
+      .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
+      .virtio_irq(p_virtio_irq));
+`endif
+`else
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset),
       .commit(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
@@ -1628,6 +1662,7 @@ module rk_xcku5p(
 `else
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
       .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
+`endif
 `endif
 
 `ifdef ILA_IRQ

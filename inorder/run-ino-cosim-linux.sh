@@ -44,7 +44,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv \
-            ../src/cache.v ../src/l2_arbiter.v ../src/clint.v ../src/plic.v \
+            ino_cache.v ino_l2_arbiter.v ../src/clint.v ../src/plic.v \
             ../src/ddr_hpm.v"
 
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then

@@ -64,14 +64,6 @@ module ino_lsu
     output reg             mem_runcached,
     input  wire [63:0]     mem_rdata,
     input  wire            mem_rvalid,
-    // The D$ read port is a ready/valid channel serving several clients (this LSU plus
-    // the page-table walkers), and it is pipelined, so a response must be claimed by
-    // IDENTITY: mem_resp_addr is the PA that mem_rdata answers. Without the match a
-    // walker's PTE lands as this load's data (seen as a wild pointer in the kernel's
-    // of_clk_init -> strcasecmp). mem_rdy gates issue; tie it high and
-    // mem_resp_addr = mem_raddr for a zero-latency memory.
-    input  wire            mem_rdy,
-    input  wire [AW-1:0]   mem_resp_addr,
     output wire            mem_wen,
     output wire [AW-1:0]   mem_waddr,
     output wire [63:0]     mem_wdata,
@@ -134,11 +126,8 @@ module ino_lsu
    assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : t_cause;
    assign fault_tval  = req_vaddr;
 
-   // request can start: translated cleanly this cycle. A READ additionally needs the
-   // shared D$ read port to accept it (mem_rdy); a store goes out the write port.
+   // request can start: translated cleanly this cycle
    wire start_ok = xl_req & t_ready & ~t_fault & ~xpage;
-   // a response is ours only when it answers the address we asked for
-   wire resp_ok  = mem_rvalid & (mem_resp_addr == mem_raddr);
 
    // ------------------------------------------------------- AMO RMW datapath
    wire        a_isw   = (req_size == 2'd2);
@@ -205,8 +194,8 @@ module ino_lsu
    // ------------------------------------------------------------ completion
    assign done   = fault
                  | (st_go  & mem_wready)
-                 | ((st == S_LD)  & resp_ok)
-                 | ((st == S_ARD) & resp_ok & ~a_dowr)
+                 | ((st == S_LD)  & mem_rvalid)
+                 | ((st == S_ARD) & mem_rvalid & ~a_dowr)
                  | (amo_go & mem_wready);
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
@@ -225,8 +214,6 @@ module ino_lsu
                 if (req_store) begin
                    pa_q <= t_paddr;
                    st   <= S_ST;
-                end else if (!mem_rdy) begin
-                   // read port busy: hold in IDLE and retry (translation is stable)
                 end else if (req_amo) begin
                    // An atomic reads, modifies and writes the CONTAINING 8-BYTE WORD:
                    // a_wdata/a_wmask are built relative to that word (a_half = addr[2]
@@ -244,9 +231,9 @@ module ino_lsu
                    st        <= S_LD;
                 end
              end
-           S_LD:  if (resp_ok) st <= S_IDLE;
+           S_LD:  if (mem_rvalid) st <= S_IDLE;
            S_ST:  if (mem_wready) st <= S_IDLE;
-           S_ARD: if (resp_ok) begin
+           S_ARD: if (mem_rvalid) begin
                      amo_old_q <= a_rdval;
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end
                      if (is_sc) rsv_v <= 1'b0;

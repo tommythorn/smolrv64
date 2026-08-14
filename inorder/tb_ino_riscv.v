@@ -11,7 +11,7 @@
 //   +cycles=<n>    timeout (default 200000)
 //   +trace=1       per-retire disassembly-free trace (pc/insn/rd)
 module tb;
-   localparam PCW = 64, SEQW = 8, HW = 8;
+   localparam PCW = 64, SEQW = 8, HW = 2;
    localparam [63:0] BASE = 64'h8000_0000;
    // 4 MiB. 2 MiB is NOT enough: rv64ssvnapot-p-napot stores to PA 0x80208010 and
    // reads it back physically. The OoO probe's TB gets away with 2 MiB only because
@@ -24,7 +24,7 @@ module tb;
 
    wire [PCW-1:0]   imem_addr;
    reg  [HW*16-1:0] imem_data;
-   wire [3:0]       imem_avail = HW[3:0];      // window always full from this TB memory
+   wire [1:0]       imem_avail = HW[1:0];      // window always full from this TB memory
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
    wire             dmem_ren, dmem_wen;
@@ -43,9 +43,7 @@ module tb;
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(),
-      // zero-latency memory: always ready, and every response answers the address asked
       .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1),
-      .dmem_rdy(1'b1), .dmem_resp_addr(dmem_raddr),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask), .dmem_wuncached(),
       .dmem_cbo(), .dmem_cbo_zero(), .dmem_cbo_keep(), .dmem_wready(1'b1),

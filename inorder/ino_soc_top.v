@@ -1,25 +1,9 @@
 `default_nettype none
-`ifndef PROBE_CLK_DIV
- `define PROBE_CLK_DIV 5
-`endif
 
-// FORK of src/soc_top.v, retargeted to the in-order core (ino_core). Everything
-// outside the core instance -- MMIO routing, CLINT/PLIC/UART, the virtio bridge,
-// the I$/D$ adapters, the PTW-through-D$ adapters, l2_arbiter, local SRAM and the
-// DDR line port -- is carried over VERBATIM; keep the two in sync when touching
-// those. Deltas:
-//   * backend_top -> ino_core (scalar: no POOL/PBITS, no per-shard writeback bus)
-//   * TWO page-table walkers, not three. The OoO LSU runs separate load and store
-//     walkers because loads and stores translate in parallel; the in-order LSU has
-//     one memory op in flight, so one data walker serves loads, stores and atomics.
-//   * commit -> retire
+// No width knobs: the core is scalar, so the I$ window is fixed at HW=2 halfwords
+// (one 32-bit instruction) and there is no per-shard writeback bus to size.
 //
-// No width knobs: the core is scalar. HW stays at soc_top's 8-halfword floor so the
-// I$ read width (HW*16) is the one cache.v is tuned for.
-`ifndef PROBE_POOL
- `define PROBE_POOL 80
-`endif
-// Build-id block (0x1000_F000) exposed to the PROBE core. Guarded so the FPGA build's
+// Build-id block (0x1000_F000). Guarded so the FPGA build's
 // -verilog_define git-commit/stamp/dirty reach it (build.tcl); sim/cosim default to 0.
 `ifndef SMOLRV64_GIT_COMMIT
  `define SMOLRV64_GIT_COMMIT 32'h0
@@ -31,6 +15,19 @@
  `define SMOLRV64_GIT_DIRTY 1'b0
 `endif
 
+// FORK of probe/soc_top.v, retargeted to the in-order core. Everything outside the
+// core instance -- MMIO routing, CLINT/PLIC/UART, virtio bridge, the I$/D$ adapters,
+// the PTW-through-D$ adapters, the l2_arbiter, local SRAM and the DDR line port -- is
+// carried over verbatim; keep the two in sync when touching those.
+//
+// Deltas vs soc_top.v:
+//   * backend_top -> ino_core (scalar: HW=2, one 32-bit fetch window; no POOL/PBITS,
+//     no per-shard writeback observation bus).
+//   * TWO page-table walkers, not three. The OoO LSU runs separate load and store
+//     walkers because loads and stores translate in parallel; the in-order LSU has
+//     one memory op in flight, so one data walker serves loads, stores and atomics.
+//   * `commit` -> `retire` (one instruction per pulse, in program order).
+//
 // Synthesizable SoC top: the in-order core (ino_core) + unified I$/D$ (cache.v)
 // + l2_arbiter merging all memory traffic onto ONE line memory port + a behavioral
 // line RAM. This lifts the proven tb_vl cache adapters (sticky-rvalid read port,
@@ -45,7 +42,7 @@
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 module ino_soc_top #(
-   parameter HW=8, PCW=64, SEQW=8,
+   parameter HW=2, PCW=64, SEQW=8,   // HW=2: one 32-bit fetch window (scalar)
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
@@ -66,7 +63,6 @@ module ino_soc_top #(
    output wire             ddr_we,
    output wire [57:0]      ddr_addr,     // line address PA[63:6]
    output wire [511:0]     ddr_wdata,
-   output wire [63:0]      ddr_wmask,    // per-byte write strobes (partial on NC/WT store pushes)
    input  wire [511:0]     ddr_rdata,
    input  wire             ddr_ack,
    // UART receive: the TB/host pushes a byte (uart_rx_we while uart_rx_ready) -> the core
@@ -91,28 +87,8 @@ module ino_soc_top #(
    output wire [3:0]       virtio_be,
    input  wire [31:0]      virtio_rdata,
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
-   input  wire             virtio_irq,      // virtio-blk  -> PLIC source 11 (DTB interrupts=11)
-   input  wire             virtio_net_irq,  // virtio-net  -> PLIC source 12 (DTB interrupts=12).
-                                            // Was missing entirely: src[12] read a hardwired 0, so
-                                            // the net device asserted its level forever and Linux
-                                            // took ZERO interrupts on it (blk on src 11 worked), the
-                                            // driver never harvested the RX ring, and DHCP got no
-                                            // reply -> eth0 stuck without an IPv4 address.
-   output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
-   output wire [63:0]      timer_dbg,       // csr_file timer/irq debug bus (ILA_TIMER, probe_clk)
-   output wire [63:0]      pc_dbg,          // fetch PA (probe_clk) -- ILA_TIMER probe1: spin-loop PC histogram
-   output wire [63:0]      mtvec_dbg,       // M trap vector (probe_clk) -- ILA_TIMER probe2
-   output wire             mtvec_we_dbg,    // mtvec write strobe -- ILA_TIMER probe4
-   output wire [63:0]      csrop_dbg,       // executing system op {pc,addr,func,is_csr} -- ILA_TIMER probe5
-   output wire             csrop_v_dbg,     // ...its 1-cycle strobe -- ILA_TIMER probe6
-   output wire [63:0]      wedge_dbg,       // frontend/dispatch/interrupt state -- ILA_TIMER probe7
-   output wire [63:0]      lsu_dbg,         // full LSU state -- ILA_TIMER probe5
-   // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; ties to 0
-   // otherwise). cache_par_err is the ILA TRIGGER: it pulses in the cycle a cache data
-   // array returns a word whose parity does not match what was stored -- the moment of
-   // corruption, rather than the kernel Oops millions of cycles downstream.
-   output wire [1:0]       cache_par_err,   // {I$, D$} 1-cycle error pulse
-   output wire [63:0]      cache_par_dbg    // {sticky, bank, addr} of the first failure
+   input  wire             virtio_irq,
+   output wire [17:0]      irq_dbg          // interrupt-path debug for the wrapper ILA (probe_clk)
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -120,7 +96,6 @@ module ino_soc_top #(
 
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
-   assign pc_dbg = {{(64-PCW){1'b0}}, imem_addr};
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;
@@ -128,8 +103,7 @@ module ino_soc_top #(
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
    wire                dmem_cbo, dmem_cbo_zero, dmem_cbo_keep;  // Zicbom/Zicboz cache maintenance
    wire [63:0]         dmem_rdata;
-   wire                dmem_rvalid, dmem_wready, dmem_idle, ifence, dmem_rdy;
-   wire [63:0]         dmem_resp_addr;
+   wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
    wire [55:0]         ptw_addr, dptw_addr;
    wire                ptw_read, dptw_read;
    wire [63:0]         ptw_rdata, dptw_rdata;
@@ -142,7 +116,6 @@ module ino_soc_top #(
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
-      .dmem_rdy(dmem_rdy), .dmem_resp_addr(dmem_resp_addr),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
       .dmem_cbo(dmem_cbo), .dmem_cbo_zero(dmem_cbo_zero), .dmem_cbo_keep(dmem_cbo_keep),
@@ -209,11 +182,7 @@ module ino_soc_top #(
       else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
                  dev_wack <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
-   // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV sweep: the DTB's
-   // timebase-frequency (501253) must stay valid or every kernel deadline is wrong (a 40x lie
-   // here once made healthy boots look permanently stalled). 333.33MHz/DIV/501253:
-   // DIV=5 -> 133 (66.67MHz), DIV=4 -> 166 (83.33MHz), DIV=3 -> 221 (111.1MHz); all within 0.3%.
-   clint #(.SCALE_DIV((333_333_333 / `PROBE_CLK_DIV) / 501_253)) u_clint
+   clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
@@ -228,7 +197,7 @@ module ino_soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({52'd0, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
@@ -317,10 +286,9 @@ module ino_soc_top #(
    function [63:0] uart_rd;
       input [63:0] a; input [7:0] rbr; input dr; input [7:0] lcr; input thr_full;
       input [3:0] ier; input [7:0] iir; input [4:0] mcr; input [7:0] scr;
-      integer b2; reg [2:0] off; reg [63:0] boff;
+      integer b2; reg [2:0] off;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
-         boff = a - UART_BASE + b2;
-         off  = boff[2:0];          // byte lane within the 8-byte window (sliced, not truncated)
+         off=(a-UART_BASE+b2)&3'h7;
          uart_rd[b2*8 +: 8] =
               (off==3'd0) ? (lcr[7] ? 8'h00 : rbr)                       // RBR (DLL if DLAB)
             : (off==3'd1) ? (lcr[7] ? 8'h00 : {4'd0, ier})               // IER (DLM if DLAB)
@@ -355,40 +323,36 @@ module ino_soc_top #(
                          : is_buildid_r ? {build_id_word, build_id_word}
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
-   // ---------------- D$ + read/write adapters, device-muxed ----------------
-   // The LSU is MULTI-OUTSTANDING (up to 2 reads in flight) and matches responses
-   // itself by PA (dmem_resp_addr): the old pend/infl/sticky/dc_rv_ok machinery is
-   // gone. This adapter only (a) holds an UNGRANTED cache request in a 1-deep issue
-   // register (av/aaddr/anc) until the rd_req&rd_rdy handshake -- dmem_rdy
-   // backpressures the LSU while it is full -- and (b) forwards the cache's raw
-   // address-tagged responses. A squash-abandoned response matches no live LSU
-   // entry and is ignored there; PTW responses on the shared port are filtered the
-   // same way (a same-address collision safely shares data). Device loads are solo
-   // (never concurrent with cache reads): their completion keeps the dmem_raddr
-   // identity (the LSU holds the last-issued address).
-   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_rd_rdy;  wire [63:0] dc_rd_resp_addr;
+   // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
+   reg          c_rd_pend;
+   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
-   wire [63:0]  dc_l2_wmask;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
-   reg          av;  reg [63:0] aaddr;  reg avnc;
-   wire         c_rd_req = av | (dmem_ren & ~is_dev_r);
-   wire [63:0]  c_rd_addr = av ? aaddr : dmem_raddr;
-   wire         c_rd_nc   = av ? avnc  : dmem_runcached;
-   always @(posedge clk) if (reset) av<=1'b0;
-      else if (c_rd_req & dc_rd_rdy) av<=1'b0;                       // granted
-      else if (dmem_ren & ~is_dev_r & ~dc_rd_rdy)                    // ungranted: hold it
-         begin av<=1'b1; aaddr<=dmem_raddr; avnc<=dmem_runcached; end
-   // rdy must also drop during a live-but-UNGRANTED request cycle (av sets only at
-   // the edge): otherwise the LSU can fire again into a full skid and that second
-   // request's address is neither presented nor latched -- a silent lost load.
-   assign       dmem_rdy = ~av & ~(dmem_ren & ~is_dev_r & ~dc_rd_rdy);
-   assign       dmem_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
-                            : is_dev_r    ? dev_rvalid
-                            : dc_rd_valid;
-   assign       dmem_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
-                            : is_dev_r    ? dev_rdata
-                            : dc_rd_data;
-   assign       dmem_resp_addr = (is_virtio_r | is_dev_r) ? dmem_raddr : dc_rd_resp_addr;
+   // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
+   // ("a new mem_ren supersedes any prior unfinished read"). The cache, already committed to the
+   // squashed address, would otherwise deliver that stale line to the new load. Match the cache's
+   // response address to the current request (like the I$ does with i_pa); a non-matching response
+   // is discarded and the request re-issues for the new address.
+   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
+   // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
+   // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
+   // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
+   wire         raw_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
+                           : is_dev_r    ? dev_rvalid
+                           : dc_rv_ok;
+   wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
+                           : is_dev_r    ? dev_rdata
+                           : dc_rd_data;
+   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
+   always @(posedge clk) if (reset) c_rd_pend<=1'b0;
+      else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
+   reg          c_rdv_st;  reg [63:0] c_rdd_st;
+   always @(posedge clk) if (reset) c_rdv_st<=1'b0;
+      else if (dmem_ren) c_rdv_st<=1'b0;
+      else if (raw_rvalid) begin c_rdv_st<=1'b1; c_rdd_st<=raw_rdata; end
+   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
+   assign       dmem_rdata  = c_st_ok ? c_rdd_st : raw_rdata;
+   assign       dmem_rvalid = raw_rvalid | c_st_ok;
    // virtio store completes only when the bridge has DELIVERED it (virtio_rvalid) -- blocking, so the
    // fence-released next read cannot overtake it; other device writes accept in 1 cycle (dev_wack).
    assign       dmem_wready = is_virtio_w ? (virtio_rvalid & vio_wpending)
@@ -403,24 +367,17 @@ module ino_soc_top #(
    wire dc_inv_req, dc_inv_busy;
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
+   ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(dcr_req), .rd_rdy(dc_rd_rdy), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr),
-      // Svpbmt: only a LSU load read can be NC -- the attribute must be QUALIFIED BY THE
-      // GRANT (c_rd_req): c_rd_nc falls through to dmem_runcached, a REGISTERED last-load
-      // attribute that lingers high after an NC load completes. Unqualified, a PTW read
-      // granted while it lingered was mis-tagged NC and took the flush-around path --
-      // INVALIDATING the (dirty) line it read. During EXT4 mount the kernel polls NC
-      // virtio rings constantly, so page-table walks randomly destroyed just-written PTE
-      // lines; the refill pulled stale L2 zeros -> kernel store-fault livelock ("hangs
-      // after 'clk: Disabling unused clocks'", board + tb_virtio, CKMAX-timing sensitive).
-      .rd_uncached(c_rd_req & c_rd_nc), .wr_uncached(dmem_wuncached),
+      // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
+      // when c_rd_req is low). The store's NC bit qualifies the write port.
+      .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_ack & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
-      .l2_wmask(dc_l2_wmask),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
       .perf_access(dc_access), .perf_miss(dc_miss));
 
@@ -445,91 +402,21 @@ module ino_soc_top #(
          endcase
       end
 
-   // ---------------- I$ (read-only) + streaming fetch adapter + fence.i FSM ----------------
-   // Two PA-keyed window buffers: i_* serves the PC, p_* holds the NEXT sequential
-   // window, prefetched while i_* is consumed. The I$ read port pipelines (one accept
-   // per cycle, 2-cycle hit), but the old single-window client serialized
-   // request -> wait -> serve and fetch-bubbled 27% of all cycles at IW=2 (zero
-   // back-to-back accepts across every run). Streaming rules:
-   //  - CONTAINMENT, not equality, decides a hit in either window (and in an arriving
-   //    response). The (HW - off_hw) >= 2 guard is REQUIRED: a PC on the last halfword
-   //    yields avail=1, which cannot feed a 32-bit op, and the client would never
-   //    refetch -> deadlock. That guard is also why the prefetch stride is WINB-2:
-   //    the next window starts at the FIRST halfword the current one cannot serve
-   //    (the PC exits at offset WINB-2 or WINB; both land in the prefetched window).
-   //  - Windows and responses are hints keyed by PA: a redirect just misses
-   //    containment, and a stale response installs harmlessly (tag-matched to its
-   //    slot via rd_resp_addr; unsigned wrap gives the lower containment bound).
-   //    I$ content changes only at fence.i, which clears both windows (ic_inv_req)
-   //    and gates installs/promotes (fi_stall) so a pre-fence in-flight response
-   //    cannot linger past the invalidate.
-   //  - When the PC walks into p_*, it is PROMOTED (copied) into i_*, freeing p_*
-   //    for the next prefetch. Prefetch never crosses the 4 KiB page: beyond it the
-   //    PA is a new translation (fetch caps its window there anyway).
-   //  - Cost: a prefetch that MISSES the I$ occupies the FSM (no HUM on the I$), so a
-   //    demand issued during that fill waits it out -- bounded, and the prefetched
-   //    line is the demand's next window in the common fall-through case.
-   localparam WINB = HW*2;                       // window size in bytes
-   reg          i_have, i_rd_pend, p_have, p_rd_pend;
-   reg [63:0]   i_pa, i_reqpa, p_pa, p_reqpa;
-   reg [HW*16-1:0] i_win, p_win;
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy, ic_rd_rdy;  wire [63:0] ic_rd_resp_addr;
-   reg          ic_inv_req;
-
-   wire [63:0]  i_off_b = imem_addr - i_pa;
-   wire [63:0]  p_off_b = imem_addr - p_pa;
-   wire [63:0]  a_off_b = imem_addr - ic_rd_resp_addr;
-   wire [$clog2(HW)-1:0] i_off_hw = i_off_b[$clog2(HW):1];
-   wire [$clog2(HW)-1:0] p_off_hw = p_off_b[$clog2(HW):1];
-   wire [$clog2(HW)-1:0] a_off_hw = a_off_b[$clog2(HW):1];
-   wire         i_match = i_have & (i_off_b < WINB) & ((HW - i_off_hw) >= 2);
-   wire         p_match = p_have & (p_off_b < WINB) & ((HW - p_off_hw) >= 2);
-   // arrival bypass: serve an arriving response COMBINATIONALLY (ic_rd_data is a
-   // register inside the cache, so this adds a mux, not array logic depth) -- by
-   // containment, so a prefetch landing with the PC already mid-window serves too.
-   wire         a_serve = ic_rd_valid & (a_off_b < WINB) & ((HW - a_off_hw) >= 2);
-   wire         serve   = a_serve | i_match | p_match;
-   wire [$clog2(HW)-1:0] s_off = a_serve ? a_off_hw : i_match ? i_off_hw : p_off_hw;
-   wire [HW*16-1:0]      s_win = a_serve ? ic_rd_data : i_match ? i_win : p_win;
-
-   // request channel (present until the rd_req&rd_rdy grant; retracting or
-   // re-addressing an ungranted request is legal). Demand: nothing serves the PC
-   // and no in-flight prefetch is about to (pf_cover). Prefetch: while serving
-   // from i_*, keep p_* one window ahead.
-   wire [63:0]  c_off_b  = imem_addr - p_reqpa;
-   wire         pf_cover = p_rd_pend & (c_off_b < WINB) & ((HW - c_off_b[$clog2(HW):1]) >= 2);
-   wire         dem_req  = ~serve & ~pf_cover & ~i_rd_pend & ~fi_stall;
-   wire [63:0]  pf_tgt   = i_pa + (WINB-2);
-   wire         pf_req   = i_match & ~p_rd_pend & ~fi_stall
-                         & (pf_tgt[63:12] == i_pa[63:12])       // same 4 KiB page only
-                         & ~(p_have & (p_pa == pf_tgt));
-   wire         ic_rd_req  = dem_req | pf_req;
-   wire [63:0]  ic_rd_addr = dem_req ? imem_addr : pf_tgt;
+   // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
+   reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
+   wire         i_match = i_have & (i_pa == imem_addr);
+   wire         i_need  = ~i_match;
+   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
+   wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
+   wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
-   wire [63:0]  ic_l2_wmask;   // all-ones (the I$ never writes; reset value holds)
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
-   always @(posedge clk) if (reset) begin
-         i_have<=1'b0; p_have<=1'b0; i_rd_pend<=1'b0; p_rd_pend<=1'b0;
-      end else begin
-         if (ic_inv_req) begin i_have<=1'b0; p_have<=1'b0; end
-         if (ic_rd_req & ic_rd_rdy) begin
-            if (dem_req) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
-            else         begin p_rd_pend<=1'b1; p_reqpa<=pf_tgt;    end
-         end
-         if (ic_rd_valid) begin
-            if (i_rd_pend & (ic_rd_resp_addr == i_reqpa)) begin
-               i_rd_pend <= 1'b0;
-               if (!fi_stall) begin i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
-            end else if (p_rd_pend & (ic_rd_resp_addr == p_reqpa)) begin
-               p_rd_pend <= 1'b0;
-               if (!fi_stall) begin p_have<=1'b1; p_pa<=p_reqpa; p_win<=ic_rd_data; end
-            end
-         end
-         // promote LAST: if a redirect lands in p_* while a stale demand response
-         // returns this same cycle, the promoted (serving) window must win i_*.
-         if (p_match & ~i_match & ~fi_stall) begin
-            i_have<=1'b1; i_pa<=p_pa; i_win<=p_win;
-         end
+   reg          ic_inv_req;
+   always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
+      else begin
+         if (ic_inv_req) i_have<=1'b0;
+         if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
+         if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
       end
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  wire fi_stall = (fi != FI_IDLE);
@@ -545,42 +432,34 @@ module ino_soc_top #(
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
       end
-   assign imem_data  = s_win >> {s_off, 4'd0};
+   // Arrival bypass: serve the window COMBINATIONALLY the cycle the I$ delivers it
+   // (ic_rd_data is a register inside the cache, so this adds a mux, not logic
+   // depth from the arrays). Guard with the response address: a redirect can move
+   // pc while a window is in flight, and the stale response must read as a miss.
+   wire         i_arr = ic_rd_valid & (ic_rd_resp_addr == imem_addr);
+   assign imem_data  = i_arr ? ic_rd_data : i_win;
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = (fi_stall | ~serve) ? {$clog2(HW+2){1'b0}}
-                     : (HW[$clog2(HW+2)-1:0] - {1'b0, s_off});
+   assign imem_avail = fi_stall ? 0 : ((i_match | i_arr) ? HW : 0);   // HW halfwords when the line is present
 
-   cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
+   ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_rdy(ic_rd_rdy), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
-      .l2_wmask(ic_l2_wmask),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss));
 
-   // ---- cache data-array integrity taps (see the port comment; -DCACHE_PARITY) ----
-`ifdef CACHE_PARITY
-   assign cache_par_err = {u_icache.par_err, u_dcache.par_err};
-   assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
-                           2'd0, u_dcache.par_bank, u_icache.par_bank,
-                           {(64-8-2*16){1'b0}},
-                           u_dcache.par_addr16, u_icache.par_addr16};
-`else
-   assign cache_par_err = 2'b00;
-   assign cache_par_dbg = 64'd0;
-`endif
-
    // ---------------- PTW adapters: PTE word reads routed THROUGH the D$ ----------------
-   // g=0 iPTW, 1 ldPTW, 2 stPTW. Each *_read is held (with a stable *_addr) until *_rvalid.
+   // g=0 iPTW, 1 dPTW (loads, stores and atomics -- the in-order LSU has one memory op
+   // in flight, so one data walker suffices). Each *_read is held (stable *_addr) until *_rvalid.
    // A walk reads its 8-byte PTE through the D$ read port (shared with the LSU via the dcr_*
    // arbiter below), so it always observes dirty PTEs -- no sfence.vma flush needed. pw_busy[g]
    // marks an outstanding read; the response is matched by exact byte address (the cache echoes
@@ -612,22 +491,13 @@ module ino_soc_top #(
    assign dptw_rdata=pw_rdata[1];  assign dptw_rvalid=pw_rvalid[1];
 
    // D$ read-port arbiter: the LSU (c_rd_req/dmem_raddr) and the 3 PTW walks share the single D$
-   // read port. Fixed priority LSU > iPTW > ldPTW > stPTW. The port is a ready/valid
-   // request channel: the selected client's request is accepted where dcr_req &
-   // dc_rd_rdy, and pw_issued[g] stops a granted walk from re-requesting while its
-   // PTE is in flight (responses de-mux by address match, so in-flight reads from
-   // different clients can overlap in the pipelined cache). No deadlock: a load
-   // needing ldPTW is itself blocked on translation and not issuing c_rd_req.
-   reg  [1:0] pw_issued;
-   wire [1:0] pw_want = pw_busy & ~pw_issued;
-   wire [1:0] pw_gnt;
-   assign pw_gnt[0] = ~c_rd_req & pw_want[0] & dc_rd_rdy;
-   assign pw_gnt[1] = ~c_rd_req & ~pw_want[0] & pw_want[1] & dc_rd_rdy;
-   always @(posedge clk) if (reset) pw_issued <= 2'd0;
-      else pw_issued <= (pw_issued | pw_gnt) & ~pw_match;
-   assign dcr_req  = c_rd_req | (|pw_want);
-   assign dcr_addr = c_rd_req    ? c_rd_addr
-                   : pw_want[0]  ? {8'd0, pw_addr[0*56 +: 56]}
+   // read port. Fixed priority LSU > iPTW > dPTW. The cache samples rd_req only at its
+   // S_IDLE and self-serializes; each client holds its request until its response matches, so a
+   // purely combinational mux suffices (no accept handshake). No deadlock: a load needing ldPTW
+   // is itself blocked on translation and not issuing c_rd_req, so the walk gets the port.
+   assign dcr_req  = c_rd_req | (|pw_busy);
+   assign dcr_addr = c_rd_req    ? dmem_raddr
+                   : pw_busy[0]  ? {8'd0, pw_addr[0*56 +: 56]}
                    :               {8'd0, pw_addr[1*56 +: 56]};
 
    // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
@@ -639,16 +509,13 @@ module ino_soc_top #(
    wire [NREQ-1:0]     a_we    = {1'b0, dc_l2_we};
    wire [NREQ*LAW-1:0] a_addr  = {ic_l2_addr, dc_l2_addr};
    wire [NREQ*512-1:0] a_wdata = {ic_l2_wdata, dc_l2_wdata};
-   wire [NREQ*64-1:0]  a_wmask = {ic_l2_wmask, dc_l2_wmask};
    wire [NREQ-1:0]     a_ack;
    wire                m_req, m_we;  wire [LAW-1:0] m_addr;  wire [511:0] m_wdata, m_rdata;  wire m_ack;
-   wire [63:0]         m_wmask;
-   l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
+   ino_l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
      (.clk(clk), .reset(reset),
-      .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .wmask(a_wmask),
-      .ack(a_ack), .rdata(arb_rdata),
+      .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .ack(a_ack), .rdata(arb_rdata),
       .mem_req(m_req), .mem_we(m_we), .mem_addr(m_addr), .mem_wdata(m_wdata),
-      .mem_wmask(m_wmask), .mem_rdata(m_rdata), .mem_ack(m_ack));
+      .mem_rdata(m_rdata), .mem_ack(m_ack));
    assign dc_l2_ack = a_ack[0];  assign dc_l2_rdata = arb_rdata;
    assign ic_l2_ack = a_ack[1];  assign ic_l2_rdata = arb_rdata;
 
@@ -666,46 +533,27 @@ module ino_soc_top #(
    // line-granular) so it infers a clean single-read/single-write BRAM -- a byte array
    // with a 64-byte for-loop access does NOT (Vivado can't template it).
    localparam NLLINE = LSIZE/64;                 // number of 64-byte lines
-   localparam LIW    = $clog2(NLLINE);           // ...and the index width lmem actually has
-   localparam [LAW-1:0] LLBASE = LBASE[6 +: LAW]; // local SRAM base as a line address
+   localparam [LAW-1:0] LLBASE = LBASE >> 6;     // local SRAM base as a line address
    reg [511:0] lmem [0:NLLINE-1];
    // FPGA: bake the monitor image into the BRAM at elaboration (one 64-byte line per hex
    // line). Sim TBs instead pack dut.lmem directly via +monhex, so guard on the define.
 `ifdef SOC_BOOT_HEX
    initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
-   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LIW-1:0] l_li_q; reg [511:0] l_wd_q;
-   reg [63:0] l_wm_q;
-   reg [511:0] l_rdata; reg l_ack; reg [511:0] l_rd;
+   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_li_q; reg [511:0] l_wd_q;
+   reg [511:0] l_rdata; reg l_ack;
    wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
    wire l_req = m_req & m_is_local;
-   // Index-range link. l_line is LAW bits but lmem has only NLLINE entries, so the array
-   // bracket truncates whatever it is given: an m_addr below LLBASE wraps the subtraction
-   // and the truncation lands it on a VALID boot-SRAM line instead of faulting. m_is_local
-   // is supposed to make that unreachable, but it is derived from m_pa independently of the
-   // index arithmetic, so nothing today connects the guard to the thing it guards.
-   always @(posedge clk)
-      if (!reset && l_req && (l_line >= NLLINE))
-         $fatal(1, "[soc_top] LOCAL SRAM INDEX OUT OF RANGE: m_addr=%h LLBASE=%h l_line=%h NLLINE=%0d",
-                m_addr, LLBASE, l_line, NLLINE);
-   // masked write = read-modify-write across the l_cnt wait (single read site + single
-   // write site keeps the SDP BRAM inference; no other master writes lmem, so the RMW
-   // has no coherence window here -- unlike DDR, where DMA forces real byte strobes)
-   wire [511:0] l_merged;
-   genvar lb;
-   generate for (lb=0; lb<64; lb=lb+1) begin : lmrg
-      assign l_merged[8*lb +: 8] = l_wm_q[lb] ? l_wd_q[8*lb +: 8] : l_rd[8*lb +: 8];
-   end endgenerate
    always @(posedge clk) begin
       l_ack <= 1'b0;
       if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line[LIW-1:0]; l_wd_q<=m_wdata; l_wm_q<=m_wmask; end
+      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; end
       else if (l_busy) begin
          if (l_cnt==0) begin
-            if (l_we_q) lmem[l_li_q] <= l_merged;
-            else        l_rdata     <= l_rd;
+            if (l_we_q) lmem[l_li_q] <= l_wd_q;
+            else        l_rdata     <= lmem[l_li_q];
             l_ack<=1'b1; l_busy<=1'b0;
-         end else begin l_rd <= lmem[l_li_q]; l_cnt <= l_cnt-1; end
+         end else l_cnt <= l_cnt-1;
       end
    end
 
@@ -714,7 +562,6 @@ module ino_soc_top #(
    assign ddr_we    = m_we;
    assign ddr_addr  = m_addr;
    assign ddr_wdata = m_wdata;
-   assign ddr_wmask = m_wmask;
 
    // DDR latency HPM: time ddr_req->ddr_ack (core cycles) into read/write log2 histograms,
    // read-only at HPM_BASE (any write clears). Observation-only; off the core critical path.
