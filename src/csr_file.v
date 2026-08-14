@@ -65,7 +65,10 @@ module csr_file
                                     // (a coarse checkpoint retires up to CKMAX at once)
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
-    input  wire [6:0]  hpm_ev,
+    // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
+    // STALL-ATTRIBUTION taps (see ino_core.v): they turn a CPI number into a CPI
+    // stack. The OoO core drives them zero, so its counters are unchanged.
+    input  wire [14:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -163,7 +166,19 @@ module csr_file
                       HPMEV_LOAD   = 16'h0003, HPMEV_STORE    = 16'h0004,
                       HPMEV_REDIR  = 16'h0005,                              // branch/pipe redirect
                       HPMEV_DCACC  = 16'h0100, HPMEV_DCMISS   = 16'h0102,   // D$ access / miss
-                      HPMEV_ICACC  = 16'h0110, HPMEV_ICMISS   = 16'h0112;   // I$ access / miss
+                      HPMEV_ICACC  = 16'h0110, HPMEV_ICMISS   = 16'h0112,   // I$ access / miss
+                      // ---- in-order stall attribution (0x03xx). Every cycle the pipe
+                      // fails to advance is charged to exactly one of these, so
+                      // sum(stalls)/instret + 1 reconstructs CPI. 0x02xx is avoided:
+                      // the DTB already maps perf BUS_CYCLES onto 0x0202.
+                      HPMEV_ST_MEM = 16'h0300,   // M stalled on the LSU (D$/dTLB/AMO)
+                      HPMEV_ST_DIV = 16'h0301,   // ...on the iterative divider
+                      HPMEV_ST_MUL = 16'h0302,   // ...on the 3-cycle multiplier
+                      HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU
+                      HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off
+                      HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
+                      HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
+                      HPMEV_FE_IC  = 16'h0312;   // ...because the I$ had no window
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    function [5:0] hpm_inc;
       input [15:0] ev;
@@ -177,6 +192,14 @@ module csr_file
         HPMEV_DCMISS:  hpm_inc = {5'd0, hpm_ev[4]};
         HPMEV_ICACC:   hpm_inc = {5'd0, hpm_ev[5]};
         HPMEV_ICMISS:  hpm_inc = {5'd0, hpm_ev[6]};
+        HPMEV_ST_MEM:  hpm_inc = {5'd0, hpm_ev[7]};
+        HPMEV_ST_DIV:  hpm_inc = {5'd0, hpm_ev[8]};
+        HPMEV_ST_MUL:  hpm_inc = {5'd0, hpm_ev[9]};
+        HPMEV_ST_FPU:  hpm_inc = {5'd0, hpm_ev[10]};
+        HPMEV_ST_SER:  hpm_inc = {5'd0, hpm_ev[11]};
+        HPMEV_FE_BUB:  hpm_inc = {5'd0, hpm_ev[12]};
+        HPMEV_FE_MMU:  hpm_inc = {5'd0, hpm_ev[13]};
+        HPMEV_FE_IC:   hpm_inc = {5'd0, hpm_ev[14]};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

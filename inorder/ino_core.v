@@ -396,7 +396,24 @@ module ino_core
                            : m_ill_eff? 64'd0
                            :            lsu_fault_tval;
 
-   wire [6:0]  hpm_ev = {hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
+   // ---- stall attribution: turn CPI into a CPI stack ----
+   // The pipe fails to retire on a given cycle for exactly one of two reasons: M is
+   // holding an instruction that has not completed (charged to the unit it is waiting
+   // on), or X had no instruction to give (a frontend bubble, sub-attributed to the
+   // iMMU walking vs the I$ having no window). `st_ser` is the third case: M is free
+   // but a serializing op in flight keeps the frontend from handing anything over.
+   wire st_m      = m_valid & ~m_done;              // M stalled at all
+   wire st_mem    = st_m & m_mem_op;                // ...on the LSU
+   wire st_div    = st_m & m_md_op &  md_div;       // ...on the divider
+   wire st_mul    = st_m & m_md_op & ~md_div;       // ...on the multiplier
+   wire st_fpu    = st_m & fp_arith;                // ...on the CVFPU
+   wire st_ser    = m_advance & ~accept;            // serialize block holds the frontend
+   wire fe_bub    = ~d_valid & ~redirect;           // X idle with no redirect in flight
+   wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
+   wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
+
+   wire [14:0] hpm_ev = {fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
+                         hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
                          redirect, m_valid & m_is_store & lsu_done, m_valid & m_is_mem
                          & ~m_is_store & lsu_done};
 
