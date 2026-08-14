@@ -219,3 +219,26 @@ set_property PACKAGE_PIN M25 [get_ports eth_txc]
 set_false_path \
     -from [get_cells mmio_clock_bridge_inst/fifo_reset_q_reg] \
     -through [get_pins -hier -filter {NAME =~ *mmio_clock_bridge_inst*xpm_fifo_rst_inst*/D}]
+
+
+# ---- ddr_line_cdc: MCP payload crossings (src/ddr_line_cdc.v) ----
+# The 512-bit line port crosses probe_clk <-> ui_clk with a 4-phase FULL HANDSHAKE:
+# only the request/done LEVELS are 2-FF synchronized. The payload -- p_we/p_addr/
+# p_wdata/p_wmask going out, m_rdata_q coming back -- is a plain free-running sample
+# that the initiator holds STABLE for the entire round trip ("launch: hold req payload
+# stable" / "stable: held while m_done asserted"), and the far side consumes it only
+# after the synchronized level arrives, >= 2 destination clocks later. So it is a
+# multi-cycle path, not a single-cycle transfer.
+#
+# probe_clk is a BUFGCE_DIV derivative of ui_clk, so without this Vivado times the
+# 512-bit bus as one 3 ns ui_clk hop: ZERO logic levels, ~90% routing. That
+# over-constraint -- not core logic -- was the sole thing keeping the in-order core
+# off 111 MHz (probe_clk->probe_clk met at +0.003 ns while this CDC missed at
+# -0.020 ns). Same reasoning as the mmio_clock_bridge false path above.
+#
+# 6 ns = 2x ui_clk, far inside the guaranteed stability window in both directions.
+set_max_delay -datapath_only 6.000 \
+    -from [get_clocks probe_clk] \
+    -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_we_m_reg*/D || NAME =~ *probe_cdc/p_addr_m_reg*/D || NAME =~ *probe_cdc/p_wdata_m_reg*/D || NAME =~ *probe_cdc/p_wmask_m_reg*/D}]
+set_max_delay -datapath_only 6.000 \
+    -to [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]

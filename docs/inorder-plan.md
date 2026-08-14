@@ -341,15 +341,17 @@ knob is integer-only. Measured, both routed and hardware-verified:
 | PROBE_CLK_DIV | probe_clk | WNS | Status |
 |---|---|---|---|
 | 5 | 66.7 MHz | +0.007 ns | baseline (OoO default) |
-| **4** | **83.3 MHz** | **+0.059 ns** | **closes; monitor runs on hardware** |
+| 4 | 83.3 MHz | +0.059 ns | closes; verified on hardware |
+| **3** | **111.1 MHz** | **+0.005 ns** | **closes; verified on hardware — current** |
 
-83.3 MHz needed **no RTL change** — timing-driven placement found the margin once
-asked for it. The next divider step is 3 = 111.1 MHz (9 ns), a 3 ns jump, which
-will need real work.
+**66% over baseline, with no RTL change at all.** Both steps came from constraints,
+not logic.
 
 ### Where the time goes
 
-The *reported* worst path at DIV=5 was misleading: `u_arb/mem_wdata_reg[38]`
+### The CDC over-constraint (what actually bought 111 MHz)
+
+The *reported* worst path was never core logic. At DIV=5 it was: `u_arb/mem_wdata_reg[38]`
 (probe_clk, 15 ns) → `probe_cdc/p_wdata_m_reg[38]` (mmcm_clkout0, 3 ns) — a
 **clock-domain crossing** with **zero logic levels** and 90% routing, timed
 synchronously against the 333 MHz UI clock. That is a constraint artifact, not a
@@ -368,7 +370,35 @@ That is the **memory-response-to-next-PC loop**: `mem_raddr` → soc_top's 64-bi
 `yidx(npc, ghr)` → `ycorr_q`/`ycorr_qv`. The whole pipeline-advance decision feeds
 the branch predictor's table read in one cycle.
 
-Candidate fixes, cheapest first:
+At 111.1 MHz the core logic **meets** (`probe_clk → probe_clk` slack +0.003 ns,
+after physopt replicated `m_imm_reg[3]`); the *only* violation was that CDC, at
+−0.020 ns. `src/ddr_line_cdc.v` is a 4-phase full handshake whose payload is a
+free-running sample held stable by the initiator for the whole round trip — the RTL
+says so outright (*"stable while p_busy held → plain sample is safe"*, *"stable: held
+while m_done asserted"*) — and only the request/done **levels** are 2-FF
+synchronized. That is a multi-cycle path, so `set_max_delay -datapath_only 6.000`
+(2× ui_clk, far inside the stability window) is the *correct* constraint, not a
+relaxation. Added to `rk_xcku5p.xdc`, scoped to the `probe_cdc` payload registers,
+alongside the existing `mmio_clock_bridge` false path that documents the same
+BUFGCE_DIV reasoning.
+
+**Hardware validation at 111.1 MHz** — the monitor banner alone only proves local
+SRAM, so the DDR path through the re-constrained CDC was exercised directly:
+
+```
+Z80000000 100000 a5      fill 1 MiB of DDR      -> ok
+C80000000 100000         blake3-256 of that MiB -> 5c901376...cfba4316
+                         host b3sum reference   -> 5c901376...cfba4316   (exact match)
+W80001000 0123456789abcdef / R80001000          -> 0123456789abcdef
+```
+
+So the write path, the read path, and a megabyte of core computation are all
+bit-exact at 111 MHz.
+
+### Remaining headroom
+
+The next divider step is 2 = 166.7 MHz (6 ns), which *would* need real RTL work: the
+core path is ~9.2 ns of 39 logic levels. Candidate fixes, cheapest first:
 1. **Narrow the response-address compare.** The LSU is single-outstanding, so the
    compare only has to filter PTW responses — comparing ~36 bits instead of 64
    halves that carry chain.

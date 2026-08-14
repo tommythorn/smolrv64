@@ -1,0 +1,1199 @@
+#-----------------------------------------------------------
+# Vivado v2025.1 (64-bit)
+# SW Build 6140274 on Wed May 21 22:58:25 MDT 2025
+# IP Build 6138677 on Thu May 22 03:10:11 MDT 2025
+# SharedData Build 6139179 on Tue May 20 17:58:58 MDT 2025
+# Start of session at: Thu Aug  6 19:10:58 2026
+# Process ID         : 581817
+# Current directory  : /home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2
+# Command line       : vivado -mode batch -source report_timing.tcl
+# Log file           : /home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2/vivado.log
+# Journal file       : /home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2/vivado.jou
+# Running On         : coffee
+# Platform           : Ubuntu
+# Operating System   : Ubuntu 26.04 LTS
+# Processor Detail   : AMD Ryzen 9 9950X3D 16-Core Processor
+# CPU Frequency      : 4703.556 MHz
+# CPU Physical cores : 16
+# CPU Logical cores  : 32
+# Host memory        : 32131 MB
+# Swap memory        : 34359 MB
+# Total Virtual      : 66491 MB
+# Available Virtual  : 60085 MB
+#-----------------------------------------------------------
+source report_timing.tcl
+# set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+# open_project $xpr
+WARNING: [filemgmt 56-3] IPUserFilesDir: Could not find the directory '/home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2/rk_xcku5p.ip_user_files'.
+Scanning sources...
+Finished scanning sources
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:emb-plus-vpr-4616:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/emb-plus-vpr-4616/1.0/board.xml as part xcve2302-sfva784-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:emb-plus-vpr-4616:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/emb-plus-vpr-4616/1.1/board.xml as part xcve2302-sfva784-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k24c:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k24c/1.0/board.xml as part xck24-ubva530-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k24c:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k24c/1.1/board.xml as part xck24-ubva530-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k24i:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k24i/1.0/board.xml as part xck24-ubva530-2lvi-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26c:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26c/1.2/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26c:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26c/1.3/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26c:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26c/1.4/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26i:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26i/1.2/board.xml as part xck26-sfvc784-2lvi-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26i:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26i/1.3/board.xml as part xck26-sfvc784-2lvi-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:k26i:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/k26i/1.4/board.xml as part xck26-sfvc784-2lvi-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kcu105:part0:1.6 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kcu105/1.6/board.xml as part xcku040-ffva1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kcu105:part0:1.7 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kcu105/1.7/board.xml as part xcku040-ffva1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kcu1500:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kcu1500/1.2/board.xml as part xcku115-flvb2104-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kd240_som:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kd240_som/1.0/board.xml as part xck24-ubva530-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kd240_som:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kd240_som/1.1/board.xml as part xck24-ubva530-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kr260_som:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kr260_som/1.0/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kr260_som:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kr260_som/1.1/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kv260_som:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kv260_som/1.2/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kv260_som:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kv260_som/1.3/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:kv260_som:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/kv260_som/1.4/board.xml as part xck26-sfvc784-2lv-c specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:v80:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/v80/1.0/board.xml as part xcv80-lsva4737-2mhp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:2.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/2.2/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:3.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/3.0/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:3.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/3.1/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:3.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/3.2/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:3.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/3.3/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190:part0:3.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190/production/3.4/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190_newl:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190_newl/production/1.0/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190_newl:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190_newl/production/1.1/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190_newl:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190_newl/production/1.2/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vck190_newl:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vck190_newl/production/1.3/board.xml as part xcvc1902-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu108:part0:1.6 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu108/1.6/board.xml as part xcvu095-ffva2104-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu108:part0:1.7 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu108/1.7/board.xml as part xcvu095-ffva2104-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu110:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu110/1.4/board.xml as part xcvu190-flgc2104-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu118:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu118/2.0/board.xml as part xcvu9p-flga2104-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu118:part0:2.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu118/2.3/board.xml as part xcvu9p-flga2104-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu118:part0:2.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu118/2.4/board.xml as part xcvu9p-flga2104-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu128:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu128/production/1.0/board.xml as part xcvu37p-fsvh2892-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu129:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu129/production/1.0/board.xml as part xcvu29p-fsga2577-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vcu1525:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vcu1525/1.3/board.xml as part xcvu9p-fsgd2104-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vek280:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vek280/production/1.0/board.xml as part xcve2802-vsvh1760-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vek280:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vek280/production/1.1/board.xml as part xcve2802-vsvh1760-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vek280:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vek280/production/1.2/board.xml as part xcve2802-vsvh1760-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vek385:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vek385/1.0/board.xml as part xc2ve3858-ssva2112-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vermeo_t1_mpsoc:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vermeo_t1_mpsoc/1.0/board.xml as part xczu19eg-ffvd1760-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vermeo_t1_rfsoc:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vermeo_t1_rfsoc/1.0/board.xml as part xczu21dr-ffvd1156-2l-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vhk158:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vhk158/production/1.0/board.xml as part xcvh1582-vsva3697-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vhk158:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vhk158/production/1.1/board.xml as part xcvh1582-vsva3697-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vhk158:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vhk158/production/1.2/board.xml as part xcvh1582-vsva3697-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180:part0:2.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180/production/2.2/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180:part0:3.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180/production/3.0/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180:part0:3.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180/production/3.1/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180:part0:3.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180/production/3.2/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180:part0:3.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180/production/3.3/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180_newl:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180_newl/production/1.0/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vmk180_newl:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vmk180_newl/production/1.1/board.xml as part xcvm1802-vsva2197-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk120:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk120/production/1.0/board.xml as part xcvp1202-vsva2785-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk120:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk120/production/1.1/board.xml as part xcvp1202-vsva2785-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk120:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk120/production/1.2/board.xml as part xcvp1202-vsva2785-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk180:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk180/production/1.0/board.xml as part xcvp1802-lsvc4072-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk180:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk180/production/1.1/board.xml as part xcvp1802-lsvc4072-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:vpk180:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/vpk180/production/1.2/board.xml as part xcvp1802-lsvc4072-2mp-e-s specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zc702:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zc702/1.4/board.xml as part xc7z020clg484-1 specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zc706:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zc706/1.4/board.xml as part xc7z045ffg900-2 specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu102:part0:3.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu102/3.3/board.xml as part xczu9eg-ffvb1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu102:part0:3.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu102/3.4/board.xml as part xczu9eg-ffvb1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu104:part0:1.1 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu104/1.1/board.xml as part xczu7ev-ffvc1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu106:part0:2.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu106/2.4/board.xml as part xczu7ev-ffvc1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu106:part0:2.5 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu106/2.5/board.xml as part xczu7ev-ffvc1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu106:part0:2.6 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu106/2.6/board.xml as part xczu7ev-ffvc1156-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu111:part0:1.2 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu111/1.2/board.xml as part xczu28dr-ffvg1517-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu111:part0:1.3 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu111/1.3/board.xml as part xczu28dr-ffvg1517-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu111:part0:1.4 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu111/1.4/board.xml as part xczu28dr-ffvg1517-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu1275:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu1275/1.0/board.xml as part xczu29dr-ffvf1760-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu1285:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu1285/1.0/board.xml as part xczu39dr-ffvf1760-2-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu208:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu208/production/2.0/board.xml as part xczu48dr-fsvg1517-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu208ld:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu208ld/production/2.0/board.xml as part xczu58dr-fsvg1517-2-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu216:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu216/production/2.0/board.xml as part xczu49dr-ffvf1760-2-e specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu216ld:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu216ld/production/2.0/board.xml as part xczu59dr-ffvf1760-2-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu670:part0:2.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu670/2.0/board.xml as part xczu67dr-fsve1156-2-i specified in board_part file is either invalid or not available
+WARNING: [Board 49-26] cannot add Board Part xilinx.com:zcu670ld:part0:1.0 available at /home/tommy/Xilinx/2025.1/data/xhub/boards/XilinxBoardStore/boards/Xilinx/zcu670ld/1.0/board.xml as part xczu57dr-fsve1156-2-i specified in board_part file is either invalid or not available
+WARNING: [Project 1-5713] Board part '' set for the project  is not found. BoardPart property will be unset. Please select board from latest repo build 
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository '/home/tommy/Xilinx/2025.1/Vivado/data/ip'.
+WARNING: [filemgmt 56-443] The ECC Algorithm string is empty. Setting the Memory Map to default ECC value to ECC_NONE.
+WARNING: [filemgmt 56-443] The ECC Algorithm string is empty. Setting the Memory Map to default ECC value to ECC_NONE.
+# open_run impl_1
+INFO: [Device 21-403] Loading part xcku5p-ffvb676-2-i
+Netlist sorting complete. Time (s): cpu = 00:00:00.55 ; elapsed = 00:00:00.54 . Memory (MB): peak = 2596.816 ; gain = 0.000 ; free physical = 13490 ; free virtual = 55806
+INFO: [Netlist 29-17] Analyzing 8516 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-479] Netlist was created with Vivado 2025.1
+INFO: [Project 1-570] Preparing netlist for logic optimization
+WARNING: [Constraints 18-550] Could not create 'DRIVE' constraint because net 'u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/cal_RESET_n[0]' is not directly connected to top level port. 'DRIVE' is ignored for synthesis but preserved for implementation.
+WARNING: [Constraints 18-550] Could not create 'SLEW' constraint because net 'u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/cal_RESET_n[0]' is not directly connected to top level port. 'SLEW' is ignored for synthesis but preserved for implementation.
+WARNING: [Constraints 18-550] Could not create 'IBUF_LOW_PWR' constraint because net 'u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/sys_clk_in' is not directly connected to top level port. 'IBUF_LOW_PWR' is ignored for synthesis but preserved for implementation.
+Read ShapeDB Complete: Time (s): cpu = 00:00:00.1 ; elapsed = 00:00:00.1 . Memory (MB): peak = 3143.410 ; gain = 8.500 ; free physical = 12941 ; free virtual = 55256
+INFO: [Timing 38-478] Restoring timing data from binary archive.
+INFO: [Timing 38-479] Binary timing data restore complete.
+INFO: [Project 1-856] Restoring constraints from binary archive.
+INFO: [Constraints 18-5170] The checkpoint was created with non-default parameter values which do not match the current Vivado settings.  Mismatching parameters are:
+  general.maxThreads
+INFO: [Project 1-853] Binary constraint restore complete.
+INFO: [Designutils 20-5722] Start Reading Physical Databases.
+Reading placement.
+Read Netlist Cache: Time (s): cpu = 00:00:00.1 ; elapsed = 00:00:00.09 . Memory (MB): peak = 3912.684 ; gain = 0.000 ; free physical = 12289 ; free virtual = 54604
+Reading placer database...
+Read Device Cache: Time (s): cpu = 00:00:00.01 ; elapsed = 00:00:00.02 . Memory (MB): peak = 3912.684 ; gain = 0.000 ; free physical = 12289 ; free virtual = 54604
+Read PlaceDB: Time (s): cpu = 00:00:02 ; elapsed = 00:00:02 . Memory (MB): peak = 4084.012 ; gain = 171.328 ; free physical = 12127 ; free virtual = 54443
+Read PulsedLatchDB: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 4084.012 ; gain = 0.000 ; free physical = 12127 ; free virtual = 54443
+Reading routing.
+Read RouteStorage: Time (s): cpu = 00:00:02 ; elapsed = 00:00:00.69 . Memory (MB): peak = 4219.137 ; gain = 135.125 ; free physical = 11998 ; free virtual = 54314
+Read Physdb Files: Time (s): cpu = 00:00:05 ; elapsed = 00:00:03 . Memory (MB): peak = 4219.137 ; gain = 306.453 ; free physical = 11998 ; free virtual = 54314
+Restored from archive | CPU: 4.990000 secs | Memory: 258.425903 MB |
+Finished XDEF File Restore: Time (s): cpu = 00:00:05 ; elapsed = 00:00:03 . Memory (MB): peak = 4219.137 ; gain = 306.453 ; free physical = 11998 ; free virtual = 54314
+Generating merged BMM file for the design top 'ddr4_0'...
+INFO: [Memdata 28-144] Successfully populated the BRAM INIT strings from the following elf files: /home/tommy/smolrv64/platforms/rk-xcku5p-f-v1.2/ddr4_0_ex.gen/sources_1/ip/ddr4_0/sw/calibration_0/Debug/calibration_ddr.elf 
+Netlist sorting complete. Time (s): cpu = 00:00:00.02 ; elapsed = 00:00:00.01 . Memory (MB): peak = 4219.137 ; gain = 0.000 ; free physical = 11998 ; free virtual = 54314
+INFO: [Project 1-111] Unisim Transformation Summary:
+  A total of 1779 instances were transformed.
+  DSP48E1 => DSP48E2 (DSP_ALU, DSP_A_B_DATA, DSP_C_DATA, DSP_MULTIPLIER, DSP_M_DATA, DSP_OUTPUT, DSP_PREADD, DSP_PREADD_DATA): 3 instances
+  DSP48E2 => DSP48E2 (DSP_ALU, DSP_A_B_DATA, DSP_C_DATA, DSP_MULTIPLIER, DSP_M_DATA, DSP_OUTPUT, DSP_PREADD, DSP_PREADD_DATA): 50 instances
+  IBUF => IBUF (IBUFCTRL, INBUF): 10 instances
+  IBUFDS => IBUFDS (DIFFINBUF, IBUFCTRL): 1 instance 
+  IOBUF => IOBUF (IBUFCTRL, INBUF, OBUFT): 4 instances
+  IOBUFDS => IOBUFDS (DIFFINBUF, IBUFCTRL, INV, OBUFT(x2)): 4 instances
+  IOBUFE3 => IOBUFE3 (IBUFCTRL, INBUF, OBUFT_DCIEN): 36 instances
+  LUT6_2 => LUT6_2 (LUT5, LUT6): 31 instances
+  OBUFDS => OBUFDS_DUAL_BUF (INV, OBUF(x2)): 1 instance 
+  RAM16X1D => RAM32X1D (RAMD32(x2)): 14 instances
+  RAM256X1D => RAM256X1D (MUXF7(x4), MUXF8(x2), RAMD64E(x8)): 477 instances
+  RAM32M => RAM32M (RAMD32(x6), RAMS32(x2)): 114 instances
+  RAM32M16 => RAM32M16 (RAMD32(x14), RAMS32(x2)): 48 instances
+  RAM32X1D => RAM32X1D (RAMD32(x2)): 6 instances
+  RAM64M => RAM64M (RAMD64E(x4)): 16 instances
+  RAM64M8 => RAM64M8 (RAMD64E(x8)): 890 instances
+  RAM64X1D => RAM64X1D (RAMD64E(x2)): 74 instances
+
+open_run: Time (s): cpu = 00:00:21 ; elapsed = 00:00:20 . Memory (MB): peak = 4219.172 ; gain = 2671.684 ; free physical = 11998 ; free virtual = 54313
+# set wns [get_property STATS.WNS [get_runs impl_1]]
+# set tns [get_property STATS.TNS [get_runs impl_1]]
+# set whs [get_property STATS.WHS [get_runs impl_1]]
+# set ths [get_property STATS.THS [get_runs impl_1]]
+# puts "\n=== Timing summary ==="
+
+=== Timing summary ===
+# puts "WNS = ${wns} ns (setup)"
+WNS = 0.105877 ns (setup)
+# puts "TNS = ${tns} ns (setup)"
+TNS = 0.000000 ns (setup)
+# puts "WHS = ${whs} ns (hold)"
+WHS = 0.011168 ns (hold)
+# puts "THS = ${ths} ns (hold)"
+THS = 0.000000 ns (hold)
+# puts "\n=== Worst 5 setup paths (all) ==="
+
+=== Worst 5 setup paths (all) ===
+# report_timing -max_paths 5 -delay_type max -sort_by slack
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: I, Delay Type: max.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 8 CPUs
+INFO: [Timing 38-78] ReportTimingParams: -max_paths 5 -nworst 1 -delay_type max -sort_by slack.
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
+| Date              : Thu Aug  6 19:11:28 2026
+| Host              : coffee running 64-bit Ubuntu 26.04 LTS
+| Command           : report_timing -max_paths 5 -delay_type max -sort_by slack
+| Design            : rk_xcku5p
+| Device            : xcku5p-ffvb676
+| Speed File        : -2  PRODUCTION 1.29 05-01-2022
+| Design State      : Physopt postRoute
+| Temperature Grade : I
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+Slack (MET) :             0.106ns  (required time - arrival time)
+  Source:                 virtio_blk_inst/queue0_desc_q_reg[6]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            virtio_blk_backend/dma_cmd_addr_reg[27]_bret__1/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.000ns  (mmcm_clkout0 rise@3.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        2.862ns  (logic 0.940ns (32.847%)  route 1.922ns (67.153%))
+  Logic Levels:           11  (CARRY8=6 LUT2=1 LUT4=1 LUT5=1 LUT6=2)
+  Clock Path Skew:        -0.001ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    4.753ns = ( 7.753 - 3.000 ) 
+    Source Clock Delay      (SCD):    4.486ns
+    Clock Pessimism Removal (CPR):    -0.268ns
+  Clock Uncertainty:      0.057ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.088ns
+    Phase Error              (PE):    0.000ns
+  Clock Net Delay (Source):      2.023ns (routing 0.961ns, distribution 1.062ns)
+  Clock Net Delay (Destination): 1.880ns (routing 0.875ns, distribution 1.005ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.023     4.486    virtio_blk_inst/c0_ddr4_ui_clk
+    SLICE_X31Y40         FDRE                                         r  virtio_blk_inst/queue0_desc_q_reg[6]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X31Y40         FDRE (Prop_FFF2_SLICEM_C_Q)
+                                                      0.079     4.565 r  virtio_blk_inst/queue0_desc_q_reg[6]/Q
+                         net (fo=13, routed)          0.701     5.266    virtio_blk_inst/virtio_blk_queue0_desc[6]
+    SLICE_X8Y32          LUT2 (Prop_E6LUT_SLICEL_I0_O)
+                                                      0.099     5.365 r  virtio_blk_inst/dma_cmd_addr[9]_bret__1_i_10/O
+                         net (fo=1, routed)           0.007     5.372    virtio_blk_inst/dma_cmd_addr[9]_bret__1_i_10_n_0
+    SLICE_X8Y32          CARRY8 (Prop_CARRY8_SLICEL_S[4]_CO[7])
+                                                      0.153     5.525 r  virtio_blk_inst/dma_cmd_addr_reg[9]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.551    virtio_blk_inst/dma_cmd_addr_reg[9]_bret__1_i_5_n_0
+    SLICE_X8Y33          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.566 r  virtio_blk_inst/dma_cmd_addr_reg[17]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.592    virtio_blk_inst/dma_cmd_addr_reg[17]_bret__1_i_5_n_0
+    SLICE_X8Y34          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.607 r  virtio_blk_inst/dma_cmd_addr_reg[25]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.633    virtio_blk_inst/dma_cmd_addr_reg[25]_bret__1_i_5_n_0
+    SLICE_X8Y35          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.648 r  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_6/CO[7]
+                         net (fo=1, routed)           0.026     5.674    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_6_n_0
+    SLICE_X8Y36          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.689 r  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_54/CO[7]
+                         net (fo=1, routed)           0.026     5.715    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_54_n_0
+    SLICE_X8Y37          CARRY8 (Prop_CARRY8_SLICEL_CI_O[0])
+                                                      0.056     5.771 f  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_52/O[0]
+                         net (fo=1, routed)           0.194     5.965    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_52_n_15
+    SLICE_X9Y37          LUT4 (Prop_B6LUT_SLICEM_I1_O)
+                                                      0.149     6.114 f  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_53/O
+                         net (fo=1, routed)           0.138     6.252    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_53_n_0
+    SLICE_X9Y37          LUT5 (Prop_D6LUT_SLICEM_I4_O)
+                                                      0.051     6.303 f  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_24/O
+                         net (fo=1, routed)           0.278     6.581    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_24_n_0
+    SLICE_X13Y34         LUT6 (Prop_E6LUT_SLICEL_I0_O)
+                                                      0.147     6.728 r  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_7/O
+                         net (fo=28, routed)          0.425     7.153    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_7_n_0
+    SLICE_X24Y33         LUT6 (Prop_D6LUT_SLICEL_I5_O)
+                                                      0.146     7.299 r  virtio_blk_inst/dma_cmd_addr[27]_bret__1_i_1/O
+                         net (fo=1, routed)           0.049     7.348    virtio_blk_backend/dma_cmd_addr_reg[27]_bret__1_0
+    SLICE_X24Y33         FDRE                                         r  virtio_blk_backend/dma_cmd_addr_reg[27]_bret__1/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      3.000     3.000 r  
+    T24                                               0.000     3.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     3.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     3.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     3.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     3.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     3.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     3.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     5.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     5.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     5.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     5.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.880     7.753    virtio_blk_backend/c0_ddr4_ui_clk
+    SLICE_X24Y33         FDRE                                         r  virtio_blk_backend/dma_cmd_addr_reg[27]_bret__1/C
+                         clock pessimism             -0.268     7.485    
+                         clock uncertainty           -0.057     7.428    
+    SLICE_X24Y33         FDRE (Setup_DFF_SLICEL_C_D)
+                                                      0.025     7.453    virtio_blk_backend/dma_cmd_addr_reg[27]_bret__1
+  -------------------------------------------------------------------
+                         required time                          7.453    
+                         arrival time                          -7.348    
+  -------------------------------------------------------------------
+                         slack                                  0.106    
+
+Slack (MET) :             0.111ns  (required time - arrival time)
+  Source:                 virtio_net_backend/head_desc_reg[1]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            virtio_net_backend/dma_cmd_addr_reg[24]/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.000ns  (mmcm_clkout0 rise@3.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        2.761ns  (logic 0.845ns (30.604%)  route 1.916ns (69.396%))
+  Logic Levels:           8  (CARRY8=4 LUT2=1 LUT5=1 LUT6=2)
+  Clock Path Skew:        -0.096ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    4.673ns = ( 7.673 - 3.000 ) 
+    Source Clock Delay      (SCD):    4.494ns
+    Clock Pessimism Removal (CPR):    -0.275ns
+  Clock Uncertainty:      0.057ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.088ns
+    Phase Error              (PE):    0.000ns
+  Clock Net Delay (Source):      2.031ns (routing 0.961ns, distribution 1.070ns)
+  Clock Net Delay (Destination): 1.800ns (routing 0.875ns, distribution 0.925ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.031     4.494    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X33Y68         FDRE                                         r  virtio_net_backend/head_desc_reg[1]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X33Y68         FDRE (Prop_DFF2_SLICEL_C_Q)
+                                                      0.081     4.575 r  virtio_net_backend/head_desc_reg[1]/Q
+                         net (fo=9, routed)           0.624     5.199    virtio_net_backend/virtio_net_debug_used_head[1]
+    SLICE_X43Y56         LUT2 (Prop_C6LUT_SLICEL_I1_O)
+                                                      0.050     5.249 r  virtio_net_backend/dma_cmd_addr[10]_i_40/O
+                         net (fo=1, routed)           0.010     5.259    virtio_net_backend/dma_cmd_addr[10]_i_40_n_0
+    SLICE_X43Y56         CARRY8 (Prop_CARRY8_SLICEL_S[2]_CO[7])
+                                                      0.155     5.414 r  virtio_net_backend/dma_cmd_addr_reg[10]_i_33/CO[7]
+                         net (fo=1, routed)           0.026     5.440    virtio_net_backend/dma_cmd_addr_reg[10]_i_33_n_0
+    SLICE_X43Y57         CARRY8 (Prop_CARRY8_SLICEL_CI_O[1])
+                                                      0.076     5.516 r  virtio_net_backend/dma_cmd_addr_reg[18]_i_20/O[1]
+                         net (fo=2, routed)           0.401     5.917    virtio_net_backend/a311_out[12]
+    SLICE_X45Y56         CARRY8 (Prop_CARRY8_SLICEL_S[2]_CO[7])
+                                                      0.155     6.072 r  virtio_net_backend/dma_cmd_addr_reg[17]_i_9/CO[7]
+                         net (fo=1, routed)           0.026     6.098    virtio_net_backend/dma_cmd_addr_reg[17]_i_9_n_0
+    SLICE_X45Y57         CARRY8 (Prop_CARRY8_SLICEL_CI_O[6])
+                                                      0.103     6.201 r  virtio_net_backend/dma_cmd_addr_reg[25]_i_9/O[6]
+                         net (fo=1, routed)           0.478     6.679    virtio_net_backend/dma_cmd_addr_reg[25]_i_9_n_9
+    SLICE_X42Y65         LUT6 (Prop_A6LUT_SLICEM_I5_O)
+                                                      0.090     6.769 r  virtio_net_backend/dma_cmd_addr[24]_i_8/O
+                         net (fo=1, routed)           0.043     6.812    virtio_net_backend/dma_cmd_addr[24]_i_8_n_0
+    SLICE_X42Y65         LUT5 (Prop_C6LUT_SLICEM_I4_O)
+                                                      0.037     6.849 r  virtio_net_backend/dma_cmd_addr[24]_i_5/O
+                         net (fo=1, routed)           0.242     7.091    virtio_net_backend/dma_cmd_addr[24]_i_5_n_0
+    SLICE_X37Y64         LUT6 (Prop_C6LUT_SLICEM_I5_O)
+                                                      0.098     7.189 r  virtio_net_backend/dma_cmd_addr[24]_i_1/O
+                         net (fo=1, routed)           0.066     7.255    virtio_net_backend/dma_cmd_addr[24]_i_1_n_0
+    SLICE_X37Y64         FDRE                                         r  virtio_net_backend/dma_cmd_addr_reg[24]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      3.000     3.000 r  
+    T24                                               0.000     3.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     3.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     3.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     3.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     3.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     3.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     3.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     5.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     5.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     5.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     5.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.800     7.673    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X37Y64         FDRE                                         r  virtio_net_backend/dma_cmd_addr_reg[24]/C
+                         clock pessimism             -0.275     7.398    
+                         clock uncertainty           -0.057     7.341    
+    SLICE_X37Y64         FDRE (Setup_CFF_SLICEM_C_D)
+                                                      0.025     7.366    virtio_net_backend/dma_cmd_addr_reg[24]
+  -------------------------------------------------------------------
+                         required time                          7.366    
+                         arrival time                          -7.255    
+  -------------------------------------------------------------------
+                         slack                                  0.111    
+
+Slack (MET) :             0.122ns  (required time - arrival time)
+  Source:                 virtio_net_backend/last_avail_idx_reg[2]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            virtio_net_backend/state_reg[1]/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.000ns  (mmcm_clkout0 rise@3.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        2.739ns  (logic 0.746ns (27.234%)  route 1.993ns (72.766%))
+  Logic Levels:           7  (LUT3=1 LUT5=1 LUT6=5)
+  Clock Path Skew:        -0.107ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    4.669ns = ( 7.669 - 3.000 ) 
+    Source Clock Delay      (SCD):    4.501ns
+    Clock Pessimism Removal (CPR):    -0.275ns
+  Clock Uncertainty:      0.057ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.088ns
+    Phase Error              (PE):    0.000ns
+  Clock Net Delay (Source):      2.038ns (routing 0.961ns, distribution 1.077ns)
+  Clock Net Delay (Destination): 1.796ns (routing 0.875ns, distribution 0.921ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.038     4.501    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X32Y69         FDRE                                         r  virtio_net_backend/last_avail_idx_reg[2]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X32Y69         FDRE (Prop_DFF2_SLICEM_C_Q)
+                                                      0.080     4.581 r  virtio_net_backend/last_avail_idx_reg[2]/Q
+                         net (fo=21, routed)          0.366     4.947    virtio_net_backend/virtio_net_debug_indices[18]
+    SLICE_X30Y66         LUT6 (Prop_A6LUT_SLICEL_I4_O)
+                                                      0.098     5.045 r  virtio_net_backend/last_avail_idx[10]_i_2__0/O
+                         net (fo=7, routed)           0.221     5.266    virtio_net_backend/last_avail_idx[10]_i_2__0_n_0
+    SLICE_X28Y67         LUT6 (Prop_F6LUT_SLICEM_I3_O)
+                                                      0.098     5.364 r  virtio_net_backend/last_avail_idx[15]_i_2__0/O
+                         net (fo=5, routed)           0.440     5.804    virtio_net_backend/last_avail_idx[15]_i_2__0_n_0
+    SLICE_X22Y74         LUT5 (Prop_D5LUT_SLICEL_I1_O)
+                                                      0.110     5.914 r  virtio_net_backend/last_avail_idx[14]_i_1__0/O
+                         net (fo=5, routed)           0.276     6.190    virtio_net_backend/next_avail_idx[14]
+    SLICE_X23Y66         LUT6 (Prop_H6LUT_SLICEL_I4_O)
+                                                      0.036     6.226 r  virtio_net_backend/FSM_onehot_state[20]_i_8/O
+                         net (fo=2, routed)           0.365     6.591    virtio_net_backend/FSM_onehot_state[20]_i_8_n_0
+    SLICE_X29Y66         LUT3 (Prop_E6LUT_SLICEM_I2_O)
+                                                      0.052     6.643 r  virtio_net_backend/state[1]_i_10/O
+                         net (fo=4, routed)           0.182     6.825    virtio_net_backend/dma_master/state_reg[1]_4
+    SLICE_X30Y67         LUT6 (Prop_H6LUT_SLICEL_I2_O)
+                                                      0.150     6.975 r  virtio_net_backend/dma_master/state[1]_i_5/O
+                         net (fo=1, routed)           0.094     7.069    virtio_net_backend/dma_master/state[1]_i_5_n_0
+    SLICE_X30Y67         LUT6 (Prop_D6LUT_SLICEL_I3_O)
+                                                      0.122     7.191 r  virtio_net_backend/dma_master/state[1]_i_1__0/O
+                         net (fo=1, routed)           0.049     7.240    virtio_net_backend/dma_master_n_21
+    SLICE_X30Y67         FDRE                                         r  virtio_net_backend/state_reg[1]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      3.000     3.000 r  
+    T24                                               0.000     3.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     3.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     3.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     3.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     3.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     3.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     3.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     5.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     5.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     5.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     5.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.796     7.669    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X30Y67         FDRE                                         r  virtio_net_backend/state_reg[1]/C
+                         clock pessimism             -0.275     7.394    
+                         clock uncertainty           -0.057     7.337    
+    SLICE_X30Y67         FDRE (Setup_DFF_SLICEL_C_D)
+                                                      0.025     7.362    virtio_net_backend/state_reg[1]
+  -------------------------------------------------------------------
+                         required time                          7.362    
+                         arrival time                          -7.240    
+  -------------------------------------------------------------------
+                         slack                                  0.122    
+
+Slack (MET) :             0.123ns  (required time - arrival time)
+  Source:                 virtio_blk_inst/queue0_desc_q_reg[6]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            virtio_blk_backend/dma_cmd_addr_reg[28]_bret__1/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.000ns  (mmcm_clkout0 rise@3.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        2.845ns  (logic 0.844ns (29.666%)  route 2.001ns (70.334%))
+  Logic Levels:           11  (CARRY8=6 LUT2=1 LUT4=1 LUT5=1 LUT6=2)
+  Clock Path Skew:        -0.001ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    4.753ns = ( 7.753 - 3.000 ) 
+    Source Clock Delay      (SCD):    4.486ns
+    Clock Pessimism Removal (CPR):    -0.268ns
+  Clock Uncertainty:      0.057ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.088ns
+    Phase Error              (PE):    0.000ns
+  Clock Net Delay (Source):      2.023ns (routing 0.961ns, distribution 1.062ns)
+  Clock Net Delay (Destination): 1.880ns (routing 0.875ns, distribution 1.005ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.023     4.486    virtio_blk_inst/c0_ddr4_ui_clk
+    SLICE_X31Y40         FDRE                                         r  virtio_blk_inst/queue0_desc_q_reg[6]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X31Y40         FDRE (Prop_FFF2_SLICEM_C_Q)
+                                                      0.079     4.565 r  virtio_blk_inst/queue0_desc_q_reg[6]/Q
+                         net (fo=13, routed)          0.701     5.266    virtio_blk_inst/virtio_blk_queue0_desc[6]
+    SLICE_X8Y32          LUT2 (Prop_E6LUT_SLICEL_I0_O)
+                                                      0.099     5.365 r  virtio_blk_inst/dma_cmd_addr[9]_bret__1_i_10/O
+                         net (fo=1, routed)           0.007     5.372    virtio_blk_inst/dma_cmd_addr[9]_bret__1_i_10_n_0
+    SLICE_X8Y32          CARRY8 (Prop_CARRY8_SLICEL_S[4]_CO[7])
+                                                      0.153     5.525 r  virtio_blk_inst/dma_cmd_addr_reg[9]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.551    virtio_blk_inst/dma_cmd_addr_reg[9]_bret__1_i_5_n_0
+    SLICE_X8Y33          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.566 r  virtio_blk_inst/dma_cmd_addr_reg[17]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.592    virtio_blk_inst/dma_cmd_addr_reg[17]_bret__1_i_5_n_0
+    SLICE_X8Y34          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.607 r  virtio_blk_inst/dma_cmd_addr_reg[25]_bret__1_i_5/CO[7]
+                         net (fo=1, routed)           0.026     5.633    virtio_blk_inst/dma_cmd_addr_reg[25]_bret__1_i_5_n_0
+    SLICE_X8Y35          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.648 r  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_6/CO[7]
+                         net (fo=1, routed)           0.026     5.674    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_6_n_0
+    SLICE_X8Y36          CARRY8 (Prop_CARRY8_SLICEL_CI_CO[7])
+                                                      0.015     5.689 r  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_54/CO[7]
+                         net (fo=1, routed)           0.026     5.715    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_54_n_0
+    SLICE_X8Y37          CARRY8 (Prop_CARRY8_SLICEL_CI_O[0])
+                                                      0.056     5.771 f  virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_52/O[0]
+                         net (fo=1, routed)           0.194     5.965    virtio_blk_inst/dma_cmd_addr_reg[30]_bret__1_i_52_n_15
+    SLICE_X9Y37          LUT4 (Prop_B6LUT_SLICEM_I1_O)
+                                                      0.149     6.114 f  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_53/O
+                         net (fo=1, routed)           0.138     6.252    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_53_n_0
+    SLICE_X9Y37          LUT5 (Prop_D6LUT_SLICEM_I4_O)
+                                                      0.051     6.303 f  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_24/O
+                         net (fo=1, routed)           0.278     6.581    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_24_n_0
+    SLICE_X13Y34         LUT6 (Prop_E6LUT_SLICEL_I0_O)
+                                                      0.147     6.728 r  virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_7/O
+                         net (fo=28, routed)          0.505     7.233    virtio_blk_inst/dma_cmd_addr[30]_bret__1_i_7_n_0
+    SLICE_X24Y31         LUT6 (Prop_G6LUT_SLICEL_I5_O)
+                                                      0.050     7.283 r  virtio_blk_inst/dma_cmd_addr[28]_bret__1_i_1/O
+                         net (fo=1, routed)           0.048     7.331    virtio_blk_backend/dma_cmd_addr_reg[28]_bret__1_0
+    SLICE_X24Y31         FDRE                                         r  virtio_blk_backend/dma_cmd_addr_reg[28]_bret__1/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      3.000     3.000 r  
+    T24                                               0.000     3.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     3.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     3.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     3.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     3.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     3.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     3.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     5.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     5.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     5.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     5.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.880     7.753    virtio_blk_backend/c0_ddr4_ui_clk
+    SLICE_X24Y31         FDRE                                         r  virtio_blk_backend/dma_cmd_addr_reg[28]_bret__1/C
+                         clock pessimism             -0.268     7.485    
+                         clock uncertainty           -0.057     7.428    
+    SLICE_X24Y31         FDRE (Setup_GFF_SLICEL_C_D)
+                                                      0.025     7.453    virtio_blk_backend/dma_cmd_addr_reg[28]_bret__1
+  -------------------------------------------------------------------
+                         required time                          7.453    
+                         arrival time                          -7.331    
+  -------------------------------------------------------------------
+                         slack                                  0.123    
+
+Slack (MET) :             0.126ns  (required time - arrival time)
+  Source:                 probe_core/u_arb/mem_wdata_reg[98]/C
+                            (rising edge-triggered cell FDRE clocked by probe_clk  {rise@0.000ns fall@6.000ns period=15.000ns})
+  Destination:            probe_cdc/p_wdata_m_reg[98]/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.000ns  (mmcm_clkout0 rise@3.000ns - probe_clk rise@0.000ns)
+  Data Path Delay:        1.965ns  (logic 0.077ns (3.919%)  route 1.888ns (96.081%))
+  Logic Levels:           0  
+  Clock Path Skew:        -0.878ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    4.889ns = ( 7.889 - 3.000 ) 
+    Source Clock Delay      (SCD):    5.370ns
+    Clock Pessimism Removal (CPR):    -0.398ns
+  Clock Uncertainty:      0.057ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Discrete Jitter          (DJ):    0.088ns
+    Phase Error              (PE):    0.000ns
+  Clock Net Delay (Source):      2.186ns (routing 0.791ns, distribution 1.395ns)
+  Clock Net Delay (Destination): 2.016ns (routing 0.875ns, distribution 1.141ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock probe_clk rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+                         net (fo=21828, routed)       0.569     3.032    ui_clk
+    BUFGCE_DIV_X0Y3      BUFGCE_DIV (Prop_BUFGCE_DIV_I_O)
+                                                      0.152     3.184 r  probe_clk_buf/O
+    X1Y1 (CLOCK_ROOT)    net (fo=70751, routed)       2.186     5.370    probe_core/u_arb/probe_clk
+    SLICE_X107Y221       FDRE                                         r  probe_core/u_arb/mem_wdata_reg[98]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X107Y221       FDRE (Prop_AFF_SLICEM_C_Q)
+                                                      0.077     5.447 r  probe_core/u_arb/mem_wdata_reg[98]/Q
+                         net (fo=2, routed)           1.888     7.334    probe_cdc/ddr_wdata[98]
+    SLICE_X99Y124        FDRE                                         r  probe_cdc/p_wdata_m_reg[98]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      3.000     3.000 r  
+    T24                                               0.000     3.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     3.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     3.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     3.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     3.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     3.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     3.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     5.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     5.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     5.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     5.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.016     7.889    probe_cdc/c0_ddr4_ui_clk
+    SLICE_X99Y124        FDRE                                         r  probe_cdc/p_wdata_m_reg[98]/C
+                         clock pessimism             -0.398     7.492    
+                         clock uncertainty           -0.057     7.435    
+    SLICE_X99Y124        FDRE (Setup_EFF2_SLICEL_C_D)
+                                                      0.025     7.460    probe_cdc/p_wdata_m_reg[98]
+  -------------------------------------------------------------------
+                         required time                          7.460    
+                         arrival time                          -7.334    
+  -------------------------------------------------------------------
+                         slack                                  0.126    
+
+
+
+
+report_timing: Time (s): cpu = 00:00:43 ; elapsed = 00:00:08 . Memory (MB): peak = 4733.801 ; gain = 514.629 ; free physical = 11447 ; free virtual = 53763
+# puts "\n=== Worst 5 failing setup paths (slack < 0) ==="
+
+=== Worst 5 failing setup paths (slack < 0) ===
+# report_timing -max_paths 5 -slack_lesser_than 0 -delay_type max
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: I, Delay Type: max.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 8 CPUs
+INFO: [Timing 38-78] ReportTimingParams: -max_paths 5 -nworst 1 -delay_type max -sort_by slack.
+WARNING: [Timing 38-164] This design has multiple clocks. Inter clock paths are considered valid unless explicitly excluded by timing constraints such as set_clock_groups or set_false_path.
+INFO: [Timing 38-72] No paths found.
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
+| Date              : Thu Aug  6 19:11:29 2026
+| Host              : coffee running 64-bit Ubuntu 26.04 LTS
+| Command           : report_timing -max_paths 5 -slack_lesser_than 0 -delay_type max
+| Design            : rk_xcku5p
+| Device            : xcku5p-ffvb676
+| Speed File        : -2  PRODUCTION 1.29 05-01-2022
+| Design State      : Physopt postRoute
+| Temperature Grade : I
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+No timing paths found.
+
+
+# puts "\n=== Worst 5 hold paths (all) ==="
+
+=== Worst 5 hold paths (all) ===
+# report_timing -max_paths 5 -delay_type min -sort_by slack
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: I, Delay Type: min.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 8 CPUs
+INFO: [Timing 38-78] ReportTimingParams: -max_paths 5 -nworst 1 -delay_type min -sort_by slack.
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
+| Date              : Thu Aug  6 19:11:29 2026
+| Host              : coffee running 64-bit Ubuntu 26.04 LTS
+| Command           : report_timing -max_paths 5 -delay_type min -sort_by slack
+| Design            : rk_xcku5p
+| Device            : xcku5p-ffvb676
+| Speed File        : -2  PRODUCTION 1.29 05-01-2022
+| Design State      : Physopt postRoute
+| Temperature Grade : I
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+Slack (MET) :             0.011ns  (arrival time - required time)
+  Source:                 u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/mcal_clb2phy_fifo_rden_reg[24]/C
+                            (rising edge-triggered cell FDSE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/xiphy_rxtx_bitslice/FIFO_RD_EN
+                            (rising edge-triggered cell RXTX_BITSLICE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Hold (Min at Fast Process Corner)
+  Requirement:            0.000ns  (mmcm_clkout0 rise@0.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        0.191ns  (logic 0.040ns (20.942%)  route 0.151ns (79.058%))
+  Logic Levels:           0  
+  Clock Path Skew:        0.136ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    2.862ns
+    Source Clock Delay      (SCD):    2.843ns
+    Clock Pessimism Removal (CPR):    -0.117ns
+  Clock Net Delay (Source):      1.200ns (routing 0.520ns, distribution 0.680ns)
+  Clock Net Delay (Destination): 1.465ns (routing 0.577ns, distribution 0.888ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     0.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.224     0.303 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     0.343    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.343 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.149     0.492    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.017     0.509 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           0.742     1.251    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.230     1.481 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.145     1.626    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.017     1.643 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.200     2.843    u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/dReg_reg[13]
+    SLICE_X0Y27          FDSE                                         r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/mcal_clb2phy_fifo_rden_reg[24]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X0Y27          FDSE (Prop_EFF2_SLICEL_C_Q)
+                                                      0.040     2.883 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/mcal_clb2phy_fifo_rden_reg[24]/Q
+                         net (fo=1, routed)           0.151     3.034    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/ch0_mcal_clb2phy_fifo_rden[0]
+    BITSLICE_RX_TX_X0Y24 RXTX_BITSLICE                                r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/xiphy_rxtx_bitslice/FIFO_RD_EN
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.322     0.422 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.472    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.472 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.183     0.655    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.019     0.674 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           0.834     1.508    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.295     1.213 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.165     1.378    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.019     1.397 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.465     2.862    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/div_clk
+    BITSLICE_RX_TX_X0Y24 RXTX_BITSLICE                                r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/xiphy_rxtx_bitslice/FIFO_RD_CLK
+                         clock pessimism              0.117     2.979    
+    BITSLICE_RX_TX_X0Y24 RXTX_BITSLICE (Hold_RXTX_BITSLICE_BITSLICE_RX_TX_FIFO_RD_CLK_FIFO_RD_EN)
+                                                      0.044     3.023    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[1].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_BITSLICE_UPPER[5].GEN_RXTX_BITSLICE_EN.u_xiphy_bitslice_upper/xiphy_rxtx_bitslice
+  -------------------------------------------------------------------
+                         required time                         -3.023    
+                         arrival time                           3.034    
+  -------------------------------------------------------------------
+                         slack                                  0.011    
+
+Slack (MET) :             0.012ns  (arrival time - required time)
+  Source:                 probe_core/core/fe/u_bp/ras_reg[0][53]/C
+                            (rising edge-triggered cell FDRE clocked by probe_clk  {rise@0.000ns fall@6.000ns period=15.000ns})
+  Destination:            probe_core/core/fe/u_bp/chk_ras_reg[5][0][53]/D
+                            (rising edge-triggered cell FDRE clocked by probe_clk  {rise@0.000ns fall@6.000ns period=15.000ns})
+  Path Group:             probe_clk
+  Path Type:              Hold (Min at Slow Process Corner)
+  Requirement:            0.000ns  (probe_clk rise@0.000ns - probe_clk rise@0.000ns)
+  Data Path Delay:        0.175ns  (logic 0.059ns (33.636%)  route 0.116ns (66.364%))
+  Logic Levels:           0  
+  Clock Path Skew:        0.104ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    5.255ns
+    Source Clock Delay      (SCD):    5.353ns
+    Clock Pessimism Removal (CPR):    -0.202ns
+  Clock Net Delay (Source):      1.830ns (routing 0.720ns, distribution 1.110ns)
+  Clock Net Delay (Destination): 2.071ns (routing 0.791ns, distribution 1.280ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock probe_clk rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     0.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     0.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     0.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     0.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     0.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     2.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     2.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     2.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     2.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+                         net (fo=21828, routed)       0.518     3.391    ui_clk
+    BUFGCE_DIV_X0Y3      BUFGCE_DIV (Prop_BUFGCE_DIV_I_O)
+                                                      0.132     3.523 r  probe_clk_buf/O
+    X1Y1 (CLOCK_ROOT)    net (fo=70751, routed)       1.830     5.353    probe_core/core/fe/u_bp/probe_clk
+    SLICE_X84Y201        FDRE                                         r  probe_core/core/fe/u_bp/ras_reg[0][53]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X84Y201        FDRE (Prop_BFF_SLICEL_C_Q)
+                                                      0.059     5.412 r  probe_core/core/fe/u_bp/ras_reg[0][53]/Q
+                         net (fo=9, routed)           0.116     5.528    probe_core/core/fe/u_bp/ras_reg[0]_1823[53]
+    SLICE_X87Y201        FDRE                                         r  probe_core/core/fe/u_bp/chk_ras_reg[5][0][53]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock probe_clk rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+                         net (fo=21828, routed)       0.569     3.032    ui_clk
+    BUFGCE_DIV_X0Y3      BUFGCE_DIV (Prop_BUFGCE_DIV_I_O)
+                                                      0.152     3.184 r  probe_clk_buf/O
+    X1Y1 (CLOCK_ROOT)    net (fo=70751, routed)       2.071     5.255    probe_core/core/fe/u_bp/probe_clk
+    SLICE_X87Y201        FDRE                                         r  probe_core/core/fe/u_bp/chk_ras_reg[5][0][53]/C
+                         clock pessimism              0.202     5.457    
+    SLICE_X87Y201        FDRE (Hold_CFF_SLICEL_C_D)
+                                                      0.060     5.517    probe_core/core/fe/u_bp/chk_ras_reg[5][0][53]
+  -------------------------------------------------------------------
+                         required time                         -5.517    
+                         arrival time                           5.528    
+  -------------------------------------------------------------------
+                         slack                                  0.012    
+
+Slack (MET) :             0.015ns  (arrival time - required time)
+  Source:                 probe_bridge/ddr_rdata_reg[17]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            probe_cdc/m_rdata_q_reg[17]/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Hold (Min at Slow Process Corner)
+  Requirement:            0.000ns  (mmcm_clkout0 rise@0.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        0.300ns  (logic 0.059ns (19.667%)  route 0.241ns (80.333%))
+  Logic Levels:           0  
+  Clock Path Skew:        0.225ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    4.615ns
+    Source Clock Delay      (SCD):    4.714ns
+    Clock Pessimism Removal (CPR):    -0.324ns
+  Clock Net Delay (Source):      1.841ns (routing 0.875ns, distribution 0.966ns)
+  Clock Net Delay (Destination): 2.152ns (routing 0.961ns, distribution 1.191ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     0.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     0.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     0.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     0.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     0.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     2.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     2.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     2.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     2.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.841     4.714    probe_bridge/c0_ddr4_ui_clk
+    SLICE_X68Y115        FDRE                                         r  probe_bridge/ddr_rdata_reg[17]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X68Y115        FDRE (Prop_EFF_SLICEL_C_Q)
+                                                      0.059     4.773 r  probe_bridge/ddr_rdata_reg[17]/Q
+                         net (fo=1, routed)           0.241     5.014    probe_cdc/D[17]
+    SLICE_X78Y121        FDRE                                         r  probe_cdc/m_rdata_q_reg[17]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.152     4.615    probe_cdc/c0_ddr4_ui_clk
+    SLICE_X78Y121        FDRE                                         r  probe_cdc/m_rdata_q_reg[17]/C
+                         clock pessimism              0.324     4.939    
+    SLICE_X78Y121        FDRE (Hold_EFF_SLICEL_C_D)
+                                                      0.060     4.999    probe_cdc/m_rdata_q_reg[17]
+  -------------------------------------------------------------------
+                         required time                         -4.999    
+                         arrival time                           5.014    
+  -------------------------------------------------------------------
+                         slack                                  0.015    
+
+Slack (MET) :             0.015ns  (arrival time - required time)
+  Source:                 probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[0].inp_pipe_operands_q_reg[1][1][58]/C
+                            (rising edge-triggered cell FDCE clocked by probe_clk  {rise@0.000ns fall@6.000ns period=15.000ns})
+  Destination:            probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[1].inp_pipe_operands_q_reg[2][1][58]/D
+                            (rising edge-triggered cell FDCE clocked by probe_clk  {rise@0.000ns fall@6.000ns period=15.000ns})
+  Path Group:             probe_clk
+  Path Type:              Hold (Min at Slow Process Corner)
+  Requirement:            0.000ns  (probe_clk rise@0.000ns - probe_clk rise@0.000ns)
+  Data Path Delay:        0.125ns  (logic 0.058ns (46.400%)  route 0.067ns (53.600%))
+  Logic Levels:           0  
+  Clock Path Skew:        0.048ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    5.191ns
+    Source Clock Delay      (SCD):    5.294ns
+    Clock Pessimism Removal (CPR):    -0.151ns
+  Clock Net Delay (Source):      1.771ns (routing 0.720ns, distribution 1.051ns)
+  Clock Net Delay (Destination): 2.007ns (routing 0.791ns, distribution 1.216ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock probe_clk rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     0.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     0.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     0.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     0.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     0.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     2.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     2.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     2.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     2.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+                         net (fo=21828, routed)       0.518     3.391    ui_clk
+    BUFGCE_DIV_X0Y3      BUFGCE_DIV (Prop_BUFGCE_DIV_I_O)
+                                                      0.132     3.523 r  probe_clk_buf/O
+    X1Y1 (CLOCK_ROOT)    net (fo=70751, routed)       1.771     5.294    probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/probe_clk
+    SLICE_X77Y40         FDCE                                         r  probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[0].inp_pipe_operands_q_reg[1][1][58]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X77Y40         FDCE (Prop_FFF_SLICEL_C_Q)
+                                                      0.058     5.352 r  probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[0].inp_pipe_operands_q_reg[1][1][58]/Q
+                         net (fo=1, routed)           0.067     5.419    probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[0].inp_pipe_operands_q_reg[1][1]_2009[58]
+    SLICE_X77Y39         FDCE                                         r  probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[1].inp_pipe_operands_q_reg[2][1][58]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock probe_clk rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+                         net (fo=21828, routed)       0.569     3.032    ui_clk
+    BUFGCE_DIV_X0Y3      BUFGCE_DIV (Prop_BUFGCE_DIV_I_O)
+                                                      0.152     3.184 r  probe_clk_buf/O
+    X1Y1 (CLOCK_ROOT)    net (fo=70751, routed)       2.007     5.191    probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/probe_clk
+    SLICE_X77Y39         FDCE                                         r  probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[1].inp_pipe_operands_q_reg[2][1][58]/C
+                         clock pessimism              0.151     5.342    
+    SLICE_X77Y39         FDCE (Hold_EFF2_SLICEL_C_D)
+                                                      0.062     5.404    probe_core/core/eb/lane[1].sh/u_fpu/u_cvfpu/cvfpu_inst/gen_operation_groups[1].i_opgroup_block/gen_merged_slice.i_multifmt_slice/gen_num_lanes[0].active_lane.lane_instance.gen_thmulti_c910_divsqrt.i_fpnew_divsqrt_th_64_c910/gen_input_pipeline[1].inp_pipe_operands_q_reg[2][1][58]
+  -------------------------------------------------------------------
+                         required time                         -5.404    
+                         arrival time                           5.419    
+  -------------------------------------------------------------------
+                         slack                                  0.015    
+
+Slack (MET) :             0.016ns  (arrival time - required time)
+  Source:                 virtio_net_backend/notify_count_reg[7]/C
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Destination:            virtio_net_backend/notify_count_reg[8]/D
+                            (rising edge-triggered cell FDRE clocked by mmcm_clkout0  {rise@0.000ns fall@1.500ns period=3.000ns})
+  Path Group:             mmcm_clkout0
+  Path Type:              Hold (Min at Slow Process Corner)
+  Requirement:            0.000ns  (mmcm_clkout0 rise@0.000ns - mmcm_clkout0 rise@0.000ns)
+  Data Path Delay:        0.224ns  (logic 0.135ns (60.159%)  route 0.089ns (39.841%))
+  Logic Levels:           2  (CARRY8=2)
+  Clock Path Skew:        0.148ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    4.654ns
+    Source Clock Delay      (SCD):    4.826ns
+    Clock Pessimism Removal (CPR):    -0.320ns
+  Clock Net Delay (Source):      1.953ns (routing 0.875ns, distribution 1.078ns)
+  Clock Net Delay (Destination): 2.191ns (routing 0.961ns, distribution 1.230ns)
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.079     0.079    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.369     0.448 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.040     0.488    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.488 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.298     0.786    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     0.810 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.195     2.005    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                      0.630     2.635 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.214     2.849    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.024     2.873 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       1.953     4.826    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X10Y59         FDRE                                         r  virtio_net_backend/notify_count_reg[7]/C
+  -------------------------------------------------------------------    -------------------
+    SLICE_X10Y59         FDRE (Prop_HFF_SLICEM_C_Q)
+                                                      0.058     4.884 r  virtio_net_backend/notify_count_reg[7]/Q
+                         net (fo=2, routed)           0.076     4.960    virtio_net_backend/virtio_net_debug_notify_count[7]
+    SLICE_X10Y59         CARRY8 (Prop_CARRY8_SLICEM_S[7]_CO[7])
+                                                      0.046     5.006 r  virtio_net_backend/notify_count_reg[0]_i_2/CO[7]
+                         net (fo=1, routed)           0.004     5.010    virtio_net_backend/notify_count_reg[0]_i_2_n_0
+    SLICE_X10Y60         CARRY8 (Prop_CARRY8_SLICEM_CI_O[0])
+                                                      0.031     5.041 r  virtio_net_backend/notify_count_reg[8]_i_1/O[0]
+                         net (fo=1, routed)           0.009     5.050    virtio_net_backend/notify_count_reg[8]_i_1_n_15
+    SLICE_X10Y60         FDRE                                         r  virtio_net_backend/notify_count_reg[8]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock mmcm_clkout0 rise edge)
+                                                      0.000     0.000 r  
+    T24                                               0.000     0.000 r  sys_clk_p (IN)
+                         net (fo=0)                   0.100     0.100    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/I
+    HPIOBDIFFINBUF_X0Y36 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
+                                                      0.465     0.565 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/DIFFINBUF_INST/O
+                         net (fo=1, routed)           0.050     0.615    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/OUT
+    T24                  IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
+                                                      0.000     0.615 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/diff_input_clk.u_ibufg_sys_clk/IBUFCTRL_INST/O
+                         net (fo=2, routed)           0.335     0.950    u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/sys_clk_in
+    BUFGCE_X0Y26         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     0.978 r  u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/gen_bufg_backbone.u__bufg_backbone/O
+                         net (fo=1, routed)           1.340     2.318    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clk_in
+    MMCM_X0Y0            MMCME4_ADV (Prop_MMCM_CLKIN1_CLKOUT0)
+                                                     -0.127     2.191 r  u_ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0
+                         net (fo=1, routed)           0.244     2.435    u_ddr4_0/inst/u_ddr4_infrastructure/mmcm_clkout0
+    BUFGCE_X0Y20         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
+                                                      0.028     2.463 r  u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk/O
+    X1Y1 (CLOCK_ROOT)    net (fo=21828, routed)       2.191     4.654    virtio_net_backend/c0_ddr4_ui_clk
+    SLICE_X10Y60         FDRE                                         r  virtio_net_backend/notify_count_reg[8]/C
+                         clock pessimism              0.320     4.974    
+    SLICE_X10Y60         FDRE (Hold_AFF_SLICEM_C_D)
+                                                      0.060     5.034    virtio_net_backend/notify_count_reg[8]
+  -------------------------------------------------------------------
+                         required time                         -5.034    
+                         arrival time                           5.050    
+  -------------------------------------------------------------------
+                         slack                                  0.016    
+
+
+
+
+# puts "\n=== Worst 5 failing hold paths (slack < 0) ==="
+
+=== Worst 5 failing hold paths (slack < 0) ===
+# report_timing -max_paths 5 -slack_lesser_than 0 -delay_type min
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: I, Delay Type: min.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 8 CPUs
+INFO: [Timing 38-78] ReportTimingParams: -max_paths 5 -nworst 1 -delay_type min -sort_by slack.
+WARNING: [Timing 38-164] This design has multiple clocks. Inter clock paths are considered valid unless explicitly excluded by timing constraints such as set_clock_groups or set_false_path.
+INFO: [Timing 38-72] No paths found.
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
+| Date              : Thu Aug  6 19:11:30 2026
+| Host              : coffee running 64-bit Ubuntu 26.04 LTS
+| Command           : report_timing -max_paths 5 -slack_lesser_than 0 -delay_type min
+| Design            : rk_xcku5p
+| Device            : xcku5p-ffvb676
+| Speed File        : -2  PRODUCTION 1.29 05-01-2022
+| Design State      : Physopt postRoute
+| Temperature Grade : I
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Timing Report
+
+No timing paths found.
+
+
+# close_project
+INFO: [Common 17-206] Exiting Vivado at Thu Aug  6 19:11:31 2026...
