@@ -321,6 +321,63 @@ is ready. Samples taken mid-walk show a stale PA — e.g. `va=ffffffff80515748
 pa=0000000080515748` alongside `va=ffffffff8051582c pa=000000008071582c` for the
 same 4 KiB page. That is a sampling artifact, not a translation inconsistency.)
 
+## FPGA (RK-XCKU5P-F) — running
+
+`make bit INO_CORE=1` builds the in-order core into the RK platform
+(`rk_xcku5p.v` gains an `INO_CORE` branch instantiating `ino_soc_top`;
+`build.tcl` gains `configure_inorder_sources`). Programmed and verified on
+hardware:
+
+```
+smolrv64 monitor  rtl=bae4dd46 fw=0020260717183236
+>
+```
+
+(`rtl=` is the build-id MMIO, so the banner proves which commit is in the fabric.)
+
+**Frequency.** `probe_clk = ui_clk(333.33 MHz)/PROBE_CLK_DIV`, `BUFGCE_DIV`, so the
+knob is integer-only. Measured, both routed and hardware-verified:
+
+| PROBE_CLK_DIV | probe_clk | WNS | Status |
+|---|---|---|---|
+| 5 | 66.7 MHz | +0.007 ns | baseline (OoO default) |
+| **4** | **83.3 MHz** | **+0.059 ns** | **closes; monitor runs on hardware** |
+
+83.3 MHz needed **no RTL change** — timing-driven placement found the margin once
+asked for it. The next divider step is 3 = 111.1 MHz (9 ns), a 3 ns jump, which
+will need real work.
+
+### Where the time goes
+
+The *reported* worst path at DIV=5 was misleading: `u_arb/mem_wdata_reg[38]`
+(probe_clk, 15 ns) → `probe_cdc/p_wdata_m_reg[38]` (mmcm_clkout0, 3 ns) — a
+**clock-domain crossing** with **zero logic levels** and 90% routing, timed
+synchronously against the 333 MHz UI clock. That is a constraint artifact, not a
+core speed limit; it belongs under `set_max_delay -datapath_only`.
+
+The real core-internal limit is `probe_clk → probe_clk`:
+
+```
+probe_core/core/u_lsu/mem_raddr_reg[12]  ->  probe_core/core/fe/u_bp/ycorr_qv_reg
+   39 logic levels (9x CARRY8), 12.86 ns (logic 3.80 / route 9.06)
+```
+
+That is the **memory-response-to-next-PC loop**: `mem_raddr` → soc_top's 64-bit
+`dc_rd_resp_addr == dmem_raddr` compare → `dmem_rvalid` → LSU `done` → `m_done` →
+`m_advance` → `accept` → `fetch`'s `npc` → the YAGS corrector index
+`yidx(npc, ghr)` → `ycorr_q`/`ycorr_qv`. The whole pipeline-advance decision feeds
+the branch predictor's table read in one cycle.
+
+Candidate fixes, cheapest first:
+1. **Narrow the response-address compare.** The LSU is single-outstanding, so the
+   compare only has to filter PTW responses — comparing ~36 bits instead of 64
+   halves that carry chain.
+2. **Decouple fetch from the M-stage stall** with a 1-entry skid buffer between F
+   and X, so `accept` no longer depends on `m_done` at all. This removes the
+   memory response from the next-PC cone entirely — the structural fix.
+3. Register the LSU response (simplest, but costs a cycle on every load, partly
+   cancelling the frequency win).
+
 ## Pinned memory subsystem (decision, 2026-08-14)
 
 `inorder/` carries its **own** cache and L2 arbiter — `ino_cache.v` and

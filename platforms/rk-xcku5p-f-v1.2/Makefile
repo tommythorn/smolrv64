@@ -41,6 +41,11 @@ ifneq ($(strip $(PROBE_IW)),)
 export PROBE_IW
 endif
 
+# Fmax sweep: probe_clk = ui_clk(333.33MHz)/PROBE_CLK_DIV (RTL default 5 = 66.7 MHz).
+ifneq ($(strip $(PROBE_CLK_DIV)),)
+export PROBE_CLK_DIV
+endif
+
 # Debug: ILA_VIRTIO=1 inserts an ILA on the MMIO clock-bridge ui-side (virtio-mmio access +
 # device read data), on ui_clk. Capture the driver's DeviceFeaturesSel/DeviceFeatures sequence
 # to see whether the Sel write reaches virtio before the Features read (probe VERSION_1 -22).
