@@ -91,21 +91,29 @@ module mmu
    reg [1:0]        tlb_lvl [0:TLBN-1];   // leaf level (0=4K,1=2M,2=1G)
    reg [7:0]        tlb_perm[0:TLBN-1];   // PTE perm bits V,R,W,X,U,G,A,D
    reg              tlb_nc  [0:TLBN-1];   // Svpbmt: leaf is NC/IO (PBMT pte[62:61] != 0)
+   reg              tlb_n   [0:TLBN-1];   // Ssvnapot: leaf is a 64 KiB NAPOT page (pte[63])
    integer t;
-   initial for (t=0;t<TLBN;t=t+1) tlb_v[t]=1'b0;
+   // tlb_n is initialized (unlike tlb_ppn/tlb_perm) because it drives a SELECT in
+   // leaf_pa: an X there makes the whole PA X, where an X in tlb_ppn alone still
+   // leaves the page-offset bits defined.
+   initial for (t=0;t<TLBN;t=t+1) begin tlb_v[t]=1'b0; tlb_n[t]=1'b0; end
 
    wire [TLBI-1:0] tlb_idx = vpn0[TLBI-1:0];
    wire [26:0]     vpn_all = {vpn2, vpn1, vpn0};
    wire            tlb_hit = tlb_v[tlb_idx] && (tlb_tag[tlb_idx] == vpn_all);
 
-   // assemble the translated physical address from a leaf entry by level
+   // assemble the translated physical address from a leaf entry by level.
+   // Ssvnapot (`n`): a level-0 leaf with pte.N=1 is a 64 KiB NAPOT page, so the low
+   // 4 PPN bits are NOT the PTE's (they hold the size encoding 0b1000) -- they come
+   // from the VA instead, making all 16 contiguous 4 KiB VAs share one PTE.
    function [AW-1:0] leaf_pa;
-      input [43:0] ppn; input [1:0] lvl; input [63:0] va;
+      input [43:0] ppn; input [1:0] lvl; input [63:0] va; input n;
       begin
          case (lvl)
            2'd2: leaf_pa = {ppn[43:18], va[29:0]};   // 1 GiB
            2'd1: leaf_pa = {ppn[43:9],  va[20:0]};   // 2 MiB
-           default: leaf_pa = {ppn, va[11:0]};       // 4 KiB
+           default: leaf_pa = n ? {ppn[43:4], va[15:12], va[11:0]}   // 64 KiB NAPOT
+                                : {ppn, va[11:0]};   // 4 KiB
          endcase
       end
    endfunction
@@ -137,6 +145,9 @@ module mmu
    reg [63:0] satp_q;
    // cause for the in-flight walk (access type was latched at start)
    wire [3:0] pf_cause_q = (acc_q == 2'd0) ? 4'd12 : (acc_q == 2'd1) ? 4'd13 : 4'd15;
+   // Ssvnapot: a recognized NAPOT leaf. Sv39 defines exactly one encoding -- a level-0
+   // leaf whose ppn[3:0] (= pte[13:10]) is 0b1000, i.e. a 64 KiB page.
+   wire       napot_ok = (lvl == 2'd0) && (ptw_rdata[13:10] == 4'b1000);
    // registered result of a just-completed walk (presented for one cycle)
    reg        w_done;
    reg [AW-1:0] w_paddr;
@@ -188,7 +199,8 @@ module mmu
    wire wdm = w_done & req_match;
    assign t_paddr = wdm      ? w_paddr :
                     !xlate    ? req_vaddr[AW-1:0] :
-                                leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr);
+                                leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr,
+                                        tlb_n[tlb_idx]);
    // base (translation) fault: page/perm fault (Sv39, fresh-walk only) or non-canonical.
    wire        base_fault = wdm ? w_fault : noncanon;
    wire [3:0]  base_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
@@ -238,19 +250,27 @@ module mmu
                  if (((lvl==2'd2) && (ptw_rdata[27:10]!=0)) ||
                      ((lvl==2'd1) && (ptw_rdata[18:10]!=0))) begin
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE; // misaligned superpage
+                 end else if (ptw_rdata[63] && !napot_ok) begin
+                    // Ssvnapot: the ONLY encoding defined for Sv39 is a level-0 leaf with
+                    // ppn[3:0]==0b1000 (64 KiB). N=1 on a superpage, or any other ppn[3:0],
+                    // is reserved -- the spec requires a page fault rather than a guess.
+                    w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
                  end else if (perm_fault(ptw_rdata, acc_q, prv_q, sum_q, mxr_q)) begin
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
                  end else begin
-                    w_paddr <= leaf_pa(ptw_rdata[53:10], lvl, va_q);
+                    w_paddr <= leaf_pa(ptw_rdata[53:10], lvl, va_q, ptw_rdata[63]);
                     w_fault<=1'b0; w_done<=1'b1; st<=IDLE;
                     w_nc   <= ptw_rdata[62] | ptw_rdata[61];   // Svpbmt PBMT != 0
-                    // fill TLB
+                    // fill TLB. A NAPOT page still occupies one entry per 4 KiB VA (the tag
+                    // is the full VPN); the N bit rides along so the hit path substitutes
+                    // va[15:12] for the PTE's size-encoded ppn[3:0].
                     tlb_v[va_q[12+:TLBI]]   <= 1'b1;
                     tlb_tag[va_q[12+:TLBI]] <= va_q[38:12];
                     tlb_ppn[va_q[12+:TLBI]] <= ptw_rdata[53:10];
                     tlb_lvl[va_q[12+:TLBI]] <= lvl;
                     tlb_perm[va_q[12+:TLBI]]<= ptw_rdata[7:0];
                     tlb_nc[va_q[12+:TLBI]]  <= ptw_rdata[62] | ptw_rdata[61];
+                    tlb_n[va_q[12+:TLBI]]   <= ptw_rdata[63];
                  end
               end else if (lvl==2'd0) begin
                  w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;    // no leaf at level 0
