@@ -1637,10 +1637,11 @@ module rk_xcku5p(
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
 `ifdef NO_VIRTIO_WIRE
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0));
+      .virtio_rdata(32'd0), .virtio_rvalid(1'b0),
+      .virtio_irq(1'b0), .virtio_net_irq(1'b0));
 `else
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq));
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
 `endif
 `else
    soc_top #(.RESET_PC(64'h7000_0000)) probe_core (

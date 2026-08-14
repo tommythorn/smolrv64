@@ -1,4 +1,7 @@
 `default_nettype none
+`ifndef PROBE_CLK_DIV
+ `define PROBE_CLK_DIV 5
+`endif
 
 // No width knobs: the core is scalar, so the I$ window is fixed at HW=2 halfwords
 // (one 32-bit instruction) and there is no per-shard writeback bus to size.
@@ -88,6 +91,7 @@ module ino_soc_top #(
    input  wire [31:0]      virtio_rdata,
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq,
+   input  wire             virtio_net_irq,   // PLIC source 12 (ubuntu-nfs.dts virtio@10003000)
    output wire [17:0]      irq_dbg          // interrupt-path debug for the wrapper ILA (probe_clk)
 );
    localparam SIZE = 1<<RAM_LG2;
@@ -182,7 +186,11 @@ module ino_soc_top #(
       else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
                  dev_wack <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
-   clint #(.SCALE_DIV(133)) u_clint  // 66.67MHz/133 = 501kHz ~= DTB timebase 500kHz; MUST track probe_clk
+   // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV sweep: the
+   // DTB declares timebase-frequency = 501253, so the CLINT must tick at that rate at
+   // ANY probe_clk. Hardcoding 133 (the DIV=5 value) made mtime run 1.67x fast at
+   // DIV=3 -- every kernel deadline, TCP timeout and NFS retry skewed by that factor.
+   clint #(.SCALE_DIV((333_333_333 / `PROBE_CLK_DIV) / 501_253)) u_clint
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
@@ -197,7 +205,7 @@ module ino_soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({52'd0, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
