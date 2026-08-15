@@ -493,8 +493,24 @@ module csr_file
    // already in flight were evaluated against the old FS, so refetch them to re-evaluate the
    // FS-disabled illegal-instruction trap. FS-changes are rare (context switch) so the cost is
    // negligible; the FP arithmetic tests set FS once at startup and never trip this.
-   wire [63:0] newms_m = (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
-   wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
+   // FMAX: derive the change-detect below from the mstatus REGISTER, not the generic
+   // `rdata` mux. These terms are guarded by upd_addr==MSTATUS/SSTATUS, where rdata is
+   // exactly mstatus_r (masked for SSTATUS), so this is bit-for-bit identical -- but it
+   // keeps the ~100-entry CSR read mux out of the redirect cone, which post-route is the
+   // first ~1.6 ns of the core's critical path (m_imm -> csr_rdata -> csr_redir_v ->
+   // iMMU -> predictor). MIP/SIP's rmw_base special case cannot apply at these addresses.
+   wire [63:0] ms_rmw_base = (upd_addr == SSTATUS) ? (mstatus_r & SSTATUS_RMASK) : mstatus_r;
+   reg  [63:0] newv_ms;
+   always @* begin
+      case (upd_func[1:0])
+        2'b01:   newv_ms = upd_src;             // csrrw/wi
+        2'b10:   newv_ms = ms_rmw_base | upd_src;   // csrrs/si
+        2'b11:   newv_ms = ms_rmw_base & ~upd_src;  // csrrc/ci
+        default: newv_ms = ms_rmw_base;
+      endcase
+   end
+   wire [63:0] newms_m = (mstatus & ~MSTATUS_WMASK) | (newv_ms & MSTATUS_WMASK);
+   wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv_ms & SSTATUS_WMASK);
    wire [1:0]  newfs_m = newms_m[14:13];   // mstatus.FS, sliced rather than shift-truncated
    wire [1:0]  newfs_s = newms_s[14:13];
    wire        do_fschg = upd_valid & upd_is_csr & ~csr_illegal &
