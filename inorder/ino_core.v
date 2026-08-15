@@ -114,6 +114,27 @@ module ino_core
    wire [CBITS-1:0]         redirect_ckpt;
    wire [SEQW-1:0]          redirect_seq;
 
+   // ---- FMAX: the predictor's training bundle lands one cycle later --------------
+   // res_v is gated by m_done, which depends on lsu_done -- so the D$/dTLB hit path
+   // reached the BTB/ycorr arrays combinationally. Updates are hints, so the extra
+   // cycle costs no correctness and no bubble; kept in step with redirect_q so u_bp
+   // sees resolve and rollback in their original relative order.
+   reg                      res_v_q, res_cbr_q, res_call_q, res_ret_q;
+   reg                      res_taken_q, res_rep_q;
+   reg [CBITS-1:0]          res_ckpt_q;
+   reg [PCW-1:0]            res_tgt_q;
+   initial begin res_v_q = 1'b0; res_rep_q = 1'b0; end
+   always @(posedge clk) begin
+      if (reset) begin res_v_q <= 1'b0; res_rep_q <= 1'b0; end
+      else       begin res_v_q <= res_v; res_rep_q <= res_rep; end
+      res_cbr_q   <= res_cbr;
+      res_call_q  <= res_call;
+      res_ret_q   <= res_ret;
+      res_taken_q <= res_taken;
+      res_ckpt_q  <= res_ckpt;
+      res_tgt_q   <= res_tgt;
+   end
+
    // ---- FMAX: the frontend sees the redirect one cycle late ----------------------
    // Cuts the redirect -> iMMU-translate -> predictor-update cone, which was the whole
    // critical path. redirect_q doubles as the shadow flag: the cycle it is high is
@@ -142,8 +163,8 @@ module ino_core
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
-      .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
-      .res_taken(res_taken), .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep),
+      .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
+      .res_taken(res_taken_q), .res_ckpt(res_ckpt_q), .res_tgt(res_tgt_q), .res_rep(res_rep_q),
       .d_valid(d_valid), .d_pc(d_pc), .d_insn(d_insn), .d_rvc(d_rvc), .d_seq(d_seq),
       .d_ckpt(d_ckpt), .d_pred_npc(d_pred_npc),
       .d_rd(d_rd), .d_rs1(d_rs1), .d_rs2(d_rs2), .d_rs3(d_rs3),
