@@ -408,7 +408,7 @@ module ino_core
    wire st_mul    = st_m & m_md_op & ~md_div;       // ...on the multiplier
    wire st_fpu    = st_m & fp_arith;                // ...on the CVFPU
    wire st_ser    = m_advance & ~accept;            // serialize block holds the frontend
-   wire fe_bub    = ~d_valid & ~redirect;           // X idle with no redirect in flight
+   wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
 

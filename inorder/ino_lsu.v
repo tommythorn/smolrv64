@@ -119,7 +119,16 @@ module ino_lsu
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software
    // emulate -- the OoO LSU makes the same call.
    wire xpage   = (({1'b0, req_vaddr[11:0]} + {9'd0, nb}) > 13'h1000);
-   wire mis_flt = xl_req & xpage;
+
+   // AMOs (and LR/SC) must be naturally aligned. The RMW datapath is built around
+   // the containing 8-byte word -- pa_q is aligned down and a_wmask is word-relative
+   // -- so without this check an unaligned AMO corrupts neighbouring bytes silently
+   // rather than trapping. nb-1 is the alignment mask (nb=8 truncates to 3'b000, so
+   // the 4-bit subtract yields 4'd7 as intended).
+   wire [3:0] al_mask = nb - 4'd1;
+   wire amo_mis = req_amo & ((req_vaddr[3:0] & al_mask) != 4'd0);
+
+   wire mis_flt = xl_req & (xpage | amo_mis);
    wire xl_flt  = xl_req & t_ready & t_fault;
 
    assign fault       = req_valid & (mis_flt | xl_flt);
