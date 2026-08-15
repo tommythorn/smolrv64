@@ -104,6 +104,7 @@ module csr_file
                      MVENDORID=12'hF11, MARCHID=12'hF12, MIMPID=12'hF13,
                      FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003,
                      STIMECMP=12'h14D, MENVCFG=12'h30A,
+                     MSTATEEN0=12'h30C, SSTATEEN0=12'h10C,
                      // Zicntr: M-mode counters + their U/S read-only shadows. time is the
                      // hardware-backed CLINT mtime (like SmolRV64); cycle/instret shadow
                      // the free-running mcycle / retired-instruction minstret.
@@ -147,7 +148,8 @@ module csr_file
    reg [63:0] mstatus, mtvec, mcause, mscratch, mie, mip,
               medeleg, mideleg, mcounteren, satp, mnstatus,
               stimecmp, menvcfg,   // Sstc: supervisor timer-compare + menvcfg.STCE enable
-              senvcfg;             // S-mode envcfg (FIOM + Zicbom/Zicboz U-mode CBO enables)
+              senvcfg,             // S-mode envcfg (FIOM + Zicbom/Zicboz U-mode CBO enables)
+              mstateen0;           // Smstateen: only SE0(63)/ENVCFG(62) implemented
    reg [63:0] stvec, scause, sscratch, scounteren;
    // VA-holding CSRs stored 40-bit Sv39-compressed (low 39 + non-canonical flag):
    // mepc/sepc can capture a non-canonical fetch-fault target, mtval/stval the
@@ -335,6 +337,9 @@ module csr_file
         STIMECMP:   rdata = stimecmp;
         MENVCFG:    rdata = menvcfg;
         SENVCFG:    rdata = {56'd0, senvcfg[7:0]};
+        MSTATEEN0:  rdata = mstateen0;
+        // mstateen1..3 / sstateen0..3 are read-only zero: they gate only state this
+        // core does not implement, so the default case (0) is the whole model.
         // machine ID CSRs -- match SmolRV64 (marchid=9 = YARVI lineage; vendor/hart=0;
         // mimpid = the build's truncated HEAD commit).
         MVENDORID:  rdata = 64'd0;
@@ -416,7 +421,15 @@ module csr_file
    // extensions via trap-to-detect-absence: mtopi (AIA/Smaia, not in RVA22) and the
    // m/sstateen0-3 family (Smstateen, also absent: 0x30C-0x30F / 0x10C-0x10F) -- the trap is
    // how it concludes the extension is missing. Add other unimplemented CSRs here as found.
-   wire csr_stateen = (upd_addr[11:2]==10'h0C3) | (upd_addr[11:2]==10'h043);  // m/sstateen0-3
+   // Smstateen is IMPLEMENTED now (see MSTATEEN0), so the family no longer traps as
+   // unimplemented. Below M-mode the mstateen0 gates apply instead: ENVCFG guards
+   // senvcfg, SE0 guards sstateen0, and sstateen1..3 are always denied because
+   // mstateen1..3 are hardwired zero. Matches simmerv cpu.rs::stateen_denies.
+   wire csr_stateen = 1'b0;
+   wire stateen_ill = upd_is_csr & (priv != M) &
+                      ( ((upd_addr == SENVCFG)   & ~mstateen0[62])
+                      | ((upd_addr == SSTATEEN0) & ~mstateen0[63])
+                      | ((upd_addr[11:2] == 10'h043) & (upd_addr[1:0] != 2'b00)) );
 `ifdef NO_SSTC
    // Diagnostic (-DNO_SSTC): hide Sstc entirely so OpenSBI's probe traps and it falls
    // back to the CLINT (mtimecmp -> MTIP -> M-mode forwards mip.STIP) timer path.
@@ -432,7 +445,8 @@ module csr_file
    // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
    // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
    wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
-   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill);
+   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill
+                                     | stateen_ill);
 
    // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
    wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
@@ -572,6 +586,7 @@ module csr_file
          mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
          fcsr<=0; stimecmp<=~64'd0; menvcfg<=64'd0; senvcfg<=64'd0;   // Sstc: stimecmp resets to "no deadline"
+         mstateen0<=64'hC000_0000_0000_0000;   // SE0|ENVCFG set: no stateen restrictions
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
          if (trap_to_s) begin
@@ -641,6 +656,7 @@ module csr_file
               end
               MENVCFG:    menvcfg <= newv;
               SENVCFG:    senvcfg <= newv & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
+              MSTATEEN0:  mstateen0 <= newv & 64'hC000_0000_0000_0000;   // SE0|ENVCFG only
               FFLAGS:     fcsr[4:0] <= newv[4:0];
               FRM:        fcsr[7:5] <= newv[2:0];
               FCSR:       fcsr      <= newv[7:0];
