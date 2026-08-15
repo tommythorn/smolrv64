@@ -114,11 +114,30 @@ module ino_core
    wire [CBITS-1:0]         redirect_ckpt;
    wire [SEQW-1:0]          redirect_seq;
 
+   // ---- FMAX: the frontend sees the redirect one cycle late ----------------------
+   // Cuts the redirect -> iMMU-translate -> predictor-update cone, which was the whole
+   // critical path. redirect_q doubles as the shadow flag: the cycle it is high is
+   // exactly the cycle in which the frontend is squashing the extra wrong-path bundle
+   // it fetched, and in which M must refuse that bundle.
+   reg                      redirect_q, redirect_is_trap_q;
+   reg [PCW-1:0]            redirect_target_q;
+   reg [CBITS-1:0]          redirect_ckpt_q;
+   reg [SEQW-1:0]           redirect_seq_q;
+   initial redirect_q = 1'b0;
+   always @(posedge clk) begin
+      if (reset) redirect_q <= 1'b0;
+      else       redirect_q <= redirect;
+      redirect_target_q  <= redirect_target;
+      redirect_is_trap_q <= redirect_is_trap;
+      redirect_ckpt_q    <= redirect_ckpt;
+      redirect_seq_q     <= redirect_seq;
+   end
+
    ino_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .CBITS(CBITS), .NCHK(NCHK),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance),
-      .redirect(redirect), .redirect_pc(redirect_target), .redirect_seq(redirect_seq),
-      .redirect_is_trap(redirect_is_trap), .redirect_ckpt(redirect_ckpt),
+      .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
+      .redirect_is_trap(redirect_is_trap_q), .redirect_ckpt(redirect_ckpt_q),
       .irq_inject(irq_inject),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
@@ -493,11 +512,11 @@ module ino_core
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
    reg inject_inflight;
    initial inject_inflight = 1'b0;
-   assign irq_inject = csr_irq_v & ~inject_inflight & ~redirect;
+   assign irq_inject = csr_irq_v & ~inject_inflight & ~redirect & ~redirect_q;
    always @(posedge clk) begin
       if (reset)                        inject_inflight <= 1'b0;
       else if (irq_inject & accept)     inject_inflight <= 1'b1;
-      else if (redirect | ~csr_irq_v)   inject_inflight <= 1'b0;
+      else if (redirect | redirect_q | ~csr_irq_v) inject_inflight <= 1'b0;
    end
 
 `ifdef INO_COSIM
@@ -594,7 +613,7 @@ module ino_core
          else if (mul_start | div_start) md_started <= 1'b1;
 
          if (m_advance) begin
-            m_valid       <= d_valid & ~redirect;
+            m_valid       <= d_valid & ~redirect & ~redirect_q;   // ~q: the shadow bundle
             m_pc          <= d_pc;
             m_insn        <= d_insn;
             m_rvc         <= d_rvc;
