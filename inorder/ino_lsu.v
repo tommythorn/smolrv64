@@ -83,10 +83,24 @@ module ino_lsu
     output wire            idle);          // no memory op in flight (fence.i drain)
 
    localparam S_IDLE = 3'd0, S_LD = 3'd1, S_ST = 3'd2,
+              S_LD2  = 3'd5, S_ST2 = 3'd6,   // second aligned word
               S_ARD  = 3'd3, S_AWR = 3'd4;
 
    reg [2:0]   st;
-   reg [55:0]  pa_q;                       // translated physical address
+   reg [55:0]  pa_q;                       // translated physical address (WORD-ALIGNED)
+
+   // ---- word-aligned D$ access (see header) --------------------------------------
+   wire [2:0]  boff   = req_vaddr[2:0];              // byte offset in the aligned word
+   wire [4:0]  wend   = {2'd0, boff} + {1'd0, nb};   // one past the last byte in-word
+   wire        xl_can = ~req_amo & ~req_cbo;         // AMO pre-aligned; CBO is line-wide
+   wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
+   reg         xword_q;
+   reg  [2:0]  boff_q;
+   reg  [55:0] pa2_q;                                // the next aligned word
+   reg  [63:0] ld_lo_q;                              // first word's data
+   // boff_q is 1..7 whenever xword_q, so sh_up is 8..56 -- never a 64-bit shift.
+   wire [5:0]  sh_dn  = {boff_q, 3'b000};
+   wire [5:0]  sh_up  = 6'd0 - {boff_q, 3'b000};     // == 64 - 8*boff (mod 64)
    reg [63:0]  amo_old_q;                  // AMO's rd value, captured at the RMW read
    reg         nc_q;                       // Svpbmt: this access is NC/IO
    initial begin st = S_IDLE; end
@@ -178,23 +192,35 @@ module ino_lsu
    wire [7:0]  a_wmask = a_isw ? (a_half ? 8'hF0 : 8'h0F) : 8'hFF;
 
    // -------------------------------------------------------- load formatting
-   wire [63:0] ld_val = (nb == 4'd1) ? (req_signed ? {{56{mem_rdata[7]}},  mem_rdata[7:0]}
-                                                   : {56'd0, mem_rdata[7:0]})
-                      : (nb == 4'd2) ? (req_signed ? {{48{mem_rdata[15]}}, mem_rdata[15:0]}
-                                                   : {48'd0, mem_rdata[15:0]})
-                      : (nb == 4'd4) ? (req_fp     ? {32'hffffffff, mem_rdata[31:0]}   // FLW: NaN-box
-                                      : req_signed ? {{32{mem_rdata[31]}}, mem_rdata[31:0]}
-                                                   : {32'd0, mem_rdata[31:0]})
-                      :                mem_rdata;
+   // The port returns the aligned word, so the LSU shifts the operand down itself and
+   // splices the second word in when the operand straddled.
+   wire [63:0] mem_rdata_eff = (st == S_LD2)
+                             ? ((ld_lo_q >> sh_dn) | (mem_rdata << sh_up))
+                             : (mem_rdata >> sh_dn);
+   wire [63:0] ld_val = (nb == 4'd1) ? (req_signed ? {{56{mem_rdata_eff[7]}},  mem_rdata_eff[7:0]}
+                                                   : {56'd0, mem_rdata_eff[7:0]})
+                      : (nb == 4'd2) ? (req_signed ? {{48{mem_rdata_eff[15]}}, mem_rdata_eff[15:0]}
+                                                   : {48'd0, mem_rdata_eff[15:0]})
+                      : (nb == 4'd4) ? (req_fp     ? {32'hffffffff, mem_rdata_eff[31:0]}   // FLW: NaN-box
+                                      : req_signed ? {{32{mem_rdata_eff[31]}}, mem_rdata_eff[31:0]}
+                                                   : {32'd0, mem_rdata_eff[31:0]})
+                      :                mem_rdata_eff;
 
    // ------------------------------------------------------------ write port
-   wire st_go = (st == S_ST), amo_go = (st == S_AWR);
+   wire st_go = (st == S_ST) || (st == S_ST2), amo_go = (st == S_AWR);
+   wire st2_go = (st == S_ST2);
+   wire [7:0] st_mask = (8'd1 << nb) - 8'd1;
    assign mem_wen       = st_go | amo_go;
-   assign mem_waddr     = {{(AW-56){1'b0}}, pa_q};
-   assign mem_wdata     = amo_go ? a_wdata : req_st_data;
+   assign mem_waddr     = {{(AW-56){1'b0}}, (st2_go ? pa2_q : pa_q)};
+   // Store data is placed at its byte offset inside the aligned word; the straddling
+   // remainder starts at byte 0 of the next word.
+   assign mem_wdata     = amo_go ? a_wdata
+                        : st2_go ? (req_st_data >> sh_up)
+                                 : (req_st_data << sh_dn);
    assign mem_wmask     = amo_go ? a_wmask
                         : req_cbo ? 8'd0                              // CBO carries no data
-                        : ((8'd1 << nb) - 8'd1);
+                        : st2_go  ? (st_mask >> (4'd8 - {1'b0, boff_q}))
+                                  : (st_mask << boff_q);
    assign mem_wuncached = nc_q & ~req_cbo;
    assign mem_cbo       = st_go & req_cbo;
    assign mem_cbo_zero  = mem_cbo & req_cbo_zero;
@@ -202,8 +228,10 @@ module ino_lsu
 
    // ------------------------------------------------------------ completion
    assign done   = fault
-                 | (st_go  & mem_wready)
-                 | ((st == S_LD)  & mem_rvalid)
+                 | ((st == S_ST)  & mem_wready & ~xword_q)
+                 | ((st == S_ST2) & mem_wready)
+                 | ((st == S_LD)  & mem_rvalid & ~xword_q)
+                 | ((st == S_LD2) & mem_rvalid)
                  | ((st == S_ARD) & mem_rvalid & ~a_dowr)
                  | (amo_go & mem_wready);
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
@@ -220,8 +248,11 @@ module ino_lsu
              if (start_ok) begin
                 nc_q          <= t_uncached;
                 mem_runcached <= t_uncached;
+                xword_q <= xword;
+                boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
+                pa2_q   <= (t_paddr & ~56'd7) + 56'd8;
                 if (req_store) begin
-                   pa_q <= t_paddr;
+                   pa_q <= t_paddr & ~56'd7;       // word-aligned: never spans a line
                    st   <= S_ST;
                 end else if (req_amo) begin
                    // An atomic reads, modifies and writes the CONTAINING 8-BYTE WORD:
@@ -234,14 +265,23 @@ module ino_lsu
                    mem_ren   <= 1'b1;
                    st        <= S_ARD;
                 end else begin
-                   pa_q <= t_paddr;
-                   mem_raddr <= {{(AW-56){1'b0}}, t_paddr};
+                   pa_q <= t_paddr & ~56'd7;
+                   mem_raddr <= {{(AW-56){1'b0}}, t_paddr} & ~{{(AW-3){1'b0}}, 3'b111};
                    mem_ren   <= 1'b1;
                    st        <= S_LD;
                 end
              end
-           S_LD:  if (mem_rvalid) st <= S_IDLE;
-           S_ST:  if (mem_wready) st <= S_IDLE;
+           S_LD:  if (mem_rvalid) begin
+                     if (xword_q) begin
+                        ld_lo_q   <= mem_rdata;
+                        mem_raddr <= {{(AW-56){1'b0}}, pa2_q};
+                        mem_ren   <= 1'b1;
+                        st        <= S_LD2;
+                     end else st <= S_IDLE;
+                  end
+           S_LD2: if (mem_rvalid) st <= S_IDLE;
+           S_ST:  if (mem_wready) st <= (xword_q ? S_ST2 : S_IDLE);
+           S_ST2: if (mem_wready) st <= S_IDLE;
            S_ARD: if (mem_rvalid) begin
                      amo_old_q <= a_rdval;
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end

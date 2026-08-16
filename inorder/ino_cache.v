@@ -688,6 +688,13 @@ module ino_cache #(
                 PERF_ID, cur_line, tag_of(cur_line), w0_way, w0_idx,
                 tagm[flat(w0_way, w0_idx)]);
 
+   // NO-SPAN (experiment, inorder-nospan): with the LSU splitting line-crossing
+   // accesses into two aligned ones, the D$ must never be asked to span. If this ever
+   // fires the experiment is invalid -- the span path is still live. The I$ is exempt:
+   // instruction fetch legitimately spans lines for a misaligned 128-bit window.
+   always @(posedge clk) if (!reset && (WRITABLE != 0) && r_span)
+      $fatal(1, "[cache id=%0d] NO-SPAN VIOLATED: D$ saw a spanning request addr=%h", PERF_ID, r_addr);
+
    // SPAN-LOW-STALE: the exposure this fork actually has. A line-crossing store writes
    // line0's low half at S_FIN via w0_way/w0_idx -- a slot named at the phase-0 lookup
    // and carried across the phase-1 lookup for line1. That lookup can miss, and its fill
