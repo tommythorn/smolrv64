@@ -92,7 +92,11 @@ module ino_lsu
    // ---- word-aligned D$ access (see header) --------------------------------------
    wire [2:0]  boff   = req_vaddr[2:0];              // byte offset in the aligned word
    wire [4:0]  wend   = {2'd0, boff} + {1'd0, nb};   // one past the last byte in-word
-   wire        xl_can = ~req_amo & ~req_cbo;         // AMO pre-aligned; CBO is line-wide
+   // MMIO must keep its EXACT address: devices decode by low address bits, so an
+   // aligned-plus-mask access lands on the wrong register (this hung virtio-net at
+   // boot). Only DRAM traffic goes through the cache and therefore needs aligning.
+   wire        pa_dram = (t_paddr >= DRAM_BASE[55:0]) && (t_paddr < DRAM_TOP[55:0]);
+   wire        xl_can = ~req_amo & ~req_cbo & pa_dram; // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
    reg         xword_q;
    reg  [2:0]  boff_q;
@@ -252,7 +256,7 @@ module ino_lsu
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
                 pa2_q   <= (t_paddr & ~56'd7) + 56'd8;
                 if (req_store) begin
-                   pa_q <= t_paddr & ~56'd7;       // word-aligned: never spans a line
+                   pa_q <= xl_can ? (t_paddr & ~56'd7) : t_paddr;
                    st   <= S_ST;
                 end else if (req_amo) begin
                    // An atomic reads, modifies and writes the CONTAINING 8-BYTE WORD:
@@ -265,8 +269,9 @@ module ino_lsu
                    mem_ren   <= 1'b1;
                    st        <= S_ARD;
                 end else begin
-                   pa_q <= t_paddr & ~56'd7;
-                   mem_raddr <= {{(AW-56){1'b0}}, t_paddr} & ~{{(AW-3){1'b0}}, 3'b111};
+                   pa_q <= xl_can ? (t_paddr & ~56'd7) : t_paddr;
+                   mem_raddr <= xl_can ? ({{(AW-56){1'b0}}, t_paddr} & ~{{(AW-3){1'b0}}, 3'b111})
+                                       :  {{(AW-56){1'b0}}, t_paddr};
                    mem_ren   <= 1'b1;
                    st        <= S_LD;
                 end
