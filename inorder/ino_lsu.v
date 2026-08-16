@@ -95,7 +95,12 @@ module ino_lsu
    // MMIO must keep its EXACT address: devices decode by low address bits, so an
    // aligned-plus-mask access lands on the wrong register (this hung virtio-net at
    // boot). Only DRAM traffic goes through the cache and therefore needs aligning.
-   wire        pa_dram = (t_paddr >= DRAM_BASE[55:0]) && (t_paddr < DRAM_TOP[55:0]);
+   // NB: DRAM_BASE/DRAM_TOP cannot be used here -- on FPGA builds they are 0 and
+   // all-ones (they exist for the MMU's unbacked-PA check), so they would make this
+   // gate always true. This SoC puts every device below 0x8000_0000 (CLINT 0x0200_0000,
+   // PLIC 0x0C00_0000, UART 0x1000_0000, virtio 0x1000_2000/3000) and DRAM above it.
+   localparam [55:0] LSU_DRAM_BASE = 56'h8000_0000;
+   wire        pa_dram = (t_paddr >= LSU_DRAM_BASE);
    wire        xl_can = ~req_amo & ~req_cbo & pa_dram; // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
    reg         xword_q;
