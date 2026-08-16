@@ -98,7 +98,13 @@ module ino_cache #(
    function [PTAGB-1:0] tag_of;   input [PAW-1:0] a; tag_of   = a[OFFB+IDXB +: PTAGB]; endfunction
    function [IDXB-1:0]  way_idx; input integer w; input [PAW-1:0] a;
       reg [PTAGB-1:0] t;
+`ifdef INO_UNSKEWED
+      // Unskewed: slot identity is tag-independent, so an index stays valid across a
+      // line-crossing access even as cur_line advances from line0 to line1.
+      begin t = tag_of(a); way_idx = base_idx(a); end
+`else
       begin t = tag_of(a); way_idx = (w==0) ? base_idx(a) : (base_idx(a) ^ t[IDXB-1:0]); end
+`endif
    endfunction
    function [FW-1:0] flat; input integer w; input [IDXB-1:0] ix; flat = (w!=0)*SETS + ix; endfunction
 
@@ -153,14 +159,22 @@ module ino_cache #(
    reg            vw;  reg [IDXB-1:0] vi;
    wire [FW-1:0]    vflat = flat(vw?1:0, vi);
    wire [PTAGB-1:0] vtag  = tagm[vflat];
+`ifdef INO_UNSKEWED
+   wire [IDXB-1:0]  vbase = vi;                       // unskewed: base == index
+`else
    wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
+`endif
 
    reg            flush_clean;        // current flush is clean-only (keep lines valid)
    reg [FW:0]     fscan;
    wire           fway  = fscan[IDXB];
    wire [IDXB-1:0] fidx  = fscan[IDXB-1:0];
    wire [PTAGB-1:0] ftag  = tagm[fscan[FW-1:0]];
+`ifdef INO_UNSKEWED
+   wire [IDXB-1:0]  fbase = fidx;                     // unskewed: base == index
+`else
    wire [IDXB-1:0]  fbase = fway ? (fidx ^ ftag[IDXB-1:0]) : fidx;
+`endif
 
    // ---- window + line buffers ----
    reg [BANKW-1:0] wlo, whi;
@@ -655,6 +669,41 @@ module ino_cache #(
                  (perf_cyc - perf_st_cyc));
    end
 `endif
+
+`ifndef SYNTHESIS
+   // ---- corruption invariants (ported from src/cache.v, c7f06b39 / dc95e905) --------
+   // This fork predates both fixes, so it has neither the fix nor the guard. These fire
+   // AT the bad write instead of at the symptom, which on the board arrives millions of
+   // cycles later as a wrong load.
+
+   // STORE-SLOT: a non-spanning store merge at S_FIN must write the slot that actually
+   // holds ITS line. If the tag there is no longer this store's tag, the store is being
+   // merged into an unrelated resident line -- silent corruption, surfacing only when
+   // that line is read back.
+   always @(posedge clk) if (!reset && (WRITABLE != 0))
+      if ((st == S_FIN) && r_is_wr && hit && !r_span && !phase
+          && valm[flat(w0_way, w0_idx)]
+          && (tagm[flat(w0_way, w0_idx)] != tag_of(cur_line)))
+         $fatal(1, "[cache id=%0d] STORE-SLOT MISMATCH: store line=%h (tag=%h) into way=%0d idx=%h holding tag=%h",
+                PERF_ID, cur_line, tag_of(cur_line), w0_way, w0_idx,
+                tagm[flat(w0_way, w0_idx)]);
+
+   // SPAN-LOW-STALE: the exposure this fork actually has. A line-crossing store writes
+   // line0's low half at S_FIN via w0_way/w0_idx -- a slot named at the phase-0 lookup
+   // and carried across the phase-1 lookup for line1. That lookup can miss, and its fill
+   // can evict line0's slot underneath the store; S_FIN then merges into whichever line
+   // moved in and marks it dirty, publishing a foreign word to DRAM under the innocent
+   // line's address. Upstream removed the exposure by committing line0 at its own live
+   // lookup (c7f06b39); here we check the slot still holds line0 at the write.
+   always @(posedge clk) if (!reset && (WRITABLE != 0))
+      if ((st == S_FIN) && r_is_wr && hit && r_span
+          && valm[flat(w0_way, w0_idx)]
+          && (tagm[flat(w0_way, w0_idx)] != tag_of(line0)))
+         $fatal(1, "[cache id=%0d] SPAN-LOW-STALE: span line0=%h (tag=%h) into way=%0d idx=%h holding tag=%h",
+                PERF_ID, line0, tag_of(line0), w0_way, w0_idx,
+                tagm[flat(w0_way, w0_idx)]);
+`endif
+
 endmodule
 
 `default_nettype wire
