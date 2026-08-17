@@ -519,6 +519,14 @@ if {$step in {impl bit}} {
     set wns [get_property STATS.WNS [get_runs impl_1]]
     set tns [get_property STATS.TNS [get_runs impl_1]]
     set failing [get_property STATS.FAILING_NETS [get_runs impl_1]]
+    # STATS.* can come back EMPTY even on a clean run (observed: every intra-clock WNS
+    # positive, yet this gate aborted before write_bitstream because Tcl evaluates
+    # {"" < 0} as TRUE, discarding a good bitstream). Treat empty as unknown and let
+    # the run proceed -- the routed timing summary is the authority.
+    if {$wns eq ""} {
+        puts "WARNING: STATS.WNS empty -- skipping the WNS gate; check the timing summary report."
+        set wns 0
+    }
     if {$wns < 0} {
         puts "\n*** TIMING VIOLATION: WNS=${wns}ns  TNS=${tns}ns  failing_endpoints=$failing ***"
         puts "    Design will not function reliably at this clock frequency."

@@ -68,7 +68,11 @@ while {1} {
     # Short waits in a loop: a timeout here does NOT disarm the core, so re-waiting
     # keeps the capture alive indefinitely while giving us a liveness heartbeat.
     wait_on_hw_ila -timeout 5 $ila
-    set st [get_property CORE_STATUS $ila]
+    # Vivado 2025.1 does not expose CORE_STATUS until the device is refreshed, and a
+    # bare read aborts the whole wait (Labtoolstcl 44-155). Refresh first, and treat a
+    # missing property as "still armed" rather than losing the capture.
+    catch {refresh_hw_device -quiet -update_hw_probes false [current_hw_device]}
+    if {[catch {set st [get_property CORE_STATUS $ila]}]} { set st "armed" }
     if {[string match -nocase "*full*" $st] || [string match -nocase "*trigger*" $st]} { break }
     incr waited 5
     if {$max_hours > 0 && $waited >= $max_hours * 3600} {

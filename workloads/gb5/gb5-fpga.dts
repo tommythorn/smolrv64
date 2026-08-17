@@ -4,10 +4,16 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmolRV64 inorder-nospan 53bb94bf @ 111 MHz";
+	model = "SmooolRV64 w/2048 MiB";  // gb5 initramfs variant
 
 	chosen {
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
+		/* Boot the Geekbench 5 initramfs: busybox runs /etc/init.d/S90geekbench,
+		   which execs /root/gb/geekbench_riscv64 -- so AES-XTS, the first
+		   workload and the one that fails validation, starts seconds after
+		   boot instead of ~10 min of systemd/cloud-init. No network needed. */
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/raw rw ignore_loglevel random.trust_bootloader=on";
+		linux,initrd-start = <0 0x96270e00>;
+		linux,initrd-end   = <0 0x9ff00000>;
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
