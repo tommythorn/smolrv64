@@ -45,8 +45,11 @@
 // SCOPE: RAM only (no MMIO devices yet -- CLINT/UART routing is the next increment;
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
+`ifndef INO_HW
+ `define INO_HW 2                 // fetch window halfwords (must match ino_core.v)
+`endif
 module ino_soc_top #(
-   parameter HW=2, PCW=64, SEQW=8,   // HW=2: one 32-bit fetch window (scalar)
+   parameter HW=`INO_HW, PCW=64, SEQW=8,   // fetch window halfwords (must match ino_core.v)
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
@@ -418,20 +421,89 @@ module ino_soc_top #(
       end
 
    // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
-   reg          i_have, i_rd_pend;  reg [63:0] i_pa, i_reqpa;  reg [HW*16-1:0] i_win;
-   wire         i_match = i_have & (i_pa == imem_addr);
-   wire         i_need  = ~i_match;
+   // ---- CHUNK-ALIGNED RUN-AHEAD FETCH BUFFER --------------------------------------
+   // Replaces a one-window adapter that tagged its single held window with the EXACT byte
+   // address it was fetched at (`i_pa == imem_addr`).  Every PC change therefore missed and
+   // re-looked-up the I$: 1.004 lookups per RETIRED INSTRUCTION, measured, costing ~2.0 CPI
+   // of FE_BUB on silicon on every workload tried (cold boot, tight hot loop, gzip alike) --
+   // ~1.0 waiting for a hit that need not have happened plus ~1.0 of arrival bubble.  It was
+   // invisible because at HW=2 the window is exactly one instruction wide, so an exact-match
+   // tag and a range check behave identically; the comparison only becomes WRONG once the
+   // window is wider than the instruction being fetched.
+   //
+   // Now: two CHUNK-ALIGNED windows held back to back, served to the frontend by a byte shift
+   // across the pair.  The I$ is looked up once per CHUNK (2 instructions at HW=4, up to 4
+   // with RVC) instead of once per instruction, and because the cache is idle while a chunk is
+   // being consumed, chunk1 is prefetched into that idle slot -- so the lookup latency lands
+   // off the critical path entirely rather than in front of every instruction.
+   //
+   // Requests are chunk-ALIGNED, so the I$ never sees a line-crossing fetch.  Given what the
+   // D-cache span path cost this project, removing a whole class of straddling access from the
+   // I$ is worth as much as the cycles.
+   //
+   // PAGES.  imem_addr is a PHYSICAL address, and the virtually-next page is not the
+   // physically-next page, so chunk1 is prefetched ONLY when it lies in the same 4 KiB page as
+   // chunk0.  At a page boundary fb_v1 simply stays 0, the next PC misses, and the buffer
+   // realigns on the freshly translated PA -- one extra lookup per page, which is nothing.
+   // This also keeps the pair within one translation, so serving across the pair is always
+   // serving bytes the iMMU actually vouched for.
+   localparam integer CHB  = HW*2;              // chunk bytes
+   localparam integer CHA  = $clog2(HW*2);      // chunk-align shift
+   localparam integer PGB  = 12;                // 4 KiB page
+
+   reg  [63:0]      fb_pa;                      // PA of chunk0 (chunk-aligned)
+   reg              fb_v0, fb_v1;
+   reg  [HW*16-1:0] fb_w0, fb_w1;
+   reg              fb_pend;  reg [63:0] fb_reqpa;
+
    wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
-   wire         ic_rd_req  = (i_need | i_rd_pend) & ~ic_rd_valid;
-   wire [63:0]  ic_rd_addr = i_rd_pend ? i_reqpa : imem_addr;
+
+   wire [63:0] fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};       // chunk containing the PC
+   wire [63:0] fb_off = imem_addr - fb_pa;                      // byte offset into the pair;
+                                                                // wraps huge if PC < fb_pa, so a
+                                                                // backward branch reads as a miss
+   wire        fb_in0 = fb_v0 & (fb_off <  CHB);
+   wire        fb_in1 = fb_v1 & (fb_off >= CHB) & (fb_off < 2*CHB);
+   wire        fb_miss = ~fb_in0 & ~fb_in1;
+
+   // chunk1 is only fetchable if it shares chunk0's page (see PAGES above)
+   wire [63:0] fb_pa1    = fb_pa + CHB;
+   wire        fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
+
+   // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
+   wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);
+   wire        fb_wantv = fb_miss | ~fb_v0 | (fb_v0 & ~fb_v1 & fb_samepg);
+
+   // NOT gated on fi_stall: it is declared further down, and the adapter this replaces did not
+   // gate on it either -- ic_inv_req clears the buffer, and imem_avail below holds fetch off.
+   wire         ic_rd_req  = (fb_wantv | fb_pend) & ~ic_rd_valid;
+   wire [63:0]  ic_rd_addr = fb_pend ? fb_reqpa : fb_want;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
    reg          ic_inv_req;
-   always @(posedge clk) if (reset) begin i_have<=1'b0; i_rd_pend<=1'b0; end
-      else begin
-         if (ic_inv_req) i_have<=1'b0;
-         if (~i_rd_pend & i_need) begin i_rd_pend<=1'b1; i_reqpa<=imem_addr; end
-         if (ic_rd_valid) begin i_rd_pend<=1'b0; i_have<=1'b1; i_pa<=i_reqpa; i_win<=ic_rd_data; end
+   // Advance/realign and fill are resolved TOGETHER, because they can land in the same cycle
+   // and the fill targets slots named relative to the CURRENT fb_pa. Ordering matters: each arm
+   // assigns the shift first and then lets a matching fill overwrite it (last nonblocking
+   // assignment wins), so a response arriving exactly as the buffer moves is not lost.
+   always @(posedge clk) if (reset) begin
+         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0;
+      end else begin
+         if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; end
+         if (ic_rd_valid) fb_pend <= 1'b0;
+
+         if (ic_inv_req) begin                                  // fence.i: drop everything
+            fb_v0 <= 1'b0; fb_v1 <= 1'b0;
+         end else if (fb_miss) begin                            // redirect / page cross: realign
+            fb_pa <= fb_al; fb_v0 <= 1'b0; fb_v1 <= 1'b0;
+            if (ic_rd_valid & (ic_rd_resp_addr == fb_al)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+         end else if (fb_in1) begin                             // PC moved on: chunk1 -> chunk0
+            fb_pa <= fb_pa1;
+            fb_w0 <= fb_w1;  fb_v0 <= fb_v1;  fb_v1 <= 1'b0;
+            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa1)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+         end else begin                                         // steady state: just fill
+            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa )) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa1)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
+         end
       end
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  wire fi_stall = (fi != FI_IDLE);
@@ -451,13 +523,31 @@ module ino_soc_top #(
    // (ic_rd_data is a register inside the cache, so this adds a mux, not logic
    // depth from the arrays). Guard with the response address: a redirect can move
    // pc while a window is in flight, and the stale response must read as a miss.
-   wire         i_arr = ic_rd_valid & (ic_rd_resp_addr == imem_addr);
-   assign imem_data  = i_arr ? ic_rd_data : i_win;
+   // Arrival bypass, kept from the old adapter: serve COMBINATIONALLY the cycle the I$ delivers
+   // the chunk the PC is in (ic_rd_data is already a register inside the cache, so this is a mux,
+   // not array depth). Without it every redirect pays an extra cycle, and redirects are 11.5% of
+   // instructions here.
+   wire         fb_arr  = ic_rd_valid & (ic_rd_resp_addr == fb_al);
+   wire [63:0]  fb_aoff = imem_addr - fb_al;                    // offset within the arriving chunk
+
+   wire [2*HW*16-1:0] fb_pair = {fb_w1, fb_w0};
+   wire [HW*16-1:0]   fb_srv  = fb_pair >> {fb_off[CHA:0], 3'b000};
+   wire [HW*16-1:0]   fb_asrv = ic_rd_data >> {fb_aoff[CHA-1:0], 3'b000};
+   assign imem_data  = fb_in0 ? fb_srv : (fb_arr ? fb_asrv : {(HW*16){1'b0}});
+
+   // Valid halfwords from the PC: to the end of chunk1 if it is present, else to the end of
+   // chunk0, capped at the HW the frontend asked for. fetch.v caps this again at the 4 KiB
+   // boundary (eff_avail), so page-straddling instructions stay its business, not ours.
+   wire [63:0] fb_vb  = (fb_v1 ? 2*CHB : CHB) - fb_off;         // valid bytes from the PC
+   wire [63:0] fb_avb = CHB - fb_aoff;                          // ditto on the arrival path
+   wire [63:0] fb_vhw = fb_in0 ? (fb_vb >> 1) : (fb_avb >> 1);
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = fi_stall ? 0 : ((i_match | i_arr) ? HW : 0);   // HW halfwords when the line is present
+   assign imem_avail = (fi_stall | ~(fb_in0 | fb_arr)) ? 0
+                     : (fb_vhw >= HW)                          ? HW
+                     :                                           fb_vhw;
 
    ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
