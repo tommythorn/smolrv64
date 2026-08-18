@@ -96,6 +96,53 @@ routing), with the CSR mux and redirect already registered out by the parked com
 feeder fix buys ~0.1 ns — the whack-a-mole `docs/pipelining-findings.md` warns about. The fix
 is to make the predictor unreachable from the back of the pipe, i.e. the decoupled frontend.
 
+## A THIRD silently-broken constraint — read the report by PATH GROUP, not the headline WNS
+
+The design summary WNS is **not** the core. Broken down on the 105.26 MHz build:
+
+| group | WNS | endpoints failing |
+|---|---|---|
+| design (headline) | -1.401 | 529 |
+| `probe_clk_unbuf` intra-clock (the core) | **-0.780** | 343 |
+| `probe_clk_unbuf` -> `mmcm_clkout0` (CDC) | **-1.401** | **10** |
+
+The worst path in the whole design is a clock crossing, not logic:
+
+```
+Source:      mmio_clock_bridge/mmio_cmd_fifo/xpm_fifo_async_inst/.../count_value_i_reg[1]_replica/C
+Destination: .../gen_pntr_pf_rc.wpr_rc_reg/reg_out_i_reg[1]/D
+Data Path Delay: 0.248 ns   (1 logic level, one LUT2)
+Requirement:     0.500 ns   (mmcm_clkout0 rise@48.000 - probe_clk_unbuf rise@47.500)
+```
+
+0.248 ns of delay failing a 0.5 ns requirement, inside an **XPM async FIFO's gray-code
+pointer logic** — a structure that ships with its own CDC constraints.
+
+Note the source name: `count_value_i_reg[1]_replica`. **`phys_opt_design` replicated a
+register inside the XPM FIFO and the replica stopped matching XPM's constraint patterns**, so
+the crossing reverted to being timed synchronously.
+
+It only became visible because of the MMCM, and this is the genuine cost of a continuous
+clock: under `BUFGCE_DIV`, `probe_clk` was an integer divide of `ui_clk` with aligned edges,
+so the worst edge relationship was a comfortable 3 ns. At 105.26 MHz the ratio is
+333.33/105.26 = 3.167 and edges land 0.5 ns apart. **Non-integer ratios expose every crossing
+whose CDC constraints have been broken.** Expect more of these as the frequency moves.
+
+Fixing it moves design WNS -1.401 -> -0.780 (91.7 -> 97.3 MHz on that build). Worth having,
+but it is NOT what blocks the frequency — the core is.
+
+**Do not reach for `set_clock_groups -asynchronous` without thought.** `cvfpu_timing.tcl`
+records that it outranks `set_max_delay`, and a `set_max_delay -datapath_only` is what
+protects the 512-bit `ddr_line_cdc` payload. Grouping probe_clk/ui_clk asynchronous would
+leave that bus untimed — the same mistake that once produced stale FP data on core<->fpu.
+A surgical waiver on the replicated XPM pointer cells, or preventing their replication, is
+the safer shape.
+
+This is the **third** silently-broken constraint found in one night, after the `if` inside
+the XDC that Vivado ignored with only a CRITICAL WARNING, and the `ddr_line_cdc` return path
+that had no `-from` in any build ever made. None of them failed loudly; a dropped constraint
+does not error, it just stops applying. **Read `report_timing_summary` by path group.**
+
 ## What is now the biggest stall (measured, post-buffer, CPI 3.993)
 
 ```
