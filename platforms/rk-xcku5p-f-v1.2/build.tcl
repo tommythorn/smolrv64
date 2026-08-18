@@ -16,6 +16,7 @@ set inorder_dir [file join $repo_root inorder]
 set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
+set probe_clk_check_hook [file normalize [file join [file dirname [info script]] probe_clk_check.tcl]]
 
 # The sharded-OoO probe core (soc_top + DDR line/AXI bridge, gated by the
 # `PROBE_CORE ifdef in rk_xcku5p.v) is now the DEFAULT.  Set PROBE_CORE=0 to
@@ -525,6 +526,15 @@ if {$step in {impl bit}} {
     set_property STEPS.OPT_DESIGN.TCL.PRE   $cvfpu_timing_hook [get_runs impl_1]
     set_property STEPS.PLACE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
     set_property STEPS.ROUTE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
+    # probe_clk guard: assert the CDC constraints in rk_xcku5p.xdc actually bound to a
+    # clock, and record the frequency the bitstream really runs at. Twice: after opt so a
+    # dropped constraint fails in minutes instead of after a full place-and-route, and after
+    # route so the recorded frequency is the one the bitstream is actually generated from.
+    if {![file exists $probe_clk_check_hook]} {
+        error "probe_clk check hook missing: $probe_clk_check_hook"
+    }
+    set_property STEPS.OPT_DESIGN.TCL.POST   $probe_clk_check_hook [get_runs impl_1]
+    set_property STEPS.ROUTE_DESIGN.TCL.POST $probe_clk_check_hook [get_runs impl_1]
     run_if_needed impl_1 "" 12
     puts "Implementation complete."
 }
