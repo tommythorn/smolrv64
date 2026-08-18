@@ -533,6 +533,9 @@ if {$step in {impl bit}} {
     if {![file exists $probe_clk_check_hook]} {
         error "probe_clk check hook missing: $probe_clk_check_hook"
     }
+    if {![llength [get_files -quiet -of_objects [get_filesets utils_1] $probe_clk_check_hook]]} {
+        add_files -fileset utils_1 -norecurse $probe_clk_check_hook
+    }
     set_property STEPS.OPT_DESIGN.TCL.POST   $probe_clk_check_hook [get_runs impl_1]
     set_property STEPS.ROUTE_DESIGN.TCL.POST $probe_clk_check_hook [get_runs impl_1]
     run_if_needed impl_1 "" 12

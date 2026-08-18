@@ -247,5 +247,22 @@ set_false_path \
 set_max_delay -datapath_only 6.000 \
     -from [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *probe_clk_buf/O}]] \
     -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_we_m_reg*/D || NAME =~ *probe_cdc/p_addr_m_reg*/D || NAME =~ *probe_cdc/p_wdata_m_reg*/D || NAME =~ *probe_cdc/p_wmask_m_reg*/D}]
+# The RETURN half. This one had no -from at all, and `set_max_delay -datapath_only`
+# REQUIRES one -- Vivado has been answering it with
+#
+#   CRITICAL WARNING: [Constraints 18-540] set_max_delay -datapath_only requires
+#   -from to be non-empty
+#
+# and dropping the constraint, in every build there has ever been, including the one
+# that shipped the 25-hour Geekbench 5 run. So while the outbound payload was correctly
+# treated as multicycle, the 512-bit read data coming BACK has always been timed as a
+# single ui_clk -> probe_clk hop: the same over-constraint, on the same bus, in the other
+# direction. It met anyway at 9 ns. It is exactly the kind of thing that does not meet
+# at 6 ns, and it is not core logic.
+#
+# -from names the launching flops rather than a clock, which is both more precise (this
+# is one specific MCP payload, not the whole ui_clk domain) and immune to the clock
+# renaming that silently broke the outbound constraint above.
 set_max_delay -datapath_only 6.000 \
-    -to [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]
+    -from [get_cells -hier -filter {NAME =~ *probe_cdc/m_rdata_q_reg*}] \
+    -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]
