@@ -1,4 +1,4 @@
-# fmax166.tcl -- what stands between the core and PROBE_CLK_DIV=2 (166.67 MHz)?
+# fmax166.tcl -- what stands between the core and 166.67 MHz (PROBE_CLK_DIV8=48)?
 #
 # BUFGCE_DIV divides ui_clk (333.333 MHz) by an integer, so the frequency ladder is
 # 66.7 / 83.3 / 111.1 / 166.7 / 333.3 -- there is no step between the current 111.1 MHz

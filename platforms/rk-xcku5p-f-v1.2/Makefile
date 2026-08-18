@@ -41,7 +41,14 @@ ifneq ($(strip $(PROBE_IW)),)
 export PROBE_IW
 endif
 
-# Fmax sweep: probe_clk = ui_clk(333.33MHz)/PROBE_CLK_DIV (RTL default 5 = 66.7 MHz).
+# Fmax sweep: probe_clk = 1000MHz*8/PROBE_CLK_DIV8, from an MMCM, so the frequency is
+# CONTINUOUS (the old BUFGCE_DIV could only reach 66.7/83.3/111.1/166.7/333.3, which made
+# any gain smaller than a whole rung worth nothing). RTL default 120 = 66.67 MHz;
+# 72 = 111.11 MHz is the GB5 milestone build. build.tcl hard-errors on the retired
+# PROBE_CLK_DIV rather than let it silently mean a different clock.
+ifneq ($(strip $(PROBE_CLK_DIV8)),)
+export PROBE_CLK_DIV8
+endif
 ifneq ($(strip $(PROBE_CLK_DIV)),)
 export PROBE_CLK_DIV
 endif

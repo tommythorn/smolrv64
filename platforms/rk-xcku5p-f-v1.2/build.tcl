@@ -237,12 +237,27 @@ if {$probe_core} {
         puts "NO_SSTC: hiding Sstc (stimecmp traps) so OpenSBI uses the CLINT timer path."
         lappend vdefines "NO_SSTC"
     }
-    # Fmax sweep knob: probe_clk = ui_clk(333.33MHz)/PROBE_CLK_DIV. The UART baud and the CLINT
-    # timebase are DERIVED from it in RTL, so they cannot drift out of sync with a sweep.
+    # RETIRED knob. It named the BUFGCE_DIV ladder (ui_clk/N); PROBE_CLK_DIV8 names the MMCM
+    # output divider in eighths. The two numbers are not interchangeable and a stale
+    # PROBE_CLK_DIV=3 would build 66.7 MHz while the operator believed 111. Fail loudly.
     if {[info exists env(PROBE_CLK_DIV)] && $env(PROBE_CLK_DIV) ne ""} {
-        set _mhz [expr {333.333 / $env(PROBE_CLK_DIV)}]
-        puts [format "PROBE_CLK_DIV override: probe_clk = ui_clk/%s = %.1f MHz (RTL default is 5 = 66.7 MHz)." $env(PROBE_CLK_DIV) $_mhz]
-        lappend vdefines "PROBE_CLK_DIV=$env(PROBE_CLK_DIV)"
+        error "PROBE_CLK_DIV is retired (it meant ui_clk/N on the old BUFGCE_DIV ladder).\
+ Use PROBE_CLK_DIV8 = the MMCM output divider in eighths: probe_clk = 1000 MHz * 8 / DIV8.\
+ PROBE_CLK_DIV=$env(PROBE_CLK_DIV) is PROBE_CLK_DIV8=[expr {8 * $env(PROBE_CLK_DIV) * 10 / 3}]\
+ (approximately -- 120/96/72 are 66.7/83.3/111.1 MHz exactly)."
+    }
+    # Fmax sweep knob: probe_clk = 1000 MHz * 8 / PROBE_CLK_DIV8, continuous rather than the
+    # 5-rung BUFGCE_DIV ladder. The UART baud and the CLINT timebase are DERIVED from it in
+    # RTL, so they cannot drift out of sync with a sweep.
+    if {[info exists env(PROBE_CLK_DIV8)] && $env(PROBE_CLK_DIV8) ne ""} {
+        set _d8 $env(PROBE_CLK_DIV8)
+        if {![string is integer -strict $_d8] || $_d8 < 8 || $_d8 > 1024} {
+            error "PROBE_CLK_DIV8=$_d8 is out of range: CLKOUT0_DIVIDE_F is 1.000..128.000, so\
+ DIV8 must be an integer in 8..1024."
+        }
+        set _mhz [expr {1000.0 * 8 / $_d8}]
+        puts [format "PROBE_CLK_DIV8 override: probe_clk = 1000MHz*8/%s = %.2f MHz (RTL default is 120 = 66.67 MHz)." $_d8 $_mhz]
+        lappend vdefines "PROBE_CLK_DIV8=$_d8"
     }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."

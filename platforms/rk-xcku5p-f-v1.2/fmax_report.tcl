@@ -7,7 +7,7 @@
 #
 # For each clock, report the worst INTRA-clock setup path (launch and capture both on that
 # clock) and turn it into an achievable period: period - slack. That is the number that tells
-# us which PROBE_CLK_DIV a given core width can support, from ONE build instead of a divisor
+# us which PROBE_CLK_DIV8 a given core width can support, from ONE build instead of a divisor
 # binary search.
 #
 #   Usage: vivado -mode batch -source fmax_report.tcl   (or: make fmax-report)

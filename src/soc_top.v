@@ -1,7 +1,8 @@
 `default_nettype none
-`ifndef PROBE_CLK_DIV
- `define PROBE_CLK_DIV 5
+`ifndef PROBE_CLK_DIV8
+ `define PROBE_CLK_DIV8 120
 `endif
+`define PROBE_CLK_HZ ((1_000_000_000 / `PROBE_CLK_DIV8) * 8)
 
 // Width knobs (guarded so -DPROBE_IW / -DPROBE_POOL override; see backend_top.v). soc_top
 // sizes its own I$ window (HW*16) and writeback bus (IW*PBITS), so it derives HW/PBITS from
@@ -205,11 +206,17 @@ module soc_top #(
       else begin dev_rvalid <= dmem_ren & is_dev_r & ~is_virtio_r;
                  dev_wack <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
-   // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV sweep: the DTB's
-   // timebase-frequency (501253) must stay valid or every kernel deadline is wrong (a 40x lie
-   // here once made healthy boots look permanently stalled). 333.33MHz/DIV/501253:
-   // DIV=5 -> 133 (66.67MHz), DIV=4 -> 166 (83.33MHz), DIV=3 -> 221 (111.1MHz); all within 0.3%.
-   clint #(.SCALE_DIV((333_333_333 / `PROBE_CLK_DIV) / 501_253)) u_clint
+   // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV8 sweep: the DTB
+   // declares timebase-frequency = 501253, so the CLINT must tick at that rate at ANY
+   // probe_clk. Hardcoding 133 (the 66.67 MHz value) made mtime run 1.67x fast at 111 MHz --
+   // every kernel deadline, TCP timeout and NFS retry skewed by that factor.
+   //
+   // NOTE the residual error, which the old integer ladder also had: SCALE_DIV is an integer,
+   // so the tick rate is probe_clk/round(probe_clk/501253), not 501253 exactly.  At 66.67 MHz
+   // it is exact (133); at 111.11 MHz it is 221 -> 502765 Hz, i.e. the timebase runs 0.30%
+   // fast and the GB5 milestone run carried that error.  Now that probe_clk is continuous,
+   // the sweep should PREFER frequencies where this divides cleanly.
+   clint #(.SCALE_DIV(`PROBE_CLK_HZ / 501_253)) u_clint
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
       .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),

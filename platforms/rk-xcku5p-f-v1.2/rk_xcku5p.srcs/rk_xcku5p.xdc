@@ -230,15 +230,31 @@ set_false_path \
 # after the synchronized level arrives, >= 2 destination clocks later. So it is a
 # multi-cycle path, not a single-cycle transfer.
 #
-# probe_clk is a BUFGCE_DIV derivative of ui_clk, so without this Vivado times the
+# probe_clk is an MMCM derivative of ui_clk, so without this Vivado times the
 # 512-bit bus as one 3 ns ui_clk hop: ZERO logic levels, ~90% routing. That
 # over-constraint -- not core logic -- was the sole thing keeping the in-order core
 # off 111 MHz (probe_clk->probe_clk met at +0.003 ns while this CDC missed at
 # -0.020 ns). Same reasoning as the mmio_clock_bridge false path above.
 #
 # 6 ns = 2x ui_clk, far inside the guaranteed stability window in both directions.
+#
+# Find the clock by OBJECT, not by literal name.  An auto-derived clock is named after the
+# net at its source pin, so moving from BUFGCE_DIV to an MMCM+BUFGCE can rename it -- and a
+# bare `get_clocks probe_clk` that matches nothing does not fail, it returns an empty list
+# and SILENTLY DROPS the constraint below, restoring the exact over-constraint that cost us
+# 111 MHz. Resolve it, then insist on finding exactly one.
+set _probe_clk [get_clocks -quiet probe_clk]
+if {[llength $_probe_clk] == 0} {
+    set _probe_clk [get_clocks -quiet -of_objects \
+        [get_pins -quiet -hier -filter {NAME =~ *probe_clk_buf/O}]]
+}
+if {[llength $_probe_clk] != 1} {
+    error "probe_clk: expected exactly one clock, got '$_probe_clk'. The probe_clk<->ui_clk\
+ CDC max_delay constraints would be silently dropped -- that over-constraint is what kept the\
+ core off 111 MHz. Run report_clocks and fix the lookup."
+}
 set_max_delay -datapath_only 6.000 \
-    -from [get_clocks probe_clk] \
+    -from $_probe_clk \
     -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_we_m_reg*/D || NAME =~ *probe_cdc/p_addr_m_reg*/D || NAME =~ *probe_cdc/p_wdata_m_reg*/D || NAME =~ *probe_cdc/p_wmask_m_reg*/D}]
 set_max_delay -datapath_only 6.000 \
     -to [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]

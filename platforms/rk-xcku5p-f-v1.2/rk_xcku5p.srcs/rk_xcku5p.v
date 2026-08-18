@@ -1,14 +1,38 @@
 `timescale 1ns / 1ps
 
-// ---- probe-core clock divider (ui_clk 333.33 MHz / PROBE_CLK_DIV) -------------------
+// ---- probe-core clock (MMCM: ui_clk x3 = 1000 MHz VCO, then divided) ----------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
-// probe/soc_top.v are DERIVED from it, so a sweep cannot silently skew the console baud
-// or the timebase (both bit us before -- see the comments at each site).
-// BUFGCE_DIV supports 1..8. Override from build.tcl via env PROBE_CLK_DIV.
-`ifndef PROBE_CLK_DIV
- `define PROBE_CLK_DIV 5
+// src/soc_top.v and inorder/ino_soc_top.v are DERIVED from it, so a sweep cannot silently
+// skew the console baud or the timebase (both bit us before -- see the comments at each
+// site).
+//
+// This USED to be BUFGCE_DIV(ui_clk)/N, which could only ever reach 333.3 / 166.7 / 111.1 /
+// 83.3 / 66.7 MHz.  On that ladder every timing improvement smaller than a whole rung was
+// worth exactly nothing, which is a terrible thing to hand someone iterating on Fmax.  An
+// MMCM makes probe_clk continuous.
+//
+// The knob is the MMCM output divider in EIGHTHS, because eighths are the primitive's real
+// resolution: any value is legal, and `PROBE_CLK_HZ is then exactly what the silicon
+// produces rather than a rounding of an intent.
+//
+//     probe_clk = 1000 MHz * 8 / PROBE_CLK_DIV8
+//     120 -> 66.67   96 -> 83.33   80 -> 100.0   72 -> 111.11 (the GB5 milestone build)
+//      64 -> 125.0   60 -> 133.33  54 -> 148.15  48 -> 166.67
+//
+// Step near 111 MHz is 1.6 MHz (1.4%), near 166 MHz 3.5 MHz (2.1%).
+//
+// VCO is fixed at 1000 MHz (ui_clk 333.333 MHz x 3, DIVCLK_DIVIDE=1).  That sits inside the
+// 600-1200 MHz window that holds for EVERY speed grade of this part, including the derating
+// on the -2i we actually have, so no sweep value can walk the MMCM out of spec.
+//
+// Override from build.tcl via env PROBE_CLK_DIV8.  The old PROBE_CLK_DIV is retired and
+// build.tcl hard-errors on it: it named a different ladder, and a stale `PROBE_CLK_DIV=3`
+// silently meaning 66.7 MHz is exactly the class of build divergence that has cost us days.
+`ifndef PROBE_CLK_DIV8
+ `define PROBE_CLK_DIV8 120
 `endif
-`define PROBE_CLK_HZ (333_333_333 / `PROBE_CLK_DIV)
+`define PROBE_CLK_HZ ((1_000_000_000 / `PROBE_CLK_DIV8) * 8)
+`define PROBE_CLKOUT_DIV_F (`PROBE_CLK_DIV8 / 8.0)
 `default_nettype none
 
 `ifndef SMOLRV64_BUILD_STAMP
@@ -122,16 +146,22 @@ module rk_xcku5p(
    );
 
 `ifdef PROBE_CORE
-   // Sharded-OoO probe core: modest-clock bring-up on a divided ui_clk. Post-route timing
-   // at /6 showed the global WNS pinned by virtio @333 MHz, with probe_clk absent from the
-   // worst-5 setup paths -- i.e. the real probe setup Fmax sits above the ~67 MHz OOC
-   // estimate -- so we push to /5 = 66.7 MHz (was /8 = 41.7). /4 = 83.3 MHz was TRIED and
-   // FAILED routing (WNS -1.78 ns at the 12 ns target => real Fmax ~72.5 MHz; probe_clk paths
-   // dominate the failing set), so /5 stands until the redirect/wake/MMIO cones get pipelined.
+   // The probe core (sharded OoO, or the in-order core under INO_CORE) runs on probe_clk,
+   // built by the MMCM below from PROBE_CLK_DIV8 -- see the knob at the top of this file.
+   //
+   // History, because the numbers below get quoted: on the old BUFGCE_DIV ladder the sharded
+   // OoO core sat at /5 = 66.7 MHz. /4 = 83.3 MHz was TRIED and FAILED routing (WNS -1.78 ns
+   // at the 12 ns target => real Fmax ~72.5 MHz, probe_clk paths dominating the failing set),
+   // so /5 stood until the redirect/wake/MMIO cones got pipelined. The in-order core reached
+   // /3 = 111.1 MHz and shipped the GB5 milestone there. Those are ladder rungs, not measured
+   // Fmax: the real Fmax was always somewhere between two rungs and the MMCM is what lets us
+   // find out where.
+   //
    // The ddr_* line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc.
-   // Synchronous divide keeps probe_clk phase-related to ui_clk.  The UART CLK_FREQ below AND
-   // the CLINT SCALE_DIV (probe/soc_top.v) MUST track this divider.
+   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (src/soc_top.v, inorder/ino_soc_top.v)
+   // are derived from the same knob, so they cannot drift out of sync with a sweep.
    wire probe_clk;
+
 `ifdef PROBE_DIAG
    // DIAGNOSTIC: decouple probe_clk/probe_reset from ui_rst (= DDR-cal-gated). A local POR
    // deasserts after ui_clk has run 1024 cycles (PLL locked; ui_clk runs post-lock independent
@@ -144,25 +174,56 @@ module rk_xcku5p(
       if (probe_por_cnt != 10'h3ff) probe_por_cnt <= probe_por_cnt + 1'b1;
       else                          probe_por <= 1'b0;
    end
-   BUFGCE_DIV #(.BUFGCE_DIVIDE(`PROBE_CLK_DIV)) probe_clk_buf
-      (.I(ui_clk), .CE(1'b1), .CLR(probe_por), .O(probe_clk));
+   wire probe_mmcm_rst  = probe_por;
+   wire probe_reset_src = probe_por;
+`else
+   wire probe_mmcm_rst  = ui_rst;
+   wire probe_reset_src = ui_cpu_reset;
+`endif
+
+   // ui_clk (333.333 MHz) x3 -> 1000 MHz VCO -> /(PROBE_CLK_DIV8/8) -> probe_clk.
+   //
+   // Direct feedback (CLKFBOUT tied straight back to CLKFBIN, no BUFG in the loop) is the
+   // recommended low-jitter mode on UltraScale+ when the output does not need to be phase
+   // aligned to the input.  probe_clk does not need to be: the old BUFGCE_DIV kept it
+   // phase-related to ui_clk, but nothing depended on that, because every probe_clk <-> ui_clk
+   // crossing already goes through a real CDC structure -- ddr_line_cdc's 4-phase handshake
+   // and mmio_clock_bridge's async FIFOs.  Giving up the phase relationship is what buys the
+   // continuous frequency.
+   wire probe_clk_unbuf, probe_clkfb, probe_mmcm_locked;
+   MMCME4_BASE #(
+      .CLKIN1_PERIOD    (3.000),                   // ui_clk = 333.333 MHz
+      .DIVCLK_DIVIDE    (1),
+      .CLKFBOUT_MULT_F  (3.000),                   // VCO = 1000 MHz
+      .CLKOUT0_DIVIDE_F (`PROBE_CLKOUT_DIV_F),
+      .BANDWIDTH        ("OPTIMIZED")
+   ) probe_mmcm (
+      .CLKIN1   (ui_clk),
+      .CLKFBIN  (probe_clkfb),
+      .CLKFBOUT (probe_clkfb),
+      .CLKOUT0  (probe_clk_unbuf),
+      .LOCKED   (probe_mmcm_locked),
+      .PWRDWN   (1'b0),
+      .RST      (probe_mmcm_rst)
+   );
+   BUFGCE probe_clk_buf (.I(probe_clk_unbuf), .CE(1'b1), .O(probe_clk));
+
+   // Hold the core in reset until the MMCM has locked.  Under BUFGCE_DIV probe_clk was merely
+   // late; an unlocked MMCM output is WRONG -- it sweeps in frequency while acquiring -- so
+   // tracking ui_rst/ui_cpu_reset alone is no longer sufficient.
+   wire probe_reset_async = probe_reset_src | ~probe_mmcm_locked;
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
-   always @(posedge probe_clk or posedge probe_por)
-      if (probe_por) probe_reset_sync <= 2'b11;
-      else           probe_reset_sync <= {probe_reset_sync[0], 1'b0};
+   always @(posedge probe_clk or posedge probe_reset_async)
+      if (probe_reset_async) probe_reset_sync <= 2'b11;
+      else                   probe_reset_sync <= {probe_reset_sync[0], 1'b0};
    wire probe_reset = probe_reset_sync[1];
-   // LEDs (core-independent): observe cal/clock health at a glance.
+
+`ifdef PROBE_DIAG
+   // LEDs (core-independent): observe cal/clock health at a glance.  led[1] is now the MMCM
+   // lock, not just a probe_clk heartbeat: a dark led[1] says the clock never came up.
    reg [26:0] hb_ui = 27'd0;    always @(posedge ui_clk)    hb_ui  <= hb_ui  + 1'b1;
    reg [23:0] hb_pr = 24'd0;    always @(posedge probe_clk) hb_pr  <= hb_pr  + 1'b1;
-   assign led = {hb_ui[26], hb_pr[23], ui_rst, init_calib_complete};
-`else
-   BUFGCE_DIV #(.BUFGCE_DIVIDE(`PROBE_CLK_DIV)) probe_clk_buf
-      (.I(ui_clk), .CE(1'b1), .CLR(ui_rst), .O(probe_clk));
-   (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
-   always @(posedge probe_clk or posedge ui_cpu_reset)
-      if (ui_cpu_reset) probe_reset_sync <= 2'b11;
-      else              probe_reset_sync <= {probe_reset_sync[0], 1'b0};
-   wire probe_reset = probe_reset_sync[1];
+   assign led = {hb_ui[26], hb_pr[23] & probe_mmcm_locked, ui_rst, init_calib_complete};
 `endif
 `endif
 
