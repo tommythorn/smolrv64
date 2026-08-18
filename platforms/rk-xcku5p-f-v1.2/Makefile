@@ -36,6 +36,12 @@ ifneq ($(strip $(INO_CORE)),)
 export INO_CORE
 endif
 
+# In-order fetch window halfwords: INO_HW=4 gives the chunk-aligned fetch buffer 8-byte
+# chunks (RTL default 2). Only 2 or 4; 8 trips the sdpram geometry guard.
+ifneq ($(strip $(INO_HW)),)
+export INO_HW
+endif
+
 # Width: PROBE_IW=1 (or 4, ...) overrides the RTL default (2). e.g. `make bit PROBE_IW=1`.
 ifneq ($(strip $(PROBE_IW)),)
 export PROBE_IW

@@ -260,6 +260,19 @@ if {$probe_core} {
         puts [format "PROBE_CLK_DIV8 override: probe_clk = 1000MHz*8/%s = %.2f MHz (RTL default is 120 = 66.67 MHz)." $_d8 $_mhz]
         lappend vdefines "PROBE_CLK_DIV8=$_d8"
     }
+    # Fetch window halfwords for the IN-ORDER core (ino_core.v / ino_soc_top.v both default
+    # to INO_HW=2). HW=4 makes the chunk-aligned fetch buffer 8-byte chunks; HW=8 would make
+    # the I$ RDW=128, which trips smolrv64_sdpram's hardware-proven-geometry guard (the wide-I$
+    # BRAM width-cascade regression that passed every Verilator test and fetched garbage on
+    # real BRAM), so 4 is the useful setting.
+    if {[info exists env(INO_HW)] && $env(INO_HW) ne ""} {
+        if {$env(INO_HW) != 2 && $env(INO_HW) != 4} {
+            error "INO_HW=$env(INO_HW): only 2 or 4 are supported. 8 sets the I$ RDW to 128 and\
+ trips the sdpram geometry guard; odd values cannot hold a 32-bit instruction."
+        }
+        puts "INO_HW override: in-order fetch window = $env(INO_HW) halfwords (RTL default is 2)."
+        lappend vdefines "INO_HW=$env(INO_HW)"
+    }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."
         lappend vdefines "PROBE_IW=$env(PROBE_IW)"
