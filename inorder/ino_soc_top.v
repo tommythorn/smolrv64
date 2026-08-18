@@ -452,23 +452,31 @@ module ino_soc_top #(
    localparam integer PGB  = 12;                // 4 KiB page
 
    reg  [63:0]      fb_pa;                      // PA of chunk0 (chunk-aligned)
+   // chunk1 is only fetchable if it shares chunk0's page (see PAGES above)
+   wire [63:0]      fb_pa1;
+   wire             fb_samepg;
    reg              fb_v0, fb_v1;
    reg  [HW*16-1:0] fb_w0, fb_w1;
    reg              fb_pend;  reg [63:0] fb_reqpa;
 
    wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
+   assign fb_pa1    = fb_pa + CHB;
+   assign fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
 
-   wire [63:0] fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};       // chunk containing the PC
-   wire [63:0] fb_off = imem_addr - fb_pa;                      // byte offset into the pair;
-                                                                // wraps huge if PC < fb_pa, so a
-                                                                // backward branch reads as a miss
-   wire        fb_in0 = fb_v0 & (fb_off <  CHB);
-   wire        fb_in1 = fb_v1 & (fb_off >= CHB) & (fb_off < 2*CHB);
-   wire        fb_miss = ~fb_in0 & ~fb_in1;
-
-   // chunk1 is only fetchable if it shares chunk0's page (see PAGES above)
-   wire [63:0] fb_pa1    = fb_pa + CHB;
-   wire        fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
+   // Hit test is an EQUALITY on chunk-aligned addresses, not a subtract-and-compare on byte
+   // offsets. The first cut computed `imem_addr - fb_pa` and compared the 64-bit result against
+   // CHB and 2*CHB; that put a 64-bit subtractor plus two magnitude comparators directly in the
+   // fetch path and cost 0.79 ns of WNS (+0.061 -> -0.728 at 111 MHz). Equality against a
+   // registered address is a comparator tree with no carry chain, and the offset within the
+   // chunk is then just the PC's low bits -- free.
+   wire [63:0]      fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};  // chunk containing the PC
+   wire [CHA-1:0]   fb_lo  = imem_addr[CHA-1:0];                // byte offset within that chunk
+   wire             fb_in0 = fb_v0 & (fb_al == fb_pa);
+   wire             fb_in1 = fb_v1 & (fb_al == fb_pa1);
+   wire             fb_hit = fb_in0 | fb_in1;
+   wire             fb_miss = ~fb_hit;
+   // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
+   wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
 
    // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
    wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);
@@ -527,27 +535,35 @@ module ino_soc_top #(
    // the chunk the PC is in (ic_rd_data is already a register inside the cache, so this is a mux,
    // not array depth). Without it every redirect pays an extra cycle, and redirects are 11.5% of
    // instructions here.
-   wire         fb_arr  = ic_rd_valid & (ic_rd_resp_addr == fb_al);
-   wire [63:0]  fb_aoff = imem_addr - fb_al;                    // offset within the arriving chunk
+   wire             fb_arr  = ic_rd_valid & (ic_rd_resp_addr == fb_al);
+   wire [CHA-1:0]   fb_aoff = fb_lo;                            // offset within the arriving chunk
 
+   // Serve for a hit in EITHER chunk. The first cut served only on fb_in0, so the cycle the PC
+   // crossed into chunk1 imem_avail read 0 and the frontend took a bubble -- one per chunk
+   // crossing, i.e. roughly one per 3 instructions at HW=4, which ate much of the win. The pair
+   // is contiguous and within one page by construction, so a chunk1 hit is served by shifting
+   // CHB further into the same pair; the shift is by fb_off, which now costs no arithmetic.
    wire [2*HW*16-1:0] fb_pair = {fb_w1, fb_w0};
-   wire [HW*16-1:0]   fb_srv  = fb_pair >> {fb_off[CHA:0], 3'b000};
-   wire [HW*16-1:0]   fb_asrv = ic_rd_data >> {fb_aoff[CHA-1:0], 3'b000};
-   assign imem_data  = fb_in0 ? fb_srv : (fb_arr ? fb_asrv : {(HW*16){1'b0}});
+   wire [HW*16-1:0]   fb_srv  = fb_pair >> {fb_off, 3'b000};
+   wire [HW*16-1:0]   fb_asrv = ic_rd_data >> {fb_aoff, 3'b000};
+   assign imem_data  = fb_hit ? fb_srv : (fb_arr ? fb_asrv : {(HW*16){1'b0}});
 
    // Valid halfwords from the PC: to the end of chunk1 if it is present, else to the end of
    // chunk0, capped at the HW the frontend asked for. fetch.v caps this again at the 4 KiB
    // boundary (eff_avail), so page-straddling instructions stay its business, not ours.
-   wire [63:0] fb_vb  = (fb_v1 ? 2*CHB : CHB) - fb_off;         // valid bytes from the PC
-   wire [63:0] fb_avb = CHB - fb_aoff;                          // ditto on the arrival path
-   wire [63:0] fb_vhw = fb_in0 ? (fb_vb >> 1) : (fb_avb >> 1);
+   // Valid bytes from the PC: to the end of chunk1 when it is present, else to the end of
+   // chunk0. Small arithmetic on CHA+1 bits, not on 64.
+   wire [CHA+1:0] fb_end = fb_v1 ? (2*CHB) : CHB;               // first invalid byte of the pair
+   wire [CHA+1:0] fb_vb  = fb_end - {1'b0, fb_off};             // valid bytes from the PC
+   wire [CHA:0]   fb_avb = CHB - {1'b0, fb_aoff};               // ditto on the arrival path
+   wire [CHA+1:0] fb_vhw = fb_hit ? (fb_vb >> 1) : {1'b0, fb_avb[CHA:1]};
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = (fi_stall | ~(fb_in0 | fb_arr)) ? 0
-                     : (fb_vhw >= HW)                          ? HW
-                     :                                           fb_vhw;
+   assign imem_avail = (fi_stall | ~(fb_hit | fb_arr)) ? 0
+                     : (fb_vhw >= HW)                     ? HW
+                     :                                      fb_vhw;
 
    ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
