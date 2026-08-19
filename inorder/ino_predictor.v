@@ -176,11 +176,15 @@ module ino_predictor
    //   bimodal [BIMW-1:0] = {hit,ctr,bidx,btag}  ·  yags [PDW-1 -: YW] = {yhit,yctr,yidx,ytag}
    localparam BIMW = 1 + 2 + BTBB + TAGW;
    localparam YW   = 1 + 2 + YBITS + YTAGW;
-   reg [PDW-1:0] pdet_f;
-   assign pd_fetch = pdet_f;
+   // COMBINATIONAL, not registered: every term is a fetch-time value of the bundle being
+   // presented right now, so the consumer latches it in the SAME cycle as `fire` and gets
+   // this bundle's details. src/predictor.v registers it into pdet_f and writes the ring a
+   // cycle later at `create`, which is why that version needs the lag; carrying the payload
+   // removes both the lag and the ring.
+   assign pd_fetch = {yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
+                      hit,  ctr_eff,  bidx(base_pc),      btag(base_pc)};
    wire [1:0]    ctr_eff  = hit  ? q_type[1:0]  : 2'b01;    // miss -> install weakly-not-taken base
    wire [1:0]    yctr_eff = yhit ? ycorr_q[1:0] : 2'b01;
-   initial pdet_f = {PDW{1'b0}};
 
    // ------------------------------------------------- speculate / commit / restore
    always @(posedge clk) begin
@@ -212,8 +216,6 @@ module ino_predictor
             if (p_cbr)  ghr <= {ghr[GHL-2:0], pred_dir};
             if (p_call) begin ras[ras_ptr + 1'b1] <= ft_npc; ras_ptr <= ras_ptr + 1'b1; end
             if (p_ret)  ras_ptr <= ras_ptr - 1'b1;
-            pdet_f <= {yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
-                       hit,  ctr_eff,  bidx(base_pc),      btag(base_pc)};
          end
       end
    end
