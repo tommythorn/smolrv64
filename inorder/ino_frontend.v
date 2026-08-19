@@ -94,11 +94,11 @@ module ino_frontend
     output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
 
    // ---------------------------------------------------------------- fetch
-   wire               f_valid, f_brt, bp_v;
-   wire [31:0]        f_inst;
-   wire [PCW-1:0]     f_pc;
-   wire [SEQW-1:0]    f_seq;
-   wire [PCW-1:0]     f_npc, f_pnpc, f_ftn, bp_tgt;
+   wire               fx_valid, f_brt, bp_v;
+   wire [31:0]        fx_inst;
+   wire [PCW-1:0]     fx_pc;
+   wire [SEQW-1:0]    fx_seq;
+   wire [PCW-1:0]     f_npc, fx_pnpc, f_ftn, bp_tgt;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ino_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
@@ -110,13 +110,13 @@ module ino_frontend
       .solo_all(1'b0),                 // IW=1: every bundle is already one instruction
       .irq_inject(irq_inject),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .npc(f_npc), .pred_npc(f_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
+      .npc(f_npc), .pred_npc(fx_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail),
-      .ready(accept), .valid(f_valid),
-      .slot_valid(), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
+      .ready(~q_full), .valid(fx_valid),
+      .slot_valid(), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
 
-   wire fire = accept & f_valid;      // mirrors fetch's own handshake
+   wire fire = ~q_full & fx_valid;    // fetch handshake: a bundle enters the QUEUE
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;
@@ -127,6 +127,44 @@ module ino_frontend
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_rep(res_rep));
+
+   // ------------------------------------------------------------- F/X queue
+   // THE point of this module's shape. fetch's .ready() used to be `accept`, which is
+   // m_advance, which is lsu_done -- so the fetch pointer could not move without knowing
+   // whether M completed this cycle, and that put the whole memory pipeline in the
+   // frontend's timing cone:
+   //   u_lsu FSM -> ... -> lsu_done -> u_fetch/va_q -> iMMU tag compare -> u_bp/ycorr_qv
+   // was the 132-path family at a 6 ns constraint. .ready() is now ~q_full: a function of
+   // a counter, with nothing from the backend in it.
+   //
+   // Depth 2, not 1: with one entry a clean ready (~q_valid, no `accept` term) drains and
+   // refills on alternate cycles, halving throughput. With two the count oscillates 1<->2
+   // and fetch pushes every cycle.
+   localparam QW = PDW + PCW + 32 + SEQW + PCW + 1 + 4 + PCW;
+   wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
+   reg  [QW-1:0]  q_dat [0:1];
+   reg            q_rp, q_wp;
+   reg  [1:0]     q_cnt;
+   wire           q_full  = q_cnt[1];
+   wire           q_empty = (q_cnt == 2'd0);
+   wire           q_push  = ~q_full & (fx_valid | fx_fault);
+   wire           q_pop   = accept & ~q_empty;
+   wire [QW-1:0]  q_in    = {pd_fetch, (fx_fault ? imem_ipc : fx_pc), fx_inst, fx_seq,
+                             fx_pnpc, fx_fault, imem_cause, imem_addr};
+   // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
+   wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
+   wire [SEQW-1:0] f_seq;   wire [PCW-1:0] f_pnpc; wire fault_op;
+   wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
+   assign {q_pdet, f_pc, f_inst, f_seq, f_pnpc, fault_op, q_cause, q_tval} = q_dat[q_rp];
+
+   always @(posedge clk) begin
+      if (reset | redirect) begin q_cnt <= 2'd0; q_rp <= 1'b0; q_wp <= 1'b0; end
+      else begin
+         if (q_push) begin q_dat[q_wp] <= q_in; q_wp <= ~q_wp; end
+         if (q_pop)  q_rp <= ~q_rp;
+         q_cnt <= q_cnt + {1'b0, q_push} - {1'b0, q_pop};
+      end
+   end
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;
@@ -172,8 +210,7 @@ module ino_frontend
    // fetch-fault pseudo-op: presented only when fetch itself has nothing (an
    // interrupt injection wins -- fetch forces a valid bundle for it, and an
    // interrupt is taken before the instruction that would have faulted).
-   wire fault_op = imem_fault & ~f_valid;
-   wire ld_valid = f_valid | fault_op;
+   wire ld_valid = ~q_empty;      // the head is a real bundle (fault pseudo-op included)
 
    // ------------------------------------------------------- IR register (F/X)
    always @(posedge clk) begin
@@ -185,13 +222,13 @@ module ino_frontend
          if (consume) d_valid <= 1'b0;      // X emptied; overridden by the load below
          if (accept) begin
             d_valid <= ld_valid;
-            d_pdet        <= pd_fetch;   // captured at fire, latched here with its bundle
+            d_pdet        <= q_pdet;     // captured at push, rode the queue with its bundle
             d_seq         <= f_seq;
-            d_pc          <= fault_op ? imem_ipc : f_pc;
+            d_pc          <= f_pc;   // fault EPC already selected at push
             d_pred_npc    <= f_pnpc;
             d_fault       <= fault_op;
-            d_fault_cause <= imem_cause;
-            d_fault_tval  <= imem_addr;      // faulting VA (straddle: pc+2)
+            d_fault_cause <= q_cause;
+            d_fault_tval  <= q_tval;         // faulting VA (straddle: pc+2)
 
             // A poisoned fetch carries no operation: every class flag is cleared so
             // it slides to M as a pure trap request. Serializing keeps it alone.
