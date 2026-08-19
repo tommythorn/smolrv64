@@ -66,6 +66,7 @@ module ino_lsu
     input  wire            mem_rvalid,
     output wire            mem_wen,
     output wire [AW-1:0]   mem_waddr,
+    output wire [AW-1:0]   mem_wabase,   // the access base PA (pa_q), NOT the per-beat address
     output wire [63:0]     mem_wdata,
     output wire [7:0]      mem_wmask,
     output wire            mem_wuncached,
@@ -221,6 +222,14 @@ module ino_lsu
    wire [7:0] st_mask = (8'd1 << nb) - 8'd1;
    assign mem_wen       = st_go | amo_go;
    assign mem_waddr     = {{(AW-56){1'b0}}, (st2_go ? pa2_q : pa_q)};
+   // The access BASE, distinct from mem_waddr's per-beat address. A straddling store's second
+   // beat addresses pa2_q, but straddling requires xl_can, which requires pa_dram -- so a
+   // DEVICE access is NEVER in S_ST2. soc_top decodes devices from this base, which keeps
+   // st2_go and pa2_q (and the mux they drive) out of the device-decode cone: that mux select
+   // was the startpoint of the worst path in the design at 6 ns,
+   //   FSM_onehot_st[3] -> st2_go -> is_uart_w -> dmem_wready -> lsu_done -> redirect
+   //                    -> iMMU tag compare -> u_bp/ycorr_qv
+   assign mem_wabase    = {{(AW-56){1'b0}}, pa_q};
    // Store data is placed at its byte offset inside the aligned word; the straddling
    // remainder starts at byte 0 of the next word.
    assign mem_wdata     = amo_go ? a_wdata

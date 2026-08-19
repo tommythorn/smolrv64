@@ -51,6 +51,7 @@ module ino_core
     input  wire                    dmem_rvalid,
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
+    output wire [AW-1:0]           dmem_wabase,  // access base PA (device decode)
     output wire [63:0]             dmem_wdata,
     output wire [7:0]              dmem_wmask,
     output wire                    dmem_wuncached,
@@ -295,7 +296,7 @@ module ino_core
       .ptw_rdata(dptw_rdata), .ptw_rvalid(dptw_rvalid),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
-      .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wdata(dmem_wdata),
+      .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wabase(dmem_wabase), .mem_wdata(dmem_wdata),
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
       .mem_wready(dmem_wready),

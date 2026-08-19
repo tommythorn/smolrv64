@@ -111,6 +111,7 @@ module ino_soc_top #(
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
    wire                dmem_cbo, dmem_cbo_zero, dmem_cbo_keep;  // Zicbom/Zicboz cache maintenance
    wire [63:0]         dmem_rdata;
+   wire [63:0]         dmem_wabase;   // store base PA, unmuxed by the straddle beat
    wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
    wire [55:0]         ptw_addr, dptw_addr;
    wire                ptw_read, dptw_read;
@@ -124,7 +125,8 @@ module ino_soc_top #(
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
-      .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
+      .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wabase(dmem_wabase),
+      .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
       .dmem_cbo(dmem_cbo), .dmem_cbo_zero(dmem_cbo_zero), .dmem_cbo_keep(dmem_cbo_keep),
       .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
@@ -148,9 +150,18 @@ module ino_soc_top #(
    // in S_LD/S_LD2/S_ARD and mem_wen only in S_ST/S_ST2/S_AWR, so a read and a write are
    // never in flight together and the write-qualification was never carrying information.
    // Selected once, applied at one site; the invariant is asserted below, not assumed.
-   wire [63:0] dev_addr = dmem_wen ? dmem_waddr : dmem_raddr;
+   // dmem_wabase, NOT dmem_waddr: the per-beat address is (st2_go ? pa2_q : pa_q), and that
+   // mux select was the startpoint of the design's worst path at 6 ns -- it reached the device
+   // decode's 64-bit compares, then dmem_wready -> lsu_done -> redirect -> iMMU -> u_bp/ycorr.
+   // A straddling second beat requires xl_can, which requires pa_dram, so a DEVICE access can
+   // never be in S_ST2 and the base is the same address the beat would have used. Asserted below.
+   wire [63:0] dev_addr = dmem_wen ? dmem_wabase : dmem_raddr;
    always @(posedge clk) if (!reset & dmem_ren & dmem_wen)
       $fatal(1, "ino_soc_top: dmem_ren & dmem_wen asserted together -- dev_addr select is ambiguous");
+   // ...and a device write is never the straddling second beat, which is what makes decoding
+   // from the base equivalent. If this ever fires, the decode above is addressing the wrong word.
+   always @(posedge clk) if (!reset & dmem_wen & is_dev_w & (dmem_waddr != dmem_wabase))
+      $fatal(1, "ino_soc_top: device write straddled a word (beat %h base %h)", dmem_waddr, dmem_wabase);
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
@@ -158,11 +169,11 @@ module ino_soc_top #(
    wire is_virtio_r = (dmem_raddr & ~64'h1fff)    == VIRTIO_BASE;   // 8 KiB: blk(+0) + net(+0x1000)
    wire is_buildid_r = (dmem_raddr & ~64'hff)     == BUILDID_BASE;  // 256 B window (read-only)
    wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r | is_buildid_r;
-   wire is_clint_w = (dmem_waddr & ~64'hffff)     == CLINT_BASE;
-   wire is_uart_w  = (dmem_waddr & ~64'hf)        == UART_BASE;
-   wire is_plic_w  = (dmem_waddr & ~64'h3ff_ffff) == PLIC_BASE;
-   wire is_hpm_w   = (dmem_waddr & ~64'hff)        == HPM_BASE;
-   wire is_virtio_w = (dmem_waddr & ~64'h1fff)    == VIRTIO_BASE;
+   wire is_clint_w = (dmem_wabase & ~64'hffff)     == CLINT_BASE;
+   wire is_uart_w  = (dmem_wabase & ~64'hf)        == UART_BASE;
+   wire is_plic_w  = (dmem_wabase & ~64'h3ff_ffff) == PLIC_BASE;
+   wire is_hpm_w   = (dmem_wabase & ~64'hff)        == HPM_BASE;
+   wire is_virtio_w = (dmem_wabase & ~64'h1fff)    == VIRTIO_BASE;
    wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
    // virtio-mmio register access: 32-bit. The probe LSU bus is byte-addressed and
    // RIGHT-ALIGNED -- it presents/consumes "8 bytes @ mem_*addr" with the addressed
