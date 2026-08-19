@@ -474,8 +474,13 @@ module ino_core
       .o_tlb_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 3'd1 : 3'd0), .hpm_ev(hpm_ev),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
+      // csr_file's ILA debug bus. The in-order SoC puts no ILA on the CSR file, so these
+      // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build
+      // and PINCONNECTEMPTY does not, so a deliberate non-connection has to say so instead
+      // of being silently omitted (same treatment as the iMMU's t_uncached).
+      .dbg_timer(), .dbg_mtvec(), .dbg_mtvec_we(), .dbg_csrop(), .dbg_csrop_v(),
       .upd_valid(m_is_sys), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
       .upd_addr(m_imm[11:0]),
       .upd_src(m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val),

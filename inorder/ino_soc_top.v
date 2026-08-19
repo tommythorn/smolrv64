@@ -315,9 +315,9 @@ module ino_soc_top #(
    function [63:0] uart_rd;
       input [63:0] a; input [7:0] rbr; input dr; input [7:0] lcr; input thr_full;
       input [3:0] ier; input [7:0] iir; input [4:0] mcr; input [7:0] scr;
-      integer b2; reg [2:0] off;
+      integer b2; reg [2:0] off; reg [63:0] uoff;
       begin uart_rd=64'd0; for (b2=0;b2<8;b2=b2+1) begin
-         off=(a-UART_BASE+b2)&3'h7;
+         uoff=a-UART_BASE+b2; off=uoff[2:0];   // narrow explicitly, not at the assignment
          uart_rd[b2*8 +: 8] =
               (off==3'd0) ? (lcr[7] ? 8'h00 : rbr)                       // RBR (DLL if DLAB)
             : (off==3'd1) ? (lcr[7] ? 8'h00 : {4'd0, ier})               // IER (DLM if DLAB)
@@ -572,7 +572,8 @@ module ino_soc_top #(
    // is contiguous and within one page by construction, so a chunk1 hit is served by shifting
    // CHB further into the same pair; the shift is by fb_off, which now costs no arithmetic.
    wire [2*HW*16-1:0] fb_pair = {fb_w1, fb_w0};
-   wire [HW*16-1:0]   fb_srv  = fb_pair >> {fb_off, 3'b000};
+   wire [2*HW*16-1:0] fb_shf  = fb_pair >> {fb_off, 3'b000};
+   wire [HW*16-1:0]   fb_srv  = fb_shf[HW*16-1:0];
    wire [HW*16-1:0]   fb_asrv = ic_rd_data >> {fb_aoff, 3'b000};
    assign imem_data  = fb_hit ? fb_srv : (fb_arr ? fb_asrv : {(HW*16){1'b0}});
 
@@ -581,17 +582,28 @@ module ino_soc_top #(
    // boundary (eff_avail), so page-straddling instructions stay its business, not ours.
    // Valid bytes from the PC: to the end of chunk1 when it is present, else to the end of
    // chunk0. Small arithmetic on CHA+1 bits, not on 64.
-   wire [CHA+1:0] fb_end = fb_v1 ? (2*CHB) : CHB;               // first invalid byte of the pair
+   // CHB is a localparam integer, so `2*CHB` and `CHB - x` are 32-bit expressions that were
+   // truncated at these narrow wires. Sized copies keep the arithmetic at the declared width.
+   localparam integer   CHB_2I = 2*CHB;      // 32-bit intermediates, part-selected to width
+   localparam [CHA+1:0] CHB_X2 = CHB_2I[CHA+1:0];
+   localparam [CHA+1:0] CHB_X1 = CHB[CHA+1:0];
+   localparam [CHA:0]   CHB_A  = CHB[CHA:0];
+   wire [CHA+1:0] fb_end = fb_v1 ? CHB_X2 : CHB_X1;             // first invalid byte of the pair
    wire [CHA+1:0] fb_vb  = fb_end - {1'b0, fb_off};             // valid bytes from the PC
-   wire [CHA:0]   fb_avb = CHB - {1'b0, fb_aoff};               // ditto on the arrival path
+   wire [CHA:0]   fb_avb = CHB_A - {1'b0, fb_aoff};             // ditto on the arrival path
    wire [CHA+1:0] fb_vhw = fb_hit ? (fb_vb >> 1) : {1'b0, fb_avb[CHA:1]};
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
    // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   assign imem_avail = (fi_stall | ~(fb_hit | fb_arr)) ? 0
-                     : (fb_vhw >= HW)                     ? HW
-                     :                                      fb_vhw;
+   // imem_avail is $clog2(HW+2) bits (:108). The literals were 32-bit and fb_vhw is CHA+2
+   // bits, so all three arms were truncated here. The last arm is reached only when
+   // fb_vhw < HW, so the narrowing cannot lose a value.
+   localparam AVW = $clog2(HW+2);
+   localparam [AVW-1:0] AV_HW = HW;
+   assign imem_avail = (fi_stall | ~(fb_hit | fb_arr)) ? {AVW{1'b0}}
+                     : (fb_vhw >= HW)                     ? AV_HW
+                     :                                      fb_vhw[AVW-1:0];
 
    ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
@@ -682,21 +694,32 @@ module ino_soc_top #(
    // line-granular) so it infers a clean single-read/single-write BRAM -- a byte array
    // with a 64-byte for-loop access does NOT (Vivado can't template it).
    localparam NLLINE = LSIZE/64;                 // number of 64-byte lines
-   localparam [LAW-1:0] LLBASE = LBASE >> 6;     // local SRAM base as a line address
+   localparam LLW    = $clog2(NLLINE);           // ...and the bits needed to index them
+   // LBASE[AW-1:6], not LBASE >> 6: the shift is a 64-bit expression silently truncated
+   // at the localparam width. LAW is AW-6, so the part-select is exactly LAW bits by
+   // construction and cannot drift if AW changes.
+   localparam [LAW-1:0] LLBASE = LBASE[AW-1:6];  // local SRAM base as a line address
    reg [511:0] lmem [0:NLLINE-1];
    // FPGA: bake the monitor image into the BRAM at elaboration (one 64-byte line per hex
    // line). Sim TBs instead pack dut.lmem directly via +monhex, so guard on the define.
 `ifdef SOC_BOOT_HEX
    initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
-   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LAW-1:0] l_li_q; reg [511:0] l_wd_q;
+   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LLW-1:0] l_li_q; reg [511:0] l_wd_q;
    reg [511:0] l_rdata; reg l_ack;
    wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
    wire l_req = m_req & m_is_local;
    always @(posedge clk) begin
       l_ack <= 1'b0;
       if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line; l_wd_q<=m_wdata; end
+      else if (!l_busy && l_req) begin
+         // lmem has NLLINE entries, so a LAW-bit (58) index at the array bracket is a silent
+         // truncation -- an out-of-range line would WRAP onto a valid one. m_is_local bounds
+         // l_line, so narrow explicitly and assert the precondition rather than trust it.
+         if (|l_line[LAW-1:LLW])
+            $fatal(1, "ino_soc_top: local SRAM line %h out of range (NLLINE=%0d)", l_line, NLLINE);
+         l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line[LLW-1:0]; l_wd_q<=m_wdata;
+      end
       else if (l_busy) begin
          if (l_cnt==0) begin
             if (l_we_q) lmem[l_li_q] <= l_wd_q;

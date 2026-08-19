@@ -14,7 +14,7 @@
 set -u
 cd "$(dirname "$0")"
 
-srcs=$(. ./rtl-sources.sh; rtl_sources)
+. ./rtl-sources.sh
 
 # Rules that fail the gate. Only WIDTHEXPAND (87 benign zero-extensions) is still
 # advisory. PINMISSING was promoted once the probe-only variants left the source list
@@ -30,21 +30,34 @@ OFF="-Wno-TIMESCALEMOD -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME
      -Wno-PINCONNECTEMPTY -Wno-PROCASSINIT -Wno-BLKSEQ -Wno-WIDTHEXPAND"
 
 echo "lint: verilator $(verilator --version 2>&1 | head -1)"
-verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \
-   -I. --top-module soc_top \
-   $srcs -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv \
-   ./verilator.vlt > /tmp/smolrv64-lint.log 2>&1
-rc=$?
 
-if [ "${1:-}" = "-v" ]; then
-   echo "---- advisory (not gating) ----"
-   grep -oE '%Warning-[A-Z]+' /tmp/smolrv64-lint.log | sort | uniq -c | sort -rn
-fi
+fail=0
+# One invocation, two tops. The in-order core ships to the FPGA alongside the OoO core but
+# was outside this gate entirely -- ino_soc_top.v, ino_lsu.v, ino_cache.v and the rest were
+# never width- or latch-checked, which is exactly the blind spot docs/rtl-rules.md exists to
+# close. Same ERRS/OFF for both: a rule that is load-bearing for one core is load-bearing
+# for the other.
+lint_top() {                      # <label> <top-module> <sources...>
+   local label=$1 top=$2; shift 2
+   local log=/tmp/smolrv64-lint-$label.log
+   verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \
+      -I. -I../inorder --top-module "$top" \
+      "$@" -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv \
+      ./verilator.vlt > "$log" 2>&1 || {
+         echo "---- LINT FAILED ($label: top=$top) ----"
+         grep -E '%Error' "$log" | head -40
+         echo "(full log: $log)"
+         fail=1
+      }
+   if [ "${VERBOSE:-0}" = 1 ]; then
+      echo "---- advisory, not gating ($label) ----"
+      grep -oE '%Warning-[A-Z]+' "$log" | sort | uniq -c | sort -rn
+   fi
+}
 
-if [ $rc -ne 0 ]; then
-   echo "---- LINT FAILED ----"
-   grep -E '%Error' /tmp/smolrv64-lint.log | head -40
-   echo "(full log: /tmp/smolrv64-lint.log)"
-   exit 1
-fi
+[ "${1:-}" = "-v" ] && VERBOSE=1
+lint_top ooo soc_top     $(rtl_sources)
+lint_top ino ino_soc_top $(ino_sources)
+
+[ $fail -ne 0 ] && exit 1
 echo "lint: clean"

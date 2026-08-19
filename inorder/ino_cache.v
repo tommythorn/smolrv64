@@ -246,6 +246,8 @@ module ino_cache #(
    // store-merge window (combinational)
    always @* begin
       nwin = win;
+      pos  = {(LZB+1){1'b0}};   // loop temp: assigned only under r_wmask[bb] below, so without
+                                // a default it infers a latch holding the previous byte's index
       for (bb=0; bb<WRB; bb=bb+1) if (r_wmask[bb]) begin
          pos = {1'b0,bwc} + bb[LZB:0];
          nwin[pos*8 +: 8] = r_wdata[bb*8 +: 8];
@@ -614,6 +616,8 @@ module ino_cache #(
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
               fscan <= fscan + 1'b1; st <= S_FLUSH;
            end
+           // "This cannot happen" is an assertion or it is deleted (docs/rtl-rules.md).
+           default: $fatal(1, "[cache id=%0d] FSM reached an undefined state st=%0d", PERF_ID, st);
          endcase
       end
       // the single write port of each status array (see staging decl above)
@@ -628,12 +632,24 @@ module ino_cache #(
 `endif
    end
 
-`ifdef PERF_TRACE
-   // Zihpm hardware cache events (always-on, unlike the PERF_TRACE DPI trace below): one pulse
-   // per resolved line lookup (S_CHECK), and per miss. soc_top taps these -> backend_top hpm_ev.
+   // Zihpm hardware cache events: one pulse per resolved line lookup (S_CHECK), and per miss.
+   // soc_top taps these -> hpm_ev -> csr_file's mhpmcounters.
+   //
+   // These were INSIDE `ifdef PERF_TRACE below, contradicting their own comment ("always-on,
+   // unlike the PERF_TRACE DPI trace"). No FPGA build defines PERF_TRACE, so in every
+   // bitstream these outputs were undriven -- tied low by synthesis -- and mhpmcounter's
+   // DCACC/DCMISS/ICACC/ICMISS events counted zero on hardware. Verilator's UNDRIVEN caught
+   // it the moment the in-order core was brought under src/lint.sh.
+   //
+   // Same defect and same fix as src/cache.v, which this file is a fork of; it was repaired
+   // upstream and the fork never picked it up. Upstream additionally masks a PARKED S_CHECK
+   // (a miss looping while it waits on the MSHR, or a CBO waiting on the write buffer) so
+   // misses do not overcount. This fork has neither an MSHR nor a write buffer, so that term
+   // is identically zero here and is omitted rather than carried as dead code.
    assign perf_access = (st == S_CHECK);
    assign perf_miss   = (st == S_CHECK) & ~hit;
 
+`ifdef PERF_TRACE
    // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
    // (own perf_cyc, in lockstep with backend_top's since same clk/reset) into the shared
    // perf_ev sink. KIND=8 CACHE; the `ckp` field = PERF_ID (0=I$, 1=D$), `rdv` = is_write,

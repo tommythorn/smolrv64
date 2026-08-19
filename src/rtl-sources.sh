@@ -18,3 +18,19 @@
 rtl_sources() {
    ls *.v | grep -vE '^tb_|probe|^flopwrap\.v$|^rf_alu\.v$|^lsu_fmax\.v$|^exec_shard_bp\.v$'
 }
+
+# The IN-ORDER core's source list: inorder/*.v (minus testbenches) plus the src/ modules
+# it shares with the OoO core. It lives here, next to rtl_sources(), for the same reason
+# that one does -- inorder/'s five runner scripts each carry their own copy of this list
+# today, and a list replicated at N sites only has to be updated wrong once.
+#
+# Not simply "rtl_sources + inorder": the OoO-only modules are not instantiated under
+# ino_soc_top, and linting an uninstantiated module standalone is what kept PINMISSING
+# advisory for the probe variants.
+ino_sources() {
+   ls ../inorder/*.v | grep -vE '/tb_'
+   for f in fetch.v aligner.v rvc_expand.v decode_slot.v decode_operands.v decode_exec.v \
+            decode_fp.v predictor.v exec_alu.v branch_unit.v mul3.v divider.v csr_file.v \
+            mmu.v alu.v clint.v plic.v ddr_hpm.v smolrv64_sdpram.v smolrv64_plic_arbiter.v
+   do echo "$f"; done
+}
