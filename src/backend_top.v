@@ -833,7 +833,7 @@ module backend_top
       .mmu_sum(mmu_sum), .mmu_mxr(mmu_mxr), .mmu_flush(mmu_flush), .fs_off(eb_fs_off),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({{(6-CNTW){1'b0}}, cc_commit_count}), .hpm_ev({8'd0, hpm_ev}),   // [14:7] are in-order stall taps; the OoO core has none
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({{(6-CNTW){1'b0}}, cc_commit_count}), .hpm_ev(hpm_ev),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause), .dbg_timer(dbg_timer), .dbg_mtvec(dbg_mtvec), .dbg_mtvec_we(dbg_mtvec_we), .dbg_csrop(dbg_csrop), .dbg_csrop_v(dbg_csrop_v),
       .csr_redir_v(csr_redir_v), .csr_redir_tgt(csr_redir_tgt));
 
