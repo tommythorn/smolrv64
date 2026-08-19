@@ -341,6 +341,23 @@ module ino_soc_top #(
                          : is_buildid_r ? {build_id_word, build_id_word}
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
+   // Device read data is REGISTERED before it reaches the load return mux.  It used to be
+   // combinational, which put the SLOWEST DEVICE'S read cone on the critical path of every
+   // DRAM cache hit -- a load that never touches a device.  Measured worst path at 111 MHz
+   // (8.980 ns of 9.000, 32 levels, 70% routing):
+   //   u_lsu/pa2_q -> dmem_waddr -> is_clint_w (64-bit compare, the CARRY8s)
+   //                -> clint mtime logic -> clint_rdata -> dmem_rdata -> m_result
+   // Note the startpoint: a STORE address (dmem_waddr is combinational from pa2_q) reached a
+   // concurrent LOAD's return data, coupling two accesses through a device neither touches.
+   //
+   // MMIO is rare and already multi-cycle, so the extra cycle of latency costs no measurable
+   // IPC.  Side effects are unaffected: PLIC's claim fires on `re` (= dmem_ren & is_plic_r)
+   // and its rdata is registered valid the cycle after, i.e. exactly during dev_rvalid -- this
+   // captures that same value and merely delivers it one cycle later.
+   reg [63:0] dev_rdata_q;  reg dev_rvalid_q;
+   always @(posedge clk) if (reset) dev_rvalid_q <= 1'b0;
+      else begin dev_rvalid_q <= dev_rvalid; dev_rdata_q <= dev_rdata; end
+
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
    wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;  wire [63:0] dc_rd_resp_addr;
@@ -356,10 +373,10 @@ module ino_soc_top #(
    // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
    // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
    wire         raw_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
-                           : is_dev_r    ? dev_rvalid
+                           : is_dev_r    ? dev_rvalid_q
                            : dc_rv_ok;
    wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
-                           : is_dev_r    ? dev_rdata
+                           : is_dev_r    ? dev_rdata_q
                            : dc_rd_data;
    wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
