@@ -42,7 +42,8 @@ module predictor
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
     parameter GHL   = 12,            // global history length (dormant until Phase 1)
-    parameter RASB  = 3)             // log2 RAS entries
+    parameter RASB  = 3,             // log2 RAS entries
+    parameter CKPT_RAS = 1)          // 1: snapshot the RAS array per checkpoint (see below)
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
@@ -73,6 +74,21 @@ module predictor
 
    localparam NBTB = 1 << BTBB;
    localparam RASN = 1 << RASB;
+   // CKPT_RAS=0 drops the per-checkpoint RAS ARRAY snapshot, keeping the pointer one.
+   //
+   // chk_ras is NCHK x RASN x PCW = 4*8*64 = 2048 flops inside this module, and the failing
+   // paths that sink here are ~70% routing -- area in u_bp is congestion, and congestion is
+   // the delay. It is also very nearly redundant: chk_rptr IS restored, and a wrong-path PUSH
+   // writes at ptr+1, above the restored pointer, so it cannot disturb a live entry. Only a
+   // wrong-path POP followed by a PUSH can overwrite one that is still live.
+   //
+   // That residue costs prediction ACCURACY, never correctness: the RAS is a hint, and M
+   // resolves the truth. So the in-order core takes CKPT_RAS=0 and pays for it in mispredicted
+   // returns; the cosim retire count at a fixed cycle budget measures exactly that price.
+   // The OoO core keeps the default and is bit-identical.
+   localparam CKN  = CKPT_RAS ? NCHK  : 1;
+   localparam CKIW = CKPT_RAS ? CBITS : 1;   // index width AT the bracket, so a CKN=1
+                                             // array is never addressed with CBITS bits
    // BTB type: 0xx = cond branch, xx = 2-bit bimodal (00 S_N .. 11 S_T); 1xx = uncond
    localparam [2:0] TY_JMP = 3'b100, TY_CALL = 3'b101, TY_RET = 3'b110;
 
@@ -127,7 +143,7 @@ module predictor
    reg [PCW-1:0]  ras [0:RASN-1];
    reg [RASB-1:0] ras_ptr;                   // top of stack
    reg [GHL-1:0]  chk_ghr  [0:NCHK-1];
-   reg [PCW-1:0]  chk_ras  [0:NCHK-1][0:RASN-1];
+   reg [PCW-1:0]  chk_ras  [0:CKN-1][0:RASN-1];
    reg [RASB-1:0] chk_rptr [0:NCHK-1];
    integer ii, jj;
    initial begin
@@ -187,7 +203,8 @@ module predictor
          ghr     <= res_rep ? {chk_ghr[rollback_idx][GHL-1:1], res_taken}
                             :  chk_ghr[rollback_idx];
          ras_ptr <= chk_rptr[rollback_idx];
-         for (k = 0; k < RASN; k = k + 1) ras[k] <= chk_ras[rollback_idx][k];
+         if (CKPT_RAS)
+            for (k = 0; k < RASN; k = k + 1) ras[k] <= chk_ras[rollback_idx[CKIW-1:0]][k];
       end else begin
          if (fire) begin                     // speculate: advance ONLY on the fetch handshake
             if (p_cbr)  ghr <= {ghr[GHL-2:0], pred_dir};
@@ -199,7 +216,8 @@ module predictor
          if (create) begin                   // snapshot the dispatching bundle's post-state
             chk_ghr[nxt]  <= ghr;            // (registered values = post-state of the bundle
             chk_rptr[nxt] <= ras_ptr;        //  fetched last cycle = the one dispatching now)
-            for (k = 0; k < RASN; k = k + 1) chk_ras[nxt][k] <= ras[k];
+            if (CKPT_RAS)
+               for (k = 0; k < RASN; k = k + 1) chk_ras[nxt[CKIW-1:0]][k] <= ras[k];
             pdet[cur]     <= pdet_f;         // the dispatching bundle's own predict details
          end
       end

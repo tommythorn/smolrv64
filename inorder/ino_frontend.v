@@ -140,7 +140,10 @@ module ino_frontend
    wire fire = accept & f_valid;      // mirrors fetch's own handshake
 
    // ------------------------------------------------------- branch predictor
-   predictor #(.PCW(PCW), .CBITS(CBITS), .NCHK(NCHK)) u_bp
+   // CKPT_RAS=0: no per-checkpoint RAS array snapshot. Costs some return-prediction
+   // accuracy on mispredict paths, never correctness (M resolves the truth); buys 2048
+   // flops of congestion relief inside u_bp, which is the sink of every failing family.
+   predictor #(.PCW(PCW), .CBITS(CBITS), .NCHK(NCHK), .CKPT_RAS(0)) u_bp
      (.clk(clk), .reset(reset),
       .npc(f_npc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
