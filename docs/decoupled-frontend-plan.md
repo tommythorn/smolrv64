@@ -23,7 +23,8 @@ and `4567b019`. The **132-path family is the subject of this document**.
 | RTL | WNS | longest path | Fmax as built |
 |---|---|---|---|
 | before the device-path fixes | -3.405 ns | 9.405 ns | 106.33 MHz |
-| after `01e1f265`+`df96e431`+`4567b019` | **-2.791 ns** | **8.791 ns** | **113.75 MHz** |
+| after `01e1f265`+`df96e431`+`4567b019` | -2.791 ns | 8.791 ns | 113.75 MHz |
+| after `953c45a3` (RAS snapshot dropped) | **-2.762 ns** | **8.762 ns** | **114.13 MHz** |
 
 +0.614 ns, +7.0%, at zero IPC cost (cosim retire count identical at identical cycles).
 Both LSU-startpoint families are gone from the work list. The limiter moved, it did not
@@ -35,7 +36,15 @@ shrink:
 ```
 
 Same shape, new feeder: backend state reaching the frontend predictor in one cycle, now via
-the CSR/system-op path instead of the memory path. `fe/u_bp` is the sink of every remaining
+the CSR/system-op path instead of the memory path.
+
+`953c45a3` (dropping the RAS snapshot) added only **+0.029 ns** on top — a rounding error
+next to the device fixes' +0.614. Its real effect was on the near-critical TAIL: the
+dominant family fell from **1176 paths to 276**, a 4.3x reduction, and a D$ family surfaced
+underneath (`u_dcache/cur_line -> valm_reg`, 9 paths, 17 levels, 6.598 ns of it routing --
+nearly pure congestion). So the congestion relief is real but it is not what sets WNS; the
+critical path is the `m_csr_func -> fe/u_bp` cone, which that change does not touch. Keep it
+for the IPC-free tail reduction and because it makes NCHK=8 affordable, not for Fmax. `fe/u_bp` is the sink of every remaining
 family. Chasing feeders from here is whack-a-mole -- each new one is whatever backend
 structure happens to be longest. Decouple the frontend instead.
 
