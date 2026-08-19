@@ -54,37 +54,49 @@ Depth 2, not 1: with depth 1 a clean `ready` (`~q_valid`, no `accept` term) drop
 throughput to one instruction per **two** cycles. Depth 2 lets the count oscillate 1↔2 so
 fetch pushes every cycle while `ready` stays a registered function of the count.
 
-### The constraint that shapes it: NCHK = 4
+### NCHK = 4 is not a constraint — it is a structure to delete
 
-`CBITS=2`, `NCHK=4` — four checkpoint slots, and `cur` wraps mod 4. Today at most two are
-outstanding (IR + M). Allocating at queue-push time with a 2-deep queue makes it **four**,
-exactly at capacity, so a new allocation can reuse a slot still needed for rollback. That
-is the "slot captured now, dereferenced later" failure `docs/rtl-rules.md` is built around,
-and it would corrupt silently.
+An earlier draft of this plan designed *around* the checkpoint ring: `CBITS=2`, `NCHK=4`,
+so allocating at queue-push time with a 2-deep queue puts four checkpoints in flight,
+exactly at capacity, and a fifth allocation would reuse a slot still needed for rollback.
 
-**So checkpoint allocation stays at IR load** (`create`/`cur` on `accept`), leaving the
-outstanding count unchanged.
+That framing was wrong (2026-08-19). **The in-order core does not use checkpoints at all**,
+and the planned OoO core will not either. The ring survives only inside `predictor.v`,
+which restores per-checkpoint branch state on a rollback:
 
-### What that forces
-
-`fire` captures fetch-time prediction state, which `create` later writes into `pdet[cur]`
-(`predictor.v:160`). Once fetch runs ahead of the IR, the state captured at `fire` belongs
-to a *different* instruction than the one loading into the IR. Therefore:
-
-- `fire` moves to the queue-push handshake (fetch-side, which is where it belongs), and
-- **the predictor's fetch-time capture must ride the queue** and be written at `create`.
-
-That is the actual content of "decoupled frontend": the fetch-time prediction metadata
-becomes part of the queued bundle. Queue payload:
-
-```
-inst[31:0], pc[PCW-1:0], seq[SEQW-1:0], pnpc[PCW-1:0],
-fault, cause[3:0], tval[PCW-1:0],          // the fault_op pseudo-slot rides the queue too
-pdet payload                                // predictor fetch-time capture
+```verilog
+end else if (rollback) begin
+   ghr     <= res_rep ? {chk_ghr[rollback_idx][GHL-1:1], res_taken}
+                      :  chk_ghr[rollback_idx];
+   ras_ptr <= chk_rptr[rollback_idx];
+   for (k = 0; k < RASN; k = k + 1) ras[k] <= chk_ras[rollback_idx][k];
 ```
 
-Decode (`decode_slot` and friends) is combinational off the queue head, so no decoded field
-needs queueing — only `inst`/`seq`.
+`chk_ras` is a **full RAS copy per checkpoint**, indexed at rollback, living inside `u_bp` —
+the exact module whose `ycorr_qv` is the sink of the 132-path family.
+
+It is unnecessary here. **M is the only commit point**, so at most one instruction can be
+mispredicting at any time and everything younger is squashed wholesale. That needs two
+copies, not `NCHK`:
+
+- a **committed** GHR/RAS/ptr, advanced at retire with the resolved outcome, and
+- a **speculative** copy used at fetch, reloaded from committed on redirect.
+
+`res_rep`'s existing "this resolve caused this cycle's rollback" term is already computing
+the committed value; it just writes it through the ring instead of into a committed copy.
+
+Consequences, all favourable:
+
+1. The queue depth question disappears — no ring, nothing to overflow, so allocation can
+   happen wherever is convenient and depth 2 is unconditionally safe.
+2. `chk_ghr[4]`, `chk_rptr[4]` and `chk_ras[4][RASN]` collapse 4:1, removing a large
+   indexed array from the critical sink's neighbourhood.
+3. `create`/`cur`/`rb_idx`/`d_ckpt`/`res_ckpt`/`redirect_ckpt` and the `CBITS`/`NCHK`
+   parameters lose their only consumer and can follow.
+
+Do this **before** the queue: it shrinks the sink, deletes the coupling the queue would
+otherwise have to thread, and is independently verifiable (cosim is sensitive to predictor
+state through the retire count at fixed cycles, and to any rollback error architecturally).
 
 ## Cost
 

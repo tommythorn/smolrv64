@@ -95,7 +95,22 @@ module ino_lsu
    wire [4:0]  wend   = {2'd0, boff} + {1'd0, nb};   // one past the last byte in-word
    // MMIO must keep its EXACT address: devices decode by low address bits, so an
    // aligned-plus-mask access lands on the wrong register (this hung virtio-net at
-   // boot). Only DRAM traffic goes through the cache and therefore needs aligning.
+   // boot), so only DRAM traffic is aligned here.
+   //
+   // ASSUMPTION, asserted below: no NON-DRAM access ever straddles an 8-byte word.
+   // The header used to claim "only DRAM traffic goes through the cache", which is
+   // false -- soc_top routes everything that is not a device window to the D$, and the
+   // on-chip boot/monitor SRAM at LBASE (0x7000_0000) is not a device. So SRAM IS
+   // cached, and being non-DRAM it is NOT aligned here; a straddling SRAM access would
+   // reach the cache spanning and trip ino_cache.v's NO-SPAN $fatal.
+   //
+   // It holds for two different reasons, neither of them enforced by construction:
+   //   MMIO  -- device registers are naturally-aligned and accessed at their own width.
+   //   SRAM  -- the boot/monitor image is assumed to issue only aligned accesses
+   //            (agreed 2026-08-19; the region exists for the Tenstorrent test suite
+   //            and may become conditional, which would retire this case entirely).
+   // An assumption that holds by luck on one address range is exactly what
+   // docs/rtl-rules.md says must be an assertion, so it is one.
    // NB: DRAM_BASE/DRAM_TOP cannot be used here -- on FPGA builds they are 0 and
    // all-ones (they exist for the MMU's unbacked-PA check), so they would make this
    // gate always true. This SoC puts every device below 0x8000_0000 (CLINT 0x0200_0000,
@@ -264,6 +279,12 @@ module ino_lsu
          case (st)
            S_IDLE:
              if (start_ok) begin
+                // See the ASSUMPTION above: non-DRAM traffic is never aligned by this
+                // LSU, so if it straddles, the cache sees a span it is asserted never to
+                // see -- and for MMIO the second beat would address the wrong register.
+                if (~pa_dram & (wend > 5'd8))
+                   $fatal(1, "ino_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
+                          t_paddr, nb, boff);
                 nc_q          <= t_uncached;
                 mem_runcached <= t_uncached;
                 xword_q <= xword;
