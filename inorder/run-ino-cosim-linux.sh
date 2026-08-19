@@ -57,7 +57,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino_clinux -o tb_ino_clinux \
-      ino_soc_top.v ino_core.v ino_frontend.v ino_exec.v ino_lsu.v ino_regfile.v \
+      ino_soc_top.v ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       tb_ino_linux.v ../src/probe_cosim.cpp > /tmp/inoclinuxbuild.log 2>&1

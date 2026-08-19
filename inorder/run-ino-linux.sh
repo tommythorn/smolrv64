@@ -49,7 +49,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DINO_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino_linux -o tb_ino_linux \
-      ino_soc_top.v ino_core.v ino_frontend.v ino_exec.v ino_lsu.v ino_regfile.v \
+      ino_soc_top.v ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       tb_ino_linux.v > /tmp/inolinuxbuild.log 2>&1

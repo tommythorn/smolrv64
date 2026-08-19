@@ -9,31 +9,16 @@
 // `decode_xslot` is not needed at all.
 //
 // CHECKPOINTS. `predictor` keeps its speculative {ghr, ras, ras_ptr} in a
-// checkpoint ring, snapshotting at `create` and restoring at `rollback`. We keep
-// that interface exactly, degenerate to ONE CHECKPOINT PER INSTRUCTION: `cur` is a
-// rotating counter, `create` pulses the cycle an instruction lands in the IR
-// register (one cycle after its fetch handshake -- the same lag the OoO core's
-// fetch->dispatch had), and the index rides with the instruction as `d_ckpt` so
-// the resolve in M can name it. NCHK=4 is ample: at most two instructions are ever
-// in flight past a branch, and `create` advances `cur` by at most one per cycle.
-//
-// This lag is exactly why branches resolve in M rather than X (see
-// docs/inorder-plan.md): resolving in X would collide `create` and the resolve of
-// the same instruction in one cycle, so `pdet[cur]` would not yet hold the
-// predict details the training reads, and a mispredict would suppress the very
-// snapshot its own rollback restores.
-//
-// FETCH FAULTS. When the iMMU faults on the fetch address the core drives
-// `imem_avail`=0 (so `fetch` presents nothing) and raises `imem_fault`. We then
-// present a POISONED instruction: valid, no side effects, carrying cause/tval down
-// to the single trap point in M. It is marked serializing, so exactly one is
-// injected -- nothing follows it into X until the trap redirects.
+// predict-details flow: ino_predictor captures this bundle's details at `fire` and
+// presents them on pd_fetch; the IR latches that as d_pdet, and it rides the pipeline
+// to M, coming back as res_pdet when the op resolves. No checkpoint ring, no tag: the
+// details are matched to their instruction by BEING the instruction's payload.
+
 module ino_frontend
   #(parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
-    parameter CBITS = 2,
-    parameter NCHK  = 4,
+    parameter PDW   = 44,            // ino_predictor's predict-detail width (BIMW+YW)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
@@ -49,8 +34,6 @@ module ino_frontend
     input  wire                    redirect,
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
-    input  wire                    redirect_is_trap,  // annul the op (restore TO its ckpt)
-    input  wire [CBITS-1:0]        redirect_ckpt,     // the redirecting op's ckpt
     input  wire                    irq_inject,        // present the interrupt pseudo-op
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
@@ -67,7 +50,7 @@ module ino_frontend
     input  wire                    res_call,
     input  wire                    res_ret,
     input  wire                    res_taken,
-    input  wire [CBITS-1:0]        res_ckpt,
+    input  wire [PDW-1:0]          res_pdet,        // resolving op's predict details (carried)
     input  wire [PCW-1:0]          res_tgt,
     input  wire                    res_rep,
 
@@ -77,7 +60,7 @@ module ino_frontend
     output reg  [31:0]             d_insn,      // RVC-expanded 32-bit form
     output reg                     d_rvc,
     output reg  [SEQW-1:0]         d_seq,
-    output reg  [CBITS-1:0]        d_ckpt,
+    output reg  [PDW-1:0]          d_pdet,          // this op's predict details -> rides to M
     output reg  [PCW-1:0]          d_pred_npc,
     // operands
     output reg  [5:0]              d_rd, d_rs1, d_rs2, d_rs3,
@@ -117,13 +100,9 @@ module ino_frontend
    wire [SEQW-1:0]    f_seq;
    wire [PCW-1:0]     f_npc, f_pnpc, f_ftn, bp_tgt;
 
-   // checkpoint ring: one per instruction. `create` pulses the cycle the IR
-   // register holds a freshly loaded instruction; `cur` is that instruction's index.
-   reg  [CBITS-1:0]   cur;
-   reg                create;
-   // a mispredicting branch reopens the span AFTER itself (it is kept); a trap
-   // reopens its OWN span (the faulting op is annulled) -- same rule as the OoO core.
-   wire [CBITS-1:0]   rb_idx = redirect_is_trap ? redirect_ckpt : (redirect_ckpt + 1'b1);
+   // No checkpoint ring, no `cur`, no `create`, no rb_idx. ino_predictor keeps committed
+   // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
+   // is no tag to allocate and nothing to pin against reuse.
 
    fetch #(.IW(1), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset),
@@ -140,16 +119,14 @@ module ino_frontend
    wire fire = accept & f_valid;      // mirrors fetch's own handshake
 
    // ------------------------------------------------------- branch predictor
-   // CKPT_RAS=0: no per-checkpoint RAS array snapshot. Costs some return-prediction
-   // accuracy on mispredict paths, never correctness (M resolves the truth); buys 2048
-   // flops of congestion relief inside u_bp, which is the sink of every failing family.
-   predictor #(.PCW(PCW), .CBITS(CBITS), .NCHK(NCHK), .CKPT_RAS(0)) u_bp
+   wire [PDW-1:0] pd_fetch;
+   ino_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
       .npc(f_npc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .create(create), .cur(cur), .rollback(redirect), .rollback_idx(rb_idx),
+      .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
-      .res_taken(res_taken), .res_ckpt(res_ckpt), .res_tgt(res_tgt), .res_rep(res_rep));
+      .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_rep(res_rep));
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;
@@ -201,17 +178,14 @@ module ino_frontend
    // ------------------------------------------------------- IR register (F/X)
    always @(posedge clk) begin
       if (reset) begin
-         d_valid <= 1'b0; create <= 1'b0; cur <= {CBITS{1'b0}};
+         d_valid <= 1'b0;
       end else if (redirect) begin
-         d_valid <= 1'b0; create <= 1'b0; cur <= rb_idx;
+         d_valid <= 1'b0;
       end else begin
-         create <= 1'b0;
          if (consume) d_valid <= 1'b0;      // X emptied; overridden by the load below
          if (accept) begin
             d_valid <= ld_valid;
-            if (ld_valid) begin create <= 1'b1; cur <= cur + 1'b1; end
-
-            d_ckpt        <= cur;
+            d_pdet        <= pd_fetch;   // captured at fire, latched here with its bundle
             d_seq         <= f_seq;
             d_pc          <= fault_op ? imem_ipc : f_pc;
             d_pred_npc    <= f_pnpc;

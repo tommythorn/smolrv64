@@ -30,8 +30,7 @@ module ino_core
     parameter SEQW = 8,
     parameter HW   = `INO_HW,
     parameter AW   = 64,
-    parameter CBITS = 2,
-    parameter NCHK  = 4,
+    parameter PDW   = 44,          // ino_predictor predict-detail width (BIMW+YW)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
@@ -82,7 +81,7 @@ module ino_core
    wire [PCW-1:0]           d_pc, d_pred_npc, d_fault_tval;
    wire [31:0]              d_insn;
    wire [SEQW-1:0]          d_seq;
-   wire [CBITS-1:0]         d_ckpt;
+   wire [PDW-1:0]           d_pdet;
    wire [5:0]               d_rd, d_rs1, d_rs2, d_rs3;
    wire [63:0]              d_imm;
    wire [5:0]               d_alu_op;
@@ -109,10 +108,8 @@ module ino_core
                                                                       : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
    wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
-   wire [CBITS-1:0]         res_ckpt;
    wire [PCW-1:0]           res_tgt;
    wire                     redirect_is_trap;
-   wire [CBITS-1:0]         redirect_ckpt;
    wire [SEQW-1:0]          redirect_seq;
 
    // ---- FMAX: the predictor's training bundle lands one cycle later --------------
@@ -122,7 +119,7 @@ module ino_core
    // sees resolve and rollback in their original relative order.
    reg                      res_v_q, res_cbr_q, res_call_q, res_ret_q;
    reg                      res_taken_q, res_rep_q;
-   reg [CBITS-1:0]          res_ckpt_q;
+   reg [PDW-1:0]            res_pdet_q;
    reg [PCW-1:0]            res_tgt_q;
    initial begin res_v_q = 1'b0; res_rep_q = 1'b0; end
    always @(posedge clk) begin
@@ -132,7 +129,7 @@ module ino_core
       res_call_q  <= res_call;
       res_ret_q   <= res_ret;
       res_taken_q <= res_taken;
-      res_ckpt_q  <= res_ckpt;
+      res_pdet_q  <= m_pdet;
       res_tgt_q   <= res_tgt;
    end
 
@@ -143,7 +140,6 @@ module ino_core
    // it fetched, and in which M must refuse that bundle.
    reg                      redirect_q, redirect_is_trap_q;
    reg [PCW-1:0]            redirect_target_q;
-   reg [CBITS-1:0]          redirect_ckpt_q;
    reg [SEQW-1:0]           redirect_seq_q;
    initial redirect_q = 1'b0;
    always @(posedge clk) begin
@@ -151,23 +147,21 @@ module ino_core
       else       redirect_q <= redirect;
       redirect_target_q  <= redirect_target;
       redirect_is_trap_q <= redirect_is_trap;
-      redirect_ckpt_q    <= redirect_ckpt;
       redirect_seq_q     <= redirect_seq;
    end
 
-   ino_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .CBITS(CBITS), .NCHK(NCHK),
+   ino_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
-      .redirect_is_trap(redirect_is_trap_q), .redirect_ckpt(redirect_ckpt_q),
       .irq_inject(irq_inject),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
-      .res_taken(res_taken_q), .res_ckpt(res_ckpt_q), .res_tgt(res_tgt_q), .res_rep(res_rep_q),
+      .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q), .res_rep(res_rep_q),
       .d_valid(d_valid), .d_pc(d_pc), .d_insn(d_insn), .d_rvc(d_rvc), .d_seq(d_seq),
-      .d_ckpt(d_ckpt), .d_pred_npc(d_pred_npc),
+      .d_pdet(d_pdet), .d_pred_npc(d_pred_npc),
       .d_rd(d_rd), .d_rs1(d_rs1), .d_rs2(d_rs2), .d_rs3(d_rs3),
       .d_rd_v(d_rd_v), .d_rs1_v(d_rs1_v), .d_rs2_v(d_rs2_v), .d_rs3_v(d_rs3_v),
       .d_imm(d_imm),
@@ -227,7 +221,7 @@ module ino_core
    reg  [PCW-1:0]   m_pc, m_pred_npc, m_fault_tval, m_target, m_taken_tgt;
    reg  [31:0]      m_insn;
    reg  [SEQW-1:0]  m_seq;
-   reg  [CBITS-1:0] m_ckpt;
+   reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
    reg  [5:0]       m_rd, m_rs1;
    reg  [63:0]      m_imm, m_result, m_addr, m_st_data, m_rs1_val, m_rs3_val;
    reg  [1:0]       m_mem_size;
@@ -504,7 +498,6 @@ module ino_core
                            : m_is_fencei ? (m_pc + (m_rvc ? 64'd2 : 64'd4))
                            :               m_target;
    assign redirect_is_trap = m_trap;
-   assign redirect_ckpt    = m_ckpt;
    assign redirect_seq     = m_trap ? m_seq : (m_seq + 1'b1);
    assign ifence           = m_valid & m_done & m_is_fencei;
 
@@ -516,7 +509,6 @@ module ino_core
    assign res_call  = m_is_jump & m_link_rd;
    assign res_ret   = m_is_jalr & m_link_rs & ~m_link_rd;
    assign res_taken = m_taken;
-   assign res_ckpt  = m_ckpt;
    assign res_tgt   = m_taken_tgt;
    assign res_rep   = res_v & res_cbr & m_redirect & ~csr_red;
 
@@ -645,7 +637,7 @@ module ino_core
             m_insn        <= d_insn;
             m_rvc         <= d_rvc;
             m_seq         <= d_seq;
-            m_ckpt        <= d_ckpt;
+            m_pdet        <= d_pdet;
             m_pred_npc    <= d_pred_npc;
             m_rd          <= d_rd;
             m_rd_v        <= d_rd_v;

@@ -27,7 +27,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit_stub.sv"
 
 iverilog -g2012 -I. -I../probe -I../src -s tb -o /tmp/ino_riscv.vvp \
-   ino_core.v ino_frontend.v ino_exec.v ino_lsu.v ino_regfile.v \
+   ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
    $PROBE_SRCS ../src/alu.v tb_ino_riscv.v || exit 1
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

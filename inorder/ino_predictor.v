@@ -1,11 +1,20 @@
 `default_nettype none
 
-// Frontend branch predictor, Phase 0 of docs/branch-predictor-plan.md: a
-// block-indexed BTB with an embedded 2-bit bimodal direction counter + a return
-// address stack, with the speculative state {ghr, ras, ras_ptr} checkpointed as
-// a structural clone of rename_shard's chk_map (snapshot at `create`, restore at
-// `rollback`, same create/cur/rollback/rollback_idx wires). The GHR is carried
-// and checkpointed but not yet used for indexing (Phase 1 = YAGS drops in here).
+// IN-ORDER frontend branch predictor. Forked from src/predictor.v, which checkpoints
+// {ghr, ras, ras_ptr} into an NCHK-deep ring as a structural clone of rename_shard's
+// chk_map. This core has NO checkpoints and needs none:
+//
+//   M is the only commit point, so at most one instruction can be redirecting and
+//   everything younger is squashed wholesale. There is never a second speculative
+//   state to choose between, so there is nothing for a ring INDEX to select.
+//
+// What replaces it: two committed scalars (ghr_c, rptr_c) advanced at resolve and
+// restored on redirect, and NO committed RAS array at all. The per-bundle predict
+// details ride the pipeline with their instruction (pd_fetch -> res_pdet) instead of
+// sitting in a side ring keyed by a checkpoint tag.
+//
+// Forked rather than parameterised so the in-order core's needs stop being negotiated
+// against the sharded-OoO core's. src/predictor.v is left untouched.
 //
 // Everything here is a HINT, never architectural: the mispredict check is the
 // exec-side `actual_npc != pred_npc` compare (branch_unit), so a stale BTB entry,
@@ -34,15 +43,16 @@
 // hit/ctr) come from a small per-checkpoint table written at dispatch -- <=1
 // CTI per bundle == per ckpt, so the checkpoint tag the op already carries is
 // the resolve key. No payload bits.
-module predictor
+module ino_predictor
   #(parameter PCW   = 64,
-    parameter CBITS = 2,
-    parameter NCHK  = 4,
     parameter BTBB  = 8,             // log2 BTB entries
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
     parameter GHL   = 12,            // global history length (dormant until Phase 1)
-    parameter RASB  = 3)             // log2 RAS entries
+    parameter RASB  = 3,             // log2 RAS entries
+    parameter YBITS = 10,            // in the header so PDW can be a port width
+    parameter YTAGW = 8,
+    parameter PDW   = (1+2+BTBB+TAGW) + (1+2+YBITS+YTAGW))
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
@@ -55,18 +65,18 @@ module predictor
                                             // stale entry may never steer any other bundle shape
     output wire                 pred_v,     // predict taken: fetch overrides its next PC
     output wire [PCW-1:0]       pred_tgt,
-    // ---- checkpoint control (rename time domain; clone of chk_map's contract) ----
-    input  wire                 create,
-    input  wire [CBITS-1:0]     cur,
-    input  wire                 rollback,
-    input  wire [CBITS-1:0]     rollback_idx,
+    // ---- redirect ----
+    input  wire                 rollback,     // a redirect is entering the frontend this cycle
+    // ---- predict details, CARRIED WITH THE INSTRUCTION (no checkpoint ring) ----
+    output wire [PDW-1:0]       pd_fetch,     // this bundle's details; capture it where the
+                                              // frontend latches the bundle (one cycle after fire)
     // ---- resolve/training port (EX domain; oldest resolved CTI this cycle) ----
     input  wire                 res_v,
     input  wire                 res_cbr,     // conditional branch (vs jump/JALR)
     input  wire                 res_call,    // jump with a link dest (rd in {x1,x5})
     input  wire                 res_ret,     // JALR return (rs1 link, rd not)
     input  wire                 res_taken,
-    input  wire [CBITS-1:0]     res_ckpt,
+    input  wire [PDW-1:0]       res_pdet,     // the RESOLVING instruction's own details
     input  wire [PCW-1:0]       res_tgt,     // taken-target (train the BTB)
     input  wire                 res_rep);    // this resolve caused this cycle's rollback ->
                                              // repair the restored GHR's bit 0 (plan B2)
@@ -106,7 +116,7 @@ module predictor
    // Trained at resolve from the carried predict details (yidx/ytag), same 1R1W +
    // write-forward discipline as the BTB. Holds only bimodal-exceptions: allocate
    // on a bimodal miss, refine on a corrector hit.
-   localparam YBITS = 10, NYAGS = 1 << YBITS, YTAGW = 8, YEW = YTAGW + 2;
+   localparam NYAGS = 1 << YBITS, YEW = YTAGW + 2;
    function [YBITS-1:0]  yidx (input [PCW-1:0] a, input [GHL-1:0] h);
       yidx  = a[YBITS:1] ^ h[YBITS-1:0] ^ {{(YBITS-2){1'b0}}, h[GHL-1:YBITS]};
    endfunction
@@ -126,17 +136,18 @@ module predictor
    reg [GHL-1:0]  ghr;
    reg [PCW-1:0]  ras [0:RASN-1];
    reg [RASB-1:0] ras_ptr;                   // top of stack
-   reg [GHL-1:0]  chk_ghr  [0:NCHK-1];
-   reg [PCW-1:0]  chk_ras  [0:NCHK-1][0:RASN-1];
-   reg [RASB-1:0] chk_rptr [0:NCHK-1];
-   integer ii, jj;
+   // No checkpoint ring. The in-order core has ONE commit point (M), so at most one
+   // instruction can be redirecting and everything younger is squashed wholesale --
+   // there is never a second speculative state to choose between. A committed copy of
+   // the two scalars is all a redirect needs, and the RAS ARRAY needs nothing: with the
+   // pointer restored, a wrong-path push landed above it and is unreachable.
+   reg [GHL-1:0]  ghr_c;                     // committed history  (advanced at resolve)
+   reg [RASB-1:0] rptr_c;                    // committed RAS top  (advanced at resolve)
+   integer ii;
    initial begin
       ghr = {GHL{1'b0}}; ras_ptr = {RASB{1'b0}};
       for (ii = 0; ii < RASN; ii = ii + 1) ras[ii] = {PCW{1'b0}};
-      for (ii = 0; ii < NCHK; ii = ii + 1) begin
-         chk_ghr[ii] = {GHL{1'b0}}; chk_rptr[ii] = {RASB{1'b0}};
-         for (jj = 0; jj < RASN; jj = jj + 1) chk_ras[ii][jj] = {PCW{1'b0}};
-      end
+      ghr_c = {GHL{1'b0}}; rptr_c = {RASB{1'b0}};
    end
 
    // ------------------------------------------------------------------- predict
@@ -156,51 +167,53 @@ module predictor
    assign pred_tgt = p_ret ? ras[ras_ptr] : btb_tgt;
    wire            pred_dir = cbr_taken;                    // GHR shifts the committed direction
 
-   // ------------------------- per-checkpoint predict details (for training/repair)
-   // captured at fetch (cycle T), written to pdet[cur] at the bundle's create
-   // (T+1) -- the same one-stage lag as the {ghr,ras} snapshot (plan B1).
+   // ------------------------------ predict details (for training), carried inline
+   // Captured at fetch (cycle T) and presented on pd_fetch at T+1, where the frontend
+   // latches it into the bundle. It then rides the pipeline to M and comes back as
+   // res_pdet. Carrying it beats a side ring indexed by a tag: there is no tag to
+   // allocate, nothing to pin against reuse, and no depth to get wrong when the
+   // frontend gains a queue.
    //   bimodal [BIMW-1:0] = {hit,ctr,bidx,btag}  ·  yags [PDW-1 -: YW] = {yhit,yctr,yidx,ytag}
    localparam BIMW = 1 + 2 + BTBB + TAGW;
    localparam YW   = 1 + 2 + YBITS + YTAGW;
-   localparam PDW  = BIMW + YW;
    reg [PDW-1:0] pdet_f;
-   reg [PDW-1:0] pdet [0:NCHK-1];
+   assign pd_fetch = pdet_f;
    wire [1:0]    ctr_eff  = hit  ? q_type[1:0]  : 2'b01;    // miss -> install weakly-not-taken base
    wire [1:0]    yctr_eff = yhit ? ycorr_q[1:0] : 2'b01;
    initial pdet_f = {PDW{1'b0}};
 
-   // ------------------------------------------------- speculate / snapshot / restore
-   wire [CBITS-1:0] nxt = cur + 1'b1;
-   integer k;
+   // ------------------------------------------------- speculate / commit / restore
    always @(posedge clk) begin
       if (reset) begin
          ghr <= {GHL{1'b0}}; ras_ptr <= {RASB{1'b0}};
-         for (k = 0; k < NCHK; k = k + 1) begin
-            chk_ghr[k] <= {GHL{1'b0}}; chk_rptr[k] <= {RASB{1'b0}};
-         end
-      end else if (rollback) begin
-         // restore the reopened span's pre-state; on a cond-branch mispredict the
-         // snapshot's bit 0 is that branch's predicted direction -> overwrite with
-         // the resolved one (exact when the branch shifted; a cold branch that
-         // never shifted gets one polluted history bit -- hint-only). Jumps/traps:
-         // restore verbatim.
-         ghr     <= res_rep ? {chk_ghr[rollback_idx][GHL-1:1], res_taken}
-                            :  chk_ghr[rollback_idx];
-         ras_ptr <= chk_rptr[rollback_idx];
-         for (k = 0; k < RASN; k = k + 1) ras[k] <= chk_ras[rollback_idx][k];
+         ghr_c <= {GHL{1'b0}}; rptr_c <= {RASB{1'b0}};
       end else begin
-         if (fire) begin                     // speculate: advance ONLY on the fetch handshake
+         // COMMIT: the committed copies advance on every resolved CTI, redirect or not.
+         // They are the only rollback state this core needs.
+         if (res_v) begin
+            if (res_cbr)  ghr_c  <= {ghr_c[GHL-2:0], res_taken};
+            if (res_call) rptr_c <= rptr_c + 1'b1;
+            if (res_ret)  rptr_c <= rptr_c - 1'b1;
+         end
+
+         if (rollback) begin
+            // RESTORE from the committed scalars. This cycle's commit update has not
+            // landed yet, so apply the resolving CTI's own effect here -- the same repair
+            // the checkpoint version made to the snapshot's bit 0.
+            ghr     <= (res_rep & res_cbr)  ? {ghr_c[GHL-2:0], res_taken} : ghr_c;
+            ras_ptr <= (res_rep & res_call) ? rptr_c + 1'b1
+                     : (res_rep & res_ret)  ? rptr_c - 1'b1 : rptr_c;
+            // The RAS ARRAY is deliberately NOT restored. With the pointer back where it
+            // belongs, a wrong-path push wrote at ptr+1 -- above the live region, where it
+            // is unreachable. Only a wrong-path pop-then-push can clobber a live entry, and
+            // the RAS is a hint: the cost is a mispredicted return, never a wrong answer,
+            // because M resolves the truth.
+         end else if (fire) begin            // SPECULATE: only on the fetch handshake
             if (p_cbr)  ghr <= {ghr[GHL-2:0], pred_dir};
             if (p_call) begin ras[ras_ptr + 1'b1] <= ft_npc; ras_ptr <= ras_ptr + 1'b1; end
             if (p_ret)  ras_ptr <= ras_ptr - 1'b1;
             pdet_f <= {yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
                        hit,  ctr_eff,  bidx(base_pc),      btag(base_pc)};
-         end
-         if (create) begin                   // snapshot the dispatching bundle's post-state
-            chk_ghr[nxt]  <= ghr;            // (registered values = post-state of the bundle
-            chk_rptr[nxt] <= ras_ptr;        //  fetched last cycle = the one dispatching now)
-            for (k = 0; k < RASN; k = k + 1) chk_ras[nxt][k] <= ras[k];
-            pdet[cur]     <= pdet_f;         // the dispatching bundle's own predict details
          end
       end
    end
@@ -210,7 +223,7 @@ module predictor
    // the array 1R1W. Bimodal: nudge the (carried) counter toward the resolved
    // direction; uncond: record the class (call/return classified at resolve
    // from the executed instruction); target: the resolved taken-target.
-   wire [PDW-1:0]  td      = pdet[res_ckpt];
+   wire [PDW-1:0]  td      = res_pdet;   // carried with the instruction, not looked up
    wire            t_hit   = td[BIMW-1];
    wire [1:0]      t_ctr   = td[BIMW-2 -: 2];
    wire [BTBB-1:0] t_idx   = td[TAGW +: BTBB];

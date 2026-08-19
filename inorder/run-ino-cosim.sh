@@ -49,7 +49,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -DINO_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino_cosim -o tb_ino_cosim \
-      ino_core.v ino_frontend.v ino_exec.v ino_lsu.v ino_regfile.v \
+      ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
       $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       tb_ino_riscv.v ../src/probe_cosim.cpp > /tmp/inocosimbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inocosimbuild.log | head -20; exit 1; fi

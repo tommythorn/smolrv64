@@ -30,7 +30,7 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
    -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino -o tb_ino \
-   ino_core.v ino_frontend.v ino_exec.v ino_lsu.v ino_regfile.v \
+   ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
    $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
    tb_ino_riscv.v > /tmp/inovlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inovlbuild.log | head -20; exit 1; fi
