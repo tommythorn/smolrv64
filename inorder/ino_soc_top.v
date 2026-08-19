@@ -140,6 +140,17 @@ module ino_soc_top #(
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
    localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio, 8 KiB: blk @+0x0000, net @+0x1000
    localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
+   // ONE address for every device.  Each device used to mux its own
+   //     (dmem_wen & is_<dev>_w) ? dmem_waddr : dmem_raddr
+   // which put a 64-bit masked compare between the LSU's combinational store address
+   // (dmem_waddr, straight off pa2_q) and the device's address port -- three times over,
+   // for CLINT, PLIC and virtio.  The LSU is SINGLE-OUTSTANDING: mem_ren is asserted only
+   // in S_LD/S_LD2/S_ARD and mem_wen only in S_ST/S_ST2/S_AWR, so a read and a write are
+   // never in flight together and the write-qualification was never carrying information.
+   // Selected once, applied at one site; the invariant is asserted below, not assumed.
+   wire [63:0] dev_addr = dmem_wen ? dmem_waddr : dmem_raddr;
+   always @(posedge clk) if (!reset & dmem_ren & dmem_wen)
+      $fatal(1, "ino_soc_top: dmem_ren & dmem_wen asserted together -- dev_addr select is ambiguous");
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
@@ -158,7 +169,7 @@ module ino_soc_top #(
    // bytes in the LOW lane and the byte mask low-aligned (store drain: sb_data=raw,
    // dr_mask=low-nbytes). So a 32b reg always sits in [31:0] regardless of its offset;
    // do NOT pick a lane by addr[2] (that picks the empty high lane for 0x014/0x038/...).
-   assign virtio_addr  = (dmem_wen & is_virtio_w) ? dmem_waddr[12:0] : dmem_raddr[12:0];
+   assign virtio_addr  = dev_addr[12:0];
    // virtio read AND write are BOTH REQ/RSP: the FPGA wrapper routes them through a probe_clk<->
    // ui_clk CDC bridge with multi-cycle latency (the sim models it, writes included, via virtio_rvalid
    // a few cycles later). A write MUST block until the bridge DELIVERS it: a fire-and-forget write
@@ -203,13 +214,13 @@ module ino_soc_top #(
    clint #(.SCALE_DIV(`PROBE_CLK_HZ / 501_253)) u_clint
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_clint_w & ~dev_wack),
-      .addr((dmem_wen & is_clint_w) ? dmem_waddr[15:0] : dmem_raddr[15:0]),
+      .addr(dev_addr[15:0]),
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
       .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
    // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller.
    // Sources: 10 = UART (DTS interrupts=<10>), 11 = virtio_blk.
    wire [63:0] plic_rdata;  wire plic_meip, plic_seip;  wire [11:0] plic_dbg;
-   wire [63:0] plic_addr = (dmem_wen & is_plic_w) ? dmem_waddr : dmem_raddr;
+   wire [63:0] plic_addr = dev_addr;
    wire        uart_irq;
    plic u_plic
      (.clk(clk), .reset(reset),
