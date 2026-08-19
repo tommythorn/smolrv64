@@ -119,6 +119,39 @@ Do this **before** the queue: it shrinks the sink, deletes the coupling the queu
 otherwise have to thread, and is independently verifiable (cosim is sensitive to predictor
 state through the retire count at fixed cycles, and to any rollback error architecturally).
 
+### The pdet obstacle — and why the RAS drop is what removes it
+
+`pdet_f` (`predictor.v:182`) is a **single** staging register holding the fetch-time predict
+details of the most recently fired bundle. It is copied to `pdet[cur]` at `create` and read
+at resolve as `pdet[res_ckpt]`. That works only because `fire` and `create` are exactly one
+cycle apart today. Put a queue between them and a later push overwrites it before the
+earlier instruction creates, so every bundle trains the predictor with a *younger* bundle's
+details. Accuracy bug, not a correctness one — which makes it the dangerous kind: it would
+quietly eat the Fmax win and show up only as a worse retire count.
+
+Fix: allocate the checkpoint at **queue push** and write `pdet[ckpt]` there, with the queue
+carrying `ckpt` to the IR. That needs NCHK >= instructions in flight = queue(2) + IR(1) +
+M(1) = 4, with headroom, so **NCHK = 8**.
+
+NCHK = 8 was unaffordable while every entry carried `chk_ras[RASN][PCW]` — at NCHK=8 that is
+8 x 8 x 64 = **4096 flops**. After `953c45a3` an entry is `chk_ghr` (GHL=12) + `chk_rptr`
+(RASB=3) + `pdet` (PDW), so doubling NCHK is cheap.
+
+**Dropping the RAS snapshot is therefore the enabler for the queue** — that, not the
+"shrinks the sink" rationale an earlier draft of this document gave, is the reason to do it
+first. (The sink is the YAGS `ycorr` table; the RAS array is adjacent area, which matters
+only because these paths are ~70% routing.)
+
+Resulting queue payload — decode is combinational off the head, so no decoded field is
+queued:
+
+```
+inst[31:0], pc[PCW-1:0], seq[SEQW-1:0], pnpc[PCW-1:0], ckpt[CBITS-1:0],
+fault, cause[3:0], tval[PCW-1:0]      // the fault_op pseudo-slot rides the queue too
+```
+
+`fire` becomes the push handshake; `create` stays at IR load; `redirect` flushes the queue.
+
 ## Cost
 
 One extra cycle of frontend latency after a redirect. Under the "assume perfect branch
