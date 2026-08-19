@@ -59,5 +59,12 @@ lint_top() {                      # <label> <top-module> <sources...>
 lint_top ooo soc_top     $(rtl_sources)
 lint_top ino ino_soc_top $(ino_sources)
 
+# docs/smolrv64-perf-events.json is generated from csr_file.v's event map. It is checked
+# HERE because a generated file nothing verifies is a file that drifts: this one had drifted
+# into describing a retired core, naming 0x0300..0x0304 as TLB events while the RTL counts
+# the in-order stall attribution there, so anyone resolving a perf event by name got the
+# wrong counter.
+../tools/gen-perf-events.py --check || fail=1
+
 [ $fail -ne 0 ] && exit 1
 echo "lint: clean"

@@ -2,216 +2,86 @@
   {
     "EventName": "CYCLES",
     "EventCode": "0x0001",
-    "BriefDescription": "Clock cycles (always counts when event is selected)"
+    "BriefDescription": "Clock cycles while this event is selected"
   },
   {
-    "EventName": "INSTRUCTIONS",
+    "EventName": "INSTRET",
     "EventCode": "0x0002",
     "BriefDescription": "Instructions retired"
   },
   {
-    "EventName": "CACHE_READ",
+    "EventName": "LOAD",
+    "EventCode": "0x0003",
+    "BriefDescription": "Load completions (LSU)"
+  },
+  {
+    "EventName": "STORE",
+    "EventCode": "0x0004",
+    "BriefDescription": "Store completions (LSU)"
+  },
+  {
+    "EventName": "REDIR",
+    "EventCode": "0x0005",
+    "BriefDescription": "Pipeline redirect (branch mispredict / flush)"
+  },
+  {
+    "EventName": "DCACC",
     "EventCode": "0x0100",
-    "BriefDescription": "L1 cache read accesses"
+    "BriefDescription": "D$ line lookups resolved (hit or miss)"
   },
   {
-    "EventName": "CACHE_HIT",
-    "EventCode": "0x0101",
-    "BriefDescription": "L1 cache read hits"
-  },
-  {
-    "EventName": "CACHE_MISS",
+    "EventName": "DCMISS",
     "EventCode": "0x0102",
-    "BriefDescription": "L1 cache read misses"
+    "BriefDescription": "D$ line lookups that missed"
   },
   {
-    "EventName": "CACHE_FILL_LINE",
-    "EventCode": "0x0103",
-    "BriefDescription": "L1 cache lines filled from memory"
+    "EventName": "ICACC",
+    "EventCode": "0x0110",
+    "BriefDescription": "I$ line lookups resolved (hit or miss)"
   },
   {
-    "EventName": "CACHE_FILL_BEAT",
-    "EventCode": "0x0104",
-    "BriefDescription": "AXI beats consumed during L1 cache line fill"
+    "EventName": "ICMISS",
+    "EventCode": "0x0112",
+    "BriefDescription": "I$ line lookups that missed"
   },
   {
-    "EventName": "CACHE_WRITE",
-    "EventCode": "0x0105",
-    "BriefDescription": "L1 cache write accesses"
-  },
-  {
-    "EventName": "AXI_READ",
-    "EventCode": "0x0200",
-    "BriefDescription": "AXI read transactions issued"
-  },
-  {
-    "EventName": "AXI_WRITE",
-    "EventCode": "0x0201",
-    "BriefDescription": "AXI write transactions issued"
-  },
-  {
-    "EventName": "BUS_WAIT_CYCLE",
-    "EventCode": "0x0202",
-    "BriefDescription": "Cycles stalled waiting on the AXI bus"
-  },
-  {
-    "EventName": "TLB_LOOKUP",
+    "EventName": "ST_MEM",
     "EventCode": "0x0300",
-    "BriefDescription": "TLB lookups"
+    "BriefDescription": "M stalled on the LSU (D$/dTLB/AMO)"
   },
   {
-    "EventName": "TLB_HIT",
+    "EventName": "ST_DIV",
     "EventCode": "0x0301",
-    "BriefDescription": "TLB hits (any page size)"
+    "BriefDescription": "M stalled on the iterative divider"
   },
   {
-    "EventName": "TLB_MISS",
+    "EventName": "ST_MUL",
     "EventCode": "0x0302",
-    "BriefDescription": "TLB misses (triggers page table walk)"
+    "BriefDescription": "M stalled on the 3-cycle multiplier"
   },
   {
-    "EventName": "TLB_HIT_4K",
+    "EventName": "ST_FPU",
     "EventCode": "0x0303",
-    "BriefDescription": "TLB hits on 4 KiB pages"
+    "BriefDescription": "M stalled on the CVFPU"
   },
   {
-    "EventName": "TLB_HIT_2M",
+    "EventName": "ST_SER",
     "EventCode": "0x0304",
-    "BriefDescription": "TLB hits on 2 MiB megapages"
+    "BriefDescription": "serializing op holds the frontend off"
   },
   {
-    "EventName": "TLB_INSERT_4K",
-    "EventCode": "0x0305",
-    "BriefDescription": "4 KiB entries inserted into the TLB"
-  },
-  {
-    "EventName": "TLB_INSERT_2M",
-    "EventCode": "0x0306",
-    "BriefDescription": "2 MiB entries inserted into the TLB"
-  },
-  {
-    "EventName": "TLB_EVICT_4K",
-    "EventCode": "0x0307",
-    "BriefDescription": "4 KiB entries evicted from the TLB"
-  },
-  {
-    "EventName": "TLB_EVICT_2M",
-    "EventCode": "0x0308",
-    "BriefDescription": "2 MiB entries evicted from the TLB"
-  },
-  {
-    "EventName": "TLB_UNCACHED_1G",
-    "EventCode": "0x0309",
-    "BriefDescription": "Accesses to 1 GiB pages (not cached in TLB; walked each time)"
-  },
-  {
-    "EventName": "TLB_UNCACHED_NAPOT",
-    "EventCode": "0x030a",
-    "BriefDescription": "Accesses to NAPOT pages (not cached in TLB; walked each time)"
-  },
-  {
-    "EventName": "PTW_LEAF_4K",
+    "EventName": "FE_BUB",
     "EventCode": "0x0310",
-    "BriefDescription": "Page table walks completing at a 4 KiB leaf"
+    "BriefDescription": "X idle: frontend supplied no instruction"
   },
   {
-    "EventName": "PTW_LEAF_2M",
+    "EventName": "FE_MMU",
     "EventCode": "0x0311",
-    "BriefDescription": "Page table walks completing at a 2 MiB leaf"
+    "BriefDescription": "X idle: because the iMMU was walking"
   },
   {
-    "EventName": "PTW_LEAF_1G",
+    "EventName": "FE_IC",
     "EventCode": "0x0312",
-    "BriefDescription": "Page table walks completing at a 1 GiB leaf"
-  },
-  {
-    "EventName": "PTW_LEAF_NAPOT",
-    "EventCode": "0x0313",
-    "BriefDescription": "Page table walks completing at a NAPOT leaf"
-  },
-  {
-    "EventName": "VHPR_READS",
-    "EventCode": "0x0400",
-    "BriefDescription": "VHPR L1 read requests (combined I-fetch and D-load)"
-  },
-  {
-    "EventName": "VHPR_WRITES",
-    "EventCode": "0x0401",
-    "BriefDescription": "VHPR L1 write requests (D-store only)"
-  },
-  {
-    "EventName": "VHPR_READ_HITS",
-    "EventCode": "0x0402",
-    "BriefDescription": "VHPR L1 read hits (combined I-fetch and D-load)"
-  },
-  {
-    "EventName": "VHPR_READ_MISSES",
-    "EventCode": "0x0403",
-    "BriefDescription": "VHPR L1 read misses (combined I-fetch and D-load)"
-  },
-  {
-    "EventName": "VHPR_WRITE_HITS",
-    "EventCode": "0x0404",
-    "BriefDescription": "VHPR L1 write hits (D-store only)"
-  },
-  {
-    "EventName": "VHPR_WRITE_MISSES",
-    "EventCode": "0x0405",
-    "BriefDescription": "VHPR L1 write misses (D-store only)"
-  },
-  {
-    "EventName": "VHPR_FILLS",
-    "EventCode": "0x0406",
-    "BriefDescription": "VHPR L1 line fills from memory"
-  },
-  {
-    "EventName": "VHPR_VICTIM_EVICTS",
-    "EventCode": "0x0407",
-    "BriefDescription": "VHPR L1 victim-line evictions on fill"
-  },
-  {
-    "EventName": "VHPR_DIRTY_VICTIM_EVICTS",
-    "EventCode": "0x0408",
-    "BriefDescription": "VHPR L1 dirty victim-line evictions (require writeback)"
-  },
-  {
-    "EventName": "VHPR_ALIAS_EVICTS",
-    "EventCode": "0x0409",
-    "BriefDescription": "VHPR L1 evictions due to physical-alias reconciliation"
-  },
-  {
-    "EventName": "VHPR_DIRTY_ALIAS_EVICTS",
-    "EventCode": "0x040a",
-    "BriefDescription": "VHPR L1 dirty alias evictions (require writeback)"
-  },
-  {
-    "EventName": "VHPR_FLUSH_EVICTS",
-    "EventCode": "0x040b",
-    "BriefDescription": "VHPR L1 evictions during a flush walk"
-  },
-  {
-    "EventName": "VHPR_DIRTY_FLUSH_EVICTS",
-    "EventCode": "0x040c",
-    "BriefDescription": "VHPR L1 dirty evictions during a flush walk (require writeback)"
-  },
-  {
-    "EventName": "VHPR_CBO_PROBES",
-    "EventCode": "0x040d",
-    "BriefDescription": "VHPR L1 cache-block-operation probes"
-  },
-  {
-    "EventName": "VHPR_PTW_PROBES",
-    "EventCode": "0x040e",
-    "BriefDescription": "VHPR L1 probes from the page-table walker"
-  },
-  {
-    "EventName": "VHPR_EPOCH_BUMPS",
-    "EventCode": "0x040f",
-    "BriefDescription": "VHPR epoch increments (bulk invalidation via epoch)"
-  },
-  {
-    "EventName": "VHPR_EPOCH_ROLLOVERS",
-    "EventCode": "0x0410",
-    "BriefDescription": "VHPR epoch rollovers (epoch wrapped, forcing a real flush)"
+    "BriefDescription": "X idle: because the I$ had no window"
   }
 ]

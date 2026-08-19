@@ -164,15 +164,22 @@ module csr_file
    // the counter simply stays put -- a clean extension point (Phase 2 wires branch/cache/TLB).
    localparam integer HPMN = 13;                                     // counters 3..15
    localparam [63:0]  HPM_INHIBIT_MASK = (((64'h1 << (HPMN+3)) - 1) & ~64'h2); // 0,2,3..15 (not TIME)
-   localparam [15:0]  HPMEV_CYCLES = 16'h0001, HPMEV_INSTRET = 16'h0002,
-                      HPMEV_LOAD   = 16'h0003, HPMEV_STORE    = 16'h0004,
-                      HPMEV_REDIR  = 16'h0005,                              // branch/pipe redirect
-                      HPMEV_DCACC  = 16'h0100, HPMEV_DCMISS   = 16'h0102,   // D$ access / miss
-                      HPMEV_ICACC  = 16'h0110, HPMEV_ICMISS   = 16'h0112,   // I$ access / miss
-                      // ---- in-order stall attribution (0x03xx). Every cycle the pipe
-                      // fails to advance is charged to exactly one of these, so
-                      // sum(stalls)/instret + 1 reconstructs CPI. 0x02xx is avoided:
-                      // the DTB already maps perf BUS_CYCLES onto 0x0202.
+   // THE event map. docs/smolrv64-perf-events.json is GENERATED from this block by
+   // tools/gen-perf-events.py -- do not edit the JSON by hand, and keep one event per line
+   // with a trailing // description, because that is what the generator parses.
+   //
+   // The 0x03xx block is the in-order stall attribution: every cycle the pipe fails to
+   // advance is charged to exactly one of these, so sum(stalls)/instret + 1 reconstructs
+   // CPI. 0x02xx is avoided -- the DTB already maps perf BUS_CYCLES onto 0x0202.
+   localparam [15:0]  HPMEV_CYCLES = 16'h0001,   // Clock cycles while this event is selected
+                      HPMEV_INSTRET= 16'h0002,   // Instructions retired
+                      HPMEV_LOAD   = 16'h0003,   // Load completions (LSU)
+                      HPMEV_STORE  = 16'h0004,   // Store completions (LSU)
+                      HPMEV_REDIR  = 16'h0005,   // Pipeline redirect (branch mispredict / flush)
+                      HPMEV_DCACC  = 16'h0100,   // D$ line lookups resolved (hit or miss)
+                      HPMEV_DCMISS = 16'h0102,   // D$ line lookups that missed
+                      HPMEV_ICACC  = 16'h0110,   // I$ line lookups resolved (hit or miss)
+                      HPMEV_ICMISS = 16'h0112,   // I$ line lookups that missed
                       HPMEV_ST_MEM = 16'h0300,   // M stalled on the LSU (D$/dTLB/AMO)
                       HPMEV_ST_DIV = 16'h0301,   // ...on the iterative divider
                       HPMEV_ST_MUL = 16'h0302,   // ...on the 3-cycle multiplier
