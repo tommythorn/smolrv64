@@ -18,6 +18,27 @@ families by `worklist.tcl`:
 The `pa2_q → m_result` family was the device-read path, fixed by `01e1f265`, `df96e431`
 and `4567b019`. The **132-path family is the subject of this document**.
 
+## Measured progress (matched builds, same constraint and knobs)
+
+| RTL | WNS | longest path | Fmax as built |
+|---|---|---|---|
+| before the device-path fixes | -3.405 ns | 9.405 ns | 106.33 MHz |
+| after `01e1f265`+`df96e431`+`4567b019` | **-2.791 ns** | **8.791 ns** | **113.75 MHz** |
+
++0.614 ns, +7.0%, at zero IPC cost (cosim retire count identical at identical cycles).
+Both LSU-startpoint families are gone from the work list. The limiter moved, it did not
+shrink:
+
+```
+-2.791  1176 paths  37 levels   m_csr_func_reg[2] -> fe/u_bp
+-2.770     1        23 levels   m_imm_reg[0]      -> m_result_reg[*]
+```
+
+Same shape, new feeder: backend state reaching the frontend predictor in one cycle, now via
+the CSR/system-op path instead of the memory path. `fe/u_bp` is the sink of every remaining
+family. Chasing feeders from here is whack-a-mole -- each new one is whatever backend
+structure happens to be longest. Decouple the frontend instead.
+
 ## The cone
 
 ```
