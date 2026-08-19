@@ -84,82 +84,37 @@ Depth 2, not 1: with depth 1 a clean `ready` (`~q_valid`, no `accept` term) drop
 throughput to one instruction per **two** cycles. Depth 2 lets the count oscillate 1↔2 so
 fetch pushes every cycle while `ready` stays a registered function of the count.
 
-### NCHK = 4 is not a constraint — it is a structure to delete
+### Checkpoints are gone — this section used to be the hard part
 
-An earlier draft of this plan designed *around* the checkpoint ring: `CBITS=2`, `NCHK=4`,
-so allocating at queue-push time with a 2-deep queue puts four checkpoints in flight,
-exactly at capacity, and a fifth allocation would reuse a slot still needed for rollback.
+Two earlier drafts of this document were about sizing the checkpoint ring for the queue:
+first "NCHK=4 is exactly at capacity", then "allocate at push, so NCHK=8, and here is why
+that is affordable now". **Both are obsolete.** `ca2e9360` deleted checkpoints from the
+in-order core entirely — there was never anything but the predictor consuming them.
 
-That framing was wrong (2026-08-19). **The in-order core does not use checkpoints at all**,
-and the planned OoO core will not either. The ring survives only inside `predictor.v`,
-which restores per-checkpoint branch state on a rollback:
+What replaced them, and why the queue is now simple:
 
-```verilog
-end else if (rollback) begin
-   ghr     <= res_rep ? {chk_ghr[rollback_idx][GHL-1:1], res_taken}
-                      :  chk_ghr[rollback_idx];
-   ras_ptr <= chk_rptr[rollback_idx];
-   for (k = 0; k < RASN; k = k + 1) ras[k] <= chk_ras[rollback_idx][k];
-```
+- `inorder/ino_predictor.v` keeps two committed scalars (`ghr_c`, `rptr_c`), advanced at
+  resolve and restored on redirect. No ring, no `rollback_idx`, no `NCHK`, no `CBITS`.
+- Predict details ride **with the instruction** — `pd_fetch` -> `d_pdet` -> `m_pdet` ->
+  `res_pdet`. The `pdet_f` overwrite hazard that forced allocation-at-push does not exist,
+  because nothing is stored in a side structure keyed by a tag.
 
-`chk_ras` is a **full RAS copy per checkpoint**, indexed at rollback, living inside `u_bp` —
-the exact module whose `ycorr_qv` is the sink of the 132-path family.
-
-It is unnecessary here. **M is the only commit point**, so at most one instruction can be
-mispredicting at any time and everything younger is squashed wholesale. That needs two
-copies, not `NCHK`:
-
-- a **committed** GHR/RAS/ptr, advanced at retire with the resolved outcome, and
-- a **speculative** copy used at fetch, reloaded from committed on redirect.
-
-`res_rep`'s existing "this resolve caused this cycle's rollback" term is already computing
-the committed value; it just writes it through the ring instead of into a committed copy.
-
-Consequences, all favourable:
-
-1. The queue depth question disappears — no ring, nothing to overflow, so allocation can
-   happen wherever is convenient and depth 2 is unconditionally safe.
-2. `chk_ghr[4]`, `chk_rptr[4]` and `chk_ras[4][RASN]` collapse 4:1, removing a large
-   indexed array from the critical sink's neighbourhood.
-3. `create`/`cur`/`rb_idx`/`d_ckpt`/`res_ckpt`/`redirect_ckpt` and the `CBITS`/`NCHK`
-   parameters lose their only consumer and can follow.
-
-Do this **before** the queue: it shrinks the sink, deletes the coupling the queue would
-otherwise have to thread, and is independently verifiable (cosim is sensitive to predictor
-state through the retire count at fixed cycles, and to any rollback error architecturally).
-
-### The pdet obstacle — and why the RAS drop is what removes it
-
-`pdet_f` (`predictor.v:182`) is a **single** staging register holding the fetch-time predict
-details of the most recently fired bundle. It is copied to `pdet[cur]` at `create` and read
-at resolve as `pdet[res_ckpt]`. That works only because `fire` and `create` are exactly one
-cycle apart today. Put a queue between them and a later push overwrites it before the
-earlier instruction creates, so every bundle trains the predictor with a *younger* bundle's
-details. Accuracy bug, not a correctness one — which makes it the dangerous kind: it would
-quietly eat the Fmax win and show up only as a worse retire count.
-
-Fix: allocate the checkpoint at **queue push** and write `pdet[ckpt]` there, with the queue
-carrying `ckpt` to the IR. That needs NCHK >= instructions in flight = queue(2) + IR(1) +
-M(1) = 4, with headroom, so **NCHK = 8**.
-
-NCHK = 8 was unaffordable while every entry carried `chk_ras[RASN][PCW]` — at NCHK=8 that is
-8 x 8 x 64 = **4096 flops**. After `953c45a3` an entry is `chk_ghr` (GHL=12) + `chk_rptr`
-(RASB=3) + `pdet` (PDW), so doubling NCHK is cheap.
-
-**Dropping the RAS snapshot is therefore the enabler for the queue** — that, not the
-"shrinks the sink" rationale an earlier draft of this document gave, is the reason to do it
-first. (The sink is the YAGS `ycorr` table; the RAS array is adjacent area, which matters
-only because these paths are ~70% routing.)
-
-Resulting queue payload — decode is combinational off the head, so no decoded field is
-queued:
+So the queue is a **plain FIFO of instruction payloads**. Depth 2 (depth 1 with a clean
+`ready` halves throughput). Payload:
 
 ```
-inst[31:0], pc[PCW-1:0], seq[SEQW-1:0], pnpc[PCW-1:0], ckpt[CBITS-1:0],
+inst[31:0], pc[PCW-1:0], seq[SEQW-1:0], pnpc[PCW-1:0], pdet[PDW-1:0],
 fault, cause[3:0], tval[PCW-1:0]      // the fault_op pseudo-slot rides the queue too
 ```
 
-`fire` becomes the push handshake; `create` stays at IR load; `redirect` flushes the queue.
+`fetch.ready` becomes `~q_full` — a registered function of the count, with no `lsu_done` in
+it, which is the entire point. `fire` becomes the push handshake. `redirect` flushes.
+
+Measured cost of getting here: -4,061 retires in 11,082,760 (-0.037%), from restoring
+GHR/RAS-pointer from committed scalars rather than an exact per-instruction snapshot.
+Recoverable if it matters: carry fetch-time `{ghr, ras_ptr}` with the instruction the way
+`pdet` is carried (15 bits per stage) and restore `{m_ghr[GHL-2:0], res_taken}`, which is
+exact.
 
 ## Cost
 
