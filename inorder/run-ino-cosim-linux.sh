@@ -65,5 +65,32 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
 fi
 
 echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_LG2 ==="
-exec "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC
+
+# Not `exec`: the run's THROUGHPUT is checked below. Correctness is checked continuously by
+# the lockstep, but a change can be perfectly correct and quietly slower, and that has
+# happened three times -- see cosim-expected.txt. The retire count at a fixed cycle budget is
+# the only instrument that sees it.
+set -o pipefail
+"$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee /tmp/ino-cosim.out
+rc=$?
+
+hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DINO_HW=\([0-9]*\).*/\1/p'); hw=${hw:-2}
+got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' /tmp/ino-cosim.out | tail -1)
+exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
+tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
+
+if [ -n "$got" ] && [ -n "$exp" ]; then
+   floor=$(awk -v e="$exp" -v t="$tol" 'BEGIN{printf "%d", e*(100-t)/100}')
+   pct=$(awk -v g="$got" -v e="$exp" 'BEGIN{printf "%+.2f", 100*(g-e)/e}')
+   if [ "$got" -lt "$floor" ]; then
+      echo "COSIM-PERF FAIL: retires=$got vs expected $exp ($pct%, floor $floor at ${tol}%)"
+      echo "  A correct-but-slower change. If it is intended, raise the number in"
+      echo "  inorder/cosim-expected.txt in the SAME commit, with the reason."
+      exit 1
+   fi
+   echo "cosim-perf: retires=$got vs expected $exp ($pct%) -- ok"
+elif [ -n "$got" ]; then
+   echo "cosim-perf: retires=$got (no expectation recorded for CYC=$CYC INO_HW=$hw)"
+fi
+exit $rc

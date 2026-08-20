@@ -1,0 +1,15 @@
+# Expected cosim throughput, checked in so a SILENT performance regression fails a gate
+# instead of surviving until someone happens to compare against a number they remembered.
+#
+# Three regressions in one day (2026-08-19) were architecturally invisible -- cosim clean,
+# riscv-tests green, Linux booting -- and visible ONLY as a retire count at a fixed cycle
+# budget:
+#   * predict details latched a cycle early, so every bundle trained on the previous one
+#   * perf_access/perf_miss inside `ifdef PERF_TRACE, so cache HPM counters read zero
+#   * a request tag captured pre-flip and compared post-flip, discarding good responses
+# The first and third cost 3-4% of throughput each.
+#
+# Format:  <CYC> <INO_HW> <expected-retires> <tolerance-%>  # provenance
+# Checked by run-ino-cosim-linux.sh when the run reaches its cycle limit.
+# RAISE these numbers when a change legitimately improves them, in the same commit.
+60000000  4  11631167  0.5   # acfbaa98: forked predictor + F/X queue + tag-matched D$ responses
