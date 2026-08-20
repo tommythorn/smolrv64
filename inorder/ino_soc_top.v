@@ -415,9 +415,23 @@ module ino_soc_top #(
    // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
    // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
    // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
-   wire         raw_rvalid = is_virtio_r ? (virtio_rvalid & vio_pending)  // not a write's completion
-                           : is_dev_r    ? dev_rvalid_q
-                           : dc_rv_ok;
+   // Same collapse as dmem_wready, on the READ side. This SELECT was the worst path at 6 ns
+   // after the write side was fixed:
+   //   u_lsu/mem_raddr -> is_uart_r (CARRY8 x3) -> is_dev_r -> raw_rvalid
+   //                   -> lsu_done -> redirect -> the F/X queue -> fe/u_bp/ycorr_q
+   // and the select carries no information -- each term is gated by its own device class at
+   // its source, so at most one is ever asserted:
+   //   dev_rvalid  <= dmem_ren & is_dev_r & ~is_virtio_r
+   //   c_rd_req     = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r  (no cache req for a device)
+   //   vio_pending <= set only by dmem_ren & is_virtio_r
+   // raw_rDATA keeps its select: it is a 64-bit mux on a path with slack, and only the VALID
+   // reaches lsu_done.
+   wire         vio_rack   = virtio_rvalid & vio_pending;   // not a write's completion
+   wire         raw_rvalid = vio_rack | dev_rvalid_q | dc_rv_ok;
+   always @(posedge clk)
+      if (!reset & ((vio_rack & dev_rvalid_q) | (vio_rack & dc_rv_ok) | (dev_rvalid_q & dc_rv_ok)))
+         $fatal(1, "ino_soc_top: two read responses at once (vio=%b dev=%b dc=%b) -- rvalid ambiguous",
+                vio_rack, dev_rvalid_q, dc_rv_ok);
    wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
                            : is_dev_r    ? dev_rdata_q
                            : dc_rd_data;
