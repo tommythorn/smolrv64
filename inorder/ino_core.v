@@ -504,13 +504,31 @@ module ino_core
    // ---- branch resolve / BTB training ----
    wire m_link_rd = m_rd_v & ((m_rd == 6'd1) | (m_rd == 6'd5));   // x1/x5 = link registers
    wire m_link_rs = (m_rs1 == 6'd1) | (m_rs1 == 6'd5);
-   assign res_v     = m_valid & m_done & (m_is_branch | m_is_jump) & ~m_trap;
+   // FMAX: res_v is qualified ONLY on M-stage flops. `m_done` and `~m_trap` are both
+   // implied by the (branch|jump) term this signal already carries, so ANDing them in
+   // bought nothing and cost everything: res_v is the D-input mux select of
+   // u_bp/btb_q (the write-forward `t_fwd`), so it put the LSU (via m_done -> lsu_done)
+   // and the CSR file (via m_trap -> csr_redir_trap) in the branch predictor's cone.
+   // That was the worst path in the design at 6 ns, 226 of them.
+   //   m_done : a CTI is not m_mem_op / m_md_op / fp_arith, so the mux collapses to 1'b1
+   //   m_trap : xtrap_v's lsu_fault term needs m_mem_op; m_ill_eff's FP term needs
+   //            m_is_fp; csr_redir_trap needs m_is_sys (opcode SYSTEM) -- none can hold
+   //            for a branch or jump. What survives is m_fault | m_illegal.
+   // Equivalence, not heuristic -- asserted below on every cycle.
+   assign res_v     = m_valid & (m_is_branch | m_is_jump) & ~m_fault & ~m_illegal;
    assign res_cbr   = m_is_branch;
    assign res_call  = m_is_jump & m_link_rd;
    assign res_ret   = m_is_jalr & m_link_rs & ~m_link_rd;
    assign res_taken = m_taken;
    assign res_tgt   = m_taken_tgt;
-   assign res_rep   = res_v & res_cbr & m_redirect & ~csr_red;
+   assign res_rep   = res_v & res_cbr & m_redirect;   // ~csr_red: 0 under res_v, see above
+
+   // The de-qualification is only safe while the implications above hold; a new M-stage
+   // completion term (another multi-cycle unit, an FP branch) would break it silently.
+   always @(posedge clk)
+     if (!reset && (res_v !== (m_valid & m_done & (m_is_branch | m_is_jump) & ~m_trap)))
+       $fatal(1, "ino_core: res_v de-qualification broken (pc=%h insn=%h done=%b trap=%b)",
+              m_pc, m_insn, m_done, m_trap);
 
    // ---- writeback ----
    assign m_wb_val = (m_is_mem | m_is_amo) ? lsu_rd_val   // FP loads too (LSU NaN-boxes FLW)
