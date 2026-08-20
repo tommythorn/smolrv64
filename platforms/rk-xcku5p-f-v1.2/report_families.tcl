@@ -9,9 +9,25 @@
 # Usage: vivado -mode batch -nojournal -nolog -source report_families.tcl
 #        (add -tclargs <N> to change the path budget, default 5000)
 
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
-open_project $xpr
-open_run impl_1
+# Open the design. Prefer a checkpoint on disk over `open_run impl_1`: a run whose
+# bookkeeping was disturbed (an external reset_run, a killed parent) reports PROGRESS 0%
+# and refuses to open, even though the checkpoint it produced is perfectly good.
+set here [file dirname [info script]]
+set dcps [list \
+   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_postroute_physopt.dcp] \
+   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_routed.dcp] \
+   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_physopt.dcp] \
+   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_placed.dcp]]
+set opened ""
+foreach d $dcps {
+   if {[file exists $d]} { open_checkpoint $d ; set opened $d ; break }
+}
+if {$opened eq ""} {
+   open_project [file normalize [file join $here rk_xcku5p.xpr]]
+   open_run impl_1
+   set opened "impl_1 (run)"
+}
+puts "=== design: $opened ==="
 
 set budget 5000
 if {[llength $argv] > 0} { set budget [lindex $argv 0] }
@@ -68,4 +84,3 @@ foreach r $rows {
    puts [format "%35s worst path: %s" "" [lindex $r 5]]
 }
 
-close_project
