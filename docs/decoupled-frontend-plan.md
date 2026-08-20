@@ -26,7 +26,9 @@ and `4567b019`. The **132-path family is the subject of this document**.
 | after `01e1f265`+`df96e431`+`4567b019` | -2.791 ns | 8.791 ns | 113.75 MHz |
 | after `953c45a3` (RAS snapshot dropped) | -2.762 ns | 8.762 ns | 114.13 MHz |
 | after the F/X queue | -3.273 ns | 9.273 ns | 107.84 MHz |
-| **after tag-matched D$ responses** | **-2.660 ns** | **8.660 ns** | **115.47 MHz** |
+| after tag-matched D$ responses | -2.660 ns | 8.660 ns | 115.47 MHz |
+| after `dmem_wready` collapsed to an OR | -2.568 ns | 8.568 ns | 116.71 MHz |
+| **after `raw_rvalid` collapsed to an OR** | **-2.436 ns** | **8.436 ns** | **118.54 MHz** |
 
 The queue REGRESSED timing by 0.511 ns on its own, then tag matching recovered 0.613 ns.
 Both are kept: the queue is IPC-positive and structurally right, and the regression was not
@@ -42,8 +44,46 @@ IPC across the same steps, cosim at a fixed 60M cycles:
 | + F/X queue | 11,623,201 | +4.88% |
 | + tag-matched responses | 11,631,167 | **+4.95%** |
 
-Session total on the in-order core: 106.33 -> 115.47 MHz (+8.6%) with +4.95% IPC, i.e.
-about +14% real performance, and every step DELETED structure rather than adding it.
+Session total on the in-order core: **106.33 -> 118.54 MHz (+11.5%)** with **+4.95% IPC**,
+i.e. about **+17% real performance**, and every step DELETED structure rather than adding it.
+
+## One defect, five appearances
+
+The device-vs-cache decision was re-derived from a 64-bit address at every point of use,
+inside the cycle where it was needed:
+
+| commit | what was recomputed on the critical path |
+|---|---|
+| `01e1f265` | device read data muxed into the load return |
+| `df96e431` | three write-qualified device address muxes |
+| `2a9f4c1`  | response matched by address instead of an allocated tag |
+| `4747f19d` | write-ready SELECTED by a device compare |
+| `f0a1c2d`  | read-valid SELECTED by a device compare |
+
+Every one is docs/rtl-rules.md's "a precondition that applies to N units is computed once and
+applied at one site", broken under a different name. Diagnostic detail: the last three were
+cycle-neutral and two were BIT-IDENTICAL in cosim -- these were not design trade-offs, they
+were redundant logic. The select never selected anything.
+
+The generator-level fix, if this recurs: ino_soc_top has no single place where "is this
+access a device?" is decided and named. Give it one, and the class cannot come back.
+
+## Where the limiter is now
+
+`m_rs1_val_reg[3] -> fe/u_bp/btb_q` (226 paths, 36 levels). The startpoint has left the LSU
+for the first time:
+
+```
+m_rs1_val (CSR write source) -> u_csr mstatus/mtvec next-state (CARRY8 x3)
+                             -> csr_writes1 -> ... -> fe/u_bp/btb_q
+```
+
+A CSR write in M reaching the fetch-side BTB read in the same cycle. Different coupling from
+the memory one, same shape: backend state with a combinational path into the frontend.
+
+Also newly visible: `u_icache/cur_line -> u_icache/linebuf[*]/CE` at only 11 levels but
+**7.091 ns of routing** (91%). That is congestion, not logic, and no amount of restructuring
+the I$'s logic will touch it -- it wants placement or a narrower fanout.
 
 +0.614 ns, +7.0%, at zero IPC cost (cosim retire count identical at identical cycles).
 Both LSU-startpoint families are gone from the work list. The limiter moved, it did not
