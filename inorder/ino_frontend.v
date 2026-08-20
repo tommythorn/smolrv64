@@ -35,6 +35,7 @@ module ino_frontend
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire                    irq_inject,        // present the interrupt pseudo-op
+    output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
     output wire [PCW-1:0]          imem_addr,         // VA to translate
@@ -117,6 +118,14 @@ module ino_frontend
       .slot_valid(), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
 
    wire fire = ~q_full & fx_valid;    // fetch handshake: a bundle enters the QUEUE
+
+   // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
+   // `accept`, which is the queue POP. Those were the same edge until this module grew a
+   // queue (`.ready(accept)` -> `.ready(~q_full)`), and ino_core's inject_inflight
+   // interlock was left keyed to the old one. Report the real event so the interlock can
+   // name it: while the backend stalls, `accept` is low but `fire` is not, so fetch
+   // re-emitted the SAME interrupt every cycle with nothing to stop it.
+   assign irq_taken = irq_inject & fire;
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;

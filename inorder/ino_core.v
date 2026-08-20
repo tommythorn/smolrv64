@@ -154,7 +154,7 @@ module ino_core
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
-      .irq_inject(irq_inject),
+      .irq_inject(irq_inject), .irq_taken(irq_taken),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
@@ -578,7 +578,19 @@ module ino_core
    //
    // Cost is one cycle of interrupt latency, which nothing observes -- csr_irq_v is a
    // level, so the injection simply happens a cycle later.
+   //
+   // THE INTERLOCK IS KEYED TO `irq_taken`, NOT `accept`. 49eecf48 gave this module's
+   // frontend an F/X queue and changed fetch's ready from `accept` to `~q_full`, so the
+   // pseudo-op is consumed on the queue PUSH while inject_inflight was still armed by the
+   // queue POP. Whenever the backend stalled -- accept low, queue not full -- fetch
+   // re-emitted the SAME interrupt every cycle, because the only thing that would have
+   // stopped it was waiting for an event that had stopped coinciding. That bitstream hung
+   // the board the moment Linux enabled its first PLIC source, and no simulation gate
+   // could see it: cosim locksteps retired instruction RESULTS, and this is a duplicated
+   // trap, not a wrong value. Found by hardware bisect (49eecf48 BAD, parent 9c298425
+   // GOOD), 2026-08-20.
    reg inject_inflight, irq_inject_q;
+   wire irq_taken;
    initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; end
    assign irq_inject = irq_inject_q;
    always @(posedge clk) begin
@@ -586,15 +598,14 @@ module ino_core
          inject_inflight <= 1'b0;
          irq_inject_q    <= 1'b0;
       end else begin
-         // Once presented, HOLD until the frontend takes it: inject_inflight is set by
-         // the acceptance, which lands a cycle after the presentation, so a plain
-         // re-evaluation would present the same interrupt twice before the interlock
-         // caught up. Scheduling and holding are separated to make that impossible.
+         // Present it until fetch actually TAKES it, then latch the interlock on that
+         // same event. Scheduling and holding are separated so one interrupt can never be
+         // presented twice while the interlock is still catching up.
          irq_inject_q <= ~redirect & ~redirect_q &
-                         (irq_inject_q ? ~accept                        // hold until taken
+                         (irq_inject_q ? ~irq_taken                     // hold until taken
                                        : csr_irq_v & ~inject_inflight); // schedule
 
-         if (irq_inject_q & accept)                   inject_inflight <= 1'b1;
+         if (irq_taken)                               inject_inflight <= 1'b1;
          else if (redirect | redirect_q | ~csr_irq_v) inject_inflight <= 1'b0;
       end
    end
@@ -604,6 +615,16 @@ module ino_core
    always @(posedge clk)
      if (!reset && irq_inject_q && inject_inflight)
        $fatal(1, "ino_core: interrupt injection presented while one is already in flight");
+
+   // ...and fetch may never consume two. This is the invariant 49eecf48 broke; it is
+   // checked directly now instead of being implied by a handshake that stopped holding.
+   reg irq_taken_q;
+   initial irq_taken_q = 1'b0;
+   always @(posedge clk) begin
+      irq_taken_q <= reset ? 1'b0 : irq_taken;
+      if (!reset && irq_taken && irq_taken_q)
+        $fatal(1, "ino_core: interrupt pseudo-op consumed twice for one interrupt");
+   end
 
 `ifdef INO_COSIM
    // ======================= cosim retire stream (VERIFY-ONLY) =======================
