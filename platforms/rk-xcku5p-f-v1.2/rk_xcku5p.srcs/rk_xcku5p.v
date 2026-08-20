@@ -1,29 +1,45 @@
 `timescale 1ns / 1ps
 
-// ---- probe-core clock (MMCM: ui_clk x3 = 1000 MHz VCO, then divided) ----------------
+// ---- probe-core clock (BUFGCE_DIV: ui_clk / N) --------------------------------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
 // src/soc_top.v and inorder/ino_soc_top.v are DERIVED from it, so a sweep cannot silently
 // skew the console baud or the timebase (both bit us before -- see the comments at each
 // site).
 //
-// This USED to be BUFGCE_DIV(ui_clk)/N, which could only ever reach 333.3 / 166.7 / 111.1 /
-// 83.3 / 66.7 MHz.  On that ladder every timing improvement smaller than a whole rung was
-// worth exactly nothing, which is a terrible thing to hand someone iterating on Fmax.  An
-// MMCM makes probe_clk continuous.
+// It is BUFGCE_DIV(ui_clk)/N, reaching 333.3 / 166.7 / 111.1 / 83.3 / 66.7 MHz.  An MMCM
+// was tried here (8e71c72e, reverted 2026-08-20) to make probe_clk continuous; it did not,
+// because the timer quantizes probe_clk to ui_clk regardless -- see the knob comment below
+// for the measurements.  Every rung of this ladder is a 3.000 ns multiple, which is exactly
+// the set that ever closed.
 //
-// The knob is the MMCM output divider in EIGHTHS, because eighths are the primitive's real
-// resolution: any value is legal, and `PROBE_CLK_HZ is then exactly what the silicon
-// produces rather than a rounding of an intent.
+// probe_clk is a BUFGCE_DIV integer divide of ui_clk.  The knob keeps its eighths-of-a-
+// nanosecond meaning (period = PROBE_CLK_DIV8 / 8 ns) so build.tcl, the Makefile and
+// tools/check-dts-timebase.py are unchanged, but ONLY MULTIPLES OF 24 ARE LEGAL:
 //
-//     probe_clk = 1000 MHz * 8 / PROBE_CLK_DIV8
-//     120 -> 66.67   96 -> 83.33   80 -> 100.0   72 -> 111.11 (the GB5 milestone build)
-//      64 -> 125.0   60 -> 133.33  54 -> 148.15  48 -> 166.67
+//     probe_clk = ui_clk / (PROBE_CLK_DIV8 / 24)
+//     24 -> 333.33   48 -> 166.67   72 -> 111.11   96 -> 83.33   120 -> 66.67
 //
-// Step near 111 MHz is 1.6 MHz (1.4%), near 166 MHz 3.5 MHz (2.1%).
+// THE MMCM THAT USED TO SIT HERE BOUGHT NOTHING.  It was added (8e71c72e) to make Fmax
+// continuous, on the reasoning that "nothing depended on the phase relationship, because
+// every probe_clk <-> ui_clk crossing already goes through a real CDC structure".  The
+// crossings do -- but the TIMER does not know that.  probe_mmcm was fed from ui_clk, so
+// Vivado treated the two as RELATED clocks and timed every crossing on EDGE ALIGNMENT.
+// Whenever probe's period was not an integer multiple of ui_clk's 3.000 ns, the tightest
+// launch->capture pair collapsed, and the placer then wrecked the rest of the design
+// chasing a path it could never meet.  Measured 2026-08-20, identical directives:
 //
-// VCO is fixed at 1000 MHz (ui_clk 333.333 MHz x 3, DIVCLK_DIVIDE=1).  That sits inside the
-// 600-1200 MHz window that holds for EVERY speed grade of this part, including the derating
-// on the -2i we actually have, so no sweep value can walk the MMCM out of spec.
+//     DIV8 120 (15.000 ns, 5x)  edge pair 3.000 ns  ->  WNS +0.159  MET
+//     DIV8  72 ( 9.000 ns, 3x)  edge pair 3.000 ns  ->  WNS +0.134  MET
+//     DIV8  64 ( 8.000 ns)      edge pair 1.000 ns  ->  WNS -1.080
+//     DIV8  68 ( 8.500 ns)      edge pair 0.500 ns  ->  WNS -1.198
+//     DIV8  70 ( 8.750 ns)      edge pair 0.250 ns  ->  WNS -2.249
+//     DIV8  71 ( 8.875 ns)      edge pair 0.125 ns  ->  WNS -2.372
+//
+// So the usable set was ALWAYS the old BUFGCE_DIV ladder, and the MMCM only added jitter,
+// ~0.3 ns of clock insertion delay, a relock failure mode, and a knob that advertises
+// frequencies the timer will never accept.  Two sessions burned builds on that lie.
+// A BUFGCE_DIV is phase-aligned with ui_clk, adds no jitter, and cannot be asked for a
+// frequency that does not exist.
 //
 // Override from build.tcl via env PROBE_CLK_DIV8.  The old PROBE_CLK_DIV is retired and
 // build.tcl hard-errors on it: it named a different ladder, and a stale `PROBE_CLK_DIV=3`
@@ -32,7 +48,7 @@
  `define PROBE_CLK_DIV8 120
 `endif
 `define PROBE_CLK_HZ ((1_000_000_000 / `PROBE_CLK_DIV8) * 8)
-`define PROBE_CLKOUT_DIV_F (`PROBE_CLK_DIV8 / 8.0)
+`define PROBE_CLK_DIVIDE   (`PROBE_CLK_DIV8 / 24)   // ui_clk divisor, 1..8
 `default_nettype none
 
 `ifndef SMOLRV64_BUILD_STAMP
@@ -181,37 +197,24 @@ module rk_xcku5p(
    wire probe_reset_src = ui_cpu_reset;
 `endif
 
-   // ui_clk (333.333 MHz) x3 -> 1000 MHz VCO -> /(PROBE_CLK_DIV8/8) -> probe_clk.
-   //
-   // Direct feedback (CLKFBOUT tied straight back to CLKFBIN, no BUFG in the loop) is the
-   // recommended low-jitter mode on UltraScale+ when the output does not need to be phase
-   // aligned to the input.  probe_clk does not need to be: the old BUFGCE_DIV kept it
-   // phase-related to ui_clk, but nothing depended on that, because every probe_clk <-> ui_clk
-   // crossing already goes through a real CDC structure -- ddr_line_cdc's 4-phase handshake
-   // and mmio_clock_bridge's async FIFOs.  Giving up the phase relationship is what buys the
-   // continuous frequency.
-   wire probe_clk_unbuf, probe_clkfb, probe_mmcm_locked;
-   MMCME4_BASE #(
-      .CLKIN1_PERIOD    (3.000),                   // ui_clk = 333.333 MHz
-      .DIVCLK_DIVIDE    (1),
-      .CLKFBOUT_MULT_F  (3.000),                   // VCO = 1000 MHz
-      .CLKOUT0_DIVIDE_F (`PROBE_CLKOUT_DIV_F),
-      .BANDWIDTH        ("OPTIMIZED")
-   ) probe_mmcm (
-      .CLKIN1   (ui_clk),
-      .CLKFBIN  (probe_clkfb),
-      .CLKFBOUT (probe_clkfb),
-      .CLKOUT0  (probe_clk_unbuf),
-      .LOCKED   (probe_mmcm_locked),
-      .PWRDWN   (1'b0),
-      .RST      (probe_mmcm_rst)
+   // ui_clk (333.333 MHz) / PROBE_CLK_DIVIDE -> probe_clk, phase-aligned by construction.
+   // The instance keeps the name `probe_clk_buf`: rk_xcku5p.xdc finds the clock with
+   // `get_clocks -of_objects [get_pins ... *probe_clk_buf/O]` rather than by literal name,
+   // and probe_clk_check.tcl asserts that lookup finds exactly one clock.
+   BUFGCE_DIV #(
+      .BUFGCE_DIVIDE (`PROBE_CLK_DIVIDE)
+   ) probe_clk_buf (
+      .I   (ui_clk),
+      .CE  (1'b1),
+      .CLR (probe_mmcm_rst),
+      .O   (probe_clk)
    );
-   BUFGCE probe_clk_buf (.I(probe_clk_unbuf), .CE(1'b1), .O(probe_clk));
 
-   // Hold the core in reset until the MMCM has locked.  Under BUFGCE_DIV probe_clk was merely
-   // late; an unlocked MMCM output is WRONG -- it sweeps in frequency while acquiring -- so
-   // tracking ui_rst/ui_cpu_reset alone is no longer sufficient.
-   wire probe_reset_async = probe_reset_src | ~probe_mmcm_locked;
+   // No lock to wait for: a BUFGCE_DIV output is correct from its first edge (it is a
+   // divider in the clock network, not an acquiring loop).  probe_clk is merely LATE, which
+   // ui_rst/ui_cpu_reset already covers -- this is what the MMCM's LOCKED gating replaced.
+   wire probe_mmcm_locked = 1'b1;                  // kept for the LED, see below
+   wire probe_reset_async = probe_reset_src;
    (* async_reg = "true" *) reg [1:0] probe_reset_sync = 2'b11;
    always @(posedge probe_clk or posedge probe_reset_async)
       if (probe_reset_async) probe_reset_sync <= 2'b11;

@@ -252,12 +252,21 @@ if {$probe_core} {
     # RTL, so they cannot drift out of sync with a sweep.
     if {[info exists env(PROBE_CLK_DIV8)] && $env(PROBE_CLK_DIV8) ne ""} {
         set _d8 $env(PROBE_CLK_DIV8)
-        if {![string is integer -strict $_d8] || $_d8 < 8 || $_d8 > 1024} {
-            error "PROBE_CLK_DIV8=$_d8 is out of range: CLKOUT0_DIVIDE_F is 1.000..128.000, so\
- DIV8 must be an integer in 8..1024."
+        # probe_clk is BUFGCE_DIV(ui_clk)/N, N = DIV8/24, N in 1..8.  The multiple-of-24 rule
+        # is not a primitive limitation, it is a TIMING one, and it applied to the MMCM too:
+        # probe_clk is derived from ui_clk, so Vivado times every probe<->ui crossing on edge
+        # alignment.  Off a 3.000 ns multiple the tightest launch->capture pair collapses
+        # (0.125 ns at DIV8=71) and the placer wrecks the design chasing it.  Measured
+        # 2026-08-20: 64/68/70/71 gave WNS -1.080/-1.198/-2.249/-2.372 while 72 and 120 MET.
+        # Refuse it here rather than let someone discover it 45 minutes into a build -- twice.
+        if {![string is integer -strict $_d8] || $_d8 % 24 != 0 || $_d8 < 24 || $_d8 > 192} {
+            error "PROBE_CLK_DIV8=$_d8 is not a legal probe_clk.  It must be a MULTIPLE OF 24\
+ in 24..192, because probe_clk = ui_clk/(DIV8/24) and any period that is not an integer\
+ multiple of ui_clk's 3.000 ns cannot be timed.  Legal: 24=333.33, 48=166.67, 72=111.11,\
+ 96=83.33, 120=66.67, 144=55.56, 168=47.62, 192=41.67 MHz."
         }
         set _mhz [expr {1000.0 * 8 / $_d8}]
-        puts [format "PROBE_CLK_DIV8 override: probe_clk = 1000MHz*8/%s = %.2f MHz (RTL default is 120 = 66.67 MHz)." $_d8 $_mhz]
+        puts [format "PROBE_CLK_DIV8 override: probe_clk = ui_clk/%d = %.2f MHz (RTL default is 120 = 66.67 MHz)." [expr {$_d8 / 24}] $_mhz]
         lappend vdefines "PROBE_CLK_DIV8=$_d8"
     }
     # Fetch window halfwords for the IN-ORDER core (ino_core.v / ino_soc_top.v both default

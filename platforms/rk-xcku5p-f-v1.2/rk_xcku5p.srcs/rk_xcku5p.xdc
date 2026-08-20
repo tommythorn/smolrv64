@@ -266,3 +266,19 @@ set_max_delay -datapath_only 6.000 \
 set_max_delay -datapath_only 6.000 \
     -from [get_cells -hier -filter {NAME =~ *probe_cdc/m_rdata_q_reg*}] \
     -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]
+
+# ---- probe_clk clock root ------------------------------------------------------------
+# MEASURED 2026-08-20, same RTL, DIV8=48 (166.67 MHz), only the clock source differing:
+#
+#   probe_mmcm (MMCM)   root X1Y1   clock-net routing 0.749 ns   WNS -0.328   1617 failing
+#   BUFGCE_DIV(ui_clk)  root X2Y1   clock-net routing 1.466 ns   WNS -0.857   4121 failing
+#
+# Identical logic; the placer simply clustered probe_core around a worse root and the same
+# fetch-cone family went from 87 paths to 614.  The MMCM was never buying frequency
+# granularity (see the knob comment in rk_xcku5p.v) -- it was buying THIS, and a root is a
+# constraint, not a primitive.  Pin it so a BUFGCE_DIV gets the same placement.
+#
+# Found by object, not by literal name, for the same reason as the CDC constraints below:
+# an auto-derived name follows the net at the source pin and a lookup that matches nothing
+# fails SILENTLY.
+set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter {NAME =~ *probe_clk_buf/O}]]
