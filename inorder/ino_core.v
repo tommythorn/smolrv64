@@ -547,14 +547,46 @@ module ino_core
    assign retire_insn = m_insn;
 
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
-   reg inject_inflight;
-   initial inject_inflight = 1'b0;
-   assign irq_inject = csr_irq_v & ~inject_inflight & ~redirect & ~redirect_q;
+   // FMAX: REGISTERED, for the same reason redirect_q is (see the note above the
+   // redirect_q declaration). irq_inject is a select in fetch's npc mux (fetch.v:168),
+   // and npc is the only combinational input to the BTB read register
+   // (ino_predictor.v:250) -- so while this was a wire it was the ONE path by which the
+   // backend reached the fetch PC, and it dragged in everything `redirect` depends on:
+   //   m_rs1_val -> csr next-state -> csr_writes -> do_satp/do_fschg -> csr_redir_v
+   //             -> csr_red -> redirect -> irq_inject -> u_fetch/npc -> u_bp/btb_q
+   // and, through redirect's m_done term, lsu_done as well. That is both the worst
+   // path at 6 ns and the "tail everything shares". With this flop, NOTHING
+   // combinational from M reaches the frontend's PC or predictor: `accept`/`consume`
+   // remain, and they feed only the queue pop and the IR register's clock enable.
+   //
+   // Cost is one cycle of interrupt latency, which nothing observes -- csr_irq_v is a
+   // level, so the injection simply happens a cycle later.
+   reg inject_inflight, irq_inject_q;
+   initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; end
+   assign irq_inject = irq_inject_q;
    always @(posedge clk) begin
-      if (reset)                        inject_inflight <= 1'b0;
-      else if (irq_inject & accept)     inject_inflight <= 1'b1;
-      else if (redirect | redirect_q | ~csr_irq_v) inject_inflight <= 1'b0;
+      if (reset) begin
+         inject_inflight <= 1'b0;
+         irq_inject_q    <= 1'b0;
+      end else begin
+         // Once presented, HOLD until the frontend takes it: inject_inflight is set by
+         // the acceptance, which lands a cycle after the presentation, so a plain
+         // re-evaluation would present the same interrupt twice before the interlock
+         // caught up. Scheduling and holding are separated to make that impossible.
+         irq_inject_q <= ~redirect & ~redirect_q &
+                         (irq_inject_q ? ~accept                        // hold until taken
+                                       : csr_irq_v & ~inject_inflight); // schedule
+
+         if (irq_inject_q & accept)                   inject_inflight <= 1'b1;
+         else if (redirect | redirect_q | ~csr_irq_v) inject_inflight <= 1'b0;
+      end
    end
+
+   // At most one interrupt pseudo-op may be in flight: presenting one while another is
+   // already accepted would inject two traps for one interrupt.
+   always @(posedge clk)
+     if (!reset && irq_inject_q && inject_inflight)
+       $fatal(1, "ino_core: interrupt injection presented while one is already in flight");
 
 `ifdef INO_COSIM
    // ======================= cosim retire stream (VERIFY-ONLY) =======================
