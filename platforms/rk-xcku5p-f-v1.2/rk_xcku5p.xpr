@@ -376,6 +376,13 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PPRDIR/../../inorder/ino_predictor.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/../../inorder/ino_regfile.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
@@ -482,13 +489,6 @@
         </FileInfo>
       </File>
       <File Path="$PPRDIR/../../src/plic.v">
-        <FileInfo>
-          <Attr Name="UsedIn" Val="synthesis"/>
-          <Attr Name="UsedIn" Val="implementation"/>
-          <Attr Name="UsedIn" Val="simulation"/>
-        </FileInfo>
-      </File>
-      <File Path="$PPRDIR/../../src/predictor.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
@@ -719,6 +719,14 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PPRDIR/../../src/predictor.v">
+        <FileInfo>
+          <Attr Name="AutoDisabled" Val="1"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/../../src/backend_top.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
@@ -930,10 +938,10 @@
         <Verilog_Define Name="PROBE_CORE"/>
         <Verilog_Define Name="INO_CORE"/>
         <Verilog_Define Name="SOC_BOOT_HEX" Val="&quot;/home/tommy/smolrv64/src/mem.linehex&quot;"/>
-        <Verilog_Define Name="PROBE_CLK_DIV8" Val="48"/>
+        <Verilog_Define Name="PROBE_CLK_DIV8" Val="72"/>
         <Verilog_Define Name="INO_HW" Val="4"/>
-        <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260819083621"/>
-        <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;he529c411"/>
+        <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260819210004"/>
+        <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;he423d9ce"/>
         <Verilog_Define Name="SMOLRV64_GIT_DIRTY" Val="1&apos;b1"/>
         <Verilog_Define Name="SMOLRV64_USE_XPM"/>
       </Config>
