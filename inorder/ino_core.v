@@ -36,6 +36,13 @@ module ino_core
     input  wire                    reset,
     // ---- instruction memory (combinational window at the translated PA) ----
     output wire [PCW-1:0]          imem_addr,
+    // VA-tagged fetch buffer (ino_soc_top): the buffer hit test compares the VIRTUAL
+    // address so a hit does not wait on address translation.  It therefore needs to know
+    // (a) the VA, (b) when this cycle's PA is actually trustworthy, and (c) when the fetch
+    // translation context changed underneath it.
+    output wire [PCW-1:0]          imem_vaddr,
+    output wire                    imem_xlate_ok,   // PA valid this cycle (not walking/faulting)
+    output wire                    imem_ctx_chg,    // drop the buffer: mapping may have changed
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
     // ---- platform interrupt lines + time ----
@@ -205,6 +212,31 @@ module ino_core
       .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_uncached());
    assign imem_addr = {8'd0, immu_pa};
+
+   // ---- VA-tagged fetch buffer support ------------------------------------------------
+   // The buffer caches instruction bytes under a VA tag, so it must be dropped on every
+   // event that can change what that VA maps to, or what may be executed from it:
+   //   satp write / sfence.vma -> mmu_flush        (csr_file o_tlb_flush)
+   //   privilege change        -> priv != priv_q   (different translation AND different X)
+   //   fence.i                 -> ic_inv_req       (already handled in ino_soc_top)
+   // mstatus.SUM/MXR are deliberately NOT here: they gate DATA accesses, not fetch.
+   // satp_fetch already folds in the M-mode bare case, so comparing it covers a
+   // privilege change that switches translation off entirely; priv is compared as well
+   // because S->U keeps satp but changes the U permission bit.
+   //
+   // imem_xlate_ok is the other half, and it is not optional.  Mid-walk the iMMU presents a
+   // STALE LEAF as t_paddr.  Under the old PA tag a fill from it was self-correcting -- the
+   // wrong bytes were tagged with the wrong PA, so the next lookup simply missed.  Under a
+   // VA tag those same wrong bytes would carry the RIGHT VA and hit, executing garbage.
+   reg  [1:0]  ipriv_q;
+   reg  [63:0] isatp_q;
+   always @(posedge clk) begin
+      ipriv_q <= mmu_priv;
+      isatp_q <= satp_fetch;
+   end
+   assign imem_vaddr    = imem_va;
+   assign imem_xlate_ok = immu_ready & ~immu_fault;
+   assign imem_ctx_chg  = mmu_flush | (ipriv_q != mmu_priv) | (isatp_q != satp_fetch);
 
    // =========================================================== stage X
    wire [63:0] rf_rs1, rf_rs2, rf_rs3;
