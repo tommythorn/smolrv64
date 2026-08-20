@@ -87,7 +87,8 @@ module fetch
    // a 32-bit op from PC+2 (the next page); `strad_lo` holds its already-read low half.
    reg            strad;
    reg [15:0]     strad_lo;
-   initial begin pc_q = RESET_PC; seq_q = 0; strad = 1'b0; end
+   reg [PCW-1:0]  pc2_q;              // pc_q + 2, captured when the straddle is entered
+   initial begin pc_q = RESET_PC; seq_q = 0; strad = 1'b0; pc2_q = RESET_PC + 64'd2; end
 
    // halfwords from pc_q to the 4 KiB page boundary; cap the aligner's view there.
    wire [11:0]    off      = pc_q[11:0];
@@ -98,7 +99,14 @@ module fetch
 
    assign cur_seq   = seq_q;
    // While straddling, present PC+2 so the iMMU translates the high halfword's (next) page.
-   assign imem_addr = (strad & ~irq_inject) ? (pc_q + 64'd2) : pc_q;
+   // FMAX: pc2_q, not a live `pc_q + 2`. This adder was the first two CARRY8 stages of
+   // the worst path in the design -- pc_q -> +2 -> u_immu/req_match -> fetch buffer ->
+   // I$ data -> aligner -> npc -> predictor read, 28 levels in one cycle. It is pure
+   // waste there: `strad` is only ever high while pc_q is FROZEN (the straddle state
+   // holds PC until `fire`, and redirect/irq_inject both clear strad), so the sum can be
+   // computed once when the straddle is ENTERED, off the critical path, instead of every
+   // cycle at the head of it. Asserted below rather than argued.
+   assign imem_addr = (strad & ~irq_inject) ? pc2_q : pc_q;
    assign imem_ipc  = pc_q;     // the instruction's PC in both states (trap EPC)
 
    // ---- aligner over the page-capped window (used in the NORMAL state) ----
@@ -185,12 +193,21 @@ module fetch
          if (fire) begin pc_q <= pc_q + 64'd4; seq_q <= seq_q + 1'b1; strad <= 1'b0; end
       end else if (straddle_det) begin
          // enter straddle: latch the low halfword, hold PC (the op is not consumed yet).
-         strad <= 1'b1; strad_lo <= imem_data[15:0];
+         // pc_q is held from here until the straddle completes, so its +2 is captured
+         // once, right here, and read back as a flop for as long as `strad` is high.
+         strad <= 1'b1; strad_lo <= imem_data[15:0]; pc2_q <= pc_q + 64'd2;
       end else if (fire) begin
          pc_q  <= norm_npc;
          seq_q <= seq_q + nvalid;
       end
    end
+
+   // The precompute is sound only while `strad` implies a frozen pc_q. If any future
+   // path advances PC during a straddle, imem_addr would translate the wrong page and
+   // the straddler would splice a halfword from somewhere else entirely.
+   always @(posedge clk)
+     if (!reset && strad && (pc2_q !== pc_q + 64'd2))
+       $fatal(1, "fetch: pc2_q stale during straddle (pc_q=%h pc2_q=%h)", pc_q, pc2_q);
 endmodule
 
 `default_nettype wire
