@@ -433,8 +433,24 @@ module ino_soc_top #(
    assign       dmem_rvalid = raw_rvalid | c_st_ok;
    // virtio store completes only when the bridge has DELIVERED it (virtio_rvalid) -- blocking, so the
    // fence-released next read cannot overtake it; other device writes accept in 1 cycle (dev_wack).
-   assign       dmem_wready = is_virtio_w ? (virtio_rvalid & vio_wpending)
-                            : is_dev_w    ? dev_wack : dc_wr_ack;
+   // dmem_wready used to SELECT among these with is_dev_w/is_virtio_w -- 64-bit masked
+   // compares off the LSU's store address -- which put the device decode on
+   //   pa_q -> is_uart_w (CARRY8 x3) -> dmem_wready -> lsu_done -> redirect -> u_bp/ycorr,
+   // the design's worst path at a 6 ns constraint (226 paths, 37 levels).
+   //
+   // The select carried no information. Each term is already gated by its own device class
+   // AT ITS SOURCE, so at most one can ever be asserted:
+   //   dev_wack      <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack
+   //   cache .wr_req  = dmem_wen & ~dc_wr_ack & ~is_dev_w      (a device store never reaches it)
+   //   vio_wpending  <= set only by dmem_wen & is_virtio_w
+   // So an OR is equivalent -- and it is an OR of registered signals, with no compare in it.
+   // The exclusivity is asserted rather than assumed.
+   wire         vio_wack = virtio_rvalid & vio_wpending;
+   assign       dmem_wready = vio_wack | dev_wack | dc_wr_ack;
+   always @(posedge clk)
+      if (!reset & ((vio_wack & dev_wack) | (vio_wack & dc_wr_ack) | (dev_wack & dc_wr_ack)))
+         $fatal(1, "ino_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
+                vio_wack, dev_wack, dc_wr_ack);
 
    // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
    // store buffer drains in ~1-2c instead of a full L2 round-trip. PTW reads are routed THROUGH
