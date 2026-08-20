@@ -453,6 +453,19 @@ module ino_core
                          redirect, m_valid & m_is_store & lsu_done, m_valid & m_is_mem
                          & ~m_is_store & lsu_done};
 
+   // FMAX: the Zihpm event bus is REGISTERED. hpm_ev -> hpm_inc -> a 64-bit mhpmcounter
+   // carry chain was 823 of 3113 failing endpoints at 6 ns and the WORST family in the
+   // design (m_addr -> ... -> u_csr/mhpmcounter[12][63]).  These 15 bits are pure
+   // instrumentation and cost nothing to delay: a counter is read through a CSR many
+   // cycles later, and no software can observe which cycle an event landed on.  They only
+   // became timing-critical when 9a6f8de3 correctly un-gated perf_access/perf_miss from
+   // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
+   // built, so this cone did not exist.
+   // minstret is NOT included: retire_cnt stays combinational because it is architectural.
+   reg [14:0] hpm_ev_q;
+   initial hpm_ev_q = 15'd0;
+   always @(posedge clk) hpm_ev_q <= reset ? 15'd0 : hpm_ev;
+
    csr_file u_csr
      (.clk(clk), .reset(reset),
       .raddr(m_imm[11:0]), .rdata(csr_rdata),
@@ -470,7 +483,7 @@ module ino_core
       .o_tlb_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The in-order SoC puts no ILA on the CSR file, so these
       // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build
