@@ -24,6 +24,8 @@
 // Banks are synchronous (READ_LATENCY=1): an address presented in one cycle is captured
 // the next, so multi-word reads serialize a pair (even+odd) per two cycles.
 module ino_cache #(
+   parameter RTW      = 4,      // opaque request-tag width (see rd_tag). 4 leaves room for
+                               // a load-queue index when multiple outstanding loads land.
    parameter PAW      = 34,
    parameter SIZE_KB  = 128,
    parameter WAYS     = 2,
@@ -43,6 +45,14 @@ module ino_cache #(
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
    output reg  [PAW-1:0]   rd_resp_addr,
+   // OPAQUE request tag. The cache never interprets it -- it captures whatever the
+   // requester supplied and echoes it with the response, so the requester can match a
+   // response to the request it allocated instead of comparing addresses
+   // (docs/rtl-rules.md: "matched by a tag the requester allocated, not by address").
+   // Opaque on purpose: when the LSU gains multiple outstanding loads, only its tag
+   // ALLOCATION changes and nothing in here moves.
+   input  wire [RTW-1:0]   rd_tag,
+   output reg  [RTW-1:0]   rd_resp_tag,
    input  wire             rd_uncached, // Svpbmt: this read is NC/IO -> don't keep the line (flush-around)
    input  wire             wr_req,
    input  wire [PAW-1:0]   wr_addr,
@@ -126,6 +136,7 @@ module ino_cache #(
    reg            r_uncached;          // Svpbmt: current access is NC/IO (flush-around)
    reg            r_cbo, r_cbo_zero, r_cbo_keep;   // Zicbom/Zicboz maintenance op latched at accept
    reg [PAW-1:0]  r_addr;
+   reg [RTW-1:0]  r_tag;
    reg [WDW-1:0]  r_wdata;
    reg [WRB-1:0]  r_wmask;
    reg [OFFB-1:0] r_off;
@@ -393,6 +404,7 @@ module ino_cache #(
                  r_cbo_zero <= (wr_req && !rd_req) & cbo_zero;
                  r_cbo_keep <= (wr_req && !rd_req) & cbo_keep;   // Zicbom/Zicboz
                  r_addr   <= rd_req ? rd_addr : wr_addr;
+                 r_tag    <= rd_tag;
                  r_wdata  <= wr_data; r_wmask <= wr_mask;
                  r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
                  // a CBO is a single-line op (never spans)
@@ -439,7 +451,7 @@ module ino_cache #(
                        // (the same values registering into wlo/whi this edge) -- skip
                        // S_FIN. NC reads keep the slow path (S_FIN's flush-around).
                        rd_data  <= fast_sh[RDW-1:0];
-                       rd_valid <= 1; rd_resp_addr <= r_addr;
+                       rd_valid <= 1; rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
                        st <= S_IDLE;
                     end
                     else st <= S_FIN;
@@ -535,7 +547,7 @@ module ino_cache #(
            S_FIN: begin
               if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
-                 rd_valid <= 1; rd_resp_addr <= r_addr;
+                 rd_valid <= 1; rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
                  // Svpbmt NC/IO load: return the (just-filled, current) word but don't keep the
                  // line, so a later DMA write isn't masked by a stale hit on the next NC load.
                  // A span clears line1 in S_NCI (one status write per cycle; data already out).

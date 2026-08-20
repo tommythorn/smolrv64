@@ -390,7 +390,28 @@ module ino_soc_top #(
    // squashed address, would otherwise deliver that stale line to the new load. Match the cache's
    // response address to the current request (like the I$ does with i_pa); a non-matching response
    // is discarded and the request re-issues for the new address.
-   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr);
+   // Response matched by an ALLOCATED TAG, not by address (docs/rtl-rules.md). The old
+   //     dc_rv_ok = dc_rd_valid & (dc_rd_resp_addr == dmem_raddr)
+   // was a 64-bit equality whose CARRY8 chain sat on the design's worst path at 6 ns:
+   //   u_lsu/mem_raddr -> this compare -> dmem_rvalid -> lsu_done -> m_done -> redirect
+   //                   -> u_fetch/va_q -> fe/u_bp/ycorr_q
+   // Tag = {client, generation}: client 0 = LSU, 1 = iPTW, 2 = dPTW. The LSU's generation
+   // toggles on every new read, so a response to a SUPERSEDED load (a squash re-issues at a
+   // new address) carries the stale generation and is discarded -- exactly what the address
+   // compare achieved, in 4 bits instead of 64.
+   localparam DRTW = 4;
+   reg          lsu_gen;
+   always @(posedge clk) if (reset) lsu_gen <= 1'b0; else if (dmem_ren) lsu_gen <= ~lsu_gen;
+   // The tag must be CONSTANT for the request's whole lifetime. lsu_gen flips at the clock
+   // edge on dmem_ren, so during the request cycle itself the cache would capture the
+   // PRE-flip value while every later compare used the POST-flip one -- legitimate responses
+   // mismatch, get discarded, and the load re-issues. Present the value lsu_gen is ABOUT to
+   // take; compare against the registered one, which equals it from the next cycle on (a
+   // response cannot arrive in the capture cycle -- rd_valid is registered).
+   wire [DRTW-1:0] lsu_tag_req = {2'd0, 1'b0, lsu_gen ^ dmem_ren};   // -> the cache
+   wire [DRTW-1:0] lsu_tag     = {2'd0, 1'b0, lsu_gen};              // -> the compare
+   wire [DRTW-1:0] dc_rd_resp_tag;
+   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_tag == lsu_tag);
    // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
    // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
    // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
@@ -427,7 +448,7 @@ module ino_soc_top #(
    ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
-      .rd_resp_addr(dc_rd_resp_addr),
+      .rd_resp_addr(dc_rd_resp_addr), .rd_tag(dcr_tag), .rd_resp_tag(dc_rd_resp_tag),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
       .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
@@ -621,6 +642,9 @@ module ino_soc_top #(
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr),
+      // The I$ still matches its response by address, in the fetch buffer (fb_al/fb_pa1/fb_pa).
+      // Named and empty on purpose: converting it is a separate change with its own measurement.
+      .rd_tag(4'd0), .rd_resp_tag(),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
@@ -647,7 +671,7 @@ module ino_soc_top #(
    genvar g;
    generate for (g=0; g<2; g=g+1) begin : ptw_adapt
       assign pw_match[g] = dc_rd_valid & pw_busy[g]
-                         & (dc_rd_resp_addr == {8'd0, pw_addr[g*56 +: 56]});
+                         & (dc_rd_resp_tag == {(g ? 2'd2 : 2'd1), 2'b00});
       always @(posedge clk) if (reset) begin pw_busy[g]<=1'b0; pw_rvalid[g]<=1'b0; end
          else begin
             pw_rvalid[g] <= 1'b0;
@@ -671,6 +695,10 @@ module ino_soc_top #(
    assign dcr_addr = c_rd_req    ? dmem_raddr
                    : pw_busy[0]  ? {8'd0, pw_addr[0*56 +: 56]}
                    :               {8'd0, pw_addr[1*56 +: 56]};
+   // ...and the tag that names the requester, selected by the SAME priority.
+   wire [DRTW-1:0] dcr_tag = c_rd_req   ? lsu_tag_req
+                           : pw_busy[0] ? {2'd1, 2'b00}
+                           :              {2'd2, 2'b00};
 
    // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
    // PTW reads no longer reach the arbiter -- they go through the D$ (dcr_* above), and a D$ miss
