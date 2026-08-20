@@ -235,16 +235,17 @@ module ino_core
    reg  [3:0]       m_fault_cause;
    initial begin m_valid = 1'b0; end
 
-   // the M-stage writeback value (also the single bypass source)
-   wire [63:0] m_wb_val;
+   // the M-stage writeback value, and the bypass source (which is NOT the same thing --
+   // see the writeback comment: a CSR result is never bypassable)
+   wire [63:0] m_wb_val, m_byp_val;
 
    // one bypass level: M -> X. An instruction two ahead has already landed in the RF.
    wire       byp1 = m_valid & m_rd_v & (m_rd == d_rs1);
    wire       byp2 = m_valid & m_rd_v & (m_rd == d_rs2);
    wire       byp3 = m_valid & m_rd_v & (m_rd == d_rs3);
-   wire [63:0] x_rs1 = byp1 ? m_wb_val : rf_rs1;
-   wire [63:0] x_rs2 = byp2 ? m_wb_val : rf_rs2;
-   wire [63:0] x_rs3 = byp3 ? m_wb_val : rf_rs3;
+   wire [63:0] x_rs1 = byp1 ? m_byp_val : rf_rs1;
+   wire [63:0] x_rs2 = byp2 ? m_byp_val : rf_rs2;
+   wire [63:0] x_rs3 = byp3 ? m_byp_val : rf_rs3;
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
@@ -531,13 +532,23 @@ module ino_core
               m_pc, m_insn, m_done, m_trap);
 
    // ---- writeback ----
-   assign m_wb_val = (m_is_mem | m_is_amo) ? lsu_rd_val   // FP loads too (LSU NaN-boxes FLW)
-                   : m_is_csr              ? csr_rdata
-                   : m_is_mul              ? (md_div ? div_result : mul_result)
-                   : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
-                                                       : fp_res_data)
-                   : fp_incore             ? fp_incore_res
-                   :                         m_result;
+   // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing
+   // (decode_exec.v:158 sets is_serialize on CSRRW/S/C), and `ser_block` holds the
+   // frontend while one is in M -- so X is empty for the whole time a CSR result is the
+   // writeback value, and that result can only ever be read back from the register file
+   // by a later instruction. Bypassing it was unreachable logic, and it cost the ALU's
+   // operand cone the entire CSR read mux, addressed by m_imm[11:0]:
+   //   m_imm[11:0] -> u_csr read mux -> csr_rdata -> m_wb_val -> x_rs1 -> exec
+   //               -> x_result / x_target
+   // which was the second-worst family at 6 ns (-0.740, 19-32 levels). The invariant
+   // that makes this sound is asserted below.
+   assign m_byp_val      = (m_is_mem | m_is_amo) ? lsu_rd_val  // FP loads too (LSU NaN-boxes FLW)
+                         : m_is_mul              ? (md_div ? div_result : mul_result)
+                         : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
+                                                             : fp_res_data)
+                         : fp_incore             ? fp_incore_res
+                         :                         m_result;
+   assign m_wb_val = m_is_csr ? csr_rdata : m_byp_val;
    assign rf_we = m_valid & m_done & m_rd_v & ~m_trap;
    assign rf_wa = m_rd;
    assign rf_wd = m_wb_val;
@@ -545,6 +556,12 @@ module ino_core
    assign retire      = m_valid & m_done & ~m_trap & ~m_is_irqop;
    assign retire_pc   = m_pc;
    assign retire_insn = m_insn;
+
+   // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
+   // exists to guarantee, and it is what makes the CSR result unbypassable above.
+   always @(posedge clk)
+     if (!reset && m_valid && m_is_serialize && d_valid)
+       $fatal(1, "ino_core: X holds an op while a serializing op is in M (pc=%h)", m_pc);
 
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
    // FMAX: REGISTERED, for the same reason redirect_q is (see the note above the
