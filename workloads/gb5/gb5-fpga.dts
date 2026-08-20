@@ -41,7 +41,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-                timebase-frequency = <501253>;  /* REAL rate: probe_clk 66.67MHz / CLINT SCALE_DIV 133. Was 20050120, a 40x "deadline probe" lie (4583ba4) that made every kernel deadline 40x longer in real time -- healthy boots looked permanently stalled and the timer appeared to storm. MUST track probe/soc_top.v clint SCALE_DIV. */
+                timebase-frequency = <502765>;  /* REAL rate = PROBE_CLK_HZ/SCALE_DIV, not 501253: SCALE_DIV is an integer. DIV8=72 -> 111,111,104/221 = 502765. Was 501253 (the exact value for the 66.67MHz era), i.e. 0.302% fast on every FPGA run since the 111MHz milestone. Checked by tools/check-dts-timebase.py. */  /* REAL rate: probe_clk 66.67MHz / CLINT SCALE_DIV 133. Was 20050120, a 40x "deadline probe" lie (4583ba4) that made every kernel deadline 40x longer in real time -- healthy boots looked permanently stalled and the timer appeared to storm. MUST track probe/soc_top.v clint SCALE_DIV. */
 
 		cpu-map {
 			cluster0 {

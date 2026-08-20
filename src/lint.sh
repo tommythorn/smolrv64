@@ -66,5 +66,14 @@ lint_top ino ino_soc_top $(ino_sources)
 # wrong counter.
 ../tools/gen-perf-events.py --check || fail=1
 
+# The DTB's timebase-frequency is what Linux uses for EVERY deadline, and it is a pure
+# function of PROBE_CLK_DIV8 -- but SCALE_DIV is an integer divide, so it is NOT 501253 at
+# every clock. It said 501253 from the 66.67 MHz era until 2026-08-19, so every FPGA run
+# from the 111 MHz milestone on (the GB5 run included) ran 0.302% fast. The DTS comment
+# said "MUST track SCALE_DIV" the whole time; nothing checked it. Now something does.
+# DIV8=72 is the shipping clock; pass a different one when that changes.
+../tools/check-dts-timebase.py 72 ../workloads/ubuntu/ubuntu-nfs.dts \
+                                 ../workloads/gb5/gb5-fpga.dts || fail=1
+
 [ $fail -ne 0 ] && exit 1
 echo "lint: clean"
