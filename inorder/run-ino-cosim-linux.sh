@@ -47,7 +47,37 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ino_cache.v ino_l2_arbiter.v ../src/clint.v ../src/plic.v \
             ../src/ddr_hpm.v"
 
+# STALE-BUILD GUARD.  MEM_LG2 and VDEFS are compile-time -D's, and the C side gets
+# MEM_LG2 via -CFLAGS.  `BUILD=1` re-runs verilator, but the generated make then compares
+# TIMESTAMPS, not flags -- so probe_cosim.cpp, unchanged on disk, is NOT recompiled and
+# keeps the MEM_BYTES from whatever the previous run used.  On 2026-08-20 that gave the
+# reference model 512 MiB while the RTL had 2 GiB: every GB5 cosim run "diverged" at
+# retire #6979942 on a load to a PA that was real memory to the DUT and off the end of
+# the world to simmerv.  Hours went into hunting a core bug that did not exist.
+# (Out-of-RAM stores are made inert by cosim_inert_devstore, so the mismatch was
+# invisible on the way in and only detectable on the way out -- which pointed the hunt
+# at the store path, exactly the wrong place.)
+#
+# So: record the compile-time config, and when it changes WIPE THE OBJECT DIRECTORY.
+# A stamp alone is not enough -- the whole point is that make will not redo the work.
+STAMP="obj_dir_ino_clinux/.config-stamp"
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
+need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
+   need_build=1
+elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
+   need_build=1
+   echo "cosim config changed ($want) -> full rebuild"
+   rm -rf obj_dir_ino_clinux
+fi
+# Even on BUILD=1, a config difference means stale objects: wipe rather than trust make.
+if [ "$need_build" = 1 ] && [ -d obj_dir_ino_clinux ] \
+   && [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
+   echo "cosim config differs from the built objects -> wiping obj_dir_ino_clinux"
+   rm -rf obj_dir_ino_clinux
+fi
+
+if [ "$need_build" = 1 ]; then
    echo "building obj_dir_ino_clinux/tb_ino_clinux (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
@@ -62,6 +92,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       tb_ino_linux.v ../src/probe_cosim.cpp > /tmp/inoclinuxbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inoclinuxbuild.log | head -20; exit 1; fi
+   printf '%s' "$want" > "$STAMP"
 fi
 
 echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_LG2 ==="

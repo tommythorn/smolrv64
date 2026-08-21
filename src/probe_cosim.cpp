@@ -105,6 +105,15 @@ bool load_flat_hex(const char* path) {
 void cosim_init() {
     g_inited = true;
     setvbuf(stdout, nullptr, _IONBF, 0);   // so $display debug survives abort()
+    // Announce the size this OBJECT FILE was compiled with, not what a shell variable
+    // said.  MEM_LG2 reaches here as a -CFLAGS -D, so a stale probe_cosim.o silently gives
+    // the reference model a different amount of RAM than the RTL -- on 2026-08-20 that was
+    // 512 MiB vs 2 GiB, and every GB5 run "diverged" on a load to a PA that was real memory
+    // to the DUT and past the end of the world here.  The runner's log line printed the
+    // shell's MEM_LG2 and therefore confirmed nothing.  This one cannot lie.
+    std::fprintf(stderr, "cosim: reference RAM = %llu MiB at 0x%llx (COSIM_MEM_SIZE_LG2=%d, compiled in)\n",
+                 (unsigned long long)(MEM_BYTES >> 20), (unsigned long long)AXI_BASE,
+                 (int)COSIM_MEM_SIZE_LG2);
     g_ctx = simmerv_create(MEM_BYTES);
     if (!g_ctx) { std::fprintf(stderr, "cosim: simmerv_create failed\n"); std::abort(); }
     simmerv_zero_registers(g_ctx);
