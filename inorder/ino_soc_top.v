@@ -600,7 +600,7 @@ module ino_soc_top #(
    // and it is the only thing standing between a missed invalidation and silently executing
    // instructions from the previous address space.
    always @(posedge clk)
-      if (!reset & fb_hit & imem_xlate_ok & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
+      if (!reset & fb_hit & imem_xlate_ok & ~imem_ctx_chg & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
          $fatal(1, "ino_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
                 fb_alv, fb_al, (fb_in1 ? fb_pa1 : fb_pa), fb_in1);
 
@@ -627,7 +627,16 @@ module ino_soc_top #(
       d_al  <= fb_al;   d_pa  <= fb_pa;   d_pa1 <= fb_pa1;        d_alv <= fb_alv;
       d_satp <= imem_satp_q;  d_priv <= imem_priv_q;  d_va <= imem_va;
    end
-   wire fb_stale_now = d_hit & d_ok & (d_al != (d_in1 ? d_pa1 : d_pa));
+   // TWO conditions, deliberately separated so the fix can be FALSIFIED rather than merely
+   // confirmed.  imem_avail_g now suppresses consumption when d_ctx is set, so:
+   //   fb_stale_now   -- a hit whose bytes ARE consumed and name the wrong PA.  Must be 0.
+   //   fb_ctxhit_now  -- the same tag/PA disagreement on the context-change cycle itself,
+   //                     now harmless because nothing consumes it.  Counted, not fatal.
+   // If the board comes back with stale=0 and a LARGE ctxhit count, that is positive
+   // evidence the mechanism was identified correctly -- not just an absence of symptoms.
+   wire fb_mism      = (d_al != (d_in1 ? d_pa1 : d_pa));
+   wire fb_stale_now = d_hit & d_ok & ~d_ctx & fb_mism;
+   wire fb_ctxhit_now = d_hit & d_ok &  d_ctx & fb_mism;
 
    // The OTHER failure class, and the reason this block reports two bits instead of one.
    // A's stale-mapping invariant has run clean for 78M retirements of cosim; the commit
@@ -647,8 +656,10 @@ module ino_soc_top #(
    reg [63:0] fbd_satp = 64'd0, fbd_pc = 64'd0, fbd_cyc = 64'd0;
    reg [63:0] fbd_flags = 64'd0;
    reg [63:0] fbd_freecyc = 64'd0;
+   reg [63:0] fbd_ctxhits = 64'd0;                  // benign ctx-cycle coincidences, cumulative
    always @(posedge clk) begin
       fbd_freecyc <= fbd_freecyc + 64'd1;           // free-running, survives reset too
+      if (fb_ctxhit_now) fbd_ctxhits <= fbd_ctxhits + 64'd1;
       if (fb_stuck_now) fbd_stuck <= 1'b1;
       if (fb_stale_now & ~fbd_stale) begin          // FIRST occurrence only -- later ones
          fbd_stale    <= 1'b1;                      // are consequences, not the cause
@@ -689,7 +700,8 @@ module ino_soc_top #(
                             : (dmem_raddr[7:3] == 5'd6) ? fbd_pc
                             : (dmem_raddr[7:3] == 5'd7) ? fbd_flags
                             : (dmem_raddr[7:3] == 5'd8) ? fbd_cyc
-                            : (dmem_raddr[7:3] == 5'd9) ? fbd_freecyc : 64'd0;
+                            : (dmem_raddr[7:3] == 5'd9) ? fbd_freecyc
+                            : (dmem_raddr[7:3] == 5'd10) ? fbd_ctxhits : 64'd0;
 
    // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
    wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);

@@ -115,7 +115,19 @@ module ino_core
    wire [55:0]              immu_pa;
    wire                     immu_ready, immu_fault;
    wire [3:0]               immu_cause;
-   wire [$clog2(HW+2)-1:0]  imem_avail_g = (immu_ready & ~immu_fault) ? imem_avail
+   // ~imem_ctx_chg IS PART OF "IS THIS CYCLE'S FETCH DATA TRUSTWORTHY".  The VA-tagged
+   // buffer is invalidated by imem_ctx_chg in ino_soc_top, but that invalidation lands at
+   // the END of the cycle while fb_hit is combinational -- so for exactly one cycle the
+   // buffer can still serve bytes fetched under the PREVIOUS translation while the iMMU has
+   // already switched to the new one.  Found on silicon at 111 MHz, first boot, in under a
+   // second of kernel time: va=ffffffff80012370 hit with pa_cached=0000000080212370 (Sv39)
+   // while the iMMU returned pa=00ffffff80012370 -- the UNTRANSLATED va, i.e. bare mode.
+   // Gated here and not on fb_hit for two reasons: this is the one site that already decides
+   // whether fetch data may be consumed (rule: one precondition, one site), and putting
+   // imem_ctx_chg -- which contains a 64-bit satp compare -- into the fb_hit cone would put
+   // back exactly the compare the VA tag was introduced to remove.
+   // Costs one fetch bubble per satp write / sfence.vma / privilege change.
+   wire [$clog2(HW+2)-1:0]  imem_avail_g = (immu_ready & ~immu_fault & ~imem_ctx_chg) ? imem_avail
                                                                       : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
    wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
