@@ -1191,7 +1191,12 @@ module backend_top
       input longint unsigned mtime_v,
       input longint unsigned mtimecmp_v,
       input longint unsigned mepc_v,
-      input byte    unsigned seip_v);
+      input byte    unsigned seip_v,
+      // Memory effect (in-order core only, for now).  This core reports "no access",
+      // which probe_cosim treats as "nothing to compare" -- a model that does not
+      // report an access must never force a false abort.
+      input byte    unsigned mem_kind,
+      input longint unsigned mem_pa);
 
    // In-order retire FIFO (decouples emission from commit: the probe commits ALU
    // ops on the issue count, which can fire a cycle or two BEFORE the value writes
@@ -1368,7 +1373,8 @@ module backend_top
                probe_retire(q_pc[0], q_insn[0], {6'd0, q_rk[0]},
                   (q_rk[0]==2'd0) ? 8'd0 : {3'd0, q_ri[0]},
                   {6'd0, q_prv[0]}, {7'd0, q_trap[0]}, q_val[0], q_cause[0], q_tval[0],
-                  64'd0, {64{1'b1}}, mepc_retire, 8'd0);   // mepc in retire order (immune to younger writes)
+                  64'd0, {64{1'b1}}, mepc_retire, 8'd0,    // mepc in retire order (immune to younger writes)
+                  8'd0, 64'd0);                            // memory effect: not captured by this core
                end
                for (fi = 0; fi < QN-1; fi = fi + 1) begin
                   q_seq[fi]=q_seq[fi+1]; q_ck[fi]=q_ck[fi+1]; q_pc[fi]=q_pc[fi+1];

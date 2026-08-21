@@ -140,14 +140,17 @@ void cosim_init() {
                  (unsigned long long)reset_pc, fw ? ", linux" : "");
 }
 
+// (memory effect is printed by dump_retire below)
 void dump_retire(const char* label, const SimmervRetire& r) {
     std::fprintf(stderr,
         "  %s seq=%llu pc=%016llx npc=%016llx insn=%08x prv=%u trap=%u "
-        "rd=(k%u,x%u)=%016llx cause=%016llx tval=%016llx mepc=%016llx\n",
+        "rd=(k%u,x%u)=%016llx cause=%016llx tval=%016llx mepc=%016llx mem=%s@%012llx\n",
         label, (unsigned long long)r.seqno, (unsigned long long)r.pc,
         (unsigned long long)r.next_pc, r.insn, r.prv, r.trapped, r.rd_kind, r.rd_idx,
         (unsigned long long)r.rd_val, (unsigned long long)r.trap_cause,
-        (unsigned long long)r.trap_tval, (unsigned long long)r.mepc);
+        (unsigned long long)r.trap_tval, (unsigned long long)r.mepc,
+        r.mem_kind == 1 ? "ld" : r.mem_kind == 2 ? "st" : "--",
+        (unsigned long long)r.mem_pa);
 }
 
 [[noreturn]] void mismatch_abort(const SimmervRetire& dut, const SimmervRetire& ref) {
@@ -262,7 +265,16 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
         rdval_ok                        &&
         dut.trap_cause == ref.trap_cause &&
         dut.trap_tval  == ref.trap_tval &&
-        dut.mepc       == ref.mepc;
+        dut.mepc       == ref.mepc &&
+        // MEMORY EFFECT.  Register results alone cannot see a store: it has no
+        // architectural result, so a store to the WRONG PHYSICAL ADDRESS corrupts
+        // REF/DUT memory silently and only surfaces much later as an unrelated fault
+        // (GB5 retire #6979942, 2026-08-20: the DUT's page-table walk was correct
+        // against its own memory -- the two models' page tables had already diverged).
+        // Compare the PA on both loads and stores; only when BOTH sides agree an access
+        // happened, so a model that reports no access never forces a false abort.
+        (dut.mem_kind == 0 || ref.mem_kind == 0 ||
+         (dut.mem_kind == ref.mem_kind && dut.mem_pa == ref.mem_pa));
 
     g_ring[g_ring_idx] = { dut, ref, true };
     g_ring_idx = (g_ring_idx + 1) % RING_N;
@@ -347,7 +359,9 @@ extern "C" void probe_retire(
     unsigned long long mtime,
     unsigned long long mtimecmp,
     unsigned long long mepc,
-    unsigned char      seip)
+    unsigned char      seip,
+    unsigned char      mem_kind,
+    unsigned long long mem_pa)
 {
     if (!g_inited) cosim_init();
 
@@ -360,6 +374,7 @@ extern "C" void probe_retire(
     e.pc = pc; e.insn = insn; e.rd_kind = rd_kind; e.rd_idx = rd_idx;
     e.prv = prv; e.trapped = trapped; e.rd_val = rd_val;
     e.trap_cause = trap_cause; e.trap_tval = trap_tval; e.mtime = mtime; e.mepc = mepc;
+    e.mem_kind = mem_kind; e.mem_pa = mem_pa;   // memory effect, compared below
 
     if (g_have_prev) {
         g_prev.next_pc = pc;            // in-order commit: this retire's pc

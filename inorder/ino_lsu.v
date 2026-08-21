@@ -81,6 +81,11 @@ module ino_lsu
     output wire            fault,
     output wire [3:0]      fault_cause,
     output wire [63:0]     fault_tval,
+    // COSIM memory-effect capture: the EXACT (unaligned) PA of the access and its kind.
+    // pa_q is not usable for this -- for DRAM it is the 8-byte-ALIGNED base, while the
+    // reference model reports the exact address.  Unused outside cosim (DCE'd).
+    output reg  [55:0]     cos_pa,
+    output reg  [1:0]      cos_kind,      // 0 = none, 1 = load, 2 = store
     output wire            idle);          // no memory op in flight (fence.i drain)
 
    localparam S_IDLE = 3'd0, S_LD = 3'd1, S_ST = 3'd2,
@@ -274,6 +279,7 @@ module ino_lsu
    always @(posedge clk) begin
       if (reset) begin
          st <= S_IDLE; mem_ren <= 1'b0; rsv_v <= 1'b0; mem_runcached <= 1'b0;
+         cos_pa <= 56'd0; cos_kind <= 2'd0;
       end else begin
          mem_ren <= 1'b0;                                  // one-cycle request pulse
          case (st)
@@ -287,6 +293,8 @@ module ino_lsu
                           t_paddr, nb, boff);
                 nc_q          <= t_uncached;
                 mem_runcached <= t_uncached;
+                cos_pa        <= t_paddr;                     // exact, pre-alignment
+                cos_kind      <= req_store ? 2'd2 : req_amo ? 2'd2 : 2'd1;
                 xword_q <= xword;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
                 pa2_q   <= (t_paddr & ~56'd7) + 56'd8;

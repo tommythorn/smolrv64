@@ -274,6 +274,7 @@ module ino_core
 
    // ---- LSU ----
    wire        lsu_done, lsu_fault, lsu_idle;
+   wire [55:0] lsu_cos_pa;  wire [1:0] lsu_cos_kind;   // cosim memory-effect capture
    wire [63:0] lsu_rd_val, lsu_fault_tval;
    wire [3:0]  lsu_fault_cause;
    wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
@@ -295,6 +296,7 @@ module ino_core
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
       .mem_wready(dmem_wready),
+      .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind),
       .done(lsu_done), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .idle(lsu_idle));
    assign dmem_idle = lsu_idle;
@@ -657,6 +659,7 @@ module ino_core
    // retire -- e.g. after an mret, or after a trap has captured it). Everything that
    // a trap changes at that same edge -- privilege above all -- must therefore be
    // REGISTERED at retire time, not read live.
+   reg [1:0]  e_mkind;   reg [55:0] e_mpa;      // cosim memory-effect capture
    import "DPI-C" function void probe_retire(
       input longint unsigned pc,
       input int     unsigned insn,
@@ -670,7 +673,12 @@ module ino_core
       input longint unsigned mtime_v,
       input longint unsigned mtimecmp_v,
       input longint unsigned mepc_v,
-      input byte    unsigned seip_v);
+      input byte    unsigned seip_v,
+      // memory effect: 0 none / 1 load / 2 store, and the EXACT physical address.
+      // The reference reports the same, so a store landing at the wrong PA -- which has
+      // no architectural result and is otherwise invisible -- aborts at the store.
+      input byte    unsigned mem_kind,
+      input longint unsigned mem_pa);
 
    // csr_file internals, tapped exactly as backend_top does
    wire        cot_fire  = u_csr.trap_v;
@@ -702,12 +710,17 @@ module ino_core
             e_rk <= 2'd0;  e_ri <= 5'd0;  e_val <= 64'd0;
             e_cause <= cot_cause;  e_tval <= cot_tval;
             e_prv <= u_csr.priv;                  // privilege BEFORE the trap
+            e_mkind <= 2'd0;  e_mpa <= 56'd0;     // a trap performed no data access
          end else if (retire) begin
             e_v <= 1'b1;  e_trap <= 1'b0;
             e_pc <= m_pc;  e_insn <= m_insn;
             e_rk <= ck_rk;  e_ri <= m_rd[4:0];  e_val <= m_wb_val;
             e_cause <= 64'd0;  e_tval <= 64'd0;
             e_prv <= u_csr.priv;
+            // Memory effect of THIS instruction, for the cosim's store/load check.
+            // m_mem_op covers loads, stores and AMOs; anything else reports "none".
+            e_mkind <= m_mem_op ? lsu_cos_kind : 2'd0;
+            e_mpa   <= lsu_cos_pa;
          end
       end
       // emit one cycle later, so this instruction's own CSR writes have landed
@@ -715,7 +728,8 @@ module ino_core
          probe_retire(e_pc, e_insn, {6'd0, e_rk},
                       (e_rk == 2'd0) ? 8'd0 : {3'd0, e_ri},
                       {6'd0, e_prv}, {7'd0, e_trap}, e_val, e_cause, e_tval,
-                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0);
+                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
+                      {6'd0, e_mkind}, {8'd0, e_mpa});
    end
 `endif
 
