@@ -43,6 +43,10 @@ module ino_core
     output wire [PCW-1:0]          imem_vaddr,
     output wire                    imem_xlate_ok,   // PA valid this cycle (not walking/faulting)
     output wire                    imem_ctx_chg,    // drop the buffer: mapping may have changed
+    // Diagnostic only (FBDIAG_BASE readout).  These are the REGISTERED copies the VA tag
+    // already maintains, so exporting them adds a fanout and nothing else.
+    output wire [63:0]             imem_satp_q,
+    output wire [1:0]              imem_priv_q,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
     // ---- platform interrupt lines + time ----
@@ -237,6 +241,8 @@ module ino_core
    assign imem_vaddr    = imem_va;
    assign imem_xlate_ok = immu_ready & ~immu_fault;
    assign imem_ctx_chg  = mmu_flush | (ipriv_q != mmu_priv) | (isatp_q != satp_fetch);
+   assign imem_satp_q   = isatp_q;
+   assign imem_priv_q   = ipriv_q;
 
    // =========================================================== stage X
    wire [63:0] rf_rs1, rf_rs2, rf_rs3;

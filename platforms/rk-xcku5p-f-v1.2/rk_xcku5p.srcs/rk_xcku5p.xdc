@@ -282,3 +282,8 @@ set_max_delay -datapath_only 6.000 \
 # an auto-derived name follows the net at the source pin and a lookup that matches nothing
 # fails SILENTLY.
 set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter {NAME =~ *probe_clk_buf/O}]]
+
+# fbdiag self-reset: probe_clk -> ui_clk 2-FF synchronizer.  These are RELATED clocks, so
+# without this exception Vivado times the crossing, and an off-integer period ratio collapses
+# the requirement -- that is what limited the design to the N x 3.000 ns ladder before.
+set_false_path -to [get_pins -hier -filter {NAME =~ *fbdiag_rst_sync_reg[0]/D}]

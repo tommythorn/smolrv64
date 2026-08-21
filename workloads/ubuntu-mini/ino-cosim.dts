@@ -1,0 +1,22 @@
+/*
+ * ubuntu-mini for the IN-ORDER VERILATOR TB (inorder/tb_ino_linux.v).
+ *
+ * Identical to simmerv-dbg.dts except that the virtio-mmio devices are removed.
+ * simmerv implements virtio; the in-order TB ties it off (tb_ino_linux.v:12 --
+ * "VIRTIO IS TIED OFF ... a disk-backed workload needs the virtio-blk subsystem
+ * from probe/tb_cosim_linux.v ported in").  With the nodes present the kernel
+ * probes 0x1000_1000, simmerv returns the "virt" magic and the DUT takes a load
+ * ACCESS fault -- a cosim MISMATCH at retire #77865083 that is a platform
+ * description error, not a core defect.
+ *
+ * This workload is initrd-rooted (root=/dev/raw), so it needs no block device.
+ *
+ * Expressed as a DELTA, not a copy: the tree already carries 39 near-identical
+ * DTS files and this is not going to be the 40th.
+ */
+/include/ "simmerv-dbg.dts"
+
+/ {
+	/delete-node/ virtio_mmio@10001000;
+	/delete-node/ virtio_mmio@10002000;
+};

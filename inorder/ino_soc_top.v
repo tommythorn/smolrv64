@@ -87,6 +87,7 @@ module ino_soc_top #(
    // byte-offset addr[11:0] + 32b write data/byte-enable positioned by addr[2]; read data
    // comes back 32b. virtio_irq raises PLIC source 1. The FPGA build leaves these
    // unconnected (virtio_rdata/irq read 0) -- the region is never touched without a DTB node.
+   output wire             fbdiag_reset_req,  // one-shot: fetch-buffer invariant fired, reset to the monitor
    output wire [12:0]      virtio_addr,   // 13-bit: bit12 selects blk(0)/net(0x1000) within the 8 KiB region
    output wire             virtio_read,
    output wire             virtio_write,
@@ -106,6 +107,7 @@ module ino_soc_top #(
    wire [PCW-1:0]      imem_addr;
    wire [PCW-1:0]      imem_va;                 // VA of the same fetch -- the buffer's tag
    wire                imem_xlate_ok, imem_ctx_chg;
+   wire [63:0]         imem_satp_q;  wire [1:0] imem_priv_q;
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;
@@ -125,6 +127,7 @@ module ino_soc_top #(
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
+      .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -145,6 +148,10 @@ module ino_soc_top #(
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
    localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio, 8 KiB: blk @+0x0000, net @+0x1000
    localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
+   // Fetch-buffer diagnostic snapshot, 256 B read-only.  Like HPM_BASE it is deliberately
+   // NOT in the DTB: the kernel must never touch it, and the only reader is the ROM monitor
+   // after a CPU reset (R1000E008 etc).  See the capture block by the fetch buffer.
+   localparam [63:0] FBDIAG_BASE  = 64'h1000_E000;
    // ONE address for every device.  Each device used to mux its own
    //     (dmem_wen & is_<dev>_w) ? dmem_waddr : dmem_raddr
    // which put a 64-bit masked compare between the LSU's combinational store address
@@ -171,7 +178,9 @@ module ino_soc_top #(
    wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
    wire is_virtio_r = (dmem_raddr & ~64'h1fff)    == VIRTIO_BASE;   // 8 KiB: blk(+0) + net(+0x1000)
    wire is_buildid_r = (dmem_raddr & ~64'hff)     == BUILDID_BASE;  // 256 B window (read-only)
-   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r | is_buildid_r;
+   wire is_fbdiag_r  = (dmem_raddr & ~64'hff)     == FBDIAG_BASE;   // 256 B window (read-only)
+   wire [63:0] fbdiag_rdata;   // driven by the capture block down by the fetch buffer
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r | is_buildid_r | is_fbdiag_r;
    wire is_clint_w = (dmem_wabase & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dmem_wabase & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_wabase & ~64'h3ff_ffff) == PLIC_BASE;
@@ -364,6 +373,7 @@ module ino_soc_top #(
                          : is_plic_r   ? plic_rdata
                          : is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg replicated into both lanes: the LSU extracts the half for the load offset, so this is correct regardless of which lane it picks (all virtio-mmio regs are 32b, accessed 32b)
                          : is_buildid_r ? {build_id_word, build_id_word}
+                         : is_fbdiag_r ? fbdiag_rdata
                          : is_hpm_r    ? hpm_rdata   : 64'd0;
 
    // Device read data is REGISTERED before it reaches the load return mux.  It used to be
@@ -593,6 +603,93 @@ module ino_soc_top #(
       if (!reset & fb_hit & imem_xlate_ok & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
          $fatal(1, "ino_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
                 fb_alv, fb_al, (fb_in1 ? fb_pa1 : fb_pa), fb_in1);
+
+   // ---- SILICON READOUT for the same invariant (FBDIAG_BASE) --------------------------
+   // The $fatal above only exists in simulation, and the failure it is meant to catch has
+   // so far only ever appeared on the board -- in systemd's generator phase, which runs
+   // BEFORE networking and before sshd, so there is no login, no perf, no ssh.  The only
+   // channels alive at that moment are the LEDs and a CPU reset into the ROM monitor, and
+   // a CPU reset leaves DRAM and every register intact except the first 32 B of DRAM.
+   // So: latch the evidence into registers the monitor can read with R<addr>.
+   //
+   // EVERYTHING HERE IS A REGISTERED OBSERVER.  It reads one-cycle-delayed copies and
+   // nothing in the design reads its output, so it cannot appear on any timing path --
+   // which is what makes it safe to carry in a bitstream that closes at +0.0245 ns.
+   //
+   // NOT reset by `reset`: reset here is probe_reset, driven by ui_cpu_reset, and the whole
+   // point is to survive the reset that gets us back to the monitor.  These clear only on
+   // power-on / reconfiguration, via their initial values.
+   reg        d_hit, d_in1, d_ok, d_ctx;
+   reg [63:0] d_al, d_pa, d_pa1, d_alv;
+   reg [63:0] d_satp, d_va; reg [1:0] d_priv;
+   always @(posedge clk) begin
+      d_hit <= fb_hit;  d_in1 <= fb_in1;  d_ok <= imem_xlate_ok;  d_ctx <= imem_ctx_chg;
+      d_al  <= fb_al;   d_pa  <= fb_pa;   d_pa1 <= fb_pa1;        d_alv <= fb_alv;
+      d_satp <= imem_satp_q;  d_priv <= imem_priv_q;  d_va <= imem_va;
+   end
+   wire fb_stale_now = d_hit & d_ok & (d_al != (d_in1 ? d_pa1 : d_pa));
+
+   // The OTHER failure class, and the reason this block reports two bits instead of one.
+   // A's stale-mapping invariant has run clean for 78M retirements of cosim; the commit
+   // also gated fb_wantv on imem_xlate_ok, which can LOSE a fill or wedge the buffer.  A
+   // dark stale bit with a lit stuck bit says the invalidation set was never the problem.
+   // 64k cycles is ~0.6 ms at 111 MHz -- orders of magnitude past any legitimate page walk
+   // or DRAM fill, so this cannot fire on a merely slow one.
+   reg [15:0] pend_age, miss_age;
+   always @(posedge clk) begin
+      if (reset | ~fb_pend | ic_rd_valid)     pend_age <= 16'd0; else pend_age <= pend_age + 16'd1;
+      if (reset | ~fb_miss | imem_xlate_ok)   miss_age <= 16'd0; else miss_age <= miss_age + 16'd1;
+   end
+   wire fb_stuck_now = (&pend_age) | (&miss_age);
+
+   reg        fbd_stale = 1'b0, fbd_stuck = 1'b0;   // sticky, power-on clear only
+   reg [63:0] fbd_va = 64'd0, fbd_panow = 64'd0, fbd_pacached = 64'd0;
+   reg [63:0] fbd_satp = 64'd0, fbd_pc = 64'd0, fbd_cyc = 64'd0;
+   reg [63:0] fbd_flags = 64'd0;
+   reg [63:0] fbd_freecyc = 64'd0;
+   always @(posedge clk) begin
+      fbd_freecyc <= fbd_freecyc + 64'd1;           // free-running, survives reset too
+      if (fb_stuck_now) fbd_stuck <= 1'b1;
+      if (fb_stale_now & ~fbd_stale) begin          // FIRST occurrence only -- later ones
+         fbd_stale    <= 1'b1;                      // are consequences, not the cause
+         fbd_va       <= d_alv;
+         fbd_panow    <= d_al;
+         fbd_pacached <= d_in1 ? d_pa1 : d_pa;
+         fbd_satp     <= d_satp;
+         fbd_pc       <= d_va;
+         fbd_cyc      <= fbd_freecyc;
+         fbd_flags    <= {56'd0, d_priv, d_ctx, fb_pend, fb_v1, fb_v0, d_in1, d_ok};
+      end
+   end
+   // SELF-RESET.  key[1] is the only soft-reset today and it is a physical button; a VIO
+   // would need a new IP core and a JTAG session.  Instead the design resets ITSELF into the
+   // monitor the moment the invariant fires.  fbd_stale is set-once and clears only on
+   // power-on, so this rising edge can happen at most once in the life of a configuration --
+   // a reset loop is impossible by construction, not by a guard that could be wrong.
+   // The delay lets the console UART drain so the last kernel output survives the reset.
+   reg        fbd_rst_arm = 1'b0, fbd_rst_done = 1'b0;
+   reg [23:0] fbd_rst_dly = 24'd0;
+   always @(posedge clk) begin
+      if ((fb_stale_now | fb_stuck_now) & ~fbd_rst_done & ~fbd_rst_arm) fbd_rst_arm <= 1'b1;
+      if (fbd_rst_arm) fbd_rst_dly <= fbd_rst_dly + 24'd1;
+      if (fbd_rst_arm & (&fbd_rst_dly)) begin fbd_rst_arm <= 1'b0; fbd_rst_done <= 1'b1; end
+   end
+   // A LEVEL, not a pulse, and a long one: asserted for the last 2^20 cycles of the window
+   // (~9 ms at 111 MHz).  It crosses into ui_clk through a 2-FF synchronizer, and a one-cycle
+   // pulse would be a coin flip there.  fbd_rst_done then latches it off forever.
+   assign fbdiag_reset_req = fbd_rst_arm & (&fbd_rst_dly[23:20]);
+
+   // "SMOLFBD\0" -- lets the monitor tell a decoded block from a dead bus returning zeros.
+   assign fbdiag_rdata      = (dmem_raddr[7:3] == 5'd0) ? 64'h534d4f4c46424400
+                            : (dmem_raddr[7:3] == 5'd1) ? {62'd0, fbd_stuck, fbd_stale}
+                            : (dmem_raddr[7:3] == 5'd2) ? fbd_va
+                            : (dmem_raddr[7:3] == 5'd3) ? fbd_panow
+                            : (dmem_raddr[7:3] == 5'd4) ? fbd_pacached
+                            : (dmem_raddr[7:3] == 5'd5) ? fbd_satp
+                            : (dmem_raddr[7:3] == 5'd6) ? fbd_pc
+                            : (dmem_raddr[7:3] == 5'd7) ? fbd_flags
+                            : (dmem_raddr[7:3] == 5'd8) ? fbd_cyc
+                            : (dmem_raddr[7:3] == 5'd9) ? fbd_freecyc : 64'd0;
 
    // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
    wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);

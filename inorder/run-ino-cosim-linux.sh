@@ -34,9 +34,17 @@ MEM_LG2=${MEM_LG2:-29}
 CYC=${CYC:-0}
 BIN=$(pwd)/obj_dir_ino_clinux/tb_ino_clinux
 
-if [ ! -f "$SIMMERV_LIB" ]; then
-   echo "building simmerv cosim lib ..."
-   (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
+# ALWAYS ask cargo -- do NOT test for the file's existence.  A stale libsimmerv_cosim.a
+# silently relinks against old REF behaviour, and that has now cost two hunts: a stale
+# probe_cosim.o gave REF and DUT different RAM sizes (91d75614), and a stale .a hid the
+# cbo.zero capture fix and reproduced a "MISMATCH" that was already fixed.  Cargo is
+# incremental; this costs ~2 s when up to date.
+echo "building simmerv cosim lib ..."
+(cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
+# Relink if the archive is newer than the binary -- verilator's make does not track it.
+if [ -f "$BIN" ] && [ "$SIMMERV_LIB" -nt "$BIN" ]; then
+   echo "simmerv lib is newer than $BIN -- forcing a rebuild"
+   rm -rf obj_dir_ino_clinux
 fi
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
