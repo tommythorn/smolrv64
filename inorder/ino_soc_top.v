@@ -104,8 +104,6 @@ module ino_soc_top #(
 
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
-   wire [PCW-1:0]      imem_va;                 // VA of the same fetch -- the buffer's tag
-   wire                imem_xlate_ok, imem_ctx_chg;
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;
@@ -124,7 +122,6 @@ module ino_soc_top #(
    ino_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
-      .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -544,11 +541,9 @@ module ino_soc_top #(
    localparam integer CHA  = $clog2(HW*2);      // chunk-align shift
    localparam integer PGB  = 12;                // 4 KiB page
 
-   reg  [63:0]      fb_pa;                      // PA of chunk0 (chunk-aligned) -- FILL address
-   reg  [63:0]      fb_va;                      // VA of chunk0 (chunk-aligned) -- HIT tag
+   reg  [63:0]      fb_pa;                      // PA of chunk0 (chunk-aligned)
    // chunk1 is only fetchable if it shares chunk0's page (see PAGES above)
    wire [63:0]      fb_pa1;
-   wire [63:0]      fb_va1;
    wire             fb_samepg;
    reg              fb_v0, fb_v1;
    reg  [HW*16-1:0] fb_w0, fb_w1;
@@ -556,7 +551,6 @@ module ino_soc_top #(
 
    wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
    assign fb_pa1    = fb_pa + CHB;
-   assign fb_va1    = fb_va + CHB;
    assign fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
 
    // Hit test is an EQUALITY on chunk-aligned addresses, not a subtract-and-compare on byte
@@ -565,41 +559,18 @@ module ino_soc_top #(
    // fetch path and cost 0.79 ns of WNS (+0.061 -> -0.728 at 111 MHz). Equality against a
    // registered address is a comparator tree with no carry chain, and the offset within the
    // chunk is then just the PC's low bits -- free.
-   wire [63:0]      fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};  // chunk containing the PC (PA)
+   wire [63:0]      fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};  // chunk containing the PC
    wire [CHA-1:0]   fb_lo  = imem_addr[CHA-1:0];                // byte offset within that chunk
-   // THE HIT TEST IS VIRTUAL.  It used to compare fb_al (a PA) against fb_pa, which put the
-   // whole iMMU -- req_match's 64-bit compare plus this PA compute, six CARRY8 stages -- in
-   // front of the buffer hit, the I$ data mux, the aligner, the next-PC and the predictor
-   // read, all in one cycle.  Measured 2026-08-20 at 166.67 MHz: that head was ~2.9 ns of a
-   // 6.06 ns path.  The VA is available a translation earlier and is just as good a tag,
-   // because fb_samepg keeps BOTH chunks inside one 4 KiB page and therefore inside one
-   // translation (see PAGES above) -- so the pair is valid exactly as long as that
-   // translation is, which is what imem_ctx_chg tracks.
-   wire [63:0]      fb_alv = {imem_va[63:CHA], {CHA{1'b0}}};    // chunk containing the PC (VA)
-   wire             fb_in0 = fb_v0 & (fb_alv == fb_va);
-   wire             fb_in1 = fb_v1 & (fb_alv == fb_va1);
+   wire             fb_in0 = fb_v0 & (fb_al == fb_pa);
+   wire             fb_in1 = fb_v1 & (fb_al == fb_pa1);
    wire             fb_hit = fb_in0 | fb_in1;
    wire             fb_miss = ~fb_hit;
    // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
    wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
 
-   // THE INVARIANT THE VA TAG RESTS ON, checked every cycle rather than argued once:
-   // a virtual hit must name the same bytes the iMMU vouches for RIGHT NOW.  If a mapping
-   // changed without imem_ctx_chg firing, the tag still matches while the PA has moved --
-   // this is the difference between "the invalidation set is complete" and "we hope it is",
-   // and it is the only thing standing between a missed invalidation and silently executing
-   // instructions from the previous address space.
-   always @(posedge clk)
-      if (!reset & fb_hit & imem_xlate_ok & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
-         $fatal(1, "ino_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
-                fb_alv, fb_al, (fb_in1 ? fb_pa1 : fb_pa), fb_in1);
-
    // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
    wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);
-   // & imem_xlate_ok: NEVER fill from an untranslated PA.  Mid-walk the iMMU presents a
-   // stale leaf; under the old PA tag those wrong bytes carried the wrong PA and simply
-   // missed next cycle, but under a VA tag they would carry the RIGHT VA and hit.
-   wire        fb_wantv = (fb_miss | ~fb_v0 | (fb_v0 & ~fb_v1 & fb_samepg)) & imem_xlate_ok;
+   wire        fb_wantv = fb_miss | ~fb_v0 | (fb_v0 & ~fb_v1 & fb_samepg);
 
    // NOT gated on fi_stall: it is declared further down, and the adapter this replaces did not
    // gate on it either -- ic_inv_req clears the buffer, and imem_avail below holds fetch off.
@@ -613,22 +584,18 @@ module ino_soc_top #(
    // assigns the shift first and then lets a matching fill overwrite it (last nonblocking
    // assignment wins), so a response arriving exactly as the buffer moves is not lost.
    always @(posedge clk) if (reset) begin
-         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0; fb_va <= 64'd0;
+         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0;
       end else begin
          if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; end
          if (ic_rd_valid) fb_pend <= 1'b0;
 
-         // imem_ctx_chg: satp write, sfence.vma, or a privilege change.  The tag is a VA, so
-         // the bytes are only valid while the translation that produced them is.  Ordinary
-         // redirects are deliberately NOT here -- mispredicts are ~11.5% of instructions and
-         // invalidating on those would destroy the hit rate the buffer exists for.
-         if (ic_inv_req | imem_ctx_chg) begin                   // fence.i / remap: drop everything
+         if (ic_inv_req) begin                                  // fence.i: drop everything
             fb_v0 <= 1'b0; fb_v1 <= 1'b0;
          end else if (fb_miss) begin                            // redirect / page cross: realign
-            fb_pa <= fb_al; fb_va <= fb_alv; fb_v0 <= 1'b0; fb_v1 <= 1'b0;
+            fb_pa <= fb_al; fb_v0 <= 1'b0; fb_v1 <= 1'b0;
             if (ic_rd_valid & (ic_rd_resp_addr == fb_al)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
          end else if (fb_in1) begin                             // PC moved on: chunk1 -> chunk0
-            fb_pa <= fb_pa1; fb_va <= fb_va1;
+            fb_pa <= fb_pa1;
             fb_w0 <= fb_w1;  fb_v0 <= fb_v1;  fb_v1 <= 1'b0;
             if (ic_rd_valid & (ic_rd_resp_addr == fb_pa1)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
          end else begin                                         // steady state: just fill
