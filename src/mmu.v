@@ -285,7 +285,15 @@ module mmu
          // context-staleness tracking (registered; see req_match). Runs every cycle
          // except a walk start (whose fresh _q latch + poison clear wins), including
          // the w_done presentation cycle after st has returned to IDLE.
-         if (!(st==IDLE && start_walk) && ctx_stale) ctx_poison <= 1'b1;
+         // ctx_stale OR flush.  An sfence.vma changes NONE of priv/sum/mxr/satp, so
+         // ctx_stale does not see it -- and `flush` above only clears the TLB, it does not
+         // stop a walk already in flight.  That walk then writes the PTE it read BEFORE the
+         // sfence straight back into the just-flushed TLB, leaving it holding exactly the
+         // mapping the sfence was issued to destroy.  Found 2026-08-20 via the GB5 cosim:
+         // a vmalloc page served from a stale TLB hit (tlb_hit=1, w_done=0) that simmerv
+         // access-faulted, retire #6979942.  Same class as every cache-invalidation bug in
+         // this project: the cached copy outlived the event that was supposed to kill it.
+         if (!(st==IDLE && start_walk) && (ctx_stale | flush)) ctx_poison <= 1'b1;
       end
    end
 endmodule
