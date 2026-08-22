@@ -68,7 +68,7 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
     // STALL-ATTRIBUTION taps (see ino_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
-    input  wire [19:0] hpm_ev,
+    input  wire [21:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -192,7 +192,9 @@ module csr_file
                       HPMEV_FE_QUE = 16'h0314,   // ...had an instruction; F/X queue empty
                       HPMEV_RED_BR = 16'h0006,   // Redirect: conditional branch mispredict
                       HPMEV_RED_JLR= 16'h0007,   // Redirect: indirect jump (jalr) target
-                      HPMEV_RED_TRP= 16'h0008;   // Redirect: trap / exception / system op
+                      HPMEV_RED_TRP= 16'h0008,   // Redirect: trap / exception / system op
+                      HPMEV_FB_HIT = 16'h0315,   // Fetch buffer served the PC (hit)
+                      HPMEV_FB_RHIT= 16'h0316;   // ...on the first fetch after a redirect
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    function [5:0] hpm_inc;
       input [15:0] ev;
@@ -219,6 +221,8 @@ module csr_file
         HPMEV_RED_TRP: hpm_inc = {5'd0, hpm_ev[17]};
         HPMEV_FE_ALN:  hpm_inc = {5'd0, hpm_ev[18]};
         HPMEV_FE_QUE:  hpm_inc = {5'd0, hpm_ev[19]};
+        HPMEV_FB_HIT:  hpm_inc = {5'd0, hpm_ev[20]};
+        HPMEV_FB_RHIT: hpm_inc = {5'd0, hpm_ev[21]};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

@@ -108,5 +108,15 @@
     "EventName": "RED_TRP",
     "EventCode": "0x0008",
     "BriefDescription": "Redirect: trap / exception / system op"
+  },
+  {
+    "EventName": "FB_HIT",
+    "EventCode": "0x0315",
+    "BriefDescription": "Fetch buffer served the PC (hit)"
+  },
+  {
+    "EventName": "FB_RHIT",
+    "EventCode": "0x0316",
+    "BriefDescription": "Fetch buffer served the PC (hit) on the first fetch after a redirect"
   }
 ]

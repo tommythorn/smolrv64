@@ -117,7 +117,7 @@ module exec_bundle
     // checkpoint retiring >=8 would have added (count mod 8) to minstret. It drops 8, it
     // does not saturate, and cosim takes DUT values for HPM counters so nothing could see it.
     input  wire [5:0]              retire_cnt,
-    input  wire [19:0]             hpm_ev,           // Zihpm event pulses -> csr_file. 20 wide to match
+    input  wire [21:0]             hpm_ev,           // Zihpm event pulses -> csr_file. 20 wide to match
                                                      // csr_file's port; the OoO core drives only [6:0].
     output wire                    irq_v,            // an interrupt is deliverable now
     output wire [3:0]              irq_cause,

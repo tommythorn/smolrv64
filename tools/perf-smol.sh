@@ -9,6 +9,7 @@
 #   ./perf-smol.sh cpi  ./prog      CPI stack: every stall cause + frontend breakdown  (10)
 #   ./perf-smol.sh mem  ./prog      D$/I$ traffic and loads/stores                     ( 6)
 #   ./perf-smol.sh br   ./prog      redirect causes                                    ( 4)
+#   ./perf-smol.sh fb   ./prog      fetch-buffer payoff + frontend bubbles              ( 7)
 #   ./perf-smol.sh all  ./prog      everything -- MULTIPLEXED, estimates only          (18)
 #
 # Pipe the output through tools/perf-cpi-stack.py.
@@ -22,10 +23,14 @@ case "$SET" in
   cpi) EV=r0300,r0301,r0302,r0303,r0304,r0311,r0312,r0313,r0314 ;;
   mem) EV=r0003,r0004,r0100,r0102,r0110,r0112 ;;
   br)  EV=r0005,r0006,r0007,r0008 ;;
-  all) EV=r0003,r0004,r0005,r0006,r0007,r0008,r0100,r0102,r0110,r0112,r0300,r0301,r0302,r0303,r0304,r0310,r0311,r0312,r0313,r0314
+  # Does the fetch-buffer address comparison pay?  FB_RHIT counts hits in the redirect
+  # shadow -- exactly what flush-on-redirect would turn into misses.  Paired with FE_* so the
+  # cost side (queue-empty, no-bytes) is measured in the same pass.
+  fb)  EV=r0005,r0315,r0316,r0311,r0312,r0313,r0314 ;;
+  all) EV=r0003,r0004,r0005,r0006,r0007,r0008,r0100,r0102,r0110,r0112,r0300,r0301,r0302,r0303,r0304,r0310,r0311,r0312,r0313,r0314,r0315,r0316
        echo "warning: 20 raw events > 13 counters -- perf will multiplex and every count is" >&2
        echo "         a scaled ESTIMATE.  The CPI-stack residual will not close.  Prefer 'cpi'." >&2 ;;
-  *)   echo "usage: $0 {cpi|mem|br|all} COMMAND..." >&2; exit 2 ;;
+  *)   echo "usage: $0 {cpi|mem|br|fb|all} COMMAND..." >&2; exit 2 ;;
 esac
 
 # No sudo if the admin lowered perf_event_paranoid (see tools/perf-smol-setup.sh); fall back

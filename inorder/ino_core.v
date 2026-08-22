@@ -47,6 +47,11 @@ module ino_core
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
     output wire [1:0]              imem_priv_q,
+    // Fetch-buffer events (computed in ino_soc_top, where the buffer lives) and the redirect
+    // it needs to qualify them.  Same route as hpm_dc_access/hpm_ic_access below.
+    output wire                    fe_redirect,
+    input  wire                    hpm_fb_hit,
+    input  wire                    hpm_fb_rhit,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
     // ---- platform interrupt lines + time ----
@@ -254,6 +259,7 @@ module ino_core
    assign imem_vaddr    = imem_va;
    assign imem_xlate_ok = immu_ready & ~immu_fault;
    assign imem_ctx_chg  = mmu_flush | (ipriv_q != mmu_priv) | (isatp_q != satp_fetch);
+   assign fe_redirect   = redirect;
    assign imem_satp_q   = isatp_q;
    assign imem_priv_q   = ipriv_q;
 
@@ -524,7 +530,8 @@ module ino_core
    wire red_br    = redirect & ~csr_red & m_is_branch;
    wire red_jalr  = redirect & ~csr_red & ~m_is_branch & m_is_jalr;
 
-   wire [19:0] hpm_ev = {fe_que, fe_aln, red_trap, red_jalr, red_br,
+   wire [21:0] hpm_ev = {hpm_fb_rhit, hpm_fb_hit,
+                         fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
                          redirect, m_valid & m_is_store & lsu_done, m_valid & m_is_mem
@@ -539,9 +546,9 @@ module ino_core
    // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
    // built, so this cone did not exist.
    // minstret is NOT included: retire_cnt stays combinational because it is architectural.
-   reg [19:0] hpm_ev_q;
-   initial hpm_ev_q = 20'd0;
-   always @(posedge clk) hpm_ev_q <= reset ? 20'd0 : hpm_ev;
+   reg [21:0] hpm_ev_q;
+   initial hpm_ev_q = 22'd0;
+   always @(posedge clk) hpm_ev_q <= reset ? 22'd0 : hpm_ev;
 
    csr_file u_csr
      (.clk(clk), .reset(reset),

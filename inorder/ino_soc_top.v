@@ -108,6 +108,7 @@ module ino_soc_top #(
    wire [PCW-1:0]      imem_va;                 // VA of the same fetch -- the buffer's tag
    wire                imem_xlate_ok, imem_ctx_chg;
    wire [63:0]         imem_satp_q;  wire [1:0] imem_priv_q;
+   wire                fe_redirect;
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire [63:0]         dmem_raddr;
@@ -128,6 +129,7 @@ module ino_soc_top #(
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
+      .fe_redirect(fe_redirect), .hpm_fb_hit(fb_hit), .hpm_fb_rhit(fb_rhit),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -590,6 +592,22 @@ module ino_soc_top #(
    wire             fb_in1 = fb_v1 & (fb_alv == fb_va1);
    wire             fb_hit = fb_in0 | fb_in1;
    wire             fb_miss = ~fb_hit;
+
+   // DOES THE ADDRESS COMPARISON PAY?  The buffer is deliberately NOT flushed on redirect, and
+   // that retention is the ONLY reason a tag is needed at all -- a buffer that only ever holds
+   // fall-through bytes can be indexed by a pointer.  The retention earns something exactly
+   // when a redirect's target lands in the bytes already held, i.e. when the first fetch after
+   // a redirect HITS.  Nothing counted that, so the tag's value has never been measured; the
+   // justification in the RTL was "mispredicts are ~11.5% of instructions", which measurement
+   // later put at 0.17-0.34%.
+   //   FB_HIT  0x0315  buffer hits (denominator: how often the buffer serves at all)
+   //   FB_RHIT 0x0316  buffer hits in the redirect shadow == what flush-on-redirect would lose
+   // FB_RHIT near zero means the tag earns nothing and a stream buffer is free.  A large
+   // FB_RHIT means the buffer is already acting as a small loop buffer, and making it bigger
+   // is the interesting direction rather than removing it.
+   reg              fb_red_q;
+   always @(posedge clk) fb_red_q <= reset ? 1'b0 : fe_redirect;
+   wire             fb_rhit = fb_hit & fb_red_q;
    // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
    wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
 
