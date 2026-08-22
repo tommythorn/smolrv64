@@ -28,7 +28,7 @@ CATALOG = os.path.join(HERE, "..", "docs", "smolrv64-perf-events.json")
 # breakdown underneath it and never added alongside it.
 BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
            ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"), ("ST_SER", "serializing op")]
-FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "I$ had no window")]
+FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all")]
 
 def load_names():
     with open(CATALOG) as f:
@@ -102,13 +102,20 @@ def main():
             100.0*g(code)/g(acc), acc[:2])
         print("    %-30s %10.3f%s" % (label, per_k(g(code)), rate))
 
-    # The number that usually explains a bad CPI here: stall per ACCESS, not per miss.
+    # Split the LSU stall into what misses can possibly explain vs what is left.  This is
+    # the number that decides whether to attack the miss path (MSHRs, non-blocking) or the
+    # HIT path (load-to-use latency) -- and on this core it has consistently been the hit
+    # path, which no amount of miss-handling work would touch.
     if g("ST_MEM") and g("DCACC"):
-        print("\n  LSU stall per D$ access %.2f cycles" % (g("ST_MEM")/g("DCACC")))
-        if g("DCMISS"):
-            print("  LSU stall per D$ MISS   %.0f cycles  -- if this is implausibly large the"
-                  "\n                                     stall is hit latency, not misses"
-                  % (g("ST_MEM")/g("DCMISS")))
+        acc, miss, st = g("DCACC"), g("DCMISS"), g("ST_MEM")
+        print("\n  LSU stall %.3f CPI -- misses or hit latency?" % (st/ins))
+        print("    %-30s %10.2f cycles" % ("stall per D$ ACCESS", st/acc))
+        for pen in (30, 60, 100):
+            frm = miss * pen
+            print("    %-30s %9.1f%% of the LSU stall (%.3f CPI)"
+                  % ("if a miss costs %d cycles" % pen, 100.0*frm/st, frm/ins))
+        print("    -> whatever is left is HIT latency: every access pays it, misses are %.3f%%"
+              % (100.0*miss/acc))
     for code, label in (("LOAD", "loads"), ("STORE", "stores")):
         if g(code):
             print("  %-8s %12d  (%.1f%% of instructions)" % (label, g(code), 100.0*g(code)/ins))
