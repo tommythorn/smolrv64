@@ -22,7 +22,14 @@ Usage:
 import json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CATALOG = os.path.join(HERE, "..", "docs", "smolrv64-perf-events.json")
+# This script is meant to be COPIED to the board, where there is no repo and no ../docs.
+# Search, in order: an explicit override, next to the script (copy the .json along with
+# it), the repo layout, and the cwd.  Never fall back to a built-in table -- a silently
+# stale event map is exactly what this file exists to prevent.
+CANDIDATES = [os.environ.get("SMOLRV_PERF_EVENTS"),
+              os.path.join(HERE, "smolrv64-perf-events.json"),
+              os.path.join(HERE, "..", "docs", "smolrv64-perf-events.json"),
+              os.path.join(os.getcwd(), "smolrv64-perf-events.json")]
 
 # FE_MMU and FE_IC are SUBSETS of FE_BUB ("X idle ... because"), so they are reported as a
 # breakdown underneath it and never added alongside it.
@@ -34,7 +41,12 @@ REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)
              ("RED_TRP", "trap / system op")]
 
 def load_names():
-    with open(CATALOG) as f:
+    path = next((p for p in CANDIDATES if p and os.path.exists(p)), None)
+    if path is None:
+        sys.exit("error: smolrv64-perf-events.json not found. Copy it next to this script,\n"
+                 "       or set SMOLRV_PERF_EVENTS=/path/to/smolrv64-perf-events.json.\n"
+                 "       Looked in: %s" % ", ".join(p for p in CANDIDATES if p))
+    with open(path) as f:
         cat = json.load(f)
     # "0x0300" -> "r0300", matching how perf echoes a raw event back
     return {"r%04x" % int(e["EventCode"], 16): e["EventName"] for e in cat}
