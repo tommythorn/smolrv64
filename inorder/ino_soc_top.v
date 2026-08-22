@@ -129,7 +129,7 @@ module ino_soc_top #(
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
-      .fe_redirect(fe_redirect), .hpm_fb_hit(fb_hit), .hpm_fb_rhit(fb_rhit),
+      .fe_redirect(fe_redirect), .hpm_fb_hit(fb_hit_q), .hpm_fb_rhit(fb_rhit_q),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -605,9 +605,17 @@ module ino_soc_top #(
    // FB_RHIT near zero means the tag earns nothing and a stream buffer is free.  A large
    // FB_RHIT means the buffer is already acting as a small loop buffer, and making it bigger
    // is the interesting direction rather than removing it.
-   reg              fb_red_q;
-   always @(posedge clk) fb_red_q <= reset ? 1'b0 : fe_redirect;
-   wire             fb_rhit = fb_hit & fb_red_q;
+   // REGISTERED before leaving this module.  fb_hit is a late combinational signal in the
+   // fetch path and fe_redirect crosses a hierarchy boundary; driving ino_core's hpm inputs
+   // from them directly adds load and a new endpoint to a cone that has ~zero slack.  A
+   // counter cannot observe which cycle an event landed on, which is the same argument that
+   // made hpm_ev_q free -- so pay the delay here instead.
+   reg              fb_red_q, fb_hit_q, fb_rhit_q;
+   always @(posedge clk) begin
+      fb_red_q  <= reset ? 1'b0 : fe_redirect;
+      fb_hit_q  <= reset ? 1'b0 : fb_hit;
+      fb_rhit_q <= reset ? 1'b0 : (fb_hit & fb_red_q);
+   end
    // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
    wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
 
