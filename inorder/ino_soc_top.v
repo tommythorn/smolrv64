@@ -560,7 +560,7 @@ module ino_soc_top #(
    wire [63:0]      fb_pa1;
    wire [63:0]      fb_va1;
    wire             fb_samepg;
-   reg              fb_v0, fb_v1;
+   reg              fb_v0, fb_v1, fb_pois;
    reg  [HW*16-1:0] fb_w0, fb_w1;
    reg              fb_pend;  reg [63:0] fb_reqpa;
 
@@ -704,6 +704,10 @@ module ino_soc_top #(
                             : (dmem_raddr[7:3] == 5'd10) ? fbd_ctxhits : 64'd0;
 
    // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
+   // A fill may only be stored if it belongs to the CURRENT translation: not poisoned by an
+   // invalidation while it was outstanding, and the address it is compared against must be a
+   // real translation rather than a mid-walk stale leaf.
+   wire        fb_fill_ok = ic_rd_valid & ~fb_pois & imem_xlate_ok;
    wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);
    // & imem_xlate_ok: NEVER fill from an untranslated PA.  Mid-walk the iMMU presents a
    // stale leaf; under the old PA tag those wrong bytes carried the wrong PA and simply
@@ -722,10 +726,21 @@ module ino_soc_top #(
    // assigns the shift first and then lets a matching fill overwrite it (last nonblocking
    // assignment wins), so a response arriving exactly as the buffer moves is not lost.
    always @(posedge clk) if (reset) begin
-         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0; fb_va <= 64'd0;
+         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0; fb_va <= 64'd0; fb_pois <= 1'b0;
       end else begin
-         if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; end
-         if (ic_rd_valid) fb_pend <= 1'b0;
+         if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; fb_pois <= 1'b0; end
+         if (ic_rd_valid) begin fb_pend <= 1'b0; fb_pois <= 1'b0; end
+
+         // POISON an in-flight fill whose translation context changed while it was out.
+         // ic_inv_req/imem_ctx_chg clear v0/v1 but NOT fb_pend, so the response for the OLD
+         // mapping is still coming.  Meanwhile the iMMU walks for the new mapping and
+         // mid-walk presents a STALE LEAF as t_paddr -- so fb_al reads the OLD pa and the
+         // acceptance test below matches it, storing old bytes under the new VA tag.
+         // Observed on silicon: va=3fa3d713a0 held pa=801b63a0 while the iMMU said 8215f3a0,
+         // priv=U, ctx_chg=0, v0=1, pend=1 -- systemd SEGV at 28.7 s.
+         // A gated the REQUEST on imem_xlate_ok (see fb_wantv) and named this exact stale-leaf
+         // hazard, but never gated the ACCEPTANCE.  This is the other half.
+         if ((ic_inv_req | imem_ctx_chg) & fb_pend) fb_pois <= 1'b1;
 
          // imem_ctx_chg: satp write, sfence.vma, or a privilege change.  The tag is a VA, so
          // the bytes are only valid while the translation that produced them is.  Ordinary
@@ -735,14 +750,14 @@ module ino_soc_top #(
             fb_v0 <= 1'b0; fb_v1 <= 1'b0;
          end else if (fb_miss) begin                            // redirect / page cross: realign
             fb_pa <= fb_al; fb_va <= fb_alv; fb_v0 <= 1'b0; fb_v1 <= 1'b0;
-            if (ic_rd_valid & (ic_rd_resp_addr == fb_al)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+            if (fb_fill_ok & (ic_rd_resp_addr == fb_al))  begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
          end else if (fb_in1) begin                             // PC moved on: chunk1 -> chunk0
             fb_pa <= fb_pa1; fb_va <= fb_va1;
             fb_w0 <= fb_w1;  fb_v0 <= fb_v1;  fb_v1 <= 1'b0;
-            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa1)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa1)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
          end else begin                                         // steady state: just fill
-            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa )) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
-            if (ic_rd_valid & (ic_rd_resp_addr == fb_pa1)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
+            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa )) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
+            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa1)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
          end
       end
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
