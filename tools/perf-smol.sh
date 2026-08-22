@@ -13,6 +13,8 @@
 #   ./perf-smol.sh all  ./prog      everything -- MULTIPLEXED, estimates only          (18)
 #
 # Pipe the output through tools/perf-cpi-stack.py.
+#
+# PERF_TIMEOUT_MS=10800000 ./perf-smol.sh cpi ./long-workload   # 3 h slice, counters printed
 set -u
 SET=${1:-cpi}; shift || true
 
@@ -37,4 +39,10 @@ esac
 # to sudo only when the kernel actually refuses.
 SUDO=""
 [ "$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 2)" -gt 1 ] && SUDO="sudo"
-exec $SUDO perf stat -e "cycles,instructions,$EV" "$@"
+
+# PERF_TIMEOUT_MS: stop after N ms and PRINT.  Use perf's own --timeout, never an external
+# `timeout`: SIGTERM kills perf before it emits the counter block, and SIGINT to perf is
+# ignored while it waits on the workload -- a three-hour Geekbench slice was lost to exactly
+# that, and the log looks merely truncated rather than failed.  The only other reliable
+# lever is killing the WORKLOAD, which makes perf print normally.
+exec $SUDO perf stat ${PERF_TIMEOUT_MS:+--timeout "$PERF_TIMEOUT_MS"} -e "cycles,instructions,$EV" "$@"
