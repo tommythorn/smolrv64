@@ -28,7 +28,10 @@ CATALOG = os.path.join(HERE, "..", "docs", "smolrv64-perf-events.json")
 # breakdown underneath it and never added alongside it.
 BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
            ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"), ("ST_SER", "serializing op")]
-FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all")]
+FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all"),
+           ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, F/X queue empty")]
+REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)"),
+             ("RED_TRP", "trap / system op")]
 
 def load_names():
     with open(CATALOG) as f:
@@ -64,6 +67,12 @@ def main():
     v, unknown = parse(text, names)
     g = lambda k: (v.get(k) or 0)
 
+    # FE_BUB is the sum of the FE_* causes.  perf-smol.sh's "cpi" set omits it to stay
+    # inside 13 counters, so reconstruct it rather than reporting a hole.
+    if v.get("FE_BUB") is None and any(v.get(k) is not None for k, _ in FE_SUB):
+        v["FE_BUB"] = sum(v.get(k) or 0 for k, _ in FE_SUB)
+        v["_FE_BUB_DERIVED"] = True
+
     cyc, ins = g("CYCLES"), g("INSTRET")
     if not cyc or not ins:
         sys.exit("error: need both cycles and instructions; got %s" % sorted(v))
@@ -80,12 +89,16 @@ def main():
         if v.get(k) is not None and g(k):
             print("    %-30s %10.3f  %5.1f%%" % ("stall: " + label, g(k)/ins, 100.0*g(k)/cyc))
     if fe_bub:
-        print("    %-30s %10.3f  %5.1f%%" % ("frontend bubble", fe_bub/ins, 100.0*fe_bub/cyc))
+        tag = " (derived)" if v.get("_FE_BUB_DERIVED") else ""
+        print("    %-30s %10.3f  %5.1f%%%s" % ("frontend bubble", fe_bub/ins, 100.0*fe_bub/cyc, tag))
         other = fe_bub - sum(g(k) for k, _ in FE_SUB)
         for k, label in FE_SUB:
             if g(k):
                 print("      %-28s %10.3f  %5.1f%%" % ("- " + label, g(k)/ins, 100.0*g(k)/cyc))
-        print("      %-28s %10.3f  %5.1f%%" % ("- other: had bytes, X idle", other/ins, 100.0*other/cyc))
+        # Only a real hole now: FE_ALN/FE_QUE close what used to be an unexplained 21-31%.
+        if abs(other) > 0.0005 * cyc:
+            print("      %-28s %10.3f  %5.1f%%   <-- unattributed"
+                  % ("- other", other/ins, 100.0*other/cyc))
 
     total = issue/ins + stalls/ins
     resid = cpi - total
@@ -93,6 +106,14 @@ def main():
     print("    %-30s %10.3f%s" % ("residual vs measured CPI", resid, flag))
 
     print("\n  MPKI (per 1000 instructions)")
+    if any(v.get(k) is not None for k, _ in REDIR_SUB):
+        tot = g("REDIR")
+        for k, label in REDIR_SUB:
+            if v.get(k) is not None:
+                print("    %-30s %10.3f" % ("redirect: " + label, per_k(g(k))))
+        if tot:
+            rest = tot - sum(g(k) for k, _ in REDIR_SUB)
+            print("    %-30s %10.3f   (fence.i / direct jal)" % ("redirect: other", per_k(rest)))
     for code, label, acc in (("REDIR", "pipeline redirects", None),
                              ("DCMISS", "D$ misses", "DCACC"),
                              ("ICMISS", "I$ misses", "ICACC")):

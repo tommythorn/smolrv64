@@ -800,7 +800,12 @@ module backend_top
    // Zihpm event pulses -> csr_file (mhpmcounterN counts its mhpmeventN-selected one):
    // [0]load [1]store (LSU completions) [2]redirect (pipe flush/branch mispredict)
    // [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss (D$/I$ line lookups, from soc_top).
-   wire [6:0] hpm_ev = {hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
+   // Width MUST match csr_file's port: no width mismatch across a hierarchy boundary
+   // (docs/rtl-rules.md).  The OoO core implements only the first seven; the stall-
+   // attribution and redirect-cause events [19:7] are in-order-core-only and read as a
+   // hard zero here rather than as an unconnected upper slice.
+   wire [19:0] hpm_ev = {13'd0,
+                        hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
                         roll_v, lsu_st_done, lsu_ld_done};
 
    exec_bundle #(.SHARDS(IW), .SBITS(SBITS), .PBITS(PBITS), .NPHYS(NPHYS), .POOL(POOL),

@@ -68,7 +68,7 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
     // STALL-ATTRIBUTION taps (see ino_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
-    input  wire [14:0] hpm_ev,
+    input  wire [19:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -187,7 +187,12 @@ module csr_file
                       HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off
                       HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
-                      HPMEV_FE_IC  = 16'h0312;   // ...because the I$ had no window
+                      HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
+                      HPMEV_FE_ALN = 16'h0313,   // ...had bytes but no complete instruction
+                      HPMEV_FE_QUE = 16'h0314,   // ...had an instruction; F/X queue empty
+                      HPMEV_RED_BR = 16'h0006,   // Redirect: conditional branch mispredict
+                      HPMEV_RED_JLR= 16'h0007,   // Redirect: indirect jump (jalr) target
+                      HPMEV_RED_TRP= 16'h0008;   // Redirect: trap / exception / system op
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    function [5:0] hpm_inc;
       input [15:0] ev;
@@ -209,6 +214,11 @@ module csr_file
         HPMEV_FE_BUB:  hpm_inc = {5'd0, hpm_ev[12]};
         HPMEV_FE_MMU:  hpm_inc = {5'd0, hpm_ev[13]};
         HPMEV_FE_IC:   hpm_inc = {5'd0, hpm_ev[14]};
+        HPMEV_RED_BR:  hpm_inc = {5'd0, hpm_ev[15]};
+        HPMEV_RED_JLR: hpm_inc = {5'd0, hpm_ev[16]};
+        HPMEV_RED_TRP: hpm_inc = {5'd0, hpm_ev[17]};
+        HPMEV_FE_ALN:  hpm_inc = {5'd0, hpm_ev[18]};
+        HPMEV_FE_QUE:  hpm_inc = {5'd0, hpm_ev[19]};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

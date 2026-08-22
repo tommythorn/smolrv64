@@ -117,7 +117,8 @@ module exec_bundle
     // checkpoint retiring >=8 would have added (count mod 8) to minstret. It drops 8, it
     // does not saturate, and cosim takes DUT values for HPM counters so nothing could see it.
     input  wire [5:0]              retire_cnt,
-    input  wire [6:0]              hpm_ev,           // Zihpm event pulses (ld/st/redir/dc/ic) -> csr_file
+    input  wire [19:0]             hpm_ev,           // Zihpm event pulses -> csr_file. 20 wide to match
+                                                     // csr_file's port; the OoO core drives only [6:0].
     output wire                    irq_v,            // an interrupt is deliverable now
     output wire [3:0]              irq_cause,
     output wire                    csr_redir_v,      // csr_file redirect this cycle (trap/xret)
@@ -282,7 +283,7 @@ module exec_bundle
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt),
       // csr_file takes 15 events; [14:7] are the in-order core's stall taps, which the
       // OoO core does not have. Widen HERE, at the one boundary where the width changes.
-      .hpm_ev({8'd0, hpm_ev}),
+      .hpm_ev(hpm_ev),   // both 20 bits now; backend_top does the zero-extend at the source
       .irq_v(irq_v), .irq_cause(irq_cause),
       .upd_valid(sv), .upd_is_csr(s_iscsr), .upd_func(s_func), .upd_addr(s_addr),
       .upd_src(s_src), .upd_pc(s_pc));

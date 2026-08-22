@@ -82,6 +82,31 @@
   {
     "EventName": "FE_IC",
     "EventCode": "0x0312",
-    "BriefDescription": "X idle: because the I$ had no window"
+    "BriefDescription": "X idle: because the fetch window was empty"
+  },
+  {
+    "EventName": "FE_ALN",
+    "EventCode": "0x0313",
+    "BriefDescription": "X idle: had bytes but no complete instruction"
+  },
+  {
+    "EventName": "FE_QUE",
+    "EventCode": "0x0314",
+    "BriefDescription": "X idle: had an instruction; F/X queue empty"
+  },
+  {
+    "EventName": "RED_BR",
+    "EventCode": "0x0006",
+    "BriefDescription": "Redirect: conditional branch mispredict"
+  },
+  {
+    "EventName": "RED_JLR",
+    "EventCode": "0x0007",
+    "BriefDescription": "Redirect: indirect jump (jalr) target"
+  },
+  {
+    "EventName": "RED_TRP",
+    "EventCode": "0x0008",
+    "BriefDescription": "Redirect: trap / exception / system op"
   }
 ]

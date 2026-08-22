@@ -111,6 +111,7 @@ module ino_core
    wire                     accept;
    wire                     m_done, m_advance;   // M completed / M can take a new op
    wire                     irq_inject;
+   wire                     fe_fx_valid;   // fetch assembled an instruction (bubble sub-attribution)
    wire [PCW-1:0]           imem_va;
    wire [55:0]              immu_pa;
    wire                     immu_ready, immu_fault;
@@ -177,7 +178,7 @@ module ino_core
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
-      .irq_inject(irq_inject), .irq_taken(irq_taken),
+      .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
@@ -500,7 +501,31 @@ module ino_core
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
 
-   wire [14:0] hpm_ev = {fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
+   // fe_ic only fires when the fetch window is EXACTLY empty, so everything else landed in
+   // an unattributed remainder -- 21% of cycles on a pure-ALU loop at 166 MHz, and 31% with
+   // compression off, with the LSU, caches, MMU and branches all out of the picture.  It was
+   // the largest single bucket in the machine and nothing said what it was.  Two cases hide
+   // in there and they call for opposite fixes:
+   //   fe_aln  fetch had BYTES but could not assemble an instruction (partial window /
+   //           straddle).  Fix = wider or better-aligned fetch.
+   //   fe_que  fetch DID assemble one; the F/X queue still had nothing for decode
+   //           (refill latency after a drain).  Fix = deeper queue / earlier restart.
+   // That it grows with instruction size points at fe_aln, but pointing is not measuring.
+   wire fe_rest   = fe_bub &  immu_ready & (imem_avail_g != {$clog2(HW+2){1'b0}});
+   wire fe_aln    = fe_rest & ~fe_fx_valid;
+   wire fe_que    = fe_rest &  fe_fx_valid;
+
+   // REDIR was one counter for every reason the pipe restarts, so a 3.4-per-1000 redirect
+   // rate could not be attributed to conditional branches, indirect jumps, or traps -- and
+   // predictor work would have been tuning blind.  csr_red wins the priority: a trap that
+   // lands on a branch is a trap.  REDIR total minus these three is the remainder
+   // (fence.i and direct-jal mispredicts), so nothing needs a fourth counter.
+   wire red_trap  = redirect &  csr_red;
+   wire red_br    = redirect & ~csr_red & m_is_branch;
+   wire red_jalr  = redirect & ~csr_red & ~m_is_branch & m_is_jalr;
+
+   wire [19:0] hpm_ev = {fe_que, fe_aln, red_trap, red_jalr, red_br,
+                         fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
                          redirect, m_valid & m_is_store & lsu_done, m_valid & m_is_mem
                          & ~m_is_store & lsu_done};
@@ -514,9 +539,9 @@ module ino_core
    // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
    // built, so this cone did not exist.
    // minstret is NOT included: retire_cnt stays combinational because it is architectural.
-   reg [14:0] hpm_ev_q;
-   initial hpm_ev_q = 15'd0;
-   always @(posedge clk) hpm_ev_q <= reset ? 15'd0 : hpm_ev;
+   reg [19:0] hpm_ev_q;
+   initial hpm_ev_q = 20'd0;
+   always @(posedge clk) hpm_ev_q <= reset ? 20'd0 : hpm_ev;
 
    csr_file u_csr
      (.clk(clk), .reset(reset),

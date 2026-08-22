@@ -36,6 +36,7 @@ module ino_frontend
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire                    irq_inject,        // present the interrupt pseudo-op
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
+    output wire                    fe_fx_valid,       // fetch produced an instruction this cycle
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
     output wire [PCW-1:0]          imem_addr,         // VA to translate
@@ -126,6 +127,13 @@ module ino_frontend
    // name it: while the backend stalls, `accept` is low but `fire` is not, so fetch
    // re-emitted the SAME interrupt every cycle with nothing to stop it.
    assign irq_taken = irq_inject & fire;
+
+   // Sub-attribution for the frontend bubble (see ino_core's fe_aln/fe_que).  fx_valid is
+   // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not
+   // the iMMU and not an empty fetch window splits into two very different problems:
+   // fetch had BYTES but could not make an instruction (aligner/straddle), versus fetch
+   // made one and the queue simply had nothing to hand over (refill latency).
+   assign fe_fx_valid = fx_valid;
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;
