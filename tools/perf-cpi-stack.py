@@ -135,6 +135,18 @@ def main():
             100.0*g(code)/g(acc), acc[:2])
         print("    %-30s %10.3f%s" % (label, per_k(g(code)), rate))
 
+    # Fetch-buffer payoff: FB_RHIT is exactly what flush-on-redirect would turn into misses.
+    if v.get("FB_RHIT") is not None:
+        print("\n  fetch buffer -- does the address comparison pay?")
+        print("    %-30s %10.3f" % ("hits in redirect shadow /1k", per_k(g("FB_RHIT"))))
+        if g("FB_HIT"):
+            print("    %-30s %9.2f%% of all buffer hits" % ("", 100.0*g("FB_RHIT")/g("FB_HIT")))
+        if g("REDIR"):
+            print("    %-30s %9.2f%% of redirects land in the buffer"
+                  % ("", 100.0*g("FB_RHIT")/g("REDIR")))
+        print("    -> near zero: the tag earns nothing, a stream buffer is free.")
+        print("       large: it is already a small loop buffer, worth GROWING not deleting.")
+
     # Split the LSU stall into what misses can possibly explain vs what is left.  This is
     # the number that decides whether to attack the miss path (MSHRs, non-blocking) or the
     # HIT path (load-to-use latency) -- and on this core it has consistently been the hit
