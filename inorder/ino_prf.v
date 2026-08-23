@@ -42,7 +42,8 @@ module ino_prf
     parameter PBITS = IDXB + 2,            // physical register number width
     parameter N_IE  = 64,                  // > 32 (integer arch regs)
     parameter N_LD  = 128,                  // > 64 (integer AND fp arch regs can land here)
-    parameter N_FE  = 128)                  // > 64: the FPU writes INTEGER regs too
+    parameter N_FE  = 128,                  // > 64: the FPU writes INTEGER regs too
+    parameter WRTHRU = 0)                   // see the write-through note below
    (input  wire             clk,
 
     // ---- three write ports, one per shard: no arbitration, by construction ----
@@ -84,23 +85,36 @@ module ino_prf
    wire [1:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
    wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
 
-   // WRITE-THROUGH.  docs/Area-Efficient-Scalar-OoO.md 14.1 makes this load-bearing: a
-   // consumer issuing in the same cycle its producer writes back must see the new value,
-   // and "an implementation that registers any of these is a different machine".  It is
-   // redundant while issue is still in-order (ino_core's byp1/byp2 already cover it) but it
-   // is wired now so enabling out-of-order issue is not silently a different machine.
+   // WRITE-THROUGH, and why it is OFF by default.
+   //
+   // docs/Area-Efficient-Scalar-OoO.md 14.1 makes it load-bearing for the OoO machine: a
+   // consumer issuing in the cycle its producer writes back must see the new value, and
+   // "an implementation that registers any of these is a different machine".
+   //
+   // With IN-ORDER issue it is dead code.  The write targets m_prd, the physical register
+   // allocated for m_rd; renaming makes physical registers unique, so a source resolves to
+   // m_prd only when that source IS m_rd -- which is exactly ino_core's byp1/2/3, and there
+   // x_rs takes m_byp_val, never prf_rs.  So the collision can happen but its result is
+   // never used.
+   //
+   // It is not free: 3 read ports x 3 shards of PBITS comparator plus a 64-bit mux, sitting
+   // in the operand read path -- the back-to-back ALU loop that must stay fast.  And on this
+   // die area is congestion and congestion is slack (docs/rtl-rules.md I1).
+   //
+   // Turning it on is NOT something to remember: ino_core asserts on a read that collides
+   // with the writeback and is not bypassed, so the machine says when this becomes needed.
    function automatic [63:0] rd_shard;
       input [1:0]      sh;
       input [IDXB-1:0] ix;
       input [63:0]     m_ie, m_ld, m_fe;
       begin
          case (sh)
-           SH_IE: rd_shard = (we_ie && wa_ie[IDXB-1:0] == ix && wa_ie[PBITS-1:IDXB] == SH_IE)
-                             ? wd_ie : m_ie;
-           SH_LD: rd_shard = (we_ld && wa_ld[IDXB-1:0] == ix && wa_ld[PBITS-1:IDXB] == SH_LD)
-                             ? wd_ld : m_ld;
-           SH_FE: rd_shard = (we_fe && wa_fe[IDXB-1:0] == ix && wa_fe[PBITS-1:IDXB] == SH_FE)
-                             ? wd_fe : m_fe;
+           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
+                              && wa_ie[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
+           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa_ld[IDXB-1:0] == ix
+                              && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
+           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
+                              && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
            default: rd_shard = 64'd0;
          endcase
       end

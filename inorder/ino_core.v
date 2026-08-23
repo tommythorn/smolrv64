@@ -396,6 +396,19 @@ module ino_core
    // on ino_prf's write-through: both deliver the same value in the M->X case, and keeping
    // the existing mux means this commit changes the operand SOURCE without also changing
    // the operand TIMING PATH.  One variable at a time.
+   // ino_prf's write-through is OFF (WRTHRU=0), which is only safe while every read that
+   // collides with the writeback is bypassed.  That is a property of IN-ORDER issue, not a
+   // law -- so check it rather than remember it.  When out-of-order issue lands and this
+   // fires, the fix is WRTHRU=1, not a patch here.
+   always @(posedge clk) if (!reset & d_valid & rf_we) begin
+      if (d_rs1_v & ~byp1 & (rn_prs1 == m_prd))
+         $fatal(1, "ino_core: rs1 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+      if (d_rs2_v & ~byp2 & (rn_prs2 == m_prd))
+         $fatal(1, "ino_core: rs2 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+      if (d_rs3_v & ~byp3 & (rn_prs3 == m_prd))
+         $fatal(1, "ino_core: rs3 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+   end
+
    wire [63:0] x_rs1 = byp1 ? m_byp_val : prf_rs1;
    wire [63:0] x_rs2 = byp2 ? m_byp_val : prf_rs2;
    wire [63:0] x_rs3 = byp3 ? m_byp_val : prf_rs3;
