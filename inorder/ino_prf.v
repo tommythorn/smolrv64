@@ -185,9 +185,10 @@ module ino_prf
    // The deadlock floor, checked once at elaboration rather than argued in a comment.
    initial begin
       if (N_IE <= 32) $fatal(1, "ino_prf: N_IE=%0d must exceed 32 integer arch regs", N_IE);
-      // The FPU writes fp regs AND integer regs (fcvt.w.d, fmv.x.w, fclass, fcmp), so
-      // SH_FE can hold up to 64 mappings -- same floor as the load shard, not 32.
-      if (N_FE <= 64) $fatal(1, "ino_prf: N_FE=%0d must exceed 64 (fp AND int land here)", N_FE);
+      // SH_FE holds ONLY fp mappings: ino_core routes FP instructions with an integer
+      // destination (fcvt.w.d, fmv.x.w, fclass, fcmp) to SH_LD instead.  So its floor is 32
+      // architectural fp registers plus one free, not 64.
+      if (N_FE <= 32) $fatal(1, "ino_prf: N_FE=%0d must exceed 32 fp arch regs", N_FE);
       if (N_LD <= 64) $fatal(1, "ino_prf: N_LD=%0d must exceed 64 (int AND fp map here)", N_LD);
       if (NMAX > (1 << IDXB))
          $fatal(1, "ino_prf: NMAX=%0d exceeds IDXB=%0d addressable", NMAX, IDXB);

@@ -242,7 +242,7 @@ module ino_rename
       if ((N_FE & (N_FE-1)) != 0) $fatal(1, "ino_rename: N_FE=%0d is not a power of two", N_FE);
       if (N_IE <= 32) $fatal(1, "ino_rename: N_IE=%0d must exceed 32", N_IE);
       if (N_LD <= 64) $fatal(1, "ino_rename: N_LD=%0d must exceed 64", N_LD);
-      if (N_FE <= 64) $fatal(1, "ino_rename: N_FE=%0d must exceed 64", N_FE);
+      if (N_FE <= 32) $fatal(1, "ino_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
       if (LOWAT < 1) $fatal(1, "ino_rename: LOWAT must be >= 1");
    end
 endmodule

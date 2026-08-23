@@ -294,12 +294,23 @@ module ino_core
    localparam integer RN_PBITS = RN_IDXB + 2;
    localparam [1:0]   SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
 
-   // Destination shard = the unit that will eventually write the result.  Loads, AMOs and
-   // mul/div take SH_LD (see ino_prf.v on why mul/div ride with loads and not the ALU);
-   // anything FP takes SH_FE, which is why SH_FE must be sized for 64 -- fcvt.w.d and
-   // friends are FP instructions that write INTEGER registers.
+   // Destination shard = where the result will be written.  Loads, AMOs and mul/div take
+   // SH_LD (see ino_prf.v on why mul/div ride with loads and not the ALU).
+   //
+   // An FP instruction goes to SH_FE only if its DESTINATION IS AN FP REGISTER.  d_rd[5] is
+   // the class bit -- architectural 0..31 are integer, 32..63 are FP (ino_rename's reset
+   // arm maps them that way).  fcvt.w.d, fmv.x.w, fclass and the FP compares are FP
+   // instructions that write INTEGER registers; sending those to SH_LD, which already holds
+   // both classes and so needs no extra room, means SH_FE can only ever hold FP mappings.
+   // Its floor drops from 65 to 33, i.e. 128 entries to 64 -- the same 64-entry saving that
+   // was worth 465 ps when mem_ie was cut (docs/rtl-rules.md I1).
+   //
+   // No new contention at this milestone: there is exactly one writeback per cycle.  When
+   // out-of-order issue lands, SH_LD's writers become LSU + mul/div + FP-to-integer, all of
+   // which are rare next to loads and all of which can hold in an output register.
    wire [1:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
-                      : d_is_fp                          ? SH_FE
+                      : (d_is_fp & d_rd[5])              ? SH_FE
+                      : d_is_fp                          ? SH_LD
                       :                                    SH_IE;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd, rn_pold;
@@ -310,7 +321,7 @@ module ino_core
    // allocate twice for one instruction, or allocate for a squashed one.
    wire rn_valid = m_advance & d_valid & ~redirect & ~redirect_q;
 
-   ino_rename #(.IDXB(RN_IDXB)) u_rename
+   ino_rename #(.IDXB(RN_IDXB), .N_FE(64)) u_rename
      (.clk(clk), .reset(reset),
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
@@ -322,7 +333,7 @@ module ino_core
       .stall(rn_stall), .shard_low(rn_shard_low));
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
-   ino_prf #(.IDXB(RN_IDXB)) u_prf
+   ino_prf #(.IDXB(RN_IDXB), .N_FE(64)) u_prf
      (.clk(clk),
       .we_ie(rf_we & (m_shard == SH_IE)), .wa_ie(m_prd), .wd_ie(rf_wd),
       .we_ld(rf_we & (m_shard == SH_LD)), .wa_ld(m_prd), .wd_ld(rf_wd),
