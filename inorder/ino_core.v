@@ -273,6 +273,54 @@ module ino_core
      (.clk(clk), .rs1(d_rs1), .rs1_val(rf_rs1), .rs2(d_rs2), .rs2_val(rf_rs2),
       .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd));
 
+   // ---- renaming and the sharded PRF, running as a SHADOW ---------------------------
+   // Issue and commit are still in order and ino_regfile is still the operand source, so
+   // this changes no architectural behaviour.  The point is that rename and ino_prf are
+   // driven by the real instruction stream and CHECKED against the known-good register
+   // file every cycle (see the assertion below), so the 240-test suite and the 13.5e9
+   // retirement cosim validate them before anything depends on them.  Switching the
+   // operand source and deleting ino_regfile is then a one-line change against a proven
+   // structure rather than a big-bang swap of the core's most load-bearing datapath.
+   localparam integer RN_IDXB  = 7;
+   localparam integer RN_PBITS = RN_IDXB + 2;
+   localparam [1:0]   SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
+
+   // Destination shard = the unit that will eventually write the result.  Loads, AMOs and
+   // mul/div take SH_LD (see ino_prf.v on why mul/div ride with loads and not the ALU);
+   // anything FP takes SH_FE, which is why SH_FE must be sized for 64 -- fcvt.w.d and
+   // friends are FP instructions that write INTEGER registers.
+   wire [1:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
+                      : d_is_fp                          ? SH_FE
+                      :                                    SH_IE;
+
+   wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd, rn_pold;
+   wire                rn_stall;
+   wire [2:0]          rn_shard_low;
+   // Rename exactly when the instruction actually enters M and is not being squashed --
+   // the same condition that sets m_valid below.  Renaming on any looser condition would
+   // allocate twice for one instruction, or allocate for a squashed one.
+   wire rn_valid = m_advance & d_valid & ~redirect & ~redirect_q;
+
+   ino_rename #(.IDXB(RN_IDXB)) u_rename
+     (.clk(clk), .reset(reset),
+      .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
+      .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
+      .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
+      .r_prd(rn_prd), .r_pold(rn_pold),
+      .c_valid(rf_we), .c_rd(m_rd), .c_rd_v(m_rd_v), .c_shard(m_shard),
+      .c_prd(m_prd), .c_pold(m_pold),
+      .flush(redirect),
+      .stall(rn_stall), .shard_low(rn_shard_low));
+
+   wire [63:0] prf_rs1, prf_rs2, prf_rs3;
+   ino_prf #(.IDXB(RN_IDXB)) u_prf
+     (.clk(clk),
+      .we_ie(rf_we & (m_shard == SH_IE)), .wa_ie(m_prd), .wd_ie(rf_wd),
+      .we_ld(rf_we & (m_shard == SH_LD)), .wa_ld(m_prd), .wd_ld(rf_wd),
+      .we_fe(rf_we & (m_shard == SH_FE)), .wa_fe(m_prd), .wd_fe(rf_wd),
+      .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
+      .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
+
    // M-stage registers (declared here: the bypass reads them)
    reg              m_valid, m_rvc, m_rd_v;
    reg  [PCW-1:0]   m_pc, m_pred_npc, m_fault_tval, m_target, m_taken_tgt;
@@ -280,6 +328,8 @@ module ino_core
    reg  [SEQW-1:0]  m_seq;
    reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
    reg  [5:0]       m_rd, m_rs1;
+   reg  [RN_PBITS-1:0] m_prd, m_pold;   // rename result, carried X->M for commit
+   reg  [1:0]       m_shard;
    reg  [63:0]      m_imm, m_result, m_addr, m_st_data, m_rs1_val, m_rs3_val;
    reg  [1:0]       m_mem_size;
    reg              m_mem_signed, m_is_mem, m_is_store, m_is_amo;
@@ -300,6 +350,37 @@ module ino_core
    wire       byp1 = m_valid & m_rd_v & (m_rd == d_rs1);
    wire       byp2 = m_valid & m_rd_v & (m_rd == d_rs2);
    wire       byp3 = m_valid & m_rd_v & (m_rd == d_rs3);
+   // THE SHADOW CHECK, and the whole reason rename can be brought up without risk.
+   // A renamed read must name the same value the architectural register file holds.  If
+   // the map, the free lists or the shard routing are wrong, this fires at the mistake
+   // rather than thousands of instructions later when the wrong value is finally used --
+   // which is the failure mode that costs days here.
+   //
+   // Excluded when the core is bypassing: ino_prf implements write-through (required by
+   // docs/Area-Efficient-Scalar-OoO.md 14.1) and ino_regfile does not, so on the cycle M
+   // writes back a register X is reading they legitimately differ.  That case is exactly
+   // what byp1/2/3 cover, and the core takes m_byp_val there regardless.
+   always @(posedge clk) if (!reset & d_valid) begin
+      if (d_rs1_v & ~byp1 & (prf_rs1 !== rf_rs1))
+         $fatal(1, "ino_core: rename shadow mismatch rs1 x%0d: prf(p%0d)=%h rf=%h",
+                d_rs1, rn_prs1, prf_rs1, rf_rs1);
+      if (d_rs2_v & ~byp2 & (prf_rs2 !== rf_rs2))
+         $fatal(1, "ino_core: rename shadow mismatch rs2 x%0d: prf(p%0d)=%h rf=%h",
+                d_rs2, rn_prs2, prf_rs2, rf_rs2);
+      if (d_rs3_v & ~byp3 & (prf_rs3 !== rf_rs3))
+         $fatal(1, "ino_core: rename shadow mismatch rs3 x%0d: prf(p%0d)=%h rf=%h",
+                d_rs3, rn_prs3, prf_rs3, rf_rs3);
+   end
+
+   // With in-order issue only ~2 instructions are ever in flight, so no shard can run dry
+   // at these sizes.  If it ever does, the sizing is wrong -- say so rather than silently
+   // stalling, because at this milestone rn_stall is deliberately NOT in the stall path
+   // (wiring it there would be a functional change).
+   always @(posedge clk)
+      if (!reset & rn_stall)
+         $fatal(1, "ino_core: rename free list ran low (shard_low=%b) -- resize the PRF",
+                rn_shard_low);
+
    wire [63:0] x_rs1 = byp1 ? m_byp_val : rf_rs1;
    wire [63:0] x_rs2 = byp2 ? m_byp_val : rf_rs2;
    wire [63:0] x_rs3 = byp3 ? m_byp_val : rf_rs3;
@@ -838,6 +919,9 @@ module ino_core
             m_pred_npc    <= d_pred_npc;
             m_rd          <= d_rd;
             m_rd_v        <= d_rd_v;
+            m_prd         <= rn_prd;
+            m_pold        <= rn_pold;
+            m_shard       <= d_shard;
             m_rs1         <= d_rs1;
             m_imm         <= d_imm;
             m_result      <= x_result;
