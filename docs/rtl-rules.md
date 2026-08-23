@@ -339,3 +339,45 @@ MSHR, write-back buffer, prefetch buffer}*; *no two MSHRs cover the same line*;
 *a slot named by an outstanding op is not reallocated*; *every response matches
 exactly one live entry*; *a dirty line is never overwritten before capture*.
 Bounded model checking finds these in seconds.
+
+## I. Area and timing
+
+**I1. Unreachable memory costs slack somewhere else.**
+This design fails timing on *routing*, not logic: the worst paths at 166 MHz
+are `u_dcache/vw0_rep -> bank WEA` and `u_icache/cur_line -> linebuf CE`, both
+under 1 ns of logic and 83–85% route on high-fanout nets. Area anywhere
+therefore buys congestion everywhere, and congestion is paid in slack by
+whatever is already marginal — not by the block that grew.
+
+Measured 2026-08-23: `ino_prf` declared all three shard arrays `[0:NMAX-1]`
+where `NMAX` was the *largest* shard, so `mem_ie` was 128 deep with `N_IE=64`.
+Half of it was unreachable and synthesis built it anyway — the Distributed RAM
+report showed all three as an identical `128 x 64, RAM64M8 x 60`. Sizing each
+array to its own shard, with no functional change at all, moved WNS from
+**−0.524 ns to −0.059 ns: 465 ps for deleting memory nothing could address**
+(`3c5936a3`).
+
+So: size every array to what it can actually hold, and read the Distributed RAM
+and BRAM mapping reports after adding a structure. A parameter that is
+"obviously big enough" is a timing bug on a congested die.
+
+**I2. A single build's WNS cannot judge a change smaller than the placement
+spread.** Four placer directives over identical RTL at DIV8=48 gave `Explore`
++0.054, `AltSpreadLogic_medium` +0.047, `ExtraTimingOpt` +0.025,
+`ExtraPostPlacementOpt` −0.027 — an **81 ps spread that straddles zero**.
+Every "166 MHz closed / did not close" judgement made before that measurement
+sits inside the envelope. Compare against two directives; treat one number as a
+sample, not a result. `Explore` is the default because it measured best
+(`dc3fb0ad`).
+
+**I3. Bring a replacement up as a shadow, checked every cycle.**
+`ino_rename` + `ino_prf` ran against the real instruction stream with
+`ino_regfile` still the operand source and an always-on comparison between them
+(`7a2605f6`). That caught five defects at the mistake rather than downstream:
+non-power-of-two free lists handing out physical register 0; a capacity
+assertion whose bound truncated to 0 and fired on every write; a commit+flush
+race restoring a stale head pointer; frees routed to the destination's shard
+instead of the register's own shard; and a boot seed (`+a1=`) the new structure
+never received. Only the last was reachable by the 240-test suite, and none by
+inspection. The switch-over then moved one variable
+(`914292fe`), and the retire stream stayed **bit-identical over 3e9 cycles**.
