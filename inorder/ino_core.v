@@ -335,9 +335,10 @@ module ino_core
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    ino_prf #(.IDXB(RN_IDXB), .N_FE(64)) u_prf
      (.clk(clk),
-      .we_ie(rf_we & (m_shard == SH_IE)), .wa_ie(m_prd), .wd_ie(rf_wd),
-      .we_ld(rf_we & (m_shard == SH_LD)), .wa_ld(m_prd), .wd_ld(rf_wd),
-      .we_fe(rf_we & (m_shard == SH_FE)), .wa_fe(m_prd), .wd_fe(rf_wd),
+      .we_ie(rf_we & (m_shard == SH_IE)),
+      .we_ld(rf_we & (m_shard == SH_LD)),
+      .we_fe(rf_we & (m_shard == SH_FE)),
+      .wa(m_prd), .wd(rf_wd),
       .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 

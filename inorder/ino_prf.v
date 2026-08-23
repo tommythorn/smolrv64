@@ -46,16 +46,25 @@ module ino_prf
     parameter WRTHRU = 0)                   // see the write-through note below
    (input  wire             clk,
 
-    // ---- three write ports, one per shard: no arbitration, by construction ----
+    // ---- write port: ONE address and ONE data bus, three shard-selected enables ----
+    // The address and data are SHARED on purpose.  Sharding exists to give each bank its
+    // own WRITE ENABLE so no arbitration is needed; it does not need three copies of the
+    // data, and three copies are expensive in a way that is easy to miss:
+    //
+    //   wd comes from m_wb_val, which for a load IS THE D$ READ DATA (lsu_rd_val), and
+    //   we carries lsu_done.  Fanning those to three 64-bit ports made the placer reach
+    //   three separate LUTRAM arrays from the D$ output and pull the cache apart to do it.
+    //   The 166 MHz failures were then paths INTERNAL to u_dcache and u_icache -- which is
+    //   why they looked like congestion and were really this.
+    //
+    // 192 bits of D$-sourced fanout back to 64.  When out-of-order writeback lands, the
+    // arbiter that picks the winner feeds this one bus; the shards still never contend for
+    // a bank, which is the property that mattered.
     input  wire             we_ie,
-    input  wire [PBITS-1:0] wa_ie,
-    input  wire [63:0]      wd_ie,
     input  wire             we_ld,
-    input  wire [PBITS-1:0] wa_ld,
-    input  wire [63:0]      wd_ld,
     input  wire             we_fe,
-    input  wire [PBITS-1:0] wa_fe,
-    input  wire [63:0]      wd_fe,
+    input  wire [PBITS-1:0] wa,
+    input  wire [63:0]      wd,
 
     // ---- three combinational read ports (rs1, rs2, rs3 for the FMA third operand) ----
     input  wire [PBITS-1:0] ra1,
@@ -109,12 +118,12 @@ module ino_prf
       input [63:0]     m_ie, m_ld, m_fe;
       begin
          case (sh)
-           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
-                              && wa_ie[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
-           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa_ld[IDXB-1:0] == ix
-                              && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
-           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
-                              && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
+           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa[IDXB-1:0] == ix
+                              && wa[PBITS-1:IDXB] == SH_IE) ? wd : m_ie;
+           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa[IDXB-1:0] == ix
+                              && wa[PBITS-1:IDXB] == SH_LD) ? wd : m_ld;
+           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa[IDXB-1:0] == ix
+                              && wa[PBITS-1:IDXB] == SH_FE) ? wd : m_fe;
            default: rd_shard = 64'd0;
          endcase
       end
@@ -151,9 +160,9 @@ module ino_prf
    end
 
    always @(posedge clk) begin
-      if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
-      if (we_ld) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
-      if (we_fe) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
+      if (we_ie) mem_ie[wa[AB_IE-1:0]] <= wd;
+      if (we_ld) mem_ld[wa[AB_LD-1:0]] <= wd;
+      if (we_fe) mem_fe[wa[AB_FE-1:0]] <= wd;
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
@@ -163,22 +172,22 @@ module ino_prf
    // otherwise be a silent wrong-register write -- exactly the class of defect that costs
    // days here, because the value surfaces far from the mistake.
    always @(posedge clk) begin
-      if (we_ie && (wa_ie[PBITS-1:IDXB] != SH_IE))
+      if (we_ie && (wa[PBITS-1:IDXB] != SH_IE))
          $fatal(1, "ino_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
-                wa_ie, wa_ie[PBITS-1:IDXB]);
-      if (we_ld && (wa_ld[PBITS-1:IDXB] != SH_LD))
+                wa, wa[PBITS-1:IDXB]);
+      if (we_ld && (wa[PBITS-1:IDXB] != SH_LD))
          $fatal(1, "ino_prf: load write to pr=%h, shard %0d is not SH_LD",
-                wa_ld, wa_ld[PBITS-1:IDXB]);
-      if (we_fe && (wa_fe[PBITS-1:IDXB] != SH_FE))
+                wa, wa[PBITS-1:IDXB]);
+      if (we_fe && (wa[PBITS-1:IDXB] != SH_FE))
          $fatal(1, "ino_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
-                wa_fe, wa_fe[PBITS-1:IDXB]);
-      if (we_ie && ({1'b0, wa_ie[IDXB-1:0]} >= N_IE[IDXB:0]))
-         $fatal(1, "ino_prf: int-exec write idx %0d >= N_IE %0d", wa_ie[IDXB-1:0], N_IE);
-      if (we_ld && ({1'b0, wa_ld[IDXB-1:0]} >= N_LD[IDXB:0]))
-         $fatal(1, "ino_prf: load write idx %0d >= N_LD %0d", wa_ld[IDXB-1:0], N_LD);
-      if (we_fe && ({1'b0, wa_fe[IDXB-1:0]} >= N_FE[IDXB:0]))
-         $fatal(1, "ino_prf: fp-exec write idx %0d >= N_FE %0d", wa_fe[IDXB-1:0], N_FE);
-      if (we_ie && wa_ie == {PBITS{1'b0}})
+                wa, wa[PBITS-1:IDXB]);
+      if (we_ie && ({1'b0, wa[IDXB-1:0]} >= N_IE[IDXB:0]))
+         $fatal(1, "ino_prf: int-exec write idx %0d >= N_IE %0d", wa[IDXB-1:0], N_IE);
+      if (we_ld && ({1'b0, wa[IDXB-1:0]} >= N_LD[IDXB:0]))
+         $fatal(1, "ino_prf: load write idx %0d >= N_LD %0d", wa[IDXB-1:0], N_LD);
+      if (we_fe && ({1'b0, wa[IDXB-1:0]} >= N_FE[IDXB:0]))
+         $fatal(1, "ino_prf: fp-exec write idx %0d >= N_FE %0d", wa[IDXB-1:0], N_FE);
+      if (we_ie && wa == {PBITS{1'b0}})
          $fatal(1, "ino_prf: write to physical register 0 (architectural zero)");
    end
 
