@@ -109,6 +109,21 @@ module ino_prf
    assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh3, ix3, mem_ie[ix3], mem_ld[ix3], mem_fe[ix3]);
 
+   integer j;
+   initial begin
+      for (j = 0; j < NMAX; j = j + 1) begin
+         mem_ie[j] = 64'd0;  mem_ld[j] = 64'd0;  mem_fe[j] = 64'd0;
+      end
+      // Boot seed, mirroring ino_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
+      // {SH_IE, 11} at reset (see ino_rename's reset arm), so the seed lands in mem_ie[11].
+      // Sim-only and inert unless a TB passes +a1=, but NOT optional: a harness that resets
+      // straight to OpenSBI expects the pointer there, and without this the shadow check
+      // fires 255 cycles into Linux boot -- which is exactly how this omission was found.
+      begin : seed reg [63:0] a1v;
+         if ($value$plusargs("a1=%h", a1v)) mem_ie[11] = a1v;
+      end
+   end
+
    always @(posedge clk) begin
       if (we_ie) mem_ie[wa_ie[IDXB-1:0]] <= wd_ie;
       if (we_ld) mem_ld[wa_ld[IDXB-1:0]] <= wd_ld;
