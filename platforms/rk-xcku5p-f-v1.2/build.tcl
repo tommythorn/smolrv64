@@ -525,7 +525,15 @@ if {$step in {impl bit}} {
     # design (WNS -0.122); ExtraTimingOpt placement + AggressiveExplore routing
     # closes it (+0.129). These are the defaults so plain 'make bit' meets timing;
     # override via PLACE_DIRECTIVE / ROUTE_DIRECTIVE env vars for closure sweeps.
-    set place_directive ExtraTimingOpt
+    # MEASURED 2026-08-22, four directives over identical RTL (HEAD 2089004b) at DIV8=48:
+    #   Explore                +0.054 MET      <- default
+    #   AltSpreadLogic_medium  +0.047 MET
+    #   ExtraTimingOpt         +0.025 MET      (the previous default)
+    #   ExtraPostPlacementOpt  -0.027 FAIL
+    # An 81 ps spread that STRADDLES ZERO on unchanged source.  Two consequences:
+    # Explore is free margin and is now the default; and a single build's WNS cannot judge
+    # a change smaller than ~80 ps -- compare against two directives, not one number.
+    set place_directive Explore
     set route_directive AggressiveExplore
     if {[info exists env(PLACE_DIRECTIVE)] && $env(PLACE_DIRECTIVE) ne ""} {
         set place_directive $env(PLACE_DIRECTIVE)
