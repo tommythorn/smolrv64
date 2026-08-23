@@ -269,9 +269,18 @@ module ino_core
    wire [5:0]  rf_wa;
    wire [63:0] rf_wd;
 
+   // ino_regfile is now a SIMULATION-ONLY REFERENCE, not the operand source.  It costs
+   // nothing in hardware (`ifndef SYNTHESIS`) and keeps the every-cycle cross-check that
+   // found four rename bugs and the missing a1 seed.  Delete it only when the cosim has
+   // run the switched design as long as the shadow one did -- a checker that has already
+   // caught five defects is worth more than the lines it occupies.
+`ifndef SYNTHESIS
    ino_regfile u_rf
      (.clk(clk), .rs1(d_rs1), .rs1_val(rf_rs1), .rs2(d_rs2), .rs2_val(rf_rs2),
       .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd));
+`else
+   assign rf_rs1 = 64'd0;  assign rf_rs2 = 64'd0;  assign rf_rs3 = 64'd0;
+`endif
 
    // ---- renaming and the sharded PRF, running as a SHADOW ---------------------------
    // Issue and commit are still in order and ino_regfile is still the operand source, so
@@ -360,6 +369,7 @@ module ino_core
    // docs/Area-Efficient-Scalar-OoO.md 14.1) and ino_regfile does not, so on the cycle M
    // writes back a register X is reading they legitimately differ.  That case is exactly
    // what byp1/2/3 cover, and the core takes m_byp_val there regardless.
+`ifndef SYNTHESIS
    always @(posedge clk) if (!reset & d_valid) begin
       if (d_rs1_v & ~byp1 & (prf_rs1 !== rf_rs1))
          $fatal(1, "ino_core: rename shadow mismatch rs1 x%0d: prf(p%0d)=%h rf=%h",
@@ -371,6 +381,7 @@ module ino_core
          $fatal(1, "ino_core: rename shadow mismatch rs3 x%0d: prf(p%0d)=%h rf=%h",
                 d_rs3, rn_prs3, prf_rs3, rf_rs3);
    end
+`endif
 
    // With in-order issue only ~2 instructions are ever in flight, so no shard can run dry
    // at these sizes.  If it ever does, the sizing is wrong -- say so rather than silently
@@ -381,9 +392,13 @@ module ino_core
          $fatal(1, "ino_core: rename free list ran low (shard_low=%b) -- resize the PRF",
                 rn_shard_low);
 
-   wire [63:0] x_rs1 = byp1 ? m_byp_val : rf_rs1;
-   wire [63:0] x_rs2 = byp2 ? m_byp_val : rf_rs2;
-   wire [63:0] x_rs3 = byp3 ? m_byp_val : rf_rs3;
+   // OPERANDS NOW COME FROM THE SHARDED PRF.  The bypass is retained rather than leaning
+   // on ino_prf's write-through: both deliver the same value in the M->X case, and keeping
+   // the existing mux means this commit changes the operand SOURCE without also changing
+   // the operand TIMING PATH.  One variable at a time.
+   wire [63:0] x_rs1 = byp1 ? m_byp_val : prf_rs1;
+   wire [63:0] x_rs2 = byp2 ? m_byp_val : prf_rs2;
+   wire [63:0] x_rs3 = byp3 ? m_byp_val : prf_rs3;
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
