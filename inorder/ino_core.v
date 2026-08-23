@@ -309,8 +309,7 @@ module ino_core
    // out-of-order issue lands, SH_LD's writers become LSU + mul/div + FP-to-integer, all of
    // which are rare next to loads and all of which can hold in an output register.
    wire [1:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
-                      : (d_is_fp & d_rd[5])              ? SH_FE
-                      : d_is_fp                          ? SH_LD
+                      : d_is_fp                          ? SH_FE
                       :                                    SH_IE;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd, rn_pold;
@@ -321,7 +320,7 @@ module ino_core
    // allocate twice for one instruction, or allocate for a squashed one.
    wire rn_valid = m_advance & d_valid & ~redirect & ~redirect_q;
 
-   ino_rename #(.IDXB(RN_IDXB), .N_FE(64)) u_rename
+   ino_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
      (.clk(clk), .reset(reset),
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
@@ -333,12 +332,12 @@ module ino_core
       .stall(rn_stall), .shard_low(rn_shard_low));
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
-   ino_prf #(.IDXB(RN_IDXB), .N_FE(64)) u_prf
+   ino_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
       .we_ie(rf_we & (m_shard == SH_IE)),
       .we_ld(rf_we & (m_shard == SH_LD)),
       .we_fe(rf_we & (m_shard == SH_FE)),
-      .wa(m_prd), .wd(rf_wd),
+      .wa(m_prd), .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
@@ -366,6 +365,7 @@ module ino_core
    // the M-stage writeback value, and the bypass source (which is NOT the same thing --
    // see the writeback comment: a CSR result is never bypassable)
    wire [63:0] m_wb_val, m_byp_val;
+   wire [63:0] wb_ie, wb_ld, wb_fe;   // per-shard write data
 
    // one bypass level: M -> X. An instruction two ahead has already landed in the RF.
    wire       byp1 = m_valid & m_rd_v & (m_rd == d_rs1);
@@ -767,6 +767,15 @@ module ino_core
                          : fp_incore             ? fp_incore_res
                          :                         m_result;
    assign m_wb_val = m_is_csr ? csr_rdata : m_byp_val;
+
+   // Per-shard write data: each shard sees only its own writer, so the D$ read data reaches
+   // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
+   // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
+   // one bus and then to every array is exactly what sharding by writer exists to avoid.
+   assign wb_ie = m_is_csr ? csr_rdata : m_result;
+   assign wb_ld = (m_is_mem | m_is_amo) ? lsu_rd_val : (md_div ? div_result : mul_result);
+   assign wb_fe = fp_arith ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
+                           : fp_incore_res;
    assign rf_we = m_valid & m_done & m_rd_v & ~m_trap;
    assign rf_wa = m_rd;
    assign rf_wd = m_wb_val;

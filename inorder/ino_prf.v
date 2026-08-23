@@ -46,25 +46,26 @@ module ino_prf
     parameter WRTHRU = 0)                   // see the write-through note below
    (input  wire             clk,
 
-    // ---- write port: ONE address and ONE data bus, three shard-selected enables ----
-    // The address and data are SHARED on purpose.  Sharding exists to give each bank its
-    // own WRITE ENABLE so no arbitration is needed; it does not need three copies of the
-    // data, and three copies are expensive in a way that is easy to miss:
+    // ---- write ports: ONE address, THREE data buses -- one per shard's own writer ----
+    // THE POINT OF SHARDING BY WRITER IS THAT EACH SHARD TAKES ITS OWN WRITER'S DATA.
     //
-    //   wd comes from m_wb_val, which for a load IS THE D$ READ DATA (lsu_rd_val), and
-    //   we carries lsu_done.  Fanning those to three 64-bit ports made the placer reach
-    //   three separate LUTRAM arrays from the D$ output and pull the cache apart to do it.
-    //   The 166 MHz failures were then paths INTERNAL to u_dcache and u_icache -- which is
-    //   why they looked like congestion and were really this.
+    // Each shard is 3 LUTRAM copies (one per read port: rs1/rs2/rs3), so 3 shards is 9
+    // arrays.  A single shared write bus reaches all 9 -- gated by enable, but physically
+    // connected.  Routing the LSU's load data through the global writeback mux and then to
+    // every array is the shape sharding exists to avoid: the D$ read data should reach the
+    // 3 load-shard copies and nothing else, and the ALU result should never leave the
+    // int-exec shard.
     //
-    // 192 bits of D$-sourced fanout back to 64.  When out-of-order writeback lands, the
-    // arbiter that picks the winner feeds this one bus; the shards still never contend for
-    // a bank, which is the property that mattered.
+    // The ADDRESS stays shared: there is one writeback per cycle, so one destination
+    // register number.  Only the data is per-writer.  When out-of-order writeback lands,
+    // each shard's bus is driven by its own unit and they still never contend for a bank.
     input  wire             we_ie,
     input  wire             we_ld,
     input  wire             we_fe,
-    input  wire [PBITS-1:0] wa,
-    input  wire [63:0]      wd,
+    input  wire [PBITS-1:0] wa,       // shared: one writeback per cycle, so one address
+    input  wire [63:0]      wd_ie,    // ALU / CSR result
+    input  wire [63:0]      wd_ld,    // LSU load data, mul, div
+    input  wire [63:0]      wd_fe,    // FPU result
 
     // ---- three combinational read ports (rs1, rs2, rs3 for the FMA third operand) ----
     input  wire [PBITS-1:0] ra1,
@@ -119,11 +120,11 @@ module ino_prf
       begin
          case (sh)
            SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_IE) ? wd : m_ie;
+                              && wa[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
            SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_LD) ? wd : m_ld;
+                              && wa[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
            SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_FE) ? wd : m_fe;
+                              && wa[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
            default: rd_shard = 64'd0;
          endcase
       end
@@ -160,9 +161,9 @@ module ino_prf
    end
 
    always @(posedge clk) begin
-      if (we_ie) mem_ie[wa[AB_IE-1:0]] <= wd;
-      if (we_ld) mem_ld[wa[AB_LD-1:0]] <= wd;
-      if (we_fe) mem_fe[wa[AB_FE-1:0]] <= wd;
+      if (we_ie) mem_ie[wa[AB_IE-1:0]] <= wd_ie;
+      if (we_ld) mem_ld[wa[AB_LD-1:0]] <= wd_ld;
+      if (we_fe) mem_fe[wa[AB_FE-1:0]] <= wd_fe;
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
