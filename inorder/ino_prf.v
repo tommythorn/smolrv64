@@ -68,12 +68,18 @@ module ino_prf
 
    // Sized to the largest shard; the smaller shards simply never index above their
    // capacity, which ino_rename's free list enforces and the assertion below checks.
-   localparam integer NMAX = (N_LD > N_IE) ? ((N_LD > N_FE) ? N_LD : N_FE)
-                                           : ((N_IE > N_FE) ? N_IE : N_FE);
+   // EACH ARRAY IS SIZED TO ITS OWN SHARD.  The first cut sized all three to the largest
+   // (NMAX), so mem_ie was 128 deep with N_IE=64 -- half of it unreachable, and synthesis
+   // duly built it: "mem_ie_reg 128 x 64, RAM64M8 x 60", identical to the 128-entry shards.
+   // Pure waste, and area is not free here: the 166 MHz build fails on ROUTING inside the
+   // caches (83-85% route on sub-1 ns logic), so congestion costs slack somewhere else.
+   localparam integer NMAX  = (N_LD > N_IE) ? ((N_LD > N_FE) ? N_LD : N_FE)
+                                            : ((N_IE > N_FE) ? N_IE : N_FE);
+   localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE);
 
-   reg [63:0] mem_ie [0:NMAX-1];
-   reg [63:0] mem_ld [0:NMAX-1];
-   reg [63:0] mem_fe [0:NMAX-1];
+   reg [63:0] mem_ie [0:N_IE-1];
+   reg [63:0] mem_ld [0:N_LD-1];
+   reg [63:0] mem_fe [0:N_FE-1];
 
    wire [1:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
    wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
@@ -102,18 +108,24 @@ module ino_prf
 
    // Physical register 0 reads 0 unconditionally -- it is the architectural zero and is
    // never allocated by ino_rename, so no write can target it.
+   // Index each array with only the bits it has.  A read of a shard the operand does not
+   // belong to is discarded by rd_shard's case, so a truncated index there is harmless --
+   // but it must not be OUT OF RANGE, which for a smaller shard it otherwise would be.
    assign rd1 = (ra1 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh1, ix1, mem_ie[ix1], mem_ld[ix1], mem_fe[ix1]);
+              : rd_shard(sh1, ix1, mem_ie[ix1[AB_IE-1:0]], mem_ld[ix1[AB_LD-1:0]],
+                         mem_fe[ix1[AB_FE-1:0]]);
    assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh2, ix2, mem_ie[ix2], mem_ld[ix2], mem_fe[ix2]);
+              : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]], mem_ld[ix2[AB_LD-1:0]],
+                         mem_fe[ix2[AB_FE-1:0]]);
    assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh3, ix3, mem_ie[ix3], mem_ld[ix3], mem_fe[ix3]);
+              : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]], mem_ld[ix3[AB_LD-1:0]],
+                         mem_fe[ix3[AB_FE-1:0]]);
 
    integer j;
    initial begin
-      for (j = 0; j < NMAX; j = j + 1) begin
-         mem_ie[j] = 64'd0;  mem_ld[j] = 64'd0;  mem_fe[j] = 64'd0;
-      end
+      for (j = 0; j < N_IE; j = j + 1) mem_ie[j] = 64'd0;
+      for (j = 0; j < N_LD; j = j + 1) mem_ld[j] = 64'd0;
+      for (j = 0; j < N_FE; j = j + 1) mem_fe[j] = 64'd0;
       // Boot seed, mirroring ino_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
       // {SH_IE, 11} at reset (see ino_rename's reset arm), so the seed lands in mem_ie[11].
       // Sim-only and inert unless a TB passes +a1=, but NOT optional: a harness that resets
@@ -125,9 +137,9 @@ module ino_prf
    end
 
    always @(posedge clk) begin
-      if (we_ie) mem_ie[wa_ie[IDXB-1:0]] <= wd_ie;
-      if (we_ld) mem_ld[wa_ld[IDXB-1:0]] <= wd_ld;
-      if (we_fe) mem_fe[wa_fe[IDXB-1:0]] <= wd_fe;
+      if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
+      if (we_ld) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
+      if (we_fe) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
