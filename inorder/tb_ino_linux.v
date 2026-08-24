@@ -111,11 +111,62 @@ module tb;
       if (dut.plic_seip)                         n_seip   <= n_seip   + 1;
    end
 
+   // ---- SIZING THE SCOREBOARD (measurement only; no RTL is changed for this) ----------
+   // M blocks until the LSU has the DATA (ino_core.v: `m_done = ... m_mem_op ? lsu_done`),
+   // and the LSU is 38.8% of GB5 cycles with 94-98% of that being hit latency rather than
+   // misses.  A 1-deep, loads-only scoreboard would let X proceed on exactly the cycles
+   // counted here: M stalled on the LSU, X holding an instruction that does not need the
+   // (single-outstanding) LSU, is not serializing, and does not read the load's result.
+   //
+   // Reuses the core's own byp1/2/3 for the dependence test rather than re-deriving it --
+   // they already are `m_valid & m_rd_v & (m_rd == d_rs*)`.  Qualified by d_rs*_v here so
+   // an absent operand cannot look like a dependence.
+   //
+   // This is a LOWER BOUND: it only credits the immediately-next instruction, not the
+   // second and third that would also flow once the first moved.
+   wire sb_dep    = (dut.core.byp1 & dut.core.d_rs1_v)
+                  | (dut.core.byp2 & dut.core.d_rs2_v)
+                  | (dut.core.byp3 & dut.core.d_rs3_v);
+   wire sb_recov  = dut.core.st_mem & dut.core.d_valid
+                  & ~dut.core.d_is_mem & ~dut.core.d_is_amo & ~dut.core.d_is_serialize
+                  & ~sb_dep;
+   // ...and the two reasons a stalled cycle is NOT recoverable, so the total is attributed
+   // rather than leaving a silent remainder.
+   wire sb_blk_dep = dut.core.st_mem & dut.core.d_valid & sb_dep;
+   wire sb_blk_mem = dut.core.st_mem & dut.core.d_valid & ~sb_dep
+                   & (dut.core.d_is_mem | dut.core.d_is_amo);
+   wire sb_blk_ser = dut.core.st_mem & dut.core.d_valid & ~sb_dep
+                   & ~(dut.core.d_is_mem | dut.core.d_is_amo) & dut.core.d_is_serialize;
+   // ...and the bucket that turned out to dominate: M is stalled on a load and X is EMPTY,
+   // so there is nothing for a scoreboard to run even if it existed. Sub-attributed with
+   // the core's own frontend-bubble taps so it is clear whether the frontend is walking the
+   // iMMU, out of fetch window, or something else.
+   wire sb_novalid = dut.core.st_mem & ~dut.core.d_valid;
+   reg [63:0] n_stmem, n_recov, n_bdep, n_bmem, n_bser, n_nov, n_nov_mmu, n_nov_ic, n_nov_qrdy;
+   always @(posedge clk) if (!reset) begin
+      if (dut.core.st_mem) n_stmem <= n_stmem + 1;
+      if (sb_recov)        n_recov <= n_recov + 1;
+      if (sb_blk_dep)      n_bdep  <= n_bdep  + 1;
+      if (sb_blk_mem)      n_bmem  <= n_bmem  + 1;
+      if (sb_blk_ser)      n_bser  <= n_bser  + 1;
+      if (sb_novalid)      n_nov   <= n_nov   + 1;
+      if (sb_novalid & ~dut.core.immu_ready) n_nov_mmu <= n_nov_mmu + 1;
+      if (sb_novalid &  dut.core.immu_ready
+          & (dut.core.imem_avail_g == 0))    n_nov_ic  <= n_nov_ic  + 1;
+      // THE distinction that decides whether the empty-X bucket is recoverable. The IR can
+      // only be loaded on `accept` (= m_advance), so a stalled M freezes it even when the
+      // F/X queue behind it is holding instructions. Those cycles ARE recoverable by the
+      // scoreboard -- one cycle later, as the IR refills. Only ~q_empty is genuinely dry.
+      if (sb_novalid & ~dut.core.fe.q_empty) n_nov_qrdy <= n_nov_qrdy + 1;
+   end
+
    reg [8*256-1:0] fw, dtb, initrd;
    reg [63:0] ncyc, c, nret;
    initial begin
       ncyc = 200000000; nret = 0;
       n_inject = 0; n_uirq = 0; n_seip = 0;
+      n_stmem = 0; n_recov = 0; n_bdep = 0; n_bmem = 0; n_bser = 0;
+      n_nov = 0; n_nov_mmu = 0; n_nov_ic = 0; n_nov_qrdy = 0;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -138,6 +189,23 @@ module tb;
       end
       $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
                dut.imem_addr);
+      $display("SB-SIZING cycles=%0d retires=%0d st_mem=%0d (%0d.%02d%% of cycles)",
+               c, nret, n_stmem, (n_stmem*100)/c, ((n_stmem*10000)/c)%100);
+      $display("SB-SIZING   recoverable   %10d  %0d.%02d%% of cycles, %0d%% of st_mem",
+               n_recov, (n_recov*100)/c, ((n_recov*10000)/c)%100, (n_recov*100)/n_stmem);
+      $display("SB-SIZING   blk next-is-mem%9d  %0d%% of st_mem   (needs a load queue, not a scoreboard)",
+               n_bmem, (n_bmem*100)/n_stmem);
+      $display("SB-SIZING   blk dependence %9d  %0d%% of st_mem   (irreducible: it wants the value)",
+               n_bdep, (n_bdep*100)/n_stmem);
+      $display("SB-SIZING   blk serialize  %9d  %0d%% of st_mem",
+               n_bser, (n_bser*100)/n_stmem);
+      $display("SB-SIZING   X EMPTY        %9d  %0d%% of st_mem   (iMMU %0d, I$ empty %0d, other %0d)",
+               n_nov, (n_nov*100)/n_stmem, n_nov_mmu, n_nov_ic, n_nov-n_nov_mmu-n_nov_ic);
+      $display("SB-SIZING     ...of which F/X QUEUE HAS WORK %0d  (%0d%% of X-empty) -- recoverable, IR just cannot reload while M stalls",
+               n_nov_qrdy, (n_nov_qrdy*100)/n_nov);
+      $display("SB-SIZING   FLOOR %0d.%02d%% of cycles / CEILING %0d.%02d%% (floor + queue-ready X-empty)",
+               (n_recov*100)/c, ((n_recov*10000)/c)%100,
+               ((n_recov+n_nov_qrdy)*100)/c, (((n_recov+n_nov_qrdy)*10000)/c)%100);
       $finish;
    end
 endmodule
