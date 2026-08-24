@@ -56,7 +56,12 @@ module ino_predictor
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
-    input  wire [PCW-1:0]       npc,        // fetch's computed next PC -> BTB read address
+    input  wire [PCW-1:0]       apc,        // fetch's AHEAD next PC -> BTB read address. A
+                                            // register-only PREDICTION of the next base PC,
+                                            // not the real one: see fetch.v's `apc`. The
+                                            // entry is stamped with it (btb_qpc <= apc) and
+                                            // unusable unless btb_qpc == base_pc, so a wrong
+                                            // apc loses a prediction and never fakes one.
     input  wire                 fire,       // fetch handshake: bundle leaves fetch this cycle
     input  wire [PCW-1:0]       base_pc,    // presented bundle's base PC (= pc_q)
     input  wire [PCW-1:0]       ft_npc,     // presented bundle's fall-through (= call return address)
@@ -294,16 +299,27 @@ module ino_predictor
    // its own training write lands -- without forwarding the retrained entry is
    // invisible to that first refetch and every cold-taken CTI mispredicts twice.
    // Decided here, applied a cycle later at btb_e/ycorr_e (see that comment).
-   wire t_fwd = res_v && (t_idx == bidx(npc));
-   wire y_fwd = y_wr  && (yc_idx == yidx(npc, ghr));        // same write-forward for the corrector
+   wire t_fwd = res_v && (t_idx == bidx(apc));
+   wire y_fwd = y_wr  && (yc_idx == yidx(apc, ghr));        // same write-forward for the corrector
+   // Read enable: exactly the cycles in which fetch's base PC MOVES. fetch advances pc_q on
+   // reset, on a redirect (unconditionally -- it does not wait for the handshake), and
+   // otherwise only on `fire`; every other cycle re-presents the same bundle, so holding the
+   // entry is what keeps it matched to it. Without this a stall would re-read at the guessed
+   // SUCCESSOR and the held-back bundle would lose the prediction it already had.
+   //   This is where the late signal went. `fire` still comes off the aligner, but it now
+   // arrives at a 1-bit RAM enable instead of steering a 10-bit index into an array -- and
+   // `rollback` is M's registered redirect, which costs nothing.
+   wire apc_en = fire | rollback | reset;
    always @(posedge clk) begin
       // Read a cycle ahead (rule A1). Nonblocking, so these see the array as it was BEFORE
       // this edge's write regardless of statement order -- the forward covers the collision.
-      btb_raw   <= btb[bidx(npc)];
-      btb_qpc   <= npc;
-      ycorr_raw <= ycorr[yidx(npc, ghr)];
-      t_fwd_q   <= t_fwd;   t_dat_q <= {1'b1, t_tag,  t_type,  res_tgt[TGTW:1]};
-      y_fwd_q   <= y_fwd;   y_dat_q <= {1'b1, yc_tag, y_nudge};
+      if (apc_en) begin
+         btb_raw   <= btb[bidx(apc)];
+         btb_qpc   <= apc;
+         ycorr_raw <= ycorr[yidx(apc, ghr)];
+         t_fwd_q   <= t_fwd;   t_dat_q <= {1'b1, t_tag,  t_type,  res_tgt[TGTW:1]};
+         y_fwd_q   <= y_fwd;   y_dat_q <= {1'b1, yc_tag, y_nudge};
+      end
       if (res_v) btb[t_idx]    <= {1'b1, t_tag,  t_type, res_tgt[TGTW:1]};
       if (y_wr)  ycorr[yc_idx] <= {1'b1, yc_tag, y_nudge};
       // The arrays themselves are NOT cleared: see the BTB declaration for why a stale hint

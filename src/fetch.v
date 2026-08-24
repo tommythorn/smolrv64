@@ -59,6 +59,7 @@ module fetch
     input  wire                    pred_v,
     input  wire [PCW-1:0]          pred_tgt,
     output wire [PCW-1:0]          npc,
+    output wire [PCW-1:0]          apc,         // npc PREDICTED from registers only -- see below
     output wire [PCW-1:0]          pred_npc,
     output wire [PCW-1:0]          ft_npc,      // presented bundle's fall-through (RAS ret addr)
     output wire                    br_term,     // presented bundle ends on a real branch/jump
@@ -177,6 +178,54 @@ module fetch
               : strad        ? (fire ? (pc_q + 64'd4) : pc_q)
               : straddle_det ? pc_q
               : fire         ? norm_npc : pc_q;
+
+   // ------------------------------------------------ AHEAD PC (the predictor's read address)
+   // `npc` above is the TRUE next PC, and it is not known until the I$ data has been
+   // aligned. Measured at 166 MHz: iMMU translate -> I$ data -> aligner puts ft_npc 4.35 ns
+   // into a 6.245 ns budget, and hanging the predictor's array read off the end of that is
+   // what pins Fmax. `apc` is the same value predicted from state already registered at the
+   // top of the cycle, so the array read gets the WHOLE cycle -- the frontend stops caring
+   // how late the fetch cloud is. Every arm below is a flop output:
+   //   redirect_pc  M drives it through a register (ino_core's redirect_target_q)
+   //   pc_q, strad  this module's own state
+   //   pred_tgt     the predictor's registered BTB entry / RAS
+   // and the one term that is NOT available -- the fall-through -- is predicted here.
+   //
+   // WHY THIS IS SAFE, and why the 2026-08-23 attempt was not: the predictor stamps its
+   // registered entry with the address it ACTUALLY read (btb_qpc <= apc) and will not use
+   // it unless btb_qpc == base_pc. So a wrong `apc` costs one LOST prediction and can never
+   // produce a wrong one. The earlier attempt indexed from norm_npc but kept stamping with
+   // npc; entry and label then disagreed, a redirect could read a stale entry stamped with
+   // the redirect target, and the mispredict it caused re-read the same stale entry -- a
+   // loop that never resynchronised (it hung rv64mi-p-illegal). Label with what you read.
+   //
+   // `straddle_det` is deliberately absent: it implies the aligner produced nothing, so
+   // ~fire, so the consumer holds its entry -- which is exactly the right answer, because
+   // pc_q holds too.
+   //
+   // IW=1, so a bundle IS one instruction and its fall-through is pc_q+2 or pc_q+4: one
+   // bit. `lenp` is an untagged direct-mapped table of that bit, trained on every fire from
+   // the aligner's own count. Untagged is fine for the same reason as above -- an alias
+   // costs a lost prediction. Unconnected in the OoO frontend, where synthesis drops it.
+   localparam LENB = 10, NLEN = 1 << LENB;
+   (* ram_style = "distributed" *)
+   reg  lenp [0:NLEN-1];
+   integer li;
+   initial for (li = 0; li < NLEN; li = li + 1) lenp[li] = 1'b0;   // cold: assume 4 bytes
+   wire [LENB-1:0] lidx    = pc_q[LENB:1];
+   wire            len_rvc = lenp[lidx];
+   assign apc = reset        ? RESET_PC
+              : redirect     ? redirect_pc
+              : irq_inject   ? pc_q
+              : strad        ? (pc_q + 64'd4)
+              : pred_v       ? pred_tgt
+              :                (pc_q + (len_rvc ? 64'd2 : 64'd4));
+
+   always @(posedge clk) begin
+      // Train from the truth: a straddler is a 32-bit op by construction; the interrupt
+      // pseudo-op is not the instruction at pc_q at all, so it must not train.
+      if (fire & ~irq_inject) lenp[lidx] <= ~strad & (al_consumed == 1'b1);
+   end
 
    always @(posedge clk) begin
       if (reset) begin

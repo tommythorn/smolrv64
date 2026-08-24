@@ -100,7 +100,7 @@ module ino_frontend
    wire [31:0]        fx_inst;
    wire [PCW-1:0]     fx_pc;
    wire [SEQW-1:0]    fx_seq;
-   wire [PCW-1:0]     f_npc, fx_pnpc, f_ftn, bp_tgt;
+   wire [PCW-1:0]     f_apc, fx_pnpc, f_ftn, bp_tgt;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ino_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
@@ -112,7 +112,9 @@ module ino_frontend
       .solo_all(1'b0),                 // IW=1: every bundle is already one instruction
       .irq_inject(irq_inject),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .npc(f_npc), .pred_npc(fx_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
+      // `npc` (the true next PC) is left unconnected: the predictor reads at `apc`, so the
+      // whole npc mux -- and with it the aligner -> array-index cone -- drops out here.
+      .npc(), .apc(f_apc), .pred_npc(fx_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail),
       .ready(~q_full), .valid(fx_valid),
@@ -139,7 +141,7 @@ module ino_frontend
    wire [PDW-1:0] pd_fetch;
    ino_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
-      .npc(f_npc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
+      .apc(f_apc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
