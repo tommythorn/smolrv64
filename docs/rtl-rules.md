@@ -141,6 +141,26 @@ generalise it into a function all dereferences go through), or make the victim
 chooser unable to select a slot that an outstanding op has named. Never
 dereference a bare `{way, idx}` across a state in which an install can run.
 
+**B5. The response is selected by the responder that FIRED, not by re-decoding
+the address.**
+The corollary of B1 on the return path, and this design has now paid for it
+three times in the same module. `ino_soc_top` routed the load return by
+recomputing `is_dev_r`/`is_virtio_r` from the live `dmem_raddr` — a set of
+masked 64-bit compares — at three sites in turn: `dmem_wready`, then
+`raw_rvalid`, then `raw_rdata`. Each fix collapsed one site onto the valid
+signals (`vio_rack` / `dev_rvalid_q` / `dc_rv_ok`, mutually exclusive and
+asserted so) and left the others, so the address decode simply became the head
+of the next critical path. Measured 2026-08-24 on the third one: 57 failing
+endpoints at 166 MHz, `mem_raddr[13] -> CARRY8 x3 -> is_virtio_r -> is_dev_r`
+costing **1.27 ns before the 64-bit mux began**, on a path that then ran through
+load alignment and the X-stage ALU into `m_result`.
+
+It is also the more robust structure, which is the real reason to prefer it:
+the select no longer depends on `mem_raddr` still holding the address the
+response belongs to. When a mutual-exclusion argument replaces a tag, assert it
+once (this one does) and then let *every* consumer select on it. If one site
+still decodes the address, the rule is not applied — it is postponed.
+
 **B4. A second copy of a line must share the original's invalidation fate, and
 that fate must be asserted.**
 The prefetch buffer (`pf_val`/`pf_addr`/`pf_line`) holds a line the tag array
@@ -213,6 +233,27 @@ and a cosim run to 84.17M retires to see it. The fix in place is a 64k-cycle
 watchdog, which is a mitigation: it is stated in its own commit message as
 something commit-side orphan detection should replace. Either way the age bound
 is known, so assert it — a wedge that announces itself costs minutes.
+
+**D4. An entry read at a GUESSED index is labelled with the index actually
+used, never with the one you wish you had used.**
+Speculatively indexing an array early is safe exactly when a later check can
+tell that the guess was wrong — and that check can only work if the entry
+carries the address it was really read at. On 2026-08-23 the predictor was
+changed to index the BTB from `norm_npc` instead of `npc` while still recording
+`btb_qpc <= npc`. The stated reasoning was that "a stale read is safe because
+the hit test requires `btb_qpc == base_pc`", which is true of the test and
+false of that code: the entry came from one address and was stamped with
+another, so on a redirect cycle a stale entry could pass a hit test as the
+entry for the redirect target. The mispredict it caused redirected to the same
+PC, which re-read at the same wrong index — a mispredict loop that never
+resynchronised. It hung `rv64mi-p-illegal` and was reverted with the mechanism
+unexplained.
+
+The same shortcut, with `btb_qpc <= apc` (the address actually indexed), is what
+`fetch.v`'s ahead PC now does, and every wrong guess degrades to a LOST
+prediction: 240/240 including `rv64mi-p-illegal`, and 0.13% of retires over 40M
+cycles of Linux cosim. The guard was always there. It was pointed at the wrong
+address.
 
 ---
 
@@ -381,3 +422,28 @@ instead of the register's own shard; and a boot seed (`+a1=`) the new structure
 never received. Only the last was reachable by the 240-test suite, and none by
 inspection. The switch-over then moved one variable
 (`914292fe`), and the retire stream stayed **bit-identical over 3e9 cycles**.
+
+**I4. A valid bit kept outside its array is a mux the size of the array,
+bolted to the read address.**
+`ino_predictor` held the BTB and YAGS valid bits in flop vectors "so the data
+array stays a clean BRAM/LUTRAM inference" — and thereby produced the opposite
+of that. `ycorr_v[yidx(npc,ghr)]` is a 1024:1 LUT/MUXF tree, and it sat at the
+END of the fetch loop (iMMU -> I$ -> aligner -> npc -> yidx). Measured
+2026-08-24 on the design's worst path, 6.462 ns of a 6.245 ns budget:
+
+* the valid mux alone, `yidx` to the capture flop: **1.051 ns**
+* `yidx` route: **0.546 ns**, fanout 161 — a 1024-deep distributed RAM is 16
+  primitives deep *per bit*, so the index drives 161 address pins
+
+1.6 ns of a 6.0 ns period to read an 11-bit entry, and none of it logic.
+Folding valid into the entry and forcing `ram_style = "block"` gave one RAMB18
+(1 K x 11) and one RAMB36 (256 x 54), ended the path at a BRAM address pin, and
+took the family from 33 failing endpoints to none.
+
+The second half of the rule is what had blocked BRAM inference in the first
+place: the write-forward mux sat between the array and its capture flop, and a
+BRAM's read register is *inside* the primitive, so any output-side mux forces
+the array back into LUTs. Register the forward DECISION and apply it in the
+consumer's cycle instead. That also defines the read-during-write result, which
+a simple dual-port BRAM leaves indeterminate in hardware — the forward is not
+merely preserved by the move, it is what makes the BRAM legal.
