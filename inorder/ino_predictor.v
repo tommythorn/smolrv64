@@ -87,15 +87,35 @@ module ino_predictor
    localparam [2:0] TY_JMP = 3'b100, TY_CALL = 3'b101, TY_RET = 3'b110;
 
    // ------------------------------------------------------------ BTB (1R1W RAM)
-   // entry = {tag, type[2:0], target[38:1]}; valid bits kept aside as a flop
-   // vector so the data array stays a clean BRAM/LUTRAM inference.
+   // entry = {valid, tag, type[2:0], target[38:1]} -- valid lives IN the array so the read
+   // is a plain synchronous-read RAM and costs one block-RAM address setup, nothing else.
+   //
+   // FMAX (this is why, 166 MHz): the valid bits used to be a separate flop vector read as
+   // `btb_v[bidx(npc)]` -- a 256:1, and for the corrector a 1024:1, LUT/MUXF mux hanging off
+   // the END of the fetch loop, which is the worst path in the design:
+   //   strad -> iMMU translate -> I$ data -> aligner -> ft_npc -> npc -> yidx -> ycorr_v mux
+   // Measured on that path at 6.462 ns: the valid mux alone was 1.05 ns, and the index cost
+   // another 0.55 ns of pure route because it fanned out to 161 distributed-RAM address pins
+   // (1024 deep is 16 LUTRAM primitives deep PER BIT). 1.6 ns of a 6.0 ns budget spent reading
+   // an 11-bit entry. Folding valid in and forcing block RAM ends the loop at a BRAM address
+   // pin: two loads on the index, no depth mux, no valid mux.
+   //
+   // The price is that `reset` can no longer mass-clear the valid bits -- a BRAM has no
+   // broadcast clear. That is free HERE and nowhere else in the core: every prediction is a
+   // hint (see the header), a surviving entry costs at most one mispredict before the first
+   // resolve retrains it, and it can never steer a bundle that does not end on a CTI
+   // (`cti_ok`) or whose base PC and tag do not both match. Configuration INIT still zeroes
+   // the array, so a cold FPGA and a fresh simulation both start empty.
    localparam EW = TAGW + 3 + TGTW;
-   reg [EW-1:0]   btb   [0:NBTB-1];
-   reg [NBTB-1:0] btb_v;
-   reg [EW-1:0]   btb_q;                     // registered read (rule A1)
-   reg            btb_qv;
+   (* ram_style = "block" *)
+   reg [EW:0]     btb   [0:NBTB-1];          // [EW] = valid
+   reg [EW:0]     btb_raw;                   // registered read (rule A1)
    reg [PCW-1:0]  btb_qpc;                   // address the read was for
-   initial begin btb_v = {NBTB{1'b0}}; btb_qv = 1'b0; btb_qpc = {PCW{1'b0}}; end
+   integer bi;
+   initial begin
+      btb_raw = {(EW+1){1'b0}}; btb_qpc = {PCW{1'b0}};
+      for (bi = 0; bi < NBTB; bi = bi + 1) btb[bi] = {(EW+1){1'b0}};
+   end
 
    // Tag folds higher PC bits in (XOR) so addresses that agree in [20:1] but differ
    // above still miss. Load-bearing across the paging transition: the kernel's
@@ -123,14 +143,34 @@ module ino_predictor
    function [YTAGW-1:0] ytagf(input [PCW-1:0] a);
       ytagf = a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
    endfunction
-   reg [YEW-1:0]   ycorr [0:NYAGS-1];
-   reg [NYAGS-1:0] ycorr_v;
-   reg [YEW-1:0]   ycorr_q;  reg ycorr_qv;
+   (* ram_style = "block" *)
+   reg [YEW:0]  ycorr [0:NYAGS-1];           // [YEW] = valid, same shape as the BTB above
+   reg [YEW:0]  ycorr_raw;
    integer yi;
    initial begin
-      ycorr_v = {NYAGS{1'b0}}; ycorr_qv = 1'b0;
-      for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {YEW{1'b0}};
+      ycorr_raw = {(YEW+1){1'b0}};
+      for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {(YEW+1){1'b0}};
    end
+
+   // ---------------------------------------- write-forward, applied AFTER the read register
+   // A training write lands on the same edge as the read a cycle ahead of it, so the read
+   // must see it. Forwarding on the ARRAY OUTPUT is what the previous version did, and it is
+   // exactly what stops block-RAM inference: a BRAM's read register is INSIDE the primitive,
+   // so a mux between array and flop forces the array back into LUTs. Register the decision
+   // instead and mux in the cycle the entry is consumed -- the compare `write index == read
+   // index` is evaluated against the same `npc` the read used, so it still means the same
+   // thing one cycle later. It also DEFINES the read-during-write result, which a simple
+   // dual-port BRAM leaves indeterminate in hardware.
+   reg            t_fwd_q, y_fwd_q;
+   reg [EW:0]     t_dat_q;
+   reg [YEW:0]    y_dat_q;
+   initial begin t_fwd_q = 1'b0; y_fwd_q = 1'b0; end
+   wire [EW:0]    btb_e    = t_fwd_q ? t_dat_q : btb_raw;
+   wire           btb_qv   = btb_e[EW];
+   wire [EW-1:0]  btb_q    = btb_e[EW-1:0];
+   wire [YEW:0]   ycorr_e  = y_fwd_q ? y_dat_q : ycorr_raw;
+   wire           ycorr_qv = ycorr_e[YEW];
+   wire [YEW-1:0] ycorr_q  = ycorr_e[YEW-1:0];
 
    // ------------------------------------------------- speculative state {ghr,ras}
    reg [GHL-1:0]  ghr;
@@ -253,23 +293,22 @@ module ino_predictor
    // write-forward: a mispredict's redirected refetch reads the BTB the same edge
    // its own training write lands -- without forwarding the retrained entry is
    // invisible to that first refetch and every cold-taken CTI mispredicts twice.
+   // Decided here, applied a cycle later at btb_e/ycorr_e (see that comment).
    wire t_fwd = res_v && (t_idx == bidx(npc));
    wire y_fwd = y_wr  && (yc_idx == yidx(npc, ghr));        // same write-forward for the corrector
    always @(posedge clk) begin
-      btb_q   <= t_fwd ? {t_tag, t_type, res_tgt[TGTW:1]} : btb[bidx(npc)];
-      btb_qv  <= t_fwd ? 1'b1 : btb_v[bidx(npc)];
-      btb_qpc <= npc;
-      ycorr_q  <= y_fwd ? {yc_tag, y_nudge} : ycorr[yidx(npc, ghr)];
-      ycorr_qv <= y_fwd ? 1'b1              : ycorr_v[yidx(npc, ghr)];
-      if (res_v) begin
-         btb[t_idx]   <= {t_tag, t_type, res_tgt[TGTW:1]};
-         btb_v[t_idx] <= 1'b1;
-      end
-      if (y_wr) begin
-         ycorr[yc_idx]   <= {yc_tag, y_nudge};
-         ycorr_v[yc_idx] <= 1'b1;
-      end
-      if (reset) begin btb_v <= {NBTB{1'b0}}; ycorr_v <= {NYAGS{1'b0}}; end
+      // Read a cycle ahead (rule A1). Nonblocking, so these see the array as it was BEFORE
+      // this edge's write regardless of statement order -- the forward covers the collision.
+      btb_raw   <= btb[bidx(npc)];
+      btb_qpc   <= npc;
+      ycorr_raw <= ycorr[yidx(npc, ghr)];
+      t_fwd_q   <= t_fwd;   t_dat_q <= {1'b1, t_tag,  t_type,  res_tgt[TGTW:1]};
+      y_fwd_q   <= y_fwd;   y_dat_q <= {1'b1, yc_tag, y_nudge};
+      if (res_v) btb[t_idx]    <= {1'b1, t_tag,  t_type, res_tgt[TGTW:1]};
+      if (y_wr)  ycorr[yc_idx] <= {1'b1, yc_tag, y_nudge};
+      // The arrays themselves are NOT cleared: see the BTB declaration for why a stale hint
+      // is harmless. Only the forward flags need it, so a reset cannot inject a bogus entry.
+      if (reset) begin t_fwd_q <= 1'b0; y_fwd_q <= 1'b0; end
    end
 endmodule
 

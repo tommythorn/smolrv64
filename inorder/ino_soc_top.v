@@ -443,17 +443,27 @@ module ino_soc_top #(
    //   dev_rvalid  <= dmem_ren & is_dev_r & ~is_virtio_r
    //   c_rd_req     = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r  (no cache req for a device)
    //   vio_pending <= set only by dmem_ren & is_virtio_r
-   // raw_rDATA keeps its select: it is a 64-bit mux on a path with slack, and only the VALID
-   // reaches lsu_done.
    wire         vio_rack   = virtio_rvalid & vio_pending;   // not a write's completion
    wire         raw_rvalid = vio_rack | dev_rvalid_q | dc_rv_ok;
    always @(posedge clk)
       if (!reset & ((vio_rack & dev_rvalid_q) | (vio_rack & dc_rv_ok) | (dev_rvalid_q & dc_rv_ok)))
          $fatal(1, "ino_soc_top: two read responses at once (vio=%b dev=%b dc=%b) -- rvalid ambiguous",
                 vio_rack, dev_rvalid_q, dc_rv_ok);
-   wire [63:0]  raw_rdata  = is_virtio_r ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
-                           : is_dev_r    ? dev_rdata_q
-                           : dc_rd_data;
+   // ...and raw_rDATA selects the same way, for the same reason. The note that used to stand
+   // here -- "a 64-bit mux on a path with slack, and only the VALID reaches lsu_done" -- has
+   // expired: at 166 MHz this select was the head of the SECOND-WORST family in the design,
+   // 57 failing endpoints at WNS -0.215:
+   //   u_lsu/mem_raddr -> is_uart_r (CARRY8 x3) -> is_dev_r -> THIS MUX -> the load byte
+   //                   -> align/sign-extend -> m_byp_val -> the X-stage ALU -> m_result
+   // 1.27 ns of it spent deciding WHICH responder to listen to, before the 64-bit mux began.
+   // The assertion directly above is what licenses the collapse: at most one response lands
+   // per cycle, so the responder that FIRED names its own data and no address is re-decoded.
+   // Strictly more robust, too -- the select no longer depends on mem_raddr still holding the
+   // address the response belongs to (a response is matched by the requester's own bookkeeping,
+   // not by an address; docs/rtl-rules.md).
+   wire [63:0]  raw_rdata  = vio_rack     ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
+                           : dev_rvalid_q ? dev_rdata_q
+                           :                dc_rd_data;
    wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
