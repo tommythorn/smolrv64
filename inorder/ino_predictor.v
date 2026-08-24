@@ -148,13 +148,21 @@ module ino_predictor
    function [YTAGW-1:0] ytagf(input [PCW-1:0] a);
       ytagf = a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
    endfunction
+   // NO VALID BIT, unlike the BTB above: the tag already carries it. An entry that has
+   // never been written reads as tag 0, so it can only be believed by a PC whose
+   // ytagf is also 0 -- 1 in 256 -- and what it then says is ctr=00, "not taken",
+   // overriding the bimodal for exactly one execution of one branch. That resolve sets
+   // yc_hit in the carried details, so `y_wr` fires, stores the same tag with a nudged
+   // counter, and the entry is right from then on. A corrector is a hint whose whole job
+   // is to be repaired by training; a valid bit here only buys the first execution of
+   // 0.4% of cold branches, and costs a bit of array plus a term in the yhit AND.
    (* ram_style = "block" *)
-   reg [YEW:0]  ycorr [0:NYAGS-1];           // [YEW] = valid, same shape as the BTB above
-   reg [YEW:0]  ycorr_raw;
+   reg [YEW-1:0]  ycorr [0:NYAGS-1];         // {tag, ctr} -- validity IS the tag match
+   reg [YEW-1:0]  ycorr_raw;
    integer yi;
    initial begin
-      ycorr_raw = {(YEW+1){1'b0}};
-      for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {(YEW+1){1'b0}};
+      ycorr_raw = {YEW{1'b0}};
+      for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {YEW{1'b0}};
    end
 
    // ---------------------------------------- write-forward, applied AFTER the read register
@@ -168,14 +176,12 @@ module ino_predictor
    // dual-port BRAM leaves indeterminate in hardware.
    reg            t_fwd_q, y_fwd_q;
    reg [EW:0]     t_dat_q;
-   reg [YEW:0]    y_dat_q;
+   reg [YEW-1:0]  y_dat_q;
    initial begin t_fwd_q = 1'b0; y_fwd_q = 1'b0; end
    wire [EW:0]    btb_e    = t_fwd_q ? t_dat_q : btb_raw;
    wire           btb_qv   = btb_e[EW];
    wire [EW-1:0]  btb_q    = btb_e[EW-1:0];
-   wire [YEW:0]   ycorr_e  = y_fwd_q ? y_dat_q : ycorr_raw;
-   wire           ycorr_qv = ycorr_e[YEW];
-   wire [YEW-1:0] ycorr_q  = ycorr_e[YEW-1:0];
+   wire [YEW-1:0] ycorr_q  = y_fwd_q ? y_dat_q : ycorr_raw;
 
    // ------------------------------------------------- speculative state {ghr,ras}
    reg [GHL-1:0]  ghr;
@@ -206,7 +212,7 @@ module ino_predictor
    wire            p_call   = hit & (q_type == TY_CALL);
    wire            p_ret    = hit & (q_type == TY_RET);
    // YAGS: a tag-hitting corrector overrides the bimodal weight for a conditional
-   wire            yhit     = p_cbr & ycorr_qv & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
+   wire            yhit     = p_cbr & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
    wire            cbr_taken= yhit ? ycorr_q[1] : q_type[1];
    assign pred_v   = hit & (q_type[2] | (p_cbr & cbr_taken)); // uncond, or predicted-taken cond
    assign pred_tgt = p_ret ? ras[ras_ptr] : btb_tgt;
@@ -298,7 +304,7 @@ module ino_predictor
    // write-forward: a mispredict's redirected refetch reads the BTB the same edge
    // its own training write lands -- without forwarding the retrained entry is
    // invisible to that first refetch and every cold-taken CTI mispredicts twice.
-   // Decided here, applied a cycle later at btb_e/ycorr_e (see that comment).
+   // Decided here, applied a cycle later at btb_e/ycorr_q (see that comment).
    wire t_fwd = res_v && (t_idx == bidx(apc));
    wire y_fwd = y_wr  && (yc_idx == yidx(apc, ghr));        // same write-forward for the corrector
    // Read enable: exactly the cycles in which fetch's base PC MOVES. fetch advances pc_q on
@@ -318,10 +324,10 @@ module ino_predictor
          btb_qpc   <= apc;
          ycorr_raw <= ycorr[yidx(apc, ghr)];
          t_fwd_q   <= t_fwd;   t_dat_q <= {1'b1, t_tag,  t_type,  res_tgt[TGTW:1]};
-         y_fwd_q   <= y_fwd;   y_dat_q <= {1'b1, yc_tag, y_nudge};
+         y_fwd_q   <= y_fwd;   y_dat_q <= {yc_tag, y_nudge};
       end
       if (res_v) btb[t_idx]    <= {1'b1, t_tag,  t_type, res_tgt[TGTW:1]};
-      if (y_wr)  ycorr[yc_idx] <= {1'b1, yc_tag, y_nudge};
+      if (y_wr)  ycorr[yc_idx] <= {yc_tag, y_nudge};
       // The arrays themselves are NOT cleared: see the BTB declaration for why a stale hint
       // is harmless. Only the forward flags need it, so a reset cannot inject a bogus entry.
       if (reset) begin t_fwd_q <= 1'b0; y_fwd_q <= 1'b0; end
