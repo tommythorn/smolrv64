@@ -341,6 +341,62 @@ module ino_core
       .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
+   // ---- reorder buffer, running as a SHADOW ------------------------------------------
+   // The step from "M is the commit point" to "the ROB head is the commit point" -- the
+   // substrate out-of-order issue needs. Brought up exactly the way rename was (rule I3):
+   // it is driven by the real instruction stream and its commit decision is CHECKED against
+   // the live one every cycle, while still driving nothing. Switching ino_rename's commit
+   // port over is then one line against a proven structure.
+   //
+   // It is small because ino_rename already did the hard part: SMAP/RMAP/lv and a per-shard
+   // free list with separate speculative and committed heads, where rollback is a pointer
+   // restore. That already supports N uncommitted instructions; N is only ever 1 today
+   // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
+   localparam integer ROB_DEPTH = 16, ROB_IDXB = 4;
+   wire [ROB_IDXB-1:0] rob_d_idx;
+   wire                rob_ready, rob_empty;
+   wire                rob_c_valid, rob_c_rd_v;
+   wire [5:0]          rob_c_rd;
+   wire [1:0]          rob_c_shard;
+   wire [RN_PBITS-1:0] rob_c_prd, rob_c_pold;
+   reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
+   initial m_rob_idx = {ROB_IDXB{1'b0}};
+   always @(posedge clk) if (m_advance) m_rob_idx <= rob_d_idx;
+
+   // Completion. While M blocks this is just "M finished", so the head is always the M
+   // instruction; when the blocking is cut, this becomes one input per unit.
+   wire rob_w_valid = m_valid & m_done;
+
+   ino_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
+     (.clk(clk), .reset(reset),
+      .d_valid(rn_valid), .d_rd(d_rd), .d_rd_v(d_rd_v), .d_shard(d_shard),
+      .d_prd(rn_prd), .d_pold(rn_pold), .d_ready(rob_ready), .d_idx(rob_d_idx),
+      .w_valid(rob_w_valid), .w_idx(m_rob_idx),
+      .c_kill(m_valid & m_done & m_trap),
+      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
+      .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
+      .flush(redirect), .empty(rob_empty));
+
+   // THE SHADOW CHECK. ino_rename gates its whole commit arm on `c_valid & c_rd_v`, so the
+   // ROB's stream is equivalent to the live one exactly when that product and the fields
+   // agree. Checked every cycle, so a wrong head, a lost completion or a mis-ordered commit
+   // fires at the mistake rather than as a wrong register value much later.
+   always @(posedge clk) if (!reset) begin
+      if ((rob_c_valid & rob_c_rd_v) !== rf_we)
+         $fatal(1, "ino_rob shadow: commit-enable differs (rob=%b live=%b pc=%h)",
+                rob_c_valid & rob_c_rd_v, rf_we, m_pc);
+      if (rf_we && ((rob_c_rd    !== m_rd)   || (rob_c_prd  !== m_prd) ||
+                    (rob_c_pold  !== m_pold) || (rob_c_shard !== m_shard)))
+         $fatal(1, "ino_rob shadow: commit record differs at pc=%h -- rob{rd=%0d prd=%0d pold=%0d sh=%0d} live{rd=%0d prd=%0d pold=%0d sh=%0d}",
+                m_pc, rob_c_rd, rob_c_prd, rob_c_pold, rob_c_shard,
+                      m_rd,     m_prd,     m_pold,     m_shard);
+      // While M blocks, at most one instruction is in flight, so the ROB can never fill and
+      // never holds more than one entry. Both stop being true in the next step; asserting
+      // them now means the step that breaks them is the step that has to justify itself.
+      if (~rob_ready)
+         $fatal(1, "ino_rob shadow: ROB full with a blocking M -- occupancy invariant broken");
+   end
+
    // M-stage registers (declared here: the bypass reads them)
    reg              m_valid, m_rvc, m_rd_v;
    reg  [PCW-1:0]   m_pc, m_pred_npc, m_fault_tval, m_target, m_taken_tgt;
