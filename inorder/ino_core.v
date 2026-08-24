@@ -326,8 +326,11 @@ module ino_core
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
       .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
       .r_prd(rn_prd), .r_pold(rn_pold),
-      .c_valid(rf_we), .c_rd(m_rd), .c_rd_v(m_rd_v), .c_shard(m_shard),
-      .c_prd(m_prd), .c_pold(m_pold),
+      // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
+      // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
+      // way rename itself was switched over once its shadow had earned it.
+      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_shard(rob_c_shard),
+      .c_prd(rob_c_prd), .c_pold(rob_c_pold),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
@@ -377,10 +380,15 @@ module ino_core
       .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
       .flush(redirect), .empty(rob_empty));
 
-   // THE SHADOW CHECK. ino_rename gates its whole commit arm on `c_valid & c_rd_v`, so the
-   // ROB's stream is equivalent to the live one exactly when that product and the fields
-   // agree. Checked every cycle, so a wrong head, a lost completion or a mis-ordered commit
-   // fires at the mistake rather than as a wrong register value much later.
+   // THE CHECK THAT EARNED THE SWITCH, kept. ino_rename gates its whole commit arm on
+   // `c_valid & c_rd_v`, so the ROB's stream is equivalent to the M-stage one exactly when
+   // that product and the fields agree. It now guards the live path rather than a shadow: a
+   // wrong head, a lost completion or a mis-ordered commit fires at the mistake instead of
+   // as a wrong register value much later.
+   //
+   // It holds only while M BLOCKS, because that is what makes the head and the M instruction
+   // the same instruction. Cutting the blocking is the step that must retire it -- and
+   // having to delete an assertion is a deliberately loud way to notice.
    always @(posedge clk) if (!reset) begin
       if ((rob_c_valid & rob_c_rd_v) !== rf_we)
          $fatal(1, "ino_rob shadow: commit-enable differs (rob=%b live=%b pc=%h)",
