@@ -84,6 +84,8 @@ module ino_cache #(
    localparam WRB   = WDW/8;
    localparam NW    = WAYS*SETS;
    localparam FW    = $clog2(NW);
+   // flat() concatenates {way, index}, which is only the flat index when WAYS is 2.
+   initial if (WAYS != 2) $fatal(1, "ino_cache: flat() assumes WAYS==2, got %0d", WAYS);
 
    localparam BANKW  = RDW;
    localparam CBY    = BANKW/8;
@@ -116,7 +118,10 @@ module ino_cache #(
       begin t = tag_of(a); way_idx = (w==0) ? base_idx(a) : (base_idx(a) ^ t[IDXB-1:0]); end
 `endif
    endfunction
-   function [FW-1:0] flat; input integer w; input [IDXB-1:0] ix; flat = (w!=0)*SETS + ix; endfunction
+   // {way, index}, not (w!=0)*SETS+ix: the multiply-add is a 32-bit expression that only
+   // happened to fit at SIZE_KB=128 and truncates at 64.  FW is clog2(WAYS*SETS) =
+   // 1+IDXB for WAYS=2, so the concatenation IS the flat index, exactly FW bits.
+   function [FW-1:0] flat; input integer w; input [IDXB-1:0] ix; flat = {(w!=0), ix}; endfunction
 
    // ---- data banks: index b = way*2 + parity ----
    reg  [BAW-1:0]   bk_rdaddr [0:2*WAYS-1];

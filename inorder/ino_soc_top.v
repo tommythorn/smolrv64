@@ -55,7 +55,11 @@ module ino_soc_top #(
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
    parameter        LRAM_LG2 = 18,              // 256 KiB local SRAM
    parameter [63:0] RESET_PC = BASE,            // tests link @DDR; the platform boots @LBASE
-   parameter        SIZE_KB  = 128              // each cache
+   parameter        SIZE_KB  = 64               // each cache. 128 KB spread the D$ over
+                                                 // X 6..72 Y 29..193 -- most of the die -- and
+                                                 // its worst INTERNAL route (vw0 -> bank WEA)
+                                                 // was 5.7 ns, 82% of it wire.  D$ miss rate
+                                                 // on GB5 is 0.195%, so halving costs little.
 ) (
    input  wire             clk,
    input  wire             reset,
