@@ -92,8 +92,18 @@ module ino_predictor
    localparam [2:0] TY_JMP = 3'b100, TY_CALL = 3'b101, TY_RET = 3'b110;
 
    // ------------------------------------------------------------ BTB (1R1W RAM)
-   // entry = {valid, tag, type[2:0], target[38:1]} -- valid lives IN the array so the read
-   // is a plain synchronous-read RAM and costs one block-RAM address setup, nothing else.
+   // entry = {tag, type[2:0], target[38:1]}, and NO valid bit -- the tag carries it, exactly
+   // as in the corrector below. A never-written entry reads as all zeros, so it is believed
+   // only by a PC whose btag is also 0 (1 in 4096) whose bundle ends on a CTI; what it then
+   // says is type=000, ctr=00 -- a strongly-not-taken conditional, i.e. pred_v=0, which is
+   // indistinguishable from having no entry. The one case that is not silent needs the
+   // CORRECTOR to override that direction from an aliased entry as well (~1e-6): then it
+   // predicts taken to target 0, which is a mispredict M resolves and the same resolve
+   // retrains, and it is not a new class of event -- the BTB is a cache that is never rolled
+   // back, so a stale entry pointing anywhere is already the normal case (see the tag-fold
+   // note below, which exists because of exactly that).
+   //
+   // The read is therefore a plain synchronous-read RAM costing one block-RAM address setup.
    //
    // FMAX (this is why, 166 MHz): the valid bits used to be a separate flop vector read as
    // `btb_v[bidx(npc)]` -- a 256:1, and for the corrector a 1024:1, LUT/MUXF mux hanging off
@@ -105,21 +115,18 @@ module ino_predictor
    // an 11-bit entry. Folding valid in and forcing block RAM ends the loop at a BRAM address
    // pin: two loads on the index, no depth mux, no valid mux.
    //
-   // The price is that `reset` can no longer mass-clear the valid bits -- a BRAM has no
-   // broadcast clear. That is free HERE and nowhere else in the core: every prediction is a
-   // hint (see the header), a surviving entry costs at most one mispredict before the first
-   // resolve retrains it, and it can never steer a bundle that does not end on a CTI
-   // (`cti_ok`) or whose base PC and tag do not both match. Configuration INIT still zeroes
-   // the array, so a cold FPGA and a fresh simulation both start empty.
+   // With no valid bit there is also nothing for `reset` to mass-clear, which a BRAM cannot
+   // do anyway. Configuration INIT zeroes the array, so a cold FPGA and a fresh simulation
+   // both start with every entry untagged.
    localparam EW = TAGW + 3 + TGTW;
    (* ram_style = "block" *)
-   reg [EW:0]     btb   [0:NBTB-1];          // [EW] = valid
-   reg [EW:0]     btb_raw;                   // registered read (rule A1)
+   reg [EW-1:0]   btb   [0:NBTB-1];          // {tag, type, target} -- validity IS the tag match
+   reg [EW-1:0]   btb_raw;                   // registered read (rule A1)
    reg [PCW-1:0]  btb_qpc;                   // address the read was for
    integer bi;
    initial begin
-      btb_raw = {(EW+1){1'b0}}; btb_qpc = {PCW{1'b0}};
-      for (bi = 0; bi < NBTB; bi = bi + 1) btb[bi] = {(EW+1){1'b0}};
+      btb_raw = {EW{1'b0}}; btb_qpc = {PCW{1'b0}};
+      for (bi = 0; bi < NBTB; bi = bi + 1) btb[bi] = {EW{1'b0}};
    end
 
    // Tag folds higher PC bits in (XOR) so addresses that agree in [20:1] but differ
@@ -175,12 +182,10 @@ module ino_predictor
    // thing one cycle later. It also DEFINES the read-during-write result, which a simple
    // dual-port BRAM leaves indeterminate in hardware.
    reg            t_fwd_q, y_fwd_q;
-   reg [EW:0]     t_dat_q;
+   reg [EW-1:0]   t_dat_q;
    reg [YEW-1:0]  y_dat_q;
    initial begin t_fwd_q = 1'b0; y_fwd_q = 1'b0; end
-   wire [EW:0]    btb_e    = t_fwd_q ? t_dat_q : btb_raw;
-   wire           btb_qv   = btb_e[EW];
-   wire [EW-1:0]  btb_q    = btb_e[EW-1:0];
+   wire [EW-1:0]  btb_q    = t_fwd_q ? t_dat_q : btb_raw;
    wire [YEW-1:0] ycorr_q  = y_fwd_q ? y_dat_q : ycorr_raw;
 
    // ------------------------------------------------- speculative state {ghr,ras}
@@ -203,7 +208,7 @@ module ino_predictor
 
    // ------------------------------------------------------------------- predict
    // (registered state only -- see the timing-shape note above)
-   wire            hit      = cti_ok & btb_qv & (btb_qpc == base_pc)
+   wire            hit      = cti_ok & (btb_qpc == base_pc)
                             & (btb_q[EW-1 -: TAGW] == btag(base_pc));
    wire [2:0]      q_type   = btb_q[TGTW +: 3];
    wire [TGTW-1:0] q_tgt    = btb_q[TGTW-1:0];
@@ -304,7 +309,7 @@ module ino_predictor
    // write-forward: a mispredict's redirected refetch reads the BTB the same edge
    // its own training write lands -- without forwarding the retrained entry is
    // invisible to that first refetch and every cold-taken CTI mispredicts twice.
-   // Decided here, applied a cycle later at btb_e/ycorr_q (see that comment).
+   // Decided here, applied a cycle later at btb_q/ycorr_q (see that comment).
    wire t_fwd = res_v && (t_idx == bidx(apc));
    wire y_fwd = y_wr  && (yc_idx == yidx(apc, ghr));        // same write-forward for the corrector
    // Read enable: exactly the cycles in which fetch's base PC MOVES. fetch advances pc_q on
@@ -323,10 +328,10 @@ module ino_predictor
          btb_raw   <= btb[bidx(apc)];
          btb_qpc   <= apc;
          ycorr_raw <= ycorr[yidx(apc, ghr)];
-         t_fwd_q   <= t_fwd;   t_dat_q <= {1'b1, t_tag,  t_type,  res_tgt[TGTW:1]};
+         t_fwd_q   <= t_fwd;   t_dat_q <= {t_tag,  t_type, res_tgt[TGTW:1]};
          y_fwd_q   <= y_fwd;   y_dat_q <= {yc_tag, y_nudge};
       end
-      if (res_v) btb[t_idx]    <= {1'b1, t_tag,  t_type, res_tgt[TGTW:1]};
+      if (res_v) btb[t_idx]    <= {t_tag,  t_type, res_tgt[TGTW:1]};
       if (y_wr)  ycorr[yc_idx] <= {yc_tag, y_nudge};
       // The arrays themselves are NOT cleared: see the BTB declaration for why a stale hint
       // is harmless. Only the forward flags need it, so a reset cannot inject a bogus entry.
