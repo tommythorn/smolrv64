@@ -143,6 +143,10 @@ module tb;
    // iMMU, out of fetch window, or something else.
    wire sb_novalid = dut.core.st_mem & ~dut.core.d_valid;
    reg [63:0] n_stmem, n_recov, n_bdep, n_bmem, n_bser, n_nov, n_nov_mmu, n_nov_ic, n_nov_qrdy;
+   // Per-unit stall, to size the OTHER units against the LSU. mul3 and cvfpu are both
+   // internally pipelined and only held to one outstanding by a busy flag / a discarded
+   // tag, so their tier is cheap -- but cheap is not the same as worth doing.
+   reg [63:0] n_stmul, n_stdiv, n_stfpu;
    always @(posedge clk) if (!reset) begin
       if (dut.core.st_mem) n_stmem <= n_stmem + 1;
       if (sb_recov)        n_recov <= n_recov + 1;
@@ -158,6 +162,9 @@ module tb;
       // F/X queue behind it is holding instructions. Those cycles ARE recoverable by the
       // scoreboard -- one cycle later, as the IR refills. Only ~q_empty is genuinely dry.
       if (sb_novalid & ~dut.core.fe.q_empty) n_nov_qrdy <= n_nov_qrdy + 1;
+      if (dut.core.st_mul) n_stmul <= n_stmul + 1;
+      if (dut.core.st_div) n_stdiv <= n_stdiv + 1;
+      if (dut.core.st_fpu) n_stfpu <= n_stfpu + 1;
    end
 
    reg [8*256-1:0] fw, dtb, initrd;
@@ -167,6 +174,7 @@ module tb;
       n_inject = 0; n_uirq = 0; n_seip = 0;
       n_stmem = 0; n_recov = 0; n_bdep = 0; n_bmem = 0; n_bser = 0;
       n_nov = 0; n_nov_mmu = 0; n_nov_ic = 0; n_nov_qrdy = 0;
+      n_stmul = 0; n_stdiv = 0; n_stfpu = 0;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -203,6 +211,8 @@ module tb;
                n_nov, (n_nov*100)/n_stmem, n_nov_mmu, n_nov_ic, n_nov-n_nov_mmu-n_nov_ic);
       $display("SB-SIZING     ...of which F/X QUEUE HAS WORK %0d  (%0d%% of X-empty) -- recoverable, IR just cannot reload while M stalls",
                n_nov_qrdy, (n_nov_qrdy*100)/n_nov);
+      $display("SB-SIZING   per-unit stall: mul=%0d div=%0d fpu=%0d  (vs LSU %0d)",
+               n_stmul, n_stdiv, n_stfpu, n_stmem);
       $display("SB-SIZING   FLOOR %0d.%02d%% of cycles / CEILING %0d.%02d%% (floor + queue-ready X-empty)",
                (n_recov*100)/c, ((n_recov*10000)/c)%100,
                ((n_recov+n_nov_qrdy)*100)/c, (((n_recov+n_nov_qrdy)*10000)/c)%100);
