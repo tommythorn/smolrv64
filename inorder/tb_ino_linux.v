@@ -147,6 +147,8 @@ module tb;
    // internally pipelined and only held to one outstanding by a busy flag / a discarded
    // tag, so their tier is cheap -- but cheap is not the same as worth doing.
    reg [63:0] n_stmul, n_stdiv, n_stfpu;
+   // Where did the cycles the scoreboard freed actually go?
+   reg [63:0] n_stm, n_hold, n_headblk, n_mempty, n_ldland, n_robfull, n_srcpend;
    always @(posedge clk) if (!reset) begin
       if (dut.core.st_mem) n_stmem <= n_stmem + 1;
       if (sb_recov)        n_recov <= n_recov + 1;
@@ -165,6 +167,13 @@ module tb;
       if (dut.core.st_mul) n_stmul <= n_stmul + 1;
       if (dut.core.st_div) n_stdiv <= n_stdiv + 1;
       if (dut.core.st_fpu) n_stfpu <= n_stfpu + 1;
+      if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
+      if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
+      if (dut.core.src_pend & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
+      if (~dut.core.rob_ready & dut.core.d_valid)   n_robfull <= n_robfull + 1;
+      if (dut.core.head_block)                      n_headblk <= n_headblk + 1;
+      if (~dut.core.m_valid)                        n_mempty  <= n_mempty + 1;
+      if (dut.core.ld_land)                         n_ldland  <= n_ldland + 1;
    end
 
    reg [8*256-1:0] fw, dtb, initrd;
@@ -175,6 +184,8 @@ module tb;
       n_stmem = 0; n_recov = 0; n_bdep = 0; n_bmem = 0; n_bser = 0;
       n_nov = 0; n_nov_mmu = 0; n_nov_ic = 0; n_nov_qrdy = 0;
       n_stmul = 0; n_stdiv = 0; n_stfpu = 0;
+      n_stm = 0; n_hold = 0; n_headblk = 0; n_mempty = 0; n_ldland = 0;
+      n_robfull = 0; n_srcpend = 0;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -213,6 +224,8 @@ module tb;
                n_nov_qrdy, (n_nov_qrdy*100)/n_nov);
       $display("SB-SIZING   per-unit stall: mul=%0d div=%0d fpu=%0d  (vs LSU %0d)",
                n_stmul, n_stdiv, n_stfpu, n_stmem);
+      $display("SB-WHERE  M-stall=%0d  M-empty=%0d | d_hold=%0d (src_pend=%0d rob_full=%0d) head_block=%0d ld_land=%0d",
+               n_stm, n_mempty, n_hold, n_srcpend, n_robfull, n_headblk, n_ldland);
       $display("SB-SIZING   FLOOR %0d.%02d%% of cycles / CEILING %0d.%02d%% (floor + queue-ready X-empty)",
                (n_recov*100)/c, ((n_recov*10000)/c)%100,
                ((n_recov+n_nov_qrdy)*100)/c, (((n_recov+n_nov_qrdy)*10000)/c)%100);

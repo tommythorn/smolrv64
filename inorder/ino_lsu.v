@@ -132,6 +132,8 @@ module ino_lsu
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
    reg         xword_q;
    reg  [2:0]  boff_q;
+   reg  [3:0]  nb_q;      // load-format width/sign/NaN-box, latched with the request
+   reg         sgn_q, fp_q;
    reg  [55:0] pa2_q;                                // the next aligned word
    reg  [63:0] ld_lo_q;                              // first word's data
    // boff_q is 1..7 whenever xword_q, so sh_up is 8..56 -- never a 64-bit shift.
@@ -233,14 +235,20 @@ module ino_lsu
    wire [63:0] mem_rdata_eff = (st == S_LD2)
                              ? ((ld_lo_q >> sh_dn) | (mem_rdata << sh_up))
                              : (mem_rdata >> sh_dn);
-   wire [63:0] ld_val = (nb == 4'd1) ? (req_signed ? {{56{mem_rdata_eff[7]}},  mem_rdata_eff[7:0]}
-                                                   : {56'd0, mem_rdata_eff[7:0]})
-                      : (nb == 4'd2) ? (req_signed ? {{48{mem_rdata_eff[15]}}, mem_rdata_eff[15:0]}
-                                                   : {48'd0, mem_rdata_eff[15:0]})
-                      : (nb == 4'd4) ? (req_fp     ? {32'hffffffff, mem_rdata_eff[31:0]}   // FLW: NaN-box
-                                      : req_signed ? {{32{mem_rdata_eff[31]}}, mem_rdata_eff[31:0]}
-                                                   : {32'd0, mem_rdata_eff[31:0]})
-                      :                mem_rdata_eff;
+   // FORMATTED FROM THE LATCHED REQUEST, not the live one. req_size/req_signed/req_fp come
+   // straight from the M-stage registers, which was safe only while M was guaranteed to still
+   // be holding this very load. With M released at dispatch they belong to whatever
+   // instruction is in M when the data comes back, and an `ld` returning 0x80044000 gets
+   // formatted as a byte load -- i.e. 0. boff_q was already latched here for the same reason;
+   // these three were not.
+   wire [63:0] ld_val = (nb_q == 4'd1) ? (sgn_q ? {{56{mem_rdata_eff[7]}},  mem_rdata_eff[7:0]}
+                                                : {56'd0, mem_rdata_eff[7:0]})
+                      : (nb_q == 4'd2) ? (sgn_q ? {{48{mem_rdata_eff[15]}}, mem_rdata_eff[15:0]}
+                                                : {48'd0, mem_rdata_eff[15:0]})
+                      : (nb_q == 4'd4) ? (fp_q  ? {32'hffffffff, mem_rdata_eff[31:0]}   // FLW: NaN-box
+                                       : sgn_q  ? {{32{mem_rdata_eff[31]}}, mem_rdata_eff[31:0]}
+                                                : {32'd0, mem_rdata_eff[31:0]})
+                      :                 mem_rdata_eff;
 
    // ------------------------------------------------------------ write port
    wire st_go = (st == S_ST) || (st == S_ST2), amo_go = (st == S_AWR);
@@ -303,6 +311,7 @@ module ino_lsu
                 cos_pa        <= t_paddr;                     // exact, pre-alignment
                 cos_kind      <= req_store ? 2'd2 : req_amo ? 2'd2 : 2'd1;
                 xword_q <= xword;
+                nb_q    <= nb;  sgn_q <= req_signed;  fp_q <= req_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
                 pa2_q   <= (t_paddr & ~56'd7) + 56'd8;
                 if (req_store) begin

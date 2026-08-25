@@ -181,7 +181,7 @@ module ino_core
 
    ino_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
-     (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance),
+     (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance & ~d_hold),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
@@ -318,7 +318,7 @@ module ino_core
    // Rename exactly when the instruction actually enters M and is not being squashed --
    // the same condition that sets m_valid below.  Renaming on any looser condition would
    // allocate twice for one instruction, or allocate for a squashed one.
-   wire rn_valid = m_advance & d_valid & ~redirect & ~redirect_q;
+   wire rn_valid = m_advance & d_take;
 
    ino_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
      (.clk(clk), .reset(reset),
@@ -337,10 +337,10 @@ module ino_core
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    ino_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
-      .we_ie(rf_we & (m_shard == SH_IE)),
-      .we_ld(rf_we & (m_shard == SH_LD)),
-      .we_fe(rf_we & (m_shard == SH_FE)),
-      .wa(m_prd), .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
+      .we_ie(prf_we & (prf_shard == SH_IE)),
+      .we_ld(prf_we & (prf_shard == SH_LD)),
+      .we_fe(prf_we & (prf_shard == SH_FE)),
+      .wa(prf_wa), .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
@@ -380,44 +380,32 @@ module ino_core
 
    // Completion. While M blocks this is just "M finished", so the head is always the M
    // instruction; when the blocking is cut, this becomes one input per unit.
-   wire rob_w_valid = m_valid & m_done;
+   // A load's done bit is set when its DATA lands, not when M released it -- otherwise the
+   // ROB would commit it before its register write exists. A FAULTING load never sets done
+   // at all: it traps, and the redirect's flush retires the entry.
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb) | ld_land;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : m_rob_idx;
 
    ino_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
       .d_valid(rn_valid), .d_rd(d_rd), .d_rd_v(d_rd_v), .d_shard(d_shard),
       .d_prd(rn_prd), .d_pold(rn_pold), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_valid(rob_w_valid), .w_idx(m_rob_idx),
+      .w_valid(rob_w_valid), .w_idx(rob_w_idx),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
       .c_noret(rob_c_noret),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx));
 
-   // THE CHECK THAT EARNED THE SWITCH, kept. ino_rename gates its whole commit arm on
-   // `c_valid & c_rd_v`, so the ROB's stream is equivalent to the M-stage one exactly when
-   // that product and the fields agree. It now guards the live path rather than a shadow: a
-   // wrong head, a lost completion or a mis-ordered commit fires at the mistake instead of
-   // as a wrong register value much later.
+   // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
+   // and by construction: it said the ROB's commit equals what M would have done in the same
+   // cycle, which was true only because M blocked. It no longer does. Its replacement is the
+   // ROB's own always-on set (double completion, completion of a dead slot, committing an
+   // invalid head, occupancy overflow) plus the scoreboard's, above.
    //
-   // It holds only while M BLOCKS, because that is what makes the head and the M instruction
-   // the same instruction. Cutting the blocking is the step that must retire it -- and
-   // having to delete an assertion is a deliberately loud way to notice.
-   always @(posedge clk) if (!reset) begin
-      if ((rob_c_valid & rob_c_rd_v) !== rf_we)
-         $fatal(1, "ino_rob shadow: commit-enable differs (rob=%b live=%b pc=%h)",
-                rob_c_valid & rob_c_rd_v, rf_we, m_pc);
-      if (rf_we && ((rob_c_rd    !== m_rd)   || (rob_c_prd  !== m_prd) ||
-                    (rob_c_pold  !== m_pold) || (rob_c_shard !== m_shard)))
-         $fatal(1, "ino_rob shadow: commit record differs at pc=%h -- rob{rd=%0d prd=%0d pold=%0d sh=%0d} live{rd=%0d prd=%0d pold=%0d sh=%0d}",
-                m_pc, rob_c_rd, rob_c_prd, rob_c_pold, rob_c_shard,
-                      m_rd,     m_prd,     m_pold,     m_shard);
-      // While M blocks, at most one instruction is in flight, so the ROB can never fill and
-      // never holds more than one entry. Both stop being true in the next step; asserting
-      // them now means the step that breaks them is the step that has to justify itself.
-      if (~rob_ready)
-         $fatal(1, "ino_rob shadow: ROB full with a blocking M -- occupancy invariant broken");
-   end
+   // `rob_ready` is now real back-pressure rather than an assertion: with M releasing loads
+   // early, the ROB genuinely fills behind a head that is waiting for its data.
 
    // M-stage registers (declared here: the bypass reads them)
    reg              m_valid, m_rvc, m_rd_v;
@@ -449,38 +437,27 @@ module ino_core
    wire       byp1 = m_valid & m_rd_v & (m_rd == d_rs1);
    wire       byp2 = m_valid & m_rd_v & (m_rd == d_rs2);
    wire       byp3 = m_valid & m_rd_v & (m_rd == d_rs3);
-   // THE SHADOW CHECK, and the whole reason rename can be brought up without risk.
-   // A renamed read must name the same value the architectural register file holds.  If
-   // the map, the free lists or the shard routing are wrong, this fires at the mistake
-   // rather than thousands of instructions later when the wrong value is finally used --
-   // which is the failure mode that costs days here.
+   // THE EVERY-CYCLE SHADOW COMPARISON IS GONE, and deliberately.
    //
-   // Excluded when the core is bypassing: ino_prf implements write-through (required by
-   // docs/Area-Efficient-Scalar-OoO.md 14.1) and ino_regfile does not, so on the cycle M
-   // writes back a register X is reading they legitimately differ.  That case is exactly
-   // what byp1/2/3 cover, and the core takes m_byp_val there regardless.
-`ifndef SYNTHESIS
-   always @(posedge clk) if (!reset & d_valid) begin
-      if (d_rs1_v & ~byp1 & (prf_rs1 !== rf_rs1))
-         $fatal(1, "ino_core: rename shadow mismatch rs1 x%0d: prf(p%0d)=%h rf=%h",
-                d_rs1, rn_prs1, prf_rs1, rf_rs1);
-      if (d_rs2_v & ~byp2 & (prf_rs2 !== rf_rs2))
-         $fatal(1, "ino_core: rename shadow mismatch rs2 x%0d: prf(p%0d)=%h rf=%h",
-                d_rs2, rn_prs2, prf_rs2, rf_rs2);
-      if (d_rs3_v & ~byp3 & (prf_rs3 !== rf_rs3))
-         $fatal(1, "ino_core: rename shadow mismatch rs3 x%0d: prf(p%0d)=%h rf=%h",
-                d_rs3, rn_prs3, prf_rs3, rf_rs3);
-   end
-`endif
+   // It asserted that a renamed read equals the architectural register file, which held only
+   // because -- in ino_rename's own words -- "issue and commit remain IN ORDER at this
+   // milestone". This commit is what ends that. Once a result lands in the PRF at COMPLETION
+   // while the architectural file is written at COMMIT, the two differ for every instruction
+   // in that window, which is most of them; and ino_regfile, having no rename, cannot model
+   // out-of-order writeback at all.
+   //
+   // It earned its keep: five defects during rename bring-up, plus two in this change (a
+   // pending source read before its load returned, and the load-format controls being taken
+   // live from a stage that had moved on). What replaces it is strictly stronger and already
+   // running -- the cosim compares every retired instruction's value against simmerv, in
+   // program order, for billions of retirements. ino_regfile itself stays, written in commit
+   // order, because tb_ino_riscv traces it.
 
-   // With in-order issue only ~2 instructions are ever in flight, so no shard can run dry
-   // at these sizes.  If it ever does, the sizing is wrong -- say so rather than silently
-   // stalling, because at this milestone rn_stall is deliberately NOT in the stall path
-   // (wiring it there would be a functional change).
-   always @(posedge clk)
-      if (!reset & rn_stall)
-         $fatal(1, "ino_core: rename free list ran low (shard_low=%b) -- resize the PRF",
-                rn_shard_low);
+   // rn_stall IS in the stall path now (see d_hold). It used to be a $fatal, on the grounds
+   // that only ~2 instructions are ever in flight so no shard can run dry -- an argument that
+   // expired when M stopped blocking and the ROB started filling behind a waiting load. It
+   // should still never fire at these sizes (ROB_DEPTH=16 against a 32-entry smallest free
+   // pool), but "should never" is now handled rather than fatal.
 
    // OPERANDS NOW COME FROM THE SHARDED PRF.  The bypass is retained rather than leaning
    // on ino_prf's write-through: both deliver the same value in the M->X case, and keeping
@@ -767,7 +744,13 @@ module ino_core
       // commit event, so a trapping op never dirties FS.
       .fp_dirty_commit(retire & rob_c_rd_v & rob_c_rd[5]),
       .o_tlb_flush(mmu_flush),
-      .xtrap_v(xtrap_v), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
+      // GATED BY m_done. Neither of these was, because a SYSTEM op or a poisoned instruction
+      // always completed in its single M cycle -- so `in M` and `completing` were the same
+      // thing. head_block and ld_land can now hold one in M for several cycles, and an
+      // ungated effect applies EARLY (before the op is the ROB head) and then AGAIN on every
+      // stalled cycle. That is what put the machine in supervisor mode one instruction ahead
+      // of the reference, at the paging transition.
+      .xtrap_v(xtrap_v & m_done), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
@@ -776,18 +759,69 @@ module ino_core
       // and PINCONNECTEMPTY does not, so a deliberate non-connection has to say so instead
       // of being silently omitted (same treatment as the iMMU's t_uncached).
       .dbg_timer(), .dbg_mtvec(), .dbg_mtvec_we(), .dbg_csrop(), .dbg_csrop_v(),
-      .upd_valid(m_is_sys), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
+      .upd_valid(m_is_sys & m_done), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
       .upd_addr(m_imm[11:0]),
       .upd_src(m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val),
       .upd_pc(m_pc));
 
+   // ---- NON-BLOCKING LOADS ------------------------------------------------------------
+   // M lets go of a plain load at DISPATCH instead of at data-return. Safe with no ROB walk
+   // because ino_lsu decides the fault before the access starts (see ino_lsu.started): past
+   // S_IDLE a load cannot fault, so nothing older can still trap once M has moved on.
+   //
+   // Exactly ONE load in flight, and that is not a simplification to revisit casually -- the
+   // PRF has one write address (ino_prf: one `wa`, three shard enables), so two completions
+   // in a cycle have nowhere to go. Multiple outstanding loads is the step that has to solve
+   // that, together with a load queue and D$ MSHRs.
+   wire m_ld_nb  = m_mem_op & ~m_is_store & ~m_is_amo;   // plain load: releases M early
+   wire ld_disp  = m_ld_nb & lsu_started;                // handed over; cannot fault now
+   reg                sb_busy, sb_rd_v;
+   reg [RN_PBITS-1:0] sb_preg;
+   reg [5:0]          sb_rd;
+   reg [ROB_IDXB-1:0] sb_rob;
+   initial begin sb_busy = 1'b0; sb_rd_v = 1'b0; end
+   wire ld_land  = sb_busy & lsu_done;                   // data back
+   always @(posedge clk) begin
+      if (reset) sb_busy <= 1'b0;
+      else begin
+         if (ld_land) sb_busy <= 1'b0;
+         if (ld_disp) begin
+            sb_busy  <= 1'b1;   sb_preg <= m_prd;      sb_rd_v <= m_rd_v;
+            sb_rd    <= m_rd;   sb_rob  <= m_rob_idx;
+         end
+      end
+   end
+   always @(posedge clk) if (!reset) begin
+      if (ld_disp & sb_busy & ~ld_land)
+         $fatal(1, "ino_core: a second load dispatched with one already in flight");
+      if (ld_land & ~sb_busy)
+         $fatal(1, "ino_core: LSU completed a load the scoreboard does not know about");
+   end
+
    // ---- completion ----
-   assign m_done = ~m_valid              ? 1'b1
+   wire m_done_raw = ~m_valid            ? 1'b1
                  : m_fault | m_ill_eff   ? 1'b1   // poisoned: traps immediately
-                 : m_mem_op              ? lsu_done
+                 : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault) : lsu_done)
                  : m_md_op               ? (md_div ? div_done : mul_done)
                  : fp_arith              ? fp_complete
                  :                         1'b1;  // in-core FP included: single-cycle
+
+   // A trap or a redirect may only fire when M IS THE ROB HEAD. The trapping instruction is
+   // YOUNGER than an outstanding load, and `flush` kills everything -- including that older
+   // entry, whose register write would be lost even though it is architecturally before the
+   // trap and cannot itself fault. Waiting costs nothing measurable: redirects run 3.4 per
+   // 1000 instructions, and the load it waits on is already on its way back.
+   // Stated over the instruction CLASS, not over csr_red/m_trap. Those are csr_file outputs,
+   // and the effects that must be head-gated (upd_valid, xtrap_v) are csr_file INPUTS -- so
+   // gating them through csr_red would close a combinational loop. Every term here is either
+   // registered or decoded from m_insn.
+   wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
+                     | m_fault | m_ill_eff | (m_mem_op & lsu_fault);
+   wire head_block   = m_valid & m_needs_head & ~m_at_head;
+
+   // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
+   // ~0.3 cycles per load against the ~2.3 the early release saves.
+   assign m_done = m_done_raw & ~head_block & ~ld_land;
    assign m_advance = ~m_valid | m_done;
 
    // ---- trap / redirect ----
@@ -815,7 +849,15 @@ module ino_core
    //            m_is_fp; csr_redir_trap needs m_is_sys (opcode SYSTEM) -- none can hold
    //            for a branch or jump. What survives is m_fault | m_illegal.
    // Equivalence, not heuristic -- asserted below on every cycle.
-   assign res_v     = m_valid & (m_is_branch | m_is_jump) & ~m_fault & ~m_illegal;
+   // The de-qualification survives, but it now needs the two gates that can hold a branch in
+   // M for more than a cycle -- without them res_v asserts on EVERY stalled cycle and trains
+   // the BTB and GHR repeatedly for one branch. Re-adding plain m_done would undo the Fmax
+   // win the de-qualification exists for (it drags the LSU and the CSR file back into the
+   // predictor's cone). It does not have to: for a BRANCH OR JUMP, csr_red and m_is_fencei
+   // are 0 and m_trap reduces to m_fault | m_illegal, both already excluded here -- so
+   // head_block collapses to the registered m_redirect against a 4-bit head compare.
+   wire res_block   = (m_redirect & ~m_at_head) | ld_land;
+   assign res_v     = m_valid & (m_is_branch | m_is_jump) & ~m_fault & ~m_illegal & ~res_block;
    assign res_cbr   = m_is_branch;
    assign res_call  = m_is_jump & m_link_rd;
    assign res_ret   = m_is_jalr & m_link_rs & ~m_link_rd;
@@ -854,12 +896,30 @@ module ino_core
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
    assign wb_ie = m_is_csr ? csr_rdata : m_result;
-   assign wb_ld = (m_is_mem | m_is_amo) ? lsu_rd_val : (md_div ? div_result : mul_result);
+   assign wb_ld = (ld_wb | m_is_mem | m_is_amo) ? lsu_rd_val
+                                                : (md_div ? div_result : mul_result);
    assign wb_fe = fp_arith ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
                            : fp_incore_res;
-   assign rf_we = m_valid & m_done & m_rd_v & ~m_trap;
-   assign rf_wa = m_rd;
-   assign rf_wd = m_wb_val;
+   // Two writers now: M's own completion, and a load landing after M has moved on. They can
+   // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
+   // address still holds and ino_prf keeps its one-write-per-cycle property.
+   wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb;   // a load writes via ld_wb
+   wire ld_wb = ld_land & sb_rd_v;
+   wire                prf_we    = m_wb | ld_wb;
+   wire [RN_PBITS-1:0] prf_wa    = ld_wb ? sb_preg : m_prd;
+   wire [1:0]          prf_shard = ld_wb ? SH_LD   : m_shard;
+
+   // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
+   // model out-of-order writeback: a younger instruction writes x13, then an older load lands
+   // and clobbers the same architectural location. Driving it from the ROB head keeps it a
+   // valid architectural model, which is what tb_ino_riscv's trace reads it as.
+`ifndef SYNTHESIS
+   assign rf_we = rob_c_valid & rob_c_rd_v;
+   assign rf_wa = rob_c_rd;
+   assign rf_wd = cs_val_h;
+`else
+   assign rf_we = 1'b0;  assign rf_wa = 6'd0;  assign rf_wd = 64'd0;
+`endif
 
    // RETIRE IS THE ROB HEAD, not the M stage. Not merely for the cosim: it drives minstret
    // through retire_cnt and csr_file's fp_dirty_commit, both architectural, and both of
@@ -880,6 +940,42 @@ module ino_core
    end
    assign retire_pc   = cs_pc[rob_head_idx];
    assign retire_insn = cs_insn[rob_head_idx];
+
+   // Values that are only known at COMPLETION, held per ROB slot until that slot commits.
+   // Simulation-only, so the ROB stays status-only in hardware. The capture is keyed on M's
+   // completion because M still blocks; when a load's data starts arriving after M has moved
+   // on, this trigger is the one thing here that has to follow it to the writeback event.
+   reg [63:0] cs_val   [0:ROB_DEPTH-1];
+   reg [1:0]  cs_mkind [0:ROB_DEPTH-1];
+   reg [55:0] cs_mpa   [0:ROB_DEPTH-1];
+   // Captured at the WRITEBACK event, which for a load is no longer M's cycle.
+   always @(posedge clk) if (!reset) begin
+      if (m_valid && m_done && !m_ld_nb) begin
+         cs_val[m_rob_idx]   <= m_wb_val;
+         cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
+         cs_mpa[m_rob_idx]   <= lsu_cos_pa;
+      end
+      // lsu_cos_* are latched AT start_ok, so they cannot be sampled during the dispatch
+      // cycle -- doing so reported the PREVIOUS access (a store) as a load's memory effect.
+      // They are still this load's values when it lands: the LSU is single-outstanding, so
+      // nothing else can have started in between.
+      if (ld_land) begin
+         cs_val[sb_rob]   <= lsu_rd_val;
+         cs_mkind[sb_rob] <= lsu_cos_kind;
+         cs_mpa[sb_rob]   <= lsu_cos_pa;
+      end
+   end
+   // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
+   // be captured in the very cycle it commits, so the array read returns pre-edge contents.
+   // Missing it reported rd=0 for the second instruction of the boot.
+   wire        cs_hit_m   = m_valid & m_done & ~m_ld_nb & (m_rob_idx == rob_head_idx);
+   wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
+   wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
+                          : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
+   wire [1:0]  cs_mkind_h = cs_hit_ld ? lsu_cos_kind
+                          : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
+   wire [55:0] cs_mpa_h   = cs_hit_ld ? lsu_cos_pa
+                          : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
 `else
    assign retire_pc   = {PCW{1'b0}};
    assign retire_insn = 32'd0;
@@ -1006,25 +1102,6 @@ module ino_core
    // carries rd/rd_v, so this needs no side array.
    wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
 
-   // Values that are only known at COMPLETION, held per ROB slot until that slot commits.
-   // Simulation-only, so the ROB stays status-only in hardware. The capture is keyed on M's
-   // completion because M still blocks; when a load's data starts arriving after M has moved
-   // on, this trigger is the one thing here that has to follow it to the writeback event.
-   reg [63:0] cs_val   [0:ROB_DEPTH-1];
-   reg [1:0]  cs_mkind [0:ROB_DEPTH-1];
-   reg [55:0] cs_mpa   [0:ROB_DEPTH-1];
-   always @(posedge clk) if (!reset && m_valid && m_done) begin
-      cs_val[m_rob_idx]   <= m_wb_val;
-      cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
-      cs_mpa[m_rob_idx]   <= lsu_cos_pa;
-   end
-   // ...and the same write-forward the ROB's head_done needs, for the same reason: while M
-   // blocks, a slot is captured in the very cycle it commits, so the array read returns the
-   // pre-edge contents. It reported rd=0 for the second instruction of the boot.
-   wire        cs_hit     = m_valid & m_done & (m_rob_idx == rob_head_idx);
-   wire [63:0] cs_val_h   = cs_hit ? m_wb_val                         : cs_val[rob_head_idx];
-   wire [1:0]  cs_mkind_h = cs_hit ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
-   wire [55:0] cs_mpa_h   = cs_hit ? lsu_cos_pa                       : cs_mpa[rob_head_idx];
 
    reg        e_v, e_trap;
    reg [63:0] e_pc, e_val, e_cause, e_tval;
@@ -1072,7 +1149,32 @@ module ino_core
    // Nothing follows a serializing op into X until it has left M, so CSR values,
    // privilege, satp and mstatus are never read stale.
    wire ser_block = (d_valid & d_is_serialize) | (m_valid & m_is_serialize);
-   assign accept  = m_advance & ~ser_block;
+
+   // An instruction may not enter M while it reads the in-flight load's destination. Compared
+   // as TAGS, not through a pending bit per physical register: NPHYS is 320, so a pending
+   // vector would be three 320:1 muxes on the operand read -- the docs/rtl-rules.md I4 shape
+   // deleted from the predictor, put back where there is no margin. Three 9-bit compares
+   // instead, and the structure still works when there is more than one tag to check.
+   // The pending tag must include the load DISPATCHING THIS CYCLE, not just one already
+   // recorded: sb_busy is set at the edge, so in the dispatch cycle itself it is still 0 and
+   // a dependent instruction would walk into M and take m_byp_val -- which for a load is
+   // lsu_rd_val, before the data exists. That is the whole failure signature of the load and
+   // store tests, and it is the same read-in-the-write-cycle shape as the ROB's head_done
+   // and the cosim side array. Forward it here too.
+   wire                ld_disp_rd = ld_disp & m_rd_v;
+   wire                pend_v     = ld_disp_rd | (sb_busy & sb_rd_v);
+   wire [RN_PBITS-1:0] pend_pr    = ld_disp_rd ? m_prd : sb_preg;
+   wire s1_pend  = pend_v & d_rs1_v & (rn_prs1 == pend_pr);
+   wire s2_pend  = pend_v & d_rs2_v & (rn_prs2 == pend_pr);
+   wire s3_pend  = pend_v & d_rs3_v & (rn_prs3 == pend_pr);
+   wire src_pend = s1_pend | s2_pend | s3_pend;
+   // ...and two resources that could not run out while only ~2 instructions were in flight.
+   // rn_stall used to be a $fatal on exactly this reasoning; with a ROB behind a waiting load
+   // it is a legitimate condition and has to be back-pressure instead.
+   wire d_hold = d_valid & (src_pend | ~rob_ready | rn_stall);
+   wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q;
+
+   assign accept  = m_advance & ~d_hold & ~ser_block;
 
    always @(posedge clk) begin
       if (reset) begin
@@ -1082,7 +1184,7 @@ module ino_core
          else if (mul_start | div_start) md_started <= 1'b1;
 
          if (m_advance) begin
-            m_valid       <= d_valid & ~redirect & ~redirect_q;   // ~q: the shadow bundle
+            m_valid       <= d_take;              // ~redirect_q: the shadow bundle
             m_pc          <= d_pc;
             m_insn        <= d_insn;
             m_rvc         <= d_rvc;
