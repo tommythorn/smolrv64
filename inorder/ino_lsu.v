@@ -76,6 +76,12 @@ module ino_lsu
     input  wire            mem_wready,
 
     // ---- completion ----
+    // `started` is the DISPATCH point, and the reason non-blocking loads stay precise with no
+    // ROB walk: mis_flt and xl_flt are both qualified by xl_req (= req_valid & st == S_IDLE),
+    // so misalignment, page-cross and translation -- PTW included, since S_IDLE is held until
+    // t_ready -- are all decided BEFORE the access begins. Once the FSM leaves S_IDLE the
+    // access cannot fault, so M can let go here.
+    output wire            started,
     output wire            done,
     output wire [63:0]     rd_val,
     output wire            fault,
@@ -265,6 +271,7 @@ module ino_lsu
    assign mem_cbo_keep  = mem_cbo & req_cbo_keep;
 
    // ------------------------------------------------------------ completion
+   assign started = start_ok;
    assign done   = fault
                  | ((st == S_ST)  & mem_wready & ~xword_q)
                  | ((st == S_ST2) & mem_wready)

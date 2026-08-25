@@ -358,6 +358,12 @@ module ino_core
    localparam integer ROB_DEPTH = 16, ROB_IDXB = 4;
    wire [ROB_IDXB-1:0] rob_d_idx;
    wire                rob_ready, rob_empty;
+   // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
+   // redirect may only fire when it is: the trapping instruction is YOUNGER than an
+   // outstanding load, and `flush` would otherwise kill that older entry and lose its
+   // register write. Not consumed yet -- see the note above lsu_started.
+   wire [ROB_IDXB-1:0] rob_head_idx;
+   wire                m_at_head = (rob_head_idx == m_rob_idx);
    wire                rob_c_valid, rob_c_rd_v;
    wire [5:0]          rob_c_rd;
    wire [1:0]          rob_c_shard;
@@ -378,7 +384,7 @@ module ino_core
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
-      .flush(redirect), .empty(rob_empty));
+      .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx));
 
    // THE CHECK THAT EARNED THE SWITCH, kept. ino_rename gates its whole commit arm on
    // `c_valid & c_rd_v`, so the ROB's stream is equivalent to the M-stage one exactly when
@@ -515,6 +521,9 @@ module ino_core
    assign m_ill_eff = m_illegal | (m_valid & m_is_fp & fs_off);
 
    // ---- LSU ----
+   // lsu_started is the point after which a load cannot fault -- what lets M let go of it
+   // without a ROB walk. Not consumed yet: cutting m_done over to it is the next step.
+   wire        lsu_started;
    wire        lsu_done, lsu_fault, lsu_idle;
    wire [55:0] lsu_cos_pa;  wire [1:0] lsu_cos_kind;   // cosim memory-effect capture
    wire [63:0] lsu_rd_val, lsu_fault_tval;
@@ -539,7 +548,7 @@ module ino_core
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
       .mem_wready(dmem_wready),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind),
-      .done(lsu_done), .rd_val(lsu_rd_val), .fault(lsu_fault),
+      .started(lsu_started), .done(lsu_done), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .idle(lsu_idle));
    assign dmem_idle = lsu_idle;
 

@@ -56,7 +56,11 @@ module ino_rob
     // Younger-than-the-committing-entry dies. Pointer-only, to match the free list's own
     // rollback: there is nothing to walk because rename never wrote the free-list array.
     input  wire             flush,
-    output wire             empty);
+    output wire             empty,
+    // Which slot is oldest. An instruction that does anything beyond writing its own
+    // register -- trap, redirect -- may act only when it IS this slot, or it would squash an
+    // older op still in flight ahead of it.
+    output wire [IDXB-1:0]  head_idx);
 
    localparam EW = 6 + 1 + 2 + PBITS + PBITS;   // {rd, rd_v, shard, prd, pold}
    localparam [IDXB:0] DEPTH_S = DEPTH[IDXB:0];   // sized, so the occupancy check cannot truncate
@@ -75,6 +79,7 @@ module ino_rob
    assign empty   = (head == tail);
    wire   full    = (head[IDXB-1:0] == tail[IDXB-1:0]) && (head[IDXB] != tail[IDXB]);
    assign d_ready = ~full;
+   assign head_idx = hidx;
    assign d_idx   = tidx;
 
    // Write-forward on the head's done bit. An op that completes IN the cycle its entry is at
