@@ -19,6 +19,12 @@ module ino_frontend
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter PDW   = 44,            // ino_predictor's predict-detail width (BIMW+YW)
+    // F/X queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
+    // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
+    // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
+    // what that costs: 0.666 CPI on hardware, 2.7x the entire LSU stall.
+    parameter QDEPTH = 8,
+    parameter QAW    = 3,            // $clog2(QDEPTH)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
@@ -161,11 +167,11 @@ module ino_frontend
    // and fetch pushes every cycle.
    localparam QW = PDW + PCW + 32 + SEQW + PCW + 1 + 4 + PCW;
    wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
-   reg  [QW-1:0]  q_dat [0:1];
-   reg            q_rp, q_wp;
-   reg  [1:0]     q_cnt;
-   wire           q_full  = q_cnt[1];
-   wire           q_empty = (q_cnt == 2'd0);
+   reg  [QW-1:0]  q_dat [0:QDEPTH-1];
+   reg  [QAW-1:0] q_rp, q_wp;
+   reg  [QAW:0]   q_cnt;
+   wire           q_full  = (q_cnt == QDEPTH[QAW:0]);
+   wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
    wire           q_push  = ~q_full & (fx_valid | fx_fault);
    wire           q_pop   = accept & ~q_empty;
    wire [QW-1:0]  q_in    = {pd_fetch, (fx_fault ? imem_ipc : fx_pc), fx_inst, fx_seq,
@@ -177,11 +183,12 @@ module ino_frontend
    assign {q_pdet, f_pc, f_inst, f_seq, f_pnpc, fault_op, q_cause, q_tval} = q_dat[q_rp];
 
    always @(posedge clk) begin
-      if (reset | redirect) begin q_cnt <= 2'd0; q_rp <= 1'b0; q_wp <= 1'b0; end
-      else begin
-         if (q_push) begin q_dat[q_wp] <= q_in; q_wp <= ~q_wp; end
-         if (q_pop)  q_rp <= ~q_rp;
-         q_cnt <= q_cnt + {1'b0, q_push} - {1'b0, q_pop};
+      if (reset | redirect) begin
+         q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
+      end else begin
+         if (q_push) begin q_dat[q_wp] <= q_in; q_wp <= q_wp + 1'b1; end
+         if (q_pop)  q_rp <= q_rp + 1'b1;
+         q_cnt <= q_cnt + {{QAW{1'b0}}, q_push} - {{QAW{1'b0}}, q_pop};
       end
    end
 
