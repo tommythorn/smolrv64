@@ -667,10 +667,10 @@ module ino_core
    wire [3:0]  csr_irq_cause;
 
    // external (non-system-op) traps: fetch fault, illegal instruction, data fault
-   wire        xtrap_v     = m_valid & (m_fault | m_ill_eff | (m_mem_op & lsu_fault));
+   wire        xtrap_v     = m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt));
    wire [3:0]  xtrap_cause = m_fault  ? m_fault_cause
                            : m_ill_eff? 4'd2                     // illegal instruction
-                           :            lsu_fault_cause;
+                           :            m_lsu_fc;
    wire [63:0] xtrap_tval  = m_fault  ? m_fault_tval
                            : m_ill_eff? 64'd0
                            :            lsu_fault_tval;
@@ -825,7 +825,13 @@ module ino_core
    // happens to persist, but the divider presents its result only in S_FIN.
    reg        m_unit_done_q;
    reg [63:0] m_unit_res_q;
-   initial m_unit_done_q = 1'b0;
+   // ...and the FAULT with it. `fault` is combinational from req_valid, so withdrawing the
+   // request (above) also withdraws the fault: lsu_fault drops, xtrap_v drops, head_block
+   // clears, and a misaligned store retires having neither trapped NOR executed. The result
+   // was not the only thing that had to survive the pulse.
+   reg        m_unit_flt_q;
+   reg [3:0]  m_unit_fc_q;
+   initial begin m_unit_done_q = 1'b0; m_unit_flt_q = 1'b0; end
    wire [63:0] m_unit_res = (m_is_mem | m_is_amo) ? lsu_rd_val
                           : m_is_mul              ? (md_div ? div_result : mul_result)
                           : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
@@ -837,8 +843,14 @@ module ino_core
       else if (m_unit_ok) begin
          m_unit_done_q <= 1'b1;
          m_unit_res_q  <= m_unit_res;
+         m_unit_flt_q  <= lsu_fault;
+         m_unit_fc_q   <= lsu_fault_cause;
       end
    wire m_done_raw = m_unit_ok | m_unit_done_q;
+   // Every trap consumer takes the latched view. fault_tval needs no latch: it is req_vaddr,
+   // which is m_addr, a register.
+   wire       m_lsu_flt = m_unit_done_q ? m_unit_flt_q : lsu_fault;
+   wire [3:0] m_lsu_fc  = m_unit_done_q ? m_unit_fc_q  : lsu_fault_cause;
 
    // A trap or a redirect may only fire when M IS THE ROB HEAD. The trapping instruction is
    // YOUNGER than an outstanding load, and `flush` kills everything -- including that older
@@ -850,7 +862,7 @@ module ino_core
    // gating them through csr_red would close a combinational loop. Every term here is either
    // registered or decoded from m_insn.
    wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
-                     | m_fault | m_ill_eff | (m_mem_op & lsu_fault);
+                     | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
    wire head_block   = m_valid & m_needs_head & ~m_at_head;
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
