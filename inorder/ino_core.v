@@ -517,7 +517,12 @@ module ino_core
 
    ino_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
      (.clk(clk), .reset(reset),
-      .req_valid(m_mem_op), .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
+      // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
+      // ld_land or the ROB head) the request would still be presented, the LSU would fall
+      // back to S_IDLE, and xl_req would start the very same access A SECOND TIME -- a store
+      // written twice. mul/div are already safe this way via md_started; the LSU was not.
+      .req_valid(m_mem_op & ~m_unit_done_q),
+      .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
       .req_vaddr(m_addr), .req_size(m_mem_size), .req_signed(m_mem_signed),
@@ -799,12 +804,41 @@ module ino_core
    end
 
    // ---- completion ----
-   wire m_done_raw = ~m_valid            ? 1'b1
+   wire m_unit_ok = ~m_valid             ? 1'b1
                  : m_fault | m_ill_eff   ? 1'b1   // poisoned: traps immediately
-                 : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault) : lsu_done)
+                 // `lsu_done` is the LSU's GLOBAL done, so an older non-blocking load
+                 // completing would otherwise satisfy a younger store sitting in M -- which
+                 // then "completes" without ever executing. ~sb_busy says the done is mine:
+                 // a blocking op cannot even start until the outstanding load has landed.
+                 : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault)
+                                                    : (lsu_done & ~sb_busy))
                  : m_md_op               ? (md_div ? div_done : mul_done)
                  : fp_arith              ? fp_complete
                  :                         1'b1;  // in-core FP included: single-cycle
+
+   // COMPLETION IS STICKY, and it has to be. Every unit's `done` is a one-cycle PULSE --
+   // mul3's is `v3`, the divider's is `(st == S_FIN)` with `S_FIN: st <= S_IDLE`, the FPU's
+   // is res_valid -- and that was safe only while nothing could hold m_done low. ld_land now
+   // can. A pulse arriving in a held cycle would be LOST: md_started stays set so the unit
+   // never restarts, its done never re-asserts, and M waits forever for a completion that
+   // already happened. The RESULT has to be latched with it for the same reason; mul3's res3
+   // happens to persist, but the divider presents its result only in S_FIN.
+   reg        m_unit_done_q;
+   reg [63:0] m_unit_res_q;
+   initial m_unit_done_q = 1'b0;
+   wire [63:0] m_unit_res = (m_is_mem | m_is_amo) ? lsu_rd_val
+                          : m_is_mul              ? (md_div ? div_result : mul_result)
+                          : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
+                                                              : fp_res_data)
+                          : fp_incore             ? fp_incore_res
+                          :                         m_result;
+   always @(posedge clk)
+      if (reset | m_advance)  m_unit_done_q <= 1'b0;
+      else if (m_unit_ok) begin
+         m_unit_done_q <= 1'b1;
+         m_unit_res_q  <= m_unit_res;
+      end
+   wire m_done_raw = m_unit_ok | m_unit_done_q;
 
    // A trap or a redirect may only fire when M IS THE ROB HEAD. The trapping instruction is
    // YOUNGER than an outstanding load, and `flush` kills everything -- including that older
@@ -883,12 +917,7 @@ module ino_core
    //               -> x_result / x_target
    // which was the second-worst family at 6 ns (-0.740, 19-32 levels). The invariant
    // that makes this sound is asserted below.
-   assign m_byp_val      = (m_is_mem | m_is_amo) ? lsu_rd_val  // FP loads too (LSU NaN-boxes FLW)
-                         : m_is_mul              ? (md_div ? div_result : mul_result)
-                         : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
-                                                             : fp_res_data)
-                         : fp_incore             ? fp_incore_res
-                         :                         m_result;
+   assign m_byp_val = m_unit_done_q ? m_unit_res_q : m_unit_res;
    assign m_wb_val = m_is_csr ? csr_rdata : m_byp_val;
 
    // Per-shard write data: each shard sees only its own writer, so the D$ read data reaches
@@ -896,10 +925,13 @@ module ino_core
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
    assign wb_ie = m_is_csr ? csr_rdata : m_result;
-   assign wb_ld = (ld_wb | m_is_mem | m_is_amo) ? lsu_rd_val
-                                                : (md_div ? div_result : mul_result);
-   assign wb_fe = fp_arith ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
-                           : fp_incore_res;
+   assign wb_ld = ld_wb                     ? lsu_rd_val
+                : (m_is_mem | m_is_amo)     ? lsu_rd_val
+                : m_unit_done_q             ? m_unit_res_q
+                :                             (md_div ? div_result : mul_result);
+   assign wb_fe = m_unit_done_q ? m_unit_res_q
+                : fp_arith      ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
+                :                 fp_incore_res;
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
    // address still holds and ino_prf keeps its one-write-per-cycle property.
@@ -950,7 +982,9 @@ module ino_core
    reg [55:0] cs_mpa   [0:ROB_DEPTH-1];
    // Captured at the WRITEBACK event, which for a load is no longer M's cycle.
    always @(posedge clk) if (!reset) begin
-      if (m_valid && m_done && !m_ld_nb) begin
+      // On the completion PULSE, not on m_done: lsu_cos_* are only this op's while the LSU
+      // still holds it, and m_done can now assert cycles later off the sticky latch.
+      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          cs_val[m_rob_idx]   <= m_wb_val;
          cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
          cs_mpa[m_rob_idx]   <= lsu_cos_pa;
@@ -968,7 +1002,8 @@ module ino_core
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
    // be captured in the very cycle it commits, so the array read returns pre-edge contents.
    // Missing it reported rd=0 for the second instruction of the boot.
-   wire        cs_hit_m   = m_valid & m_done & ~m_ld_nb & (m_rob_idx == rob_head_idx);
+   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb
+                          & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
