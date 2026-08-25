@@ -36,6 +36,11 @@ module ino_rob
     input  wire [1:0]       d_shard,
     input  wire [PBITS-1:0] d_prd,
     input  wire [PBITS-1:0] d_pold,
+    // Commits but must not be COUNTED. The interrupt pseudo-op normally traps, and a trap
+    // never commits at all -- but rule D3 records that an injected OP_IRQ can commit with
+    // its trap not firing, so c_kill does not cover it and minstret would gain an
+    // instruction that architecturally does not exist.
+    input  wire             d_noret,
     output wire             d_ready,      // room to allocate
     output wire [IDXB-1:0]  d_idx,        // the slot this dispatch takes; ride it with the op
 
@@ -51,6 +56,7 @@ module ino_rob
     output wire [1:0]       c_shard,
     output wire [PBITS-1:0] c_prd,
     output wire [PBITS-1:0] c_pold,
+    output wire             c_noret,
 
     // ---- recovery ----
     // Younger-than-the-committing-entry dies. Pointer-only, to match the free list's own
@@ -62,7 +68,7 @@ module ino_rob
     // older op still in flight ahead of it.
     output wire [IDXB-1:0]  head_idx);
 
-   localparam EW = 6 + 1 + 2 + PBITS + PBITS;   // {rd, rd_v, shard, prd, pold}
+   localparam EW = 1 + 6 + 1 + 2 + PBITS + PBITS;   // {noret, rd, rd_v, shard, prd, pold}
    localparam [IDXB:0] DEPTH_S = DEPTH[IDXB:0];   // sized, so the occupancy check cannot truncate
 
    reg [EW-1:0]    ent [0:DEPTH-1];
@@ -99,6 +105,7 @@ module ino_rob
    assign c_shard = he[2*PBITS +: 2];
    assign c_rd_v  = he[2*PBITS+2];
    assign c_rd    = he[2*PBITS+3 +: 6];
+   assign c_noret = he[2*PBITS+9];
 
    wire do_alloc  = d_valid & d_ready & ~flush;
    wire do_commit = c_valid;
@@ -108,7 +115,7 @@ module ino_rob
          v <= {DEPTH{1'b0}}; done <= {DEPTH{1'b0}}; head <= 0; tail <= 0;
       end else begin
          if (do_alloc) begin
-            ent[tidx]  <= {d_rd, d_rd_v, d_shard, d_prd, d_pold};
+            ent[tidx]  <= {d_noret, d_rd, d_rd_v, d_shard, d_prd, d_pold};
             v[tidx]    <= 1'b1;
             done[tidx] <= 1'b0;
             tail       <= tail + 1'b1;

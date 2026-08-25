@@ -364,7 +364,13 @@ module ino_core
    // register write. Not consumed yet -- see the note above lsu_started.
    wire [ROB_IDXB-1:0] rob_head_idx;
    wire                m_at_head = (rob_head_idx == m_rob_idx);
-   wire                rob_c_valid, rob_c_rd_v;
+   wire                rob_c_valid, rob_c_rd_v, rob_c_noret;
+   // Mirrors m_is_irqop one stage earlier. That signal is
+   //   m_is_sys & funct3==0 & imm==0x7F0, with m_is_sys carrying ~m_ill_eff & ~m_fault,
+   // and m_ill_eff reduces to m_illegal here because a SYSTEM op is never m_is_fp -- so
+   // this decode is exact, not approximate.
+   wire d_is_irqop = (d_insn[6:2] == 5'b11100) & (d_insn[14:12] == 3'b000)
+                   & (d_insn[31:20] == 12'h7F0) & ~d_illegal & ~d_fault;
    wire [5:0]          rob_c_rd;
    wire [1:0]          rob_c_shard;
    wire [RN_PBITS-1:0] rob_c_prd, rob_c_pold;
@@ -379,11 +385,13 @@ module ino_core
    ino_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
       .d_valid(rn_valid), .d_rd(d_rd), .d_rd_v(d_rd_v), .d_shard(d_shard),
-      .d_prd(rn_prd), .d_pold(rn_pold), .d_ready(rob_ready), .d_idx(rob_d_idx),
+      .d_prd(rn_prd), .d_pold(rn_pold), .d_noret(d_is_irqop),
+      .d_ready(rob_ready), .d_idx(rob_d_idx),
       .w_valid(rob_w_valid), .w_idx(m_rob_idx),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
+      .c_noret(rob_c_noret),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx));
 
    // THE CHECK THAT EARNED THE SWITCH, kept. ino_rename gates its whole commit arm on
@@ -757,7 +765,7 @@ module ino_core
       // arith, the in-core FP writers and FP loads -- and excludes FSW/FSD, which
       // write memory, not FP state. Commit-gated by construction: `retire` is the
       // commit event, so a trapping op never dirties FS.
-      .fp_dirty_commit(retire & m_rd_v & m_rd[5]),
+      .fp_dirty_commit(retire & rob_c_rd_v & rob_c_rd[5]),
       .o_tlb_flush(mmu_flush),
       .xtrap_v(xtrap_v), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
@@ -853,9 +861,29 @@ module ino_core
    assign rf_wa = m_rd;
    assign rf_wd = m_wb_val;
 
-   assign retire      = m_valid & m_done & ~m_trap & ~m_is_irqop;
-   assign retire_pc   = m_pc;
-   assign retire_insn = m_insn;
+   // RETIRE IS THE ROB HEAD, not the M stage. Not merely for the cosim: it drives minstret
+   // through retire_cnt and csr_file's fp_dirty_commit, both architectural, and both of
+   // which must count an instruction when it COMMITS rather than when it happens to finish.
+   // With M still blocking the two coincide, which is what makes this step checkable.
+   assign retire      = rob_c_valid & ~rob_c_noret;
+
+   // retire_pc/retire_insn are verification payload -- tb_ino_riscv traces them and
+   // ino_soc_top leaves both unconnected -- so they come from a simulation-only side array
+   // rather than widening the ROB by 96 bits an entry. docs/Area-Efficient-Scalar-OoO.md 2:
+   // the reorder buffer holds status, not data.
+`ifndef SYNTHESIS
+   reg [PCW-1:0] cs_pc   [0:ROB_DEPTH-1];
+   reg [31:0]    cs_insn [0:ROB_DEPTH-1];
+   always @(posedge clk) if (rn_valid) begin
+      cs_pc[rob_d_idx]   <= d_pc;
+      cs_insn[rob_d_idx] <= d_insn;
+   end
+   assign retire_pc   = cs_pc[rob_head_idx];
+   assign retire_insn = cs_insn[rob_head_idx];
+`else
+   assign retire_pc   = {PCW{1'b0}};
+   assign retire_insn = 32'd0;
+`endif
 
    // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
    // exists to guarantee, and it is what makes the CSR result unbypassable above.
@@ -974,7 +1002,29 @@ module ino_core
    wire        cot_ifault = ~cot_intr & ((cot_cause[5:0]==6'd0) | (cot_cause[5:0]==6'd1)
                                        | (cot_cause[5:0]==6'd12));
 
-   wire [1:0] ck_rk = ~m_rd_v ? 2'd0 : m_rd[5] ? 2'd2 : 2'd1;
+   // Destination class comes from the COMMITTING entry, not from M -- the ROB already
+   // carries rd/rd_v, so this needs no side array.
+   wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
+
+   // Values that are only known at COMPLETION, held per ROB slot until that slot commits.
+   // Simulation-only, so the ROB stays status-only in hardware. The capture is keyed on M's
+   // completion because M still blocks; when a load's data starts arriving after M has moved
+   // on, this trigger is the one thing here that has to follow it to the writeback event.
+   reg [63:0] cs_val   [0:ROB_DEPTH-1];
+   reg [1:0]  cs_mkind [0:ROB_DEPTH-1];
+   reg [55:0] cs_mpa   [0:ROB_DEPTH-1];
+   always @(posedge clk) if (!reset && m_valid && m_done) begin
+      cs_val[m_rob_idx]   <= m_wb_val;
+      cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
+      cs_mpa[m_rob_idx]   <= lsu_cos_pa;
+   end
+   // ...and the same write-forward the ROB's head_done needs, for the same reason: while M
+   // blocks, a slot is captured in the very cycle it commits, so the array read returns the
+   // pre-edge contents. It reported rd=0 for the second instruction of the boot.
+   wire        cs_hit     = m_valid & m_done & (m_rob_idx == rob_head_idx);
+   wire [63:0] cs_val_h   = cs_hit ? m_wb_val                         : cs_val[rob_head_idx];
+   wire [1:0]  cs_mkind_h = cs_hit ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
+   wire [55:0] cs_mpa_h   = cs_hit ? lsu_cos_pa                       : cs_mpa[rob_head_idx];
 
    reg        e_v, e_trap;
    reg [63:0] e_pc, e_val, e_cause, e_tval;
@@ -983,12 +1033,12 @@ module ino_core
    reg [4:0]  e_ri;
    initial    e_v = 1'b0;
 
+   // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
+   // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
    always @(posedge clk) begin
       e_v <= 1'b0;
-      if (!reset && m_valid && m_done) begin
-         // a trap and a retire are mutually exclusive, and every M cycle is one or
-         // the other (or neither, for the interrupt pseudo-op, which emits as a trap)
-         if (cot_fire) begin
+      if (!reset) begin
+         if (m_valid && m_done && cot_fire) begin
             e_v <= 1'b1;  e_trap <= 1'b1;
             e_pc <= m_pc;
             e_insn <= (cot_intr | cot_ifault) ? 32'd0 : m_insn;
@@ -998,14 +1048,14 @@ module ino_core
             e_mkind <= 2'd0;  e_mpa <= 56'd0;     // a trap performed no data access
          end else if (retire) begin
             e_v <= 1'b1;  e_trap <= 1'b0;
-            e_pc <= m_pc;  e_insn <= m_insn;
-            e_rk <= ck_rk;  e_ri <= m_rd[4:0];  e_val <= m_wb_val;
+            e_pc <= cs_pc[rob_head_idx];  e_insn <= cs_insn[rob_head_idx];
+            e_rk <= ck_rk;  e_ri <= rob_c_rd[4:0];  e_val <= cs_val_h;
             e_cause <= 64'd0;  e_tval <= 64'd0;
             e_prv <= u_csr.priv;
-            // Memory effect of THIS instruction, for the cosim's store/load check.
-            // m_mem_op covers loads, stores and AMOs; anything else reports "none".
-            e_mkind <= m_mem_op ? lsu_cos_kind : 2'd0;
-            e_mpa   <= lsu_cos_pa;
+            // Memory effect of the COMMITTING instruction, for the cosim's store/load check
+            // -- captured when it completed, replayed when it commits.
+            e_mkind <= cs_mkind_h;
+            e_mpa   <= cs_mpa_h;
          end
       end
       // emit one cycle later, so this instruction's own CSR writes have landed
