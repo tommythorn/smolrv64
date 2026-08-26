@@ -1,10 +1,10 @@
 #!/bin/bash
 # Verilated regression for the in-order core, with the REAL CVFPU.
-#   ./run-ino-vl.sh [class-glob ...]      e.g. rv64uf-p rv64ud-p
+#   ./run-ooo2-vl.sh [class-glob ...]      e.g. rv64uf-p rv64ud-p
 # Default: every standard class, F/D included.
 #
 # This is the flow that covers F/D: fpnew uses SystemVerilog concurrent assertions
-# iverilog cannot parse, so ./run-ino-tests.sh builds against fp_unit_stub.sv and is
+# iverilog cannot parse, so ./run-ooo2-tests.sh builds against fp_unit_stub.sv and is
 # the fast INTEGER regression. Builds one binary, then runs tests JOBS at a time.
 set -u
 cd "$(dirname "$0")"
@@ -24,17 +24,17 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv"
 
-echo "building obj_dir_ino/tb_ino ..."
+echo "building obj_dir_ooo2/tb_ooo2 ..."
 verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
-   -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino -o tb_ino \
-   ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
+   -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2 -o tb_ooo2 \
+   ooo2_core.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
    $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-   tb_ino_riscv.v > /tmp/inovlbuild.log 2>&1
-if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inovlbuild.log | head -20; exit 1; fi
-BIN=$(pwd)/obj_dir_ino/tb_ino
+   tb_ooo2_riscv.v > /tmp/ooo2vlbuild.log 2>&1
+if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2vlbuild.log | head -20; exit 1; fi
+BIN=$(pwd)/obj_dir_ooo2/tb_ooo2
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 res="$tmp/results"; : > "$res"

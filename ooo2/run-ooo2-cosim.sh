@@ -1,17 +1,17 @@
 #!/bin/bash
-# Lockstep the in-order core against simmerv. Builds tb_ino_riscv.v with
-# -DINO_COSIM (ino_core emits a probe_retire() DPI stream) linked against
+# Lockstep the in-order core against simmerv. Builds tb_ooo2_riscv.v with
+# -DINO_COSIM (ooo2_core emits a probe_retire() DPI stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, then runs one riscv-test (or any
 # flat image), comparing every retired instruction to the golden model.
 #
-#   ./run-ino-cosim.sh <test-base>       e.g. rv64ui-p-add
-#   ./run-ino-cosim.sh -a [class ...]    sweep whole classes, report divergences
-#   BUILD=1 ./run-ino-cosim.sh <test>    force a rebuild
-#   RESET_PC=80000000 CYC=... ./run-ino-cosim.sh <test>
+#   ./run-ooo2-cosim.sh <test-base>       e.g. rv64ui-p-add
+#   ./run-ooo2-cosim.sh -a [class ...]    sweep whole classes, report divergences
+#   BUILD=1 ./run-ooo2-cosim.sh <test>    force a rebuild
+#   RESET_PC=80000000 CYC=... ./run-ooo2-cosim.sh <test>
 #
 # The C++ side is probe/probe_cosim.cpp UNMODIFIED -- the DPI contract is the same
-# one the OoO core emits, and it is the RTL side that got simpler (see ino_core.v's
-# INO_COSIM block: no reorder FIFO, no value-ready tracking, no squash truncation).
+# one the OoO core emits, and it is the RTL side that got simpler (see ooo2_core.v's
+# OOO2_COSIM block: no reorder FIFO, no value-ready tracking, no squash truncation).
 set -u
 cd "$(dirname "$0")"
 
@@ -22,7 +22,7 @@ TESTDIR=../tests/riscv-tests/passes
 NM=$(command -v riscv64-unknown-elf-nm || command -v riscv64-elf-nm || command -v riscv64-linux-gnu-nm)
 CYC=${CYC:-2000000}
 RESET_PC=${RESET_PC:-80000000}
-BIN=$(pwd)/obj_dir_ino_cosim/tb_ino_cosim
+BIN=$(pwd)/obj_dir_ooo2_cosim/tb_ooo2_cosim
 # libsimmerv_cosim.a carries a vmnet shim (simmerv's virtio-net backend), whose
 # symbols live in the vmnet framework on macOS. Harmless for cosim, but the link
 # fails without it.
@@ -41,18 +41,18 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv"
 
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
-   echo "building obj_dir_ino_cosim/tb_ino_cosim ..."
+   echo "building obj_dir_ooo2_cosim/tb_ooo2_cosim ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DINO_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
-      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino_cosim -o tb_ino_cosim \
-      ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
+      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_cosim -o tb_ooo2_cosim \
+      ooo2_core.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      tb_ino_riscv.v ../src/probe_cosim.cpp > /tmp/inocosimbuild.log 2>&1
-   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inocosimbuild.log | head -20; exit 1; fi
+      tb_ooo2_riscv.v ../src/probe_cosim.cpp > /tmp/ooo2cosimbuild.log 2>&1
+   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2cosimbuild.log | head -20; exit 1; fi
 fi
 
 run_one() {   # $1 = test base; echoes one status line, returns 1 on divergence
@@ -92,7 +92,7 @@ if [ "${1:-}" = "-a" ]; then
    echo "---- ok=$ok diverged/failed=$bad"
    [ "$bad" -eq 0 ]
 else
-   base=${1:?usage: run-ino-cosim.sh <test-base> | -a [class ...]}
+   base=${1:?usage: run-ooo2-cosim.sh <test-base> | -a [class ...]}
    echo "=== cosim $base (reset_pc=$RESET_PC) ==="
    run_one "$base"
 fi

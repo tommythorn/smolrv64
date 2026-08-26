@@ -15,9 +15,9 @@
 // file fills it exactly; the OoO probe measured this shape at ~0 extra area).
 //
 // There is NO internal write-before-read forwarding: the in-order pipe reads in X
-// and writes at the end of M, and the one bypass level (M -> X) lives in ino_exec.
+// and writes at the end of M, and the one bypass level (M -> X) lives in ooo2_exec.
 // An instruction two ahead has already landed here by the time X reads it.
-module ino_regfile
+module rv_regfile
   #(parameter AREGS = 64,
     parameter ABITS = 6)
    (input  wire             clk,
@@ -60,7 +60,7 @@ module ino_regfile
    // check it in simulation. Costs nothing in synthesis.
    always @(posedge clk)
       if (we && wa == {ABITS{1'b0}})
-         $display("*** ino_regfile: write to x0 (val=%h) -- x0 invariant broken", wd);
+         $display("*** rv_regfile: write to x0 (val=%h) -- x0 invariant broken", wd);
 `endif
 endmodule
 

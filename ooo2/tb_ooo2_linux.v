@@ -2,9 +2,9 @@
 `default_nettype none
 
 // Linux-boot harness for the in-order SoC. Resets DIRECTLY to OpenSBI
-// (0x8000_0000) with a1 = the DTB pointer (+a1=, seeded into ino_regfile's x11),
+// (0x8000_0000) with a1 = the DTB pointer (+a1=, seeded into rv_regfile's x11),
 // so the monitor is bypassed and the DUT starts where the reference model would.
-// Console output comes out of ino_soc_top's UART $write.
+// Console output comes out of rv_soc_top's UART $write.
 //
 //   +fw=<path> +dtb=<path> [+initrd=<path>]
 //   [+dtb_off=<hex>] [+initrd_off=<hex>] [+a1=<hex>] [+cycles=N]   (0 = unbounded)
@@ -14,8 +14,8 @@
 // virtio-blk subsystem from probe/tb_cosim_linux.v ported in.
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
-`ifdef INO_MEM_SIZE_LG2
-   localparam [63:0] DDR_BYTES = 64'd1 << `INO_MEM_SIZE_LG2;
+`ifdef OOO2_MEM_SIZE_LG2
+   localparam [63:0] DDR_BYTES = 64'd1 << `OOO2_MEM_SIZE_LG2;
 `else
    localparam [63:0] DDR_BYTES = 64'd1 << 29;        // 512 MiB
 `endif
@@ -45,7 +45,7 @@ module tb;
       else if (uart_tx_v & uart_tx_rdy) txcnt <= TX_DRAIN[7:0];
       else if (txcnt != 8'd0)           txcnt <= txcnt - 8'd1;
 
-   ino_soc_top #(.RESET_PC(64'h8000_0000)) dut
+   rv_soc_top #(.RESET_PC(64'h8000_0000)) dut
      (.clk(clk), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
@@ -95,7 +95,7 @@ module tb;
                lram[li][j*8 +: 8]      = lram[li][(63-j)*8 +: 8];
                lram[li][(63-j)*8 +: 8] = t;
             end
-         $display("[ino-linux: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
+         $display("[ooo2-linux: loaded %0d bytes @ DDR+%h (%0d lines)]", n, off, nl);
       end
    endtask
 
@@ -112,7 +112,7 @@ module tb;
    end
 
    // ---- SIZING THE SCOREBOARD (measurement only; no RTL is changed for this) ----------
-   // M blocks until the LSU has the DATA (ino_core.v: `m_done = ... m_mem_op ? lsu_done`),
+   // M blocks until the LSU has the DATA (ooo2_core.v: `m_done = ... m_mem_op ? lsu_done`),
    // and the LSU is 38.8% of GB5 cycles with 94-98% of that being hit latency rather than
    // misses.  A 1-deep, loads-only scoreboard would let X proceed on exactly the cycles
    // counted here: M stalled on the LSU, X holding an instruction that does not need the

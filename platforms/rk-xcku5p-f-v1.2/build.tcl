@@ -12,7 +12,7 @@ set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
 set probe_dir [file join $repo_root src]
-set inorder_dir [file join $repo_root inorder]
+set ooo2_dir [file join $repo_root ooo2]
 set sram_even [file join $repo_root src mem.even]
 set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
@@ -165,18 +165,18 @@ proc configure_probe_sources {repo_root src_dir probe_dir} {
     update_compile_order -fileset $fileset
 }
 
-# In-order core (INO_CORE=1): ino_soc_top + its modules. It pins its OWN memory
-# subsystem (ino_cache / ino_l2_arbiter) rather than src/cache.v -- see
-# docs/inorder-plan.md. src/'s modules stay in the fileset but are unreachable from
-# the top under INO_CORE, so Vivado elaborates and drops them.
-proc configure_inorder_sources {repo_root src_dir inorder_dir} {
+# In-order core (OOO2_CORE=1): rv_soc_top + its modules. It pins its OWN memory
+# subsystem (rv_cache / rv_l2_arbiter) rather than src/cache.v -- see
+# docs/ooo2-plan.md. src/'s modules stay in the fileset but are unreachable from
+# the top under OOO2_CORE, so Vivado elaborates and drops them.
+proc configure_ooo2_sources {repo_root src_dir ooo2_dir} {
     set fileset [current_fileset]
-    foreach f [lsort [glob -nocomplain [file join $inorder_dir *.v]]] {
+    foreach f [lsort [glob -nocomplain [file join $ooo2_dir *.v]]] {
         set b [file tail $f]
         if {[regexp {^tb_} $b]} continue
         add_source_if_missing $fileset $f Verilog
     }
-    add_unique_property_value $fileset include_dirs [file normalize $inorder_dir]
+    add_unique_property_value $fileset include_dirs [file normalize $ooo2_dir]
     update_compile_order -fileset $fileset
 }
 
@@ -216,10 +216,10 @@ if {$probe_core} {
     puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
     lappend vdefines "PROBE_CORE"
-    if {[info exists env(INO_CORE)] && $env(INO_CORE) ne "" && $env(INO_CORE) ne "0"} {
-        puts "INO_CORE: building the in-order core (ino_soc_top) instead of the OoO soc_top."
-        lappend vdefines "INO_CORE"
-        configure_inorder_sources $repo_root $src_dir $inorder_dir
+    if {[info exists env(OOO2_CORE)] && $env(OOO2_CORE) ne "" && $env(OOO2_CORE) ne "0"} {
+        puts "OOO2_CORE: building the in-order core (rv_soc_top) instead of the OoO soc_top."
+        lappend vdefines "OOO2_CORE"
+        configure_ooo2_sources $repo_root $src_dir $ooo2_dir
     }
     lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
     if {[info exists env(NO_VIRTIO_WIRE)] && $env(NO_VIRTIO_WIRE) ne "" && $env(NO_VIRTIO_WIRE) ne "0"} {
@@ -269,18 +269,18 @@ if {$probe_core} {
         puts [format "PROBE_CLK_DIV8 override: probe_clk = ui_clk/%d = %.2f MHz (RTL default is 120 = 66.67 MHz)." [expr {$_d8 / 24}] $_mhz]
         lappend vdefines "PROBE_CLK_DIV8=$_d8"
     }
-    # Fetch window halfwords for the IN-ORDER core (ino_core.v / ino_soc_top.v both default
-    # to INO_HW=2). HW=4 makes the chunk-aligned fetch buffer 8-byte chunks; HW=8 would make
+    # Fetch window halfwords for the IN-ORDER core (ooo2_core.v / rv_soc_top.v both default
+    # to OOO2_HW=2). HW=4 makes the chunk-aligned fetch buffer 8-byte chunks; HW=8 would make
     # the I$ RDW=128, which trips smolrv64_sdpram's hardware-proven-geometry guard (the wide-I$
     # BRAM width-cascade regression that passed every Verilator test and fetched garbage on
     # real BRAM), so 4 is the useful setting.
-    if {[info exists env(INO_HW)] && $env(INO_HW) ne ""} {
-        if {$env(INO_HW) != 2 && $env(INO_HW) != 4} {
-            error "INO_HW=$env(INO_HW): only 2 or 4 are supported. 8 sets the I$ RDW to 128 and\
+    if {[info exists env(OOO2_HW)] && $env(OOO2_HW) ne ""} {
+        if {$env(OOO2_HW) != 2 && $env(OOO2_HW) != 4} {
+            error "OOO2_HW=$env(OOO2_HW): only 2 or 4 are supported. 8 sets the I$ RDW to 128 and\
  trips the sdpram geometry guard; odd values cannot hold a 32-bit instruction."
         }
-        puts "INO_HW override: in-order fetch window = $env(INO_HW) halfwords (RTL default is 2)."
-        lappend vdefines "INO_HW=$env(INO_HW)"
+        puts "OOO2_HW override: in-order fetch window = $env(OOO2_HW) halfwords (RTL default is 2)."
+        lappend vdefines "OOO2_HW=$env(OOO2_HW)"
     }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."
@@ -305,9 +305,9 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-# `inorder` belongs here: it is the core these builds actually load (INO_CORE=1), so
+# `ooo2` belongs here: it is the core these builds actually load (OOO2_CORE=1), so
 # leaving it out let a bitstream built from modified in-order RTL report itself clean.
-set source_paths [list src inorder platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
+set source_paths [list src ooo2 platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1

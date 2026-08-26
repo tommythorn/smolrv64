@@ -23,7 +23,7 @@
 // LINE-CROSSING handled INTERNALLY via the two-phase lookup (phase0=line0, phase1=line1).
 // Banks are synchronous (READ_LATENCY=1): an address presented in one cycle is captured
 // the next, so multi-word reads serialize a pair (even+odd) per two cycles.
-module ino_cache #(
+module rv_cache #(
    parameter RTW      = 4,      // opaque request-tag width (see rd_tag). 4 leaves room for
                                // a load-queue index when multiple outstanding loads land.
    parameter PAW      = 34,
@@ -85,7 +85,7 @@ module ino_cache #(
    localparam NW    = WAYS*SETS;
    localparam FW    = $clog2(NW);
    // flat() concatenates {way, index}, which is only the flat index when WAYS is 2.
-   initial if (WAYS != 2) $fatal(1, "ino_cache: flat() assumes WAYS==2, got %0d", WAYS);
+   initial if (WAYS != 2) $fatal(1, "rv_cache: flat() assumes WAYS==2, got %0d", WAYS);
 
    localparam BANKW  = RDW;
    localparam CBY    = BANKW/8;
@@ -110,7 +110,7 @@ module ino_cache #(
    function [PTAGB-1:0] tag_of;   input [PAW-1:0] a; tag_of   = a[OFFB+IDXB +: PTAGB]; endfunction
    function [IDXB-1:0]  way_idx; input integer w; input [PAW-1:0] a;
       reg [PTAGB-1:0] t;
-`ifdef INO_UNSKEWED
+`ifdef OOO2_UNSKEWED
       // Unskewed: slot identity is tag-independent, so an index stays valid across a
       // line-crossing access even as cur_line advances from line0 to line1.
       begin t = tag_of(a); way_idx = base_idx(a); end
@@ -175,7 +175,7 @@ module ino_cache #(
    reg            vw;  reg [IDXB-1:0] vi;
    wire [FW-1:0]    vflat = flat(vw?1:0, vi);
    wire [PTAGB-1:0] vtag  = tagm[vflat];
-`ifdef INO_UNSKEWED
+`ifdef OOO2_UNSKEWED
    wire [IDXB-1:0]  vbase = vi;                       // unskewed: base == index
 `else
    wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
@@ -186,7 +186,7 @@ module ino_cache #(
    wire           fway  = fscan[IDXB];
    wire [IDXB-1:0] fidx  = fscan[IDXB-1:0];
    wire [PTAGB-1:0] ftag  = tagm[fscan[FW-1:0]];
-`ifdef INO_UNSKEWED
+`ifdef OOO2_UNSKEWED
    wire [IDXB-1:0]  fbase = fidx;                     // unskewed: base == index
 `else
    wire [IDXB-1:0]  fbase = fway ? (fidx ^ ftag[IDXB-1:0]) : fidx;

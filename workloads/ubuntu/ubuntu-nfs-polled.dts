@@ -33,7 +33,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-                timebase-frequency = <502765>;  /* REAL rate = PROBE_CLK_HZ / CLINT SCALE_DIV, and SCALE_DIV is an integer so this is NOT 501253 at every clock. probe_clk = (1e9/PROBE_CLK_DIV8)*8; SCALE_DIV = PROBE_CLK_HZ/501253. DIV8=120: 66,666,664/133 = 501253 (exact, the old value). DIV8=72: 111,111,104/221 = 502765. DIV8=68: 117,647,056/234 = 502765. This said 501253 from the 66.67MHz era until 2026-08-19, so from the 111MHz milestone onward every kernel deadline, TCP timeout and NFS retry ran 0.302% fast -- including the GB5 run. Was 20050120 before that, a 40x "deadline probe" lie (4583ba4). MUST track ino_soc_top.v's clint SCALE_DIV; tools/check-dts-timebase.py verifies it. */
+                timebase-frequency = <502765>;  /* REAL rate = PROBE_CLK_HZ / CLINT SCALE_DIV, and SCALE_DIV is an integer so this is NOT 501253 at every clock. probe_clk = (1e9/PROBE_CLK_DIV8)*8; SCALE_DIV = PROBE_CLK_HZ/501253. DIV8=120: 66,666,664/133 = 501253 (exact, the old value). DIV8=72: 111,111,104/221 = 502765. DIV8=68: 117,647,056/234 = 502765. This said 501253 from the 66.67MHz era until 2026-08-19, so from the 111MHz milestone onward every kernel deadline, TCP timeout and NFS retry ran 0.302% fast -- including the GB5 run. Was 20050120 before that, a 40x "deadline probe" lie (4583ba4). MUST track rv_soc_top.v's clint SCALE_DIV; tools/check-dts-timebase.py verifies it. */
 
 		cpu-map {
 			cluster0 {

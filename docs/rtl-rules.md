@@ -144,7 +144,7 @@ dereference a bare `{way, idx}` across a state in which an install can run.
 **B5. The response is selected by the responder that FIRED, not by re-decoding
 the address.**
 The corollary of B1 on the return path, and this design has now paid for it
-three times in the same module. `ino_soc_top` routed the load return by
+three times in the same module. `rv_soc_top` routed the load return by
 recomputing `is_dev_r`/`is_virtio_r` from the live `dmem_raddr` — a set of
 masked 64-bit compares — at three sites in turn: `dmem_wready`, then
 `raw_rvalid`, then `raw_rdata`. Each fix collapsed one site onto the valid
@@ -262,7 +262,7 @@ because `m_done` is forced low whenever another writer takes the single PRF/ROB
 port. The FPU re-issued an op whose ROB slot had already completed, committed
 and been freed; the ROB's own "completion for a slot with no live entry"
 assertion is what caught it. The guard is the already-completed latch
-(`~m_unit_done_q`), the same one `ino_lsu`'s `req_valid` carries. If two units
+(`~m_unit_done_q`), the same one `ooo2_lsu`'s `req_valid` carries. If two units
 need it, it is one predicate applied at both sites, not two spellings of it.
 
 **D6. An op that writes LATE is excluded from the BYPASS, not merely from the
@@ -433,7 +433,7 @@ under 1 ns of logic and 83–85% route on high-fanout nets. Area anywhere
 therefore buys congestion everywhere, and congestion is paid in slack by
 whatever is already marginal — not by the block that grew.
 
-Measured 2026-08-23: `ino_prf` declared all three shard arrays `[0:NMAX-1]`
+Measured 2026-08-23: `ooo2_prf` declared all three shard arrays `[0:NMAX-1]`
 where `NMAX` was the *largest* shard, so `mem_ie` was 128 deep with `N_IE=64`.
 Half of it was unreachable and synthesis built it anyway — the Distributed RAM
 report showed all three as an identical `128 x 64, RAM64M8 x 60`. Sizing each
@@ -455,8 +455,8 @@ sample, not a result. `Explore` is the default because it measured best
 (`dc3fb0ad`).
 
 **I3. Bring a replacement up as a shadow, checked every cycle.**
-`ino_rename` + `ino_prf` ran against the real instruction stream with
-`ino_regfile` still the operand source and an always-on comparison between them
+`ooo2_rename` + `ooo2_prf` ran against the real instruction stream with
+`rv_regfile` still the operand source and an always-on comparison between them
 (`7a2605f6`). That caught five defects at the mistake rather than downstream:
 non-power-of-two free lists handing out physical register 0; a capacity
 assertion whose bound truncated to 0 and fired on every write; a commit+flush
@@ -468,7 +468,7 @@ inspection. The switch-over then moved one variable
 
 **I4. A valid bit kept outside its array is a mux the size of the array,
 bolted to the read address.**
-`ino_predictor` held the BTB and YAGS valid bits in flop vectors "so the data
+`ooo2_predictor` held the BTB and YAGS valid bits in flop vectors "so the data
 array stays a clean BRAM/LUTRAM inference" — and thereby produced the opposite
 of that. `ycorr_v[yidx(npc,ghr)]` is a 1024:1 LUT/MUXF tree, and it sat at the
 END of the fetch loop (iMMU -> I$ -> aligner -> npc -> yidx). Measured

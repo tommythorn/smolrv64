@@ -20,7 +20,7 @@ from speculation past a single instruction.
 | Question | Decision |
 |---|---|
 | Width | **Scalar, IW=1.** No cross-slot hazard logic; `decode_xslot` unused. |
-| Layout | New `inorder/` dir. **Shared modules compile out of `../probe` unmodified** — `inorder/` never edits a `probe/` file; anything that must change is forked in. |
+| Layout | New `ooo2/` dir. **Shared modules compile out of `../probe` unmodified** — `ooo2/` never edits a `probe/` file; anything that must change is forked in. |
 | Multi-cycle ops | **Stall the whole pipe.** D$ miss, divide, FPU, page-table walk all freeze F/X/M. No scoreboard, no late writeback. |
 | Milestone | riscv-tests → cosim vs Simmerv → Linux boot in sim → FPGA/Ubuntu. Integer + CSR/trap/MMU first, FP wired in after. |
 | Branch prediction | **Keep the frontend's** (`predictor.v` + BTB/bimodal/RAS) as-is. |
@@ -112,57 +112,57 @@ with a poison bit and a mux in one stage.
 `commit_ctl.v` `decode_xslot.v` `decode_rename.v` `decode_stage.v`
 `exec_shard*.v` `exec_bundle.v` `rf_shard.v` `lsu.v` `backend_top.v`.
 
-**New in `inorder/`:**
-- `ino_frontend.v` — `fetch` + `predictor` + `decode_slot` → IR register.
-- `ino_regfile.v` — 64×64 unified arch RF (int 0–31, FP 32–63, x0 hardwired 0),
+**New in `ooo2/`:**
+- `ooo2_frontend.v` — `fetch` + `predictor` + `decode_slot` → IR register.
+- `rv_regfile.v` — 64×64 unified arch RF (int 0–31, FP 32–63, x0 hardwired 0),
   3R1W, LUTRAM.
-- `ino_exec.v` — X stage: RF read, bypass mux, `exec_alu`, `branch_unit`, M-units.
-- `ino_lsu.v` — M stage memory: one `mmu`, D$ request/response, byte
+- `ooo2_exec.v` — X stage: RF read, bypass mux, `exec_alu`, `branch_unit`, M-units.
+- `ooo2_lsu.v` — M stage memory: one `mmu`, D$ request/response, byte
   extract/sign-extend/NaN-box, AMO read-modify-write, LR/SC reservation, fence.i.
-- `ino_core.v` — the three stages, stall control, trap mux, CSR file, RF write.
-- `ino_soc_top.v` — fork of `soc_top.v` driving `ino_core` (2 PTW ports, not 3).
+- `ooo2_core.v` — the three stages, stall control, trap mux, CSR file, RF write.
+- `rv_soc_top.v` — fork of `soc_top.v` driving `ooo2_core` (2 PTW ports, not 3).
 
 ## Build order
 
-1. ~~`ino_regfile` + `ino_exec`~~ — **done**.
-2. ~~`ino_frontend` + IR register~~ — **done**.
-3. ~~`ino_core` integer subset~~ — **done**: rv64ui-p 52/52.
-4. ~~`ino_lsu`~~ — **done**: rv64um-p 13/13, rv64ua-p 19/19, rv64uc-p 1/1.
+1. ~~`rv_regfile` + `ooo2_exec`~~ — **done**.
+2. ~~`ooo2_frontend` + IR register~~ — **done**.
+3. ~~`ooo2_core` integer subset~~ — **done**: rv64ui-p 52/52.
+4. ~~`ooo2_lsu`~~ — **done**: rv64um-p 13/13, rv64ua-p 19/19, rv64uc-p 1/1.
 5. ~~CSR/trap/MMU~~ — **done**: rv64mi-p 15/16, rv64si-p 7/7, ssvnapot-p 1/1, and
    the whole Sv39 `-v` set (rv64ui/um/ua/uc-v) 85/85. **193/194 overall.**
 6. ~~FP (`fp_unit.sv`)~~ — **done**: rv64uf/ud-p+v pass, and with it the last
    integer holdout (`rv64mi-p-csr` test 12). **240/240 overall.**
 7. ~~Cosim vs Simmerv~~ — **harness done**, 130/131 `-p` tests lockstep clean.
-8. ~~Linux boot in sim~~ — **done, to a login prompt.** `ino_soc_top` +
-   `tb_ino_linux.v` boot OpenSBI v1.8.1 and the Ubuntu 6.x kernel all the way to
+8. ~~Linux boot in sim~~ — **done, to a login prompt.** `rv_soc_top` +
+   `tb_ooo2_linux.v` boot OpenSBI v1.8.1 and the Ubuntu 6.x kernel all the way to
    `smolrv64 login:` on the tiny128 initrd workload, matching
    `workloads/tiny128/golden-output.txt` line for line (syslogd / klogd / sysctl /
    random seed / network, all OK). ~5.3 CPI; login at ~1.1B cycles. Linux cosim
-   (`run-ino-cosim-linux.sh`) separately lockstepped 171M retirements against
+   (`run-ooo2-cosim-linux.sh`) separately lockstepped 171M retirements against
    simmerv with zero divergence.
 9. **Next:** FPGA bring-up (RK platform wrapper), then cycle time.
 
-Harnesses (`inorder/tb_ino_riscv.v` serves the first three):
-- `run-ino-tests.sh [class ...]` — iverilog, `fp_unit_stub.sv`. Fast **integer**
+Harnesses (`ooo2/tb_ooo2_riscv.v` serves the first three):
+- `run-ooo2-tests.sh [class ...]` — iverilog, `fp_unit_stub.sv`. Fast **integer**
   regression.
-- `run-ino-vl.sh [class ...]` — verilator, the **real CVFPU**. This is the flow
+- `run-ooo2-vl.sh [class ...]` — verilator, the **real CVFPU**. This is the flow
   that covers F/D: fpnew uses SystemVerilog concurrent assertions iverilog cannot
   parse.
-- `run-ino-cosim.sh <test> | -a [class ...]` — verilator + simmerv lockstep.
-- `run-ino-linux.sh` — verilator, `ino_soc_top` + `tb_ino_linux.v`: boots OpenSBI +
+- `run-ooo2-cosim.sh <test> | -a [class ...]` — verilator + simmerv lockstep.
+- `run-ooo2-linux.sh` — verilator, `rv_soc_top` + `tb_ooo2_linux.v`: boots OpenSBI +
   Linux on the tiny128 initrd workload. `CYC=0` runs unbounded (wrap in `timeout`).
   Pass `INITRD=<uncompressed cpio>` to skip ~1B cycles of in-kernel zstd decode.
-- `run-ino-cosim-linux.sh` — the same boot, lockstepped against simmerv.
+- `run-ooo2-cosim-linux.sh` — the same boot, lockstepped against simmerv.
 
-## `ino_soc_top` — a fork, deliberately
+## `rv_soc_top` — a fork, deliberately
 
-`ino_soc_top.v` is a copy of `probe/soc_top.v` retargeted to `ino_core`. Everything
+`rv_soc_top.v` is a copy of `probe/soc_top.v` retargeted to `ooo2_core`. Everything
 outside the core instance — MMIO routing, CLINT/PLIC/UART, the virtio bridge, the
 I$/D$ adapters, the PTW-through-D$ adapters, `l2_arbiter`, local SRAM, the DDR line
 port — is carried over verbatim, so **keep the two in sync when touching those**.
 The deltas are small and structural:
 
-- `backend_top` → `ino_core` (scalar: `HW=2`, no `POOL`/`PBITS`, no per-shard
+- `backend_top` → `ooo2_core` (scalar: `HW=2`, no `POOL`/`PBITS`, no per-shard
   writeback observation bus).
 - **Two page-table walkers, not three.** The OoO LSU runs separate load and store
   walkers because loads and stores translate in parallel; the in-order LSU has one
@@ -174,7 +174,7 @@ This is the one place the "never fork, just reference `probe/`" rule had to give
 
 ## Cosim
 
-`ino_core.v`'s `INO_COSIM` block emits the same `probe_retire()` DPI stream the
+`ooo2_core.v`'s `OOO2_COSIM` block emits the same `probe_retire()` DPI stream the
 OoO core does, so **`probe/probe_cosim.cpp` is reused unmodified**. The RTL side
 is what collapsed: the OoO harness needs ~250 lines — a 40-deep FIFO to rebuild
 program order from out-of-order commit, per-entry value-ready tracking (an ALU op
@@ -191,7 +191,7 @@ Anything a trap changes on that same edge — privilege above all — must there
 be **registered at retire time**, not read live.
 
 Two environment notes: `libsimmerv_cosim.a` carries a vmnet shim, so the link
-needs `-framework vmnet` on macOS; and `tb_ino_riscv.v` ends its loop on an
+needs `-framework vmnet` on macOS; and `tb_ooo2_riscv.v` ends its loop on an
 explicit `done` flag rather than relying on `$finish`, which under Verilator
 completes the current time slot (the loop ran on and printed a bogus TIMEOUT
 *after* PASS).
@@ -221,7 +221,7 @@ core needs around it:
   resolved to the NAPOT-encoded PPN instead of substituting the VA's `VPN[3:0]`.
   The OoO core "passed" `rv64ssvnapot-p-napot` only because `probe/tb_riscv.v`'s
   2 MiB memory puts the relevant PA out of range — the compare read X and iverilog
-  did not take the fail-branch. `inorder/tb_ino_riscv.v`'s 4 MiB makes the address
+  did not take the fail-branch. `ooo2/tb_ooo2_riscv.v`'s 4 MiB makes the address
   real and exposed it.
 
 ## RESOLVED: the "stall before `/init`" was not a bug
@@ -265,7 +265,7 @@ U-mode multitasking.
 
 ## Superseded: what the investigation looked like before that
 
-`run-ino-linux.sh` gets all the way through kernel init — VFS/rootfs mount,
+`run-ooo2-linux.sh` gets all the way through kernel init — VFS/rootfs mount,
 clocksource switch, TCP hash tables, initramfs unpack, io schedulers, PLIC
 registration, the 8250 driver taking the console from the SBI bootconsole, and the
 kernel's misaligned-access probe (*"scalar unaligned word access speed is 5.86x
@@ -290,7 +290,7 @@ forward progress toward `/init`.
 
 ### Linux cosim result: the retire stream is CORRECT
 
-`run-ino-cosim-linux.sh` locksteps the whole SoC against simmerv.
+`run-ooo2-cosim-linux.sh` locksteps the whole SoC against simmerv.
 **171,000,000 retirements, zero divergence** — clean through the stall region and
 well past it (c=879M, spinning at `ffffffff80515838`). So the core is *not*
 architecturally wrong: every instruction it retires, and every trap it takes,
@@ -311,7 +311,7 @@ making the reference *follow* the DUT:
 The kernel spinning in S-mode while timer interrupts *do* arrive, with the retire
 stream provably correct, points at one of those two. Next diagnostic: log the
 cause of each injected interrupt and the duty cycle of `csr_irq_v` vs
-`irq_inject`/`inject_inflight` in `ino_core`, to see whether an interrupt is
+`irq_inject`/`inject_inflight` in `ooo2_core`, to see whether an interrupt is
 pending-but-never-injected (an injection-gating bug) rather than never-pending
 (a CLINT/PLIC or `mip`/`mie` bug).
 
@@ -323,9 +323,9 @@ same 4 KiB page. That is a sampling artifact, not a translation inconsistency.)
 
 ## FPGA (RK-XCKU5P-F) — running
 
-`make bit INO_CORE=1` builds the in-order core into the RK platform
-(`rk_xcku5p.v` gains an `INO_CORE` branch instantiating `ino_soc_top`;
-`build.tcl` gains `configure_inorder_sources`). Programmed and verified on
+`make bit OOO2_CORE=1` builds the in-order core into the RK platform
+(`rk_xcku5p.v` gains an `OOO2_CORE` branch instantiating `rv_soc_top`;
+`build.tcl` gains `configure_ooo2_sources`). Programmed and verified on
 hardware:
 
 ```
@@ -410,8 +410,8 @@ core path is ~9.2 ns of 39 logic levels. Candidate fixes, cheapest first:
 
 ## Pinned memory subsystem (decision, 2026-08-14)
 
-`inorder/` carries its **own** cache and L2 arbiter — `ino_cache.v` and
-`ino_l2_arbiter.v`, the last known-good versions — instead of `src/cache.v` /
+`ooo2/` carries its **own** cache and L2 arbiter — `rv_cache.v` and
+`rv_l2_arbiter.v`, the last known-good versions — instead of `src/cache.v` /
 `src/l2_arbiter.v`. `src/` is left untouched for the OoO core.
 
 **Why.** Rebasing onto the current `src/` tree regressed the Linux boot: kernel
@@ -464,7 +464,7 @@ run behind it, which is the next milestone anyway.
 
 ## Verified-by-test notes
 
-- **`ino_lsu` atomics must use the ALIGNED PA for the write.** The D$ port is
+- **`ooo2_lsu` atomics must use the ALIGNED PA for the write.** The D$ port is
   byte-address-relative in both directions, and an AMO's `a_wdata`/`a_wmask` are
   built relative to the containing 8-byte word (`.W` picks its half with
   `addr[2]`). Writing at the raw PA lands a `.W` half four bytes past its target;

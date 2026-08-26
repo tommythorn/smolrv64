@@ -11,7 +11,7 @@
 //                   + 1 (resp toggle) + 2 (sync) + 1 (latch)  =  ~13 cycles
 //
 // and hardware measured exactly 14.02 stall cycles per FP op. But BOTH instantiations of
-// this module -- ino_core.v and exec_shard.v -- tie fpu_clock to clk, so every one of those
+// this module -- ooo2_core.v and exec_shard.v -- tie fpu_clock to clk, so every one of those
 // ~9 synchroniser cycles paid for a clock crossing that does not exist. On the in-order
 // core the FPU was 45% of all GB5 cycles, and two thirds of that was this handshake.
 //
@@ -72,9 +72,9 @@ module fp_unit #(parameter TAGW = 24,
    fpnew_pkg::status_t   fpn_status;
    logic [TAGW-1:0]      fpn_tag;
 
-   // ONE OP IN FLIGHT, which is the contract both callers already rely on (ino_core asserts
+   // ONE OP IN FLIGHT, which is the contract both callers already rely on (ooo2_core asserts
    // it, exec_shard gates on busy). The result is REGISTERED rather than passed straight
-   // out: res_valid feeds m_done in ino_core, and fpnew's combinational output there would
+   // out: res_valid feeds m_done in ooo2_core, and fpnew's combinational output there would
    // drag the whole FP datapath into the completion cone.
    //
    // EVERY OUTPUT OF THIS MODULE IS A REGISTER, and iss_ready especially. fpnew's

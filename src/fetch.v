@@ -186,7 +186,7 @@ module fetch
    // what pins Fmax. `apc` is the same value predicted from state already registered at the
    // top of the cycle, so the array read gets the WHOLE cycle -- the frontend stops caring
    // how late the fetch cloud is. Every arm below is a flop output:
-   //   redirect_pc  M drives it through a register (ino_core's redirect_target_q)
+   //   redirect_pc  M drives it through a register (ooo2_core's redirect_target_q)
    //   pc_q, strad  this module's own state
    //   pred_tgt     the predictor's registered BTB entry / RAS
    // and the one term that is NOT available -- the fall-through -- is predicted here.

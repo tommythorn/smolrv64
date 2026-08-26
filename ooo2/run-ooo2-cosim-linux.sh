@@ -1,20 +1,20 @@
 #!/bin/bash
-# Linux-boot lockstep: the in-order SoC vs simmerv. Builds tb_ino_linux.v with
-# -DINO_COSIM (ino_core emits its probe_retire() stream) linked against
+# Linux-boot lockstep: the in-order SoC vs simmerv. Builds tb_ooo2_linux.v with
+# -DINO_COSIM (ooo2_core emits its probe_retire() stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, resets to OpenSBI (0x8000_0000)
 # with a1=DTB, and locksteps every retired instruction -- aborting on the first
 # divergence with a 320-deep DUT/REF history ring.
 #
-# This is the tool for the /init stall (docs/inorder-plan.md): it names the first
+# This is the tool for the /init stall (docs/ooo2-plan.md): it names the first
 # architecturally wrong instruction instead of inferring from a spin address.
 #
-#   ./run-ino-cosim-linux.sh              default tiny128 initrd workload
-#   CYC=0 ./run-ino-cosim-linux.sh        unbounded (wrap in `timeout`)
-#   BUILD=1 ./run-ino-cosim-linux.sh      force a rebuild
+#   ./run-ooo2-cosim-linux.sh              default tiny128 initrd workload
+#   CYC=0 ./run-ooo2-cosim-linux.sh        unbounded (wrap in `timeout`)
+#   BUILD=1 ./run-ooo2-cosim-linux.sh      force a rebuild
 #   FW=... DTB=... INITRD=... OFF_DTB=... OFF_INITRD=... A1=... MEM_LG2=...
 #
-# MEM_LG2 sizes THREE things that must agree: the RTL DDR array (INO_MEM_SIZE_LG2),
-# the C-side bound + simmerv's memory (COSIM_MEM_SIZE_LG2), and ino_core's valid-DRAM
+# MEM_LG2 sizes THREE things that must agree: the RTL DDR array (OOO2_MEM_SIZE_LG2),
+# the C-side bound + simmerv's memory (COSIM_MEM_SIZE_LG2), and ooo2_core's valid-DRAM
 # window for the MMU's unbacked-PA access-fault check. One knob drives all three.
 set -u
 cd "$(dirname "$0")"
@@ -32,7 +32,7 @@ INITRD=${INITRD:-$W/tiny128.cpio}
 OFF_DTB=${OFF_DTB:-1ff00000}; OFF_INITRD=${OFF_INITRD:-1f52c000}; A1=${A1:-9ff00000}
 MEM_LG2=${MEM_LG2:-29}
 CYC=${CYC:-0}
-BIN=$(pwd)/obj_dir_ino_clinux/tb_ino_clinux
+BIN=$(pwd)/obj_dir_ooo2_clinux/tb_ooo2_clinux
 
 # ALWAYS ask cargo -- do NOT test for the file's existence.  A stale libsimmerv_cosim.a
 # silently relinks against old REF behaviour, and that has now cost two hunts: a stale
@@ -44,7 +44,7 @@ echo "building simmerv cosim lib ..."
 # Relink if the archive is newer than the binary -- verilator's make does not track it.
 if [ -f "$BIN" ] && [ "$SIMMERV_LIB" -nt "$BIN" ]; then
    echo "simmerv lib is newer than $BIN -- forcing a rebuild"
-   rm -rf obj_dir_ino_clinux
+   rm -rf obj_dir_ooo2_clinux
 fi
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
@@ -52,7 +52,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv \
-            ino_cache.v ino_l2_arbiter.v ../src/clint.v ../src/plic.v \
+            rv_cache.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
             ../src/ddr_hpm.v"
 
 # STALE-BUILD GUARD.  MEM_LG2 and VDEFS are compile-time -D's, and the C side gets
@@ -68,7 +68,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
 #
 # So: record the compile-time config, and when it changes WIPE THE OBJECT DIRECTORY.
 # A stamp alone is not enough -- the whole point is that make will not redo the work.
-STAMP="obj_dir_ino_clinux/.config-stamp"
+STAMP="obj_dir_ooo2_clinux/.config-stamp"
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
@@ -76,17 +76,17 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
    need_build=1
    echo "cosim config changed ($want) -> full rebuild"
-   rm -rf obj_dir_ino_clinux
+   rm -rf obj_dir_ooo2_clinux
 fi
 # Even on BUILD=1, a config difference means stale objects: wipe rather than trust make.
-if [ "$need_build" = 1 ] && [ -d obj_dir_ino_clinux ] \
+if [ "$need_build" = 1 ] && [ -d obj_dir_ooo2_clinux ] \
    && [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
-   echo "cosim config differs from the built objects -> wiping obj_dir_ino_clinux"
-   rm -rf obj_dir_ino_clinux
+   echo "cosim config differs from the built objects -> wiping obj_dir_ooo2_clinux"
+   rm -rf obj_dir_ooo2_clinux
 fi
 
 if [ "$need_build" = 1 ]; then
-   echo "building obj_dir_ino_clinux/tb_ino_clinux (MEM_LG2=$MEM_LG2) ..."
+   echo "building obj_dir_ooo2_clinux/tb_ooo2_clinux (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
@@ -94,12 +94,12 @@ if [ "$need_build" = 1 ]; then
       -DINO_COSIM -DINO_MEM_SIZE_LG2=$MEM_LG2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
-      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ino_clinux -o tb_ino_clinux \
-      ino_soc_top.v ino_core.v ino_frontend.v ino_predictor.v ino_exec.v ino_lsu.v ino_regfile.v \
+      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_clinux -o tb_ooo2_clinux \
+      rv_soc_top.v ooo2_core.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      tb_ino_linux.v ../src/probe_cosim.cpp > /tmp/inoclinuxbuild.log 2>&1
-   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/inoclinuxbuild.log | head -20; exit 1; fi
+      tb_ooo2_linux.v ../src/probe_cosim.cpp > /tmp/ooo2clinuxbuild.log 2>&1
+   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2clinuxbuild.log | head -20; exit 1; fi
    printf '%s' "$want" > "$STAMP"
 fi
 
@@ -111,11 +111,11 @@ echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_
 # the only instrument that sees it.
 set -o pipefail
 "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee /tmp/ino-cosim.out
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee /tmp/ooo2-cosim.out
 rc=$?
 
 hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DINO_HW=\([0-9]*\).*/\1/p'); hw=${hw:-2}
-got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' /tmp/ino-cosim.out | tail -1)
+got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' /tmp/ooo2-cosim.out | tail -1)
 exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
 tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
 
@@ -125,11 +125,11 @@ if [ -n "$got" ] && [ -n "$exp" ]; then
    if [ "$got" -lt "$floor" ]; then
       echo "COSIM-PERF FAIL: retires=$got vs expected $exp ($pct%, floor $floor at ${tol}%)"
       echo "  A correct-but-slower change. If it is intended, raise the number in"
-      echo "  inorder/cosim-expected.txt in the SAME commit, with the reason."
+      echo "  ooo2/cosim-expected.txt in the SAME commit, with the reason."
       exit 1
    fi
    echo "cosim-perf: retires=$got vs expected $exp ($pct%) -- ok"
 elif [ -n "$got" ]; then
-   echo "cosim-perf: retires=$got (no expectation recorded for CYC=$CYC INO_HW=$hw)"
+   echo "cosim-perf: retires=$got (no expectation recorded for CYC=$CYC OOO2_HW=$hw)"
 fi
 exit $rc

@@ -3,7 +3,7 @@
 
 // In-order pipelined RVA22S64 core: F | X | M.
 //
-//   F : PC -> iMMU -> I$ window -> aligner -> RVC expand -> decode   (ino_frontend)
+//   F : PC -> iMMU -> I$ window -> aligner -> RVC expand -> decode   (ooo2_frontend)
 //   X : regfile read + M-bypass -> exec_alu (ALU/AGU/compare) -> branch_unit
 //   M : LSU (dMMU + D$) | mul/div | csr_file | trap | redirect | regfile write
 //
@@ -22,21 +22,21 @@
 //
 // SERIALIZATION. A CSR/system/fence op lets nothing follow it into X until it has
 // left M, so CSR values, privilege, satp and mstatus.FS are never read stale.
-`ifndef INO_HW
- `define INO_HW 2                 // fetch window halfwords (one 32-bit instruction)
+`ifndef OOO2_HW
+ `define OOO2_HW 2                 // fetch window halfwords (one 32-bit instruction)
 `endif
-module ino_core
+module ooo2_core
   #(parameter PCW  = 64,
     parameter SEQW = 8,
-    parameter HW   = `INO_HW,
+    parameter HW   = `OOO2_HW,
     parameter AW   = 64,
-    parameter PDW   = 44,          // ino_predictor predict-detail width (BIMW+YW)
+    parameter PDW   = 44,          // ooo2_predictor predict-detail width (BIMW+YW)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
     // ---- instruction memory (combinational window at the translated PA) ----
     output wire [PCW-1:0]          imem_addr,
-    // VA-tagged fetch buffer (ino_soc_top): the buffer hit test compares the VIRTUAL
+    // VA-tagged fetch buffer (rv_soc_top): the buffer hit test compares the VIRTUAL
     // address so a hit does not wait on address translation.  It therefore needs to know
     // (a) the VA, (b) when this cycle's PA is actually trustworthy, and (c) when the fetch
     // translation context changed underneath it.
@@ -47,7 +47,7 @@ module ino_core
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
     output wire [1:0]              imem_priv_q,
-    // Fetch-buffer events (computed in ino_soc_top, where the buffer lives) and the redirect
+    // Fetch-buffer events (computed in rv_soc_top, where the buffer lives) and the redirect
     // it needs to qualify them.  Same route as hpm_dc_access/hpm_ic_access below.
     output wire                    fe_redirect,
     input  wire                    hpm_fb_hit,
@@ -122,7 +122,7 @@ module ino_core
    wire                     immu_ready, immu_fault;
    wire [3:0]               immu_cause;
    // ~imem_ctx_chg IS PART OF "IS THIS CYCLE'S FETCH DATA TRUSTWORTHY".  The VA-tagged
-   // buffer is invalidated by imem_ctx_chg in ino_soc_top, but that invalidation lands at
+   // buffer is invalidated by imem_ctx_chg in rv_soc_top, but that invalidation lands at
    // the END of the cycle while fb_hit is combinational -- so for exactly one cycle the
    // buffer can still serve bytes fetched under the PREVIOUS translation while the iMMU has
    // already switched to the new one.  Found on silicon at 111 MHz, first boot, in under a
@@ -179,7 +179,7 @@ module ino_core
       redirect_seq_q     <= redirect_seq;
    end
 
-   ino_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
+   ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance & ~d_hold),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
@@ -240,7 +240,7 @@ module ino_core
    // event that can change what that VA maps to, or what may be executed from it:
    //   satp write / sfence.vma -> mmu_flush        (csr_file o_tlb_flush)
    //   privilege change        -> priv != priv_q   (different translation AND different X)
-   //   fence.i                 -> ic_inv_req       (already handled in ino_soc_top)
+   //   fence.i                 -> ic_inv_req       (already handled in rv_soc_top)
    // mstatus.SUM/MXR are deliberately NOT here: they gate DATA accesses, not fetch.
    // satp_fetch already folds in the M-mode bare case, so comparing it covers a
    // privilege change that switches translation off entirely; priv is compared as well
@@ -269,13 +269,13 @@ module ino_core
    wire [5:0]  rf_wa;
    wire [63:0] rf_wd;
 
-   // ino_regfile is now a SIMULATION-ONLY REFERENCE, not the operand source.  It costs
+   // rv_regfile is now a SIMULATION-ONLY REFERENCE, not the operand source.  It costs
    // nothing in hardware (`ifndef SYNTHESIS`) and keeps the every-cycle cross-check that
    // found four rename bugs and the missing a1 seed.  Delete it only when the cosim has
    // run the switched design as long as the shadow one did -- a checker that has already
    // caught five defects is worth more than the lines it occupies.
 `ifndef SYNTHESIS
-   ino_regfile u_rf
+   rv_regfile u_rf
      (.clk(clk), .rs1(d_rs1), .rs1_val(rf_rs1), .rs2(d_rs2), .rs2_val(rf_rs2),
       .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd));
 `else
@@ -283,22 +283,22 @@ module ino_core
 `endif
 
    // ---- renaming and the sharded PRF, running as a SHADOW ---------------------------
-   // Issue and commit are still in order and ino_regfile is still the operand source, so
-   // this changes no architectural behaviour.  The point is that rename and ino_prf are
+   // Issue and commit are still in order and rv_regfile is still the operand source, so
+   // this changes no architectural behaviour.  The point is that rename and ooo2_prf are
    // driven by the real instruction stream and CHECKED against the known-good register
    // file every cycle (see the assertion below), so the 240-test suite and the 13.5e9
    // retirement cosim validate them before anything depends on them.  Switching the
-   // operand source and deleting ino_regfile is then a one-line change against a proven
+   // operand source and deleting rv_regfile is then a one-line change against a proven
    // structure rather than a big-bang swap of the core's most load-bearing datapath.
    localparam integer RN_IDXB  = 7;
    localparam integer RN_PBITS = RN_IDXB + 2;
    localparam [1:0]   SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
 
    // Destination shard = where the result will be written.  Loads, AMOs and mul/div take
-   // SH_LD (see ino_prf.v on why mul/div ride with loads and not the ALU).
+   // SH_LD (see ooo2_prf.v on why mul/div ride with loads and not the ALU).
    //
    // An FP instruction goes to SH_FE only if its DESTINATION IS AN FP REGISTER.  d_rd[5] is
-   // the class bit -- architectural 0..31 are integer, 32..63 are FP (ino_rename's reset
+   // the class bit -- architectural 0..31 are integer, 32..63 are FP (ooo2_rename's reset
    // arm maps them that way).  fcvt.w.d, fmv.x.w, fclass and the FP compares are FP
    // instructions that write INTEGER registers; sending those to SH_LD, which already holds
    // both classes and so needs no extra room, means SH_FE can only ever hold FP mappings.
@@ -320,7 +320,7 @@ module ino_core
    // allocate twice for one instruction, or allocate for a squashed one.
    wire rn_valid = m_advance & d_take;
 
-   ino_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
+   ooo2_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
      (.clk(clk), .reset(reset),
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
@@ -335,7 +335,7 @@ module ino_core
       .stall(rn_stall), .shard_low(rn_shard_low));
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
-   ino_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
+   ooo2_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
       .we_ie(prf_we & (prf_shard == SH_IE)),
       .we_ld(prf_we & (prf_shard == SH_LD)),
@@ -348,10 +348,10 @@ module ino_core
    // The step from "M is the commit point" to "the ROB head is the commit point" -- the
    // substrate out-of-order issue needs. Brought up exactly the way rename was (rule I3):
    // it is driven by the real instruction stream and its commit decision is CHECKED against
-   // the live one every cycle, while still driving nothing. Switching ino_rename's commit
+   // the live one every cycle, while still driving nothing. Switching ooo2_rename's commit
    // port over is then one line against a proven structure.
    //
-   // It is small because ino_rename already did the hard part: SMAP/RMAP/lv and a per-shard
+   // It is small because ooo2_rename already did the hard part: SMAP/RMAP/lv and a per-shard
    // free list with separate speculative and committed heads, where rollback is a pointer
    // restore. That already supports N uncommitted instructions; N is only ever 1 today
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
@@ -386,7 +386,7 @@ module ino_core
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land | fp_land;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : fp_land ? fb_rob : m_rob_idx;
 
-   ino_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
       .d_valid(rn_valid), .d_rd(d_rd), .d_rd_v(d_rd_v), .d_shard(d_shard),
       .d_prd(rn_prd), .d_pold(rn_pold), .d_noret(d_is_irqop),
@@ -453,18 +453,18 @@ module ino_core
    // THE EVERY-CYCLE SHADOW COMPARISON IS GONE, and deliberately.
    //
    // It asserted that a renamed read equals the architectural register file, which held only
-   // because -- in ino_rename's own words -- "issue and commit remain IN ORDER at this
+   // because -- in ooo2_rename's own words -- "issue and commit remain IN ORDER at this
    // milestone". This commit is what ends that. Once a result lands in the PRF at COMPLETION
    // while the architectural file is written at COMMIT, the two differ for every instruction
-   // in that window, which is most of them; and ino_regfile, having no rename, cannot model
+   // in that window, which is most of them; and rv_regfile, having no rename, cannot model
    // out-of-order writeback at all.
    //
    // It earned its keep: five defects during rename bring-up, plus two in this change (a
    // pending source read before its load returned, and the load-format controls being taken
    // live from a stage that had moved on). What replaces it is strictly stronger and already
    // running -- the cosim compares every retired instruction's value against simmerv, in
-   // program order, for billions of retirements. ino_regfile itself stays, written in commit
-   // order, because tb_ino_riscv traces it.
+   // program order, for billions of retirements. rv_regfile itself stays, written in commit
+   // order, because tb_ooo2_riscv traces it.
 
    // rn_stall IS in the stall path now (see d_hold). It used to be a $fatal, on the grounds
    // that only ~2 instructions are ever in flight so no shard can run dry -- an argument that
@@ -473,20 +473,20 @@ module ino_core
    // pool), but "should never" is now handled rather than fatal.
 
    // OPERANDS NOW COME FROM THE SHARDED PRF.  The bypass is retained rather than leaning
-   // on ino_prf's write-through: both deliver the same value in the M->X case, and keeping
+   // on ooo2_prf's write-through: both deliver the same value in the M->X case, and keeping
    // the existing mux means this commit changes the operand SOURCE without also changing
    // the operand TIMING PATH.  One variable at a time.
-   // ino_prf's write-through is OFF (WRTHRU=0), which is only safe while every read that
+   // ooo2_prf's write-through is OFF (WRTHRU=0), which is only safe while every read that
    // collides with the writeback is bypassed.  That is a property of IN-ORDER issue, not a
    // law -- so check it rather than remember it.  When out-of-order issue lands and this
    // fires, the fix is WRTHRU=1, not a patch here.
    always @(posedge clk) if (!reset & d_valid & rf_we) begin
       if (d_rs1_v & ~m_byp_late & ~byp1 & (rn_prs1 == m_prd))
-         $fatal(1, "ino_core: rs1 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+         $fatal(1, "ooo2_core: rs1 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
       if (d_rs2_v & ~m_byp_late & ~byp2 & (rn_prs2 == m_prd))
-         $fatal(1, "ino_core: rs2 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+         $fatal(1, "ooo2_core: rs2 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
       if (d_rs3_v & ~m_byp_late & ~byp3 & (rn_prs3 == m_prd))
-         $fatal(1, "ino_core: rs3 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+         $fatal(1, "ooo2_core: rs3 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
    end
 
    wire [63:0] x_rs1 = byp1 ? m_byp_val : prf_rs1;
@@ -496,7 +496,7 @@ module ino_core
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
 
-   ino_exec u_x
+   ooo2_exec u_x
      (.alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
       .op2_imm(d_op2_imm), .res_link(d_res_link), .is_rvc(d_rvc),
       .is_branch(d_is_branch), .is_jump(d_is_jump), .is_jalr(d_is_jalr),
@@ -528,7 +528,7 @@ module ino_core
    wire [3:0]  lsu_fault_cause;
    wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
 
-   ino_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
+   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
      (.clk(clk), .reset(reset),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
       // ld_land or the ROB head) the request would still be presented, the LSU would fall
@@ -801,11 +801,11 @@ module ino_core
 
    // ---- NON-BLOCKING LOADS ------------------------------------------------------------
    // M lets go of a plain load at DISPATCH instead of at data-return. Safe with no ROB walk
-   // because ino_lsu decides the fault before the access starts (see ino_lsu.started): past
+   // because ooo2_lsu decides the fault before the access starts (see ooo2_lsu.started): past
    // S_IDLE a load cannot fault, so nothing older can still trap once M has moved on.
    //
    // Exactly ONE load in flight, and that is not a simplification to revisit casually -- the
-   // PRF has one write address (ino_prf: one `wa`, three shard enables), so two completions
+   // PRF has one write address (ooo2_prf: one `wa`, three shard enables), so two completions
    // in a cycle have nowhere to go. Multiple outstanding loads is the step that has to solve
    // that, together with a load queue and D$ MSHRs.
    wire m_ld_nb  = m_mem_op & ~m_is_store & ~m_is_amo;   // plain load: releases M early
@@ -828,9 +828,9 @@ module ino_core
    end
    always @(posedge clk) if (!reset) begin
       if (ld_disp & sb_busy & ~ld_land)
-         $fatal(1, "ino_core: a second load dispatched with one already in flight");
+         $fatal(1, "ooo2_core: a second load dispatched with one already in flight");
       if (ld_land & ~sb_busy)
-         $fatal(1, "ino_core: LSU completed a load the scoreboard does not know about");
+         $fatal(1, "ooo2_core: LSU completed a load the scoreboard does not know about");
    end
 
    // ---- FP scoreboard: the FPU releases M at ISSUE, not at result -------------------
@@ -874,16 +874,16 @@ module ino_core
    end
    always @(posedge clk) if (!reset) begin
       if (fp_disp & fb_busy)
-         $fatal(1, "ino_core: a second FP op issued with one already in flight");
+         $fatal(1, "ooo2_core: a second FP op issued with one already in flight");
       if (fp_complete & ~fb_busy)
-         $fatal(1, "ino_core: FPU completed an op the scoreboard does not know about");
+         $fatal(1, "ooo2_core: FPU completed an op the scoreboard does not know about");
       if (fp_complete & fb_got)
-         $fatal(1, "ino_core: FP result arrived while one was still held");
+         $fatal(1, "ooo2_core: FP result arrived while one was still held");
       // All fp_arith ops take SH_FE (d_shard is by instruction CLASS, so this holds even
       // for fcvt.w.d / fmv.x.d / fle.d, whose rd is an integer register). fp_wval is put on
       // wb_fe alone on the strength of it.
       if (fp_disp & (m_shard != SH_FE))
-         $fatal(1, "ino_core: FP op issued to shard %0d, not SH_FE", m_shard);
+         $fatal(1, "ooo2_core: FP op issued to shard %0d, not SH_FE", m_shard);
    end
 
    // ---- completion ----
@@ -998,7 +998,7 @@ module ino_core
    // completion term (another multi-cycle unit, an FP branch) would break it silently.
    always @(posedge clk)
      if (!reset && (res_v !== (m_valid & m_done & (m_is_branch | m_is_jump) & ~m_trap)))
-       $fatal(1, "ino_core: res_v de-qualification broken (pc=%h insn=%h done=%b trap=%b)",
+       $fatal(1, "ooo2_core: res_v de-qualification broken (pc=%h insn=%h done=%b trap=%b)",
               m_pc, m_insn, m_done, m_trap);
 
    // ---- writeback ----
@@ -1029,7 +1029,7 @@ module ino_core
                 :                 fp_incore_res;
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
-   // address still holds and ino_prf keeps its one-write-per-cycle property.
+   // address still holds and ooo2_prf keeps its one-write-per-cycle property.
    wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
    wire ld_wb = ld_land & sb_rd_v;
    wire                prf_we    = m_wb | ld_wb | fp_wb;
@@ -1039,7 +1039,7 @@ module ino_core
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
    // model out-of-order writeback: a younger instruction writes x13, then an older load lands
    // and clobbers the same architectural location. Driving it from the ROB head keeps it a
-   // valid architectural model, which is what tb_ino_riscv's trace reads it as.
+   // valid architectural model, which is what tb_ooo2_riscv's trace reads it as.
 `ifndef SYNTHESIS
    assign rf_we = rob_c_valid & rob_c_rd_v;
    assign rf_wa = rob_c_rd;
@@ -1054,8 +1054,8 @@ module ino_core
    // With M still blocking the two coincide, which is what makes this step checkable.
    assign retire      = rob_c_valid & ~rob_c_noret;
 
-   // retire_pc/retire_insn are verification payload -- tb_ino_riscv traces them and
-   // ino_soc_top leaves both unconnected -- so they come from a simulation-only side array
+   // retire_pc/retire_insn are verification payload -- tb_ooo2_riscv traces them and
+   // rv_soc_top leaves both unconnected -- so they come from a simulation-only side array
    // rather than widening the ROB by 96 bits an entry. docs/Area-Efficient-Scalar-OoO.md 2:
    // the reorder buffer holds status, not data.
 `ifndef SYNTHESIS
@@ -1124,13 +1124,13 @@ module ino_core
    // exists to guarantee, and it is what makes the CSR result unbypassable above.
    always @(posedge clk)
      if (!reset && m_valid && m_is_serialize && d_valid)
-       $fatal(1, "ino_core: X holds an op while a serializing op is in M (pc=%h)", m_pc);
+       $fatal(1, "ooo2_core: X holds an op while a serializing op is in M (pc=%h)", m_pc);
 
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
    // FMAX: REGISTERED, for the same reason redirect_q is (see the note above the
    // redirect_q declaration). irq_inject is a select in fetch's npc mux (fetch.v:168),
    // and npc is the only combinational input to the BTB read register
-   // (ino_predictor.v:250) -- so while this was a wire it was the ONE path by which the
+   // (ooo2_predictor.v:250) -- so while this was a wire it was the ONE path by which the
    // backend reached the fetch PC, and it dragged in everything `redirect` depends on:
    //   m_rs1_val -> csr next-state -> csr_writes -> do_satp/do_fschg -> csr_redir_v
    //             -> csr_red -> redirect -> irq_inject -> u_fetch/npc -> u_bp/btb_q
@@ -1177,7 +1177,7 @@ module ino_core
    // already accepted would inject two traps for one interrupt.
    always @(posedge clk)
      if (!reset && irq_inject_q && inject_inflight)
-       $fatal(1, "ino_core: interrupt injection presented while one is already in flight");
+       $fatal(1, "ooo2_core: interrupt injection presented while one is already in flight");
 
    // ...and fetch may never consume two. This is the invariant 49eecf48 broke; it is
    // checked directly now instead of being implied by a handshake that stopped holding.
@@ -1186,10 +1186,10 @@ module ino_core
    always @(posedge clk) begin
       irq_taken_q <= reset ? 1'b0 : irq_taken;
       if (!reset && irq_taken && irq_taken_q)
-        $fatal(1, "ino_core: interrupt pseudo-op consumed twice for one interrupt");
+        $fatal(1, "ooo2_core: interrupt pseudo-op consumed twice for one interrupt");
    end
 
-`ifdef INO_COSIM
+`ifdef OOO2_COSIM
    // ======================= cosim retire stream (VERIFY-ONLY) =======================
    // Hand every retiring instruction (and every trap) to simmerv via probe_retire(),
    // the same DPI contract probe/probe_cosim.cpp already implements.

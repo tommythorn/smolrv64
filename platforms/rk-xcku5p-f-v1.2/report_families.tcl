@@ -32,8 +32,8 @@ puts "=== design: $opened ==="
 set budget 5000
 if {[llength $argv] > 0} { set budget [lindex $argv 0] }
 
-# Hierarchy depth used as the family key. 3 keeps u_ino/u_core/u_lsu distinct from
-# u_ino/u_core/u_csr without splitting on individual registers.
+# Hierarchy depth used as the family key. 3 keeps u_ooo2/u_core/u_lsu distinct from
+# u_ooo2/u_core/u_csr without splitting on individual registers.
 set depth 3
 
 proc famkey {pinname depth} {

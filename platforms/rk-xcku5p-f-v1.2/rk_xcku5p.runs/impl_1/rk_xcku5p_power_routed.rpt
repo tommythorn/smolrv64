@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 -------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
-| Date             : Fri Aug 14 05:24:40 2026
+| Date             : Tue Aug 25 17:31:19 2026
 | Host             : coffee running 64-bit Ubuntu 26.04 LTS
 | Command          : report_power -file rk_xcku5p_power_routed.rpt -pb rk_xcku5p_power_summary_routed.pb -rpx rk_xcku5p_power_routed.rpx
 | Design           : rk_xcku5p
@@ -30,14 +30,14 @@ Table of Contents
 ----------
 
 +--------------------------+--------------+
-| Total On-Chip Power (W)  | 1.853        |
+| Total On-Chip Power (W)  | 1.974        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
-| Dynamic (W)              | 1.368        |
-| Device Static (W)        | 0.485        |
+| Dynamic (W)              | 1.488        |
+| Device Static (W)        | 0.486        |
 | Effective TJA (C/W)      | 1.7          |
-| Max Ambient (C)          | 96.8         |
-| Junction Temperature (C) | 28.2         |
+| Max Ambient (C)          | 96.6         |
+| Junction Temperature (C) | 28.4         |
 | Confidence Level         | Low          |
 | Setting File             | ---          |
 | Simulation Activity File | ---          |
@@ -52,24 +52,24 @@ Table of Contents
 +--------------------------+-----------+----------+-----------+-----------------+
 | On-Chip                  | Power (W) | Used     | Available | Utilization (%) |
 +--------------------------+-----------+----------+-----------+-----------------+
-| Clocks                   |     0.301 |       15 |       --- |             --- |
-| CLB Logic                |     0.093 |   123384 |       --- |             --- |
-|   LUT as Logic           |     0.064 |    51937 |    216960 |           23.94 |
-|   LUT as Distributed RAM |     0.021 |     9964 |     99840 |            9.98 |
-|   CARRY8                 |     0.004 |     1145 |     27120 |            4.22 |
-|   Register               |     0.002 |    45168 |    433920 |           10.41 |
+| Clocks                   |     0.335 |       15 |       --- |             --- |
+| CLB Logic                |     0.116 |   124780 |       --- |             --- |
+|   LUT as Logic           |     0.085 |    56137 |    216960 |           25.87 |
+|   LUT as Distributed RAM |     0.022 |     6612 |     99840 |            6.62 |
+|   CARRY8                 |     0.005 |     1217 |     27120 |            4.49 |
+|   Register               |     0.002 |    46271 |    433920 |           10.66 |
 |   LUT as Shift Register  |     0.002 |      389 |     99840 |            0.39 |
-|   Others                 |    <0.001 |     1125 |       --- |             --- |
-|   BUFG                   |    <0.001 |        3 |        32 |            9.38 |
-|   F7/F8 Muxes            |     0.000 |     4438 |    216960 |            2.05 |
-| Signals                  |     0.096 |   109630 |       --- |             --- |
-| Block RAM                |     0.115 |      144 |       480 |           30.00 |
+|   Others                 |    <0.001 |     1129 |       --- |             --- |
+|   BUFG                   |    <0.001 |        2 |        32 |            6.25 |
+|   F7/F8 Muxes            |     0.000 |     3720 |    216960 |            1.71 |
+| Signals                  |     0.126 |   110208 |       --- |             --- |
+| Block RAM                |     0.146 |    117.5 |       480 |           24.48 |
 | MMCM                     |     0.189 |        0 |       --- |             --- |
 | PLL                      |     0.124 |        2 |       --- |             --- |
-| DSPs                     |     0.008 |       28 |      1824 |            1.54 |
-| I/O                      |     0.443 |      100 |       280 |           35.71 |
-| Static Power             |     0.485 |          |           |                 |
-| Total                    |     1.853 |          |           |                 |
+| DSPs                     |     0.009 |       28 |      1824 |            1.54 |
+| I/O                      |     0.442 |      100 |       280 |           35.71 |
+| Static Power             |     0.486 |          |           |                 |
+| Total                    |     1.974 |          |           |                 |
 +--------------------------+-----------+----------+-----------+-----------------+
 
 
@@ -79,10 +79,10 @@ Table of Contents
 +------------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
 | Source           | Voltage (V) | Total (A) | Dynamic (A) | Static (A) | Powerup (A) | Budget (A)  | Margin (A) |
 +------------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
-| Vccint           |       0.850 |     0.875 |       0.723 |      0.152 |       NA    | Unspecified | NA         |
+| Vccint           |       0.850 |     1.017 |       0.863 |      0.154 |       NA    | Unspecified | NA         |
 | Vccint_io        |       0.850 |     0.283 |       0.247 |      0.036 |       NA    | Unspecified | NA         |
-| Vccbram          |       0.850 |     0.007 |       0.005 |      0.002 |       NA    | Unspecified | NA         |
-| Vccaux           |       1.800 |     0.298 |       0.171 |      0.128 |       NA    | Unspecified | NA         |
+| Vccbram          |       0.850 |     0.008 |       0.006 |      0.002 |       NA    | Unspecified | NA         |
+| Vccaux           |       1.800 |     0.298 |       0.171 |      0.127 |       NA    | Unspecified | NA         |
 | Vccaux_io        |       1.800 |     0.118 |       0.087 |      0.031 |       NA    | Unspecified | NA         |
 | Vcco33           |       3.300 |     0.008 |       0.001 |      0.007 |       NA    | Unspecified | NA         |
 | Vcco25           |       2.500 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
@@ -149,7 +149,7 @@ Table of Contents
 | pll_clk[0]_DIV                                                                                      | u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[0].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_CONTROL[0].GEN_I_CONTROL.u_xiphy_control/TX_BIT_CTRL_OUT0[26] |             3.0 |
 | pll_clk[1]                                                                                          | u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/pll_clk[1]                                                                                                                       |             0.4 |
 | pll_clk[1]_DIV                                                                                      | u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/generate_block1.u_ddr_xiphy/byte_num[5].xiphy_byte_wrapper.u_xiphy_byte_wrapper/I_CONTROL[0].GEN_I_CONTROL.u_xiphy_control/TX_BIT_CTRL_OUT0[26] |             3.0 |
-| probe_clk                                                                                           | probe_clk                                                                                                                                                                                          |             9.0 |
+| probe_clk                                                                                           | probe_clk                                                                                                                                                                                          |             6.0 |
 | sys_clk_p                                                                                           | sys_clk_p                                                                                                                                                                                          |             5.0 |
 +-----------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------------+
 
@@ -163,57 +163,59 @@ Table of Contents
 +-----------------------------+-----------+
 | Name                        | Power (W) |
 +-----------------------------+-----------+
-| rk_xcku5p                   |     1.368 |
-|   dbg_hub                   |     0.004 |
-|     inst                    |     0.004 |
-|       BSCANID.u_xsdbm_id    |     0.004 |
-|   eth_rx_engine_inst        |     0.004 |
+| rk_xcku5p                   |     1.488 |
+|   dbg_hub                   |     0.003 |
+|     inst                    |     0.003 |
+|       BSCANID.u_xsdbm_id    |     0.003 |
+|   eth_rx_engine_inst        |     0.003 |
 |   eth_tx_engine_inst        |     0.003 |
-|     u_tx                    |     0.001 |
-|   gmii_to_rgmii_inst        |     0.103 |
-|     u_rgmii_rx              |     0.102 |
-|   mmio_clock_bridge_inst    |     0.005 |
-|     mmio_cmd_fifo           |     0.003 |
-|       xpm_fifo_async_inst   |     0.003 |
-|     mmio_rsp_fifo           |     0.001 |
-|       xpm_fifo_async_inst   |     0.001 |
+|   gmii_to_rgmii_inst        |     0.102 |
+|     u_rgmii_rx              |     0.101 |
+|   mmio_clock_bridge_inst    |     0.006 |
+|     mmio_cmd_fifo           |     0.004 |
+|       xpm_fifo_async_inst   |     0.004 |
+|     mmio_rsp_fifo           |     0.002 |
+|       xpm_fifo_async_inst   |     0.002 |
 |   probe_bridge              |     0.011 |
 |   probe_cdc                 |     0.017 |
-|   probe_core                |     0.272 |
-|     core                    |     0.129 |
-|       fe                    |     0.046 |
-|       u_csr                 |     0.022 |
-|       u_div                 |     0.002 |
-|       u_fpu                 |     0.030 |
-|       u_immu                |     0.001 |
-|       u_lsu                 |     0.015 |
-|       u_mul                 |     0.009 |
-|       u_rf                  |     0.002 |
+|   probe_core                |     0.388 |
+|     core                    |     0.198 |
+|       fe                    |     0.050 |
+|       u_csr                 |     0.020 |
+|       u_div                 |     0.007 |
+|       u_fpu                 |     0.046 |
+|       u_immu                |     0.002 |
+|       u_lsu                 |     0.012 |
+|       u_mul                 |     0.015 |
+|       u_prf                 |     0.008 |
+|       u_rename              |     0.020 |
+|       u_rob                 |     0.005 |
 |       u_x                   |     0.002 |
-|     u_arb                   |     0.003 |
-|     u_dcache                |     0.065 |
-|       banks[0].u_bank       |     0.011 |
-|       banks[1].u_bank       |     0.011 |
+|     u_arb                   |     0.004 |
+|     u_dcache                |     0.079 |
+|       banks[0].u_bank       |     0.012 |
+|       banks[1].u_bank       |     0.012 |
 |       banks[2].u_bank       |     0.012 |
 |       banks[3].u_bank       |     0.012 |
-|     u_ddr_hpm               |     0.004 |
-|     u_icache                |     0.048 |
-|       banks[0].u_bank       |     0.010 |
-|       banks[1].u_bank       |     0.010 |
-|       banks[2].u_bank       |     0.009 |
-|       banks[3].u_bank       |     0.009 |
+|     u_ddr_hpm               |     0.006 |
+|     u_icache                |     0.060 |
+|       banks[0].u_bank       |     0.012 |
+|       banks[1].u_bank       |     0.012 |
+|       banks[2].u_bank       |     0.012 |
+|       banks[3].u_bank       |     0.012 |
+|     u_plic                  |     0.001 |
 |   sd_d_iobufs[3].sd_d_iobuf |     0.003 |
-|   u_ddr4_0                  |     0.881 |
-|     inst                    |     0.881 |
+|   u_ddr4_0                  |     0.886 |
+|     inst                    |     0.886 |
 |       u_ddr4_infrastructure |     0.093 |
-|       u_ddr4_mem_intfc      |     0.755 |
-|       u_ddr_axi             |     0.033 |
-|   virtio_blk_backend        |     0.016 |
+|       u_ddr4_mem_intfc      |     0.759 |
+|       u_ddr_axi             |     0.034 |
+|   virtio_blk_backend        |     0.017 |
 |     dma_master              |     0.002 |
 |     sd                      |     0.007 |
 |   virtio_blk_inst           |     0.004 |
-|   virtio_net_backend        |     0.016 |
-|     dma_master              |     0.002 |
+|   virtio_net_backend        |     0.015 |
+|     dma_master              |     0.003 |
 |   virtio_net_inst           |     0.006 |
 +-----------------------------+-----------+
 

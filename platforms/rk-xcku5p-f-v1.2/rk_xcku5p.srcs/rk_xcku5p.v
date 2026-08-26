@@ -2,7 +2,7 @@
 
 // ---- probe-core clock (BUFGCE_DIV: ui_clk / N) --------------------------------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
-// src/soc_top.v and inorder/ino_soc_top.v are DERIVED from it, so a sweep cannot silently
+// src/soc_top.v and ooo2/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
 // skew the console baud or the timebase (both bit us before -- see the comments at each
 // site).
 //
@@ -173,7 +173,7 @@ module rk_xcku5p(
    );
 
 `ifdef PROBE_CORE
-   // The probe core (sharded OoO, or the in-order core under INO_CORE) runs on probe_clk,
+   // The probe core (sharded OoO, or the in-order core under OOO2_CORE) runs on probe_clk,
    // built by the MMCM below from PROBE_CLK_DIV8 -- see the knob at the top of this file.
    //
    // History, because the numbers below get quoted: on the old BUFGCE_DIV ladder the sharded
@@ -185,7 +185,7 @@ module rk_xcku5p(
    // find out where.
    //
    // The ddr_* line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc.
-   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (src/soc_top.v, inorder/ino_soc_top.v)
+   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (src/soc_top.v, ooo2/rv_soc_top.v)
    // are derived from the same knob, so they cannot drift out of sync with a sweep.
    wire probe_clk;
 
@@ -1684,10 +1684,10 @@ module rk_xcku5p(
    wire [63:0] probe_wedge;     // frontend/dispatch/interrupt state for ILA_TIMER probe7
    wire [63:0] probe_lsu;       // full LSU state for ILA_TIMER probe5
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
-`ifdef INO_CORE
-   // ---------------- In-order core (INO_CORE=1) ----------------
-   // ino_soc_top pins its own memory subsystem (ino_cache / ino_l2_arbiter) -- see
-   // docs/inorder-plan.md -- so it has neither the newer soc_top's per-byte DDR write
+`ifdef OOO2_CORE
+   // ---------------- In-order core (OOO2_CORE=1) ----------------
+   // rv_soc_top pins its own memory subsystem (rv_cache / rv_l2_arbiter) -- see
+   // docs/ooo2-plan.md -- so it has neither the newer soc_top's per-byte DDR write
    // strobes nor its ILA debug buses. It only ever pushes WHOLE lines, so wmask is
    // all-ones; the debug buses tie off (their ILAs are PROBE_CORE-only diagnostics).
    assign pddr_wmask      = {64{1'b1}};
@@ -1701,7 +1701,7 @@ module rk_xcku5p(
    assign probe_csrop_v   = 1'b0;
    assign probe_wedge     = 64'd0;
    assign probe_lsu       = 64'd0;
-   ino_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
+   rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
       .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),

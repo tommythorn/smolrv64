@@ -3,7 +3,7 @@
 // Reorder buffer for the in-order core -- the step that turns "M is the commit point" into
 // "the ROB head is the commit point", which is the substrate out-of-order issue needs.
 //
-// WHAT THIS DOES NOT DO, and why it is small. `ino_rename` already carries the whole
+// WHAT THIS DOES NOT DO, and why it is small. `ooo2_rename` already carries the whole
 // speculative/committed split: SMAP/RMAP/lv for the map, and a per-shard free list with a
 // speculative head (h_*) and a committed head (hc_*), where rollback is `h := hc` in one
 // cycle with no walk. That structure already supports N uncommitted instructions -- today N
@@ -13,16 +13,16 @@
 //
 // docs/Area-Efficient-Scalar-OoO.md 2: "The reorder buffer holds status, not data." Same
 // here -- no result values, no PC, no operands. An entry is {rd, rd_v, shard, prd, pold},
-// which is exactly and only what `ino_rename`'s commit port consumes.
+// which is exactly and only what `ooo2_rename`'s commit port consumes.
 //
 // SHADOW BRING-UP (rule I3, the playbook that landed rename and caught five defects no test
 // reached). At this milestone M still blocks, so the ROB never holds more than one live
 // entry and its commit stream must be BIT-IDENTICAL to the M-stage commit it shadows;
-// ino_core asserts exactly that, every cycle. What that proves is allocation, the head/tail
+// ooo2_core asserts exactly that, every cycle. What that proves is allocation, the head/tail
 // march and wrap, in-order commit, and the rename hand-off. What it cannot prove -- depth,
 // out-of-order `done`, and multi-entry squash -- is precisely what the next step adds, on a
 // commit path that will by then be known good.
-module ino_rob
+module ooo2_rob
   #(parameter DEPTH = 16,
     parameter IDXB  = 4,              // $clog2(DEPTH)
     parameter PBITS = 9)
@@ -48,7 +48,7 @@ module ino_rob
     input  wire             w_valid,
     input  wire [IDXB-1:0]  w_idx,
 
-    // ---- commit: the head, in order, straight into ino_rename's commit port ----
+    // ---- commit: the head, in order, straight into ooo2_rename's commit port ----
     input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
     output wire             c_valid,
     output wire [5:0]       c_rd,
@@ -140,17 +140,17 @@ module ino_rob
    // ---- invariants (always on: docs/rtl-rules.md A1) --------------------------------
    always @(posedge clk) if (!reset) begin
       if (d_valid & ~d_ready)
-         $fatal(1, "ino_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
+         $fatal(1, "ooo2_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
       if (w_valid & ~v[w_idx])
-         $fatal(1, "ino_rob: completion for slot %0d, which holds no live entry", w_idx);
+         $fatal(1, "ooo2_rob: completion for slot %0d, which holds no live entry", w_idx);
       if (w_valid & done[w_idx])
-         $fatal(1, "ino_rob: slot %0d completed twice", w_idx);
+         $fatal(1, "ooo2_rob: slot %0d completed twice", w_idx);
       if (c_valid & ~v[hidx])
-         $fatal(1, "ino_rob: committing an invalid head (head=%0d)", head);
+         $fatal(1, "ooo2_rob: committing an invalid head (head=%0d)", head);
       // Occupancy can never exceed the array. Catches a lost commit or a double allocate at
       // the moment it happens rather than as a wedge thousands of cycles later.
       if ((tail - head) > DEPTH_S)
-         $fatal(1, "ino_rob: occupancy %0d exceeds DEPTH %0d", tail - head, DEPTH);
+         $fatal(1, "ooo2_rob: occupancy %0d exceeds DEPTH %0d", tail - head, DEPTH);
    end
 endmodule
 

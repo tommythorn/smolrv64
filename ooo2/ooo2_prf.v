@@ -2,7 +2,7 @@
 
 // Sharded physical register file for the in-order core.
 //
-// WHY SHARDS.  ino_regfile is a unified 64-entry array with ONE write port
+// WHY SHARDS.  rv_regfile is a unified 64-entry array with ONE write port
 // (`always @(posedge clk) if (we) r[wa] <= wd;`).  The moment completion goes out of order
 // -- which is the whole point of the scoreboard/OoO work -- the LSU, the ALU and the FPU
 // contend for it.  Duplicating the array does NOT help: every copy must receive every
@@ -30,14 +30,14 @@
 // so nothing is ever freed.  Hence N_LD > 64 (the load shard can hold both integer and FP
 // mappings), N_FE > 64 (the FPU writes integer regs), and N_IE > 32 (the ALU writes
 // only integer regs).  Above that floor it is a stall/area choice -- see
-// docs/Area-Efficient-Scalar-OoO.md 9.3 -- and ino_rename exports per-shard stall counters
+// docs/Area-Efficient-Scalar-OoO.md 9.3 -- and ooo2_rename exports per-shard stall counters
 // so the choice can be replaced by a measurement.
 //
 // Physical register number: {shard[1:0], idx[IDXB-1:0]}.  Shard in the HIGH bits so a
 // shard's pool is a contiguous range and its free list is a plain counter range.
 // Physical register 0 is the architectural zero: never written, always reads 0.
 
-module ino_prf
+module ooo2_prf
   #(parameter IDXB  = 7,                   // index bits within a shard
     parameter PBITS = IDXB + 2,            // physical register number width
     parameter N_IE  = 64,                  // > 32 (integer arch regs)
@@ -78,7 +78,7 @@ module ino_prf
    localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
 
    // Sized to the largest shard; the smaller shards simply never index above their
-   // capacity, which ino_rename's free list enforces and the assertion below checks.
+   // capacity, which ooo2_rename's free list enforces and the assertion below checks.
    // EACH ARRAY IS SIZED TO ITS OWN SHARD.  The first cut sized all three to the largest
    // (NMAX), so mem_ie was 128 deep with N_IE=64 -- half of it unreachable, and synthesis
    // duly built it: "mem_ie_reg 128 x 64, RAM64M8 x 60", identical to the 128-entry shards.
@@ -103,7 +103,7 @@ module ino_prf
    //
    // With IN-ORDER issue it is dead code.  The write targets m_prd, the physical register
    // allocated for m_rd; renaming makes physical registers unique, so a source resolves to
-   // m_prd only when that source IS m_rd -- which is exactly ino_core's byp1/2/3, and there
+   // m_prd only when that source IS m_rd -- which is exactly ooo2_core's byp1/2/3, and there
    // x_rs takes m_byp_val, never prf_rs.  So the collision can happen but its result is
    // never used.
    //
@@ -111,7 +111,7 @@ module ino_prf
    // in the operand read path -- the back-to-back ALU loop that must stay fast.  And on this
    // die area is congestion and congestion is slack (docs/rtl-rules.md I1).
    //
-   // Turning it on is NOT something to remember: ino_core asserts on a read that collides
+   // Turning it on is NOT something to remember: ooo2_core asserts on a read that collides
    // with the writeback and is not bypassed, so the machine says when this becomes needed.
    function automatic [63:0] rd_shard;
       input [1:0]      sh;
@@ -131,7 +131,7 @@ module ino_prf
    endfunction
 
    // Physical register 0 reads 0 unconditionally -- it is the architectural zero and is
-   // never allocated by ino_rename, so no write can target it.
+   // never allocated by ooo2_rename, so no write can target it.
    // Index each array with only the bits it has.  A read of a shard the operand does not
    // belong to is discarded by rd_shard's case, so a truncated index there is harmless --
    // but it must not be OUT OF RANGE, which for a smaller shard it otherwise would be.
@@ -150,8 +150,8 @@ module ino_prf
       for (j = 0; j < N_IE; j = j + 1) mem_ie[j] = 64'd0;
       for (j = 0; j < N_LD; j = j + 1) mem_ld[j] = 64'd0;
       for (j = 0; j < N_FE; j = j + 1) mem_fe[j] = 64'd0;
-      // Boot seed, mirroring ino_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
-      // {SH_IE, 11} at reset (see ino_rename's reset arm), so the seed lands in mem_ie[11].
+      // Boot seed, mirroring rv_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
+      // {SH_IE, 11} at reset (see ooo2_rename's reset arm), so the seed lands in mem_ie[11].
       // Sim-only and inert unless a TB passes +a1=, but NOT optional: a harness that resets
       // straight to OpenSBI expects the pointer there, and without this the shadow check
       // fires 255 cycles into Linux boot -- which is exactly how this omission was found.
@@ -174,34 +174,34 @@ module ino_prf
    // days here, because the value surfaces far from the mistake.
    always @(posedge clk) begin
       if (we_ie && (wa[PBITS-1:IDXB] != SH_IE))
-         $fatal(1, "ino_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
+         $fatal(1, "ooo2_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
                 wa, wa[PBITS-1:IDXB]);
       if (we_ld && (wa[PBITS-1:IDXB] != SH_LD))
-         $fatal(1, "ino_prf: load write to pr=%h, shard %0d is not SH_LD",
+         $fatal(1, "ooo2_prf: load write to pr=%h, shard %0d is not SH_LD",
                 wa, wa[PBITS-1:IDXB]);
       if (we_fe && (wa[PBITS-1:IDXB] != SH_FE))
-         $fatal(1, "ino_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
+         $fatal(1, "ooo2_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
                 wa, wa[PBITS-1:IDXB]);
       if (we_ie && ({1'b0, wa[IDXB-1:0]} >= N_IE[IDXB:0]))
-         $fatal(1, "ino_prf: int-exec write idx %0d >= N_IE %0d", wa[IDXB-1:0], N_IE);
+         $fatal(1, "ooo2_prf: int-exec write idx %0d >= N_IE %0d", wa[IDXB-1:0], N_IE);
       if (we_ld && ({1'b0, wa[IDXB-1:0]} >= N_LD[IDXB:0]))
-         $fatal(1, "ino_prf: load write idx %0d >= N_LD %0d", wa[IDXB-1:0], N_LD);
+         $fatal(1, "ooo2_prf: load write idx %0d >= N_LD %0d", wa[IDXB-1:0], N_LD);
       if (we_fe && ({1'b0, wa[IDXB-1:0]} >= N_FE[IDXB:0]))
-         $fatal(1, "ino_prf: fp-exec write idx %0d >= N_FE %0d", wa[IDXB-1:0], N_FE);
+         $fatal(1, "ooo2_prf: fp-exec write idx %0d >= N_FE %0d", wa[IDXB-1:0], N_FE);
       if (we_ie && wa == {PBITS{1'b0}})
-         $fatal(1, "ino_prf: write to physical register 0 (architectural zero)");
+         $fatal(1, "ooo2_prf: write to physical register 0 (architectural zero)");
    end
 
    // The deadlock floor, checked once at elaboration rather than argued in a comment.
    initial begin
-      if (N_IE <= 32) $fatal(1, "ino_prf: N_IE=%0d must exceed 32 integer arch regs", N_IE);
-      // SH_FE holds ONLY fp mappings: ino_core routes FP instructions with an integer
+      if (N_IE <= 32) $fatal(1, "ooo2_prf: N_IE=%0d must exceed 32 integer arch regs", N_IE);
+      // SH_FE holds ONLY fp mappings: ooo2_core routes FP instructions with an integer
       // destination (fcvt.w.d, fmv.x.w, fclass, fcmp) to SH_LD instead.  So its floor is 32
       // architectural fp registers plus one free, not 64.
-      if (N_FE <= 32) $fatal(1, "ino_prf: N_FE=%0d must exceed 32 fp arch regs", N_FE);
-      if (N_LD <= 64) $fatal(1, "ino_prf: N_LD=%0d must exceed 64 (int AND fp map here)", N_LD);
+      if (N_FE <= 32) $fatal(1, "ooo2_prf: N_FE=%0d must exceed 32 fp arch regs", N_FE);
+      if (N_LD <= 64) $fatal(1, "ooo2_prf: N_LD=%0d must exceed 64 (int AND fp map here)", N_LD);
       if (NMAX > (1 << IDXB))
-         $fatal(1, "ino_prf: NMAX=%0d exceeds IDXB=%0d addressable", NMAX, IDXB);
+         $fatal(1, "ooo2_prf: NMAX=%0d exceeds IDXB=%0d addressable", NMAX, IDXB);
    end
 endmodule
 

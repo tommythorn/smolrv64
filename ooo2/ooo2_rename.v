@@ -3,8 +3,8 @@
 // Register renaming for the in-order core: SMAP/RMAP + lv[], and one free list per PRF
 // shard.  Issue and commit remain IN ORDER at this milestone -- this module changes no
 // architectural behaviour, so the retire stream must stay bit-identical.  It exists to give
-// ino_prf a known destination shard, which is the only cheap way to get more than one write
-// port (see ino_prf.v's header).
+// ooo2_prf a known destination shard, which is the only cheap way to get more than one write
+// port (see ooo2_prf.v's header).
 //
 // THE MAP.  docs/Area-Efficient-Scalar-OoO.md 9.2 recovers by bulk-copying rat_commit into
 // map -- a 32 x PBITS parallel load.  On this FPGA that fanout is the failure mode: the
@@ -31,7 +31,7 @@
 // writer), so the entries between h_comm and h_spec still hold the in-flight allocations.
 // Restoring h_spec := h_comm frees them all in one cycle, with no walk and no checkpoints.
 
-module ino_rename
+module ooo2_rename
   #(parameter IDXB  = 7,
     parameter PBITS = IDXB + 2,
     parameter N_IE  = 64,
@@ -151,7 +151,7 @@ module ino_rename
    integer i;
    always @(posedge clk) begin
       if (reset) begin
-         // x0 -> physical 0 (SH_IE index 0), which ino_prf hardwires to read zero and
+         // x0 -> physical 0 (SH_IE index 0), which ooo2_prf hardwires to read zero and
          // never writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard
          // starts entirely free.
          for (i = 0; i < 32; i = i + 1) begin
@@ -180,7 +180,7 @@ module ino_rename
             if (fre_ie) begin fl_ie[t_ie[PW_IE-2:0]] <= c_pold[IDXB-1:0]; t_ie <= t_ie + 1'b1; end
             if (fre_ld) begin fl_ld[t_ld[PW_LD-2:0]] <= c_pold[IDXB-1:0]; t_ld <= t_ld + 1'b1; end
             if (fre_fe) begin fl_fe[t_fe[PW_FE-2:0]] <= c_pold[IDXB-1:0]; t_fe <= t_fe + 1'b1; end
-            if (c_shard > SH_FE) $fatal(1, "ino_rename: commit to shard %0d", c_shard);
+            if (c_shard > SH_FE) $fatal(1, "ooo2_rename: commit to shard %0d", c_shard);
          end
 
          // ---- rename: SMAP takes the new mapping, the head advances.  A flush in the same
@@ -189,7 +189,7 @@ module ino_rename
          if (alloc) begin
             smap[r_rd] <= r_prd;
             lv[r_rd]   <= 1'b1;
-            if (r_shard > SH_FE) $fatal(1, "ino_rename: rename to shard %0d", r_shard);
+            if (r_shard > SH_FE) $fatal(1, "ooo2_rename: rename to shard %0d", r_shard);
          end
 
          // ---- rollback
@@ -212,38 +212,38 @@ module ino_rename
       // stall above is supposed to make this unreachable; "supposed to" is what assertions
       // are for.
       if (alloc && r_shard == SH_IE && avail_ie == 0)
-         $fatal(1, "ino_rename: allocated from an empty int-exec free list");
+         $fatal(1, "ooo2_rename: allocated from an empty int-exec free list");
       if (alloc && r_shard == SH_LD && avail_ld == 0)
-         $fatal(1, "ino_rename: allocated from an empty load free list");
+         $fatal(1, "ooo2_rename: allocated from an empty load free list");
       if (alloc && r_shard == SH_FE && avail_fe == 0)
-         $fatal(1, "ino_rename: allocated from an empty fp-exec free list");
+         $fatal(1, "ooo2_rename: allocated from an empty fp-exec free list");
       // c_pold may legitimately belong to a DIFFERENT shard than c_shard (see pold_sh
       // above); what must hold is that it names a shard that exists, so it is returned to a
       // real free list rather than dropped.
       if (c_valid && c_rd_v && (pold_sh > SH_FE))
-         $fatal(1, "ino_rename: freeing pr=%h whose shard %0d does not exist",
+         $fatal(1, "ooo2_rename: freeing pr=%h whose shard %0d does not exist",
                 c_pold, pold_sh);
       if (c_valid && c_rd_v && (c_prd[PBITS-1:IDXB] != c_shard))
-         $fatal(1, "ino_rename: committing pr=%h whose shard is not %0d", c_prd, c_shard);
+         $fatal(1, "ooo2_rename: committing pr=%h whose shard is not %0d", c_prd, c_shard);
       // x0 must never be renamed: it has no value to hold and freeing it would inject
       // physical register 0 into a free list.
       if (alloc && r_rd == 6'd0)
-         $fatal(1, "ino_rename: renamed x0");
+         $fatal(1, "ooo2_rename: renamed x0");
    end
 
    initial begin
       // Sizes MUST be powers of two: the free-list pointers carry one extra MSB and index
       // with the low bits, which only wraps correctly at a power of two.  At N=40 the
       // pointer walked past the end of the array and read 0 -- i.e. handed out physical
-      // register 0, the architectural zero.  Caught by ino_prf's pr0 assertion on the
+      // register 0, the architectural zero.  Caught by ooo2_prf's pr0 assertion on the
       // first riscv-test; checked here so it cannot come back.
-      if ((N_IE & (N_IE-1)) != 0) $fatal(1, "ino_rename: N_IE=%0d is not a power of two", N_IE);
-      if ((N_LD & (N_LD-1)) != 0) $fatal(1, "ino_rename: N_LD=%0d is not a power of two", N_LD);
-      if ((N_FE & (N_FE-1)) != 0) $fatal(1, "ino_rename: N_FE=%0d is not a power of two", N_FE);
-      if (N_IE <= 32) $fatal(1, "ino_rename: N_IE=%0d must exceed 32", N_IE);
-      if (N_LD <= 64) $fatal(1, "ino_rename: N_LD=%0d must exceed 64", N_LD);
-      if (N_FE <= 32) $fatal(1, "ino_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
-      if (LOWAT < 1) $fatal(1, "ino_rename: LOWAT must be >= 1");
+      if ((N_IE & (N_IE-1)) != 0) $fatal(1, "ooo2_rename: N_IE=%0d is not a power of two", N_IE);
+      if ((N_LD & (N_LD-1)) != 0) $fatal(1, "ooo2_rename: N_LD=%0d is not a power of two", N_LD);
+      if ((N_FE & (N_FE-1)) != 0) $fatal(1, "ooo2_rename: N_FE=%0d is not a power of two", N_FE);
+      if (N_IE <= 32) $fatal(1, "ooo2_rename: N_IE=%0d must exceed 32", N_IE);
+      if (N_LD <= 64) $fatal(1, "ooo2_rename: N_LD=%0d must exceed 64", N_LD);
+      if (N_FE <= 32) $fatal(1, "ooo2_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
+      if (LOWAT < 1) $fatal(1, "ooo2_rename: LOWAT must be >= 1");
    end
 endmodule
 

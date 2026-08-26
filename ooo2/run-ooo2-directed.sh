@@ -7,20 +7,20 @@
 # core as it was before the corresponding fix. Keep them cheap and self-checking:
 # tohost=1 is PASS, anything else is FAIL with test# = tohost>>1.
 #
-#   ./run-ino-directed.sh              all tests in directed/
-#   ./run-ino-directed.sh amomis       just one
+#   ./run-ooo2-directed.sh              all tests in directed/
+#   ./run-ooo2-directed.sh amomis       just one
 #
-# Assumes obj_dir_ino/tb_ino is current (./run-ino-vl.sh builds it).
+# Assumes obj_dir_ooo2/tb_ooo2 is current (./run-ooo2-vl.sh builds it).
 set -u
 cd "$(dirname "$0")"
 
-BIN=$(pwd)/obj_dir_ino/tb_ino
+BIN=$(pwd)/obj_dir_ooo2/tb_ooo2
 CYC=${CYC:-400000}
 CC=$(command -v riscv64-unknown-elf-gcc || command -v riscv64-elf-gcc || command -v riscv64-linux-gnu-gcc)
 OC=${CC%gcc}objcopy
 NM=${CC%gcc}nm
 
-[ -x "$BIN" ] || { echo "ERROR: $BIN missing -- run ./run-ino-vl.sh first" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "ERROR: $BIN missing -- run ./run-ooo2-vl.sh first" >&2; exit 1; }
 
 tests=("$@")
 [ ${#tests[@]} -eq 0 ] && tests=($(cd directed && ls *.S | sed 's/\.S$//'))

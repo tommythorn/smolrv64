@@ -9,16 +9,16 @@
 // `decode_xslot` is not needed at all.
 //
 // CHECKPOINTS. `predictor` keeps its speculative {ghr, ras, ras_ptr} in a
-// predict-details flow: ino_predictor captures this bundle's details at `fire` and
+// predict-details flow: ooo2_predictor captures this bundle's details at `fire` and
 // presents them on pd_fetch; the IR latches that as d_pdet, and it rides the pipeline
 // to M, coming back as res_pdet when the op resolves. No checkpoint ring, no tag: the
 // details are matched to their instruction by BEING the instruction's payload.
 
-module ino_frontend
+module ooo2_frontend
   #(parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
-    parameter PDW   = 44,            // ino_predictor's predict-detail width (BIMW+YW)
+    parameter PDW   = 44,            // ooo2_predictor's predict-detail width (BIMW+YW)
     // F/X queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -108,7 +108,7 @@ module ino_frontend
    wire [SEQW-1:0]    fx_seq;
    wire [PCW-1:0]     f_apc, fx_pnpc, f_ftn, bp_tgt;
 
-   // No checkpoint ring, no `cur`, no `create`, no rb_idx. ino_predictor keeps committed
+   // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
    // is no tag to allocate and nothing to pin against reuse.
 
@@ -130,13 +130,13 @@ module ino_frontend
 
    // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
    // `accept`, which is the queue POP. Those were the same edge until this module grew a
-   // queue (`.ready(accept)` -> `.ready(~q_full)`), and ino_core's inject_inflight
+   // queue (`.ready(accept)` -> `.ready(~q_full)`), and ooo2_core's inject_inflight
    // interlock was left keyed to the old one. Report the real event so the interlock can
    // name it: while the backend stalls, `accept` is low but `fire` is not, so fetch
    // re-emitted the SAME interrupt every cycle with nothing to stop it.
    assign irq_taken = irq_inject & fire;
 
-   // Sub-attribution for the frontend bubble (see ino_core's fe_aln/fe_que).  fx_valid is
+   // Sub-attribution for the frontend bubble (see ooo2_core's fe_aln/fe_que).  fx_valid is
    // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not
    // the iMMU and not an empty fetch window splits into two very different problems:
    // fetch had BYTES but could not make an instruction (aligner/straddle), versus fetch
@@ -145,7 +145,7 @@ module ino_frontend
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;
-   ino_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
+   ooo2_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
       .apc(f_apc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),

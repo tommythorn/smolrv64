@@ -43,7 +43,7 @@
 // hit/ctr) come from a small per-checkpoint table written at dispatch -- <=1
 // CTI per bundle == per ckpt, so the checkpoint tag the op already carries is
 // the resolve key. No payload bits.
-module ino_predictor
+module ooo2_predictor
   #(parameter PCW   = 64,
     parameter BTBB  = 8,             // log2 BTB entries
     parameter TAGW  = 12,

@@ -13,7 +13,7 @@
 //     nothing younger has passed M), so it writes the D$ directly -- no buffer;
 //   * one MMU/walker serves loads, stores and atomics.
 //
-// The request is held stable by ino_core until `done` pulses. `done` is
+// The request is held stable by ooo2_core until `done` pulses. `done` is
 // combinational in the completing cycle and `rd_val` is valid with it.
 //
 // Semantics kept bit-identical to probe/lsu.v so the Simmerv cosim agrees:
@@ -26,7 +26,7 @@
 //     the OoO LSU does -- software emulates it.
 //   * atomics read the containing 8-byte word, compute, and write it back under a
 //     0x0F/0xF0/0xFF mask; `.W` selects its half with addr[2].
-module ino_lsu
+module ooo2_lsu
   #(parameter AW = 64,
     parameter [63:0] DRAM_BASE = 64'd0,
     parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF)
@@ -113,7 +113,7 @@ module ino_lsu
    // false -- soc_top routes everything that is not a device window to the D$, and the
    // on-chip boot/monitor SRAM at LBASE (0x7000_0000) is not a device. So SRAM IS
    // cached, and being non-DRAM it is NOT aligned here; a straddling SRAM access would
-   // reach the cache spanning and trip ino_cache.v's NO-SPAN $fatal.
+   // reach the cache spanning and trip rv_cache.v's NO-SPAN $fatal.
    //
    // It holds for two different reasons, neither of them enforced by construction:
    //   MMIO  -- device registers are naturally-aligned and accessed at their own width.
@@ -304,7 +304,7 @@ module ino_lsu
                 // LSU, so if it straddles, the cache sees a span it is asserted never to
                 // see -- and for MMIO the second beat would address the wrong register.
                 if (~pa_dram & (wend > 5'd8))
-                   $fatal(1, "ino_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
+                   $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
                           t_paddr, nb, boff);
                 nc_q          <= t_uncached;
                 mem_runcached <= t_uncached;

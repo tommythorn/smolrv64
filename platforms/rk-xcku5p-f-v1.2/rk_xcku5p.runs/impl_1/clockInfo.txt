@@ -1,6 +1,6 @@
 -------------------------------------
 | Tool Version : Vivado v.2025.1
-| Date         : Fri Aug 14 04:59:44 2026
+| Date         : Tue Aug 25 17:12:19 2026
 | Host         : coffee
 | Design       : design_1
 | Device       : xcku5p-ffvb676-2-I-
@@ -19,6 +19,8 @@ Number of global clocks: 9
 	Number of BUFG_GT: 0
 	Number of BUFG_PS: 0
 	Number of BUFG_FABRIC: 0
+	Running suboptimal placement checker for 1 clock (and their loads) with USER_CLOCK_ROOT...
+		No sub-optimality found
 	Running suboptimal placement checker for 7 clocks (and their loads) which do not have the CLOCK_LOW_FANOUT property but have a fanout less than 2000...
 Pre-CRP Checker took 0 secs
 
@@ -28,6 +30,7 @@ Clock Net Route Info (CRP Input)
 Clock 1: probe_clk
 	Clock source type: BUFG_DIV
 	Clock source region: X0Y3
+	Clock locked root: X1Y1
 	initial rect ((0, 0), (3, 3))
 
 Clock 2: u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk_0
@@ -51,12 +54,12 @@ Clock 4: gmii_to_rgmii_inst/u_rgmii_rx/BUFG_out_0
 Clock 5: u_ddr4_0/inst/u_ddr4_infrastructure/dbg_clk
 	Clock source type: BUFGCE
 	Clock source region: X0Y0
-	initial rect ((0, 0), (1, 1))
+	initial rect ((0, 0), (1, 0))
 
 Clock 6: dbg_hub/inst/BSCANID.u_xsdbm_id/itck_i
 	Clock source type: BUFGCE
 	Clock source region: X0Y3
-	initial rect ((0, 1), (3, 3))
+	initial rect ((0, 0), (3, 3))
 
 Clock 7: u_ddr4_0/inst/u_ddr4_infrastructure/sys_clk_in_bufg
 	Clock source type: BUFGCE
@@ -80,20 +83,24 @@ Clock 9: u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/mmcm_
 *****************
 User Constraints:
 *****************
-No user constraints found
+The following 1 clock nets have the USER_CLOCK_ROOT property:
+	probe_clk(BUFG_DIV): X1Y1
+
 
 
 ***********************
 Running Pre-CRP Checker
 ***********************
-Number of global clocks: 12
-	Number of BUFGCE: 11
+Number of global clocks: 11
+	Number of BUFGCE: 10
 	Number of BUFGCE_HDIO: 0
 	Number of BUFG_CTRL: 0
 	Number of BUFGCE_DIV: 1
 	Number of BUFG_GT: 0
 	Number of BUFG_PS: 0
 	Number of BUFG_FABRIC: 0
+	Running suboptimal placement checker for 1 clock (and their loads) with USER_CLOCK_ROOT...
+		No sub-optimality found
 	Running suboptimal placement checker for 8 clocks (and their loads) which do not have the CLOCK_LOW_FANOUT property but have a fanout less than 2000...
 Pre-CRP Checker took 0 secs
 
@@ -104,80 +111,73 @@ Clock 1: probe_clk
 	Clock source type: BUFG_DIV
 	Clock source region: X0Y3
 	Clock locked root: X1Y1
-	Clock regions with locked loads: X0Y1 X0Y2 X1Y0 X1Y1 X1Y2 X1Y3 X2Y0 X2Y1 X2Y2 X2Y3 X3Y0 X3Y1 X3Y2 X3Y3 
+	Clock regions with locked loads: X0Y1 X0Y2 X1Y0 X1Y1 X1Y2 X1Y3 X2Y0 X2Y1 X2Y2 X2Y3 X3Y0 X3Y1 X3Y2 
 	initial rect ((0, 0), (3, 3))
 
 Clock 2: u_ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk_0
 	Clock source type: BUFGCE
 	Clock source region: X0Y0
 	Clock locked root: X1Y1
-	Clock regions with locked loads: X0Y0 X0Y1 X0Y2 X0Y3 X1Y0 X1Y1 X1Y2 X2Y0 X2Y1 
+	Clock regions with locked loads: X0Y0 X0Y1 X0Y2 X0Y3 X1Y1 X1Y2 X1Y3 X2Y1 X2Y3 
 	initial rect ((0, 0), (2, 3))
 
 Clock 3: probe_reset_sync[1]
 	Clock source type: BUFGCE
-	Clock source region: X0Y1
-	Clock locked root: X0Y1
-	Clock regions with locked loads: X0Y2 X1Y1 X1Y2 X2Y1 X2Y2 X2Y3 X3Y1 X3Y2 X3Y3 
-	initial rect ((0, 1), (3, 3))
-
-Clock 4: probe_core/core/u_fpu/u_cvfpu/fpu_reset_sync_q[1]
-	Clock source type: BUFGCE
 	Clock source region: X0Y3
 	Clock locked root: X0Y3
-	Clock regions with locked loads: X1Y3 X2Y2 X2Y3 X3Y2 X3Y3 
-	initial rect ((0, 2), (3, 3))
+	Clock regions with locked loads: X0Y1 X1Y0 X1Y1 X1Y2 X1Y3 X2Y0 X2Y1 X2Y2 X2Y3 X3Y0 X3Y1 X3Y2 
+	initial rect ((0, 0), (3, 3))
 
-Clock 5: u_ddr4_0/inst/u_ddr4_infrastructure/c0_riu_clk
+Clock 4: u_ddr4_0/inst/u_ddr4_infrastructure/c0_riu_clk
 	Clock source type: BUFGCE
 	Clock source region: X0Y0
 	Clock locked root: X1Y1
 	Clock regions with locked loads: X0Y0 X0Y1 
 	initial rect ((0, 0), (1, 1))
 
-Clock 6: probe_core/core/u_lsu/SR[0]
+Clock 5: probe_core/core/u_lsu/dev_wack_reg_0[0]
 	Clock source type: BUFGCE
 	Clock source region: X0Y2
 	Clock locked root: X0Y2
-	Clock regions with locked loads: X1Y2 X1Y3 
-	initial rect ((0, 2), (1, 3))
+	Clock regions with locked loads: X2Y2 X2Y3 X3Y2 
+	initial rect ((0, 2), (3, 3))
 
-Clock 7: gmii_to_rgmii_inst/u_rgmii_rx/BUFG_out_0
+Clock 6: gmii_to_rgmii_inst/u_rgmii_rx/BUFG_out_0
 	Clock source type: BUFGCE
 	Clock source region: X0Y2
-	Clock locked root: X1Y1
-	Clock regions with locked loads: X0Y0 X0Y1 X0Y2 X1Y0 X1Y1 X2Y1 
-	initial rect ((0, 0), (2, 2))
+	Clock locked root: X0Y2
+	Clock regions with locked loads: X0Y2 X0Y3 
+	initial rect ((0, 2), (0, 3))
 
-Clock 8: u_ddr4_0/inst/u_ddr4_infrastructure/dbg_clk
+Clock 7: u_ddr4_0/inst/u_ddr4_infrastructure/dbg_clk
 	Clock source type: BUFGCE
 	Clock source region: X0Y0
 	Clock locked root: X0Y0
-	Clock regions with locked loads: X0Y0 X0Y1 
-	initial rect ((0, 0), (0, 1))
+	Clock regions with locked loads: X0Y0 X1Y0 
+	initial rect ((0, 0), (1, 0))
 
-Clock 9: dbg_hub/inst/BSCANID.u_xsdbm_id/itck_i
+Clock 8: dbg_hub/inst/BSCANID.u_xsdbm_id/itck_i
 	Clock source type: BUFGCE
 	Clock source region: X0Y3
 	Clock locked root: X1Y1
-	Clock regions with locked loads: X0Y0 X0Y1 X3Y1 X3Y2 
+	Clock regions with locked loads: X0Y0 X1Y0 X3Y2 
 	initial rect ((0, 0), (3, 3))
 
-Clock 10: u_ddr4_0/inst/u_ddr4_infrastructure/sys_clk_in_bufg
+Clock 9: u_ddr4_0/inst/u_ddr4_infrastructure/sys_clk_in_bufg
 	Clock source type: BUFGCE
 	Clock source region: X0Y1
 	Clock locked root: X0Y0
 	Clock regions with locked loads: X0Y0 
 	initial rect ((0, 0), (0, 1))
 
-Clock 11: gmii_to_rgmii_inst/u_rgmii_rx/clkfb_buf
+Clock 10: gmii_to_rgmii_inst/u_rgmii_rx/clkfb_buf
 	Clock source type: BUFGCE
 	Clock source region: X0Y2
-	Clock locked root: X1Y1
+	Clock locked root: X0Y2
 	Clock regions with locked loads: X0Y2 
-	initial rect ((0, 1), (1, 2))
+	initial rect ((0, 2), (0, 2))
 
-Clock 12: u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/mmcm_clk_in
+Clock 11: u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/mmcm_clk_in
 	Clock source type: BUFGCE
 	Clock source region: X0Y1
 	Clock locked root: X0Y0
@@ -189,6 +189,8 @@ Clock 12: u_ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/mmcm
 *****************
 User Constraints:
 *****************
-No user constraints found
+The following 1 clock nets have the USER_CLOCK_ROOT property:
+	probe_clk(BUFG_DIV): X1Y1
+
 
 

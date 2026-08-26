@@ -79,13 +79,13 @@ set_property include_dirs {
   /home/tommy/smolrv64/inorder
   /home/tommy/smolrv64/src
 } [current_fileset]
-set_property verilog_define {MEM_BASEADDR=64'h70000000 PROBE_CORE INO_CORE SOC_BOOT_HEX=\"/home/tommy/smolrv64/src/mem.linehex\" PROBE_CLK_DIV=3 SMOLRV64_BUILD_STAMP=64'h20260814045449 SMOLRV64_GIT_COMMIT=32'h51e23520 SMOLRV64_GIT_DIRTY=1'b1 SMOLRV64_USE_XPM} [current_fileset]
+set_property verilog_define {MEM_BASEADDR=64'h70000000 PROBE_CORE INO_CORE SOC_BOOT_HEX=\"/home/tommy/smolrv64/src/mem.linehex\" PROBE_CLK_DIV8=48 INO_HW=4 SMOLRV64_BUILD_STAMP=64'h20260825170703 SMOLRV64_GIT_COMMIT=32'h85e78ce7 SMOLRV64_GIT_DIRTY=1'b1 SMOLRV64_USE_XPM} [current_fileset]
 OPTRACE "Creating in-memory project" END { }
 OPTRACE "Adding files" START { }
 read_verilog -library xil_defaultlib -sv {
   /home/tommy/smolrv64/third_party/cvfpu/src/common_cells/src/cf_math_pkg.sv
-  /home/tommy/smolrv64/src/fp_unit.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/fpnew_pkg.sv
+  /home/tommy/smolrv64/src/fp_unit.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/fpnew_cast_multi.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/fpnew_classifier.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/fpnew_divsqrt_multi.sv
@@ -101,7 +101,6 @@ read_verilog -library xil_defaultlib -sv {
   /home/tommy/smolrv64/third_party/cvfpu/src/fpnew_top.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/common_cells/src/lzc.sv
   /home/tommy/smolrv64/third_party/cvfpu/src/common_cells/src/rr_arb_tree.sv
-  /home/tommy/smolrv64/src/smolrv64_cvfpu.sv
 }
 read_verilog -library xil_defaultlib {
   /home/tommy/smolrv64/src/aligner.v
@@ -145,7 +144,10 @@ read_verilog -library xil_defaultlib {
   /home/tommy/smolrv64/inorder/ino_frontend.v
   /home/tommy/smolrv64/inorder/ino_l2_arbiter.v
   /home/tommy/smolrv64/inorder/ino_lsu.v
-  /home/tommy/smolrv64/inorder/ino_regfile.v
+  /home/tommy/smolrv64/inorder/ino_predictor.v
+  /home/tommy/smolrv64/inorder/ino_prf.v
+  /home/tommy/smolrv64/inorder/ino_rename.v
+  /home/tommy/smolrv64/inorder/ino_rob.v
   /home/tommy/smolrv64/inorder/ino_soc_top.v
   /home/tommy/smolrv64/src/mmu.v
   /home/tommy/smolrv64/src/mul3.v
@@ -161,7 +163,6 @@ read_verilog -library xil_defaultlib {
   /home/tommy/smolrv64/third_party/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/pa_fpu_frbus.v
   /home/tommy/smolrv64/third_party/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/pa_fpu_src_type.v
   /home/tommy/smolrv64/src/plic.v
-  /home/tommy/smolrv64/src/predictor.v
   /home/tommy/smolrv64/src/rgmii_rx.v
   /home/tommy/smolrv64/src/rgmii_tx.v
   /home/tommy/smolrv64/src/rs232rx.v

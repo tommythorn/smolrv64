@@ -9,7 +9,7 @@ changes no architectural behaviour and exists to remove the single-write-port bl
 | gate | result |
 |---|---|
 | `src/lint.sh` | clean |
-| `inorder/run-ino-vl.sh` | pass=240 fail=0 |
+| `ooo2/run-ooo2-vl.sh` | pass=240 fail=0 |
 | `src/run-vl-tests.sh` | failures: 0 |
 | ubuntu-mini cosim | 3 runs, **26e9 retirements**, zero mismatches, zero assertion fires |
 | retire stream vs pre-rename | **bit-identical** at c=1e9/2e9/3e9 |
@@ -33,7 +33,7 @@ u_fetch/strad_reg_replica_4 → u_bp/ycorr_qv     6.462 ns   logic 2.23   route 
 u_lsu/mem_raddr_reg[13]     → m_result_reg[14]  6.195 ns   logic 1.82   route 71%
 ```
 
-`ino_predictor.v:259-263` reads the arrays a cycle ahead:
+`ooo2_predictor.v:259-263` reads the arrays a cycle ahead:
 
 ```verilog
 btb_q    <= t_fwd ? ... : btb[bidx(npc)];
@@ -65,7 +65,7 @@ squashes the sequential fetch behind it:
 * one bubble per predicted-taken branch (~10–15% of instructions → 0.10–0.15 CPI, ~3% of
   the current 4.2)
 * fetch needs a second redirect port, distinct from the backend mispredict redirect
-* interacts with the F/X queue (`inorder/ino_frontend.v`)
+* interacts with the F/X queue (`ooo2/ooo2_frontend.v`)
 
 Tommy's position, 2026-08-23: **frequency is critical and latency is an acceptable price**,
 and BP accuracy is a moving target — "BP can be improved. What we have now is just the
@@ -121,7 +121,7 @@ cost).
 
 ## The design, in brief
 
-**PRF** (`inorder/ino_prf.v`) — three shards, one writer each, so no write arbitration:
+**PRF** (`ooo2/ooo2_prf.v`) — three shards, one writer each, so no write arbitration:
 
 | shard | writer | holds | entries |
 |---|---|---|---|
@@ -139,7 +139,7 @@ it deadlocks rename (everything mapped, nothing free → nothing commits → not
 Checked at elaboration. They must also be powers of two — the free-list pointers carry one
 extra MSB and index with the low bits.
 
-**Map** (`inorder/ino_rename.v`) — `lv[a] ? SMAP[a] : RMAP[a]`; rename writes SMAP and sets
+**Map** (`ooo2/ooo2_rename.v`) — `lv[a] ? SMAP[a] : RMAP[a]`; rename writes SMAP and sets
 `lv`, commit writes RMAP, rollback is `lv <= 0` plus three pointer restores. One control
 signal to 64 flops instead of `docs/Area-Efficient-Scalar-OoO.md` §9.2's 32-wide bulk copy,
 which is the fanout that hurts on FPGA.
@@ -150,11 +150,11 @@ shard the mapped count varies 0..64, so each shard carries a real tail pointer. 
 still pointer-only.
 
 **`WRTHRU=0`** — write-through is dead code with in-order issue (the collision is exactly
-`byp1/2/3`, where `x_rs` takes `m_byp_val`). `ino_core` asserts on an unbypassed read that
+`byp1/2/3`, where `x_rs` takes `m_byp_val`). `ooo2_core` asserts on an unbypassed read that
 collides with the writeback, naming `WRTHRU` as the fix, so enabling it for OoO issue is not
 something to remember.
 
-**`ino_regfile` is still instantiated under `ifndef SYNTHESIS`** as an every-cycle
+**`rv_regfile` is still instantiated under `ifndef SYNTHESIS`** as an every-cycle
 cross-check. It caught five defects (four rename bugs plus a missing `+a1=` boot seed) and
 costs nothing in hardware. Keep it until the design has run the cosim as long as the shadow
 version did.
@@ -165,7 +165,7 @@ version did.
 
 1. **ROB + `pending[]` bits.** LSU 38.8% + FPU 28.5% = **67% of GB5 cycles**, and 94–98% of
    the LSU share is hit latency, not misses (3.24 cycles per D$ access; miss rate 0.195%).
-   `ino_core.v:703` — `m_done = ... m_mem_op ? lsu_done ...` — blocks M until the unit
+   `ooo2_core.v:703` — `m_done = ... m_mem_op ? lsu_done ...` — blocks M until the unit
    finishes. Rename removed the reason that had to be true; the ROB removes the blocking.
    The ROB is needed for **precise exceptions** once younger instructions complete ahead of
    a load. Expect 0.5–1.0 CPI.

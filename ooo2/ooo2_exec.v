@@ -1,7 +1,7 @@
 `default_nettype none
 
 // Stage X datapath: purely combinational. The surrounding stage registers, the
-// register file, and the single M->X bypass level live in ino_core.
+// register file, and the single M->X bypass level live in ooo2_core.
 //
 //   result = exec_alu   (ALU / LUI / AUIPC / JAL(R) link)
 //   addr   = exec_alu.sum = rs1 + imm   (load/store/AMO address generation)
@@ -13,7 +13,7 @@
 //
 // Multi-cycle units (mul3, divider, the FPU) are NOT here -- they live in M with
 // the LSU, so X is always exactly one cycle and needs no interlock of its own.
-module ino_exec
+module ooo2_exec
    (// decoded control
     input  wire [5:0]  alu_op,
     input  wire        alu_w,

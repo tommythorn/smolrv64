@@ -8,7 +8,7 @@ places I was wrong are recorded deliberately.
 **+4.95% IPC, banked. Frequency gain real but not yet bankable.**
 
 Shippable bitstream: `/var/tmp/inorder_111MHz_1ba5da1b.bit` — `PROBE_CLK_DIV8=72`
-(111.11 MHz), `INO_HW=4`, closed at **WNS +0.008** via `make physopt`. Program any banked
+(111.11 MHz), `OOO2_HW=4`, closed at **WNS +0.008** via `make physopt`. Program any banked
 bit with:
 
     make program BIT=/var/tmp/inorder_111MHz_1ba5da1b.bit
@@ -79,10 +79,10 @@ cycle-neutral, two BIT-IDENTICAL in cosim.** These were not trade-offs, they wer
 logic — the select never selected anything. If deleting logic changes nothing at all in
 simulation, it wasn't doing anything.
 
-**Generator-level fix if it recurs:** `ino_soc_top` has no single place where "is this access
+**Generator-level fix if it recurs:** `rv_soc_top` has no single place where "is this access
 a device?" is decided and named. Give it one and the class is closed.
 
-Also landed: the predictor forked to `inorder/ino_predictor.v` with checkpoints deleted
+Also landed: the predictor forked to `ooo2/ooo2_predictor.v` with checkpoints deleted
 entirely (nothing used them; predict details now ride the pipeline as `pd_fetch -> d_pdet ->
 m_pdet -> res_pdet`), and the F/X queue that decouples `fetch.ready` from `lsu_done`.
 
@@ -110,7 +110,7 @@ redirect sharing a cycle, and it is what keeps promoting whichever backend signa
 
 A documented invariant with nothing behind it:
 
-- **`inorder/cosim-expected.txt` + a check in `run-ino-cosim-linux.sh`** — fails when the
+- **`ooo2/cosim-expected.txt` + a check in `run-ooo2-cosim-linux.sh`** — fails when the
   retire count drops >0.5% below a recorded number. Three regressions today were
   architecturally invisible (cosim clean, tests green, Linux booting) and visible ONLY here;
   two cost ~4% each. **Raise the number in the same commit that earns it.**
@@ -145,18 +145,18 @@ built**.
    hits). That is what let the `hpm_ev` bug recur after the identical `retire_cnt` bug was
    fixed once.
 8. **The five `run-ino-*.sh` runners each carry their own source list** — adding one module
-   meant patching all five. `src/rtl-sources.sh` has `ino_sources()` already; they should
+   meant patching all five. `src/rtl-sources.sh` has `ooo2_sources()` already; they should
    use it.
 
 ## Verification recipe
 
     src/lint.sh                                    # both tops + perf-events + dts timebase
-    inorder/run-ino-vl.sh rv64ui-p rv64um-p rv64ua-p rv64uc-p     # pass=85 fail=0
-    VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 inorder/run-ino-cosim-linux.sh
+    ooo2/run-ooo2-vl.sh rv64ui-p rv64um-p rv64ua-p rv64uc-p     # pass=85 fail=0
+    VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 ooo2/run-ooo2-cosim-linux.sh
     src/run-vl-tests.sh                            # only if src/ changed; failures: 0
 
 `BUILD=1` is MANDATORY when `VDEFS` changes — the cosim runner reuses a stale binary
 otherwise, which is exactly the "compared across non-matched builds" trap.
 
-`run-ino-vl.sh` does NOT compile `ino_soc_top.v`. A change there can pass every riscv-test
+`run-ooo2-vl.sh` does NOT compile `rv_soc_top.v`. A change there can pass every riscv-test
 and be broken; the Linux cosim is the only gate that sees it.

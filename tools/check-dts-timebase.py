@@ -5,7 +5,7 @@ The DTB's timebase-frequency is what Linux uses for EVERY deadline -- scheduler 
 timeouts, NFS retries. It is not a free parameter: it must equal the rate the CLINT really
 ticks at, which is
 
-    probe_clk = (1_000_000_000 // PROBE_CLK_DIV8) * 8      # rk_xcku5p.v / ino_soc_top.v
+    probe_clk = (1_000_000_000 // PROBE_CLK_DIV8) * 8      # rk_xcku5p.v / rv_soc_top.v
     SCALE_DIV = probe_clk // 501_253                       # integer -> NOT exact
     real      = probe_clk // SCALE_DIV
 

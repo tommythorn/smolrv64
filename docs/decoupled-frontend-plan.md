@@ -65,7 +65,7 @@ applied at one site", broken under a different name. Diagnostic detail: the last
 cycle-neutral and two were BIT-IDENTICAL in cosim -- these were not design trade-offs, they
 were redundant logic. The select never selected anything.
 
-The generator-level fix, if this recurs: ino_soc_top has no single place where "is this
+The generator-level fix, if this recurs: rv_soc_top has no single place where "is this
 access a device?" is decided and named. Give it one, and the class cannot come back.
 
 ## Where the limiter is now
@@ -122,7 +122,7 @@ u_lsu/FSM_onehot_st[3] -> st2_go -> device write decode (is_uart_w, CARRY8 x3)
                        -> fe/u_bp/ycorr_qv
 ```
 
-`4567b019` removed the `st2_go` entry. The rest is two lines of `ino_frontend.v`:
+`4567b019` removed the `st2_go` entry. The rest is two lines of `ooo2_frontend.v`:
 
 ```verilog
 fetch ... u_fetch (..., .ready(accept), ...);   // accept = m_advance = f(lsu_done)
@@ -158,7 +158,7 @@ in-order core entirely — there was never anything but the predictor consuming 
 
 What replaced them, and why the queue is now simple:
 
-- `inorder/ino_predictor.v` keeps two committed scalars (`ghr_c`, `rptr_c`), advanced at
+- `ooo2/ooo2_predictor.v` keeps two committed scalars (`ghr_c`, `rptr_c`), advanced at
   resolve and restored on redirect. No ring, no `rollback_idx`, no `NCHK`, no `CBITS`.
 - Predict details ride **with the instruction** — `pd_fetch` -> `d_pdet` -> `m_pdet` ->
   `res_pdet`. The `pdet_f` overwrite hazard that forced allocation-at-push does not exist,
@@ -194,5 +194,5 @@ this shape breaks in two ways worth watching — a checkpoint-ring aliasing bug 
 rollback target after a mispredict) and a lost/duplicated slot at a redirect boundary.
 Neither is visible in a retire *count*; both are visible to lockstep.
 
-Baseline to match: `VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 ./run-ino-cosim-linux.sh` gives
+Baseline to match: `VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 ./run-ooo2-cosim-linux.sh` gives
 **retires=11,082,760** with 200 pre-existing UART-LSR `MMIO-DIVERGE` lines and no others.

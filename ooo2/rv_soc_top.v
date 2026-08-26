@@ -25,14 +25,14 @@
 // carried over verbatim; keep the two in sync when touching those.
 //
 // Deltas vs soc_top.v:
-//   * backend_top -> ino_core (scalar: HW=2, one 32-bit fetch window; no POOL/PBITS,
+//   * backend_top -> ooo2_core (scalar: HW=2, one 32-bit fetch window; no POOL/PBITS,
 //     no per-shard writeback observation bus).
 //   * TWO page-table walkers, not three. The OoO LSU runs separate load and store
 //     walkers because loads and stores translate in parallel; the in-order LSU has
 //     one memory op in flight, so one data walker serves loads, stores and atomics.
 //   * `commit` -> `retire` (one instruction per pulse, in program order).
 //
-// Synthesizable SoC top: the in-order core (ino_core) + unified I$/D$ (cache.v)
+// Synthesizable SoC top: the in-order core (ooo2_core) + unified I$/D$ (cache.v)
 // + l2_arbiter merging all memory traffic onto ONE line memory port + a behavioral
 // line RAM. This lifts the proven tb_vl cache adapters (sticky-rvalid read port,
 // write-through write port, fence.i drain+invalidate FSM) into a real module, and
@@ -45,11 +45,11 @@
 // SCOPE: RAM only (no MMIO devices yet -- CLINT/UART routing is the next increment;
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
-`ifndef INO_HW
- `define INO_HW 2                 // fetch window halfwords (must match ino_core.v)
+`ifndef OOO2_HW
+ `define OOO2_HW 2                 // fetch window halfwords (must match ooo2_core.v)
 `endif
-module ino_soc_top #(
-   parameter HW=`INO_HW, PCW=64, SEQW=8,   // fetch window halfwords (must match ino_core.v)
+module rv_soc_top #(
+   parameter HW=`OOO2_HW, PCW=64, SEQW=8,   // fetch window halfwords (must match ooo2_core.v)
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
@@ -128,7 +128,7 @@ module ino_soc_top #(
    wire                ptw_rvalid, dptw_rvalid;
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
-   ino_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) core
+   ooo2_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
@@ -173,11 +173,11 @@ module ino_soc_top #(
    // never be in S_ST2 and the base is the same address the beat would have used. Asserted below.
    wire [63:0] dev_addr = dmem_wen ? dmem_wabase : dmem_raddr;
    always @(posedge clk) if (!reset & dmem_ren & dmem_wen)
-      $fatal(1, "ino_soc_top: dmem_ren & dmem_wen asserted together -- dev_addr select is ambiguous");
+      $fatal(1, "rv_soc_top: dmem_ren & dmem_wen asserted together -- dev_addr select is ambiguous");
    // ...and a device write is never the straddling second beat, which is what makes decoding
    // from the base equivalent. If this ever fires, the decode above is addressing the wrong word.
    always @(posedge clk) if (!reset & dmem_wen & is_dev_w & (dmem_waddr != dmem_wabase))
-      $fatal(1, "ino_soc_top: device write straddled a word (beat %h base %h)", dmem_waddr, dmem_wabase);
+      $fatal(1, "rv_soc_top: device write straddled a word (beat %h base %h)", dmem_waddr, dmem_wabase);
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
@@ -447,7 +447,7 @@ module ino_soc_top #(
    wire         raw_rvalid = vio_rack | dev_rvalid_q | dc_rv_ok;
    always @(posedge clk)
       if (!reset & ((vio_rack & dev_rvalid_q) | (vio_rack & dc_rv_ok) | (dev_rvalid_q & dc_rv_ok)))
-         $fatal(1, "ino_soc_top: two read responses at once (vio=%b dev=%b dc=%b) -- rvalid ambiguous",
+         $fatal(1, "rv_soc_top: two read responses at once (vio=%b dev=%b dc=%b) -- rvalid ambiguous",
                 vio_rack, dev_rvalid_q, dc_rv_ok);
    // ...and raw_rDATA selects the same way, for the same reason. The note that used to stand
    // here -- "a 64-bit mux on a path with slack, and only the VALID reaches lsu_done" -- has
@@ -492,7 +492,7 @@ module ino_soc_top #(
    assign       dmem_wready = vio_wack | dev_wack | dc_wr_ack;
    always @(posedge clk)
       if (!reset & ((vio_wack & dev_wack) | (vio_wack & dc_wr_ack) | (dev_wack & dc_wr_ack)))
-         $fatal(1, "ino_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
+         $fatal(1, "rv_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
                 vio_wack, dev_wack, dc_wr_ack);
 
    // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
@@ -504,7 +504,7 @@ module ino_soc_top #(
    wire dc_inv_req, dc_inv_busy;
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
-   ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
+   rv_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_resp_addr(dc_rd_resp_addr), .rd_tag(dcr_tag), .rd_resp_tag(dc_rd_resp_tag),
@@ -620,7 +620,7 @@ module ino_soc_top #(
    // FB_RHIT means the buffer is already acting as a small loop buffer, and making it bigger
    // is the interesting direction rather than removing it.
    // REGISTERED before leaving this module.  fb_hit is a late combinational signal in the
-   // fetch path and fe_redirect crosses a hierarchy boundary; driving ino_core's hpm inputs
+   // fetch path and fe_redirect crosses a hierarchy boundary; driving ooo2_core's hpm inputs
    // from them directly adds load and a new endpoint to a cone that has ~zero slack.  A
    // counter cannot observe which cycle an event landed on, which is the same argument that
    // made hpm_ev_q free -- so pay the delay here instead.
@@ -641,7 +641,7 @@ module ino_soc_top #(
    // instructions from the previous address space.
    always @(posedge clk)
       if (!reset & fb_hit & imem_xlate_ok & ~imem_ctx_chg & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
-         $fatal(1, "ino_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
+         $fatal(1, "rv_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
                 fb_alv, fb_al, (fb_in1 ? fb_pa1 : fb_pa), fb_in1);
 
    // ---- SILICON READOUT for the same invariant (FBDIAG_BASE) --------------------------
@@ -864,7 +864,7 @@ module ino_soc_top #(
                      : (fb_vhw >= HW)                     ? AV_HW
                      :                                      fb_vhw[AVW-1:0];
 
-   ino_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
+   rv_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
@@ -938,7 +938,7 @@ module ino_soc_top #(
    wire [NREQ*512-1:0] a_wdata = {ic_l2_wdata, dc_l2_wdata};
    wire [NREQ-1:0]     a_ack;
    wire                m_req, m_we;  wire [LAW-1:0] m_addr;  wire [511:0] m_wdata, m_rdata;  wire m_ack;
-   ino_l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
+   rv_l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
      (.clk(clk), .reset(reset),
       .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .ack(a_ack), .rdata(arb_rdata),
       .mem_req(m_req), .mem_we(m_we), .mem_addr(m_addr), .mem_wdata(m_wdata),
@@ -983,7 +983,7 @@ module ino_soc_top #(
          // truncation -- an out-of-range line would WRAP onto a valid one. m_is_local bounds
          // l_line, so narrow explicitly and assert the precondition rather than trust it.
          if (|l_line[LAW-1:LLW])
-            $fatal(1, "ino_soc_top: local SRAM line %h out of range (NLLINE=%0d)", l_line, NLLINE);
+            $fatal(1, "rv_soc_top: local SRAM line %h out of range (NLLINE=%0d)", l_line, NLLINE);
          l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line[LLW-1:0]; l_wd_q<=m_wdata;
       end
       else if (l_busy) begin

@@ -8,7 +8,7 @@ places I was wrong are recorded deliberately, because two of them cost hours.
 **The board hang is FIXED and verified on hardware. The clock did not move.**
 
 Shippable bitstream: `/var/tmp/inorder_111MHz_FIXED_102b2fd7.bit` — `PROBE_CLK_DIV8=72`
-(111.11 MHz), `INO_CORE=1 INO_HW=4`, **closed natively at WNS +0.134** and boots to
+(111.11 MHz), `OOO2_CORE=1 OOO2_HW=4`, **closed natively at WNS +0.134** and boots to
 `/sbin/init` over NFS with the UNMODIFIED interrupt-enabled `ubuntu-nfs.dtb`.
 
     cd platforms/rk-xcku5p-f-v1.2 && make program BIT=/var/tmp/inorder_111MHz_FIXED_102b2fd7.bit
@@ -34,8 +34,8 @@ exact reported symptom.
 
 It changed fetch's handshake and did not change the other end of it:
 
-    ino_frontend.v:  .ready(accept)  ->  .ready(~q_full)
-    ino_core.v:      inject_inflight <= irq_inject & accept;      (UNCHANGED)
+    ooo2_frontend.v:  .ready(accept)  ->  .ready(~q_full)
+    ooo2_core.v:      inject_inflight <= irq_inject & accept;      (UNCHANGED)
 
 The interrupt pseudo-op is consumed by fetch on the queue PUSH (`fire`), but the interlock
 that guarantees one injection per interrupt stayed armed by the queue POP (`accept`).
@@ -46,7 +46,7 @@ thing that would have stopped it was waiting on an event that had stopped coinci
 That is why the machine died the instant Linux enabled its first PLIC source, and why a DTB
 with the uart's `interrupts`/`interrupt-parent` removed walks straight past it.
 
-Fix (`cb24e5ae`): `ino_frontend` exports `irq_taken = irq_inject & fire`, and both the hold
+Fix (`cb24e5ae`): `ooo2_frontend` exports `irq_taken = irq_inject & fire`, and both the hold
 and the interlock key off it. `rtl-rules.md` already has the rule — an interlock must NAME
 the event it interlocks, not a proxy — and this is the second commit to pay for it, so it
 is now asserted: fetch consuming two pseudo-ops for one interrupt is a `$fatal`.
@@ -135,8 +135,8 @@ FLOPS, so the RTL is faster when pushed hard and heavier when relaxed — exactl
 ## Verification recipe
 
     src/lint.sh                                    # lint: clean
-    inorder/run-ino-vl.sh rv64ui-p rv64um-p rv64ua-p rv64uc-p    # pass=85 fail=0
-    VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 inorder/run-ino-cosim-linux.sh   # 11631167
+    ooo2/run-ooo2-vl.sh rv64ui-p rv64um-p rv64ua-p rv64uc-p    # pass=85 fail=0
+    VDEFS=-DINO_HW=4 BUILD=1 CYC=60000000 ooo2/run-ooo2-cosim-linux.sh   # 11631167
     src/run-vl-tests.sh                            # only if src/ changed; failures: 0
 
     # and the only one that would have caught this bug:

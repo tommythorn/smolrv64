@@ -1,8 +1,6 @@
 List of CLB Tiles
-CLEM_X38Y162
-CLEL_R_X38Y162
+CLEM_X59Y102
+CLEL_R_X59Y102
 
 List of Congested Nets
-probe_core/core/m_st_data_reg_n_0_[9]
-probe_core/core/u_lsu/dmem_rdata[8]
 

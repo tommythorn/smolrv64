@@ -334,63 +334,77 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_cache.v">
+      <File Path="$PPRDIR/../../ooo2/rv_cache.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_core.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_core.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_exec.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_exec.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_frontend.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_frontend.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_l2_arbiter.v">
+      <File Path="$PPRDIR/../../ooo2/rv_l2_arbiter.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_lsu.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_lsu.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_predictor.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_predictor.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_regfile.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_prf.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../inorder/ino_soc_top.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_rename.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../../ooo2/ooo2_rob.v">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../../ooo2/rv_soc_top.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
@@ -586,14 +600,14 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../src/fp_unit.sv">
+      <File Path="$PPRDIR/../../third_party/cvfpu/src/fpnew_pkg.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../third_party/cvfpu/src/fpnew_pkg.sv">
+      <File Path="$PPRDIR/../../src/fp_unit.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
@@ -705,15 +719,24 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../src/smolrv64_cvfpu.sv">
+      <File Path="$PSRCDIR/rk_xcku5p.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/rk_xcku5p.v">
+      <File Path="$PPRDIR/../../src/smolrv64_cvfpu.sv">
         <FileInfo>
+          <Attr Name="AutoDisabled" Val="1"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../../ooo2/rv_regfile.v">
+        <FileInfo>
+          <Attr Name="AutoDisabled" Val="1"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
@@ -932,16 +955,16 @@
         <Option Name="TopModule" Val="rk_xcku5p"/>
         <Option Name="TopAutoSet" Val="TRUE"/>
         <Option Name="VerilogDir" Val="$PPRDIR/../../third_party/cvfpu/src/common_cells/include"/>
-        <Option Name="VerilogDir" Val="$PPRDIR/../../inorder"/>
+        <Option Name="VerilogDir" Val="$PPRDIR/../../ooo2"/>
         <Option Name="VerilogDir" Val="$PPRDIR/../../src"/>
         <Verilog_Define Name="MEM_BASEADDR" Val="64&apos;h70000000"/>
         <Verilog_Define Name="PROBE_CORE"/>
-        <Verilog_Define Name="INO_CORE"/>
+        <Verilog_Define Name="OOO2_CORE"/>
         <Verilog_Define Name="SOC_BOOT_HEX" Val="&quot;/home/tommy/smolrv64/src/mem.linehex&quot;"/>
-        <Verilog_Define Name="PROBE_CLK_DIV8" Val="72"/>
-        <Verilog_Define Name="INO_HW" Val="4"/>
-        <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260819210004"/>
-        <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;he423d9ce"/>
+        <Verilog_Define Name="PROBE_CLK_DIV8" Val="48"/>
+        <Verilog_Define Name="OOO2_HW" Val="4"/>
+        <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260825170703"/>
+        <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;h85e78ce7"/>
         <Verilog_Define Name="SMOLRV64_GIT_DIRTY" Val="1&apos;b1"/>
         <Verilog_Define Name="SMOLRV64_USE_XPM"/>
       </Config>
@@ -1070,7 +1093,7 @@
         </Step>
         <Step Id="power_opt_design"/>
         <Step Id="place_design" PreStepTclHook="$PPRDIR/cvfpu_timing.tcl">
-          <Option Id="Directive">8</Option>
+          <Option Id="Directive">0</Option>
         </Step>
         <Step Id="post_place_power_opt_design"/>
         <Step Id="phys_opt_design">

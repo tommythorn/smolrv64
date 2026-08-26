@@ -20,7 +20,7 @@ UART LSR lines (an unmodified baseline emits the identical 200 — controlled fo
 
 ## The bug
 
-`inorder/ino_soc_top.v` tagged its single held fetch window with the **exact byte address**
+`ooo2/rv_soc_top.v` tagged its single held fetch window with the **exact byte address**
 it was fetched at:
 
 ```verilog
@@ -47,7 +47,7 @@ Branch **`inorder-fb`** on coffee, on top of `inorder-nospan`:
 | `8e71c72e` | probe_clk from an MMCM — continuous frequency instead of the 5-rung BUFGCE ladder |
 | `00a00b7c` | move the probe_clk guard out of the XDC, where Vivado silently ignored it |
 | `f38f909c` | constrain the `ddr_line_cdc` RETURN path — unconstrained in **every build ever made** |
-| `38916986` | `INO_HW` build knob (refuses 8: RDW=128 trips the sdpram geometry guard) |
+| `38916986` | `OOO2_HW` build knob (refuses 8: RDW=128 trips the sdpram geometry guard) |
 | `c2b01cbe` | fetch buffer v2 |
 | `e51ccb01`, `fa235782` | your two parked timing commits, now cosim-validated |
 

@@ -66,7 +66,7 @@ module csr_file
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
-    // STALL-ATTRIBUTION taps (see ino_core.v): they turn a CPI number into a CPI
+    // STALL-ATTRIBUTION taps (see ooo2_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
     input  wire [21:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----

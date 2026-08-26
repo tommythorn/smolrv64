@@ -12,7 +12,7 @@
 //
 // The memory port mirrors the same contract (1-cycle mem_req pulse -> mem_ack with
 // mem_rdata), so a cache.v-style behavioral RAM (or the real DRAM bridge) drops in.
-module ino_l2_arbiter #(
+module rv_l2_arbiter #(
    parameter NREQ = 4,
    parameter AW   = 58,     // line address width (PA[63:6])
    parameter DW   = 512     // line data width

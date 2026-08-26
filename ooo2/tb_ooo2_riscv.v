@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// riscv-tests harness for the in-order core (ino_core), a stripped sibling of
+// riscv-tests harness for the in-order core (ooo2_core), a stripped sibling of
 // probe/tb_riscv.v: a flat byte memory at 0x80000000 serves both the
 // combinational fetch window and the LSU's data port, and a store to `tohost`
 // (+tohost=<hex>) ends the run -- 1 = PASS, else FAIL with test# = tohost>>1.
@@ -37,7 +37,7 @@ module tb;
    wire [PCW-1:0]   retire_pc, redirect_target;
    wire [31:0]      retire_insn;
 
-   ino_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
+   ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail),
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
@@ -106,7 +106,7 @@ module tb;
       reset = 1; @(negedge clk); @(negedge clk); reset = 0;
 
       if ($value$plusargs("trace=%d", trace)) ;
-      if ($test$plusargs("vcd")) begin $dumpfile("/tmp/ino.vcd"); $dumpvars(0, dut); end
+      if ($test$plusargs("vcd")) begin $dumpfile("/tmp/ooo2.vcd"); $dumpvars(0, dut); end
 
       // `done` ends the loop explicitly rather than relying on $finish to abort it:
       // iverilog stops on the spot, but Verilator finishes the current time slot, so
