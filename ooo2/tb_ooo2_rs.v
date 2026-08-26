@@ -69,17 +69,35 @@ module tb;
       @(negedge clk);
       expect_iss("empty -> no issue", 1'b0, 4'd0);
 
-      // 4. oldest-ready among several ready
-      disp(4'd5, 9'd0, 1'b1, 4'b0001);
-      disp(4'd3, 9'd0, 1'b1, 4'b0001);       // older by age (head=0)
-      disp(4'd7, 9'd0, 1'b1, 4'b0001);
-      @(negedge clk);
-      expect_iss("oldest ready wins", 1'b1, 4'd3);
-      take; @(negedge clk);
-      expect_iss("then next oldest", 1'b1, 4'd5);
-      take; @(negedge clk);
-      expect_iss("then the youngest", 1'b1, 4'd7);
-      take;
+      // 4. several ready at once: ALL of them issue, none lost or repeated.
+      // Deliberately NOT asserting the order. Selection is by fixed priority now, not by
+      // age -- age-ordered select cost a comparator CHAIN in the readiness path, and window
+      // size matters more than which ready entry goes first. Pinning the order here would
+      // just have to be rewritten the next time the policy changes; what must never change
+      // is that every dispatched entry issues exactly once.
+      begin : allthree
+         reg [2:0] seen; integer n;
+         seen = 3'b000;
+         disp(4'd5, 9'd0, 1'b1, 4'b0001);
+         disp(4'd3, 9'd0, 1'b1, 4'b0001);
+         disp(4'd7, 9'd0, 1'b1, 4'b0001);
+         for (n = 0; n < 3; n = n + 1) begin
+            @(negedge clk);
+            if (!iss_v) begin $display("FAIL all-issue: nothing ready at step %0d", n); errs=errs+1; end
+            else begin
+               case (iss_rob)
+                 4'd3: seen[0] = 1'b1;
+                 4'd5: seen[1] = 1'b1;
+                 4'd7: seen[2] = 1'b1;
+                 default: begin $display("FAIL all-issue: unexpected rob=%0d", iss_rob); errs=errs+1; end
+               endcase
+            end
+            take;
+         end
+         if (seen !== 3'b111) begin
+            $display("FAIL all-issue: seen=%b, expected all of rob 3/5/7", seen); errs=errs+1;
+         end else $display("  ok  every ready entry issues exactly once (order unconstrained)");
+      end
 
       // 5. a busy unit must not block a different unit's entry
       disp(4'd0, 9'd0, 1'b1, 4'b0010);       // needs unit1

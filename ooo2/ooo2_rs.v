@@ -176,20 +176,34 @@ module ooo2_rs
    // ---- ready and oldest-ready select (doc 8.3) --------------------------------------
    // ready includes the unit check, so a busy unit does not block a DIFFERENT unit's
    // entry -- that is the entire point of the structure.
-   // Oldest LIVE entry, for the in_order gate. Same minimum-reduction as the select below
-   // but over v[] rather than rdy[], so it does not depend on readiness.
-   reg              old_v;
-   reg [IDXB-1:0]   old_ent;
-   reg [ROBB-1:0]   old_age;
-   integer          j;
-   always @* begin
-      old_v = 1'b0; old_ent = {IDXB{1'b0}}; old_age = {ROBB{1'b0}};
-      for (j = 0; j < NENT; j = j + 1)
-         if (v[j] && (!old_v || ((e_rob[j] - head) < old_age))) begin
-            old_v = 1'b1; old_ent = j[IDXB-1:0]; old_age = e_rob[j] - head;
+   // IS-OLDEST, as a MATRIX rather than a minimum-reduction. The reduction was written as a
+   // sequential loop -- "if this one is older than the best so far" -- which synthesises to a
+   // CHAIN of NENT comparators, depth NENT. That is what made the scheduler the critical
+   // path, and why halving NENT bought 1.9ns: the cost was linear in the window.
+   //
+   // Each entry instead asks "does any live entry have a smaller age than mine?", which is
+   // NENT^2 comparators but only TWO levels -- compare, then OR-reduce. Depth is now
+   // independent of the window, so the window is free to grow.
+   wire [NENT-1:0] is_oldest;
+   genvar gi, gj;
+   generate
+      for (gi = 0; gi < NENT; gi = gi + 1) begin : g_old
+         wire [NENT-1:0] older;
+         for (gj = 0; gj < NENT; gj = gj + 1) begin : g_older
+            assign older[gj] = (gi == gj) ? 1'b0
+                             : v[gj] & ((e_rob[gj] - head) < (e_rob[gi] - head));
          end
-   end
+         assign is_oldest[gi] = v[gi] & ~|older;
+      end
+   endgenerate
+   wire old_v = |v;
 
+   // Stall attribution reads the oldest entry; it feeds counters only, never selection.
+   reg [IDXB-1:0] old_ent;
+   always @* begin
+      old_ent = {IDXB{1'b0}};
+      for (k = NENT-1; k >= 0; k = k - 1) if (is_oldest[k]) old_ent = k[IDXB-1:0];
+   end
    wire o_r1 = e_r1[old_ent] | hit(e_ps1[old_ent]);
    wire o_r2 = e_r2[old_ent] | hit(e_ps2[old_ent]);
    wire o_r3 = e_r3[old_ent] | hit(e_ps3[old_ent]);
@@ -204,26 +218,27 @@ module ooo2_rs
                               & (e_r2[g] | hit(e_ps2[g]))
                               & (e_r3[g] | hit(e_ps3[g]))
                               & ~|(e_unit[g] & unit_busy)
-                              & (~(in_order | e_ord[g]) | (g[IDXB-1:0] == old_ent));
+                              & (~(in_order | e_ord[g]) | is_oldest[g]);
       end
    endgenerate
 
-   // age(x) = (x - head) & (ROB_SIZE-1); 0 is oldest. Minimum-reduction over NENT --
-   // a comparator tree, deterministic and starvation-free.
+   // SELECT BY FIXED PRIORITY, not by age. Age-ordered selection costs a comparator chain
+   // in the readiness-to-issue path and buys very little: what matters for covering a stall
+   // is how many independent instructions the window HOLDS, not which of the ready ones goes
+   // first. Trading the chain for a priority encoder makes select depth independent of NENT,
+   // which is what lets the window grow -- and window size is the thing that actually
+   // determines whether a load's latency can be hidden.
+   //
+   // STARVATION IS BOUNDED BY THE ROB, not by this policy. If a low-priority entry never
+   // wins, its ROB slot never completes; commit is in order, so the ROB fills, dispatch
+   // stops, every other entry drains, and it becomes the only candidate. The in-order commit
+   // point is the backstop that makes a cheap policy safe here.
    reg              sel_v;
    reg [IDXB-1:0]   sel;
-   reg [ROBB-1:0]   sel_age;
    always @* begin
-      sel_v = 1'b0; sel = {IDXB{1'b0}}; sel_age = {ROBB{1'b0}};
-      for (k = 0; k < NENT; k = k + 1) begin : g_sel
-         if (rdy[k]) begin
-            if (!sel_v || ((e_rob[k] - head) < sel_age)) begin
-               sel_v   = 1'b1;
-               sel     = k[IDXB-1:0];
-               sel_age = e_rob[k] - head;
-            end
-         end
-      end
+      sel_v = |rdy;
+      sel   = {IDXB{1'b0}};
+      for (k = NENT-1; k >= 0; k = k - 1) if (rdy[k]) sel = k[IDXB-1:0];
    end
 
    assign d_ent    = fsel;
