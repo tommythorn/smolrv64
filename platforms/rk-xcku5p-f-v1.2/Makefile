@@ -121,6 +121,13 @@ program:
 
 # Open the impl_1 checkpoint and dump worst setup paths.  Use this to diagnose
 # timing violations without rebuilding.
+# Reset the runs after a KILLED build. A run terminated mid-flight leaves its directory
+# half-written and the next build inherits it, failing ~30 minutes in with an error that
+# points at the wrong thing. There was no target for this and it has bitten more than once.
+.PHONY: reset
+reset:
+	$(VIVADO) $(VFLAGS) -source reset_runs.tcl
+
 timing:
 	$(VIVADO) $(VFLAGS) -source report_timing.tcl
 

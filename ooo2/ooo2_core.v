@@ -441,6 +441,15 @@ module ooo2_core
    // feeds M from X. What this buys is that the pack/unpack of a 35-field payload, which
    // is where silent corruption would live, is checked every cycle against the m_*
    // registers holding the very same instruction (see the assertion below).
+   // MEASURED, both configurations, 300M-cycle Linux cosim (in-order core = 67,160,189):
+   //   RS_N=8  retires 66,529,479 (-0.94%)  WNS -2.043ns
+   //   RS_N=4  retires 65,718,516 (-2.15%)  WNS -0.128ns
+   // Shrinking the window bought 1.9ns of timing and cost 1.2% of throughput, and still did
+   // not close -- so window size is not the lever. At 4 the critical path had already moved
+   // OFF the scheduler's own select tree and onto m_addr -> LSU -> m_done -> m_advance ->
+   // unit_busy -> select, i.e. the M-completion cone feeding readiness. Registering
+   // unit_busy is what takes that out; making the scheduler smaller only makes the design
+   // worse at everything it exists to do.
    localparam integer RS_N = 8, RS_IDXB = 3, RS_NUNIT = 5;
    localparam [RS_NUNIT-1:0] U_ALU = 5'b00001, U_MEM = 5'b00010,
                              U_MD  = 5'b00100, U_FP  = 5'b01000, U_SYS = 5'b10000;
