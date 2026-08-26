@@ -4,8 +4,13 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	model = "SmolRV64 inorder-nospan 53bb94bf @ 111 MHz";
-
+	/* No git hash here. It was "inorder-fb 95aff227" -- a branch that no longer
+	 * exists and a commit long superseded -- and it announced that on every boot.
+	 * The bitstream already carries the real identity (SMOLRV64_GIT_COMMIT plus a
+	 * build stamp and a dirty flag, read out by the monitor banner), so repeating a
+	 * hand-edited copy here can only ever be wrong. Core name and clock only; the
+	 * clock is checkable against timebase-frequency by tools/check-dts-timebase.py. */
+	model = "SmolRV64 ooo2 @ 111.11 MHz";
 	chosen {
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
