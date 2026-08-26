@@ -1,16 +1,15 @@
 /dts-v1/;
+/* @GENERATED@
+ * Clock variants are GENERATED from this template: the timebase must equal the rate
+ * the RTL's CLINT really ticks at, so it is computed from PROBE_CLK_DIV8 by the same
+ * function that checks it (tools/check-dts-timebase.py). Editing a generated .dts is
+ * how five byte-identical copies and one stale model string happened. */
 
 / {
 	#address-cells = <2>;
 	#size-cells = <2>;
 	compatible = "riscv-virtio";
-	/* No git hash here. It was "inorder-fb 95aff227" -- a branch that no longer
-	 * exists and a commit long superseded -- and it announced that on every boot.
-	 * The bitstream already carries the real identity (SMOLRV64_GIT_COMMIT plus a
-	 * build stamp and a dirty flag, read out by the monitor banner), so repeating a
-	 * hand-edited copy here can only ever be wrong. Core name and clock only; the
-	 * clock is checkable against timebase-frequency by tools/check-dts-timebase.py. */
-	model = "SmolRV64 ooo2 @ 114.29 MHz";
+	model = "@MODEL@";
 	chosen {
 		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
@@ -29,8 +28,7 @@
 	};
 
 	uart@10000000 {
-		interrupts = <10>;
-		interrupt-parent = <&plic>;
+@UART_IRQ@
 		clock-frequency = <0x384000>;
 		reg = <0 0x10000000 0 0x100>;
 		compatible = "ns16550a";
@@ -40,7 +38,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
-                timebase-frequency = <501253>;  /* REAL rate = PROBE_CLK_HZ / CLINT SCALE_DIV, and SCALE_DIV is an integer so this is NOT 501253 at every clock. probe_clk = (1e9/PROBE_CLK_DIV8)*8; SCALE_DIV = PROBE_CLK_HZ/501253. DIV8=120: 66,666,664/133 = 501253 (exact, the old value). DIV8=72: 111,111,104/221 = 502765. DIV8=68: 117,647,056/234 = 502765. This said 501253 from the 66.67MHz era until 2026-08-19, so from the 111MHz milestone onward every kernel deadline, TCP timeout and NFS retry ran 0.302% fast -- including the GB5 run. Was 20050120 before that, a 40x "deadline probe" lie (4583ba4). MUST track ino_soc_top.v's clint SCALE_DIV; tools/check-dts-timebase.py verifies it. */
+                timebase-frequency = <@TIMEBASE@>;  /* REAL rate = PROBE_CLK_HZ / CLINT SCALE_DIV, and SCALE_DIV is an integer so this is NOT 501253 at every clock. probe_clk = (1e9/PROBE_CLK_DIV8)*8; SCALE_DIV = PROBE_CLK_HZ/501253. DIV8=120: 66,666,664/133 = 501253 (exact, the old value). DIV8=72: 111,111,104/221 = 502765. DIV8=68: 117,647,056/234 = 502765. This said 501253 from the 66.67MHz era until 2026-08-19, so from the 111MHz milestone onward every kernel deadline, TCP timeout and NFS retry ran 0.302% fast -- including the GB5 run. Was 20050120 before that, a 40x "deadline probe" lie (4583ba4). MUST track rv_soc_top.v's clint SCALE_DIV; tools/check-dts-timebase.py verifies it. */
 
 		cpu-map {
 			cluster0 {
