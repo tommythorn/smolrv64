@@ -25,7 +25,8 @@
 module ooo2_rob
   #(parameter DEPTH = 16,
     parameter IDXB  = 4,              // $clog2(DEPTH)
-    parameter PBITS = 9)
+    parameter PBITS = 9,
+    parameter NW    = 3)              // simultaneous completion ports
    (input  wire             clk,
     input  wire             reset,
 
@@ -45,8 +46,12 @@ module ooo2_rob
     output wire [IDXB-1:0]  d_idx,        // the slot this dispatch takes; ride it with the op
 
     // ---- completion: out of order, names its slot by the tag it was given ----
-    input  wire             w_valid,
-    input  wire [IDXB-1:0]  w_idx,
+    // NW ports. One was enough while a single stage completed everything; with units
+    // running independently, an ALU result, a landing load and a landing FP result can
+    // all finish in the same cycle, and making them queue for a completion port would
+    // reintroduce exactly the serialisation dynamic issue exists to remove.
+    input  wire [NW-1:0]           w_v,
+    input  wire [NW*IDXB-1:0]      w_ix,
 
     // ---- commit: the head, in order, straight into ooo2_rename's commit port ----
     input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
@@ -78,7 +83,7 @@ module ooo2_rob
    reg [EW-1:0]    ent [0:DEPTH-1];
    reg [DEPTH-1:0] v, done;                     // bulk-cleared on flush, so flops by necessity
    reg [IDXB:0]    head, tail;                  // one extra MSB: full and empty differ by it
-   integer         ri;
+   integer         ri, rj;
    initial begin
       v = {DEPTH{1'b0}}; done = {DEPTH{1'b0}}; head = 0; tail = 0;
       for (ri = 0; ri < DEPTH; ri = ri + 1) ent[ri] = {EW{1'b0}};
@@ -96,7 +101,18 @@ module ooo2_rob
    // the head must commit that same cycle, or every completion costs an extra cycle -- and
    // at this milestone that would make the shadow's commit stream one cycle late and no
    // longer bit-identical to the M-stage commit it is checked against.
-   wire head_done = v[hidx] & (done[hidx] | (w_valid & (w_idx == hidx)));
+   // Write-forward across every port: an op completing IN the cycle its entry reaches the
+   // head must commit that same cycle, or every completion costs an extra cycle.
+   function automatic w_hits;
+      input [IDXB-1:0] ix;
+      integer q;
+      begin
+         w_hits = 1'b0;
+         for (q = 0; q < NW; q = q + 1)
+            if (w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
+      end
+   endfunction
+   wire head_done = v[hidx] & (done[hidx] | w_hits(hidx));
 
    // c_kill: the head is trapping. It must NOT commit -- a trap does not write rd -- and the
    // redirect that follows flushes it, which returns its allocation through the free list's
@@ -122,7 +138,8 @@ module ooo2_rob
             done[tidx] <= 1'b0;
             tail       <= tail + 1'b1;
          end
-         if (w_valid) done[w_idx] <= 1'b1;
+         for (ri = 0; ri < NW; ri = ri + 1)
+            if (w_v[ri]) done[w_ix[ri*IDXB +: IDXB]] <= 1'b1;
          if (do_commit) begin
             v[hidx] <= 1'b0;
             head    <= head + 1'b1;
@@ -143,10 +160,17 @@ module ooo2_rob
    always @(posedge clk) if (!reset) begin
       if (d_valid & ~d_ready)
          $fatal(1, "ooo2_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
-      if (w_valid & ~v[w_idx])
-         $fatal(1, "ooo2_rob: completion for slot %0d, which holds no live entry", w_idx);
-      if (w_valid & done[w_idx])
-         $fatal(1, "ooo2_rob: slot %0d completed twice", w_idx);
+      for (ri = 0; ri < NW; ri = ri + 1) if (w_v[ri]) begin
+         if (~v[w_ix[ri*IDXB +: IDXB]])
+            $fatal(1, "ooo2_rob: completion for slot %0d, which holds no live entry",
+                   w_ix[ri*IDXB +: IDXB]);
+         if (done[w_ix[ri*IDXB +: IDXB]])
+            $fatal(1, "ooo2_rob: slot %0d completed twice", w_ix[ri*IDXB +: IDXB]);
+         for (rj = 0; rj < NW; rj = rj + 1)
+            if (rj > ri && w_v[rj] && (w_ix[rj*IDXB +: IDXB] == w_ix[ri*IDXB +: IDXB]))
+               $fatal(1, "ooo2_rob: two ports completing slot %0d in one cycle",
+                      w_ix[ri*IDXB +: IDXB]);
+      end
       if (c_valid & ~v[hidx])
          $fatal(1, "ooo2_rob: committing an invalid head (head=%0d)", head);
       // Occupancy can never exceed the array. Catches a lost commit or a double allocate at

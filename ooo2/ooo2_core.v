@@ -417,14 +417,16 @@ module ooo2_core
          $fatal(1, "ooo2_pending shadow: rs3 p%0d consumed while pending (pc=%h)", rn_prs3, d_pc);
    end
 
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
+   // NW=1 until units complete independently; the port is widened by the same commit
+   // that makes more than one completion per cycle possible.
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(1)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_valid(rob_w_valid), .w_idx(rob_w_idx),
+      .w_v(rob_w_valid), .w_ix(rob_w_idx),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
