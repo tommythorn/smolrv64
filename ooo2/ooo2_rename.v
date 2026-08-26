@@ -53,15 +53,12 @@ module ooo2_rename
     output wire [PBITS-1:0] r_prs2,
     output wire [PBITS-1:0] r_prs3,
     output wire [PBITS-1:0] r_prd,        // newly allocated physical register
-    output wire [PBITS-1:0] r_pold,       // the mapping it displaces -- freed at commit
 
     // ---- commit port (in order, one per cycle) ----
     input  wire             c_valid,
     input  wire [5:0]       c_rd,
     input  wire             c_rd_v,
-    input  wire [1:0]       c_shard,
     input  wire [PBITS-1:0] c_prd,        // becomes the committed mapping
-    input  wire [PBITS-1:0] c_pold,       // returns to c_shard's free list
 
     // ---- recovery ----
     input  wire             flush,        // total squash: everything uncommitted dies
@@ -85,7 +82,6 @@ module ooo2_rename
    assign r_prs1 = lv[r_rs1] ? smap[r_rs1] : rmap[r_rs1];
    assign r_prs2 = lv[r_rs2] ? smap[r_rs2] : rmap[r_rs2];
    assign r_prs3 = lv[r_rs3] ? smap[r_rs3] : rmap[r_rs3];
-   assign r_pold = lv[r_rd]  ? smap[r_rd]  : rmap[r_rd];
 
    // ---- free lists, one per shard ---------------------------------------------------
    // Pointers carry an extra MSB so full and empty are distinguishable without a separate
@@ -116,6 +112,12 @@ module ooo2_rename
    // one.  A register's shard is encoded in its number and never changes, so the free push
    // must be routed by c_pold's own shard.  Routing it by c_shard moves registers between
    // shards, which breaks the one-writer-per-bank property the whole design rests on.
+   // NEITHER the displaced register NOR the destination shard travels in the ROB (doc 5.1).
+   // rmap holds committed state, so in the cycle this entry commits rmap[c_rd] is still the
+   // mapping it displaced -- the write below is what replaces it. And a physical register's
+   // shard is the top bits of its number, so the allocation shard is read off c_prd.
+   wire [PBITS-1:0] c_pold  = rmap[c_rd];
+   wire [1:0] c_shard = c_prd[PBITS-1:IDXB];
    wire [1:0] pold_sh = c_pold[PBITS-1:IDXB];
    wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
    wire cmt_ld = c_valid & c_rd_v & (c_shard == SH_LD);

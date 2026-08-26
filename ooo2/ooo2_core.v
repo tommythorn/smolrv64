@@ -312,7 +312,7 @@ module ooo2_core
                       : d_is_fp                          ? SH_FE
                       :                                    SH_IE;
 
-   wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd, rn_pold;
+   wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
    wire                rn_stall;
    wire [2:0]          rn_shard_low;
    // Rename exactly when the instruction actually enters M and is not being squashed --
@@ -325,12 +325,11 @@ module ooo2_core
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
       .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
-      .r_prd(rn_prd), .r_pold(rn_pold),
+      .r_prd(rn_prd),
       // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
       // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
       // way rename itself was switched over once its shadow had earned it.
-      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_shard(rob_c_shard),
-      .c_prd(rob_c_prd), .c_pold(rob_c_pold),
+      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_prd(rob_c_prd),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
@@ -372,8 +371,7 @@ module ooo2_core
    wire d_is_irqop = (d_insn[6:2] == 5'b11100) & (d_insn[14:12] == 3'b000)
                    & (d_insn[31:20] == 12'h7F0) & ~d_illegal & ~d_fault;
    wire [5:0]          rob_c_rd;
-   wire [1:0]          rob_c_shard;
-   wire [RN_PBITS-1:0] rob_c_prd, rob_c_pold;
+   wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
    always @(posedge clk) if (m_advance) m_rob_idx <= rob_d_idx;
@@ -388,14 +386,15 @@ module ooo2_core
 
    ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
-      .d_valid(rn_valid), .d_rd(d_rd), .d_rd_v(d_rd_v), .d_shard(d_shard),
-      .d_prd(rn_prd), .d_pold(rn_pold), .d_noret(d_is_irqop),
+      // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
+      // `d_prd != 0` is what replaces the stored rd_v bit.
+      .d_valid(rn_valid), .d_rd(d_rd),
+      .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
       .w_valid(rob_w_valid), .w_idx(rob_w_idx),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
-      .c_shard(rob_c_shard), .c_prd(rob_c_prd), .c_pold(rob_c_pold),
-      .c_noret(rob_c_noret),
+      .c_prd(rob_c_prd), .c_noret(rob_c_noret),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
@@ -414,7 +413,7 @@ module ooo2_core
    reg  [SEQW-1:0]  m_seq;
    reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
    reg  [5:0]       m_rd, m_rs1;
-   reg  [RN_PBITS-1:0] m_prd, m_pold;   // rename result, carried X->M for commit
+   reg  [RN_PBITS-1:0] m_prd;           // rename result, carried X->M
    reg  [1:0]       m_shard;
    reg  [63:0]      m_imm, m_result, m_addr, m_st_data, m_rs1_val, m_rs3_val;
    reg  [1:0]       m_mem_size;
@@ -1343,7 +1342,6 @@ module ooo2_core
             m_rd          <= d_rd;
             m_rd_v        <= d_rd_v;
             m_prd         <= rn_prd;
-            m_pold        <= rn_pold;
             m_shard       <= d_shard;
             m_rs1         <= d_rs1;
             m_imm         <= d_imm;

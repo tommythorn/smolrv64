@@ -11,14 +11,23 @@
 // non-blocking unit only ever buys the instructions BETWEEN a producer and its first
 // consumer. Measured: saxpy, whose FP work is independent across iterations, got 1.24x.
 //
-// WHAT THIS MODULE DOES NOT HOLD. Not the execute payload -- no opcode, immediate, pc or
-// operand VALUES. The doc puts opcode+immediate in the scheduler because its example ISA
-// has five instructions; RV64GC's execute bundle is ~40 fields wide, and NENT copies of it
-// in flops is the wrong shape for an FPGA. It lives in a rob_idx-indexed LUTRAM written at
-// dispatch and read at select instead: same information, sized by the window (16) rather
-// than by dependency depth (NENT), and in distributed RAM rather than registers.
-// Operand VALUES are never stored at all -- the PRF is read at ISSUE, which is the
-// "values live in one place" property the whole design rests on.
+// WHERE THE EXECUTE PAYLOAD LIVES. Not here as flops, and NOT in a rob_idx-indexed array
+// either. It goes in a LUTRAM indexed by THIS MODULE'S ENTRY NUMBER -- written with fsel at
+// dispatch, read with sel at select.
+//
+// Indexing it by rob_idx was the wrong instinct and would have cost twice over. The ROB is
+// the LARGE structure (sized by the window) and the scheduler the small one (sized by
+// dependency depth), so a payload array indexed by rob_idx is ROB_SIZE deep where NENT
+// would do. Worse, it would put a READ PORT AT ISSUE on a ROB-sized array, and doc 5 is
+// explicit that this is what the split exists to avoid: "The ROB is written at dispatch and
+// writeback, and read only at commit. No ROB field is read at issue; that is why the
+// execute-time fields -- opcode, immediate, sources -- live in the scheduler instead."
+//
+// What the doc keeps in scheduler REGISTERS (opcode, immediate) goes to that LUTRAM instead
+// only because RV64GC's execute bundle is ~40 fields against its example ISA's five; the
+// structure is the scheduler's either way. Operand VALUES are never stored anywhere -- the
+// PRF is read at ISSUE, which is the "values live in one place" property the design rests
+// on, and which the current core violates by reading operands in X and carrying them to M.
 module ooo2_rs
   #(parameter NENT   = 8,
     parameter IDXB   = 3,             // $clog2(NENT)
