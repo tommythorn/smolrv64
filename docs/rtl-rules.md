@@ -255,6 +255,49 @@ prediction: 240/240 including `rv64mi-p-illegal`, and 0.13% of retires over 40M
 cycles of Linux cosim. The guard was always there. It was pointed at the wrong
 address.
 
+**D5. A request that has been ACCEPTED is withdrawn, not re-presented.**
+A unit's "go" signal built from `op is in M` plus `unit is free` will fire a
+SECOND time if the stage is held after the hand-off — and the stage can be held,
+because `m_done` is forced low whenever another writer takes the single PRF/ROB
+port. The FPU re-issued an op whose ROB slot had already completed, committed
+and been freed; the ROB's own "completion for a slot with no live entry"
+assertion is what caught it. The guard is the already-completed latch
+(`~m_unit_done_q`), the same one `ino_lsu`'s `req_valid` carries. If two units
+need it, it is one predicate applied at both sites, not two spellings of it.
+
+**D6. An op that writes LATE is excluded from the BYPASS, not merely from the
+writeback.**
+A non-blocking load and an FP op both leave M with no result in hand and write
+the PRF later from their scoreboard slot. Excluding them from `m_wb` is the
+obvious half; the half that bites is the M→X bypass, which compares
+architectural `rd` and happily forwards `m_unit_res_q` — a register latched at
+DISPATCH, i.e. the result bus as it stood before the unit had produced anything.
+The window is real because `m_done` is held low on another writer's landing
+cycle, so the op sits in M with `rd` asserted AFTER its interlock has cleared. A
+correct `fmin` retired with the right value while the very next instruction read
+zero. The interlock covers these consumers; the bypass must decline them.
+
+**D7. A variable-latency unit can answer in the ISSUE cycle.**
+"Latency >= 1" is an assumption, not a property. CVFPU's NONCOMP ops
+(min/max, sign-inject, compare, classify) assert `out_valid` combinationally
+with `in_valid`, `PipeRegs` notwithstanding, and parts of CONV do too. A
+completion path that sets an in-flight flag on issue and clears it on result
+must handle both arriving together — `else if` on the issue arm, not a separate
+state. Dropping the branch the previous FSM had failed exactly the 16
+fcvt/fmin/recoding tests and nothing else.
+
+**D8. An output a caller feeds back into its ISSUE decision is a register.**
+Exposing a downstream unit's combinational `ready` closes a loop through the
+scheduler: `fpnew_top.in_ready_o` is combinational in `in_valid_i`, and
+`exec_shard.v` computes `munit_busy = ... | ~fp_iss_ready`, which produces
+`fp_start`, which is that valid. The reason this is a RULE and not a lint
+finding is that `run-vl-tests.sh` builds with `-Wno-UNOPTFLAT`: the loop does
+not error, it is settled wrong, and the damage lands on whatever else that shard
+was issuing — 11 atomics tests and `rv64uc-v-rvc`, none of which touch FP. Hold
+the request in a register and hand the caller a registered `ready`. A gate that
+waives UNOPTFLAT cannot be the thing that finds this, so the interface rule has
+to.
+
 ---
 
 ## E. Widths and lint
@@ -447,3 +490,26 @@ the array back into LUTs. Register the forward DECISION and apply it in the
 consumer's cycle instead. That also defines the read-during-write result, which
 a simple dual-port BRAM leaves indeterminate in hardware — the forward is not
 merely preserved by the move, it is what makes the BRAM legal.
+
+**I5. A CDC wrapper instantiated on a SINGLE clock still costs its full
+synchroniser latency.**
+`smolrv64_cvfpu` crosses two clock domains with a toggle request/response and an
+`ASYNC_REG` two-flop synchroniser each way. `fp_unit.sv` had tied `fpu_clock` to
+`clk` since it was written — with a comment saying so, treating the crossing as
+absent — but the toggle protocol and both synchronisers are structural and run
+regardless:
+
+    1 req toggle + 2 sync + 1 IDLE->ISSUE + 5 accept/PipeRegs
+                 + 1 resp toggle + 2 sync + 1 latch   ~= 13
+
+against 4 cycles of actual arithmetic. Hardware measured **14.02 stall cycles
+per FP op**, dead on, and the FPU was 45% of all GB5 cycles — about two thirds
+of it this handshake. Nothing in simulation or timing flags it: the design is
+correct, closes timing, and is simply ~3x slower than the arithmetic it wraps.
+
+Two things follow. A wrapper whose cost depends on a clocking choice states that
+cost where the choice is made, so a same-clock instantiation is either
+parameterised or a direct connection. And the "how many cycles does this
+actually take" question belongs in the CPI stack before any RTL is written for
+the unit — one hardware counter run sized this correctly and would have
+redirected a day of work had it been run first.

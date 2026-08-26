@@ -383,8 +383,8 @@ module ino_core
    // A load's done bit is set when its DATA lands, not when M released it -- otherwise the
    // ROB would commit it before its register write exists. A FAULTING load never sets done
    // at all: it traps, and the redirect's flush retires the entry.
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb) | ld_land;
-   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : m_rob_idx;
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land | fp_land;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : fp_land ? fb_rob : m_rob_idx;
 
    ino_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
@@ -434,9 +434,22 @@ module ino_core
    wire [63:0] wb_ie, wb_ld, wb_fe;   // per-shard write data
 
    // one bypass level: M -> X. An instruction two ahead has already landed in the RF.
-   wire       byp1 = m_valid & m_rd_v & (m_rd == d_rs1);
-   wire       byp2 = m_valid & m_rd_v & (m_rd == d_rs2);
-   wire       byp3 = m_valid & m_rd_v & (m_rd == d_rs3);
+   //
+   // AN OP THAT WRITES LATE MUST NOT BYPASS. A non-blocking load and an FP op both leave M
+   // with no result in hand -- m_unit_res_q is latched at DISPATCH, before the unit has
+   // produced anything -- and both write the PRF from their scoreboard slot instead. Their
+   // consumers are covered by the pending-tag interlock, which holds X until the value is
+   // in the PRF, so the bypass is not merely wrong here, it is unnecessary.
+   //
+   // Not theoretical, and the FPU is what exposed it. m_done is forced low on ld_land and
+   // fp_land, so an FP op can still be sitting in M for cycles AFTER its result has landed
+   // and fb_busy has cleared -- interlock off, m_rd still asserted. An fmin's consumer read
+   // the FP result bus as it stood before the op ever issued.
+   wire       m_byp_late = m_ld_nb | fp_arith;
+   wire       m_byp_ok   = m_valid & m_rd_v & ~m_byp_late;
+   wire       byp1 = m_byp_ok & (m_rd == d_rs1);
+   wire       byp2 = m_byp_ok & (m_rd == d_rs2);
+   wire       byp3 = m_byp_ok & (m_rd == d_rs3);
    // THE EVERY-CYCLE SHADOW COMPARISON IS GONE, and deliberately.
    //
    // It asserted that a renamed read equals the architectural register file, which held only
@@ -468,11 +481,11 @@ module ino_core
    // law -- so check it rather than remember it.  When out-of-order issue lands and this
    // fires, the fix is WRTHRU=1, not a patch here.
    always @(posedge clk) if (!reset & d_valid & rf_we) begin
-      if (d_rs1_v & ~byp1 & (rn_prs1 == m_prd))
+      if (d_rs1_v & ~m_byp_late & ~byp1 & (rn_prs1 == m_prd))
          $fatal(1, "ino_core: rs1 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
-      if (d_rs2_v & ~byp2 & (rn_prs2 == m_prd))
+      if (d_rs2_v & ~m_byp_late & ~byp2 & (rn_prs2 == m_prd))
          $fatal(1, "ino_core: rs2 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
-      if (d_rs3_v & ~byp3 & (rn_prs3 == m_prd))
+      if (d_rs3_v & ~m_byp_late & ~byp3 & (rn_prs3 == m_prd))
          $fatal(1, "ino_core: rs3 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
    end
 
@@ -604,7 +617,12 @@ module ino_core
    wire        fp_iss_ready, fp_res_valid, fpu_busy;
    wire [63:0] fp_res_data;
    wire [4:0]  fp_res_fflags;
-   wire        fp_start = fp_arith & ~fpu_inflight;
+   // ~m_unit_done_q is the SAME guard the LSU carries on req_valid, and for the same
+   // reason. `m_unit_ok` for an FP op is the one-cycle fp_disp pulse, but m_done can be
+   // held low afterwards by ld_land or fp_land -- so M keeps presenting an op it has
+   // already handed over, and re-issues it the moment fpu_inflight/fb_busy clear. That
+   // completed a ROB slot which had already committed and been freed.
+   wire        fp_start = fp_arith & ~fpu_inflight & ~fb_busy & ~m_unit_done_q;
    // FP32 result heading for an f-register -> NaN-box it on writeback
    wire        fp_dst32 = (fp_dst == 3'd0) & fp_wrfp;
 
@@ -655,8 +673,12 @@ module ino_core
    // completion pulses once, and an in-core op occupies M for exactly one cycle.
    wire       fp_icmp    = fp_incore & (fp_cls == 3'd2);
    wire       fp_icmp_nv = fp_isd ? cmp_d2[1] : cmp_s2[1];
+   // OR, not a priority mux. While the FPU blocked M these two could never coincide -- an
+   // in-core compare could not be in M while an FPU op was completing there. With the FPU
+   // released at issue they can, and the mux silently DROPPED the compare's NV flag.
    wire       fp_flags_we = fp_complete | fp_icmp;
-   wire [4:0] fp_flags    = fp_complete ? fp_res_fflags : {fp_icmp_nv, 4'd0};
+   wire [4:0] fp_flags    = (fp_complete ? fp_res_fflags      : 5'd0)
+                          | (fp_icmp     ? {fp_icmp_nv, 4'd0} : 5'd0);
 
    // ---- CSR file ----
    wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100) & ~m_ill_eff & ~m_fault;
@@ -681,12 +703,20 @@ module ino_core
    // on), or X had no instruction to give (a frontend bubble, sub-attributed to the
    // iMMU walking vs the I$ having no window). `st_ser` is the third case: M is free
    // but a serializing op in flight keeps the frontend from handing anything over.
+   // REDEFINED when the LSU and the FPU stopped blocking M. The wait did not go away, it
+   // MOVED: M advances and the consumer is held in X instead, which landed in `st_ser`
+   // (accept's ~d_hold term) and made a dependent stall read as a serializing op. Each
+   // dependent wait is now charged to the unit that owns the register it is waiting for,
+   // so the stack stays additive and comparable across the change. st_m and m_advance are
+   // exact complements, so the two halves of each bucket cannot double-count.
    wire st_m      = m_valid & ~m_done;              // M stalled at all
-   wire st_mem    = st_m & m_mem_op;                // ...on the LSU
+   wire dep_ld    = m_advance & d_valid & ld_pend;             // X held for a load result
+   wire dep_fp    = m_advance & d_valid & fp_pend & ~ld_pend;  // ...for an FP result
+   wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = st_m & m_md_op &  md_div;       // ...on the divider
    wire st_mul    = st_m & m_md_op & ~md_div;       // ...on the multiplier
-   wire st_fpu    = st_m & fp_arith;                // ...on the CVFPU
-   wire st_ser    = m_advance & ~accept;            // serialize block holds the frontend
+   wire st_fpu    = (st_m & fp_arith) | dep_fp;     // ...on the CVFPU
+   wire st_ser    = m_advance & ~accept & ~dep_ld & ~dep_fp;
    wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
@@ -803,6 +833,59 @@ module ino_core
          $fatal(1, "ino_core: LSU completed a load the scoreboard does not know about");
    end
 
+   // ---- FP scoreboard: the FPU releases M at ISSUE, not at result -------------------
+   // Same shape as the load slot above, and the same argument makes it safe: an FP op
+   // cannot fault (it reports exceptions in fflags, never as a trap), so once it is in the
+   // unit it is architecturally guaranteed to complete, and nothing older than it can trap
+   // either -- everything that CAN trap is head-gated and would not have left X.
+   //
+   // ONE DIFFERENCE, forced by the unit. `res_valid` is a one-cycle pulse and two of the
+   // three fp_unit variants (fp_unit_synth.sv, fp_unit_stub.sv) ignore `res_ready`
+   // entirely, so the result cannot be parked in the FPU. It is captured HERE and written
+   // when the PRF's single port is free. The load wins that arbitration because
+   // `lsu_rd_val` is transient while this register is not.
+   wire fp_disp = fp_start & fp_iss_ready;               // accepted by the unit this cycle
+   reg                fb_busy, fb_rd_v, fb_dst32, fb_got;
+   reg [RN_PBITS-1:0] fb_preg;
+   reg [5:0]          fb_rd;
+   reg [ROB_IDXB-1:0] fb_rob;
+   reg [63:0]         fb_val;
+   initial begin fb_busy = 1'b0; fb_rd_v = 1'b0; fb_got = 1'b0; end
+   // fp_dst32 is decoded from m_insn, so it is gone the cycle after issue -- the same trap
+   // that made the LSU latch nb/signed/fp at dispatch rather than read them at completion.
+   wire [63:0] fp_res_fmt = fb_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data;
+   wire        fp_avail   = fb_got | fp_complete;        // held, or arriving right now
+   wire [63:0] fp_wval    = fb_got  ? fb_val : fp_res_fmt;
+   // ~ld_land, not ~ld_wb: a load with rd_v=0 still consumes the ROB's single completion
+   // port even though it writes no register.
+   wire        fp_land    = fb_busy & fp_avail & ~ld_land;
+   wire        fp_wb      = fp_land & fb_rd_v;
+   always @(posedge clk) begin
+      if (reset) begin fb_busy <= 1'b0; fb_got <= 1'b0; end
+      else begin
+         if (fp_complete) begin fb_got <= 1'b1; fb_val <= fp_res_fmt; end
+         if (fp_land)     begin fb_busy <= 1'b0; fb_got <= 1'b0; end   // ordered after: a
+         if (fp_disp) begin                                            // captured-and-written
+            fb_busy <= 1'b1;   fb_preg  <= m_prd;   fb_rd_v <= m_rd_v; // cycle clears both
+            fb_rd   <= m_rd;   fb_rob   <= m_rob_idx;
+            fb_dst32 <= fp_dst32;
+         end
+      end
+   end
+   always @(posedge clk) if (!reset) begin
+      if (fp_disp & fb_busy)
+         $fatal(1, "ino_core: a second FP op issued with one already in flight");
+      if (fp_complete & ~fb_busy)
+         $fatal(1, "ino_core: FPU completed an op the scoreboard does not know about");
+      if (fp_complete & fb_got)
+         $fatal(1, "ino_core: FP result arrived while one was still held");
+      // All fp_arith ops take SH_FE (d_shard is by instruction CLASS, so this holds even
+      // for fcvt.w.d / fmv.x.d / fle.d, whose rd is an integer register). fp_wval is put on
+      // wb_fe alone on the strength of it.
+      if (fp_disp & (m_shard != SH_FE))
+         $fatal(1, "ino_core: FP op issued to shard %0d, not SH_FE", m_shard);
+   end
+
    // ---- completion ----
    wire m_unit_ok = ~m_valid             ? 1'b1
                  : m_fault | m_ill_eff   ? 1'b1   // poisoned: traps immediately
@@ -813,7 +896,7 @@ module ino_core
                  : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault)
                                                     : (lsu_done & ~sb_busy))
                  : m_md_op               ? (md_div ? div_done : mul_done)
-                 : fp_arith              ? fp_complete
+                 : fp_arith              ? fp_disp   // handed over; cannot fault now
                  :                         1'b1;  // in-core FP included: single-cycle
 
    // COMPLETION IS STICKY, and it has to be. Every unit's `done` is a one-cycle PULSE --
@@ -867,7 +950,7 @@ module ino_core
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
    // ~0.3 cycles per load against the ~2.3 the early release saves.
-   assign m_done = m_done_raw & ~head_block & ~ld_land;
+   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land;
    assign m_advance = ~m_valid | m_done;
 
    // ---- trap / redirect ----
@@ -902,7 +985,7 @@ module ino_core
    // predictor's cone). It does not have to: for a BRANCH OR JUMP, csr_red and m_is_fencei
    // are 0 and m_trap reduces to m_fault | m_illegal, both already excluded here -- so
    // head_block collapses to the registered m_redirect against a 4-bit head compare.
-   wire res_block   = (m_redirect & ~m_at_head) | ld_land;
+   wire res_block   = (m_redirect & ~m_at_head) | ld_land | fp_land;
    assign res_v     = m_valid & (m_is_branch | m_is_jump) & ~m_fault & ~m_illegal & ~res_block;
    assign res_cbr   = m_is_branch;
    assign res_call  = m_is_jump & m_link_rd;
@@ -941,17 +1024,17 @@ module ino_core
                 : (m_is_mem | m_is_amo)     ? lsu_rd_val
                 : m_unit_done_q             ? m_unit_res_q
                 :                             (md_div ? div_result : mul_result);
-   assign wb_fe = m_unit_done_q ? m_unit_res_q
-                : fp_arith      ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data)
+   assign wb_fe = fp_wb         ? fp_wval
+                : m_unit_done_q ? m_unit_res_q
                 :                 fp_incore_res;
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
    // address still holds and ino_prf keeps its one-write-per-cycle property.
-   wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb;   // a load writes via ld_wb
+   wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
    wire ld_wb = ld_land & sb_rd_v;
-   wire                prf_we    = m_wb | ld_wb;
-   wire [RN_PBITS-1:0] prf_wa    = ld_wb ? sb_preg : m_prd;
-   wire [1:0]          prf_shard = ld_wb ? SH_LD   : m_shard;
+   wire                prf_we    = m_wb | ld_wb | fp_wb;
+   wire [RN_PBITS-1:0] prf_wa    = ld_wb ? sb_preg : fp_wb ? fb_preg : m_prd;
+   wire [1:0]          prf_shard = ld_wb ? SH_LD   : fp_wb ? SH_FE   : m_shard;
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
    // model out-of-order writeback: a younger instruction writes x13, then an older load lands
@@ -996,7 +1079,7 @@ module ino_core
    always @(posedge clk) if (!reset) begin
       // On the completion PULSE, not on m_done: lsu_cos_* are only this op's while the LSU
       // still holds it, and m_done can now assert cycles later off the sticky latch.
-      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
+      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
          cs_val[m_rob_idx]   <= m_wb_val;
          cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
          cs_mpa[m_rob_idx]   <= lsu_cos_pa;
@@ -1010,18 +1093,27 @@ module ino_core
          cs_mkind[sb_rob] <= lsu_cos_kind;
          cs_mpa[sb_rob]   <= lsu_cos_pa;
       end
+      if (fp_land) begin
+         cs_val[fb_rob]   <= fp_wval;
+         cs_mkind[fb_rob] <= 2'd0;      // an FP op has no memory effect
+         cs_mpa[fb_rob]   <= 56'd0;
+      end
    end
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
    // be captured in the very cycle it commits, so the array read returns pre-edge contents.
    // Missing it reported rd=0 for the second instruction of the boot.
-   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb
+   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
+   wire        cs_hit_fp  = fp_land & (fb_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
+                          : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_ld ? lsu_cos_kind
+                          : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
    wire [55:0] cs_mpa_h   = cs_hit_ld ? lsu_cos_pa
+                          : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
 `else
    assign retire_pc   = {PCW{1'b0}};
@@ -1208,13 +1300,23 @@ module ino_core
    // lsu_rd_val, before the data exists. That is the whole failure signature of the load and
    // store tests, and it is the same read-in-the-write-cycle shape as the ROB's head_done
    // and the cosim side array. Forward it here too.
+   // One slot per long-latency unit, each comparing the SAME three renamed sources. The
+   // dispatching-this-cycle term is in both: the slot register does not hold the tag until
+   // the next edge, and a consumer right behind the producer would otherwise read a stale
+   // physreg (the defect the load slot already paid for).
    wire                ld_disp_rd = ld_disp & m_rd_v;
    wire                pend_v     = ld_disp_rd | (sb_busy & sb_rd_v);
    wire [RN_PBITS-1:0] pend_pr    = ld_disp_rd ? m_prd : sb_preg;
-   wire s1_pend  = pend_v & d_rs1_v & (rn_prs1 == pend_pr);
-   wire s2_pend  = pend_v & d_rs2_v & (rn_prs2 == pend_pr);
-   wire s3_pend  = pend_v & d_rs3_v & (rn_prs3 == pend_pr);
-   wire src_pend = s1_pend | s2_pend | s3_pend;
+   wire                fp_disp_rd = fp_disp & m_rd_v;
+   wire                fpnd_v     = fp_disp_rd | (fb_busy & fb_rd_v);
+   wire [RN_PBITS-1:0] fpnd_pr    = fp_disp_rd ? m_prd : fb_preg;
+   wire ld_pend  = pend_v & ((d_rs1_v & (rn_prs1 == pend_pr))
+                           | (d_rs2_v & (rn_prs2 == pend_pr))
+                           | (d_rs3_v & (rn_prs3 == pend_pr)));
+   wire fp_pend  = fpnd_v & ((d_rs1_v & (rn_prs1 == fpnd_pr))
+                           | (d_rs2_v & (rn_prs2 == fpnd_pr))
+                           | (d_rs3_v & (rn_prs3 == fpnd_pr)));
+   wire src_pend = ld_pend | fp_pend;
    // ...and two resources that could not run out while only ~2 instructions were in flight.
    // rn_stall used to be a $fatal on exactly this reasoning; with a ROB behind a waiting load
    // it is a legitimate condition and has to be back-pressure instead.

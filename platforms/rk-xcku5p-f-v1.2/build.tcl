@@ -305,7 +305,9 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-set source_paths [list src platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
+# `inorder` belongs here: it is the core these builds actually load (INO_CORE=1), so
+# leaving it out let a bitstream built from modified in-order RTL report itself clean.
+set source_paths [list src inorder platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1
