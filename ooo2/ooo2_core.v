@@ -336,10 +336,9 @@ module ooo2_core
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    ooo2_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
-      .we_ie(prf_we & (prf_shard == SH_IE)),
-      .we_ld(prf_we & (prf_shard == SH_LD)),
-      .we_fe(prf_we & (prf_shard == SH_FE)),
-      .wa(prf_wa), .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
+      .we_ie(we_ie), .we_ld(we_ld), .we_fe(we_fe),
+      .wa_ie(wa_ie), .wa_ld(wa_ld), .wa_fe(wa_fe),
+      .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
@@ -383,6 +382,40 @@ module ooo2_core
    // at all: it traps, and the redirect's flush retires the entry.
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land | fp_land;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : fp_land ? fb_rob : m_rob_idx;
+
+   // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
+   // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
+   // register, because dynamic issue makes the number of outstanding results unbounded;
+   // today's interlock is the degenerate case of that with one load tag and one FP tag.
+   // Brought up as a shadow (rule I3): nothing consumes pnd_r*, but the assertion below
+   // ties them to the machine that is actually running, so the bits are known good before
+   // anything depends on them. NWB=3, one per PRF shard, matching the write ports.
+   wire pnd_r1, pnd_r2, pnd_r3;
+   ooo2_pending #(.PBITS(RN_PBITS), .NWB(3)) u_pend
+     (.clk(clk), .reset(reset),
+      .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
+      .w_v({we_fe, we_ld, we_ie}), .w_preg({wa_fe, wa_ld, wa_ie}),
+      .q1(rn_prs1), .q2(rn_prs2), .q3(rn_prs3),
+      .r1(pnd_r1), .r2(pnd_r2), .r3(pnd_r3),
+      .flush(redirect));
+
+   // THE SHADOW CHECK. At the cycle an instruction is actually consumed out of X, every
+   // source it reads must be either ready by the pending bits or supplied by the M->X
+   // bypass. If the bits ever claim "not ready" for a source this machine went ahead and
+   // read, they are wrong -- and they would be wrong in the direction that silently
+   // corrupts a scheduler built on them.
+   // Keyed on rn_valid, NOT on `accept`. `accept` is the F/X QUEUE POP; in a redirect
+   // cycle it is high while d_take is low, so the instruction is discarded rather than
+   // consumed and its sources are never read. rn_valid = m_advance & d_take is the
+   // cycle the operands actually move into M.
+   always @(posedge clk) if (!reset & rn_valid) begin
+      if (d_rs1_v & ~pnd_r1 & ~byp1)
+         $fatal(1, "ooo2_pending shadow: rs1 p%0d consumed while pending (pc=%h)", rn_prs1, d_pc);
+      if (d_rs2_v & ~pnd_r2 & ~byp2)
+         $fatal(1, "ooo2_pending shadow: rs2 p%0d consumed while pending (pc=%h)", rn_prs2, d_pc);
+      if (d_rs3_v & ~pnd_r3 & ~byp3)
+         $fatal(1, "ooo2_pending shadow: rs3 p%0d consumed while pending (pc=%h)", rn_prs3, d_pc);
+   end
 
    ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS)) u_rob
      (.clk(clk), .reset(reset),
@@ -1031,9 +1064,30 @@ module ooo2_core
    // address still holds and ooo2_prf keeps its one-write-per-cycle property.
    wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
    wire ld_wb = ld_land & sb_rd_v;
-   wire                prf_we    = m_wb | ld_wb | fp_wb;
-   wire [RN_PBITS-1:0] prf_wa    = ld_wb ? sb_preg : fp_wb ? fb_preg : m_prd;
-   wire [1:0]          prf_shard = ld_wb ? SH_LD   : fp_wb ? SH_FE   : m_shard;
+
+   // PER-SHARD WRITE PORTS. Each shard is driven by its OWN writers rather than through a
+   // muxed address: IE by M's ALU/CSR result, LD by a landing load or M's mul/div, FE by a
+   // landing FP result or M's in-core FP. Nothing changes yet -- m_done is still forced low
+   // on ld_land/fp_land, so no shard sees two writers in a cycle, and the ROB's single
+   // completion port remains the reason a cycle has to be yielded at all. What this buys is
+   // the precondition: doc 7's "give each file its own write port and a single writer, and
+   // the arbiter disappears" cannot even be attempted while one address is shared. The
+   // one-writer-per-cycle property is asserted below rather than assumed.
+   wire m_wb_ie = m_wb & (m_shard == SH_IE);
+   wire m_wb_ld = m_wb & (m_shard == SH_LD);
+   wire m_wb_fe = m_wb & (m_shard == SH_FE);
+   wire we_ie = m_wb_ie;
+   wire we_ld = m_wb_ld | ld_wb;
+   wire we_fe = m_wb_fe | fp_wb;
+   wire [RN_PBITS-1:0] wa_ie = m_prd;
+   wire [RN_PBITS-1:0] wa_ld = ld_wb ? sb_preg : m_prd;
+   wire [RN_PBITS-1:0] wa_fe = fp_wb ? fb_preg : m_prd;
+   always @(posedge clk) if (!reset) begin
+      if (m_wb_ld & ld_wb)
+         $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
+      if (m_wb_fe & fp_wb)
+         $fatal(1, "ooo2_core: FE shard written by both M and a landing FP result");
+   end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
    // model out-of-order writeback: a younger instruction writes x13, then an older load lands

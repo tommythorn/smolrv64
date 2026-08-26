@@ -62,7 +62,16 @@ module ooo2_prf
     input  wire             we_ie,
     input  wire             we_ld,
     input  wire             we_fe,
-    input  wire [PBITS-1:0] wa,       // shared: one writeback per cycle, so one address
+    // ONE ADDRESS PER SHARD. They shared a single `wa` while exactly one writeback could
+    // happen per cycle; dynamic issue makes simultaneous completions the normal case, and
+    // docs/Area-Efficient-Scalar-OoO.md 7 names splitting the file as the way to delete
+    // writeback arbitration entirely -- but only if each file has its own port. This is
+    // that port. It changes nothing on its own: the M stage still yields the cycle to a
+    // landing load or FP result, because the ROB's single completion port has not been
+    // widened yet.
+    input  wire [PBITS-1:0] wa_ie,
+    input  wire [PBITS-1:0] wa_ld,
+    input  wire [PBITS-1:0] wa_fe,
     input  wire [63:0]      wd_ie,    // ALU / CSR result
     input  wire [63:0]      wd_ld,    // LSU load data, mul, div
     input  wire [63:0]      wd_fe,    // FPU result
@@ -119,12 +128,12 @@ module ooo2_prf
       input [63:0]     m_ie, m_ld, m_fe;
       begin
          case (sh)
-           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
-           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
-           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa[IDXB-1:0] == ix
-                              && wa[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
+           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
+                              && wa_ie[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
+           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa_ld[IDXB-1:0] == ix
+                              && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
+           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
+                              && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
            default: rd_shard = 64'd0;
          endcase
       end
@@ -161,9 +170,9 @@ module ooo2_prf
    end
 
    always @(posedge clk) begin
-      if (we_ie) mem_ie[wa[AB_IE-1:0]] <= wd_ie;
-      if (we_ld) mem_ld[wa[AB_LD-1:0]] <= wd_ld;
-      if (we_fe) mem_fe[wa[AB_FE-1:0]] <= wd_fe;
+      if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
+      if (we_ld) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
+      if (we_fe) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
@@ -173,22 +182,22 @@ module ooo2_prf
    // otherwise be a silent wrong-register write -- exactly the class of defect that costs
    // days here, because the value surfaces far from the mistake.
    always @(posedge clk) begin
-      if (we_ie && (wa[PBITS-1:IDXB] != SH_IE))
+      if (we_ie && (wa_ie[PBITS-1:IDXB] != SH_IE))
          $fatal(1, "ooo2_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
-                wa, wa[PBITS-1:IDXB]);
-      if (we_ld && (wa[PBITS-1:IDXB] != SH_LD))
+                wa_ie, wa_ie[PBITS-1:IDXB]);
+      if (we_ld && (wa_ld[PBITS-1:IDXB] != SH_LD))
          $fatal(1, "ooo2_prf: load write to pr=%h, shard %0d is not SH_LD",
-                wa, wa[PBITS-1:IDXB]);
-      if (we_fe && (wa[PBITS-1:IDXB] != SH_FE))
+                wa_ld, wa_ld[PBITS-1:IDXB]);
+      if (we_fe && (wa_fe[PBITS-1:IDXB] != SH_FE))
          $fatal(1, "ooo2_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
-                wa, wa[PBITS-1:IDXB]);
-      if (we_ie && ({1'b0, wa[IDXB-1:0]} >= N_IE[IDXB:0]))
-         $fatal(1, "ooo2_prf: int-exec write idx %0d >= N_IE %0d", wa[IDXB-1:0], N_IE);
-      if (we_ld && ({1'b0, wa[IDXB-1:0]} >= N_LD[IDXB:0]))
-         $fatal(1, "ooo2_prf: load write idx %0d >= N_LD %0d", wa[IDXB-1:0], N_LD);
-      if (we_fe && ({1'b0, wa[IDXB-1:0]} >= N_FE[IDXB:0]))
-         $fatal(1, "ooo2_prf: fp-exec write idx %0d >= N_FE %0d", wa[IDXB-1:0], N_FE);
-      if (we_ie && wa == {PBITS{1'b0}})
+                wa_fe, wa_fe[PBITS-1:IDXB]);
+      if (we_ie && ({1'b0, wa_ie[IDXB-1:0]} >= N_IE[IDXB:0]))
+         $fatal(1, "ooo2_prf: int-exec write idx %0d >= N_IE %0d", wa_ie[IDXB-1:0], N_IE);
+      if (we_ld && ({1'b0, wa_ld[IDXB-1:0]} >= N_LD[IDXB:0]))
+         $fatal(1, "ooo2_prf: load write idx %0d >= N_LD %0d", wa_ld[IDXB-1:0], N_LD);
+      if (we_fe && ({1'b0, wa_fe[IDXB-1:0]} >= N_FE[IDXB:0]))
+         $fatal(1, "ooo2_prf: fp-exec write idx %0d >= N_FE %0d", wa_fe[IDXB-1:0], N_FE);
+      if (we_ie && wa_ie == {PBITS{1'b0}})
          $fatal(1, "ooo2_prf: write to physical register 0 (architectural zero)");
    end
 
