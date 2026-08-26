@@ -459,6 +459,14 @@ It also splits capacity — a load-heavy stretch can exhaust the load file while
 file has registers to spare — so the two must be sized against the class mix rather than
 the total.
 
+**Reported back from an RV64GC implementation: the clean partition does not survive contact
+with a real ISA.** Sharding by writer gives three files (integer-exec, load, fp-exec), and
+the arbiter does not disappear, because the LOAD file has more than one writer — the LSU
+and the multiplier/divider both target it. The single-writer property that deletes the
+arbiter holds for the other two files and not for that one, so what is actually bought is
+"two thirds of the arbitration disappears". Either give the multiplier its own file, or
+accept an arbiter on one of them. Worth knowing before sizing the win.
+
 ---
 
 ## 8. Per-cycle algorithm
@@ -558,6 +566,14 @@ sel = argmin over { e : ready[e] } of age(rs_rob_idx[e])
 
 Selecting the oldest ready entry is a minimum-reduction over `RS_SIZE` values of
 `ROB_IDX_BITS` bits — a comparator tree, deterministic and starvation-free.
+
+**A source the instruction does not read must be seeded READY at dispatch.** The entry has
+a fixed number of source slots and `ready[e]` requires all of them; an instruction that
+reads fewer will otherwise wait forever on whatever physical register its unused slot
+happens to name. The example ISA here hides this — `ADD`, `BLT` and `SW` all read exactly
+two — but any real ISA has one-source and zero-source instructions, and a third slot for
+fused multiply-add. The failure is a silent hang, not a wrong result, and it will not
+reproduce in a trace: the entry simply never becomes ready.
 
 ```
 if sel exists:
@@ -976,6 +992,45 @@ Load-bearing. An implementation that registers any of these is a different machi
 | dispatch → dispatch, `map` | Both sources read the pre-rename mapping. |
 | commit → writeback, `rob_done` | **Not** bypassed: commit runs first, so an instruction commits no earlier than the cycle *after* its writeback. |
 
+### 14.1.1 What breaks if a unit has ZERO latency
+
+Everything in 14.1 is stated for a machine where every unit has `remaining >= 1`, so a
+writeback always lands in a LATER cycle than the issue that caused it. That is what keeps
+"writeback -> issue, wakeup bits" a one-way dependence. It is easy to read `ALU | 1 cycle`
+in 7 as a modelling convenience; it is not. Three things break together the moment a unit
+writes back in its own issue cycle — which is tempting, because it saves a cycle on every
+ALU dependence.
+
+**An instruction forwards to itself.** If the writeback mux feeding the register file
+includes the result of the op issuing this cycle, and operands are forwarded from that mux,
+the loop is `wb -> forward -> operand -> execute -> wb`. Exclude the issuing op's own
+result from the forward. This is not a compromise: exactly one instruction issues per
+cycle, so the result being written is the issuing op's own and no other entry can want it
+this cycle.
+
+**Readiness becomes a function of selection.** The wakeup broadcast now carries a
+destination that depends on WHICH entry was selected, while selection depends on readiness.
+Split the wakeup in two:
+
+| class | what | may a woken entry issue this cycle? |
+|---|---|---|
+| fast | writebacks from units that took >= 1 cycle | yes — the value is forwardable now |
+| slow | the zero-latency unit completing at issue | no — and it does not need to |
+
+Slow costs nothing. The value is written at the END of the issue cycle, so a dependent
+could not read it before the next cycle in any case. What it buys is that every term in
+the readiness function is selection-independent.
+
+**The `pending` array's write-forward joins the loop.** 14.1 requires
+"writeback -> dispatch, `pending`", and the natural implementation makes the readiness
+outputs combinational in the writeback ADDRESS — which is now selection-dependent. Drop
+that forward and let the SCHEDULER cover the case on its dispatch path instead: it already
+compares an arriving entry's sources against the live wakeup ports.
+
+The alternative is to keep every unit at `remaining >= 1`, register the zero-latency unit's
+result, and pay one cycle on every ALU-to-ALU dependence. Both are defensible; what is not
+defensible is assuming 14.1 still holds unmodified.
+
 ### 14.2 Optional bypasses
 
 Consequences of the stage order rather than requirements. Registering them instead is
@@ -1260,6 +1315,25 @@ that falls out of the committed map. A one-line-per-cycle trace behind a flag: c
 was fetched and renamed, what issued and into which unit, what wrote back, what committed,
 and the occupancy of each structure.
 
+### Bringing it up against an in-order machine
+
+If this replaces a working in-order core rather than being built fresh, the switchover has
+no natural intermediate: the payload, the decoupled dispatch and the issue stage must all
+land before anything executes, and landing them together means landing the recovery
+machinery with them.
+
+A single gate splits it. Add an `in_order` input to the scheduler that makes an entry
+issuable only when it is the OLDEST live entry, and bring the machine up with it set. The
+execution ORDER is then unchanged, so the existing test suite and any lockstep model still
+apply unmodified — while the entire mechanical change is in place: dispatch no longer waits
+on operands, the scheduler fills and drains, operands are read at issue, units are fed from
+the scheduler. Clearing the flag afterwards is the only step that needs 12, 11 and squash
+handling, and it lands on structures already proven.
+
+Measured on the machine in 19, the in-order stage alone was **+2.7%** — decoupling dispatch
+from execution fills the window even when nothing reorders, so the intermediate is not a
+throwaway.
+
 ### Differential testing
 
 - **An in-order reference interpreter** for the same instructions. **It must not share code
@@ -1352,6 +1426,47 @@ Two readings worth carrying forward:
   the store queue — and neither is possible to rank from a random corpus.
 
 ---
+
+## 19. A cheaper point on the curve: reorder only what cannot trap
+
+Everything above reorders every instruction, and most of the machinery exists to survive
+that: the redirect register (12) because a mispredict is detected out of order, the store
+queue (11) and `load_may_issue` because memory is reordered, and flush handling for units
+still executing when a squash lands.
+
+There is a point short of that which keeps almost all of the benefit and needs **none** of
+it. Give each scheduler entry an `ordered` bit, set for everything that can trap, redirect,
+touch memory, or hold a unit for more than a cycle, and let an ordered entry issue only
+when it is the oldest live entry. In an RV64GC implementation that leaves exactly the pure
+ALU op free to reorder.
+
+Four properties then fall out rather than being built:
+
+| normally required | why it is not needed here |
+|---|---|
+| redirect register, oldest-wins | anything that can trap or redirect executes only as the oldest entry, so control events are already detected in order |
+| per-unit squash / zombie handling | nothing younger is ever in flight when a trap fires, so there is no writeback to suppress after a flush |
+| store queue, `load_may_issue` | memory keeps program order |
+| deadlock avoidance when a unit is held | an instruction waiting to become oldest cannot starve an older one, because the only thing that can be older and un-issued is an ALU op — and those complete at issue without entering a shared unit |
+
+That last row is the one that is easy to get wrong. It only holds if the free-to-reorder
+class **never occupies the shared execute resource**. If ALU ops queue for the same slot the
+long-latency ops use, an older ALU op can be starved by a younger op sitting in that slot
+waiting to become oldest, and the machine deadlocks.
+
+**What it costs.** Long-latency ops do not reorder against each other: a load still waits
+behind an older load, an FP op behind an older FP op. The dependent-wait buckets shrink but
+do not vanish.
+
+**What it is worth.** Measured on an RV64GC implementation booting Linux, 300M cycles,
+against the same core with in-order issue: retires **67,160,189 -> 69,754,834, +3.9%**, of
+which +2.7 points is decoupling dispatch from execution and +1.2 is the reordering itself.
+That understates it — a Linux boot is frontend-bound, and the buckets reordering attacks
+are the ones that dominate compute-bound code.
+
+**And it is the natural bring-up stage for the full thing.** The ordered bit is one input to
+the readiness function; clearing it for more classes is how you get from here to 12 and 11,
+one class at a time, on a machine that already runs.
 
 ## Appendix A — Early squash and rename rollback
 
