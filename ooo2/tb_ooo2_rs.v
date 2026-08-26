@@ -11,13 +11,14 @@ module tb;
    reg [NWB-1:0] wb_v=0; reg [NWB*PBITS-1:0] wb_preg=0;
    reg [NUNIT-1:0] unit_busy=0; reg [ROBB-1:0] head=0; reg iss_take=0;
    wire d_ready, iss_v; wire [ROBB-1:0] iss_rob; wire [NUNIT-1:0] iss_unit;
+   wire [IDXB-1:0] d_ent, iss_ent;
    wire [IDXB:0] occupancy;
    integer errs=0;
 
    ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.ROBB(ROBB),.PBITS(PBITS),.NUNIT(NUNIT),.NWB(NWB)) dut
      (.clk(clk),.reset(reset),.d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),
       .d_ps1(d_ps1),.d_ps2(d_ps2),.d_ps3(d_ps3),.d_r1(d_r1),.d_r2(d_r2),.d_r3(d_r3),
-      .d_unit(d_unit),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
+      .d_unit(d_unit),.d_ent(d_ent),.iss_ent(iss_ent),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
       .iss_v(iss_v),.iss_rob(iss_rob),.iss_unit(iss_unit),.iss_take(iss_take),
       .flush(flush),.occupancy(occupancy));
 

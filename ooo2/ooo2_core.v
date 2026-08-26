@@ -417,6 +417,99 @@ module ooo2_core
          $fatal(1, "ooo2_pending shadow: rs3 p%0d consumed while pending (pc=%h)", rn_prs3, d_pc);
    end
 
+   // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
+   // Dispatch fills the scheduler and the payload alongside the existing in-order path;
+   // issue drains it the next cycle. Nothing is steered by it yet -- the machine still
+   // feeds M from X. What this buys is that the pack/unpack of a 35-field payload, which
+   // is where silent corruption would live, is checked every cycle against the m_*
+   // registers holding the very same instruction (see the assertion below).
+   localparam integer RS_N = 8, RS_IDXB = 3, RS_NUNIT = 5;
+   localparam [RS_NUNIT-1:0] U_ALU = 5'b00001, U_MEM = 5'b00010,
+                             U_MD  = 5'b00100, U_FP  = 5'b01000, U_SYS = 5'b10000;
+
+   wire [RS_NUNIT-1:0] d_unit = (d_is_mem | d_is_amo)          ? U_MEM
+                              : d_is_mul                       ? U_MD
+                              // d_is_fp alone: `use_fpu` is decoded in M off m_insn, so it
+                              // does not exist at dispatch yet. Harmless while unit_busy is
+                              // tied off; the switchover has to move decode_fp to dispatch.
+                              : d_is_fp                        ? U_FP
+                              : (d_is_csr | d_is_serialize | d_is_fencei) ? U_SYS
+                              :                                  U_ALU;
+
+   wire                rs_ready, rs_iss_v;
+   wire [RS_IDXB-1:0]  rs_d_ent, rs_iss_ent;
+   wire [ROB_IDXB-1:0] rs_iss_rob;
+   wire [RS_NUNIT-1:0] rs_iss_unit;
+   wire [RS_IDXB:0]    rs_occ;
+
+   ooo2_rs #(.NENT(RS_N), .IDXB(RS_IDXB), .ROBB(ROB_IDXB), .PBITS(RN_PBITS),
+             .NUNIT(RS_NUNIT), .NWB(3)) u_rs
+     (.clk(clk), .reset(reset),
+      .d_valid(rn_valid), .d_ready(rs_ready), .d_rob(rob_d_idx),
+      .d_ps1(rn_prs1), .d_ps2(rn_prs2), .d_ps3(rn_prs3),
+      // "available to this instruction", which is what the machine itself acts on: ready
+      // by the pending bits OR supplied by the M->X bypass.
+      .d_r1(pnd_r1 | byp1), .d_r2(pnd_r2 | byp2), .d_r3(pnd_r3 | byp3),
+      .d_unit(d_unit), .d_ent(rs_d_ent),
+      .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
+      .unit_busy({RS_NUNIT{1'b0}}), .head(rob_head_idx),
+      .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
+      .iss_unit(rs_iss_unit), .iss_take(rs_iss_v),
+      .flush(redirect), .occupancy(rs_occ));
+
+   // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
+   // width or ordering mistake is a lint error rather than a wrong instruction.
+   localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 2 + 6
+                          + 64 + 2 + 1 + 1 + 1 + 1 + 5 + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1
+                          + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64;
+   wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
+                           (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
+                           d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
+                           d_amo_func, d_is_branch, d_is_jump, d_is_jalr, d_is_mul,
+                           d_is_csr, d_csr_func, d_is_serialize, d_is_fp, d_is_fencei,
+                           d_is_cbo, d_cbo_zero, d_cbo_keep, d_illegal, d_fault,
+                           d_fault_cause, d_fault_tval};
+   reg [PLW-1:0] plmem [0:RS_N-1];
+   wire [PLW-1:0] pl_out = plmem[rs_iss_ent];
+   always @(posedge clk) if (rn_valid & rs_ready) plmem[rs_d_ent] <= pl_in;
+
+   wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
+   wire [31:0]         q_insn;
+   wire                q_rvc, q_rd_v, q_mem_signed, q_is_mem, q_is_store, q_is_amo;
+   wire [SEQW-1:0]     q_seq;
+   wire [PDW-1:0]      q_pdet;
+   wire [5:0]          q_rd, q_rs1;
+   wire [RN_PBITS-1:0] q_prd;
+   wire [1:0]          q_shard, q_mem_size;
+   wire [63:0]         q_imm;
+   wire [4:0]          q_amo_func;
+   wire                q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr;
+   wire [2:0]          q_csr_func;
+   wire                q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero;
+   wire                q_cbo_keep, q_illegal, q_fault;
+   wire [3:0]          q_fault_cause;
+   assign {q_pc, q_insn, q_rvc, q_seq, q_pdet, q_pred_npc, q_rd, q_rd_v, q_prd, q_shard,
+           q_rs1, q_imm, q_mem_size, q_mem_signed, q_is_mem, q_is_store, q_is_amo,
+           q_amo_func, q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr, q_csr_func,
+           q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero, q_cbo_keep,
+           q_illegal, q_fault, q_fault_cause, q_fault_tval} = pl_out;
+
+   // THE PACK/UNPACK CHECK. Dispatch happens in the cycle an instruction enters M, and the
+   // scheduler cannot offer an entry before the next cycle, so at issue the payload holds
+   // exactly the instruction M is holding. Checking the wide fields is enough: any ordering
+   // error shifts the whole vector.
+   always @(posedge clk) if (!reset & rs_iss_v & m_valid & (rs_iss_rob == m_rob_idx)) begin
+      if (q_pc   !== m_pc)   $fatal(1, "ooo2 payload: pc %h != m_pc %h", q_pc, m_pc);
+      if (q_insn !== m_insn) $fatal(1, "ooo2 payload: insn %h != m_insn %h", q_insn, m_insn);
+      if (q_imm  !== m_imm)  $fatal(1, "ooo2 payload: imm %h != m_imm %h", q_imm, m_imm);
+      // Only when a register is actually written: the payload stores prd GATED by rd_v
+      // (0 means "writes nothing", the ROB's convention), while m_prd is ungated and holds
+      // a stale allocation for an instruction that writes no register.
+      if (q_rd_v & (q_prd !== m_prd))
+         $fatal(1, "ooo2 payload: prd %0d != m_prd %0d", q_prd, m_prd);
+      if (q_rd   !== m_rd)   $fatal(1, "ooo2 payload: rd %0d != m_rd %0d", q_rd, m_rd);
+   end
+
    // NW=1 until units complete independently; the port is widened by the same commit
    // that makes more than one completion per cycle possible.
    ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(1)) u_rob

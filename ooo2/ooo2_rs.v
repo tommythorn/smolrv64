@@ -45,6 +45,7 @@ module ooo2_rs
     input  wire [PBITS-1:0]      d_ps1, d_ps2, d_ps3,
     input  wire                  d_r1, d_r2, d_r3,   // source already available
     input  wire [NUNIT-1:0]      d_unit,             // one-hot
+    output wire [IDXB-1:0]       d_ent,              // entry taken; index the payload with it
 
     // ---- wakeup: every PRF write broadcasts its destination ----
     input  wire [NWB-1:0]        wb_v,
@@ -54,6 +55,7 @@ module ooo2_rs
     input  wire [NUNIT-1:0]      unit_busy,
     input  wire [ROBB-1:0]       head,           // ROB head, for age
     output wire                  iss_v,
+    output wire [IDXB-1:0]       iss_ent,            // ...and read the payload back with this
     output wire [ROBB-1:0]       iss_rob,
     output wire [NUNIT-1:0]      iss_unit,
     input  wire                  iss_take,       // consumer accepted it this cycle
@@ -132,6 +134,8 @@ module ooo2_rs
       end
    end
 
+   assign d_ent    = fsel;
+   assign iss_ent  = sel;
    assign iss_v    = sel_v;
    assign iss_rob  = e_rob[sel];
    assign iss_unit = e_unit[sel];
