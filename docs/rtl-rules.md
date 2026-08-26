@@ -382,6 +382,17 @@ Passed is not consumed. `20acd8c` (every run was silently `IW=2`), `7cf760e`,
 
 **G2. A stale binary is a build error, never a silent run.** `c0cb6ee`.
 
+**G4. A port-list change is a WHOLE-DESIGN change, so the gate is the full lint.**
+Adding a port to a module is not verified by that module's own unit TB — the
+instantiation is half the change and lives in another file. `ooo2_rs` grew
+`in_order` and `iss_ps1/2/3`, its 16-check TB passed, and the commit went in
+with `ooo2_core`'s instantiation still missing all four pins: the design did
+not elaborate at all. `src/lint.sh` is `-Werror` on PINMISSING and catches it
+in seconds, so the rule is simply that a changed port list means the full lint
+before the commit, never the module TB alone. The commit had to be rewritten
+out of history, which is the cheap version of this mistake — the expensive
+version is a bisect landing on a revision that does not build.
+
 **G3. The config space is swept, not just the default point.**
 `src/sweep.sh` runs `IW ∈ {1,2,3,4}` × `CKMAX ∈ {1,2}` × `CACHE ∈ {0,1}` and
 compares against `src/sweep-expected.txt`; a cell worse than recorded fails.
