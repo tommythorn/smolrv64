@@ -12,13 +12,16 @@ module tb;
    reg [NUNIT-1:0] unit_busy=0; reg [ROBB-1:0] head=0; reg iss_take=0;
    wire d_ready, iss_v; wire [ROBB-1:0] iss_rob; wire [NUNIT-1:0] iss_unit;
    wire [IDXB-1:0] d_ent, iss_ent;
+   wire [PBITS-1:0] iss_ps1, iss_ps2, iss_ps3;
+   reg in_order = 1'b0;
    wire [IDXB:0] occupancy;
    integer errs=0;
 
    ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.ROBB(ROBB),.PBITS(PBITS),.NUNIT(NUNIT),.NWB(NWB)) dut
      (.clk(clk),.reset(reset),.d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),
       .d_ps1(d_ps1),.d_ps2(d_ps2),.d_ps3(d_ps3),.d_r1(d_r1),.d_r2(d_r2),.d_r3(d_r3),
-      .d_unit(d_unit),.d_ent(d_ent),.iss_ent(iss_ent),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
+      .d_unit(d_unit),.d_ent(d_ent),.iss_ent(iss_ent),.in_order(in_order),
+      .iss_ps1(iss_ps1),.iss_ps2(iss_ps2),.iss_ps3(iss_ps3),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
       .iss_v(iss_v),.iss_rob(iss_rob),.iss_unit(iss_unit),.iss_take(iss_take),
       .flush(flush),.occupancy(occupancy));
 
@@ -96,6 +99,20 @@ module tb;
       @(negedge clk);
       expect_iss("wakeup in the dispatch cycle is not lost", 1'b1, 4'd2);
       take;
+
+      // 6b. in_order: the SAME shape as test 1 must now NOT reorder.
+      in_order = 1'b1;
+      disp(4'd4, 9'd88, 1'b0, 4'b0001);      // older, waiting on p88
+      disp(4'd5, 9'd0,  1'b1, 4'b0001);      // younger, ready
+      @(negedge clk);
+      expect_iss("in_order: younger ready does NOT pass older stalled", 1'b0, 4'd0);
+      wake(9'd88);
+      @(negedge clk);
+      expect_iss("in_order: older issues first", 1'b1, 4'd4);
+      take; @(negedge clk);
+      expect_iss("in_order: then the younger", 1'b1, 4'd5);
+      take;
+      in_order = 1'b0;
 
       // 7. fill to full, check d_ready
       begin : fill

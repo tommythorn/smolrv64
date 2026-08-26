@@ -54,9 +54,18 @@ module ooo2_rs
     // ---- issue: oldest ready entry whose unit is free ----
     input  wire [NUNIT-1:0]      unit_busy,
     input  wire [ROBB-1:0]       head,           // ROB head, for age
+    // Bring-up gate. With in_order set, an entry is issuable only when it is the OLDEST
+    // LIVE entry -- the scheduler fills and drains but never reorders, so nothing younger
+    // than a redirecting instruction is ever in flight and a flush is still just "clear
+    // everything". That is what makes the switchover gateable in two steps instead of one:
+    // this lands the payload, the issue-time PRF read and unit routing with the execution
+    // ORDER unchanged, and clearing it is then the only change that needs deferred traps,
+    // zombie units and load/store ordering.
+    input  wire                  in_order,
     output wire                  iss_v,
     output wire [IDXB-1:0]       iss_ent,            // ...and read the payload back with this
     output wire [ROBB-1:0]       iss_rob,
+    output wire [PBITS-1:0]      iss_ps1, iss_ps2, iss_ps3,   // PRF read addresses at issue
     output wire [NUNIT-1:0]      iss_unit,
     input  wire                  iss_take,       // consumer accepted it this cycle
 
@@ -105,6 +114,20 @@ module ooo2_rs
    // ---- ready and oldest-ready select (doc 8.3) --------------------------------------
    // ready includes the unit check, so a busy unit does not block a DIFFERENT unit's
    // entry -- that is the entire point of the structure.
+   // Oldest LIVE entry, for the in_order gate. Same minimum-reduction as the select below
+   // but over v[] rather than rdy[], so it does not depend on readiness.
+   reg              old_v;
+   reg [IDXB-1:0]   old_ent;
+   reg [ROBB-1:0]   old_age;
+   integer          j;
+   always @* begin
+      old_v = 1'b0; old_ent = {IDXB{1'b0}}; old_age = {ROBB{1'b0}};
+      for (j = 0; j < NENT; j = j + 1)
+         if (v[j] && (!old_v || ((e_rob[j] - head) < old_age))) begin
+            old_v = 1'b1; old_ent = j[IDXB-1:0]; old_age = e_rob[j] - head;
+         end
+   end
+
    wire [NENT-1:0] rdy;
    genvar g;
    generate
@@ -112,7 +135,8 @@ module ooo2_rs
          assign rdy[g] = v[g] & (e_r1[g] | hit(e_ps1[g]))
                               & (e_r2[g] | hit(e_ps2[g]))
                               & (e_r3[g] | hit(e_ps3[g]))
-                              & ~|(e_unit[g] & unit_busy);
+                              & ~|(e_unit[g] & unit_busy)
+                              & (~in_order | (g[IDXB-1:0] == old_ent));
       end
    endgenerate
 
@@ -139,6 +163,9 @@ module ooo2_rs
    assign iss_v    = sel_v;
    assign iss_rob  = e_rob[sel];
    assign iss_unit = e_unit[sel];
+   assign iss_ps1  = e_ps1[sel];
+   assign iss_ps2  = e_ps2[sel];
+   assign iss_ps3  = e_ps3[sel];
 
    reg [IDXB:0] occ;
    always @* begin

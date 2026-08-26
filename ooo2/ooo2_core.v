@@ -452,8 +452,13 @@ module ooo2_core
       .d_r1(pnd_r1 | byp1), .d_r2(pnd_r2 | byp2), .d_r3(pnd_r3 | byp3),
       .d_unit(d_unit), .d_ent(rs_d_ent),
       .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
+      // in_order=1 is the Step I setting; it makes no difference while the scheduler
+      // drains the cycle after dispatch and never holds more than one entry.
+      .in_order(1'b1),
       .unit_busy({RS_NUNIT{1'b0}}), .head(rob_head_idx),
       .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
+      // Unconnected until operands are read at issue (Step I).
+      .iss_ps1(), .iss_ps2(), .iss_ps3(),
       .iss_unit(rs_iss_unit), .iss_take(rs_iss_v),
       .flush(redirect), .occupancy(rs_occ));
 
