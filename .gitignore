@@ -1,2 +1,3 @@
 # Verilator/verilated build directories (obj_dir_vl, obj_dir_ooo2, obj_dir_cosim, ...)
 obj_*/
+ooo2/obj_dir_rs/
