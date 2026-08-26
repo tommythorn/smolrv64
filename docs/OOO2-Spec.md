@@ -56,7 +56,35 @@ Only **M** redirects. Anything that redirects or traps must additionally be the 
 (`head_block`), because a younger instruction must not squash an older load or FP op still
 in flight.
 
-### 2.1 Why the F/X queue exists
+### 2.1 There is no issue queue
+
+Worth stating plainly, because a ROB plus a physical register file plus a scoreboard usually
+implies one. **X is a single instruction slot.** There are no reservation stations, no
+wakeup/select, no scheduler, and nothing may issue around anything else. The scoreboard
+(§7.2, §8) is an *interlock*, not a dispatcher: it decides whether the instruction in X may
+advance, and its only two answers are "go" and "stall".
+
+So an `add` waiting on a pending load **blocks every younger instruction**, including ones
+that do not touch the load's destination at all:
+
+```verilog
+d_hold = d_valid & (src_pend | ~rob_ready | rn_stall);   // ooo2_core.v
+accept = m_advance & ~d_hold & ~ser_block;
+q_pop  = accept & ~q_empty;                              // ooo2_frontend.v
+```
+
+`accept` low means the F/X queue does not pop. Younger instructions accumulate behind the
+stalled one in that 8-entry FIFO — strictly in order, no bypass — and once it fills, fetch
+stalls too. This is **head-of-line blocking** and it is the single largest structural gap
+between this core and an out-of-order one.
+
+The direct consequence: a non-blocking unit buys only the instructions **between the
+producer and its first consumer**. Nothing after the consumer benefits. Measured, on the
+three FP kernels of §7.1 — `dot` gains 2.19x because the next iteration's two loads and its
+address arithmetic fit under the FMA, while `saxpy`, whose FP work is independent across
+iterations but whose consumer follows immediately, gains only 1.24x.
+
+### 2.2 Why the F/X queue exists
 
 `accept` (X←F) is registered off M-stage state. The queue decouples fetch from the backend so
 a fetch bubble and a backend stall do not serialise. Depth 8 (`QDEPTH`), which bought ~3.9% on
@@ -67,7 +95,7 @@ the Linux cosim over depth 4.
 ## 3. Stall taxonomy
 
 Every non-retiring cycle is attributed to exactly one bucket by the hardware counters in
-§10, and the buckets are additive because `st_m` (M stalled) and `m_advance` are exact
+§11, and the buckets are additive because `st_m` (M stalled) and `m_advance` are exact
 complements.
 
 ### 3.1 F stalls — the frontend has nothing to hand over
@@ -86,7 +114,7 @@ complements.
 
 | cause | meaning |
 |---|---|
-| `src_pend` | a source's **physical** register is the destination of an in-flight load (`ld_pend`) or FP op (`fp_pend`). Compared on renamed physregs, not architectural ones. |
+| `src_pend` | a source's **physical** register is the destination of an in-flight load (`ld_pend`) or FP op (`fp_pend`). Compared on renamed physregs, not architectural ones. **Blocks all younger instructions too** — see §2.1. |
 | `~rob_ready` | ROB full (16 entries) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op (CSR, per `decode_exec.v`) is in X or M — separate term, ANDed into `accept` |
@@ -180,7 +208,27 @@ A physical register's shard is encoded in its number and never changes, so a com
 ## 6. Reorder buffer
 
 - **16 entries**, status only — no result values, no PC, no operands.
-- Entry: `{noret, rd, rd_v, shard, prd, pold}` — exactly what rename's commit port consumes.
+
+**Entry format — 16 bits.** `ent[]` is `{noret, rd, prd}`, plus `v` and `done` as separate
+bulk-clearable bit vectors.
+
+| field | bits | meaning |
+|---|---|---|
+| `noret` | 1 | commits but must not be counted (see below) |
+| `rd` | 6 | architectural destination, unified numbering (0–31 int, 32–63 FP) |
+| `prd` | `PBITS`=9 | physical register allocated; **0 when none** |
+| | **16** | × `DEPTH`=16 = **256 bits** |
+| `v[16]`, `done[16]` | 32 | separate flops — both are bulk-cleared on flush |
+
+**Three fields are deliberately absent**, each recoverable from state the design already
+keeps. The ROB is sized by the *window*; the scheduler that needs execute detail is sized by
+*dependency depth*, so anything derivable does not belong here.
+
+| not stored | recovered as | why it is sound |
+|---|---|---|
+| `rd_v` | `\|prd` | physical register 0 is architectural x0's permanent mapping and is never freed, so it is never allocated |
+| `shard` | `prd[PBITS-1:IDXB]` | a physical register's shard is the top bits of its number and never changes |
+| `pold` | `rmap[c_rd]`, read at commit | `rmap` holds committed state, so in the cycle an entry commits its architectural register still maps to what that entry displaced; the commit write is what replaces it |
 - Completion is by **slot index**, allocated at rename and carried with the op.
 - Write-forward on the head's `done` bit, so an op completing in the cycle its entry reaches
   the head commits that same cycle.
@@ -190,6 +238,38 @@ A physical register's shard is encoded in its number and never changes, so a com
 
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
+
+### 6.1 Scheduler (`ooo2_rs`) — BUILT AND UNIT-TESTED, NOT YET WIRED
+
+Stated here because its absence is the single largest fact about the machine (§2.1) and
+because the module now exists. **It is not instantiated by `ooo2_core` yet**, so nothing in
+§2, §3 or §7 describes its behaviour; this subsection describes what will replace them.
+
+**Entry format — 38 bits.** Scheduling state only.
+
+| field | bits | meaning |
+|---|---|---|
+| `v` | 1 | entry live |
+| `e_rob` | `ROBB`=4 | ROB slot, for age and for completion |
+| `e_ps1/2/3` | 3 × `PBITS`=27 | source **physical** registers |
+| `e_r1/2/3` | 3 | per-source ready bits |
+| `e_unit` | `NUNIT`=4 | one-hot unit requirement |
+| | **38** | × `NENT`=8 = **304 bits** |
+
+- **Wakeup**: every PRF write broadcasts its destination; `NWB`=3 ports, one per shard.
+  A source not yet ready is also compared against the live ports **in its dispatch cycle**,
+  because a producer broadcasts exactly once and would otherwise be missed forever.
+- **Select**: oldest ready, `age = (rob - head)`, minimum-reduction comparator tree.
+  Deterministic and starvation-free.
+- **The unit check is inside `ready`**, so a busy MEM cannot block an ALU entry.
+- **No execute payload and no operand values.** Payload goes in a LUTRAM indexed by the
+  scheduler's own entry number — written with the free-slot index at dispatch, read with the
+  select index at issue. Not indexed by `rob_idx`: that would be `ROB_SIZE` deep where
+  `NENT` suffices, and would put a read port at issue on a ROB-sized array, which is the
+  specific thing the ROB/scheduler split exists to avoid. Operand values are never stored;
+  the PRF is read **at issue**.
+
+Gate: `ooo2/run-ooo2-rs-tb.sh` — seconds, no core build, 13 checks.
 
 ---
 
@@ -321,7 +401,90 @@ UART is **3 Mbps, hardwired in RTL** — not derived from the DTS or the kernel 
 
 ---
 
-## 10. Counters and observability
+## 10. Array inventory
+
+Every array in the core, with the shape the RTL actually declares. Sizes are for the
+shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
+
+### 10.1 Core
+
+| array | module | shape | width | bits | storage | ports |
+|---|---|---|---|---|---|---|
+| `mem_ie` | `ooo2_prf` | 64 | 64 | 4 096 | LUTRAM | 3R shared, 1W |
+| `mem_ld` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 3R shared, 1W |
+| `mem_fe` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 3R shared, 1W |
+| `smap` | `ooo2_rename` | 64 | 9 | 576 | LUTRAM | 3R, 1W + bulk |
+| `rmap` | `ooo2_rename` | 64 | 9 | 576 | LUTRAM | 4R, 1W |
+| `lv` | `ooo2_rename` | 64 | 1 | 64 | flops | bulk-cleared on flush |
+| `fl_ie` | `ooo2_rename` | 64 | 7 | 448 | LUTRAM | free list |
+| `fl_ld` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
+| `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
+| `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
+| `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
+| scheduler entry | `ooo2_rs` | 8 | 38 | 304 | flops | **not yet wired** (§6.1) |
+| `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
+
+The PRF's three shards share **one write address** with three shard enables, so it is one
+write per cycle in total, not one per shard. §7 of `Area-Efficient-Scalar-OoO.md` offers
+exactly this split as the way to delete writeback arbitration — but only if each file has
+its own write port and a single writer. Neither holds yet: the address is shared, and the LD
+shard has three writers (LSU, mul, div). This is the binding constraint on dynamic issue.
+
+### 10.2 Front end
+
+| array | module | shape | width | bits | storage |
+|---|---|---|---|---|---|
+| `btb` | `ooo2_predictor` | 256 | 53 | 13 568 | **BRAM**, sync read |
+| `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | **BRAM**, sync read |
+| `ras` | `ooo2_predictor` | 8 | 64 | 512 | flops |
+| `lenp` | `src/fetch` | 1024 | 1 | 1 024 | LUTRAM |
+
+Neither `btb` nor `ycorr` has a valid bit — validity is the tag match (§4.2).
+
+### 10.3 Memory system
+
+Per cache instance; there are two (I$, D$), identical geometry.
+
+| array | shape | width | bits | storage |
+|---|---|---|---|---|
+| data banks | 4 × 2048 | 64 | 524 288 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
+| `tagm` | 1024 | 49 | 50 176 | LUTRAM |
+| `valm` | 1024 | 1 | 1 024 | flops |
+| `dirm` | 1024 | 1 | 1 024 | flops (D$ only in effect) |
+| `vicm` | 512 | 1 | 512 | flops — victim/replacement bit per set |
+
+Data is 4 banks (`2*WAYS`) of `2048 × 64`, which is the 64 KB: even/odd chunk banking per
+way, so any read at any byte offset is served by one access (§9.1).
+
+**`PTAGB` = 49 bits and does not need to be.** It is `PAW - IDXB - OFFB` with `PAW`=64 as
+instantiated, but the MMU produces 56-bit physical addresses, so eight tag bits per way are
+structurally zero — ~8 Kib per cache, ~16 Kib total. Untested observation, not a measurement;
+narrowing `PAW` to 56 is a one-parameter change that needs a build to confirm it is free.
+
+Address translation, two instances (iTLB in `ooo2_core`, dTLB in `ooo2_lsu`):
+
+| array | shape | width | bits |
+|---|---|---|---|
+| `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 16 | 1+27+44+2+8+1+1 = 84 | 1 344 |
+
+Also in `rv_soc_top`: `lmem` — the 256 KiB on-chip boot/monitor SRAM, `NLLINE × 512`.
+
+### 10.4 Verification-only
+
+Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as area:
+
+| array | shape | width | purpose |
+|---|---|---|---|
+| `cs_pc` | 16 | 64 | retire PC for the cosim trace |
+| `cs_insn` | 16 | 32 | retire instruction word |
+| `cs_val` | 16 | 64 | retire value — captured at the writeback event |
+| `cs_mkind` | 16 | 2 | memory-effect kind |
+| `cs_mpa` | 16 | 56 | memory-effect physical address |
+| `r` (`rv_regfile`) | 64 | 64 | architectural shadow, written at commit |
+
+---
+
+## 11. Counters and observability
 
 `Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 22-bit `hpm_ev`
 bus. This is exactly the width of the event list, so a 13-event `perf stat` is full — adding
@@ -346,7 +509,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 
 ---
 
-## 11. Verification
+## 12. Verification
 
 | gate | command | pass |
 |---|---|---|
@@ -364,7 +527,7 @@ tracers and stats are gated.
 
 ---
 
-## 12. FPGA implementation (XCKU5P, `platforms/rk-xcku5p-f-v1.2`)
+## 13. FPGA implementation (XCKU5P, `platforms/rk-xcku5p-f-v1.2`)
 
 | | |
 |---|---|
@@ -380,10 +543,14 @@ pinned by the MIG's `ui_clk`.
 
 ---
 
-## 13. Known limits
+## 14. Known limits
 
 - **Single-outstanding everything.** One load, one FP op, one mul/div. Independent FP cannot
   overlap itself; that needs a second PRF write port.
+- **No issue queue, so a stalled consumer stalls the whole machine** (§2.1). An instruction
+  waiting on an in-flight load or FP result holds X, and everything younger queues behind it
+  in order. This is what caps the return on every non-blocking unit, and it is the next
+  structural thing to fix if the goal is out-of-order.
 - **`IW=1`.** The aligner emits at most one instruction per cycle, exactly what the backend
   consumes, so the F/X queue can never build a backlog and every frontend hiccup is
   unrecoverable. On integer workloads this is the dominant cost (frontend 41.8% of cycles on
