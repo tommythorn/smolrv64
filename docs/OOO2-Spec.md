@@ -239,11 +239,13 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
 
-### 6.1 Scheduler (`ooo2_rs`) — BUILT AND UNIT-TESTED, NOT YET WIRED
+### 6.1 Scheduler (`ooo2_rs`) — WIRED AND VERIFIED, NOT YET STEERING
 
-Stated here because its absence is the single largest fact about the machine (§2.1) and
-because the module now exists. **It is not instantiated by `ooo2_core` yet**, so nothing in
-§2, §3 or §7 describes its behaviour; this subsection describes what will replace them.
+Stated here because its absence is the single largest fact about the machine (§2.1).
+The module is instantiated and filled: dispatch writes it and the payload, issue drains
+them the next cycle. **Nothing is steered by it** — the machine still feeds M from X in
+order, so §2, §3 and §7 remain accurate. `docs/ooo2-dynamic-issue-plan.md` is the
+remaining work.
 
 **Entry format — 38 bits.** Scheduling state only.
 
@@ -262,14 +264,23 @@ because the module now exists. **It is not instantiated by `ooo2_core` yet**, so
 - **Select**: oldest ready, `age = (rob - head)`, minimum-reduction comparator tree.
   Deterministic and starvation-free.
 - **The unit check is inside `ready`**, so a busy MEM cannot block an ALU entry.
-- **No execute payload and no operand values.** Payload goes in a LUTRAM indexed by the
-  scheduler's own entry number — written with the free-slot index at dispatch, read with the
-  select index at issue. Not indexed by `rob_idx`: that would be `ROB_SIZE` deep where
-  `NENT` suffices, and would put a read port at issue on a ROB-sized array, which is the
-  specific thing the ROB/scheduler split exists to avoid. Operand values are never stored;
-  the PRF is read **at issue**.
+- **No execute payload and no operand values.** The payload is a separate LUTRAM indexed
+  by the scheduler's own entry number (`d_ent` to write at dispatch, `iss_ent` to read at
+  issue) — **396 bits × 8 = 3 168 bits**, 34 fields. Not indexed by `rob_idx`: that would be
+  `ROB_SIZE` deep where `NENT` suffices, and would put a read port at issue on a ROB-sized
+  array, the specific thing the ROB/scheduler split exists to avoid. Operand values are
+  never stored; the PRF is read **at issue**.
+- The payload holds the X→M bundle **minus** operand values and minus everything
+  `ooo2_exec` recomputes (`result`, `addr`, `target`, `taken`, `redirect`). `prd` is stored
+  **gated by `rd_v`**, matching the ROB's "0 means writes nothing" convention — which is
+  where it differs from the ungated `m_prd`.
+- Packed and unpacked with the **same concatenation**, so a width or ordering error is a
+  lint failure. And checked at runtime: dispatch happens in the cycle an instruction enters
+  M and the scheduler cannot offer it before the next cycle, so at issue the payload holds
+  exactly what M holds — `pc`, `insn`, `imm`, `rd`, `prd` are compared every cycle.
 
-Gate: `ooo2/run-ooo2-rs-tb.sh` — seconds, no core build, 13 checks.
+Gates: `ooo2/run-ooo2-rs-tb.sh` (seconds, 13 checks) plus the payload check above, which
+runs inside every 240-test and cosim run.
 
 ---
 
@@ -421,14 +432,20 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
-| scheduler entry | `ooo2_rs` | 8 | 38 | 304 | flops | **not yet wired** (§6.1) |
+| scheduler entry | `ooo2_rs` | 8 | 38 | 304 | flops | wired, not steering (§6.1) |
+| `plmem` (payload) | `ooo2_core` | 8 | 396 | 3 168 | LUTRAM | 1W dispatch, 1R issue |
+| `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 
-The PRF's three shards share **one write address** with three shard enables, so it is one
-write per cycle in total, not one per shard. §7 of `Area-Efficient-Scalar-OoO.md` offers
-exactly this split as the way to delete writeback arbitration — but only if each file has
-its own write port and a single writer. Neither holds yet: the address is shared, and the LD
-shard has three writers (LSU, mul, div). This is the binding constraint on dynamic issue.
+Each PRF shard now has **its own write address** (`wa_ie`/`wa_ld`/`wa_fe`), which is §7 of
+`Area-Efficient-Scalar-OoO.md`'s "give each file its own port and a single writer and the
+arbiter disappears". Half of that holds: IE takes only the ALU/CSR result and FE only the
+FPU, but **LD has two writers** — a landing load and M's mul/div — so LD still needs an
+arbiter, or mul/div needs its own shard. It costs nothing today because `m_done` is forced
+low on `ld_land`/`fp_land`, and an assertion fires the moment that stops being true.
+
+The remaining single point is the **ROB completion port**: widened to `NW` ports but pinned
+at `NW=1`, and it is now the only reason a cycle has to be yielded at all.
 
 ### 10.2 Front end
 
