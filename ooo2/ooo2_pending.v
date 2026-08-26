@@ -27,9 +27,13 @@ module ooo2_pending
     input  wire [NWB-1:0]        w_v,
     input  wire [NWB*PBITS-1:0]  w_preg,
 
-    // ---- read: three sources, combinational ----
+    // ---- read: two sets of three. Dispatch asks "is this source ready?" to seed the
+    // scheduler entry; issue asks the same to check what the scheduler selected. Read ports
+    // are the one thing duplication genuinely buys.
     input  wire [PBITS-1:0]      q1, q2, q3,
     output wire                  r1, r2, r3,
+    input  wire [PBITS-1:0]      q4, q5, q6,
+    output wire                  r4, r5, r6,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -63,6 +67,9 @@ module ooo2_pending
    assign r1 = rdy_of(q1) | wb_hit(q1);
    assign r2 = rdy_of(q2) | wb_hit(q2);
    assign r3 = rdy_of(q3) | wb_hit(q3);
+   assign r4 = rdy_of(q4) | wb_hit(q4);
+   assign r5 = rdy_of(q5) | wb_hit(q5);
+   assign r6 = rdy_of(q6) | wb_hit(q6);
 
    always @(posedge clk) begin
       if (reset | flush) begin

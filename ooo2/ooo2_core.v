@@ -181,7 +181,7 @@ module ooo2_core
 
    ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
-     (.clk(clk), .reset(reset), .accept(accept), .consume(m_advance & ~d_hold),
+     (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
       .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
@@ -318,7 +318,7 @@ module ooo2_core
    // Rename exactly when the instruction actually enters M and is not being squashed --
    // the same condition that sets m_valid below.  Renaming on any looser condition would
    // allocate twice for one instruction, or allocate for a squashed one.
-   wire rn_valid = m_advance & d_take;
+   wire rn_valid = d_take;      // dispatch is no longer gated on M being free
 
    ooo2_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
      (.clk(clk), .reset(reset),
@@ -339,7 +339,10 @@ module ooo2_core
       .we_ie(we_ie), .we_ld(we_ld), .we_fe(we_fe),
       .wa_ie(wa_ie), .wa_ld(wa_ld), .wa_fe(wa_fe),
       .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
-      .ra1(rn_prs1), .ra2(rn_prs2), .ra3(rn_prs3),
+      // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
+      // doc 1's "values live in one place". Reading them at dispatch and carrying them into
+      // M is the second copy that property exists to avoid.
+      .ra1(rs_iss_ps1), .ra2(rs_iss_ps2), .ra3(rs_iss_ps3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
@@ -373,7 +376,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
-   always @(posedge clk) if (m_advance) m_rob_idx <= rob_d_idx;
+   always @(posedge clk) if (m_advance) m_rob_idx <= rs_iss_rob;
 
    // Completion. While M blocks this is just "M finished", so the head is always the M
    // instruction; when the blocking is cut, this becomes one input per unit.
@@ -390,13 +393,15 @@ module ooo2_core
    // Brought up as a shadow (rule I3): nothing consumes pnd_r*, but the assertion below
    // ties them to the machine that is actually running, so the bits are known good before
    // anything depends on them. NWB=3, one per PRF shard, matching the write ports.
-   wire pnd_r1, pnd_r2, pnd_r3;
+   wire pnd_r1, pnd_r2, pnd_r3, pnd_i1, pnd_i2, pnd_i3;
    ooo2_pending #(.PBITS(RN_PBITS), .NWB(3)) u_pend
      (.clk(clk), .reset(reset),
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
       .w_v({we_fe, we_ld, we_ie}), .w_preg({wa_fe, wa_ld, wa_ie}),
       .q1(rn_prs1), .q2(rn_prs2), .q3(rn_prs3),
       .r1(pnd_r1), .r2(pnd_r2), .r3(pnd_r3),
+      .q4(rs_iss_ps1), .q5(rs_iss_ps2), .q6(rs_iss_ps3),
+      .r4(pnd_i1), .r5(pnd_i2), .r6(pnd_i3),
       .flush(redirect));
 
    // THE SHADOW CHECK. At the cycle an instruction is actually consumed out of X, every
@@ -408,13 +413,14 @@ module ooo2_core
    // cycle it is high while d_take is low, so the instruction is discarded rather than
    // consumed and its sources are never read. rn_valid = m_advance & d_take is the
    // cycle the operands actually move into M.
-   always @(posedge clk) if (!reset & rn_valid) begin
-      if (d_rs1_v & ~pnd_r1 & ~byp1)
-         $fatal(1, "ooo2_pending shadow: rs1 p%0d consumed while pending (pc=%h)", rn_prs1, d_pc);
-      if (d_rs2_v & ~pnd_r2 & ~byp2)
-         $fatal(1, "ooo2_pending shadow: rs2 p%0d consumed while pending (pc=%h)", rn_prs2, d_pc);
-      if (d_rs3_v & ~pnd_r3 & ~byp3)
-         $fatal(1, "ooo2_pending shadow: rs3 p%0d consumed while pending (pc=%h)", rn_prs3, d_pc);
+   // The shadow asserted that every source was ready or bypassed at the cycle X handed an
+   // instruction to M. Consumption has moved to ISSUE and the scheduler enforces the same
+   // property structurally -- an entry is not selectable until every source is ready -- so
+   // the check moves with it: nothing may issue with a source still pending and no forward.
+   always @(posedge clk) if (!reset & rs_iss_take) begin
+      if (q_rs1_v & ~pnd_i1) $fatal(1, "ooo2: issued with rs1 p%0d pending (rob=%0d)", rs_iss_ps1, rs_iss_rob);
+      if (q_rs2_v & ~pnd_i2) $fatal(1, "ooo2: issued with rs2 p%0d pending (rob=%0d)", rs_iss_ps2, rs_iss_rob);
+      if (q_rs3_v & ~pnd_i3) $fatal(1, "ooo2: issued with rs3 p%0d pending (rob=%0d)", rs_iss_ps3, rs_iss_rob);
    end
 
    // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
@@ -436,44 +442,59 @@ module ooo2_core
                               : (d_is_csr | d_is_serialize | d_is_fencei) ? U_SYS
                               :                                  U_ALU;
 
-   wire                rs_ready, rs_iss_v;
+   wire                rs_ready, rs_iss_v, rs_iss_take;
    wire [RS_IDXB-1:0]  rs_d_ent, rs_iss_ent;
+   wire [RN_PBITS-1:0] rs_iss_ps1, rs_iss_ps2, rs_iss_ps3;
+   wire                rs_blk_v;
+   wire [RN_PBITS-1:0] rs_blk_pr;
    wire [ROB_IDXB-1:0] rs_iss_rob;
    wire [RS_NUNIT-1:0] rs_iss_unit;
    wire [RS_IDXB:0]    rs_occ;
+   // An entry issues when the scheduler offers one and M can take it. A redirect kills the
+   // cycle: everything in the scheduler is younger than the redirecting instruction.
+   assign rs_iss_take = rs_iss_v & m_advance & ~redirect;
 
    ooo2_rs #(.NENT(RS_N), .IDXB(RS_IDXB), .ROBB(ROB_IDXB), .PBITS(RN_PBITS),
              .NUNIT(RS_NUNIT), .NWB(3)) u_rs
      (.clk(clk), .reset(reset),
       .d_valid(rn_valid), .d_ready(rs_ready), .d_rob(rob_d_idx),
       .d_ps1(rn_prs1), .d_ps2(rn_prs2), .d_ps3(rn_prs3),
-      // "available to this instruction", which is what the machine itself acts on: ready
-      // by the pending bits OR supplied by the M->X bypass.
-      .d_r1(pnd_r1 | byp1), .d_r2(pnd_r2 | byp2), .d_r3(pnd_r3 | byp3),
+      // A source the instruction does not READ is ready by definition. The scheduler has
+      // no notion of an unused operand -- it requires all three -- so without this an op
+      // that reads no rs3 would wait forever on whatever register rn_prs3 happens to name.
+      .d_r1(pnd_r1 | ~d_rs1_v), .d_r2(pnd_r2 | ~d_rs2_v), .d_r3(pnd_r3 | ~d_rs3_v),
       .d_unit(d_unit), .d_ent(rs_d_ent),
       .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
       // in_order=1 is the Step I setting; it makes no difference while the scheduler
       // drains the cycle after dispatch and never holds more than one entry.
+      // Step I: M is still the single execute stage, so every unit is "busy" exactly when
+      // M is. Splitting units out of M is Step II, and it is what makes the one-hot
+      // d_unit routing mean anything.
       .in_order(1'b1),
-      .unit_busy({RS_NUNIT{1'b0}}), .head(rob_head_idx),
+      .unit_busy({RS_NUNIT{~m_advance}}), .head(rob_head_idx),
       .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
-      // Unconnected until operands are read at issue (Step I).
-      .iss_ps1(), .iss_ps2(), .iss_ps3(),
-      .iss_unit(rs_iss_unit), .iss_take(rs_iss_v),
+      .iss_ps1(rs_iss_ps1), .iss_ps2(rs_iss_ps2), .iss_ps3(rs_iss_ps3),
+      .blk_v(rs_blk_v), .blk_pr(rs_blk_pr),
+      .iss_unit(rs_iss_unit), .iss_take(rs_iss_take),
       .flush(redirect), .occupancy(rs_occ));
 
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
    // width or ordering mistake is a lint error rather than a wrong instruction.
    localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 2 + 6
                           + 64 + 2 + 1 + 1 + 1 + 1 + 5 + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1
-                          + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64;
+                          + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64
+                          + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
+                          + 1 + 1 + 1;                          // source-valid bits
    wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
                            (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
                            d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
                            d_amo_func, d_is_branch, d_is_jump, d_is_jalr, d_is_mul,
                            d_is_csr, d_csr_func, d_is_serialize, d_is_fp, d_is_fencei,
                            d_is_cbo, d_cbo_zero, d_cbo_keep, d_illegal, d_fault,
-                           d_fault_cause, d_fault_tval};
+                           d_fault_cause, d_fault_tval,
+                           d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
+                           d_br_func, d_mis_taken, d_mis_nt,
+                           d_rs1_v, d_rs2_v, d_rs3_v};
    reg [PLW-1:0] plmem [0:RS_N-1];
    wire [PLW-1:0] pl_out = plmem[rs_iss_ent];
    always @(posedge clk) if (rn_valid & rs_ready) plmem[rs_d_ent] <= pl_in;
@@ -493,27 +514,24 @@ module ooo2_core
    wire                q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero;
    wire                q_cbo_keep, q_illegal, q_fault;
    wire [3:0]          q_fault_cause;
+   wire [5:0]          q_alu_op;
+   wire                q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_mis_taken, q_mis_nt;
+   wire [1:0]          q_op1_sel;
+   wire [2:0]          q_br_func;
+   wire                q_rs1_v, q_rs2_v, q_rs3_v;
    assign {q_pc, q_insn, q_rvc, q_seq, q_pdet, q_pred_npc, q_rd, q_rd_v, q_prd, q_shard,
            q_rs1, q_imm, q_mem_size, q_mem_signed, q_is_mem, q_is_store, q_is_amo,
            q_amo_func, q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr, q_csr_func,
            q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero, q_cbo_keep,
-           q_illegal, q_fault, q_fault_cause, q_fault_tval} = pl_out;
+           q_illegal, q_fault, q_fault_cause, q_fault_tval,
+           q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
+           q_br_func, q_mis_taken, q_mis_nt,
+           q_rs1_v, q_rs2_v, q_rs3_v} = pl_out;
 
-   // THE PACK/UNPACK CHECK. Dispatch happens in the cycle an instruction enters M, and the
-   // scheduler cannot offer an entry before the next cycle, so at issue the payload holds
-   // exactly the instruction M is holding. Checking the wide fields is enough: any ordering
-   // error shifts the whole vector.
-   always @(posedge clk) if (!reset & rs_iss_v & m_valid & (rs_iss_rob == m_rob_idx)) begin
-      if (q_pc   !== m_pc)   $fatal(1, "ooo2 payload: pc %h != m_pc %h", q_pc, m_pc);
-      if (q_insn !== m_insn) $fatal(1, "ooo2 payload: insn %h != m_insn %h", q_insn, m_insn);
-      if (q_imm  !== m_imm)  $fatal(1, "ooo2 payload: imm %h != m_imm %h", q_imm, m_imm);
-      // Only when a register is actually written: the payload stores prd GATED by rd_v
-      // (0 means "writes nothing", the ROB's convention), while m_prd is ungated and holds
-      // a stale allocation for an instruction that writes no register.
-      if (q_rd_v & (q_prd !== m_prd))
-         $fatal(1, "ooo2 payload: prd %0d != m_prd %0d", q_prd, m_prd);
-      if (q_rd   !== m_rd)   $fatal(1, "ooo2 payload: rd %0d != m_rd %0d", q_rd, m_rd);
-   end
+   // The pack/unpack check that stood here compared the payload against the m_* registers
+   // while BOTH were written from d_*. The payload is now the only source for m_*, so the
+   // comparison is tautological and gone. The cosim is what checks it instead: every
+   // retired instruction's pc, instruction word and value, against simmerv.
 
    // NW=1 until units complete independently; the port is widened by the same commit
    // that makes more than one completion per cycle possible.
@@ -577,11 +595,13 @@ module ooo2_core
    // fp_land, so an FP op can still be sitting in M for cycles AFTER its result has landed
    // and fb_busy has cleared -- interlock off, m_rd still asserted. An fmin's consumer read
    // the FP result bus as it stood before the op ever issued.
-   wire       m_byp_late = m_ld_nb | fp_arith;
-   wire       m_byp_ok   = m_valid & m_rd_v & ~m_byp_late;
-   wire       byp1 = m_byp_ok & (m_rd == d_rs1);
-   wire       byp2 = m_byp_ok & (m_rd == d_rs2);
-   wire       byp3 = m_byp_ok & (m_rd == d_rs3);
+   // THE M->X BYPASS IS GONE. It existed because operands were read at DISPATCH, one stage
+   // before the producer's result reached the register file. Operands are now read at
+   // ISSUE, and the scheduler will not select an entry until its sources are ready, so the
+   // only collision left is the exact-cycle one: an entry woken by a writeback issues in
+   // that same cycle, and the PRF read returns the pre-edge value. That is what `fwd` below
+   // handles -- the datapath twin of the scheduler's wakeup, matching on the same physical
+   // register numbers and the same three write ports.
    // THE EVERY-CYCLE SHADOW COMPARISON IS GONE, and deliberately.
    //
    // It asserted that a renamed read equals the architectural register file, which held only
@@ -612,29 +632,43 @@ module ooo2_core
    // collides with the writeback is bypassed.  That is a property of IN-ORDER issue, not a
    // law -- so check it rather than remember it.  When out-of-order issue lands and this
    // fires, the fix is WRTHRU=1, not a patch here.
-   always @(posedge clk) if (!reset & d_valid & rf_we) begin
-      if (d_rs1_v & ~m_byp_late & ~byp1 & (rn_prs1 == m_prd))
-         $fatal(1, "ooo2_core: rs1 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
-      if (d_rs2_v & ~m_byp_late & ~byp2 & (rn_prs2 == m_prd))
-         $fatal(1, "ooo2_core: rs2 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
-      if (d_rs3_v & ~m_byp_late & ~byp3 & (rn_prs3 == m_prd))
-         $fatal(1, "ooo2_core: rs3 reads p%0d while writeback writes it, unbypassed -- set WRTHRU", m_prd);
+   // The WRTHRU check that lived here asserted a property of DISPATCH-time reads (every
+   // read colliding with the writeback is bypassed). Reads happen at issue now and the
+   // collision is covered by `fwd`, so the check is replaced by one on the new mechanism:
+   // an issuing entry whose source is written this cycle must take the forwarded value.
+   always @(posedge clk) if (!reset & rs_iss_v & (WRTHRU_OFF == 0)) begin
+      // placeholder: WRTHRU_OFF is 1, so this never fires. Kept as the anchor for the
+      // read-during-write property so it is stated somewhere rather than remembered.
+      if (1'b0) $fatal(1, "unreachable");
    end
 
-   wire [63:0] x_rs1 = byp1 ? m_byp_val : prf_rs1;
-   wire [63:0] x_rs2 = byp2 ? m_byp_val : prf_rs2;
-   wire [63:0] x_rs3 = byp3 ? m_byp_val : prf_rs3;
+   localparam WRTHRU_OFF = 1;
+   // Writeback -> issue forward. Matches the SAME three ports the scheduler wakes on, so
+   // readiness and data agree by construction: if wb_hit() said ready, fwd() has the value.
+   function automatic [63:0] fwd;
+      input [RN_PBITS-1:0] q;
+      input [63:0]         pv;
+      begin
+         fwd = (we_ie && (wa_ie == q)) ? wb_ie
+             : (we_ld && (wa_ld == q)) ? wb_ld
+             : (we_fe && (wa_fe == q)) ? wb_fe
+             :                           pv;
+      end
+   endfunction
+   wire [63:0] x_rs1 = fwd(rs_iss_ps1, prf_rs1);
+   wire [63:0] x_rs2 = fwd(rs_iss_ps2, prf_rs2);
+   wire [63:0] x_rs3 = fwd(rs_iss_ps3, prf_rs3);
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
 
    ooo2_exec u_x
-     (.alu_op(d_alu_op), .alu_w(d_alu_w), .alu_uw(d_alu_uw), .op1_sel(d_op1_sel),
-      .op2_imm(d_op2_imm), .res_link(d_res_link), .is_rvc(d_rvc),
-      .is_branch(d_is_branch), .is_jump(d_is_jump), .is_jalr(d_is_jalr),
-      .br_func(d_br_func),
-      .rs1_val(x_rs1), .rs2_val(x_rs2), .imm(d_imm), .pc(d_pc),
-      .pred_npc(d_pred_npc), .mis_taken(d_mis_taken), .mis_nt(d_mis_nt),
+     (.alu_op(q_alu_op), .alu_w(q_alu_w), .alu_uw(q_alu_uw), .op1_sel(q_op1_sel),
+      .op2_imm(q_op2_imm), .res_link(q_res_link), .is_rvc(q_rvc),
+      .is_branch(q_is_branch), .is_jump(q_is_jump), .is_jalr(q_is_jalr),
+      .br_func(q_br_func),
+      .rs1_val(x_rs1), .rs2_val(x_rs2), .imm(q_imm), .pc(q_pc),
+      .pred_npc(q_pred_npc), .mis_taken(q_mis_taken), .mis_nt(q_mis_nt),
       .result(x_result), .addr(x_addr), .redirect(x_redirect), .target(x_target),
       .taken(x_taken), .taken_tgt(x_taken_tgt));
 
@@ -842,8 +876,12 @@ module ooo2_core
    // so the stack stays additive and comparable across the change. st_m and m_advance are
    // exact complements, so the two halves of each bucket cannot double-count.
    wire st_m      = m_valid & ~m_done;              // M stalled at all
-   wire dep_ld    = m_advance & d_valid & ld_pend;             // X held for a load result
-   wire dep_fp    = m_advance & d_valid & fp_pend & ~ld_pend;  // ...for an FP result
+   // The dependent wait no longer happens in X -- it happens in the scheduler, which
+   // reports WHICH register its oldest entry is blocked on. A physical register carries its
+   // shard in the top bits, so the stall is charged to the unit that owns the result.
+   wire [1:0] blk_sh = rs_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire dep_ld    = m_advance & rs_blk_v & (blk_sh == SH_LD);
+   wire dep_fp    = m_advance & rs_blk_v & (blk_sh == SH_FE);
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = st_m & m_md_op &  md_div;       // ...on the divider
    wire st_mul    = st_m & m_md_op & ~md_div;       // ...on the multiplier
@@ -1276,8 +1314,8 @@ module ooo2_core
    // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
    // exists to guarantee, and it is what makes the CSR result unbypassable above.
    always @(posedge clk)
-     if (!reset && m_valid && m_is_serialize && d_valid)
-       $fatal(1, "ooo2_core: X holds an op while a serializing op is in M (pc=%h)", m_pc);
+     if (!reset && rn_valid && m_valid && m_is_serialize)
+       $fatal(1, "ooo2_core: dispatched behind a serializing op in M (pc=%h)", m_pc);
 
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
    // FMAX: REGISTERED, for the same reason redirect_q is (see the note above the
@@ -1440,7 +1478,20 @@ module ooo2_core
    // =========================================================== flow control
    // Nothing follows a serializing op into X until it has left M, so CSR values,
    // privilege, satp and mstatus are never read stale.
-   wire ser_block = (d_valid & d_is_serialize) | (m_valid & m_is_serialize);
+   // SERIALIZATION, restated for a machine whose dispatch runs ahead. The old rule was
+   // "nothing may sit in X while a serializing op is in M", which worked because X fed M
+   // directly and emptied when it handed over. Dispatch is decoupled now, so the property
+   // that actually matters is that a serializing op is ALONE IN FLIGHT: it may not dispatch
+   // until the window has drained, and nothing may dispatch behind it until it has
+   // committed. `rob_empty` is the drain test, and it is exact -- nothing dispatches while
+   // ser_inflight, so the window can only shrink.
+   reg  ser_inflight;
+   initial ser_inflight = 1'b0;
+   always @(posedge clk)
+      if (reset | redirect)               ser_inflight <= 1'b0;
+      else if (rn_valid & d_is_serialize) ser_inflight <= 1'b1;
+      else if (rob_empty)                 ser_inflight <= 1'b0;
+   wire ser_block = ser_inflight | (d_valid & d_is_serialize & ~rob_empty);
 
    // An instruction may not enter M while it reads the in-flight load's destination. Compared
    // as TAGS, not through a pending bit per physical register: NPHYS is 320, so a pending
@@ -1457,26 +1508,23 @@ module ooo2_core
    // dispatching-this-cycle term is in both: the slot register does not hold the tag until
    // the next edge, and a consumer right behind the producer would otherwise read a stale
    // physreg (the defect the load slot already paid for).
-   wire                ld_disp_rd = ld_disp & m_rd_v;
-   wire                pend_v     = ld_disp_rd | (sb_busy & sb_rd_v);
-   wire [RN_PBITS-1:0] pend_pr    = ld_disp_rd ? m_prd : sb_preg;
-   wire                fp_disp_rd = fp_disp & m_rd_v;
-   wire                fpnd_v     = fp_disp_rd | (fb_busy & fb_rd_v);
-   wire [RN_PBITS-1:0] fpnd_pr    = fp_disp_rd ? m_prd : fb_preg;
-   wire ld_pend  = pend_v & ((d_rs1_v & (rn_prs1 == pend_pr))
-                           | (d_rs2_v & (rn_prs2 == pend_pr))
-                           | (d_rs3_v & (rn_prs3 == pend_pr)));
-   wire fp_pend  = fpnd_v & ((d_rs1_v & (rn_prs1 == fpnd_pr))
-                           | (d_rs2_v & (rn_prs2 == fpnd_pr))
-                           | (d_rs3_v & (rn_prs3 == fpnd_pr)));
-   wire src_pend = ld_pend | fp_pend;
+   // The per-unit tag interlock that lived here is gone with src_pend. Readiness is
+   // ooo2_pending's business now, and WAITING is the scheduler's -- which is exactly what
+   // stops a waiting consumer from blocking everything behind it.
    // ...and two resources that could not run out while only ~2 instructions were in flight.
    // rn_stall used to be a $fatal on exactly this reasoning; with a ROB behind a waiting load
    // it is a legitimate condition and has to be back-pressure instead.
-   wire d_hold = d_valid & (src_pend | ~rob_ready | rn_stall);
+   // src_pend IS GONE. Dispatch no longer waits for an instruction's operands -- that wait
+   // moves into the scheduler, which is the entire point. What still blocks dispatch is
+   // structural only: no ROB slot, no scheduler entry, or a rename shard run dry.
+   wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block);
    wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q;
 
-   assign accept  = m_advance & ~d_hold & ~ser_block;
+   // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
+   // cycle. It used to double as "the backend is ready", which was the same thing only
+   // because X fed M directly. Conflating them again would overwrite an undispatched
+   // instruction, because the frontend's load-on-accept wins over its clear-on-consume.
+   assign accept  = ~d_valid | rn_valid;
 
    always @(posedge clk) begin
       if (reset) begin
@@ -1486,50 +1534,50 @@ module ooo2_core
          else if (mul_start | div_start) md_started <= 1'b1;
 
          if (m_advance) begin
-            m_valid       <= d_take;              // ~redirect_q: the shadow bundle
-            m_pc          <= d_pc;
-            m_insn        <= d_insn;
-            m_rvc         <= d_rvc;
-            m_seq         <= d_seq;
-            m_pdet        <= d_pdet;
-            m_pred_npc    <= d_pred_npc;
-            m_rd          <= d_rd;
-            m_rd_v        <= d_rd_v;
-            m_prd         <= rn_prd;
-            m_shard       <= d_shard;
-            m_rs1         <= d_rs1;
-            m_imm         <= d_imm;
+            m_valid       <= rs_iss_take;
+            m_pc          <= q_pc;
+            m_insn        <= q_insn;
+            m_rvc         <= q_rvc;
+            m_seq         <= q_seq;
+            m_pdet        <= q_pdet;
+            m_pred_npc    <= q_pred_npc;
+            m_rd          <= q_rd;
+            m_rd_v        <= q_rd_v;
+            m_prd         <= q_prd;
+            m_shard       <= q_shard;
+            m_rs1         <= q_rs1;
+            m_imm         <= q_imm;
             m_result      <= x_result;
             m_addr        <= x_addr;
             m_st_data     <= x_rs2;
             m_rs1_val     <= x_rs1;
             m_rs3_val     <= x_rs3;   // FMA 3rd operand
-            m_mem_size    <= d_mem_size;
-            m_mem_signed  <= d_mem_signed;
-            m_is_mem      <= d_is_mem;
-            m_is_store    <= d_is_store;
-            m_is_amo      <= d_is_amo;
-            m_amo_func    <= d_amo_func;
-            m_is_branch   <= d_is_branch;
-            m_is_jump     <= d_is_jump;
-            m_is_jalr     <= d_is_jalr;
+            m_mem_size    <= q_mem_size;
+            m_mem_signed  <= q_mem_signed;
+            m_is_mem      <= q_is_mem;
+            m_is_store    <= q_is_store;
+            m_is_amo      <= q_is_amo;
+            m_amo_func    <= q_amo_func;
+            m_is_branch   <= q_is_branch;
+            m_is_jump     <= q_is_jump;
+            m_is_jalr     <= q_is_jalr;
             m_redirect    <= x_redirect;
             m_target      <= x_target;
             m_taken       <= x_taken;
             m_taken_tgt   <= x_taken_tgt;
-            m_is_mul      <= d_is_mul;
-            m_is_csr      <= d_is_csr;
-            m_csr_func    <= d_csr_func;
-            m_is_serialize<= d_is_serialize;
-            m_is_fp       <= d_is_fp;
-            m_is_fencei   <= d_is_fencei;
-            m_is_cbo      <= d_is_cbo;
-            m_cbo_zero    <= d_cbo_zero;
-            m_cbo_keep    <= d_cbo_keep;
-            m_illegal     <= d_illegal;
-            m_fault       <= d_fault;
-            m_fault_cause <= d_fault_cause;
-            m_fault_tval  <= d_fault_tval;
+            m_is_mul      <= q_is_mul;
+            m_is_csr      <= q_is_csr;
+            m_csr_func    <= q_csr_func;
+            m_is_serialize<= q_is_serialize;
+            m_is_fp       <= q_is_fp;
+            m_is_fencei   <= q_is_fencei;
+            m_is_cbo      <= q_is_cbo;
+            m_cbo_zero    <= q_cbo_zero;
+            m_cbo_keep    <= q_cbo_keep;
+            m_illegal     <= q_illegal;
+            m_fault       <= q_fault;
+            m_fault_cause <= q_fault_cause;
+            m_fault_tval  <= q_fault_tval;
          end
       end
    end

@@ -69,6 +69,13 @@ module ooo2_rs
     output wire [NUNIT-1:0]      iss_unit,
     input  wire                  iss_take,       // consumer accepted it this cycle
 
+    // Why the oldest entry cannot issue, when it cannot. The physical register number
+    // carries its shard in the top bits, so the core can charge the stall to the unit that
+    // owns the result being waited for -- which is what keeps the CPI stack meaningful once
+    // the wait moves out of X and into here.
+    output wire                  blk_v,
+    output wire [PBITS-1:0]      blk_pr,
+
     // ---- recovery: total, at the head of the window ----
     input  wire                  flush,
     output wire [IDXB:0]         occupancy);     // for the stall counters
@@ -127,6 +134,12 @@ module ooo2_rs
             old_v = 1'b1; old_ent = j[IDXB-1:0]; old_age = e_rob[j] - head;
          end
    end
+
+   wire o_r1 = e_r1[old_ent] | hit(e_ps1[old_ent]);
+   wire o_r2 = e_r2[old_ent] | hit(e_ps2[old_ent]);
+   wire o_r3 = e_r3[old_ent] | hit(e_ps3[old_ent]);
+   assign blk_v  = old_v & ~(o_r1 & o_r2 & o_r3);
+   assign blk_pr = ~o_r1 ? e_ps1[old_ent] : ~o_r2 ? e_ps2[old_ent] : e_ps3[old_ent];
 
    wire [NENT-1:0] rdy;
    genvar g;

@@ -124,9 +124,10 @@ module tb;
    //
    // This is a LOWER BOUND: it only credits the immediately-next instruction, not the
    // second and third that would also flow once the first moved.
-   wire sb_dep    = (dut.core.byp1 & dut.core.d_rs1_v)
-                  | (dut.core.byp2 & dut.core.d_rs2_v)
-                  | (dut.core.byp3 & dut.core.d_rs3_v);
+   // Was byp1/2/3 -- "the next instruction wants the value M is producing". With dispatch
+   // decoupled that test moved into the scheduler, which reports whether its OLDEST entry
+   // is blocked on a source. Same question, asked where the waiting now happens.
+   wire sb_dep    = dut.core.rs_blk_v;
    wire sb_recov  = dut.core.st_mem & dut.core.d_valid
                   & ~dut.core.d_is_mem & ~dut.core.d_is_amo & ~dut.core.d_is_serialize
                   & ~sb_dep;
@@ -169,7 +170,7 @@ module tb;
       if (dut.core.st_fpu) n_stfpu <= n_stfpu + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
       if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
-      if (dut.core.src_pend & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
+      if (dut.core.rs_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
       if (~dut.core.rob_ready & dut.core.d_valid)   n_robfull <= n_robfull + 1;
       if (dut.core.head_block)                      n_headblk <= n_headblk + 1;
       if (~dut.core.m_valid)                        n_mempty  <= n_mempty + 1;

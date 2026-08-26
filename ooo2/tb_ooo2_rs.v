@@ -14,6 +14,7 @@ module tb;
    wire [IDXB-1:0] d_ent, iss_ent;
    wire [PBITS-1:0] iss_ps1, iss_ps2, iss_ps3;
    reg in_order = 1'b0;
+   wire blk_v; wire [PBITS-1:0] blk_pr;
    wire [IDXB:0] occupancy;
    integer errs=0;
 
@@ -21,7 +22,7 @@ module tb;
      (.clk(clk),.reset(reset),.d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),
       .d_ps1(d_ps1),.d_ps2(d_ps2),.d_ps3(d_ps3),.d_r1(d_r1),.d_r2(d_r2),.d_r3(d_r3),
       .d_unit(d_unit),.d_ent(d_ent),.iss_ent(iss_ent),.in_order(in_order),
-      .iss_ps1(iss_ps1),.iss_ps2(iss_ps2),.iss_ps3(iss_ps3),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
+      .blk_v(blk_v),.blk_pr(blk_pr),.iss_ps1(iss_ps1),.iss_ps2(iss_ps2),.iss_ps3(iss_ps3),.wb_v(wb_v),.wb_preg(wb_preg),.unit_busy(unit_busy),.head(head),
       .iss_v(iss_v),.iss_rob(iss_rob),.iss_unit(iss_unit),.iss_take(iss_take),
       .flush(flush),.occupancy(occupancy));
 
