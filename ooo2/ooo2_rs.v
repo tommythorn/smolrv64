@@ -52,6 +52,12 @@ module ooo2_rs
     // disambiguation. What is left free to reorder is the pure ALU op, which is also what
     // is queued up behind a stalled consumer.
     input  wire                  d_ord,
+    // The destination, so a fixed-latency entry can be woken WHEN IT IS SELECTED rather
+    // than when it writes back. That is what keeps dependent instructions back to back
+    // once select has its own stage: the producer executes the cycle after it is selected,
+    // the consumer is selected in that same cycle and executes the cycle after -- two
+    // consecutive execute cycles, no bubble.
+    input  wire [PBITS-1:0]      d_prd,
     output wire [IDXB-1:0]       d_ent,              // entry taken; index the payload with it
 
     // ---- wakeup, in two classes ----
@@ -66,6 +72,14 @@ module ooo2_rs
     // is what keeps selection out of its own readiness function.
     input  wire [NSW-1:0]        sw_v,
     input  wire [NSW*PBITS-1:0]  sw_preg,
+
+    // The entry the consumer is still holding downstream. Its slot must NOT be handed to a
+    // new dispatch: the payload lives in an array indexed by entry number and is read a
+    // cycle AFTER selection, so reallocating the slot overwrites the payload of an
+    // instruction that has not executed yet. It is only observable when the issue stage
+    // stalls, which is exactly why it survived the first two test runs.
+    input  wire                  hold_v,
+    input  wire [IDXB-1:0]       hold_ent,
 
     // ---- issue: oldest ready entry whose unit is free ----
     input  wire [NUNIT-1:0]      unit_busy,
@@ -102,6 +116,7 @@ module ooo2_rs
    reg [NENT-1:0]  e_r1, e_r2, e_r3;
    reg [NUNIT-1:0] e_unit [0:NENT-1];
    reg [NENT-1:0]  e_ord;
+   reg [PBITS-1:0] e_prd  [0:NENT-1];
 
    integer k;
    initial begin
@@ -115,7 +130,8 @@ module ooo2_rs
    end
 
    // ---- free-slot select: lowest free index (fixed priority, doc 8.4) --------------
-   wire [NENT-1:0] freem = ~v;
+   wire [NENT-1:0] held  = hold_v ? ({{(NENT-1){1'b0}}, 1'b1} << hold_ent) : {NENT{1'b0}};
+   wire [NENT-1:0] freem = ~v & ~held;
    assign d_ready = |freem;
    reg [IDXB-1:0] fsel;
    always @* begin
@@ -136,11 +152,22 @@ module ooo2_rs
       end
    endfunction
 
+   // Wake-at-select, for entries whose latency is FIXED and one cycle (the un-ordered
+   // class). Broadcast internally, on the SLOW path -- it only ever sets registered ready
+   // bits, so selection never feeds back into readiness and no loop is created.
+   //
+   // Correct because the timing lines up exactly: the producer selected this cycle executes
+   // next cycle and writes the register file at the end of it, while a consumer woken now is
+   // selected next cycle and reads the register file the cycle after. The value is always
+   // there, which is also why no operand forwarding is needed anywhere.
+   wire            self_wk_v  = do_iss & ~e_ord[sel];
+   wire [PBITS-1:0] self_wk_pr = e_prd[sel];
+
    function automatic shit;           // slow-wakeup match, registered update only
       input [PBITS-1:0] p;
       integer w;
       begin
-         shit = 1'b0;
+         shit = (self_wk_v && (self_wk_pr == p));
          for (w = 0; w < NSW; w = w + 1)
             if (sw_v[w] && (sw_preg[w*PBITS +: PBITS] == p)) shit = 1'b1;
       end
@@ -236,6 +263,7 @@ module ooo2_rs
             e_ps1[fsel] <= d_ps1;  e_ps2[fsel] <= d_ps2;  e_ps3[fsel] <= d_ps3;
             e_unit[fsel]<= d_unit;
             e_ord[fsel] <= d_ord;
+            e_prd[fsel] <= d_prd;
             // Dispatch-cycle wakeup: a producer writing back THIS cycle will never
             // broadcast again, so a source that is not yet ready must be checked against
             // the live writeback ports or the entry waits forever.

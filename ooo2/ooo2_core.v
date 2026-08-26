@@ -342,7 +342,7 @@ module ooo2_core
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
-      .ra1(rs_iss_ps1), .ra2(rs_iss_ps2), .ra3(rs_iss_ps3),
+      .ra1(i_ps1), .ra2(i_ps2), .ra3(i_ps3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
@@ -376,7 +376,10 @@ module ooo2_core
    wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
-   always @(posedge clk) if (m_advance) m_rob_idx <= rs_iss_rob;
+   // i_rob, not rs_iss_rob: M is loaded from the ISSUE REGISTER now, a cycle after
+   // selection. Naming the current selection here let M's slot drift from the instruction
+   // M actually holds, and both completion ports then marked the same entry done.
+   always @(posedge clk) if (m_advance) m_rob_idx <= i_rob;
 
    // Completion. While M blocks this is just "M finished", so the head is always the M
    // instruction; when the blocking is cut, this becomes one input per unit.
@@ -402,7 +405,7 @@ module ooo2_core
       .w_v({we_fe, we_ld, we_ie}), .w_preg({wa_fe, wa_ld, wa_ie}),
       .q1(rn_prs1), .q2(rn_prs2), .q3(rn_prs3),
       .r1(pnd_r1), .r2(pnd_r2), .r3(pnd_r3),
-      .q4(rs_iss_ps1), .q5(rs_iss_ps2), .q6(rs_iss_ps3),
+      .q4(i_ps1), .q5(i_ps2), .q6(i_ps3),
       .r4(pnd_i1), .r5(pnd_i2), .r6(pnd_i3),
       .flush(redirect));
 
@@ -419,16 +422,17 @@ module ooo2_core
    // instruction to M. Consumption has moved to ISSUE and the scheduler enforces the same
    // property structurally -- an entry is not selectable until every source is ready -- so
    // the check moves with it: nothing may issue with a source still pending and no forward.
-   always @(posedge clk) if (!reset & rs_iss_take) begin
+   always @(posedge clk) if (!reset & (iss_alu | iss_m)) begin
       // "pending" is the REGISTER, cleared at the writeback edge -- so an entry the
       // scheduler woke this cycle is legitimately still marked pending while its value
       // arrives on a forward. The property is that a source is available, by either route.
-      if (q_rs1_v & ~pnd_i1 & ~fwd_hit(rs_iss_ps1))
-         $fatal(1, "ooo2: issued with rs1 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps1, rs_iss_rob);
-      if (q_rs2_v & ~pnd_i2 & ~fwd_hit(rs_iss_ps2))
-         $fatal(1, "ooo2: issued with rs2 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps2, rs_iss_rob);
-      if (q_rs3_v & ~pnd_i3 & ~fwd_hit(rs_iss_ps3))
-         $fatal(1, "ooo2: issued with rs3 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps3, rs_iss_rob);
+      if (q_rs1_v & ~pnd_i1)
+         $fatal(1, "ooo2: executed with rs1 p%0d still pending (rob=%0d pc=%h insn=%h ord=%b)",
+                i_ps1, i_rob, q_pc, q_insn, q_ord);
+      if (q_rs2_v & ~pnd_i2)
+         $fatal(1, "ooo2: executed with rs2 p%0d still pending (rob=%0d)", i_ps2, i_rob);
+      if (q_rs3_v & ~pnd_i3)
+         $fatal(1, "ooo2: executed with rs3 p%0d still pending (rob=%0d)", i_ps3, i_rob);
    end
 
    // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
@@ -467,11 +471,51 @@ module ooo2_core
    wire [RS_IDXB:0]    rs_occ;
    // An entry issues when the scheduler offers one and M can take it. A redirect kills the
    // cycle: everything in the scheduler is younger than the redirecting instruction.
-   // M-class entries are already gated on M being free by unit_busy, so the handshake
-   // itself only has to exclude a redirect cycle.
-   assign rs_iss_take = rs_iss_v & ~redirect;
-   wire   iss_m       = rs_iss_take &  q_ord;    // into M, in order
-   wire   iss_alu     = rs_iss_take & ~q_ord;    // completes here, out of order
+   // ---- SELECT GETS ITS OWN STAGE -------------------------------------------------
+   // Select, payload read, register read, execute and writeback in ONE cycle was 50 logic
+   // levels and 13.1 ns against a 6 ns period. doc 14 permits exactly this cut: "an
+   // implementation may pipeline select -> operand read -> execute".
+   //
+   // Cycle N selects and registers the choice. Cycle N+1 reads the payload and the register
+   // file, executes and writes back. Stage N+1 is SHORTER than the in-order X stage it
+   // replaces -- its register-file address is a flop here, where X first had to walk the
+   // rename map -- so the pipeline it feeds is unaffected. The cost lands on the redirect
+   // path, one stage deeper, which is where a scheduler's cost belongs.
+   //
+   // BACK-TO-BACK DEPENDENTS ARE PRESERVED. The producer selected at N executes at N+1;
+   // ooo2_rs wakes its consumer AT SELECT, so the consumer is selected at N+1 and executes
+   // at N+2 -- consecutive execute cycles, no bubble. The same timing is why no operand
+   // forwarding exists anywhere here: every producer's write has landed before its consumer
+   // reads.
+   reg                 i_v;
+   reg [RS_IDXB-1:0]   i_ent;
+   reg [ROB_IDXB-1:0]  i_rob;
+   reg [RN_PBITS-1:0]  i_ps1, i_ps2, i_ps3;
+   initial i_v = 1'b0;
+
+   // The stage completes when its writeback port is free: M for an ordered op, the IE shard
+   // for an ALU op. Otherwise it holds, and holds the scheduler with it.
+   wire   i_done      = i_v & (q_ord ? m_advance : ~m_wb_ie);
+   wire   iss_ready   = ~i_v | i_done;
+   assign rs_iss_take = rs_iss_v & iss_ready & ~redirect;
+   // ~redirect on BOTH. The register is cleared on a redirect, but these are
+   // combinational off i_v -- without the guard an instruction being squashed still writes
+   // the register file and still marks its ROB slot done, in the very cycle rename is
+   // rolling that physical register back. That is the zombie writeback in miniature, and it
+   // is what failed all 61 virtual-memory tests: they are the ones that trap often.
+   wire   iss_m       = i_v &  q_ord & m_advance & ~redirect;  // loads M this cycle
+   wire   iss_alu     = i_v & ~q_ord & ~m_wb_ie  & ~redirect;  // completes here
+
+   always @(posedge clk) begin
+      if (reset | redirect) i_v <= 1'b0;
+      else if (iss_ready) begin
+         i_v <= rs_iss_take;
+         if (rs_iss_take) begin
+            i_ent <= rs_iss_ent;  i_rob <= rs_iss_rob;
+            i_ps1 <= rs_iss_ps1;  i_ps2 <= rs_iss_ps2;  i_ps3 <= rs_iss_ps3;
+         end
+      end
+   end
 
    ooo2_rs #(.NENT(RS_N), .IDXB(RS_IDXB), .ROBB(ROB_IDXB), .PBITS(RN_PBITS),
              .NUNIT(RS_NUNIT), .NWB(3)) u_rs
@@ -487,17 +531,32 @@ module ooo2_core
       // writeback only -- the ALU op completing at issue goes on the SLOW port, because its
       // result cannot be read before the next cycle anyway and putting it here would make
       // readiness a function of selection.
-      .wb_v({we_fe, we_ld, fwd_ie_v}), .wb_preg({wa_fe, wa_ld, m_prd}),
-      .sw_v(alu_wb), .sw_preg(q_prd),
+      // The FULL IE port, alu_wb included. Excluding it hung the machine: a consumer
+      // DISPATCHED after its producer was selected misses the wake-at-select broadcast, and
+      // with no writeback wakeup either it waits forever -- three live entries, every unit
+      // free, nothing ready. Wake-at-select alone only covers consumers already in the
+      // scheduler.
+      //
+      // And it is safe to include now, which it was not before. alu_wb is built from i_v
+      // and a payload read at a REGISTERED address, so it no longer depends on the current
+      // selection -- pipelining select dissolved the loop that forced the fast/slow split.
+      .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
+      .sw_v(1'b0), .sw_preg({RN_PBITS{1'b0}}),
+      .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
       // U_ALU is never "busy" -- a one-cycle unit cannot be the reason another instruction
       // waits (doc 7) -- EXCEPT when M is writing the IE shard this cycle, which is the one
       // port they contend for. Gating the ALU there rather than stalling M keeps the
       // dependency one-way: m_wb_ie is built from m_done, and nothing in m_done depends on
       // issue, so there is no combinational loop through the scheduler.
       .in_order(1'b0),
-      .unit_busy({{(RS_NUNIT-1){~m_advance}}, m_wb_ie}), .head(rob_head_idx),
+      // An ordered op may be SELECTED only when M is free AND the issue register is not
+      // already holding one -- otherwise it stalls in the register and blocks the ALU ops
+      // behind it, undoing dynamic issue exactly when it matters.
+      .unit_busy({{(RS_NUNIT-1){~m_advance | (i_v & q_ord)}}, m_wb_ie}),
+      .head(rob_head_idx),
       .d_ord(d_ord),
       .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
+      .hold_v(i_v), .hold_ent(i_ent),
       .iss_ps1(rs_iss_ps1), .iss_ps2(rs_iss_ps2), .iss_ps3(rs_iss_ps3),
       .blk_v(rs_blk_v), .blk_pr(rs_blk_pr),
       .iss_unit(rs_iss_unit), .iss_take(rs_iss_take),
@@ -522,7 +581,7 @@ module ooo2_core
                            d_br_func, d_mis_taken, d_mis_nt,
                            d_rs1_v, d_rs2_v, d_rs3_v, d_ord};
    reg [PLW-1:0] plmem [0:RS_N-1];
-   wire [PLW-1:0] pl_out = plmem[rs_iss_ent];
+   wire [PLW-1:0] pl_out = plmem[i_ent];
    always @(posedge clk) if (rn_valid & rs_ready) plmem[rs_d_ent] <= pl_in;
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
@@ -568,7 +627,7 @@ module ooo2_core
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_v({iss_alu, rob_w_valid}), .w_ix({rs_iss_rob, rob_w_idx}),
+      .w_v({iss_alu, rob_w_valid}), .w_ix({i_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -671,39 +730,14 @@ module ooo2_core
    localparam WRTHRU_OFF = 1;
    // Writeback -> issue forward. Matches the SAME three ports the scheduler wakes on, so
    // readiness and data agree by construction: if wb_hit() said ready, fwd() has the value.
-   // The IE forward source is M's writeback ONLY -- deliberately not the ALU op completing
-   // at issue. wb_ie now selects between them, so forwarding from it would close the loop
-   // wb_ie -> fwd -> x_rs1 -> ooo2_exec -> x_result -> wb_ie: an instruction forwarding its
-   // own result to its own operand.
-   //
-   // Excluding it is not just loop-breaking, it is correct. Only one entry issues per cycle,
-   // so the op whose result alu_wb carries IS the issuing op -- no other entry can need it
-   // this cycle. An entry the scheduler wakes on alu_wb issues next cycle at the earliest,
-   // by which time the PRF holds the value.
-   wire        fwd_ie_v = m_wb_ie;
-   wire [63:0] fwd_ie_d = m_is_csr ? csr_rdata : m_result;
-   function automatic [63:0] fwd;
-      input [RN_PBITS-1:0] q;
-      input [63:0]         pv;
-      begin
-         fwd = (fwd_ie_v && (m_prd == q)) ? fwd_ie_d
-             : (we_ld    && (wa_ld == q)) ? wb_ld
-             : (we_fe    && (wa_fe == q)) ? wb_fe
-             :                              pv;
-      end
-   endfunction
-   // Same three conditions as a predicate: "a forward covers this source this cycle".
-   function automatic fwd_hit;
-      input [RN_PBITS-1:0] q;
-      begin
-         fwd_hit = (fwd_ie_v && (m_prd == q))
-                || (we_ld    && (wa_ld == q))
-                || (we_fe    && (wa_fe == q));
-      end
-   endfunction
-   wire [63:0] x_rs1 = fwd(rs_iss_ps1, prf_rs1);
-   wire [63:0] x_rs2 = fwd(rs_iss_ps2, prf_rs2);
-   wire [63:0] x_rs3 = fwd(rs_iss_ps3, prf_rs3);
+   // NO OPERAND FORWARDING, and none can be needed. Select has its own stage, so a
+   // consumer reads the register file two cycles after its producer was selected while the
+   // producer wrote it at the end of the cycle in between -- the value is always already
+   // there. This is what the extra stage buys back: the forward mux, its self-forwarding
+   // loop, and the whole question of which writebacks are forwardable all disappear.
+   wire [63:0] x_rs1 = prf_rs1;
+   wire [63:0] x_rs2 = prf_rs2;
+   wire [63:0] x_rs3 = prf_rs3;
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
@@ -1342,9 +1376,9 @@ module ooo2_core
          cs_mpa[fb_rob]   <= 56'd0;
       end
       if (iss_alu) begin                // completed at issue, never saw M
-         cs_val[rs_iss_rob]   <= x_result;
-         cs_mkind[rs_iss_rob] <= 2'd0;
-         cs_mpa[rs_iss_rob]   <= 56'd0;
+         cs_val[i_rob]   <= x_result;
+         cs_mkind[i_rob] <= 2'd0;
+         cs_mpa[i_rob]   <= 56'd0;
       end
    end
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
@@ -1354,7 +1388,7 @@ module ooo2_core
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (fb_rob == rob_head_idx);
-   wire        cs_hit_alu = iss_alu & (rs_iss_rob == rob_head_idx);
+   wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
                           : cs_hit_alu ? x_result
                           : cs_hit_fp ? fp_wval

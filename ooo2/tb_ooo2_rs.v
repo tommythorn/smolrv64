@@ -21,7 +21,7 @@ module tb;
    ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.ROBB(ROBB),.PBITS(PBITS),.NUNIT(NUNIT),.NWB(NWB)) dut
      (.clk(clk),.reset(reset),.d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),
       .d_ps1(d_ps1),.d_ps2(d_ps2),.d_ps3(d_ps3),.d_r1(d_r1),.d_r2(d_r2),.d_r3(d_r3),
-      .d_unit(d_unit),.d_ord(d_ord),.d_ent(d_ent),.iss_ent(iss_ent),.in_order(in_order),
+      .d_unit(d_unit),.d_ord(d_ord),.d_prd({PBITS{1'b0}}),.hold_v(1'b0),.hold_ent({IDXB{1'b0}}),.d_ent(d_ent),.iss_ent(iss_ent),.in_order(in_order),
       .blk_v(blk_v),.blk_pr(blk_pr),.iss_ps1(iss_ps1),.iss_ps2(iss_ps2),.iss_ps3(iss_ps3),.wb_v(wb_v),.wb_preg(wb_preg),.sw_v(1'b0),.sw_preg({PBITS{1'b0}}),.unit_busy(unit_busy),.head(head),
       .iss_v(iss_v),.iss_rob(iss_rob),.iss_unit(iss_unit),.iss_take(iss_take),
       .flush(flush),.occupancy(occupancy));
