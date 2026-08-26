@@ -56,33 +56,43 @@ Only **M** redirects. Anything that redirects or traps must additionally be the 
 (`head_block`), because a younger instruction must not squash an older load or FP op still
 in flight.
 
-### 2.1 There is no issue queue
+### 2.1 Issue is dynamic — for ALU ops
 
-Worth stating plainly, because a ROB plus a physical register file plus a scoreboard usually
-implies one. **X is a single instruction slot.** There are no reservation stations, no
-wakeup/select, no scheduler, and nothing may issue around anything else. The scoreboard
-(§7.2, §8) is an *interlock*, not a dispatcher: it decides whether the instruction in X may
-advance, and its only two answers are "go" and "stall".
+**X is no longer a single slot that everything funnels through.** Dispatch renames,
+allocates a ROB slot and a scheduler entry, and moves on; it does **not** wait for operands.
+The scheduler holds the instruction until its sources are ready and then issues the
+**oldest ready** entry.
 
-So an `add` waiting on a pending load **blocks every younger instruction**, including ones
-that do not touch the load's destination at all:
+What may reorder is deliberately narrow. Every entry carries an `ord` bit, set for anything
+that can trap, redirect, touch memory, or hold a unit for more than a cycle — memory, AMO,
+mul, div, FP, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault.
+Those keep program order. **Pure ALU ops are free to reorder**, and they complete at issue
+without ever entering M.
 
-```verilog
-d_hold = d_valid & (src_pend | ~rob_ready | rn_stall);   // ooo2_core.v
-accept = m_advance & ~d_hold & ~ser_block;
-q_pop  = accept & ~q_empty;                              // ooo2_frontend.v
-```
+That split is what makes the rest unnecessary rather than merely deferred:
 
-`accept` low means the F/X queue does not pop. Younger instructions accumulate behind the
-stalled one in that 8-entry FIFO — strictly in order, no bypass — and once it fills, fetch
-stalls too. This is **head-of-line blocking** and it is the single largest structural gap
-between this core and an out-of-order one.
+| usually needed for OoO | why not here |
+|---|---|
+| deferred traps / redirect register | anything that can trap issues only as the oldest entry, so traps still fire in order |
+| per-unit zombie bits at flush | nothing younger is ever in flight when a trap fires, so there is no writeback to suppress |
+| memory disambiguation, store queue | memory keeps program order |
+| deadlock avoidance | an op head-blocked in M cannot starve an older one: the only thing that can be older and un-issued is an ALU op, and those never enter M |
 
-The direct consequence: a non-blocking unit buys only the instructions **between the
-producer and its first consumer**. Nothing after the consumer benefits. Measured, on the
-three FP kernels of §7.1 — `dot` gains 2.19x because the next iteration's two loads and its
-address arithmetic fit under the FMA, while `saxpy`, whose FP work is independent across
-iterations but whose consumer follows immediately, gains only 1.24x.
+**Operands are read at ISSUE**, addressed by the selected entry's physical registers — doc 1's
+"values live in one place". The old M→X bypass is gone; a writeback→issue forward (`fwd`)
+replaces it, matching the same ports the scheduler wakes on, so readiness and data agree by
+construction.
+
+Wakeup is split in two. **Fast** wakeups are writebacks whose value can be forwarded in the
+same cycle, and none of them may depend on which entry was selected or readiness becomes a
+function of itself. **Slow** is the ALU op completing at issue: its result is written at the
+end of the cycle, so a dependent cannot read it before the next one anyway, and waking it
+late costs nothing.
+
+Measured, 300 M-cycle Linux cosim, retires: **67,160,189 → 68,981,116** (dispatch decoupled)
+**→ 69,754,834** (dynamic issue) — **+3.9%**. Small on this workload because a Linux boot is
+frontend-bound (§14) and only ALU ops reorder; the buckets it targets are `ST_MEM` and
+`ST_FPU`, which dominate GB5 rather than a boot.
 
 ### 2.2 Why the F/X queue exists
 
@@ -114,10 +124,11 @@ complements.
 
 | cause | meaning |
 |---|---|
-| `src_pend` | a source's **physical** register is the destination of an in-flight load (`ld_pend`) or FP op (`fp_pend`). Compared on renamed physregs, not architectural ones. **Blocks all younger instructions too** — see §2.1. |
+| *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
+| `~rs_ready` | scheduler full (8 entries) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
-| `ser_block` | a serializing op (CSR, per `decode_exec.v`) is in X or M — separate term, ANDed into `accept` |
+| `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
 
 ### 3.3 M stalls — `m_done` low
 
@@ -239,13 +250,11 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
 
-### 6.1 Scheduler (`ooo2_rs`) — WIRED AND VERIFIED, NOT YET STEERING
+### 6.1 Scheduler (`ooo2_rs`) — LIVE
 
 Stated here because its absence is the single largest fact about the machine (§2.1).
-The module is instantiated and filled: dispatch writes it and the payload, issue drains
-them the next cycle. **Nothing is steered by it** — the machine still feeds M from X in
-order, so §2, §3 and §7 remain accurate. `docs/ooo2-dynamic-issue-plan.md` is the
-remaining work.
+It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
+is not needed alongside it.
 
 **Entry format — 38 bits.** Scheduling state only.
 
@@ -433,7 +442,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | scheduler entry | `ooo2_rs` | 8 | 38 | 304 | flops | wired, not steering (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 8 | 396 | 3 168 | LUTRAM | 1W dispatch, 1R issue |
+| `plmem` (payload) | `ooo2_core` | 8 | 413 | 3 304 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 
@@ -564,10 +573,12 @@ pinned by the MIG's `ui_clk`.
 
 - **Single-outstanding everything.** One load, one FP op, one mul/div. Independent FP cannot
   overlap itself; that needs a second PRF write port.
-- **No issue queue, so a stalled consumer stalls the whole machine** (§2.1). An instruction
-  waiting on an in-flight load or FP result holds X, and everything younger queues behind it
-  in order. This is what caps the return on every non-blocking unit, and it is the next
-  structural thing to fix if the goal is out-of-order.
+- **Only ALU ops reorder** (§2.1). A memory, mul, div, FP or CSR op still issues in program
+  order, so a long-latency op still blocks *other long-latency ops* behind it. Freeing those
+  needs what §2.1's table says this design currently avoids: deferred traps, zombie units,
+  and memory disambiguation.
+- **M is still a single execute slot** for everything except ALU ops, so only one
+  long-latency op is in flight at a time.
 - **`IW=1`.** The aligner emits at most one instruction per cycle, exactly what the backend
   consumes, so the F/X queue can never build a backlog and every frontend hiccup is
   unrecoverable. On integer workloads this is the dominant cost (frontend 41.8% of cycles on
