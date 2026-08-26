@@ -424,6 +424,26 @@ MSHR, write-back buffer, prefetch buffer}*; *no two MSHRs cover the same line*;
 exactly one live entry*; *a dirty line is never overwritten before capture*.
 Bounded model checking finds these in seconds.
 
+**H4. `docs/OOO2-Spec.md` is updated in the SAME commit as the change it
+describes.**
+The spec is normative, not a summary written afterwards: geometry, sizes,
+associativity, indexing, storage primitive, latencies, the pipeline stages, and
+crucially WHAT STALLS AND WHAT RESTARTS. A spec that lags the RTL is worse than
+no spec, because the next person budgets against it — this project has already
+paid for that twice. The FPU handshake cost 14.02 cycles per op against 4 cycles
+of arithmetic and nobody knew, because "CVFPU, PIPE_REGS=4" was the only thing
+written down; and a whole day went into a CPI bucket worth 0.243 while a 45%
+bucket sat unexamined. If a change moves a number in that file, moving the
+number is part of the change.
+
+Two corollaries. A figure that is MEASURED says so, with the workload, because
+a measured number on one workload is not a property of the core — GB5 is
+FPU-bound and `sha256sum` is frontend-bound on the same silicon. And a
+"known limits" section is mandatory: what is single-outstanding, what still
+blocks, what is not implemented. Those are the questions people actually ask,
+and leaving them out is how an intermediate step gets mistaken for the
+destination.
+
 ## I. Area and timing
 
 **I1. Unreachable memory costs slack somewhere else.**

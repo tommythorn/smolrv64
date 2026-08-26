@@ -54,7 +54,15 @@
 
 `docs/rtl-rules.md` is the full rule set, derived from the project's own
 defect record with the commits that paid for each rule. Read it before
-touching the core, cache, LSU or MMU. The non-negotiable ones:
+touching the core, cache, LSU or MMU.
+
+- `docs/OOO2-Spec.md` is the normative description of the core in `ooo2/`
+  (geometry, sizes, latencies, pipeline stages, what stalls, what restarts,
+  known limits). It is ALWAYS kept current: if a change moves a number in that
+  file, updating it is part of that same commit, not a follow-up. Measured
+  figures must name their workload.
+
+The non-negotiable ones:
 
 - Invariant checks are ALWAYS ON (`$fatal`/`$display`, no `` `ifdef ``).
   Only flood-volume tracers and stats are gated. Every FSM `case` gets a
@@ -99,23 +107,6 @@ All Vivado operations are driven headlessly via the Makefile in
 GUI or run raw `vivado` commands — invoke the Make targets directly
 from that directory. The Makefile sets `LD_LIBRARY_PATH` so `vivado
 -mode batch` works without the libtinfo.so.5 error.
-
-Targets (run from `platforms/rk-xcku5p-f-v1.2/`):
-- `make synth`   — synthesis only
-- `make impl`    — synthesis + implementation
-- `make bit`     — synth + impl + bitstream (default `all`)
-- `make program` — program the device over JTAG (requires existing .bit)
-- `make load`    — build workload (WORKLOAD=path), rebuild bitstream, program
-- `make timing`  — open impl_1 checkpoint, print WNS/TNS and worst
-                   setup paths (no rebuild). Use this for every timing
-                   diagnosis instead of asking the user to run reports.
-- `make clean`   — wipe generated outputs (keeps sources and .xpr)
-- `make connect` — screen to $(TTY) at 115200
-
-Scripts live alongside the Makefile:
-- `build.tcl`         — synth/impl/bit flow driver
-- `program.tcl`       — JTAG program
-- `report_timing.tcl` — WNS/TNS + worst 5 setup + worst 5 failing paths
 
 When the user reports a timing violation, run `make timing` yourself
 to get the failing path, then analyze. Do not re-run `make bit` to

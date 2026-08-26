@@ -47,7 +47,7 @@
   {
     "EventName": "ST_MEM",
     "EventCode": "0x0300",
-    "BriefDescription": "M stalled on the LSU (D$/dTLB/AMO)"
+    "BriefDescription": "M stalled on the LSU, + X held for a pending load"
   },
   {
     "EventName": "ST_DIV",
@@ -62,12 +62,12 @@
   {
     "EventName": "ST_FPU",
     "EventCode": "0x0303",
-    "BriefDescription": "M stalled on the CVFPU"
+    "BriefDescription": "M stalled on the CVFPU, + X held for a pending FP result"
   },
   {
     "EventName": "ST_SER",
     "EventCode": "0x0304",
-    "BriefDescription": "serializing op holds the frontend off"
+    "BriefDescription": "serializing op holds the frontend off (not data deps)"
   },
   {
     "EventName": "FE_BUB",

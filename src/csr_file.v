@@ -180,11 +180,11 @@ module csr_file
                       HPMEV_DCMISS = 16'h0102,   // D$ line lookups that missed
                       HPMEV_ICACC  = 16'h0110,   // I$ line lookups resolved (hit or miss)
                       HPMEV_ICMISS = 16'h0112,   // I$ line lookups that missed
-                      HPMEV_ST_MEM = 16'h0300,   // M stalled on the LSU (D$/dTLB/AMO)
+                      HPMEV_ST_MEM = 16'h0300,   // M stalled on the LSU, + X held for a pending load
                       HPMEV_ST_DIV = 16'h0301,   // ...on the iterative divider
                       HPMEV_ST_MUL = 16'h0302,   // ...on the 3-cycle multiplier
-                      HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU
-                      HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off
+                      HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU, + X held for a pending FP result
+                      HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off (not data deps)
                       HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
                       HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
