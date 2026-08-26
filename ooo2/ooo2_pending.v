@@ -51,25 +51,19 @@ module ooo2_pending
       begin rdy_of = (q == {PBITS{1'b0}}) ? 1'b1 : ~pend[q]; end
    endfunction
 
-   // Write-forward the landing writebacks. A consumer renamed in the very cycle its
-   // producer writes back must see ready, or it waits for a broadcast that has already
-   // happened -- the same hazard the scheduler handles on its dispatch path.
-   function automatic wb_hit;
-      input [PBITS-1:0] q;
-      integer w;
-      begin
-         wb_hit = 1'b0;
-         for (w = 0; w < NWB; w = w + 1)
-            if (w_v[w] && (w_preg[w*PBITS +: PBITS] == q)) wb_hit = 1'b1;
-      end
-   endfunction
-
-   assign r1 = rdy_of(q1) | wb_hit(q1);
-   assign r2 = rdy_of(q2) | wb_hit(q2);
-   assign r3 = rdy_of(q3) | wb_hit(q3);
-   assign r4 = rdy_of(q4) | wb_hit(q4);
-   assign r5 = rdy_of(q5) | wb_hit(q5);
-   assign r6 = rdy_of(q6) | wb_hit(q6);
+   // NO same-cycle write-forward here, deliberately. It used to be needed so an instruction
+   // renamed in the very cycle its producer wrote back did not wait for a broadcast that had
+   // already happened -- but the scheduler now covers exactly that case on its own dispatch
+   // path (hit()/shit() when the entry is written). Keeping it here made these outputs
+   // combinational in the writeback ADDRESS, and one of those addresses depends on which
+   // entry the scheduler selected, which closed a loop through readiness. Reads are now a
+   // pure function of the pending register.
+   assign r1 = rdy_of(q1);
+   assign r2 = rdy_of(q2);
+   assign r3 = rdy_of(q3);
+   assign r4 = rdy_of(q4);
+   assign r5 = rdy_of(q5);
+   assign r6 = rdy_of(q6);
 
    always @(posedge clk) begin
       if (reset | flush) begin

@@ -34,7 +34,8 @@ module ooo2_rs
     parameter ROBB   = 4,             // ROB index bits
     parameter PBITS  = 9,             // physical register number bits
     parameter NUNIT  = 4,             // functional units, one-hot
-    parameter NWB    = 3)             // simultaneous writeback tags (one per PRF shard)
+    parameter NWB    = 3,             // fast writeback tags (one per PRF shard)
+    parameter NSW    = 1)             // slow (next-cycle) wakeup tags
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -45,11 +46,26 @@ module ooo2_rs
     input  wire [PBITS-1:0]      d_ps1, d_ps2, d_ps3,
     input  wire                  d_r1, d_r2, d_r3,   // source already available
     input  wire [NUNIT-1:0]      d_unit,             // one-hot
+    // This entry may issue only when it is the OLDEST live entry. Set for everything that
+    // can trap, redirect, touch memory or occupy a unit for more than a cycle -- i.e. for
+    // everything whose reordering would need deferred traps, zombie units or memory
+    // disambiguation. What is left free to reorder is the pure ALU op, which is also what
+    // is queued up behind a stalled consumer.
+    input  wire                  d_ord,
     output wire [IDXB-1:0]       d_ent,              // entry taken; index the payload with it
 
-    // ---- wakeup: every PRF write broadcasts its destination ----
+    // ---- wakeup, in two classes ----
+    // FAST: writebacks whose value can be forwarded to an operand read in the SAME cycle,
+    // so an entry they wake may issue immediately. These must not depend on which entry is
+    // selected, or readiness and selection close a loop.
     input  wire [NWB-1:0]        wb_v,
     input  wire [NWB*PBITS-1:0]  wb_preg,
+    // SLOW: writebacks that only mark a register available for LATER cycles. The ALU op
+    // completing at issue is one: its result is written at the end of this cycle, so a
+    // dependent cannot read it before the next one -- waking it "late" costs nothing and
+    // is what keeps selection out of its own readiness function.
+    input  wire [NSW-1:0]        sw_v,
+    input  wire [NSW*PBITS-1:0]  sw_preg,
 
     // ---- issue: oldest ready entry whose unit is free ----
     input  wire [NUNIT-1:0]      unit_busy,
@@ -85,10 +101,12 @@ module ooo2_rs
    reg [PBITS-1:0] e_ps1  [0:NENT-1], e_ps2 [0:NENT-1], e_ps3 [0:NENT-1];
    reg [NENT-1:0]  e_r1, e_r2, e_r3;
    reg [NUNIT-1:0] e_unit [0:NENT-1];
+   reg [NENT-1:0]  e_ord;
 
    integer k;
    initial begin
       v = {NENT{1'b0}}; e_r1 = {NENT{1'b0}}; e_r2 = {NENT{1'b0}}; e_r3 = {NENT{1'b0}};
+      e_ord = {NENT{1'b0}};
       for (k = 0; k < NENT; k = k + 1) begin
          e_rob[k] = {ROBB{1'b0}}; e_ps1[k] = {PBITS{1'b0}};
          e_ps2[k] = {PBITS{1'b0}}; e_ps3[k] = {PBITS{1'b0}};
@@ -115,6 +133,16 @@ module ooo2_rs
          hit = 1'b0;
          for (w = 0; w < NWB; w = w + 1)
             if (wb_v[w] && (wb_preg[w*PBITS +: PBITS] == p)) hit = 1'b1;
+      end
+   endfunction
+
+   function automatic shit;           // slow-wakeup match, registered update only
+      input [PBITS-1:0] p;
+      integer w;
+      begin
+         shit = 1'b0;
+         for (w = 0; w < NSW; w = w + 1)
+            if (sw_v[w] && (sw_preg[w*PBITS +: PBITS] == p)) shit = 1'b1;
       end
    endfunction
 
@@ -149,7 +177,7 @@ module ooo2_rs
                               & (e_r2[g] | hit(e_ps2[g]))
                               & (e_r3[g] | hit(e_ps3[g]))
                               & ~|(e_unit[g] & unit_busy)
-                              & (~in_order | (g[IDXB-1:0] == old_ent));
+                              & (~(in_order | e_ord[g]) | (g[IDXB-1:0] == old_ent));
       end
    endgenerate
 
@@ -197,9 +225,9 @@ module ooo2_rs
          // Wakeup applies to EVERY live entry, including the one issuing this cycle (it
          // leaves anyway) and the one being dispatched (handled on its own path below).
          for (k = 0; k < NENT; k = k + 1) if (v[k]) begin
-            if (hit(e_ps1[k])) e_r1[k] <= 1'b1;
-            if (hit(e_ps2[k])) e_r2[k] <= 1'b1;
-            if (hit(e_ps3[k])) e_r3[k] <= 1'b1;
+            if (hit(e_ps1[k]) | shit(e_ps1[k])) e_r1[k] <= 1'b1;
+            if (hit(e_ps2[k]) | shit(e_ps2[k])) e_r2[k] <= 1'b1;
+            if (hit(e_ps3[k]) | shit(e_ps3[k])) e_r3[k] <= 1'b1;
          end
          if (do_iss) v[sel] <= 1'b0;
          if (do_disp) begin
@@ -207,12 +235,13 @@ module ooo2_rs
             e_rob[fsel] <= d_rob;
             e_ps1[fsel] <= d_ps1;  e_ps2[fsel] <= d_ps2;  e_ps3[fsel] <= d_ps3;
             e_unit[fsel]<= d_unit;
+            e_ord[fsel] <= d_ord;
             // Dispatch-cycle wakeup: a producer writing back THIS cycle will never
             // broadcast again, so a source that is not yet ready must be checked against
             // the live writeback ports or the entry waits forever.
-            e_r1[fsel]  <= d_r1 | hit(d_ps1);
-            e_r2[fsel]  <= d_r2 | hit(d_ps2);
-            e_r3[fsel]  <= d_r3 | hit(d_ps3);
+            e_r1[fsel]  <= d_r1 | hit(d_ps1) | shit(d_ps1);
+            e_r2[fsel]  <= d_r2 | hit(d_ps2) | shit(d_ps2);
+            e_r3[fsel]  <= d_r3 | hit(d_ps3) | shit(d_ps3);
          end
       end
    end

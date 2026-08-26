@@ -383,6 +383,8 @@ module ooo2_core
    // A load's done bit is set when its DATA lands, not when M released it -- otherwise the
    // ROB would commit it before its register write exists. A FAULTING load never sets done
    // at all: it traps, and the redirect's flush retires the entry.
+   // An ALU op completing at issue is the SECOND completion port: it never enters M, so
+   // its ROB entry has to be marked done from here. This is why ooo2_rob's port was widened.
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land | fp_land;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : fp_land ? fb_rob : m_rob_idx;
 
@@ -418,9 +420,15 @@ module ooo2_core
    // property structurally -- an entry is not selectable until every source is ready -- so
    // the check moves with it: nothing may issue with a source still pending and no forward.
    always @(posedge clk) if (!reset & rs_iss_take) begin
-      if (q_rs1_v & ~pnd_i1) $fatal(1, "ooo2: issued with rs1 p%0d pending (rob=%0d)", rs_iss_ps1, rs_iss_rob);
-      if (q_rs2_v & ~pnd_i2) $fatal(1, "ooo2: issued with rs2 p%0d pending (rob=%0d)", rs_iss_ps2, rs_iss_rob);
-      if (q_rs3_v & ~pnd_i3) $fatal(1, "ooo2: issued with rs3 p%0d pending (rob=%0d)", rs_iss_ps3, rs_iss_rob);
+      // "pending" is the REGISTER, cleared at the writeback edge -- so an entry the
+      // scheduler woke this cycle is legitimately still marked pending while its value
+      // arrives on a forward. The property is that a source is available, by either route.
+      if (q_rs1_v & ~pnd_i1 & ~fwd_hit(rs_iss_ps1))
+         $fatal(1, "ooo2: issued with rs1 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps1, rs_iss_rob);
+      if (q_rs2_v & ~pnd_i2 & ~fwd_hit(rs_iss_ps2))
+         $fatal(1, "ooo2: issued with rs2 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps2, rs_iss_rob);
+      if (q_rs3_v & ~pnd_i3 & ~fwd_hit(rs_iss_ps3))
+         $fatal(1, "ooo2: issued with rs3 p%0d neither ready nor forwarded (rob=%0d)", rs_iss_ps3, rs_iss_rob);
    end
 
    // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
@@ -433,14 +441,21 @@ module ooo2_core
    localparam [RS_NUNIT-1:0] U_ALU = 5'b00001, U_MEM = 5'b00010,
                              U_MD  = 5'b00100, U_FP  = 5'b01000, U_SYS = 5'b10000;
 
-   wire [RS_NUNIT-1:0] d_unit = (d_is_mem | d_is_amo)          ? U_MEM
-                              : d_is_mul                       ? U_MD
-                              // d_is_fp alone: `use_fpu` is decoded in M off m_insn, so it
-                              // does not exist at dispatch yet. Harmless while unit_busy is
-                              // tied off; the switchover has to move decode_fp to dispatch.
-                              : d_is_fp                        ? U_FP
-                              : (d_is_csr | d_is_serialize | d_is_fencei) ? U_SYS
-                              :                                  U_ALU;
+   // ORDERED: everything that can trap, redirect, touch memory, or hold a unit for more
+   // than a cycle. Those are exactly the ops whose reordering would require deferred traps,
+   // zombie units and memory disambiguation -- and keeping them in order buys all three
+   // properties for free:
+   //   * an op head-blocked in M can never starve an older op, because the only thing that
+   //     can be older and un-issued is an ALU op, and those never enter M;
+   //   * nothing younger is ever in flight when something traps, because anything that can
+   //     trap issues only as the oldest entry -- so there is no zombie writeback to suppress;
+   //   * memory keeps program order.
+   // What is left free to reorder is the pure ALU op, which is precisely what queues up
+   // behind a consumer waiting on a load or an FP result.
+   wire d_ord = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
+              | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
+              | d_illegal | d_fault | d_is_irqop;
+   wire [RS_NUNIT-1:0] d_unit = d_ord ? U_SYS : U_ALU;
 
    wire                rs_ready, rs_iss_v, rs_iss_take;
    wire [RS_IDXB-1:0]  rs_d_ent, rs_iss_ent;
@@ -452,7 +467,11 @@ module ooo2_core
    wire [RS_IDXB:0]    rs_occ;
    // An entry issues when the scheduler offers one and M can take it. A redirect kills the
    // cycle: everything in the scheduler is younger than the redirecting instruction.
-   assign rs_iss_take = rs_iss_v & m_advance & ~redirect;
+   // M-class entries are already gated on M being free by unit_busy, so the handshake
+   // itself only has to exclude a redirect cycle.
+   assign rs_iss_take = rs_iss_v & ~redirect;
+   wire   iss_m       = rs_iss_take &  q_ord;    // into M, in order
+   wire   iss_alu     = rs_iss_take & ~q_ord;    // completes here, out of order
 
    ooo2_rs #(.NENT(RS_N), .IDXB(RS_IDXB), .ROBB(ROB_IDXB), .PBITS(RN_PBITS),
              .NUNIT(RS_NUNIT), .NWB(3)) u_rs
@@ -464,14 +483,20 @@ module ooo2_core
       // that reads no rs3 would wait forever on whatever register rn_prs3 happens to name.
       .d_r1(pnd_r1 | ~d_rs1_v), .d_r2(pnd_r2 | ~d_rs2_v), .d_r3(pnd_r3 | ~d_rs3_v),
       .d_unit(d_unit), .d_ent(rs_d_ent),
-      .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
-      // in_order=1 is the Step I setting; it makes no difference while the scheduler
-      // drains the cycle after dispatch and never holds more than one entry.
-      // Step I: M is still the single execute stage, so every unit is "busy" exactly when
-      // M is. Splitting units out of M is Step II, and it is what makes the one-hot
-      // d_unit routing mean anything.
-      .in_order(1'b1),
-      .unit_busy({RS_NUNIT{~m_advance}}), .head(rob_head_idx),
+      // FAST wakeup: none of these depend on which entry is selected. The IE port is M's
+      // writeback only -- the ALU op completing at issue goes on the SLOW port, because its
+      // result cannot be read before the next cycle anyway and putting it here would make
+      // readiness a function of selection.
+      .wb_v({we_fe, we_ld, fwd_ie_v}), .wb_preg({wa_fe, wa_ld, m_prd}),
+      .sw_v(alu_wb), .sw_preg(q_prd),
+      // U_ALU is never "busy" -- a one-cycle unit cannot be the reason another instruction
+      // waits (doc 7) -- EXCEPT when M is writing the IE shard this cycle, which is the one
+      // port they contend for. Gating the ALU there rather than stalling M keeps the
+      // dependency one-way: m_wb_ie is built from m_done, and nothing in m_done depends on
+      // issue, so there is no combinational loop through the scheduler.
+      .in_order(1'b0),
+      .unit_busy({{(RS_NUNIT-1){~m_advance}}, m_wb_ie}), .head(rob_head_idx),
+      .d_ord(d_ord),
       .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
       .iss_ps1(rs_iss_ps1), .iss_ps2(rs_iss_ps2), .iss_ps3(rs_iss_ps3),
       .blk_v(rs_blk_v), .blk_pr(rs_blk_pr),
@@ -484,7 +509,8 @@ module ooo2_core
                           + 64 + 2 + 1 + 1 + 1 + 1 + 5 + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1
                           + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
-                          + 1 + 1 + 1;                          // source-valid bits
+                          + 1 + 1 + 1                           // source-valid bits
+                          + 1;                                  // ordered
    wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
                            (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
                            d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
@@ -494,7 +520,7 @@ module ooo2_core
                            d_fault_cause, d_fault_tval,
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
                            d_br_func, d_mis_taken, d_mis_nt,
-                           d_rs1_v, d_rs2_v, d_rs3_v};
+                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord};
    reg [PLW-1:0] plmem [0:RS_N-1];
    wire [PLW-1:0] pl_out = plmem[rs_iss_ent];
    always @(posedge clk) if (rn_valid & rs_ready) plmem[rs_d_ent] <= pl_in;
@@ -518,7 +544,7 @@ module ooo2_core
    wire                q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_mis_taken, q_mis_nt;
    wire [1:0]          q_op1_sel;
    wire [2:0]          q_br_func;
-   wire                q_rs1_v, q_rs2_v, q_rs3_v;
+   wire                q_rs1_v, q_rs2_v, q_rs3_v, q_ord;
    assign {q_pc, q_insn, q_rvc, q_seq, q_pdet, q_pred_npc, q_rd, q_rd_v, q_prd, q_shard,
            q_rs1, q_imm, q_mem_size, q_mem_signed, q_is_mem, q_is_store, q_is_amo,
            q_amo_func, q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr, q_csr_func,
@@ -526,7 +552,7 @@ module ooo2_core
            q_illegal, q_fault, q_fault_cause, q_fault_tval,
            q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
            q_br_func, q_mis_taken, q_mis_nt,
-           q_rs1_v, q_rs2_v, q_rs3_v} = pl_out;
+           q_rs1_v, q_rs2_v, q_rs3_v, q_ord} = pl_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -535,14 +561,14 @@ module ooo2_core
 
    // NW=1 until units complete independently; the port is widened by the same commit
    // that makes more than one completion per cycle possible.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(1)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(2)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_v(rob_w_valid), .w_ix(rob_w_idx),
+      .w_v({iss_alu, rob_w_valid}), .w_ix({rs_iss_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -645,14 +671,34 @@ module ooo2_core
    localparam WRTHRU_OFF = 1;
    // Writeback -> issue forward. Matches the SAME three ports the scheduler wakes on, so
    // readiness and data agree by construction: if wb_hit() said ready, fwd() has the value.
+   // The IE forward source is M's writeback ONLY -- deliberately not the ALU op completing
+   // at issue. wb_ie now selects between them, so forwarding from it would close the loop
+   // wb_ie -> fwd -> x_rs1 -> ooo2_exec -> x_result -> wb_ie: an instruction forwarding its
+   // own result to its own operand.
+   //
+   // Excluding it is not just loop-breaking, it is correct. Only one entry issues per cycle,
+   // so the op whose result alu_wb carries IS the issuing op -- no other entry can need it
+   // this cycle. An entry the scheduler wakes on alu_wb issues next cycle at the earliest,
+   // by which time the PRF holds the value.
+   wire        fwd_ie_v = m_wb_ie;
+   wire [63:0] fwd_ie_d = m_is_csr ? csr_rdata : m_result;
    function automatic [63:0] fwd;
       input [RN_PBITS-1:0] q;
       input [63:0]         pv;
       begin
-         fwd = (we_ie && (wa_ie == q)) ? wb_ie
-             : (we_ld && (wa_ld == q)) ? wb_ld
-             : (we_fe && (wa_fe == q)) ? wb_fe
-             :                           pv;
+         fwd = (fwd_ie_v && (m_prd == q)) ? fwd_ie_d
+             : (we_ld    && (wa_ld == q)) ? wb_ld
+             : (we_fe    && (wa_fe == q)) ? wb_fe
+             :                              pv;
+      end
+   endfunction
+   // Same three conditions as a predicate: "a forward covers this source this cycle".
+   function automatic fwd_hit;
+      input [RN_PBITS-1:0] q;
+      begin
+         fwd_hit = (fwd_ie_v && (m_prd == q))
+                || (we_ld    && (wa_ld == q))
+                || (we_fe    && (wa_fe == q));
       end
    endfunction
    wire [63:0] x_rs1 = fwd(rs_iss_ps1, prf_rs1);
@@ -1189,7 +1235,7 @@ module ooo2_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   assign wb_ie = m_is_csr ? csr_rdata : m_result;
+   assign wb_ie = alu_wb ? x_result : m_is_csr ? csr_rdata : m_result;
    assign wb_ld = ld_wb                     ? lsu_rd_val
                 : (m_is_mem | m_is_amo)     ? lsu_rd_val
                 : m_unit_done_q             ? m_unit_res_q
@@ -1214,10 +1260,14 @@ module ooo2_core
    wire m_wb_ie = m_wb & (m_shard == SH_IE);
    wire m_wb_ld = m_wb & (m_shard == SH_LD);
    wire m_wb_fe = m_wb & (m_shard == SH_FE);
-   wire we_ie = m_wb_ie;
+   // IE is written by M (a jump's link register, a CSR result) and by an ALU op completing
+   // at issue. They cannot collide: unit_busy holds the ALU off in any cycle m_wb_ie is
+   // set, which is asserted below.
+   wire alu_wb = iss_alu & q_rd_v;
+   wire we_ie = m_wb_ie | alu_wb;
    wire we_ld = m_wb_ld | ld_wb;
    wire we_fe = m_wb_fe | fp_wb;
-   wire [RN_PBITS-1:0] wa_ie = m_prd;
+   wire [RN_PBITS-1:0] wa_ie = alu_wb ? q_prd : m_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? sb_preg : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? fb_preg : m_prd;
    always @(posedge clk) if (!reset) begin
@@ -1225,6 +1275,8 @@ module ooo2_core
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
       if (m_wb_fe & fp_wb)
          $fatal(1, "ooo2_core: FE shard written by both M and a landing FP result");
+      if (m_wb_ie & alu_wb)
+         $fatal(1, "ooo2_core: IE shard written by both M and an issuing ALU op");
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
@@ -1289,6 +1341,11 @@ module ooo2_core
          cs_mkind[fb_rob] <= 2'd0;      // an FP op has no memory effect
          cs_mpa[fb_rob]   <= 56'd0;
       end
+      if (iss_alu) begin                // completed at issue, never saw M
+         cs_val[rs_iss_rob]   <= x_result;
+         cs_mkind[rs_iss_rob] <= 2'd0;
+         cs_mpa[rs_iss_rob]   <= 56'd0;
+      end
    end
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
    // be captured in the very cycle it commits, so the array read returns pre-edge contents.
@@ -1297,13 +1354,17 @@ module ooo2_core
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (fb_rob == rob_head_idx);
+   wire        cs_hit_alu = iss_alu & (rs_iss_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
+                          : cs_hit_alu ? x_result
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_ld ? lsu_cos_kind
+                          : cs_hit_alu ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
    wire [55:0] cs_mpa_h   = cs_hit_ld ? lsu_cos_pa
+                          : cs_hit_alu ? 56'd0
                           : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
 `else
@@ -1534,7 +1595,7 @@ module ooo2_core
          else if (mul_start | div_start) md_started <= 1'b1;
 
          if (m_advance) begin
-            m_valid       <= rs_iss_take;
+            m_valid       <= iss_m;
             m_pc          <= q_pc;
             m_insn        <= q_insn;
             m_rvc         <= q_rvc;
