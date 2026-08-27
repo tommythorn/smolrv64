@@ -621,3 +621,35 @@ pinned by the MIG's `ui_clk`.
 - **No memory disambiguation** — a younger memory op simply waits for `S_IDLE`.
 - Workload sensitivity is large and measured: GB5 is FPU- and serialisation-bound,
   `sha256sum` is frontend-bound. Do not generalise a CPI stack from one workload.
+
+### Measured: GB5 AES-XTS, dynamic issue vs in-order issue
+
+Both captures killed at the same workload boundary (GB5 has no workload selection, so
+AES-XTS is isolated by terminating at the start of Text Compression), on an idle board at
+166.67 MHz. D$ accesses per instruction agree to 3.8% between the two, so the code mix is
+the same and the 3.6% instruction-count drift from the kill point is not carrying the
+result. Wall clock and CPI agree to 4%.
+
+| | in-order issue | dynamic issue | |
+|---|---:|---:|---:|
+| IPC | 0.4327 | **0.5182** | **+19.8%** |
+| CPI | 2.311 | 1.930 | -16.5% |
+| wall clock | 1292.7 s | 1034.8 s | -20.0% |
+| `ST_MEM` cyc/insn | 1.176 | 1.008 | -14.2% |
+| `ST_MEM` cyc/D$ access | 3.465 | 3.090 | -10.8% |
+| `ST_SER` % of cycles | 0.16 | **8.67** | 44x |
+| `FE_BUB` % of cycles | 4.02 | **17.31** | 3.5x |
+| redirects / 1k insn | 9.70 | 6.14 | -37% |
+| **`FE_BUB` cycles / redirect** | **9.6** | **54.4** | **+468%** |
+
+**The last row is `head_block` priced in cycles, and it is now the largest single target.**
+A branch resolves in M and then waits there until it is the ROB head before the frontend is
+redirected (§12 of `Area-Efficient-Scalar-OoO.md`). The window grew from ~2 instructions to
+16, so the wait grew with it: we mispredict **37% less often** and pay **5.7x more per
+mispredict**. `ST_SER` has the same cause -- a serializing op now drains a 16-entry ROB
+instead of a two-instruction shadow.
+
+Recoverable: 423M redirects x ~45 cycles ~= **19G cycles, ~14% of runtime**. The fix splits
+in two: redirect the FRONTEND at execute (the 14%), and apply the architectural flush at
+retire from the redirect register (the correctness half, which deletes `head_block` and is
+the precondition for more than one scheduler -- see `Area-Efficient-Scalar-OoO.md` 12.2).
