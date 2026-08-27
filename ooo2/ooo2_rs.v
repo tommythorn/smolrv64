@@ -33,7 +33,12 @@ module ooo2_rs
     // AT SELECT rather than at writeback, which is what keeps dependents back to back once
     // select has its own stage: producer selected at N executes at N+1, consumer woken at N
     // is selected at N+1 and executes at N+2 -- consecutive execute cycles.
-    parameter FIXEDL = 0)
+    parameter FIXEDL = 0,
+    // 1 for a class that must keep PROGRAM ORDER among its own entries -- memory, until
+    // there is disambiguation. Allocation becomes circular and only the head may issue, so
+    // "oldest" is a pointer compare and not an age comparison. This is the whole reason no
+    // scheduler needs age: the one ordering constraint that survives belongs to one class.
+    parameter INORDER = 0)
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -86,15 +91,21 @@ module ooo2_rs
       end
    end
 
-   // ---- free slot: lowest index, excluding the one held downstream ----
+   // ---- slot allocation ----
+   // Out of order: lowest free index. In order: a circular tail, so entry order IS program
+   // order and the head is the oldest by construction.
    wire [NENT-1:0] held  = hold_v ? ({{(NENT-1){1'b0}}, 1'b1} << hold_ent) : {NENT{1'b0}};
    wire [NENT-1:0] freem = ~v & ~held;
-   assign d_ready = |freem;
-   reg [IDXB-1:0] fsel;
+   reg  [IDXB-1:0] qhead, qtail;
+   initial begin qhead = {IDXB{1'b0}}; qtail = {IDXB{1'b0}}; end
+
+   reg [IDXB-1:0] lowfree;
    always @* begin
-      fsel = {IDXB{1'b0}};
-      for (k = NENT-1; k >= 0; k = k - 1) if (freem[k]) fsel = k[IDXB-1:0];
+      lowfree = {IDXB{1'b0}};
+      for (k = NENT-1; k >= 0; k = k - 1) if (freem[k]) lowfree = k[IDXB-1:0];
    end
+   wire [IDXB-1:0] fsel    = (INORDER != 0) ? qtail : lowfree;
+   assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail]) : |freem;
 
    // ---- wakeup: NSRC * NWB comparators per entry. Linear in N. ----
    function automatic hit;
@@ -118,7 +129,9 @@ module ooo2_rs
          for (gs = 0; gs < NSRC; gs = gs + 1) begin : g_src
             assign srdy[g*NSRC + gs] = e_r[g][gs] | hit(e_ps[g][gs*PBITS +: PBITS]);
          end
-         assign rdy[g] = v[g] & (&srdy[g*NSRC +: NSRC]) & ~unit_busy;
+         // In order: only the head is a candidate. No age compare, just a pointer match.
+         assign rdy[g] = v[g] & (&srdy[g*NSRC +: NSRC]) & ~unit_busy
+                       & ((INORDER == 0) | (g[IDXB-1:0] == qhead));
       end
    endgenerate
 
@@ -175,14 +188,19 @@ module ooo2_rs
    always @(posedge clk) begin
       if (reset | flush) begin
          v <= {NENT{1'b0}};
+         qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
       end else begin
          for (k = 0; k < NENT; k = k + 1) if (v[k])
             for (q = 0; q < NSRC; q = q + 1)
                if (hit(e_ps[k][q*PBITS +: PBITS])
                    || (self_v && (self_pr == e_ps[k][q*PBITS +: PBITS])))
                   e_r[k][q] <= 1'b1;
-         if (do_iss) v[sel] <= 1'b0;
+         if (do_iss) begin
+            v[sel] <= 1'b0;
+            if (INORDER != 0) qhead <= (qhead == (NENT-1)) ? {IDXB{1'b0}} : qhead + 1'b1;
+         end
          if (do_disp) begin
+            if (INORDER != 0) qtail <= (qtail == (NENT-1)) ? {IDXB{1'b0}} : qtail + 1'b1;
             v[fsel]     <= 1'b1;
             e_rob[fsel] <= d_rob;
             e_ps[fsel]  <= d_ps;
@@ -208,6 +226,8 @@ module ooo2_rs
          $fatal(1, "ooo2_rs: issued entry %0d holds nothing", sel);
       if (do_iss & unit_busy)
          $fatal(1, "ooo2_rs: issued to a busy unit");
+      if ((INORDER != 0) & do_iss & (sel != qhead))
+         $fatal(1, "ooo2_rs: in-order scheduler issued %0d, not the head %0d", sel, qhead);
    end
 endmodule
 

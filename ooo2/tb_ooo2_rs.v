@@ -37,6 +37,25 @@ module tb;
       .hold_v(hold_v),.hold_ent(hold_ent),
       .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.occupancy(occupancy));
 
+   // Second instance in INORDER mode -- the load scheduler's configuration.
+   reg io_d_valid=0, io_take=0, io_hold=0;
+   reg [ROBB-1:0] io_rob=0; reg [NSRC*PBITS-1:0] io_ps=0; reg [NSRC-1:0] io_r=2'b11;
+   reg [NWB-1:0] io_wb_v=0; reg [NWB*PBITS-1:0] io_wb_preg=0;
+   wire io_iss_v, io_d_ready, io_blk_v;
+   wire [ROBB-1:0] io_iss_rob;
+   wire [IDXB-1:0] io_d_ent, io_iss_ent; wire [NSRC*PBITS-1:0] io_iss_ps;
+   wire [PBITS-1:0] io_blk_pr; wire [IDXB:0] io_occ;
+   ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
+             .FIXEDL(0),.INORDER(1)) dut_io
+     (.clk(clk),.reset(reset),
+      .d_valid(io_d_valid),.d_ready(io_d_ready),.d_rob(io_rob),.d_ps(io_ps),.d_r(io_r),
+      .d_prd({PBITS{1'b0}}),.d_ent(io_d_ent),
+      .wb_v(io_wb_v),.wb_preg(io_wb_preg),
+      .unit_busy(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
+      .iss_ps(io_iss_ps),.iss_take(io_take),
+      .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),
+      .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.occupancy(io_occ));
+
    task disp(input [ROBB-1:0] rob, input [PBITS-1:0] p0, input r0, input [PBITS-1:0] prd);
       begin
          @(negedge clk);
@@ -124,6 +143,36 @@ module tb;
          if (seen[3:0]!==4'b1111) begin
             $display("FAIL all-issue: seen=%b", seen[3:0]); errs=errs+1;
          end else $display("  ok  every entry issues exactly once (order unconstrained)");
+      end
+
+      // 7. INORDER: the head-pointer mode the load scheduler uses for memory ordering.
+      // A younger READY entry must NOT pass an older unready one -- that is the whole
+      // property, and it must hold without any age comparison.
+      begin : inorder_test
+         io_hold = 1'b0;
+         @(negedge clk);
+         io_d_valid=1; io_rob=4'd5; io_ps={9'd0,9'd50}; io_r=2'b10; // head, waits on p50
+         @(posedge clk); @(negedge clk);
+         io_rob=4'd6; io_ps={9'd0,9'd0};  io_r=2'b11;               // younger, ready now
+         @(posedge clk); @(negedge clk); io_d_valid=0;
+         @(negedge clk);
+         if (io_iss_v !== 1'b0) begin
+            $display("FAIL inorder: younger ready entry passed the head (rob=%0d)", io_iss_rob);
+            errs=errs+1;
+         end else $display("  ok  inorder: younger ready does NOT pass an unready head");
+         @(negedge clk); io_wb_v=3'b001; io_wb_preg[PBITS-1:0]=9'd50;
+         @(posedge clk); @(negedge clk); io_wb_v=0;
+         @(negedge clk);
+         if (io_iss_v !== 1'b1 || io_iss_rob !== 4'd5) begin
+            $display("FAIL inorder: head did not issue first (v=%b rob=%0d)", io_iss_v, io_iss_rob);
+            errs=errs+1;
+         end else $display("  ok  inorder: head issues first once ready");
+         @(negedge clk); io_take=1; @(posedge clk); @(negedge clk); io_take=0;
+         @(negedge clk);
+         if (io_iss_v !== 1'b1 || io_iss_rob !== 4'd6) begin
+            $display("FAIL inorder: second did not follow (v=%b rob=%0d)", io_iss_v, io_iss_rob);
+            errs=errs+1;
+         end else $display("  ok  inorder: then the next in program order");
       end
 
       $display("---- RS-TB %s (errs=%0d)", errs==0 ? "PASS":"FAIL", errs);
