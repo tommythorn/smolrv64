@@ -676,7 +676,29 @@ redirected (§12 of `Area-Efficient-Scalar-OoO.md`). The window grew from ~2 ins
 mispredict**. `ST_SER` has the same cause -- a serializing op now drains a 16-entry ROB
 instead of a two-instruction shadow.
 
-Recoverable: 423M redirects x ~45 cycles ~= **19G cycles, ~14% of runtime**. The fix splits
-in two: redirect the FRONTEND at execute (the 14%), and apply the architectural flush at
-retire from the redirect register (the correctness half, which deletes `head_block` and is
-the precondition for more than one scheduler -- see `Area-Efficient-Scalar-OoO.md` 12.2).
+**That 54.4 is not 45 cycles of waste, and an early estimate here that said so was wrong.**
+It decomposes into two parts with very different prospects:
+
+- **fetch latency** -- refilling I$, iMMU and the predictor after the flush. Genuinely
+  recoverable, and recovered by the early frontend restart below.
+- **drain** -- older instructions completing so the branch can reach the head. This is real
+  work, not waste: a missing load ahead of the branch has to finish either way.
+
+Removing the drain means squashing at EXECUTE, which needs the rename map rolled back to an
+arbitrary branch. Rollback here is `h := hc` to the last COMMIT point with no snapshot
+(`ooo2_rename`), which is exactly why waiting for the head exists. Per-branch snapshots or
+a ROB walk would buy it; neither is built.
+
+**Early frontend restart (implemented).** On a mispredict the frontend does not wait to
+become head: note the event, flush, freeze the renamer, and refetch the resolved target
+while the ROB drains behind it. At the squash the renamer is released onto a correct path
+already sitting in the F/X queue, and the frontend is deliberately NOT flushed a second
+time. Only mispredicts qualify -- `m_target` is resolved in execute, whereas a trap's
+target leaves `csr_file` only once the op is at head, so traps keep the late path.
+
+The renamer must freeze for the whole window rather than run ahead: with `h := hc` and no
+snapshot, anything renamed before the squash is *undone* by it, so running ahead would lose
+those instructions rather than merely waste them.
+
+Measured: Linux-boot cosim retires 66,724,877 -> **67,271,018** at a fixed 300M cycles,
++0.82%, no divergence. Bounded by the fetch half above; the drain is untouched.

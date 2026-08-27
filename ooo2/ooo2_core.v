@@ -140,6 +140,9 @@ module ooo2_core
    wire [PCW-1:0]           res_tgt;
    wire                     redirect_is_trap;
    wire [SEQW-1:0]          redirect_seq;
+   wire                     fe_red_pulse, fr_set, fr_active;
+   wire [PCW-1:0]           fe_red_tgt;
+   wire [SEQW-1:0]          fe_red_seq;
 
    // ---- FMAX: the predictor's training bundle lands one cycle later --------------
    // res_v is gated by m_done, which depends on lsu_done -- so the D$/dTLB hit path
@@ -179,10 +182,23 @@ module ooo2_core
       redirect_seq_q     <= redirect_seq;
    end
 
+   // The FRONTEND is driven by fe_red_* below, NOT by the squash. The two came apart when
+   // the mispredict restart moved to execute; see the EARLY FRONTEND RESTART block.
+   reg                      fe_red_q;
+   reg [PCW-1:0]            fe_red_tgt_q;
+   reg [SEQW-1:0]           fe_red_seq_q;
+   initial fe_red_q = 1'b0;
+   always @(posedge clk) begin
+      if (reset) fe_red_q <= 1'b0;
+      else       fe_red_q <= fe_red_pulse;
+      fe_red_tgt_q <= fe_red_tgt;
+      fe_red_seq_q <= fe_red_seq;
+   end
+
    ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
-      .redirect(redirect_q), .redirect_pc(redirect_target_q), .redirect_seq(redirect_seq_q),
+      .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail_g),
@@ -259,7 +275,7 @@ module ooo2_core
    assign imem_vaddr    = imem_va;
    assign imem_xlate_ok = immu_ready & ~immu_fault;
    assign imem_ctx_chg  = mmu_flush | (ipriv_q != mmu_priv) | (isatp_q != satp_fetch);
-   assign fe_redirect   = redirect;
+   assign fe_redirect   = fe_red_pulse;
    assign imem_satp_q   = isatp_q;
    assign imem_priv_q   = ipriv_q;
 
@@ -1270,6 +1286,7 @@ module ooo2_core
    // and the effects that must be head-gated (upd_valid, xtrap_v) are csr_file INPUTS -- so
    // gating them through csr_red would close a combinational loop. Every term here is either
    // registered or decoded from m_insn.
+   reg  fr_v;   initial fr_v = 1'b0;
    wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
                      | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
    wire head_block   = m_valid & m_needs_head & ~m_at_head;
@@ -1283,6 +1300,43 @@ module ooo2_core
    wire m_trap = xtrap_v | (m_is_sys & csr_redir_trap);
    wire csr_red = xtrap_v | (m_is_sys & csr_redir_v);
    assign redirect         = m_valid & m_done & (csr_red | m_redirect | m_is_fencei);
+
+   // ---- EARLY FRONTEND RESTART -------------------------------------------------------
+   // On a mispredict, do NOT wait to become ROB head before refetching. Note the event,
+   // flush the frontend, freeze the renamer, and start fetching the resolved target now;
+   // the ROB drains behind us. When the branch reaches the head the squash runs and the
+   // renamer is released -- onto a correct path that is already in the F/X queue.
+   //
+   // Only a MISPREDICT can do this: its target (m_target) is resolved in execute. A trap's
+   // target comes out of csr_file only once the op is at head, so traps keep the late path.
+   //
+   // The renamer MUST freeze for the whole window. Rollback here is `h := hc` with no
+   // snapshot (ooo2_rename), so anything renamed before the squash is undone by it --
+   // renaming ahead would not merely waste work, it would lose the instructions. Frozen,
+   // the correct path accumulates in the F/X queue, which the squash does not touch.
+   //
+   // fr_v is the "frozen by an older redirect" interlock: a younger mispredict that
+   // executes while one is pending is wrong-path by construction and must not retarget
+   // the frontend. Oldest wins, and here the oldest is simply the one that got there
+   // first -- M holds a single instruction until it is head, so no younger event can
+   // reach M ahead of it. When units issue independently this needs the explicit age
+   // compare of doc 12.
+   //
+   // Measured motivation: FE_BUB per redirect went 9.6 -> 54.4 cycles when the window
+   // grew from ~2 instructions to 16, while mispredicts fell 37% (docs/OOO2-Spec.md).
+   assign fr_set    = m_valid & m_redirect & ~m_trap & ~fr_v & ~redirect;
+   assign fr_active = fr_set | fr_v;
+   always @(posedge clk) begin
+      if (reset)         fr_v <= 1'b0;
+      else if (redirect) fr_v <= 1'b0;      // the squash consumes it
+      else if (fr_set)   fr_v <= 1'b1;
+   end
+
+   // Exactly one frontend flush per event. Re-flushing at the squash would discard the
+   // correct path this whole mechanism exists to have fetched early.
+   assign fe_red_pulse = fr_set | (redirect & ~fr_v);
+   assign fe_red_tgt   = fr_set ? m_target        : redirect_target;
+   assign fe_red_seq   = fr_set ? (m_seq + 1'b1)  : redirect_seq;
    assign redirect_target  = csr_red     ? csr_redir_tgt
                            : m_is_fencei ? (m_pc + (m_rvc ? 64'd2 : 64'd4))
                            :               m_target;
@@ -1535,12 +1589,12 @@ module ooo2_core
          // Present it until fetch actually TAKES it, then latch the interlock on that
          // same event. Scheduling and holding are separated so one interrupt can never be
          // presented twice while the interlock is still catching up.
-         irq_inject_q <= ~redirect & ~redirect_q &
+         irq_inject_q <= ~redirect & ~redirect_q & ~fr_active &
                          (irq_inject_q ? ~irq_taken                     // hold until taken
                                        : csr_irq_v & ~inject_inflight); // schedule
 
          if (irq_taken)                               inject_inflight <= 1'b1;
-         else if (redirect | redirect_q | ~csr_irq_v) inject_inflight <= 1'b0;
+         else if (redirect | redirect_q | fr_active | ~csr_irq_v) inject_inflight <= 1'b0;
       end
    end
 
@@ -1698,7 +1752,7 @@ module ooo2_core
    // moves into the scheduler, which is the entire point. What still blocks dispatch is
    // structural only: no ROB slot, no scheduler entry, or a rename shard run dry.
    wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block);
-   wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q;
+   wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q & ~fr_active;
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
    // cycle. It used to double as "the backend is ready", which was the same thing only
