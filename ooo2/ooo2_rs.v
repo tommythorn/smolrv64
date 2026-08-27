@@ -1,135 +1,92 @@
 `default_nettype none
 
-// The scheduler. docs/Area-Efficient-Scalar-OoO.md 5 ("Scheduler -- RS_SIZE entries") and
-// 8.3 ("Issue and execute"): entries hold a readiness bit per source, writeback wakes them,
-// and issue selects the OLDEST READY entry -- not the oldest entry.
+// One scheduler for one class of unit. docs/Area-Efficient-Scalar-OoO.md 5 and 8.3, reduced
+// to what is actually load-bearing: N pairs of (physical register, ready), a wakeup that
+// compares each source against the writeback ports, and a pick among the ready ones.
 //
-// This is the piece whose absence made everything else cosmetic. A ROB and a physical
-// register file give in-order commit and precise state; they do not let an instruction
-// start before an older one. Until this module exists, an `add` waiting on a load holds the
-// single decode slot and every younger instruction queues behind it in program order, so a
-// non-blocking unit only ever buys the instructions BETWEEN a producer and its first
-// consumer. Measured: saxpy, whose FP work is independent across iterations, got 1.24x.
+// NOTHING HERE SCALES WITH N^2, AND NOTHING COMPARES AGE. An earlier version did both and
+// both were mistakes. Age-ordered select was written as "is this older than the best so
+// far", which synthesises to a CHAIN of N comparators -- depth linear in the window, and it
+// was the critical path at 8.3ns. An is-oldest MATRIX then replaced it to enforce "ordered
+// ops issue only when oldest", which fixed the depth and cost N^2 comparators instead.
 //
-// WHERE THE EXECUTE PAYLOAD LIVES. Not here as flops, and NOT in a rob_idx-indexed array
-// either. It goes in a LUTRAM indexed by THIS MODULE'S ENTRY NUMBER -- written with fsel at
-// dispatch, read with sel at select.
+// Neither is needed. Which ready entry goes first does not matter; what matters is how much
+// independent work the window HOLDS. And the ordering that genuinely must be preserved --
+// memory ops against each other, until there is disambiguation -- is a property of ONE
+// class, so it belongs to that class's scheduler as a head pointer (O(1)), not to every
+// scheduler as an age comparison.
 //
-// Indexing it by rob_idx was the wrong instinct and would have cost twice over. The ROB is
-// the LARGE structure (sized by the window) and the scheduler the small one (sized by
-// dependency depth), so a payload array indexed by rob_idx is ROB_SIZE deep where NENT
-// would do. Worse, it would put a READ PORT AT ISSUE on a ROB-sized array, and doc 5 is
-// explicit that this is what the split exists to avoid: "The ROB is written at dispatch and
-// writeback, and read only at commit. No ROB field is read at issue; that is why the
-// execute-time fields -- opcode, immediate, sources -- live in the scheduler instead."
-//
-// What the doc keeps in scheduler REGISTERS (opcode, immediate) goes to that LUTRAM instead
-// only because RV64GC's execute bundle is ~40 fields against its example ISA's five; the
-// structure is the scheduler's either way. Operand VALUES are never stored anywhere -- the
-// PRF is read at ISSUE, which is the "values live in one place" property the design rests
-// on, and which the current core violates by reading operands in X and carrying them to M.
+// Split by class, each instance is small and their select trees are independent:
+//   integer  ~12 entries, 2 sources
+//   loads     ~8 entries, 2 sources (address, and store data)
+//   FP        ~4 entries, 3 sources (FMA is the only thing that needs a third)
+// which is also one scheduler per PRF shard -- the condition doc 7 names for the writeback
+// arbiter to disappear.
 module ooo2_rs
-  #(parameter NENT   = 8,
-    parameter IDXB   = 3,             // $clog2(NENT)
-    parameter ROBB   = 4,             // ROB index bits
-    parameter PBITS  = 9,             // physical register number bits
-    parameter NUNIT  = 4,             // functional units, one-hot
-    parameter NWB    = 3,             // fast writeback tags (one per PRF shard)
-    parameter NSW    = 1)             // slow (next-cycle) wakeup tags
+  #(parameter NENT   = 12,
+    parameter IDXB   = 4,             // $clog2(NENT)
+    parameter NSRC   = 2,             // 3 only for the FP scheduler (FMA)
+    parameter ROBB   = 4,
+    parameter PBITS  = 9,
+    parameter NWB    = 3,             // writeback ports watched, one per PRF shard
+    // 1 when this scheduler's unit has FIXED one-cycle latency. Its entries are then woken
+    // AT SELECT rather than at writeback, which is what keeps dependents back to back once
+    // select has its own stage: producer selected at N executes at N+1, consumer woken at N
+    // is selected at N+1 and executes at N+2 -- consecutive execute cycles.
+    parameter FIXEDL = 0)
    (input  wire                  clk,
     input  wire                  reset,
 
-    // ---- dispatch: one per cycle, in program order ----
+    // ---- dispatch ----
     input  wire                  d_valid,
-    output wire                  d_ready,        // a free entry exists
+    output wire                  d_ready,
     input  wire [ROBB-1:0]       d_rob,
-    input  wire [PBITS-1:0]      d_ps1, d_ps2, d_ps3,
-    input  wire                  d_r1, d_r2, d_r3,   // source already available
-    input  wire [NUNIT-1:0]      d_unit,             // one-hot
-    // This entry may issue only when it is the OLDEST live entry. Set for everything that
-    // can trap, redirect, touch memory or occupy a unit for more than a cycle -- i.e. for
-    // everything whose reordering would need deferred traps, zombie units or memory
-    // disambiguation. What is left free to reorder is the pure ALU op, which is also what
-    // is queued up behind a stalled consumer.
-    input  wire                  d_ord,
-    // The destination, so a fixed-latency entry can be woken WHEN IT IS SELECTED rather
-    // than when it writes back. That is what keeps dependent instructions back to back
-    // once select has its own stage: the producer executes the cycle after it is selected,
-    // the consumer is selected in that same cycle and executes the cycle after -- two
-    // consecutive execute cycles, no bubble.
-    input  wire [PBITS-1:0]      d_prd,
-    output wire [IDXB-1:0]       d_ent,              // entry taken; index the payload with it
+    input  wire [NSRC*PBITS-1:0] d_ps,
+    input  wire [NSRC-1:0]       d_r,        // source already available
+    input  wire [PBITS-1:0]      d_prd,      // destination, for wake-at-select
+    output wire [IDXB-1:0]       d_ent,      // slot taken; index the payload with it
 
-    // ---- wakeup, in two classes ----
-    // FAST: writebacks whose value can be forwarded to an operand read in the SAME cycle,
-    // so an entry they wake may issue immediately. These must not depend on which entry is
-    // selected, or readiness and selection close a loop.
+    // ---- wakeup ----
     input  wire [NWB-1:0]        wb_v,
     input  wire [NWB*PBITS-1:0]  wb_preg,
-    // SLOW: writebacks that only mark a register available for LATER cycles. The ALU op
-    // completing at issue is one: its result is written at the end of this cycle, so a
-    // dependent cannot read it before the next one -- waking it "late" costs nothing and
-    // is what keeps selection out of its own readiness function.
-    input  wire [NSW-1:0]        sw_v,
-    input  wire [NSW*PBITS-1:0]  sw_preg,
 
-    // The entry the consumer is still holding downstream. Its slot must NOT be handed to a
-    // new dispatch: the payload lives in an array indexed by entry number and is read a
-    // cycle AFTER selection, so reallocating the slot overwrites the payload of an
-    // instruction that has not executed yet. It is only observable when the issue stage
-    // stalls, which is exactly why it survived the first two test runs.
+    // ---- issue ----
+    input  wire                  unit_busy,  // one unit per scheduler, so one bit
+    output wire                  iss_v,
+    output wire [IDXB-1:0]       iss_ent,
+    output wire [ROBB-1:0]       iss_rob,
+    output wire [NSRC*PBITS-1:0] iss_ps,
+    input  wire                  iss_take,
+
+    // The entry still held downstream. Its slot must not be reallocated: the payload array
+    // is indexed by entry number and read a cycle AFTER selection, so handing the slot to a
+    // new dispatch overwrites the payload of an instruction that has not executed yet.
     input  wire                  hold_v,
     input  wire [IDXB-1:0]       hold_ent,
 
-    // ---- issue: oldest ready entry whose unit is free ----
-    input  wire [NUNIT-1:0]      unit_busy,
-    input  wire [ROBB-1:0]       head,           // ROB head, for age
-    // Bring-up gate. With in_order set, an entry is issuable only when it is the OLDEST
-    // LIVE entry -- the scheduler fills and drains but never reorders, so nothing younger
-    // than a redirecting instruction is ever in flight and a flush is still just "clear
-    // everything". That is what makes the switchover gateable in two steps instead of one:
-    // this lands the payload, the issue-time PRF read and unit routing with the execution
-    // ORDER unchanged, and clearing it is then the only change that needs deferred traps,
-    // zombie units and load/store ordering.
-    input  wire                  in_order,
-    output wire                  iss_v,
-    output wire [IDXB-1:0]       iss_ent,            // ...and read the payload back with this
-    output wire [ROBB-1:0]       iss_rob,
-    output wire [PBITS-1:0]      iss_ps1, iss_ps2, iss_ps3,   // PRF read addresses at issue
-    output wire [NUNIT-1:0]      iss_unit,
-    input  wire                  iss_take,       // consumer accepted it this cycle
-
-    // Why the oldest entry cannot issue, when it cannot. The physical register number
-    // carries its shard in the top bits, so the core can charge the stall to the unit that
-    // owns the result being waited for -- which is what keeps the CPI stack meaningful once
-    // the wait moves out of X and into here.
+    // Why the pick found nothing, for the stall counters. Never feeds selection.
     output wire                  blk_v,
     output wire [PBITS-1:0]      blk_pr,
 
-    // ---- recovery: total, at the head of the window ----
     input  wire                  flush,
-    output wire [IDXB:0]         occupancy);     // for the stall counters
+    output wire [IDXB:0]         occupancy);
 
-   reg [NENT-1:0]  v;
-   reg [ROBB-1:0]  e_rob  [0:NENT-1];
-   reg [PBITS-1:0] e_ps1  [0:NENT-1], e_ps2 [0:NENT-1], e_ps3 [0:NENT-1];
-   reg [NENT-1:0]  e_r1, e_r2, e_r3;
-   reg [NUNIT-1:0] e_unit [0:NENT-1];
-   reg [NENT-1:0]  e_ord;
-   reg [PBITS-1:0] e_prd  [0:NENT-1];
+   reg [NENT-1:0]        v;
+   reg [ROBB-1:0]        e_rob [0:NENT-1];
+   reg [NSRC*PBITS-1:0]  e_ps  [0:NENT-1];
+   reg [NSRC-1:0]        e_r   [0:NENT-1];
+   reg [PBITS-1:0]       e_prd [0:NENT-1];
 
-   integer k;
+   integer k, q;
    initial begin
-      v = {NENT{1'b0}}; e_r1 = {NENT{1'b0}}; e_r2 = {NENT{1'b0}}; e_r3 = {NENT{1'b0}};
-      e_ord = {NENT{1'b0}};
+      v = {NENT{1'b0}};
       for (k = 0; k < NENT; k = k + 1) begin
-         e_rob[k] = {ROBB{1'b0}}; e_ps1[k] = {PBITS{1'b0}};
-         e_ps2[k] = {PBITS{1'b0}}; e_ps3[k] = {PBITS{1'b0}};
-         e_unit[k] = {NUNIT{1'b0}};
+         e_rob[k] = {ROBB{1'b0}}; e_ps[k] = {(NSRC*PBITS){1'b0}};
+         e_r[k]   = {NSRC{1'b0}}; e_prd[k] = {PBITS{1'b0}};
       end
    end
 
-   // ---- free-slot select: lowest free index (fixed priority, doc 8.4) --------------
+   // ---- free slot: lowest index, excluding the one held downstream ----
    wire [NENT-1:0] held  = hold_v ? ({{(NENT-1){1'b0}}, 1'b1} << hold_ent) : {NENT{1'b0}};
    wire [NENT-1:0] freem = ~v & ~held;
    assign d_ready = |freem;
@@ -139,9 +96,7 @@ module ooo2_rs
       for (k = NENT-1; k >= 0; k = k - 1) if (freem[k]) fsel = k[IDXB-1:0];
    end
 
-   // ---- wakeup ----------------------------------------------------------------------
-   // A source is woken by ANY of the writeback ports. Sources are compared as physical
-   // register numbers, which is the whole reason rename exists underneath this.
+   // ---- wakeup: NSRC * NWB comparators per entry. Linear in N. ----
    function automatic hit;
       input [PBITS-1:0] p;
       integer w;
@@ -152,87 +107,25 @@ module ooo2_rs
       end
    endfunction
 
-   // Wake-at-select, for entries whose latency is FIXED and one cycle (the un-ordered
-   // class). Broadcast internally, on the SLOW path -- it only ever sets registered ready
-   // bits, so selection never feeds back into readiness and no loop is created.
-   //
-   // Correct because the timing lines up exactly: the producer selected this cycle executes
-   // next cycle and writes the register file at the end of it, while a consumer woken now is
-   // selected next cycle and reads the register file the cycle after. The value is always
-   // there, which is also why no operand forwarding is needed anywhere.
-   wire            self_wk_v  = do_iss & ~e_ord[sel];
-   wire [PBITS-1:0] self_wk_pr = e_prd[sel];
-
-   function automatic shit;           // slow-wakeup match, registered update only
-      input [PBITS-1:0] p;
-      integer w;
-      begin
-         shit = (self_wk_v && (self_wk_pr == p));
-         for (w = 0; w < NSW; w = w + 1)
-            if (sw_v[w] && (sw_preg[w*PBITS +: PBITS] == p)) shit = 1'b1;
-      end
-   endfunction
-
-   // ---- ready and oldest-ready select (doc 8.3) --------------------------------------
-   // ready includes the unit check, so a busy unit does not block a DIFFERENT unit's
-   // entry -- that is the entire point of the structure.
-   // IS-OLDEST, as a MATRIX rather than a minimum-reduction. The reduction was written as a
-   // sequential loop -- "if this one is older than the best so far" -- which synthesises to a
-   // CHAIN of NENT comparators, depth NENT. That is what made the scheduler the critical
-   // path, and why halving NENT bought 1.9ns: the cost was linear in the window.
-   //
-   // Each entry instead asks "does any live entry have a smaller age than mine?", which is
-   // NENT^2 comparators but only TWO levels -- compare, then OR-reduce. Depth is now
-   // independent of the window, so the window is free to grow.
-   wire [NENT-1:0] is_oldest;
-   genvar gi, gj;
-   generate
-      for (gi = 0; gi < NENT; gi = gi + 1) begin : g_old
-         wire [NENT-1:0] older;
-         for (gj = 0; gj < NENT; gj = gj + 1) begin : g_older
-            assign older[gj] = (gi == gj) ? 1'b0
-                             : v[gj] & ((e_rob[gj] - head) < (e_rob[gi] - head));
-         end
-         assign is_oldest[gi] = v[gi] & ~|older;
-      end
-   endgenerate
-   wire old_v = |v;
-
-   // Stall attribution reads the oldest entry; it feeds counters only, never selection.
-   reg [IDXB-1:0] old_ent;
-   always @* begin
-      old_ent = {IDXB{1'b0}};
-      for (k = NENT-1; k >= 0; k = k - 1) if (is_oldest[k]) old_ent = k[IDXB-1:0];
-   end
-   wire o_r1 = e_r1[old_ent] | hit(e_ps1[old_ent]);
-   wire o_r2 = e_r2[old_ent] | hit(e_ps2[old_ent]);
-   wire o_r3 = e_r3[old_ent] | hit(e_ps3[old_ent]);
-   assign blk_v  = old_v & ~(o_r1 & o_r2 & o_r3);
-   assign blk_pr = ~o_r1 ? e_ps1[old_ent] : ~o_r2 ? e_ps2[old_ent] : e_ps3[old_ent];
-
-   wire [NENT-1:0] rdy;
-   genvar g;
+   // ---- ready, and the pick ----
+   // Flat, not inside the generate block: a procedural loop cannot index a generate
+   // instance with a runtime variable, and the stall attribution below needs exactly that.
+   wire [NENT*NSRC-1:0] srdy;
+   wire [NENT-1:0]      rdy;
+   genvar g, gs;
    generate
       for (g = 0; g < NENT; g = g + 1) begin : g_rdy
-         assign rdy[g] = v[g] & (e_r1[g] | hit(e_ps1[g]))
-                              & (e_r2[g] | hit(e_ps2[g]))
-                              & (e_r3[g] | hit(e_ps3[g]))
-                              & ~|(e_unit[g] & unit_busy)
-                              & (~(in_order | e_ord[g]) | is_oldest[g]);
+         for (gs = 0; gs < NSRC; gs = gs + 1) begin : g_src
+            assign srdy[g*NSRC + gs] = e_r[g][gs] | hit(e_ps[g][gs*PBITS +: PBITS]);
+         end
+         assign rdy[g] = v[g] & (&srdy[g*NSRC +: NSRC]) & ~unit_busy;
       end
    endgenerate
 
-   // SELECT BY FIXED PRIORITY, not by age. Age-ordered selection costs a comparator chain
-   // in the readiness-to-issue path and buys very little: what matters for covering a stall
-   // is how many independent instructions the window HOLDS, not which of the ready ones goes
-   // first. Trading the chain for a priority encoder makes select depth independent of NENT,
-   // which is what lets the window grow -- and window size is the thing that actually
-   // determines whether a load's latency can be hidden.
-   //
-   // STARVATION IS BOUNDED BY THE ROB, not by this policy. If a low-priority entry never
-   // wins, its ROB slot never completes; commit is in order, so the ROB fills, dispatch
-   // stops, every other entry drains, and it becomes the only candidate. The in-order commit
-   // point is the backstop that makes a cheap policy safe here.
+   // FIXED PRIORITY. Deterministic, and starvation is bounded by the ROB rather than by the
+   // policy: if a low-priority entry never wins, its ROB slot never completes, commit is in
+   // order, the ROB fills, dispatch stops, every other entry drains, and it is all that is
+   // left. The in-order commit point is what makes a cheap pick safe.
    reg              sel_v;
    reg [IDXB-1:0]   sel;
    always @* begin
@@ -241,14 +134,11 @@ module ooo2_rs
       for (k = NENT-1; k >= 0; k = k - 1) if (rdy[k]) sel = k[IDXB-1:0];
    end
 
-   assign d_ent    = fsel;
-   assign iss_ent  = sel;
-   assign iss_v    = sel_v;
-   assign iss_rob  = e_rob[sel];
-   assign iss_unit = e_unit[sel];
-   assign iss_ps1  = e_ps1[sel];
-   assign iss_ps2  = e_ps2[sel];
-   assign iss_ps3  = e_ps3[sel];
+   assign d_ent   = fsel;
+   assign iss_v   = sel_v;
+   assign iss_ent = sel;
+   assign iss_rob = e_rob[sel];
+   assign iss_ps  = e_ps[sel];
 
    reg [IDXB:0] occ;
    always @* begin
@@ -260,31 +150,46 @@ module ooo2_rs
    wire do_disp = d_valid & d_ready & ~flush;
    wire do_iss  = iss_v & iss_take & ~flush;
 
+   // Wake-at-select, for a fixed-latency unit only. Internal, and it only ever writes
+   // registered ready bits -- so selection never feeds back into readiness.
+   wire             self_v  = (FIXEDL != 0) & do_iss;
+   wire [PBITS-1:0] self_pr = e_prd[sel];
+
+   // Stall attribution: the lowest-indexed live entry that is not ready, and the first
+   // source it is waiting on. Counters only.
+   reg              b_v;
+   reg [PBITS-1:0]  b_pr;
+   always @* begin
+      b_v = 1'b0; b_pr = {PBITS{1'b0}};
+      for (k = NENT-1; k >= 0; k = k - 1)
+         if (v[k] && !(&srdy[k*NSRC +: NSRC])) begin
+            b_v = 1'b1;
+            b_pr = e_ps[k][0 +: PBITS];
+            for (q = NSRC-1; q >= 0; q = q - 1)
+               if (!srdy[k*NSRC + q]) b_pr = e_ps[k][q*PBITS +: PBITS];
+         end
+   end
+   assign blk_v  = b_v;
+   assign blk_pr = b_pr;
+
    always @(posedge clk) begin
       if (reset | flush) begin
          v <= {NENT{1'b0}};
       end else begin
-         // Wakeup applies to EVERY live entry, including the one issuing this cycle (it
-         // leaves anyway) and the one being dispatched (handled on its own path below).
-         for (k = 0; k < NENT; k = k + 1) if (v[k]) begin
-            if (hit(e_ps1[k]) | shit(e_ps1[k])) e_r1[k] <= 1'b1;
-            if (hit(e_ps2[k]) | shit(e_ps2[k])) e_r2[k] <= 1'b1;
-            if (hit(e_ps3[k]) | shit(e_ps3[k])) e_r3[k] <= 1'b1;
-         end
+         for (k = 0; k < NENT; k = k + 1) if (v[k])
+            for (q = 0; q < NSRC; q = q + 1)
+               if (hit(e_ps[k][q*PBITS +: PBITS])
+                   || (self_v && (self_pr == e_ps[k][q*PBITS +: PBITS])))
+                  e_r[k][q] <= 1'b1;
          if (do_iss) v[sel] <= 1'b0;
          if (do_disp) begin
             v[fsel]     <= 1'b1;
             e_rob[fsel] <= d_rob;
-            e_ps1[fsel] <= d_ps1;  e_ps2[fsel] <= d_ps2;  e_ps3[fsel] <= d_ps3;
-            e_unit[fsel]<= d_unit;
-            e_ord[fsel] <= d_ord;
+            e_ps[fsel]  <= d_ps;
             e_prd[fsel] <= d_prd;
-            // Dispatch-cycle wakeup: a producer writing back THIS cycle will never
-            // broadcast again, so a source that is not yet ready must be checked against
-            // the live writeback ports or the entry waits forever.
-            e_r1[fsel]  <= d_r1 | hit(d_ps1) | shit(d_ps1);
-            e_r2[fsel]  <= d_r2 | hit(d_ps2) | shit(d_ps2);
-            e_r3[fsel]  <= d_r3 | hit(d_ps3) | shit(d_ps3);
+            for (q = 0; q < NSRC; q = q + 1)
+               e_r[fsel][q] <= d_r[q] | hit(d_ps[q*PBITS +: PBITS])
+                             | (self_v && (self_pr == d_ps[q*PBITS +: PBITS]));
          end
       end
    end
@@ -295,14 +200,14 @@ module ooo2_rs
          $fatal(1, "ooo2_rs: dispatch into a full scheduler");
       if (do_disp & v[fsel])
          $fatal(1, "ooo2_rs: dispatch into occupied entry %0d", fsel);
+      if (do_disp & held[fsel])
+         $fatal(1, "ooo2_rs: dispatch into the entry still held downstream (%0d)", fsel);
       if (iss_take & ~iss_v)
          $fatal(1, "ooo2_rs: consumer took an issue that was not offered");
       if (do_iss & ~v[sel])
          $fatal(1, "ooo2_rs: issued entry %0d holds nothing", sel);
-      if (do_iss & |(iss_unit & unit_busy))
-         $fatal(1, "ooo2_rs: issued to a busy unit (unit=%b busy=%b)", iss_unit, unit_busy);
-      if (do_disp & (d_unit == {NUNIT{1'b0}}))
-         $fatal(1, "ooo2_rs: dispatch with no unit selected (rob=%0d)", d_rob);
+      if (do_iss & unit_busy)
+         $fatal(1, "ooo2_rs: issued to a busy unit");
    end
 endmodule
 

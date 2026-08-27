@@ -453,7 +453,7 @@ module ooo2_core
    // Shrinking bought timing and cost throughput. Growing is only affordable because the
    // depth is now constant; covering a 3.24-cycle D$ hit needs independent work IN the
    // window, and 4 entries holding only ALU ops could not hold enough.
-   localparam integer RS_N = 16, RS_IDXB = 4, RS_NUNIT = 5;
+   localparam integer RS_N = 12, RS_IDXB = 4, RS_NUNIT = 5;
    localparam [RS_NUNIT-1:0] U_ALU = 5'b00001, U_MEM = 5'b00010,
                              U_MD  = 5'b00100, U_FP  = 5'b01000, U_SYS = 5'b10000;
 
