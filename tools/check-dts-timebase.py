@@ -43,7 +43,11 @@ def rtl_id():
     try:
         h = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                            text=True, check=True).stdout.strip()
-        d = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+        # Only DESIGN sources count. This repo tracks Vivado's run and cache output, so a
+        # plain `git status` is dirty after every single build and the marker would fire
+        # always -- which is the same as never. Scope it to what actually changes the RTL.
+        d = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--",
+                            "ooo2", "src", "platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs"],
                            capture_output=True, text=True, check=True).stdout.strip()
         return h + ("-dirty" if d else "")
     except Exception:
