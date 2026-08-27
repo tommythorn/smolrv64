@@ -294,6 +294,10 @@ module ooo2_core
    localparam integer RN_PBITS = RN_IDXB + 2;
    localparam [1:0]   SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
 
+   wire d_ord   = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
+                | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
+                | d_illegal | d_fault | d_is_irqop;
+
    // Destination shard = where the result will be written.  Loads, AMOs and mul/div take
    // SH_LD (see ooo2_prf.v on why mul/div ride with loads and not the ALU).
    //
@@ -308,9 +312,20 @@ module ooo2_core
    // No new contention at this milestone: there is exactly one writeback per cycle.  When
    // out-of-order issue lands, SH_LD's writers become LSU + mul/div + FP-to-integer, all of
    // which are rare next to loads and all of which can hold in an output register.
+   // THE RULE IS: shard = the UNIT that writes it, and nothing else. An op routed to M
+   // takes SH_LD even when its result is an ordinary integer -- a CSR read and a jump's
+   // link register are M's results, not the ALU's. Leaving those two in SH_IE gave that
+   // shard a second writer, and the only way to keep one write port was to hold the ALU
+   // off whenever M was writing it (`unit_busy = m_wb_ie`). That put the whole LSU
+   // completion cone into the INTEGER scheduler's ready bits: the post-route critical path
+   // was m_addr -> lsu -> m_done -> m_wb_ie -> u_rs_i/e_r[9][1], 24 levels, -0.383 ns.
+   // With this line the ALU is SH_IE's only writer, m_wb_ie is identically 0 (asserted
+   // below, not assumed), and the integer scheduler has no unit_busy term at all.
+   // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
    wire [1:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
                       : d_is_fp                          ? SH_FE
-                      :                                    SH_IE;
+                      : d_ord                            ? SH_LD   // CSR, jumps: M writes
+                      :                                    SH_IE;  // the ALU, alone
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
    wire                rn_stall;
@@ -441,48 +456,137 @@ module ooo2_core
    // feeds M from X. What this buys is that the pack/unpack of a 35-field payload, which
    // is where silent corruption would live, is checked every cycle against the m_*
    // registers holding the very same instruction (see the assertion below).
-   // WINDOW 16, and the window is what matters. Selection is by fixed priority now, so
-   // select depth no longer scales with NENT -- the age-ordered version synthesised to a
-   // comparator CHAIN, which is why the cost used to be linear in the window and why
-   // halving it bought 1.9ns.
+   // ---- THREE SCHEDULERS, ONE PER UNIT CLASS -----------------------------------------
+   // One scheduler per class is also one per PRF shard, which is the condition doc 7 names
+   // for the writeback arbiter to disappear. It also stops the integer entries paying for
+   // FMA's third operand: only FP needs NSRC=3.
    //
-   // Measured on the 300M Linux cosim against the in-order core's 67,160,189, with the OLD
-   // age-ordered select:
-   //     RS_N=8  66,529,479 (-0.94%)  WNS -2.043ns
-   //     RS_N=4  65,718,516 (-2.15%)  WNS -0.128ns
-   // Shrinking bought timing and cost throughput. Growing is only affordable because the
-   // depth is now constant; covering a 3.24-cycle D$ hit needs independent work IN the
-   // window, and 4 entries holding only ALU ops could not hold enough.
-   localparam integer RS_N = 12, RS_IDXB = 4, RS_NUNIT = 5;
-   localparam [RS_NUNIT-1:0] U_ALU = 5'b00001, U_MEM = 5'b00010,
-                             U_MD  = 5'b00100, U_FP  = 5'b01000, U_SYS = 5'b10000;
+   // Sizes are a timing knob. The integer scheduler should be grown until it is JUST BARELY
+   // the critical path -- as large as the clock allows and no larger. 10 for now.
+   //
+   // NO AGE ANYWHERE. The one ordering constraint that survives -- memory against memory,
+   // until there is disambiguation -- is the LOAD scheduler's head pointer (INORDER), which
+   // is a pointer match rather than the N^2 is-oldest matrix it replaces.
+   localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
+   localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
+                                           // branches, FP -- one in-order stream
+   localparam integer NF = 1,  IBF = 1;    // vestigial; three schedulers needs three units
+   localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
+   localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
+   localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
+   localparam integer PL_N = NI + NL + NF, PL_IB = 5;
+   localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2;
 
-   // ORDERED: everything that can trap, redirect, touch memory, or hold a unit for more
-   // than a cycle. Those are exactly the ops whose reordering would require deferred traps,
-   // zombie units and memory disambiguation -- and keeping them in order buys all three
-   // properties for free:
-   //   * an op head-blocked in M can never starve an older op, because the only thing that
-   //     can be older and un-issued is an ALU op, and those never enter M;
-   //   * nothing younger is ever in flight when something traps, because anything that can
-   //     trap issues only as the oldest entry -- so there is no zombie writeback to suppress;
-   //   * memory keeps program order.
-   // What is left free to reorder is the pure ALU op, which is precisely what queues up
-   // behind a consumer waiting on a load or an FP result.
-   wire d_ord = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
-              | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
-              | d_illegal | d_fault | d_is_irqop;
-   wire [RS_NUNIT-1:0] d_unit = d_ord ? U_SYS : U_ALU;
+   // ORDERED: anything that can trap, redirect, touch memory or hold a unit for more than a
+   // cycle. Those go to the in-order schedulers; what is left free to reorder is the pure
+   // ALU op, which is exactly what queues up behind a consumer waiting on a load.
+   // An FP load/store is a MEMORY op, not an FP-unit op -- it must go to the load scheduler
+   // or memory ordering is silently broken for half the accesses.
+   // FP SHARES THE IN-ORDER SCHEDULER, and that is not a simplification -- it is forced.
+   // Three schedulers deadlock while all three feed ONE execute stage: an M-class op from
+   // one scheduler reaches M, finds it must be the ROB head to retire, and an OLDER M-class
+   // op in a different scheduler cannot issue to free M. Observed exactly: FP scheduler full
+   // and offering nothing, M head-blocked on a younger LD-class op, both stuck.
+   // Three schedulers needs three UNITS. Until the FPU and the LSU are separately issuable,
+   // every M-class op belongs to one in-order stream.
+   wire d_cls_f = 1'b0;
+   wire d_cls_l = d_ord;
+   wire d_cls_i = ~d_ord;
 
-   wire                rs_ready, rs_iss_v, rs_iss_take;
-   wire [RS_IDXB-1:0]  rs_d_ent, rs_iss_ent;
-   wire [RN_PBITS-1:0] rs_iss_ps1, rs_iss_ps2, rs_iss_ps3;
-   wire                rs_blk_v;
-   wire [RN_PBITS-1:0] rs_blk_pr;
-   wire [ROB_IDXB-1:0] rs_iss_rob;
-   wire [RS_NUNIT-1:0] rs_iss_unit;
-   wire [RS_IDXB:0]    rs_occ;
-   // An entry issues when the scheduler offers one and M can take it. A redirect kills the
-   // cycle: everything in the scheduler is younger than the redirecting instruction.
+   wire [1:0] d_cls = d_cls_i ? C_I : d_cls_l ? C_L : C_F;
+
+   wire [RN_PBITS-1:0] d_prd_g = d_rd_v ? rn_prd : {RN_PBITS{1'b0}};
+   wire [2:0] d_srdy = {pnd_r3 | ~d_rs3_v, pnd_r2 | ~d_rs2_v, pnd_r1 | ~d_rs1_v};
+
+   wire [NWB_C-1:0]        wkv  = {we_fe, we_ld, we_ie};
+   wire [NWB_C*RN_PBITS-1:0] wkp = {wa_fe, wa_ld, wa_ie};
+
+   wire ri_ready, ri_iss_v, ri_blk_v;  wire [IBI-1:0] ri_d_ent, ri_iss_ent;
+   wire [ROB_IDXB-1:0] ri_iss_rob;     wire [2*RN_PBITS-1:0] ri_iss_ps;
+   wire [RN_PBITS-1:0] ri_blk_pr;      wire [IBI:0] ri_occ;
+   wire rl_ready, rl_iss_v, rl_blk_v;  wire [IBL-1:0] rl_d_ent, rl_iss_ent;
+   wire [ROB_IDXB-1:0] rl_iss_rob;     wire [3*RN_PBITS-1:0] rl_iss_ps;
+   wire [RN_PBITS-1:0] rl_blk_pr;      wire [IBL:0] rl_occ;
+   wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
+   wire [ROB_IDXB-1:0] rf_iss_rob;     wire [3*RN_PBITS-1:0] rf_iss_ps;
+   wire [RN_PBITS-1:0] rf_blk_pr;      wire [IBF:0] rf_occ;
+
+   wire ri_take, rl_take, rf_take;
+   wire i_needs_m;                     // the issue register holds an M-class op
+
+   ooo2_rs #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(1),.INORDER(0)) u_rs_i
+     (.clk(clk),.reset(reset),
+      .d_valid(rn_valid & d_cls_i),.d_ready(ri_ready),.d_rob(rob_d_idx),
+      .d_ps({rn_prs2, rn_prs1}),.d_r(d_srdy[1:0]),.d_prd(d_prd_g),.d_ent(ri_d_ent),
+      .wb_v(wkv),.wb_preg(wkp),
+      .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
+      .iss_ps(ri_iss_ps),.iss_take(ri_take),
+      .hold_v(i_v & (i_cls == C_I)),.hold_ent(i_ent[IBI-1:0]),
+      .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
+
+   ooo2_rs #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(0),.INORDER(1)) u_rs_l
+     (.clk(clk),.reset(reset),
+      .d_valid(rn_valid & d_cls_l),.d_ready(rl_ready),.d_rob(rob_d_idx),
+      .d_ps({rn_prs3, rn_prs2, rn_prs1}),.d_r(d_srdy),.d_prd(d_prd_g),.d_ent(rl_d_ent),
+      .wb_v(wkv),.wb_preg(wkp),
+      .unit_busy(~m_advance | (i_v & i_needs_m)),
+      .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
+      .iss_ps(rl_iss_ps),.iss_take(rl_take),
+      .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),
+      .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ));
+
+   ooo2_rs #(.NENT(NF),.IDXB(IBF),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(0),.INORDER(1)) u_rs_f
+     (.clk(clk),.reset(reset),
+      .d_valid(rn_valid & d_cls_f),.d_ready(rf_ready),.d_rob(rob_d_idx),
+      .d_ps({rn_prs3, rn_prs2, rn_prs1}),.d_r(d_srdy),.d_prd(d_prd_g),.d_ent(rf_d_ent),
+      .wb_v(wkv),.wb_preg(wkp),
+      .unit_busy(~m_advance | (i_v & i_needs_m)),
+      .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
+      .iss_ps(rf_iss_ps),.iss_take(rf_take),
+      .hold_v(i_v & (i_cls == C_F)),.hold_ent(i_ent[IBF-1:0]),
+      .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
+
+   // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
+   wire rs_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;
+   wire [RS_IDXB-1:0] rs_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
+                               : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
+                               :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
+   wire [PL_IB-1:0] pl_w_idx = d_cls_i ? (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_d_ent})
+                             : d_cls_l ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, rl_d_ent})
+                             :           (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, rf_d_ent});
+
+   // ISSUE ARBITRATION, one per cycle into the single issue register. Long-latency classes
+   // win: they are gated on M being free anyway, so they only bid when they can make
+   // progress, while an ALU op can always go next cycle instead.
+   wire pick_l = rl_iss_v;
+   wire pick_f = rf_iss_v & ~pick_l;
+   wire pick_i = ri_iss_v & ~pick_l & ~pick_f;
+   wire rs_iss_v = pick_l | pick_f | pick_i;
+   wire [1:0] pick_cls = pick_l ? C_L : pick_f ? C_F : C_I;
+   wire [RS_IDXB-1:0] rs_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
+                                 : pick_f ? {{(RS_IDXB-IBF){1'b0}}, rf_iss_ent}
+                                 :          {{(RS_IDXB-IBI){1'b0}}, ri_iss_ent};
+   wire [PL_IB-1:0] pl_r_idx = (i_cls == C_I) ? (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, i_ent[IBI-1:0]})
+                             : (i_cls == C_L) ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, i_ent[IBL-1:0]})
+                             :                  (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, i_ent[IBF-1:0]});
+   wire [ROB_IDXB-1:0] rs_iss_rob = pick_l ? rl_iss_rob : pick_f ? rf_iss_rob : ri_iss_rob;
+   wire [RN_PBITS-1:0] rs_iss_ps1 = pick_l ? rl_iss_ps[0 +: RN_PBITS]
+                                  : pick_f ? rf_iss_ps[0 +: RN_PBITS]
+                                  :          ri_iss_ps[0 +: RN_PBITS];
+   wire [RN_PBITS-1:0] rs_iss_ps2 = pick_l ? rl_iss_ps[RN_PBITS +: RN_PBITS]
+                                  : pick_f ? rf_iss_ps[RN_PBITS +: RN_PBITS]
+                                  :          ri_iss_ps[RN_PBITS +: RN_PBITS];
+   wire [RN_PBITS-1:0] rs_iss_ps3 = rl_iss_ps[2*RN_PBITS +: RN_PBITS];
+   wire rs_iss_take;
+   assign ri_take = pick_i & rs_iss_take;
+   assign rl_take = pick_l & rs_iss_take;
+   assign rf_take = pick_f & rs_iss_take;
+   wire rs_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
+   wire [RN_PBITS-1:0] rs_blk_pr = rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr;
+
    // ---- SELECT GETS ITS OWN STAGE -------------------------------------------------
    // Select, payload read, register read, execute and writeback in ONE cycle was 50 logic
    // levels and 13.1 ns against a 6 ns period. doc 14 permits exactly this cut: "an
@@ -500,14 +604,16 @@ module ooo2_core
    // forwarding exists anywhere here: every producer's write has landed before its consumer
    // reads.
    reg                 i_v;
+   reg [1:0]           i_cls;      // which scheduler it came from -- selects the hold port
    reg [RS_IDXB-1:0]   i_ent;
    reg [ROB_IDXB-1:0]  i_rob;
    reg [RN_PBITS-1:0]  i_ps1, i_ps2, i_ps3;
    initial i_v = 1'b0;
 
-   // The stage completes when its writeback port is free: M for an ordered op, the IE shard
-   // for an ALU op. Otherwise it holds, and holds the scheduler with it.
-   wire   i_done      = i_v & (q_ord ? m_advance : ~m_wb_ie);
+   // An ordered op completes when M takes it; an ALU op completes unconditionally, because
+   // SH_IE has exactly one writer and it is this one. Nothing can be in the way.
+   assign i_needs_m   = i_v & q_ord;
+   wire   i_done      = i_v & (q_ord ? m_advance : 1'b1);
    wire   iss_ready   = ~i_v | i_done;
    assign rs_iss_take = rs_iss_v & iss_ready & ~redirect;
    // ~redirect on BOTH. The register is cleared on a redirect, but these are
@@ -516,63 +622,18 @@ module ooo2_core
    // rolling that physical register back. That is the zombie writeback in miniature, and it
    // is what failed all 61 virtual-memory tests: they are the ones that trap often.
    wire   iss_m       = i_v &  q_ord & m_advance & ~redirect;  // loads M this cycle
-   wire   iss_alu     = i_v & ~q_ord & ~m_wb_ie  & ~redirect;  // completes here
+   wire   iss_alu     = i_v & ~q_ord & ~redirect;  // completes here, always
 
    always @(posedge clk) begin
       if (reset | redirect) i_v <= 1'b0;
       else if (iss_ready) begin
          i_v <= rs_iss_take;
          if (rs_iss_take) begin
-            i_ent <= rs_iss_ent;  i_rob <= rs_iss_rob;
+            i_cls <= pick_cls;    i_ent <= rs_iss_ent;  i_rob <= rs_iss_rob;
             i_ps1 <= rs_iss_ps1;  i_ps2 <= rs_iss_ps2;  i_ps3 <= rs_iss_ps3;
          end
       end
    end
-
-   ooo2_rs #(.NENT(RS_N), .IDXB(RS_IDXB), .ROBB(ROB_IDXB), .PBITS(RN_PBITS),
-             .NUNIT(RS_NUNIT), .NWB(3)) u_rs
-     (.clk(clk), .reset(reset),
-      .d_valid(rn_valid), .d_ready(rs_ready), .d_rob(rob_d_idx),
-      .d_ps1(rn_prs1), .d_ps2(rn_prs2), .d_ps3(rn_prs3),
-      // A source the instruction does not READ is ready by definition. The scheduler has
-      // no notion of an unused operand -- it requires all three -- so without this an op
-      // that reads no rs3 would wait forever on whatever register rn_prs3 happens to name.
-      .d_r1(pnd_r1 | ~d_rs1_v), .d_r2(pnd_r2 | ~d_rs2_v), .d_r3(pnd_r3 | ~d_rs3_v),
-      .d_unit(d_unit), .d_ent(rs_d_ent),
-      // FAST wakeup: none of these depend on which entry is selected. The IE port is M's
-      // writeback only -- the ALU op completing at issue goes on the SLOW port, because its
-      // result cannot be read before the next cycle anyway and putting it here would make
-      // readiness a function of selection.
-      // The FULL IE port, alu_wb included. Excluding it hung the machine: a consumer
-      // DISPATCHED after its producer was selected misses the wake-at-select broadcast, and
-      // with no writeback wakeup either it waits forever -- three live entries, every unit
-      // free, nothing ready. Wake-at-select alone only covers consumers already in the
-      // scheduler.
-      //
-      // And it is safe to include now, which it was not before. alu_wb is built from i_v
-      // and a payload read at a REGISTERED address, so it no longer depends on the current
-      // selection -- pipelining select dissolved the loop that forced the fast/slow split.
-      .wb_v({we_fe, we_ld, we_ie}), .wb_preg({wa_fe, wa_ld, wa_ie}),
-      .sw_v(1'b0), .sw_preg({RN_PBITS{1'b0}}),
-      .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
-      // U_ALU is never "busy" -- a one-cycle unit cannot be the reason another instruction
-      // waits (doc 7) -- EXCEPT when M is writing the IE shard this cycle, which is the one
-      // port they contend for. Gating the ALU there rather than stalling M keeps the
-      // dependency one-way: m_wb_ie is built from m_done, and nothing in m_done depends on
-      // issue, so there is no combinational loop through the scheduler.
-      .in_order(1'b0),
-      // An ordered op may be SELECTED only when M is free AND the issue register is not
-      // already holding one -- otherwise it stalls in the register and blocks the ALU ops
-      // behind it, undoing dynamic issue exactly when it matters.
-      .unit_busy({{(RS_NUNIT-1){~m_advance | (i_v & q_ord)}}, m_wb_ie}),
-      .head(rob_head_idx),
-      .d_ord(d_ord),
-      .iss_v(rs_iss_v), .iss_ent(rs_iss_ent), .iss_rob(rs_iss_rob),
-      .hold_v(i_v), .hold_ent(i_ent),
-      .iss_ps1(rs_iss_ps1), .iss_ps2(rs_iss_ps2), .iss_ps3(rs_iss_ps3),
-      .blk_v(rs_blk_v), .blk_pr(rs_blk_pr),
-      .iss_unit(rs_iss_unit), .iss_take(rs_iss_take),
-      .flush(redirect), .occupancy(rs_occ));
 
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
    // width or ordering mistake is a lint error rather than a wrong instruction.
@@ -592,9 +653,12 @@ module ooo2_core
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
                            d_br_func, d_mis_taken, d_mis_nt,
                            d_rs1_v, d_rs2_v, d_rs3_v, d_ord};
-   reg [PLW-1:0] plmem [0:RS_N-1];
-   wire [PLW-1:0] pl_out = plmem[i_ent];
-   always @(posedge clk) if (rn_valid & rs_ready) plmem[rs_d_ent] <= pl_in;
+   // ONE payload array across all three schedulers, indexed by a flat slot number with a
+   // per-class offset -- each scheduler has its own entry-number space, and the offsets are
+   // what stop them aliasing.
+   reg [PLW-1:0] plmem [0:PL_N-1];
+   wire [PLW-1:0] pl_out = plmem[pl_r_idx];
+   always @(posedge clk) if (rn_valid & rs_ready) plmem[pl_w_idx] <= pl_in;
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
    wire [31:0]         q_insn;
@@ -1281,11 +1345,17 @@ module ooo2_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   assign wb_ie = alu_wb ? x_result : m_is_csr ? csr_rdata : m_result;
+   assign wb_ie = x_result;                       // one writer: the ALU
+   // SH_LD is now M's shard outright, so this mux carries every result M produces, not
+   // just the memory and mul/div ones it started as. The two new arms are the two classes
+   // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
+   // after the mem/amo/mul arms above is a jump's link register.
    assign wb_ld = ld_wb                     ? lsu_rd_val
                 : (m_is_mem | m_is_amo)     ? lsu_rd_val
                 : m_unit_done_q             ? m_unit_res_q
-                :                             (md_div ? div_result : mul_result);
+                : m_is_csr                  ? csr_rdata
+                : m_is_mul                  ? (md_div ? div_result : mul_result)
+                :                             m_result;
    assign wb_fe = fp_wb         ? fp_wval
                 : m_unit_done_q ? m_unit_res_q
                 :                 fp_incore_res;
@@ -1310,10 +1380,10 @@ module ooo2_core
    // at issue. They cannot collide: unit_busy holds the ALU off in any cycle m_wb_ie is
    // set, which is asserted below.
    wire alu_wb = iss_alu & q_rd_v;
-   wire we_ie = m_wb_ie | alu_wb;
+   wire we_ie = alu_wb;
    wire we_ld = m_wb_ld | ld_wb;
    wire we_fe = m_wb_fe | fp_wb;
-   wire [RN_PBITS-1:0] wa_ie = alu_wb ? q_prd : m_prd;
+   wire [RN_PBITS-1:0] wa_ie = q_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? sb_preg : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? fb_preg : m_prd;
    always @(posedge clk) if (!reset) begin
@@ -1321,8 +1391,11 @@ module ooo2_core
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
       if (m_wb_fe & fp_wb)
          $fatal(1, "ooo2_core: FE shard written by both M and a landing FP result");
-      if (m_wb_ie & alu_wb)
-         $fatal(1, "ooo2_core: IE shard written by both M and an issuing ALU op");
+      // m_wb_ie is dead by construction: d_shard sends every M-routed op to SH_LD or
+      // SH_FE. Asserted rather than assumed -- if a future op class reaches M with
+      // SH_IE, it would silently drop its result now that we_ie ignores M.
+      if (m_wb_ie)
+         $fatal(1, "ooo2_core: M wrote the IE shard -- d_shard must route M's ops to SH_LD");
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot

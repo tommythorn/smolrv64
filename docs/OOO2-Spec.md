@@ -126,7 +126,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~rs_ready` | scheduler full (8 entries) |
+| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12 (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
 
@@ -205,9 +205,18 @@ read ports only; sharding by *writer* is what buys write ports.
 
 | shard | entries | written by | why the size |
 |---|---|---|---|
-| IE | 64 | ALU / CSR | > 32 (integer arch regs) |
-| LD | 128 | LSU, mul, div | > 64: can hold integer *and* FP mappings |
+| IE | 64 | **the ALU, alone** | > 32 (integer arch regs) |
+| LD | 128 | everything M completes: LSU, mul, div, CSR, jump link | > 64: can hold integer *and* FP mappings |
 | FE | 128 | FPU | > 64: the FPU writes integer regs too (`fcvt.w.d`, `fmv.x.d`, `fle.d`) |
+
+**A destination's shard is chosen by the UNIT that writes it, never by the data type.** A
+CSR read and a jump's link register are integer results, but M produces them, so they take
+LD. Leaving those two in IE gave that shard a second writer, and the only way to keep one
+write port was to hold the ALU off whenever M was writing IE — which put the entire LSU
+completion cone inside the integer scheduler's ready bits. Post-route that was the critical
+path: `m_addr -> lsu -> m_done -> m_wb_ie -> u_rs_i/e_r[9][1]`, 24 logic levels, WNS
+-0.383 ns at 166.67 MHz. With the rule applied, `m_wb_ie` is identically zero (asserted in
+`ooo2_core`, not assumed) and the integer scheduler has no `unit_busy` term at all.
 
 A physical register's shard is encoded in its number and never changes, so a commit's
 `c_pold` is returned to **its own** shard's free list, not to `c_shard`.
@@ -256,23 +265,44 @@ Stated here because its absence is the single largest fact about the machine (§
 It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
 is not needed alongside it.
 
-**Entry format — 38 bits.** Scheduling state only.
+**There are two schedulers, not one, and neither stores age.**
+
+| | `u_rs_i` | `u_rs_l` |
+|---|---|---|
+| entries (`NENT`) | 10 | 12 |
+| sources (`NSRC`) | 2 | 3 |
+| holds | pure ALU and non-trapping ops | everything routed to M: memory, AMO, mul/div, CSR, branches, jumps, FP arith |
+| ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` |
+| unit | completes at issue, writes IE | M |
+| `unit_busy` | **none** — IE has one writer | `~m_advance \| (i_v & i_needs_m)` |
+
+**Entry format — `2 + NSRC×PBITS` bits.** Scheduling state only; no age, nothing quadratic.
 
 | field | bits | meaning |
 |---|---|---|
 | `v` | 1 | entry live |
-| `e_rob` | `ROBB`=4 | ROB slot, for age and for completion |
-| `e_ps1/2/3` | 3 × `PBITS`=27 | source **physical** registers |
-| `e_r1/2/3` | 3 | per-source ready bits |
-| `e_unit` | `NUNIT`=4 | one-hot unit requirement |
-| | **38** | × `NENT`=8 = **304 bits** |
+| `e_rob` | `ROBB`=4 | ROB slot, carried to completion |
+| `e_ps[NSRC]` | `NSRC` × `PBITS`=9 | source **physical** registers |
+| `e_r[NSRC]` | `NSRC` | per-source ready bits |
+
+`NSRC` is a parameter precisely so the integer scheduler does not pay for the third operand
+only `fmadd` has: 20 bits/entry against 29.
 
 - **Wakeup**: every PRF write broadcasts its destination; `NWB`=3 ports, one per shard.
   A source not yet ready is also compared against the live ports **in its dispatch cycle**,
   because a producer broadcasts exactly once and would otherwise be missed forever.
-- **Select**: oldest ready, `age = (rob - head)`, minimum-reduction comparator tree.
-  Deterministic and starvation-free.
-- **The unit check is inside `ready`**, so a busy MEM cannot block an ALU entry.
+- **Select**: **fixed priority**, lowest entry index first. Age is not stored, not
+  compared, and not needed — an age matrix is `O(N²)` and buys nothing a free list does not
+  already give. Starvation is impossible because an entry is only freed by issuing.
+- **Wake-at-select**, not wake-at-writeback (`FIXEDL`): a fixed-latency producer broadcasts
+  its destination in the cycle it is *selected*, so a dependent issues the very next cycle.
+  Back-to-back dependent issue is non-negotiable and is check 7 of the module TB.
+- **`hold_v`/`hold_ent`**: the payload LUTRAM is read the cycle *after* selection, so an
+  entry is not released at select — it is held until the issue register accepts it.
+  Releasing at select let a dispatch overwrite `plmem[i_ent]` under a stalled issue stage;
+  that survived two full 240-test runs before surfacing as `auipc`/`jalr` failures.
+- **In-order mode** (`INORDER`) is a circular head pointer, not a comparator tree: entry
+  `qhead` is the only one eligible. A younger ready entry does not pass an unready head.
 - **No execute payload and no operand values.** The payload is a separate LUTRAM indexed
   by the scheduler's own entry number (`d_ent` to write at dispatch, `iss_ent` to read at
   issue) — **396 bits × 8 = 3 168 bits**, 34 fields. Not indexed by `rob_idx`: that would be
@@ -297,8 +327,9 @@ runs inside every 240-test and cosim run.
 
 | unit | latency | outstanding | blocks M? | writes |
 |---|---|---|---|---|
-| ALU / branch | 1 cycle (in X) | — | no | IE shard |
-| CSR | 1 cycle, **serializing** | 1 | yes | IE shard |
+| ALU / branch | 1 cycle (at issue) | — | no | IE shard |
+| jump link (`jal`/`jalr`) | 1 cycle | 1 | yes | LD shard (M writes it) |
+| CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 | yes | LD shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | yes | LD shard |
 | FPU (CVFPU) | 6 cycles (§7.1) | 1 | **no** | FE shard |
@@ -441,8 +472,9 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
-| scheduler entry | `ooo2_rs` | 8 | 38 | 304 | flops | wired, not steering (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 8 | 413 | 3 304 | LUTRAM | 1W dispatch, 1R issue |
+| `u_rs_i` entry | `ooo2_rs` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
+| `u_rs_l` entry | `ooo2_rs` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
+| `plmem` (payload) | `ooo2_core` | 22 | 413 | 9 086 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 
