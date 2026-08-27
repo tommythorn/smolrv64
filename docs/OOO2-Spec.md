@@ -591,8 +591,8 @@ tracers and stats are gated.
 | | |
 |---|---|
 | `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`, from an MMCM |
-| Timing | `probe_clk` WNS **+0.029 ns**, TNS 0.000, 0 failing endpoints, with dynamic issue (commit `3060dc84`) |
-| Margin | 29 ps against a placement spread of 81-400 ps (rule I2): **closed, not robustly closed.** A re-place can put it back under. |
+| Timing | `probe_clk` WNS **+0.124 ns**, TNS 0.000, 0 failing endpoints, dynamic issue with 8/8 schedulers |
+| Margin | 124 ps against a placement spread of 81-400 ps (rule I2). Was +0.029 ns at 10/12 schedulers; shrinking to 8/8 bought **95 ps**, which is the real reason to do it -- the 0.43% cycles/byte was the tiebreaker, not the prize. Still inside the spread's upper half, so treat a re-place as able to lose it. |
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |
