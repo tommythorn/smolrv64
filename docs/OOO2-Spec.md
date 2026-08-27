@@ -642,6 +642,33 @@ result. Wall clock and CPI agree to 4%.
 | redirects / 1k insn | 9.70 | 6.14 | -37% |
 | **`FE_BUB` cycles / redirect** | **9.6** | **54.4** | **+468%** |
 
+### Measured: GB5 full suite, same build
+
+Same bitstream and commit, all workloads, 8.98 h elapsed (previous full run 9.16 h).
+`https://browser.geekbench.com/v5/cpu/24575051`
+
+| | full GB5 | AES-XTS alone |
+|---|---:|---:|
+| IPC | **0.2520** | 0.5182 |
+| CPI | 3.967 | 1.930 |
+| `ST_MEM` | **54.7%** of cycles, 2.171 CPI | 52.3%, 1.008 CPI |
+| `ST_FPU` | **28.9%** of cycles, 1.148 CPI | ~0 |
+| `FE_BUB` | 5.3% | 17.3% |
+| `ST_SER` | 3.9% | 8.7% |
+| D$ miss rate | **2.04%** | 0.28% |
+| `ST_MEM` per D$ access | **4.995 cyc** | 3.090 cyc |
+
+**Dynamic issue is worth +19.8% on AES-XTS and +2.5% on the full suite**, and the two
+numbers above say why. Dynamic issue hides *dependency* stalls on cache hits; it cannot
+hide a real miss while M is a single execute slot with one outstanding load, and the full
+suite misses 7x more often. Do not quote the AES-XTS figure as a machine-wide result.
+
+`ST_FPU` at 1.148 CPI is a **regression** against the 0.973 the FPU rework reached, and it
+is a direct cost of collapsing three schedulers into two: FP arithmetic now sits in the
+in-order scheduler, ordered against every load, mul/div, CSR and branch, so it cannot start
+until everything older in that stream has issued. At 28.9% of full-suite cycles this is the
+price tag on the FP scheduler that 12.2 says needs its own unit.
+
 **The last row is `head_block` priced in cycles, and it is now the largest single target.**
 A branch resolves in M and then waits there until it is the ROB head before the frontend is
 redirected (§12 of `Area-Efficient-Scalar-OoO.md`). The window grew from ~2 instructions to
