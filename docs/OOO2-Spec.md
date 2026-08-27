@@ -333,7 +333,7 @@ runs inside every 240-test and cosim run.
 | CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 | yes | LD shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | yes | LD shard |
-| FPU (CVFPU) | 6 cycles (§7.1) | 1 | **no** | FE shard |
+| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **no** | FE shard |
 | LSU load | see §8 | 1 | **no** | LD shard |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
@@ -690,7 +690,35 @@ outright and cuts `ST_SER`. Frontend half **done** (`575781db`, +0.82% on the bo
 of six `m_needs_head` terms are decode-static and can gate at issue on
 `entry_rob == rob_head`; only a mispredict and a faulting memory access need the register.
 
-### P3 -- FP gets its own scheduler AND its own unit
+### P3a -- FP multiple in flight -- **DONE**
+
+`fp_unit` held exactly one op while `fpnew` underneath is pipelined (`PipeRegs=4`) and
+already had tag ports, instantiated `TAGW(1)` with `iss_tag(1'b0)` and `res_tag()`
+unconnected. The destination now rides in a 21-bit tag (`dst32, rd_v, rd, rob, prd`), so
+results self-describe and may return out of issue order -- which they do, because fpnew's
+op groups (ADDMUL, DIVSQRT, NONCOMP, CONV) have different latencies. `NFLIGHT=4`.
+
+Measured on `workloads/fpbench`, eight independent chains:
+
+| | before | after |
+|---|---:|---:|
+| throughput | 4.00 cyc/op | **2.25 cyc/op** |
+| `ST_FPU` | 43% of cycles | **0%** |
+| overlap (lat/thru) | 1.99x | **3.55x** |
+| latency (serial chain) | 8.00 cyc/op | 8.00 cyc/op |
+
+Latency is unchanged and should be: a dependent chain waits on the FPU no matter how many
+slots are free. `FE_BUB` is now 44% on that kernel -- the frontend is what is left.
+
+`NFLIGHT` defaults to **1** so `src/exec_shard.v`, which shares this file, is bit-identical
+(215/215 confirms). FP also took its own ROB completion port (`NW` 2 -> 3); it used to share
+one with landing loads, which is why a result had to be held when a load landed in the same
+cycle. With several in flight that collision stops being rare.
+
+**This was the same defect as the LSU**: a pipelined unit throttled to one outstanding
+operation by its wrapper. P0 is the same shape of fix.
+
+### P3b -- FP gets its own scheduler AND its own unit
 
 `ST_FPU` is **28.9% of full-suite cycles** at 1.148 CPI, a regression from the 0.973 the
 FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind every

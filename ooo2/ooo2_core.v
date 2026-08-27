@@ -419,8 +419,11 @@ module ooo2_core
    // at all: it traps, and the redirect's flush retires the entry.
    // An ALU op completing at issue is the SECOND completion port: it never enters M, so
    // its ROB entry has to be marked done from here. This is why ooo2_rob's port was widened.
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land | fp_land;
-   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : fp_land ? fb_rob : m_rob_idx;
+   // FP has its OWN completion port now. It used to share this one, which is why a landing
+   // FP result had to be held whenever a load landed in the same cycle -- with several FP
+   // ops in flight that collision stops being rare, and holding stops being cheap.
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : m_rob_idx;
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
    // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
@@ -719,14 +722,14 @@ module ooo2_core
 
    // NW=1 until units complete independently; the port is widened by the same commit
    // that makes more than one completion per cycle possible.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(2)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(3)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_v({iss_alu, rob_w_valid}), .w_ix({i_rob, rob_w_idx}),
+      .w_v({fp_land, iss_alu, rob_w_valid}), .w_ix({ft_rob, i_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -957,8 +960,7 @@ module ooo2_core
 
    wire        fp_arith  = m_valid & fp_valid_d &  fp_use_fpu & ~m_ill_eff;
    wire        fp_incore = m_valid & fp_valid_d & ~fp_use_fpu & ~m_ill_eff;
-   reg         fpu_inflight;
-   initial     fpu_inflight = 1'b0;
+
    wire        fp_iss_ready, fp_res_valid, fpu_busy;
    wire [63:0] fp_res_data;
    wire [4:0]  fp_res_fflags;
@@ -967,26 +969,32 @@ module ooo2_core
    // held low afterwards by ld_land or fp_land -- so M keeps presenting an op it has
    // already handed over, and re-issues it the moment fpu_inflight/fb_busy clear. That
    // completed a ROB slot which had already committed and been freed.
-   wire        fp_start = fp_arith & ~fpu_inflight & ~fb_busy & ~m_unit_done_q;
+   // ~m_unit_done_q ONLY. The ~fpu_inflight & ~fb_busy that stood here served a
+   // one-op-at-a-time scoreboard; the destination now rides in the tag, so nothing has to
+   // be free before the next op can go. ~m_unit_done_q stays: it stops M re-issuing an op
+   // it has already handed over.
+   wire        fp_start = fp_arith & ~m_unit_done_q;
    // FP32 result heading for an f-register -> NaN-box it on writeback
    wire        fp_dst32 = (fp_dst == 3'd0) & fp_wrfp;
+   localparam integer FTAGW = 2 + 6 + ROB_IDXB + RN_PBITS;   // dst32, rd_v, rd, rob, prd
+   wire [FTAGW-1:0] fp_res_tag;
 
-   fp_unit #(.TAGW(1)) u_fpu
+   // THE TAG CARRIES THE DESTINATION. rule: a response is matched by a tag the requester
+   // allocated. 21 bits inside the wrapper's 24: with results returning out of issue order
+   // (fpnew's op groups have different latencies), a result must say where it goes rather
+   // than be matched against "the one in flight".
+   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4)) u_fpu
      (.clk(clk), .reset(reset),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
       .iss_op(fp_op), .iss_op_mod(fp_mod), .iss_src_fmt(fp_src), .iss_dst_fmt(fp_dst),
       .iss_int_fmt(fp_int),
       .iss_rnd(fp_rnd == 3'b111 ? csr_frm : fp_rnd),      // dynamic rm -> fcsr.frm
-      .iss_operands({fpo2, fpo1, fpo0}), .iss_tag(1'b0),
+      .iss_operands({fpo2, fpo1, fpo0}),
+      .iss_tag({fp_dst32, m_rd_v, m_rd, m_rob_idx, m_prd}),
       .res_valid(fp_res_valid), .res_ready(1'b1), .res_data(fp_res_data),
-      .res_fflags(fp_res_fflags), .res_tag(), .flush(1'b0), .busy(fpu_busy));
+      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(1'b0), .busy(fpu_busy));
 
-   always @(posedge clk) begin
-      if (reset)                          fpu_inflight <= 1'b0;
-      else if (fp_res_valid)              fpu_inflight <= 1'b0;
-      else if (fp_start & fp_iss_ready)   fpu_inflight <= 1'b1;
-   end
-   wire fp_complete = fp_res_valid & fpu_inflight;
+   wire fp_complete = fp_res_valid;
 
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
    wire        fp_isd = m_insn[25];              // 0=single 1=double
@@ -1194,45 +1202,30 @@ module ooo2_core
    // when the PRF's single port is free. The load wins that arbitration because
    // `lsu_rd_val` is transient while this register is not.
    wire fp_disp = fp_start & fp_iss_ready;               // accepted by the unit this cycle
-   reg                fb_busy, fb_rd_v, fb_dst32, fb_got;
-   reg [RN_PBITS-1:0] fb_preg;
-   reg [5:0]          fb_rd;
-   reg [ROB_IDXB-1:0] fb_rob;
-   reg [63:0]         fb_val;
-   initial begin fb_busy = 1'b0; fb_rd_v = 1'b0; fb_got = 1'b0; end
-   // fp_dst32 is decoded from m_insn, so it is gone the cycle after issue -- the same trap
-   // that made the LSU latch nb/signed/fp at dispatch rather than read them at completion.
-   wire [63:0] fp_res_fmt = fb_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data;
-   wire        fp_avail   = fb_got | fp_complete;        // held, or arriving right now
-   wire [63:0] fp_wval    = fb_got  ? fb_val : fp_res_fmt;
-   // ~ld_land, not ~ld_wb: a load with rd_v=0 still consumes the ROB's single completion
-   // port even though it writes no register.
-   wire        fp_land    = fb_busy & fp_avail & ~ld_land;
-   wire        fp_wb      = fp_land & fb_rd_v;
-   always @(posedge clk) begin
-      if (reset) begin fb_busy <= 1'b0; fb_got <= 1'b0; end
-      else begin
-         if (fp_complete) begin fb_got <= 1'b1; fb_val <= fp_res_fmt; end
-         if (fp_land)     begin fb_busy <= 1'b0; fb_got <= 1'b0; end   // ordered after: a
-         if (fp_disp) begin                                            // captured-and-written
-            fb_busy <= 1'b1;   fb_preg  <= m_prd;   fb_rd_v <= m_rd_v; // cycle clears both
-            fb_rd   <= m_rd;   fb_rob   <= m_rob_idx;
-            fb_dst32 <= fp_dst32;
-         end
-      end
-   end
+   // The scoreboard that stood here (fb_busy/fb_preg/fb_rob/fb_val/fb_got, plus a held
+   // result for the cycle a load stole the ROB port) is GONE. Every field it carried now
+   // rides in the tag and comes back with the result, which is what lets more than one op
+   // be in flight at all -- fpnew returns them out of issue order across op groups.
+   wire        ft_dst32 = fp_res_tag[FTAGW-1];
+   wire        ft_rd_v  = fp_res_tag[FTAGW-2];
+   wire [5:0]  ft_rd    = fp_res_tag[FTAGW-3 -: 6];
+   wire [ROB_IDXB-1:0]  ft_rob = fp_res_tag[RN_PBITS +: ROB_IDXB];
+   wire [RN_PBITS-1:0]  ft_prd = fp_res_tag[RN_PBITS-1:0];
+   wire [63:0] fp_wval  = ft_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data;
+   // No ~ld_land: FP has its own ROB completion port now, so a load landing in the same
+   // cycle no longer displaces it and there is nothing to hold.
+   wire        fp_land  = fp_complete;
+   wire        fp_wb    = fp_land & ft_rd_v;
    always @(posedge clk) if (!reset) begin
-      if (fp_disp & fb_busy)
-         $fatal(1, "ooo2_core: a second FP op issued with one already in flight");
-      if (fp_complete & ~fb_busy)
-         $fatal(1, "ooo2_core: FPU completed an op the scoreboard does not know about");
-      if (fp_complete & fb_got)
-         $fatal(1, "ooo2_core: FP result arrived while one was still held");
       // All fp_arith ops take SH_FE (d_shard is by instruction CLASS, so this holds even
       // for fcvt.w.d / fmv.x.d / fle.d, whose rd is an integer register). fp_wval is put on
       // wb_fe alone on the strength of it.
       if (fp_disp & (m_shard != SH_FE))
          $fatal(1, "ooo2_core: FP op issued to shard %0d, not SH_FE", m_shard);
+      // The tag is the only thing naming the destination now, so a result that arrives
+      // unowned would write a live register silently instead of being caught by fb_busy.
+      if (fp_land & (ft_prd == {RN_PBITS{1'b0}}) & ft_rd_v)
+         $fatal(1, "ooo2_core: FP result claims rd_v with physreg 0");
    end
 
    // ---- completion ----
@@ -1446,7 +1439,7 @@ module ooo2_core
    wire we_fe = m_wb_fe | fp_wb;
    wire [RN_PBITS-1:0] wa_ie = q_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? sb_preg : m_prd;
-   wire [RN_PBITS-1:0] wa_fe = fp_wb ? fb_preg : m_prd;
+   wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : m_prd;
    always @(posedge clk) if (!reset) begin
       if (m_wb_ld & ld_wb)
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
@@ -1517,9 +1510,9 @@ module ooo2_core
          cs_mpa[sb_rob]   <= lsu_cos_pa;
       end
       if (fp_land) begin
-         cs_val[fb_rob]   <= fp_wval;
-         cs_mkind[fb_rob] <= 2'd0;      // an FP op has no memory effect
-         cs_mpa[fb_rob]   <= 56'd0;
+         cs_val[ft_rob]   <= fp_wval;
+         cs_mkind[ft_rob] <= 2'd0;      // an FP op has no memory effect
+         cs_mpa[ft_rob]   <= 56'd0;
       end
       if (iss_alu) begin                // completed at issue, never saw M
          cs_val[i_rob]   <= x_result;
@@ -1533,7 +1526,7 @@ module ooo2_core
    wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
-   wire        cs_hit_fp  = fp_land & (fb_rob == rob_head_idx);
+   wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
                           : cs_hit_alu ? x_result

@@ -18,7 +18,21 @@
 // smolrv64_cvfpu is NOT deleted: rk_xcku5p.v instantiates it directly on a genuinely
 // separate fpu_clk, which is the case its CDC was built for.
 module fp_unit #(parameter TAGW = 24,
-                 parameter int unsigned PIPE_REGS = 4)
+                 parameter int unsigned PIPE_REGS = 4,
+                 // OPS IN FLIGHT. fpnew is a PIPELINED unit (PipeRegs = PIPE_REGS), able to
+                 // accept an op every cycle, but this wrapper held exactly one and so
+                 // delivered one op per round trip. Measured on workloads/fpbench with eight
+                 // INDEPENDENT chains -- as much ILP as the shape allows -- that was 4.00
+                 // cycles/op against 8.00 for a serial chain: an overlap of 1.99x where the
+                 // unit's own latency (PIPE_REGS) should have allowed far more.
+                 //
+                 // DEFAULT 1 IS DELIBERATE. src/exec_shard.v instantiates this too; at
+                 // NFLIGHT=1 every expression below reduces to exactly what it was, so that
+                 // core is untouched by this. Only a caller that can route results by tag
+                 // may raise it -- with more than one in flight, results come back TAGGED and
+                 // not necessarily in issue order, because fpnew's op groups (ADDMUL,
+                 // DIVSQRT, NONCOMP, CONV) have different latencies.
+                 parameter int unsigned NFLIGHT = 1)
    (input  wire             clk,
     input  wire             reset,
     // issue (1 op/cycle when iss_ready)
@@ -93,13 +107,22 @@ module fp_unit #(parameter TAGW = 24,
    logic [2:0]           req_sf_q, req_df_q, req_rnd_q;
    logic [1:0]           req_if_q;
    logic [TAGW-1:0]      req_tag_q;
-   logic                 inflight_q, out_valid_q;
+   localparam int unsigned FW = (NFLIGHT <= 1) ? 1 : $clog2(NFLIGHT + 1);
+   logic [FW-1:0]        nflight_q;          // ops accepted by fpnew, not yet returned
+   logic                 out_valid_q;
    logic [63:0]          result_q;
    logic [4:0]           fflags_q;
    logic [TAGW-1:0]      tag_q;
-   initial begin inflight_q = 1'b0; out_valid_q = 1'b0; req_v_q = 1'b0; end
+   initial begin nflight_q = '0; out_valid_q = 1'b0; req_v_q = 1'b0; end
 
-   assign iss_ready  = ~req_v_q & ~inflight_q & ~out_valid_q;   // registers only
+   // Still REGISTERS ONLY. fpnew's in_ready_o is combinational in in_valid_i and
+   // exec_shard.v feeds iss_ready into its issue decision, so exposing it closes a loop --
+   // that cost 11 atomics and rv64uc-v-rvc once, hidden behind -Wno-UNOPTFLAT.
+   // At NFLIGHT=1 out_blk is `out_valid_q`, i.e. the original expression unchanged. Above
+   // 1, a result being delivered no longer blocks issue when the consumer takes it in the
+   // same cycle, which is the whole point.
+   wire out_blk = out_valid_q & ((NFLIGHT <= 1) ? 1'b1 : ~res_ready);
+   assign iss_ready  = ~req_v_q & (nflight_q != FW'(NFLIGHT)) & ~out_blk;
    wire   fire       = iss_valid & iss_ready;                   // core hands the op over
    // STRAIGHT THROUGH IN THE COMMON CASE. The request register is a FALLBACK for the cycle
    // fpnew declines, not a stage every op pays -- routing every op through it cost a cycle
@@ -112,11 +135,11 @@ module fp_unit #(parameter TAGW = 24,
    assign res_data   = result_q;
    assign res_fflags = fflags_q;
    assign res_tag    = tag_q;
-   assign busy       = req_v_q | inflight_q | out_valid_q;
+   assign busy       = req_v_q | (nflight_q != '0) | out_valid_q;
 
    always_ff @(posedge clk) begin
       if (reset | flush) begin
-         req_v_q <= 1'b0; inflight_q <= 1'b0; out_valid_q <= 1'b0;
+         req_v_q <= 1'b0; nflight_q <= '0; out_valid_q <= 1'b0;
       end else begin
          if (out_valid_q & res_ready) out_valid_q <= 1'b0;
          if (fpn_take) req_v_q <= 1'b0;
@@ -130,21 +153,25 @@ module fp_unit #(parameter TAGW = 24,
          // the op, PipeRegs notwithstanding. The old FSM had an explicit branch for this in
          // FPU_ISSUE; dropping it failed exactly the 16 fcvt/fmin/recoding tests and nothing
          // else. `else if` is the whole fix: a same-cycle result never sets inflight_q.
+         // Counter, not a flag. Both same-cycle cases net to zero and need no special
+         // arm: one op returning while another is accepted, and a NONCOMP/CONV op that
+         // returns in the very cycle it is accepted (the `else if` this replaces).
+         if (fpn_out_valid & ~fpn_take)      nflight_q <= nflight_q - 1'b1;
+         else if (fpn_take & ~fpn_out_valid) nflight_q <= nflight_q + 1'b1;
          if (fpn_out_valid) begin
-            inflight_q  <= 1'b0;
             out_valid_q <= 1'b1;
             result_q    <= fpn_result;
             fflags_q    <= {fpn_status.NV, fpn_status.DZ, fpn_status.OF,
                             fpn_status.UF, fpn_status.NX};
             tag_q       <= fpn_tag;
-         end else if (fpn_take) inflight_q <= 1'b1;
+         end
       end
    end
 
    // Invariants (docs/rtl-rules.md A1). Both say the same thing from opposite ends: the
    // one-op-at-a-time contract holds, so no result can arrive unowned or be overwritten.
    always_ff @(posedge clk) if (!reset) begin
-      if (fpn_out_valid & ~inflight_q & ~fpn_take)
+      if (fpn_out_valid & (nflight_q == '0) & ~fpn_take)
          $fatal(1, "fp_unit: fpnew produced a result with no op in flight");
       if (fpn_out_valid & out_valid_q & ~res_ready)
          $fatal(1, "fp_unit: result arrived while the previous one was unconsumed");
