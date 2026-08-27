@@ -937,6 +937,60 @@ the first place.
 
 ---
 
+### 12.2 Why this register is not optional: completion must not depend on retirement
+
+Measured, on a real build, and worth stating as a rule because the failure is a **deadlock**
+rather than a wrong answer.
+
+The tempting shortcut is to skip the register and take the redirect straight from the
+execute stage, gating it on "this instruction is the ROB head" so it cannot flush anything
+older than itself. That gate looks free — the redirect has to wait for the head anyway, so
+it appears to cost no branch penalty. It does not cost penalty. It costs **liveness**.
+
+Holding an instruction in the execute stage until it becomes the head makes *completion*
+depend on *retirement*. That inverts the ROB contract, which is:
+
+> an instruction completes in a finite number of cycles after it issues, and retires
+> when it is head and complete.
+
+Nothing in that sentence lets completion wait on retirement, and once it does, any shared
+execute resource can deadlock:
+
+```
+scheduler A --\
+scheduler B ---+--> ONE execute stage M
+scheduler C --/
+```
+
+A younger instruction from scheduler B reaches M, discovers it is not the head, and parks
+there. The older instruction it is waiting for is still sitting in scheduler C, unissued,
+because M is occupied. Neither can move. Observed exactly on a three-scheduler build: the
+FP scheduler full and offering nothing, M held by a younger memory-class op, `m_advance`
+low forever.
+
+Note what does **not** save you. Arbitrating between schedulers oldest-first does not: the
+older instruction can simply become ready *after* the younger one has already parked in M.
+Making the schedulers in-order internally does not either, because the ordering that is
+violated is *between* them. The single in-order stream that does work is just the
+one-scheduler machine wearing a disguise — it removes the deadlock by removing the
+reordering the schedulers existed to provide.
+
+Two things fix it properly, and a machine wants both eventually:
+
+1. **This register.** Record the event at execute, apply it at commit. The instruction
+   completes and frees the unit; the redirect fires later, from per-machine state that
+   belongs to no unit. This is what §12 already specifies.
+2. **One unit per scheduler** (§7), so a stalled instruction can only ever block its own
+   unit, and everything older in that unit has already issued ahead of it.
+
+The corollary is the useful part. **Only genuinely dynamic events need the register.** An
+event known at decode — a system instruction, `fence.i`, an illegal opcode, a fetch fault —
+can instead be gated at *issue*, on `entry_rob == rob_head`. That is one comparator per
+entry, it cannot deadlock (the head is by definition the oldest, so nothing older exists to
+block), and it keeps such instructions out of the execute stage entirely until they are
+architecturally alone. What is left needing the register is only what execute discovers:
+a mispredict, and a faulting memory access.
+
 ## 13. Port budget
 
 Per cycle, wide structures only:
