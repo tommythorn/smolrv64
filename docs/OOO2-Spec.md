@@ -624,172 +624,104 @@ pinned by the MIG's `ui_clk`.
 
 ## 15. Prioritised work list
 
-Ordered by measured impact over effort. Every claim names its measurement; anything
-unmeasured says so. Re-rank when a measurement changes, not when an idea sounds good.
+Ordered by measured impact over effort. Every claim names its measurement and the
+CONFIGURATION it was measured in; anything unmeasured says so.
 
-**Read this first.** `workloads/aesbench` (T-table AES-128, the kernel GB5's AES-XTS runs)
-measures the kernel ALONE and disagrees sharply with the GB5 "AES-XTS" CPI stack recorded
-above. The benchmark is the trustworthy one: the GB5 figure came from a `perf stat` window
-covering the whole process, including startup faulting a binary in over NFS. Kernel alone,
-128 KiB streamed over a 64 KiB D$:
+### Measurement discipline (read before adding a number here)
 
-| | aesbench (kernel only) | GB5 window (contaminated) |
+**Always measure at `VDEFS="-DOOO2_HW=4"`.** The simulation default is `OOO2_HW=2`
+(32-bit fetch); the FPGA runs 4 (64-bit). They do not merely differ in degree, they
+disagree about which unit is the bottleneck:
+
+| workloads/aesbench | HW=2 (sim default) | **HW=4 (the FPGA)** |
 |---|---:|---:|
-| `FE_BUB` | **66.7%** | 17.3% |
-| ... `FE_ALN` (RVC aligner) | **37.1%** | not measured |
-| ... `FE_QUE` (F/X empty) | **24.1%** | not measured |
-| ... `FE_IC` (I$) | 5.4% | — |
-| `ST_MEM` | **8.0%** | 52.3% |
-| D$ misses | ~0 | 0.28% |
+| cycles/byte | 222.90 | **122.70** |
+| IPC | 0.277 | **0.506** |
+| `FE_ALN` (RVC aligner) | **37.0%** | 8.0% |
+| `FE_QUE` (F/X empty) | 24.0% | 24.0% |
+| `ST_MEM` | 7.9% | **23.7%** |
 
-### P0 -- frontend instruction delivery (the RVC aligner, `IW=1`)
+At HW=2 the RVC aligner looks like the largest stall in the machine and the scheduler
+sweep saturates; at HW=4 the aligner is a minor term and the sweep has a real optimum at
+8. An earlier version of this list ranked the aligner P0 on the HW=2 numbers. It was
+wrong, and it was believable because `run-ooo2-cosim-linux.sh` reported the width by
+grepping for `-DINO_HW=`, a name that died in the rename -- so it printed the default no
+matter what was set (fixed, `a0d651e6`+).
 
-`FE_ALN` + `FE_QUE` = **61% of all cycles** on AES. Corroborated three ways: `sha256sum` is
-41.8% frontend (recorded above); the same 4,055,045 instructions took **20% more cycles**
-purely from a code-layout change; and the result is unmoved by doubling the cache
-footprint. The aligner emits at most one instruction per cycle and stalls when a 4-byte
-instruction straddles the 8-byte fetch window -- frequent in RVC-dense code, which the
-GB5 AES trace confirms this kernel is. **Branch `inorder-fbv2` ("fetch buffer v2 -- serve
-across the pair") already targets exactly this** and should be evaluated before anything
-new is written.
+Two workloads, two different answers, both valid:
+
+| | GB5 full suite (hardware) | aesbench (AES kernel, HW=4) |
+|---|---:|---:|
+| `ST_MEM` | **54.7%** | 23.7% |
+| `ST_FPU` | **28.9%** | ~0 |
+| `FE_BUB` | 5.3% | **32.4%** |
+| `ST_SER` | 3.9% | ~0 |
+
+The frontend is an integer/crypto-code problem, not a machine-wide one. Memory is
+machine-wide. Rank by the full suite unless the goal is a specific workload.
+
+### P0 -- multiple outstanding loads
+
+`ST_MEM` is **54.7% of full-suite GB5 cycles** at a 2.04% miss rate costing 4.995 cycles
+per access, and 23.7% even on the cache-resident AES kernel. No amount of dynamic issue
+hides this through a single-outstanding LSU -- which the scheduler sweep proves from the
+other side: 4 entries to 20 spans 0.8%, because the window is not the constraint, the unit
+is. The tag space already reserves 2 bits (4 outstanding).
 
 ### P1 -- triage the regression against 95aff227 (8/22)
 
 Reported: many workloads regressed between 95aff227 (in-order issue) and 72d14cde
-(dynamic issue), while AES-XTS improved 814.5 -> 950.6 kB/s. Mechanism already measured and
-consistent: dynamic issue grew the window from ~2 instructions to 16, and both penalties
-scale with window depth --
+(dynamic issue), while AES-XTS improved 814.5 -> 950.6 kB/s. Mechanism already measured:
+dynamic issue grew the window from ~2 instructions to 16 and both penalties scale with
+depth --
 
     FE_BUB per redirect   9.6 -> 54.4 cycles
     ST_SER               0.16% -> 8.67% of cycles
 
 A win on load-bound code and a loss on branch-heavy or serialising code is exactly what
-that predicts. Needs the 8/22 per-workload page loaded into `bench/gb5-results.tsv`
-(`tools/bench-track.py add`) to confirm WHICH regressed. Note the noise floor: 95aff227
-measured 814.5 and 754.4 kB/s on identical RTL, 7.4% apart.
+that predicts, and it is the same trade the scheduler sweep shows in miniature (8/8 beats
+10/12). Needs the 8/22 page in `bench/gb5-results.tsv` to confirm which. Noise floor:
+95aff227 measured 814.5 and 754.4 kB/s on identical RTL, 7.4% apart.
 
 ### P2 -- delete `head_block` (redirect register + issue-time head gate)
 
 Completion must not depend on retirement (`Area-Efficient-Scalar-OoO.md` 12.2). Blocks P3
-outright, and cuts `ST_SER`. The frontend half is **done** (`575781db`, +0.82% on the boot).
-Five of six `m_needs_head` terms are decode-static and can gate at issue on
+outright and cuts `ST_SER`. Frontend half **done** (`575781db`, +0.82% on the boot). Five
+of six `m_needs_head` terms are decode-static and can gate at issue on
 `entry_rob == rob_head`; only a mispredict and a faulting memory access need the register.
 
 ### P3 -- FP gets its own scheduler AND its own unit
 
-`ST_FPU` is **28.9% of full-suite GB5 cycles** at 1.148 CPI -- a regression from the 0.973
-the FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind
-every load, mul/div, CSR and branch. Blocked on P2: three schedulers into one execute stage
+`ST_FPU` is **28.9% of full-suite cycles** at 1.148 CPI, a regression from the 0.973 the
+FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind every
+load, mul/div, CSR and branch. Blocked on P2: three schedulers into one execute stage
 deadlock.
 
 ### P4 -- Machine Learning scores 0
 
-GB5 aggregates a category as a **geometric mean**, so this single 0 (0.01 images/sec) zeroes
-the entire Floating Point score. Cause unknown and uninvestigated -- cheapest possible
-score win if it is one pathology, and worth an hour before any of P5-P7.
+GB5 aggregates a category as a **geometric mean**, so this single 0 (0.01 images/sec)
+zeroes the entire Floating Point score. Cause uninvestigated -- the cheapest possible score
+win if it is one pathology.
 
-### P5 -- multiple outstanding loads
+### P5 -- frontend run-ahead (`IW>=2`)
 
-`ST_MEM` is 54.7% of full-suite cycles at a 2.04% miss rate costing 4.995 cycles per access,
-which no amount of dynamic issue can hide through a single-outstanding LSU. Note this is a
-FULL-SUITE lever, not an AES one -- aesbench puts AES's `ST_MEM` at 8.0%. The tag space
-already reserves 2 bits (4 outstanding).
+`FE_QUE` is **24% of cycles on the AES kernel** and unchanged between HW=2 and HW=4, so it
+is not an alignment artifact: the frontend makes at most one instruction per cycle and the
+backend consumes one per cycle, so no hiccup is ever recovered. Only 5.3% on the full
+suite, hence below the memory and FP items despite being large on integer code.
+`sha256sum` at 41.8% frontend is the same effect.
 
-### P6 -- shrink the schedulers to 8/8
+### P6 -- shrink the schedulers to 8/8 -- **DONE**
 
-Measured on aesbench, cycles/byte: 4/4 186.57, 6/6 186.13, **8/8 185.57**, 10/12 184.94,
-12/12 184.94, 16/16 184.94. It **saturates at 10/12** -- 12 and 16 are bit-identical, so
-every entry past 10/12 is area and Fmax for nothing. 8/8 costs 0.34%, worth trading for
-margin while `probe_clk` holds only +0.029 ns against an 81-400 ps placement spread.
+Measured optimum, not a guess. See the `NI`/`IBI` comment in `ooo2_core.v`.
 
 ### P7 -- rename walk-back, to remove the mispredict DRAIN
 
 The other half of the mispredict cost. Needs a FIFO of ~ROB-size (index, value) pairs
 replayed on squash, and introduces a race between the replay and the ROB head advancing.
-Deferred deliberately: it is the first thing here that makes an otherwise simple design
+Deferred deliberately: the first item here that makes an otherwise simple design
 complicated, and it must not cost frequency.
 
 ### P8 -- stores and AMOs still block M
 
 Unmeasured in isolation. Listed so it is not forgotten, not because it is next.
-
-### Measured: GB5 AES-XTS, dynamic issue vs in-order issue
-
-Both captures killed at the same workload boundary (GB5 has no workload selection, so
-AES-XTS is isolated by terminating at the start of Text Compression), on an idle board at
-166.67 MHz. D$ accesses per instruction agree to 3.8% between the two, so the code mix is
-the same and the 3.6% instruction-count drift from the kill point is not carrying the
-result. Wall clock and CPI agree to 4%.
-
-| | in-order issue | dynamic issue | |
-|---|---:|---:|---:|
-| IPC | 0.4327 | **0.5182** | **+19.8%** |
-| CPI | 2.311 | 1.930 | -16.5% |
-| wall clock | 1292.7 s | 1034.8 s | -20.0% |
-| `ST_MEM` cyc/insn | 1.176 | 1.008 | -14.2% |
-| `ST_MEM` cyc/D$ access | 3.465 | 3.090 | -10.8% |
-| `ST_SER` % of cycles | 0.16 | **8.67** | 44x |
-| `FE_BUB` % of cycles | 4.02 | **17.31** | 3.5x |
-| redirects / 1k insn | 9.70 | 6.14 | -37% |
-| **`FE_BUB` cycles / redirect** | **9.6** | **54.4** | **+468%** |
-
-### Measured: GB5 full suite, same build
-
-Same bitstream and commit, all workloads, 8.98 h elapsed (previous full run 9.16 h).
-`https://browser.geekbench.com/v5/cpu/24575051`
-
-| | full GB5 | AES-XTS alone |
-|---|---:|---:|
-| IPC | **0.2520** | 0.5182 |
-| CPI | 3.967 | 1.930 |
-| `ST_MEM` | **54.7%** of cycles, 2.171 CPI | 52.3%, 1.008 CPI |
-| `ST_FPU` | **28.9%** of cycles, 1.148 CPI | ~0 |
-| `FE_BUB` | 5.3% | 17.3% |
-| `ST_SER` | 3.9% | 8.7% |
-| D$ miss rate | **2.04%** | 0.28% |
-| `ST_MEM` per D$ access | **4.995 cyc** | 3.090 cyc |
-
-**Dynamic issue is worth +19.8% on AES-XTS and +2.5% on the full suite**, and the two
-numbers above say why. Dynamic issue hides *dependency* stalls on cache hits; it cannot
-hide a real miss while M is a single execute slot with one outstanding load, and the full
-suite misses 7x more often. Do not quote the AES-XTS figure as a machine-wide result.
-
-`ST_FPU` at 1.148 CPI is a **regression** against the 0.973 the FPU rework reached, and it
-is a direct cost of collapsing three schedulers into two: FP arithmetic now sits in the
-in-order scheduler, ordered against every load, mul/div, CSR and branch, so it cannot start
-until everything older in that stream has issued. At 28.9% of full-suite cycles this is the
-price tag on the FP scheduler that 12.2 says needs its own unit.
-
-**The last row is `head_block` priced in cycles, and it is now the largest single target.**
-A branch resolves in M and then waits there until it is the ROB head before the frontend is
-redirected (§12 of `Area-Efficient-Scalar-OoO.md`). The window grew from ~2 instructions to
-16, so the wait grew with it: we mispredict **37% less often** and pay **5.7x more per
-mispredict**. `ST_SER` has the same cause -- a serializing op now drains a 16-entry ROB
-instead of a two-instruction shadow.
-
-**That 54.4 is not 45 cycles of waste, and an early estimate here that said so was wrong.**
-It decomposes into two parts with very different prospects:
-
-- **fetch latency** -- refilling I$, iMMU and the predictor after the flush. Genuinely
-  recoverable, and recovered by the early frontend restart below.
-- **drain** -- older instructions completing so the branch can reach the head. This is real
-  work, not waste: a missing load ahead of the branch has to finish either way.
-
-Removing the drain means squashing at EXECUTE, which needs the rename map rolled back to an
-arbitrary branch. Rollback here is `h := hc` to the last COMMIT point with no snapshot
-(`ooo2_rename`), which is exactly why waiting for the head exists. Per-branch snapshots or
-a ROB walk would buy it; neither is built.
-
-**Early frontend restart (implemented).** On a mispredict the frontend does not wait to
-become head: note the event, flush, freeze the renamer, and refetch the resolved target
-while the ROB drains behind it. At the squash the renamer is released onto a correct path
-already sitting in the F/X queue, and the frontend is deliberately NOT flushed a second
-time. Only mispredicts qualify -- `m_target` is resolved in execute, whereas a trap's
-target leaves `csr_file` only once the op is at head, so traps keep the late path.
-
-The renamer must freeze for the whole window rather than run ahead: with `h := hc` and no
-snapshot, anything renamed before the squash is *undone* by it, so running ahead would lose
-those instructions rather than merely waste them.
-
-Measured: Linux-boot cosim retires 66,724,877 -> **67,271,018** at a fixed 300M cycles,
-+0.82%, no divergence. Bounded by the fetch half above; the drain is untouched.
