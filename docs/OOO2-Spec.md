@@ -215,7 +215,8 @@ LD. Leaving those two in IE gave that shard a second writer, and the only way to
 write port was to hold the ALU off whenever M was writing IE — which put the entire LSU
 completion cone inside the integer scheduler's ready bits. Post-route that was the critical
 path: `m_addr -> lsu -> m_done -> m_wb_ie -> u_rs_i/e_r[9][1]`, 24 logic levels, WNS
--0.383 ns at 166.67 MHz. With the rule applied, `m_wb_ie` is identically zero (asserted in
+-0.383 ns at 166.67 MHz. Applying the rule was worth **+0.397 ns** and is what closed
+166.67 MHz with dynamic issue. With it, `m_wb_ie` is identically zero (asserted in
 `ooo2_core`, not assumed) and the integer scheduler has no `unit_busy` term at all.
 
 A physical register's shard is encoded in its number and never changes, so a commit's
@@ -590,7 +591,8 @@ tracers and stats are gated.
 | | |
 |---|---|
 | `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`, from an MMCM |
-| Timing | WNS +0.027 ns, TNS 0.000, 0 failing endpoints |
+| Timing | `probe_clk` WNS **+0.029 ns**, TNS 0.000, 0 failing endpoints, with dynamic issue (commit `3060dc84`) |
+| Margin | 29 ps against a placement spread of 81-400 ps (rule I2): **closed, not robustly closed.** A re-place can put it back under. |
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |
