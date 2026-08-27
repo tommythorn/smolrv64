@@ -622,6 +622,97 @@ pinned by the MIG's `ui_clk`.
 - Workload sensitivity is large and measured: GB5 is FPU- and serialisation-bound,
   `sha256sum` is frontend-bound. Do not generalise a CPI stack from one workload.
 
+## 15. Prioritised work list
+
+Ordered by measured impact over effort. Every claim names its measurement; anything
+unmeasured says so. Re-rank when a measurement changes, not when an idea sounds good.
+
+**Read this first.** `workloads/aesbench` (T-table AES-128, the kernel GB5's AES-XTS runs)
+measures the kernel ALONE and disagrees sharply with the GB5 "AES-XTS" CPI stack recorded
+above. The benchmark is the trustworthy one: the GB5 figure came from a `perf stat` window
+covering the whole process, including startup faulting a binary in over NFS. Kernel alone,
+128 KiB streamed over a 64 KiB D$:
+
+| | aesbench (kernel only) | GB5 window (contaminated) |
+|---|---:|---:|
+| `FE_BUB` | **66.7%** | 17.3% |
+| ... `FE_ALN` (RVC aligner) | **37.1%** | not measured |
+| ... `FE_QUE` (F/X empty) | **24.1%** | not measured |
+| ... `FE_IC` (I$) | 5.4% | — |
+| `ST_MEM` | **8.0%** | 52.3% |
+| D$ misses | ~0 | 0.28% |
+
+### P0 -- frontend instruction delivery (the RVC aligner, `IW=1`)
+
+`FE_ALN` + `FE_QUE` = **61% of all cycles** on AES. Corroborated three ways: `sha256sum` is
+41.8% frontend (recorded above); the same 4,055,045 instructions took **20% more cycles**
+purely from a code-layout change; and the result is unmoved by doubling the cache
+footprint. The aligner emits at most one instruction per cycle and stalls when a 4-byte
+instruction straddles the 8-byte fetch window -- frequent in RVC-dense code, which the
+GB5 AES trace confirms this kernel is. **Branch `inorder-fbv2` ("fetch buffer v2 -- serve
+across the pair") already targets exactly this** and should be evaluated before anything
+new is written.
+
+### P1 -- triage the regression against 95aff227 (8/22)
+
+Reported: many workloads regressed between 95aff227 (in-order issue) and 72d14cde
+(dynamic issue), while AES-XTS improved 814.5 -> 950.6 kB/s. Mechanism already measured and
+consistent: dynamic issue grew the window from ~2 instructions to 16, and both penalties
+scale with window depth --
+
+    FE_BUB per redirect   9.6 -> 54.4 cycles
+    ST_SER               0.16% -> 8.67% of cycles
+
+A win on load-bound code and a loss on branch-heavy or serialising code is exactly what
+that predicts. Needs the 8/22 per-workload page loaded into `bench/gb5-results.tsv`
+(`tools/bench-track.py add`) to confirm WHICH regressed. Note the noise floor: 95aff227
+measured 814.5 and 754.4 kB/s on identical RTL, 7.4% apart.
+
+### P2 -- delete `head_block` (redirect register + issue-time head gate)
+
+Completion must not depend on retirement (`Area-Efficient-Scalar-OoO.md` 12.2). Blocks P3
+outright, and cuts `ST_SER`. The frontend half is **done** (`575781db`, +0.82% on the boot).
+Five of six `m_needs_head` terms are decode-static and can gate at issue on
+`entry_rob == rob_head`; only a mispredict and a faulting memory access need the register.
+
+### P3 -- FP gets its own scheduler AND its own unit
+
+`ST_FPU` is **28.9% of full-suite GB5 cycles** at 1.148 CPI -- a regression from the 0.973
+the FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind
+every load, mul/div, CSR and branch. Blocked on P2: three schedulers into one execute stage
+deadlock.
+
+### P4 -- Machine Learning scores 0
+
+GB5 aggregates a category as a **geometric mean**, so this single 0 (0.01 images/sec) zeroes
+the entire Floating Point score. Cause unknown and uninvestigated -- cheapest possible
+score win if it is one pathology, and worth an hour before any of P5-P7.
+
+### P5 -- multiple outstanding loads
+
+`ST_MEM` is 54.7% of full-suite cycles at a 2.04% miss rate costing 4.995 cycles per access,
+which no amount of dynamic issue can hide through a single-outstanding LSU. Note this is a
+FULL-SUITE lever, not an AES one -- aesbench puts AES's `ST_MEM` at 8.0%. The tag space
+already reserves 2 bits (4 outstanding).
+
+### P6 -- shrink the schedulers to 8/8
+
+Measured on aesbench, cycles/byte: 4/4 186.57, 6/6 186.13, **8/8 185.57**, 10/12 184.94,
+12/12 184.94, 16/16 184.94. It **saturates at 10/12** -- 12 and 16 are bit-identical, so
+every entry past 10/12 is area and Fmax for nothing. 8/8 costs 0.34%, worth trading for
+margin while `probe_clk` holds only +0.029 ns against an 81-400 ps placement spread.
+
+### P7 -- rename walk-back, to remove the mispredict DRAIN
+
+The other half of the mispredict cost. Needs a FIFO of ~ROB-size (index, value) pairs
+replayed on squash, and introduces a race between the replay and the ROB head advancing.
+Deferred deliberately: it is the first thing here that makes an otherwise simple design
+complicated, and it must not cost frequency.
+
+### P8 -- stores and AMOs still block M
+
+Unmeasured in isolation. Listed so it is not forgotten, not because it is next.
+
 ### Measured: GB5 AES-XTS, dynamic issue vs in-order issue
 
 Both captures killed at the same workload boundary (GB5 has no workload selection, so

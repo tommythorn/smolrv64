@@ -1,0 +1,37 @@
+# GB5 single-core results, one row per workload per run.  Append-only; never edit a
+# recorded row.  `date` is the run date, `rtl` the commit the BITSTREAM was built from.
+#
+# Why this file exists: a GB5 result page shows `model` and nothing else about the
+# hardware, and two runs of the SAME commit differ 7.4% on AES-XTS (95aff227: 814.5 vs
+# 754.4 kB/s).  Without the commit and the spread written down, "is this better?" is not
+# answerable.  The model string now carries the commit automatically (1497f89b).
+#
+# score is GB5's integer subscore; rate is its throughput figure, which is the sensitive
+# one -- a score of 1 spans a wide range of rates, so ALWAYS compare rate, not score.
+# unit is the rate's unit as GB5 prints it.
+#
+# date	rtl	mhz	workload	score	rate	unit
+20260817	53bb94bf	111.11	AES-XTS	?	285.1	KB/sec
+20260822	95aff227	166.67	AES-XTS	?	814.5	KB/sec
+20260825	95aff227	166.67	AES-XTS	?	754.4	KB/sec
+20260827	72d14cde	166.67	AES-XTS	1	950.6	KB/sec
+20260827	72d14cde	166.67	Text Compression	9	45.3	KB/sec
+20260827	72d14cde	166.67	Image Compression	4	177.3	Kpixels/sec
+20260827	72d14cde	166.67	Navigation	8	22.4	KTE/sec
+20260827	72d14cde	166.67	HTML5	3	3.88	KElements/sec
+20260827	72d14cde	166.67	SQLite	4	1.19	Krows/sec
+20260827	72d14cde	166.67	PDF Rendering	4	237.1	Kpixels/sec
+20260827	72d14cde	166.67	Text Rendering	4	1.26	KB/sec
+20260827	72d14cde	166.67	Clang	5	39.3	lines/sec
+20260827	72d14cde	166.67	Camera	1	0.02	images/sec
+20260827	72d14cde	166.67	N-Body Physics	4	5.62	Kpairs/sec
+20260827	72d14cde	166.67	Rigid Body Physics	5	28.5	FPS
+20260827	72d14cde	166.67	Gaussian Blur	1	28.1	Kpixels/sec
+20260827	72d14cde	166.67	Face Detection	5	0.04	images/sec
+20260827	72d14cde	166.67	Horizon Detection	5	112.5	Kpixels/sec
+20260827	72d14cde	166.67	Image Inpainting	4	211.5	Kpixels/sec
+20260827	72d14cde	166.67	HDR	7	89.3	Kpixels/sec
+20260827	72d14cde	166.67	Ray Tracing	4	3.53	Kpixels/sec
+20260827	72d14cde	166.67	Structure from Motion	1	11.7	pixels/sec
+20260827	72d14cde	166.67	Speech Recognition	6	0.20	Words/sec
+20260827	72d14cde	166.67	Machine Learning	0	0.01	images/sec

@@ -116,7 +116,35 @@ static void encrypt(const uint8_t *in, uint8_t *out) {
 static uint64_t rdcycle(void)  { uint64_t v; __asm__ volatile("rdcycle  %0":"=r"(v)); return v; }
 static uint64_t rdinstr(void)  { uint64_t v; __asm__ volatile("rdinstret %0":"=r"(v)); return v; }
 
-#define NBLK 512                 /* 8 KiB per pass, independent blocks as in XTS */
+// A CPI stack for the AES kernel ALONE. The GB5 numbers for this workload were taken over
+// a window that also held process startup, so they cannot say where AES itself spends its
+// cycles. These can. Event numbers are src/csr_file.v's HPMEV_*.
+#define EV_FE_IC  0x0312   /* fetch window empty  */
+#define EV_FE_ALN 0x0313   /* bytes, but no COMPLETE instruction -- the RVC aligner */
+#define EV_FE_QUE 0x0314   /* had one; F/X queue empty */
+#define EV_FE_BUB 0x0310   /* total: X idle, frontend supplied nothing */
+#define EV_ICMISS 0x0112
+#define EV_ST_MEM 0x0300
+#define SETEV(n, e) __asm__ volatile("csrw 0x32" #n ", %0" :: "r"((uint64_t)(e)))
+#define RDCNT(n)    ({ uint64_t v; __asm__ volatile("csrr %0, 0xB0" #n : "=r"(v)); v; })
+
+static void hpm_setup(void) {
+    SETEV(3, EV_FE_IC);  SETEV(4, EV_FE_ALN); SETEV(5, EV_FE_QUE);
+    SETEV(6, EV_FE_BUB); SETEV(7, EV_ICMISS);  SETEV(8, EV_ST_MEM);
+}
+static void pct(const char *nm, uint64_t v, uint64_t tot) {
+    puts_(nm); putdec(v);
+    puts_(" ("); putdec(v * 100 / tot); putc_('.'); putdec((v * 1000 / tot) % 10); puts_("%)\n");
+}
+
+// FOOTPRINT MATTERS AS MUCH AS THE BYTE COUNT. An earlier version encrypted an 8 KiB
+// buffer eight times: after pass 1 everything was resident in the 64 KiB D$, D$ misses
+// were literally 0, and the kernel looked purely frontend-bound. GB5's AES-XTS streams
+// through a buffer instead and misses ~0.28% -- low, but real traffic on every line.
+// Same total bytes, one pass, 128 KiB of footprint = 2x the D$, so lines are actually
+// fetched. Without this the benchmark disagrees with GB5 about where the cycles go and
+// would mis-rank the work.
+#define NBLK 4096                /* 64 KiB in + 64 KiB out, streamed once */
 static uint8_t buf[NBLK * 16], obuf[NBLK * 16];
 
 int main(void) {
@@ -135,14 +163,18 @@ int main(void) {
     puts_("aesbench: FIPS-197 vector ok\n");
 
     for (int i = 0; i < NBLK * 16; i++) buf[i] = (uint8_t)(i * 7 + 13);
-    for (int i = 0; i < NBLK; i++) encrypt(buf + 16*i, obuf + 16*i);   // warm the D$
+    // Deliberately NOT warmed: streaming past a 64 KiB cache is the point.
 
+    hpm_setup();
+    uint64_t e3 = RDCNT(3), e4 = RDCNT(4), e5 = RDCNT(5);
+    uint64_t e6 = RDCNT(6), e7 = RDCNT(7), e8 = RDCNT(8);
     uint64_t c0 = rdcycle(), i0 = rdinstr();
-    for (int p = 0; p < 8; p++)
-        for (int i = 0; i < NBLK; i++) encrypt(buf + 16*i, obuf + 16*i);
+    for (int i = 0; i < NBLK; i++) encrypt(buf + 16*i, obuf + 16*i);
     uint64_t c = rdcycle() - c0, n = rdinstr() - i0;
+    e3 = RDCNT(3) - e3; e4 = RDCNT(4) - e4; e5 = RDCNT(5) - e5;
+    e6 = RDCNT(6) - e6; e7 = RDCNT(7) - e7; e8 = RDCNT(8) - e8;
 
-    const uint64_t bytes = (uint64_t)NBLK * 16 * 8;
+    const uint64_t bytes = (uint64_t)NBLK * 16;
     puts_("aesbench: bytes=");   putdec(bytes);
     puts_(" cycles=");           putdec(c);
     puts_(" insn=");             putdec(n);
@@ -152,6 +184,13 @@ int main(void) {
     putdec(n / bytes); putc_('.'); putdec((n * 100 / bytes) % 100);
     puts_("  IPC=0.");
     putdec(n * 1000 / c);
+    puts_("\n");
+    pct("aesbench: FE_BUB total ", e6, c);
+    pct("aesbench:   FE_IC  (I$)  ", e3, c);
+    pct("aesbench:   FE_ALN (rvc) ", e4, c);
+    pct("aesbench:   FE_QUE (F/X) ", e5, c);
+    pct("aesbench: ST_MEM        ", e8, c);
+    puts_("aesbench: I$miss="); putdec(e7);
     puts_("\naesbench: done\n");
     for (;;);
 }
