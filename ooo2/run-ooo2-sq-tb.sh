@@ -3,5 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 verilator --binary -Wno-DECLFILENAME -Wno-WIDTHEXPAND \
-   --top-module tb_ooo2_sq tb_ooo2_sq.v ooo2_sq.v -o obj_dir_sq/tb_sq >/dev/null 2>&1
-exec ./obj_dir_sq/tb_sq
+   --top-module tb_ooo2_sq tb_ooo2_sq.v ooo2_sq.v -o tb_sq >/dev/null 2>&1
+exec ./obj_dir/tb_sq

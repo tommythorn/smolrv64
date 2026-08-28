@@ -32,12 +32,14 @@ module ooo2_sq
     parameter IDXB  = 2,               // $clog2(NENT)
     parameter PAW   = 56,
     parameter PBITS = 9,
+    parameter ROBB  = 4,
     parameter NWB   = 3)
    (input  wire                  clk,
     input  wire                  reset,
 
     // ---- allocate: at dispatch, program order, one per cycle ----
     input  wire                  d_alloc,
+    input  wire [ROBB-1:0]       d_rob,       // rides with the store; commit is at the head
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
 
@@ -57,6 +59,7 @@ module ooo2_sq
 
     // ---- commit: the head, once its data has arrived ----
     output wire                  c_v,
+    output wire [ROBB-1:0]       c_rob,       // core commits only when this IS the ROB head
     output wire [PAW-1:0]        c_addr,
     output wire [63:0]           c_data,
     output wire [1:0]            c_size,
@@ -75,6 +78,7 @@ module ooo2_sq
    reg [63:0]            data [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
    reg [PBITS-1:0]       dpr  [0:NENT-1];
+   reg [ROBB-1:0]        rob  [0:NENT-1];
    reg [IDXB-1:0]        head, tail;
    reg [IDXB:0]          cnt;
    integer               k, w;
@@ -86,7 +90,11 @@ module ooo2_sq
    assign d_idx     = tail;
    assign occupancy = cnt;
 
+   // c_v says the head is READY (address and data present). Committing in program order
+   // is the core's job: it takes the entry only when c_rob is the ROB head, so a store
+   // reaches memory exactly where the cosim's retire stream expects it.
    assign c_v    = v[head] & av[head] & dv[head];
+   assign c_rob  = rob[head];
    assign c_addr = addr[head];
    assign c_data = data[head];
    assign c_size = sz[head];
@@ -122,6 +130,7 @@ module ooo2_sq
          // allocate at the tail
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0;
+            rob[tail] <= d_rob;
             tail <= tail + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;

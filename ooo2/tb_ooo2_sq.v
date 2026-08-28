@@ -6,6 +6,7 @@ module tb_ooo2_sq;
    always #5 clk = ~clk;
 
    reg d_alloc=0, a_v=0, a_data_v=0, c_take=0;
+   reg [3:0] d_rob=0;
    reg [IDXB-1:0]  a_idx=0;
    reg [PAW-1:0]   a_addr=0, ld_addr=0;
    reg [1:0]       a_size=2, ld_size=2;
@@ -15,18 +16,19 @@ module tb_ooo2_sq;
    reg [NWB*PBITS-1:0] wb_preg=0;
    reg [NWB*64-1:0]    wb_data=0;
    wire d_ready, c_v, ld_block;
+   wire [3:0] c_rob;
    wire [IDXB-1:0] d_idx;
    wire [PAW-1:0]  c_addr;
    wire [63:0]     c_data;
    wire [1:0]      c_size;
    wire [IDXB:0]   occ;
 
-   ooo2_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.NWB(NWB)) dut
-     (.clk(clk),.reset(reset),.d_alloc(d_alloc),.d_ready(d_ready),.d_idx(d_idx),
+   ooo2_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(4),.NWB(NWB)) dut
+     (.clk(clk),.reset(reset),.d_alloc(d_alloc),.d_rob(d_rob),.d_ready(d_ready),.d_idx(d_idx),
       .a_v(a_v),.a_idx(a_idx),.a_addr(a_addr),.a_size(a_size),.a_dpreg(a_dpreg),
       .a_data_v(a_data_v),.a_data(a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
-      .c_v(c_v),.c_addr(c_addr),.c_data(c_data),.c_size(c_size),.c_take(c_take),
+      .c_v(c_v),.c_rob(c_rob),.c_addr(c_addr),.c_data(c_data),.c_size(c_size),.c_take(c_take),
       .ld_addr(ld_addr),.ld_size(ld_size),.ld_block(ld_block),
       .occupancy(occ),.flush(flush));
 
