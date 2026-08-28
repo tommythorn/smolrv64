@@ -606,8 +606,8 @@ tracers and stats are gated.
 | | |
 |---|---|
 | `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`, from an MMCM |
-| Timing | `probe_clk` WNS **+0.124 ns**, TNS 0.000, 0 failing endpoints, dynamic issue with 8/8 schedulers |
-| Margin | 124 ps against a placement spread of 81-400 ps (rule I2). Was +0.029 ns at 10/12 schedulers; shrinking to 8/8 bought **95 ps**, which is the real reason to do it -- the 0.43% cycles/byte was the tiebreaker, not the prize. Still inside the spread's upper half, so treat a re-place as able to lose it. |
+| Timing | `probe_clk` WNS **+0.050 ns**, TNS 0.000, 0 failing endpoints |
+| Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.050 at `NF`=4, which gave 22 ps back for no measured performance. |
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |
