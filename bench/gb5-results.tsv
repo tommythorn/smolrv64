@@ -84,3 +84,6 @@
 20260828	2ba7716e	166.67	Structure from Motion	1	11.2	pixels/sec
 20260828	2ba7716e	166.67	Speech Recognition	6	0.19	Words/sec
 20260828	2ba7716e	166.67	Machine Learning	0	0.01	images/sec
+# aggregate-only rows (no saved result page): efe6dd6 = FP four-in-flight on 10/12
+# schedulers. IPC 0.2582 vs 72d14cde 0.2520 (+2.4%), same schedulers, so this
+# isolates the FP change. ST_FPU 28.9%% -> 27.9%%. https://browser.geekbench.com/v5/cpu/24579000
