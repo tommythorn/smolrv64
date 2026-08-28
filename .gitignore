@@ -34,3 +34,5 @@ workloads/blurbench/blurbench.elf
 workloads/mlbench/mlbench.bin
 workloads/mlbench/mlbench.elf
 tools/perftool/target/
+workloads/saxpybench/saxpybench.bin
+workloads/saxpybench/saxpybench.elf

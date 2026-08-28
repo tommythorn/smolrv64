@@ -967,6 +967,63 @@ instruction count, so a workload that runs long dominates it while contributing 
 equal terms to the score. Judge changes on the geomean of rates. The same mistake in the
 other direction is what made 8/8 look good on `aesbench`.
 
+### Camera: what actually limits it, and the work in priority order
+
+Camera is classified **Integer** by GB5 and scores 1, so it drags the Integer geomean.
+`workloads/saxpybench` reproduces its loop from the trace: `y[i] = a*x[i] + y[i]`, 7
+instructions per element, **no accumulator carried between iterations** -- every element
+is independent.
+
+Measured at `OOO2_HW=4`, arrays L1-resident:
+
+```
+RESIDENT  22.08 cyc/elem   7 insn/elem   IPC 0.32
+          ST_FPU 68%   ST_MEM 68%   ST_ROB 68%   FE_BUB 0%
+STREAM    25.43 cyc/elem (128 KiB over a 64 KiB D$)   ST_MEM 72%
+```
+
+**22.08 is one element's critical path**: load 5 + `fmuls` 8 + `fadds` 8 ~= 21. So there is
+**zero overlap between iterations that depend on nothing at all.**
+
+What was swept and did NOT move it -- each of these is a hypothesis killed:
+
+| swept | range | cycles/elem |
+|---|---|---|
+| ROB depth | 16 -> 32 -> 64 -> 128 | 22.08 at every one |
+| FP scheduler `NF` | 4 -> 8 -> 16 | 22.08 |
+| FPU `NFLIGHT` | 4 -> 8 | 22.08 |
+| D$ footprint | resident -> 2x the cache | 22.08 -> 25.43 (misses are minor) |
+
+`ST_ROB` goes 68% -> 0% at ROB=32 **with no change in speed**, which settles it: the ROB
+filled *because* something downstream was slow, not the reverse. And `FE_BUB` is 0%, so the
+frontend is innocent here.
+
+**The remaining candidate is `u_rs_l` being in-order.** A store waits for `rs2` -- the
+`fadds` result, ~21 cycles away -- and while it waits it holds the head of an in-order
+queue, so the *next* element's loads cannot issue behind it. Independent work, perfectly
+serialized. (An attempt to confirm by setting `INORDER(0)` on `u_rs_l` produced no output at
+all: the head pointer is load-bearing for M's single-slot coherence, so the upside cannot be
+measured that cheaply.)
+
+#### Priority order for Camera
+
+1. **A store issues on its ADDRESS alone; its data arrives at the store buffer separately**
+   (`Area-Efficient-Scalar-OoO.md` 11). This is the whole diagnosis in one change: it stops
+   a store waiting 21 cycles at the head of the queue.
+2. **Load queue -- loads issue and access out of order.** Lets element *i+1* begin while
+   *i*'s chain runs.
+3. **Multiple outstanding loads.** `ldbench` measures 4.00 cyc/load throughput against 5.00
+   latency, an overlap of only 1.24x; Camera does 2 loads per element.
+4. **FP latency.** 16 of the 21-cycle chain is `fmuls` + `fadds` at 8 cycles each. Real, but
+   it is an fpnew `PIPE_REGS` / Fmax trade, not free.
+5. **Superscalar.** 7 instructions per element is a 7-cycle floor at `IW=1`, so this cannot
+   pay until 1-3 have moved the wall below it.
+
+**Estimated ceiling, not measured:** with memory decoupled the floor becomes the largest of
+7 cycles (issue width), ~4.5 (FP throughput at 2.25 cyc/op x2), and the memory throughput
+term -- so roughly **10-12 cycles/element against 22.08 today, ~2x**. Items 1-3 are one
+piece of work (P0), which makes Camera the clearest single argument for it.
+
 ### Corroborated: the ST_MEM attribution fix (aesbench as control)
 
 `aesbench` contains no FP, so a correct FP-attribution fix must barely move it. `blurbench`
