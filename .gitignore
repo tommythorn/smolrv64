@@ -12,3 +12,10 @@ workloads/ubuntu/ubuntu-nfs-166.dts
 workloads/ubuntu/ubuntu-nfs-166.dtb
 workloads/ubuntu/ubuntu-nfs-polled.dts
 workloads/ubuntu/ubuntu-nfs-polled.dtb
+
+# Serial console capture from `screen -L`. Grows without bound (17 MB when it was
+# committed by mistake) and is a byproduct of every single boot. It was deliberately
+# removed once in 9529c850 and re-added by a blanket `git add -A` -- the reason the
+# rule below exists.
+workloads/ubuntu/screenlog.0
+workloads/*/screenlog.0
