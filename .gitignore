@@ -29,3 +29,5 @@ workloads/fpbench/fpbench.bin
 workloads/fpbench/fpbench.elf
 workloads/ldbench/ldbench.bin
 workloads/ldbench/ldbench.elf
+workloads/blurbench/blurbench.bin
+workloads/blurbench/blurbench.elf
