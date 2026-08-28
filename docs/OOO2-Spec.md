@@ -803,16 +803,32 @@ the FE write port arbitrated between FP and MD results. **No new scheduler, no f
 shard, no extra read ports, no IE arbitration**, and it inherits the tag mechanism that
 already lets FP complete out of order. `u_rs_l` is then memory-only and goes unary.
 
-**The wrinkle is the divider, not the multiplier.** `mul3` is 3 cycles and pipelined and
-fits stage F exactly. The `divider` is ~64 cycles and iterative, and `unit_busy` is
-per-scheduler -- so a divide would block **FP issue** for its whole duration, and FP is
-23% of cycles against the much cheaper M-class residual it blocks today. That needs the
-per-entry readiness gate (`~e_var[g] | ~md_busy`) after all -- for readiness only, not for
-the wake model. The bit is required by every option, so this one still comes out ahead.
+**mul and div are treated identically at issue. There is no per-entry bit.** An earlier
+draft of this section reached for a readiness gate (`~e_var[g] | ~md_busy`) so that a
+64-cycle divide would not block FP issue. That is the wrong place to solve it.
 
-If the per-entry bit is unwelcome, `mul` -> stage F with `div` left in M also works, at the
-cost of `u_rs_l` keeping `NSRC`=2 for div's second operand -- which forfeits the unary
-scheduler that motivated the whole move.
+**NEVER STALL ISSUE.** Issue is the most important critical path in the machine, and making
+it conditional on a functional unit's state is precisely what puts unit state on that path.
+Back-pressure belongs at the FRONTEND, where it is off the critical path and where there is
+already a stall mechanism.
+
+So: a divide issues exactly like a multiply and enters a **small request FIFO**, which the
+single divider drains at one per ~64 cycles. The FIFO is allowed to fill. Only when it
+comes within **M entries of full** does the frontend stall (or restart) -- and `M` is the
+number of instructions that may already be past the frontend and still turn out to be
+divides. That slack is the whole design: it guarantees the back-pressure lands upstream
+before issue could ever be asked to wait.
+
+Measured, this mechanism is cold. On full-suite GB5, `ST_DIV` is 0.354% of cycles at ~64
+cycles per divide, i.e. **one divide per ~4,560 instructions, one per ~18,000 cycles**. The
+FIFO is essentially always empty and the frontend stall essentially never fires. It exists
+to handle a divide-dense burst correctly, rather than paying for that burst on the issue
+path in every cycle that is not one.
+
+The same reasoning applies to the FPU's `iss_ready`, which today does feed `unit_busy` and
+therefore does gate issue. It is registers-only, so it is not the worst version of the
+mistake, but it is the same shape and should become a FIFO with frontend back-pressure when
+this is built.
 
 #### Alternative considered: with the ALU ops, in `u_rs_i` A fourth scheduler and stage
 would need a **fourth PRF shard** -- one writer per shard is the property the register file
