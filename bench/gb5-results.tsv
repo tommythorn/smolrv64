@@ -84,6 +84,24 @@
 20260828	2ba7716e	166.67	Structure from Motion	1	11.2	pixels/sec
 20260828	2ba7716e	166.67	Speech Recognition	6	0.19	Words/sec
 20260828	2ba7716e	166.67	Machine Learning	0	0.01	images/sec
-# aggregate-only rows (no saved result page): efe6dd6 = FP four-in-flight on 10/12
-# schedulers. IPC 0.2582 vs 72d14cde 0.2520 (+2.4%), same schedulers, so this
-# isolates the FP change. ST_FPU 28.9%% -> 27.9%%. https://browser.geekbench.com/v5/cpu/24579000
+20260829	efe6dd6	166.67	AES-XTS	0	863.8	KB/sec
+20260829	efe6dd6	166.67	Text Compression	9	45.7	KB/sec
+20260829	efe6dd6	166.67	Image Compression	3	162.3	Kpixels/sec
+20260829	efe6dd6	166.67	Navigation	6	16.7	KTE/sec
+20260829	efe6dd6	166.67	HTML5	3	3.95	KElements/sec
+20260829	efe6dd6	166.67	SQLite	4	1.18	Krows/sec
+20260829	efe6dd6	166.67	PDF Rendering	4	208.4	Kpixels/sec
+20260829	efe6dd6	166.67	Text Rendering	4	1.24	KB/sec
+20260829	efe6dd6	166.67	Clang	5	41.1	lines/sec
+20260829	efe6dd6	166.67	Camera	1	0.01	images/sec
+20260829	efe6dd6	166.67	N-Body Physics	4	5.57	Kpairs/sec
+20260829	efe6dd6	166.67	Rigid Body Physics	5	30.3	FPS
+20260829	efe6dd6	166.67	Gaussian Blur	1	29.2	Kpixels/sec
+20260829	efe6dd6	166.67	Face Detection	5	0.04	images/sec
+20260829	efe6dd6	166.67	Horizon Detection	5	115.9	Kpixels/sec
+20260829	efe6dd6	166.67	Image Inpainting	4	210.4	Kpixels/sec
+20260829	efe6dd6	166.67	HDR	6	85.2	Kpixels/sec
+20260829	efe6dd6	166.67	Ray Tracing	5	3.65	Kpixels/sec
+20260829	efe6dd6	166.67	Structure from Motion	1	11.6	pixels/sec
+20260829	efe6dd6	166.67	Speech Recognition	6	0.2	Words/sec
+20260829	efe6dd6	166.67	Machine Learning	0	0.01	images/sec

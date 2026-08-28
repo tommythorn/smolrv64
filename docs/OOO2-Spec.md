@@ -891,6 +891,43 @@ against a few entries recovers most independent traffic.
 Revisit only after P0 is measured. Forwarding buys nothing until loads can issue and
 access out of order in the first place.
 
+### UNRESOLVED: efe6dd6 is a 5.4% geomean regression that has no mechanism
+
+**Do not run GB5 again until this is understood.**
+
+`efe6dd6` differs from `72d14cde` by exactly one RTL change -- FP four-in-flight -- on
+identical 10/12 schedulers. Aggregate counters said +2.4% IPC. The per-workload geomean,
+which is what the score follows, says **-5.4%**:
+
+| gained | | regressed (>8% noise floor) | |
+|---|---:|---|---:|
+| Rigid Body Physics | +6.3% | **Navigation** | **-25.4%** |
+| Clang | +4.6% | **PDF Rendering** | **-12.1%** |
+| Gaussian Blur | +3.9% | **AES-XTS** | **-9.1%** |
+| Ray Tracing | +3.4% | Image Compression | -8.5% |
+| Horizon Detection | +3.0% | | |
+
+(Camera's -50% is 0.02 -> 0.01, single-digit quantisation, not real.)
+
+The FP workloads gaining is consistent with the change. **The integer workloads regressing
+is not**: nothing in FP four-in-flight can slow Navigation by 25%. AES-XTS fell 950.6 ->
+863.8 and the Crypto score went 1 -> 0 again.
+
+Candidate explanations, none confirmed:
+
+- **Run-to-run variation larger than the AES-XTS-derived 7.4% floor.** That floor came from
+  one workload; others may be noisier. Nothing establishes it as a global bound.
+- **The ROB completion port widening** (`NW` 2 -> 3) that shipped with the FP change. It
+  touches every completion, not just FP.
+- **Machine conditions.** The run started at `load=1.82`, but no comparable figure was
+  recorded for `72d14cde`.
+
+**Method lesson, and it is the second time in this session.** Aggregate IPC and per-workload
+geomean disagreed in SIGN here, and the aggregate is the one that misleads: it weights by
+instruction count, so a workload that runs long dominates it while contributing one of 21
+equal terms to the score. Judge changes on the geomean of rates. The same mistake in the
+other direction is what made 8/8 look good on `aesbench`.
+
 ### Workload shapes, from hardware traces
 
 Three GB5 workloads have been traced on the FPGA and turned into microbenchmarks. They want
