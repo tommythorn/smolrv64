@@ -804,7 +804,7 @@ module backend_top
    // (docs/rtl-rules.md).  The OoO core implements only the first seven; the stall-
    // attribution and redirect-cause events [19:7] are in-order-core-only and read as a
    // hard zero here rather than as an unconnected upper slice.
-   wire [21:0] hpm_ev = {15'd0,
+   wire [22:0] hpm_ev = {16'd0,
                         hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
                         roll_v, lsu_st_done, lsu_ld_done};
 

@@ -124,6 +124,7 @@ static uint64_t rdinstr(void)  { uint64_t v; __asm__ volatile("rdinstret %0":"=r
 #define EV_FE_QUE 0x0314   /* had one; F/X queue empty */
 #define EV_FE_BUB 0x0310   /* total: X idle, frontend supplied nothing */
 #define EV_ICMISS 0x0112
+#define EV_ST_ROB 0x0305   /* dispatch blocked: ROB full */
 #define EV_ST_MEM 0x0300
 #define SETEV(n, e) __asm__ volatile("csrw 0x32" #n ", %0" :: "r"((uint64_t)(e)))
 #define RDCNT(n)    ({ uint64_t v; __asm__ volatile("csrr %0, 0xB0" #n : "=r"(v)); v; })

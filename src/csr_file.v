@@ -68,7 +68,7 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
     // STALL-ATTRIBUTION taps (see ooo2_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
-    input  wire [21:0] hpm_ev,
+    input  wire [22:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -185,6 +185,7 @@ module csr_file
                       HPMEV_ST_MUL = 16'h0302,   // ...on the 3-cycle multiplier
                       HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU, + X held for a pending FP result
                       HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off (not data deps)
+                      HPMEV_ST_ROB = 16'h0305,   // dispatch blocked: the ROB is full
                       HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
                       HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
@@ -223,6 +224,7 @@ module csr_file
         HPMEV_FE_QUE:  hpm_inc = {5'd0, hpm_ev[19]};
         HPMEV_FB_HIT:  hpm_inc = {5'd0, hpm_ev[20]};
         HPMEV_FB_RHIT: hpm_inc = {5'd0, hpm_ev[21]};
+        HPMEV_ST_ROB:  hpm_inc = {5'd0, hpm_ev[22]};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

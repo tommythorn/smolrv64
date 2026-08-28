@@ -52,6 +52,7 @@ static uint64_t rdinstr(void) { uint64_t v; __asm__ volatile("rdinstret %0":"=r"
 #define SETEV(n, e) __asm__ volatile("csrw 0x32" #n ", %0" :: "r"((uint64_t)(e)))
 #define RDCNT(n)    ({ uint64_t v; __asm__ volatile("csrr %0, 0xB0" #n : "=r"(v)); v; })
 #define EV_ST_FPU 0x0303
+#define EV_ST_ROB 0x0305   /* dispatch blocked: ROB full */
 #define EV_ST_MEM 0x0300
 #define EV_FE_BUB 0x0310
 
@@ -60,20 +61,21 @@ static uint64_t rdinstr(void) { uint64_t v; __asm__ volatile("rdinstret %0":"=r"
 static float A[N], B[N];
 
 int main(void) {
-    SETEV(3, EV_ST_FPU); SETEV(4, EV_ST_MEM); SETEV(5, EV_FE_BUB);
+    SETEV(3, EV_ST_FPU); SETEV(4, EV_ST_MEM); SETEV(5, EV_FE_BUB); SETEV(6, EV_ST_ROB);
     for (int i = 0; i < N; i++) { A[i] = (float)((i*31)&255) * 0.00390625f;
                                   B[i] = (float)((i*17)&255) * 0.00390625f; }
     volatile float sink = 0.0f;
 
     // ---- SERIAL: one accumulator, as traced ----
     uint64_t c0 = rdcycle(), i0 = rdinstr(), f0c = RDCNT(3), m0 = RDCNT(4), b0 = RDCNT(5);
+    uint64_t r0 = RDCNT(6);
     for (int p = 0; p < PASS; p++) {
         float acc = 0.0f;
         for (int i = 0; i < N; i++) acc = acc + A[i] * B[i];
         sink += acc;
     }
     uint64_t sc = rdcycle() - c0, si = rdinstr() - i0, sf = RDCNT(3) - f0c;
-    uint64_t sm = RDCNT(4) - m0, sb = RDCNT(5) - b0;
+    uint64_t sm = RDCNT(4) - m0, sb = RDCNT(5) - b0, sr = RDCNT(6) - r0;
 
     // ---- SPLIT4: four accumulators, chain depth /4 ----
     c0 = rdcycle(); i0 = rdinstr(); f0c = RDCNT(3);
@@ -97,6 +99,10 @@ int main(void) {
     puts_("\nmlbench:   ST_FPU=");     putdec(sf * 100 / sc);
     puts_("% ST_MEM=");                putdec(sm * 100 / sc);
     puts_("% FE_BUB=");                putdec(sb * 100 / sc);
+    puts_("% ST_ROB=");                putdec(sr * 100 / sc);
+    puts_("%\nmlbench:   raw cyc="); putdec(sc);
+    puts_(" ST_FPU="); putdec(sf); puts_(" ST_MEM="); putdec(sm);
+    puts_(" FE_BUB="); putdec(sb); puts_(" ST_ROB="); putdec(sr);
     puts_("%\nmlbench: SPLIT4 cyc/elem="); fixed2(tc, el);
     puts_("  insn/elem=");                 fixed2(ti, el);
     puts_("  ST_FPU/elem=");               fixed2(tf, el);

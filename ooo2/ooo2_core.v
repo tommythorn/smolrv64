@@ -1221,7 +1221,9 @@ module ooo2_core
    // op the unit will not yet take, which is exactly the old `st_m & fp_arith` term in its
    // new home. (~f_advance is the same expression; written out for clarity.)
    wire st_fpu    = (f_valid & ~fp_disp) | dep_fp;  // ...on the FPU
-   wire st_ser    = m_advance & ~accept & ~dep_ld & ~dep_fp;
+   // ~st_rob: the two are now disjoint, so the stack does not count a ROB-full cycle
+   // twice under two different names.
+   wire st_ser    = m_advance & ~accept & ~dep_ld & ~dep_fp & ~st_rob;
    wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
@@ -1249,7 +1251,15 @@ module ooo2_core
    wire red_br    = redirect & ~csr_red & m_is_branch;
    wire red_jalr  = redirect & ~csr_red & ~m_is_branch & m_is_jalr;
 
-   wire [21:0] hpm_ev = {hpm_fb_rhit, hpm_fb_hit,
+   // ST_ROB: dispatch has an instruction and the ROB has no room. Split out of ST_SER
+   // because that event's name says "serializing op" while it actually absorbed EVERY
+   // non-dependency dispatch stall -- and on workloads/mlbench the dominant one is not
+   // serialisation at all: d_hold is 99% rob_full, because a dot-product accumulator chain
+   // blocks RETIREMENT rather than issue, so it never appears as a dependency stall and
+   // ST_FPU correctly reads 0%. Without this bit that workload's real limiter is invisible
+   // in the CPI stack.
+   wire st_rob = d_valid & ~rob_ready;
+   wire [22:0] hpm_ev = {st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
@@ -1265,9 +1275,9 @@ module ooo2_core
    // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
    // built, so this cone did not exist.
    // minstret is NOT included: retire_cnt stays combinational because it is architectural.
-   reg [21:0] hpm_ev_q;
-   initial hpm_ev_q = 22'd0;
-   always @(posedge clk) hpm_ev_q <= reset ? 22'd0 : hpm_ev;
+   reg [22:0] hpm_ev_q;
+   initial hpm_ev_q = 23'd0;
+   always @(posedge clk) hpm_ev_q <= reset ? 23'd0 : hpm_ev;
 
    csr_file u_csr
      (.clk(clk), .reset(reset),
