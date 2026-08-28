@@ -266,16 +266,30 @@ Stated here because its absence is the single largest fact about the machine (§
 It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
 is not needed alongside it.
 
-**There are two schedulers, not one, and neither stores age.**
+**There are three schedulers, one per unit, and none stores age.**
 
-| | `u_rs_i` | `u_rs_l` |
-|---|---|---|
-| entries (`NENT`) | 10 | 12 |
-| sources (`NSRC`) | 2 | 3 |
-| holds | pure ALU and non-trapping ops | everything routed to M: memory, AMO, mul/div, CSR, branches, jumps, FP arith |
-| ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` |
-| unit | completes at issue, writes IE | M |
-| `unit_busy` | **none** — IE has one writer | `~m_advance \| (i_v & i_needs_m)` |
+| | `u_rs_i` | `u_rs_l` | `u_rs_f` |
+|---|---|---|---|
+| entries (`NENT`) | 10 | 12 | 8 |
+| sources (`NSRC`) | 2 | 3 | 3 |
+| holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
+| ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
+| unit | completes at issue, writes IE | M | **stage F** |
+| `unit_busy` | **none** — IE has one writer | `~m_advance \| (i_v & i_needs_m)` | `~f_advance \| (i_v & i_needs_f)` |
+
+**One scheduler per unit is what makes three safe.** Three schedulers feeding ONE execute
+stage deadlock (`Area-Efficient-Scalar-OoO.md` 12.2): an op reaches the shared stage, finds
+it must be ROB head to retire, and an older op in a different scheduler cannot issue to
+free it. Stage F removes the condition rather than arbitrating it -- **an FP arith op never
+enters M**. It cannot head-block because it cannot trap: a bad encoding is `~d_fp_valid`,
+and `mstatus.FS=Off` routes FP to M as before (a write to FS redirects and refetches, so
+the value read at dispatch is what every in-flight FP op retires under).
+
+`u_rs_f` reorders, and that is the point rather than a detail. `workloads/blurbench`, taken
+from a hardware trace of GB5 Gaussian Blur, is a 4-deep serial `fadds` chain whose taps are
+independent; in-order issue held it at exactly its critical path (39.50 cycles/pixel against
+5 dependence levels x 8 cycles) because the next iteration's multiplies could not start
+until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 
 **Entry format — `2 + NSRC×PBITS` bits.** Scheduling state only; no age, nothing quadratic.
 
@@ -333,7 +347,7 @@ runs inside every 240-test and cosim run.
 | CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 | yes | LD shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | yes | LD shard |
-| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **no** | FE shard |
+| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | FE shard |
 | LSU load | see §8 | 1 | **no** | LD shard |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
@@ -475,7 +489,8 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `u_rs_i` entry | `ooo2_rs` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_rs_l` entry | `ooo2_rs` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 22 | 413 | 9 086 | LUTRAM | 1W dispatch, 1R issue |
+| `u_rs_f` entry | `ooo2_rs` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 
@@ -743,7 +758,23 @@ cycle. With several in flight that collision stops being rare.
 **This was the same defect as the LSU**: a pipelined unit throttled to one outstanding
 operation by its wrapper. P0 is the same shape of fix.
 
-### P3b -- FP gets its own scheduler AND its own unit
+### P3b -- FP gets its own scheduler AND its own unit -- **DONE**
+
+`u_rs_f` (8 entries, `NSRC`=3, reordering) feeding stage F, a one-entry execute stage
+parallel to M. Measured: `blurbench` 39.50 -> **29.44** cycles/pixel (-25%). `fpbench` is
+unchanged at 2.25 cyc/op throughput and 8.00 latency, correctly -- it was already FPU-bound
+rather than issue-bound, so the gain lands exactly where the trace predicted and nowhere
+else.
+
+One hazard this exposed, recorded because it will return: an FP op still in fpnew's
+pipeline when a squash happens writes back after rename has rolled its physreg away.
+`ooo2_pending` caught it as *"writeback to p352, which was not pending"*. `fp_unit` already
+forwarded `flush` to `fpnew_top`; the core tied it to 0. Flushing EVERY in-flight op on
+redirect is correct only while `head_block` holds -- a redirect fires only at ROB head, so
+anything in flight is younger by construction. **Removing `head_block` (P2) requires
+replacing this with an epoch tag first.**
+
+### P3b-old -- superseded, kept for the reasoning
 
 `ST_FPU` is **28.9% of full-suite cycles** at 1.148 CPI, a regression from the 0.973 the
 FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind every
