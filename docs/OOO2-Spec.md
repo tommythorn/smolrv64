@@ -911,12 +911,21 @@ Fixed in `f637fc8`, and the history matters because these numbers appear through
 **Every CPI stack recorded above predates these fixes** and overstates `ST_MEM` at the
 expense of `ST_FPU`. On `mlbench` the correction moved `ST_MEM` 41% → 33%.
 
-**A known remaining gap: there is no ROB-full event.** `st_ser` absorbs every non-dependency
-dispatch stall under a name that says "serialize". That matters because on `mlbench`
-`d_hold` is **99% `rob_full`** — a dot-product accumulator chain blocks *retirement*, not
-issue, so it never appears as a dependency stall at all and `ST_FPU` correctly reads 0%.
-The Zihpm bus is full at `[21:0]`; adding `ST_ROB` means widening it, which reaches
-`src/csr_file.v` and the other core.
+**`ST_ROB` (0x0305) now exists**: dispatch has an instruction and the ROB has no room,
+`d_valid & ~rob_ready`. The Zihpm bus was full at `[21:0]` and is now `[22:0]`, which
+reached `src/csr_file.v`, `src/exec_bundle.v` and `src/backend_top.v` (the other core keeps
+the new bit at zero). `ST_SER` now excludes it, so the two are disjoint rather than
+double-counting.
+
+**It immediately corrected the claim that motivated it.** This document said `mlbench` was
+ROB-full limited, on the strength of the testbench's `rob_full=68670`. That is a WHOLE-RUN
+counter and mlbench's array initialisation is store-heavy; measured over the dot-product
+kernel alone, `ST_ROB` is **1,001 cycles of 1,705,045 — 0.06%**. The ROB is not the
+kernel's constraint. `FE_BUB` at **53.7%** is, and the ROB-full stalls live in init.
+
+The recurring lesson: **a counter accumulated over a different window than the claim
+answers a different question.** This is the second time in this session that produced a
+confidently wrong conclusion.
 
 **The events overlap and do not sum to a budget.** The stack reaches 94% of cycles with
 rows that double-count a cycle stalled on two things. Read them as shares.
@@ -970,7 +979,7 @@ different things, and averaging them hides that.
 | basic block | long | 9 instructions | **5.2 instructions** |
 | mem ops | 31% `ST_MEM` | 41% | **41.2%**, of which `c.sdsp`/`c.ldsp` = **22.3%** |
 | control transfers | rare | 1 per 9 | **19.4%**, 13.9% branches |
-| what binds it | FP issue order (fixed: 39.50 -> 29.44) | ROB full -- `d_hold` is 99% `rob_full` | mispredicts + stack traffic |
+| what binds it | FP issue order (fixed: 39.50 -> 29.44) | **the frontend**, `FE_BUB` 53.7% (NOT the ROB: `ST_ROB` is 0.06%) | mispredicts + stack traffic |
 | what would help | done | ROB depth; FP add latency | superscalar, store forwarding, cheaper redirect |
 
 **Clang and Text Compression are the workloads that matter to Tommy personally**, and they
