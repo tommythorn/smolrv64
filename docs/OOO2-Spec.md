@@ -737,7 +737,39 @@ dry via `LOWAT` before a 32-entry ROB fills), and both are `$clog2`-wide in the 
 the payload index and every scheduler entry. Revisit only when a measurement shows the
 window binding.
 
-### P0 -- multiple outstanding loads
+### P0 -- load queue + store buffer (which is also multiple outstanding loads)
+
+This is one piece of work, not two. `Area-Efficient-Scalar-OoO.md` 11.1 has the design:
+address calculation issues freely; stores take a store-buffer slot indexed by store-seqno
+and commit when their data is ready; loads insert into a program-order load queue and
+access memory out of order once no older pending store can alias, starting with the
+cheapest correct test ("assume any older pending store aliases").
+
+It subsumes three separate entries that were on this list:
+
+- **multiple outstanding loads** -- the load queue IS the tag space the D$ already reserves
+  (`rd_tag`/`rd_resp_tag`, plus 2 free bits in the LSU tag).
+- **stores and AMOs block M** -- a store that commits from a buffer when its data arrives
+  does not hold an execute stage waiting for `rs2`.
+- **`u_rs_l` is in-order** -- with ordering moved to the access, the scheduler no longer
+  carries it.
+
+Measured motivation, `workloads/ldbench`, entirely L1-resident:
+
+| | cyc/load |
+|---|---:|
+| latency (pointer chase) | 5.00 |
+| throughput (8 INDEPENDENT streams) | 4.00 |
+| **overlap** | **1.24x** |
+
+Eight independent streams overlap 1.24x. And `ST_MEM` is 54.7% of full-suite GB5 cycles.
+
+Unlike P3a, the units here are genuinely FSMs (`rv_cache`: `S_IDLE -> S_CHECK -> deliver`;
+`ooo2_lsu`: `S_IDLE -> S_LD -> S_LD2`), neither accepting a request until idle again --
+~2 cycles each, which is the measured 4. So this needs a pipelined hit path as well as the
+queue. Batch it alone: it wants its own bisect.
+
+### P0-old -- multiple outstanding loads
 
 `ST_MEM` is **54.7% of full-suite GB5 cycles** at a 2.04% miss rate costing 4.995 cycles
 per access, and 23.7% even on the cache-resident AES kernel. The scheduler sweep proves the
