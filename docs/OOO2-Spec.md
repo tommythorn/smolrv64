@@ -663,10 +663,35 @@ machine-wide. Rank by the full suite unless the goal is a specific workload.
 ### P0 -- multiple outstanding loads
 
 `ST_MEM` is **54.7% of full-suite GB5 cycles** at a 2.04% miss rate costing 4.995 cycles
-per access, and 23.7% even on the cache-resident AES kernel. No amount of dynamic issue
-hides this through a single-outstanding LSU -- which the scheduler sweep proves from the
-other side: 4 entries to 20 spans 0.8%, because the window is not the constraint, the unit
-is. The tag space already reserves 2 bits (4 outstanding).
+per access, and 23.7% even on the cache-resident AES kernel. The scheduler sweep proves the
+window is not the constraint (4 entries to 20 spans 0.8%); `workloads/ldbench` proves what
+is, directly:
+
+| `ldbench`, entirely L1-resident (0 misses) | cyc/load | `ST_MEM`/load |
+|---|---:|---:|
+| latency (pointer chase) | 5.00 | 4.99 |
+| throughput (8 INDEPENDENT streams) | **4.00** | 1.75 |
+| **overlap (lat/thru)** | **1.24x** | |
+
+Eight independent streams overlap 1.24x. Loads are very nearly serialised, `ST_MEM` is 43%
+of cycles with zero misses, and the ceiling is ~4 cycles per load however much ILP is
+offered.
+
+**This is NOT the same fix as P3a, and the difference is the whole cost estimate.** The FPU
+turned out to be pipelined already (`PipeRegs=4`) with its tag ports wired and unused -- the
+wrapper was the only thing serialising it, so the fix was a counter and a tag. Here both
+stages are genuinely FSMs:
+
+    rv_cache: S_IDLE (accept) -> S_CHECK -> deliver -> S_IDLE
+    ooo2_lsu: S_IDLE -> S_LD  -> (S_LD2 if xword) -> S_IDLE
+
+Neither accepts a new request until it returns to idle, and ~2 cycles each is exactly the
+measured 4. Pipelining the hit path -- address/BRAM-read in one stage, compare/select in
+the next, with the miss path left on the FSM -- is a real rewrite of the most
+corruption-sensitive module in the design, not a wrapper change. The tag plumbing
+(`rd_tag`/`rd_resp_tag`, and 2 free bits in the LSU tag space) already exists for it.
+
+Do not start this in the same batch as anything else: it wants its own bisect.
 
 ### P1 -- triage the regression against 95aff227 (8/22)
 
