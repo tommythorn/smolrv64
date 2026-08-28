@@ -813,22 +813,38 @@ cycle its producer writes back.
 
 ---
 
-## 11. The store queue and memory ordering
+## 11. The store buffer, the load queue, and memory ordering
 
-A FIFO in program order. `sq_rob_idx` is written when the entry is **allocated at
-dispatch**; `sq_addr` and `sq_data` when the store executes.
+Two structures, both in program order, both allowing out-of-order *access*.
 
-**Allocation must be at dispatch, in program order — not at issue.** Otherwise younger
+### Store buffer — indexed by store-seqno
+
+A **store-seqno** is a counter incremented once per store. It indexes the buffer directly,
+so "the stores older than me" is a slot range rather than a scan, and comparing two of them
+is a small monotone compare rather than an age function over a wrapped ROB index.
+
+**A slot is allocated at dispatch, in program order — not at issue.** Otherwise younger
 stores take every slot while an older one waits for its operands, and the older store can
-never issue to free one: deadlock. If the queue is full, dispatch stalls.
+never issue to free one: deadlock. If the buffer is full, dispatch stalls.
 
-- **Execute** computes `addr = src1 + imm`, reads `src2` for the data, and writes both
-  into the entry found by the masked lookup of §8.3.
-- **Commit** pops the head when `sq_count > 0 && sq_rob_idx[sq_head] == commit_idx`,
-  writing the data to memory — *unless* that entry is trapping, in which case the trap
-  suppresses the write (§8.1).
-- **Flush** clears the queue entirely, which is correct because every live entry is
+- **Issue** happens as soon as the ADDRESS operands are ready. `addr = src1 + imm` is
+  ordinary ALU work; it waits for nothing else and may issue out of order.
+- **Data arrives separately.** `src2` is frequently the later of the two operands, so the
+  buffer accepts address and data independently and the store does not occupy an execute
+  stage waiting for `rs2`.
+- **Commit** writes memory when the entry is oldest *and* its data has arrived — *unless*
+  it is trapping, in which case the trap suppresses the write (§8.1).
+- **Flush** clears the buffer entirely, which is correct because every live entry is
   younger than the redirecting instruction.
+
+### Load queue — program order in, out of order out
+
+Entries are inserted **in program order** and access memory **out of order**. Each load
+carries the store-seqno of the most recent store older than it, captured at dispatch —
+the only point where program order is known for free. §11.1 is the access rule.
+
+A load's address calculation, like a store's, is ordinary ALU work and issues as soon as
+its operands are ready. **Only the access is ordered.**
 
 ### Why a queue here and a single register for branches
 
@@ -845,11 +861,15 @@ ever consumed**, because the first mispredicting branch to reach the head squash
 everything behind it. So stores need one slot per in-flight instance, and branches need
 exactly one register no matter how many are in flight.
 
-**The queue holds data, not a `data_preg`.** Holding a register number would be narrower
+**The buffer holds data, not a `data_preg`.** Holding a register number would be narrower
 per entry, but it would keep a third PRF read port alive at commit, and a read port costs
 a substantial fraction of the array it reads (§15). Holding the data kills the port and
 takes the PRF to a clean **2R1W**. It is the clearest case in the design of flops being
-the wrong unit of account. It also means a store waits for `rs2` before it can execute.
+the wrong unit of account.
+
+It does NOT mean the store waits for `rs2` before it can execute. The address side issues
+and fills its slot independently; only the *commit* needs the data. Writing it otherwise
+was the same conflation of issue with access that §11.1 corrects.
 
 ### 11.1 Memory ordering — ISSUE is free, ACCESS is ordered
 
