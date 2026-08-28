@@ -1096,6 +1096,25 @@ module ooo2_core
       // forever, since m_unit_ok no longer has an arm for it.
       if (fp_arith)
          $fatal(1, "ooo2_core: an FPU op reached M -- d_cls_f must route it to the F stage");
+      // ROUNDING MODE IS AN FP BARRIER, and out-of-order FP depends on it.
+      //
+      // Reordering FP is safe for the exception FLAGS because they accumulate: csr_file
+      // does `fcsr[4:0] <= fcsr[4:0] | fp_fflags`, an OR, so the order results land in
+      // cannot change the answer. The ROUNDING MODE is not like that. A dynamic-rm op
+      // (rnd == 3'b111) reads csr_frm when the F stage hands it to the unit, so an frm
+      // change must not overtake, or be overtaken by, any FP op in flight.
+      //
+      // Today that holds for a reason that is not about FP at all: decode_exec sets
+      // is_serialize on EVERY CSRRW/S/C, and ser_block drains the ROB before such an op
+      // dispatches and lets nothing dispatch behind it until it commits. An FP op commits
+      // only once its result has landed, so a drained ROB means nothing is in flight.
+      //
+      // That is an accident of a broader rule, and it would evaporate the moment CSR ops
+      // stop being serializing -- an obvious future optimisation, since serialising every
+      // CSR read to make frm safe is heavy-handed. Assert the property directly so it
+      // cannot be lost silently.
+      if (m_valid & m_is_csr & (fpu_busy | f_valid))
+         $fatal(1, "ooo2_core: a CSR op is in M while FP work is in flight -- frm may change under it");
    end
 
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----

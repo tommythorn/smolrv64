@@ -285,6 +285,42 @@ enters M**. It cannot head-block because it cannot trap: a bad encoding is `~d_f
 and `mstatus.FS=Off` routes FP to M as before (a write to FS redirects and refetches, so
 the value read at dispatch is what every in-flight FP op retires under).
 
+**Only `u_rs_l` is in-order, and only memory needs it to be.** A load may not pass an older
+store of unknown address and there is no disambiguation yet (§14), so memory issues in
+order. But that ordering is currently applied to EVERYTHING routed to M -- mul/div, CSR,
+branches and jumps included -- which is broader than the reason for it. They cannot be
+split into a fourth scheduler while they share M: two schedulers feeding one execute stage
+is the deadlock of `Area-Efficient-Scalar-OoO.md` 12.2. **Narrowing the in-order set to
+memory alone is blocked on P2 (deleting `head_block`)**, not on anything about the
+schedulers.
+
+### Out-of-order FP: why the flags are safe and the rounding mode is not
+
+Reordering FP is safe for the exception FLAGS because they **accumulate**: `csr_file` does
+`fcsr[4:0] <= fcsr[4:0] | fp_fflags`, an OR, so the order results land in cannot change the
+architectural answer.
+
+The **rounding mode is not like that**. A dynamic-rm op (`rnd == 3'b111`) reads `csr_frm`
+when stage F hands it to the unit, so **an frm change must be an FP barrier** -- it must
+neither overtake nor be overtaken by an FP op in flight.
+
+Today that holds for a reason that is not about FP at all: `decode_exec.v:158` sets
+`is_serialize` on *every* CSRRW/S/C, and `ser_block` drains the ROB before such an op
+dispatches and lets nothing dispatch behind it until it commits. An FP op commits only once
+its result has landed, so a drained ROB means nothing is in flight.
+
+That is an accident of a broader rule, and it evaporates the moment CSR ops stop being
+serializing -- an obvious future optimisation, since serialising every CSR *read* to make
+frm safe is heavy-handed. `ooo2_core` therefore asserts the property directly:
+
+```
+if (m_valid & m_is_csr & (fpu_busy | f_valid))
+   $fatal("a CSR op is in M while FP work is in flight -- frm may change under it");
+```
+
+Verified over 240/240 and 300M cycles of Linux boot, which exercises dynamic rounding in
+glibc.
+
 `u_rs_f` reorders, and that is the point rather than a detail. `workloads/blurbench`, taken
 from a hardware trace of GB5 Gaussian Blur, is a 4-deep serial `fadds` chain whose taps are
 independent; in-order issue held it at exactly its critical path (39.50 cycles/pixel against
