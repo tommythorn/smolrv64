@@ -967,6 +967,44 @@ instruction count, so a workload that runs long dominates it while contributing 
 equal terms to the score. Judge changes on the geomean of rates. The same mistake in the
 other direction is what made 8/8 look good on `aesbench`.
 
+### Corroborated: the ST_MEM attribution fix (aesbench as control)
+
+`aesbench` contains no FP, so a correct FP-attribution fix must barely move it. `blurbench`
+is FP-heavy, so it should move a lot. That is what happened:
+
+| | pre-fix | post-fix |
+|---|---:|---:|
+| **aesbench** `ST_MEM` (control) | 23.7% | **22.8%** |
+| aesbench cyc/byte, `FE_BUB`, `FE_ALN`, `FE_QUE` | | **bit-identical** |
+| **blurbench** `ST_MEM` | 31% | **44%** |
+| **blurbench** `ST_FPU` | 65% | **49%** |
+
+**The direction on blurbench was the opposite of predicted, and the reason matters.** The
+expectation was that mis-charged FP dependencies would move `ST_MEM` -> `ST_FPU`. The
+dominant effect is the reverse: in blur, `u_rs_f` blocks waiting on LOAD results (the taps
+are `flw`), i.e. on `SH_LD` registers. The old priority mux reported only `u_rs_l`'s own
+block, whose sources are address registers in `SH_IE` and so counted as *neither* event --
+so the FP scheduler's waits on memory were invisible entirely. They correctly land in
+`ST_MEM` now. `ST_FPU` falls because the stricter `~rs_iss_v` gate removes over-counting.
+
+### Two score-1 workloads share shapes we already model
+
+| workload | per-iteration shape | already covered by |
+|---|---|---|
+| Gaussian Blur | 5 `flw`, 4 `fmuls`, 4 `fadds`, 1 `fsw` -- 5-tap FIR, serial accumulator | `workloads/blurbench` |
+| **Structure from Motion** | **identical** -- 5 `flw`, 4 `fmuls`, 4 `fadds`, 1 `fsw` | `workloads/blurbench` |
+| **Camera** | 2 `flw`, 1 `fmuls`, 1 `fadds`, 1 `fsw` -- SAXPY, no cross-iteration accumulator | (none yet) |
+
+Structure from Motion and Gaussian Blur are the SAME KERNEL SHAPE, which is why the limit
+study gives them identical numbers in all nine cells despite being different traces (23 vs
+24 distinct PCs). **The FP scheduler win on blur (39.50 -> 29.44 cyc/px) should carry to
+Structure from Motion**, and both score 1.
+
+Camera has no carried accumulator, so its elements are independent -- yet `IW2/W16` = 1.09
+against `IW2/W64` = 2.00. It is **window-limited**: 9 instructions per iteration against an
+8-cycle FP latency needs ~2 iterations in flight. It also stores every iteration, which is
+where the store buffer (P0) would tell.
+
 ### Workload shapes, from hardware traces
 
 Three GB5 workloads have been traced on the FPGA and turned into microbenchmarks. They want
