@@ -737,6 +737,42 @@ dry via `LOWAT` before a 32-entry ROB fills), and both are `$clog2`-wide in the 
 the payload index and every scheduler entry. Revisit only when a measurement shows the
 window binding.
 
+### Open question: mul/div were conflated with loads. How much does it matter?
+
+Measured, full-suite GB5 (`2ba7716e`). `ST_MUL`/`ST_DIV` count cycles M is *stalled* on
+those units, so they already ARE the cost of occupying the shared stage -- everything
+M-class waits during them -- rather than a separate cost on top:
+
+| | % of cycles |
+|---|---:|
+| `ST_MUL` | 0.901 |
+| `ST_DIV` | 0.354 |
+| **both** | **1.255** |
+| `ST_MEM` | 59.620 |
+| `ST_FPU` | 23.249 |
+
+It is two conflations and they resolve differently.
+
+**Scheduler — dissolves for free.** mul/div sit in `u_rs_l` and inherit memory's in-order
+issue. Once ordering moves to the load queue and store buffer (P0), `u_rs_l` reorders and
+this cost disappears without anyone touching mul/div.
+
+**Shard — not actually a conflation.** Under shard-by-writer, `SH_LD` means "the shard M
+writes", and M writes mul/div results. It becomes wrong only if mul/div get their own unit,
+which would need a fourth shard: one writer per shard is the property the PRF rests on.
+
+**What is genuinely left is div, not mul.** They are different units sharing a name --
+`mul3` is 3 cycles and pipelined, `divider` is ~64 cycles and iterative. Only a long divide
+occupying the shared stage is a real problem, and the fix follows two precedents already in
+the design: release the stage at start and land the result by tag, as non-blocking loads
+and the FPU both do. No new shard and no new scheduler.
+
+**Recommendation: leave it, and re-measure after P0.** 0.354% does not justify the change
+today. But the denominator shrinks once memory and FP are fixed, and M's residual then
+becomes CSR, branches, jumps and mul/div -- at which point a divide blocking a *branch*
+costs mispredict penalty rather than just its own latency. That is the number that could
+turn 1.25% into something worth acting on, and it cannot be read off today's counters.
+
 ### P0 -- load queue + store buffer (which is also multiple outstanding loads)
 
 This is one piece of work, not two. `Area-Efficient-Scalar-OoO.md` 11.1 has the design:
