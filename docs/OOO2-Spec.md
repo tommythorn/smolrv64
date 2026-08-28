@@ -270,7 +270,7 @@ is not needed alongside it.
 
 | | `u_rs_i` | `u_rs_l` | `u_rs_f` |
 |---|---|---|---|
-| entries (`NENT`) | 10 | 12 | 8 |
+| entries (`NENT`) | 10 | 12 | 4 |
 | sources (`NSRC`) | 2 | 3 | 3 |
 | holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
@@ -489,8 +489,8 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `u_rs_i` entry | `ooo2_rs` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_rs_l` entry | `ooo2_rs` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `u_rs_f` entry | `ooo2_rs` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
+| `u_rs_f` entry | `ooo2_rs` | 4 | 2+3×9 = 29 | 116 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `plmem` (payload) | `ooo2_core` | 26 | 413 | 10 738 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 

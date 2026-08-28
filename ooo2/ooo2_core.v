@@ -504,7 +504,10 @@ module ooo2_core
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
    localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
-   localparam integer NF = 8,  IBF = 3;    // FP arith, three sources, its OWN unit
+   // NF=4: measured. blurbench is 29.44 cycles/pixel at both 4 and 8 entries, so the extra
+   // four are area and Fmax for nothing -- the FP chain is latency-bound once it can
+   // reorder at all, and a deeper queue does not shorten it.
+   localparam integer NF = 4,  IBF = 2;    // FP arith, three sources, its OWN unit
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
