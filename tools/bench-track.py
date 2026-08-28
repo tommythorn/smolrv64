@@ -66,6 +66,13 @@ def cmd_diff(a, b):
     wins = regs = noise = 0
     for w in both:
         x, y = ra[w]["rate"], rb[w]["rate"]
+        # A rate of 0 is real data, not missing data: Machine Learning reports 0.00
+        # images/sec on this core, which is also what zeroes the whole FP geomean. Ratio is
+        # undefined; say so rather than divide.
+        if x == 0 or y == 0:
+            print("%-24s %12.2f %12.2f %9s%s" % (w, x, y, "n/a",
+                  "  (zero rate -- scores 0)" if y == 0 else "  (was zero)"))
+            continue
         ch = (y / x - 1) * 100
         tag = ""
         if abs(ch) < NOISE:

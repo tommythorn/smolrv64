@@ -20,8 +20,28 @@
 #
 # date	rtl	mhz	workload	score	rate	unit
 20260817	53bb94bf	111.11	AES-XTS	?	285.1	KB/sec
-20260822	95aff227	166.67	AES-XTS	?	814.5	KB/sec
 20260825	95aff227	166.67	AES-XTS	?	754.4	KB/sec
+20260822	95aff227	166.67	AES-XTS	0	814.5	KB/sec
+20260822	95aff227	166.67	Text Compression	9	48.7	KB/sec
+20260822	95aff227	166.67	Image Compression	4	168.1	Kpixels/sec
+20260822	95aff227	166.67	Navigation	9	25.5	KTE/sec
+20260822	95aff227	166.67	HTML5	4	4.24	KElements/sec
+20260822	95aff227	166.67	SQLite	4	1.28	Krows/sec
+20260822	95aff227	166.67	PDF Rendering	4	236.6	Kpixels/sec
+20260822	95aff227	166.67	Text Rendering	4	1.28	KB/sec
+20260822	95aff227	166.67	Clang	5	37.8	lines/sec
+20260822	95aff227	166.67	Camera	1	0.01	images/sec
+20260822	95aff227	166.67	N-Body Physics	4	4.66	Kpairs/sec
+20260822	95aff227	166.67	Rigid Body Physics	3	18.7	FPS
+20260822	95aff227	166.67	Gaussian Blur	0	16.5	Kpixels/sec
+20260822	95aff227	166.67	Face Detection	3	0.02	images/sec
+20260822	95aff227	166.67	Horizon Detection	3	85.3	Kpixels/sec
+20260822	95aff227	166.67	Image Inpainting	3	131.6	Kpixels/sec
+20260822	95aff227	166.67	HDR	5	70.8	Kpixels/sec
+20260822	95aff227	166.67	Ray Tracing	3	2.48	Kpixels/sec
+20260822	95aff227	166.67	Structure from Motion	1	7.7	pixels/sec
+20260822	95aff227	166.67	Speech Recognition	5	0.16	Words/sec
+20260822	95aff227	166.67	Machine Learning	0	0.0	images/sec
 20260827	72d14cde	166.67	AES-XTS	1	950.6	KB/sec
 20260827	72d14cde	166.67	Text Compression	9	45.3	KB/sec
 20260827	72d14cde	166.67	Image Compression	4	177.3	Kpixels/sec
@@ -41,5 +61,26 @@
 20260827	72d14cde	166.67	HDR	7	89.3	Kpixels/sec
 20260827	72d14cde	166.67	Ray Tracing	4	3.53	Kpixels/sec
 20260827	72d14cde	166.67	Structure from Motion	1	11.7	pixels/sec
-20260827	72d14cde	166.67	Speech Recognition	6	0.20	Words/sec
+20260827	72d14cde	166.67	Speech Recognition	6	0.2	Words/sec
 20260827	72d14cde	166.67	Machine Learning	0	0.01	images/sec
+20260828	2ba7716e	166.67	AES-XTS	0	851.1	KB/sec
+20260828	2ba7716e	166.67	Text Compression	9	46.4	KB/sec
+20260828	2ba7716e	166.67	Image Compression	4	172.9	Kpixels/sec
+20260828	2ba7716e	166.67	Navigation	8	22.9	KTE/sec
+20260828	2ba7716e	166.67	HTML5	3	3.84	KElements/sec
+20260828	2ba7716e	166.67	SQLite	3	1.05	Krows/sec
+20260828	2ba7716e	166.67	PDF Rendering	4	201.9	Kpixels/sec
+20260828	2ba7716e	166.67	Text Rendering	4	1.27	KB/sec
+20260828	2ba7716e	166.67	Clang	5	36.7	lines/sec
+20260828	2ba7716e	166.67	Camera	1	0.02	images/sec
+20260828	2ba7716e	166.67	N-Body Physics	5	5.66	Kpairs/sec
+20260828	2ba7716e	166.67	Rigid Body Physics	5	28.6	FPS
+20260828	2ba7716e	166.67	Gaussian Blur	0	26.2	Kpixels/sec
+20260828	2ba7716e	166.67	Face Detection	5	0.04	images/sec
+20260828	2ba7716e	166.67	Horizon Detection	4	105.0	Kpixels/sec
+20260828	2ba7716e	166.67	Image Inpainting	4	209.3	Kpixels/sec
+20260828	2ba7716e	166.67	HDR	6	88.4	Kpixels/sec
+20260828	2ba7716e	166.67	Ray Tracing	4	2.94	Kpixels/sec
+20260828	2ba7716e	166.67	Structure from Motion	1	11.2	pixels/sec
+20260828	2ba7716e	166.67	Speech Recognition	6	0.19	Words/sec
+20260828	2ba7716e	166.67	Machine Learning	0	0.01	images/sec
