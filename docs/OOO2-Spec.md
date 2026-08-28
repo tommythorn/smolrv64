@@ -786,7 +786,35 @@ buffer accepts it separately (§11). So after P0, **mul/div is the only thing le
 memory scheduler unary: 45% fewer entry bits and 50% fewer comparators than `NSRC`=2, on
 the scheduler that is also the largest.
 
-**Where they go: with the ALU ops, not into a fourth unit.** A fourth scheduler and stage
+**Where they go: into the FP pipeline.** Three facts already in the design make this the
+cheapest option, and they were not obvious:
+
+- **The PRF is unified.** "FP sources are just rs1/rs2/rs3 with the fp bit set" -- there is
+  no separate FP register file, so stage F and the integer pipe read the same array through
+  the same ports.
+- **`SH_FE` already holds INTEGER destinations** (`N_FE = 128, // > 64: the FPU writes
+  INTEGER regs too` -- `fcvt.w.d`, `fmv.x.d`, `fle.d`). A mul's integer destination renamed
+  into FE is an existing case, not a new one.
+- **`u_rs_f` is already `FIXEDL`=0**, i.e. wake-at-writeback, which is exactly what a
+  variable-latency op needs.
+
+So it needs: `d_shard` routing mul/div to `SH_FE`, `mul3`/`divider` hung off stage F, and
+the FE write port arbitrated between FP and MD results. **No new scheduler, no fourth
+shard, no extra read ports, no IE arbitration**, and it inherits the tag mechanism that
+already lets FP complete out of order. `u_rs_l` is then memory-only and goes unary.
+
+**The wrinkle is the divider, not the multiplier.** `mul3` is 3 cycles and pipelined and
+fits stage F exactly. The `divider` is ~64 cycles and iterative, and `unit_busy` is
+per-scheduler -- so a divide would block **FP issue** for its whole duration, and FP is
+23% of cycles against the much cheaper M-class residual it blocks today. That needs the
+per-entry readiness gate (`~e_var[g] | ~md_busy`) after all -- for readiness only, not for
+the wake model. The bit is required by every option, so this one still comes out ahead.
+
+If the per-entry bit is unwelcome, `mul` -> stage F with `div` left in M also works, at the
+cost of `u_rs_l` keeping `NSRC`=2 for div's second operand -- which forfeits the unary
+scheduler that motivated the whole move.
+
+#### Alternative considered: with the ALU ops, in `u_rs_i` A fourth scheduler and stage
 would need a **fourth PRF shard** -- one writer per shard is the property the register file
 rests on, and mul/div can write neither `SH_IE` (that reintroduces the second writer whose
 removal was worth 397 ps) nor `SH_LD` (the LSU owns it after P0). It would *not* need extra
@@ -812,7 +840,11 @@ waits, and the rare case (1.2% of ops) absorbs the stall -- the shared write por
 nothing on the common path.
 
 `FIXEDL` is a module parameter today, so making it per-entry is the one real change inside
-`ooo2_rs`: one bit of storage and a mux on the selected entry.
+`ooo2_rs`: one bit of storage and a mux on the selected entry. **The scheduler change can
+be avoided entirely** by dispatching mul/div as if their destination were `x0` -- `prd`=0
+broadcasts to nobody at select, so no dependent wakes early -- while the real physical
+destination travels in the payload and is used at writeback. `x0` is already a handled
+case. That leaves only the readiness gate.
 
 Two things to verify rather than assume when this is built:
 
