@@ -281,6 +281,39 @@ free.push(rat_commit[rd]);  rat_commit[rd] = rob_dest[i]
 Storing `prev_dest` instead would not remove the need for `dest` — the map update still
 needs the new register — so it would be `2 × PREG_BITS` per entry to do the same job.
 
+### The scheduler is the critical path. Move logic OUT of it, at any reasonable cost elsewhere.
+
+This is the governing rule for everything in this section, and it is worth stating before
+the structure rather than deriving it afterwards.
+
+**Simplify the schedulers to an extreme extent, removing logic at the expense of
+complications elsewhere.** Select-to-issue sets the clock. Every term added to a
+scheduler's readiness or select logic is paid in every cycle by every entry; nearly
+anything moved out of it is paid only when the situation it handles actually arises, which
+for most of these is almost never.
+
+Applied, with what each one removed:
+
+| moved out | replaced by | what it cost the scheduler |
+|---|---|---|
+| oldest-ready select | fixed priority, lowest index | an `O(N²)` age matrix |
+| age for memory ordering | store-seqno + load queue (§11) | age comparison per entry |
+| store's data operand | store buffer accepts it separately | one whole source: `NSRC` 2 → 1 |
+| FMA's third operand | `NSRC` as a per-scheduler parameter | 9 bits × every integer entry |
+| unit-busy gating for a divide | request FIFO + **frontend** back-pressure | a per-entry readiness term |
+| variable-latency wake suppression | dispatch with `prd`=0, real dest in the payload | a per-entry latency bit |
+| in-flight FP destination tracking | the destination rides in the FPU's tag | a scoreboard and its hazard cases |
+
+**Back-pressure belongs at the frontend, never at issue.** A functional unit that can be
+busy should be given a queue and allowed to apply pressure upstream, with enough slack to
+cover the instructions already past the frontend. The frontend already has a stall
+mechanism and is not on the critical path. Gating issue on unit state puts unit state on
+the critical path, which is the one thing this design cannot afford.
+
+The complications this pushes elsewhere are real -- a FIFO, a store buffer, a tag, an
+occasional frontend stall -- and they are the right trade every time, because they are cold
+paths and the scheduler is not.
+
 ### Scheduler — `RS_SIZE` entries
 
 | Name | Width | Bits/entry |
