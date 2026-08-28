@@ -891,6 +891,39 @@ against a few entries recovers most independent traffic.
 Revisit only after P0 is measured. Forwarding buys nothing until loads can issue and
 access out of order in the first place.
 
+### Workload shapes, from hardware traces
+
+Three GB5 workloads have been traced on the FPGA and turned into microbenchmarks. They want
+different things, and averaging them hides that.
+
+| | Gaussian Blur | Machine Learning | Clang |
+|---|---|---|---|
+| bench | `workloads/blurbench` | `workloads/mlbench` | (trace only) |
+| shape | 5-tap FIR, 4-deep serial `fadds`, independent taps | dot product, **one** accumulator across all iterations | no kernel; branchy pointer code |
+| basic block | long | 9 instructions | **5.2 instructions** |
+| mem ops | 31% `ST_MEM` | 41% | **41.2%**, of which `c.sdsp`/`c.ldsp` = **22.3%** |
+| control transfers | rare | 1 per 9 | **19.4%**, 13.9% branches |
+| what binds it | FP issue order (fixed: 39.50 -> 29.44) | ROB full -- `d_hold` is 99% `rob_full` | mispredicts + stack traffic |
+| what would help | done | ROB depth; FP add latency | superscalar, store forwarding, cheaper redirect |
+
+**Clang and Text Compression are the workloads that matter to Tommy personally**, and they
+are the ones a scalar core helps least. At a 5.2-instruction basic block a scalar machine is
+capped at 1 IPC and we are far below it. Two-wide issue is the ceiling-raiser, and its cost
+is a second issue slot -- i.e. a second set of register read ports, the same bill that makes
+a fourth functional unit look expensive today. Once it is paid for superscalar, a fourth
+unit is nearly free.
+
+**Clang is also the workload that wants store-to-load forwarding**, which is postponed
+(above) on the strength of the FP workloads. 22.3% of its instructions are stack spill
+immediately followed by reload of the same slot; with no forwarding every reload waits for
+its store to commit. Revisit the postponement once P0 exists, because the store buffer is
+where forwarding would live.
+
+**And it is the workload where the redirect cost bites hardest**: 13.9% branches against a
+measured 54.4 cycles of `FE_BUB` per redirect is one mispredict per ~7 instructions at a
+price that swamps everything else. That puts P2 and the deferred rename walk-back back in
+contention, specifically for Clang and Text Compression rather than for the score.
+
 ### P0 -- load queue + store buffer (which is also multiple outstanding loads)
 
 This is one piece of work, not two. `Area-Efficient-Scalar-OoO.md` 11.1 has the design:

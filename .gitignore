@@ -33,3 +33,4 @@ workloads/blurbench/blurbench.bin
 workloads/blurbench/blurbench.elf
 workloads/mlbench/mlbench.bin
 workloads/mlbench/mlbench.elf
+tools/perftool/target/
