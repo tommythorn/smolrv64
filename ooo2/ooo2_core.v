@@ -486,19 +486,27 @@ module ooo2_core
    // NO AGE ANYWHERE. The one ordering constraint that survives -- memory against memory,
    // until there is disambiguation -- is the LOAD scheduler's head pointer (INORDER), which
    // is a pointer match rather than the N^2 is-oldest matrix it replaces.
-   // SIZE 8, MEASURED, NOT GUESSED. cycles/byte on workloads/aesbench at the fetch width
-   // the FPGA actually uses (OOO2_HW=4): 4/4 123.20, 6/6 122.68, 8/8 122.18, 10/12 122.70,
-   // and 12/12, 16/16, 20/20 all bit-identical at 122.70. There is a real optimum at 8 --
-   // a bigger window exposes no more ILP here (the units are the constraint) while making
-   // every mispredict drain longer. Bigger is not free and is not better.
-   // At OOO2_HW=2, the SIMULATION default, the curve saturates instead and 8/8 looks 0.34%
-   // WORSE. Measure at the width the hardware runs.
-   localparam integer NI = 8,  IBI = 3;    // integer: pure ALU, reorders freely
-   localparam integer NL = 8,  IBL = 3;    // every M-class op: memory, mul/div, CSR,
+   // SIZE 10/12, AND THE MICROBENCHMARK THAT SAID 8/8 WAS WRONG.
+   // workloads/aesbench at OOO2_HW=4 gives cycles/byte 4/4 123.20, 6/6 122.68, 8/8 122.18,
+   // 10/12 122.70, and 12/12 / 16/16 / 20/20 bit-identical at 122.70 -- an apparent optimum
+   // at 8, worth 0.43%, and it bought +95 ps of probe_clk margin. The full GB5 suite then
+   // measured 8/8 at **-4.1% geomean** against 10/12, and on the very workload aesbench
+   // models:
+   //
+   //     AES-XTS  950.6 -> 851.1 KB/sec  (-10.5%)  -- and the Crypto score 1 -> 0
+   //     Ray Tracing -16.7%   PDF Rendering -14.8%   SQLite -11.8%
+   //
+   // aesbench is L1-resident and single-phase; the real AES-XTS runs under virtual memory
+   // with real misses and a mixed instruction stream, and a smaller window hurts there.
+   // The rule this is here to record: a microbenchmark can VALIDATE a change the real
+   // workload REJECTS. Size the schedulers on the suite, and treat a microbenchmark win as
+   // provisional until a suite run confirms it. The 95 ps has to be found somewhere else.
+   localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
+   localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
    localparam integer NF = 1,  IBF = 1;    // vestigial; three schedulers needs three units
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
-   localparam integer RS_IDXB = 3;         // widest per-class entry index (IBI)
+   localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
    localparam integer PL_N = NI + NL + NF, PL_IB = 5;
    localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2;

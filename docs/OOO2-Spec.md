@@ -764,9 +764,42 @@ backend consumes one per cycle, so no hiccup is ever recovered. Only 5.3% on the
 suite, hence below the memory and FP items despite being large on integer code.
 `sha256sum` at 41.8% frontend is the same effect.
 
-### P6 -- shrink the schedulers to 8/8 -- **DONE**
+### P6 -- shrink the schedulers to 8/8 -- **REVERTED, it was a regression**
 
-Measured optimum, not a guess. See the `NI`/`IBI` comment in `ooo2_core.v`.
+`aesbench` at `OOO2_HW=4` showed an optimum at 8/8 (122.18 cycles/byte against 10/12's
+122.70) and it bought **+95 ps** of `probe_clk` margin. The full GB5 suite then measured
+8/8 at **-4.1% geomean** against 10/12, including on the workload `aesbench` exists to
+model:
+
+| | 10/12 | 8/8 | |
+|---|---:|---:|---:|
+| AES-XTS | 950.6 | 851.1 KB/sec | **-10.5%**, and Crypto score 1 -> **0** |
+| Ray Tracing | 3.53 | 2.94 | -16.7% |
+| PDF Rendering | 237.1 | 201.9 | -14.8% |
+| SQLite | 1.19 | 1.05 | -11.8% |
+
+**A microbenchmark can validate a change the real workload rejects.** `aesbench` is
+L1-resident and single-phase; the real AES-XTS runs under virtual memory with real misses
+and a mixed instruction stream, where a smaller window costs more than it saves. Treat a
+microbenchmark win as PROVISIONAL until a suite run confirms it, and size the schedulers on
+the suite. The 95 ps must be found elsewhere.
+
+### Measured: dynamic issue vs in-order issue, full GB5 single-core
+
+From saved result pages, per workload, rate not score.
+
+| | geomean |
+|---|---:|
+| dynamic issue vs in-order (`95aff227` -> `72d14cde`) | **+24.5%** |
+| 8/8 vs 10/12 (`72d14cde` -> `2ba7716e`) | -4.1% |
+| net, in-order -> today | +19.1% |
+
+12 workloads improved, 2 regressed, 7 within the 8% noise floor. Biggest gains are FP and
+media -- Gaussian Blur +70%, Image Inpainting +61%, Rigid Body +52%, Structure from Motion
++52%, Ray Tracing +42%. **The only two real losses are branch-heavy integer code**:
+Navigation -12.2% and HTML5 -8.5%, which is the window-depth mispredict penalty
+(`FE_BUB` 9.6 -> 54.4 cycles per redirect) showing up exactly where predicted. Dynamic
+issue is not a broad regression; it is a large win with a narrow, understood cost.
 
 ### P7 -- rename walk-back, to remove the mispredict DRAIN
 
