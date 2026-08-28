@@ -58,4 +58,4 @@ fi
 
 echo "=== booting: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 ==="
 exec "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC "$@"

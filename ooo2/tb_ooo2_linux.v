@@ -127,6 +127,39 @@ module tb;
    // Was byp1/2/3 -- "the next instruction wants the value M is producing". With dispatch
    // decoupled that test moved into the scheduler, which reports whether its OLDEST entry
    // is blocked on a source. Same question, asked where the waiting now happens.
+   // ---- PIPEVIEW: cycle-by-cycle waterfall, +pipe=<start> [+pipe_n=<cycles>] ---------
+   // Peeks the core; no DUT change. Aggregate counters stopped being trustworthy when the
+   // schedulers split -- ST_FPU counts only dep_fp now that FP never enters M, and
+   // rs_blk_pr gives the LD scheduler priority, so an FP dependency behind a load is
+   // charged to ST_MEM. A waterfall does not have that problem: it shows which stage each
+   // instruction sat in, per cycle, and where the gaps are.
+   //
+   //   DIS  dispatched (rename+ROB alloc)      ISS  selected into the issue register
+   //   ALU  completed at issue                 M/F  entered the M or F execute stage
+   //   LD   a load landed                      FP   an FP result landed
+   //   RET  retired at the ROB head            RED  redirect
+   integer pv_from = -1, pv_n = 0, pv_cnt = 0;
+   integer pv_c;
+   initial pv_c = 0;
+   always @(posedge clk) if (!reset) begin
+      pv_c <= pv_c + 1;
+      if (pv_from >= 0 && pv_c >= pv_from && pv_c < pv_from + pv_n) begin
+         $write("pv %0d |", pv_c);
+         if (dut.core.d_take)      $write(" DIS:%0d", dut.core.rob_d_idx);   else $write("        ");
+         if (dut.core.rs_iss_take) $write(" ISS:%s%0d",
+              dut.core.pick_l ? "L" : dut.core.pick_f ? "F" : "I", dut.core.rs_iss_rob);
+                                                                             else $write("        ");
+         if (dut.core.iss_alu)     $write(" ALU:%0d", dut.core.i_rob);       else $write("        ");
+         if (dut.core.iss_m)       $write(" M:%0d",   dut.core.i_rob);       else $write("      ");
+         if (dut.core.iss_f)       $write(" F:%0d",   dut.core.i_rob);       else $write("      ");
+         if (dut.core.ld_land)     $write(" LD:%0d",  dut.core.sb_rob);      else $write("       ");
+         if (dut.core.fp_land)     $write(" FP:%0d",  dut.core.ft_rob);      else $write("       ");
+         if (dut.core.rob_c_valid) $write(" RET:%0d", dut.core.rob_head_idx);else $write("        ");
+         if (dut.core.redirect)    $write(" RED");
+         $write("\n");
+      end
+   end
+
    wire sb_dep    = dut.core.rs_blk_v;
    wire sb_recov  = dut.core.st_mem & dut.core.d_valid
                   & ~dut.core.d_is_mem & ~dut.core.d_is_amo & ~dut.core.d_is_serialize
@@ -187,6 +220,8 @@ module tb;
       n_stmul = 0; n_stdiv = 0; n_stfpu = 0;
       n_stm = 0; n_hold = 0; n_headblk = 0; n_mempty = 0; n_ldland = 0;
       n_robfull = 0; n_srcpend = 0;
+      if ($value$plusargs("pipe=%d", pv_from)) pv_n = 200;
+      if ($value$plusargs("pipe_n=%d", pv_cnt))  pv_n = pv_cnt;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;

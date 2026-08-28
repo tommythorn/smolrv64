@@ -31,3 +31,5 @@ workloads/ldbench/ldbench.bin
 workloads/ldbench/ldbench.elf
 workloads/blurbench/blurbench.bin
 workloads/blurbench/blurbench.elf
+workloads/mlbench/mlbench.bin
+workloads/mlbench/mlbench.elf
