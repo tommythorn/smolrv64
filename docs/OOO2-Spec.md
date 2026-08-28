@@ -675,6 +675,32 @@ Two workloads, two different answers, both valid:
 The frontend is an integer/crypto-code problem, not a machine-wide one. Memory is
 machine-wide. Rank by the full suite unless the goal is a specific workload.
 
+### Answered: why is the ROB only 16 entries, and would more help?
+
+**No, and it is measured twice** -- once with FP in the in-order scheduler and again after
+FP got its own reordering scheduler, in case the first answer was an artifact of that:
+
+| ROB | blur cyc/px | AES cyc/byte |
+|---|---:|---:|
+| 16 | 29.44 | 122.7 |
+| 32 | 29.32 | 121.6 |
+| 64 | 29.32 | 121.6 |
+
+It saturates at 32 and the whole range spans 0.4% on blur, 0.9% on AES. Before the FP
+scheduler the blur column was 39.50 at **all three** depths, bit-identical.
+
+The reason is that the ROB has never been the binding constraint -- the UNITS are, which
+the scheduler sweeps say from the other side too (4 to 20 entries spans 0.8%). Blur now
+sits at 29.44 cycles/pixel with `ST_FPU` at 65%, i.e. 19.2 stall cycles for 8 FP ops =
+2.4 cycles per op, against the 2.25 cyc/op `fpbench` measures as FP throughput. It is at
+the FPU's throughput bound, and no amount of window changes that.
+
+What a deeper ROB WOULD cost is real: `N_IE` must grow with it (32 of its 64 physical
+registers are the architectural integer set, so only 32 are free, and the free list runs
+dry via `LOWAT` before a 32-entry ROB fills), and both are `$clog2`-wide in the FP tag,
+the payload index and every scheduler entry. Revisit only when a measurement shows the
+window binding.
+
 ### P0 -- multiple outstanding loads
 
 `ST_MEM` is **54.7% of full-suite GB5 cycles** at a 2.04% miss rate costing 4.995 cycles
