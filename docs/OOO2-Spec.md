@@ -269,6 +269,31 @@ is not needed alongside it.
 
 **There are three schedulers, one per unit, and none stores age.**
 
+**NF=8 DOES NOT CLOSE TIMING at 166.67 MHz, and the reason is not the scheduler.**
+
+| | `probe_clk` |
+|---|---:|
+| `NF`=4 | **+0.050 ns** (closes) |
+| `NF`=8 | **-0.012 ns** (FAILS) |
+
+62 ps, landing 12 ps under. But the failing paths are in the FRONTEND:
+
+| slack | path | levels |
+|---|---|---|
+| -0.012 | `fe/u_fetch/pc_q_reg[17]` -> `pc_q_reg[12]` | 24, **6x CARRY8** |
+| -0.008 | `fe/u_fetch/pc_q_reg[12]` -> `u_bp/btb_reg/ADDRARDADDR[9]` | 23, 6x CARRY8 |
+| -0.006 | `m_addr_reg[14]` -> `i_ps3_reg[1]/CE` | scheduler-related |
+
+The PC increment and its path into the BTB address were already marginal; NF=8's extra area
+tipped them. Only the third path is the scheduler's (`i_ps3` is the `NSRC`=3 third source,
+whose clock enable sits in M's completion cone). **A faster scheduler would not fix this.**
+Three ways out, in order of what they cost:
+
+1. **Keep `NF`=4** -- closes at +0.050 ns, and no measured workload can see the difference.
+2. **Attack the frontend PC path** (24 levels, 6 CARRY8) to buy headroom, then `NF`=8 fits.
+   This is the only option that makes the policy affordable rather than abandoning it.
+3. **Scale the frequency back.**
+
 **Minimum 8 entries for any scheduler is policy.** Measurement does not currently justify it
 for `u_rs_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and
 `NF`=8 costs 22 ps of `probe_clk` -- but both of those workloads are limited elsewhere (FP
