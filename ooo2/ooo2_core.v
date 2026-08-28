@@ -504,7 +504,7 @@ module ooo2_core
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
    localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
-   localparam integer NF = 1,  IBF = 1;    // vestigial; three schedulers needs three units
+   localparam integer NF = 8,  IBF = 3;    // FP arith, three sources, its OWN unit
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
@@ -516,15 +516,29 @@ module ooo2_core
    // ALU op, which is exactly what queues up behind a consumer waiting on a load.
    // An FP load/store is a MEMORY op, not an FP-unit op -- it must go to the load scheduler
    // or memory ordering is silently broken for half the accesses.
-   // FP SHARES THE IN-ORDER SCHEDULER, and that is not a simplification -- it is forced.
-   // Three schedulers deadlock while all three feed ONE execute stage: an M-class op from
-   // one scheduler reaches M, finds it must be the ROB head to retire, and an OLDER M-class
-   // op in a different scheduler cannot issue to free M. Observed exactly: FP scheduler full
-   // and offering nothing, M head-blocked on a younger LD-class op, both stuck.
-   // Three schedulers needs three UNITS. Until the FPU and the LSU are separately issuable,
-   // every M-class op belongs to one in-order stream.
-   wire d_cls_f = 1'b0;
-   wire d_cls_l = d_ord;
+   // FP ARITH NOW HAS ITS OWN SCHEDULER AND ITS OWN UNIT (the F stage below), so it no
+   // longer queues behind every load, mul/div, CSR and branch in the in-order stream.
+   //
+   // Three schedulers used to deadlock because all three fed ONE execute stage: an op
+   // reached M, found it had to be ROB head to retire, and an older op in a different
+   // scheduler could not issue to free M. That is fixed by removal, not by arbitration --
+   // an FP arith op never enters M at all now. It cannot head-block, because it cannot
+   // trap: the only FP trap is illegal, and both of its causes are settled before dispatch
+   // (a bad encoding is ~d_fp_valid, and mstatus.FS=Off is gated below).
+   //
+   // fs_off: a write to FS REDIRECTS and refetches younger ops (csr_file do_fschg), so the
+   // value read at dispatch is the one every in-flight FP op will retire under. When FS is
+   // off, FP arith routes to M as before and takes its illegal-instruction trap there --
+   // unchanged, and the reason the F stage needs no trap path.
+   wire d_fp_valid, d_use_fpu;
+   decode_fp u_dfp_disp
+     (.insn(d_insn), .fp_valid(d_fp_valid), .use_fpu(d_use_fpu), .fp_class(),
+      .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
+      .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
+
+   wire d_cls_f = d_fp_valid & d_use_fpu & ~d_is_mem & ~d_is_amo
+                & ~fs_off & ~d_illegal & ~d_fault & ~d_is_irqop;
+   wire d_cls_l = d_ord & ~d_cls_f;
    wire d_cls_i = ~d_ord;
 
    wire [1:0] d_cls = d_cls_i ? C_I : d_cls_l ? C_L : C_F;
@@ -547,6 +561,8 @@ module ooo2_core
 
    wire ri_take, rl_take, rf_take;
    wire i_needs_m;                     // the issue register holds an M-class op
+   wire i_needs_f;                     // ...or an F-class one
+   wire f_advance;
 
    ooo2_rs #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_rs_i
@@ -571,13 +587,18 @@ module ooo2_core
       .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),
       .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ));
 
+   // INORDER(0): FP arith may reorder freely. It has no memory ordering to respect and
+   // cannot trap, and reordering is the entire point -- the Gaussian Blur loop
+   // (workloads/blurbench) is a 4-deep serial fadds chain whose taps are independent, and
+   // it ran at exactly its critical path (39.50 cyc/px against 5 levels x 8 cycles) because
+   // in-order issue would not let the NEXT iteration's multiplies start early.
    ooo2_rs #(.NENT(NF),.IDXB(IBF),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(0),.INORDER(1)) u_rs_f
+             .FIXEDL(0),.INORDER(0)) u_rs_f
      (.clk(clk),.reset(reset),
       .d_valid(rn_valid & d_cls_f),.d_ready(rf_ready),.d_rob(rob_d_idx),
       .d_ps({rn_prs3, rn_prs2, rn_prs1}),.d_r(d_srdy),.d_prd(d_prd_g),.d_ent(rf_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(~m_advance | (i_v & i_needs_m)),
+      .unit_busy(~f_advance | (i_v & i_needs_f)),
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
       .iss_ps(rf_iss_ps),.iss_take(rf_take),
       .hold_v(i_v & (i_cls == C_F)),.hold_ent(i_ent[IBF-1:0]),
@@ -613,7 +634,8 @@ module ooo2_core
    wire [RN_PBITS-1:0] rs_iss_ps2 = pick_l ? rl_iss_ps[RN_PBITS +: RN_PBITS]
                                   : pick_f ? rf_iss_ps[RN_PBITS +: RN_PBITS]
                                   :          ri_iss_ps[RN_PBITS +: RN_PBITS];
-   wire [RN_PBITS-1:0] rs_iss_ps3 = rl_iss_ps[2*RN_PBITS +: RN_PBITS];
+   wire [RN_PBITS-1:0] rs_iss_ps3 = pick_f ? rf_iss_ps[2*RN_PBITS +: RN_PBITS]
+                                  :          rl_iss_ps[2*RN_PBITS +: RN_PBITS];
    wire rs_iss_take;
    assign ri_take = pick_i & rs_iss_take;
    assign rl_take = pick_l & rs_iss_take;
@@ -646,8 +668,9 @@ module ooo2_core
 
    // An ordered op completes when M takes it; an ALU op completes unconditionally, because
    // SH_IE has exactly one writer and it is this one. Nothing can be in the way.
-   assign i_needs_m   = i_v & q_ord;
-   wire   i_done      = i_v & (q_ord ? m_advance : 1'b1);
+   assign i_needs_f   = i_v & (i_cls == C_F);
+   assign i_needs_m   = i_v & q_ord & ~i_needs_f;
+   wire   i_done      = i_v & (i_needs_f ? f_advance : q_ord ? m_advance : 1'b1);
    wire   iss_ready   = ~i_v | i_done;
    assign rs_iss_take = rs_iss_v & iss_ready & ~redirect;
    // ~redirect on BOTH. The register is cleared on a redirect, but these are
@@ -655,7 +678,8 @@ module ooo2_core
    // the register file and still marks its ROB slot done, in the very cycle rename is
    // rolling that physical register back. That is the zombie writeback in miniature, and it
    // is what failed all 61 virtual-memory tests: they are the ones that trap often.
-   wire   iss_m       = i_v &  q_ord & m_advance & ~redirect;  // loads M this cycle
+   wire   iss_m       = i_needs_m & m_advance & ~redirect;     // loads M this cycle
+   wire   iss_f       = i_needs_f & f_advance & ~redirect;     // loads the F stage
    wire   iss_alu     = i_v & ~q_ord & ~redirect;  // completes here, always
 
    always @(posedge clk) begin
@@ -966,22 +990,15 @@ module ooo2_core
    wire [63:0] fpo1 = fp_src32 ? {32'hffffffff, unbox_s(fpo1r)} : fpo1r;
    wire [63:0] fpo2 = fp_src32 ? {32'hffffffff, unbox_s(fpo2r)} : fpo2r;
 
+   // DEAD BY CONSTRUCTION, kept for the assertion below. d_cls_f routes every FPU op to
+   // the F stage, and the only way one reaches M is with FS off -- which makes m_ill_eff
+   // true and so clears this anyway.
    wire        fp_arith  = m_valid & fp_valid_d &  fp_use_fpu & ~m_ill_eff;
    wire        fp_incore = m_valid & fp_valid_d & ~fp_use_fpu & ~m_ill_eff;
 
    wire        fp_iss_ready, fp_res_valid, fpu_busy;
    wire [63:0] fp_res_data;
    wire [4:0]  fp_res_fflags;
-   // ~m_unit_done_q is the SAME guard the LSU carries on req_valid, and for the same
-   // reason. `m_unit_ok` for an FP op is the one-cycle fp_disp pulse, but m_done can be
-   // held low afterwards by ld_land or fp_land -- so M keeps presenting an op it has
-   // already handed over, and re-issues it the moment fpu_inflight/fb_busy clear. That
-   // completed a ROB slot which had already committed and been freed.
-   // ~m_unit_done_q ONLY. The ~fpu_inflight & ~fb_busy that stood here served a
-   // one-op-at-a-time scoreboard; the destination now rides in the tag, so nothing has to
-   // be free before the next op can go. ~m_unit_done_q stays: it stops M re-issuing an op
-   // it has already handed over.
-   wire        fp_start = fp_arith & ~m_unit_done_q;
    // FP32 result heading for an f-register -> NaN-box it on writeback
    wire        fp_dst32 = (fp_dst == 3'd0) & fp_wrfp;
    localparam integer FTAGW = 2 + 6 + ROB_IDXB + RN_PBITS;   // dst32, rd_v, rd, rob, prd
@@ -994,15 +1011,89 @@ module ooo2_core
    fp_unit #(.TAGW(FTAGW), .NFLIGHT(4)) u_fpu
      (.clk(clk), .reset(reset),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
-      .iss_op(fp_op), .iss_op_mod(fp_mod), .iss_src_fmt(fp_src), .iss_dst_fmt(fp_dst),
-      .iss_int_fmt(fp_int),
-      .iss_rnd(fp_rnd == 3'b111 ? csr_frm : fp_rnd),      // dynamic rm -> fcsr.frm
-      .iss_operands({fpo2, fpo1, fpo0}),
-      .iss_tag({fp_dst32, m_rd_v, m_rd, m_rob_idx, m_prd}),
+      .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
+      .iss_int_fmt(ff_int),
+      .iss_rnd(ff_rnd == 3'b111 ? csr_frm : ff_rnd),      // dynamic rm -> fcsr.frm
+      .iss_operands({ffo2, ffo1, ffo0}),
+      .iss_tag({ff_dst32, f_rd_v, f_rd, f_rob, f_prd}),
       .res_valid(fp_res_valid), .res_ready(1'b1), .res_data(fp_res_data),
-      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(1'b0), .busy(fpu_busy));
+      // FLUSH ON REDIRECT. With results landing asynchronously by tag, an op still in
+      // fpnew's pipeline when a squash happens would write back after rename had rolled
+      // its physreg away -- the zombie writeback, caught by ooo2_pending as "writeback to
+      // pN, which was not pending" on rv64ud-p-structural. It only became reachable once
+      // FP could reorder and run several deep.
+      //
+      // Flushing EVERY in-flight op is safe only because head_block still holds: a
+      // redirect fires only when its op is the ROB head, so everything older has already
+      // committed, and anything in flight is younger by construction. If head_block goes
+      // (work list P2), this needs an age or epoch tag instead.
+      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy));
 
    wire fp_complete = fp_res_valid;
+
+   // ============================================================== stage F (FP arith)
+   // A one-entry execute stage parallel to M, fed by u_rs_f. An FP arith op is loaded here
+   // at issue and NEVER enters M, which is what makes three schedulers safe: it cannot
+   // occupy the shared stage and it cannot head-block, having no trap path (see d_cls_f).
+   //
+   // Completion is already independent of this stage: the destination rides in the FPU tag
+   // and lands through fp_land, its own ROB completion port and the FE shard. That work is
+   // what made the split cheap -- all that is added here is dispatch.
+   reg         f_valid;
+   reg [31:0]  f_insn;
+   reg [5:0]   f_rd;
+   reg         f_rd_v;
+   reg [RN_PBITS-1:0] f_prd;
+   reg [ROB_IDXB-1:0] f_rob;
+   reg [63:0]  f_rs1_val, f_rs2_val, f_rs3_val;
+   initial     f_valid = 1'b0;
+
+   wire        ff_valid_d, ff_use_fpu, ff_o0i, ff_wrfp, ff_mod;
+   wire [2:0]  ff_cls, ff_src, ff_dst, ff_rnd;
+   wire [3:0]  ff_op;
+   wire [1:0]  ff_int, ff_o0, ff_o1, ff_o2;
+   decode_fp u_dfp_f
+     (.insn(f_insn), .fp_valid(ff_valid_d), .use_fpu(ff_use_fpu), .fp_class(ff_cls),
+      .op(ff_op), .op_mod(ff_mod), .src_fmt(ff_src), .dst_fmt(ff_dst), .int_fmt(ff_int),
+      .rnd(ff_rnd), .op0_sel(ff_o0), .op1_sel(ff_o1), .op2_sel(ff_o2),
+      .op0_int(ff_o0i), .wr_fp(ff_wrfp));
+
+   wire        ff_src32 = (ff_src == 3'd0);
+   wire [63:0] ffo0r = fpsel(ff_o0, f_rs1_val, f_rs2_val, f_rs3_val);
+   wire [63:0] ffo1r = fpsel(ff_o1, f_rs1_val, f_rs2_val, f_rs3_val);
+   wire [63:0] ffo2r = fpsel(ff_o2, f_rs1_val, f_rs2_val, f_rs3_val);
+   wire [63:0] ffo0 = (ff_src32 & ~ff_o0i) ? {32'hffffffff, unbox_s(ffo0r)} : ffo0r;
+   wire [63:0] ffo1 = ff_src32 ? {32'hffffffff, unbox_s(ffo1r)} : ffo1r;
+   wire [63:0] ffo2 = ff_src32 ? {32'hffffffff, unbox_s(ffo2r)} : ffo2r;
+   wire        ff_dst32 = (ff_dst == 3'd0) & ff_wrfp;
+
+   wire        fp_start = f_valid & ~redirect;
+   wire        fp_disp  = fp_start & fp_iss_ready;   // accepted by the unit this cycle
+   assign      f_advance = ~f_valid | fp_disp;
+
+   always @(posedge clk) begin
+      if (reset | redirect) f_valid <= 1'b0;
+      else if (f_advance) begin
+         f_valid   <= iss_f;
+         f_insn    <= q_insn;   f_rd    <= q_rd;    f_rd_v <= q_rd_v;
+         f_prd     <= q_prd;    f_rob   <= i_rob;
+         f_rs1_val <= x_rs1;    f_rs2_val <= x_rs2; f_rs3_val <= x_rs3;
+      end
+   end
+
+   always @(posedge clk) if (!reset) begin
+      // The F stage only ever holds an FPU op. d_cls_f is decided from decode_fp on d_insn
+      // and the same decoder runs here on the payload's insn, so a disagreement means the
+      // payload and the classification came from different instructions.
+      if (f_valid & ~(ff_valid_d & ff_use_fpu))
+         $fatal(1, "ooo2_core: F stage holds a non-FPU op (insn %08x)", f_insn);
+      if (iss_f & (q_shard != SH_FE))
+         $fatal(1, "ooo2_core: F-class op is not SH_FE");
+      // fp_arith is dead by construction now; if one ever reaches M it would sit there
+      // forever, since m_unit_ok no longer has an arm for it.
+      if (fp_arith)
+         $fatal(1, "ooo2_core: an FPU op reached M -- d_cls_f must route it to the F stage");
+   end
 
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
    wire        fp_isd = m_insn[25];              // 0=single 1=double
@@ -1209,7 +1300,6 @@ module ooo2_core
    // entirely, so the result cannot be parked in the FPU. It is captured HERE and written
    // when the PRF's single port is free. The load wins that arbitration because
    // `lsu_rd_val` is transient while this register is not.
-   wire fp_disp = fp_start & fp_iss_ready;               // accepted by the unit this cycle
    // The scoreboard that stood here (fb_busy/fb_preg/fb_rob/fb_val/fb_got, plus a held
    // result for the cycle a load stole the ROB port) is GONE. Every field it carried now
    // rides in the tag and comes back with the result, which is what lets more than one op
@@ -1225,11 +1315,9 @@ module ooo2_core
    wire        fp_land  = fp_complete;
    wire        fp_wb    = fp_land & ft_rd_v;
    always @(posedge clk) if (!reset) begin
-      // All fp_arith ops take SH_FE (d_shard is by instruction CLASS, so this holds even
-      // for fcvt.w.d / fmv.x.d / fle.d, whose rd is an integer register). fp_wval is put on
-      // wb_fe alone on the strength of it.
-      if (fp_disp & (m_shard != SH_FE))
-         $fatal(1, "ooo2_core: FP op issued to shard %0d, not SH_FE", m_shard);
+      // The SH_FE check moved to the F stage, where it compares the shard of the op being
+      // dispatched. Left here it compared fp_disp -- now the F stage's -- against M's
+      // shard, two unrelated instructions, and fired on rv64ud-p-fcvt.
       // The tag is the only thing naming the destination now, so a result that arrives
       // unowned would write a live register silently instead of being caught by fb_busy.
       if (fp_land & (ft_prd == {RN_PBITS{1'b0}}) & ft_rd_v)
@@ -1246,7 +1334,6 @@ module ooo2_core
                  : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault)
                                                     : (lsu_done & ~sb_busy))
                  : m_md_op               ? (md_div ? div_done : mul_done)
-                 : fp_arith              ? fp_disp   // handed over; cannot fault now
                  :                         1'b1;  // in-core FP included: single-cycle
 
    // COMPLETION IS STICKY, and it has to be. Every unit's `done` is a one-cycle PULSE --
