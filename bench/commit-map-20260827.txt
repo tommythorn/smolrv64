@@ -1,0 +1,36 @@
+# Old -> new commit ids across the 2026-08-27 history rewrite.
+#
+# A 17 MB workloads/ubuntu/screenlog.0 and six microbenchmark .bin/.elf were committed
+# by mistake and removed from history with git filter-branch over 30aa264f^..ooo2 --
+# a range chosen so the commits ooo2 SHARES with origin/main were untouched and this
+# branch stays attached to main.
+#
+# The cost is that ids already stamped into DTB model strings, and therefore onto public
+# Geekbench result pages, no longer exist. This file and the gb5-<old> tags are how they
+# stay resolvable. Do not delete either.
+#
+# old_id new_id subject
+e74287058a32b45f66ccb1bfa693be094ee4cebc 1d6d2f2fc759ae6eff828854f5a7b1c0f6f2548f bench: history is append-only -- published commit ids must keep resolving
+6a1408bb29257870a591ead733f6a76ff62ab582 bef9e04b9fca2cb2373ef7ba6c73a51254ecdfd1 untrack microbenchmark .bin/.elf -- build output, committed by a directory add
+3fd4a6093933bb1574ad9f84ff00539eeea13640 1736a30145ed96d9befec2f8d5d83828e45d840e untrack workloads/ubuntu/screenlog.0 -- 17 MB of console log, again
+cb584cc6ff7f92da4445a6264be7558c154663ef 86cabbebe54e8ac45dfd308edad7874735f9e76f bench: ldbench -- loads overlap 1.24x, and P0 is not the FP fix
+a0ad92d58d1832d3449c3ea9da91d95860797d5b 721060c1d0954b9278ea81b7112f0f6302e96051 dtb: stop tracking the GENERATED device trees
+c2d0e052e9a696805d5e244d66ee2c7986ffb6ec b71f0bcd1a11be1e2868b3d4b75d60e77d1512e5 fpu: four ops in flight -- ST_FPU 43% -> 0% on independent FP work
+e3f122186e563155f9757596e6989453efbec5fc d76af410a42ada3378918e13f4ebee888436695b dtb: scope the -dirty marker to design sources
+2ba7716e2334a57242ef2756c7c66d2807942c6a ab76572740d894859460434e59c2daa5b694faa5 docs: 8/8 schedulers bought 95 ps -- probe_clk +0.029 -> +0.124 ns
+e838041774a45e1b1de137e65c50bc8b2e0b7e38 2c6acd4093960a6d03b4c7173730b3e50d5f423d docs: re-rank the work list on HW=4 data, and say why the old one was wrong
+d16c1f50cbd793e79becc9352dd274e733e2da21 ba5350e1e46c73a7636037f94096862f1b0993c2 ooo2: schedulers 10/12 -> 8/8, measured at the width the FPGA runs
+a0d651e6ed7f1adb3c95531fa0218aab5ffedcec cfbecd4f584b542fabdfa9ed89aa434a0b5cb7e6 bench: track GB5 by commit, and a prioritised work list built from measurement
+1497f89b36a9f0b39643c885cd1105e63a085fc5 aca2bf1018b27e40ecd251852da235887bebf48b dtb: put the RTL commit in the model string, and mark a dirty tree
+575781db3654ef16b95cf476e0a766feee92d42e dd2c11fc656e7c3b8df5fdf27e5fd0d3e5892cc2 ooo2: restart the frontend at execute on a mispredict, freeze the renamer
+afdd403e11f1ddcc7529a3f6cabfacfb8805839d c33110f674a53da98422379459d371ac89d0a334 docs: full GB5 on the same build -- +2.5%, and why it is not +19.8%
+72d14cde989263ffc5a367666fae615b4b08e249 b92af9b09fd020d0d9f56f5d93a62c4b396370a1 docs: AES-XTS measured -- dynamic issue +19.8% IPC, and what it exposed
+a2844633a2238cad0f6966c4f93879e7658ea51c 6dbd0a031e0357ebe39302126301a34a332302a0 doc: 12.2 -- completion must not depend on retirement, measured
+80904e4c97130585e2cdf132d9832d475991e950 4c49173fa4195b831e2eabb587bbba86bfc967ab docs: 166.67 MHz closes with dynamic issue -- probe_clk WNS +0.029
+3060dc842572572d8624173603a3e1e201ab0462 17e3578950066e95b59029c57086082b179eeefc ooo2: two schedulers, and the shard rule that says IE has one writer
+284709514231689135c12dd965021765e0a6fe0f ec316ca8b4ae152db6a835d3a1c2eafc4ad0d17d ooo2_rs: in-order mode as a head pointer, for the load scheduler
+1941a8dc1c36593782d7a461e5cc562753df4970 d9b8b7868c4583a994836ad32bad20b839242515 ooo2_rs: no age, no N^2, parameterised source count -- one scheduler per unit class
+a3d224b538a386dd720b8bb5172abb6a1dff1d9c 5306b44124c1a41b76791f6fc317e74ccf9462a7 ooo2: drop age priority from select, and grow the window to 16
+3ebbba7a40622f6ad4e604afca9987112271a536 13ad594562659b94088065ac6679c4a570093c74 platform: a reset target, and record what window size actually bought
+a196779d6446b71d288ee729930d1b307539490f 2d5f2c3b97a0d81134a76b2bc006b3366ce2f749 ooo2: give select its own stage -- the scheduler was 50 logic levels deep
+30aa264fdd0475d39e5663c76a3bdccc7e58683a 9dbc0f2b8060dd242399b18c86b4d304125249a2 dts: generate the NFS device trees instead of hand-copying them
