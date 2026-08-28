@@ -292,7 +292,13 @@ Three ways out, in order of what they cost:
 1. **Keep `NF`=4** -- closes at +0.050 ns, and no measured workload can see the difference.
 2. **Attack the frontend PC path** (24 levels, 6 CARRY8) to buy headroom, then `NF`=8 fits.
    This is the only option that makes the policy affordable rather than abandoning it.
-3. **Scale the frequency back.**
+3. ~~Scale the frequency back.~~ **HARD RULE: frequency is never scaled back except for a
+   diagnostic run.** 166.67 MHz is a floor, not a variable. When a change does not fit, the
+   change gives way or the path it broke gets fixed -- the clock does not.
+
+Standing procedure when a scheduler size does not fit: **dial it down one entry at a time
+until it passes**, rather than jumping to a known-good size. `NF`=8 fails; `NF`=7 is under
+test.
 
 **Minimum 8 entries for any scheduler is policy.** Measurement does not currently justify it
 for `u_rs_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and

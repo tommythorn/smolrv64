@@ -504,12 +504,16 @@ module ooo2_core
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
    localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
-   // NF=8 BY POLICY: a minimum of 8 entries for any scheduler. Measurement does not
-   // currently support it -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4
-   // and 8, and NF=8 costs 22 ps of probe_clk (+0.050 -> +0.028) -- but both of those
-   // workloads are limited elsewhere (FP latency and in-order memory issue respectively),
-   // so neither can see a deeper FP queue. Revisit once the store buffer moves the wall.
-   localparam integer NF = 8,  IBF = 3;    // FP arith, three sources, its OWN unit
+   // NF: 8 is the standing policy (minimum 8 entries for any scheduler), dialled down one
+   // at a time until timing passes. FREQUENCY IS NOT A KNOB -- 166.67 MHz is never traded
+   // away except for a diagnostic run.
+   //   NF=8  probe_clk -0.012 ns  FAILS
+   //   NF=7  <- here
+   //   NF=4  probe_clk +0.050 ns  (closes; no measured workload can tell 4 from 16)
+   // The two worst paths at NF=8 are the FRONTEND PC increment and its route into the BTB
+   // address (24 levels, 6x CARRY8) -- already marginal, tipped by the extra area. The
+   // scheduler is only the third path. Fixing the frontend is what would make 8 affordable.
+   localparam integer NF = 7,  IBF = 3;    // FP arith, three sources, its OWN unit
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
