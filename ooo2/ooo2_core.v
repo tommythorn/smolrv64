@@ -1187,13 +1187,40 @@ module ooo2_core
    // The dependent wait no longer happens in X -- it happens in the scheduler, which
    // reports WHICH register its oldest entry is blocked on. A physical register carries its
    // shard in the top bits, so the stall is charged to the unit that owns the result.
-   wire [1:0] blk_sh = rs_blk_pr[RN_PBITS-1:RN_IDXB];
-   wire dep_ld    = m_advance & rs_blk_v & (blk_sh == SH_LD);
-   wire dep_fp    = m_advance & rs_blk_v & (blk_sh == SH_FE);
+   // ---- DEPENDENCY ATTRIBUTION: per scheduler, not through a priority mux -------------
+   // `rs_blk_pr` is `rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr` -- a priority
+   // mux built when there was one scheduler and kept when there were three. With three, an
+   // FP dependency in u_rs_f is INVISIBLE in any cycle u_rs_l is also blocked, so it was
+   // charged to ST_MEM instead. That is not a small skew: on workloads/mlbench, whose
+   // critical path is an FP add chain, ST_FPU read 0% and ST_MEM read 41%.
+   //
+   // Each scheduler's blocking source is classified on its own shard and OR-ed. A cycle can
+   // now count in more than one event, which is correct -- the machine really is waiting on
+   // both -- and matches how these events already behaved (the stack sums past 100%).
+   wire [1:0] bsh_l = rl_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [1:0] bsh_f = rf_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [1:0] bsh_i = ri_blk_pr[RN_PBITS-1:RN_IDXB];
+   // Gated on "nothing issued", NOT on m_advance. The old `m_advance &` gate dated from M
+   // being the only unit, where "M could accept" was the same thing as "issue could
+   // proceed". With three units it silently masks: on workloads/mlbench M is busy with
+   // loads nearly every cycle, so dep_fp could never fire and the FP add chain that IS the
+   // critical path reported 0%.
+   wire no_issue  = ~rs_iss_v;
+   wire dep_ld    = no_issue & ((rl_blk_v & (bsh_l == SH_LD))
+                              | (rf_blk_v & (bsh_f == SH_LD))
+                              | (ri_blk_v & (bsh_i == SH_LD)));
+   wire dep_fp    = no_issue & ((rl_blk_v & (bsh_l == SH_FE))
+                              | (rf_blk_v & (bsh_f == SH_FE))
+                              | (ri_blk_v & (bsh_i == SH_FE)));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = st_m & m_md_op &  md_div;       // ...on the divider
    wire st_mul    = st_m & m_md_op & ~md_div;       // ...on the multiplier
-   wire st_fpu    = (st_m & fp_arith) | dep_fp;     // ...on the CVFPU
+   // ST_FPU MUST WATCH STAGE F. It used to be `(st_m & fp_arith) | dep_fp`, and fp_arith is
+   // identically 0 since FP stopped entering M -- so the FPU's own occupancy vanished from
+   // the stack the moment it got its own stage. `f_valid & ~fp_disp` is stage F holding an
+   // op the unit will not yet take, which is exactly the old `st_m & fp_arith` term in its
+   // new home. (~f_advance is the same expression; written out for clarity.)
+   wire st_fpu    = (f_valid & ~fp_disp) | dep_fp;  // ...on the FPU
    wire st_ser    = m_advance & ~accept & ~dep_ld & ~dep_fp;
    wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
