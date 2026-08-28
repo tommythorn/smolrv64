@@ -269,6 +269,32 @@ is not needed alongside it.
 
 **There are three schedulers, one per unit, and none stores age.**
 
+**SCHEDULER-SIZE TIMING NUMBERS IN THIS DOCUMENT ARE SINGLE SAMPLES AND DO NOT
+DISTINGUISH THE CONFIGURATIONS.** Rule I2: four placer directives over IDENTICAL RTL span
+**81 ps straddling zero**; treat one build as a sample, not a result. Three NF builds:
+
+| | `probe_clk` | worst family |
+|---|---:|---|
+| `NF`=8 | -0.012 | frontend PC increment, 24 levels, 6x CARRY8 |
+| `NF`=7 | **-0.082** | `u_csr/mhpmcounter[12]` carry, 32 levels, 10x CARRY8 |
+| `NF`=4 | +0.050 | -- |
+
+`NF`=7 is 70 ps WORSE than `NF`=8, from REMOVING an entry. That is not a logic effect. All
+three sit inside a 132 ps range, i.e. inside the I2 envelope, and each build fails on a
+DIFFERENT family. **Dialling the scheduler down one entry at a time cannot work: the step is
+far below the noise.** Any NF judgement needs at least two placer directives per config.
+
+Two marginal families are now visible and both are worth attacking on their own merits,
+independent of NF:
+
+- **Frontend PC increment** -> BTB address: 24 levels, 6x CARRY8.
+- **`mhpmcounter` carry**: 32 levels, 10x CARRY8. This is a KNOWN worst family -- the
+  comment above `hpm_ev_q` records it as "823 of 3113 failing endpoints at 6 ns and the
+  WORST family in the design", fixed once by registering the event bus. **It may have been
+  made worse by widening that bus to 23 bits for `ST_ROB`**, which adds a mux input to
+  every one of the 13 counters. Stats may be gated (unlike invariants), so this is
+  recoverable if it is confirmed.
+
 **NF=8 DOES NOT CLOSE TIMING at 166.67 MHz, and the reason is not the scheduler.**
 
 | | `probe_clk` |
