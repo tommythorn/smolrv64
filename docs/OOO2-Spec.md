@@ -767,11 +767,49 @@ occupying the shared stage is a real problem, and the fix follows two precedents
 the design: release the stage at start and land the result by tag, as non-blocking loads
 and the FPU both do. No new shard and no new scheduler.
 
-**Recommendation: leave it, and re-measure after P0.** 0.354% does not justify the change
-today. But the denominator shrinks once memory and FP are fixed, and M's residual then
-becomes CSR, branches, jumps and mul/div -- at which point a divide blocking a *branch*
-costs mispredict penalty rather than just its own latency. That is the number that could
-turn 1.25% into something worth acting on, and it cannot be read off today's counters.
+**Recommendation: move them, as part of P0 -- and the reason is not their stall.**
+
+An earlier version of this section said "leave it", weighing only the 1.255%. That missed
+the dominant cost. A scheduler's `NSRC` is set by its **worst-case occupant** and multiplies
+through every entry and every wakeup comparator:
+
+| memory scheduler | entry bits (`NENT`=12) | wakeup comparators (`NWB`=3) |
+|---|---:|---:|
+| today, `NSRC`=3 (FP legacy) | 348 | 108 |
+| FP moved out, `NSRC`=2 | 240 | 72 |
+| **unary, `NSRC`=1** | **132** | **36** |
+
+**A memory op needs exactly one register operand: the base address.** The immediate is in
+the payload, and the store's DATA stops being the scheduler's problem the moment the store
+buffer accepts it separately (§11). So after P0, **mul/div is the only thing left forcing
+`NSRC` > 1** -- not one cost among several, the sole remaining one. Moving them makes the
+memory scheduler unary: 45% fewer entry bits and 50% fewer comparators than `NSRC`=2, on
+the scheduler that is also the largest.
+
+What it costs: mul/div need their own scheduler (small -- they are ~1.2% of ops) and their
+own execute stage, and that stage needs a **fourth PRF shard**, because one writer per
+shard is the property the register file rests on. They cannot write `SH_IE` without
+reintroducing the second writer whose removal was worth 397 ps, and they cannot write
+`SH_LD` once the LSU owns it. Size the new shard small.
+
+Do it while P0 is rebuilding the memory path anyway, not before and not separately.
+
+### Deliberately postponed: store-to-load forwarding
+
+The load-queue/store-buffer scheme (§11) admits a degree of forwarding as an extension --
+a load whose address matches a pending store's, whose data has arrived, could take the
+value from the buffer instead of waiting. It is **postponed on purpose**.
+
+The general form -- complete, arbitrary bypass from any store to any load -- is
+complicated, slow and large: it is an associative match of every load address against
+every buffer entry, with byte-granular merge for partial overlap, on the critical path of
+every load. The cheap correct behaviour is to WAIT, and §11.1's aliasing spectrum already
+provides the useful middle ground without any forwarding at all: the cheapest test
+("assume any older pending store aliases") is correct, and `|addr_load - addr_store| > 8`
+against a few entries recovers most independent traffic.
+
+Revisit only after P0 is measured. Forwarding buys nothing until loads can issue and
+access out of order in the first place.
 
 ### P0 -- load queue + store buffer (which is also multiple outstanding loads)
 
