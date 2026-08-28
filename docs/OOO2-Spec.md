@@ -128,7 +128,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 4 (§6.1) |
+| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 8; minimum 8 is policy (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
 
@@ -269,9 +269,16 @@ is not needed alongside it.
 
 **There are three schedulers, one per unit, and none stores age.**
 
+**Minimum 8 entries for any scheduler is policy.** Measurement does not currently justify it
+for `u_rs_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and
+`NF`=8 costs 22 ps of `probe_clk` -- but both of those workloads are limited elsewhere (FP
+latency, and in-order memory issue), so neither can see a deeper FP queue. Recorded as a
+standing rule rather than a measured optimum, and worth re-measuring once the store buffer
+moves the wall.
+
 | | `u_rs_i` | `u_rs_l` | `u_rs_f` |
 |---|---|---|---|
-| entries (`NENT`) | 10 | 12 | 4 |
+| entries (`NENT`) | 10 | 12 | 8 |
 | sources (`NSRC`) | 2 | 3 | 3 |
 | holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
@@ -530,8 +537,8 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `u_rs_i` entry | `ooo2_rs` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_rs_l` entry | `ooo2_rs` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `u_rs_f` entry | `ooo2_rs` | 4 | 2+3×9 = 29 | 116 | flops | FP, reorders, `NSRC`=3 (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 26 | 413 | 10 738 | LUTRAM | 1W dispatch, 1R issue |
+| `u_rs_f` entry | `ooo2_rs` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
 
