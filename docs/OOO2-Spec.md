@@ -786,11 +786,43 @@ buffer accepts it separately (§11). So after P0, **mul/div is the only thing le
 memory scheduler unary: 45% fewer entry bits and 50% fewer comparators than `NSRC`=2, on
 the scheduler that is also the largest.
 
-What it costs: mul/div need their own scheduler (small -- they are ~1.2% of ops) and their
-own execute stage, and that stage needs a **fourth PRF shard**, because one writer per
-shard is the property the register file rests on. They cannot write `SH_IE` without
-reintroducing the second writer whose removal was worth 397 ps, and they cannot write
-`SH_LD` once the LSU owns it. Size the new shard small.
+**Where they go: with the ALU ops, not into a fourth unit.** A fourth scheduler and stage
+would need a **fourth PRF shard** -- one writer per shard is the property the register file
+rests on, and mul/div can write neither `SH_IE` (that reintroduces the second writer whose
+removal was worth 397 ps) nor `SH_LD` (the LSU owns it after P0). It would *not* need extra
+read ports, contrary to a first reading: there is one set of `ra1/ra2/ra3` and a single
+issue slot (`rs_iss_v = pick_l | pick_f | pick_i`), so a fourth scheduler shares them. Read
+ports only become the cost under multi-issue.
+
+The cheaper route keeps mul/div in `u_rs_i`, which is already `NSRC`=2, and teaches the
+scheduler that some of its entries are not fixed-latency:
+
+| | |
+|---|---|
+| routing | mul/div -> `u_rs_i`, no new scheduler and no new shard |
+| new state | one per-entry `var` bit, set at dispatch |
+| ready | `& (~e_var[g] \| ~md_busy)` -- gates mul/div entries only; ALU entries unaffected |
+| wakeup | `self_v = ~e_var[sel] & do_iss` -- wake-at-select for ALU, wake-at-writeback for mul/div |
+| execute | a small MD stage off the shared issue register, like stage F; result lands by tag |
+| writeback | `we_ie` arbitrates: **the ALU always wins, MD holds its result until a gap** |
+
+**The asymmetry is the whole point.** `unit_busy = m_wb_ie` used to hold *the ALU* off
+whenever M wrote IE, and that was the 397 ps critical path. Inverted -- the ALU never
+waits, and the rare case (1.2% of ops) absorbs the stall -- the shared write port costs
+nothing on the common path.
+
+`FIXEDL` is a module parameter today, so making it per-entry is the one real change inside
+`ooo2_rs`: one bit of storage and a mux on the selected entry.
+
+Two things to verify rather than assume when this is built:
+
+- **Starvation.** If the ALU issued every cycle MD could never write. It is self-limiting --
+  a held result leaves its ROB entry incomplete, the ROB fills, dispatch stalls, ALU issue
+  stops, a gap appears -- but that is an argument, and it wants an asserted bound on how
+  long a result may be held.
+- **Latency.** Dependents of a mul wake at writeback instead of select, losing the bypass
+  that makes ALU chains free. Bounded (`mul3` is 3 cycles) and `ST_MUL` is 0.901%, but it
+  is a real regression on mul-dependent chains and should be measured, not assumed small.
 
 Do it while P0 is rebuilding the memory path anyway, not before and not separately.
 
