@@ -1,3 +1,14 @@
 # Verilator/verilated build directories (obj_dir_vl, obj_dir_ooo2, obj_dir_cosim, ...)
 obj_*/
 ooo2/obj_dir_rs/
+
+# GENERATED device trees (tools/check-dts-timebase.py --gen, `make dtbs`).
+# Tracking these stopped working once the model string carried the RTL commit: the file
+# then contains the hash of the commit BEFORE it, so it is dirty immediately after every
+# commit and committing it only makes it stale again. The template is the source.
+workloads/ubuntu/ubuntu-nfs.dts
+workloads/ubuntu/ubuntu-nfs.dtb
+workloads/ubuntu/ubuntu-nfs-166.dts
+workloads/ubuntu/ubuntu-nfs-166.dtb
+workloads/ubuntu/ubuntu-nfs-polled.dts
+workloads/ubuntu/ubuntu-nfs-polled.dtb
