@@ -6,6 +6,14 @@
 # 754.4 kB/s).  Without the commit and the spread written down, "is this better?" is not
 # answerable.  The model string now carries the commit automatically (1497f89b).
 #
+# HISTORY IS APPEND-ONLY, PERMANENTLY. These commit ids are published outside this repo:
+# they are stamped into the DTB model string and therefore appear on public Geekbench
+# result pages, which cannot be edited or withdrawn. A history rewrite would change every
+# hash from the rewrite point forward and leave those pages naming commits that exist
+# nowhere. So: no filter-repo, no rebase of published history, no amend of a commit whose
+# id has shipped in a bitstream. Anything already tracked by mistake stays in history; the
+# fix is `git rm --cached` plus .gitignore, which adds a commit and changes no hash.
+#
 # score is GB5's integer subscore; rate is its throughput figure, which is the sensitive
 # one -- a score of 1 spans a wide range of rates, so ALWAYS compare rate, not score.
 # unit is the rate's unit as GB5 prints it.
