@@ -56,18 +56,20 @@ Only **M** redirects. Anything that redirects or traps must additionally be the 
 (`head_block`), because a younger instruction must not squash an older load or FP op still
 in flight.
 
-### 2.1 Issue is dynamic — for ALU ops
+### 2.1 Issue is dynamic — for ALU and FP ops
 
 **X is no longer a single slot that everything funnels through.** Dispatch renames,
 allocates a ROB slot and a scheduler entry, and moves on; it does **not** wait for operands.
-The scheduler holds the instruction until its sources are ready and then issues the
-**oldest ready** entry.
+The scheduler holds the instruction until its sources are ready and then issues by
+**fixed priority, lowest entry index** — there is no age anywhere (§6.1).
 
-What may reorder is deliberately narrow. Every entry carries an `ord` bit, set for anything
-that can trap, redirect, touch memory, or hold a unit for more than a cycle — memory, AMO,
-mul, div, FP, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault.
-Those keep program order. **Pure ALU ops are free to reorder**, and they complete at issue
-without ever entering M.
+What may reorder is deliberately narrow, but it is no longer only the ALU. **Pure ALU ops
+and FP arithmetic both reorder freely**, in `u_rs_i` and `u_rs_f` respectively. An ALU op
+completes at issue; an FP op goes to stage F. Neither ever enters M.
+
+Everything else carries an `ord` bit and keeps program order in `u_rs_l` — memory, AMO,
+mul, div, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault. Only
+memory actually requires that ordering; the rest inherit it because they share M (§6.1).
 
 That split is what makes the rest unnecessary rather than merely deferred:
 
@@ -76,7 +78,7 @@ That split is what makes the rest unnecessary rather than merely deferred:
 | deferred traps / redirect register | anything that can trap issues only as the oldest entry, so traps still fire in order |
 | per-unit zombie bits at flush | nothing younger is ever in flight when a trap fires, so there is no writeback to suppress |
 | memory disambiguation, store queue | memory keeps program order |
-| deadlock avoidance | an op head-blocked in M cannot starve an older one: the only thing that can be older and un-issued is an ALU op, and those never enter M |
+| deadlock avoidance | an op head-blocked in M cannot starve an older one: the only things that can be older and un-issued are an ALU op or an FP op, and **neither ever enters M** |
 
 **Operands are read at ISSUE**, addressed by the selected entry's physical registers — doc 1's
 "values live in one place". The old M→X bypass is gone; a writeback→issue forward (`fwd`)
@@ -126,7 +128,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12 (§6.1) |
+| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 4 (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
 
@@ -262,7 +264,6 @@ cosim payload per slot so the ROB stays status-only in hardware.
 
 ### 6.1 Scheduler (`ooo2_rs`) — LIVE
 
-Stated here because its absence is the single largest fact about the machine (§2.1).
 It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
 is not needed alongside it.
 
@@ -285,14 +286,18 @@ enters M**. It cannot head-block because it cannot trap: a bad encoding is `~d_f
 and `mstatus.FS=Off` routes FP to M as before (a write to FS redirects and refetches, so
 the value read at dispatch is what every in-flight FP op retires under).
 
-**Only `u_rs_l` is in-order, and only memory needs it to be.** A load may not pass an older
-store of unknown address and there is no disambiguation yet (§14), so memory issues in
-order. But that ordering is currently applied to EVERYTHING routed to M -- mul/div, CSR,
-branches and jumps included -- which is broader than the reason for it. They cannot be
-split into a fourth scheduler while they share M: two schedulers feeding one execute stage
-is the deadlock of `Area-Efficient-Scalar-OoO.md` 12.2. **Narrowing the in-order set to
-memory alone is blocked on P2 (deleting `head_block`)**, not on anything about the
-schedulers.
+**Only `u_rs_l` is in-order, and it should not be at all.** In-order ISSUE is not what
+memory ordering requires (`Area-Efficient-Scalar-OoO.md` 11.1): an address calculation is
+ordinary ALU work, so loads and stores should issue as soon as their address operands are
+ready, in any order, with the ordering living in a **load queue** (program order in, out of
+order out) and a **store buffer** (indexed by store-seqno, committing when data is ready).
+
+`u_rs_l` is in-order because neither structure exists yet, and the cost falls on far more
+than memory: **mul/div, CSR, branches and jumps are all serialized for a constraint only
+loads and stores ever had.** They cannot be split into a fourth scheduler while they share
+M -- two schedulers feeding one execute stage is the 12.2 deadlock -- so the order of work
+is P2 (delete `head_block`), then the load queue and store buffer, then `u_rs_l` reorders
+and no scheduler is in-order.
 
 ### Out-of-order FP: why the flags are safe and the rounding mode is not
 
@@ -656,14 +661,13 @@ pinned by the MIG's `ui_clk`.
 
 ## 14. Known limits
 
-- **Single-outstanding everything.** One load, one FP op, one mul/div. Independent FP cannot
-  overlap itself; that needs a second PRF write port.
-- **Only ALU ops reorder** (§2.1). A memory, mul, div, FP or CSR op still issues in program
-  order, so a long-latency op still blocks *other long-latency ops* behind it. Freeing those
-  needs what §2.1's table says this design currently avoids: deferred traps, zombie units,
-  and memory disambiguation.
-- **M is still a single execute slot** for everything except ALU ops, so only one
-  long-latency op is in flight at a time.
+- **One load and one mul/div outstanding.** FP is no longer among them: `NFLIGHT`=4 and
+  results return by tag, out of issue order (§7).
+- **ALU and FP ops reorder** (§2.1); memory, mul, div, CSR, branches and jumps still issue
+  in program order from `u_rs_l`. A long-latency op in M still blocks *other M-class ops*
+  behind it. Freeing those needs the load queue and store buffer, and `head_block` gone.
+- **M is a single execute slot** for everything except ALU ops (which complete at issue) and
+  FP arithmetic (stage F), so one M-class long-latency op is in flight at a time.
 - **`IW=1`.** The aligner emits at most one instruction per cycle, exactly what the backend
   consumes, so the F/X queue can never build a backlog and every frontend hiccup is
   unrecoverable. On integer workloads this is the dominant cost (frontend 41.8% of cycles on
@@ -891,6 +895,32 @@ against a few entries recovers most independent traffic.
 Revisit only after P0 is measured. Forwarding buys nothing until loads can issue and
 access out of order in the first place.
 
+### CPI-stack counters: what they can and cannot be trusted for
+
+Fixed in `f637fc8`, and the history matters because these numbers appear throughout:
+
+- `rs_blk_pr` was a **priority mux** (LD, then FP, then integer), so an FP dependency was
+  invisible in any cycle the LD scheduler was also blocked and got charged to `ST_MEM`.
+  Now each scheduler is classified on its own shard and OR-ed.
+- `ST_FPU` was `(st_m & fp_arith) | dep_fp`, and `fp_arith` is identically 0 since FP left
+  M — the FPU's own occupancy vanished from the stack when it got stage F. Now
+  `(f_valid & ~fp_disp) | dep_fp`.
+- `dep_*` was gated on `m_advance`, from when "M could accept" and "issue could proceed"
+  were the same statement. It masked completely on memory-heavy code. Now `~rs_iss_v`.
+
+**Every CPI stack recorded above predates these fixes** and overstates `ST_MEM` at the
+expense of `ST_FPU`. On `mlbench` the correction moved `ST_MEM` 41% → 33%.
+
+**A known remaining gap: there is no ROB-full event.** `st_ser` absorbs every non-dependency
+dispatch stall under a name that says "serialize". That matters because on `mlbench`
+`d_hold` is **99% `rob_full`** — a dot-product accumulator chain blocks *retirement*, not
+issue, so it never appears as a dependency stall at all and `ST_FPU` correctly reads 0%.
+The Zihpm bus is full at `[21:0]`; adding `ST_ROB` means widening it, which reaches
+`src/csr_file.v` and the other core.
+
+**The events overlap and do not sum to a budget.** The stack reaches 94% of cycles with
+rows that double-count a cycle stalled on two things. Read them as shares.
+
 ### UNRESOLVED: efe6dd6 is a 5.4% geomean regression that has no mechanism
 
 **Do not run GB5 again until this is understood.**
@@ -993,39 +1023,6 @@ Unlike P3a, the units here are genuinely FSMs (`rv_cache`: `S_IDLE -> S_CHECK ->
 ~2 cycles each, which is the measured 4. So this needs a pipelined hit path as well as the
 queue. Batch it alone: it wants its own bisect.
 
-### P0-old -- multiple outstanding loads
-
-`ST_MEM` is **54.7% of full-suite GB5 cycles** at a 2.04% miss rate costing 4.995 cycles
-per access, and 23.7% even on the cache-resident AES kernel. The scheduler sweep proves the
-window is not the constraint (4 entries to 20 spans 0.8%); `workloads/ldbench` proves what
-is, directly:
-
-| `ldbench`, entirely L1-resident (0 misses) | cyc/load | `ST_MEM`/load |
-|---|---:|---:|
-| latency (pointer chase) | 5.00 | 4.99 |
-| throughput (8 INDEPENDENT streams) | **4.00** | 1.75 |
-| **overlap (lat/thru)** | **1.24x** | |
-
-Eight independent streams overlap 1.24x. Loads are very nearly serialised, `ST_MEM` is 43%
-of cycles with zero misses, and the ceiling is ~4 cycles per load however much ILP is
-offered.
-
-**This is NOT the same fix as P3a, and the difference is the whole cost estimate.** The FPU
-turned out to be pipelined already (`PipeRegs=4`) with its tag ports wired and unused -- the
-wrapper was the only thing serialising it, so the fix was a counter and a tag. Here both
-stages are genuinely FSMs:
-
-    rv_cache: S_IDLE (accept) -> S_CHECK -> deliver -> S_IDLE
-    ooo2_lsu: S_IDLE -> S_LD  -> (S_LD2 if xword) -> S_IDLE
-
-Neither accepts a new request until it returns to idle, and ~2 cycles each is exactly the
-measured 4. Pipelining the hit path -- address/BRAM-read in one stage, compare/select in
-the next, with the miss path left on the FSM -- is a real rewrite of the most
-corruption-sensitive module in the design, not a wrapper change. The tag plumbing
-(`rd_tag`/`rd_resp_tag`, and 2 free bits in the LSU tag space) already exists for it.
-
-Do not start this in the same batch as anything else: it wants its own bisect.
-
 ### P1 -- triage the regression against 95aff227 (8/22)
 
 Reported: many workloads regressed between 95aff227 (in-order issue) and 72d14cde
@@ -1091,13 +1088,6 @@ forwarded `flush` to `fpnew_top`; the core tied it to 0. Flushing EVERY in-fligh
 redirect is correct only while `head_block` holds -- a redirect fires only at ROB head, so
 anything in flight is younger by construction. **Removing `head_block` (P2) requires
 replacing this with an epoch tag first.**
-
-### P3b-old -- superseded, kept for the reasoning
-
-`ST_FPU` is **28.9% of full-suite cycles** at 1.148 CPI, a regression from the 0.973 the
-FPU rework reached, caused by FP arithmetic sitting in the in-order scheduler behind every
-load, mul/div, CSR and branch. Blocked on P2: three schedulers into one execute stage
-deadlock.
 
 ### P4 -- Machine Learning scores 0
 
