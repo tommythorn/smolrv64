@@ -851,24 +851,52 @@ a substantial fraction of the array it reads (§15). Holding the data kills the 
 takes the PRF to a clean **2R1W**. It is the clearest case in the design of flops being
 the wrong unit of account. It also means a store waits for `rs2` before it can execute.
 
-### 11.1 Memory ordering
+### 11.1 Memory ordering — ISSUE is free, ACCESS is ordered
 
-A load may not issue while any older store is live. Stores write memory only at commit, so
-this is exactly the condition under which memory holds every older store's data and no
-younger store's. The store queue holds exactly the live stores in program order, so the
-oldest live store is its head:
+**Nothing about memory ordering belongs to the issue stage.** An address calculation is
+ordinary ALU work: `addr = src1 + imm`, no memory involved, no ordering to respect. Both
+loads and stores issue **as soon as their address operands are ready, in any order**.
+
+Ordering applies to the memory ACCESS, and it lives in two structures:
+
+**Store buffer**, indexed by **store-seqno** — a counter incremented once per store, not a
+ROB index. A store issues the moment its address can be computed and takes its slot; it
+**commits when its data is ready** and it is the oldest. Address and data therefore need
+not arrive together, which matters because the data operand is frequently the later of the
+two.
+
+**Load queue**, entries inserted **in program order** but executed **out of order**. Each
+load carries the store-seqno of the most recent store older than it — captured at dispatch,
+which is the only point where program order is known for free. A load may access memory
+once no older pending store can alias it:
 
 ```
-load_may_issue(i) = sq_count == 0 || age(sq_rob_idx[sq_head]) > age(i)
+load_may_access(i) = no store in the buffer with seqno < i.store_seqno  ... can alias
 ```
 
-**One comparison, not a window-wide scan.** Run both formulations in debug builds and
-assert they agree every cycle.
+**The aliasing test is deliberately a spectrum, and the cheap end is correct.** The wording
+above says *can alias*, not *exists*, so an implementation chooses how hard to look:
 
-There is no address comparison and no forwarding: the rule costs performance and nothing
-else. Relaxing it to compare addresses is cheap precisely because the addresses now live
-somewhere a comparator can reach — a second reason the queue holds them rather than the
-ROB.
+| cost | test | effect |
+|---|---|---|
+| cheapest | assume any older pending store aliases | load waits for older stores to drain |
+| cheap | `|addr_load - addr_store| > 8` against a few entries | most independent accesses proceed |
+| full | exact overlap against every entry | maximum reordering |
+
+Start at the top row. It is correct, it is one comparison against the buffer's oldest
+seqno, and it still buys the thing that matters most — the load's **address calculation and
+its issue** are no longer serialized behind older memory ops, only its access is.
+
+**Why store-seqno rather than ROB age.** A store-seqno counts only stores, so the
+comparison is against a small monotone counter rather than a wrapped ROB index needing an
+age function. It also indexes the store buffer directly, so "the older stores" is a range
+of slots rather than a scan.
+
+**What this replaces.** An earlier version of this section gated *issue*:
+`load_may_issue(i) = sq_count == 0 || age(sq_rob_idx[sq_head]) > age(i)`. That is a
+stronger condition than correctness needs, and in `ooo2` it is the reason the memory
+scheduler is in-order at all — every mul/div, CSR, branch and jump routed through the same
+stage inherited an ordering that only loads and stores ever required.
 
 ---
 
