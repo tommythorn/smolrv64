@@ -69,6 +69,7 @@ module ooo2_lq
 
     // ---- access: hand the D$ the oldest entry that is clear ----
     output wire                  x_v,
+    output wire [IDXB-1:0]       x_idx,       // the entry being offered -- the response's tag
     output wire [PAW-1:0]        x_pa,
     output wire [1:0]            x_size,
     output wire                  x_signed,
@@ -123,6 +124,7 @@ module ooo2_lq
    assign q_size  = sz[acc];
    assign q_tag   = sqt[acc];
    assign x_v     = cand_v & ~q_block;
+   assign x_idx   = acc;
    assign x_pa    = pa[acc];
    assign x_size  = sz[acc];
    assign x_signed= sgn[acc];

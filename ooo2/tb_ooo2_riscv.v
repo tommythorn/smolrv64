@@ -131,7 +131,6 @@ module tb;
       end
       if (!done)
          $display("RISCV-TEST TIMEOUT after %0d cycles (pc~%h) retires=%0d", ncyc, imem_addr, nret);
-      $finish;
    end
 
    // apply stores after the monitor has seen them

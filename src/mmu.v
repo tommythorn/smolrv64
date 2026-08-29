@@ -41,6 +41,10 @@ module mmu
     input  wire [63:0] ptw_rdata,
     input  wire        ptw_rvalid,
     // combinational translation result (valid this cycle when t_ready)
+    output wire        walking,       // a page-table walk is in progress (REGISTERED, so it
+                                      // is safe to gate a request on -- t_ready is not: it
+                                      // is a function of req_valid, and gating req_valid on
+                                      // it closes a combinational loop through this module
     output wire        t_ready,       // translation resolved this cycle (else: walking)
     output wire [AW-1:0] t_paddr,
     output wire        t_fault,
@@ -195,6 +199,7 @@ module mmu
    // A faulting walk still fills no TLB, so fault delivery always reflects memory.
    wire tlb_ok = tlb_hit & ~hit_perm_fault;
    // resolves this cycle on: Bare, non-canonical, a clean TLB hit, or a just-finished walk.
+   assign walking = (st != IDLE);
    assign t_ready = req_valid & (!xlate | noncanon | tlb_ok | (w_done & req_match));
    wire wdm = w_done & req_match;
    assign t_paddr = wdm      ? w_paddr :

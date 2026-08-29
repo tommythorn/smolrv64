@@ -31,7 +31,7 @@ module tb_ooo2_lq;
       .d_sqtag(d_sqtag),.d_ready(d_ready),.d_idx(d_idx),
       .a_v(a_v),.a_idx(a_idx),.a_pa(a_pa),.a_size(a_size),.a_signed(a_signed),.a_fp(a_fp),
       .q_pa(q_pa),.q_size(q_size),.q_tag(q_tag),.q_block(q_block),
-      .x_v(x_v),.x_pa(x_pa),.x_size(x_size),.x_signed(x_signed),.x_fp(x_fp),.x_take(x_take),
+      .x_v(x_v),.x_idx(),.x_pa(x_pa),.x_size(x_size),.x_signed(x_signed),.x_fp(x_fp),.x_take(x_take),
       .l_v(l_v),.l_idx(l_idx),.l_prd(l_prd),.l_rd(l_rd),.l_rd_v(l_rd_v),.l_rob(l_rob),
       .occupancy(occ),.flush(flush));
 

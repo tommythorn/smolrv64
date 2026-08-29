@@ -47,7 +47,7 @@ module ooo2_lsu
     input  wire            req_fp,         // FLW -> NaN-box the 32-bit result
     input  wire [63:0]     req_st_data,    // rs2
 
-    // ---- COMMIT PORT: a store draining from ooo2_sq, ALREADY TRANSLATED -------------
+    // ---- PRE-TRANSLATED ACCESS PORT ------------------------------------------------
     // Routed through this FSM rather than given its own path to the cache (rule C2): the
     // straddle beat, mem_wready handshaking, device decode from mem_wabase and the LR/SC
     // reservation clear all live below, and a second writer would have to duplicate every
@@ -57,26 +57,28 @@ module ooo2_lsu
     //
     // Holds priority over req_* when both want an idle LSU: the committing store is at the
     // ROB head, so it is unconditionally older, and M's op is free to wait a cycle.
-    input  wire            cq_v,
-    input  wire [55:0]     cq_pa,          // physical, from ooo2_sq
-    input  wire [1:0]      cq_size,
-    input  wire [63:0]     cq_data,
-    input  wire            cq_unc,         // the uncached bit decided at translate time
-    output wire            cq_done,
+    input  wire            pt_v,
+    input  wire            pt_store,       // 1 = store draining from ooo2_sq, 0 = load from ooo2_lq
+    input  wire [55:0]     pt_pa,          // physical: translated when the op executed
+    input  wire [1:0]      pt_size,
+    input  wire [63:0]     pt_data,        // store data
+    input  wire            pt_signed,      // load formatting
+    input  wire            pt_fp,
+    input  wire            pt_unc,         // the uncached bit decided at translate time
+    output wire            pt_done,
+    output wire            pt_ack,         // accepted this cycle -- the requester may advance
+    output wire            pt_is_store,    // direction of the access IN FLIGHT
 
-    // ---- TRANSLATE-ONLY: a store's address pass ------------------------------------
-    // A store no longer accesses memory when it executes; it translates, hands the PA to
-    // ooo2_sq and completes in that cycle. Translation and its faults are exactly what
+    // ---- TRANSLATE-ONLY: the address pass of a buffered store or a queued load ------
+    // Neither accesses memory when it executes: it translates, hands the PA to ooo2_sq or
+    // ooo2_lq and completes in that cycle. Translation and its faults are exactly what
     // S_IDLE already does, so this is a completion arm, not a state: the FSM stays idle.
+    // The access happens later, through the pre-translated port above.
     input  wire            req_xlate,
     output wire [55:0]     xo_pa,
     output wire            xo_unc,
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
 
-    // ---- load disambiguation: an older buffered store may alias --------------------
-    // Fed from ooo2_sq with THIS access's translated PA. A load may not start while it
-    // is set; the store buffer is the ordering point, not the scheduler.
-    input  wire            ld_block,
 
     // ---- translation context (from csr_file) ----
     input  wire [63:0]     xl_satp,
@@ -159,8 +161,8 @@ module ooo2_lsu
    // PLIC 0x0C00_0000, UART 0x1000_0000, virtio 0x1000_2000/3000) and DRAM above it.
    localparam [55:0] LSU_DRAM_BASE = 56'h8000_0000;
    // The effective physical address: the MMU's for an M request, ooo2_sq's for a commit.
-   wire [55:0] eff_pa  = cq_start ? cq_pa : t_paddr;
-   wire        eff_unc = cq_start ? cq_unc : t_uncached;
+   wire [55:0] eff_pa  = pt_start ? pt_pa : t_paddr;
+   wire        eff_unc = pt_start ? pt_unc : t_uncached;
    wire        pa_dram = (eff_pa >= LSU_DRAM_BASE);
    wire        xl_can = ~req_amo & ~eff_cbo & pa_dram; // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
@@ -183,19 +185,32 @@ module ooo2_lsu
    // Which requester owns the access in flight. done/fault/rd_val are single outputs, so
    // without this a commit store finishing under M's pending op would be latched by M as
    // its own completion.
-   reg         own_cq;
-   initial     own_cq = 1'b0;
-   wire        cq_start = cq_v & (st == S_IDLE);
+   reg         own_pt, own_pt_st;
+   initial     begin own_pt = 1'b0; own_pt_st = 1'b0; end
+   assign      pt_is_store = own_pt_st;
+   // A PRE-TRANSLATED ACCESS MUST NOT STEAL THE FSM FROM A PAGE-TABLE WALK. The MMU is
+   // driven by xl_req, which is qualified by `st == S_IDLE`; letting pt_start take the FSM
+   // while a walk is in progress drops req_valid under the MMU, the walk restarts, and a
+   // steady supply of queued loads keeps it restarting forever. Every -v- test hung.
+   // `walking` is the MMU's own state register, not t_ready. t_ready is a function of
+   // req_valid, so gating req_valid on it closes a combinational loop THROUGH the MMU --
+   // which is exactly what the first attempt did, and Verilator reported it as "Active
+   // region did not converge" rather than as a hang.
+   wire        mmu_walking;
+   wire        xl_want  = req_valid & (st == S_IDLE);
+   wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking;
 
-   // The request the FSM actually sees. In S_IDLE the selector is cq_start (own_cq still
-   // holds the PREVIOUS access's owner and would be stale); once running it is own_cq.
-   // cq_pa's low bits ARE the VA's low bits -- a page offset survives translation -- so
+   // The request the FSM actually sees. In S_IDLE the selector is pt_start (own_pt still
+   // holds the PREVIOUS access's owner and would be stale); once running it is own_pt.
+   // pt_pa's low bits ARE the VA's low bits -- a page offset survives translation -- so
    // boff/wend/alignment below are correct from it.
-   wire        sel_cq      = (st == S_IDLE) ? cq_start : own_cq;
-   wire [63:0] eff_vaddr   = sel_cq ? {8'd0, cq_pa}  : req_vaddr;
-   wire [1:0]  eff_size    = sel_cq ? cq_size        : req_size;
-   wire [63:0] eff_st_data = sel_cq ? cq_data        : req_st_data;
-   wire        eff_cbo     = sel_cq ? 1'b0           : req_cbo;
+   wire        sel_pt      = (st == S_IDLE) ? pt_start : own_pt;
+   wire [63:0] eff_vaddr   = sel_pt ? {8'd0, pt_pa}  : req_vaddr;
+   wire [1:0]  eff_size    = sel_pt ? pt_size        : req_size;
+   wire [63:0] eff_st_data = sel_pt ? pt_data        : req_st_data;
+   wire        eff_cbo     = sel_pt ? 1'b0           : req_cbo;
+   wire        eff_signed  = sel_pt ? pt_signed      : req_signed;
+   wire        eff_fp      = sel_pt ? pt_fp          : req_fp;
 
    wire [3:0]  nb       = 4'd1 << eff_size;
    wire        wr_class = req_store | (req_amo & ~is_lr);   // store-class for translation/faults
@@ -206,7 +221,7 @@ module ooo2_lsu
    wire [3:0]  t_cause;
    // only ask while a request is actually waiting to be translated (S_IDLE): once
    // started, the access owns pa_q and the walker must be left alone.
-   wire        xl_req = req_valid & (st == S_IDLE) & ~cq_start;
+   wire        xl_req = xl_want & ~pt_start;
 
    mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_mmu
      (.clk(clk), .reset(reset),
@@ -215,7 +230,7 @@ module ooo2_lsu
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
-      .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
+      .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
       .t_uncached(t_uncached));
 
    // A misaligned access whose byte span leaves the page needs a second translation.
@@ -241,10 +256,10 @@ module ooo2_lsu
    // request can start: translated cleanly this cycle
    wire xl_ok    = xl_req & t_ready & ~t_fault & ~xpage;
    wire xo_ok    = xl_ok & req_xlate;                    // translate-only: completes now
-   // A LOAD waits for disambiguation. Stores do not: a store's own entry is what younger
-   // loads are checked against, and it is checked against nothing.
-   wire ld_hold  = ~req_store & ~req_amo & ~req_cbo & ~req_xlate & ld_block;
-   wire start_ok = cq_start | (xl_ok & ~req_xlate & ~ld_hold);
+   // NO disambiguation here any more. ooo2_lq owns the ordering test, against a REGISTERED
+   // address, so it is off the translate path entirely -- that is the whole reason the queue
+   // exists (see its header).
+   wire start_ok = pt_start | (xl_ok & ~req_xlate);
    assign xo_v   = xo_ok;
    assign xo_pa  = t_paddr;
    assign xo_unc = t_uncached;
@@ -340,7 +355,7 @@ module ooo2_lsu
    // ------------------------------------------------------------ completion
    // `started` is M's early-release signal for a non-blocking load. A commit store starting
    // is not M's access and must not pulse it.
-   assign started = start_ok & ~cq_start;
+   assign started = start_ok & ~pt_start;
    wire acc_done = ((st == S_ST)  & mem_wready & ~xword_q)
                  | ((st == S_ST2) & mem_wready)
                  | ((st == S_LD)  & mem_rvalid & ~xword_q)
@@ -352,8 +367,9 @@ module ooo2_lsu
    // M as its own -- the same class of defect as rule D5's re-presented request.
    // `fault` needs no such split: it is qualified by xl_req, which is false unless M owns an
    // idle LSU, so a commit can never raise one (it was translated before it was buffered).
-   assign done    = fault | xo_ok | (acc_done & ~own_cq);
-   assign cq_done = acc_done & own_cq;
+   assign done    = fault | xo_ok | (acc_done & ~own_pt);
+   assign pt_done = acc_done & own_pt;
+   assign pt_ack  = pt_start;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
 
@@ -373,16 +389,18 @@ module ooo2_lsu
                 if (~pa_dram & (wend > 5'd8))
                    $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
                           eff_pa, nb, boff);
-                own_cq        <= cq_start;
+                own_pt        <= pt_start;
+                own_pt_st     <= pt_start & pt_store;
                 nc_q          <= eff_unc;
                 mem_runcached <= eff_unc;
                 cos_pa        <= eff_pa;                      // exact, pre-alignment
-                cos_kind      <= (cq_start | req_store) ? 2'd2 : req_amo ? 2'd2 : 2'd1;
+                cos_kind      <= ((pt_start & pt_store) | req_store) ? 2'd2
+                               : req_amo ? 2'd2 : 2'd1;
                 xword_q <= xword;
-                nb_q    <= nb;  sgn_q <= req_signed;  fp_q <= req_fp;
+                nb_q    <= nb;  sgn_q <= eff_signed;  fp_q <= eff_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
                 pa2_q   <= (eff_pa & ~56'd7) + 56'd8;
-                if (cq_start | req_store) begin
+                if (pt_start ? pt_store : req_store) begin
                    pa_q <= xl_can ? (eff_pa & ~56'd7) : eff_pa;
                    st   <= S_ST;
                 end else if (req_amo) begin
@@ -430,7 +448,7 @@ module ooo2_lsu
          // sequence may not contain a store, so the only way to clear a live reservation is
          // an OLDER buffered store draining after the LR executed -- and that store is one
          // dynamic instruction, gone once it commits, so the retry succeeds.
-         if (st_go && mem_wready && rsv_v && (own_cq || (req_vaddr[38:3] == rsv_w)))
+         if (st_go && mem_wready && rsv_v && (own_pt || (req_vaddr[38:3] == rsv_w)))
             rsv_v <= 1'b0;
       end
    end

@@ -21,7 +21,7 @@ module tb;
      (.clk(clk), .reset(reset), .req_valid(req_valid), .req_vaddr(req_vaddr),
       .req_access(req_access), .priv(priv), .sum(sum), .mxr(mxr), .satp(satp),
       .flush(flush), .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata),
-      .ptw_rvalid(ptw_rvalid), .t_ready(t_ready), .t_paddr(t_paddr),
+      .ptw_rvalid(ptw_rvalid), .walking(), .t_ready(t_ready), .t_paddr(t_paddr),
       .t_fault(t_fault), .t_cause(t_cause), .t_uncached(t_uncached));
 
    // behavioral page table (registered read, 1-cycle latency)

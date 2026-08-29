@@ -471,7 +471,7 @@ module lsu
       .req_valid(ld_sel_v), .req_vaddr(lq_addr[ld_sel]), .req_access(2'd1),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(ldp_addr), .ptw_read(ldp_read), .ptw_rdata(ldp_rdata), .ptw_rvalid(ldp_rvalid),
-      .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause),
+      .walking(), .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause),
       .t_uncached(ldx_uncached));
    // mmu resolves combinationally in Bare mode (no walk): a noncanon/out-of-range load
    // there yields ldx_fault with an ACCESS-fault cause (5), surfaced like any page fault.
@@ -744,7 +744,7 @@ module lsu
                 : 2'd2),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
-      .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
+      .walking(), .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
       .t_uncached(stx_uncached));
    wire          amo_xok   = ~xlate | (stx_ready & ~stx_fault);   // amo ok (valid when amo_need_xl)
    wire          amo_xflt  = xlate & amo_need_xl & stx_ready & stx_fault;

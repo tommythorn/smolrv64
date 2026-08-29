@@ -31,7 +31,7 @@ module tb_ooo2_sq;
       .a_data_v(a_data_v),.a_data(a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(c_v),.c_rob(c_rob),.c_addr(c_addr),.c_data(c_data),.c_size(c_size),.c_unc(c_unc),.c_take(c_take),
-      .ld_addr(ld_addr),.ld_size(ld_size),.ld_tag(ld_tag),.ld_block(ld_block),.d_tag(),
+      .ld_addr(ld_addr),.ld_size(ld_size),.ld_tag(ld_tag),.ld_block(ld_block),.ld_older(),.d_tag(),
       .occupancy(occ),.flush(flush));
 
    integer pass=0, fail=0;

@@ -153,7 +153,7 @@ module tb;
          if (dut.core.iss_alu)     $write(" ALU:%0d", dut.core.i_rob);       else $write("        ");
          if (dut.core.iss_m)       $write(" M:%0d",   dut.core.i_rob);       else $write("      ");
          if (dut.core.iss_f)       $write(" F:%0d",   dut.core.i_rob);       else $write("      ");
-         if (dut.core.ld_land)     $write(" LD:%0d",  dut.core.sb_rob);      else $write("       ");
+         if (dut.core.ld_land)     $write(" LD:%0d",  dut.core.lq_l_rob);    else $write("       ");
          if (dut.core.fp_land)     $write(" FP:%0d",  dut.core.ft_rob);      else $write("       ");
          if (dut.core.rob_c_valid) $write(" RET:%0d", dut.core.rob_head_idx);else $write("        ");
          if (dut.core.redirect)    $write(" RED");
@@ -208,8 +208,8 @@ module tb;
       if (dut.core.st_mul) n_stmul <= n_stmul + 1;
       if (dut.core.st_div) n_stdiv <= n_stdiv + 1;
       if (dut.core.st_fpu) n_stfpu <= n_stfpu + 1;
-      if (dut.core.lsu_started & ~dut.core.m_is_store & ~dut.core.m_is_amo)
-                                   n_ldstart <= n_ldstart + 1;
+      // Loads no longer start via lsu_started -- they access from the queue's port.
+      if (dut.core.lq_x_take)      n_ldstart <= n_ldstart + 1;
       if (dut.core.sq_ld_reorder)  n_ldreord <= n_ldreord + 1;
       if (dut.core.sq_ld_block)    n_ldblk   <= n_ldblk   + 1;
       n_sqocc <= n_sqocc + {61'd0, dut.core.sq_occ};

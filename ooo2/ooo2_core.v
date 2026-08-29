@@ -253,7 +253,7 @@ module ooo2_core
       .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
-      .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
+      .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_uncached());
    assign imem_addr = {8'd0, immu_pa};
 
@@ -432,8 +432,9 @@ module ooo2_core
    // Its ROB slot is completed by sq_c_take above, in the cycle memory is actually written.
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
+   wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith & ~m_st_nb) | ld_land;
-   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : m_rob_idx;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : m_rob_idx;
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
    // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
@@ -543,6 +544,7 @@ module ooo2_core
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
    localparam integer PL_N = NI + NL + NF, PL_IB = 5;
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
+   localparam integer LQ_N = 4, LQ_IB = 2;      // load queue:   entries, index width
    localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2;
 
    // ORDERED: anything that can trap, redirect, touch memory or hold a unit for more than a
@@ -740,7 +742,8 @@ module ooo2_core
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
                           + 1 + 1 + 1                           // source-valid bits
                           + 1                                   // ordered
-                          + SQ_IB;                              // store-buffer slot
+                          + SQ_IB                               // store-buffer slot / seqno
+                          + LQ_IB;                              // load-queue slot
    wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
                            (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
                            d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
@@ -750,7 +753,7 @@ module ooo2_core
                            d_fault_cause, d_fault_tval,
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
                            d_br_func, d_mis_taken, d_mis_nt,
-                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_tag};
+                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_tag, lq_d_idx};
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
@@ -761,6 +764,7 @@ module ooo2_core
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
    wire [31:0]         q_insn;
    wire [SQ_IB-1:0]    q_sq_tag;
+   wire [LQ_IB-1:0]    q_lq_idx;
    wire                q_rvc, q_rd_v, q_mem_signed, q_is_mem, q_is_store, q_is_amo;
    wire [SEQW-1:0]     q_seq;
    wire [PDW-1:0]      q_pdet;
@@ -786,7 +790,7 @@ module ooo2_core
            q_illegal, q_fault, q_fault_cause, q_fault_tval,
            q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
            q_br_func, q_mis_taken, q_mis_nt,
-           q_rs1_v, q_rs2_v, q_rs3_v, q_ord, q_sq_tag} = pl_out;
+           q_rs1_v, q_rs2_v, q_rs3_v, q_ord, q_sq_tag, q_lq_idx} = pl_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -810,13 +814,13 @@ module ooo2_core
    wire [55:0]         sq_c_addr;
    wire [63:0]         sq_c_data;
    wire [1:0]          sq_c_size;
-   wire                lsu_cq_done, lsu_xo_v, lsu_xo_unc;
+   wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_xo_v, lsu_xo_unc;
    wire [55:0]         lsu_xo_pa;
    wire d_st_alloc = rn_valid & d_st_nb;
    // The head entry may go to memory only once it IS the ROB head: that is the point at
    // which no older instruction can still trap and no redirect can still squash it.
    wire sq_go     = sq_c_v & (sq_c_rob == rob_head_idx);
-   wire sq_c_take = lsu_cq_done;
+   wire sq_c_take = lsu_pt_done & lsu_pt_is_store;
 
    ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C)) u_sq
@@ -828,14 +832,59 @@ module ooo2_core
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
-      .ld_addr(lsu_xo_pa), .ld_size(m_mem_size), .ld_tag(m_sq_tag),
+      // Queried by the LOAD QUEUE's candidate, from its REGISTERED address -- not by
+      // whatever M happens to be translating. That was the old path and leaving it wired
+      // here queried the buffer with a stale tag from an empty M stage, which blocked a
+      // load against a store that was not older than it and deadlocked the machine.
+      .ld_addr(lq_q_pa), .ld_size(lq_q_size), .ld_tag(lq_q_tag),
       .ld_block(sq_ld_block), .ld_older(sq_ld_older),
       .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
    // its access only when ~ld_block, so a start with an older store still live is exactly
    // one reordering that the old in-order machine could not have done.
-   wire sq_ld_reorder = lsu_started & ~m_is_store & ~m_is_amo & sq_ld_older;
+   wire sq_ld_reorder = lq_x_take & sq_ld_older;
+
+   // ------------------------------------------------------------------- LOAD QUEUE
+   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_l_rd_v;
+   wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
+   wire [55:0]         lq_q_pa, lq_x_pa;
+   wire [1:0]          lq_q_size, lq_x_size;
+   wire [SQ_IB-1:0]    lq_q_tag;
+   wire [RN_PBITS-1:0] lq_l_prd;
+   wire [5:0]          lq_l_rd;
+   wire [ROB_IDXB-1:0] lq_l_rob;
+   wire [LQ_IB:0]      lq_occ;
+   wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
+   wire d_ld_alloc = rn_valid & d_ld_nb;
+
+   ooo2_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
+             .ROBB(ROB_IDXB), .SQIB(SQ_IB)) u_lq
+     (.clk(clk), .reset(reset),
+      .d_alloc(d_ld_alloc), .d_rob(rob_d_idx), .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
+      .d_rd(d_rd), .d_rd_v(d_rd_v), .d_sqtag(sq_d_tag),
+      .d_ready(lq_d_ready), .d_idx(lq_d_idx),
+      .a_v(m_lq_fill), .a_idx(m_lq_idx), .a_pa(lsu_xo_pa), .a_size(m_mem_size),
+      .a_signed(m_mem_signed), .a_fp(m_is_fp),
+      .q_pa(lq_q_pa), .q_size(lq_q_size), .q_tag(lq_q_tag), .q_block(sq_ld_block),
+      .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
+      .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_take(lq_x_take),
+      .l_v(ld_land), .l_idx(ld_inflight_idx),
+      .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob),
+      .occupancy(lq_occ), .flush(redirect));
+
+   // ONE pre-translated port, two users. The committing store wins: it is at the ROB head,
+   // so it is unconditionally older than any queued load, and it frees the port immediately.
+   // A load waiting a cycle for it costs nothing that the store's own drain did not already.
+   wire pt_v      = sq_go | lq_x_v;
+   wire pt_store  = sq_go;
+   wire lq_x_take = lq_x_v & ~sq_go & lsu_pt_ack;
+   wire ld_land   = lsu_pt_done & ~lsu_pt_is_store;
+   // The tag of the access in flight. One at a time today, so a single register; when loads
+   // are pipelined this becomes the D$'s rd_tag and the queue interface does not change.
+   reg  [LQ_IB-1:0] ld_inflight_idx;
+   initial ld_inflight_idx = {LQ_IB{1'b0}};
+   always @(posedge clk) if (lq_x_take) ld_inflight_idx <= lq_x_idx;
 
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
@@ -889,6 +938,7 @@ module ooo2_core
    // captured at dispatch: for a store it names the entry to fill, for a load it is the
    // store-seqno bounding which entries are older than it.
    reg  [SQ_IB-1:0] m_sq_tag;
+   reg  [LQ_IB-1:0] m_lq_idx;
    reg              m_rs2_rdy;
    initial begin m_valid = 1'b0; end
 
@@ -1012,10 +1062,14 @@ module ooo2_core
       .req_valid(m_mem_op & ~m_unit_done_q),
       // A plain store TRANSLATES here and goes no further: its address lands in ooo2_sq and
       // memory is written later, from the buffer's commit port below.
-      .req_xlate(m_st_nb), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
-      .ld_block(sq_ld_block),
-      .cq_v(sq_go), .cq_pa(sq_c_addr), .cq_size(sq_c_size), .cq_data(sq_c_data),
-      .cq_unc(sq_c_unc), .cq_done(lsu_cq_done),
+      // Loads AND buffered stores translate here and go no further; the access itself
+      // comes back through the pre-translated port, from ooo2_lq or ooo2_sq.
+      .req_xlate(m_st_nb | m_ld_nb), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
+      .pt_v(pt_v), .pt_store(pt_store),
+      .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
+      .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
+      .pt_unc(pt_store ? sq_c_unc : 1'b0), .pt_done(lsu_pt_done),
+      .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
@@ -1439,30 +1493,14 @@ module ooo2_core
    // PRF has one write address (ooo2_prf: one `wa`, three shard enables), so two completions
    // in a cycle have nowhere to go. Multiple outstanding loads is the step that has to solve
    // that, together with a load queue and D$ MSHRs.
-   wire m_ld_nb  = m_mem_op & ~m_is_store & ~m_is_amo;   // plain load: releases M early
-   wire ld_disp  = m_ld_nb & lsu_started;                // handed over; cannot fault now
-   reg                sb_busy, sb_rd_v;
-   reg [RN_PBITS-1:0] sb_preg;
-   reg [5:0]          sb_rd;
-   reg [ROB_IDXB-1:0] sb_rob;
-   initial begin sb_busy = 1'b0; sb_rd_v = 1'b0; end
-   wire ld_land  = sb_busy & lsu_done;                   // data back
-   always @(posedge clk) begin
-      if (reset) sb_busy <= 1'b0;
-      else begin
-         if (ld_land) sb_busy <= 1'b0;
-         if (ld_disp) begin
-            sb_busy  <= 1'b1;   sb_preg <= m_prd;      sb_rd_v <= m_rd_v;
-            sb_rd    <= m_rd;   sb_rob  <= m_rob_idx;
-         end
-      end
-   end
-   always @(posedge clk) if (!reset) begin
-      if (ld_disp & sb_busy & ~ld_land)
-         $fatal(1, "ooo2_core: a second load dispatched with one already in flight");
-      if (ld_land & ~sb_busy)
-         $fatal(1, "ooo2_core: LSU completed a load the scoreboard does not know about");
-   end
+   wire m_ld_nb  = m_mem_op & ~m_is_store & ~m_is_amo & ~m_is_cbo;  // plain load, rule C1
+   // The 1-deep load scoreboard that stood here is GONE, replaced by ooo2_lq. It tracked a
+   // load from the cycle its ACCESS STARTED, which is why the ordering test had nowhere to
+   // live but ooo2_lsu's start gate, on the end of the translate path. The queue tracks it
+   // from the cycle its ADDRESS IS KNOWN instead, and holds that address in a flop -- which
+   // is the entire point. Its "a second load dispatched with one already in flight"
+   // assertion is likewise retired: several in flight is now the intent, not a bug.
+   //   sb_preg/sb_rd/sb_rd_v/sb_rob -> lq_l_prd/lq_l_rd/lq_l_rd_v/lq_l_rob
 
    // ---- FP scoreboard: the FPU releases M at ISSUE, not at result -------------------
    // Same shape as the load slot above, and the same argument makes it safe: an FP op
@@ -1502,12 +1540,12 @@ module ooo2_core
    // ---- completion ----
    wire m_unit_ok = ~m_valid             ? 1'b1
                  : m_fault | m_ill_eff   ? 1'b1   // poisoned: traps immediately
-                 // `lsu_done` is the LSU's GLOBAL done, so an older non-blocking load
-                 // completing would otherwise satisfy a younger store sitting in M -- which
-                 // then "completes" without ever executing. ~sb_busy says the done is mine:
-                 // a blocking op cannot even start until the outstanding load has landed.
-                 : m_mem_op              ? (m_ld_nb ? (lsu_started | lsu_fault)
-                                                    : (lsu_done & ~sb_busy))
+                 // `done` is now M's alone: it is fault | translate-only | an access this
+                 // stage started, and every access ooo2_lq or ooo2_sq starts reports on
+                 // pt_done instead (the own_pt latch in ooo2_lsu). The ~sb_busy qualifier
+                 // that used to be needed here -- an older load's completion satisfying a
+                 // younger store that never executed -- has no case left to cover.
+                 : m_mem_op              ? lsu_done
                  : m_md_op               ? (md_div ? div_done : mul_done)
                  :                         1'b1;  // in-core FP included: single-cycle
 
@@ -1687,7 +1725,7 @@ module ooo2_core
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
    // address still holds and ooo2_prf keeps its one-write-per-cycle property.
    wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
-   wire ld_wb = ld_land & sb_rd_v;
+   wire ld_wb = ld_land & lq_l_rd_v;
 
    // PER-SHARD WRITE PORTS. Each shard is driven by its OWN writers rather than through a
    // muxed address: IE by M's ALU/CSR result, LD by a landing load or M's mul/div, FE by a
@@ -1708,7 +1746,7 @@ module ooo2_core
    wire we_ld = m_wb_ld | ld_wb;
    wire we_fe = m_wb_fe | fp_wb;
    wire [RN_PBITS-1:0] wa_ie = q_prd;
-   wire [RN_PBITS-1:0] wa_ld = ld_wb ? sb_preg : m_prd;
+   wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : m_prd;
    always @(posedge clk) if (!reset) begin
       if (m_wb_ld & ld_wb)
@@ -1788,9 +1826,9 @@ module ooo2_core
       // They are still this load's values when it lands: the LSU is single-outstanding, so
       // nothing else can have started in between.
       if (ld_land) begin
-         cs_val[sb_rob]   <= lsu_rd_val;
-         cs_mkind[sb_rob] <= lsu_cos_kind;
-         cs_mpa[sb_rob]   <= lsu_cos_pa;
+         cs_val[lq_l_rob]   <= lsu_rd_val;
+         cs_mkind[lq_l_rob] <= lsu_cos_kind;
+         cs_mpa[lq_l_rob]   <= lsu_cos_pa;
       end
       if (fp_land) begin
          cs_val[ft_rob]   <= fp_wval;
@@ -1808,7 +1846,7 @@ module ooo2_core
    // Missing it reported rd=0 for the second instruction of the boot.
    wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
-   wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
+   wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
    wire        cs_hit_sq  = sq_c_take & (sq_c_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
@@ -2042,7 +2080,8 @@ module ooo2_core
    // which costs nothing at the head of the machine and keeps unit state out of the
    // scheduler's select (docs/OOO2-Spec.md 15).
    wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block
-                            | (d_st_nb & ~sq_d_ready));
+                            | (d_st_nb & ~sq_d_ready)
+                            | (d_ld_nb & ~lq_d_ready));
    wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q & ~fr_active;
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
@@ -2083,6 +2122,7 @@ module ooo2_core
                            | (wkv[1] & (wkp[1*RN_PBITS +: RN_PBITS] == i_ps2))
                            | (wkv[2] & (wkp[2*RN_PBITS +: RN_PBITS] == i_ps2));
             m_sq_tag      <= q_sq_tag;
+            m_lq_idx      <= q_lq_idx;
             m_rs1_val     <= x_rs1;
             m_rs3_val     <= x_rs3;   // FMA 3rd operand
             m_mem_size    <= q_mem_size;
