@@ -504,16 +504,22 @@ module ooo2_core
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
    localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
-   // NF: 8 is the standing policy (minimum 8 entries for any scheduler), dialled down one
-   // at a time until timing passes. FREQUENCY IS NOT A KNOB -- 166.67 MHz is never traded
-   // away except for a diagnostic run.
-   //   NF=8  probe_clk -0.012 ns  FAILS
-   //   NF=7  <- here
-   //   NF=4  probe_clk +0.050 ns  (closes; no measured workload can tell 4 from 16)
-   // The two worst paths at NF=8 are the FRONTEND PC increment and its route into the BTB
-   // address (24 levels, 6x CARRY8) -- already marginal, tipped by the extra area. The
-   // scheduler is only the third path. Fixing the frontend is what would make 8 affordable.
-   localparam integer NF = 7,  IBF = 3;    // FP arith, three sources, its OWN unit
+   // NF=5, the largest FP scheduler that closes 166.67 MHz. FREQUENCY IS NOT A KNOB --
+   // it is never traded away except for a diagnostic run -- so the scheduler was dialled
+   // down one entry at a time until it passed:
+   //
+   //   NF=8  -0.012   frontend PC increment      24 levels,  6x CARRY8
+   //   NF=7  -0.082   u_csr/mhpmcounter[12]      32 levels, 10x CARRY8
+   //   NF=6  -0.210   fpnew i_fpnew_cast_multi internal pipeline
+   //   NF=5  +0.038   PASSES
+   //
+   // FOUR SIZES, FOUR DIFFERENT FAILING FAMILIES, and none of them the scheduler. The
+   // design sits within ~100 ps of the limit on several paths at once and placement decides
+   // which one bites (rule I2: 81 ps spread over IDENTICAL RTL). So this number is where
+   // the search stopped, not a measurement that 5 is faster than 6 -- and the standing
+   // policy remains a minimum of 8, recoverable by fixing the families above rather than
+   // by a better scheduler.
+   localparam integer NF = 5,  IBF = 3;    // FP arith, three sources, its OWN unit
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
