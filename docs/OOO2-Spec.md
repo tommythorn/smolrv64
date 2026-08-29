@@ -1180,8 +1180,65 @@ where the store buffer (P0) would tell.
 
 ### Workload shapes, from hardware traces
 
-Three GB5 workloads have been traced on the FPGA and turned into microbenchmarks. They want
-different things, and averaging them hides that.
+Thirteen GB5 workloads have been traced on the FPGA (`~/gb5-traces/`). Two tools read them:
+`tools/trace-limit.py` (how much ILP is there) and `tools/trace-bp.py` (does the frontend
+find it). Both are ceilings from a ~19k-instruction window, not predictions.
+
+#### Limit study — relative throughput, `IW1/W64` = 1.00
+
+| workload | IW1/W16 | IW2/W16 | IW2/W64 | IW4/W64 | limited by |
+|---|---:|---:|---:|---:|---|
+| pdf-rendering | 1.00 | **1.86** | 1.99 | 3.32 | **width**, shallow window |
+| text-rendering | 0.99 | **1.84** | 1.98 | 3.81 | **width**, shallow window |
+| clang | 0.98 | **1.79** | 1.97 | 3.65 | **width**, shallow window |
+| text-compression | 1.00 | **1.79** | 2.00 | 3.76 | **width**, shallow window |
+| html5 | 0.98 | **1.72** | 2.00 | 3.69 | **width**, shallow window |
+| sqlite | 0.93 | 1.62 | 1.81 | 3.03 | width |
+| image-compression | 0.96 | 1.48 | 2.00 | 3.51 | width, some window |
+| aes-xts | 1.00 | 1.90 | 2.00 | 3.84 | width |
+| **camera** | 0.93 | **1.09** | **2.00** | 3.12 | **window** — needs W64 before width pays |
+| n-body-physics | **0.69** | 0.83 | 1.49 | 1.59 | **window + FP latency** |
+| gaussian-blur | 0.69 | 0.70 | 1.61 | 1.75 | FP latency |
+| structure-from-motion | 0.69 | 0.70 | 1.61 | 1.75 | FP latency (same kernel as blur) |
+| machine-learning | 0.86 | 0.86 | 1.14 | 1.14 | **serial accumulator** — nothing helps |
+
+Five workloads reach 1.7-1.9x at **`IW2` with today's 16-entry window**. Superscalar pays
+them immediately, with no ROB growth. Camera is the opposite: 1.09 at W16 against 2.00 at
+W64, so width buys it nothing until the window is deep enough to hold two iterations.
+
+#### Frontend study — the BTB is the second finding
+
+`tools/trace-bp.py`, replaying through the real 256-entry BTB and 8-entry RAS. A miss is
+COLD (PC never seen) or CONFLICT (the index belongs to another PC); only conflict is bought
+back by capacity.
+
+| workload | CTI/insn | BTB256 hit | cold | confl | BTB1024 hit | taken-miss/insn |
+|---|---:|---:|---:|---:|---:|---:|
+| **html5** | 15.6% | 60% | 9% | **31%** | **81%** | **3.6% -> 1.8%** |
+| text-rendering | 19.1% | 53% | 16% | **32%** | **72%** | 5.6% -> 3.1% |
+| sqlite | 13.6% | 53% | 33% | 15% | 63% | 4.0% -> 3.1% |
+| clang | 19.4% | 39% | **41%** | 20% | 48% | 7.0% -> 6.0% |
+| pdf-rendering | 12.2% | 83% | 14% | 3% | 85% | 1.0% -> 0.9% |
+| text-compression | 12.1% | 86% | 5% | 9% | 94% | 0.9% -> 0.5% |
+| n-body / image-compression / **camera** | 4-11% | 96-100% | ~0 | ~0 | -- | ~0 |
+
+**The RAS is not a problem: 91-100% on every workload that returns at all.** An earlier
+reading of the raw traces suggested deep call nesting overflowing the 8-entry stack; that
+was an artifact of an unbalanced trace window (more calls than returns visible) and the
+replay does not support it. `RASB`=3 stays.
+
+**A 1024-entry BTB halves html5's taken-miss rate** (3.6% -> 1.8% of all instructions) and
+cuts text-rendering's by 45%. It costs about one RAMB18 — block RAM is at 24% of 480 tiles
+— and it does not touch the critical path, because `apc` is register-only (rule I6) and the
+read already ends at a BRAM address pin. This is the cheapest frontend win on the list.
+
+**Clang is the exception and the reason to check the split.** It is 41% COLD: its branch
+working set is genuinely larger than any affordable BTB, so 256 -> 1024 buys it 9 points
+where it buys html5 21. Clang needs width and cheaper redirects, not a bigger BTB.
+
+#### The three traced-and-benched workloads
+
+They want different things, and averaging them hides that.
 
 | | Gaussian Blur | Machine Learning | Clang |
 |---|---|---|---|
