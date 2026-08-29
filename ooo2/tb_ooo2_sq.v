@@ -10,7 +10,7 @@ module tb_ooo2_sq;
    reg [IDXB-1:0]  a_idx=0;
    reg [PAW-1:0]   a_addr=0, ld_addr=0;
    reg [1:0]       a_size=2, ld_size=2;
-   reg [PBITS-1:0] a_dpreg=0;
+   reg [PBITS-1:0] d_dpreg=0;
    reg [63:0]      a_data=0;
    reg [NWB-1:0]   wb_v=0;
    reg [NWB*PBITS-1:0] wb_preg=0;
@@ -24,8 +24,8 @@ module tb_ooo2_sq;
    wire [IDXB:0]   occ;
 
    ooo2_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(4),.NWB(NWB)) dut
-     (.clk(clk),.reset(reset),.d_alloc(d_alloc),.d_rob(d_rob),.d_ready(d_ready),.d_idx(d_idx),
-      .a_v(a_v),.a_idx(a_idx),.a_addr(a_addr),.a_size(a_size),.a_dpreg(a_dpreg),
+     (.clk(clk),.reset(reset),.d_alloc(d_alloc),.d_rob(d_rob),.d_dpreg(d_dpreg),.d_ready(d_ready),.d_idx(d_idx),
+      .a_v(a_v),.a_idx(a_idx),.a_addr(a_addr),.a_size(a_size),
       .a_data_v(a_data_v),.a_data(a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(c_v),.c_rob(c_rob),.c_addr(c_addr),.c_data(c_data),.c_size(c_size),.c_take(c_take),
@@ -43,7 +43,7 @@ module tb_ooo2_sq;
       repeat (3) @(posedge clk); #1; reset = 0; step;
 
       // 1. allocate one store; nothing to commit until address AND data arrive
-      d_alloc=1; step; d_alloc=0; step;
+      d_dpreg=9'd7; d_alloc=1; step; d_alloc=0; step;
       chk("1 alloc -> occ 1", occ==1, 1'b1);
       chk("1 no commit yet",  c_v, 1'b0);
 
@@ -52,7 +52,7 @@ module tb_ooo2_sq;
       chk("2 unknown addr blocks", ld_block, 1'b1);
 
       // 3. give it an address; data still pending on preg 7
-      a_v=1; a_idx=0; a_addr=56'h2000; a_size=2; a_dpreg=9'd7; a_data_v=0; step; a_v=0; #1;
+      a_v=1; a_idx=0; a_addr=56'h2000; a_size=2; a_data_v=0; step; a_v=0; #1;
       chk("3 still no commit (no data)", c_v, 1'b0);
 
       // 4. a load elsewhere no longer blocks; one overlapping it does
@@ -76,11 +76,11 @@ module tb_ooo2_sq;
       chk("6 nothing blocks now", ld_block, 1'b0);
 
       // 7. in-order commit: allocate two, fill the SECOND first, head must still go first
-      d_alloc=1; step; d_alloc=1; step; d_alloc=0; step;
+      d_dpreg=9'd0; d_alloc=1; step; d_alloc=1; step; d_alloc=0; step;
       chk("7 occ 2", occ==2, 1'b1);
-      a_v=1; a_idx=2; a_addr=56'h4000; a_dpreg=9'd0; a_data_v=1; a_data=64'h22; step; a_v=0; #1;
+      a_v=1; a_idx=2; a_addr=56'h4000; a_data_v=1; a_data=64'h22; step; a_v=0; #1;
       chk("7 head not ready -> no commit", c_v, 1'b0);
-      a_v=1; a_idx=1; a_addr=56'h3000; a_dpreg=9'd0; a_data_v=1; a_data=64'h11; step; a_v=0; #1;
+      a_v=1; a_idx=1; a_addr=56'h3000; a_data_v=1; a_data=64'h11; step; a_v=0; #1;
       chk("7 head ready -> commits", c_v && c_data==64'h11, 1'b1);
       c_take=1; step; #1; chk("7 then the second", c_v && c_data==64'h22, 1'b1);
       c_take=1; step; c_take=0; #1;
@@ -97,6 +97,26 @@ module tb_ooo2_sq;
       d_alloc=1; repeat (NENT) step; d_alloc=0; #1;
       chk("9 full", occ==NENT, 1'b1);
       chk("9 d_ready low when full", d_ready, 1'b0);
+
+      // 10. REGRESSION (rule A5). The writeback may land BETWEEN allocate and the address.
+      // Arming the snoop at a_v loses it, and a physical register is written back exactly
+      // once -- so the entry would never become committable and would wedge the ROB head.
+      flush=1; step; flush=0; d_dpreg=9'd5; d_alloc=1; step; d_alloc=0; #1;
+      wb_v=3'b001; wb_preg[0 +: PBITS]=9'd5; wb_data[0 +: 64]=64'hFEED_FACE;
+      step; wb_v=0; #1;                              // data arrives with NO address yet
+      chk("10 no commit without an address", c_v, 1'b0);
+      a_v=1; a_idx=0; a_addr=56'h8000; a_size=3; a_data_v=0; step; a_v=0; #1;
+      chk("10 early writeback was captured", c_v, 1'b1);
+      chk("10 and its value is right", c_data==64'hFEED_FACE, 1'b1);
+      c_take=1; step; c_take=0; #1;
+
+      // 11. and the same writeback in the ALLOCATE cycle itself, where dpr[] is still
+      // being written on that very edge.
+      d_dpreg=9'd6; d_alloc=1;
+      wb_v=3'b100; wb_preg[2*PBITS +: PBITS]=9'd6; wb_data[2*64 +: 64]=64'hC0FFEE;
+      step; d_alloc=0; wb_v=0; #1;
+      a_v=1; a_idx=1; a_addr=56'h9000; a_size=3; a_data_v=0; step; a_v=0; #1;
+      chk("11 same-cycle writeback captured", c_v && c_data==64'hC0FFEE, 1'b1);
 
       $display("---- tb_ooo2_sq pass=%0d fail=%0d", pass, fail);
       if (fail != 0) $fatal(1, "tb_ooo2_sq FAILED");

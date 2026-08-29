@@ -40,6 +40,7 @@ module ooo2_sq
     // ---- allocate: at dispatch, program order, one per cycle ----
     input  wire                  d_alloc,
     input  wire [ROBB-1:0]       d_rob,       // rides with the store; commit is at the head
+    input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
 
@@ -48,9 +49,8 @@ module ooo2_sq
     input  wire [IDXB-1:0]       a_idx,
     input  wire [PAW-1:0]        a_addr,
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
-    input  wire [PBITS-1:0]      a_dpreg,    // renamed rs2; 0 = data already supplied
-    input  wire                  a_data_v,
-    input  wire [63:0]           a_data,
+    input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
+    input  wire [63:0]           a_data,     //   (ignored once the snoop has the value)
 
     // ---- snoop the writeback ports for the data operand ----
     input  wire [NWB-1:0]        wb_v,
@@ -82,6 +82,8 @@ module ooo2_sq
    reg [IDXB-1:0]        head, tail;
    reg [IDXB:0]          cnt;
    integer               k, w;
+   reg                   sn_live;         // snoop scratch, see the writeback loop
+   reg [PBITS-1:0]       sn_dpr;
 
    initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}};
                  head = {IDXB{1'b0}}; tail = {IDXB{1'b0}}; cnt = {(IDXB+1){1'b0}}; end
@@ -130,28 +132,45 @@ module ooo2_sq
          // allocate at the tail
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0;
-            rob[tail] <= d_rob;
+            rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;
             tail <= tail + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;
          else if (~(d_alloc & d_ready) & (c_v & c_take)) cnt <= cnt - 1'b1;
 
-         // address (and data, when it was ready at issue)
+         // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
-            addr[a_idx] <= a_addr;  sz[a_idx] <= a_size;
-            dpr[a_idx]  <= a_dpreg; av[a_idx] <= 1'b1;
-            if (a_data_v) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
+            addr[a_idx] <= a_addr;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
+            if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
          end
 
-         // snoop the writeback ports for a pending data operand
-         for (k = 0; k < NENT; k = k + 1)
+         // SNOOP THE WRITEBACK PORTS, ARMED FROM ALLOCATE.
+         //
+         // Arming at `a_v` instead would be a silent data-loss bug, and it is worth naming
+         // because it is not visible from this module alone. A physical register is written
+         // back EXACTLY ONCE. Allocate happens at dispatch; the address arrives when the
+         // store executes, which is at least one cycle later and unboundedly later behind a
+         // PTW. A writeback landing anywhere in that window would find no entry watching for
+         // it, and nothing would ever produce it again -- the store would sit in the buffer
+         // forever, wedging the ROB head.
+         //
+         // So `dpr` is captured at ALLOCATE, from the renamer, and the entry watches from
+         // the cycle it exists. The `d_alloc` cycle itself is covered by taking the live
+         // d_dpreg, because dpr[tail] is written on that same edge.
+         //
+         // The already-produced case is not the snoop's job: if rs2 was ready when the store
+         // read the PRF, `a_data_v` supplies it and no writeback is coming. The two paths are
+         // disjoint by construction and `~dv` keeps them so if they ever overlap.
+         for (k = 0; k < NENT; k = k + 1) begin
+            sn_live = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? 1'b1     : (v[k] & ~dv[k]);
+            sn_dpr  = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? d_dpreg  : dpr[k];
             for (w = 0; w < NWB; w = w + 1)
-               if (v[k] & av[k] & ~dv[k] & ~(a_v & (a_idx == k[IDXB-1:0]) & a_data_v)
-                   & wb_v[w] & (wb_preg[w*PBITS +: PBITS] == dpr[k])
-                   & (dpr[k] != {PBITS{1'b0}})) begin
+               if (sn_live & (sn_dpr != {PBITS{1'b0}})
+                   & wb_v[w] & (wb_preg[w*PBITS +: PBITS] == sn_dpr)) begin
                   data[k] <= wb_data[w*64 +: 64];
                   dv[k]   <= 1'b1;
                end
+         end
       end
    end
 
@@ -163,6 +182,13 @@ module ooo2_sq
          $fatal(1, "ooo2_sq: address written to a slot with no live entry (idx %0d)", a_idx);
       if (a_v & av[a_idx])
          $fatal(1, "ooo2_sq: address written twice to slot %0d", a_idx);
+      // A store whose data can never arrive wedges the ROB head forever -- the one failure
+      // of this structure that presents as a hang rather than a wrong answer, so it gets an
+      // assertion rather than a comment. dpreg 0 is LEGAL (rs2 = x0, or any value already in
+      // the PRF): it means no writeback is coming, which is only a bug if a_data_v did not
+      // supply the value either.
+      if (a_v & ~a_data_v & ~dv[a_idx] & (dpr[a_idx] == {PBITS{1'b0}}))
+         $fatal(1, "ooo2_sq: entry %0d has no data and no producer -- it can never commit", a_idx);
       if (c_take & ~c_v)
          $fatal(1, "ooo2_sq: commit taken with no committable head");
    end
