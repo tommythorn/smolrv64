@@ -57,6 +57,8 @@ module fetch
     // rides to dispatch and is the exec-side mispredict reference (branch_unit
     // redirects iff actual_npc != pred_npc).
     input  wire                    pred_v,
+    input  wire                    apred_v,     // pred_v computed from REGISTERS ONLY (no aligner
+                                                // term) -- the `apc` arm. See apc below.
     input  wire [PCW-1:0]          pred_tgt,
     output wire [PCW-1:0]          npc,
     output wire [PCW-1:0]          apc,         // npc PREDICTED from registers only -- see below
@@ -188,8 +190,18 @@ module fetch
    // how late the fetch cloud is. Every arm below is a flop output:
    //   redirect_pc  M drives it through a register (ooo2_core's redirect_target_q)
    //   pc_q, strad  this module's own state
+   //   apred_v      the predictor's steer with its `cti_ok` term removed
    //   pred_tgt     the predictor's registered BTB entry / RAS
    // and the one term that is NOT available -- the fall-through -- is predicted here.
+   //
+   // THE SELECT COUNTS AS MUCH AS THE ARM. `pred_v` and `pred_tgt` both used to carry
+   // the aligner's `br_term`, so this mux -- and with it a block-RAM address pin -- sat
+   // at the end of iMMU -> I$ -> aligner after all: 22 levels, 5.521 ns of 6.000, 70%
+   // route. ooo2_predictor now splits its tag cone from its CTI cone and exports the
+   // register-only half as `apred_v`. Using it here is safe by the very argument below:
+   // `apred_v` differs from `pred_v` only on a bundle whose entry says taken while the
+   // aligner says the bundle is not CTI-terminated, and the stamp-and-compare turns that
+   // into one LOST prediction, never a wrong one.
    //
    // WHY THIS IS SAFE, and why the 2026-08-23 attempt was not: the predictor stamps its
    // registered entry with the address it ACTUALLY read (btb_qpc <= apc) and will not use
@@ -218,7 +230,7 @@ module fetch
               : redirect     ? redirect_pc
               : irq_inject   ? pc_q
               : strad        ? (pc_q + 64'd4)
-              : pred_v       ? pred_tgt
+              : apred_v      ? pred_tgt
               :                (pc_q + (len_rvc ? 64'd2 : 64'd4));
 
    always @(posedge clk) begin

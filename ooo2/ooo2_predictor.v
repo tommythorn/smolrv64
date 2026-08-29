@@ -23,14 +23,25 @@
 //
 // TIMING SHAPE (this is the load-bearing property): prediction is computed from
 // REGISTERED state only -- btb_q (the BTB entry read last cycle at fetch's
-// computed next PC and flopped, rule A1) and the RAS registers. NO instruction
-// bytes are inspected at fetch: the CTI class (cond / jump / call / return)
-// lives in the BTB type field, trained at resolve from the executed
+// AHEAD next PC and flopped, rule A1), ycorr_q, and the RAS registers. NO
+// instruction bytes are inspected at fetch: the CTI class (cond / jump / call /
+// return) lives in the BTB type field, trained at resolve from the executed
 // instruction. So the fetch-cone addition is one 64-bit register equality
-// (read-address == bundle base) + a 3-bit type decode + the target mux --
-// nothing from the I$-data -> aligner cloud feeds the PC mux. The cost is hint
-// quality only: an untrained CTI (including a return's first execution per
-// call site) predicts fall-through and pays one mispredict to train.
+// (read-address == bundle base) + a 3-bit type decode + the target mux. The cost
+// is hint quality only: an untrained CTI (including a return's first execution
+// per call site) predicts fall-through and pays one mispredict to train.
+//
+// State that precisely, because a looser version of it was here and was WRONG.
+// The invariant is not "nothing from the aligner enters this module" -- `cti_ok`
+// does, and must. It is:
+//
+//     NO signal that reaches an ARRAY ADDRESS may depend on the aligner.
+//
+// `apc` is the BTB and corrector read address, so `apred_v` and `pred_tgt` -- the
+// two outputs `apc` selects on -- are register-only. `pred_v` keeps `cti_ok` and
+// steers the real PC, which ends at fetch's pc_q flops. `apc_en` keeps `fire`,
+// because a RAM enable pin is one bit, not an index. See `predict` for what the
+// violation cost when `cti_ok` sat at the top of the cone instead.
 //
 // Bundle-granularity: the aligner ends every bundle at its first CTI, so a
 // bundle has at most one control transfer, it is the last valid slot, and the
@@ -69,6 +80,10 @@ module ooo2_predictor
                                             // ONLY such bundles have the exec-side compare, so a
                                             // stale entry may never steer any other bundle shape
     output wire                 pred_v,     // predict taken: fetch overrides its next PC
+    output wire                 apred_v,    // the SAME decision minus `cti_ok` -- register-only,
+                                            // and therefore the only one `apc` may consume. Being
+                                            // wrong costs one lost prediction (btb_qpc != base_pc
+                                            // next cycle); it can never fake one. See `predict`.
     output wire [PCW-1:0]       pred_tgt,
     // ---- redirect ----
     input  wire                 rollback,     // a redirect is entering the frontend this cycle
@@ -207,20 +222,51 @@ module ooo2_predictor
    end
 
    // ------------------------------------------------------------------- predict
-   // (registered state only -- see the timing-shape note above)
-   wire            hit      = cti_ok & (btb_qpc == base_pc)
+   // TWO cones, and the split between them is the load-bearing property.
+   //
+   // TAG cone -- REGISTERS ONLY. btb_q/ycorr_q are the arrays' read registers (rule A1),
+   // btb_qpc is the address that read was for, base_pc is fetch's pc_q, ras/ras_ptr are
+   // flops. Nothing here comes from the I$-data -> aligner cloud, so this is the cone
+   // fetch's `apc` -- the NEXT array read address -- is allowed to hang off.
+   //
+   // CTI cone -- the tag cone AND `cti_ok`, the aligner's "this bundle really does end on
+   // a control transfer". Only that may steer fetch's ACTUAL next PC, because the
+   // exec-side mispredict compare (actual_npc != pred_npc) exists only on CTI-terminated
+   // bundles: a stale entry allowed to redirect any other bundle shape would never be
+   // caught.
+   //
+   // Keeping the two apart is worth 22 logic levels. `cti_ok` used to be ANDed in at the
+   // TOP, so p_ret -- the RAS-vs-BTB target select -- sat downstream of the whole fetch
+   // cloud, and `apc` carried it to a block-RAM address pin. The routed path was
+   //   strad -> imem_addr -> iMMU req_match -> I$ fb_w0 compare -> I$ data -> p_ret
+   //          -> bp_tgt -> u_bp/btb_reg/ADDRARDADDR[12]
+   // 5.521 ns of a 6.000 ns budget, 69.7% of it pure route, and a twin ending at the
+   // corrector's address pin. This is the same defect ooo2_core.v's irq_inject note
+   // records, one input over: a late term reaching an array INDEX.
+   wire            tag_hit  = (btb_qpc == base_pc)
                             & (btb_q[EW-1 -: TAGW] == btag(base_pc));
    wire [2:0]      q_type   = btb_q[TGTW +: 3];
    wire [TGTW-1:0] q_tgt    = btb_q[TGTW-1:0];
    wire [PCW-1:0]  btb_tgt  = {{(PCW-TGTW-1){q_tgt[TGTW-1]}}, q_tgt, 1'b0};  // sign-extend canonical VA
-   wire            p_cbr    = hit & ~q_type[2];             // known conditional branch
-   wire            p_call   = hit & (q_type == TY_CALL);
-   wire            p_ret    = hit & (q_type == TY_RET);
+   wire            t_cbr    = tag_hit & ~q_type[2];         // known conditional branch
+   wire            t_ret    = tag_hit & (q_type == TY_RET);
    // YAGS: a tag-hitting corrector overrides the bimodal weight for a conditional
-   wire            yhit     = p_cbr & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
+   wire            yhit     = t_cbr & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
    wire            cbr_taken= yhit ? ycorr_q[1] : q_type[1];
-   assign pred_v   = hit & (q_type[2] | (p_cbr & cbr_taken)); // uncond, or predicted-taken cond
-   assign pred_tgt = p_ret ? ras[ras_ptr] : btb_tgt;
+   // The steer, from registers only: "the entry read for this base PC says taken".
+   assign apred_v  = tag_hit & (q_type[2] | (t_cbr & cbr_taken));
+   // The TARGET is register-only too -- `t_ret`, not `p_ret`. pred_tgt is consumed only
+   // where pred_v is high, and pred_v implies cti_ok, so t_ret == p_ret at every point
+   // fetch looks at it: the value is bit-identical, the cone it hangs off is not.
+   assign pred_tgt = t_ret ? ras[ras_ptr] : btb_tgt;
+
+   // ---- the CTI cone: everything that may change architectural state or the real PC
+   wire            hit      = tag_hit & cti_ok;
+   wire            p_cbr    = t_cbr   & cti_ok;
+   wire            p_ret    = t_ret   & cti_ok;
+   wire            p_call   = tag_hit & cti_ok & (q_type == TY_CALL);
+   wire            p_yhit   = yhit    & cti_ok;
+   assign pred_v   = apred_v & cti_ok;      // uncond, or predicted-taken cond
    wire            pred_dir = cbr_taken;                    // GHR shifts the committed direction
 
    // ------------------------------ predict details (for training), carried inline
@@ -237,10 +283,11 @@ module ooo2_predictor
    // this bundle's details. src/predictor.v registers it into pdet_f and writes the ring a
    // cycle later at `create`, which is why that version needs the lag; carrying the payload
    // removes both the lag and the ring.
-   assign pd_fetch = {yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
-                      hit,  ctr_eff,  bidx(base_pc),      btag(base_pc)};
-   wire [1:0]    ctr_eff  = hit  ? q_type[1:0]  : 2'b01;    // miss -> install weakly-not-taken base
-   wire [1:0]    yctr_eff = yhit ? ycorr_q[1:0] : 2'b01;
+   assign pd_fetch = {p_yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
+                      hit,    ctr_eff,  bidx(base_pc),      btag(base_pc)};
+   wire [1:0]    ctr_eff  = hit    ? q_type[1:0]  : 2'b01;  // miss -> install weakly-not-taken base
+   wire [1:0]    yctr_eff = p_yhit ? ycorr_q[1:0] : 2'b01;  // p_yhit, not yhit: pd_fetch is the
+                                                            // CTI cone's payload, unchanged
 
    // ------------------------------------------------- speculate / commit / restore
    always @(posedge clk) begin

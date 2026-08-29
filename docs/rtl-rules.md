@@ -544,3 +544,41 @@ parameterised or a direct connection. And the "how many cycles does this
 actually take" question belongs in the CPI stack before any RTL is written for
 the unit — one hardware counter run sized this correctly and would have
 redirected a day of work had it been run first.
+
+**I6. A late signal may reach a RAM's ENABLE. It may never reach its ADDRESS.**
+An array's address pin has to be stable early: it fans out to every primitive in
+the depth, it usually cannot be placed near the logic that computes it, and on a
+BRAM it carries a real setup requirement. A one-bit enable does none of that. So
+when the fetch cloud has to touch a predictor read, it touches the enable.
+
+`ooo2_predictor` already had that split — `apc_en = fire | rollback | reset`
+deliberately spends the aligner's `fire` on a RAM enable — while its own header
+claimed "nothing from the I$-data -> aligner cloud feeds the PC mux". The claim
+was false. `cti_ok`, the aligner's "this bundle ends on a CTI", was ANDed in at
+the TOP of the predict cone, so `hit` carried it, so `p_ret` — the RAS-vs-BTB
+target select — carried it, and `fetch.v`'s `apc` selected on *both* `pred_v`
+and `pred_tgt`. The register-only ahead PC was register-only in intent and
+aligner-dependent in fact. Measured on the routed NF=5 checkpoint:
+
+    strad -> imem_addr -> u_immu/req_match -> u_icache/fb_w0 -> I$ data
+          -> p_ret -> bp_tgt -> u_bp/btb_reg/ADDRARDADDR[12]
+
+22 levels, 5 CARRY8, **5.521 ns of a 6.000 ns budget, 69.7% of it route**, plus
+a twin ending at the corrector's address pin. Two of the three worst
+non-FPU families in the design, from one term.
+
+The fix is to split the cone, not to shorten it: a `tag_hit` half computed from
+registers only (the arrays' read registers, `btb_qpc`, `base_pc`, the RAS) and a
+`cti_ok`-qualified half. The *address* consumes the register-only half; the real
+PC and every architectural update consume the qualified one. `pred_tgt` needed
+`t_ret` rather than `p_ret` for the same reason, and is bit-identical where it
+is used, because `pred_v` implies `cti_ok`. Cost: **1 retire in 10.4 million**
+over the 40 M-cycle Linux cosim.
+
+This is the third instance of the class. `irq_inject` was a live mux select into
+`u_fetch/npc -> u_bp/btb_q` and was fixed by registering it
+(`ooo2_core.v:1722`); D4 is the same pin reached from a guessed index; I4 is the
+same pin reached through a valid mux. The general form: **for every array in the
+design, write down its address expression and name the flop each term comes
+from.** A term you cannot name that way is the bug, whatever the comment above
+it says.

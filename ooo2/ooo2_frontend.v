@@ -102,7 +102,7 @@ module ooo2_frontend
     output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
 
    // ---------------------------------------------------------------- fetch
-   wire               fx_valid, f_brt, bp_v;
+   wire               fx_valid, f_brt, bp_v, bp_av;
    wire [31:0]        fx_inst;
    wire [PCW-1:0]     fx_pc;
    wire [SEQW-1:0]    fx_seq;
@@ -117,7 +117,10 @@ module ooo2_frontend
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
       .solo_all(1'b0),                 // IW=1: every bundle is already one instruction
       .irq_inject(irq_inject),
-      .pred_v(bp_v), .pred_tgt(bp_tgt),
+      // `bp_av` on the apc arm, `bp_v` on the real advance: the predictor's steer minus
+      // its aligner term, so the array read address stays register-only (ooo2_predictor
+      // `predict`).
+      .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
       // `npc` (the true next PC) is left unconnected: the predictor reads at `apc`, so the
       // whole npc mux -- and with it the aligner -> array-index cone -- drops out here.
       .npc(), .apc(f_apc), .pred_npc(fx_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
@@ -148,7 +151,7 @@ module ooo2_frontend
    ooo2_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
       .apc(f_apc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
-      .pred_v(bp_v), .pred_tgt(bp_tgt),
+      .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_rep(res_rep));

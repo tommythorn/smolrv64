@@ -89,7 +89,8 @@ module frontend
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .solo_all(solo_all), .irq_inject(irq_inject),
-      .pred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .apc(/* in-order only */),
+      // apc is unconnected here, so its whole cone drops out; apred_v only feeds it.
+      .pred_v(bp_v), .apred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .apc(/* ooo2 only */),
       .pred_npc(f_pnpc), .ft_npc(f_ftn),
       .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),

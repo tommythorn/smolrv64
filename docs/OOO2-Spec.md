@@ -171,6 +171,13 @@ Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
   PC, never from a combinational `npc`. This is what bought the predictor a full stage of
   slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the
   existing `btb_qpc == base_pc` tag check catches it. Cost: **0.13% of retires**.
+  - Register-only means *every arm and every select*. `apc` selects on `apred_v` and
+    `pred_tgt`, which `ooo2_predictor` computes from its `tag_hit` cone — the arrays' read
+    registers, `btb_qpc`, `base_pc`, the RAS — with no `cti_ok` term. The aligner reaches
+    the predictor only at `apc_en`, a one-bit RAM enable. Rule I6.
+  - `pred_v` (`= apred_v & cti_ok`) and `pred_npc` steer the *real* PC and end at `pc_q`'s
+    flops, so the aligner term is free there. `apred_v` differs from `pred_v` only on a BTB
+    alias: measured **1 retire in 10,444,329** over 40 M cycles of Linux cosim.
 - **Length predictor**: 1024-entry, 1 bit/entry, distributed RAM, indexed `pc_q[10:1]`.
   Predicts RVC-vs-32-bit so `apc` can advance without decoding.
 
@@ -277,6 +284,8 @@ DISTINGUISH THE CONFIGURATIONS.** Rule I2: four placer directives over IDENTICAL
 |---|---:|---|
 | `NF`=8 | -0.012 | frontend PC increment, 24 levels, 6x CARRY8 |
 | `NF`=7 | **-0.082** | `u_csr/mhpmcounter[12]` carry, 32 levels, 10x CARRY8 |
+| `NF`=6 | **-0.210** | `fpnew` `i_fpnew_cast_multi` internal pipeline |
+| `NF`=5 | **+0.038** | PASSES — this is the shipped size |
 | `NF`=4 | +0.050 | -- |
 
 `NF`=7 is 70 ps WORSE than `NF`=8, from REMOVING an entry. That is not a logic effect. All
@@ -287,7 +296,8 @@ far below the noise.** Any NF judgement needs at least two placer directives per
 Two marginal families are now visible and both are worth attacking on their own merits,
 independent of NF:
 
-- **Frontend PC increment** -> BTB address: 24 levels, 6x CARRY8.
+- ~~**Frontend PC increment** -> BTB address: 24 levels, 6x CARRY8.~~ **DIAGNOSED AND
+  FIXED — it was never the increment.** See "The frontend path" below.
 - **`mhpmcounter` carry**: 32 levels, 10x CARRY8. This is a KNOWN worst family -- the
   comment above `hpm_ev_q` records it as "823 of 3113 failing endpoints at 6 ns and the
   WORST family in the design", fixed once by registering the event bus. **It may have been
@@ -315,16 +325,46 @@ tipped them. Only the third path is the scheduler's (`i_ps3` is the `NSRC`=3 thi
 whose clock enable sits in M's completion cone). **A faster scheduler would not fix this.**
 Three ways out, in order of what they cost:
 
-1. **Keep `NF`=4** -- closes at +0.050 ns, and no measured workload can see the difference.
-2. **Attack the frontend PC path** (24 levels, 6 CARRY8) to buy headroom, then `NF`=8 fits.
-   This is the only option that makes the policy affordable rather than abandoning it.
+1. **Keep `NF`=5** -- the largest that closes (+0.038 ns), and no measured workload can see
+   the difference against 8.
+2. **Attack the frontend PC path** to buy headroom, then `NF`=8 fits. This is the only
+   option that makes the policy affordable rather than abandoning it. **Done** -- see below.
 3. ~~Scale the frequency back.~~ **HARD RULE: frequency is never scaled back except for a
    diagnostic run.** 166.67 MHz is a floor, not a variable. When a change does not fit, the
    change gives way or the path it broke gets fixed -- the clock does not.
 
 Standing procedure when a scheduler size does not fit: **dial it down one entry at a time
-until it passes**, rather than jumping to a known-good size. `NF`=8 fails; `NF`=7 is under
-test.
+until it passes**, rather than jumping to a known-good size. 8, 7 and 6 all failed, each on
+a different family; `NF`=5 closed at +0.038.
+
+#### The frontend path (2026-08-28)
+
+The name was wrong and so was the diagnosis. Nothing in it is a PC increment. On the routed
+`NF`=5 checkpoint the two frontend paths are:
+
+| slack | source -> destination | levels |
+|---|---|---|
+| +0.062 | `fe/u_fetch/strad_reg` -> `u_bp/btb_reg/ADDRARDADDR[12]` | 22, 5x CARRY8 |
+| +0.075 | `fe/u_fetch/strad_reg` -> `u_bp/ycorr_reg_bram_0/ADDRBWRADDR[9]` | -- |
+
+and the first expands to
+
+    strad -> imem_addr -> u_immu/req_match -> u_icache/fb_w0 -> I$ data
+          -> u_bp/ras_ptr -> p_ret -> bp_tgt -> btb ADDRARDADDR[12]
+
+**5.521 ns of 6.000, and 3.848 ns of that (69.7%) is route.** The CARRY8s are the iMMU's
+TLB compare and the I$'s fetch-buffer address compare, not an adder. `apc` is supposed to
+be register-only precisely so this cannot happen; it was not, because `cti_ok` (the
+aligner's `br_term`) was ANDed into `hit` at the top of `ooo2_predictor`'s predict cone and
+so reached both `pred_v` and, through `p_ret`, `pred_tgt` — the two things `apc` selects
+on. Rule I6.
+
+Fixed by splitting the cone: `tag_hit`/`apred_v`/`pred_tgt` from registers only, `pred_v =
+apred_v & cti_ok` for the real PC. `pred_tgt` is bit-identical where it is read, since
+`pred_v` implies `cti_ok`. Verified: `lint: clean`, 240/240, 215/215, Linux cosim clean over
+40 M cycles at **10,444,328 retires against a 10,444,329 baseline — 1 in 10.4 million.**
+The `probe_clk` effect is **not yet built and therefore not yet known**; rule I2 applies
+when it is.
 
 **Minimum 8 entries for any scheduler is policy.** Measurement does not currently justify it
 for `u_rs_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and
@@ -711,8 +751,8 @@ tracers and stats are gated.
 | | |
 |---|---|
 | `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`, from an MMCM |
-| Timing | `probe_clk` WNS **+0.050 ns**, TNS 0.000, 0 failing endpoints |
-| Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.050 at `NF`=4, which gave 22 ps back for no measured performance. |
+| Timing | `probe_clk` WNS **+0.038 ns**, TNS 0.000, 0 failing endpoints (`NF`=5) |
+| Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.038 at `NF`=5, the largest FP scheduler that closes. |
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |

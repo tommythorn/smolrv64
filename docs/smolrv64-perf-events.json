@@ -70,6 +70,11 @@
     "BriefDescription": "serializing op holds the frontend off (not data deps)"
   },
   {
+    "EventName": "ST_ROB",
+    "EventCode": "0x0305",
+    "BriefDescription": "dispatch blocked: the ROB is full"
+  },
+  {
     "EventName": "FE_BUB",
     "EventCode": "0x0310",
     "BriefDescription": "X idle: frontend supplied no instruction"
