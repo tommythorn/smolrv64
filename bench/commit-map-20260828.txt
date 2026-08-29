@@ -1,0 +1,82 @@
+# Old -> new commit ids across the SECOND history rewrite (2026-08-28).
+#
+# Removed: workloads/ubuntu/faster-ubuntu-25.04-preinstalled-server-riscv64.img (9.5 GB)
+#          workloads/ubuntu/ubuntu-25.04-preinstalled-server-riscv64.img.zst   (3.0 GB)
+#
+# Both were added by mistake in the dts commit by a blanket `git add -A workloads/` --
+# the same add that took screenlog.0. A push then produced a pack over GitHub's 2 GiB
+# limit. The FILES ARE NOT LOST: they remain in the working tree and are backed up at
+# ~/smolrv64-bigfiles (md5-verified). They are now in .gitignore.
+#
+# .git went 8.3 GB -> 1.8 GB. Most of that only landed after retargeting the gb5-* tags:
+# those tags existed to preserve published Geekbench ids, and by pointing at the OLD
+# commits they pinned the very blobs the rewrite removed.
+#
+# CHAIN FOR THE PUBLISHED IDS (two rewrites now):
+#   72d14cde -> b92af9b0 -> 082774af   tag gb5-72d14cde   browser.geekbench.com/v5/cpu/24575051
+#   2ba7716e -> ab765727 -> b52fae1d   tag gb5-2ba7716e
+#   efe6dd6  -> (see below)            browser.geekbench.com/v5/cpu/24579000
+#
+# old_id new_id subject
+ef3e64f5c8a0c9c101c89a618a0ca157f1ff6593 d79da4277eeec25b96d60dc12f37a93b2dbfe8f8 untrack the two Ubuntu disk images (9.5 GB + 3.0 GB)
+a3567873e62174d04c258d401cd2f05afc01c7c7 cb33a85e16ba28dfb6940b6e6576e0fd1cfa0ded ooo2: NF=5 -- the largest FP scheduler that closes 166.67 MHz
+b4a76c5cb5563ffd0e229bbbff65f50e3c9c9585 09a2e099a5a2c83d5420c0ff36c3c3f6fdb25be6 docs: NF timing numbers are placement noise -- retract, and name the real families
+c1273cf39910fb3612c7bebea0791f78311b52da ad837c7ea65f2da2301d4aee87e19c704500abc0 ooo2: NF 8 -> 7, and record that frequency is never a knob
+748a3ecfa3ff8c5cbb801e9185c7e42e750206ef 19e245899e9f86f243fa2d23e5130cb5e3f2f735 docs: NF=8 fails timing at -0.012 ns -- and the failing path is the FRONTEND
+8e5f7d58779e949f6e83434c7132b109326e50b7 f7bdce3b50eb6412075a3a4b42d464c551d60fe4 ooo2_sq: carry the ROB index; commit must be at the ROB head
+1ffe90f525e3fb90e7727d4c61137f613252b05d 84b3d5f0766a9cd06ec47e093ee489a2c21b67ff ooo2: FP scheduler 4 -> 8 entries, by policy
+63448604d719033f43d028ee154a52bd3e66e70d 8e5936b46b6ff4ae8f176f2c11b2297f4864c216 ooo2: the store buffer (ooo2_sq), standalone -- item 1 of the Camera list
+983c44dba04b556163a18a0898c41dc476250a36 947510000e0d5187deb11186b6dc554ef2450052 bench: saxpybench (GB5 Camera) -- the ROB is a symptom, in-order memory is the cause
+9069b7af263f7944e2852551c4c4a760f057d7f7 aa86f42146e7f63379fee3357c43fb72a7316417 docs: corroborate the ST_MEM fix on aesbench/blurbench; two new traces
+4544b54d2157385e07b0b6181fcb1961b18ebae3 23945e3511084158e16a6a3230a8a86c2f20465a docs: correct the mlbench ROB claim -- ST_ROB says 0.06%, not 99%
+4ff5da18a7d14d82469e206eff6811f0aa0e0c74 394d6c302754276efaaeece0dc61e0fd0073ac46 hpm: add ST_ROB (0x0305), widen the event bus to 23 bits
+0b691c3a10b46fbab452050db296c43f4be01b52 6e891bdbae471ad487cea3e765428f2e65af59ac docs: audit OOO2-Spec.md against the code -- six stale claims, two dead sections
+f637fc89ca7f1623ffbf1b8988ac9b2b27949623 d9e4bfe4881f3632eea140f0812baf5b3edb0ffd ooo2: fix CPI-stack attribution -- three bugs the scheduler split introduced
+92e05a9785f009740ba7727f62d2ffa671a27af6 6b8efc8363649ddda5b33621df2193a927b5ba4f bench: efe6dd6 per-workload -- a 5.4% geomean regression with no mechanism
+6a6d6b4e6171b60fe77129828b10f685449f7d60 70ee33437d393cc5081536f368a23524b93d856f bench: GB5 on efe6dd6 -- FP four-in-flight is +2.4% IPC, isolated
+3f64fc130d3ed162f28d9c310e95ca4179a1431f 8a9074348a3c7ce8c32727042fb7e1d4effe1d64 tools: trace-limit.py -- separate window-limited from width-limited workloads
+b404fcbc122b1ccaf9b493aefb3d7fec2f9ef7ae daaa09502f93c9bd929c91b9f74c4ba8638b6004 bench: restore the perf trace tooling, and record three traced workload shapes
+c55136c722b87ba17910e185af78cd7a130da833 ef1fce796cb9fdd8d70d94e7d9519df2225d8c61 bench: pipeview waterfall, and mlbench -- the GB5 Machine Learning loop
+823d1ed30589af1483011cceda277fefc8a90f66 125463c08e2da4077cc01278bb2b3f065dd7f644 doc 5: state the governing rule -- move logic OUT of the scheduler
+711d55ed42e034e2b2102e755509e6190bc2f9a1 0402bd7ebd175b98f6e6adab7c90839343c5f201 docs: never stall issue -- div gets a FIFO and frontend back-pressure
+b41c2f9aaf4485776167de69f257fbe8c32b3469 98a0fb9e495baafa7801066e70d5bade30c9623a docs: mul/div into the FP pipeline -- cheapest option, and mostly already built
+23fff4c2ab759ebcdfce8135df2f1754fc4b5838 783390776c880dc3d7bf21f050f11cc47ffd8384 docs: mul/div stay with the ALU ops -- per-entry variable latency, not a 4th unit
+c98a3055a84ecf94e74743900c76d42c732ac02d 78100d5cd094a4045a571980c76e8131f15d5d18 docs: move mul/div after all -- a unary memory scheduler, not their 0.354%
+a04bf75b6887ae247d21f6448aed324c9306b623 38c5a2a841def475b120a3956a74b71c6e130041 docs: mul/div conflated with loads -- what it costs, and which half dissolves
+5145953a22206688b89a28cec3b7775503b600bc cce9e0176938bcb61cf07ba62620bfb582c8f8c8 doc 11: fix the three places that still contradicted 11.1
+1fc616d6833b4a1963230abd00dbbab1d0be7d02 5d2c0ef27e161846336c5caf5591ef5f36381ee5 docs: u_rs_l should not be in-order at all, and P0 is one piece of work
+64edc9812488d1122e59b71c0fd21575d2c5c588 c460d3c2ddf895508e90861db8183c768788c750 doc 11.1: memory ordering belongs to ACCESS, not to issue
+fc952d461876bf0059d76b317a9b292ab7e61259 763e0623c086bd57a3670377f8a56a364df7bf4d ooo2: assert the rounding-mode FP barrier, and record why flags need none
+7f53f5f439a32646e520ae2552a6aa4082513a86 115c558b368722e4f3b47df84dbdf78410f40716 docs: answer "why is the ROB only 16" with a measurement, twice
+3fec7cfd60b7c354b3a9a38c114f13bf836a1989 1153714a1ffed18c4fc33a529b1ca0301f3649ae docs: probe_clk +0.050 ns with three schedulers, and the ledger for it
+2475f72ac0261dd5210e12d6d3ef5a6efec47f7e fe6e90349fa2161caea32015d6d3ce2dd3a619bf ooo2: FP scheduler 8 -> 4 entries, measured identical
+ccfa3da22c390fcf2c3e1ac03497d898c8f014db ef56aaa671cc8a40bfa8ba02d2f55548122d76bf docs: three schedulers, one per unit -- spec caught up with 86b239f
+86b239f00526a2dc0724b1dfd993dbfd59ecf138 d09c969ca429cd7eca152a4305691ad5d0200199 ooo2: FP arith gets its own scheduler AND its own execute stage
+4b76aa9b062559eb5a0cf1c1efc4e9eedd6ab5bb 84c0792086aead3c58c0fce87e2825310eb3bf42 bench: blurbench -- the GB5 Gaussian Blur loop is exactly its own FP critical path
+efe6dd634eb6fe41da9c3f3fb1885076a00315d7 1a5a49a68f071cdcce0cf38cfb600eb7d2872752 bench: load all three GB5 result pages, per workload
+1a8bfed83f3460cbbbb5e077d00c888b9f9fbd5a f51e18de6cdec62076eed7fb136aec853c3db800 ooo2: revert schedulers to 10/12 -- 8/8 was a -4.1% geomean regression
+6d8f1409cc86eddd35cdf024013d7e3faa9e9041 d893c898b42b5cbcf7c6fd6adb918ce2a6c8194a bench: old->new commit map for the 2026-08-27 history rewrite
+1d6d2f2fc759ae6eff828854f5a7b1c0f6f2548f 3fe8777c918f5fd97dd9ad8a7cea70e5f5fb7bf4 bench: history is append-only -- published commit ids must keep resolving
+bef9e04b9fca2cb2373ef7ba6c73a51254ecdfd1 55758f88a80865fcaa6355d76347bc71cae756e9 untrack microbenchmark .bin/.elf -- build output, committed by a directory add
+1736a30145ed96d9befec2f8d5d83828e45d840e f309974805f31457b34022d024ef1c13d8260fd2 untrack workloads/ubuntu/screenlog.0 -- 17 MB of console log, again
+86cabbebe54e8ac45dfd308edad7874735f9e76f e432959ed375bfa0704672fad5ea714e2a87f3ca bench: ldbench -- loads overlap 1.24x, and P0 is not the FP fix
+721060c1d0954b9278ea81b7112f0f6302e96051 035ab3b1e0217fd7e566dc44b20a2cb19680fac2 dtb: stop tracking the GENERATED device trees
+b71f0bcd1a11be1e2868b3d4b75d60e77d1512e5 aa67ed8f6bd9929a13b637154dd38ac5b4f33811 fpu: four ops in flight -- ST_FPU 43% -> 0% on independent FP work
+d76af410a42ada3378918e13f4ebee888436695b f9bc92e3d1e6b2c3ca555c3d508e2bfe1b8b2183 dtb: scope the -dirty marker to design sources
+ab76572740d894859460434e59c2daa5b694faa5 b52fae1d2303f28aee931adbd15560f6eed1d330 docs: 8/8 schedulers bought 95 ps -- probe_clk +0.029 -> +0.124 ns
+2c6acd4093960a6d03b4c7173730b3e50d5f423d de6eea252bf92dcb61d945ff137c9453ac13870d docs: re-rank the work list on HW=4 data, and say why the old one was wrong
+ba5350e1e46c73a7636037f94096862f1b0993c2 95ac6d8cc96fb467c200cfb09e42ae379f005ff8 ooo2: schedulers 10/12 -> 8/8, measured at the width the FPGA runs
+cfbecd4f584b542fabdfa9ed89aa434a0b5cb7e6 12d93daaec86ca844d9a999d936bc76506088bba bench: track GB5 by commit, and a prioritised work list built from measurement
+aca2bf1018b27e40ecd251852da235887bebf48b ba32ed36b2877cf9147113902f4487ed6590a794 dtb: put the RTL commit in the model string, and mark a dirty tree
+dd2c11fc656e7c3b8df5fdf27e5fd0d3e5892cc2 2e68dcdd54f59a2c43870f386bd79e2400ec28d9 ooo2: restart the frontend at execute on a mispredict, freeze the renamer
+c33110f674a53da98422379459d371ac89d0a334 f6676dba3b54aac77e028f89e1f40c1e482c11ab docs: full GB5 on the same build -- +2.5%, and why it is not +19.8%
+b92af9b09fd020d0d9f56f5d93a62c4b396370a1 082774afef63aa342773ed20c0011669a7dac2bc docs: AES-XTS measured -- dynamic issue +19.8% IPC, and what it exposed
+6dbd0a031e0357ebe39302126301a34a332302a0 7d307369e70a802bc71dcb86b246295666ec64ad doc: 12.2 -- completion must not depend on retirement, measured
+4c49173fa4195b831e2eabb587bbba86bfc967ab a1969388f392f9a514048d38fcea8b581f23d663 docs: 166.67 MHz closes with dynamic issue -- probe_clk WNS +0.029
+17e3578950066e95b59029c57086082b179eeefc 2b411c9b4fecf493289ba044522347107952a56d ooo2: two schedulers, and the shard rule that says IE has one writer
+ec316ca8b4ae152db6a835d3a1c2eafc4ad0d17d 796f451e11ed95beef768c6c658fe717064c38f7 ooo2_rs: in-order mode as a head pointer, for the load scheduler
+d9b8b7868c4583a994836ad32bad20b839242515 8794230f1f26f0fd88936f958f6d5c2fda9bbd97 ooo2_rs: no age, no N^2, parameterised source count -- one scheduler per unit class
+5306b44124c1a41b76791f6fc317e74ccf9462a7 c33b74c258d296e752948f4497568fae316de060 ooo2: drop age priority from select, and grow the window to 16
+13ad594562659b94088065ac6679c4a570093c74 2866425400f56c6d84b0a6083021d5373f47d16d platform: a reset target, and record what window size actually bought
+2d5f2c3b97a0d81134a76b2bc006b3366ce2f749 af2baacc3a1b80a3c6d39e2f961e7ec599a04607 ooo2: give select its own stage -- the scheduler was 50 logic levels deep
+9dbc0f2b8060dd242399b18c86b4d304125249a2 19215d306b6ff12e45b36f2459e15842408f88de dts: generate the NFS device trees instead of hand-copying them
