@@ -479,6 +479,13 @@ module rv_cache #(
 
            // ---- miss: evict victim (writeback if dirty) then fill ----
            S_WB: begin
+              // THE VICTIM STOPS BEING VALID HERE, before a single byte of it is
+              // overwritten. Its data is still readable for the writeback below (that
+              // streams by {wb_way,wb_idx}, not by the valid bit), and from this cycle on a
+              // lookup of the old tag MISSES instead of hitting a line that is half the old
+              // one and half the new. Free -- S_WB used no status write port -- and it is
+              // what makes the install safe to run alongside lookups.
+              v_we=1; v_wa=vflat; v_wd=1'b0;
               if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
                  wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
                  wb_laddr <= {vtag, vbase};
@@ -496,10 +503,7 @@ module rv_cache #(
            S_WBA: if (l2_ack) st <= r_cbo_zero ? S_ZFILL : S_FILL;
 
            // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
-           S_ZFILL: begin
-              tagm[vflat] <= tag_of(cur_line);
-              v_we=1; v_wa=vflat; v_wd=1'b1;
-              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
+           S_ZFILL: begin                   // bookkeeping deferred to the last install cycle
               linebuf <= {LINEB{1'b0}}; pc <= 0;
               st <= S_FILLI;
            end
@@ -514,11 +518,11 @@ module rv_cache #(
               // exactly the missing line, caught by the branch above on landing).
            end else begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
            S_FILLW: if (l2_ack) begin
+              // The line bookkeeping that stood here -- tag, valid, dirty, victim -- has
+              // moved to the LAST install cycle. Advertising a line as valid before its
+              // data is in the banks is only harmless while nothing can look it up; the
+              // whole point of splitting the fill machine out is that something can.
               linebuf <= l2_rdata; pc <= 0;
-              tagm[vflat] <= tag_of(cur_line);
-              v_we=1; v_wa=vflat; v_wd=1'b1;
-              d_we=1; d_wa=vflat; d_wd=1'b0;
-              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
               st <= S_FILLI;
               if (PF_EN && !r_uncached && !r_cbo_zero) begin
                  pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;  // arm next-line
@@ -532,18 +536,28 @@ module rv_cache #(
            // decision edge in S_CHECK/S_FILL; here only the line bookkeeping + re-arm.
            S_PFI: begin
               pc <= 0;
-              tagm[vflat] <= tag_of(cur_line);
-              v_we=1; v_wa=vflat; v_wd=1'b1;
-              d_we=1; d_wa=vflat; d_wd=1'b0;
-              k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
+              // S_CHECK jumps straight here on a stream-buffer hit, skipping S_WB, so this
+              // is the one fill entry that owes the victim invalidate itself. Reaching it
+              // FROM S_FILL invalidates twice, which is idempotent.
+              v_we=1; v_wa=vflat; v_wd=1'b0;
               pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;
               st <= S_FILLI;
            end
            S_FILLI: begin                  // install pair pc (bank writes combinational)
               if (pc == HALF-1) begin
                  pc <= 0;
-                 // cbo.zero: the line is now zero -> mark dirty and finish; else re-lookup the refill
-                 if (r_cbo_zero) begin d_we=1; d_wa=vflat; d_wd=1'b1; wr_ack <= 1; st <= S_IDLE; end
+                 // THE LINE BECOMES VALID HERE, in the cycle its last chunk is written, and
+                 // not before. One site for every fill path -- demand, cbo.zero and the
+                 // stream buffer -- so there is one answer to "when is a filled line
+                 // visible". cbo.zero installs a line that is dirty by construction: it was
+                 // never read from L2, so L2 does not have these zeros.
+                 tagm[vflat] <= tag_of(cur_line);
+                 v_we=1; v_wa=vflat; v_wd=1'b1;
+                 d_we=1; d_wa=vflat; d_wd=r_cbo_zero;
+                 k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
+                 // cbo.zero is complete once the line is installed; everything else re-looks
+                 // its own request up, which now hits.
+                 if (r_cbo_zero) begin wr_ack <= 1; st <= S_IDLE; end
                  else st <= S_LOOK;
               end else pc <= pc + 1'b1;
            end
