@@ -37,3 +37,12 @@ tools/perftool/target/
 workloads/saxpybench/saxpybench.bin
 workloads/saxpybench/saxpybench.elf
 sq/obj_dir_sq
+
+# Ubuntu disk images -- 9.5 GB and 3.0 GB. Added by mistake in the dts commit via a
+# blanket `git add -A workloads/`, which is why a push produced a pack over GitHub's
+# 2 GiB limit. Kept out of the working tree's index permanently; the files themselves
+# live on disk and are backed up outside the repo.
+workloads/ubuntu/faster-ubuntu-25.04-preinstalled-server-riscv64.img
+workloads/ubuntu/ubuntu-25.04-preinstalled-server-riscv64.img.zst
+workloads/ubuntu/*.img
+workloads/ubuntu/*.img.zst
