@@ -3,6 +3,12 @@
 `main` is at **`6642e63`**, verified green. Work in progress is parked on
 **`wip/pipelined-loads`** (`0681b57`) and **does not work** — see §4.
 
+> **SUPERSEDED IN PART.** §7 item 3 has since been done — see the note on it, which
+> corrects this document's framing of what the load queue's two cycles cost. Camera is
+> **18.08** cyc/elem, not the 19.08 quoted in §1 and §3, and `ldbench` is 5.00/4.00, not
+> 6.00/5.00. `docs/OOO2-Spec.md` sections 8 and "Camera" carry the current numbers;
+> everything else here still stands.
+
 ---
 
 ## 1. Where things stand
@@ -199,8 +205,16 @@ dumping state. In each case the giveaway was arithmetic that could not be true �
 1. **Fix `wip/pipelined-loads`** (§4). Per-cycle dump around the first stall.
 2. **Step 1 — the cache** (§5): `S_CHECK` self-loop for back-to-back hits. This is what
    turns the throughput on; steps 2+3 gain ~0 without it. Gate on the **cosim**.
-3. **Bypass the queue when no older store is live.** Recovers the load queue's +2.00 and
-   is timing-safe — "is any older store live" does not involve the load's address.
+3. **Bypass the queue when no older store is live.** — **DONE**, but read this before
+   believing the framing above. It recovers **1.00**, not 2.00: Camera 19.08 → 18.08,
+   ldbench latency 6.00 → 5.00, throughput 5.00 → 4.00, Linux boot +1.81%.
+   The first attempt took the framing literally — drop the entry, let M hold the load
+   through its access, the pre-queue shape — and it was a **regression**: ldbench
+   6.00 → **7.00**, Camera unmoved. The queue's two cycles are not both overhead. The fill
+   cycle is M's EARLY RELEASE, and letting the following non-memory instructions execute
+   while data is in flight is worth more than the latency it costs. What works is to keep
+   fill, release and land exactly as they are and move only the access START into the
+   translate pass (`req_early`). Details in `docs/OOO2-Spec.md` section 8.
 4. **Speculative parallel TLB / cache / alias.** The delicate one; do it last, against a
    correct implementation to check it.
 

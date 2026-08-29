@@ -29,6 +29,15 @@
 //             exactly one disambiguation query port into ooo2_sq.
 //   land      data returns, writes back, completes the ROB slot.
 //
+// FILL AND ACCESS COLLAPSE when there is nothing to disambiguate against. The SELECT cycle
+// exists to read a registered address into the alias test; a load with no store older than
+// it still live has no alias test to run, so the core starts its access in the same pass
+// that fills the entry (a_sent) and the entry goes straight to `sent`. Everything else is
+// unchanged -- the entry is still filled, M is still released here, and the data still lands
+// through l_*. That last part is the point: an earlier attempt let M keep the load through
+// its access instead, and giving up the early release cost more than the cycles it saved
+// (ldbench 6.00 -> 7.00 cyc/load). The queue's two cycles are not pure overhead.
+//
 // FLUSH IS WHOLESALE for the same reason as ooo2_sq's: `redirect` is gated by head_block,
 // so it fires only with the redirecting instruction at the ROB head, and everything still
 // live here is younger than that. A load already ACCESSED but not yet landed is younger
@@ -54,7 +63,11 @@ module ooo2_lq
     output wire [IDXB-1:0]       d_idx,
 
     // ---- fill: the address is translated; M lets go here ----
+    // a_sent says the SAME cycle also handed the access to memory (see the header). The
+    // entry skips straight past `acc` -- it never becomes a candidate, because it has
+    // already been what a candidate is for.
     input  wire                  a_v,
+    input  wire                  a_sent,
     input  wire [IDXB-1:0]       a_idx,
     input  wire [PAW-1:0]        a_pa,
     input  wire [1:0]            a_size,
@@ -66,6 +79,13 @@ module ooo2_lq
     output wire [1:0]            q_size,
     output wire [SQIB-1:0]       q_tag,
     input  wire                  q_block,
+
+    // ---- early start: may the core collapse fill and access for the entry M holds? ----
+    // Only for the CANDIDATE: every entry older than acc has already been sent, so a load
+    // starting from here is still the oldest load that has not reached memory, and loads
+    // keep reaching memory in program order -- the property cand_v exists to hold.
+    input  wire [IDXB-1:0]       b_idx,       // the entry M's load owns
+    output wire                  b_ok,        // ...and it is the untranslated candidate
 
     // ---- access: hand the D$ the oldest entry that is clear ----
     output wire                  x_v,
@@ -92,8 +112,8 @@ module ooo2_lq
     output wire [IDXB:0]         occupancy,
     input  wire                  flush);
 
-   // Three pointers, not a state per entry. head..acc are accessed-but-not-landed,
-   // acc..tail are waiting. A pointer triple is what makes flush a pointer reset.
+   // Two pointers and a per-entry `sent` bit. acc..tail are waiting to go to memory; what
+   // is behind acc is outstanding or already landed. Pointers are what make flush a reset.
    reg [NENT-1:0]        v, av;              // live / address known
    reg [PAW-1:0]         pa   [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
@@ -103,12 +123,16 @@ module ooo2_lq
    reg [NENT-1:0]        rdv;
    reg [ROBB-1:0]        rob  [0:NENT-1];
    reg [SQIB-1:0]        sqt  [0:NENT-1];
-   reg [IDXB-1:0]        head, acc, tail;
+   // `sent` replaces a HEAD pointer, which could only say "the OLDEST entry is outstanding".
+   // That stops being the same question once an entry can reach memory without ever being
+   // the candidate (a_sent). Per entry it is exact, and it is what the landing assertion
+   // below actually wants to know.
+   reg [NENT-1:0]        sent;                // handed to memory, data not back yet
+   reg [IDXB-1:0]        acc, tail;
    reg [IDXB:0]          cnt;
-   integer               k;
 
-   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}};
-                 head = {IDXB{1'b0}}; acc = {IDXB{1'b0}}; tail = {IDXB{1'b0}};
+   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; sent = {NENT{1'b0}};
+                 acc = {IDXB{1'b0}}; tail = {IDXB{1'b0}};
                  cnt = {(IDXB+1){1'b0}}; end
 
    assign d_ready   = (cnt != NENT[IDXB:0]);
@@ -120,6 +144,10 @@ module ooo2_lq
    // loads would access out of program order with respect to each other with nothing
    // ordering them.
    wire cand_v = v[acc] & av[acc];
+   // The mirror of cand_v: the candidate is live and its address is NOT yet known, which is
+   // exactly a load still in M. q_tag is sqt[acc], so this is also what licenses the core to
+   // read ooo2_sq's ld_older as an answer about the load M is holding.
+   assign b_ok = (b_idx == acc) & v[acc] & ~av[acc];
    assign q_pa    = pa[acc];
    assign q_size  = sz[acc];
    assign q_tag   = sqt[acc];
@@ -138,18 +166,16 @@ module ooo2_lq
 
    always @(posedge clk) begin
       if (reset | flush) begin
-         v <= {NENT{1'b0}}; av <= {NENT{1'b0}};
-         head <= {IDXB{1'b0}}; acc <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}};
+         v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; sent <= {NENT{1'b0}};
+         acc <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}};
          cnt <= {(IDXB+1){1'b0}};
       end else begin
-         // Retiring the entry frees its slot. head only advances when the OLDEST entry
-         // lands, so an out-of-order response leaves the slot marked dead and the pointer
-         // catches up -- which is also what keeps cnt honest.
-         if (l_v) begin v[l_idx] <= 1'b0; av[l_idx] <= 1'b0; end
-         if (l_v & (l_idx == head)) head <= head + 1'b1;
-         if (x_v & x_take) acc <= acc + 1'b1;
+         // Retiring the entry frees its slot; slot REUSE is governed by cnt and tail, so an
+         // out-of-order response simply leaves the slot dead until tail comes round to it.
+         if (l_v) begin v[l_idx] <= 1'b0; av[l_idx] <= 1'b0; sent[l_idx] <= 1'b0; end
+         if (x_v & x_take) begin acc <= acc + 1'b1; sent[acc] <= 1'b1; end
          if (d_alloc & d_ready) begin
-            v[tail] <= 1'b1; av[tail] <= 1'b0;
+            v[tail] <= 1'b1; av[tail] <= 1'b0; sent[tail] <= 1'b0;
             rob[tail] <= d_rob; prd[tail] <= d_prd; rdn[tail] <= d_rd;
             rdv[tail] <= d_rd_v; sqt[tail] <= d_sqtag;
             tail <= tail + 1'b1;
@@ -161,6 +187,9 @@ module ooo2_lq
             pa[a_idx] <= a_pa;  sz[a_idx] <= a_size;
             sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  av[a_idx] <= 1'b1;
          end
+         // Filled AND already gone. It cannot collide with x_take above: that one needs
+         // av[acc], and a_sent is asserted only while b_ok says ~av[acc].
+         if (a_v & a_sent) begin sent[a_idx] <= 1'b1; acc <= acc + 1'b1; end
       end
    end
 
@@ -175,10 +204,15 @@ module ooo2_lq
          $fatal(1, "ooo2_lq: address written twice to slot %0d", a_idx);
       if (l_v & ~v[l_idx])
          $fatal(1, "ooo2_lq: data landed for a slot with no live entry (idx %0d)", l_idx);
-      if (l_v & (l_idx == acc) & (head == acc))
-         $fatal(1, "ooo2_lq: data landed for an entry that was never sent to memory");
+      if (l_v & ~sent[l_idx])
+         $fatal(1, "ooo2_lq: data landed for an entry that was never sent to memory (idx %0d)", l_idx);
       if (x_v & x_take & ~av[acc])
          $fatal(1, "ooo2_lq: started an access with no translated address");
+      if (a_v & a_sent & ~b_ok)
+         $fatal(1, "ooo2_lq: entry %0d started early but is not the untranslated candidate (acc %0d)",
+                a_idx, acc);
+      if (a_v & a_sent & x_v & x_take)
+         $fatal(1, "ooo2_lq: an early start and a candidate start in the same cycle");
    end
 endmodule
 `default_nettype wire

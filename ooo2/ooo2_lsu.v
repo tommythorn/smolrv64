@@ -75,6 +75,11 @@ module ooo2_lsu
     // S_IDLE already does, so this is a completion arm, not a state: the FSM stays idle.
     // The access happens later, through the pre-translated port above.
     input  wire            req_xlate,
+    // ...and this translate-only LOAD may also ISSUE its access in the same pass. Set by the
+    // core when no store older than it is live, so there is no ordering test to wait for.
+    // What it saves is exactly ooo2_lq's SELECT cycle: the entry is still filled and M is
+    // still released on xo_v, and ooo2_lq still lands the data.
+    input  wire            req_early,
     output wire [55:0]     xo_pa,
     output wire            xo_unc,
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
@@ -185,8 +190,14 @@ module ooo2_lsu
    // Which requester owns the access in flight. done/fault/rd_val are single outputs, so
    // without this a commit store finishing under M's pending op would be latched by M as
    // its own completion.
-   reg         own_pt, own_pt_st;
-   initial     begin own_pt = 1'b0; own_pt_st = 1'b0; end
+   // WHO reports the access and WHERE its fields came from are two questions, and an
+   // early-started queued load answers them differently: its address and size are M's own
+   // request -- this IS M's translate pass -- but ooo2_lq lands it, so it reports on pt_done.
+   // One signal for both would let pt_*, the queue's NEXT candidate, drive nb/boff/st_mask
+   // while an early load sat in S_LD: inert today, and precisely the shape of defect this
+   // file's history is made of.
+   reg         own_pt, own_pt_st, src_pt;
+   initial     begin own_pt = 1'b0; own_pt_st = 1'b0; src_pt = 1'b0; end
    assign      pt_is_store = own_pt_st;
    // A PRE-TRANSLATED ACCESS MUST NOT STEAL THE FSM FROM A PAGE-TABLE WALK. The MMU is
    // driven by xl_req, which is qualified by `st == S_IDLE`; letting pt_start take the FSM
@@ -200,11 +211,11 @@ module ooo2_lsu
    wire        xl_want  = req_valid & (st == S_IDLE);
    wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking;
 
-   // The request the FSM actually sees. In S_IDLE the selector is pt_start (own_pt still
-   // holds the PREVIOUS access's owner and would be stale); once running it is own_pt.
+   // The request the FSM actually sees. In S_IDLE the selector is pt_start (src_pt still
+   // holds the PREVIOUS access's source and would be stale); once running it is src_pt.
    // pt_pa's low bits ARE the VA's low bits -- a page offset survives translation -- so
    // boff/wend/alignment below are correct from it.
-   wire        sel_pt      = (st == S_IDLE) ? pt_start : own_pt;
+   wire        sel_pt      = (st == S_IDLE) ? pt_start : src_pt;
    wire [63:0] eff_vaddr   = sel_pt ? {8'd0, pt_pa}  : req_vaddr;
    wire [1:0]  eff_size    = sel_pt ? pt_size        : req_size;
    wire [63:0] eff_st_data = sel_pt ? pt_data        : req_st_data;
@@ -259,7 +270,11 @@ module ooo2_lsu
    // NO disambiguation here any more. ooo2_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).
-   wire start_ok = pt_start | (xl_ok & ~req_xlate);
+   // ...unless req_early says the same pass may issue the access. Only the START moves:
+   // xo_ok still fires, so ooo2_lq is still filled and M is still released this cycle.
+   // xl_early implies ~pt_start (xl_req is gated on it), so the port cannot be double-booked.
+   wire xl_early = xo_ok & req_early;
+   wire start_ok = pt_start | (xl_ok & ~req_xlate) | xl_early;
    assign xo_v   = xo_ok;
    assign xo_pa  = t_paddr;
    assign xo_unc = t_uncached;
@@ -389,8 +404,9 @@ module ooo2_lsu
                 if (~pa_dram & (wend > 5'd8))
                    $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
                           eff_pa, nb, boff);
-                own_pt        <= pt_start;
+                own_pt        <= pt_start | xl_early;   // ooo2_lq lands it either way
                 own_pt_st     <= pt_start & pt_store;
+                src_pt        <= pt_start;              // ...but the fields are M's
                 nc_q          <= eff_unc;
                 mem_runcached <= eff_unc;
                 cos_pa        <= eff_pa;                      // exact, pre-alignment
@@ -448,9 +464,17 @@ module ooo2_lsu
          // sequence may not contain a store, so the only way to clear a live reservation is
          // an OLDER buffered store draining after the LR executed -- and that store is one
          // dynamic instruction, gone once it commits, so the retry succeeds.
-         if (st_go && mem_wready && rsv_v && (own_pt || (req_vaddr[38:3] == rsv_w)))
+         if (st_go && mem_wready && rsv_v && (own_pt_st || (req_vaddr[38:3] == rsv_w)))
             rsv_v <= 1'b0;
       end
+   end
+
+   // req_early is a claim about the requester's own bookkeeping -- that ooo2_lq will land
+   // this access -- so it is only meaningful on a translate-only LOAD. On anything else the
+   // access would start and then be reported to nobody.
+   always @(posedge clk) if (!reset) begin
+      if (req_early & ~(req_xlate & ~req_store & ~req_amo & ~req_cbo))
+         $fatal(1, "ooo2_lsu: req_early on an access that is not a translate-only load");
    end
 endmodule
 

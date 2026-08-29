@@ -545,7 +545,26 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 
 ## 8. Load/store unit and MMU
 
-- **Blocking store/AMO, non-blocking load.** One memory op in flight.
+- **Blocking store/AMO, non-blocking load.** One memory access in flight: the D$ is a
+  single-request FSM (`rv_cache.v`, `S_IDLE` latches then `S_CHECK` returns), so exactly one
+  access is outstanding at a time.
+- **A plain store and a plain load leave M without touching memory.** Their M pass only
+  TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
+  on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
+  the committing store and the load queue, the store winning -- it is at the ROB head, so it
+  is unconditionally older and it frees the port immediately.
+- **A queued load's access is one cycle after its fill, unless nothing is ordering it.**
+  `ooo2_lq` registers the address, then selects the oldest entry no older store can alias,
+  then accesses; the SELECT cycle is what pays for the alias test. When no store older than
+  the load is live -- `ooo2_sq`'s `ld_older`, which reads `v[]`/`head`/`ld_tag` and never an
+  address -- `req_early` collapses fill and access into that one pass, with `mem_raddr` taken
+  straight off `t_paddr`. Fill, M's early release and the landing path are all unchanged;
+  only the start moves. Worth **1 cycle per such load** (see the ldbench and Camera tables).
+  **Do not extend it by also skipping the fill.** A version that dropped the queue entry and
+  let M hold the load through its access was a REGRESSION -- ldbench 6.00 -> 7.00 cyc/load,
+  Camera unmoved -- because releasing M lets the following non-memory instructions execute
+  while the data is in flight, and that is worth more than the latency it costs. The queue's
+  two cycles are not overhead; one of them is.
 - A load's fault is decided **before the access starts**: `mis_flt` and `xl_flt` are both
   qualified by `xl_req = req_valid & (st == S_IDLE)`. Once the LSU leaves `S_IDLE` the access
   cannot fault. This is what makes precise exceptions possible **with no ROB walk** — M holds
@@ -1090,18 +1109,31 @@ Camera is classified **Integer** by GB5 and scores 1, so it drags the Integer ge
 instructions per element, **no accumulator carried between iterations** -- every element
 is independent.
 
-Measured at `OOO2_HW=4`, arrays L1-resident:
+Measured at `OOO2_HW=4`, arrays L1-resident. **Always measure at `OOO2_HW=4`** -- at the
+simulation default of 2 this loop is frontend-bound (`FE_BUB` 76%) and reads 30.01 cyc/elem
+whatever the memory system does.
 
-```
-RESIDENT  22.08 cyc/elem   7 insn/elem   IPC 0.32
-          ST_FPU 68%   ST_MEM 68%   ST_ROB 68%   FE_BUB 0%
-STREAM    25.43 cyc/elem (128 KiB over a 64 KiB D$)   ST_MEM 72%
-```
+| state | RESIDENT cyc/elem | STREAM |
+|---|---:|---:|
+| before the store buffer | 22.08 | 25.43 |
+| store buffer (`ec6ad3e`) | **17.08** | -- |
+| + load queue (`cb02868`) | 19.08 | 22.43 |
+| + early start | **18.08** | **21.43** |
 
-**22.08 is one element's critical path**: load 5 + `fmuls` 8 + `fadds` 8 ~= 21. So there is
+At 18.08: `ST_FPU` 0%, **`ST_MEM` 72%**, `ST_ROB` 21%, `FE_BUB` 0%.
+
+The early start does not recover the queue's whole +2.00, and the reason is structural: it
+fires only when NO older store is live, and about half of Camera's loads have one at M time
+(49.2% reordered past an uncommitted store at `ec6ad3e`). Deciding that the older store does
+not ALIAS needs the address, which is the flop the queue exists for. A partial-address test
+on `VA[11:3]` would be legal and off the translate path -- page offsets survive translation
+-- but saxpy's three arrays are page-aligned at equal offsets, so their low bits collide
+every iteration. That door is closed; do not spend a session on it.
+
+**22.08 was one element's critical path**: load 5 + `fmuls` 8 + `fadds` 8 ~= 21. So there was
 **zero overlap between iterations that depend on nothing at all.**
 
-What was swept and did NOT move it -- each of these is a hypothesis killed:
+What was swept at 22.08 and did NOT move it -- each of these is a hypothesis killed:
 
 | swept | range | cycles/elem |
 |---|---|---|
@@ -1109,6 +1141,10 @@ What was swept and did NOT move it -- each of these is a hypothesis killed:
 | FP scheduler `NF` | 4 -> 8 -> 16 | 22.08 |
 | FPU `NFLIGHT` | 4 -> 8 | 22.08 |
 | D$ footprint | resident -> 2x the cache | 22.08 -> 25.43 (misses are minor) |
+
+Re-confirmed after the store buffer: **ROB 16 -> 32** takes `ST_ROB` 58% -> 0% with cyc/elem
+unchanged at 17.08, and store-buffer `NENT` 4 -> 8 takes "full" from 426 514 cycles to 62,
+also unchanged. The ROB fills *because* something downstream is slow.
 
 `ST_ROB` goes 68% -> 0% at ROB=32 **with no change in speed**, which settles it: the ROB
 filled *because* something downstream was slow, not the reverse. And `FE_BUB` is 0%, so the
@@ -1129,7 +1165,9 @@ measured that cheaply.)
 2. **Load queue -- loads issue and access out of order.** Lets element *i+1* begin while
    *i*'s chain runs.
 3. **Multiple outstanding loads.** `ldbench` measures 4.00 cyc/load throughput against 5.00
-   latency, an overlap of only 1.24x; Camera does 2 loads per element.
+   latency, an overlap of only 1.24x; Camera does 2 loads per element. The D$ is the floor
+   here: it is a single-request FSM, so `S_CHECK` must self-loop before more outstanding
+   loads in the LSU can buy anything.
 4. **FP latency.** 16 of the 21-cycle chain is `fmuls` + `fadds` at 8 cycles each. Real, but
    it is an fpnew `PIPE_REGS` / Fmax trade, not free.
 5. **Superscalar.** 7 instructions per element is a 7-cycle floor at `IW=1`, so this cannot
@@ -1137,7 +1175,7 @@ measured that cheaply.)
 
 **Estimated ceiling, not measured:** with memory decoupled the floor becomes the largest of
 7 cycles (issue width), ~4.5 (FP throughput at 2.25 cyc/op x2), and the memory throughput
-term -- so roughly **10-12 cycles/element against 22.08 today, ~2x**. Items 1-3 are one
+term -- so roughly **10-12 cycles/element against 18.08 today**. Items 1-3 are one
 piece of work (P0), which makes Camera the clearest single argument for it.
 
 ### Corroborated: the ST_MEM attribution fix (aesbench as control)
@@ -1253,6 +1291,14 @@ to the worst case for showing a BTB difference and cannot stand in for GB5:
 |---|---:|---:|---:|---|
 | 8 | 256 | 10 444 328 | -- | 1x RAMB36 |
 | **10** | **1024** | **10 496 381** | **+0.50%** | 1x RAMB36 + 1x RAMB18 |
+
+Later states of the same 40 M-cycle boot, for continuity (BTB 1024 throughout):
+
+| state | retires | vs previous |
+|---|---:|---:|
+| + store buffer (`ec6ad3e`) | 10 513 562 | +0.16% |
+| + load queue (`cb02868`) | 10 315 103 | -1.9% |
+| + early start | **10 501 952** | **+1.81%** |
 | 12 | 4096 | 10 510 154 | +0.63% | **6x RAMB36** |
 
 Do NOT read "1024 captures most of 4096's value" out of that. The 1024-vs-4096 gap is 13 k
@@ -1331,6 +1377,10 @@ contention, specifically for Clang and Text Compression rather than for the scor
 
 ### P0 -- load queue + store buffer (which is also multiple outstanding loads)
 
+**Store buffer and load queue are BUILT** (`ec6ad3e`, `cb02868`, plus the early start in
+section 8); multiple outstanding loads is not, and is blocked on the D$ read below. What
+follows is the original motivation, kept because the measurement is still the argument.
+
 This is one piece of work, not two. `Area-Efficient-Scalar-OoO.md` 11.1 has the design:
 address calculation issues freely; stores take a store-buffer slot indexed by store-seqno
 and commit when their data is ready; loads insert into a program-order load queue and
@@ -1348,13 +1398,15 @@ It subsumes three separate entries that were on this list:
 
 Measured motivation, `workloads/ldbench`, entirely L1-resident:
 
-| | cyc/load |
-|---|---:|
-| latency (pointer chase) | 5.00 |
-| throughput (8 INDEPENDENT streams) | 4.00 |
-| **overlap** | **1.24x** |
+| | cyc/load | with the load queue (`cb02868`) | + early start |
+|---|---:|---:|---:|
+| latency (pointer chase) | 5.00 | 6.00 | **5.00** |
+| throughput (8 INDEPENDENT streams) | 4.00 | 5.00 | **4.00** |
+| **overlap** | **1.24x** | 1.19x | **1.24x** |
 
-Eight independent streams overlap 1.24x. And `ST_MEM` is 54.7% of full-suite GB5 cycles.
+The queue cost a cycle on both and the early start gives it back, so the argument below is
+unchanged: eight independent streams overlap 1.24x. And `ST_MEM` is 54.7% of full-suite GB5
+cycles.
 
 Unlike P3a, the units here are genuinely FSMs (`rv_cache`: `S_IDLE -> S_CHECK -> deliver`;
 `ooo2_lsu`: `S_IDLE -> S_LD -> S_LD2`), neither accepting a request until idle again --

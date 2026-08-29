@@ -846,7 +846,7 @@ module ooo2_core
    wire sq_ld_reorder = lq_x_take & sq_ld_older;
 
    // ------------------------------------------------------------------- LOAD QUEUE
-   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_l_rd_v;
+   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_l_rd_v, lq_b_ok;
    wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
    wire [55:0]         lq_q_pa, lq_x_pa;
    wire [1:0]          lq_q_size, lq_x_size;
@@ -864,14 +864,40 @@ module ooo2_core
       .d_alloc(d_ld_alloc), .d_rob(rob_d_idx), .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
       .d_rd(d_rd), .d_rd_v(d_rd_v), .d_sqtag(sq_d_tag),
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
-      .a_v(m_lq_fill), .a_idx(m_lq_idx), .a_pa(lsu_xo_pa), .a_size(m_mem_size),
+      .a_v(m_lq_fill), .a_sent(lq_b_early), .a_idx(m_lq_idx),
+      .a_pa(lsu_xo_pa), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp),
       .q_pa(lq_q_pa), .q_size(lq_q_size), .q_tag(lq_q_tag), .q_block(sq_ld_block),
+      .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob),
       .occupancy(lq_occ), .flush(redirect));
+
+   // ------------------------------------------------- COLLAPSING FILL AND ACCESS
+   // The queue costs a load two cycles -- one to register the address, one to select the
+   // candidate and run the alias test against it. The SECOND is what pays for the test, so
+   // a load with no store OLDER than it still live should not pay it: the access issues in
+   // the same M pass that fills the entry. Fill, M's early release and the landing path are
+   // ALL unchanged -- only the start moves.
+   //
+   // That last point is the whole design. An earlier attempt dropped the entry and let M
+   // keep the load through its access instead, which also skipped the fill cycle -- and it
+   // was a REGRESSION (ldbench 6.00 -> 7.00 cyc/load, Camera unmoved). The queue's two
+   // cycles are not overhead: releasing M lets the following non-memory instructions execute
+   // while the data is in flight, and that is worth more than the latency it costs.
+   //
+   // TIMING-SAFE BY CONSTRUCTION, which is the only reason this may gate a start at all.
+   // ooo2_sq's ld_older is v[]/head/ld_tag alone -- no address, nothing off the translate
+   // path -- and lq_b_ok is a 2-bit index compare on flops. Both settle at the top of the
+   // cycle, in parallel with the dTLB lookup they qualify. ld_BLOCK, the address compare, is
+   // what must never come back here, and does not. The ADDRESS still reaches mem_raddr from
+   // t_paddr in this cycle, which is the path ec6ad3e closed at 166 MHz.
+   //
+   // ld_older answers about OUR load only while the queue's query port is asking about it:
+   // q_tag is sqt[acc], so `b_idx == acc` -- inside lq_b_ok -- is what makes the read sound.
+   wire lq_b_early = m_ld_nb & lq_b_ok & ~sq_ld_older;
 
    // ONE pre-translated port, two users. The committing store wins: it is at the ROB head,
    // so it is unconditionally older than any queued load, and it frees the port immediately.
@@ -882,9 +908,15 @@ module ooo2_core
    wire ld_land   = lsu_pt_done & ~lsu_pt_is_store;
    // The tag of the access in flight. One at a time today, so a single register; when loads
    // are pipelined this becomes the D$'s rd_tag and the queue interface does not change.
+   // Two ways an access leaves for memory now, and they name their entry differently: the
+   // candidate path by lq_x_idx, the early path by the index M is holding. They are mutually
+   // exclusive -- an early start needs ~av[acc], a candidate start needs av[acc] -- which
+   // ooo2_lq asserts rather than assumes.
+   wire lq_b_take = m_lq_fill & lq_b_early;
    reg  [LQ_IB-1:0] ld_inflight_idx;
    initial ld_inflight_idx = {LQ_IB{1'b0}};
-   always @(posedge clk) if (lq_x_take) ld_inflight_idx <= lq_x_idx;
+   always @(posedge clk) if      (lq_x_take) ld_inflight_idx <= lq_x_idx;
+                         else if (lq_b_take) ld_inflight_idx <= m_lq_idx;
 
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
@@ -1064,7 +1096,7 @@ module ooo2_core
       // memory is written later, from the buffer's commit port below.
       // Loads AND buffered stores translate here and go no further; the access itself
       // comes back through the pre-translated port, from ooo2_lq or ooo2_sq.
-      .req_xlate(m_st_nb | m_ld_nb), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
+      .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
       .pt_v(pt_v), .pt_store(pt_store),
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
