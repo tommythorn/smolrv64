@@ -1413,6 +1413,28 @@ Unlike P3a, the units here are genuinely FSMs (`rv_cache`: `S_IDLE -> S_CHECK ->
 ~2 cycles each, which is the measured 4. So this needs a pipelined hit path as well as the
 queue. Batch it alone: it wants its own bisect.
 
+**The pipelined hit path is NOT a cache-only change, and it is not step 1.** Self-looping
+`S_CHECK` is the right shape and is written -- `wip/cache-selfloop` (`baf96df`) -- but on its
+own it makes the cache do **every lookup twice**: `ldbench` `D$acc` 1 600 000 -> 3 200 000 for
+the same 1 600 000 loads, Linux boot -2.9%, `saxpybench` `FE_BUB` 0% -> 43%. The cause is the
+requester handshake, not the FSM:
+
+    c_rd_req  = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r      (dc_rv_ok <- dc_rd_valid)
+    ic_rd_req = (fb_wantv | fb_pend) & ~ic_rd_valid
+
+Both drop their request on `rd_valid`, which is a **registered** output, so in the very
+`S_CHECK` cycle the response is being produced the request is still asserted and the
+self-loop accepts it again. The implicit contract "hold the request until the response
+matches" only worked because the cache stayed busy for exactly the round trip. A pipelined
+port needs the explicit one: an `rd_ack` combinational from the accept, with every requester
+splitting its single pending bit into REQUESTING (cleared on ack) and OUTSTANDING (cleared on
+the response) -- rule D5, and the same defect `wip/pipelined-loads` hit as `pt_ack`.
+
+**And even with the ack it buys nothing alone**: the LSU, the I$ fetch buffer and each PTW
+walk are all single-outstanding, so each drops its request on the ack with no next address
+ready and `S_CHECK` never actually self-loops. Design the ack together with the
+multi-outstanding LSU that consumes it, not ahead of it.
+
 ### P1 -- triage the regression against 95aff227 (8/22)
 
 Reported: many workloads regressed between 95aff227 (in-order issue) and 72d14cde

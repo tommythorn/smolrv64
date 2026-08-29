@@ -144,6 +144,16 @@ Pipelining therefore needs `S_CHECK` to self-loop: return the current data (the 
 banks from `a_live`. Feasible precisely because `hit` is combinational from
 `cur_line` rather than a registered tag-RAM output. That is **step 1**, not started.
 
+> **CORRECTION, measured.** The self-loop is written (`wip/cache-selfloop`, `baf96df`) and it
+> is **not a cache-only change**. Alone it makes the cache do every lookup TWICE -- `ldbench`
+> `D$acc` 1.6 M -> 3.2 M for the same loads, Linux -2.9%, `saxpybench` `FE_BUB` 0% -> 43%,
+> cosim clean because the defect is waste, not corruption. Both requesters drop their request
+> on the cache's REGISTERED `rd_valid`, so during the `S_CHECK` cycle that produces the
+> response the request is still asserted and gets re-accepted. It needs an `rd_ack` and a
+> requesting/outstanding split at every requester (rule D5) -- and even then buys nothing
+> until a requester can stream, because all three are single-outstanding. See
+> `docs/OOO2-Spec.md`, P0.
+
 **The cosim does not check a store it thinks made no access.** `probe_cosim.cpp:285`
 skips the address compare whenever *either* side reports `mem_kind == 0` — deliberate,
 so a model reporting no access never forces a false abort. A buffered store's M pass
