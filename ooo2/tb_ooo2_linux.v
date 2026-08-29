@@ -105,6 +105,7 @@ module tb;
    // looks healthy while userspace wedges in its first console write() -- a silent
    // failure that looks exactly like "slow". These counters make it visible.
    reg [63:0] n_inject, n_uirq, n_seip;
+   initial begin n_ldstart=0; n_ldreord=0; n_ldblk=0; n_sqocc=0; n_sqfull=0; end
    always @(posedge clk) if (!reset) begin
       if (dut.core.irq_inject & dut.core.accept) n_inject <= n_inject + 1;
       if (dut.uart_irq)                          n_uirq   <= n_uirq   + 1;
@@ -181,6 +182,12 @@ module tb;
    // internally pipelined and only held to one outstanding by a busy flag / a discarded
    // tag, so their tier is cheap -- but cheap is not the same as worth doing.
    reg [63:0] n_stmul, n_stdiv, n_stfpu;
+   // STORE BUFFER: is it actually reordering anything?
+   //   n_ldstart  loads that began an access
+   //   n_ldreord  ...of those, ones that passed an older UNCOMMITTED store
+   //   n_ldblk    cycles a load was held by disambiguation instead
+   //   n_sqocc    summed occupancy, for sizing NENT
+   reg [63:0] n_ldstart, n_ldreord, n_ldblk, n_sqocc, n_sqfull;
    // Where did the cycles the scoreboard freed actually go?
    reg [63:0] n_stm, n_hold, n_headblk, n_mempty, n_ldland, n_robfull, n_srcpend;
    always @(posedge clk) if (!reset) begin
@@ -201,6 +208,12 @@ module tb;
       if (dut.core.st_mul) n_stmul <= n_stmul + 1;
       if (dut.core.st_div) n_stdiv <= n_stdiv + 1;
       if (dut.core.st_fpu) n_stfpu <= n_stfpu + 1;
+      if (dut.core.lsu_started & ~dut.core.m_is_store & ~dut.core.m_is_amo)
+                                   n_ldstart <= n_ldstart + 1;
+      if (dut.core.sq_ld_reorder)  n_ldreord <= n_ldreord + 1;
+      if (dut.core.sq_ld_block)    n_ldblk   <= n_ldblk   + 1;
+      n_sqocc <= n_sqocc + {61'd0, dut.core.sq_occ};
+      if (~dut.core.sq_d_ready)    n_sqfull  <= n_sqfull  + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
       if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
       if (dut.core.rs_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
@@ -244,6 +257,12 @@ module tb;
       end
       $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
                dut.imem_addr);
+      $display("SQ  loads=%0d reordered=%0d (%0d.%0d%%)  ld_block cycles=%0d (%0d.%0d%%)  mean occ=%0d.%02d  full=%0d",
+               n_ldstart, n_ldreord,
+               n_ldstart ? (100*n_ldreord)/n_ldstart : 0,
+               n_ldstart ? ((1000*n_ldreord)/n_ldstart)%10 : 0,
+               n_ldblk, (100*n_ldblk)/c, ((1000*n_ldblk)/c)%10,
+               n_sqocc/c, ((100*n_sqocc)/c)%100, n_sqfull);
       $display("SB-SIZING cycles=%0d retires=%0d st_mem=%0d (%0d.%02d%% of cycles)",
                c, nret, n_stmem, (n_stmem*100)/c, ((n_stmem*10000)/c)%100);
       $display("SB-SIZING   recoverable   %10d  %0d.%02d%% of cycles, %0d%% of st_mem",

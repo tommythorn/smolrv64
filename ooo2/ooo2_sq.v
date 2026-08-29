@@ -43,12 +43,14 @@ module ooo2_sq
     input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
+    output wire [IDXB-1:0]       d_tag,       // the STORE-SEQNO a load captures at dispatch
 
     // ---- address (and possibly data) written when the store executes ----
     input  wire                  a_v,
     input  wire [IDXB-1:0]       a_idx,
     input  wire [PAW-1:0]        a_addr,
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
+    input  wire                  a_unc,      // uncached, decided at translate time
     input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
     input  wire [63:0]           a_data,     //   (ignored once the snoop has the value)
 
@@ -63,12 +65,16 @@ module ooo2_sq
     output wire [PAW-1:0]        c_addr,
     output wire [63:0]           c_data,
     output wire [1:0]            c_size,
+    output wire                  c_unc,
     input  wire                  c_take,
 
     // ---- load disambiguation ----
     input  wire [PAW-1:0]        ld_addr,
     input  wire [1:0]            ld_size,
+    input  wire [IDXB-1:0]       ld_tag,     // this load's captured store-seqno
     output wire                  ld_block,
+    output wire                  ld_older,   // an older store is live (aliasing or not) --
+                                             // the load is REORDERED past it if it starts
 
     output wire [IDXB:0]         occupancy,
     input  wire                  flush);
@@ -77,6 +83,7 @@ module ooo2_sq
    reg [PAW-1:0]         addr [0:NENT-1];
    reg [63:0]            data [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
+   reg [NENT-1:0]        unc;
    reg [PBITS-1:0]       dpr  [0:NENT-1];
    reg [ROBB-1:0]        rob  [0:NENT-1];
    reg [IDXB-1:0]        head, tail;
@@ -90,6 +97,7 @@ module ooo2_sq
 
    assign d_ready   = (cnt != NENT[IDXB:0]);
    assign d_idx     = tail;
+   assign d_tag     = tail;
    assign occupancy = cnt;
 
    // c_v says the head is READY (address and data present). Committing in program order
@@ -100,24 +108,50 @@ module ooo2_sq
    assign c_addr = addr[head];
    assign c_data = data[head];
    assign c_size = sz[head];
+   assign c_unc  = unc[head];
 
    // ---- disambiguation: does any live entry overlap this load? ----
    // A byte range is [addr, addr + (1<<size)). Two ranges overlap unless one ends at or
    // before the other begins. An entry with no address yet cannot be compared, so it
    // blocks -- conservative and correct.
+   // ONLY ENTRIES OLDER THAN THE LOAD COUNT, and getting this wrong deadlocks rather than
+   // corrupting. Entries are allocated at DISPATCH, so the buffer also holds stores YOUNGER
+   // than a load sitting in M. Blocking on those is a circular wait: the load waits for a
+   // younger store's address, and that store cannot execute because u_rs_l is in-order and
+   // the load is at its head. Measured: it hung 115 of 240 tests.
+   //
+   // The load carries the store-seqno it captured at dispatch -- `d_tag`, the tail at that
+   // moment -- and an entry is older than it exactly when it is nearer the head:
+   //     dist(x) = (x - head) mod NENT,   older(g) = dist(g) < dist(ld_tag)
+   // No wrap bit is needed: a store younger than the load can never commit before the load
+   // retires, so the live region cannot cycle past the load's tag.
    localparam [PAW:0] SQ_ONE = {{PAW{1'b0}}, 1'b1};   // width-matched, not a bare literal
+   wire [IDXB-1:0] ld_dist = ld_tag - head;
    wire [NENT-1:0] ovl;
    genvar g;
    generate
       for (g = 0; g < NENT; g = g + 1) begin : g_ovl
+         wire [IDXB-1:0] g_dist = g[IDXB-1:0] - head;
+         wire         older = v[g] & (g_dist < ld_dist);
          wire [PAW:0] s_lo = {1'b0, addr[g]};
          wire [PAW:0] s_hi = s_lo + (SQ_ONE << sz[g]);
          wire [PAW:0] l_lo = {1'b0, ld_addr};
          wire [PAW:0] l_hi = l_lo + (SQ_ONE << ld_size);
-         assign ovl[g] = v[g] & (~av[g] | ~((s_hi <= l_lo) | (l_hi <= s_lo)));
+         assign ovl[g] = older & (~av[g] | ~((s_hi <= l_lo) | (l_hi <= s_lo)));
       end
    endgenerate
    assign ld_block = |ovl;
+   // Older-and-live, regardless of overlap. ld_block is the subset that actually conflicts,
+   // so `ld_older & ~ld_block` at a load's start is precisely a load reordered past an
+   // uncommitted store -- the thing this whole structure exists to allow.
+   wire [NENT-1:0] oldv;
+   genvar go;
+   generate
+      for (go = 0; go < NENT; go = go + 1) begin : g_old
+         assign oldv[go] = v[go] & (((go[IDXB-1:0] - head)) < ld_dist);
+      end
+   endgenerate
+   assign ld_older = |oldv;
 
    always @(posedge clk) begin
       if (reset | flush) begin
@@ -141,6 +175,7 @@ module ooo2_sq
          // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
             addr[a_idx] <= a_addr;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
+            unc[a_idx]  <= a_unc;
             if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
          end
 

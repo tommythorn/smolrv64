@@ -428,7 +428,11 @@ module ooo2_core
    // FP has its OWN completion port now. It used to share this one, which is why a landing
    // FP result had to be held whenever a load landed in the same cycle -- with several FP
    // ops in flight that collision stops being rare, and holding stops being cheap.
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith) | ld_land;
+   // A plain store leaves M with no result AND no memory effect yet -- the buffer owns both.
+   // Its ROB slot is completed by sq_c_take above, in the cycle memory is actually written.
+   wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
+   wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith & ~m_st_nb) | ld_land;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? sb_rob : m_rob_idx;
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
@@ -469,7 +473,10 @@ module ooo2_core
       if (q_rs1_v & ~pnd_i1)
          $fatal(1, "ooo2: executed with rs1 p%0d still pending (rob=%0d pc=%h insn=%h ord=%b)",
                 i_ps1, i_rob, q_pc, q_insn, q_ord);
-      if (q_rs2_v & ~pnd_i2)
+      // ...except a plain store, whose rs2 is deliberately not waited on: ooo2_sq captures
+      // it by snooping. m_rs2_rdy records whether the PRF read was valid, and the buffer's
+      // own assertion catches an entry that can never be woken.
+      if (q_rs2_v & ~pnd_i2 & ~(q_is_store & ~q_is_amo & ~q_is_cbo))
          $fatal(1, "ooo2: executed with rs2 p%0d still pending (rob=%0d)", i_ps2, i_rob);
       if (q_rs3_v & ~pnd_i3)
          $fatal(1, "ooo2: executed with rs3 p%0d still pending (rob=%0d)", i_ps3, i_rob);
@@ -535,6 +542,7 @@ module ooo2_core
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
    localparam integer PL_N = NI + NL + NF, PL_IB = 5;
+   localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
    localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2;
 
    // ORDERED: anything that can trap, redirect, touch memory or hold a unit for more than a
@@ -570,7 +578,12 @@ module ooo2_core
    wire [1:0] d_cls = d_cls_i ? C_I : d_cls_l ? C_L : C_F;
 
    wire [RN_PBITS-1:0] d_prd_g = d_rd_v ? rn_prd : {RN_PBITS{1'b0}};
-   wire [2:0] d_srdy = {pnd_r3 | ~d_rs3_v, pnd_r2 | ~d_rs2_v, pnd_r1 | ~d_rs1_v};
+   // A plain store's rs2 is not an operand of the INSTRUCTION any more -- it is an operand
+   // of its store-buffer entry, which watches for it independently (ooo2_sq's snoop). So the
+   // scheduler must not wait on it, and this is the whole of that change: one term, no
+   // per-entry state, nothing added to select. The store issues on its address alone.
+   wire       d_st_nb = d_is_store & ~d_is_amo & ~d_is_cbo;   // "buffered store" -- rule C1
+   wire [2:0] d_srdy = {pnd_r3 | ~d_rs3_v, pnd_r2 | ~d_rs2_v | d_st_nb, pnd_r1 | ~d_rs1_v};
 
    wire [NWB_C-1:0]        wkv  = {we_fe, we_ld, we_ie};
    wire [NWB_C*RN_PBITS-1:0] wkp = {wa_fe, wa_ld, wa_ie};
@@ -726,7 +739,8 @@ module ooo2_core
                           + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
                           + 1 + 1 + 1                           // source-valid bits
-                          + 1;                                  // ordered
+                          + 1                                   // ordered
+                          + SQ_IB;                              // store-buffer slot
    wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
                            (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
                            d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
@@ -736,7 +750,7 @@ module ooo2_core
                            d_fault_cause, d_fault_tval,
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
                            d_br_func, d_mis_taken, d_mis_nt,
-                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord};
+                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_tag};
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
@@ -746,6 +760,7 @@ module ooo2_core
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
    wire [31:0]         q_insn;
+   wire [SQ_IB-1:0]    q_sq_tag;
    wire                q_rvc, q_rd_v, q_mem_signed, q_is_mem, q_is_store, q_is_amo;
    wire [SEQW-1:0]     q_seq;
    wire [PDW-1:0]      q_pdet;
@@ -771,23 +786,69 @@ module ooo2_core
            q_illegal, q_fault, q_fault_cause, q_fault_tval,
            q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
            q_br_func, q_mis_taken, q_mis_nt,
-           q_rs1_v, q_rs2_v, q_rs3_v, q_ord} = pl_out;
+           q_rs1_v, q_rs2_v, q_rs3_v, q_ord, q_sq_tag} = pl_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
    // comparison is tautological and gone. The cosim is what checks it instead: every
    // retired instruction's pc, instruction word and value, against simmerv.
 
-   // NW=1 until units complete independently; the port is widened by the same commit
-   // that makes more than one completion per cycle possible.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(3)) u_rob
+   // ------------------------------------------------------------------ STORE BUFFER
+   // docs/Area-Efficient-Scalar-OoO.md 11. A store issues on its ADDRESS alone and commits
+   // when its data has arrived and it is the oldest -- which is what stops it sitting at the
+   // head of u_rs_l for the ~21 cycles an fadds takes, with the next iteration's loads
+   // queued behind work they do not depend on (spec 15, Camera).
+   //
+   // FLUSH IS WHOLESALE, and that is correct rather than merely convenient: `redirect` is
+   // gated by head_block, so a redirect fires only when the redirecting instruction is at
+   // the ROB head -- every older instruction has therefore already retired, and a store
+   // retires only when this buffer has written it. Everything still live is younger.
+   wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_block, sq_ld_older;
+   wire [SQ_IB:0]      sq_occ;
+   wire [SQ_IB-1:0]    sq_d_idx, sq_d_tag;
+   wire [ROB_IDXB-1:0] sq_c_rob;
+   wire [55:0]         sq_c_addr;
+   wire [63:0]         sq_c_data;
+   wire [1:0]          sq_c_size;
+   wire                lsu_cq_done, lsu_xo_v, lsu_xo_unc;
+   wire [55:0]         lsu_xo_pa;
+   wire d_st_alloc = rn_valid & d_st_nb;
+   // The head entry may go to memory only once it IS the ROB head: that is the point at
+   // which no older instruction can still trap and no redirect can still squash it.
+   wire sq_go     = sq_c_v & (sq_c_rob == rob_head_idx);
+   wire sq_c_take = lsu_cq_done;
+
+   ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
+             .ROBB(ROB_IDXB), .NWB(NWB_C)) u_sq
+     (.clk(clk), .reset(reset),
+      .d_alloc(d_st_alloc), .d_rob(rob_d_idx), .d_dpreg(rn_prs2),
+      .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag),
+      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_size(m_mem_size),
+      .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
+      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, wb_ie}),
+      .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
+      .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
+      .ld_addr(lsu_xo_pa), .ld_size(m_mem_size), .ld_tag(m_sq_tag),
+      .ld_block(sq_ld_block), .ld_older(sq_ld_older),
+      .occupancy(sq_occ), .flush(redirect));
+
+   // Instrumentation for "did a load actually get reordered past a store". A load STARTS
+   // its access only when ~ld_block, so a start with an older store still live is exactly
+   // one reordering that the old in-order machine could not have done.
+   wire sq_ld_reorder = lsu_started & ~m_is_store & ~m_is_amo & sq_ld_older;
+
+   // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
+   // Routed through the existing completion mechanism (rule C2), which is parameterised on
+   // exactly this -- not a private path to the ROB.
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(4)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_v({fp_land, iss_alu, rob_w_valid}), .w_ix({ft_rob, i_rob, rob_w_idx}),
+      .w_v({sq_c_take, fp_land, iss_alu, rob_w_valid}),
+      .w_ix({sq_c_rob, ft_rob, i_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -821,6 +882,14 @@ module ooo2_core
    reg              m_is_cbo, m_cbo_zero, m_cbo_keep;
    reg              m_illegal, m_fault;
    reg  [3:0]       m_fault_cause;
+   // Store-buffer slot, and whether the issue-cycle PRF read of rs2 was valid. A plain
+   // store may now issue with rs2 still pending, so m_st_data is meaningful only when
+   // m_rs2_rdy -- otherwise ooo2_sq's snoop supplies the value instead.
+   // ONE field serves both roles, because a buffered store's own slot IS the tail it
+   // captured at dispatch: for a store it names the entry to fill, for a load it is the
+   // store-seqno bounding which entries are older than it.
+   reg  [SQ_IB-1:0] m_sq_tag;
+   reg              m_rs2_rdy;
    initial begin m_valid = 1'b0; end
 
    // the M-stage writeback value, and the bypass source (which is NOT the same thing --
@@ -941,6 +1010,12 @@ module ooo2_core
       // back to S_IDLE, and xl_req would start the very same access A SECOND TIME -- a store
       // written twice. mul/div are already safe this way via md_started; the LSU was not.
       .req_valid(m_mem_op & ~m_unit_done_q),
+      // A plain store TRANSLATES here and goes no further: its address lands in ooo2_sq and
+      // memory is written later, from the buffer's commit port below.
+      .req_xlate(m_st_nb), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
+      .ld_block(sq_ld_block),
+      .cq_v(sq_go), .cq_pa(sq_c_addr), .cq_size(sq_c_size), .cq_data(sq_c_data),
+      .cq_unc(sq_c_unc), .cq_done(lsu_cq_done),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
@@ -1692,8 +1767,21 @@ module ooo2_core
       // still holds it, and m_done can now assert cycles later off the sticky latch.
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
          cs_val[m_rob_idx]   <= m_wb_val;
-         cs_mkind[m_rob_idx] <= m_mem_op ? lsu_cos_kind : 2'd0;
-         cs_mpa[m_rob_idx]   <= lsu_cos_pa;
+         // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
+         // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
+         // hand the cosim a stale PA under this store's seqno. Worse, it would often be
+         // kind 0, and probe_cosim.cpp deliberately SKIPS the address compare whenever
+         // either side reports no access ("a model that reports no access never forces a
+         // false abort"), so the mistake would be invisible rather than loud: every
+         // buffered store would go unchecked. Captured at commit instead, below.
+         cs_mkind[m_rob_idx] <= (m_mem_op & ~m_st_nb) ? lsu_cos_kind : 2'd0;
+         cs_mpa[m_rob_idx]   <= m_st_nb ? 56'd0 : lsu_cos_pa;
+      end
+      // The buffered store's real memory effect, in the cycle the buffer writes memory.
+      // lsu_cos_* were latched from the commit port's own S_IDLE, so they are this store's.
+      if (sq_c_take) begin
+         cs_mkind[sq_c_rob] <= lsu_cos_kind;
+         cs_mpa[sq_c_rob]   <= lsu_cos_pa;
       end
       // lsu_cos_* are latched AT start_ok, so they cannot be sampled during the dispatch
       // cycle -- doing so reported the PREVIOUS access (a store) as a load's memory effect.
@@ -1721,17 +1809,21 @@ module ooo2_core
    wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (sb_rob == rob_head_idx);
+   wire        cs_hit_sq  = sq_c_take & (sq_c_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
-   wire [63:0] cs_val_h   = cs_hit_ld ? lsu_rd_val
+   wire [63:0] cs_val_h   = cs_hit_sq ? 64'd0          // a store writes no register
+                          : cs_hit_ld ? lsu_rd_val
                           : cs_hit_alu ? x_result
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
-   wire [1:0]  cs_mkind_h = cs_hit_ld ? lsu_cos_kind
+   wire [1:0]  cs_mkind_h = cs_hit_sq ? lsu_cos_kind
+                          : cs_hit_ld ? lsu_cos_kind
                           : cs_hit_alu ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
-   wire [55:0] cs_mpa_h   = cs_hit_ld ? lsu_cos_pa
+   wire [55:0] cs_mpa_h   = cs_hit_sq ? lsu_cos_pa
+                          : cs_hit_ld ? lsu_cos_pa
                           : cs_hit_alu ? 56'd0
                           : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
@@ -1946,7 +2038,11 @@ module ooo2_core
    // src_pend IS GONE. Dispatch no longer waits for an instruction's operands -- that wait
    // moves into the scheduler, which is the entire point. What still blocks dispatch is
    // structural only: no ROB slot, no scheduler entry, or a rename shard run dry.
-   wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block);
+   // Back-pressure at the FRONTEND, never at issue: a full store buffer holds dispatch,
+   // which costs nothing at the head of the machine and keeps unit state out of the
+   // scheduler's select (docs/OOO2-Spec.md 15).
+   wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block
+                            | (d_st_nb & ~sq_d_ready));
    wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q & ~fr_active;
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
@@ -1979,6 +2075,14 @@ module ooo2_core
             m_result      <= x_result;
             m_addr        <= x_addr;
             m_st_data     <= x_rs2;
+            // "x_rs2 is valid this cycle": the pending register says ready, OR a writeback
+            // is naming it right now and the PRF's write-through returns it anyway. This is
+            // exactly the condition the shadow check above asserts for every other operand.
+            m_rs2_rdy     <= pnd_i2
+                           | (wkv[0] & (wkp[0*RN_PBITS +: RN_PBITS] == i_ps2))
+                           | (wkv[1] & (wkp[1*RN_PBITS +: RN_PBITS] == i_ps2))
+                           | (wkv[2] & (wkp[2*RN_PBITS +: RN_PBITS] == i_ps2));
+            m_sq_tag      <= q_sq_tag;
             m_rs1_val     <= x_rs1;
             m_rs3_val     <= x_rs3;   // FMA 3rd operand
             m_mem_size    <= q_mem_size;
