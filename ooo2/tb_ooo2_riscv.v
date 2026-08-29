@@ -131,6 +131,12 @@ module tb;
       end
       if (!done)
          $display("RISCV-TEST TIMEOUT after %0d cycles (pc~%h) retires=%0d", ncyc, imem_addr, nret);
+      // Without this the clock keeps toggling after the verdict is printed, stdout is never
+      // flushed, and the process never exits: every test "hangs" at 100% CPU with NO output.
+      // cb02868 lost it to a line-range `sed -i '134,149d'` that was one line too long while
+      // removing debug $displays -- a deleted line leaves no trace, so re-reading the region
+      // looked fine. Diff a line-range edit; do not eyeball it.
+      $finish;
    end
 
    // apply stores after the monitor has seen them
