@@ -63,6 +63,14 @@ module csr_file
     input  wire [63:0] mtime,       // free-running CLINT time (Sstc stimecmp compare); 0 in device-less TBs
     input  wire [5:0]  retire_cnt,  // # instructions retiring this cycle (commit_ctl) -> minstret
                                     // (a coarse checkpoint retires up to CKMAX at once)
+    input  wire [5:0]  hpm_retire_cnt, // the SAME count for the Zihpm counters, and the caller is
+                                    // free to delay it. minstret is architectural and must be
+                                    // exact this cycle; mhpmcounterN is instrumentation read
+                                    // through a CSR many cycles later, so a cycle of lag is
+                                    // unobservable -- exactly the argument `hpm_ev` already
+                                    // rests on. Splitting them keeps the retire cone out of
+                                    // THIRTEEN event muxes and 64-bit carry chains. See
+                                    // ooo2_core's hpm_ret_q.
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
@@ -197,11 +205,14 @@ module csr_file
                       HPMEV_FB_HIT = 16'h0315,   // Fetch buffer served the PC (hit)
                       HPMEV_FB_RHIT= 16'h0316;   // ...on the first fetch after a redirect
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
+   // EVERY input here is a register as far as this module is concerned: `hpm_ev` and
+   // `hpm_retire_cnt` are both the caller's delayed copies. That is what keeps the mux and
+   // the 64-bit adder below a path that starts at the top of the cycle.
    function [5:0] hpm_inc;
       input [15:0] ev;
       case (ev)
         HPMEV_CYCLES:  hpm_inc = 6'd1;
-        HPMEV_INSTRET: hpm_inc = retire_cnt;
+        HPMEV_INSTRET: hpm_inc = hpm_retire_cnt;
         HPMEV_LOAD:    hpm_inc = {5'd0, hpm_ev[0]};
         HPMEV_STORE:   hpm_inc = {5'd0, hpm_ev[1]};
         HPMEV_REDIR:   hpm_inc = {5'd0, hpm_ev[2]};

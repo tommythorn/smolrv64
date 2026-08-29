@@ -280,7 +280,7 @@ module exec_bundle
       .fp_dirty_commit(fp_dirty_commit),
       .xtrap_v(xtrap_v), .xtrap_intr(xtrap_intr), .xtrap_cause(xtrap_cause),
       .xtrap_epc(xtrap_epc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire_cnt), .hpm_retire_cnt(retire_cnt),
       // csr_file takes 15 events; [14:7] are the in-order core's stall taps, which the
       // OoO core does not have. Widen HERE, at the one boundary where the width changes.
       .hpm_ev(hpm_ev),   // width tracks csr_file's port; backend_top zero-extends at the source

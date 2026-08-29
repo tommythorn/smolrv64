@@ -298,12 +298,24 @@ independent of NF:
 
 - ~~**Frontend PC increment** -> BTB address: 24 levels, 6x CARRY8.~~ **DIAGNOSED AND
   FIXED — it was never the increment.** See "The frontend path" below.
-- **`mhpmcounter` carry**: 32 levels, 10x CARRY8. This is a KNOWN worst family -- the
-  comment above `hpm_ev_q` records it as "823 of 3113 failing endpoints at 6 ns and the
-  WORST family in the design", fixed once by registering the event bus. **It may have been
-  made worse by widening that bus to 23 bits for `ST_ROB`**, which adds a mux input to
-  every one of the 13 counters. Stats may be gated (unlike invariants), so this is
-  recoverable if it is confirmed.
+- **`mhpmcounter` carry**: 32 levels, 10x CARRY8. **DIAGNOSED AND FIXED.** The earlier
+  `hpm_ev_q` fix registered the event bus and closed one route out of `lsu_done`; it left
+  the other alive by explicitly exempting `retire_cnt` as "architectural". That is true of
+  `minstret` and false of `mhpmcounterN`. `retire` is `rob_c_valid`, and `ooo2_rob`'s
+  `head_done` write-forwards across every writeback port, so:
+
+      m_addr -> lsu_done -> rob w_hits -> retire -> retire_cnt
+             -> hpm_inc's INSTRET arm -> 13 event muxes -> 13x 64-bit carry chain
+
+  Zihpm counters are permitted **arbitrary** read latency — a counter may reflect state N
+  cycles ago — so `csr_file` now takes a second `hpm_retire_cnt` port and `ooo2_core`
+  feeds it a registered copy (`hpm_ret_q`). `minstret` keeps the live count. Every input
+  to `hpm_inc` is now a flop, so the mux and the adder start at the top of the cycle.
+  The src/ OoO core passes its live count to both ports and is bit-identical.
+
+  If the mux and the 64-bit adder still bind *together*, the same licence permits
+  splitting them across cycles (register `hpm_inc` per counter, 13x6 flops). Not done:
+  unmeasured, and it is 78 flops for a path that may already fit.
 
 **NF=8 DOES NOT CLOSE TIMING at 166.67 MHz, and the reason is not the scheduler.**
 

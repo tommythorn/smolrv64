@@ -508,10 +508,15 @@ module ooo2_core
    // it is never traded away except for a diagnostic run -- so the scheduler was dialled
    // down one entry at a time until it passed:
    //
-   //   NF=8  -0.012   frontend PC increment      24 levels,  6x CARRY8
+   //   NF=8  -0.012   "frontend PC increment"    24 levels,  6x CARRY8
    //   NF=7  -0.082   u_csr/mhpmcounter[12]      32 levels, 10x CARRY8
    //   NF=6  -0.210   fpnew i_fpnew_cast_multi internal pipeline
    //   NF=5  +0.038   PASSES
+   //
+   // The NF=8 family has since been DIAGNOSED and REMOVED: it was not an increment at all
+   // but `cti_ok` leaking from the aligner into `apc`, the BTB read address, through
+   // ooo2_predictor's `hit`/`p_ret` (see that module's `predict`, and rule I6). NF is back
+   // at 8 -- the standing policy -- to retest with that path gone.
    //
    // FOUR SIZES, FOUR DIFFERENT FAILING FAMILIES, and none of them the scheduler. The
    // design sits within ~100 ps of the limit on several paths at once and placement decides
@@ -1287,9 +1292,26 @@ module ooo2_core
    // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
    // built, so this cone did not exist.
    // minstret is NOT included: retire_cnt stays combinational because it is architectural.
+   //
+   // But that argument covers minstret ONLY, and the first version of this fix stopped
+   // there -- leaving the OTHER route from the same source alive. `retire` is
+   // `rob_c_valid`, and ooo2_rob's `head_done` write-forwards across every writeback port,
+   // so retire sits downstream of every unit's completion in the cycle it happens:
+   //   m_addr -> lsu_done -> rob w_hits -> retire -> retire_cnt
+   //          -> hpm_inc's INSTRET arm -> 13 event muxes -> 13x 64-bit carry chain
+   // and `u_csr/mhpmcounter[12]` came back as the worst family at NF=7 (-0.082, 32 levels,
+   // 10x CARRY8). mhpmcounterN is instrumentation by the same argument as hpm_ev above --
+   // read through a CSR many cycles later, and no software can observe which cycle an
+   // event landed on -- so it takes the delayed copy and minstret keeps the live one.
+   // Registering it here rather than in csr_file also keeps the src/ OoO core, which
+   // shares that module, bit-identical: it passes its live count to both ports.
    reg [22:0] hpm_ev_q;
-   initial hpm_ev_q = 23'd0;
-   always @(posedge clk) hpm_ev_q <= reset ? 23'd0 : hpm_ev;
+   reg [5:0]  hpm_ret_q;
+   initial begin hpm_ev_q = 23'd0; hpm_ret_q = 6'd0; end
+   always @(posedge clk) begin
+      hpm_ev_q  <= reset ? 23'd0 : hpm_ev;
+      hpm_ret_q <= (reset | ~retire) ? 6'd0 : 6'd1;
+   end
 
    csr_file u_csr
      (.clk(clk), .reset(reset),
@@ -1314,7 +1336,8 @@ module ooo2_core
       // of the reference, at the paging transition.
       .xtrap_v(xtrap_v & m_done), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0), .hpm_ev(hpm_ev_q),
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0),
+      .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The in-order SoC puts no ILA on the CSR file, so these
       // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build
