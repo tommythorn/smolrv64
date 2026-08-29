@@ -524,7 +524,7 @@ module ooo2_core
    // the search stopped, not a measurement that 5 is faster than 6 -- and the standing
    // policy remains a minimum of 8, recoverable by fixing the families above rather than
    // by a better scheduler.
-   localparam integer NF = 5,  IBF = 3;    // FP arith, three sources, its OWN unit
+   localparam integer NF = 8,  IBF = 3;    // FP arith, three sources, its OWN unit
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
