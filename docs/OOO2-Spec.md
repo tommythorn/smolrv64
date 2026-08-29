@@ -1242,14 +1242,24 @@ over billions of instructions is larger, so this understates the depth:
 | clang | 7.0% | 6.0% | 5.5% | **5.2%** |
 | sqlite | 4.0% | 3.1% | 3.0% | **2.9%** |
 
-Measured on the tiny128 Linux boot (not a branch-heavy workload), 40 M cycles, no
-divergence at any depth:
+**1024 is chosen because 4096 does not fit, not because it performs comparably.** That
+distinction matters, because the performance evidence for the choice is weak and the timing
+evidence is not.
+
+ONE workload, 40 M cycles, tiny128 Linux boot -- which is not branch-heavy, so it is close
+to the worst case for showing a BTB difference and cannot stand in for GB5:
 
 | `BTBB` | entries | retires | vs 256 | BRAM |
 |---|---:|---:|---:|---|
 | 8 | 256 | 10 444 328 | -- | 1x RAMB36 |
 | **10** | **1024** | **10 496 381** | **+0.50%** | 1x RAMB36 + 1x RAMB18 |
 | 12 | 4096 | 10 510 154 | +0.63% | **6x RAMB36** |
+
+Do NOT read "1024 captures most of 4096's value" out of that. The 1024-vs-4096 gap is 13 k
+retires on a single non-branch-heavy boot, and the trace study that agrees with it is a set
+of 19 k-instruction windows that by its own limits cannot judge a 4096-entry table at all.
+Two weak measurements pointing the same way are still weak. What is actually established is
+that 1024 beats 256 on this workload, and that 4096 costs 434 ps.
 
 #### What 4096 cost — rule I1, and it was NOT the address fanout
 
