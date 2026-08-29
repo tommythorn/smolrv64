@@ -807,7 +807,8 @@ module ooo2_core
    // gated by head_block, so a redirect fires only when the redirecting instruction is at
    // the ROB head -- every older instruction has therefore already retired, and a store
    // retires only when this buffer has written it. Everything still live is younger.
-   wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_block, sq_ld_older;
+   wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_older;
+   wire                sq_ld_block;      // instrumentation: candidate held by an alias
    wire [SQ_IB:0]      sq_occ;
    wire [SQ_IB-1:0]    sq_d_idx, sq_d_tag;
    wire [ROB_IDXB-1:0] sq_c_rob;
@@ -823,7 +824,7 @@ module ooo2_core
    wire sq_c_take = lsu_pt_done & lsu_pt_is_store;
 
    ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .NWB(NWB_C)) u_sq
+             .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
      (.clk(clk), .reset(reset),
       .d_alloc(d_st_alloc), .d_rob(rob_d_idx), .d_dpreg(rn_prs2),
       .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag),
@@ -832,12 +833,13 @@ module ooo2_core
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
-      // Queried by the LOAD QUEUE's candidate, from its REGISTERED address -- not by
-      // whatever M happens to be translating. That was the old path and leaving it wired
-      // here queried the buffer with a stale tag from an empty M stage, which blocked a
-      // load against a store that was not older than it and deadlocked the machine.
-      .ld_addr(lq_q_pa), .ld_size(lq_q_size), .ld_tag(lq_q_tag),
-      .ld_block(sq_ld_block), .ld_older(sq_ld_older),
+      // THE ALIAS TEST LIVES HERE, not at issue: ooo2_lq exports its entries, ooo2_sq keeps
+      // a conflict matrix updated wherever an address arrives, and issue reads a flop.
+      .l_pa(lq_e_pa), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
+      .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx),
+      .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
+      .l_block(lq_e_block),
+      .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
@@ -848,8 +850,12 @@ module ooo2_core
    // ------------------------------------------------------------------- LOAD QUEUE
    wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_l_rd_v, lq_b_ok;
    wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
-   wire [55:0]         lq_q_pa, lq_x_pa;
-   wire [1:0]          lq_q_size, lq_x_size;
+   wire [55:0]         lq_x_pa;
+   wire [1:0]          lq_x_size;
+   wire [LQ_N*56-1:0]  lq_e_pa;
+   wire [LQ_N*2-1:0]   lq_e_size;
+   wire [LQ_N*SQ_IB-1:0] lq_e_tag;
+   wire [LQ_N-1:0]     lq_e_av, lq_e_block;
    wire [SQ_IB-1:0]    lq_q_tag;
    wire [RN_PBITS-1:0] lq_l_prd;
    wire [5:0]          lq_l_rd;
@@ -867,7 +873,8 @@ module ooo2_core
       .a_v(m_lq_fill), .a_sent(lq_b_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp),
-      .q_pa(lq_q_pa), .q_size(lq_q_size), .q_tag(lq_q_tag), .q_block(sq_ld_block),
+      .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
+      .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_take(lq_x_take),

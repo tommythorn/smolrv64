@@ -74,11 +74,22 @@ module ooo2_lq
     input  wire                  a_signed,
     input  wire                  a_fp,
 
-    // ---- disambiguation: ONE query, for the entry we are trying to start ----
-    output wire [PAW-1:0]        q_pa,
-    output wire [1:0]            q_size,
+    // ---- disambiguation: a BIT PER ENTRY, maintained by ooo2_sq -----------------------
+    // The entries are exported so ooo2_sq can run the alias test where an ADDRESS ARRIVES
+    // and hand back a flop. Asking it at issue instead put `acc` at the head of a 36-level,
+    // 12x CARRY8 cone ending at the frontend's redirect register: WNS -1.698 ns at
+    // 166.67 MHz, 18 670 failing endpoints, all five worst paths sourced here. Moving the
+    // address off the TRANSLATE path -- this module's original purpose -- left the compare
+    // itself, and its whole downstream tail, exactly where they were.
+    output wire [NENT*PAW-1:0]   e_pa,
+    output wire [NENT*2-1:0]     e_size,
+    output wire [NENT*SQIB-1:0]  e_tag,
+    output wire [NENT-1:0]       e_av,
+    input  wire [NENT-1:0]       e_block,     // per entry: an older store aliases it
+    output wire                  x_block,     // ...and the candidate is one, held right now
+    // ...and the seqno of the entry being tested, for ooo2_sq's ld_older. That one is
+    // pointer arithmetic against head, with no address and no adder in it.
     output wire [SQIB-1:0]       q_tag,
-    input  wire                  q_block,
 
     // ---- early start: may the core collapse fill and access for the entry M holds? ----
     // Only for the CANDIDATE: every entry older than acc has already been sent, so a load
@@ -148,10 +159,19 @@ module ooo2_lq
    // exactly a load still in M. q_tag is sqt[acc], so this is also what licenses the core to
    // read ooo2_sq's ld_older as an answer about the load M is holding.
    assign b_ok = (b_idx == acc) & v[acc] & ~av[acc];
-   assign q_pa    = pa[acc];
-   assign q_size  = sz[acc];
    assign q_tag   = sqt[acc];
-   assign x_v     = cand_v & ~q_block;
+   genvar ge;
+   generate
+      for (ge = 0; ge < NENT; ge = ge + 1) begin : g_exp
+         assign e_pa  [ge*PAW  +: PAW ] = pa [ge];
+         assign e_size[ge*2    +: 2   ] = sz [ge];
+         assign e_tag [ge*SQIB +: SQIB] = sqt[ge];
+      end
+   endgenerate
+   assign e_av = av;
+   // ONE 4:1 mux from acc, into a flop-sourced bit. That is the whole point.
+   assign x_v     = cand_v & ~e_block[acc];
+   assign x_block = cand_v &  e_block[acc];   // instrumentation only
    assign x_idx   = acc;
    assign x_pa    = pa[acc];
    assign x_size  = sz[acc];

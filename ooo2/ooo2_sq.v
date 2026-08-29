@@ -33,7 +33,9 @@ module ooo2_sq
     parameter PAW   = 56,
     parameter PBITS = 9,
     parameter ROBB  = 4,
-    parameter NWB   = 3)
+    parameter NWB   = 3,
+    parameter LQN   = 4,               // ooo2_lq's NENT
+    parameter LQIB  = 2)               // ooo2_lq's IDXB
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -68,11 +70,30 @@ module ooo2_sq
     output wire                  c_unc,
     input  wire                  c_take,
 
-    // ---- load disambiguation ----
-    input  wire [PAW-1:0]        ld_addr,
-    input  wire [1:0]            ld_size,
+    // ---- load disambiguation: a CONFLICT MATRIX, not a compare at issue ----------------
+    // The alias test runs where an ADDRESS ARRIVES -- one arriving store against every
+    // queued load, or one arriving load against every live store -- and the answer is a
+    // FLOP. Issue reads a bit.
+    //
+    // WHY, and it is the whole reason this exists: computing it at issue put ooo2_lq's acc
+    // pointer at the head of a 36-level, 12x CARRY8 cone -- acc -> sz[acc] -> these 57-bit
+    // overlap compares -> ld_block -> x_v -> pt_start -> start_ok -> lsu_done -> m_done ->
+    // redirect -> the frontend's target register. WNS -1.698 ns at 166.67 MHz, 18 670
+    // failing endpoints, ALL FIVE worst paths sourced at acc. Moving the address off the
+    // TRANSLATE path (which is why ooo2_lq exists) left the compare and its whole downstream
+    // tail exactly where they were.
+    input  wire [LQN*PAW-1:0]    l_pa,        // the load queue's entries, flattened
+    input  wire [LQN*2-1:0]      l_size,
+    input  wire [LQN*IDXB-1:0]   l_tag,       // each load's captured store-seqno
+    input  wire [LQN-1:0]        l_av,
+    input  wire                  l_fill,      // a load's address arrives this cycle...
+    input  wire [LQIB-1:0]       l_fill_ix,   // ...into this entry
+    input  wire [PAW-1:0]        l_fill_pa,
+    input  wire [1:0]            l_fill_size,
+    output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
+    // ld_older keeps a query port: it is pointer arithmetic against head, no address and no
+    // adder, so it is not part of the cone above.
     input  wire [IDXB-1:0]       ld_tag,     // this load's captured store-seqno
-    output wire                  ld_block,
     output wire                  ld_older,   // an older store is live (aliasing or not) --
                                              // the load is REORDERED past it if it starts
 
@@ -126,21 +147,40 @@ module ooo2_sq
    // No wrap bit is needed: a store younger than the load can never commit before the load
    // retires, so the live region cannot cycle past the load's tag.
    localparam [PAW:0] SQ_ONE = {{PAW{1'b0}}, 1'b1};   // width-matched, not a bare literal
+
+   // Byte ranges [a, a + (1<<size)) overlap unless one ends at or before the other begins.
+   // ONE definition, used at both matrix-update sites (rule C1) -- a predicate written twice
+   // only has to be updated wrong once.
+   function ovl_ab;
+      input [PAW-1:0] la; input [1:0] ls;
+      input [PAW-1:0] sa; input [1:0] ss;
+      reg [PAW:0] l_lo, l_hi, s_lo, s_hi;
+      begin
+         l_lo = {1'b0, la};  l_hi = l_lo + (SQ_ONE << ls);
+         s_lo = {1'b0, sa};  s_hi = s_lo + (SQ_ONE << ss);
+         ovl_ab = ~((s_hi <= l_lo) | (l_hi <= s_lo));
+      end
+   endfunction
+
+   // conf[i][g]: load-queue entry i's bytes overlap store g's. Written only when one of the
+   // two addresses arrives, so nothing about it is on the issue path.
+   reg [NENT-1:0] conf [0:LQN-1];
+   integer        li;
+
    wire [IDXB-1:0] ld_dist = ld_tag - head;
-   wire [NENT-1:0] ovl;
-   genvar g;
+   genvar gl, gs;
    generate
-      for (g = 0; g < NENT; g = g + 1) begin : g_ovl
-         wire [IDXB-1:0] g_dist = g[IDXB-1:0] - head;
-         wire         older = v[g] & (g_dist < ld_dist);
-         wire [PAW:0] s_lo = {1'b0, addr[g]};
-         wire [PAW:0] s_hi = s_lo + (SQ_ONE << sz[g]);
-         wire [PAW:0] l_lo = {1'b0, ld_addr};
-         wire [PAW:0] l_hi = l_lo + (SQ_ONE << ld_size);
-         assign ovl[g] = older & (~av[g] | ~((s_hi <= l_lo) | (l_hi <= s_lo)));
+      for (gl = 0; gl < LQN; gl = gl + 1) begin : g_lblk
+         wire [IDXB-1:0] l_dist = l_tag[gl*IDXB +: IDXB] - head;
+         wire [NENT-1:0] oldm;
+         for (gs = 0; gs < NENT; gs = gs + 1) begin : g_om
+            assign oldm[gs] = v[gs] & ((gs[IDXB-1:0] - head) < l_dist);
+         end
+         // An older store whose address has not arrived cannot be compared, so it blocks --
+         // conservative and correct, and the same rule the compare form used.
+         assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | ~av)));
       end
    endgenerate
-   assign ld_block = |ovl;
    // Older-and-live, regardless of overlap. ld_block is the subset that actually conflicts,
    // so `ld_older & ~ld_block` at a load's start is precisely a load reordered past an
    // uncommitted store -- the thing this whole structure exists to allow.
@@ -157,7 +197,22 @@ module ooo2_sq
       if (reset | flush) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}};
          head <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}}; cnt <= {(IDXB+1){1'b0}};
+         for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
       end else begin
+         // A STORE's address arrives: its COLUMN, against every queued load.
+         if (a_v)
+            for (li = 0; li < LQN; li = li + 1)
+               conf[li][a_idx] <= l_av[li]
+                                & ovl_ab(l_pa[li*PAW +: PAW], l_size[li*2 +: 2], a_addr, a_size);
+         // A LOAD's address arrives: its ROW, against every live store. Written second, so
+         // it wins the one cell both updates can touch -- and it must, because the column
+         // update above would compare that cell against addr[a_idx], which is not written
+         // until this same edge. The a_v arm here forwards the arriving address instead.
+         if (l_fill)
+            for (k = 0; k < NENT; k = k + 1)
+               conf[l_fill_ix][k] <= (a_v && (k[IDXB-1:0] == a_idx))
+                                   ? ovl_ab(l_fill_pa, l_fill_size, a_addr, a_size)
+                                   : (av[k] & ovl_ab(l_fill_pa, l_fill_size, addr[k], sz[k]));
          // commit the head
          if (c_v & c_take) begin
             v[head] <= 1'b0; av[head] <= 1'b0; dv[head] <= 1'b0;
