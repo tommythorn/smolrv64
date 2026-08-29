@@ -56,14 +56,17 @@
 // the resolve key. No payload bits.
 module ooo2_predictor
   #(parameter PCW   = 64,
-    parameter BTBB  = 8,             // log2 BTB entries
+    parameter BTBB  = 12,            // log2 BTB entries -- 4096
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
     parameter GHL   = 12,            // global history length (dormant until Phase 1)
     parameter RASB  = 3,             // log2 RAS entries
     parameter YBITS = 10,            // in the header so PDW can be a port width
     parameter YTAGW = 8,
-    parameter PDW   = (1+2+BTBB+TAGW) + (1+2+YBITS+YTAGW))
+    // Carried predict details. INDEPENDENT OF BTBB, TAGW and YTAGW -- see `training`:
+    // an index or a PC-only tag is recomputed at resolve from res_pc instead of riding
+    // the pipeline. Only yidx must be carried, because it folds the PREDICT-time GHR.
+    parameter PDW   = (1+2) + (1+2+YBITS))
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
@@ -98,6 +101,10 @@ module ooo2_predictor
     input  wire                 res_taken,
     input  wire [PDW-1:0]       res_pdet,     // the RESOLVING instruction's own details
     input  wire [PCW-1:0]       res_tgt,     // taken-target (train the BTB)
+    input  wire [PCW-1:0]       res_pc,      // the resolving CTI's OWN pc. Its index and its
+                                             // PC-only tags are recomputed from this rather
+                                             // than carried -- see `training`.
+
     input  wire                 res_rep);    // this resolve caused this cycle's rollback ->
                                              // repair the restored GHR's bit 0 (plan B2)
 
@@ -275,16 +282,24 @@ module ooo2_predictor
    // res_pdet. Carrying it beats a side ring indexed by a tag: there is no tag to
    // allocate, nothing to pin against reuse, and no depth to get wrong when the
    // frontend gains a queue.
-   //   bimodal [BIMW-1:0] = {hit,ctr,bidx,btag}  ·  yags [PDW-1 -: YW] = {yhit,yctr,yidx,ytag}
-   localparam BIMW = 1 + 2 + BTBB + TAGW;
-   localparam YW   = 1 + 2 + YBITS + YTAGW;
+   //   bimodal [BIMW-1:0] = {hit,ctr}  ·  yags [PDW-1 -: YW] = {yhit,yctr,yidx}
+   //
+   // WHAT IS *NOT* CARRIED, and why the payload got smaller as the BTB got 16x bigger:
+   // bidx, btag and ytagf are pure functions of the branch's own PC, and the pipeline
+   // already carries that PC (ooo2_core's d_pc -> m_pc). Carrying their results too was
+   // 28 redundant bits in every F/X queue entry and every payload slot, and it coupled
+   // PDW to BTBB -- so growing the BTB used to widen the whole pipeline. Recomputing
+   // them at resolve costs one slice and two XORs off a registered PC.
+   //   yidx is the exception and stays: it folds the GHR AS IT WAS AT PREDICT TIME,
+   // which is speculative state no later cycle can reconstruct.
+   localparam BIMW = 1 + 2;
+   localparam YW   = 1 + 2 + YBITS;
    // COMBINATIONAL, not registered: every term is a fetch-time value of the bundle being
    // presented right now, so the consumer latches it in the SAME cycle as `fire` and gets
    // this bundle's details. src/predictor.v registers it into pdet_f and writes the ring a
    // cycle later at `create`, which is why that version needs the lag; carrying the payload
    // removes both the lag and the ring.
-   assign pd_fetch = {p_yhit, yctr_eff, yidx(base_pc, ghr), ytagf(base_pc),
-                      hit,    ctr_eff,  bidx(base_pc),      btag(base_pc)};
+   assign pd_fetch = {p_yhit, yctr_eff, yidx(base_pc, ghr), hit, ctr_eff};
    wire [1:0]    ctr_eff  = hit    ? q_type[1:0]  : 2'b01;  // miss -> install weakly-not-taken base
    wire [1:0]    yctr_eff = p_yhit ? ycorr_q[1:0] : 2'b01;  // p_yhit, not yhit: pd_fetch is the
                                                             // CTI cone's payload, unchanged
@@ -331,8 +346,10 @@ module ooo2_predictor
    wire [PDW-1:0]  td      = res_pdet;   // carried with the instruction, not looked up
    wire            t_hit   = td[BIMW-1];
    wire [1:0]      t_ctr   = td[BIMW-2 -: 2];
-   wire [BTBB-1:0] t_idx   = td[TAGW +: BTBB];
-   wire [TAGW-1:0] t_tag   = td[TAGW-1:0];
+   // RECOMPUTED, not carried. res_pc is the resolving CTI's own PC, and bidx/btag are
+   // pure functions of it -- the same functions the predict side applied to base_pc.
+   wire [BTBB-1:0] t_idx   = bidx(res_pc);
+   wire [TAGW-1:0] t_tag   = btag(res_pc);
    wire [1:0]      t_base  = t_hit ? t_ctr : (res_taken ? 2'b10 : 2'b01);  // miss -> install weak
    wire [1:0]      t_nudge = res_taken ? ((t_base == 2'b11) ? 2'b11 : t_base + 1'b1)
                                        : ((t_base == 2'b00) ? 2'b00 : t_base - 1'b1);
@@ -345,8 +362,8 @@ module ooo2_predictor
    wire [YW-1:0]    yd     = td[PDW-1 -: YW];
    wire             yc_hit = yd[YW-1];
    wire [1:0]       yc_ctr = yd[YW-2 -: 2];
-   wire [YBITS-1:0] yc_idx = yd[YTAGW +: YBITS];
-   wire [YTAGW-1:0] yc_tag = yd[YTAGW-1:0];
+   wire [YBITS-1:0] yc_idx = yd[YBITS-1:0];      // carried: folds the predict-time GHR
+   wire [YTAGW-1:0] yc_tag = ytagf(res_pc);      // recomputed: PC-only
    wire [1:0]       y_base = yc_hit ? yc_ctr : (res_taken ? 2'b10 : 2'b01);
    wire [1:0]       y_nudge= res_taken ? ((y_base == 2'b11) ? 2'b11 : y_base + 1'b1)
                                        : ((y_base == 2'b00) ? 2'b00 : y_base - 1'b1);

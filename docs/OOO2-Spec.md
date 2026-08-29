@@ -185,7 +185,7 @@ Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
 | structure | size | organisation | storage |
 |---|---|---|---|
-| BTB | 256 entries (`BTBB`=8) | 12-bit tag + 3-bit type + 38-bit target | BRAM, sync read |
+| BTB | **4096 entries** (`BTBB`=12) | 12-bit tag + 3-bit type + 38-bit target | BRAM, sync read |
 | YAGS correector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | BRAM, sync read |
 | GHR | 12 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
@@ -665,7 +665,7 @@ at `NW=1`, and it is now the only reason a cycle has to be yielded at all.
 
 | array | module | shape | width | bits | storage |
 |---|---|---|---|---|---|
-| `btb` | `ooo2_predictor` | 256 | 53 | 13 568 | **BRAM**, sync read |
+| `btb` | `ooo2_predictor` | **4096** | 53 | 217 088 | **BRAM**, sync read (6x RAMB36) |
 | `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | **BRAM**, sync read |
 | `ras` | `ooo2_predictor` | 8 | 64 | 512 | flops |
 | `lenp` | `src/fetch` | 1024 | 1 | 1 024 | LUTRAM |
@@ -1227,10 +1227,33 @@ reading of the raw traces suggested deep call nesting overflowing the 8-entry st
 was an artifact of an unbalanced trace window (more calls than returns visible) and the
 replay does not support it. `RASB`=3 stays.
 
-**A 1024-entry BTB halves html5's taken-miss rate** (3.6% -> 1.8% of all instructions) and
-cuts text-rendering's by 45%. It costs about one RAMB18 — block RAM is at 24% of 480 tiles
-— and it does not touch the critical path, because `apc` is register-only (rule I6) and the
-read already ends at a BRAM address pin. This is the cheapest frontend win on the list.
+**DONE: the BTB is now 4096 entries** (`BTBB`=12, 6x RAMB36 of 480 tiles). taken-miss/insn
+across the depths, and note that the traces CANNOT judge 4096 — a 19k-instruction window
+holds 286-884 distinct branch sites, so a 4096-entry table is 5-14x the observed working
+set and what it measures there is residual tag aliasing, not capacity. The real working set
+over billions of instructions is larger, so this understates the depth:
+
+| | 256 | 1024 | 2048 | **4096** |
+|---|---:|---:|---:|---:|
+| html5 | 3.6% | 1.8% | 1.2% | **1.1%** |
+| text-rendering | 5.6% | 3.1% | 2.5% | **2.1%** |
+| clang | 7.0% | 6.0% | 5.5% | **5.2%** |
+| sqlite | 4.0% | 3.1% | 3.0% | **2.9%** |
+
+Measured on the tiny128 Linux boot (not a branch-heavy workload): **+0.63% retires** at 40 M
+cycles, 10,444,328 -> 10,510,154, no divergence.
+
+**UltraRAM was considered and rejected**, though the part has 64 unused blocks and one
+URAM288 is exactly 4096x72. Two disqualifiers. The BTB's output register is the START of
+the prediction loop (`btb_raw` -> tag compare -> `apred_v`/`pred_tgt` -> `apc` -> address
+pin), which must close in one cycle; URAM's clock-to-out is worse than BRAM's and its
+remedy is the optional output pipeline register, which adds a cycle and breaks ahead
+prediction outright — `apc` is a ONE-cycle-ahead guess. And UltraRAM has no initialisation:
+contents are undefined after configuration, where this BTB deliberately has no valid bit and
+relies on configuration INIT to start every entry untagged. Hardware would boot with random
+tags where simulation boots with zeros. Harmless in itself (a bogus entry is a mispredict
+the exec-side compare catches) but a sim/hardware divergence in exactly the structure whose
+safety argument is that the two agree. BRAM costs 6 tiles of 480; URAM saves five of them.
 
 **Clang is the exception and the reason to check the split.** It is 41% COLD: its branch
 working set is genuinely larger than any affordable BTB, so 256 -> 1024 buys it 9 points

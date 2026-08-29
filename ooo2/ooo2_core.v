@@ -30,7 +30,7 @@ module ooo2_core
     parameter SEQW = 8,
     parameter HW   = `OOO2_HW,
     parameter AW   = 64,
-    parameter PDW   = 44,          // ooo2_predictor predict-detail width (BIMW+YW)
+    parameter PDW   = 16,          // ooo2_predictor predict-detail width (BIMW+YW)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,
@@ -153,6 +153,10 @@ module ooo2_core
    reg                      res_taken_q, res_rep_q;
    reg [PDW-1:0]            res_pdet_q;
    reg [PCW-1:0]            res_tgt_q;
+   reg [PCW-1:0]            res_pc_q;     // the resolving CTI's own PC. u_bp recomputes its
+                                          // BTB index and its PC-only tags from this instead
+                                          // of carrying them, which is what keeps PDW at 16
+                                          // while the BTB holds 4096 entries.
    initial begin res_v_q = 1'b0; res_rep_q = 1'b0; end
    always @(posedge clk) begin
       if (reset) begin res_v_q <= 1'b0; res_rep_q <= 1'b0; end
@@ -163,6 +167,7 @@ module ooo2_core
       res_taken_q <= res_taken;
       res_pdet_q  <= m_pdet;
       res_tgt_q   <= res_tgt;
+      res_pc_q    <= m_pc;
    end
 
    // ---- FMAX: the frontend sees the redirect one cycle late ----------------------
@@ -204,7 +209,8 @@ module ooo2_core
       .imem_avail(imem_avail_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
-      .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q), .res_rep(res_rep_q),
+      .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),
+      .res_pc(res_pc_q), .res_rep(res_rep_q),
       .d_valid(d_valid), .d_pc(d_pc), .d_insn(d_insn), .d_rvc(d_rvc), .d_seq(d_seq),
       .d_pdet(d_pdet), .d_pred_npc(d_pred_npc),
       .d_rd(d_rd), .d_rs1(d_rs1), .d_rs2(d_rs2), .d_rs3(d_rs3),

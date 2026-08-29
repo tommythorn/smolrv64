@@ -18,7 +18,7 @@ module ooo2_frontend
   #(parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
-    parameter PDW   = 44,            // ooo2_predictor's predict-detail width (BIMW+YW)
+    parameter PDW   = 16,            // ooo2_predictor's predict-detail width (BIMW+YW)
     // F/X queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -59,6 +59,7 @@ module ooo2_frontend
     input  wire                    res_ret,
     input  wire                    res_taken,
     input  wire [PDW-1:0]          res_pdet,        // resolving op's predict details (carried)
+    input  wire [PCW-1:0]          res_pc,          // resolving op's own PC (index/tag recompute)
     input  wire [PCW-1:0]          res_tgt,
     input  wire                    res_rep,
 
@@ -154,7 +155,8 @@ module ooo2_frontend
       .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
-      .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_rep(res_rep));
+      .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),
+      .res_rep(res_rep));
 
    // ------------------------------------------------------------- F/X queue
    // THE point of this module's shape. fetch's .ready() used to be `accept`, which is
