@@ -56,7 +56,13 @@
 // the resolve key. No payload bits.
 module ooo2_predictor
   #(parameter PCW   = 64,
-    parameter BTBB  = 12,            // log2 BTB entries -- 4096
+    // 1024, and the ceiling is rule I1, not the trace study. 4096 measured BETTER on the
+    // traces (html5 taken-miss 1.1% vs 1.8%) and +0.63% retires vs +0.50% -- and it cost
+    // 434 ps of probe_clk, because 4096x53 is 6 RAMB36 against 1024's 1 RAMB36 + 1 RAMB18.
+    // The five extra tiles were paid for by m_addr -> u_rs_i/i_ps* and i_ps2 -> u_prf,
+    // which were already sitting at exactly 0.000 -- congestion is charged to whatever is
+    // marginal, never to the block that grew. Raise this only with slack in hand.
+    parameter BTBB  = 10,            // log2 BTB entries
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
     parameter GHL   = 12,            // global history length (dormant until Phase 1)

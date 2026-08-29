@@ -185,7 +185,7 @@ Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
 | structure | size | organisation | storage |
 |---|---|---|---|
-| BTB | **4096 entries** (`BTBB`=12) | 12-bit tag + 3-bit type + 38-bit target | BRAM, sync read |
+| BTB | **1024 entries** (`BTBB`=10) | 12-bit tag + 3-bit type + 38-bit target | BRAM, sync read |
 | YAGS correector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | BRAM, sync read |
 | GHR | 12 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
@@ -665,7 +665,7 @@ at `NW=1`, and it is now the only reason a cycle has to be yielded at all.
 
 | array | module | shape | width | bits | storage |
 |---|---|---|---|---|---|
-| `btb` | `ooo2_predictor` | **4096** | 53 | 217 088 | **BRAM**, sync read (6x RAMB36) |
+| `btb` | `ooo2_predictor` | **1024** | 53 | 54 272 | **BRAM**, sync read (1x RAMB36 + 1x RAMB18) |
 | `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | **BRAM**, sync read |
 | `ras` | `ooo2_predictor` | 8 | 64 | 512 | flops |
 | `lenp` | `src/fetch` | 1024 | 1 | 1 024 | LUTRAM |
@@ -1227,7 +1227,9 @@ reading of the raw traces suggested deep call nesting overflowing the 8-entry st
 was an artifact of an unbalanced trace window (more calls than returns visible) and the
 replay does not support it. `RASB`=3 stays.
 
-**DONE: the BTB is now 4096 entries** (`BTBB`=12, 6x RAMB36 of 480 tiles). taken-miss/insn
+**DONE: the BTB is now 1024 entries** (`BTBB`=10). 4096 was built and REVERTED -- it is
+better on every workload metric and it costs 434 ps of `probe_clk`; see "What 4096 cost"
+below. taken-miss/insn
 across the depths, and note that the traces CANNOT judge 4096 — a 19k-instruction window
 holds 286-884 distinct branch sites, so a 4096-entry table is 5-14x the observed working
 set and what it measures there is residual tag aliasing, not capacity. The real working set
@@ -1240,8 +1242,34 @@ over billions of instructions is larger, so this understates the depth:
 | clang | 7.0% | 6.0% | 5.5% | **5.2%** |
 | sqlite | 4.0% | 3.1% | 3.0% | **2.9%** |
 
-Measured on the tiny128 Linux boot (not a branch-heavy workload): **+0.63% retires** at 40 M
-cycles, 10,444,328 -> 10,510,154, no divergence.
+Measured on the tiny128 Linux boot (not a branch-heavy workload), 40 M cycles, no
+divergence at any depth:
+
+| `BTBB` | entries | retires | vs 256 | BRAM |
+|---|---:|---:|---:|---|
+| 8 | 256 | 10 444 328 | -- | 1x RAMB36 |
+| **10** | **1024** | **10 496 381** | **+0.50%** | 1x RAMB36 + 1x RAMB18 |
+| 12 | 4096 | 10 510 154 | +0.63% | **6x RAMB36** |
+
+#### What 4096 cost — rule I1, and it was NOT the address fanout
+
+Built at `7926354` and reverted. `probe_clk` **-0.434 ns, 880 failing endpoints**, against
+**+0.000** for the same RTL minus this change. Reproduced under a second placer directive
+(`AltSpreadLogic_medium`: -0.408), so it is not placement noise.
+
+**No BTB, `apc` or predictor path appears anywhere in the failing set.** The prediction that
+6 BRAMs would put ~72 pins on `apc[12:1]` and cost route on that path was simply wrong. What
+failed is `m_addr -> u_rs_i/i_ps*` and `i_ps2 -> u_prf/mem_ie` — the scheduler wakeup and
+the PRF write, 74% route, and both were already sitting at exactly 0.000.
+
+That is rule I1 verbatim: *area anywhere buys congestion everywhere, and congestion is paid
+in slack by whatever is already marginal, not by the block that grew.* I1's own worked
+example is `u_prf/mem_ie`, which is one of the two endpoints that failed here, and its
+recorded magnitude — 465 ps for deleting unreachable memory — is the same order as the 434
+ps this cost for adding five reachable tiles.
+
+**The BTB is not depth-limited by its own timing; it is limited by the slack the rest of the
+design has to lend it.** Revisit 2048/4096 once the `m_addr -> scheduler` family has margin.
 
 **UltraRAM was considered and rejected**, though the part has 64 unused blocks and one
 URAM288 is exactly 4096x72. Two disqualifiers. The BTB's output register is the START of
