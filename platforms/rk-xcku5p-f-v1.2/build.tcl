@@ -180,6 +180,26 @@ proc configure_ooo2_sources {repo_root src_dir ooo2_dir} {
     update_compile_order -fileset $fileset
 }
 
+# Helper: put back IP output products that are not in git.
+# Only the .xci is tracked for ddr4_0 -- its generated HDL and, crucially, its
+# out-of-context checkpoint are not.  After a fresh clone or a `git clean -fdx` the
+# checkpoint is simply gone, `read_ip` has nothing to black-box against, and synthesis
+# dies two seconds into elaboration with "module 'ddr4_0' not found" -- with nothing in
+# the flow offering to regenerate it.  The <ip>.dcp in the IP's output directory is the
+# artifact that matters, so its absence is the test; a complete IP costs nothing here.
+proc ensure_ip_products {} {
+    foreach ip [get_ips -quiet] {
+        set dcp [file join [get_property IP_OUTPUT_DIR $ip] $ip.dcp]
+        if {[file exists $dcp]} continue
+        puts "  IP $ip: output products missing ($dcp) -- regenerating."
+        generate_target {instantiation_template synthesis} $ip
+        synth_ip $ip
+        if {![file exists $dcp]} {
+            error "IP $ip: synth_ip did not produce $dcp"
+        }
+    }
+}
+
 # Helper: launch a run only if it needs work
 proc run_if_needed {run_id to_step jobs} {
     global force
@@ -481,6 +501,7 @@ if {$step in {synth impl bit}} {
     # part of the bitstream even when the RTL text is unchanged. Vivado's
     # auto-incremental synthesis can reuse BRAM INIT values from the reference
     # checkpoint and silently preserve an older monitor image.
+    ensure_ip_products
     set_property AUTO_INCREMENTAL_CHECKPOINT 0 [get_runs synth_1]
     if {[lsearch [list_property [get_runs synth_1]] INCREMENTAL_CHECKPOINT] >= 0} {
         set_property INCREMENTAL_CHECKPOINT "" [get_runs synth_1]

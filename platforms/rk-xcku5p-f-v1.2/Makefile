@@ -169,9 +169,13 @@ load:
 
 $(BIT): bit
 
-# Wipe all generated outputs (keeps sources and .xpr)
+# Wipe all generated outputs (keeps sources and .xpr).  This must leave exactly what
+# `git clean -fdx` leaves -- the .gitignore beside it lists the same paths -- so that
+# the two ways of getting to a clean tree agree and `make` can rebuild from either.
 clean:
-	rm -rf $(PROJECT).cache $(PROJECT).hw $(RUNS_DIR) \
+	rm -rf $(PROJECT).cache $(PROJECT).gen $(PROJECT).hw $(PROJECT).sim $(RUNS_DIR) \
+	       ddr4_0_ex.gen ddr4_0_ex.srcs \
+	       $(PROJECT).srcs/utils_1 $(PROJECT).srcs/sources_1/ip/ila_* \
 	       .Xil *.jou *.log
 
 connect:
