@@ -572,9 +572,19 @@ if {$step in {impl bit}} {
     #   ExtraTimingOpt         +0.025 MET      (the previous default)
     #   ExtraPostPlacementOpt  -0.027 FAIL
     # An 81 ps spread that STRADDLES ZERO on unchanged source.  Two consequences:
-    # Explore is free margin and is now the default; and a single build's WNS cannot judge
+    # Explore was free margin and was the default; and a single build's WNS cannot judge
     # a change smaller than ~80 ps -- compare against two directives, not one number.
-    set place_directive Explore
+    #
+    # RE-MEASURED 2026-09-01 on the tree that closes and boots (b56f3a5e + b9dbdd0 + 42508cf
+    # + 69f1ac6 + the gate repairs), and the ordering INVERTED -- so the 81 ps spread above
+    # is a property of one RTL state, not a ranking to carry forward:
+    #   AltSpreadLogic_medium  +0.024 MET      <- default
+    #   Explore                -0.180 FAIL, and -0.113 after `make physopt`
+    # 204 ps between them on identical source, which is inside the 81-400 ps spread rule I2
+    # warns about and larger than the whole margin.  The directive is therefore part of the
+    # shipping configuration, not a sweep knob: a build that meets timing only when someone
+    # remembers to pass PLACE_DIRECTIVE is the same trap OOO2_HW and PROBE_CLK_DIV8 were.
+    set place_directive AltSpreadLogic_medium
     set route_directive AggressiveExplore
     if {[info exists env(PLACE_DIRECTIVE)] && $env(PLACE_DIRECTIVE) ne ""} {
         set place_directive $env(PLACE_DIRECTIVE)
