@@ -71,8 +71,11 @@ lint_top ooo2 rv_soc_top $(ooo2_sources)
 # every clock. It said 501253 from the 66.67 MHz era until 2026-08-19, so every FPGA run
 # from the 111 MHz milestone on (the GB5 run included) ran 0.302% fast. The DTS comment
 # said "MUST track SCALE_DIV" the whole time; nothing checked it. Now something does.
-# DIV8=72 is the shipping clock; pass a different one when that changes.
-../tools/check-dts-timebase.py 72 ../workloads/ubuntu/ubuntu-nfs.dts \
+# DIV8=48 (166.67 MHz) is the shipping clock; pass a different one when that changes. It was
+# 72 here while the DTBs had already been regenerated for 48, so the gate was red against a
+# clock nothing builds -- and 42508cf0 had meanwhile dropped PROBE_CLK_DIV8 from the Vivado
+# project entirely, so the bitstreams were being built at the RTL default 120 (66.67 MHz).
+../tools/check-dts-timebase.py 48 ../workloads/ubuntu/ubuntu-nfs.dts \
                                  ../workloads/gb5/gb5-fpga.dts || fail=1
 
 [ $fail -ne 0 ] && exit 1
