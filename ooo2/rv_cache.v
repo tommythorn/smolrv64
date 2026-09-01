@@ -357,7 +357,13 @@ module rv_cache #(
    // clo/pair_e/pair_o but from the request inputs, so the banks can be
    // addressed in the SAME cycle the request is accepted -- data then lands at
    // S_CHECK with S_LOOK skipped entirely (the 2-cycle hit path).
-   wire [PAW-1:0]  a_live    = do_replay ? f_addr : (rd_req ? rd_addr : wr_addr);
+   // SELECTED BY f_replay, A REGISTER -- not by do_replay, which is
+   // acc_slot(st, inv_go, inv_busy, fill_banks) & f_replay and puts that whole decode on
+   // the select of a mux that feeds a BRAM ADDRESS pin (docs/rtl-rules.md I6). The two
+   // differ only when a replay is owed and the slot is busy, and in those cycles nothing
+   // consumes this address: the drive below is overridden by the states that need it, and
+   // the FSM reads bk_rddata only in the cycle after it accepted.
+   wire [PAW-1:0]  a_live    = f_replay ? f_addr : (rd_req ? rd_addr : wr_addr);
    wire [CHB-1:0]  a_clo     = a_live[OFFB-1 -: CHB];
    wire [CHB-1:0]  a_chunk_e = a_clo[0] ? (a_clo + 1'b1) : a_clo;
    wire [CHB-1:0]  a_chunk_o = a_clo[0] ? a_clo : (a_clo + 1'b1);
@@ -415,16 +421,21 @@ module rv_cache #(
          bk_wrdata[b] = {BANKW{1'b0}};
       end
 
-      // accept-cycle read: address the banks from the LIVE request (way_idx of the
-      // full address == way_idx of its line: the index/tag bits exclude the offset).
-      // No invalidate guard needed: if the FSM takes the inv arm instead, the read
-      // data is simply never consumed.
-      if (accept || do_replay) begin
-         bk_rd_drv = 1'b1;
-         for (w2=0; w2<WAYS; w2=w2+1) begin
-            bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
-            bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
-         end
+      // THE LOOKUP'S READ ADDRESS IS PRESENTED UNCONDITIONALLY, from the live request.
+      // It reaches a BRAM ADDRESS pin, so nothing that decodes FSM state or arbitration
+      // belongs on it (docs/rtl-rules.md I6, the rule 0b53c4b paid for) -- and `accept`
+      // carries acc_slot, which is st, inv_go, inv_busy and a five-way fst decode. An
+      // address the FSM does not consume is free: bk_rddata is read only in the cycle
+      // after an accept, and every state that needs a DIFFERENT address drives it below,
+      // later in this block, where it wins. That is the same argument the invalidate arm
+      // already relied on, applied to the whole condition rather than half of it.
+      // ...but the COLLISION CHECK below still means "a read that will be consumed", because
+      // a BRAM collision corrupts the read, never the write: an address presented and
+      // discarded cannot hurt anything, and flagging it would be a false alarm.
+      bk_rd_drv = accept | do_replay;
+      for (w2=0; w2<WAYS; w2=w2+1) begin
+         bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
+         bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
       end
       // window read: present line's chunks so data is valid next cycle (both ways read)
       // (the span phase-1 lookup, the post-fill re-lookup, and a held stage B re-reading its
