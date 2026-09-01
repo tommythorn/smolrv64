@@ -860,6 +860,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] lq_l_prd;
    wire [5:0]          lq_l_rd;
    wire [ROB_IDXB-1:0] lq_l_rob;
+   wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;
    wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
    wire d_ld_alloc = rn_valid & d_ld_nb;
@@ -879,7 +880,7 @@ module ooo2_core
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
-      .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob),
+      .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
       .occupancy(lq_occ), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
@@ -1860,14 +1861,19 @@ module ooo2_core
          cs_mkind[sq_c_rob] <= lsu_cos_kind;
          cs_mpa[sq_c_rob]   <= lsu_cos_pa;
       end
-      // lsu_cos_* are latched AT start_ok, so they cannot be sampled during the dispatch
-      // cycle -- doing so reported the PREVIOUS access (a store) as a load's memory effect.
-      // They are still this load's values when it lands: the LSU is single-outstanding, so
-      // nothing else can have started in between.
+      // A LANDING LOAD'S EFFECT COMES FROM THE ENTRY THAT OWNS IT. This read lsu_cos_*,
+      // justified as "they are still this load's values when it lands: the LSU is
+      // single-outstanding, so nothing else can have started in between". b9dbdd0 starts a
+      // queued load's access in its TRANSLATE pass, so a store does start in between, and the
+      // load then committed carrying the store's kind -- with the store's PA too, which looked
+      // right precisely when it was most wrong, because a store the load reads back has the
+      // same address. docs/rtl-rules.md: matched by a tag the requester allocated, never by
+      // "only one in flight". The load queue entry IS that tag, and it holds the load's own
+      // PA; the kind is a load by construction, because only loads are queued here.
       if (ld_land) begin
          cs_val[lq_l_rob]   <= lsu_rd_val;
-         cs_mkind[lq_l_rob] <= lsu_cos_kind;
-         cs_mpa[lq_l_rob]   <= lsu_cos_pa;
+         cs_mkind[lq_l_rob] <= 2'd1;
+         cs_mpa[lq_l_rob]   <= lq_l_pa;
       end
       if (fp_land) begin
          cs_val[ft_rob]   <= fp_wval;
@@ -1895,12 +1901,12 @@ module ooo2_core
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_sq ? lsu_cos_kind
-                          : cs_hit_ld ? lsu_cos_kind
+                          : cs_hit_ld ? 2'd1
                           : cs_hit_alu ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
    wire [55:0] cs_mpa_h   = cs_hit_sq ? lsu_cos_pa
-                          : cs_hit_ld ? lsu_cos_pa
+                          : cs_hit_ld ? lq_l_pa
                           : cs_hit_alu ? 56'd0
                           : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];

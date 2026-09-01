@@ -1,6 +1,6 @@
 #!/bin/bash
 # Linux-boot lockstep: the in-order SoC vs simmerv. Builds tb_ooo2_linux.v with
-# -DINO_COSIM (ooo2_core emits its probe_retire() stream) linked against
+# -DOOO2_COSIM (ooo2_core emits its probe_retire() stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, resets to OpenSBI (0x8000_0000)
 # with a1=DTB, and locksteps every retired instruction -- aborting on the first
 # divergence with a 320-deep DUT/REF history ring.
@@ -91,7 +91,7 @@ if [ "$need_build" = 1 ]; then
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
-      -DINO_COSIM -DINO_MEM_SIZE_LG2=$MEM_LG2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
+      -DOOO2_COSIM -DOOO2_MEM_SIZE_LG2=$MEM_LG2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_clinux -o tb_ooo2_clinux \

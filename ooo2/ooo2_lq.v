@@ -119,6 +119,11 @@ module ooo2_lq
     output wire [5:0]            l_rd,
     output wire                  l_rd_v,
     output wire [ROBB-1:0]       l_rob,
+    // The landing load's OWN address, for the cosim's memory-effect record. It has to come
+    // from the entry that owns the load: the shared lsu_cos_* pair is whatever access ran
+    // LAST, and since b9dbdd0 a queued load's access starts in its translate pass, a store
+    // can and does start between a load's start and its landing.
+    output wire [PAW-1:0]        l_pa,
 
     output wire [IDXB:0]         occupancy,
     input  wire                  flush);
@@ -183,6 +188,7 @@ module ooo2_lq
    assign l_rd   = rdn[l_idx];
    assign l_rd_v = rdv[l_idx];
    assign l_rob  = rob[l_idx];
+   assign l_pa   = pa[l_idx];
 
    always @(posedge clk) begin
       if (reset | flush) begin

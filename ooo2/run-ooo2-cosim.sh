@@ -1,6 +1,6 @@
 #!/bin/bash
 # Lockstep the in-order core against simmerv. Builds tb_ooo2_riscv.v with
-# -DINO_COSIM (ooo2_core emits a probe_retire() DPI stream) linked against
+# -DOOO2_COSIM (ooo2_core emits a probe_retire() DPI stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, then runs one riscv-test (or any
 # flat image), comparing every retired instruction to the golden model.
 #
@@ -46,7 +46,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
-      -DINO_COSIM ${VDEFS:-} \
+      -DOOO2_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_cosim -o tb_ooo2_cosim \
       ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
