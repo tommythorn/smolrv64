@@ -545,9 +545,14 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 
 ## 8. Load/store unit and MMU
 
-- **Blocking store/AMO, non-blocking load.** One memory access in flight: the D$ is a
-  single-request FSM (`rv_cache.v`, `S_IDLE` latches then `S_CHECK` returns), so exactly one
-  access is outstanding at a time.
+- **Blocking store/AMO, non-blocking load.** The D$ is no longer a single-request FSM.
+  `rv_cache.v` is a LOOKUP pipeline plus a FILL machine: a miss hands its request to the one
+  MSHR and leaves, so stage B empties and the next request resolves while the line is
+  fetched, and a missing read is answered by the fill machine (`F_ANS`) rather than replayed.
+  Two requests can be in flight -- one in the pipeline, one in the MSHR. A store, an NC
+  access, a CBO and a line-spanning access are SOLO: each shares state with the fill machine,
+  so it is taken only while that machine is idle. A plain cached read shares none of it,
+  which is exactly why it is the one allowed to overlap a fill.
 - **A plain store and a plain load leave M without touching memory.** Their M pass only
   TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
@@ -1170,9 +1175,12 @@ measured that cheaply.)
 2. **Load queue -- loads issue and access out of order.** Lets element *i+1* begin while
    *i*'s chain runs.
 3. **Multiple outstanding loads.** `ldbench` measures 4.00 cyc/load throughput against 5.00
-   latency, an overlap of only 1.24x; Camera does 2 loads per element. The D$ is the floor
-   here: it is a single-request FSM, so `S_CHECK` must self-loop before more outstanding
-   loads in the LSU can buy anything.
+   latency, an overlap of only 1.24x; Camera does 2 loads per element. The D$ is no longer
+   the floor: the port can hold two requests in flight. The gain from that alone is +0.32%
+   (14,610,812 -> 14,657,366 retires at 60 M cycles) because the D$'s clients are the LSU and
+   two page-table walkers, and when the LSU misses it is blocked on that miss anyway -- only
+   an independent walk overlaps. **The next gain needs a CLIENT that can hold two requests
+   in flight**, which is a multiple-outstanding LSU, not more cache work.
 4. **FP latency.** 16 of the 21-cycle chain is `fmuls` + `fadds` at 8 cycles each. Real, but
    it is an fpnew `PIPE_REGS` / Fmax trade, not free.
 5. **Superscalar.** 7 instructions per element is a 7-cycle floor at `IW=1`, so this cannot
