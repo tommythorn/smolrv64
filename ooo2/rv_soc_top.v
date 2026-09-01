@@ -464,7 +464,20 @@ module rv_soc_top #(
    wire [63:0]  raw_rdata  = vio_rack     ? {virtio_rdata, virtio_rdata}  // 32b reg, valid at virtio_rvalid
                            : dev_rvalid_q ? dev_rdata_q
                            :                dc_rd_data;
-   wire         c_rd_req = (dmem_ren | c_rd_pend) & ~dc_rv_ok & ~is_dev_r;
+   // TWO QUESTIONS, and the one pending bit used to answer both. c_rd_want is "the cache
+   // still owes us an accept"; c_rd_pend is "a response is still coming". They coincide only
+   // while the cache serves one request at a time. With a pipelined port they do not: rd_valid
+   // is REGISTERED, so during the cycle a response is being produced the old request is still
+   // asserted, and a cache that can accept in that cycle takes it twice. Dropping on the ack
+   // is what makes the request unambiguous (docs/rtl-rules.md D5).
+   reg          c_rd_want;
+   wire         c_rd_req = (dmem_ren | c_rd_want) & ~is_dev_r;
+   wire         lsu_rd_ack;                       // this cycle's accept belonged to the LSU
+   always @(posedge clk) if (reset) c_rd_want<=1'b0;
+      else if (dmem_ren & ~lsu_rd_ack) c_rd_want<=1'b1;
+      else if (lsu_rd_ack)             c_rd_want<=1'b0;
+   // ...and c_rd_pend keeps its old meaning and its old users (c_st_ok below reads it as
+   // "a response is outstanding"), so it is still cleared by the response, not the accept.
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
       else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
@@ -507,6 +520,7 @@ module rv_soc_top #(
    rv_cache #(.PAW(64), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_ack(dc_rd_ack),
       .rd_resp_addr(dc_rd_resp_addr), .rd_tag(dcr_tag), .rd_resp_tag(dc_rd_resp_tag),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
@@ -756,7 +770,14 @@ module rv_soc_top #(
 
    // NOT gated on fi_stall: it is declared further down, and the adapter this replaces did not
    // gate on it either -- ic_inv_req clears the buffer, and imem_avail below holds fetch off.
-   wire         ic_rd_req  = (fb_wantv | fb_pend) & ~ic_rd_valid;
+   // Held until ACCEPTED, not until answered -- see c_rd_want on the D$ side for why the
+   // two are not the same question once the port can accept while it answers.
+   wire         ic_rd_ack;
+   reg          ic_sent;
+   always @(posedge clk) if (reset) ic_sent<=1'b0;
+      else if (ic_rd_ack)   ic_sent<=1'b1;
+      else if (ic_rd_valid) ic_sent<=1'b0;
+   wire         ic_rd_req  = (fb_wantv | fb_pend) & ~ic_sent & ~ic_rd_valid;
    wire [63:0]  ic_rd_addr = fb_pend ? fb_reqpa : fb_want;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
@@ -871,7 +892,7 @@ module rv_soc_top #(
       .rd_resp_addr(ic_rd_resp_addr),
       // The I$ still matches its response by address, in the fetch buffer (fb_al/fb_pa1/fb_pa).
       // Named and empty on purpose: converting it is a separate change with its own measurement.
-      .rd_tag(4'd0), .rd_resp_tag(),
+      .rd_ack(ic_rd_ack), .rd_tag(4'd0), .rd_resp_tag(),
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
@@ -891,7 +912,10 @@ module rv_soc_top #(
    wire [1:0]   pw_read   = {dptw_read, ptw_read};
    wire [2*56-1:0] pw_addr = {dptw_addr, ptw_addr};
    reg  [1:0]   pw_busy;
+   reg  [1:0]   pw_sent;      // ...and this walk's request has been accepted (see c_rd_want)
    reg  [1:0]   pw_rvalid;
+   wire [1:0]   pw_rq = pw_busy & ~pw_sent;    // still asking for the port
+   wire [1:0]   pw_ack;
    reg  [63:0]  pw_rdata [0:1];
    wire [1:0]   pw_match;
    wire [511:0] arb_rdata;
@@ -899,12 +923,17 @@ module rv_soc_top #(
    generate for (g=0; g<2; g=g+1) begin : ptw_adapt
       assign pw_match[g] = dc_rd_valid & pw_busy[g]
                          & (dc_rd_resp_tag == {(g ? 2'd2 : 2'd1), 2'b00});
-      always @(posedge clk) if (reset) begin pw_busy[g]<=1'b0; pw_rvalid[g]<=1'b0; end
+      assign pw_ack[g] = dc_rd_ack & ~c_rd_req & (g ? (~pw_rq[0] & pw_rq[1]) : pw_rq[0]);
+      always @(posedge clk) if (reset) begin pw_busy[g]<=1'b0; pw_sent[g]<=1'b0; pw_rvalid[g]<=1'b0; end
          else begin
             pw_rvalid[g] <= 1'b0;
-            if (pw_read[g] & ~pw_busy[g] & ~pw_rvalid[g]) pw_busy[g] <= 1'b1;  // new request
+            if (pw_read[g] & ~pw_busy[g] & ~pw_rvalid[g]) begin
+               pw_busy[g] <= 1'b1; pw_sent[g] <= 1'b0;                          // new request
+            end
+            if (pw_ack[g]) pw_sent[g] <= 1'b1;
             if (pw_match[g]) begin
                pw_busy[g]  <= 1'b0;
+               pw_sent[g]  <= 1'b0;
                pw_rvalid[g]<= 1'b1;
                pw_rdata[g] <= dc_rd_data;                  // the cache returns the 64-bit word
             end
@@ -918,14 +947,18 @@ module rv_soc_top #(
    // S_IDLE and self-serializes; each client holds its request until its response matches, so a
    // purely combinational mux suffices (no accept handshake). No deadlock: a load needing ldPTW
    // is itself blocked on translation and not issuing c_rd_req, so the walk gets the port.
-   assign dcr_req  = c_rd_req | (|pw_busy);
-   assign dcr_addr = c_rd_req    ? dmem_raddr
-                   : pw_busy[0]  ? {8'd0, pw_addr[0*56 +: 56]}
-                   :               {8'd0, pw_addr[1*56 +: 56]};
+   // Selected on "still ASKING", not "still outstanding": once the cache has accepted a
+   // walk's read, that walk must stop presenting it or a pipelined port serves it twice.
+   wire            dc_rd_ack;
+   assign lsu_rd_ack = dc_rd_ack & c_rd_req;
+   assign dcr_req  = c_rd_req | (|pw_rq);
+   assign dcr_addr = c_rd_req  ? dmem_raddr
+                   : pw_rq[0]  ? {8'd0, pw_addr[0*56 +: 56]}
+                   :             {8'd0, pw_addr[1*56 +: 56]};
    // ...and the tag that names the requester, selected by the SAME priority.
-   wire [DRTW-1:0] dcr_tag = c_rd_req   ? lsu_tag_req
-                           : pw_busy[0] ? {2'd1, 2'b00}
-                           :              {2'd2, 2'b00};
+   wire [DRTW-1:0] dcr_tag = c_rd_req ? lsu_tag_req
+                           : pw_rq[0] ? {2'd1, 2'b00}
+                           :            {2'd2, 2'b00};
 
    // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
    // PTW reads no longer reach the arbiter -- they go through the D$ (dcr_* above), and a D$ miss

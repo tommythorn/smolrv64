@@ -53,6 +53,11 @@ module rv_cache #(
    // ALLOCATION changes and nothing in here moves.
    input  wire [RTW-1:0]   rd_tag,
    output reg  [RTW-1:0]   rd_resp_tag,
+   // ACCEPTED THIS CYCLE. A pipelined port cannot use "hold the request until the response
+   // matches" -- rd_valid is registered, so during the cycle a response is being produced the
+   // old request is still asserted and would be taken twice. The requester drops (or advances)
+   // on this instead: a request is accepted or it is not (docs/rtl-rules.md D5).
+   output wire             rd_ack,
    input  wire             rd_uncached, // Svpbmt: this read is NC/IO -> don't keep the line (flush-around)
    input  wire             wr_req,
    input  wire [PAW-1:0]   wr_addr,
@@ -207,13 +212,18 @@ module rv_cache #(
    reg             w0_way;  reg [IDXB-1:0] w0_idx; // line0 hit way/idx (for the span store)
    reg [PAW-OFFB-1:0] wb_laddr;                    // L2 line address for the streamed writeback
 
+   // TWO machines now, not one. The LOOKUP pipeline resolves a request against the arrays;
+   // the FILL machine owns everything that takes an L2 round trip. They were one `case`, and
+   // that -- not the FSM's shape -- is why the cache served one request at a time: a miss put
+   // the machine in states from which the accept state was simply unreachable.
+   localparam [3:0]
+      S_IDLE=0, S_LOOK=1, S_CHECK=2, S_FIN=3, S_SPANW=4, S_NCI=5,
+      S_WTR=6, S_WTW=7, S_WTI=8, S_WTA=9;
    localparam [4:0]
-      S_IDLE=0, S_LOOK=1, S_CHECK=2, S_FIN=3, S_SPANW=4,
-      S_WB=5, S_WBR=6, S_WBW=7, S_WBI=8, S_WBA=9,
-      S_FILL=10, S_FILLW=11, S_FILLI=12,
-      S_WTR=13, S_WTW=14, S_WTI=15, S_WTA=16,
-      S_FLUSH=17, S_FLUSHR=18, S_FLUSHW=19, S_FLUSHI=20, S_FLUSHA=21,
-      S_NCI=22, S_ZFILL=23, S_PFI=24;
+      F_IDLE=0, F_WB=1, F_WBR=2, F_WBW=3, F_WBI=4, F_WBA=5,
+      F_FILL=6, F_FILLW=7, F_FILLI=8, F_ZFILL=9, F_PFI=10,
+      F_FLUSH=11, F_FLUSHR=12, F_FLUSHW=13, F_FLUSHI=14, F_FLUSHA=15,
+      F_ANS=16;
 
    // ---- next-line prefetch (PREFETCH!=0; the I$): single-line stream buffer ----
    // A demand fill of line L arms a prefetch of L+1. The prefetch runs as a
@@ -240,11 +250,84 @@ module rv_cache #(
    // only when a victim can never be dirty -- i.e. the I$.
    wire pf_hit = PF_EN & pf_val & (pf_addr == cur_line[PAW-1:OFFB])
                & ~r_uncached & ~r_cbo;
-   reg [4:0] st;
+   reg [3:0] st;         // lookup pipeline
+   reg [4:0] fst;        // fill machine
+
+   // THE STAGE-B WINDOW IS LIVE. The data banks are synchronous with NO read enable: what
+   // S_CHECK compares and shifts is whatever row was addressed at the PREVIOUS edge, and
+   // bk_rdaddr falls back to 0 in every cycle no state drives it. So a stage that stalls
+   // does not keep its window -- it gets row 0, or the victim chunk the writeback is
+   // streaming. This bit says the banks were addressed for the request now in S_CHECK;
+   // when it is low the stage re-reads through S_LOOK instead of delivering another line's
+   // bytes. fill_banks is in it because the fill machine's victim stream OWNS the read
+   // port for those cycles (that is why acc_slot excludes them) and wins the drive below.
+   reg b_live;
+
+   // ---- MSHR: the one request the fill machine owns -------------------------------------
+   // A miss hands its request over HERE and leaves the pipeline, which is the entire point of
+   // the split -- the pipeline is then free to resolve other requests while the line is
+   // fetched. The copy is what makes that safe: r_*/cur_line belong to whatever the pipeline
+   // is looking at now, and a fill outlives several of those.
+   //
+   // When the line lands the request is RE-ISSUED into the accept stage rather than answered
+   // from linebuf. Answering from linebuf would need a 512->64 variable byte shift, and this
+   // cache's whole datapath is built to avoid exactly that (see the header: "a minimal mux,
+   // no full-line read"). A replay costs one pipeline pass and no mux at all.
+   reg            f_v;                        // a fill is in progress
+   reg [PAW-1:0]  f_line;                     // the line being fetched (line1, for a span)
+   reg [PAW-1:0]  f_addr;                     // ...and the request to re-issue when it lands
+   reg [RTW-1:0]  f_tag;
+   reg            f_is_wr, f_uncached, f_cbo, f_cbo_zero, f_cbo_keep, f_span;
+   reg [WDW-1:0]  f_wdata;
+   reg [WRB-1:0]  f_wmask;
+   reg            f_replay;                   // re-issue f_* into the accept stage now
+   initial begin f_v = 1'b0; f_replay = 1'b0; end
+
+   // The fill machine's own view of the stream buffer. pf_hit below is the PIPELINE's
+   // question, asked about cur_line at the miss; this is the same question asked about the
+   // line the fill machine is actually fetching, and they are different lines.
+   wire pf_hit_f = PF_EN & pf_val & (pf_addr == f_line[PAW-1:OFFB]) & ~f_uncached & ~f_cbo;
+
+   // Answering a missing READ out of the landed line. The two chunks it needs are selected
+   // from linebuf into wlo/whi and then run through win_sh, the SAME network a hit uses --
+   // so this is one 8:1 chunk mux, not the 512->64 byte mux that answering from a line
+   // buffer normally costs. f_cnx wraps within the line: if the read sits in the last chunk
+   // it cannot span (a spanning request is never answered this way), so whi is unused.
+   wire [CHB-1:0]     f_clo    = f_addr[OFFB-1 -: CHB];
+   wire [CHB-1:0]     f_cnx    = f_clo + 1'b1;
+   wire [LZB-1:0]     f_bwc    = f_addr[LZB-1:0];
+   wire [2*BANKW-1:0] f_win_sh = {whi, wlo} >> (f_bwc*8);
+
+   // linebuf/pc/wb_* are ONE set of resources. The fill machine's writeback and the
+   // pipeline's write-through push both stream a line through them, so the two are mutually
+   // exclusive -- enforced by refusing to accept a write-through-shaped request while a fill
+   // is live, and asserted rather than trusted at the bottom of this file.
+   wire pipe_uses_lb = (st==S_WTR) | (st==S_WTW) | (st==S_WTI) | (st==S_WTA);
+
+   // THE ONE REASON STAGE B HOLDS, computed once and applied at both sites that need it --
+   // the S_CHECK arm that holds, and the perf event that must not count a cycle in which
+   // nothing resolved. A CBO reads only the status arrays, so it never holds for a window.
+   wire pipe_hold = (st == S_CHECK) & ~r_cbo
+                  & ( ~b_live
+                    | (hit & ~phase & ~r_span & ~r_is_wr & ~r_uncached & (fst == F_ANS))
+                    | (~hit & f_v) );
+
+   // THE FILL MACHINE'S WINDOW ON THE BANKS -- both directions. It takes the READ port to
+   // stream a victim out, and F_FILLI takes the WRITE port to install. The install used to be
+   // outside this: "an install is a bank WRITE and a lookup is a bank READ, on 1R1W banks, so
+   // they do not contend at all". That is true of the behavioural model and NOT of the BRAM it
+   // becomes -- a simple-dual-port block RAM reading the address port A is writing in the same
+   // cycle returns INVALID data, and this file already carries one scar from trusting a sim
+   // model of these banks over the hardware (smolrv64_sdpram's width guard). The cache's own
+   // invariant already said so and fires on a directed hit-under-miss at the last install
+   // cycle. So the pipeline sits out the install too: a few cycles inside a fill tens long.
+   wire fill_banks  = (fst==F_WBR) | (fst==F_WBW) | (fst==F_FLUSHR) | (fst==F_FLUSHW)
+                    | (fst==F_FILLI);
 
    integer b, bb, w2;
    reg [2*BANKW-1:0] nwin;
    reg [LZB:0]       pos;
+   reg               bk_rd_drv;      // a bank read address is being presented this cycle
 
    // ---- single-write-port staging for the status arrays (valm/dirm/vicm) ----
    // Scattered indexed NBA writes (plus a one-cycle full-clear loop) defeat RAM
@@ -274,15 +357,57 @@ module rv_cache #(
    // clo/pair_e/pair_o but from the request inputs, so the banks can be
    // addressed in the SAME cycle the request is accepted -- data then lands at
    // S_CHECK with S_LOOK skipped entirely (the 2-cycle hit path).
-   wire [PAW-1:0]  a_live    = rd_req ? rd_addr : wr_addr;
+   wire [PAW-1:0]  a_live    = do_replay ? f_addr : (rd_req ? rd_addr : wr_addr);
    wire [CHB-1:0]  a_clo     = a_live[OFFB-1 -: CHB];
    wire [CHB-1:0]  a_chunk_e = a_clo[0] ? (a_clo + 1'b1) : a_clo;
    wire [CHB-1:0]  a_chunk_o = a_clo[0] ? a_clo : (a_clo + 1'b1);
    wire [PAIRB-1:0] a_pair_e = a_chunk_e[CHB-1:1];
    wire [PAIRB-1:0] a_pair_o = a_chunk_o[CHB-1:1];
 
+   // ---- acceptance ------------------------------------------------------------------
+   // The pipeline takes a request when it is empty and nothing older owns the slot. A
+   // completed fill's REPLAY wins it outright: that request is older than anything at the
+   // door, and the pipeline was deliberately held empty for it.
+   //
+   // SOLO requests. A store, an NC access, a CBO and a line-spanning access all share state
+   // with the fill machine -- linebuf/pc/wb_* for the write-through push, and the pipeline
+   // itself for a replay if they miss -- so they are taken only when the fill machine is
+   // idle, and while the MSHR holds one, nothing at all is taken. A plain cached read shares
+   // none of it, which is exactly why it is the one that gets to overlap a fill.
+   // AN INVALIDATE STOPS THE DOOR, NOT THE REPLAY, and those are two different gates.
+   //
+   // The replay is a request that ALREADY MISSED and whose line is ALREADY FETCHED; f_v is
+   // cleared by nothing else. Blocking it behind an invalidate closes a cycle: inv_pend
+   // holds off the replay, f_v holds off the scan (F_IDLE waits for !f_v), and inv_pend is
+   // cleared only by the scan starting. Every solo miss -- a store, an NC access, a CBO, and
+   // the line-SPANNING fetch the I$ does all day -- opens that window for the length of a
+   // fill, and a fence.i landing in it wedges the cache for good: inv_busy stuck high, the
+   // fence.i FSM waiting on it forever, imem_avail nailed to 0, the core stopped. It needs
+   // no MMU and no second client, which is why it kills the board before Linux is entered.
+   // So `do_replay` asks only whether stage A is free.
+   //
+   // ~inv_busy on the DOOR, and not just ~inv_go. THE FLUSH IS A FILL-MACHINE JOB NOW: `st`
+   // used to sit in the flush states, so "st == S_IDLE" kept requests out for the whole scan
+   // by itself. Now the pipeline is idle throughout it, inv_pend clears the cycle the scan
+   // starts, and a request taken mid-scan that MISSES writes `fst <= F_WB` over it --
+   // F_FLUSH's clean arm assigns no fst, so the pipeline's write is the one that lands. The
+   // scan is abandoned with inv_pend already clear, so it never resumes: the same dead
+   // board by a different road. inv_busy spans request-to-completion, which is the window.
+   wire inv_go   = inv_req | inv_pend;
+   wire acc_slot = (st == S_IDLE) & ~fill_banks;
+   wire req_wr   = wr_req & ~rd_req & (WRITABLE != 0);
+   wire req_span = ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
+                     + (rd_req ? RDB : WRB)) > WORDB);
+   wire req_solo = req_wr | (rd_req & rd_uncached) | req_span;
+   wire f_solo   = f_v & (f_is_wr | f_cbo | f_uncached | f_span);
+   wire do_replay = acc_slot & f_replay;
+   wire accept    = acc_slot & ~inv_go & ~inv_busy
+                  & ~f_replay & ~f_solo & (rd_req | req_wr) & ~(req_solo & f_v);
+   assign rd_ack  = accept & rd_req;
+
    // ---- combinational bank port drive ----
    always @* begin
+      bk_rd_drv = 1'b0;
       for (b=0; b<2*WAYS; b=b+1) begin
          bk_rdaddr[b] = {BAW{1'b0}};
          bk_wren[b]   = 1'b0;
@@ -294,15 +419,19 @@ module rv_cache #(
       // full address == way_idx of its line: the index/tag bits exclude the offset).
       // No invalidate guard needed: if the FSM takes the inv arm instead, the read
       // data is simply never consumed.
-      if (st==S_IDLE && (rd_req || (wr_req && WRITABLE!=0))) begin
+      if (accept || do_replay) begin
+         bk_rd_drv = 1'b1;
          for (w2=0; w2<WAYS; w2=w2+1) begin
             bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
             bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
          end
       end
       // window read: present line's chunks so data is valid next cycle (both ways read)
-      // (still used by the span phase-1 lookup and the post-fill re-lookup)
-      if (st==S_LOOK) begin
+      // (the span phase-1 lookup, the post-fill re-lookup, and a held stage B re-reading its
+      // own row). ~fill_banks for the same reason acc_slot has it: those cycles belong to the
+      // fill machine, and b_live tells stage B its window did not happen.
+      if (st==S_LOOK && !fill_banks) begin
+         bk_rd_drv = 1'b1;
          for (w2=0; w2<WAYS; w2=w2+1) begin
             if (!phase) begin
                bk_rdaddr[w2*2+0] = { way_idx(w2,cur_line), pair_e };  // even bank
@@ -312,13 +441,14 @@ module rv_cache #(
          end
       end
       // serialized full-line read (writeback / write-through / flush): pair pc, even+odd
-      if (st==S_WBR || st==S_WTR || st==S_FLUSHR) begin
+      if (fst==F_WBR || fst==F_FLUSHR || st==S_WTR) begin
+         bk_rd_drv = 1'b1;
          bk_rdaddr[wb_way*2+0] = { wb_idx, pc[PAIRB-1:0] };
          bk_rdaddr[wb_way*2+1] = { wb_idx, pc[PAIRB-1:0] };
       end
 
       // serialized fill install: write pair pc of the victim from linebuf (even+odd)
-      if (st==S_FILLI) begin
+      if (fst==F_FILLI) begin
          bk_wren  [vw*2+0] = 1'b1;
          bk_wraddr[vw*2+0] = { vi, pc[PAIRB-1:0] };
          bk_wrdata[vw*2+0] = linebuf[(2*pc)  *BANKW +: BANKW];
@@ -354,11 +484,16 @@ module rv_cache #(
       v_wa = {FW{1'b0}}; d_wa = {FW{1'b0}}; k_wa = {IDXB{1'b0}};
       v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
-         st <= S_IDLE; rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
+         st <= S_IDLE; fst <= F_IDLE; f_v <= 1'b0; f_replay <= 1'b0; b_live <= 1'b0;
+         rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
       end else begin
          rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
+         // The three cycles that address the banks for the request S_CHECK will hold next
+         // cycle -- and only if the fill machine's victim stream did not take the read port
+         // out from under them (that drive is last in the comb block, so it wins).
+         b_live <= (accept | do_replay | (st == S_LOOK)) & ~fill_banks;
          // parallel prefetch engine: issue on the idle L2 port during hit-path
          // states (they never touch L2); mutual exclusion with demand fills is
          // by construction -- S_FILL stalls while pf_infl, l2_req is only ever
@@ -388,17 +523,19 @@ module rv_cache #(
          case (st)
            S_IDLE: begin
               phase <= 0;
-              if (inv_req | inv_pend) begin
-                 inv_pend <= 1'b0;
-                 pf_val <= 0; pf_want <= 0;      // prefetch buffer shares the cache's fate
-                 if (pf_infl) pf_drop <= 1;      // in-flight line predates the flush: land it dead
-                 // Every config walks S_FLUSH (one line/cycle behind inv_busy, which all
-                 // requesters already poll). For WRITABLE==0/WRTHRU the dirty-writeback
-                 // branch is compile-time dead, leaving a pure valid-clear scan -- the
-                 // old one-cycle full clear was what broke the valm RAM inference.
-                 inv_busy <= 1; fscan <= 0; flush_clean <= (WRITABLE!=0 && WRTHRU==0) & inv_clean;
-                 st <= S_FLUSH;
-              end else if (rd_req || (wr_req && WRITABLE!=0)) begin
+              // A completed fill's own request, re-entering the pipeline that was held empty
+              // for it. The banks were addressed from f_addr this cycle by the same a_live
+              // mux the door uses, so from S_CHECK on it is an ordinary request again.
+              if (do_replay) begin
+                 r_is_wr <= f_is_wr;  r_uncached <= f_uncached;  r_span <= f_span;
+                 r_cbo <= f_cbo;  r_cbo_zero <= f_cbo_zero;  r_cbo_keep <= f_cbo_keep;
+                 r_addr <= f_addr;  r_tag <= f_tag;
+                 r_wdata <= f_wdata;  r_wmask <= f_wmask;
+                 r_off <= f_addr[OFFB-1:0];
+                 cur_line <= {f_addr[PAW-1:OFFB], {OFFB{1'b0}}};
+                 f_v <= 1'b0;  f_replay <= 1'b0;
+                 st <= S_CHECK;
+              end else if (accept) begin
                  r_is_wr  <= wr_req && !rd_req;
                  r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
                  // CBO flags qualify a write-port maintenance op only. Reads win arbitration
@@ -428,7 +565,13 @@ module rv_cache #(
                  w0_way <= hway; w0_idx <= cih;
                  if (r_cbo_zero) begin
                     // cbo.zero: overwrite the resident line with zeros (install loop), mark dirty
-                    vw <= hway; vi <= cih; linebuf <= {LINEB{1'b0}}; pc <= 0; st <= S_FILLI;
+                    vw <= hway; vi <= cih; linebuf <= {LINEB{1'b0}}; pc <= 0;
+                    f_v <= 1'b1;  f_line <= cur_line;
+                    f_addr <= r_addr;  f_tag <= r_tag;
+                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
+                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
+                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
+                    fst <= F_FILLI; st <= S_IDLE;
                  end else if (WRTHRU==0 && dirm[flat(hway,cih)]) begin
                     // dirty -> write the line back to L2 (reuses the WT push path), then finalize
                     wb_way <= hway; wb_idx <= cih; pc <= 0; st <= S_WTR;
@@ -441,20 +584,50 @@ module rv_cache #(
                  if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
                     vw <= vicm[base_idx(cur_line)];
                     vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
-                    st <= S_WB;
+                    f_v <= 1'b1;  f_line <= cur_line;
+                    f_addr <= r_addr;  f_tag <= r_tag;
+                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
+                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
+                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
+                    fst <= F_WB; st <= S_IDLE;
                  end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
               end
+           end else if (pipe_hold) begin
+              // ONE REASON TO HOLD, not three. Everything S_CHECK consumes below comes out of
+              // bk_rddata, which is the row addressed at the previous edge, so a stage that
+              // waits has to be re-read and cannot simply sit still:
+              //   ~b_live       the banks were not addressed for this request last cycle --
+              //                 nothing drove them, or the fill machine's victim stream took
+              //                 the read port.
+              //   fst == F_ANS  an older request owns the response port this cycle (the fill
+              //                 machine's case runs second, so its rd_* would win anyway).
+              //   ~hit & f_v    ONE MSHR: a second miss waits for the fill in flight. It
+              //                 cannot deadlock against it -- a plain read, the only thing
+              //                 accepted while a fill runs, is answered by F_ANS and needs
+              //                 nothing from this pipeline.
+              // S_LOOK re-presents cur_line's chunks and comes straight back, so the window a
+              // hit delivers was always read in the cycle before it. Holding IN S_CHECK is
+              // what shipped another line's bytes to a load -- and to a page-table walk.
+              st <= S_LOOK;
            end else begin
               if (hit) begin
                  if (!phase) begin
-                    wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
-                    whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
                     w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
+                    // wlo/whi are the stage B->C registers, and F_ANS borrows them to answer
+                    // a missing read out of linebuf. The fast path below does not use them
+                    // (it reads the bank outputs live, through fast_sh), so it must not write
+                    // them either -- a hit-under-miss would clobber the fill's answer.
+                    if (r_span || r_is_wr || r_uncached) begin
+                       wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
+                       whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
+                    end
                     if (r_span) begin phase <= 1; cur_line <= line1; st <= S_LOOK; end
                     else if (!r_is_wr && !r_uncached) begin
                        // fast read delivery: the window is live on the bank outputs
                        // (the same values registering into wlo/whi this edge) -- skip
                        // S_FIN. NC reads keep the slow path (S_FIN's flush-around).
+                       // Reaching here means b_live and fst != F_ANS: the hold arm above
+                       // owns both, so this arm has no test of its own.
                        rd_data  <= fast_sh[RDW-1:0];
                        rd_valid <= 1; rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
                        st <= S_IDLE;
@@ -473,93 +646,17 @@ module rv_cache #(
                  // nonblocking reads here take the pre-ack values pf_hit was computed
                  // on (a same-edge ack's fresh line is discarded: hint loss only).
                  if (pf_hit) begin linebuf <= pf_line; pf_val <= 0; end
-                 st <= pf_hit ? S_PFI : S_WB;
+                    f_v <= 1'b1;  f_line <= cur_line;
+                    f_addr <= r_addr;  f_tag <= r_tag;
+                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
+                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
+                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
+                 // THE REQUEST LEAVES THE PIPELINE HERE. That is the split: what used to be
+                 // `st <= S_WB`, dragging the one machine into ten states from which the
+                 // accept state was unreachable, is now a handoff that empties stage B.
+                 fst <= pf_hit ? F_PFI : F_WB;
+                 st  <= S_IDLE;
               end
-           end
-
-           // ---- miss: evict victim (writeback if dirty) then fill ----
-           S_WB: begin
-              // THE VICTIM STOPS BEING VALID HERE, before a single byte of it is
-              // overwritten. Its data is still readable for the writeback below (that
-              // streams by {wb_way,wb_idx}, not by the valid bit), and from this cycle on a
-              // lookup of the old tag MISSES instead of hitting a line that is half the old
-              // one and half the new. Free -- S_WB used no status write port -- and it is
-              // what makes the install safe to run alongside lookups.
-              v_we=1; v_wa=vflat; v_wd=1'b0;
-              if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
-                 wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
-                 wb_laddr <= {vtag, vbase};
-                 st <= S_WBR;
-              end else st <= r_cbo_zero ? S_ZFILL : S_FILL;
-           end
-           S_WBR: st <= S_WBW;
-           S_WBW: begin
-              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
-              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
-              if (pc == HALF-1) begin pc <= 0; st <= S_WBI; end
-              else begin pc <= pc + 1'b1; st <= S_WBR; end
-           end
-           S_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_WBA; end
-           S_WBA: if (l2_ack) st <= r_cbo_zero ? S_ZFILL : S_FILL;
-
-           // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
-           S_ZFILL: begin                   // bookkeeping deferred to the last install cycle
-              linebuf <= {LINEB{1'b0}}; pc <= 0;
-              st <= S_FILLI;
-           end
-
-           S_FILL: if (PF_EN && pf_hit) begin
-              // the missing line is in (or just landed in) the buffer: install it.
-              // Same decision-edge capture/consume as the S_CHECK shortcut.
-              linebuf <= pf_line; pf_val <= 0;
-              st <= S_PFI;
-           end else if (PF_EN && pf_infl) begin
-              // a prefetch is mid-flight on the L2 port: wait it out (it may be
-              // exactly the missing line, caught by the branch above on landing).
-           end else begin l2_req<=1; l2_we<=0; l2_addr<=cur_line[PAW-1:OFFB]; st<=S_FILLW; end
-           S_FILLW: if (l2_ack) begin
-              // The line bookkeeping that stood here -- tag, valid, dirty, victim -- has
-              // moved to the LAST install cycle. Advertising a line as valid before its
-              // data is in the banks is only harmless while nothing can look it up; the
-              // whole point of splitting the fill machine out is that something can.
-              linebuf <= l2_rdata; pc <= 0;
-              st <= S_FILLI;
-              if (PF_EN && !r_uncached && !r_cbo_zero) begin
-                 pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;  // arm next-line
-              end
-           end
-
-           // ---- prefetch: victim already chosen at S_CHECK; install the buffered line
-           // (same bookkeeping as S_FILLW but sourced from pf_line, no L2), then re-arm
-           // for the line after -- consumption-chained streaming.
-           // prefetch install: linebuf was captured (and the buffer consumed) at the
-           // decision edge in S_CHECK/S_FILL; here only the line bookkeeping + re-arm.
-           S_PFI: begin
-              pc <= 0;
-              // S_CHECK jumps straight here on a stream-buffer hit, skipping S_WB, so this
-              // is the one fill entry that owes the victim invalidate itself. Reaching it
-              // FROM S_FILL invalidates twice, which is idempotent.
-              v_we=1; v_wa=vflat; v_wd=1'b0;
-              pf_want <= 1; pf_next <= cur_line[PAW-1:OFFB] + 1'b1;
-              st <= S_FILLI;
-           end
-           S_FILLI: begin                  // install pair pc (bank writes combinational)
-              if (pc == HALF-1) begin
-                 pc <= 0;
-                 // THE LINE BECOMES VALID HERE, in the cycle its last chunk is written, and
-                 // not before. One site for every fill path -- demand, cbo.zero and the
-                 // stream buffer -- so there is one answer to "when is a filled line
-                 // visible". cbo.zero installs a line that is dirty by construction: it was
-                 // never read from L2, so L2 does not have these zeros.
-                 tagm[vflat] <= tag_of(cur_line);
-                 v_we=1; v_wa=vflat; v_wd=1'b1;
-                 d_we=1; d_wa=vflat; d_wd=r_cbo_zero;
-                 k_we=1; k_wa=base_idx(cur_line); k_wd=~vicm[base_idx(cur_line)];
-                 // cbo.zero is complete once the line is installed; everything else re-looks
-                 // its own request up, which now hits.
-                 if (r_cbo_zero) begin wr_ack <= 1; st <= S_IDLE; end
-                 else st <= S_LOOK;
-              end else pc <= pc + 1'b1;
            end
 
            // ---- hit terminal: deliver read / commit store ----
@@ -622,33 +719,172 @@ module rv_cache #(
               wr_ack <= 1; st <= S_IDLE;
            end
 
+           // "This cannot happen" is an assertion or it is deleted (docs/rtl-rules.md).
+           default: $fatal(1, "[cache id=%0d] FSM reached an undefined state st=%0d", PERF_ID, st);
+         endcase
+
+         // ==================== FILL MACHINE ====================================
+         // Everything that takes an L2 round trip. It runs CONCURRENTLY with the lookup
+         // pipeline above and, because this case comes second, its blocking assignments to
+         // the status-array write ports simply win -- which is the fill-has-priority rule,
+         // expressed by ordering rather than by a mux. `fill_status` is how the pipeline
+         // finds out it lost and holds, instead of dropping its write on the floor.
+         case (fst)
+           F_IDLE: begin
+              // An invalidate is a fill-machine job: it walks the whole array and it uses
+              // linebuf. Accepts are already blocked by inv_go, so the pipeline drains into
+              // this state on its own.
+              if (inv_go && (st == S_IDLE) && !f_v) begin
+                 inv_pend <= 1'b0;
+                 pf_val <= 0; pf_want <= 0;      // prefetch buffer shares the cache's fate
+                 if (pf_infl) pf_drop <= 1;      // in-flight line predates the flush: land it dead
+                 // Every config walks F_FLUSH (one line/cycle behind inv_busy, which all
+                 // requesters already poll). For WRITABLE==0/WRTHRU the dirty-writeback
+                 // branch is compile-time dead, leaving a pure valid-clear scan -- the
+                 // old one-cycle full clear was what broke the valm RAM inference.
+                 inv_busy <= 1; fscan <= 0; flush_clean <= (WRITABLE!=0 && WRTHRU==0) & inv_clean;
+                 fst <= F_FLUSH;
+              end
+           end
+
+           // ---- miss: evict victim (writeback if dirty) then fill ----
+           F_WB: begin
+              // THE VICTIM STOPS BEING VALID HERE, before a single byte of it is
+              // overwritten. Its data is still readable for the writeback below (that
+              // streams by {wb_way,wb_idx}, not by the valid bit), and from this cycle on a
+              // lookup of the old tag MISSES instead of hitting a line that is half the old
+              // one and half the new. Free -- F_WB used no status write port -- and it is
+              // what makes the install safe to run alongside lookups.
+              v_we=1; v_wa=vflat; v_wd=1'b0;
+              if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
+                 wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
+                 wb_laddr <= {vtag, vbase};
+                 fst <= F_WBR;
+              end else fst <= f_cbo_zero ? F_ZFILL : F_FILL;
+           end
+           F_WBR: fst <= F_WBW;
+           F_WBW: begin
+              linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
+              linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
+              if (pc == HALF-1) begin pc <= 0; fst <= F_WBI; end
+              else begin pc <= pc + 1'b1; fst <= F_WBR; end
+           end
+           F_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_WBA; end
+           F_WBA: if (l2_ack) fst <= f_cbo_zero ? F_ZFILL : F_FILL;
+
+           // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
+           F_ZFILL: begin                   // bookkeeping deferred to the last install cycle
+              linebuf <= {LINEB{1'b0}}; pc <= 0;
+              fst <= F_FILLI;
+           end
+
+           F_FILL: if (PF_EN && pf_hit_f) begin
+              // the missing line is in (or just landed in) the buffer: install it.
+              // Same decision-edge capture/consume as the S_CHECK shortcut.
+              linebuf <= pf_line; pf_val <= 0;
+              fst <= F_PFI;
+           end else if (PF_EN && pf_infl) begin
+              // a prefetch is mid-flight on the L2 port: wait it out (it may be
+              // exactly the missing line, caught by the branch above on landing).
+           end else begin l2_req<=1; l2_we<=0; l2_addr<=f_line[PAW-1:OFFB]; fst<=F_FILLW; end
+           F_FILLW: if (l2_ack) begin
+              // The line bookkeeping that stood here -- tag, valid, dirty, victim -- has
+              // moved to the LAST install cycle. Advertising a line as valid before its
+              // data is in the banks is only harmless while nothing can look it up; the
+              // whole point of splitting the fill machine out is that something can.
+              linebuf <= l2_rdata; pc <= 0;
+              fst <= F_FILLI;
+              if (PF_EN && !f_uncached && !f_cbo_zero) begin
+                 pf_want <= 1; pf_next <= f_line[PAW-1:OFFB] + 1'b1;  // arm next-line
+              end
+           end
+
+           // ---- prefetch: victim already chosen at S_CHECK; install the buffered line
+           // (same bookkeeping as F_FILLW but sourced from pf_line, no L2), then re-arm
+           // for the line after -- consumption-chained streaming.
+           // prefetch install: linebuf was captured (and the buffer consumed) at the
+           // decision edge in S_CHECK/F_FILL; here only the line bookkeeping + re-arm.
+           F_PFI: begin
+              pc <= 0;
+              // S_CHECK jumps straight here on a stream-buffer hit, skipping F_WB, so this
+              // is the one fill entry that owes the victim invalidate itself. Reaching it
+              // FROM F_FILL invalidates twice, which is idempotent.
+              v_we=1; v_wa=vflat; v_wd=1'b0;
+              pf_want <= 1; pf_next <= f_line[PAW-1:OFFB] + 1'b1;
+              fst <= F_FILLI;
+           end
+           F_FILLI: begin                  // install pair pc (bank writes combinational)
+              if (pc == HALF-1) begin
+                 pc <= 0;
+                 // THE LINE BECOMES VALID HERE, in the cycle its last chunk is written, and
+                 // not before. One site for every fill path -- demand, cbo.zero and the
+                 // stream buffer -- so there is one answer to "when is a filled line
+                 // visible". cbo.zero installs a line that is dirty by construction: it was
+                 // never read from L2, so L2 does not have these zeros.
+                 tagm[vflat] <= tag_of(f_line);
+                 v_we=1; v_wa=vflat; v_wd=1'b1;
+                 d_we=1; d_wa=vflat; d_wd=f_cbo_zero;
+                 k_we=1; k_wa=base_idx(f_line); k_wd=~vicm[base_idx(f_line)];
+                 // HOW THE MISSING REQUEST IS COMPLETED, and there are two answers because
+                 // a read wants data out and a store wants data in.
+                 //   plain cached read -> answered HERE, from linebuf, in F_ANS. It never
+                 //     re-enters the pipeline, and that is not an optimisation: a second miss
+                 //     stalls stage B, which would block the replay that frees the MSHR that
+                 //     stage B is waiting for. Answering directly is what has no deadlock.
+                 //   everything else    -> replayed through the pipeline exactly as before.
+                 //     Safe because such a request is `solo`: the pipeline was held empty for
+                 //     it, so the slot is there when it asks.
+                 // The two chunks the read needs are selected out of linebuf and handed to the
+                 // SAME shift network a hit uses (win_sh), so this costs one 8:1 chunk mux and
+                 // not the 512->64 byte mux that answering from a line buffer usually implies.
+                 if (f_cbo_zero) begin wr_ack <= 1; fst <= F_IDLE; f_v <= 1'b0; end
+                 else if (f_is_wr | f_cbo | f_uncached | f_span) begin
+                    f_replay <= 1'b1; fst <= F_IDLE;
+                 end else begin
+                    wlo <= linebuf[(f_clo*BANKW) +: BANKW];
+                    whi <= linebuf[(f_cnx*BANKW) +: BANKW];
+                    fst <= F_ANS;
+                 end
+              end else pc <= pc + 1'b1;
+           end
+
+
+           // The one cycle that belongs to neither machine: the missing READ is answered
+           // from the line that just landed. It owns the response port here -- the pipeline
+           // yields (see pipe_deliver), because this request is older than anything in it.
+           F_ANS: begin
+              rd_data  <= f_win_sh[RDW-1:0];
+              rd_valid <= 1; rd_resp_addr <= f_addr; rd_resp_tag <= f_tag;
+              f_v <= 1'b0;
+              fst <= F_IDLE;
+           end
+
            // ---- flush (write-back configs) ----
-           S_FLUSH: begin
-              if (fscan == NW) begin inv_busy <= 0; st <= S_IDLE; end
+           F_FLUSH: begin
+              if (fscan == NW) begin inv_busy <= 0; fst <= F_IDLE; end
               else if (WRITABLE!=0 && WRTHRU==0 && valm[fscan[FW-1:0]] && dirm[fscan[FW-1:0]]) begin
                  wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
-                 st <= S_FLUSHR;
+                 fst <= F_FLUSHR;
               end else begin
                  if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush keeps lines valid
                  d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
                  fscan <= fscan + 1'b1;
               end
            end
-           S_FLUSHR: st <= S_FLUSHW;
-           S_FLUSHW: begin
+           F_FLUSHR: fst <= F_FLUSHW;
+           F_FLUSHW: begin
               linebuf[(2*pc)  *BANKW +: BANKW] <= bk_rddata[wb_way*2+0];
               linebuf[(2*pc+1)*BANKW +: BANKW] <= bk_rddata[wb_way*2+1];
-              if (pc == HALF-1) begin pc <= 0; st <= S_FLUSHI; end
-              else begin pc <= pc + 1'b1; st <= S_FLUSHR; end
+              if (pc == HALF-1) begin pc <= 0; fst <= F_FLUSHI; end
+              else begin pc <= pc + 1'b1; fst <= F_FLUSHR; end
            end
-           S_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; st<=S_FLUSHA; end
-           S_FLUSHA: if (l2_ack) begin
+           F_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_FLUSHA; end
+           F_FLUSHA: if (l2_ack) begin
               if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush: written back, stays valid+clean
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
-              fscan <= fscan + 1'b1; st <= S_FLUSH;
+              fscan <= fscan + 1'b1; fst <= F_FLUSH;
            end
-           // "This cannot happen" is an assertion or it is deleted (docs/rtl-rules.md).
-           default: $fatal(1, "[cache id=%0d] FSM reached an undefined state st=%0d", PERF_ID, st);
+           default: $fatal(1, "[cache id=%0d] fill machine reached an undefined state fst=%0d", PERF_ID, fst);
          endcase
       end
       // the single write port of each status array (see staging decl above)
@@ -656,11 +892,63 @@ module rv_cache #(
       if (d_we) dirm[d_wa] <= d_wd;
       if (k_we) vicm[k_wa] <= k_wd;
 `ifdef CDBG
-      if (st==S_FLUSH && (fscan[3:0]==0 || fscan==NW))
+      if (fst==F_FLUSH && (fscan[3:0]==0 || fscan==NW))
          $display("[CDBG %m] t=%0t S_FLUSH fscan=%0d/%0d invb=%b", $time, fscan, NW, inv_busy);
-      if (st==S_IDLE && (inv_req|inv_pend))
+      if (st==S_IDLE && inv_go)
          $display("[CDBG %m] t=%0t IDLE->inv (pend=%b)", $time, inv_pend);
 `endif
+   end
+
+   // ---- invariants (docs/rtl-rules.md A1): always on, no `ifdef ----------------------
+   // A FLUSH IS BOUNDED: one line per cycle plus, on the D$, a writeback per dirty line. So
+   // inv_busy being high is bounded too, and BOTH ways this cache has lost a scan end the
+   // same way -- inv_busy high forever with every requester polling it. That has exactly one
+   // symptom on a board, which is that the board stops, so the bound is checked here where
+   // it can name the cache and the state it died in. Nothing but the $fatal reads inv_age,
+   // so synthesis drops it; simulation keeps it.
+   localparam INV_MAX = NW * 1024;
+   reg [$clog2(INV_MAX+1)-1:0] inv_age;
+   always @(posedge clk)
+      if (reset || !inv_busy)        inv_age <= 0;
+      else if (inv_age != INV_MAX)   inv_age <= inv_age + 1'b1;
+
+   integer ai;
+   always @(posedge clk) if (!reset) begin
+      // linebuf/pc/wb_* are ONE set of registers with two users -- the fill machine's
+      // writeback and the pipeline's write-through push. They are kept apart by the solo
+      // rule, not by a mux, so the day that rule is loosened this is what says so.
+      if (pipe_uses_lb && (fst != F_IDLE))
+         $fatal(1, "[cache id=%0d] write-through push and fill machine both own linebuf (st=%0d fst=%0d)",
+                PERF_ID, st, fst);
+      // A solo request's miss is replayed through this pipeline, which is only sound while
+      // the pipeline is empty for it.
+      if (accept && req_solo && f_v)
+         $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
+      if (inv_age == INV_MAX)
+         $fatal(1, "[cache id=%0d] invalidate has not finished in %0d cycles -- the scan was lost (fscan=%0d/%0d st=%0d fst=%0d f_v=%b f_replay=%b inv_pend=%b)",
+                PERF_ID, INV_MAX, fscan, NW, st, fst, f_v, f_replay, inv_pend);
+      // THE SCAN OWNS THE FILL MACHINE. A miss taken during an invalidate hands off with
+      // `fst <= F_WB`, and F_FLUSH's clean arm assigns no fst, so that write lands and the
+      // scan is abandoned -- with inv_pend already clear, leaving inv_busy high for good
+      // and the fence.i FSM waiting on it forever. acc_slot's ~inv_busy is what stops it;
+      // this is the check that says so, because the silent version of this is a dead board.
+      if (f_v && (fst == F_FLUSH || fst == F_FLUSHR || fst == F_FLUSHW
+                  || fst == F_FLUSHI || fst == F_FLUSHA))
+         $fatal(1, "[cache id=%0d] a fill is live during the invalidate scan (fscan=%0d) -- the scan is being abandoned",
+                PERF_ID, fscan);
+      // NO BANK ROW IS READ AND WRITTEN IN THE SAME CYCLE, whoever the reader is. It was
+      // qualified by `accept`, which named one of four readers -- the accept-cycle lookup, the
+      // S_LOOK window read, the writeback stream and the write-through push -- and the one it
+      // did not name is the one that fires: a lookup re-reading its row while F_FILLI installs.
+      // On the behavioural model that read returns pre-write data; on the BRAM it returns
+      // INVALID data, which is why this is a hardware bug that simulation shows as a clean run.
+      // It is also the cross-module check for the day the LSU goes multiple-outstanding:
+      // ooo2_sq blocks a load whose bytes overlap an older uncommitted store and holds the
+      // entry until this cache acknowledges the write, so no such pair can arrive back to back.
+      for (ai=0; ai<2*WAYS; ai=ai+1)
+         if (bk_rd_drv && bk_wren[ai] && (bk_rdaddr[ai] == bk_wraddr[ai]))
+            $fatal(1, "[cache id=%0d] bank %0d row %0d read and written in the same cycle",
+                   PERF_ID, ai, bk_wraddr[ai]);
    end
 
    // Zihpm hardware cache events: one pulse per resolved line lookup (S_CHECK), and per miss.
@@ -677,8 +965,11 @@ module rv_cache #(
    // (a miss looping while it waits on the MSHR, or a CBO waiting on the write buffer) so
    // misses do not overcount. This fork has neither an MSHR nor a write buffer, so that term
    // is identically zero here and is omitted rather than carried as dead code.
-   assign perf_access = (st == S_CHECK);
-   assign perf_miss   = (st == S_CHECK) & ~hit;
+   // One pulse per RESOLVED lookup. A stage-B request that is holding -- for the MSHR, or
+   // for the response port -- has not resolved anything and must not be counted twice.
+   wire pipe_resolve  = (st == S_CHECK) & ~pipe_hold;
+   assign perf_access = pipe_resolve;
+   assign perf_miss   = pipe_resolve & ~hit;
 
 `ifdef PERF_TRACE
    // Cache memory-system events (docs/perf-observability-plan.md, step 2). Self-contained
@@ -707,7 +998,7 @@ module rv_cache #(
       // capture store accept (for the accept->ack latency)
       if (st == S_IDLE && wr_req && !rd_req && WRITABLE != 0) perf_st_cyc <= perf_cyc;
       // refill complete -> re-lookup: emit the miss penalty
-      if (st == S_FILLI && pc == HALF-1)
+      if (fst == F_FILLI && pc == HALF-1)
          perf_ev(perf_cyc, 8, 2, PERF_ID, 0, 0, 0, 0, {{(64-PAW){1'b0}}, cur_line},
                  (perf_cyc - perf_miss_cyc));
       // store committed (wr_ack asserted last cycle; +1 constant offset, fine for a hist)
@@ -718,6 +1009,24 @@ module rv_cache #(
 `endif
 
 `ifndef SYNTHESIS
+   // WINDOW PROVENANCE. The defect this checks independently of the b_live bit that fixes
+   // it: S_CHECK shifts bk_rddata, which is whatever address was on the bank read ports at
+   // the previous edge, and every cycle the stage holds is a cycle that address was some
+   // other row (0 when nothing drove it, the victim's chunk while a writeback streams).
+   // Delivered to a load it is a wrong value; delivered to a page-table walk it is a wrong
+   // PTE, and the board dies with a paging fault on an address that is mapped.
+   reg [BAW-1:0] b_rda [0:2*WAYS-1];
+   integer bri;
+   always @(posedge clk) for (bri=0; bri<2*WAYS; bri=bri+1) b_rda[bri] <= bk_rdaddr[bri];
+   always @(posedge clk) if (!reset && (st == S_CHECK) && !r_cbo && hit && b_live) begin
+      if (b_rda[hway*2+0] != (phase ? {cih, {PAIRB{1'b0}}} : {cih, pair_e}))
+         $fatal(1, "[cache id=%0d] STALE WINDOW: even bank read %h, this hit needs %h (line=%h phase=%b fst=%0d)",
+                PERF_ID, b_rda[hway*2+0], phase ? {cih, {PAIRB{1'b0}}} : {cih, pair_e}, cur_line, phase, fst);
+      if (!phase && (b_rda[hway*2+1] != {cih, pair_o}))
+         $fatal(1, "[cache id=%0d] STALE WINDOW: odd bank read %h, this hit needs %h (line=%h fst=%0d)",
+                PERF_ID, b_rda[hway*2+1], {cih, pair_o}, cur_line, fst);
+   end
+
    // ---- corruption invariants (ported from src/cache.v, c7f06b39 / dc95e905) --------
    // This fork predates both fixes, so it has neither the fix nor the guard. These fire
    // AT the bad write instead of at the symptom, which on the board arrives millions of
