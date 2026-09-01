@@ -17,7 +17,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-DTB=${DTB:-ubuntu.dtb}
+# ubuntu-nfs.dtb IS the boot device tree: it is generated for the shipping clock
+# (PROBE_CLK_DIV8=48) by ../ubuntu/Makefile and checked by src/lint.sh. ubuntu.dtb is a
+# hand-written leftover from the SD-card era with a stale timebase-frequency; defaulting to
+# it meant the one command anybody actually types had to carry DTB= to be correct.
+DTB=${DTB:-ubuntu-nfs.dtb}
 FW=${FW:-fw_payload.bin}
 INITRD=${INITRD:-tiny128.cpio}
 DTB_ADDR=${DTB_ADDR:-fffff000}

@@ -119,7 +119,7 @@ rc=$?
 # sim default (2 = 32-bit fetch) is NOT what the FPGA runs (4 = 64-bit), and at HW=2 the RVC
 # aligner stalls 37% of cycles against 8% at HW=4. A whole priority list was built on the
 # wrong number before this was caught. Measure at the width the hardware uses.
-hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${hw:-2}
+hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${hw:-4}
 got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' /tmp/ooo2-cosim.out | tail -1)
 exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
 tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)

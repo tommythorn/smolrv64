@@ -12,4 +12,10 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  4  11631167  0.5   # acfbaa98: forked predictor + F/X queue + tag-matched D$ responses
+60000000  4  14610812  0.5   # main-candidate: b56f3a5e + b9dbdd0 + 42508cf + 69f1ac6 (LQ/SQ
+                              # timing) + the cosim repair.  Measured with the lockstep ACTUALLY
+                              # RUNNING -- the previous row, 11631167 from acfbaa98, predates the
+                              # -DINO_COSIM/-DOOO2_COSIM break, and by the time the break was
+                              # found the real number was 26% above it, so the gate could not
+                              # fail no matter what landed.  A throughput floor nothing can trip
+                              # is not a gate.

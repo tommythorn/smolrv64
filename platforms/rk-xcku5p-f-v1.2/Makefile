@@ -30,14 +30,17 @@ ifneq ($(strip $(PROBE_DIAG)),)
 export PROBE_DIAG
 endif
 
-# OOO2_CORE=1 builds the IN-ORDER core (ooo2/rv_soc_top) instead of the OoO
-# soc_top.  e.g. `make bit OOO2_CORE=1`.
+# THE SHIPPING BUILD NEEDS NO ARGUMENTS.  `make` builds ooo2/rv_soc_top at OOO2_HW=4 and
+# PROBE_CLK_DIV8=48 (166.67 MHz), because those three were the shipping configuration while
+# living only on the command line -- and the line people type is `make OOO2_CORE=1`, which
+# built HW=2 at 66.67 MHz for weeks without anyone noticing.  Opt out with OOO2_CORE=0.
 ifneq ($(strip $(OOO2_CORE)),)
 export OOO2_CORE
 endif
 
-# In-order fetch window halfwords: OOO2_HW=4 gives the chunk-aligned fetch buffer 8-byte
-# chunks (RTL default 2). Only 2 or 4; 8 trips the sdpram geometry guard.
+# Fetch window halfwords.  4 is the default in the RTL, in build.tcl and here; it gives the
+# chunk-aligned fetch buffer 8-byte chunks.  Only 2 or 4 elaborate; 8 trips the sdpram
+# geometry guard.  Setting 2 builds a 32-bit fetch window that no bitstream should ship.
 ifneq ($(strip $(OOO2_HW)),)
 export OOO2_HW
 endif
@@ -49,8 +52,8 @@ endif
 
 # Fmax sweep: probe_clk = 1000MHz*8/PROBE_CLK_DIV8, from an MMCM, so the frequency is
 # CONTINUOUS (the old BUFGCE_DIV could only reach 66.7/83.3/111.1/166.7/333.3, which made
-# any gain smaller than a whole rung worth nothing). RTL default 120 = 66.67 MHz;
-# 72 = 111.11 MHz is the GB5 milestone build. build.tcl hard-errors on the retired
+# any gain smaller than a whole rung worth nothing). 48 = 166.67 MHz is the shipping clock
+# and the default everywhere; 72 = 111.11 MHz was the previous milestone. build.tcl hard-errors on the retired
 # PROBE_CLK_DIV rather than let it silently mean a different clock.
 ifneq ($(strip $(PROBE_CLK_DIV8)),)
 export PROBE_CLK_DIV8

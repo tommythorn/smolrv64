@@ -236,8 +236,14 @@ if {$probe_core} {
     puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
     lappend vdefines "PROBE_CORE"
-    if {[info exists env(OOO2_CORE)] && $env(OOO2_CORE) ne "" && $env(OOO2_CORE) ne "0"} {
-        puts "OOO2_CORE: building the in-order core (rv_soc_top) instead of the OoO soc_top."
+    # THE SHIPPING BUILD IS THE DEFAULT. It used to be reachable only by typing
+    # OOO2_CORE=1 OOO2_HW=4 PROBE_CLK_DIV8=48, and since this file rebuilds `vdefines` from
+    # scratch every run (the .xpr RECORDS the last build and carries nothing forward), a
+    # command that omitted any of them silently built something else -- which is what
+    # `make OOO2_CORE=1` did for weeks: HW=2 at 66.67 MHz. A configuration you have to
+    # remember is one you will forget. OOO2_CORE=0 opts out.
+    if {![info exists env(OOO2_CORE)] || $env(OOO2_CORE) ne "0"} {
+        puts "Building the ooo2 core (rv_soc_top) -- default."
         lappend vdefines "OOO2_CORE"
         configure_ooo2_sources $repo_root $src_dir $ooo2_dir
     }
@@ -286,21 +292,33 @@ if {$probe_core} {
  96=83.33, 120=66.67, 144=55.56, 168=47.62, 192=41.67 MHz."
         }
         set _mhz [expr {1000.0 * 8 / $_d8}]
-        puts [format "PROBE_CLK_DIV8 override: probe_clk = ui_clk/%d = %.2f MHz (RTL default is 120 = 66.67 MHz)." [expr {$_d8 / 24}] $_mhz]
+        puts [format "PROBE_CLK_DIV8 override: probe_clk = ui_clk/%d = %.2f MHz (the shipping clock is 48 = 166.67 MHz)." [expr {$_d8 / 24}] $_mhz]
         lappend vdefines "PROBE_CLK_DIV8=$_d8"
+    } else {
+        # EMITTED EVEN WHEN NOT OVERRIDDEN, so the .xpr's Verilog_Define block records the
+        # clock this bitstream was actually built at. That block is the only durable record
+        # of a build's configuration -- it is how the 66.67 MHz builds were finally
+        # identified -- and it is worthless if the shipping value is an implicit RTL default
+        # that never appears in it.
+        puts "probe_clk = 166.67 MHz (PROBE_CLK_DIV8=48) -- the shipping clock."
+        lappend vdefines "PROBE_CLK_DIV8=48"
     }
-    # Fetch window halfwords for the IN-ORDER core (ooo2_core.v / rv_soc_top.v both default
-    # to OOO2_HW=2). HW=4 makes the chunk-aligned fetch buffer 8-byte chunks; HW=8 would make
+    # Fetch window halfwords. 4 is the shipping build AND the RTL default (ooo2_core.v and
+    # rv_soc_top.v agree); it makes the chunk-aligned fetch buffer 8-byte chunks. HW=8 would make
     # the I$ RDW=128, which trips smolrv64_sdpram's hardware-proven-geometry guard (the wide-I$
     # BRAM width-cascade regression that passed every Verilator test and fetched garbage on
     # real BRAM), so 4 is the useful setting.
     if {[info exists env(OOO2_HW)] && $env(OOO2_HW) ne ""} {
         if {$env(OOO2_HW) != 2 && $env(OOO2_HW) != 4} {
-            error "OOO2_HW=$env(OOO2_HW): only 2 or 4 are supported. 8 sets the I$ RDW to 128 and\
+            error "OOO2_HW=$env(OOO2_HW): the shipping build is 4; only 2 or 4 elaborate at all,\
+ and 2 is a 32-bit fetch window that no bitstream should ship. 8 sets the I$ RDW to 128 and\
  trips the sdpram geometry guard; odd values cannot hold a 32-bit instruction."
         }
-        puts "OOO2_HW override: in-order fetch window = $env(OOO2_HW) halfwords (RTL default is 2)."
+        puts "OOO2_HW override: fetch window = $env(OOO2_HW) halfwords (the shipping build is 4)."
         lappend vdefines "OOO2_HW=$env(OOO2_HW)"
+    } else {
+        puts "fetch window = 4 halfwords (OOO2_HW=4) -- the shipping build."
+        lappend vdefines "OOO2_HW=4"
     }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."

@@ -819,11 +819,16 @@ CONFIGURATION it was measured in; anything unmeasured says so.
 
 ### Measurement discipline (read before adding a number here)
 
-**Always measure at `VDEFS="-DOOO2_HW=4"`.** The simulation default is `OOO2_HW=2`
-(32-bit fetch); the FPGA runs 4 (64-bit). They do not merely differ in degree, they
-disagree about which unit is the bottleneck:
+**`OOO2_HW=4` IS THE DEFAULT EVERYWHERE NOW** -- the RTL, `build.tcl` and the sim
+runners -- because a shipping configuration that has to be remembered is one that will be
+forgotten, and this one was: `OOO2_HW` and `PROBE_CLK_DIV8` live only on the command line
+(`build.tcl` rebuilds the define list from scratch every run, so the `.xpr` records the
+last build and carries nothing forward), and the command anybody actually types is
+`make OOO2_CORE=1`. Every bitstream built from that line ran at HW=2 and 66.67 MHz. The
+table below is why that is not a small thing -- the two widths do not merely differ in
+degree, they disagree about which unit is the bottleneck:
 
-| workloads/aesbench | HW=2 (sim default) | **HW=4 (the FPGA)** |
+| workloads/aesbench | HW=2 (never build this) | **HW=4 (the shipping build)** |
 |---|---:|---:|
 | cycles/byte | 222.90 | **122.70** |
 | IPC | 0.277 | **0.506** |
