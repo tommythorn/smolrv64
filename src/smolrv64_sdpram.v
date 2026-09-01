@@ -133,7 +133,18 @@ module smolrv64_sdpram #(
    assign rd_data = READ_LATENCY == 1 ? rd_data_r : rd_data_rr;
 
    always @(posedge clock) begin
-      rd_data_r <= ram[rd_addr];
+      // A COLLISION RETURNS X, BECAUSE THAT IS WHAT THE BRAM RETURNS. Reading the address
+      // port A is writing in the same cycle gives INVALID data on a simple-dual-port block
+      // RAM -- the write succeeds, the read does not. This model used to hand back clean
+      // pre-write data, so a design that read a row while installing into it was correct in
+      // every simulation and wrong on the board, silently. That is not a hypothetical: it is
+      // one of three fidelity gaps that let a broken D$ reach a bitstream twice on
+      // 2026-09-01, and the only one a testbench cannot work around, because sim was
+      // strictly MORE forgiving than the hardware. Now it is strictly less: X propagates,
+      // comparisons against it fail, and the invariant in rv_cache.v that checks for this
+      // pair has something to agree with instead of standing alone.
+      if (wr_en && (rd_addr == wr_addr)) rd_data_r <= {DATA_WIDTH{1'bx}};
+      else                               rd_data_r <= ram[rd_addr];
       rd_data_rr <= rd_data_r;
       if (wr_en)
          ram[wr_addr] <= wr_data;
