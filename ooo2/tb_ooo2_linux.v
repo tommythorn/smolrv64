@@ -56,19 +56,28 @@ module tb;
       .virtio_addr(), .virtio_read(), .virtio_write(), .virtio_wdata(), .virtio_be(),
       .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .irq_dbg());
 
-   // behavioral DDR (4-cycle line latency), modeled as a 512-bit LINE array: the
+   // DDR_LAT: line latency in cycles. The default 4 is NOT representative -- real DDR4
+   // through the MIG, ddr_line_axi and the probe_clk/ui_clk CDC is tens of cycles, and the
+   // gap matters for anything that runs CONCURRENTLY with a fill. At 4 cycles a pipelined
+   // cache admits about two requests while a line is outstanding; at 100 it admits dozens,
+   // which is the difference between exercising that concurrency and barely touching it.
+   // Sweep it whenever a change alters what happens during a miss.
+`ifndef DDR_LAT
+ `define DDR_LAT 4
+`endif
+   // behavioral DDR (DDR_LAT-cycle line latency), modeled as a 512-bit LINE array: the
    // ddr_* port is 64-byte lines, so the element count stays under the array-dimension
    // limit even at 2 GiB (a flat byte array overflows it).
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;
    reg [511:0] lram [0:NLINES-1];
-   reg d_busy; reg [3:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
+   reg d_busy; reg [15:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
    reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy <= 1'b0;
       else if (!d_busy && ddr_req) begin
-         d_busy<=1'b1; d_cnt<=4'd4; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         d_busy<=1'b1; d_cnt<=16'd`DDR_LAT; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
       end else if (d_busy) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);
