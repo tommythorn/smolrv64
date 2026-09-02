@@ -12,7 +12,13 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  4  14610812  0.5   # main-candidate: b56f3a5e + b9dbdd0 + 42508cf + 69f1ac6 (LQ/SQ
+60000000  4  14657366  0.5   # +0.32% from the D$ fill-machine split (aa0af4f): the lookup
+                              # pipeline resolves a request while a line is fetched, so two
+                              # can be in flight -- one in the pipeline, one in the MSHR.
+                              # Small because the D$'s clients are the LSU and two page-table
+                              # walkers and a missing LSU is blocked on its own miss anyway;
+                              # the next gain needs a multiple-outstanding CLIENT.
+                              # Previously 14610812 for main-candidate: b56f3a5e + b9dbdd0 + 42508cf + 69f1ac6 (LQ/SQ
                               # timing) + the cosim repair.  Measured with the lockstep ACTUALLY
                               # RUNNING -- the previous row, 11631167 from acfbaa98, predates the
                               # -DINO_COSIM/-DOOO2_COSIM break, and by the time the break was
