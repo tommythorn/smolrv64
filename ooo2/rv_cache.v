@@ -941,6 +941,43 @@ module rv_cache #(
          for (pi=0; pi<(1<<BAW); pi=pi+1) par_mem[pb][pi] = 1'b0;
       end
    end
+   // ---- ADDRESS PROVENANCE (the half parity is blind to) ----------------------------
+   // Parity proves the array returned what was stored AT THE ADDRESS PRESENTED. It cannot
+   // see the wrong address being presented -- and that is exactly the defect class already
+   // found here: a held stage B delivered bank ROW 0, which is valid data with valid parity
+   // for row 0. The board's remaining fault survived a parity-clean boot, so it is in the
+   // addressing, not the bits.
+   //
+   // This is the simulation-only WINDOW PROVENANCE assertion at the bottom of this file,
+   // made synthesizable and folded into the same error pulse: on the cycle a hit consumes
+   // its window, the address that was on the bank read ports at the previous edge must be
+   // THIS request's row. Comparators only, feeding a flop, so it adds no depth to the read
+   // path. adr_sticky distinguishes it from a parity failure in the snapshot.
+   reg [BAW-1:0] b_rda_s [0:2*WAYS-1];
+   integer brs;
+   always @(posedge clk) for (brs=0; brs<2*WAYS; brs=brs+1) b_rda_s[brs] <= bk_rdaddr[brs];
+   wire [BAW-1:0] adr_exp_e = phase ? {cih, {PAIRB{1'b0}}} : {cih, pair_e};
+   wire [BAW-1:0] adr_exp_o = {cih, pair_o};
+   wire adr_bad = (st == S_CHECK) && !r_cbo && hit && b_live &&
+                  ((b_rda_s[hway*2+0] != adr_exp_e) ||
+                   (!phase && (b_rda_s[hway*2+1] != adr_exp_o)));
+   reg adr_err; reg adr_sticky; reg [BAW-1:0] adr_got; reg [BAW-1:0] adr_want;
+   initial begin adr_err=1'b0; adr_sticky=1'b0; adr_got={BAW{1'b0}}; adr_want={BAW{1'b0}}; end
+   always @(posedge clk) begin
+      adr_err <= 1'b0;
+      if (reset) adr_sticky <= 1'b0;
+      else if (adr_bad) begin
+         adr_err <= 1'b1;
+         if (!adr_sticky) begin
+            adr_sticky <= 1'b1; adr_got <= b_rda_s[hway*2+0]; adr_want <= adr_exp_e;
+         end
+`ifndef SYNTHESIS
+         $display("[cache id=%0d] ADDR PROVENANCE: bank read %h, this hit needs %h (line=%h)",
+                  PERF_ID, b_rda_s[hway*2+0], adr_exp_e, cur_line);
+`endif
+      end
+   end
+
    reg par_err;  reg par_sticky;  reg [BAW-1:0] par_addr;  reg [2:0] par_bank;
    wire [15:0] par_addr16 = {{(16-BAW){1'b0}}, par_addr};
    initial begin par_err=1'b0; par_sticky=1'b0; par_addr={BAW{1'b0}}; par_bank=3'd0; end

@@ -270,9 +270,15 @@ module rv_soc_top #(
 
    // ---- cache data-array integrity taps (see the port comment; -DCACHE_PARITY) ----
 `ifdef CACHE_PARITY
-   assign cache_par_err = {u_icache.par_err, u_dcache.par_err};
+   // The trigger is EITHER integrity failure: a parity mismatch (the array returned
+   // something other than what was stored) or an address-provenance failure (the array
+   // returned the wrong ROW, which parity cannot see and which is the class the board's
+   // surviving fault belongs to).
+   assign cache_par_err = {u_icache.par_err | u_icache.adr_err,
+                           u_dcache.par_err | u_dcache.adr_err};
    assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
-                           2'd0, u_dcache.par_bank, u_icache.par_bank,
+                           u_dcache.adr_sticky, u_icache.adr_sticky,
+                           u_dcache.par_bank, u_icache.par_bank,
                            {(64-8-2*16){1'b0}},
                            u_dcache.par_addr16, u_icache.par_addr16};
 `else
