@@ -101,7 +101,14 @@ module rv_soc_top #(
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq,
    input  wire             virtio_net_irq,   // PLIC source 12 (ubuntu-nfs.dts virtio@10003000)
-   output wire [17:0]      irq_dbg          // interrupt-path debug for the wrapper ILA (probe_clk)
+   output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
+   // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; tied to 0
+   // otherwise). cache_par_err is the ILA_PARITY TRIGGER: it pulses in the cycle a cache
+   // data array returns a word whose parity does not match what was stored -- the moment of
+   // corruption, rather than the kernel Oops millions of cycles downstream, which is the
+   // only evidence the board has offered so far and is far beyond any pre-trigger depth.
+   output wire [1:0]       cache_par_err,   // {I$, D$} 1-cycle error pulse
+   output wire [63:0]      cache_par_dbg    // {sticky, bank, addr} of the first failure
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -260,6 +267,18 @@ module rv_soc_top #(
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
    assign irq_dbg = {dmem_ren & is_plic_r, dmem_wen & is_plic_w, plic_addr[3:0], plic_dbg};
+
+   // ---- cache data-array integrity taps (see the port comment; -DCACHE_PARITY) ----
+`ifdef CACHE_PARITY
+   assign cache_par_err = {u_icache.par_err, u_dcache.par_err};
+   assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
+                           2'd0, u_dcache.par_bank, u_icache.par_bank,
+                           {(64-8-2*16){1'b0}},
+                           u_dcache.par_addr16, u_icache.par_addr16};
+`else
+   assign cache_par_err = 2'd0;
+   assign cache_par_dbg = 64'd0;
+`endif
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
    // NS16550A UART. Semantics ported from the scalar core's Ubuntu-proven model

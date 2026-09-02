@@ -1709,6 +1709,7 @@ module rk_xcku5p(
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg),
+      .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
 `ifdef NO_VIRTIO_WIRE

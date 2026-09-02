@@ -910,6 +910,72 @@ module rv_cache #(
 `endif
    end
 
+`ifdef CACHE_PARITY
+   // ---- data-array integrity check (ILA_PARITY trigger source) -----------------------
+   // PORTED FROM src/cache.v, which this file is a fork of and which had it while the
+   // shipping cache did not -- the same drift that left the fork without two upstream
+   // repairs. The board's corruption is SILENT: by the time the kernel Oopses we are
+   // millions of cycles past the bad read, far beyond any ILA pre-trigger depth. A parity
+   // bit per bank word, written on every bank write and checked on every bank read, makes
+   // the hardware SAY "this array just returned something other than what was stored" in
+   // the cycle it happens.
+   //
+   // Either outcome is decisive. If it fires, the D$ data path is corrupting on real BRAM
+   // and we have the address and the bank. If it NEVER fires while the board still Oopses,
+   // the data arrays are EXONERATED and the fault is upstream of them -- the tag/valid
+   // logic, the LSU, the MMU -- which is exactly the discrimination seven simulation
+   // approaches could not make.
+   //
+   // A parallel array in distributed RAM: no BRAM geometry change, no data-path change,
+   // and the compare feeds a FLOP rather than the read path, so it does not lengthen the
+   // cone that is already at the timing limit. Opt-in (-DCACHE_PARITY): a diagnostic
+   // bitstream, not the production one.
+   reg  par_mem [0:2*WAYS-1][0:(1<<BAW)-1];
+   reg  par_rd_v [0:2*WAYS-1];
+   reg  par_exp  [0:2*WAYS-1];
+   reg  [BAW-1:0] par_rd_a [0:2*WAYS-1];
+   integer pb, pi;
+   initial begin
+      for (pb=0; pb<2*WAYS; pb=pb+1) begin
+         par_rd_v[pb] = 1'b0; par_exp[pb] = 1'b0; par_rd_a[pb] = {BAW{1'b0}};
+         for (pi=0; pi<(1<<BAW); pi=pi+1) par_mem[pb][pi] = 1'b0;
+      end
+   end
+   reg par_err;  reg par_sticky;  reg [BAW-1:0] par_addr;  reg [2:0] par_bank;
+   wire [15:0] par_addr16 = {{(16-BAW){1'b0}}, par_addr};
+   initial begin par_err=1'b0; par_sticky=1'b0; par_addr={BAW{1'b0}}; par_bank=3'd0; end
+   always @(posedge clk) begin
+      par_err <= 1'b0;
+      for (pb=0; pb<2*WAYS; pb=pb+1) begin
+         if (bk_wren[pb]) par_mem[pb][bk_wraddr[pb]] <= ^bk_wrdata[pb];
+         // the address presented this cycle yields data NEXT cycle (READ_LATENCY=1), so
+         // carry the expectation forward. The NBA read of par_mem yields the OLD parity,
+         // which is what read_first returns on the data side for a same-cycle write.
+         par_rd_a[pb] <= bk_rdaddr[pb];
+         par_exp [pb] <= par_mem[pb][bk_rdaddr[pb]];
+         // ONLY READS THAT WILL BE CONSUMED. This fork drives the lookup's bank address
+         // UNCONDITIONALLY (rule I6 -- nothing that decodes FSM state belongs on a BRAM
+         // address pin), so most cycles present an address nobody will look at, including
+         // same-address collisions with an install. Those are harmless -- a BRAM collision
+         // corrupts the read, never the write, and the read is discarded -- but a checker
+         // that flags them cries wolf on every fill, which is exactly what it did before
+         // this line existed. bk_rd_drv is the same qualifier the collision invariant uses.
+         par_rd_v[pb] <= bk_rd_drv;
+         if (par_rd_v[pb] && (^bk_rddata[pb] != par_exp[pb])) begin
+            par_err <= 1'b1;
+            if (!par_sticky) begin
+               par_sticky <= 1'b1; par_addr <= par_rd_a[pb]; par_bank <= pb[2:0];
+            end
+`ifndef SYNTHESIS
+            $display("[cache id=%0d] PARITY ERROR bank=%0d addr=%h data=%h exp_par=%b",
+                     PERF_ID, pb, par_rd_a[pb], bk_rddata[pb], par_exp[pb]);
+`endif
+         end
+      end
+      if (reset) begin par_sticky <= 1'b0; par_err <= 1'b0; end
+   end
+`endif
+
    // ---- invariants (docs/rtl-rules.md A1): always on, no `ifdef ----------------------
    // A FLUSH IS BOUNDED: one line per cycle plus, on the D$, a writeback per dirty line. So
    // inv_busy being high is bounded too, and BOTH ways this cache has lost a scan end the
