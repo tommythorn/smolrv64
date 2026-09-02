@@ -26,7 +26,11 @@ module tb;
 `ifndef LAT
  `define LAT 20
 `endif
+`ifndef JIT
+ `define JIT 0
+`endif
    localparam LAT = `LAT;
+   localparam JIT = `JIT;
    reg clk=0, reset=1;
    always #5 clk = ~clk;
 
@@ -71,12 +75,18 @@ module tb;
    initial for (mi=0;mi<NL;mi=mi+1)
       for (w=0;w<8;w=w+1) mem[mi][w*64 +: 64] = {mi[31:0], w[2:0], 1'b0, 28'h5A5A5A5};
 
+   integer seed = 1;
    integer lcnt; reg lbusy=0; reg [PAW-OFFB-1:0] laddr; reg lwe; reg [LINEB-1:0] lwd;
    always @(posedge clk) begin
       l2_ack <= 1'b0;
       if (reset) lbusy <= 1'b0;
       else if (!lbusy && l2_req) begin
-         lbusy<=1'b1; lcnt<=LAT; laddr<=l2_addr; lwe<=l2_we; lwd<=l2_wdata;
+         // VARIABLE, because the real one is: DDR4 through the MIG varies with refresh,
+         // bank conflicts and arbitration against the I$. A FIXED latency explores exactly
+         // ONE interleaving of fill against lookup, so a race needing any other is invisible
+         // however long the sweep. LAT is the floor, JIT the jitter on top.
+         lbusy<=1'b1; lcnt<=LAT + ({$random(seed)} % (JIT+1)); laddr<=l2_addr;
+         lwe<=l2_we; lwd<=l2_wdata;
       end else if (lbusy) begin
          if (lcnt==0) begin
             if (lwe) mem[laddr[11:0]] <= lwd; else l2_rdata <= mem[laddr[11:0]];

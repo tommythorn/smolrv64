@@ -65,19 +65,31 @@ module tb;
 `ifndef DDR_LAT
  `define DDR_LAT 4
 `endif
+`ifndef DDR_JIT
+ `define DDR_JIT 0
+`endif
    // behavioral DDR (DDR_LAT-cycle line latency), modeled as a 512-bit LINE array: the
    // ddr_* port is 64-byte lines, so the element count stays under the array-dimension
    // limit even at 2 GiB (a flat byte array overflows it).
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;
    reg [511:0] lram [0:NLINES-1];
+   integer ddr_seed = 1;
    reg d_busy; reg [15:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
    reg [63:0] line;
    always @(posedge clk) begin
       ddr_ack <= 1'b0;
       if (reset) d_busy <= 1'b0;
       else if (!d_busy && ddr_req) begin
-         d_busy<=1'b1; d_cnt<=16'd`DDR_LAT; d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
+         // DDR_JIT: jitter on top of DDR_LAT, because the real memory system is not a
+         // constant. DDR4 through the MIG varies with refresh, bank conflicts and
+         // arbitration between the I$ and the D$, so a FIXED latency explores exactly one
+         // interleaving of fill against lookup -- and a race needing any other interleaving
+         // is invisible however long the run. The D$ split passes this cosim at DDR_LAT=4
+         // and 100, both constant, and fails on the board; this is the axis those runs
+         // never varied.
+         d_busy<=1'b1; d_cnt<=16'd`DDR_LAT + ({$random(ddr_seed)} % (`DDR_JIT + 1));
+         d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
       end else if (d_busy) begin
          if (d_cnt==0) begin
             line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);
