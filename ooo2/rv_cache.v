@@ -956,11 +956,25 @@ module rv_cache #(
    reg [BAW-1:0] b_rda_s [0:2*WAYS-1];
    integer brs;
    always @(posedge clk) for (brs=0; brs<2*WAYS; brs=brs+1) b_rda_s[brs] <= bk_rdaddr[brs];
-   wire [BAW-1:0] adr_exp_e = phase ? {cih, {PAIRB{1'b0}}} : {cih, pair_e};
-   wire [BAW-1:0] adr_exp_o = {cih, pair_o};
-   wire adr_bad = (st == S_CHECK) && !r_cbo && hit && b_live &&
-                  ((b_rda_s[hway*2+0] != adr_exp_e) ||
-                   (!phase && (b_rda_s[hway*2+1] != adr_exp_o)));
+   // PIPELINED BY A CYCLE, deliberately. Comparing combinationally off st/hit/b_live/hway
+   // put a compare on the hit path and cost 0.818 ns -- on a design with 24 ps of margin
+   // that is not a diagnostic, it is a build failure. Everything the check needs is latched
+   // first and compared from FLOPS the next cycle, so the only new logic is
+   // flop -> compare -> flop, off every existing path. The snapshot is read post-mortem
+   // over JTAG; one cycle of delay is irrelevant to it.
+   reg            chk_v;
+   reg            chk_phase;
+   reg [BAW-1:0]  chk_got_e, chk_got_o, chk_exp_e, chk_exp_o;
+   always @(posedge clk) begin
+      chk_v     <= (st == S_CHECK) && !r_cbo && hit && b_live;
+      chk_phase <= phase;
+      chk_got_e <= b_rda_s[hway*2+0];
+      chk_got_o <= b_rda_s[hway*2+1];
+      chk_exp_e <= phase ? {cih, {PAIRB{1'b0}}} : {cih, pair_e};
+      chk_exp_o <= {cih, pair_o};
+   end
+   wire adr_bad = chk_v && ((chk_got_e != chk_exp_e) ||
+                            (!chk_phase && (chk_got_o != chk_exp_o)));
    reg adr_err; reg adr_sticky; reg [BAW-1:0] adr_got; reg [BAW-1:0] adr_want;
    initial begin adr_err=1'b0; adr_sticky=1'b0; adr_got={BAW{1'b0}}; adr_want={BAW{1'b0}}; end
    always @(posedge clk) begin
@@ -969,11 +983,11 @@ module rv_cache #(
       else if (adr_bad) begin
          adr_err <= 1'b1;
          if (!adr_sticky) begin
-            adr_sticky <= 1'b1; adr_got <= b_rda_s[hway*2+0]; adr_want <= adr_exp_e;
+            adr_sticky <= 1'b1; adr_got <= chk_got_e; adr_want <= chk_exp_e;
          end
 `ifndef SYNTHESIS
-         $display("[cache id=%0d] ADDR PROVENANCE: bank read %h, this hit needs %h (line=%h)",
-                  PERF_ID, b_rda_s[hway*2+0], adr_exp_e, cur_line);
+         $display("[cache id=%0d] ADDR PROVENANCE: bank read %h, this hit needs %h",
+                  PERF_ID, chk_got_e, chk_exp_e);
 `endif
       end
    end
