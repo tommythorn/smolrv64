@@ -1689,10 +1689,16 @@ module rk_xcku5p(
    // rv_soc_top pins its own memory subsystem (rv_cache / rv_l2_arbiter) -- see
    // docs/ooo2-plan.md -- so it has neither the newer soc_top's per-byte DDR write
    // strobes nor its ILA debug buses. It only ever pushes WHOLE lines, so wmask is
-   // all-ones; the debug buses tie off (their ILAs are PROBE_CORE-only diagnostics).
+   // all-ones; the remaining debug buses tie off (those ILAs are PROBE_CORE-only).
+   //
+   // EXCEPT THE PARITY BUS, which rv_soc_top now drives. It was tied to 0 here while
+   // ILA_PARITY was still selectable, so an ILA_PARITY build of the ooo2 core captured a
+   // CONSTANT and read as "no error ever" -- a diagnostic that cannot fail is worse than
+   // none, because it answers. Caught only because probe_pc_dbg and probe_lsu are also
+   // tied off here and a capture with every probe identically zero is not a clean result,
+   // it is a dead one. Those two stay tied: rv_soc_top has no such outputs yet, so probe2
+   // and probe3 of ila_parity remain uninformative for this core.
    assign pddr_wmask      = {64{1'b1}};
-   assign probe_par_err   = 2'd0;
-   assign probe_par_dbg   = 64'd0;
    assign probe_timer_dbg = 64'd0;
    assign probe_pc_dbg    = 64'd0;
    assign probe_mtvec_dbg = 64'd0;
