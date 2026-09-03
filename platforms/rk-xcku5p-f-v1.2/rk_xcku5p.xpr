@@ -418,7 +418,7 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_rs.v">
+      <File Path="$PPRDIR/../../ooo2/ooo2_iq.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>

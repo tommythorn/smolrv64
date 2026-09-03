@@ -139,6 +139,10 @@ timing:
 util:
 	$(VIVADO) $(VFLAGS) -source report_util.tcl
 
+# Where each block physically sits, by clock region. The input to any floorplanning.
+place-report:
+	$(VIVADO) $(VFLAGS) -source report_place.tcl
+
 # Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
 # (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
 physopt:

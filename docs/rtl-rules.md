@@ -575,6 +575,31 @@ same trap `OOO2_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
 default in `build.tcl` (`c4134edd`); this rule said `Explore` for a day after
 that stopped being true, which is D9 applied to a document.
 
+**FLOORPLANNING IS NOT THE LEVER HERE -- TESTED AND REFUTED, 2026-09-03.** The obvious
+reading of "65-83% route on a die that is only a third full" is that the design is
+spread and wants compacting. `make place-report` showed `probe_core/core`'s 53,634
+cells over NINE clock regions with `u_prf` mostly in X2Y3 and `u_sq` mostly in X3Y2,
+diagonally apart. A pblock confining the core to six contiguous regions
+(X1Y2:X3Y3, ~8,900 cells per region, no exclusion so the caches could still share
+X1Y2) made it WORSE: WNS -0.206 / TNS -117 against 0.000 unconstrained.
+
+The failing paths say why, and they did not move outside the core:
+
+    u_sq/v_reg[2]        -> u_iq_i/e_r_reg[8][1]     70% route
+    u_rename/lv_reg[15]  -> u_iq_l/e_r_reg[9][2]     82% route
+    u_sq/v_reg[2]        -> ps_out_reg[10]/CE        72% route
+
+These are SINGLE CONTROL REGISTERS fanning out to every issue-queue entry's ready
+bits. `e_r` is per-entry wakeup state, so its destinations are spread BY CONSTRUCTION;
+the route being timed is the fanout tree, not a journey between two blocks. Confining
+the core gave the placer less room to spread the replicas it needs, which is exactly
+what `AltSpreadLogic_medium` was chosen to do. Distance was never the mechanism.
+
+So the lever is FANOUT, not placement: either fewer broadcast consumers, or readiness
+held as state per physical register instead of recomputed from control that must reach
+every entry. `ooo2_pending` (ooo2_core.v, brought up as a shadow under I3, nothing
+consuming it yet) is exactly that structure and is the thing to finish.
+
 **THE DESIGN HAS NO MARGIN ANYWHERE, and that is the real finding.** Across the
 D$ work, six builds failed on SIX UNRELATED PATHS -- the D$ accept cone,
 `u_lq/acc -> u_iq_i/e_r`, `u_sq/head -> u_iq_i/e_r`, virtio DMA ->
