@@ -112,6 +112,29 @@ policy that turned `23ede45` into a boot wedge instead of a one-line abort.
 **A5. A fix ships with the invariant it violated, always on.**
 Not the debug tracer used to find it. The invariant.
 
+**A6. An invariant states the HAZARD, not the route to it.**
+A check phrased in the same terms as the gate it is checking has the gate's
+blind spot, and reports success from inside it. A1 above holds up `cache.v`'s
+two-L2-transactions tripwire as the model to copy; in the `rv_cache.v` fork that
+model is exactly what a real bug walked past. The tripwire (`5ce1666a`) is
+`l2_req && l2_out && !l2_ack` -- *is a new request being raised while one is
+outstanding*. The prefetch engine's own guard was `!l2_req`, so the prefetcher
+can never raise `l2_req` in a cycle where the tripwire could observe it. Check
+and bug were both written in terms of the request pulse. 300 M cosim cycles ran
+green with two transactions genuinely outstanding, and `5ce1666a` concluded in
+writing that the race does not occur.
+
+The hazard is not "two requests raised in one cycle". It is **two consumers
+waiting on one untagged ack** -- state, not an event. Written that way,
+`pf_infl && fst inside {F_FILLW, F_WBA, F_FLUSHA}`, it holds no matter which
+gate the issue path uses, and it fired on the first run at realistic memory
+latency after being silent for the life of the bug.
+
+The test to apply before believing a check: **if someone changed the gate, would
+this still catch the bug?** If the check restates the gate's own condition, the
+answer is no, and it is decoration that costs trust. Assert the state that must
+never hold, never the transition you believe leads there.
+
 ---
 
 ## B. Identity and ownership
@@ -172,6 +195,25 @@ clean. `pf_drop` and the `S_IDLE` clear deliver that across three separate
 sites and nothing checked the property they collectively provide; it is now
 asserted at flush completion. Where a design keeps a shadow copy, name the
 fate-sharing property and assert it — do not assert exclusivity you do not have.
+
+**B6. A shared port's BUSY covers the whole round trip, not the request pulse.**
+`l2_req` is a one-cycle pulse, so a second user gated on `!l2_req` is gated on
+nothing: the cycle after the first request the pulse is already low and the
+response is still in flight. The port *looks* free for the entire memory
+latency. That is how `rv_cache.v` came to have two L2 requests outstanding
+against one untagged ack -- both consumers latched it, and the stream buffer
+filed the demand line's bytes under the address it had asked for. Right tag,
+wrong data, which no parity or provenance check can see (parity is computed on
+the write, so wrong data gets consistent parity, and the row read is the row
+asked for). `PF_EN` is I$-only, so it corrupted INSTRUCTIONS: the board died in
+arbitrary places with both integrity checks silent.
+
+The gate is *issued OR outstanding* -- `fill_l2_busy`, naming every fill,
+writeback and flush state that awaits an ack. This is B1 seen from the requester
+side: when an ack carries no tag, the only thing keeping it matched to its
+requester is that there is exactly one, and that is a property of the ISSUE
+GATE, not of the pulse. Either tag the transaction or make the gate cover the
+latency; `!<req_pulse>` is neither.
 
 ---
 
@@ -297,6 +339,23 @@ was issuing — 11 atomics tests and `rv64uc-v-rvc`, none of which touch FP. Hol
 the request in a register and hand the caller a registered `ready`. A gate that
 waives UNOPTFLAT cannot be the thing that finds this, so the interface rule has
 to.
+
+**D9. Splitting a machine invalidates every predicate that names its states.**
+A guard reading "X is only ever raised in states outside this set" is a theorem
+about one state encoding, not a fact about the design, and it does not survive
+the encoding changing under it. `rv_cache.v`'s prefetch guard named `st` states
+and was true when a single FSM owned both the hit path and the fills. `2e3791c`
+moved L2 requests to the new `fst` machine and left the guard on `st` -- and
+since the split `st` sits in `S_IDLE` for the WHOLE fill, the window the guard
+permits grew to cover precisely the cycles the port is busy. The guard did not
+merely stop working; it inverted. The comment above it still asserted the old
+invariant in the old machine's vocabulary, which is why it read as reviewed and
+correct for four commits.
+
+When a machine is split, `grep` every reference to the states of the machine
+that changed and re-derive each predicate against the new one, comment included.
+A stale comment stating a no-longer-true theorem is worse than no comment: it is
+the thing that stops the next reader from checking.
 
 ---
 

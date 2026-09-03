@@ -553,6 +553,16 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   access, a CBO and a line-spanning access are SOLO: each shares state with the fill machine,
   so it is taken only while that machine is idle. A plain cached read shares none of it,
   which is exactly why it is the one allowed to overlap a fill.
+- **The cache's L2 port is single-outstanding, and that is a CONTRACT, not an observation.**
+  `l2_ack` carries no tag, so the only thing binding a response to its requester is that
+  exactly one request is in flight. Two things in the cache fetch lines -- the fill machine
+  and, on the I$, the next-line prefetcher -- and they are serialised by `fill_l2_busy`
+  (`F_FILL`, `F_FILLW`, `F_WBI`, `F_WBA`, `F_FLUSHI`, `F_FLUSHA`, `S_WTI`, `S_WTA`: issued
+  OR outstanding) together with the prefetcher's own `pf_infl`. Gating on the `l2_req` pulse
+  is NOT sufficient -- it is a single cycle, so the port reads as free for the whole memory
+  latency -- and doing so shipped a wrong-line-under-a-correct-tag bug that no parity or
+  provenance check could see. An always-on invariant now asserts the hazard directly (a
+  prefetch in flight while the fill machine awaits an ack). Rules A6, B6 and D9.
 - **A plain store and a plain load leave M without touching memory.** Their M pass only
   TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by

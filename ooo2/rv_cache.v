@@ -324,9 +324,6 @@ module rv_cache #(
    wire fill_banks  = (fst==F_WBR) | (fst==F_WBW) | (fst==F_FLUSHR) | (fst==F_FLUSHW)
                     | (fst==F_FILLI);
 
-   // The two things that can raise l2_req in one cycle, named so the invariant below can
-   // say so. The prefetch's own guard is `!l2_req`, which is REGISTERED and therefore
-   // cannot see a same-cycle raiser -- that blind spot is the defect.
    // THE FILL MACHINE HAS AN L2 REQUEST ISSUED OR OUTSTANDING. Not "is issuing this
    // cycle": the hazard is the whole ROUND TRIP. l2_req is a one-cycle pulse, so the cycle
    // after the fill machine issues, l2_req is low again and fst is F_FILLW -- both of the
