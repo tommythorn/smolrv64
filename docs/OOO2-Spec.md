@@ -64,10 +64,10 @@ The scheduler holds the instruction until its sources are ready and then issues 
 **fixed priority, lowest entry index** — there is no age anywhere (§6.1).
 
 What may reorder is deliberately narrow, but it is no longer only the ALU. **Pure ALU ops
-and FP arithmetic both reorder freely**, in `u_rs_i` and `u_rs_f` respectively. An ALU op
+and FP arithmetic both reorder freely**, in `u_iq_i` and `u_iq_f` respectively. An ALU op
 completes at issue; an FP op goes to stage F. Neither ever enters M.
 
-Everything else carries an `ord` bit and keeps program order in `u_rs_l` — memory, AMO,
+Everything else carries an `ord` bit and keeps program order in `u_iq_l` — memory, AMO,
 mul, div, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault. Only
 memory actually requires that ordering; the rest inherit it because they share M (§6.1).
 
@@ -128,7 +128,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~rs_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (policy is 8; 5 is the largest that closes timing) (§6.1) |
+| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (policy is 8; 5 is the largest that closes timing) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
 
@@ -223,7 +223,7 @@ CSR read and a jump's link register are integer results, but M produces them, so
 LD. Leaving those two in IE gave that shard a second writer, and the only way to keep one
 write port was to hold the ALU off whenever M was writing IE — which put the entire LSU
 completion cone inside the integer scheduler's ready bits. Post-route that was the critical
-path: `m_addr -> lsu -> m_done -> m_wb_ie -> u_rs_i/e_r[9][1]`, 24 logic levels, WNS
+path: `m_addr -> lsu -> m_done -> m_wb_ie -> u_iq_i/e_r[9][1]`, 24 logic levels, WNS
 -0.383 ns at 166.67 MHz. Applying the rule was worth **+0.397 ns** and is what closed
 166.67 MHz with dynamic issue. With it, `m_wb_ie` is identically zero (asserted in
 `ooo2_core`, not assumed) and the integer scheduler has no `unit_busy` term at all.
@@ -269,7 +269,7 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
 
-### 6.1 Scheduler (`ooo2_rs`) — LIVE
+### 6.1 Scheduler (`ooo2_iq`) — LIVE
 
 It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
 is not needed alongside it.
@@ -379,13 +379,13 @@ The `probe_clk` effect is **not yet built and therefore not yet known**; rule I2
 when it is.
 
 **Minimum 8 entries for any scheduler is policy.** Measurement does not currently justify it
-for `u_rs_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and
+for `u_iq_f` -- blurbench is 29.44 cycles/pixel and saxpybench 22.08 at both 4 and 8, and
 `NF`=8 costs 22 ps of `probe_clk` -- but both of those workloads are limited elsewhere (FP
 latency, and in-order memory issue), so neither can see a deeper FP queue. Recorded as a
 standing rule rather than a measured optimum, and worth re-measuring once the store buffer
 moves the wall.
 
-| | `u_rs_i` | `u_rs_l` | `u_rs_f` |
+| | `u_iq_i` | `u_iq_l` | `u_iq_f` |
 |---|---|---|---|
 | entries (`NENT`) | 10 | 12 | 5 |
 | sources (`NSRC`) | 2 | 3 | 3 |
@@ -402,17 +402,17 @@ enters M**. It cannot head-block because it cannot trap: a bad encoding is `~d_f
 and `mstatus.FS=Off` routes FP to M as before (a write to FS redirects and refetches, so
 the value read at dispatch is what every in-flight FP op retires under).
 
-**Only `u_rs_l` is in-order, and it should not be at all.** In-order ISSUE is not what
+**Only `u_iq_l` is in-order, and it should not be at all.** In-order ISSUE is not what
 memory ordering requires (`Area-Efficient-Scalar-OoO.md` 11.1): an address calculation is
 ordinary ALU work, so loads and stores should issue as soon as their address operands are
 ready, in any order, with the ordering living in a **load queue** (program order in, out of
 order out) and a **store buffer** (indexed by store-seqno, committing when data is ready).
 
-`u_rs_l` is in-order because neither structure exists yet, and the cost falls on far more
+`u_iq_l` is in-order because neither structure exists yet, and the cost falls on far more
 than memory: **mul/div, CSR, branches and jumps are all serialized for a constraint only
 loads and stores ever had.** They cannot be split into a fourth scheduler while they share
 M -- two schedulers feeding one execute stage is the 12.2 deadlock -- so the order of work
-is P2 (delete `head_block`), then the load queue and store buffer, then `u_rs_l` reorders
+is P2 (delete `head_block`), then the load queue and store buffer, then `u_iq_l` reorders
 and no scheduler is in-order.
 
 ### Out-of-order FP: why the flags are safe and the rounding mode is not
@@ -442,7 +442,7 @@ if (m_valid & m_is_csr & (fpu_busy | f_valid))
 Verified over 240/240 and 300M cycles of Linux boot, which exercises dynamic rounding in
 glibc.
 
-`u_rs_f` reorders, and that is the point rather than a detail. `workloads/blurbench`, taken
+`u_iq_f` reorders, and that is the point rather than a detail. `workloads/blurbench`, taken
 from a hardware trace of GB5 Gaussian Blur, is a 4-deep serial `fadds` chain whose taps are
 independent; in-order issue held it at exactly its critical path (39.50 cycles/pixel against
 5 dependence levels x 8 cycles) because the next iteration's multiplies could not start
@@ -490,7 +490,7 @@ only `fmadd` has: 20 bits/entry against 29.
   M and the scheduler cannot offer it before the next cycle, so at issue the payload holds
   exactly what M holds — `pc`, `insn`, `imm`, `rd`, `prd` are compared every cycle.
 
-Gates: `ooo2/run-ooo2-rs-tb.sh` (seconds, 13 checks) plus the payload check above, which
+Gates: `ooo2/run-ooo2-iq-tb.sh` (seconds, 13 checks) plus the payload check above, which
 runs inside every 240-test and cosim run.
 
 ---
@@ -704,9 +704,9 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
-| `u_rs_i` entry | `ooo2_rs` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
-| `u_rs_l` entry | `ooo2_rs` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `u_rs_f` entry | `ooo2_rs` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
+| `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
+| `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 281 | 2 248 | LUTRAM | F/X queue |
@@ -840,7 +840,7 @@ pinned by the MIG's `ui_clk`.
 - **One load and one mul/div outstanding.** FP is no longer among them: `NFLIGHT`=4 and
   results return by tag, out of issue order (§7).
 - **ALU and FP ops reorder** (§2.1); memory, mul, div, CSR, branches and jumps still issue
-  in program order from `u_rs_l`. A long-latency op in M still blocks *other M-class ops*
+  in program order from `u_iq_l`. A long-latency op in M still blocks *other M-class ops*
   behind it. Freeing those needs the load queue and store buffer, and `head_block` gone.
 - **M is a single execute slot** for everything except ALU ops (which complete at issue) and
   FP arithmetic (stage F), so one M-class long-latency op is in flight at a time.
@@ -938,8 +938,8 @@ M-class waits during them -- rather than a separate cost on top:
 
 It is two conflations and they resolve differently.
 
-**Scheduler — dissolves for free.** mul/div sit in `u_rs_l` and inherit memory's in-order
-issue. Once ordering moves to the load queue and store buffer (P0), `u_rs_l` reorders and
+**Scheduler — dissolves for free.** mul/div sit in `u_iq_l` and inherit memory's in-order
+issue. Once ordering moves to the load queue and store buffer (P0), `u_iq_l` reorders and
 this cost disappears without anyone touching mul/div.
 
 **Shard — not actually a conflation.** Under shard-by-writer, `SH_LD` means "the shard M
@@ -980,13 +980,13 @@ cheapest option, and they were not obvious:
 - **`SH_FE` already holds INTEGER destinations** (`N_FE = 128, // > 64: the FPU writes
   INTEGER regs too` -- `fcvt.w.d`, `fmv.x.d`, `fle.d`). A mul's integer destination renamed
   into FE is an existing case, not a new one.
-- **`u_rs_f` is already `FIXEDL`=0**, i.e. wake-at-writeback, which is exactly what a
+- **`u_iq_f` is already `FIXEDL`=0**, i.e. wake-at-writeback, which is exactly what a
   variable-latency op needs.
 
 So it needs: `d_shard` routing mul/div to `SH_FE`, `mul3`/`divider` hung off stage F, and
 the FE write port arbitrated between FP and MD results. **No new scheduler, no fourth
 shard, no extra read ports, no IE arbitration**, and it inherits the tag mechanism that
-already lets FP complete out of order. `u_rs_l` is then memory-only and goes unary.
+already lets FP complete out of order. `u_iq_l` is then memory-only and goes unary.
 
 **mul and div are treated identically at issue. There is no per-entry bit.** An earlier
 draft of this section reached for a readiness gate (`~e_var[g] | ~md_busy`) so that a
@@ -1015,20 +1015,20 @@ therefore does gate issue. It is registers-only, so it is not the worst version 
 mistake, but it is the same shape and should become a FIFO with frontend back-pressure when
 this is built.
 
-#### Alternative considered: with the ALU ops, in `u_rs_i` A fourth scheduler and stage
+#### Alternative considered: with the ALU ops, in `u_iq_i` A fourth scheduler and stage
 would need a **fourth PRF shard** -- one writer per shard is the property the register file
 rests on, and mul/div can write neither `SH_IE` (that reintroduces the second writer whose
 removal was worth 397 ps) nor `SH_LD` (the LSU owns it after P0). It would *not* need extra
 read ports, contrary to a first reading: there is one set of `ra1/ra2/ra3` and a single
-issue slot (`rs_iss_v = pick_l | pick_f | pick_i`), so a fourth scheduler shares them. Read
+issue slot (`iq_iss_v = pick_l | pick_f | pick_i`), so a fourth scheduler shares them. Read
 ports only become the cost under multi-issue.
 
-The cheaper route keeps mul/div in `u_rs_i`, which is already `NSRC`=2, and teaches the
+The cheaper route keeps mul/div in `u_iq_i`, which is already `NSRC`=2, and teaches the
 scheduler that some of its entries are not fixed-latency:
 
 | | |
 |---|---|
-| routing | mul/div -> `u_rs_i`, no new scheduler and no new shard |
+| routing | mul/div -> `u_iq_i`, no new scheduler and no new shard |
 | new state | one per-entry `var` bit, set at dispatch |
 | ready | `& (~e_var[g] \| ~md_busy)` -- gates mul/div entries only; ALU entries unaffected |
 | wakeup | `self_v = ~e_var[sel] & do_iss` -- wake-at-select for ALU, wake-at-writeback for mul/div |
@@ -1041,7 +1041,7 @@ waits, and the rare case (1.2% of ops) absorbs the stall -- the shared write por
 nothing on the common path.
 
 `FIXEDL` is a module parameter today, so making it per-entry is the one real change inside
-`ooo2_rs`: one bit of storage and a mux on the selected entry. **The scheduler change can
+`ooo2_iq`: one bit of storage and a mux on the selected entry. **The scheduler change can
 be avoided entirely** by dispatching mul/div as if their destination were `x0` -- `prd`=0
 broadcasts to nobody at select, so no dependent wakes early -- while the real physical
 destination travels in the payload and is used at writeback. `x0` is already a handled
@@ -1080,14 +1080,14 @@ access out of order in the first place.
 
 Fixed in `f637fc8`, and the history matters because these numbers appear throughout:
 
-- `rs_blk_pr` was a **priority mux** (LD, then FP, then integer), so an FP dependency was
+- `iq_blk_pr` was a **priority mux** (LD, then FP, then integer), so an FP dependency was
   invisible in any cycle the LD scheduler was also blocked and got charged to `ST_MEM`.
   Now each scheduler is classified on its own shard and OR-ed.
 - `ST_FPU` was `(st_m & fp_arith) | dep_fp`, and `fp_arith` is identically 0 since FP left
   M — the FPU's own occupancy vanished from the stack when it got stage F. Now
   `(f_valid & ~fp_disp) | dep_fp`.
 - `dep_*` was gated on `m_advance`, from when "M could accept" and "issue could proceed"
-  were the same statement. It masked completely on memory-heavy code. Now `~rs_iss_v`.
+  were the same statement. It masked completely on memory-heavy code. Now `~iq_iss_v`.
 
 **Every CPI stack recorded above predates these fixes** and overstates `ST_MEM` at the
 expense of `ST_FPU`. On `mlbench` the correction moved `ST_MEM` 41% → 33%.
@@ -1196,10 +1196,10 @@ also unchanged. The ROB fills *because* something downstream is slow.
 filled *because* something downstream was slow, not the reverse. And `FE_BUB` is 0%, so the
 frontend is innocent here.
 
-**The remaining candidate is `u_rs_l` being in-order.** A store waits for `rs2` -- the
+**The remaining candidate is `u_iq_l` being in-order.** A store waits for `rs2` -- the
 `fadds` result, ~21 cycles away -- and while it waits it holds the head of an in-order
 queue, so the *next* element's loads cannot issue behind it. Independent work, perfectly
-serialized. (An attempt to confirm by setting `INORDER(0)` on `u_rs_l` produced no output at
+serialized. (An attempt to confirm by setting `INORDER(0)` on `u_iq_l` produced no output at
 all: the head pointer is load-bearing for M's single-slot coherence, so the upside cannot be
 measured that cheaply.)
 
@@ -1241,11 +1241,11 @@ is FP-heavy, so it should move a lot. That is what happened:
 
 **The direction on blurbench was the opposite of predicted, and the reason matters.** The
 expectation was that mis-charged FP dependencies would move `ST_MEM` -> `ST_FPU`. The
-dominant effect is the reverse: in blur, `u_rs_f` blocks waiting on LOAD results (the taps
-are `flw`), i.e. on `SH_LD` registers. The old priority mux reported only `u_rs_l`'s own
+dominant effect is the reverse: in blur, `u_iq_f` blocks waiting on LOAD results (the taps
+are `flw`), i.e. on `SH_LD` registers. The old priority mux reported only `u_iq_l`'s own
 block, whose sources are address registers in `SH_IE` and so counted as *neither* event --
 so the FP scheduler's waits on memory were invisible entirely. They correctly land in
-`ST_MEM` now. `ST_FPU` falls because the stricter `~rs_iss_v` gate removes over-counting.
+`ST_MEM` now. `ST_FPU` falls because the stricter `~iq_iss_v` gate removes over-counting.
 
 ### Two score-1 workloads share shapes we already model
 
@@ -1364,7 +1364,7 @@ Built at `7926354` and reverted. `probe_clk` **-0.434 ns, 880 failing endpoints*
 
 **No BTB, `apc` or predictor path appears anywhere in the failing set.** The prediction that
 6 BRAMs would put ~72 pins on `apc[12:1]` and cost route on that path was simply wrong. What
-failed is `m_addr -> u_rs_i/i_ps*` and `i_ps2 -> u_prf/mem_ie` — the scheduler wakeup and
+failed is `m_addr -> u_iq_i/i_ps*` and `i_ps2 -> u_prf/mem_ie` — the scheduler wakeup and
 the PRF write, 74% route, and both were already sitting at exactly 0.000.
 
 That is rule I1 verbatim: *area anywhere buys congestion everywhere, and congestion is paid
@@ -1442,7 +1442,7 @@ It subsumes three separate entries that were on this list:
   (`rd_tag`/`rd_resp_tag`, plus 2 free bits in the LSU tag).
 - **stores and AMOs block M** -- a store that commits from a buffer when its data arrives
   does not hold an execute stage waiting for `rs2`.
-- **`u_rs_l` is in-order** -- with ordering moved to the access, the scheduler no longer
+- **`u_iq_l` is in-order** -- with ordering moved to the access, the scheduler no longer
   carries it.
 
 Measured motivation, `workloads/ldbench`, entirely L1-resident:
@@ -1536,7 +1536,7 @@ operation by its wrapper. P0 is the same shape of fix.
 
 ### P3b -- FP gets its own scheduler AND its own unit -- **DONE**
 
-`u_rs_f` (8 entries, `NSRC`=3, reordering) feeding stage F, a one-entry execute stage
+`u_iq_f` (8 entries, `NSRC`=3, reordering) feeding stage F, a one-entry execute stage
 parallel to M. Measured: `blurbench` 39.50 -> **29.44** cycles/pixel (-25%). `fpbench` is
 unchanged at 2.25 cyc/op throughput and 8.00 latency, correctly -- it was already FPU-bound
 rather than issue-bound, so the gain lands exactly where the trace predicted and nowhere

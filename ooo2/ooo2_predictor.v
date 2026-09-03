@@ -61,7 +61,7 @@ module ooo2_predictor
     // against 1024's 1 RAMB36 + 1 RAMB18. Nothing here says 1024 is nearly as good --
     // the only performance evidence is one non-branch-heavy Linux boot and a set of 19k
     // trace windows too short to judge 4096. It says 4096 does not fit.
-    // The five extra tiles were paid for by m_addr -> u_rs_i/i_ps* and i_ps2 -> u_prf,
+    // The five extra tiles were paid for by m_addr -> u_iq_i/i_ps* and i_ps2 -> u_prf,
     // which were already sitting at exactly 0.000 -- congestion is charged to whatever is
     // marginal, never to the block that grew. Raise this only with slack in hand.
     parameter BTBB  = 10,            // log2 BTB entries

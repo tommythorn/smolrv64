@@ -8,7 +8,7 @@ rediscovery. Written against the RTL as of `6642270f`.
 
 | piece | commit | state |
 |---|---|---|
-| `ooo2_rs` — oldest-ready scheduler | `300a69d9` | 16/16 unit TB |
+| `ooo2_iq` — oldest-ready scheduler | `300a69d9` | 16/16 unit TB |
 | ROB entry 28→16 bits | `c4155099` | live |
 | `ooo2_pending` — per-physreg readiness | `0ba595d0` | live as a **shadow**, soaked 300M cycles |
 | PRF: one write address per shard | `0ba595d0` | live, behaviour-neutral |
@@ -64,7 +64,7 @@ e_ps1/2/3  -> PRF read (3 ports, already exist)
            -> ooo2_exec  -> result / addr / branch resolution
 ```
 
-Unit routing, one-hot, matching `ooo2_rs`'s `unit_busy`:
+Unit routing, one-hot, matching `ooo2_iq`'s `unit_busy`:
 
 | unit | ops | busy while |
 |---|---|---|
@@ -109,7 +109,7 @@ writeback events per cycle it must be captured per ROB slot from each port.
 
 An earlier version of this note said steps 1–3 had to land together with no gateable
 intermediate. That is true only because issue REORDERS — and reordering is exactly what
-makes 4a, 4b and 4c hard. `ooo2_rs`'s `in_order` gate (`526ef02d`) splits it.
+makes 4a, 4b and 4c hard. `ooo2_iq`'s `in_order` gate (`526ef02d`) splits it.
 
 **Step I — `in_order = 1`.** Dispatch stops waiting on operands; the scheduler fills; issue
 takes the oldest LIVE entry; operands are read from the PRF at issue; M is fed from issue

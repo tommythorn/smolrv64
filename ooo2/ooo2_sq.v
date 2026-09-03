@@ -3,7 +3,7 @@
 // ooo2_sq -- the store buffer.
 //
 // WHY. A store currently waits for BOTH its address operand and its data (`rs2`) before it
-// may issue, and `u_rs_l` is in-order, so it holds the head of the queue while it waits.
+// may issue, and `u_iq_l` is in-order, so it holds the head of the queue while it waits.
 // On workloads/saxpybench (the GB5 Camera loop) the data is an `fadds` result ~21 cycles
 // away, and the next element's loads sit behind it -- 22.08 cycles/element for work whose
 // elements are completely independent. docs/Area-Efficient-Scalar-OoO.md 11: a store issues
@@ -138,7 +138,7 @@ module ooo2_sq
    // ONLY ENTRIES OLDER THAN THE LOAD COUNT, and getting this wrong deadlocks rather than
    // corrupting. Entries are allocated at DISPATCH, so the buffer also holds stores YOUNGER
    // than a load sitting in M. Blocking on those is a circular wait: the load waits for a
-   // younger store's address, and that store cannot execute because u_rs_l is in-order and
+   // younger store's address, and that store cannot execute because u_iq_l is in-order and
    // the load is at its head. Measured: it hung 115 of 240 tests.
    //
    // The load carries the store-seqno it captured at dispatch -- `d_tag`, the tail at that

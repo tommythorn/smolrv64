@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-// Unit TB for ooo2_rs. The properties, in order of what would hurt most if broken:
+// Unit TB for ooo2_iq. The properties, in order of what would hurt most if broken:
 //   1. a ready entry issues, and every dispatched entry issues exactly ONCE
 //   2. an entry whose source is not ready does NOT issue
 //   3. a wakeup arriving in the dispatch cycle is not lost (a producer broadcasts once)
@@ -21,19 +21,18 @@ module tb;
    wire d_ready, iss_v, blk_v;
    wire [IDXB-1:0] d_ent, iss_ent;
    wire [ROBB-1:0] iss_rob;
-   wire [NSRC*PBITS-1:0] iss_ps;
    wire [PBITS-1:0] blk_pr;
    wire [IDXB:0] occupancy;
    integer errs=0;
 
-   ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
+   ooo2_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
              .FIXEDL(1)) dut
      (.clk(clk),.reset(reset),
       .d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),.d_ps(d_ps),.d_r(d_r),
       .d_prd(d_prd),.d_ent(d_ent),
       .wb_v(wb_v),.wb_preg(wb_preg),
       .unit_busy(unit_busy),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
-      .iss_ps(iss_ps),.iss_take(iss_take),
+      .iss_take(iss_take),
       .hold_v(hold_v),.hold_ent(hold_ent),
       .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.occupancy(occupancy));
 
@@ -43,16 +42,16 @@ module tb;
    reg [NWB-1:0] io_wb_v=0; reg [NWB*PBITS-1:0] io_wb_preg=0;
    wire io_iss_v, io_d_ready, io_blk_v;
    wire [ROBB-1:0] io_iss_rob;
-   wire [IDXB-1:0] io_d_ent, io_iss_ent; wire [NSRC*PBITS-1:0] io_iss_ps;
+   wire [IDXB-1:0] io_d_ent, io_iss_ent;
    wire [PBITS-1:0] io_blk_pr; wire [IDXB:0] io_occ;
-   ooo2_rs #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
+   ooo2_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
              .FIXEDL(0),.INORDER(1)) dut_io
      (.clk(clk),.reset(reset),
       .d_valid(io_d_valid),.d_ready(io_d_ready),.d_rob(io_rob),.d_ps(io_ps),.d_r(io_r),
       .d_prd({PBITS{1'b0}}),.d_ent(io_d_ent),
       .wb_v(io_wb_v),.wb_preg(io_wb_preg),
       .unit_busy(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
-      .iss_ps(io_iss_ps),.iss_take(io_take),
+      .iss_take(io_take),
       .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),
       .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.occupancy(io_occ));
 
@@ -175,8 +174,8 @@ module tb;
          end else $display("  ok  inorder: then the next in program order");
       end
 
-      $display("---- RS-TB %s (errs=%0d)", errs==0 ? "PASS":"FAIL", errs);
+      $display("---- IQ-TB %s (errs=%0d)", errs==0 ? "PASS":"FAIL", errs);
       $finish;
    end
-   initial begin #300000; $display("---- RS-TB TIMEOUT"); $finish; end
+   initial begin #300000; $display("---- IQ-TB TIMEOUT"); $finish; end
 endmodule

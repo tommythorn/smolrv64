@@ -152,7 +152,7 @@ module tb;
    // ---- PIPEVIEW: cycle-by-cycle waterfall, +pipe=<start> [+pipe_n=<cycles>] ---------
    // Peeks the core; no DUT change. Aggregate counters stopped being trustworthy when the
    // schedulers split -- ST_FPU counts only dep_fp now that FP never enters M, and
-   // rs_blk_pr gives the LD scheduler priority, so an FP dependency behind a load is
+   // iq_blk_pr gives the LD scheduler priority, so an FP dependency behind a load is
    // charged to ST_MEM. A waterfall does not have that problem: it shows which stage each
    // instruction sat in, per cycle, and where the gaps are.
    //
@@ -168,8 +168,8 @@ module tb;
       if (pv_from >= 0 && pv_c >= pv_from && pv_c < pv_from + pv_n) begin
          $write("pv %0d |", pv_c);
          if (dut.core.d_take)      $write(" DIS:%0d", dut.core.rob_d_idx);   else $write("        ");
-         if (dut.core.rs_iss_take) $write(" ISS:%s%0d",
-              dut.core.pick_l ? "L" : dut.core.pick_f ? "F" : "I", dut.core.rs_iss_rob);
+         if (dut.core.iq_iss_take) $write(" ISS:%s%0d",
+              dut.core.pick_l ? "L" : dut.core.pick_f ? "F" : "I", dut.core.iq_iss_rob);
                                                                              else $write("        ");
          if (dut.core.iss_alu)     $write(" ALU:%0d", dut.core.i_rob);       else $write("        ");
          if (dut.core.iss_m)       $write(" M:%0d",   dut.core.i_rob);       else $write("      ");
@@ -182,7 +182,7 @@ module tb;
       end
    end
 
-   wire sb_dep    = dut.core.rs_blk_v;
+   wire sb_dep    = dut.core.iq_blk_v;
    wire sb_recov  = dut.core.st_mem & dut.core.d_valid
                   & ~dut.core.d_is_mem & ~dut.core.d_is_amo & ~dut.core.d_is_serialize
                   & ~sb_dep;
@@ -237,7 +237,7 @@ module tb;
       if (~dut.core.sq_d_ready)    n_sqfull  <= n_sqfull  + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
       if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
-      if (dut.core.rs_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
+      if (dut.core.iq_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
       if (~dut.core.rob_ready & dut.core.d_valid)   n_robfull <= n_robfull + 1;
       if (dut.core.head_block)                      n_headblk <= n_headblk + 1;
       if (~dut.core.m_valid)                        n_mempty  <= n_mempty + 1;

@@ -22,7 +22,7 @@
 //   FP        ~4 entries, 3 sources (FMA is the only thing that needs a third)
 // which is also one scheduler per PRF shard -- the condition doc 7 names for the writeback
 // arbiter to disappear.
-module ooo2_rs
+module ooo2_iq
   #(parameter NENT   = 12,
     parameter IDXB   = 4,             // $clog2(NENT)
     parameter NSRC   = 2,             // 3 only for the FP scheduler (FMA)
@@ -213,19 +213,19 @@ module ooo2_rs
    // ---- invariants (always on: docs/rtl-rules.md A1) ---------------------------------
    always @(posedge clk) if (!reset) begin
       if (d_valid & ~d_ready & ~flush)
-         $fatal(1, "ooo2_rs: dispatch into a full scheduler");
+         $fatal(1, "ooo2_iq: dispatch into a full scheduler");
       if (do_disp & v[fsel])
-         $fatal(1, "ooo2_rs: dispatch into occupied entry %0d", fsel);
+         $fatal(1, "ooo2_iq: dispatch into occupied entry %0d", fsel);
       if (do_disp & held[fsel])
-         $fatal(1, "ooo2_rs: dispatch into the entry still held downstream (%0d)", fsel);
+         $fatal(1, "ooo2_iq: dispatch into the entry still held downstream (%0d)", fsel);
       if (iss_take & ~iss_v)
-         $fatal(1, "ooo2_rs: consumer took an issue that was not offered");
+         $fatal(1, "ooo2_iq: consumer took an issue that was not offered");
       if (do_iss & ~v[sel])
-         $fatal(1, "ooo2_rs: issued entry %0d holds nothing", sel);
+         $fatal(1, "ooo2_iq: issued entry %0d holds nothing", sel);
       if (do_iss & unit_busy)
-         $fatal(1, "ooo2_rs: issued to a busy unit");
+         $fatal(1, "ooo2_iq: issued to a busy unit");
       if ((INORDER != 0) & do_iss & (sel != qhead))
-         $fatal(1, "ooo2_rs: in-order scheduler issued %0d, not the head %0d", sel, qhead);
+         $fatal(1, "ooo2_iq: in-order scheduler issued %0d, not the head %0d", sel, qhead);
    end
 endmodule
 

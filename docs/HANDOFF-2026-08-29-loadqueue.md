@@ -44,7 +44,7 @@ Timing, in order:
   already carries, so they are recomputed at resolve instead of riding along. Only
   `yidx` still rides (it folds the predict-time GHR). **4096 was built and reverted**:
   it cost **434 ps**, and not where predicted — no BTB path failed at all; the extra
-  five RAMB36 pushed `m_addr -> u_rs_i/i_ps*` and `i_ps2 -> u_prf` over, both already
+  five RAMB36 pushed `m_addr -> u_iq_i/i_ps*` and `i_ps2 -> u_prf` over, both already
   at 0.000. That is rule I1 verbatim, and I1's own worked example is `u_prf/mem_ie`.
 
 Memory:
@@ -169,7 +169,7 @@ the **cosim**, not the 240 suite.
 **Loads must carry a store-seqno.** Store-buffer entries are allocated at *dispatch*,
 so the buffer also holds stores **younger** than a load sitting in M. Blocking on those
 is a circular wait — the load waits for a younger store's address, and that store
-cannot execute because `u_rs_l` is in-order and the load is at its head. It hung 115 of
+cannot execute because `u_iq_l` is in-order and the load is at its head. It hung 115 of
 240 tests. The load carries the tail it captured at dispatch; only entries nearer the
 head count.
 

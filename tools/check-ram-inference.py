@@ -7,7 +7,7 @@ the RTL.  Two mechanisms demote an array, both of them innocuous-looking edits:
 
   broadcast READ    reading every entry in a loop (a wakeup CAM, a search, a priority pick).
                     Distributed RAM has one read port per instance, so this forces flops.
-                    ooo2_rs.v's e_ps was demoted this way and became the tail of the
+                    ooo2_iq.v's e_ps was demoted this way and became the tail of the
                     critical path; e_prd and e_rob, in the SAME module with the same entry
                     count, stayed RAM because they are read only at [sel].
 

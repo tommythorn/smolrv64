@@ -1,7 +1,9 @@
 `include "exec_pay.vh"
 `default_nettype none
 
-// One shard of the sharded scheduler: a classic CAM reservation station.
+// One shard of the sharded scheduler: a CAM-woken ISSUE QUEUE. Not a reservation station --
+// it stores source TAGS (s1/s2/s3 are PBITS wide) and ready bits, never operand values, and
+// the register file is read at issue. Same correction as ooo2_rs -> ooo2_iq.
 //
 // **Stopgap design** (the scheduler is the single most timing-critical structure and
 // gets a full rethink later). N=2 entries, 3 source operands each (rs1/rs2/rs3, the

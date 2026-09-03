@@ -340,7 +340,7 @@ module ooo2_core
    // shard a second writer, and the only way to keep one write port was to hold the ALU
    // off whenever M was writing it (`unit_busy = m_wb_ie`). That put the whole LSU
    // completion cone into the INTEGER scheduler's ready bits: the post-route critical path
-   // was m_addr -> lsu -> m_done -> m_wb_ie -> u_rs_i/e_r[9][1], 24 levels, -0.383 ns.
+   // was m_addr -> lsu -> m_done -> m_wb_ie -> u_iq_i/e_r[9][1], 24 levels, -0.383 ns.
    // With this line the ALU is SH_IE's only writer, m_wb_ie is identically 0 (asserted
    // below, not assumed), and the integer scheduler has no unit_busy term at all.
    // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
@@ -413,7 +413,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
-   // i_rob, not rs_iss_rob: M is loaded from the ISSUE REGISTER now, a cycle after
+   // i_rob, not iq_iss_rob: M is loaded from the ISSUE REGISTER now, a cycle after
    // selection. Naming the current selection here let M's slot drift from the instruction
    // M actually holds, and both completion ports then marked the same entry done.
    always @(posedge clk) if (m_advance) m_rob_idx <= i_rob;
@@ -605,8 +605,8 @@ module ooo2_core
    wire i_needs_f;                     // ...or an F-class one
    wire f_advance;
 
-   ooo2_rs #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(1),.INORDER(0)) u_rs_i
+   ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
       .d_valid(rn_valid & d_cls_i),.d_ready(ri_ready),.d_rob(rob_d_idx),
       .d_ps({rn_prs2, rn_prs1}),.d_r(d_srdy[1:0]),.d_prd(d_prd_g),.d_ent(ri_d_ent),
@@ -616,8 +616,8 @@ module ooo2_core
       .hold_v(i_v & (i_cls == C_I)),.hold_ent(i_ent[IBI-1:0]),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
 
-   ooo2_rs #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(0),.INORDER(1)) u_rs_l
+   ooo2_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(0),.INORDER(1)) u_iq_l
      (.clk(clk),.reset(reset),
       .d_valid(rn_valid & d_cls_l),.d_ready(rl_ready),.d_rob(rob_d_idx),
       .d_ps({rn_prs3, rn_prs2, rn_prs1}),.d_r(d_srdy),.d_prd(d_prd_g),.d_ent(rl_d_ent),
@@ -633,8 +633,8 @@ module ooo2_core
    // (workloads/blurbench) is a 4-deep serial fadds chain whose taps are independent, and
    // it ran at exactly its critical path (39.50 cyc/px against 5 levels x 8 cycles) because
    // in-order issue would not let the NEXT iteration's multiplies start early.
-   ooo2_rs #(.NENT(NF),.IDXB(IBF),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(0),.INORDER(0)) u_rs_f
+   ooo2_iq #(.NENT(NF),.IDXB(IBF),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(0),.INORDER(0)) u_iq_f
      (.clk(clk),.reset(reset),
       .d_valid(rn_valid & d_cls_f),.d_ready(rf_ready),.d_rob(rob_d_idx),
       .d_ps({rn_prs3, rn_prs2, rn_prs1}),.d_r(d_srdy),.d_prd(d_prd_g),.d_ent(rf_d_ent),
@@ -646,8 +646,8 @@ module ooo2_core
       .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
 
    // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
-   wire rs_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;
-   wire [RS_IDXB-1:0] rs_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
+   wire iq_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;
+   wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
                                : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
                                :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
    wire [PL_IB-1:0] pl_w_idx = d_cls_i ? (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_d_ent})
@@ -660,22 +660,22 @@ module ooo2_core
    wire pick_l = rl_iss_v;
    wire pick_f = rf_iss_v & ~pick_l;
    wire pick_i = ri_iss_v & ~pick_l & ~pick_f;
-   wire rs_iss_v = pick_l | pick_f | pick_i;
+   wire iq_iss_v = pick_l | pick_f | pick_i;
    wire [1:0] pick_cls = pick_l ? C_L : pick_f ? C_F : C_I;
-   wire [RS_IDXB-1:0] rs_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
+   wire [RS_IDXB-1:0] iq_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
                                  : pick_f ? {{(RS_IDXB-IBF){1'b0}}, rf_iss_ent}
                                  :          {{(RS_IDXB-IBI){1'b0}}, ri_iss_ent};
    wire [PL_IB-1:0] pl_r_idx = (i_cls == C_I) ? (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, i_ent[IBI-1:0]})
                              : (i_cls == C_L) ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, i_ent[IBL-1:0]})
                              :                  (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, i_ent[IBF-1:0]});
-   wire [ROB_IDXB-1:0] rs_iss_rob = pick_l ? rl_iss_rob : pick_f ? rf_iss_rob : ri_iss_rob;
+   wire [ROB_IDXB-1:0] iq_iss_rob = pick_l ? rl_iss_rob : pick_f ? rf_iss_rob : ri_iss_rob;
    // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
    // with it. The source tags used to come OUT of each queue as `iss_ps` -- an async read of
    // the entry array (e_ps[sel], a 16:1 mux over FLOPS) then a 3-way class mux, two levels
    // landing on the i_ps* capture flops, and the tail of the post-route critical path
    // (m_addr_reg[12]_replica -> i_ps1_reg[3]/D, WNS -0.041 at DIV8=48).
    //
-   // e_ps CANNOT be a LUTRAM: ooo2_rs.v:130 broadcasts every entry's tags to the wakeup
+   // e_ps CANNOT be a LUTRAM: ooo2_iq.v:130 broadcasts every entry's tags to the wakeup
    // comparators and distributed RAM has one read port per instance. Synthesis proves the
    // split inside that very module -- e_prd and e_rob, read only at [sel], became RAM32M;
    // e_ps and e_r, read by every comparator, stayed flops. e_r MUST be flops, it is the
@@ -698,16 +698,16 @@ module ooo2_core
                              :          (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_iss_ent});
    reg  [3*RN_PBITS-1:0] psmem [0:PL_N-1];
    wire [3*RN_PBITS-1:0] ps_out = psmem[pl_s_idx];
-   always @(posedge clk) if (rn_valid & rs_ready) psmem[pl_w_idx] <= {rn_prs3, rn_prs2, rn_prs1};
-   wire [RN_PBITS-1:0] rs_iss_ps1 = ps_out[0 +: RN_PBITS];
-   wire [RN_PBITS-1:0] rs_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
-   wire [RN_PBITS-1:0] rs_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
-   wire rs_iss_take;
-   assign ri_take = pick_i & rs_iss_take;
-   assign rl_take = pick_l & rs_iss_take;
-   assign rf_take = pick_f & rs_iss_take;
-   wire rs_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
-   wire [RN_PBITS-1:0] rs_blk_pr = rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr;
+   always @(posedge clk) if (rn_valid & iq_ready) psmem[pl_w_idx] <= {rn_prs3, rn_prs2, rn_prs1};
+   wire [RN_PBITS-1:0] iq_iss_ps1 = ps_out[0 +: RN_PBITS];
+   wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
+   wire [RN_PBITS-1:0] iq_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
+   wire iq_iss_take;
+   assign ri_take = pick_i & iq_iss_take;
+   assign rl_take = pick_l & iq_iss_take;
+   assign rf_take = pick_f & iq_iss_take;
+   wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
+   wire [RN_PBITS-1:0] iq_blk_pr = rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr;
 
    // ---- SELECT GETS ITS OWN STAGE -------------------------------------------------
    // Select, payload read, register read, execute and writeback in ONE cycle was 50 logic
@@ -721,7 +721,7 @@ module ooo2_core
    // path, one stage deeper, which is where a scheduler's cost belongs.
    //
    // BACK-TO-BACK DEPENDENTS ARE PRESERVED. The producer selected at N executes at N+1;
-   // ooo2_rs wakes its consumer AT SELECT, so the consumer is selected at N+1 and executes
+   // ooo2_iq wakes its consumer AT SELECT, so the consumer is selected at N+1 and executes
    // at N+2 -- consecutive execute cycles, no bubble. The same timing is why no operand
    // forwarding exists anywhere here: every producer's write has landed before its consumer
    // reads.
@@ -738,7 +738,7 @@ module ooo2_core
    assign i_needs_m   = i_v & q_ord & ~i_needs_f;
    wire   i_done      = i_v & (i_needs_f ? f_advance : q_ord ? m_advance : 1'b1);
    wire   iss_ready   = ~i_v | i_done;
-   assign rs_iss_take = rs_iss_v & iss_ready & ~redirect;
+   assign iq_iss_take = iq_iss_v & iss_ready & ~redirect;
    // ~redirect on BOTH. The register is cleared on a redirect, but these are
    // combinational off i_v -- without the guard an instruction being squashed still writes
    // the register file and still marks its ROB slot done, in the very cycle rename is
@@ -751,10 +751,10 @@ module ooo2_core
    always @(posedge clk) begin
       if (reset | redirect) i_v <= 1'b0;
       else if (iss_ready) begin
-         i_v <= rs_iss_take;
-         if (rs_iss_take) begin
-            i_cls <= pick_cls;    i_ent <= rs_iss_ent;  i_rob <= rs_iss_rob;
-            i_ps1 <= rs_iss_ps1;  i_ps2 <= rs_iss_ps2;  i_ps3 <= rs_iss_ps3;
+         i_v <= iq_iss_take;
+         if (iq_iss_take) begin
+            i_cls <= pick_cls;    i_ent <= iq_iss_ent;  i_rob <= iq_iss_rob;
+            i_ps1 <= iq_iss_ps1;  i_ps2 <= iq_iss_ps2;  i_ps3 <= iq_iss_ps3;
          end
       end
    end
@@ -784,7 +784,7 @@ module ooo2_core
    // what stop them aliasing.
    reg [PLW-1:0] plmem [0:PL_N-1];
    wire [PLW-1:0] pl_out = plmem[pl_r_idx];
-   always @(posedge clk) if (rn_valid & rs_ready) plmem[pl_w_idx] <= pl_in;
+   always @(posedge clk) if (rn_valid & iq_ready) plmem[pl_w_idx] <= pl_in;
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
    wire [31:0]         q_insn;
@@ -825,7 +825,7 @@ module ooo2_core
    // ------------------------------------------------------------------ STORE BUFFER
    // docs/Area-Efficient-Scalar-OoO.md 11. A store issues on its ADDRESS alone and commits
    // when its data has arrived and it is the oldest -- which is what stops it sitting at the
-   // head of u_rs_l for the ~21 cycles an fadds takes, with the next iteration's loads
+   // head of u_iq_l for the ~21 cycles an fadds takes, with the next iteration's loads
    // queued behind work they do not depend on (spec 15, Camera).
    //
    // FLUSH IS WHOLESALE, and that is correct rather than merely convenient: `redirect` is
@@ -1065,7 +1065,7 @@ module ooo2_core
    // read colliding with the writeback is bypassed). Reads happen at issue now and the
    // collision is covered by `fwd`, so the check is replaced by one on the new mechanism:
    // an issuing entry whose source is written this cycle must take the forwarded value.
-   always @(posedge clk) if (!reset & rs_iss_v & (WRTHRU_OFF == 0)) begin
+   always @(posedge clk) if (!reset & iq_iss_v & (WRTHRU_OFF == 0)) begin
       // placeholder: WRTHRU_OFF is 1, so this never fires. Kept as the anchor for the
       // read-during-write property so it is stated somewhere rather than remembered.
       if (1'b0) $fatal(1, "unreachable");
@@ -1252,7 +1252,7 @@ module ooo2_core
    wire fp_complete = fp_res_valid;
 
    // ============================================================== stage F (FP arith)
-   // A one-entry execute stage parallel to M, fed by u_rs_f. An FP arith op is loaded here
+   // A one-entry execute stage parallel to M, fed by u_iq_f. An FP arith op is loaded here
    // at issue and NEVER enters M, which is what makes three schedulers safe: it cannot
    // occupy the shared stage and it cannot head-block, having no trap path (see d_cls_f).
    //
@@ -1405,9 +1405,9 @@ module ooo2_core
    // reports WHICH register its oldest entry is blocked on. A physical register carries its
    // shard in the top bits, so the stall is charged to the unit that owns the result.
    // ---- DEPENDENCY ATTRIBUTION: per scheduler, not through a priority mux -------------
-   // `rs_blk_pr` is `rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr` -- a priority
+   // `iq_blk_pr` is `rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr` -- a priority
    // mux built when there was one scheduler and kept when there were three. With three, an
-   // FP dependency in u_rs_f is INVISIBLE in any cycle u_rs_l is also blocked, so it was
+   // FP dependency in u_iq_f is INVISIBLE in any cycle u_iq_l is also blocked, so it was
    // charged to ST_MEM instead. That is not a small skew: on workloads/mlbench, whose
    // critical path is an FP add chain, ST_FPU read 0% and ST_MEM read 41%.
    //
@@ -1422,7 +1422,7 @@ module ooo2_core
    // proceed". With three units it silently masks: on workloads/mlbench M is busy with
    // loads nearly every cycle, so dep_fp could never fire and the FP add chain that IS the
    // critical path reported 0%.
-   wire no_issue  = ~rs_iss_v;
+   wire no_issue  = ~iq_iss_v;
    wire dep_ld    = no_issue & ((rl_blk_v & (bsh_l == SH_LD))
                               | (rf_blk_v & (bsh_f == SH_LD))
                               | (ri_blk_v & (bsh_i == SH_LD)));
@@ -2149,7 +2149,7 @@ module ooo2_core
    // Back-pressure at the FRONTEND, never at issue: a full store buffer holds dispatch,
    // which costs nothing at the head of the machine and keeps unit state out of the
    // scheduler's select (docs/OOO2-Spec.md 15).
-   wire d_hold = d_valid & (~rob_ready | ~rs_ready | rn_stall | ser_block
+   wire d_hold = d_valid & (~rob_ready | ~iq_ready | rn_stall | ser_block
                             | (d_st_nb & ~sq_d_ready)
                             | (d_ld_nb & ~lq_d_ready));
    wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q & ~fr_active;

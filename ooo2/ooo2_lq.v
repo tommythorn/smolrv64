@@ -19,7 +19,7 @@
 // SHAPE, deliberately the same as ooo2_sq's, because they are the same idea applied to the
 // two directions:
 //   allocate  at DISPATCH, in program order. Not at fill: allocating at fill would make
-//             entry order depend on ISSUE order, and u_rs_l is meant to stop being in-order
+//             entry order depend on ISSUE order, and u_iq_l is meant to stop being in-order
 //             (spec 15). Program order is what the ROB index and the store-seqno mean.
 //   fill      when the load's address is translated. M releases it here -- from this point
 //             the access cannot fault (ooo2_lsu decides faults before it leaves S_IDLE), so

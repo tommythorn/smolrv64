@@ -465,7 +465,7 @@ Passed is not consumed. `20acd8c` (every run was silently `IW=2`), `7cf760e`,
 
 **G4. A port-list change is a WHOLE-DESIGN change, so the gate is the full lint.**
 Adding a port to a module is not verified by that module's own unit TB — the
-instantiation is half the change and lives in another file. `ooo2_rs` grew
+instantiation is half the change and lives in another file. `ooo2_iq` grew
 `in_order` and `iss_ps1/2/3`, its 16-check TB passed, and the commit went in
 with `ooo2_core`'s instantiation still missing all four pins: the design did
 not elaborate at all. `src/lint.sh` is `-Werror` on PINMISSING and catches it
@@ -577,7 +577,7 @@ that stopped being true, which is D9 applied to a document.
 
 **THE DESIGN HAS NO MARGIN ANYWHERE, and that is the real finding.** Across the
 D$ work, six builds failed on SIX UNRELATED PATHS -- the D$ accept cone,
-`u_lq/acc -> u_rs_i/e_r`, `u_sq/head -> u_rs_i/e_r`, virtio DMA ->
+`u_lq/acc -> u_iq_i/e_r`, `u_sq/head -> u_iq_i/e_r`, virtio DMA ->
 `probe_bridge`, and two more -- and the tree that ships closes at +0.019 to
 +0.024. Whichever near-critical path placement treats worst that day is the one
 that fails. The consequence for method: landing IPC one commit at a time against
@@ -667,7 +667,7 @@ today's timing does not demand it.
 
 *Synthesis will tell you which you have, for free.* Any array declared
 `reg [W-1:0] a [0:N-1]` that does NOT appear in the synth log's `The RAM "..."`
-list is a mux of flops. The split showed up INSIDE `ooo2_rs.v`: `e_prd` and
+list is a mux of flops. The split showed up INSIDE `ooo2_iq.v`: `e_prd` and
 `e_rob`, read only at `[sel]`, became `RAM32M`; `e_ps` and `e_r`, read by every
 wakeup comparator, stayed flops -- distributed RAM has one read port per instance,
 so a broadcast read forces a CAM. `e_r` must be a CAM; it IS the wakeup state.

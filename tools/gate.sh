@@ -38,13 +38,24 @@ git log -1 --format='%H%n%s%n%ci' > "$RES/commit.txt"
 
 # ---- 1. fast gates first: they cost seconds and can veto an hour ----------------------
 (cd "$REPO/src" && ./lint.sh 2>&1 | tail -1) || { echo "GATE: FAIL (lint)"; exit 1; }
-if [ -x "$REPO/ooo2/run-ooo2-cache-tb.sh" ]; then
-   # Run ONCE and judge the saved output: running it twice to grep it twice doubles the
-   # cost and, worse, lets the decision be made on a different execution than the one shown.
-   (cd "$REPO/ooo2" && ./run-ooo2-cache-tb.sh) > "$RES/cache-tb.log" 2>&1
-   grep -E 'PASS|FAIL' "$RES/cache-tb.log"
-   grep -q FAIL "$RES/cache-tb.log" && { echo "GATE: FAIL (directed cache)"; exit 1; }
-fi
+# EVERY unit tb, found by GLOB rather than named one at a time. Only the cache tb was ever
+# run here; on 2026-09-03 three of the other four turned out not even to COMPILE -- tb_ooo2_iq
+# lost `iss_ps` when the tags moved to a LUTRAM, and tb_ooo2_lq/tb_ooo2_sq still drive the
+# per-candidate address ports that the conflict-matrix rewrite deleted. Nothing noticed,
+# because no gate ran them and the runners sent their build errors to /dev/null. A test that
+# does not compile is a test that cannot fail, which is the same defect as a test that passes
+# vacuously. A build failure here is a GATE failure, and a new run-ooo2-*-tb.sh is picked up
+# without editing this file.
+for tb in "$REPO"/ooo2/run-ooo2-*-tb.sh; do
+   [ -x "$tb" ] || continue
+   n=$(basename "$tb" .sh)
+   (cd "$REPO/ooo2" && "$tb") > "$RES/$n.log" 2>&1
+   rc=$?
+   grep -E 'PASS|FAIL|BUILD FAILED' "$RES/$n.log" | sed "s/^/  [$n] /"
+   if [ $rc -ne 0 ] || grep -q 'FAIL' "$RES/$n.log"; then
+      echo "GATE: FAIL ($n)"; exit 1
+   fi
+done
 
 # ---- 2. the floor: `make` alone, from a clean tree ------------------------------------
 echo "--- building (no arguments; the shipping config is the default) ---"

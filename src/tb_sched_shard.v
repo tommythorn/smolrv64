@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// sched_shard (CAM reservation station, N=2, 3 operands) tests. Self lane (SH=0) is
+// sched_shard (CAM-woken issue queue, N=2, 3 operands) tests. Self lane (SH=0) is
 // looped back as the bundle wires it: clr[0] = this shard's dispatched dest, wake[0]
 // = this shard's issue. Sibling lane 1 models a cross-shard producer.
 //
