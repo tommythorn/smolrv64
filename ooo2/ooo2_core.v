@@ -591,13 +591,13 @@ module ooo2_core
    wire [NWB_C*RN_PBITS-1:0] wkp = {wa_fe, wa_ld, wa_ie};
 
    wire ri_ready, ri_iss_v, ri_blk_v;  wire [IBI-1:0] ri_d_ent, ri_iss_ent;
-   wire [ROB_IDXB-1:0] ri_iss_rob;     wire [2*RN_PBITS-1:0] ri_iss_ps;
+   wire [ROB_IDXB-1:0] ri_iss_rob;
    wire [RN_PBITS-1:0] ri_blk_pr;      wire [IBI:0] ri_occ;
    wire rl_ready, rl_iss_v, rl_blk_v;  wire [IBL-1:0] rl_d_ent, rl_iss_ent;
-   wire [ROB_IDXB-1:0] rl_iss_rob;     wire [3*RN_PBITS-1:0] rl_iss_ps;
+   wire [ROB_IDXB-1:0] rl_iss_rob;
    wire [RN_PBITS-1:0] rl_blk_pr;      wire [IBL:0] rl_occ;
    wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
-   wire [ROB_IDXB-1:0] rf_iss_rob;     wire [3*RN_PBITS-1:0] rf_iss_ps;
+   wire [ROB_IDXB-1:0] rf_iss_rob;
    wire [RN_PBITS-1:0] rf_blk_pr;      wire [IBF:0] rf_occ;
 
    wire ri_take, rl_take, rf_take;
@@ -612,7 +612,7 @@ module ooo2_core
       .d_ps({rn_prs2, rn_prs1}),.d_r(d_srdy[1:0]),.d_prd(d_prd_g),.d_ent(ri_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
-      .iss_ps(ri_iss_ps),.iss_take(ri_take),
+     .iss_take(ri_take),
       .hold_v(i_v & (i_cls == C_I)),.hold_ent(i_ent[IBI-1:0]),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
 
@@ -624,7 +624,7 @@ module ooo2_core
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(~m_advance | (i_v & i_needs_m)),
       .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
-      .iss_ps(rl_iss_ps),.iss_take(rl_take),
+     .iss_take(rl_take),
       .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),
       .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ));
 
@@ -641,7 +641,7 @@ module ooo2_core
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(~f_advance | (i_v & i_needs_f)),
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
-      .iss_ps(rf_iss_ps),.iss_take(rf_take),
+     .iss_take(rf_take),
       .hold_v(i_v & (i_cls == C_F)),.hold_ent(i_ent[IBF-1:0]),
       .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
 
@@ -669,14 +669,39 @@ module ooo2_core
                              : (i_cls == C_L) ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, i_ent[IBL-1:0]})
                              :                  (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, i_ent[IBF-1:0]});
    wire [ROB_IDXB-1:0] rs_iss_rob = pick_l ? rl_iss_rob : pick_f ? rf_iss_rob : ri_iss_rob;
-   wire [RN_PBITS-1:0] rs_iss_ps1 = pick_l ? rl_iss_ps[0 +: RN_PBITS]
-                                  : pick_f ? rf_iss_ps[0 +: RN_PBITS]
-                                  :          ri_iss_ps[0 +: RN_PBITS];
-   wire [RN_PBITS-1:0] rs_iss_ps2 = pick_l ? rl_iss_ps[RN_PBITS +: RN_PBITS]
-                                  : pick_f ? rf_iss_ps[RN_PBITS +: RN_PBITS]
-                                  :          ri_iss_ps[RN_PBITS +: RN_PBITS];
-   wire [RN_PBITS-1:0] rs_iss_ps3 = pick_f ? rf_iss_ps[2*RN_PBITS +: RN_PBITS]
-                                  :          rl_iss_ps[2*RN_PBITS +: RN_PBITS];
+   // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
+   // with it. The source tags used to come OUT of each queue as `iss_ps` -- an async read of
+   // the entry array (e_ps[sel], a 16:1 mux over FLOPS) then a 3-way class mux, two levels
+   // landing on the i_ps* capture flops, and the tail of the post-route critical path
+   // (m_addr_reg[12]_replica -> i_ps1_reg[3]/D, WNS -0.041 at DIV8=48).
+   //
+   // e_ps CANNOT be a LUTRAM: ooo2_rs.v:130 broadcasts every entry's tags to the wakeup
+   // comparators and distributed RAM has one read port per instance. Synthesis proves the
+   // split inside that very module -- e_prd and e_rob, read only at [sel], became RAM32M;
+   // e_ps and e_r, read by every comparator, stayed flops. e_r MUST be flops, it is the
+   // wakeup state. e_ps need not be, so the tags are kept REDUNDANTLY here, written at
+   // dispatch beside plmem and read at the selected index. plmem is already unified across
+   // classes (OFF_I/OFF_L/OFF_F), so one indexed read collapses BOTH muxes.
+   //
+   // ON THIS FPGA THE WIN IS ROUTING, NOT LEVELS. The failing paths are ~68% route / ~32%
+   // logic, so a mux over N scattered flop groups is paying for the GATHER, and a LUTRAM is
+   // one compact primitive with local routing. Flop-to-flop through random logic is not
+   // automatically better than RAM-to-RAM here; that is an ASIC intuition.
+   //
+   // NO NEW PIPELINE STAGE, deliberately. i_ps* were already flops; this replaces the logic
+   // FEEDING them, so depth is unchanged and the cosim is BIT-IDENTICAL (14,657,366 retires).
+   // The index is COMBINATIONAL (this cycle's pick), not i_ent (last cycle's): reading
+   // plmem's registered port instead would put a LUTRAM output on the PRF address pins
+   // ra1/ra2/ra3, which rule I6 forbids -- that trades this path for a worse one.
+   wire [PL_IB-1:0] pl_s_idx = pick_l ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, rl_iss_ent})
+                             : pick_f ? (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, rf_iss_ent})
+                             :          (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_iss_ent});
+   reg  [3*RN_PBITS-1:0] psmem [0:PL_N-1];
+   wire [3*RN_PBITS-1:0] ps_out = psmem[pl_s_idx];
+   always @(posedge clk) if (rn_valid & rs_ready) psmem[pl_w_idx] <= {rn_prs3, rn_prs2, rn_prs1};
+   wire [RN_PBITS-1:0] rs_iss_ps1 = ps_out[0 +: RN_PBITS];
+   wire [RN_PBITS-1:0] rs_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
+   wire [RN_PBITS-1:0] rs_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
    wire rs_iss_take;
    assign ri_take = pick_i & rs_iss_take;
    assign rl_take = pick_l & rs_iss_take;

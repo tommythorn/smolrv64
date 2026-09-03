@@ -60,7 +60,6 @@ module ooo2_rs
     output wire                  iss_v,
     output wire [IDXB-1:0]       iss_ent,
     output wire [ROBB-1:0]       iss_rob,
-    output wire [NSRC*PBITS-1:0] iss_ps,
     input  wire                  iss_take,
 
     // The entry still held downstream. Its slot must not be reallocated: the payload array
@@ -151,7 +150,6 @@ module ooo2_rs
    assign iss_v   = sel_v;
    assign iss_ent = sel;
    assign iss_rob = e_rob[sel];
-   assign iss_ps  = e_ps[sel];
 
    reg [IDXB:0] occ;
    always @* begin
