@@ -134,6 +134,11 @@ reset:
 timing:
 	$(VIVADO) $(VFLAGS) -source report_timing.tcl
 
+# Device utilization from the newest impl checkpoint. "Is it full?" is the first question
+# before more critical-path surgery -- see rule I7.
+util:
+	$(VIVADO) $(VFLAGS) -source report_util.tcl
+
 # Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
 # (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
 physopt:
