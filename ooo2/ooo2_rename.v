@@ -52,6 +52,12 @@ module ooo2_rename
     output wire [PBITS-1:0] r_prs1,
     output wire [PBITS-1:0] r_prs2,
     output wire [PBITS-1:0] r_prs3,
+    // The two candidates and the bit that chooses between them, so a consumer whose result
+    // does not depend on WHICH map won can look both up in parallel and select afterwards.
+    // `lv` is late; the map read is not. See ooo2_core's readiness query.
+    output wire [PBITS-1:0] r_sprs1, r_sprs2, r_sprs3,   // speculative (smap)
+    output wire [PBITS-1:0] r_mprs1, r_mprs2, r_mprs3,   // committed  (rmap)
+    output wire             r_lv1, r_lv2, r_lv3,         // lv[rs]: 1 = take the speculative
     output wire [PBITS-1:0] r_prd,        // newly allocated physical register
 
     // ---- commit port (in order, one per cycle) ----
@@ -79,9 +85,12 @@ module ooo2_rename
    // source equals this instruction's own destination -- rd is written at the clock edge,
    // so the combinational reads below see the old value by construction.  (Matches
    // docs/Area-Efficient-Scalar-OoO.md 14.1 "dispatch -> dispatch, map".)
-   assign r_prs1 = lv[r_rs1] ? smap[r_rs1] : rmap[r_rs1];
-   assign r_prs2 = lv[r_rs2] ? smap[r_rs2] : rmap[r_rs2];
-   assign r_prs3 = lv[r_rs3] ? smap[r_rs3] : rmap[r_rs3];
+   assign r_sprs1 = smap[r_rs1];  assign r_mprs1 = rmap[r_rs1];  assign r_lv1 = lv[r_rs1];
+   assign r_sprs2 = smap[r_rs2];  assign r_mprs2 = rmap[r_rs2];  assign r_lv2 = lv[r_rs2];
+   assign r_sprs3 = smap[r_rs3];  assign r_mprs3 = rmap[r_rs3];  assign r_lv3 = lv[r_rs3];
+   assign r_prs1 = r_lv1 ? r_sprs1 : r_mprs1;
+   assign r_prs2 = r_lv2 ? r_sprs2 : r_mprs2;
+   assign r_prs3 = r_lv3 ? r_sprs3 : r_mprs3;
 
    // ---- free lists, one per shard ---------------------------------------------------
    // Pointers carry an extra MSB so full and empty are distinguishable without a separate

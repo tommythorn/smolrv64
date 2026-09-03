@@ -33,7 +33,13 @@ module ooo2_pending
     input  wire [PBITS-1:0]      q1, q2, q3,
     output wire                  r1, r2, r3,
     input  wire [PBITS-1:0]      q4, q5, q6,
+    // q7..q9 are the COMMITTED-map partners of q1..q3. The rename side queries the
+    // speculative and committed tag for each source and lets `lv` pick the RESULT, instead
+    // of picking the tag and then looking it up -- see ooo2_core. Readiness is a pure
+    // function of `pend`, so pnd(lv ? s : m) == (lv ? pnd(s) : pnd(m)) exactly.
+    input  wire [PBITS-1:0]      q7, q8, q9,
     output wire                  r4, r5, r6,
+    output wire                  r7, r8, r9,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -64,6 +70,9 @@ module ooo2_pending
    assign r4 = rdy_of(q4);
    assign r5 = rdy_of(q5);
    assign r6 = rdy_of(q6);
+   assign r7 = rdy_of(q7);
+   assign r8 = rdy_of(q8);
+   assign r9 = rdy_of(q9);
 
    always @(posedge clk) begin
       if (reset | flush) begin

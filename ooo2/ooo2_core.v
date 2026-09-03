@@ -350,6 +350,9 @@ module ooo2_core
                       :                                    SH_IE;  // the ALU, alone
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
+   wire [RN_PBITS-1:0] rn_sprs1, rn_sprs2, rn_sprs3;   // the two map candidates, and
+   wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
+   wire                rn_lv1, rn_lv2, rn_lv3;
    wire                rn_stall;
    wire [2:0]          rn_shard_low;
    // Rename exactly when the instruction actually enters M and is not being squashed --
@@ -362,6 +365,9 @@ module ooo2_core
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
       .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
+      .r_sprs1(rn_sprs1), .r_sprs2(rn_sprs2), .r_sprs3(rn_sprs3),
+      .r_mprs1(rn_mprs1), .r_mprs2(rn_mprs2), .r_mprs3(rn_mprs3),
+      .r_lv1(rn_lv1), .r_lv2(rn_lv2), .r_lv3(rn_lv3),
       .r_prd(rn_prd),
       // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
       // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
@@ -440,16 +446,40 @@ module ooo2_core
    // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
    // register, because dynamic issue makes the number of outstanding results unbounded;
    // today's interlock is the degenerate case of that with one load tag and one FP tag.
-   // Brought up as a shadow (rule I3): nothing consumes pnd_r*, but the assertion below
-   // ties them to the machine that is actually running, so the bits are known good before
-   // anything depends on them. NWB=3, one per PRF shard, matching the write ports.
-   wire pnd_r1, pnd_r2, pnd_r3, pnd_i1, pnd_i2, pnd_i3;
+   // CONSUMED, not a shadow: pnd_r1/2/3 are d_srdy below, which is every queue's d_r. It was
+   // brought up under rule I3 and the comment here still said "nothing consumes pnd_r*"
+   // long after it did -- which sent a later reader looking for work that was already done
+   // (D9: a stale statement stops the next person from checking). The I3 assertion below
+   // still cross-checks it every cycle. NWB=3, one per PRF shard, matching the write ports.
+   // READINESS QUERIES BOTH MAPS AND SELECTS AFTERWARDS.
+   //
+   // It used to query the already-muxed tag: lv[rs] picked smap[rs] or rmap[rs], and THAT
+   // 9-bit result addressed the 512-deep pending array. `lv` is a late signal -- it is
+   // written every rename and cleared wholesale on a flush -- so it sat in front of a
+   // register-file-sized lookup whose output then had to reach every issue-queue entry's
+   // ready bit. That was the post-floorplan critical path: u_rename/lv_reg[15] ->
+   // u_iq_l/e_r_reg[9][2], 82% route (see docs/rtl-rules.md I2).
+   //
+   // Readiness is a pure function of `pend`, so pnd(lv ? s : m) == (lv ? pnd(s) : pnd(m)).
+   // Looking BOTH candidates up in parallel and letting lv pick the 1-bit RESULT turns a
+   // late 9-bit address mux into a late 2:1 on one wire. The map reads do not depend on lv
+   // and start immediately. Cost is three more read ports on a 1-bit-wide array.
+   //
+   // rn_prs* keeps the muxed tag: the queue payload and psmem still need the actual number,
+   // but that is a write into flops/LUTRAM, not a lookup feeding readiness.
+   wire pnd_s1, pnd_s2, pnd_s3, pnd_m1, pnd_m2, pnd_m3;
+   wire pnd_r1 = rn_lv1 ? pnd_s1 : pnd_m1;
+   wire pnd_r2 = rn_lv2 ? pnd_s2 : pnd_m2;
+   wire pnd_r3 = rn_lv3 ? pnd_s3 : pnd_m3;
+   wire pnd_i1, pnd_i2, pnd_i3;
    ooo2_pending #(.PBITS(RN_PBITS), .NWB(3)) u_pend
      (.clk(clk), .reset(reset),
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
       .w_v({we_fe, we_ld, we_ie}), .w_preg({wa_fe, wa_ld, wa_ie}),
-      .q1(rn_prs1), .q2(rn_prs2), .q3(rn_prs3),
-      .r1(pnd_r1), .r2(pnd_r2), .r3(pnd_r3),
+      .q1(rn_sprs1), .q2(rn_sprs2), .q3(rn_sprs3),
+      .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
+      .q7(rn_mprs1), .q8(rn_mprs2), .q9(rn_mprs3),
+      .r7(pnd_m1), .r8(pnd_m2), .r9(pnd_m3),
       .q4(i_ps1), .q5(i_ps2), .q6(i_ps3),
       .r4(pnd_i1), .r5(pnd_i2), .r6(pnd_i3),
       .flush(redirect));
