@@ -646,6 +646,52 @@ actually take" question belongs in the CPI stack before any RTL is written for
 the unit — one hardware counter run sized this correctly and would have
 redirected a day of work had it been run first.
 
+**I7. On this FPGA, an indexed RAM read beats a mux across N scattered flops --
+and it is the option that SCALES.**
+Three separate reasons, and the third is the one that matters over time.
+
+*Routing, not levels.* Measured 2026-09-03 at DIV8=48, every critical path in
+this design is 65-83% ROUTE and only 17-35% logic. A mux over N entries is
+therefore paying mostly to GATHER N physically scattered flop groups into a mux
+tree; a LUTRAM is one compact primitive with local routing. The ASIC intuition
+that flop-to-flop through random logic beats RAM-to-RAM is inverted here, because
+in an ASIC the logic cloud is rarely made that big and route is not the term that
+dominates.
+
+*It SCALES.* Flops grow the gather with N -- more entries, more sources to route
+from, worse placement pressure, and the cost lands on whatever else wanted those
+sites. A RAM grows by adding depth to a primitive that is already local. Making
+the queue or the ROB bigger later is an ordinary change if the payload is in RAM
+and a re-floorplan if it is in flops. This is the reason to prefer RAM even where
+today's timing does not demand it.
+
+*Synthesis will tell you which you have, for free.* Any array declared
+`reg [W-1:0] a [0:N-1]` that does NOT appear in the synth log's `The RAM "..."`
+list is a mux of flops. The split showed up INSIDE `ooo2_rs.v`: `e_prd` and
+`e_rob`, read only at `[sel]`, became `RAM32M`; `e_ps` and `e_r`, read by every
+wakeup comparator, stayed flops -- distributed RAM has one read port per instance,
+so a broadcast read forces a CAM. `e_r` must be a CAM; it IS the wakeup state.
+`e_ps` need not be, and it was the tail of the critical path until its tags were
+kept REDUNDANTLY in a `psmem` LUTRAM read at the selected index (`3b518832`).
+
+TWO CONSTRAINTS, both load-bearing:
+
+- **Do not fix these by registering RAM outputs.** That buys timing by adding a
+  pipeline stage and costs IPC, which is the wrong trade in a design whose whole
+  problem is memory-level parallelism. The valid move keeps depth IDENTICAL:
+  replace the logic FEEDING an existing flop with a RAM read feeding that same
+  flop. Verify it: a correct change is BIT-IDENTICAL in cosim retires
+  (`psmem` measured 14,657,366 against 14,657,366), not merely close.
+- **I6 still applies.** The flop, not the RAM output, drives the next RAM's
+  address pin. Reading the payload RAM's registered port would have put a LUTRAM
+  output on the PRF address pins and traded one path for a worse one.
+
+AND KNOW WHAT IT DOES NOT BUY. `3b518832` removed its target completely --
+`i_ps1_reg` appears ZERO times in the postroute report afterwards -- and whole-design
+WNS still landed at +0.000902. The next path took its place at 74.8% route. Seven
+distinct paths have now been worst across this work. One path fix does not make
+margin here; see I2.
+
 **I6. A late signal may reach a RAM's ENABLE. It may never reach its ADDRESS.**
 An array's address pin has to be stable early: it fans out to every primitive in
 the depth, it usually cannot be placed near the logic that computes it, and on a
