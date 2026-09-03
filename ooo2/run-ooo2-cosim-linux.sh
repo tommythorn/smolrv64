@@ -69,6 +69,10 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
 # So: record the compile-time config, and when it changes WIPE THE OBJECT DIRECTORY.
 # A stamp alone is not enough -- the whole point is that make will not redo the work.
 STAMP="obj_dir_ooo2_clinux/.config-stamp"
+# G1: echo the config THIS RUN consumed, every run -- not only when it rebuilds. A run that
+# reuses a binary is exactly the one whose config you cannot see, and reading it back out of
+# .config-stamp after the fact is how you end up trusting a number you did not verify.
+echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>}"
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
@@ -86,7 +90,7 @@ if [ "$need_build" = 1 ] && [ -d obj_dir_ooo2_clinux ] \
 fi
 
 if [ "$need_build" = 1 ]; then
-   echo "building obj_dir_ooo2_clinux/tb_ooo2_clinux (MEM_LG2=$MEM_LG2) ..."
+   echo "building obj_dir_ooo2_clinux/tb_ooo2_clinux (MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>}) ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
