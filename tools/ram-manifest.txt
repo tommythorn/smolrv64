@@ -1,0 +1,53 @@
+# Arrays that MUST be inferred as RAM. Checked by tools/check-ram-inference.py after
+# synthesis; a demotion to flops FAILS THE BUILD and names the array.
+#
+# Why a manifest and not just an attribute: `(* ram_style *)` asks the tool to try, and
+# Vivado warns rather than errors when it cannot -- which is a silent regression on a design
+# where nobody reads warnings. The attribute states intent at the declaration, this file
+# enforces it. Both are wanted; only this one fails.
+#
+# Format:  <array-name> : why it must not become flops
+# The name is the declared reg array, without the _reg suffix synthesis appends.
+#
+# To REMOVE a line you must have decided the array is allowed to be flops -- say so in the
+# commit message, with the reason. Do not delete a line to make a build pass.
+
+# ---- the issue queue: the scheduler emits an INDEX, everything else is looked up ---------
+plmem   : issue payload; read at the selected entry, one indexed read
+psmem   : source tags; added 3b518832 after e_ps was demoted by the wakeup broadcast
+e_prd   : issue-queue destination tag, read only at [sel]
+e_rob   : issue-queue ROB index, read only at [sel]
+
+# ---- the physical register file: the largest array in the design ------------------------
+mem_ie  : PRF integer shard; sharded by WRITER so each has ONE write port
+mem_ld  : PRF load shard
+mem_fe  : PRF FP shard
+
+# ---- rename: free lists and maps, initialised by the bitstream and never reset ----------
+# A `for` loop over every entry in the reset branch pinned all five into flops (~3,400 bits)
+# purely to initialise them. Configuration does that for free. If one of these regresses,
+# look for a reintroduced reset loop first.
+fl_ie   : free list, circular FIFO read at head / written at tail
+fl_ld   : free list
+fl_fe   : free list
+rmap    : committed map; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
+smap    : speculative map; flush clears `lv`, so no wholesale copy is ever needed
+
+# ---- reorder buffer, frontend, predictor, MMU -------------------------------------------
+rob     : ROB status
+ent     : ROB entries
+q_dat   : fetch queue data
+ras     : return address stack
+btb     : branch target buffer, 1024 x 53 -- would be larger than the whole design in flops
+ycorr   : YAGS correlated table (Block RAM)
+prd     : load queue destination tag
+rdn     : load queue
+tlb_tag : iTLB/dTLB
+tlb_ppn : iTLB/dTLB
+tlb_perm: iTLB/dTLB
+
+# ---- cache tag/state arrays --------------------------------------------------------------
+tagm    : cache tags
+dirm    : dirty bits
+valm    : valid bits
+vicm    : victim/replacement state

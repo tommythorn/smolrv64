@@ -71,8 +71,8 @@ module ooo2_rename
    localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
 
    // ---- the map -------------------------------------------------------------------
-   reg [PBITS-1:0] smap [0:63];
-   reg [PBITS-1:0] rmap [0:63];
+   (* ram_style = "distributed" *) reg [PBITS-1:0] smap [0:63];
+   (* ram_style = "distributed" *) reg [PBITS-1:0] rmap [0:63];
    reg [63:0]      lv;
 
    // Reads are of the PRE-rename mapping for all three sources, including the case where a
@@ -90,9 +90,9 @@ module ooo2_rename
    localparam integer PW_LD = $clog2(N_LD) + 1;
    localparam integer PW_FE = $clog2(N_FE) + 1;
 
-   reg [IDXB-1:0] fl_ie [0:N_IE-1];   reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
-   reg [IDXB-1:0] fl_ld [0:N_LD-1];   reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
-   reg [IDXB-1:0] fl_fe [0:N_FE-1];   reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
+   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ie [0:N_IE-1];   reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
+   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ld [0:N_LD-1];   reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
+   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_fe [0:N_FE-1];   reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
 
    // Initial tails, sized: SH_IE/SH_FE start with N-32 free, SH_LD with all N.
    localparam [PW_IE-1:0] T0_IE = (N_IE - 32);
@@ -150,30 +150,78 @@ module ooo2_rename
                                                  : fl_fe[h_fe[PW_FE-2:0]];
    assign r_prd = {r_shard, head_idx};
 
+   // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
+   //
+   // They used to be written at EVERY index in the reset branch. No RAM can be written at
+   // every address in one cycle, so that one `for` loop pinned ~3,400 bits into flops --
+   // fl_ie/fl_ld/fl_fe (~2,240) and rmap/smap (~1,152) -- even though every one of them is
+   // one-write/few-read once running: the free lists are circular FIFOs read at the head and
+   // written at the tail, and the maps are read at r_rs1/r_rs2/r_rs3 (+rmap[c_rd]) and
+   // written at one index. On an FPGA the contents come from configuration for free, so the
+   // loop bought nothing and cost the RAM inference plus a reset net fanning out to all of
+   // them. Rule I7.
+   //
+   // THE VALUES ONLY HAVE TO BE A PERMUTATION of the shard's indices; which permutation is
+   // irrelevant, because a free list only ever moves entries around. Identity is used.
+   //
+   // WHY A RUNTIME RESET IS STILL SAFE. `ui_cpu_reset` is a RUNTIME reset (rk_xcku5p.v:
+   // ui_rst | ~init_calib_complete | ~key[1] | fbdiag_rst_sync), so a button press restarts
+   // the core without reconfiguring and the arrays keep the PREVIOUS run's contents. That is
+   // sound because the contents are only meaningful through the pointers, and slots
+   // [head,tail) still hold exactly the free set. The pointers are therefore not reset
+   // either -- resetting them over stale slots is what would republish already-allocated
+   // registers as free. Reset instead does what `flush` does (h_* <= hc_*), which reclaims
+   // everything renamed but uncommitted, so nothing leaks across a restart.
+   //
+   // x0 is safe across all of this: x0 destinations are excluded from rename (r_rd_v), so
+   // rmap[0]/smap[0] are never written and keep the {SH_IE,0} that ooo2_prf hardwires to
+   // read zero.
+   integer j;
+   initial begin
+      // x0 -> physical 0 (SH_IE index 0), which ooo2_prf hardwires to read zero and never
+      // writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard starts
+      // entirely free.
+      for (j = 0; j < 32; j = j + 1) begin
+         rmap[j]      = {SH_IE, j[IDXB-1:0]};
+         smap[j]      = {SH_IE, j[IDXB-1:0]};
+         rmap[32 + j] = {SH_FE, j[IDXB-1:0]};
+         smap[32 + j] = {SH_FE, j[IDXB-1:0]};
+      end
+      // Indices 0..31 of SH_IE and SH_FE are taken by the initial architectural mappings, so
+      // their free lists start with 32..N-1 -- N-32 entries.  SH_LD starts wholly free.
+      // Slots at or beyond the tail are never read (a circular FIFO only reads between head
+      // and tail) but are given a legal index anyway so a pointer bug shows up as an
+      // assertion rather than as an out-of-range PRF access.
+      for (j = 0; j < N_IE; j = j + 1) fl_ie[j] = OFF32 + j[IDXB-1:0];
+      for (j = 0; j < N_LD; j = j + 1) fl_ld[j] = j[IDXB-1:0];
+      for (j = 0; j < N_FE; j = j + 1) fl_fe[j] = OFF32 + j[IDXB-1:0];
+      // The pointers come from configuration for the same reason the arrays do. They are
+      // the ONLY thing that says which slots are free, so resetting them while the arrays
+      // keep the previous run's contents would republish stale slots as free and hand out
+      // DUPLICATE physical registers -- the one combination that is worse than either
+      // choice alone.
+      h_ie = {PW_IE{1'b0}}; hc_ie = {PW_IE{1'b0}}; t_ie = T0_IE;
+      h_ld = {PW_LD{1'b0}}; hc_ld = {PW_LD{1'b0}}; t_ld = T0_LD;
+      h_fe = {PW_FE{1'b0}}; hc_fe = {PW_FE{1'b0}}; t_fe = T0_FE;
+      lv = 64'd0;
+   end
+
    integer i;
    always @(posedge clk) begin
+      // RESET IS A TOTAL SQUASH, which is exactly what `flush` already means here, so it
+      // does what flush does and nothing else: drop the speculative map and roll the
+      // allocation heads back to the committed heads. That RECLAIMS every register renamed
+      // but not committed, so restarting the core leaks nothing -- without it, each reset
+      // would strand up to a ROB's worth of registers and repeated presses of key[1] would
+      // eventually run a shard dry and stall the machine forever.
+      // It touches no array and no free-list contents: t_* and hc_* carry the free set
+      // across the reset, which is what makes the arrays safe to leave in configuration
+      // state. See the initial block above.
       if (reset) begin
-         // x0 -> physical 0 (SH_IE index 0), which ooo2_prf hardwires to read zero and
-         // never writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard
-         // starts entirely free.
-         for (i = 0; i < 32; i = i + 1) begin
-            rmap[i]      <= {SH_IE, i[IDXB-1:0]};
-            smap[i]      <= {SH_IE, i[IDXB-1:0]};
-            rmap[32 + i] <= {SH_FE, i[IDXB-1:0]};
-            smap[32 + i] <= {SH_FE, i[IDXB-1:0]};
-         end
-         // Indices 0..31 of SH_IE and SH_FE are taken by the initial architectural
-         // mappings, so their free lists start with 32..N-1 -- N-32 entries.  SH_LD starts
-         // wholly free.  Slots at or beyond the tail are never read (a circular FIFO only
-         // reads between head and tail) but are given a legal index anyway so a pointer bug
-         // shows up as an assertion rather than as an out-of-range PRF access.
-         for (i = 0; i < N_IE; i = i + 1) fl_ie[i] <= OFF32 + i[IDXB-1:0];
-         for (i = 0; i < N_LD; i = i + 1) fl_ld[i] <= i[IDXB-1:0];
-         for (i = 0; i < N_FE; i = i + 1) fl_fe[i] <= OFF32 + i[IDXB-1:0];
-         lv <= 64'd0;
-         h_ie <= {PW_IE{1'b0}}; hc_ie <= {PW_IE{1'b0}}; t_ie <= T0_IE;
-         h_ld <= {PW_LD{1'b0}}; hc_ld <= {PW_LD{1'b0}}; t_ld <= T0_LD;
-         h_fe <= {PW_FE{1'b0}}; hc_fe <= {PW_FE{1'b0}}; t_fe <= T0_FE;
+         lv   <= 64'd0;
+         h_ie <= hc_ie;
+         h_ld <= hc_ld;
+         h_fe <= hc_fe;
       end else begin
          // ---- commit: RMAP takes the committed mapping, the displaced register is freed
          hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;

@@ -553,6 +553,16 @@ if {$step in {synth impl bit}} {
     }
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
+
+    # RAM INFERENCE GATE. Whether an array is a RAM or a mux over flops is decided here,
+    # silently, from its access pattern -- a broadcast read or a reset `for` loop demotes it
+    # and nothing in lint, the testbenches or the cosim can see that. It shows up as slack
+    # months later on a design that is 65-83% route-bound. tools/ram-manifest.txt records
+    # which arrays must stay RAM; this fails the build the moment one does not.
+    set _rc [catch {exec python3 [file join $repo_root tools check-ram-inference.py] \
+                        [file join [get_property DIRECTORY [get_runs synth_1]] runme.log]} _rout]
+    puts $_rout
+    if {$_rc} { error "RAM inference regressed -- see above and docs/rtl-rules.md I7" }
 }
 
 # Implementation — use Performance_ExplorePostRoutePhysOpt for timing closure
