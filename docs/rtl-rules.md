@@ -686,6 +686,20 @@ TWO CONSTRAINTS, both load-bearing:
   address pin. Reading the payload RAM's registered port would have put a LUTRAM
   output on the PRF address pins and traded one path for a worse one.
 
+**A PARALLEL RESET LOOP IS THE OTHER THING THAT FORCES FLOPS**, and it is easy to
+miss because the steady-state access pattern looks perfect. `e_ps` was forced by a
+broadcast READ; `ooo2_rename`'s free lists and rename maps are forced by a broadcast
+WRITE -- `for (i=0;i<N;i=i+1) fl_ie[i] <= OFF32 + i;` in the reset branch. No RAM can
+be written at every address in one cycle, so the whole array becomes flops however
+clean the running behaviour is. Audited 2026-09-03: `fl_ie`/`fl_ld`/`fl_fe` (~2,240
+flops) and `rmap`/`smap` (~1,152) are strictly one-write/few-read once out of reset --
+the free lists are circular FIFOs read at the head and written at the tail, and the
+rename maps need no wholesale copy on a flush because `lv <= 0` clears the live vector
+instead. All ~3,400 flops are held there by the init loop alone. The fix is a
+SEQUENTIAL init: walk a counter across the array while reset is asserted. Read ports
+beyond three come from replicating the LUTRAM -- duplication buys READ ports, never
+write ports.
+
 AND KNOW WHAT IT DOES NOT BUY. `3b518832` removed its target completely --
 `i_ps1_reg` appears ZERO times in the postroute report afterwards -- and whole-design
 WNS still landed at +0.000902. The next path took its place at 74.8% route. Seven
