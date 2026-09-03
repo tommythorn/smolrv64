@@ -324,6 +324,18 @@ module rv_cache #(
    wire fill_banks  = (fst==F_WBR) | (fst==F_WBW) | (fst==F_FLUSHR) | (fst==F_FLUSHW)
                     | (fst==F_FILLI);
 
+   // The two things that can raise l2_req in one cycle, named so the invariant below can
+   // say so. The prefetch's own guard is `!l2_req`, which is REGISTERED and therefore
+   // cannot see a same-cycle raiser -- that blind spot is the defect.
+   // THE FILL MACHINE HAS AN L2 REQUEST ISSUED OR OUTSTANDING. Not "is issuing this
+   // cycle": the hazard is the whole ROUND TRIP. l2_req is a one-cycle pulse, so the cycle
+   // after the fill machine issues, l2_req is low again and fst is F_FILLW -- both of the
+   // old guard's tests pass and the prefetch issues into a port that is still busy. Two
+   // requests outstanding, one response, and both consumers latch it.
+   wire fill_l2_busy = (fst==F_FILL) | (fst==F_FILLW)
+                     | (fst==F_WBI)  | (fst==F_WBA)
+                     | (fst==F_FLUSHI) | (fst==F_FLUSHA) | (st==S_WTI) | (st==S_WTA);
+
    integer b, bb, w2;
    reg [2*BANKW-1:0] nwin;
    reg [LZB:0]       pos;
@@ -507,11 +519,30 @@ module rv_cache #(
          b_live <= (accept | do_replay | (st == S_LOOK)) & ~fill_banks;
          // parallel prefetch engine: issue on the idle L2 port during hit-path
          // states (they never touch L2); mutual exclusion with demand fills is
-         // by construction -- S_FILL stalls while pf_infl, l2_req is only ever
-         // raised in states outside the issue set, and PF_EN excludes the
-         // writeback/write-through/flush L2 states entirely.
+         // GATED ON fst, NOT st. The original guard read "l2_req is only ever raised in
+         // states outside the issue set" and named st states -- true while ONE machine owned
+         // both the hit path and the fills, false the moment the fill machine was split out.
+         // Since the split, st is S_IDLE for the WHOLE of a fill, so the prefetch's issue
+         // window covers exactly the cycles the fill machine is using the L2 port.
+         //
+         // When both raise l2_req in the SAME cycle the collision is silent and lethal: this
+         // block runs before both case statements, so the fill machine's l2_addr <= f_line
+         // overwrites l2_addr <= pf_next and ONE request goes out -- but pf_infl is set, so on
+         // the ack BOTH consume it. F_FILLW takes the line into linebuf and the prefetch takes
+         // the SAME data into pf_line under pf_ia, the address it never actually fetched. A
+         // later miss on pf_ia installs the demand line's bytes under pf_ia's tag: THE WRONG
+         // LINE, with a correct tag, correct parity (computed on the write) and correct address
+         // provenance (the row read is the row asked for). Every check in this file is blind to
+         // it, and it corrupts INSTRUCTIONS, because PF_EN is the I$.
+         //
+         // ~fill_l2_busy: the prefetch takes the port only when the fill machine has nothing
+         // issued OR outstanding on it. Blocking just the ISSUE cycle is not enough -- the
+         // cycle after, l2_req is low and fst is F_FILLW, so the old guard would let the
+         // prefetch straight in while the demand response is still in flight. It still
+         // prefetches freely during F_WB, the writeback streaming, F_FILLI and F_ANS, which
+         // is most of a fill.
          if (PF_EN) begin
-            if (!pf_infl && pf_want && !l2_req
+            if (!pf_infl && pf_want && !l2_req && !fill_l2_busy
                 && (st==S_IDLE || st==S_LOOK || st==S_CHECK || st==S_FIN)) begin
                l2_req <= 1; l2_we <= 0; l2_addr <= pf_next;
                pf_ia <= pf_next;
@@ -1052,6 +1083,22 @@ module rv_cache #(
       // the pipeline is empty for it.
       if (accept && req_solo && f_v)
          $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
+      // TWO RAISERS, ONE CYCLE. 5ce1666a asserted "a second L2 request while one is
+      // outstanding" (l2_req && l2_out && !l2_ack) and concluded the race does not occur in
+      // 300 M cycles. It cannot: when the prefetch and the fill machine raise l2_req in the
+      // SAME cycle, l2_out is not yet set, one address wins the register, and both consume
+      // the ack. That is the shape that files a demand line under a prefetch address.
+      // TWO CONSUMERS, ONE ACK -- stated as the hazard rather than as one way of reaching
+      // it. The prefetch waiting on l2_ack while the fill machine is ALSO waiting means one
+      // response will be latched by both: F_FILLW takes it into linebuf and the prefetch
+      // takes the same bytes into pf_line under pf_ia, an address it never fetched. A later
+      // miss on pf_ia then installs the wrong line under a correct tag -- invisible to
+      // parity (computed on the write) and to address provenance (the row read is the row
+      // asked for). Checking the ISSUE condition instead would only restate whichever gate
+      // is currently in the guard, and would stop firing the moment the guard changed.
+      if (PF_EN && pf_infl && ((fst==F_FILLW) || (fst==F_WBA) || (fst==F_FLUSHA)))
+         $fatal(1, "[cache id=%0d] prefetch and fill machine both awaiting l2_ack (fst=%0d pf_ia=%h f_line=%h)",
+                PERF_ID, fst, pf_ia, f_line[PAW-1:OFFB]);
       if (inv_age == INV_MAX)
          $fatal(1, "[cache id=%0d] invalidate has not finished in %0d cycles -- the scan was lost (fscan=%0d/%0d st=%0d fst=%0d f_v=%b f_replay=%b inv_pend=%b)",
                 PERF_ID, INV_MAX, fscan, NW, st, fst, f_v, f_replay, inv_pend);
