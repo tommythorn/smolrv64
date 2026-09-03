@@ -563,8 +563,28 @@ spread.** Four placer directives over identical RTL at DIV8=48 gave `Explore`
 `ExtraPostPlacementOpt` −0.027 — an **81 ps spread that straddles zero**.
 Every "166 MHz closed / did not close" judgement made before that measurement
 sits inside the envelope. Compare against two directives; treat one number as a
-sample, not a result. `Explore` is the default because it measured best
-(`dc3fb0ad`).
+sample, not a result.
+
+**AND THE RANKING DOES NOT CARRY FORWARD.** Re-measured 2026-09-01 on a later
+tree, the order INVERTED: `AltSpreadLogic_medium` +0.024 MET against `Explore`
+-0.180 FAIL (-0.113 after `make physopt`). 204 ps apart on identical source --
+inside the spread this rule warns about, and larger than the entire margin. So
+the directive is part of the SHIPPING CONFIGURATION, not a sweep knob: a build
+that meets timing only when somebody remembers to pass `PLACE_DIRECTIVE` is the
+same trap `OOO2_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
+default in `build.tcl` (`c4134edd`); this rule said `Explore` for a day after
+that stopped being true, which is D9 applied to a document.
+
+**THE DESIGN HAS NO MARGIN ANYWHERE, and that is the real finding.** Across the
+D$ work, six builds failed on SIX UNRELATED PATHS -- the D$ accept cone,
+`u_lq/acc -> u_rs_i/e_r`, `u_sq/head -> u_rs_i/e_r`, virtio DMA ->
+`probe_bridge`, and two more -- and the tree that ships closes at +0.019 to
++0.024. Whichever near-critical path placement treats worst that day is the one
+that fails. The consequence for method: landing IPC one commit at a time against
+a hard floor is right, but each candidate is currently decided by placement luck
+rather than by its merit. Structural headroom has to come before the next IPC
+change, and it must be aimed at whatever the tool reports as worst on TODAY's
+main -- not at a cone suspected in advance.
 
 **I3. Bring a replacement up as a shadow, checked every cycle.**
 `ooo2_rename` + `ooo2_prf` ran against the real instruction stream with
