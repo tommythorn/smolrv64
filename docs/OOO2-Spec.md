@@ -643,6 +643,32 @@ latency, not misses.
 `rv_l2_arbiter`: fixed-priority merge of **4** line requesters (I$ fill, D$ fill, D$
 writeback/write-through, PTW-as-line) onto one 512-bit line port to DDR4.
 
+**LATENCY SENSITIVITY, and why the D$ split did not cash in.** Measured 2026-09-02 on the
+Ubuntu NFS boot, `OOO2_HW=4`, 300 M cycles per point, lockstep clean at every point:
+
+| `DDR_LAT` (cycles) | retires | retires/cycle | vs. a 4-cycle memory |
+|---|---|---|---|
+| 4  | 80,008,912 | 0.2667 | -- |
+| 20 | 68,713,515 | 0.2290 | -14.1% |
+| 80 | 42,307,472 | 0.1410 | **-47.1%** |
+
+**Nearly half the throughput is spent waiting for memory**, and the board sits at the slow
+end of this curve, not the 4-cycle end every cosim before 2026-09-02 ran at.
+
+The D$ split (`rv_cache` as a LOOKUP pipeline plus a FILL machine, section 8) was aimed at
+exactly this and recovers **+0.33%** of it -- 42,307,472 against 42,169,204 for the
+pre-split cache at `DDR_LAT=80`, statistically the same +0.32% it scores at `DDR_LAT=4`.
+Making the memory 20x slower did NOT widen its advantage, which is the measurement that
+matters: if the win came from hiding miss latency it would have grown, and it did not.
+
+The reason is that the split gives the CACHE the ability to overlap a hit with a fill while
+nothing in the design produces the second request. The LSU, the I$ fetch buffer and each PTW
+walk are all single-outstanding (section 8), so `S_CHECK` usually has nothing to run under
+the miss. The cache is now READY for memory-level parallelism and is not the thing limiting
+it. Any further work inside `rv_cache` aimed at hiding latency is optimising a resource that
+is not the constraint -- the constraint is the number of independent requests the core can
+have in flight, i.e. the multi-outstanding load queue in the work list below.
+
 ### 9.3 Physical memory map
 
 | region | base | size |

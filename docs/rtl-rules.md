@@ -215,6 +215,28 @@ requester is that there is exactly one, and that is a property of the ISSUE
 GATE, not of the pulse. Either tag the transaction or make the gate cover the
 latency; `!<req_pulse>` is neither.
 
+PROVEN ON HARDWARE, not inferred, because a clean boot after a fix is not evidence that the
+fix is why it booted -- the build also placed differently. The control was `main` with
+exactly ONE TOKEN removed, `&& !fill_l2_busy`, and nothing else (the `.xpr` was restored so
+Vivado saw a single-variable tree). It was validated in simulation FIRST, so a board run was
+not spent on a control that might not be broken: at `DDR_LAT=40 DDR_JIT=63` the invariant
+fires with `fst=7` = F_FILLW, the OUTSTANDING state, which is exactly what `!l2_req` cannot
+see. Then both bitstreams, both MEETING timing:
+
+| | WNS | result |
+|---|---|---|
+| guard in | +0.019106 ns | `ubuntu login:`, 0 faults, 801 KB of clean boot |
+| guard out (1 token) | +0.010035 ns | Kernel panic at 1.22 s |
+
+    epc: rtnl_fill_ifinfo.isra.0+0x23a/0x1070
+    cause: 2 = ILLEGAL INSTRUCTION       badaddr: 00000000f6e40423
+
+`cause=2` is the signature this mechanism predicts and nothing else does: `PF_EN` is I$-only,
+so the corruption lands in INSTRUCTIONS and the core died executing a word that is not code.
+Timing is excluded -- both met, and the one that failed had the LARGER logic removed. When a
+fix and a rebuild land together, the negative control is what separates them, and it costs
+one build.
+
 ---
 
 ## C. Cross-cutting predicates

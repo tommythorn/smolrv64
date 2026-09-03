@@ -46,3 +46,4 @@ workloads/ubuntu/faster-ubuntu-25.04-preinstalled-server-riscv64.img
 workloads/ubuntu/ubuntu-25.04-preinstalled-server-riscv64.img.zst
 workloads/ubuntu/*.img
 workloads/ubuntu/*.img.zst
+gate-results/
