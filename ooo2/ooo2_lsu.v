@@ -248,7 +248,14 @@ module ooo2_lsu
    wire        eff_signed  = sel_pt ? pt_signed      : req_signed;
    wire        eff_fp      = sel_pt ? pt_fp          : req_fp;
 
-   wire [3:0]  nb       = 4'd1 << eff_size;
+   wire [3:0]  nb       = 4'd1 << eff_size;   // the access that STARTS: M's or the port's
+   // M'S OWN FAULT TESTS USE M'S OWN WIDTH. They used `nb`, which follows sel_pt, i.e. in
+   // S_IDLE the port's grant: in the cycle a queued access is granted, M's translate pass
+   // judged its page crossing with the port's size -- wrong on its face, and it was also
+   // the door the store queue's head walked through into M's completion (head -> l_block
+   // -> the queue's candidate -> pt_start -> sel_pt -> nb -> xpage -> xo_ok -> done):
+   // 5667 near-critical endpoints in the 2026-09-04 build C.
+   wire [3:0]  req_nb   = 4'd1 << req_size;
    wire        wr_class = req_store | (req_amo & ~is_lr);   // store-class for translation/faults
 
    // ------------------------------------------------------------ translation
@@ -274,14 +281,14 @@ module ooo2_lsu
    // A misaligned access whose byte span leaves the page needs a second translation.
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software
    // emulate -- the OoO LSU makes the same call.
-   wire xpage   = (({1'b0, req_vaddr[11:0]} + {9'd0, nb}) > 13'h1000);
+   wire xpage   = (({1'b0, req_vaddr[11:0]} + {9'd0, req_nb}) > 13'h1000);
 
    // AMOs (and LR/SC) must be naturally aligned. The RMW datapath is built around
    // the containing 8-byte word -- pa_q is aligned down and a_wmask is word-relative
    // -- so without this check an unaligned AMO corrupts neighbouring bytes silently
    // rather than trapping. nb-1 is the alignment mask (nb=8 truncates to 3'b000, so
    // the 4-bit subtract yields 4'd7 as intended).
-   wire [3:0] al_mask = nb - 4'd1;
+   wire [3:0] al_mask = req_nb - 4'd1;
    wire amo_mis = req_amo & ((req_vaddr[3:0] & al_mask) != 4'd0);
 
    wire mis_flt = (xl_x & xpage) | (xl_f & (xpage | amo_mis));

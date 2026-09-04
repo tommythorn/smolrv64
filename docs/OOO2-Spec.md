@@ -591,9 +591,13 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   while the data is in flight, and that is worth more than the latency it costs. The queue's
   two cycles are not overhead; one of them is.
 - A load's fault is decided **before the access starts**: for an FSM-starting access
-  `mis_flt` and `xl_flt` are qualified by `xl_f = req_valid & ~req_xlate & (st == S_IDLE)
-  & ~pt_start`, and for the translate-only pass by `xl_x = req_valid & req_xlate`, which
-  never enters the FSM at all. Once the LSU leaves `S_IDLE` an access cannot fault. This is
+  `mis_flt` and `xl_flt` are qualified by `xl_f = req_valid & ~req_xlate & (st == S_IDLE)`,
+  and for the translate-only pass by `xl_x = req_valid & req_xlate`, which never enters the
+  FSM at all. The pre-translated port's grant (`pt_start`) appears only in the START
+  decision (`xl_ok_f`, `xl_early`), never in a request to the MMU or in a fault -- and M's
+  own fault tests (`xpage`, `amo_mis`) use M's own width (`req_nb`), not the width of
+  whichever access the port selected this cycle. Once the LSU leaves `S_IDLE` an access
+  cannot fault. This is
   what makes precise exceptions possible **with no ROB walk** — M holds only until
   translation resolves (same cycle on a TLB hit), and after that the load is architecturally
   guaranteed to complete.
