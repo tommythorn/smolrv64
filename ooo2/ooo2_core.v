@@ -1590,7 +1590,11 @@ module ooo2_core
       // and PINCONNECTEMPTY does not, so a deliberate non-connection has to say so instead
       // of being silently omitted (same treatment as the iMMU's t_uncached).
       .dbg_timer(), .dbg_mtvec(), .dbg_mtvec_we(), .dbg_csrop(), .dbg_csrop_v(),
-      .upd_valid(m_is_sys & m_done), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
+      // m_done_red here too: a system op is never a memory op, and upd_valid feeds the CSR
+      // unit's redirect and trap-target logic -- with the full m_done, build D of 2026-09-04
+      // had 1357 near-critical endpoints starting at m_addr: dTLB compare -> lsu_done ->
+      // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
+      .upd_valid(m_is_sys & m_done_red), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
       .upd_addr(m_imm[11:0]),
       .upd_src(m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val),
       .upd_pc(m_pc));
@@ -1745,6 +1749,8 @@ module ooo2_core
                 redirect, redirect_ref);
       if ((xtrap_v & m_done_red) != (xtrap_v & m_done))
          $fatal(1, "ooo2_core: trap request from the non-memory done disagrees with m_done");
+      if ((m_is_sys & m_done_red) != (m_is_sys & m_done))
+         $fatal(1, "ooo2_core: CSR update valid from the non-memory done disagrees with m_done");
    end
 
    // ---- EARLY FRONTEND RESTART -------------------------------------------------------
