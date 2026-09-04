@@ -1,5 +1,11 @@
 # Handoff — 2026-09-03: timing at 166.67 MHz
 
+> **§4 IS REFUTED -- read `HANDOFF-2026-09-04-timing.md`.** The 178 MHz OOC figure was
+> measured on `rv_cache`'s parameter defaults, not the shipped shape, and the failing core
+> paths were one five-module chain through the LSU's port arbitration, not slack the cache
+> had spent. The rest of this file (the WNS record, the refuted floorplan, the instruments)
+> still stands.
+
 `main` is at **`bcff35e7`**. It is correct and boots, but **it does not reliably close
 timing**, and the last commit that produced a bitstream is `f9540bf1`.
 
