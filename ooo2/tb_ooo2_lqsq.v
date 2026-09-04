@@ -30,7 +30,7 @@ module tb;
    reg [ROBB-1:0]   lq_d_rob=0;  reg [PBITS-1:0] lq_d_prd=0;  reg [5:0] lq_d_rd=0;  reg lq_d_rd_v=1;
    reg [IDXB:0]     lq_d_sqtag=0;
    reg [IDXB-1:0]   lq_a_idx=0, lq_b_idx=0, lq_l_idx=0;
-   reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0;
+   reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0, lq_a_unc=0;
    wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v;
    wire [IDXB-1:0]  lq_d_idx, lq_x_idx;  wire [IDXB:0] lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
@@ -51,7 +51,7 @@ module tb;
       .d_alloc(lq_d_alloc),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
       .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_idx(lq_d_idx),
       .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_size(lq_a_size),
-      .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(1'b0),
+      .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(lq_a_unc),
       .e_pa(e_pa),.e_size(e_size),.e_tag(e_tag),.e_av(e_av),.e_block(e_block),.x_block(lq_x_block),
       .q_tag(lq_q_tag),.b_idx(lq_b_idx),.b_ok(lq_b_ok),
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
@@ -287,6 +287,23 @@ module tb;
       chk("9w released after all four commit", lq_x_v && !ld_older, 1'b1);
       take; land(L0);
       chk("9w drained", lq_occ==0 && sq_occ==0, 1'b1);
+
+      // ---- 10. EVERY attribute presented at fill comes back at take (rule B7) ----
+      // The uncached bit was never carried (2026-09-04): the port hardwired it to 0 and a
+      // queued NC load was cached. Present every attribute with a distinctive value and read
+      // them all back on the candidate, so a field added to the port without its entry
+      // fails here rather than on the board.
+      disp_load(9'd46, 4'd13, L0);
+      lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h00_ABCD_EF01_2348; lq_a_size=2'd1; lq_a_signed=1; lq_a_fp=1; lq_a_unc=1;
+      step; lq_a_v=0; #1;
+      chk("10 pa round-trips",     lq_x_v && lq_x_pa==56'h00_ABCD_EF01_2348, 1'b1);
+      chk("10 size round-trips",   lq_x_size==2'd1, 1'b1);
+      chk("10 signed round-trips", lq_x_signed, 1'b1);
+      chk("10 fp round-trips",     lq_x_fp, 1'b1);
+      chk("10 unc round-trips",    lq_x_unc, 1'b1);
+      lq_a_signed=0; lq_a_fp=0; lq_a_unc=0; lq_a_size=2;
+      take; land(L0);
+      chk("10 drained", lq_occ==0, 1'b1);
 
       $display("---- tb_ooo2_lqsq pass=%0d fail=%0d", pass, fail);
       if (fail != 0) begin $display("LQSQ-TB FAIL"); $fatal(1, "tb_ooo2_lqsq FAILED"); end

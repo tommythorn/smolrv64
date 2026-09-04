@@ -56,21 +56,48 @@ module tb;
       .virtio_addr(), .virtio_read(), .virtio_write(), .virtio_wdata(), .virtio_be(),
       .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .irq_dbg());
 
-   // DDR_LAT: line latency in cycles. The default 4 is NOT representative -- real DDR4
-   // through the MIG, ddr_line_axi and the probe_clk/ui_clk CDC is tens of cycles, and the
-   // gap matters for anything that runs CONCURRENTLY with a fill. At 4 cycles a pipelined
-   // cache admits about two requests while a line is outstanding; at 100 it admits dozens,
-   // which is the difference between exercising that concurrency and barely touching it.
-   // Sweep it whenever a change alters what happens during a miss.
+   // THE DDR MODEL IS THE MEASURED ONE BY DEFAULT. Until 2026-09-04 the default was a flat
+   // 4-cycle line latency, which is not this machine: the D$ admitted two requests under a
+   // fill where the board admits dozens, the store queue never filled the way it does on the
+   // board, and two six-day-old ordering defects lived through every gate. The shape below
+   // is src/ddr_hpm.v's histogram read on the board on 2026-08-04 at 66.67 MHz (8.2 M reads,
+   // 3.0 M writes): reads mean 13.31 cycles, 96% in 8-15, 2.2% in 16-31, 1.6% in 32-63;
+   // writes mean 8.69, ~4.5 lower; nothing beyond 63. Reads and writes differ because
+   // writes post at the bridge, so they draw separately, and the tail is occasional
+   // excursions (refresh, bank conflicts), not a wide uniform spread.
+   //
+   // SCALED to the 166.67 MHz core clock by 2.5 (DDR latency is fixed in ns; the CDC and
+   // arbiter parts are not, so this is approximate): reads 28-45 with a mean ~33, writes
+   // 20-37 with a mean ~22, tails 40-77 and 80-157. RE-MEASURE with workloads/ddrhpm at
+   // 166.67 MHz and replace these constants -- the board was busy when this was written.
+   //
+   //   +ddr_lat=N     flat N-cycle latency, reads and writes alike (the old model; sweeps)
+   //   -DDDR_LAT=N    the same, at compile time (kept for the existing sweep scripts)
+   //   -DDDR_JIT=J    uniform 0..J added on top of whichever base is in force
 `ifndef DDR_LAT
- `define DDR_LAT 4
+ `define DDR_LAT 0
 `endif
 `ifndef DDR_JIT
  `define DDR_JIT 0
 `endif
-   // behavioral DDR (DDR_LAT-cycle line latency), modeled as a 512-bit LINE array: the
-   // ddr_* port is 64-byte lines, so the element count stays under the array-dimension
-   // limit even at 2 GiB (a flat byte array overflows it).
+   reg [63:0] ddr_lat_arg;
+   initial if (!$value$plusargs("ddr_lat=%d", ddr_lat_arg)) ddr_lat_arg = 64'd`DDR_LAT;
+   reg [15:0] dlfsr; initial dlfsr = 16'hBEEF;
+   function [7:0] ddr_draw;      // measured shape, scaled x2.5; 0 = flat override in force
+      input is_wr;
+      reg [9:0] r;
+      begin
+         r = dlfsr[9:0];
+         if (ddr_lat_arg != 0)        ddr_draw = ddr_lat_arg[7:0];
+         else if (r[9:4] == 6'd0)     ddr_draw = 8'd85 + {3'd0, r[3:0], 1'b0};   // ~1.5%: 85-115 (of 80-157)
+         else if (r[9:6] == 4'd0)     ddr_draw = 8'd45 + {3'd0, r[3:0], 1'b0};   // ~3%:   45-75  (of 40-77)
+         else if (is_wr)              ddr_draw = 8'd20 + {3'd0, r[2:0], 1'b0};   // writes 20-34, mean ~27
+         else                         ddr_draw = 8'd28 + {3'd0, r[2:0], 1'b0};   // reads  28-42, mean ~35
+      end
+   endfunction
+   // behavioral DDR, modeled as a 512-bit LINE array: the ddr_* port is 64-byte lines, so
+   // the element count stays under the array-dimension limit even at 2 GiB (a flat byte
+   // array overflows it).
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;
    reg [511:0] lram [0:NLINES-1];
@@ -81,14 +108,8 @@ module tb;
       ddr_ack <= 1'b0;
       if (reset) d_busy <= 1'b0;
       else if (!d_busy && ddr_req) begin
-         // DDR_JIT: jitter on top of DDR_LAT, because the real memory system is not a
-         // constant. DDR4 through the MIG varies with refresh, bank conflicts and
-         // arbitration between the I$ and the D$, so a FIXED latency explores exactly one
-         // interleaving of fill against lookup -- and a race needing any other interleaving
-         // is invisible however long the run. The D$ split passes this cosim at DDR_LAT=4
-         // and 100, both constant, and fails on the board; this is the axis those runs
-         // never varied.
-         d_busy<=1'b1; d_cnt<=16'd`DDR_LAT + ({$random(ddr_seed)} % (`DDR_JIT + 1));
+         d_busy<=1'b1; d_cnt<={8'd0, ddr_draw(ddr_we)} + ({$random(ddr_seed)} % (`DDR_JIT + 1));
+         dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
          d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
       end else if (d_busy) begin
          if (d_cnt==0) begin
@@ -161,11 +182,12 @@ module tb;
    //   LD   a load landed                      FP   an FP result landed
    //   RET  retired at the ROB head            RED  redirect
    integer pv_from = -1, pv_n = 0, pv_cnt = 0;
+   reg [63:0] trace_from, trace_to;             // +trace_from/+trace_to, see the plusargs
    integer pv_c;
    initial pv_c = 0;
    always @(posedge clk) if (!reset) begin
       pv_c <= pv_c + 1;
-      if (pv_from >= 0 && pv_c >= pv_from && pv_c < pv_from + pv_n) begin
+      if (trace_on && pv_from >= 0 && pv_c >= pv_from && pv_c < pv_from + pv_n) begin
          $write("pv %0d |", pv_c);
          if (dut.core.d_take)      $write(" DIS:%0d", dut.core.rob_d_idx);   else $write("        ");
          if (dut.core.iq_iss_take) $write(" ISS:%s%0d",
@@ -246,6 +268,7 @@ module tb;
 
    reg [8*256-1:0] fw, dtb, initrd;
    reg [63:0] ncyc, c, nret;
+   wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
    initial begin
       ncyc = 200000000; nret = 0;
       n_inject = 0; n_uirq = 0; n_seip = 0;
@@ -254,6 +277,12 @@ module tb;
       n_stmul = 0; n_stdiv = 0; n_stfpu = 0;
       n_stm = 0; n_hold = 0; n_headblk = 0; n_mempty = 0; n_ldland = 0;
       n_robfull = 0; n_srcpend = 0;
+      // +trace_from=<cycle> +trace_to=<cycle>: the window every tb-side trace honours, so a
+      // trace is aimed by plusarg and never by a compile-time literal (three 17 M-cycle
+      // rebuilds on 2026-09-04 went to a `$time` threshold in the wrong unit). RTL-side
+      // `ifdef` traces read the same two plusargs themselves (rule G6).
+      if (!$value$plusargs("trace_from=%d", trace_from)) trace_from = 64'd0;
+      if (!$value$plusargs("trace_to=%d",   trace_to))   trace_to   = 64'hFFFF_FFFF_FFFF_FFFF;
       if ($value$plusargs("pipe=%d", pv_from)) pv_n = 200;
       if ($value$plusargs("pipe_n=%d", pv_cnt))  pv_n = pv_cnt;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end

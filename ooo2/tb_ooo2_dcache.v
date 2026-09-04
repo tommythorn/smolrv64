@@ -41,7 +41,7 @@ module tb;
    wire [RDW-1:0]   rd_data;
    wire             rd_valid, rd_ack;
    wire [3:0]       rd_resp_tag;
-   reg              cbo_req=0, cbo_zero=0;
+   reg              cbo_req=0, cbo_zero=0, cbo_keep=0, rd_unc=0, wr_unc=0;
    reg              wr_req=0;
    reg  [PAW-1:0]   wr_addr=0;
    reg  [63:0]      wr_data=0;
@@ -59,10 +59,10 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(rd_req), .rd_addr(rd_addr), .rd_data(rd_data), .rd_valid(rd_valid),
       .rd_resp_addr(), .rd_tag(rd_tag), .rd_resp_tag(rd_resp_tag),
-      .rd_ack(rd_ack), .rd_uncached(1'b0),
+      .rd_ack(rd_ack), .rd_uncached(rd_unc),
       .wr_req(wr_req), .wr_addr(wr_addr), .wr_data(wr_data), .wr_mask(wr_mask),
-      .wr_ack(wr_ack), .wr_uncached(1'b0),
-      .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(1'b0),
+      .wr_ack(wr_ack), .wr_uncached(wr_unc),
+      .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep),
       .inv_req(1'b0), .inv_clean(1'b0), .inv_busy(),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
       .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss());
@@ -137,6 +137,30 @@ module tb;
          wr_addr=a; wr_data=64'd0; wr_mask=8'd0; cbo_zero=1'b1; cbo_req=1'b1; wr_req=1'b1;
          @(negedge clk); while (!wr_ack) @(negedge clk);
          wr_req=1'b0; cbo_req=1'b0; cbo_zero=1'b0; @(negedge clk);
+      end
+   endtask
+   // Zicbom clean (keep=1) / flush+inval (keep=0): the write port with cbo_req, no data.
+   task do_cbo(input [PAW-1:0] a, input keep);
+      begin
+         wr_addr=a; wr_data=64'd0; wr_mask=8'd0; cbo_keep=keep; cbo_req=1'b1; wr_req=1'b1;
+         @(negedge clk); while (!wr_ack) @(negedge clk);
+         wr_req=1'b0; cbo_req=1'b0; cbo_keep=1'b0; @(negedge clk);
+      end
+   endtask
+   // Svpbmt NC/IO accesses: the same ports with the uncached bit up.
+   task do_load_nc(input [PAW-1:0] a, input [3:0] t);
+      begin rd_unc=1'b1; do_load(a, t); rd_unc=1'b0; end
+   endtask
+   task do_store_nc(input [PAW-1:0] a, input [63:0] d, input [7:0] m);
+      begin wr_unc=1'b1; do_store(a, d, m); wr_unc=1'b0; end
+   endtask
+   // A DEVICE writes memory behind the cache (virtio DMA): straight into the backing store,
+   // while the cache is idle, one 64-bit word of one line.
+   task dma_write(input [PAW-1:0] a, input [63:0] d);
+      begin
+         @(negedge clk); while (lbusy) @(negedge clk);
+         mem[a[17:6]][a[5:3]*64 +: 64] = d;
+         @(negedge clk);
       end
    endtask
    task expect64(input [63:0] g, input [63:0] e, input [255:0] what);
@@ -248,6 +272,59 @@ module tb;
                begin $display("FAIL k=%0d: evicted dirty word got %h want %h", k, got, 64'hCAFE_F00D_0000_0000+k); errors=errors+1; end
             if (errors > 6) k=44;
          end
+      end
+
+      // ---- T8-T13: DMA COHERENCE, the board's contract that no boot exercised in sim. ----
+      // Linux with Svpbmt maps DMA-coherent memory NC and does cbo.clean/inval around
+      // streaming DMA. On 2026-09-04 the board read stale virtio rings (the queue lost the NC
+      // bit, not the cache) -- and nothing here could have said which. These pin the cache's
+      // side: an NC read never keeps a line, an NC store reaches memory and keeps no line,
+      // cbo.inval drops a clean line, cbo.flush writes back and drops, cbo.clean writes
+      // back and keeps.
+      begin : dma_coherence
+         reg [PAW-1:0] X;
+         X = 64'h8000_0000 + 64'h30000;
+         // T8: a resident line, the device rewrites it, cbo.inval, then an NC read
+         do_load(X, 4'h1);  expect64(got, expect_word(X), "T8 prime");
+         dma_write(X, 64'hD0D0_0001_0000_0001);
+         do_cbo(X, 1'b0);                                     // inval (clean line: no writeback)
+         do_load_nc(X, 4'h2);
+         expect64(got, 64'hD0D0_0001_0000_0001, "T8 NC read after cbo.inval sees the device's word");
+         // T9: an NC read must not keep the line: the device rewrites, the next NC read sees it
+         dma_write(X, 64'hD0D0_0002_0000_0002);
+         do_load_nc(X, 4'h3);
+         expect64(got, 64'hD0D0_0002_0000_0002, "T9 second NC read sees the newer device word (line not kept)");
+         dma_write(X, 64'hD0D0_0003_0000_0003);
+         do_load(X, 4'h4);
+         expect64(got, 64'hD0D0_0003_0000_0003, "T9 a cacheable read after NC reads fetches from memory");
+         // T10: cbo.clean of a DIRTY line writes it back and keeps it
+         do_store(X + 64'd8, 64'hC1EA_0000_0000_0010, 8'hFF);
+         do_cbo(X, 1'b1);                                     // clean
+         if (mem[X[17:6]][1*64 +: 64] !== 64'hC1EA_0000_0000_0010)
+            begin $display("FAIL T10 cbo.clean did not write the dirty word back"); errors=errors+1; end
+         do_load(X + 64'd8, 4'h5);
+         expect64(got, 64'hC1EA_0000_0000_0010, "T10 the line is still readable after clean");
+         // T11: cbo.flush of a dirty line writes back AND drops it: a device word lands after
+         do_store(X + 64'd16, 64'hF1A5_0000_0000_0020, 8'hFF);
+         do_cbo(X, 1'b0);                                     // flush/inval
+         if (mem[X[17:6]][2*64 +: 64] !== 64'hF1A5_0000_0000_0020)
+            begin $display("FAIL T11 cbo.flush did not write the dirty word back"); errors=errors+1; end
+         dma_write(X + 64'd24, 64'hD0D0_0004_0000_0004);
+         do_load(X + 64'd24, 4'h6);
+         expect64(got, 64'hD0D0_0004_0000_0004, "T11 after flush the line is refetched (device word visible)");
+         // T12: cbo.inval on a CLEAN resident line drops it
+         do_load(X + 64'd32, 4'h7);
+         dma_write(X + 64'd32, 64'hD0D0_0005_0000_0005);
+         do_cbo(X, 1'b0);
+         do_load(X + 64'd32, 4'h8);
+         expect64(got, 64'hD0D0_0005_0000_0005, "T12 cbo.inval of a clean line: the next read refetches");
+         // T13: an NC store reaches memory at once and keeps no line
+         do_store_nc(X + 64'd40, 64'h5C5C_0000_0000_0050, 8'hFF);
+         if (mem[X[17:6]][5*64 +: 64] !== 64'h5C5C_0000_0000_0050)
+            begin $display("FAIL T13 NC store not in memory after ack"); errors=errors+1; end
+         dma_write(X + 64'd48, 64'hD0D0_0006_0000_0006);
+         do_load(X + 64'd48, 4'h9);
+         expect64(got, 64'hD0D0_0006_0000_0006, "T13 after an NC store the line was not kept");
       end
 
       if (errors==0) $display("rv_cache D$ directed: PASS");

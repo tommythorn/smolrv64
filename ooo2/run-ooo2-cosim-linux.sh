@@ -72,7 +72,6 @@ STAMP="obj_dir_ooo2_clinux/.config-stamp"
 # G1: echo the config THIS RUN consumed, every run -- not only when it rebuilds. A run that
 # reuses a binary is exactly the one whose config you cannot see, and reading it back out of
 # .config-stamp after the fact is how you end up trusting a number you did not verify.
-echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>}"
 # THE STAMP COVERS THE SOURCES TOO. Without this, a run with BUILD unset reused whatever
 # binary was there, and on 2026-09-04 a whole day of commits was declared "bit-identical"
 # against a model none of them had been compiled into -- every log said "building simmerv
@@ -84,6 +83,7 @@ srchash=$(cat rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predi
               ../src/smolrv64_plic_arbiter.v ../src/smolrv64_cvfpu.sv tb_ooo2_linux.v \
               ../src/probe_cosim.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
+echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>} model-src=$srchash"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
    need_build=1
@@ -142,13 +142,13 @@ if [ -n "$got" ] && [ -n "$exp" ]; then
    floor=$(awk -v e="$exp" -v t="$tol" 'BEGIN{printf "%d", e*(100-t)/100}')
    pct=$(awk -v g="$got" -v e="$exp" 'BEGIN{printf "%+.2f", 100*(g-e)/e}')
    if [ "$got" -lt "$floor" ]; then
-      echo "COSIM-PERF FAIL: retires=$got vs expected $exp ($pct%, floor $floor at ${tol}%)"
+      echo "COSIM-PERF FAIL: retires=$got vs expected $exp ($pct%, floor $floor at ${tol}%) model-src=$srchash"
       echo "  A correct-but-slower change. If it is intended, raise the number in"
       echo "  ooo2/cosim-expected.txt in the SAME commit, with the reason."
       exit 1
    fi
-   echo "cosim-perf: retires=$got vs expected $exp ($pct%) -- ok"
+   echo "cosim-perf: retires=$got vs expected $exp ($pct%) -- ok  model-src=$srchash"
 elif [ -n "$got" ]; then
-   echo "cosim-perf: retires=$got (no expectation recorded for CYC=$CYC OOO2_HW=$hw)"
+   echo "cosim-perf: retires=$got (no expectation recorded for CYC=$CYC OOO2_HW=$hw) model-src=$srchash"
 fi
 exit $rc

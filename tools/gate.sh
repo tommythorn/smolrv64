@@ -77,31 +77,9 @@ fi
 echo "timing: $WNS"
 printf '%s\n' "$WORST" | sed 's/^/  /'
 
-# ---- 3. the board -------------------------------------------------------------------
-( cd "$PLAT" && timeout 900 make program ) > "$RES/program.log" 2>&1
-grep -qi "programmed successfully" "$RES/program.log" || { echo "GATE: FAIL (program)"; exit 1; }
-
-# screenlog.0 is CUMULATIVE across boots: record the offset or a previous boot's login:
-# reads as a pass. That produced a false pass on 2026-09-01.
-PRE=$(wc -c < "$UB/screenlog.0")
-( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
-   || { echo "GATE: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
-
-echo "--- booting, watching past byte $PRE ---"
-END=$(( $(date +%s) + BOOT_WAIT ))
-while [ "$(date +%s)" -lt "$END" ]; do
-   NEW=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r')
-   printf '%s' "$NEW" | grep -aq "login:" && break
-   printf '%s' "$NEW" | grep -aqE "Kernel panic" && break
-   sleep 15
-done
-NEW=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r')
-FAULTS=$(printf '%s' "$NEW" | grep -acE "unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|Unable to handle kernel paging|Oops \[#|Kernel panic")
-LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
-echo "login: $LOGIN   faults: $FAULTS   last: $(printf '%s' "$NEW" | grep -aoE '^\[ *[0-9]+\.[0-9]+\]' | tail -1)"
-printf '%s' "$NEW" > "$RES/boot.log"
-if [ "$LOGIN" -ge 1 ] && [ "$FAULTS" -eq 0 ]; then
+# ---- 3. the board: tools/board-gate.sh, runnable alone on a banked bitstream ------------
+tools/board-gate.sh "$RES" | tee "$RES/board.log"
+if [ "${PIPESTATUS[0]}" -eq 0 ]; then
    echo "GATE: PASS  ($WHAT)  $WNS   [evidence: gate-results/$SHA/]"; exit 0
 fi
-printf '%s' "$NEW" | grep -aE "unhandled signal|segfault|Oops \[#|epc :" | head -4
-echo "GATE: FAIL (board)  login=$LOGIN faults=$FAULTS   [evidence: gate-results/$SHA/]"; exit 1
+echo "GATE: FAIL (board)   [evidence: gate-results/$SHA/]"; exit 1
