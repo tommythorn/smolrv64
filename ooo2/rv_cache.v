@@ -202,14 +202,19 @@ module rv_cache #(
    wire [2*BANKW-1:0] win    = {whi, wlo};
    wire [2*BANKW-1:0] win_sh = win >> (bwc*8);
    // live-window variant for the S_CHECK fast read delivery (same bytes that are
-   // being registered into wlo/whi this edge)
-   wire [BANKW-1:0]   fwlo    = clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
-   wire [BANKW-1:0]   fwhi    = clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
-   wire [2*BANKW-1:0] fast_sh = {fwhi, fwlo} >> (bwc*8);
+   // being registered into wlo/whi this edge).
+   // SHIFT PER WAY, THEN SELECT THE WAY. The way is the LAST thing this cycle learns --
+   // it is the tag compare -- so it must be the last mux on the data, not the first. The
+   // old form selected the way's two chunks first (128 mux selects on `hway`) and shifted
+   // the result; this shifts both ways' windows from registers and bank outputs alone and
+   // lets `hway` pick one 64-bit result. Same bytes, one 2:1 mux after the compare.
+   wire [2*BANKW-1:0] fast0 = (clo[0] ? {bk_rddata[0], bk_rddata[1]} : {bk_rddata[1], bk_rddata[0]}) >> (bwc*8);
+   wire [2*BANKW-1:0] fast1 = (clo[0] ? {bk_rddata[2], bk_rddata[3]} : {bk_rddata[3], bk_rddata[2]}) >> (bwc*8);
    reg [LINEB-1:0] linebuf;
    reg [PAIRB:0]   pc;
    reg [IDXB-1:0]  wb_idx;  reg wb_way;            // line currently streamed for WB/WT/flush
    reg             w0_way;  reg [IDXB-1:0] w0_idx; // line0 hit way/idx (for the span store)
+   reg             w1_way;  reg [IDXB-1:0] w1_idx; // line1 hit way/idx (phase 1), see S_CHECK
    reg [PAW-OFFB-1:0] wb_laddr;                    // L2 line address for the streamed writeback
 
    // TWO machines now, not one. The LOOKUP pipeline resolves a request against the arrays;
@@ -467,18 +472,29 @@ module rv_cache #(
          bk_rdaddr[wb_way*2+1] = { wb_idx, pc[PAIRB-1:0] };
       end
 
-      // serialized fill install: write pair pc of the victim from linebuf (even+odd)
+      // serialized fill install: write pair pc of the victim from linebuf (even+odd).
+      // A cbo.zero installs ZEROS BY MASKING HERE, not by zeroing linebuf at the lookup.
+      // `linebuf <= 0` on the cbo.zero HIT sat under `hit` in S_CHECK, which put the tag
+      // compare on the clock-enable of 512 flops: the D$'s worst family in the 2026-09-03
+      // build (cur_line -> tagm -> compare -> linebuf/CE, 14 levels, 80% route, 325
+      // endpoints). f_cbo_zero is a register captured with the request, so the enable is
+      // gone from the compare and the cycle count is unchanged -- and it must be, because
+      // Zicboz is advertised and cbo.zero is the kernel's clear_page, not a rarity.
       if (fst==F_FILLI) begin
          bk_wren  [vw*2+0] = 1'b1;
          bk_wraddr[vw*2+0] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+0] = linebuf[(2*pc)  *BANKW +: BANKW];
+         bk_wrdata[vw*2+0] = f_cbo_zero ? {BANKW{1'b0}} : linebuf[(2*pc)  *BANKW +: BANKW];
          bk_wren  [vw*2+1] = 1'b1;
          bk_wraddr[vw*2+1] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+1] = linebuf[(2*pc+1)*BANKW +: BANKW];
+         bk_wrdata[vw*2+1] = f_cbo_zero ? {BANKW{1'b0}} : linebuf[(2*pc+1)*BANKW +: BANKW];
       end
       // store merge: write the low chunk (and same-line high chunk if the store spilled).
       // Uses the captured LINE0 way/idx (w0_*) -- in a span, the live hway/cih are line1's.
-      if (st==S_FIN && r_is_wr && hit) begin
+      // NOT qualified by `hit`: S_FIN is reached only through a hit, the request is solo, so
+      // nothing can move the line between the two states -- asserted below, where it is a
+      // check instead of a re-evaluation of the whole tag compare on the bank write enable.
+      // ~r_cbo: a Zicbom op also passes through S_FIN (its dirty test) and carries no data.
+      if (st==S_FIN && r_is_wr && !r_cbo) begin
          bk_wren  [w0_way*2 + clo[0]] = 1'b1;
          bk_wraddr[w0_way*2 + clo[0]] = { w0_idx, pair_lo };
          bk_wrdata[w0_way*2 + clo[0]] = nwin[0 +: BANKW];
@@ -488,11 +504,12 @@ module rv_cache #(
             bk_wrdata[w0_way*2 + (clo[0]^1'b1)] = nwin[BANKW +: BANKW];
          end
       end
-      // spanning store high half: write line1 chunk0 (even bank) of the line1 hit way
-      if (st==S_SPANW && hit) begin
-         bk_wren  [hway*2 + 0] = 1'b1;
-         bk_wraddr[hway*2 + 0] = { cih, {PAIRB{1'b0}} };
-         bk_wrdata[hway*2 + 0] = nwin[BANKW +: BANKW];
+      // spanning store high half: write line1 chunk0 (even bank) of the line1 hit way,
+      // captured at the phase-1 lookup (w1_*), not re-derived from the live compare.
+      if (st==S_SPANW) begin
+         bk_wren  [w1_way*2 + 0] = 1'b1;
+         bk_wraddr[w1_way*2 + 0] = { w1_idx, {PAIRB{1'b0}} };
+         bk_wrdata[w1_way*2 + 0] = nwin[BANKW +: BANKW];
       end
    end
 
@@ -562,76 +579,117 @@ module rv_cache #(
          case (st)
            S_IDLE: begin
               phase <= 0;
-              // A completed fill's own request, re-entering the pipeline that was held empty
-              // for it. The banks were addressed from f_addr this cycle by the same a_live
-              // mux the door uses, so from S_CHECK on it is an ordinary request again.
+              // THE REQUEST REGISTERS ARE CAPTURED EVERY IDLE CYCLE, FROM THE SAME MUX THAT
+              // ADDRESSES THE BANKS. Their clock-enable used to be `accept`, which is the
+              // whole front door -- the requester's request (for the I$, the fetch buffer's
+              // hit test behind the iTLB compare), acc_slot, the invalidate gates and the
+              // solo rules -- fanned out to ~200 flops. A value captured in a cycle that is
+              // NOT accepted is never read: nothing consumes r_*/cur_line while st is S_IDLE,
+              // and the next idle cycle overwrites it. So the enable is the state alone and
+              // `accept` decides only whether the pipeline leaves S_IDLE. The select is
+              // f_replay, a register, exactly as a_live's is (rule I6 for the bank address).
+              //
+              // A completed fill's own request re-enters the pipeline that was held empty for
+              // it; the banks were addressed from f_addr this cycle by the same a_live mux
+              // the door uses, so from S_CHECK on it is an ordinary request again.
+              r_is_wr    <= f_replay ? f_is_wr    : (wr_req && !rd_req);
+              r_uncached <= f_replay ? f_uncached : (rd_req ? rd_uncached : wr_uncached);   // Svpbmt
+              // CBO flags qualify a write-port maintenance op only. Reads win arbitration
+              // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
+              // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
+              // making its refill zero-fill the line instead of fetching it.
+              r_cbo      <= f_replay ? f_cbo      : ((wr_req && !rd_req) & cbo_req);
+              r_cbo_zero <= f_replay ? f_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
+              r_cbo_keep <= f_replay ? f_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
+              r_addr     <= a_live;
+              r_tag      <= f_replay ? f_tag      : rd_tag;
+              r_wdata    <= f_replay ? f_wdata    : wr_data;
+              r_wmask    <= f_replay ? f_wmask    : wr_mask;
+              r_off      <= a_live[OFFB-1:0];
+              // a CBO is a single-line op (never spans); req_span is the door's own test
+              r_span     <= f_replay ? f_span     : req_span;
+              cur_line   <= {a_live[PAW-1:OFFB], {OFFB{1'b0}}};
               if (do_replay) begin
-                 r_is_wr <= f_is_wr;  r_uncached <= f_uncached;  r_span <= f_span;
-                 r_cbo <= f_cbo;  r_cbo_zero <= f_cbo_zero;  r_cbo_keep <= f_cbo_keep;
-                 r_addr <= f_addr;  r_tag <= f_tag;
-                 r_wdata <= f_wdata;  r_wmask <= f_wmask;
-                 r_off <= f_addr[OFFB-1:0];
-                 cur_line <= {f_addr[PAW-1:OFFB], {OFFB{1'b0}}};
                  f_v <= 1'b0;  f_replay <= 1'b0;
                  st <= S_CHECK;
-              end else if (accept) begin
-                 r_is_wr  <= wr_req && !rd_req;
-                 r_uncached <= rd_req ? rd_uncached : wr_uncached;   // Svpbmt
-                 // CBO flags qualify a write-port maintenance op only. Reads win arbitration
-                 // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
-                 // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
-                 // making its refill zero-fill the line instead of fetching it.
-                 r_cbo    <= (wr_req && !rd_req) & cbo_req;
-                 r_cbo_zero <= (wr_req && !rd_req) & cbo_zero;
-                 r_cbo_keep <= (wr_req && !rd_req) & cbo_keep;   // Zicbom/Zicboz
-                 r_addr   <= rd_req ? rd_addr : wr_addr;
-                 r_tag    <= rd_tag;
-                 r_wdata  <= wr_data; r_wmask <= wr_mask;
-                 r_off    <= rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0];
-                 // a CBO is a single-line op (never spans)
-                 r_span   <= ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
-                               + (rd_req ? RDB : WRB)) > WORDB);
-                 cur_line <= {(rd_req ? rd_addr[PAW-1:OFFB] : wr_addr[PAW-1:OFFB]), {OFFB{1'b0}}};
+              end else if (accept)
                  st <= S_CHECK;    // banks already addressed this cycle (live drive above)
-              end
            end
 
            S_LOOK: st <= S_CHECK;
 
-           S_CHECK: if (r_cbo) begin
-              // Zicbom/Zicboz: single-line maintenance on the addressed line.
-              if (hit) begin
-                 w0_way <= hway; w0_idx <= cih;
-                 if (r_cbo_zero) begin
-                    // cbo.zero: overwrite the resident line with zeros (install loop), mark dirty
-                    vw <= hway; vi <= cih; linebuf <= {LINEB{1'b0}}; pc <= 0;
-                    f_v <= 1'b1;  f_line <= cur_line;
-                    f_addr <= r_addr;  f_tag <= r_tag;
-                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
-                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
-                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
-                    fst <= F_FILLI; st <= S_IDLE;
-                 end else if (WRTHRU==0 && dirm[flat(hway,cih)]) begin
-                    // dirty -> write the line back to L2 (reuses the WT push path), then finalize
-                    wb_way <= hway; wb_idx <= cih; pc <= 0; st <= S_WTR;
-                 end else begin
-                    // clean line: flush/inval just invalidates; clean keeps it
-                    if (!r_cbo_keep) begin v_we=1; v_wa=flat(hway,cih); v_wd=1'b0; end
-                    wr_ack <= 1; st <= S_IDLE;
-                 end
-              end else begin
-                 if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
-                    vw <= vicm[base_idx(cur_line)];
-                    vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
-                    f_v <= 1'b1;  f_line <= cur_line;
-                    f_addr <= r_addr;  f_tag <= r_tag;
-                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
-                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
-                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
-                    fst <= F_WB; st <= S_IDLE;
-                 end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
+           S_CHECK: begin
+              // THE COMPARE DECIDES; IT DOES NOT ENABLE. `hit` is the last signal this cycle
+              // produces -- cur_line, the tag array, a 49-bit compare -- and it used to sit on
+              // the clock-enable of the MSHR copy (f_*, ~160 flops), the window registers,
+              // the response registers and the stream-buffer capture: ~900 enables on one
+              // late net, 65-83% route. Everything below that is a COPY is captured on a
+              // register-decoded condition instead and left as garbage when the other
+              // outcome happens; only the bits that ARE the decision (st, f_v, fst, rd_valid,
+              // the victim and the hit way/index) still wait for the compare.
+              //
+              // The MSHR copy: taken every S_CHECK cycle while no fill owns it. f_v is the
+              // only bit that has to know whether this request missed, and the copy is
+              // consumed only once f_v is set -- in the same cycle, from the same edge, as
+              // it was under the old `hit` qualifier. A hit simply overwrites a copy nobody
+              // reads. Never while f_v: those fields belong to the fill in flight.
+              if (!f_v) begin
+                 f_line <= cur_line;  f_addr <= r_addr;  f_tag <= r_tag;
+                 f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
+                 f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
+                 f_wdata <= r_wdata;  f_wmask <= r_wmask;
               end
-           end else if (pipe_hold) begin
+              // The stage-B window and the response fields, on the SAME register-decoded
+              // qualifiers the decisions below use minus the compare. wlo/whi stay reserved
+              // for solo requests (F_ANS borrows them for a plain read's fill answer, and a
+              // solo request is never in the pipeline with a fill live); the fast read's
+              // data and response registers are overwritten harmlessly when it misses or
+              // holds, because rd_valid -- which does wait for the compare -- is not set.
+              // A span's move to line1 is likewise captured here; a miss leaves through
+              // S_IDLE, which resets phase, and the fill copy above took line0 this edge.
+              if (!r_cbo && b_live) begin
+                 if (!phase) begin
+                    if (r_span || r_is_wr || r_uncached) begin
+                       wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
+                       whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
+                    end
+                    if (r_span) begin phase <= 1; cur_line <= line1; end
+                    rd_data <= hway ? fast1[RDW-1:0] : fast0[RDW-1:0];
+                    rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
+                 end else
+                    whi <= bk_rddata[hway*2+0];           // line1 chunk0
+              end
+              // The stream buffer's line, for the miss that will install it (F_PFI). It has
+              // to be taken AT THIS EDGE -- a prefetch ack can land this very cycle and
+              // overwrite pf_line with a different line -- but not under `hit`: pf_hit is a
+              // register compare, and ~f_v says the fill machine is idle, so linebuf is free.
+              if (PF_EN && pf_hit && !f_v) linebuf <= pf_line;
+
+              if (r_cbo) begin
+                 // Zicbom/Zicboz: single-line maintenance on the addressed line.
+                 if (hit) begin
+                    w0_way <= hway; w0_idx <= cih;
+                    if (r_cbo_zero) begin
+                       // cbo.zero: overwrite the resident line with zeros (the install loop
+                       // masks the data on f_cbo_zero) and mark it dirty
+                       vw <= hway; vi <= cih; pc <= 0;
+                       f_v <= 1'b1;
+                       fst <= F_FILLI; st <= S_IDLE;
+                    end else
+                       // clean/flush/inval: the dirty test runs NEXT cycle in S_FIN, on the
+                       // way/index just registered. Reading dirm[flat(hway,cih)] here was a
+                       // second array read ADDRESSED BY THE FIRST ONE's compare -- the
+                       // 18-level path (RAMD64E x2) that limited the module alone.
+                       st <= S_FIN;
+                 end else begin
+                    if (r_cbo_zero) begin                 // miss: allocate a line, then zero-fill it
+                       vw <= vicm[base_idx(cur_line)];
+                       vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                       f_v <= 1'b1;
+                       fst <= F_WB; st <= S_IDLE;
+                    end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
+                 end
+              end else if (pipe_hold) begin
               // ONE REASON TO HOLD, not three. Everything S_CHECK consumes below comes out of
               // bk_rddata, which is the row addressed at the previous edge, so a stage that
               // waits has to be re-read and cannot simply sit still:
@@ -647,60 +705,58 @@ module rv_cache #(
               // S_LOOK re-presents cur_line's chunks and comes straight back, so the window a
               // hit delivers was always read in the cycle before it. Holding IN S_CHECK is
               // what shipped another line's bytes to a load -- and to a page-table walk.
-              st <= S_LOOK;
-           end else begin
-              if (hit) begin
-                 if (!phase) begin
-                    w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
-                    // wlo/whi are the stage B->C registers, and F_ANS borrows them to answer
-                    // a missing read out of linebuf. The fast path below does not use them
-                    // (it reads the bank outputs live, through fast_sh), so it must not write
-                    // them either -- a hit-under-miss would clobber the fill's answer.
-                    if (r_span || r_is_wr || r_uncached) begin
-                       wlo <= clo[0] ? bk_rddata[hway*2+1] : bk_rddata[hway*2+0];
-                       whi <= clo[0] ? bk_rddata[hway*2+0] : bk_rddata[hway*2+1];
-                    end
-                    if (r_span) begin phase <= 1; cur_line <= line1; st <= S_LOOK; end
-                    else if (!r_is_wr && !r_uncached) begin
-                       // fast read delivery: the window is live on the bank outputs
-                       // (the same values registering into wlo/whi this edge) -- skip
-                       // S_FIN. NC reads keep the slow path (S_FIN's flush-around).
-                       // Reaching here means b_live and fst != F_ANS: the hold arm above
-                       // owns both, so this arm has no test of its own.
-                       rd_data  <= fast_sh[RDW-1:0];
-                       rd_valid <= 1; rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
-                       st <= S_IDLE;
-                    end
-                    else st <= S_FIN;
-                 end else begin
-                    whi <= bk_rddata[hway*2+0];           // line1 chunk0
-                    st  <= S_FIN;
-                 end
+                 st <= S_LOOK;
               end else begin
-                 vw <= vicm[base_idx(cur_line)];
-                 vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
-                 // stream-buffer hit: skip the L2 round trip. Capture the line AND
-                 // consume the buffer AT THIS EDGE: a prefetch ack can land this very
-                 // cycle and overwrite pf_line/pf_addr with a DIFFERENT line -- the
-                 // nonblocking reads here take the pre-ack values pf_hit was computed
-                 // on (a same-edge ack's fresh line is discarded: hint loss only).
-                 if (pf_hit) begin linebuf <= pf_line; pf_val <= 0; end
-                    f_v <= 1'b1;  f_line <= cur_line;
-                    f_addr <= r_addr;  f_tag <= r_tag;
-                    f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
-                    f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
-                    f_wdata <= r_wdata;  f_wmask <= r_wmask;
-                 // THE REQUEST LEAVES THE PIPELINE HERE. That is the split: what used to be
-                 // `st <= S_WB`, dragging the one machine into ten states from which the
-                 // accept state was unreachable, is now a handoff that empties stage B.
-                 fst <= pf_hit ? F_PFI : F_WB;
-                 st  <= S_IDLE;
+                 if (hit) begin
+                    if (!phase) begin
+                       w0_way <= hway; w0_idx <= cih;       // remember line0 (for span store)
+                       if (r_span) st <= S_LOOK;            // line1 next: window/cur_line above
+                       else if (!r_is_wr && !r_uncached) begin
+                          // fast read delivery: the window is live on the bank outputs and
+                          // was captured above -- skip S_FIN. NC reads keep the slow path
+                          // (S_FIN's flush-around). Reaching here means b_live and
+                          // fst != F_ANS: the hold arm above owns both.
+                          rd_valid <= 1;
+                          st <= S_IDLE;
+                       end
+                       else st <= S_FIN;
+                    end else begin
+                       w1_way <= hway; w1_idx <= cih;       // line1's slot, for S_SPANW/S_NCI
+                       st  <= S_FIN;
+                    end
+                 end else begin
+                    vw <= vicm[base_idx(cur_line)];
+                    vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
+                    // stream-buffer hit: skip the L2 round trip. The line was captured
+                    // above at this same edge; consume the buffer here (a same-edge ack's
+                    // fresh line is discarded: hint loss only).
+                    if (pf_hit) pf_val <= 0;
+                    f_v <= 1'b1;
+                    // THE REQUEST LEAVES THE PIPELINE HERE. That is the split: what used to be
+                    // `st <= S_WB`, dragging the one machine into ten states from which the
+                    // accept state was unreachable, is now a handoff that empties stage B.
+                    fst <= pf_hit ? F_PFI : F_WB;
+                    st  <= S_IDLE;
+                 end
               end
            end
 
            // ---- hit terminal: deliver read / commit store ----
            S_FIN: begin
-              if (!r_is_wr) begin
+              if (r_cbo) begin
+                 // Zicbom clean/flush/inval on a RESIDENT line, the cycle after the lookup:
+                 // the dirty bit is read at the slot registered in S_CHECK. Dirty -> write
+                 // the line back to L2 (reuses the WT push path), then finalize at S_WTA;
+                 // clean -> flush/inval just invalidates, clean keeps it. One cycle later
+                 // than before, for the only Zicbom ops there are; cbo.zero does not come
+                 // here (its install loop starts straight from S_CHECK).
+                 if (WRTHRU==0 && dirm[flat(w0_way,w0_idx)]) begin
+                    wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
+                 end else begin
+                    if (!r_cbo_keep) begin v_we=1; v_wa=flat(w0_way,w0_idx); v_wd=1'b0; end
+                    wr_ack <= 1; st <= S_IDLE;
+                 end
+              end else if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
                  rd_valid <= 1; rd_resp_addr <= r_addr; rd_resp_tag <= r_tag;
                  // Svpbmt NC/IO load: return the (just-filled, current) word but don't keep the
@@ -728,13 +784,13 @@ module rv_cache #(
               end
            end
            S_NCI: begin                     // NC span load: drop line1 too (flush-around)
-              v_we=1; v_wa=flat(hway,cih); v_wd=1'b0;
+              v_we=1; v_wa=flat(w1_way,w1_idx); v_wd=1'b0;
               st <= S_IDLE;
            end
            S_SPANW: begin                   // spanning store high half written combinationally
               if (WRTHRU!=0 || r_uncached) begin wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR; end
               else begin
-                 d_we=1; d_wa=flat(hway,cih); d_wd=1'b1;   // line0's dirty was staged at S_FIN
+                 d_we=1; d_wa=flat(w1_way,w1_idx); d_wd=1'b1;   // line0's dirty was staged at S_FIN
                  wr_ack <= 1; st <= S_IDLE;
               end
            end
@@ -811,9 +867,11 @@ module rv_cache #(
            F_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_WBA; end
            F_WBA: if (l2_ack) fst <= f_cbo_zero ? F_ZFILL : F_FILL;
 
-           // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark dirty
+           // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark
+           // dirty. The zeros come from the install loop's f_cbo_zero mask; this state only
+           // starts the loop, and it stays a state so the miss path's cycle count is unchanged.
            F_ZFILL: begin                   // bookkeeping deferred to the last install cycle
-              linebuf <= {LINEB{1'b0}}; pc <= 0;
+              pc <= 0;
               fst <= F_FILLI;
            end
 
@@ -1080,6 +1138,20 @@ module rv_cache #(
       // the pipeline is empty for it.
       if (accept && req_solo && f_v)
          $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
+      // THE LINE A SOLO REQUEST HIT IS STILL THERE IN THE STATES AFTER S_CHECK. The store
+      // merge (S_FIN), the span's second half (S_SPANW), the NC drop (S_NCI) and the Zicbom
+      // dirty test (S_FIN) all act on the way/index REGISTERED at the lookup and no longer
+      // re-evaluate the compare; that is sound because a solo request is alone in the cache
+      // -- no fill is live, no invalidate scan can start while st != S_IDLE -- so the tag
+      // cannot move under it. This is that assumption, checked every cycle.
+      if ((st == S_FIN || st == S_SPANW || st == S_NCI) && !hit)
+         $fatal(1, "[cache id=%0d] line %h vanished between S_CHECK and st=%0d", PERF_ID, cur_line, st);
+      // A CBO is solo; the MSHR copy taken in S_CHECK assumes no fill owns f_* while one is
+      // in stage B, and the replay's select assumes f_replay implies a fill in flight.
+      if ((st == S_CHECK) && r_cbo && f_v)
+         $fatal(1, "[cache id=%0d] a CBO is in stage B while a fill is live", PERF_ID);
+      if (f_replay && !f_v)
+         $fatal(1, "[cache id=%0d] replay owed with no fill in flight", PERF_ID);
       // TWO RAISERS, ONE CYCLE. 5ce1666a asserted "a second L2 request while one is
       // outstanding" (l2_req && l2_out && !l2_ack) and concluded the race does not occur in
       // 300 M cycles. It cannot: when the prefetch and the fill machine raise l2_req in the
@@ -1209,7 +1281,7 @@ module rv_cache #(
    // merged into an unrelated resident line -- silent corruption, surfacing only when
    // that line is read back.
    always @(posedge clk) if (!reset && (WRITABLE != 0))
-      if ((st == S_FIN) && r_is_wr && hit && !r_span && !phase
+      if ((st == S_FIN) && r_is_wr && !r_cbo && hit && !r_span && !phase
           && valm[flat(w0_way, w0_idx)]
           && (tagm[flat(w0_way, w0_idx)] != tag_of(cur_line)))
          $fatal(1, "[cache id=%0d] STORE-SLOT MISMATCH: store line=%h (tag=%h) into way=%0d idx=%h holding tag=%h",
