@@ -472,7 +472,7 @@ module lsu
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(ldp_addr), .ptw_read(ldp_read), .ptw_rdata(ldp_rdata), .ptw_rvalid(ldp_rvalid),
       .walking(), .t_ready(ldx_ready), .t_paddr(ldx_pa), .t_fault(ldx_fault), .t_cause(ldx_cause),
-      .t_uncached(ldx_uncached));
+      .t_uncached(ldx_uncached), .t_ok(), .t_fault_raw());
    // mmu resolves combinationally in Bare mode (no walk): a noncanon/out-of-range load
    // there yields ldx_fault with an ACCESS-fault cause (5), surfaced like any page fault.
    // Page-crossing misaligned load: the byte span [addr[11:0] .. +nb) exceeds 0x1000, so its high
@@ -745,7 +745,7 @@ module lsu
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
       .ptw_addr(stp_addr), .ptw_read(stp_read), .ptw_rdata(stp_rdata), .ptw_rvalid(stp_rvalid),
       .walking(), .t_ready(stx_ready), .t_paddr(stx_pa), .t_fault(stx_fault), .t_cause(stx_cause),
-      .t_uncached(stx_uncached));
+      .t_uncached(stx_uncached), .t_ok(), .t_fault_raw());
    wire          amo_xok   = ~xlate | (stx_ready & ~stx_fault);   // amo ok (valid when amo_need_xl)
    wire          amo_xflt  = xlate & amo_need_xl & stx_ready & stx_fault;
    wire [AW-1:0] amo_pa_al = xlate ? (({{(AW-56){1'b0}}, stx_pa}) & ~{{(AW-3){1'b0}}, 3'b111})

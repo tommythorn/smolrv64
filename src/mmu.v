@@ -49,7 +49,15 @@ module mmu
     output wire [AW-1:0] t_paddr,
     output wire        t_fault,
     output wire [3:0]  t_cause,       // 12=instr, 13=load, 15=store page fault
-    output wire        t_uncached);   // Svpbmt: leaf PBMT(pte[62:61])!=0 -> NC/IO (don't cache)
+    output wire        t_uncached,    // Svpbmt: leaf PBMT(pte[62:61])!=0 -> NC/IO (don't cache)
+    // THE SAME ANSWERS WITHOUT THE req_valid QUALIFIER. t_ready and t_fault carry the
+    // caller's req_valid inside them; a caller whose req_valid is an OR of two request
+    // sources (ooo2_lsu: a translate-only pass and an FSM-starting access) would otherwise
+    // see the OTHER source's arbitration inside ITS answer, structurally, however the
+    // logic simplifies. t_ok is t_ready's resolve term alone; t_fault_raw is t_fault with
+    // the PA-validity term gated on t_ok instead of t_ready. AND them with your own valid.
+    output wire        t_ok,
+    output wire        t_fault_raw);
 
    wire        xlate = (satp[63:60] == 4'd8);   // 8 = Sv39, else Bare (identity)
 
@@ -200,7 +208,9 @@ module mmu
    wire tlb_ok = tlb_hit & ~hit_perm_fault;
    // resolves this cycle on: Bare, non-canonical, a clean TLB hit, or a just-finished walk.
    assign walking = (st != IDLE);
-   assign t_ready = req_valid & (!xlate | noncanon | tlb_ok | (w_done & req_match));
+   wire   t_ok_w  = (!xlate | noncanon | tlb_ok | (w_done & req_match));
+   assign t_ok    = t_ok_w;
+   assign t_ready = req_valid & t_ok_w;
    wire wdm = w_done & req_match;
    assign t_paddr = wdm      ? w_paddr :
                     !xlate    ? req_vaddr[AW-1:0] :
@@ -213,7 +223,8 @@ module mmu
    // didn't already fault -- an unbacked resolved PA is an access fault.  t_ready-gating is
    // essential: mid-walk t_paddr is a stale leaf and must not raise a (spurious) fault.
    wire        pa_ok = pa_valid({{(64-AW){1'b0}}, t_paddr});
-   assign t_fault = base_fault | (t_ready & ~pa_ok);
+   assign t_fault     = base_fault | (t_ready & ~pa_ok);
+   assign t_fault_raw = base_fault | (t_ok_w  & ~pa_ok);
    assign t_cause = base_fault ? base_cause : af_cause;
    // Svpbmt memory type: NC/IO leaf -> uncached. Bare/non-canonical = normal (cacheable);
    // MMIO device regions are routed around the D$ by soc_top's address decode, not here.

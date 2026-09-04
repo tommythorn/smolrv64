@@ -575,28 +575,42 @@ same trap `OOO2_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
 default in `build.tcl` (`c4134edd`); this rule said `Explore` for a day after
 that stopped being true, which is D9 applied to a document.
 
-**MEASURE A STRUCTURE OUT OF CONTEXT BEFORE REDESIGNING IT.** `make ooc MODULE=<m>`
-synthesises one module alone on the part and reports its intrinsic Fmax. In the flat
-design every path is 65-83% route and placement swamps anything under ~200 ps (I2), so
-the full build tells you whether today's placement was lucky, never whether a STRUCTURE
-is good. Measured 2026-09-03 at a 6.000 ns period:
+**MEASURE A STRUCTURE OUT OF CONTEXT BEFORE REDESIGNING IT -- AT THE INSTANCE'S
+PARAMETERS.** `make ooc MODULE=<m> GENERICS="P=V ..."` synthesises one module alone on the
+part and reports its intrinsic Fmax. In the flat design every path is 65-83% route and
+placement swamps anything under ~200 ps (I2), so the full build tells you whether today's
+placement was lucky, never whether a STRUCTURE is good. Measured 2026-09-03 at 6.000 ns:
 
     ooo2_pending  1144 MHz      ooo2_rename   403 MHz
     ooo2_lq        908 MHz      ooo2_iq       373 MHz
                                 ooo2_sq       330 MHz
-    rv_cache       178 MHz   <-- +0.385 ns ALONE ON AN EMPTY DIE
+    rv_cache D$ as shipped (PAW=64 SIZE_KB=64)   181 MHz   +0.478 ns
+    rv_cache D$ after 1271c96d                   206 MHz   +1.134 ns
 
-Every core module clears 166.67 MHz by 2x or more. THE CACHE DOES NOT. Its own worst
-path is `cur_line_reg[18] -> valm/DP.A/WE` -- 18 logic levels including MUXF7 x3,
-MUXF8 x2 and RAMD64E x2, and 70.9% route with nothing else on the chip to compete with.
-So the thing to redesign was never the scheduler, which is what the failing paths in the
-integrated build appear to implicate; those paths merely END in core logic that has no
-slack left after the cache has spent it. Suspicion picked the wrong module twice here
-(first the issue queue, then a floorplan); one OOC run settled it.
+The first cache figure recorded here (178 MHz, `cur_line_reg[18] -> valm/WE`) was taken
+WITHOUT generics, i.e. on the module DEFAULTS -- PAW=34, 128 KB, no prefetch, a 2048-set
+array with 18-bit tags that nothing instantiates. ooc.tcl now refuses to be silent about
+that. Measure BOTH roles of a two-role module; the I$ shape adds `WRITABLE=0 PREFETCH=1`.
 
-Use it to compare a proposed replacement against the incumbent AT THE SAME INTERFACE,
-then confirm in the full build -- never the other way round. The OOC number is a
-comparison instrument, not a promise about the integrated design.
+AND AN OOC NUMBER CANNOT SEE A PATH THAT CROSSES MODULES. The conclusion this paragraph
+used to draw -- "every core module clears 166.67 MHz by 2x, the cache does not, so the
+failing core paths merely END in logic the cache has starved" -- was wrong, and the data
+that refuted it was already on disk: the routed checkpoint BEFORE post-route phys_opt was
+at -0.169 with 709 failing endpoints, all of them core; phys_opt then equalised the worst
+paths at -0.03 and only THEN did a cache family sit level with them. A census of that
+checkpoint (`scratchpad`-style: every endpoint under +0.35 ns, keyed by startpoint):
+
+    u_sq/v_reg           1708 of 3401   one chain: pt port grant -> M's done -> wakeup, redirect
+    u_dcache/cur_line     815           `hit` on enables and a dependent array read (I8)
+    ps_out_reg            463           issued tags -> PRF -> ALU -> store-queue snoop
+    m_addr_reg            145           dTLB compare -> M's done -> issue select
+    fe/u_fetch            129           the fetch loop's fall-through adder into the F/X queue
+
+The 22-25-level core chains span five modules (ooo2_sq -> ooo2_lq -> ooo2_lsu/mmu ->
+ooo2_core -> ooo2_iq -> psmem); no per-module OOC can measure them, and `make ooc` cannot
+build ooo2_core at all. So: OOC to compare a replacement against the incumbent AT THE SAME
+INTERFACE, a census of the routed checkpoint to know WHICH families exist, and the full
+build on two directives to confirm -- never one of the three alone.
 
 **FLOORPLANNING IS NOT THE LEVER HERE -- TESTED AND REFUTED, 2026-09-03.** The obvious
 reading of "65-83% route on a die that is only a third full" is that the design is
@@ -791,3 +805,37 @@ same pin reached through a valid mux. The general form: **for every array in the
 design, write down its address expression and name the flop each term comes
 from.** A term you cannot name that way is the bug, whatever the comment above
 it says.
+
+**I8. The compare DECIDES; it does not ENABLE.**
+A set-associative lookup produces its answer -- the tag compare -- as the last thing in
+the cycle. Everything that is captured *because* of that answer and consumed only under it
+(the MSHR copy of the request, the window registers, the response fields, a victim's line
+buffer) can be captured on the STATE alone and left as garbage when the other outcome
+happens; only the bit that IS the outcome has to wait for the compare. Measured 2026-09-03
+on `rv_cache` (`1271c96d`): `hit` sat on ~900 clock-enables -- the cbo.zero arm's
+`linebuf <= 0` alone was 325 endpoints at -0.033 in the integrated build, 14 levels and 80%
+route -- and on the ADDRESS of a second array (the Zicbom dirty test
+`dirm[flat(hway,cih)]`, the module's own worst path at 19 levels). Moving the enables to
+state-decoded conditions, masking the install data instead of zeroing the buffer, shifting
+both ways' windows before the way select, and taking the dirty test one cycle later on the
+registered slot took the D$ alone from 181 to 206 MHz with the cosim bit-identical. The
+general form: for every register whose enable or address contains a late signal, ask
+whether the value would be READ if the signal were false. If not, the enable is the state.
+The one exception is a register another machine shares (the fill machine's `linebuf`), and
+that needs the sharing predicate (`~f_v`), which is still a register.
+
+**I9. An arbitration that preempts a request must not sit in the requester's COMPLETION.**
+`ooo2_lsu` granted its FSM to the pre-translated port with priority over M's request, and
+implemented that by gating M's request to the MMU on `~pt_start`. Correct for an access
+that starts the FSM; for the translate-only pass -- which needs the MMU and nothing else
+-- it put the port's grant, i.e. `ooo2_sq`'s live bits, `ooo2_lq`'s candidate and the
+alias matrix, in series with M's completion for every plain load and store. M's completion
+is the writeback valid (the wakeup broadcast, fanout 194), the redirect (the fetch adder,
+the F/X queue) and the hpm events, and 1708 of the 3401 endpoints under +0.35 ns in the
+2026-09-03 routed checkpoint began at `u_sq/v_reg` for that reason alone, 22-27 levels each,
+the worst at -0.035. The general form: a grant decides what the loser may START. Whether
+the loser is DONE is decided by the loser's own unit, and a broadcast completion (a wakeup
+valid, a redirect) is built only from the terms that can actually produce it -- an access
+that completed, a latched fault, a fixed-latency unit -- never from the whole `done` mux.
+Keep the full expression alongside and assert the two equal every cycle, so the narrowing
+is checked rather than argued.

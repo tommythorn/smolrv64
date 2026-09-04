@@ -437,7 +437,7 @@ module backend_top
       // I$ regardless of a leaf's PBMT. Executing from a device page is not a thing this
       // system does. Named-and-empty rather than omitted, so PINMISSING stays an error
       // and the next unconnected port is a finding rather than more of the same noise.
-      .t_uncached(),
+      .t_uncached(), .t_ok(), .t_fault_raw(),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
 
    // ---- precise page-fault trap injection ----

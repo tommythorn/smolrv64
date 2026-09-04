@@ -55,8 +55,9 @@ module ooo2_lsu
     // the PA and the uncached bit, which ooo2_sq carries -- and everything downstream is
     // the existing code, untouched.
     //
-    // Holds priority over req_* when both want an idle LSU: the committing store is at the
-    // ROB head, so it is unconditionally older, and M's op is free to wait a cycle.
+    // Holds priority over an FSM-STARTING req_* when both want an idle LSU: the committing
+    // store is at the ROB head, so it is unconditionally older, and M's op is free to wait a
+    // cycle. A translate-only req_* does not compete: it never takes the FSM (see xl_x).
     input  wire            pt_v,
     input  wire            pt_store,       // 1 = store draining from ooo2_sq, 0 = load from ooo2_lq
     input  wire [55:0]     pt_pa,          // physical: translated when the op executed
@@ -83,6 +84,8 @@ module ooo2_lsu
     output wire [55:0]     xo_pa,
     output wire            xo_unc,
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
+    output wire            xo_early,       // ...and the access started here too (req_early
+                                           // honoured: the FSM was idle and the port free)
 
 
     // ---- translation context (from csr_file) ----
@@ -121,6 +124,9 @@ module ooo2_lsu
     // access cannot fault, so M can let go here.
     output wire            started,
     output wire            done,
+    output wire            done_acc,       // the ACCESS part of `done` alone: an access this
+                                           // stage started has completed. Never the translate
+                                           // pass or a fault -- see ooo2_core's writeback valids
     output wire [63:0]     rd_val,
     output wire            fault,
     output wire [3:0]      fault_cause,
@@ -210,6 +216,20 @@ module ooo2_lsu
    wire        mmu_walking;
    wire        xl_want  = req_valid & (st == S_IDLE);
    wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking;
+   // A TRANSLATE-ONLY REQUEST DOES NOT ARBITRATE, AND DOES NOT WAIT FOR THE FSM. It needs the
+   // MMU and nothing else: no bank, no pa_q, no state. It used to be gated with everything
+   // else on `~pt_start` and `st == S_IDLE`, which put the pre-translated port's grant -- the
+   // store queue's live bits, the load queue's candidate, the alias matrix -- in series with
+   // M's completion for every plain load and store, and M's completion is the wakeup
+   // broadcast, the redirect and the hpm events: 1708 of the 3401 endpoints under +0.35 ns
+   // in the 2026-09-03 routed checkpoint started at u_sq/v_reg for exactly this reason.
+   // Now the MMU sees it whenever M presents it. A walk it starts continues while the FSM
+   // runs a queued access (the walker's reads go through the D$ port arbiter, behind this
+   // FSM's own access, and complete on their own), and the request is never withdrawn under
+   // the walker by the FSM leaving S_IDLE -- which was the restart hazard the old gating
+   // guarded against from the other side. The early START is still an FSM matter (xl_early).
+   wire        xl_x     = req_valid & req_xlate;
+   wire        xl_f     = xl_want & ~req_xlate & ~pt_start;
 
    // The request the FSM actually sees. In S_IDLE the selector is pt_start (src_pt still
    // holds the PREVIOUS access's source and would be stale); once running it is src_pt.
@@ -227,12 +247,14 @@ module ooo2_lsu
    wire        wr_class = req_store | (req_amo & ~is_lr);   // store-class for translation/faults
 
    // ------------------------------------------------------------ translation
-   wire        t_ready, t_fault, t_uncached;
+   wire        t_ready, t_fault, t_uncached, t_ok, t_fault_raw;
    wire [55:0] t_paddr;
    wire [3:0]  t_cause;
-   // only ask while a request is actually waiting to be translated (S_IDLE): once
-   // started, the access owns pa_q and the walker must be left alone.
-   wire        xl_req = xl_want & ~pt_start;
+   // An FSM-starting access asks only while it is actually waiting in S_IDLE and the port is
+   // not taking the FSM this cycle: once started, the access owns pa_q. The translate-only
+   // pass asks unconditionally (xl_x). The MMU's t_ok/t_fault_raw carry no req_valid, so the
+   // translate-only answers below are ANDed with xl_x alone and never see xl_f's gating.
+   wire        xl_req = xl_x | xl_f;
 
    mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_mmu
      (.clk(clk), .reset(reset),
@@ -242,7 +264,7 @@ module ooo2_lsu
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
-      .t_uncached(t_uncached));
+      .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw));
 
    // A misaligned access whose byte span leaves the page needs a second translation.
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software
@@ -257,25 +279,29 @@ module ooo2_lsu
    wire [3:0] al_mask = nb - 4'd1;
    wire amo_mis = req_amo & ((req_vaddr[3:0] & al_mask) != 4'd0);
 
-   wire mis_flt = xl_req & (xpage | amo_mis);
-   wire xl_flt  = xl_req & t_ready & t_fault;
+   wire mis_flt = (xl_x & xpage) | (xl_f & (xpage | amo_mis));
+   wire xl_flt  = (xl_x & t_ok & t_fault_raw) | (xl_f & t_ready & t_fault);
 
    assign fault       = req_valid & (mis_flt | xl_flt);
    assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : t_cause;
    assign fault_tval  = req_vaddr;
 
-   // request can start: translated cleanly this cycle
-   wire xl_ok    = xl_req & t_ready & ~t_fault & ~xpage;
-   wire xo_ok    = xl_ok & req_xlate;                    // translate-only: completes now
+   // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
+   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage;
+   // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
+   wire xo_ok    = xl_x & t_ok & ~t_fault_raw & ~xpage;
    // NO disambiguation here any more. ooo2_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).
    // ...unless req_early says the same pass may issue the access. Only the START moves:
-   // xo_ok still fires, so ooo2_lq is still filled and M is still released this cycle.
-   // xl_early implies ~pt_start (xl_req is gated on it), so the port cannot be double-booked.
-   wire xl_early = xo_ok & req_early;
-   wire start_ok = pt_start | (xl_ok & ~req_xlate) | xl_early;
-   assign xo_v   = xo_ok;
+   // xo_ok still fires, so ooo2_lq is still filled and M is still released this cycle. The
+   // start is an FSM matter, so it is the one translate-only thing that still needs S_IDLE
+   // and yields to the port; when it yields, the load simply goes the queue's way, and
+   // ooo2_lq is told which happened through xo_early rather than re-deriving it.
+   wire xl_early = xo_ok & req_early & (st == S_IDLE) & ~pt_start;
+   wire start_ok = pt_start | xl_ok_f | xl_early;
+   assign xo_v     = xo_ok;
+   assign xo_early = xl_early;
    assign xo_pa  = t_paddr;
    assign xo_unc = t_uncached;
 
@@ -382,8 +408,9 @@ module ooo2_lsu
    // M as its own -- the same class of defect as rule D5's re-presented request.
    // `fault` needs no such split: it is qualified by xl_req, which is false unless M owns an
    // idle LSU, so a commit can never raise one (it was translated before it was buffered).
-   assign done    = fault | xo_ok | (acc_done & ~own_pt);
-   assign pt_done = acc_done & own_pt;
+   assign done_acc = acc_done & ~own_pt;
+   assign done     = fault | xo_ok | done_acc;
+   assign pt_done  = acc_done & own_pt;
    assign pt_ack  = pt_start;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);

@@ -254,7 +254,7 @@ module ooo2_core
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
-      .t_cause(immu_cause), .t_uncached());
+      .t_cause(immu_cause), .t_uncached(), .t_ok(), .t_fault_raw());
    assign imem_addr = {8'd0, immu_pa};
 
    // ---- VA-tagged fetch buffer support ------------------------------------------------
@@ -937,7 +937,7 @@ module ooo2_core
       .d_alloc(d_ld_alloc), .d_rob(rob_d_idx), .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
       .d_rd(d_rd), .d_rd_v(d_rd_v), .d_sqtag(sq_d_tag),
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
-      .a_v(m_lq_fill), .a_sent(lq_b_early), .a_idx(m_lq_idx),
+      .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp),
       .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
@@ -986,7 +986,7 @@ module ooo2_core
    // candidate path by lq_x_idx, the early path by the index M is holding. They are mutually
    // exclusive -- an early start needs ~av[acc], a candidate start needs av[acc] -- which
    // ooo2_lq asserts rather than assumes.
-   wire lq_b_take = m_lq_fill & lq_b_early;
+   wire lq_b_take = lsu_xo_early;          // the LSU says whether the early start happened
    reg  [LQ_IB-1:0] ld_inflight_idx;
    initial ld_inflight_idx = {LQ_IB{1'b0}};
    always @(posedge clk) if      (lq_x_take) ld_inflight_idx <= lq_x_idx;
@@ -1153,7 +1153,7 @@ module ooo2_core
    // lsu_started is the point after which a load cannot fault -- what lets M let go of it
    // without a ROB walk. Not consumed yet: cutting m_done over to it is the next step.
    wire        lsu_started;
-   wire        lsu_done, lsu_fault, lsu_idle;
+   wire        lsu_done, lsu_done_acc, lsu_fault, lsu_idle, lsu_xo_early;
    wire [55:0] lsu_cos_pa;  wire [1:0] lsu_cos_kind;   // cosim memory-effect capture
    wire [63:0] lsu_rd_val, lsu_fault_tval;
    wire [3:0]  lsu_fault_cause;
@@ -1171,6 +1171,7 @@ module ooo2_core
       // Loads AND buffered stores translate here and go no further; the access itself
       // comes back through the pre-translated port, from ooo2_lq or ooo2_sq.
       .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
+      .xo_early(lsu_xo_early),
       .pt_v(pt_v), .pt_store(pt_store),
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
@@ -1192,7 +1193,7 @@ module ooo2_core
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
       .mem_wready(dmem_wready),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind),
-      .started(lsu_started), .done(lsu_done), .rd_val(lsu_rd_val), .fault(lsu_fault),
+      .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .idle(lsu_idle));
    assign dmem_idle = lsu_idle;
 
@@ -1686,10 +1687,17 @@ module ooo2_core
          m_unit_fc_q   <= lsu_fault_cause;
       end
    wire m_done_raw = m_unit_ok | m_unit_done_q;
-   // Every trap consumer takes the latched view. fault_tval needs no latch: it is req_vaddr,
-   // which is m_addr, a register.
-   wire       m_lsu_flt = m_unit_done_q ? m_unit_flt_q : lsu_fault;
-   wire [3:0] m_lsu_fc  = m_unit_done_q ? m_unit_fc_q  : lsu_fault_cause;
+   // EVERY TRAP CONSUMER TAKES THE LATCHED VIEW, AND ONLY THE LATCHED VIEW. A data-side fault
+   // is decided by the dTLB compare in the cycle the LSU reports it; taking the trap in that
+   // same cycle put m_addr -> TLB -> lsu_fault -> xtrap_v -> redirect -> the fetch adder ->
+   // the F/X queue's write data in one 26-level path. Now the cycle that reports the fault
+   // only LATCHES it (m_flt_pulse holds m_done low for that one cycle); the trap, the
+   // redirect and the head gate all read the copy next cycle. One cycle per data fault, and
+   // faults are the rarest thing M does. fault_tval needs no latch: it is req_vaddr, which
+   // is m_addr, a register.
+   wire       m_flt_pulse = m_mem_op & lsu_fault & ~m_unit_done_q;
+   wire       m_lsu_flt = m_unit_done_q & m_unit_flt_q;
+   wire [3:0] m_lsu_fc  = m_unit_fc_q;
 
    // A trap or a redirect may only fire when M IS THE ROB HEAD. The trapping instruction is
    // YOUNGER than an outstanding load, and `flush` kills everything -- including that older
@@ -1707,13 +1715,29 @@ module ooo2_core
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
    // ~0.3 cycles per load against the ~2.3 the early release saves.
-   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land;
+   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land & ~m_flt_pulse;
    assign m_advance = ~m_valid | m_done;
 
    // ---- trap / redirect ----
    wire m_trap = xtrap_v | (m_is_sys & csr_redir_trap);
    wire csr_red = xtrap_v | (m_is_sys & csr_redir_v);
-   assign redirect         = m_valid & m_done & (csr_red | m_redirect | m_is_fencei);
+   // THE REDIRECT DOES NOT CARRY THE LSU'S LIVE COMPLETION. A memory op redirects only as a
+   // trap, and a trap is taken from the latched copy (m_unit_done_q); a branch, a system op
+   // and fence.i never go through the LSU. So the redirect's "done" is m_done with the
+   // memory arm of m_unit_ok removed -- logically the same signal on every cycle a redirect
+   // can fire, asserted below, and structurally free of dTLB -> lsu_done -> m_unit_ok, which
+   // was the head of the u_sq/v_reg -> fe/q_dat family (326 endpoints, 26 levels).
+   wire m_unit_ok_nomem = ~m_valid            ? 1'b1
+                        : m_fault | m_ill_eff ? 1'b1
+                        : m_mem_op            ? 1'b0
+                        : m_md_op             ? (md_div ? div_done : mul_done)
+                        :                       1'b1;
+   wire m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
+   assign redirect = m_valid & m_done_red & (csr_red | m_redirect | m_is_fencei);
+   wire   redirect_ref = m_valid & m_done & (csr_red | m_redirect | m_is_fencei);
+   always @(posedge clk) if (!reset && (redirect != redirect_ref))
+      $fatal(1, "ooo2_core: redirect from the non-memory done disagrees with m_done (%b vs %b)",
+             redirect, redirect_ref);
 
    // ---- EARLY FRONTEND RESTART -------------------------------------------------------
    // On a mispredict, do NOT wait to become ROB head before refetching. Note the event,
@@ -1830,7 +1854,29 @@ module ooo2_core
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
    // address still holds and ooo2_prf keeps its one-write-per-cycle property.
-   wire m_wb  = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
+   //
+   // THE WRITEBACK VALID IS BUILT FROM THE TERMS THAT CAN ACTUALLY WRITE, not from m_done.
+   // we_ld/we_fe are the wakeup broadcast: every scheduler entry compares against them, the
+   // pick follows, the source-tag read follows that. m_done carries the LSU's whole
+   // completion -- the dTLB compare through xo_ok, the live fault -- and none of it can
+   // ever produce a register write from M: a translate-only load is m_ld_nb, a store has
+   // no rd, a faulting op traps. The only memory completion that writes a register is an
+   // access this stage started (an AMO, LR/SC, a blocking load), which is lsu_done_acc.
+   // The trap qualifier likewise takes the latched fault. m_wb_ref below is the old
+   // expression, kept only for the assertion that the two never differ.
+   wire m_unit_ok_wb = ~m_valid            ? 1'b1
+                     : m_fault | m_ill_eff ? 1'b1
+                     : m_mem_op            ? lsu_done_acc
+                     : m_md_op             ? (md_div ? div_done : mul_done)
+                     :                       1'b1;
+   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
+   wire m_trap_wb = (m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt)))
+                  | (m_is_sys & csr_redir_trap);
+   wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb & ~fp_arith;
+   wire m_wb_ref = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
+   always @(posedge clk) if (!reset && (m_wb != m_wb_ref))
+      $fatal(1, "ooo2_core: writeback valid from the access-only done disagrees with m_done (%b vs %b)",
+             m_wb, m_wb_ref);
    wire ld_wb = ld_land & lq_l_rd_v;
 
    // PER-SHARD WRITE PORTS. Each shard is driven by its OWN writers rather than through a

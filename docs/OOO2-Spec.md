@@ -568,6 +568,16 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
   the committing store and the load queue, the store winning -- it is at the ROB head, so it
   is unconditionally older and it frees the port immediately.
+- **The translate-only pass does not arbitrate, and does not wait for the LSU's FSM.** It
+  needs the MMU and nothing else, so `ooo2_lsu` presents it (`xl_x = req_valid & req_xlate`)
+  whatever the FSM is doing and whoever the pre-translated port granted this cycle; a walk it
+  starts runs on while a queued access uses the FSM. Only an access that STARTS the FSM
+  (AMO, LR/SC, CBO, and the `req_early` start of a load) yields to the port. Until 2026-09-03
+  the translate pass was gated with those on `~pt_start` and `st == S_IDLE`, which put the
+  port's grant -- `ooo2_sq`'s live bits, `ooo2_lq`'s candidate, the alias matrix -- in series
+  with M's completion for every plain load and store, and M's completion is the wakeup
+  broadcast, the redirect and the hpm events: 1708 of the 3401 endpoints under +0.35 ns in
+  that day's routed checkpoint started at `u_sq/v_reg` for this reason alone. Rule I9.
 - **A queued load's access is one cycle after its fill, unless nothing is ordering it.**
   `ooo2_lq` registers the address, then selects the oldest entry no older store can alias,
   then accesses; the SELECT cycle is what pays for the alias test. When no store older than
@@ -580,11 +590,27 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   Camera unmoved -- because releasing M lets the following non-memory instructions execute
   while the data is in flight, and that is worth more than the latency it costs. The queue's
   two cycles are not overhead; one of them is.
-- A load's fault is decided **before the access starts**: `mis_flt` and `xl_flt` are both
-  qualified by `xl_req = req_valid & (st == S_IDLE)`. Once the LSU leaves `S_IDLE` the access
-  cannot fault. This is what makes precise exceptions possible **with no ROB walk** — M holds
-  only until translation resolves (same cycle on a TLB hit), and after that the load is
-  architecturally guaranteed to complete.
+- A load's fault is decided **before the access starts**: for an FSM-starting access
+  `mis_flt` and `xl_flt` are qualified by `xl_f = req_valid & ~req_xlate & (st == S_IDLE)
+  & ~pt_start`, and for the translate-only pass by `xl_x = req_valid & req_xlate`, which
+  never enters the FSM at all. Once the LSU leaves `S_IDLE` an access cannot fault. This is
+  what makes precise exceptions possible **with no ROB walk** — M holds only until
+  translation resolves (same cycle on a TLB hit), and after that the load is architecturally
+  guaranteed to complete.
+- **A data-side fault completes M one cycle after the LSU reports it.** The cycle that
+  reports it only latches it (`m_unit_flt_q`); the trap, the redirect and the ROB-head gate
+  read the copy. That keeps `m_addr -> dTLB -> lsu_fault` out of `xtrap_v -> redirect -> the
+  fetch adder -> the F/X queue`, and costs one cycle per data fault -- the rarest thing M
+  does. For the same reason the redirect uses `m_done` with the LSU arm removed, and the
+  writeback valids `we_ld`/`we_fe` (the wakeup broadcast) use `lsu_done_acc`, the completion
+  of an access this stage started: a translate pass or a fault never writes a register.
+  Both are asserted equal to the full expressions every cycle.
+- **Zicbom clean/flush/inval on a resident line take their dirty test in `S_FIN`**, one cycle
+  after the lookup, on the way/index registered there. Reading `dirm[flat(hway,cih)]` in
+  `S_CHECK` was a second array read addressed by the first one's compare -- the D$'s own
+  worst path alone on the part (19 levels). cbo.zero is unchanged in cycles: its zeros come
+  from masking the install loop's write data on `f_cbo_zero`, not from zeroing `linebuf` at
+  the lookup. Rule I8.
 - **No line-spanning access**: the LSU splits a line-crossing access, and the cache resolves
   the two halves internally via a two-phase lookup.
 - Load-format controls (`nb`, signed, fp) are **latched at dispatch**, not read at
