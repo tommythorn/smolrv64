@@ -113,6 +113,23 @@ module ooo2_sq
    reg                   sn_live;         // snoop scratch, see the writeback loop
    reg [PBITS-1:0]       sn_dpr;
 
+   // THE SNOOP TAKES ITS DATA A CYCLE LATE, FROM A REGISTERED COPY OF THE WRITEBACK BUS.
+   // wb_data for the IE shard is the ALU result of the instruction issued THIS cycle: the
+   // issued source tags, the PRF read, the ALU, and then a 64-bit fanout into every entry's
+   // data mux. 392 endpoints of today's routed checkpoint under +0.35 ns were exactly
+   // ps_out -> u_prf -> ALU -> u_sq/data_reg (14 levels, 76-80% route). The TAG compare
+   // stays live -- it is a registered physreg number against a registered one, and it is
+   // what sets dv -- but the bytes are captured from wb_q the cycle after, and for the one
+   // cycle in between the head's data is read through a bypass from that same copy. Every
+   // observable is unchanged: dv, c_v and c_data have the values they had, on the cycle they
+   // had them; only the data register's D input moved from an ALU output to a flop.
+   reg [NWB*64-1:0]      wb_q;            // last cycle's writeback data
+   reg [NENT-1:0]        ld_v;            // entry k's data lands from wb_q this cycle
+   reg [1:0]             ld_w [0:NENT-1]; // ...from this port (NWB <= 4)
+   integer               li2;
+   initial begin ld_v = {NENT{1'b0}}; for (li2 = 0; li2 < NENT; li2 = li2 + 1) ld_w[li2] = 2'd0; end
+   initial if (NWB > 4) $fatal(1, "ooo2_sq: ld_w holds a port index of at most 2 bits");
+
    initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}};
                  head = {IDXB{1'b0}}; tail = {IDXB{1'b0}}; cnt = {(IDXB+1){1'b0}}; end
 
@@ -127,7 +144,8 @@ module ooo2_sq
    assign c_v    = v[head] & av[head] & dv[head];
    assign c_rob  = rob[head];
    assign c_addr = addr[head];
-   assign c_data = data[head];
+   // the landing bypass: the cycle dv rose, the bytes are still in wb_q
+   assign c_data = ld_v[head] ? wb_q[ld_w[head]*64 +: 64] : data[head];
    assign c_size = sz[head];
    assign c_unc  = unc[head];
 
@@ -251,17 +269,24 @@ module ooo2_sq
          // The already-produced case is not the snoop's job: if rs2 was ready when the store
          // read the PRF, `a_data_v` supplies it and no writeback is coming. The two paths are
          // disjoint by construction and `~dv` keeps them so if they ever overlap.
+         // The match sets dv NOW and notes the port; the bytes land NEXT cycle from wb_q
+         // (below, outside the reset arm: a landing already noted must complete even if the
+         // entry was flushed, which only makes it a write into a dead slot).
          for (k = 0; k < NENT; k = k + 1) begin
             sn_live = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? 1'b1     : (v[k] & ~dv[k]);
             sn_dpr  = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? d_dpreg  : dpr[k];
+            ld_v[k] <= 1'b0;
             for (w = 0; w < NWB; w = w + 1)
                if (sn_live & (sn_dpr != {PBITS{1'b0}})
                    & wb_v[w] & (wb_preg[w*PBITS +: PBITS] == sn_dpr)) begin
-                  data[k] <= wb_data[w*64 +: 64];
+                  ld_v[k] <= 1'b1;  ld_w[k] <= w[1:0];
                   dv[k]   <= 1'b1;
                end
          end
       end
+      wb_q <= wb_data;
+      for (k = 0; k < NENT; k = k + 1)
+         if (ld_v[k]) data[k] <= wb_q[ld_w[k]*64 +: 64];
    end
 
    // Invariants (docs/rtl-rules.md A1): anything the design would otherwise drop silently.
@@ -281,6 +306,12 @@ module ooo2_sq
          $fatal(1, "ooo2_sq: entry %0d has no data and no producer -- it can never commit", a_idx);
       if (c_take & ~c_v)
          $fatal(1, "ooo2_sq: commit taken with no committable head");
+      // The landing bypass is exact only if nothing else writes the entry's data in the one
+      // cycle the bytes are in flight: the address-time capture is guarded by ~dv, and dv
+      // rose with the note, so a collision here is a second producer for one physreg.
+      for (li = 0; li < NENT; li = li + 1)
+         if (ld_v[li] & a_v & a_data_v & ~dv[li] & (a_idx == li[IDXB-1:0]))
+            $fatal(1, "ooo2_sq: entry %0d landing and captured in the same cycle", li);
    end
 endmodule
 `default_nettype wire

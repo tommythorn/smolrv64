@@ -129,7 +129,12 @@ module ooo2_iq
             assign srdy[g*NSRC + gs] = e_r[g][gs] | hit(e_ps[g][gs*PBITS +: PBITS]);
          end
          // In order: only the head is a candidate. No age compare, just a pointer match.
-         assign rdy[g] = v[g] & (&srdy[g*NSRC +: NSRC]) & ~unit_busy
+         // unit_busy is NOT here. It is the unit's completion this cycle -- for the memory
+         // class, M's advance, which is the dTLB compare and the LSU's done -- and putting
+         // it inside every entry's ready bit made it the ROOT of the priority select. It
+         // qualifies only the RESULT below: the pick is a function of readiness alone, and
+         // the late signal is one AND on the issue valid instead of NENT ANDs feeding a tree.
+         assign rdy[g] = v[g] & (&srdy[g*NSRC +: NSRC])
                        & ((INORDER == 0) | (g[IDXB-1:0] == qhead));
       end
    endgenerate
@@ -141,15 +146,21 @@ module ooo2_iq
    reg              sel_v;
    reg [IDXB-1:0]   sel;
    always @* begin
-      sel_v = |rdy;
+      sel_v = (|rdy) & ~unit_busy;
       sel   = {IDXB{1'b0}};
       for (k = NENT-1; k >= 0; k = k - 1) if (rdy[k]) sel = k[IDXB-1:0];
    end
+   // THE IN-ORDER QUEUE'S ISSUE INDEX IS ITS HEAD POINTER, A REGISTER. rdy is nonzero only
+   // at qhead when INORDER, so `sel` equals qhead whenever iss_v -- but written as the
+   // priority loop it is a function of the wakeup compares, and the core reads the source
+   // tags at this index (rule I6: a late signal never reaches a RAM address). Out of order
+   // the pick is genuinely combinational, and only that class pays for it.
+   wire [IDXB-1:0]  isel = (INORDER != 0) ? qhead : sel;
 
    assign d_ent   = fsel;
    assign iss_v   = sel_v;
-   assign iss_ent = sel;
-   assign iss_rob = e_rob[sel];
+   assign iss_ent = isel;
+   assign iss_rob = e_rob[isel];
 
    reg [IDXB:0] occ;
    always @* begin
@@ -164,7 +175,7 @@ module ooo2_iq
    // Wake-at-select, for a fixed-latency unit only. Internal, and it only ever writes
    // registered ready bits -- so selection never feeds back into readiness.
    wire             self_v  = (FIXEDL != 0) & do_iss;
-   wire [PBITS-1:0] self_pr = e_prd[sel];
+   wire [PBITS-1:0] self_pr = e_prd[isel];
 
    // Stall attribution: the lowest-indexed live entry that is not ready, and the first
    // source it is waiting on. Counters only.
@@ -194,7 +205,7 @@ module ooo2_iq
                    || (self_v && (self_pr == e_ps[k][q*PBITS +: PBITS])))
                   e_r[k][q] <= 1'b1;
          if (do_iss) begin
-            v[sel] <= 1'b0;
+            v[isel] <= 1'b0;
             if (INORDER != 0) qhead <= (qhead == (NENT-1)) ? {IDXB{1'b0}} : qhead + 1'b1;
          end
          if (do_disp) begin
@@ -220,12 +231,14 @@ module ooo2_iq
          $fatal(1, "ooo2_iq: dispatch into the entry still held downstream (%0d)", fsel);
       if (iss_take & ~iss_v)
          $fatal(1, "ooo2_iq: consumer took an issue that was not offered");
-      if (do_iss & ~v[sel])
-         $fatal(1, "ooo2_iq: issued entry %0d holds nothing", sel);
+      if (do_iss & ~v[isel])
+         $fatal(1, "ooo2_iq: issued entry %0d holds nothing", isel);
       if (do_iss & unit_busy)
          $fatal(1, "ooo2_iq: issued to a busy unit");
+      // isel is qhead by construction when INORDER; this is the check that the priority
+      // loop agrees, i.e. that nothing but the head can ever be ready.
       if ((INORDER != 0) & do_iss & (sel != qhead))
-         $fatal(1, "ooo2_iq: in-order scheduler issued %0d, not the head %0d", sel, qhead);
+         $fatal(1, "ooo2_iq: in-order scheduler picked %0d, not the head %0d", sel, qhead);
    end
 endmodule
 

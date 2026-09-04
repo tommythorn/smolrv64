@@ -723,11 +723,22 @@ module ooo2_core
    // The index is COMBINATIONAL (this cycle's pick), not i_ent (last cycle's): reading
    // plmem's registered port instead would put a LUTRAM output on the PRF address pins
    // ra1/ra2/ra3, which rule I6 forbids -- that trades this path for a worse one.
-   wire [PL_IB-1:0] pl_s_idx = pick_l ? (OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, rl_iss_ent})
-                             : pick_f ? (OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, rf_iss_ent})
-                             :          (OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_iss_ent});
+   //
+   // ONE READ PER CLASS, AT THAT CLASS'S OWN CANDIDATE; THE PICK SELECTS THE RESULT. The
+   // pick (pick_l/pick_f/pick_i) is the last thing the issue cycle knows -- it carries
+   // every class's readiness, and through the memory class's unit_busy the LSU's completion
+   // and the dTLB compare -- and it used to be the SELECT of the mux on this array's address
+   // pin: rule I6 broken at the exact spot 3b518832 had just cleared. Read the array three
+   // times (duplication buys read ports, and this array is 30 x 27 bits) at addresses that
+   // are, for the in-order class, a head pointer plus a constant, and let the pick choose
+   // among three 27-bit results one LUT before the capture flop. Same value, same cycle.
+   wire [PL_IB-1:0] pl_s_idx_l = OFF_L[PL_IB-1:0] + {{(PL_IB-IBL){1'b0}}, rl_iss_ent};
+   wire [PL_IB-1:0] pl_s_idx_f = OFF_F[PL_IB-1:0] + {{(PL_IB-IBF){1'b0}}, rf_iss_ent};
+   wire [PL_IB-1:0] pl_s_idx_i = OFF_I[PL_IB-1:0] + {{(PL_IB-IBI){1'b0}}, ri_iss_ent};
    reg  [3*RN_PBITS-1:0] psmem [0:PL_N-1];
-   wire [3*RN_PBITS-1:0] ps_out = psmem[pl_s_idx];
+   wire [3*RN_PBITS-1:0] ps_out = pick_l ? psmem[pl_s_idx_l]
+                                : pick_f ? psmem[pl_s_idx_f]
+                                :          psmem[pl_s_idx_i];
    always @(posedge clk) if (rn_valid & iq_ready) psmem[pl_w_idx] <= {rn_prs3, rn_prs2, rn_prs1};
    wire [RN_PBITS-1:0] iq_iss_ps1 = ps_out[0 +: RN_PBITS];
    wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
