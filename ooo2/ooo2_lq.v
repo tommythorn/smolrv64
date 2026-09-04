@@ -160,7 +160,13 @@ module ooo2_lq
                  acc = {IDXB{1'b0}}; tail = {IDXB{1'b0}};
                  cnt = {(IDXB+1){1'b0}}; end
 
-   assign d_ready   = (cnt != NENT[IDXB:0]);
+   // THE SLOT AT THE TAIL MUST BE FREE, not merely "the queue is not full". Loads land out of
+   // order once they are pipelined (the tagged fast path; the random bench lands them in any
+   // order), so the ring can wrap round to a slot whose load is still in flight while cnt
+   // says there is room. Allocating there overwrote the entry and its landing then found
+   // "an entry that was never sent" (2026-09-04). Waiting on that one slot is head-of-line
+   // blocking at a miss; at NENT=4 the pointer ring is the right size for it.
+   assign d_ready   = (cnt != NENT[IDXB:0]) & ~v[tail];
    assign d_idx     = tail;
    assign occupancy = cnt;
 
@@ -168,7 +174,12 @@ module ooo2_lq
    // an entry still waiting for translation cannot be tested and must not be skipped, or
    // loads would access out of program order with respect to each other with nothing
    // ordering them.
-   wire cand_v = v[acc] & av[acc];
+   // ...and NOT already sent: with every entry taken and none landed, acc wraps round to the
+   // head, which is live, translated and IN FLIGHT, and `v & av` offered it a second time.
+   // Unreachable while one load is in flight at a time (the FSM parks), which is why nothing
+   // saw it; the random bench (tb_ooo2_lqsq_rand, seed 1, cycle 358) found it in its first
+   // run, and the tagged fast path can hold NENT in flight.
+   wire cand_v = v[acc] & av[acc] & ~sent[acc];
    // The mirror of cand_v: the candidate is live and its address is NOT yet known, which is
    // exactly a load still in M. q_tag is sqt[acc], so this is also what licenses the core to
    // read ooo2_sq's ld_older as an answer about the load M is holding.
@@ -234,6 +245,8 @@ module ooo2_lq
    always @(posedge clk) if (!reset) begin
       if (d_alloc & ~d_ready)
          $fatal(1, "ooo2_lq: allocate into a full queue");
+      if (d_alloc & d_ready & v[tail])
+         $fatal(1, "ooo2_lq: allocate into slot %0d while its load is in flight", tail);
       if (a_v & ~v[a_idx])
          $fatal(1, "ooo2_lq: address written to a slot with no live entry (idx %0d)", a_idx);
       if (a_v & av[a_idx])

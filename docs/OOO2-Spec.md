@@ -851,11 +851,21 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | lint | `src/lint.sh` | `lint: clean` |
 | riscv-tests, this core | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
-| Linux lockstep vs simmerv | `BUILD=1 CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence |
+| Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
+| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 |
+| load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (72 directed checks) |
+| load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
+| long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
+| the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, rtl= recorded |
 
-**`CYC=300000000` is the required cosim length.** At 40e6 the run reports `inj=0` — it never
-reaches the first interrupt — and three defects that wedged hardware were invisible at that
-budget. `BUILD=1` is required whenever RTL changed; the runner does not rebuild otherwise.
+**`CYC=300000000` is the required tiny128 cosim length.** At 40e6 the run reports `inj=0` — it
+never reaches the first interrupt — and three defects that wedged hardware were invisible at
+that budget. The runner rebuilds whenever any source changed (its stamp hashes them) and
+prints the model's source hash on the verdict line; a verdict whose log lacks
+`building obj_dir_ooo2_clinux` after an RTL edit is not a verdict (rule G5). tiny128 is a
+small guest: it never lined up the store-queue age defect of 2026-09-04 in 60 M cycles,
+the Geekbench boot did at 447 M, so the long-guest run is a standing per-batch gate. The
+DDR model is the measured shape by default (`+ddr_lat=N` for a flat sweep).
 
 Invariant assertions are **always on** (`$fatal`, never `` `ifdef ``). Only flood-volume
 tracers and stats are gated.

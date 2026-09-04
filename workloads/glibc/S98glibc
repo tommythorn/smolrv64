@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "=== S98glibc ==="
+/usr/bin/dash /usr/bin/glibc-test.sh || echo "GLIBC-TEST FAIL exit=$?"
+echo "=== S98glibc: done ==="

@@ -77,11 +77,11 @@ STAMP="obj_dir_ooo2_clinux/.config-stamp"
 # against a model none of them had been compiled into -- every log said "building simmerv
 # cosim lib" and none said "building obj_dir_ooo2_clinux". A verdict from a binary that
 # does not contain the change is not a verdict. The hash is of every RTL file the model is
-# built from, so any edit forces the rebuild and BUILD=1 is only for a wiped/foreign tree.
-srchash=$(cat rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v \
-              ooo2_lsu.v rv_regfile.v $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v \
-              ../src/smolrv64_plic_arbiter.v ../src/smolrv64_cvfpu.sv tb_ooo2_linux.v \
-              ../src/probe_cosim.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
+# built from -- EVERY .v/.sv under ooo2/ and src/, because Verilator pulls modules in by
+# name from the -I paths and a list of the top-level files missed ooo2_lq.v on the first
+# try (the hash did not move when the queue changed, 2026-09-04, the same afternoon).
+# Any edit forces the rebuild; BUILD=1 is only for a wiped or foreign tree.
+srchash=$(cat *.v ../src/*.v ../src/*.sv ../src/probe_cosim.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
 echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>} model-src=$srchash"
 need_build=0

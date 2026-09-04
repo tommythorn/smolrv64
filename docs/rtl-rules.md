@@ -539,6 +539,15 @@ is the general one: a runner that can skip a build must say in its output whethe
 did, and a verdict without that line is not read. The same hole exists in any harness
 with a cached binary; check the run log before the number.
 
+**G6. A trace is aimed by plusarg; a wait is keyed on the process.** Three 17 M-cycle
+rebuilds on 2026-09-04 went to a `$time` literal in a debug print, in the wrong unit. The
+testbench reads `+trace_from=<cycle> +trace_to=<cycle>` and exposes `trace_on`; an
+`` `ifdef `` trace in RTL reads the same plusargs itself (`$value$plusargs`), never a
+literal. And a waiter for Vivado keys on `pgrep -x vivado` (`tools/wait-vivado.sh`): the
+flow runs synthesis and implementation as separate processes, so a log line such as
+"Exiting Vivado" fires mid-build, and `pgrep -f` matches the shell running the wait and
+hangs it -- both happened the same day, the second for the third time in this project.
+
 ## H. Process
 
 **H1. Cheapest confirmation first.**
@@ -689,6 +698,14 @@ a hard floor is right, but each candidate is currently decided by placement luck
 rather than by its merit. Structural headroom has to come before the next IPC
 change, and it must be aimed at whatever the tool reports as worst on TODAY's
 main -- not at a cone suspected in advance.
+
+The corollaries, priced on 2026-09-04: (a) the second-directive build is worth its hour
+only when the shipping directive FAILS by less than the spread -- F closed at +0.084 on
+AltSpread and the Explore build before it told nothing F did not; (b) never bisect on the
+board with 166.67 MHz builds, because the lottery makes a bisect point unusable (B+unc: B's
+own RTL plus one flop failed by 0.5 ns) -- bisect at `PROBE_CLK_DIV8=72`, where placement
+cannot fail, and let the device tree's timebase be wrong; (c) when a cosim repro exists,
+do not bisect on the board at all.
 
 **I3. Bring a replacement up as a shadow, checked every cycle.**
 `ooo2_rename` + `ooo2_prf` ran against the real instruction stream with
