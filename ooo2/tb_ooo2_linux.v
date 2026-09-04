@@ -59,17 +59,17 @@ module tb;
    // THE DDR MODEL IS THE MEASURED ONE BY DEFAULT. Until 2026-09-04 the default was a flat
    // 4-cycle line latency, which is not this machine: the D$ admitted two requests under a
    // fill where the board admits dozens, the store queue never filled the way it does on the
-   // board, and two six-day-old ordering defects lived through every gate. The shape below
-   // is src/ddr_hpm.v's histogram read on the board on 2026-08-04 at 66.67 MHz (8.2 M reads,
-   // 3.0 M writes): reads mean 13.31 cycles, 96% in 8-15, 2.2% in 16-31, 1.6% in 32-63;
-   // writes mean 8.69, ~4.5 lower; nothing beyond 63. Reads and writes differ because
-   // writes post at the bridge, so they draw separately, and the tail is occasional
-   // excursions (refresh, bank conflicts), not a wide uniform spread.
+   // board, and two six-day-old ordering defects lived through every gate.
    //
-   // SCALED to the 166.67 MHz core clock by 2.5 (DDR latency is fixed in ns; the CDC and
-   // arbiter parts are not, so this is approximate): reads 28-45 with a mean ~33, writes
-   // 20-37 with a mean ~22, tails 40-77 and 80-157. RE-MEASURE with workloads/ddrhpm at
-   // 166.67 MHz and replace these constants -- the board was busy when this was written.
+   // MEASURED on the board at 166.67 MHz on 2026-09-04 (src/ddr_hpm.v read with
+   // workloads/ddrhpm; 1.2 G reads and 139 M writes over an Ubuntu boot, then 443 M reads
+   // over a 512 MB kernel memcpy stream and a sort -- the two agree to 1%):
+   //     read  (fill):       mean 28.75 cycles -- 96.5% in 16-31, 1.2% in 32-63, 2.3% in 64+
+   //     write (write-back): mean 15.62 cycles -- 95.1% in  8-15, 1.2% in 16-31, 2.3% in 32-63, 1.3% in 64+
+   // Reads and writes differ because writes post at the bridge, so they draw separately; the
+   // tails are occasional excursions (refresh, bank conflicts), not a wide uniform spread.
+   // The base bands are placed at the top of the measured bin so the means match: reads
+   // 24-31, writes 12-15.
    //
    //   +ddr_lat=N     flat N-cycle latency, reads and writes alike (the old model; sweeps)
    //   -DDDR_LAT=N    the same, at compile time (kept for the existing sweep scripts)
@@ -83,16 +83,22 @@ module tb;
    reg [63:0] ddr_lat_arg;
    initial if (!$value$plusargs("ddr_lat=%d", ddr_lat_arg)) ddr_lat_arg = 64'd`DDR_LAT;
    reg [15:0] dlfsr; initial dlfsr = 16'hBEEF;
-   function [7:0] ddr_draw;      // measured shape, scaled x2.5; 0 = flat override in force
+   function [7:0] ddr_draw;      // the measured shape; 0 = flat override in force
       input is_wr;
-      reg [9:0] r;
+      reg [9:0] r;               // 0..1023: the thresholds below are the measured fractions
       begin
          r = dlfsr[9:0];
-         if (ddr_lat_arg != 0)        ddr_draw = ddr_lat_arg[7:0];
-         else if (r[9:4] == 6'd0)     ddr_draw = 8'd85 + {3'd0, r[3:0], 1'b0};   // ~1.5%: 85-115 (of 80-157)
-         else if (r[9:6] == 4'd0)     ddr_draw = 8'd45 + {3'd0, r[3:0], 1'b0};   // ~3%:   45-75  (of 40-77)
-         else if (is_wr)              ddr_draw = 8'd20 + {3'd0, r[2:0], 1'b0};   // writes 20-34, mean ~27
-         else                         ddr_draw = 8'd28 + {3'd0, r[2:0], 1'b0};   // reads  28-42, mean ~35
+         if (ddr_lat_arg != 0)              ddr_draw = ddr_lat_arg[7:0];
+         else if (is_wr) begin
+            if      (r < 10'd13)            ddr_draw = 8'd64 + {2'd0, r[5:0]};   // 1.3%: 64-127
+            else if (r < 10'd36)            ddr_draw = 8'd32 + {3'd0, r[4:0]};   // 2.3%: 32-63
+            else if (r < 10'd48)            ddr_draw = 8'd16 + {4'd0, r[3:0]};   // 1.2%: 16-31
+            else                            ddr_draw = 8'd12 + {6'd0, r[1:0]};   // 95%:  12-15, mean 13.5
+         end else begin
+            if      (r < 10'd24)            ddr_draw = 8'd64 + {2'd0, r[5:0]};   // 2.3%: 64-127
+            else if (r < 10'd36)            ddr_draw = 8'd32 + {3'd0, r[4:0]};   // 1.2%: 32-63
+            else                            ddr_draw = 8'd24 + {5'd0, r[2:0]};   // 96.5%: 24-31, mean 27.5
+         end
       end
    endfunction
    // behavioral DDR, modeled as a 512-bit LINE array: the ddr_* port is 64-byte lines, so

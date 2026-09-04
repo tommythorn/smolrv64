@@ -12,13 +12,14 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  4  11135530  0.5   # The DDR model is now the MEASURED shape (tb_ooo2_linux.v:
-                              # src/ddr_hpm.v's 2026-08-04 histogram, scaled to 166.67 MHz),
-                              # not a flat 4 cycles: reads ~35, writes ~27, tails to 115.
-                              # Same RTL as the row below; the machine simply waits for
-                              # memory the way the board does. `+ddr_lat=4` reproduces the
-                              # old number. Re-measure with workloads/ddrhpm at 166.67 MHz
-                              # and re-baseline when the board is free.
+60000000  4  11578974  0.5   # The DDR model is the one MEASURED on the board at 166.67 MHz
+                              # (2026-09-04, src/ddr_hpm.v via workloads/ddrhpm: reads mean
+                              # 28.75 cycles, 96.5% in 16-31; writes mean 15.6, 95% in 8-15;
+                              # tails to 64+), not a flat 4 cycles. Same RTL as the rows
+                              # below; the machine waits for memory the way the board does.
+                              # `+ddr_lat=4` reproduces the old number.
+                              # Previously 11135530 for a few hours: the 66.67 MHz measurement
+                              # scaled by 2.5, before the board could be re-measured.
                               # Previously 16025548 at the flat 4-cycle model: +9.33% over the row before it, and NOT from one commit: the
                               # 2026-09-03/04 core commits (translate-only pass off the port
                               # grant, unit_busy after select, the sq snoop, latched faults,

@@ -101,6 +101,7 @@ fi
 
 if [ "$need_build" = 1 ]; then
    echo "building obj_dir_ooo2_clinux/tb_ooo2_clinux (MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>}) ..."
+   mkdir -p obj_dir_ooo2_clinux
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
@@ -112,8 +113,8 @@ if [ "$need_build" = 1 ]; then
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
-      tb_ooo2_linux.v ../src/probe_cosim.cpp > /tmp/ooo2clinuxbuild.log 2>&1
-   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2clinuxbuild.log | head -20; exit 1; fi
+      tb_ooo2_linux.v ../src/probe_cosim.cpp > obj_dir_ooo2_clinux/build.log 2>&1
+   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' obj_dir_ooo2_clinux/build.log | head -20; exit 1; fi
    printf '%s' "$want" > "$STAMP"
 fi
 
@@ -125,7 +126,7 @@ echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_
 # the only instrument that sees it.
 set -o pipefail
 "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee /tmp/ooo2-cosim.out
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee obj_dir_ooo2_clinux/last-run.out
 rc=$?
 
 # OOO2_HW, not INO_HW: the define was renamed with the core and this line was not, so it
@@ -134,7 +135,7 @@ rc=$?
 # aligner stalls 37% of cycles against 8% at HW=4. A whole priority list was built on the
 # wrong number before this was caught. Measure at the width the hardware uses.
 hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${hw:-4}
-got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' /tmp/ooo2-cosim.out | tail -1)
+got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_dir_ooo2_clinux/last-run.out | tail -1)
 exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
 tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
 
