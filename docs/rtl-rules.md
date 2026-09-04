@@ -575,6 +575,29 @@ same trap `OOO2_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
 default in `build.tcl` (`c4134edd`); this rule said `Explore` for a day after
 that stopped being true, which is D9 applied to a document.
 
+**MEASURE A STRUCTURE OUT OF CONTEXT BEFORE REDESIGNING IT.** `make ooc MODULE=<m>`
+synthesises one module alone on the part and reports its intrinsic Fmax. In the flat
+design every path is 65-83% route and placement swamps anything under ~200 ps (I2), so
+the full build tells you whether today's placement was lucky, never whether a STRUCTURE
+is good. Measured 2026-09-03 at a 6.000 ns period:
+
+    ooo2_pending  1144 MHz      ooo2_rename   403 MHz
+    ooo2_lq        908 MHz      ooo2_iq       373 MHz
+                                ooo2_sq       330 MHz
+    rv_cache       178 MHz   <-- +0.385 ns ALONE ON AN EMPTY DIE
+
+Every core module clears 166.67 MHz by 2x or more. THE CACHE DOES NOT. Its own worst
+path is `cur_line_reg[18] -> valm/DP.A/WE` -- 18 logic levels including MUXF7 x3,
+MUXF8 x2 and RAMD64E x2, and 70.9% route with nothing else on the chip to compete with.
+So the thing to redesign was never the scheduler, which is what the failing paths in the
+integrated build appear to implicate; those paths merely END in core logic that has no
+slack left after the cache has spent it. Suspicion picked the wrong module twice here
+(first the issue queue, then a floorplan); one OOC run settled it.
+
+Use it to compare a proposed replacement against the incumbent AT THE SAME INTERFACE,
+then confirm in the full build -- never the other way round. The OOC number is a
+comparison instrument, not a promise about the integrated design.
+
 **FLOORPLANNING IS NOT THE LEVER HERE -- TESTED AND REFUTED, 2026-09-03.** The obvious
 reading of "65-83% route on a die that is only a third full" is that the design is
 spread and wants compacting. `make place-report` showed `probe_core/core`'s 53,634
