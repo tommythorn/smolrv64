@@ -47,7 +47,9 @@ proc hist {fh paths title which} {
     P $fh "\n=== $title ==="
     array unset m
     foreach p $paths { set e [base [get_property $which $p] 2]; if {![info exists m($e)]} {set m($e) 0}; incr m($e) }
-    foreach k [lsort -command {apply {{a b} {global m; expr {$m($b) - $m($a)}}}} [array names m]] { P $fh [format "%6d  %s" $m($k) $k] }
+    set rows {}
+    foreach k [array names m] { lappend rows [list $m($k) $k] }
+    foreach r [lsort -integer -decreasing -index 0 $rows] { P $fh [format "%6d  %s" [lindex $r 0] [lindex $r 1]] }
 }
 hist $fh $near "by STARTPOINT module (unique endpoints under +$lim)" STARTPOINT_PIN
 hist $fh $near "by ENDPOINT module (unique endpoints under +$lim)" ENDPOINT_PIN
