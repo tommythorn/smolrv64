@@ -144,13 +144,16 @@ place-report:
 	$(VIVADO) $(VFLAGS) -source report_place.tcl
 
 # Synthesise ONE module alone and report its intrinsic Fmax and logic depth.
-#   make ooc MODULE=ooo2_iq [PERIOD=6.0]
+#   make ooc MODULE=ooo2_iq [PERIOD=6.0] [GENERICS="P=V ..."] [REPORT=/path/to/write]
+#   GENERICS is the INSTANCE's parameters -- without it the module DEFAULTS are measured,
+#   which for rv_cache is a 128 KB / PAW=34 cache nothing instantiates (see ooc.tcl).
 # The flat design is 65-83% route and placement-dominated (rules I2/I7), so it cannot judge a
 # STRUCTURE. This can. Compare a replacement against the incumbent at the same interface here
 # first, then confirm in the full build.
 ooc:
 	@test -n "$(MODULE)" || { echo "usage: make ooc MODULE=<module> [PERIOD=6.0]"; exit 2; }
-	OOC_MODULE=$(MODULE) OOC_PERIOD=$(PERIOD) $(VIVADO) $(VFLAGS) -source ooc.tcl
+	OOC_MODULE=$(MODULE) OOC_PERIOD=$(PERIOD) OOC_GENERICS="$(GENERICS)" OOC_REPORT="$(REPORT)" \
+	  $(VIVADO) $(VFLAGS) -source ooc.tcl
 
 # Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
 # (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
