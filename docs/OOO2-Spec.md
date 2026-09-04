@@ -579,7 +579,12 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   broadcast, the redirect and the hpm events: 1708 of the 3401 endpoints under +0.35 ns in
   that day's routed checkpoint started at `u_sq/v_reg` for this reason alone. Rule I9.
 - **A queued load carries everything its access needs**: PA, size, sign, fp-ness and the
-  Svpbmt uncached bit, all written into `ooo2_lq` at the translate pass. The uncached bit
+  Svpbmt uncached bit, all written into `ooo2_lq` at the translate pass -- and, from
+  dispatch, the store-seqno that bounds which store-queue entries are older than it: the
+  queue's tail COUNTER, one bit wider than its index (`SQ_TB`), because a full queue's tail
+  equals its head and an index-width seqno then counts zero older stores where there are
+  NENT (rule B8; found by the Geekbench boot under the cosim on 2026-09-04, after Ubuntu
+  userspace had segfaulted on the board on the pointers it corrupted). The uncached bit
   was missing until 2026-09-04 and the pre-translated port hardwired it to 0 for loads, so
   an NC load that went through the queue (rather than the early start) was cached: the
   board's virtio rings read stale (`id 0 is not a head!`), and no simulation could see it.

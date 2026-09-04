@@ -28,13 +28,14 @@ module tb;
    // ---- load queue ports ----
    reg              lq_d_alloc=0, lq_a_v=0, lq_a_sent=0, lq_x_take=0, lq_l_v=0;
    reg [ROBB-1:0]   lq_d_rob=0;  reg [PBITS-1:0] lq_d_prd=0;  reg [5:0] lq_d_rd=0;  reg lq_d_rd_v=1;
-   reg [IDXB-1:0]   lq_d_sqtag=0, lq_a_idx=0, lq_b_idx=0, lq_l_idx=0;
+   reg [IDXB:0]     lq_d_sqtag=0;
+   reg [IDXB-1:0]   lq_a_idx=0, lq_b_idx=0, lq_l_idx=0;
    reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0;
    wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v;
-   wire [IDXB-1:0]  lq_d_idx, lq_x_idx, lq_q_tag;
+   wire [IDXB-1:0]  lq_d_idx, lq_x_idx;  wire [IDXB:0] lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
    wire [PBITS-1:0] lq_l_prd;  wire [5:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
-   wire [NENT*PAW-1:0] e_pa;  wire [NENT*2-1:0] e_size;  wire [NENT*IDXB-1:0] e_tag;
+   wire [NENT*PAW-1:0] e_pa;  wire [NENT*2-1:0] e_size;  wire [NENT*(IDXB+1)-1:0] e_tag;
    wire [NENT-1:0]  e_av, e_block;
    // ---- store queue ports ----
    reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0;
@@ -42,10 +43,10 @@ module tb;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older;
-   wire [IDXB-1:0]  sq_d_idx, sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
+   wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
 
-   ooo2_lq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.SQIB(IDXB)) u_lq
+   ooo2_lq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.SQIB(IDXB+1)) u_lq
      (.clk(clk),.reset(reset),
       .d_alloc(lq_d_alloc),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
       .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_idx(lq_d_idx),
@@ -80,7 +81,7 @@ module tb;
    endtask
    task step; begin @(posedge clk); #1; end endtask
    // program-order dispatch helpers: a load captures the store-seqno the queue hands out NOW
-   reg [IDXB-1:0] L0, L1, S0, S1;
+   reg [IDXB-1:0] L0, L1, S0, S1, S2, S3;
    task disp_store(input [PBITS-1:0] dp, input [ROBB-1:0] rob, output [IDXB-1:0] ix);
       begin sq_d_dpreg=dp; sq_d_rob=rob; sq_d_alloc=1; ix=sq_d_idx; step; sq_d_alloc=0; #1; end
    endtask
@@ -244,6 +245,48 @@ module tb;
       lq_d_alloc=1; repeat (NENT) step; lq_d_alloc=0; #1;
       chk("8 full queue refuses", lq_occ==NENT && !lq_d_ready, 1'b1);
       drain;
+
+      // ---- 9. a load dispatched against a FULL store queue: every store in it is older ----
+      // The seqno a load captures is the tail; with tail == head a distance of zero said "no
+      // older store" and the load overtook all of them (GB5 boot retire 123,081,278; Ubuntu
+      // userspace segfaults on the board, 2026-09-04). NENT stores, none committed, then the
+      // load: it must wait for the last of them.
+      disp_store(9'd7, 4'd1, S0); disp_store(9'd7, 4'd2, S1);
+      disp_store(9'd7, 4'd3, S2); disp_store(9'd7, 4'd4, S3);
+      chk("9 store queue full", sq_occ==NENT && !sq_d_ready, 1'b1);
+      disp_load(9'd44, 4'd5, L0);                       // tag = head + NENT, the wrap bit set
+      load_addr(L0, 56'h9000, 2);
+      chk("9 an older store is live (the queue was full at dispatch)", ld_older, 1'b1);
+      chk("9 unknown addresses block", !lq_x_v && lq_x_block, 1'b1);
+      store_addr(S0, 56'h9100, 2, 1'b1, 64'h1); store_addr(S1, 56'h9200, 2, 1'b1, 64'h2);
+      store_addr(S2, 56'h9300, 2, 1'b1, 64'h3);
+      chk("9 still blocked by the last unknown address", !lq_x_v && lq_x_block, 1'b1);
+      store_addr(S3, 56'h9000, 2, 1'b1, 64'h4);         // the youngest store aliases the load
+      chk("9 the aliasing fourth store blocks", !lq_x_v && lq_x_block, 1'b1);
+      commit; commit; commit;
+      chk("9 three commits do not release it", !lq_x_v && lq_x_block && ld_older, 1'b1);
+      commit;
+      chk("9 the fourth does", lq_x_v && !ld_older, 1'b1);
+      take; land(L0);
+      chk("9 drained", lq_occ==0 && sq_occ==0, 1'b1);
+      // ...and with the pointers WRAPPED: two stores committed first, then the queue refilled,
+      // so the tail passed the head before the load captured it.
+      disp_store(9'd7, 4'd6, S0); disp_store(9'd7, 4'd7, S1);
+      store_addr(S0, 56'hA000, 2, 1'b1, 64'h5); store_addr(S1, 56'hA100, 2, 1'b1, 64'h6);
+      commit; commit;
+      disp_store(9'd7, 4'd8, S0); disp_store(9'd7, 4'd9, S1);
+      disp_store(9'd7, 4'd10, S2); disp_store(9'd7, 4'd11, S3);
+      chk("9w full again across the wrap", sq_occ==NENT && !sq_d_ready, 1'b1);
+      disp_load(9'd45, 4'd12, L0);
+      load_addr(L0, 56'hB000, 2);
+      chk("9w older stores live across the wrap", ld_older, 1'b1);
+      store_addr(S0, 56'hB100, 2, 1'b1, 64'h7); store_addr(S1, 56'hB200, 2, 1'b1, 64'h8);
+      store_addr(S2, 56'hB300, 2, 1'b1, 64'h9); store_addr(S3, 56'hB000, 2, 1'b1, 64'hA);
+      chk("9w the aliasing store blocks", !lq_x_v && lq_x_block, 1'b1);
+      commit; commit; commit; commit;
+      chk("9w released after all four commit", lq_x_v && !ld_older, 1'b1);
+      take; land(L0);
+      chk("9w drained", lq_occ==0 && sq_occ==0, 1'b1);
 
       $display("---- tb_ooo2_lqsq pass=%0d fail=%0d", pass, fail);
       if (fail != 0) begin $display("LQSQ-TB FAIL"); $fatal(1, "tb_ooo2_lqsq FAILED"); end

@@ -255,6 +255,21 @@ against the request's port: every field on the port that the access consumes is 
 entry, or the queue is a defect. There is no assertion for a value the design never had;
 the check is the diff, at review time.
 
+**B8. A sequence number that orders entries of a ring is one bit wider than the ring's
+index.** `ooo2_sq` handed a dispatching load its tail INDEX as the store-seqno, and "older"
+was `(slot - head) < (tag - head)` in index width. With the queue full, tail == head, the
+distance read zero, and a load with eight older stores live saw none of them: it took the
+early start and read memory ahead of the store to its own address. Eight back-to-back
+stores followed by a load of the second one's target is ordinary compiled code -- Linux
+itself, at retire 123,081,278 of the Geekbench boot under the ooo2 cosim, and Ubuntu's
+shell on the board, which segfaulted on the corrupted pointers it read back. Six days old
+(`cb028682`); invisible to the 60 M-cycle tiny128 cosim, visible in the first long run of
+a bigger guest. The counters that produce the seqno carry a wrap bit (`headc`/`tailc`),
+the distance is exact up to NENT, and the queue asserts that no load claims more older
+stores than are live. The same arithmetic error is possible in any ring whose occupancy
+can reach its size; when a pointer is captured as an age, check what a FULL ring hands
+out.
+
 ## C. Cross-cutting predicates
 
 **C1. Computed once, applied at one site.**
@@ -512,6 +527,17 @@ Sweeping only power-of-2 points is not sweeping. The bugs live where the
 arithmetic stops dividing evenly.
 
 ---
+
+**G5. A verdict comes from a model built from the sources under test, and the runner
+proves it.** `run-ooo2-cosim-linux.sh` reused the built model whenever `BUILD` was unset
+and its MEM_LG2/VDEFS stamp matched. On 2026-09-04 a day of core commits was declared
+"bit-identical, 14,657,366 retires" one after another -- the lockstep that passed was the
+previous week's core, and the true number at the end of the day was 16,025,548. Every one
+of those logs lacked the line `building obj_dir_ooo2_clinux/tb_ooo2_clinux`, and nobody
+looked. The stamp now hashes every RTL source, so an edit forces the rebuild; the rule
+is the general one: a runner that can skip a build must say in its output whether it
+did, and a verdict without that line is not read. The same hole exists in any harness
+with a cached binary; check the run log before the number.
 
 ## H. Process
 

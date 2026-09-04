@@ -574,6 +574,10 @@ module ooo2_core
    localparam integer NWB_C   = 3;         // writeback ports watched: one per PRF shard
    localparam integer PL_N = NI + NL + NF, PL_IB = 5;
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
+   localparam integer SQ_TB = SQ_IB + 1;         // ...and its seqno: the index plus a wrap bit
+                                                 // (ooo2_sq's head/tail counters), so that a load
+                                                 // dispatched against a FULL queue counts NENT
+                                                 // older stores, not zero
    localparam integer LQ_N = 4, LQ_IB = 2;      // load queue:   entries, index width
    localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2;
 
@@ -808,7 +812,7 @@ module ooo2_core
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
                           + 1 + 1 + 1                           // source-valid bits
                           + 1                                   // ordered
-                          + SQ_IB                               // store-buffer slot / seqno
+                          + SQ_IB                               // store-buffer slot (a store's)
                           + LQ_IB;                              // load-queue slot
    wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
                            (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
@@ -819,7 +823,7 @@ module ooo2_core
                            d_fault_cause, d_fault_tval,
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
                            d_br_func, d_mis_taken, d_mis_nt,
-                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_tag, lq_d_idx};
+                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_idx, lq_d_idx};
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
@@ -876,7 +880,8 @@ module ooo2_core
    wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_older;
    wire                sq_ld_block;      // instrumentation: candidate held by an alias
    wire [SQ_IB:0]      sq_occ;
-   wire [SQ_IB-1:0]    sq_d_idx, sq_d_tag;
+   wire [SQ_IB-1:0]    sq_d_idx;
+   wire [SQ_TB-1:0]    sq_d_tag;
    wire [ROB_IDXB-1:0] sq_c_rob;
    wire [55:0]         sq_c_addr;
    wire [63:0]         sq_c_data;
@@ -920,9 +925,9 @@ module ooo2_core
    wire [1:0]          lq_x_size;
    wire [LQ_N*56-1:0]  lq_e_pa;
    wire [LQ_N*2-1:0]   lq_e_size;
-   wire [LQ_N*SQ_IB-1:0] lq_e_tag;
+   wire [LQ_N*SQ_TB-1:0] lq_e_tag;
    wire [LQ_N-1:0]     lq_e_av, lq_e_block;
-   wire [SQ_IB-1:0]    lq_q_tag;
+   wire [SQ_TB-1:0]    lq_q_tag;
    wire [RN_PBITS-1:0] lq_l_prd;
    wire [5:0]          lq_l_rd;
    wire [ROB_IDXB-1:0] lq_l_rob;
@@ -932,7 +937,7 @@ module ooo2_core
    wire d_ld_alloc = rn_valid & d_ld_nb;
 
    ooo2_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .SQIB(SQ_IB)) u_lq
+             .ROBB(ROB_IDXB), .SQIB(SQ_TB)) u_lq
      (.clk(clk), .reset(reset),
       .d_alloc(d_ld_alloc), .d_rob(rob_d_idx), .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}),
       .d_rd(d_rd), .d_rd_v(d_rd_v), .d_sqtag(sq_d_tag),
@@ -1041,8 +1046,8 @@ module ooo2_core
    // store may now issue with rs2 still pending, so m_st_data is meaningful only when
    // m_rs2_rdy -- otherwise ooo2_sq's snoop supplies the value instead.
    // ONE field serves both roles, because a buffered store's own slot IS the tail it
-   // captured at dispatch: for a store it names the entry to fill, for a load it is the
-   // store-seqno bounding which entries are older than it.
+   // captured at dispatch: for a store it names the entry to fill. (A load's store-seqno
+   // goes straight into ooo2_lq at dispatch and is one bit wider -- SQ_TB.)
    reg  [SQ_IB-1:0] m_sq_tag;
    reg  [LQ_IB-1:0] m_lq_idx;
    reg              m_rs2_rdy;

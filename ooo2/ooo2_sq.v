@@ -45,7 +45,8 @@ module ooo2_sq
     input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
-    output wire [IDXB-1:0]       d_tag,       // the STORE-SEQNO a load captures at dispatch
+    output wire [IDXB:0]         d_tag,       // the STORE-SEQNO a load captures at dispatch: the
+                                              // tail COUNTER, one bit wider than the index (below)
 
     // ---- address (and possibly data) written when the store executes ----
     input  wire                  a_v,
@@ -84,7 +85,7 @@ module ooo2_sq
     // tail exactly where they were.
     input  wire [LQN*PAW-1:0]    l_pa,        // the load queue's entries, flattened
     input  wire [LQN*2-1:0]      l_size,
-    input  wire [LQN*IDXB-1:0]   l_tag,       // each load's captured store-seqno
+    input  wire [LQN*(IDXB+1)-1:0] l_tag,     // each load's captured store-seqno
     input  wire [LQN-1:0]        l_av,
     input  wire                  l_fill,      // a load's address arrives this cycle...
     input  wire [LQIB-1:0]       l_fill_ix,   // ...into this entry
@@ -93,7 +94,7 @@ module ooo2_sq
     output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
     // ld_older keeps a query port: it is pointer arithmetic against head, no address and no
     // adder, so it is not part of the cone above.
-    input  wire [IDXB-1:0]       ld_tag,     // this load's captured store-seqno
+    input  wire [IDXB:0]         ld_tag,     // this load's captured store-seqno
     output wire                  ld_older,   // an older store is live (aliasing or not) --
                                              // the load is REORDERED past it if it starts
 
@@ -107,7 +108,17 @@ module ooo2_sq
    reg [NENT-1:0]        unc;
    reg [PBITS-1:0]       dpr  [0:NENT-1];
    reg [ROBB-1:0]        rob  [0:NENT-1];
-   reg [IDXB-1:0]        head, tail;
+   // THE SEQNO IS ONE BIT WIDER THAN THE INDEX. A load captures the tail at dispatch and
+   // "older" is (slot - head) < (tag - head). With tag and head both IDXB bits, a FULL queue
+   // (tail == head) hands the load a distance of ZERO: every live store is older and the
+   // arithmetic says none is. The load took the early start, read memory ahead of the store
+   // to its own address, and returned the old word -- eight back-to-back stores and a load
+   // of the second one's target, Linux's own code (GB5 boot, retire 123,081,278, 2026-09-04);
+   // on the board, Ubuntu userspace segfaulted on corrupted pointers. Six days old, from
+   // the day the queue was wired in. The counters below carry the wrap bit, so the distance
+   // is exact up to NENT; the index is their low bits, as before.
+   reg [IDXB:0]          headc, tailc;
+   wire [IDXB-1:0]       head = headc[IDXB-1:0], tail = tailc[IDXB-1:0];
    reg [IDXB:0]          cnt;
    integer               k, w;
    reg                   sn_live;         // snoop scratch, see the writeback loop
@@ -131,11 +142,11 @@ module ooo2_sq
    initial if (NWB > 4) $fatal(1, "ooo2_sq: ld_w holds a port index of at most 2 bits");
 
    initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}};
-                 head = {IDXB{1'b0}}; tail = {IDXB{1'b0}}; cnt = {(IDXB+1){1'b0}}; end
+                 headc = {(IDXB+1){1'b0}}; tailc = {(IDXB+1){1'b0}}; cnt = {(IDXB+1){1'b0}}; end
 
    assign d_ready   = (cnt != NENT[IDXB:0]);
    assign d_idx     = tail;
-   assign d_tag     = tail;
+   assign d_tag     = tailc;
    assign occupancy = cnt;
 
    // c_v says the head is READY (address and data present). Committing in program order
@@ -185,18 +196,23 @@ module ooo2_sq
    reg [NENT-1:0] conf [0:LQN-1];
    integer        li;
 
-   wire [IDXB-1:0] ld_dist = ld_tag - head;
+   wire [IDXB:0] ld_dist = ld_tag - headc;
    genvar gl, gs;
    generate
       for (gl = 0; gl < LQN; gl = gl + 1) begin : g_lblk
-         wire [IDXB-1:0] l_dist = l_tag[gl*IDXB +: IDXB] - head;
+         wire [IDXB:0]   l_dist = l_tag[gl*(IDXB+1) +: IDXB+1] - headc;
          wire [NENT-1:0] oldm;
          for (gs = 0; gs < NENT; gs = gs + 1) begin : g_om
-            assign oldm[gs] = v[gs] & ((gs[IDXB-1:0] - head) < l_dist);
+            wire [IDXB-1:0] sd = gs[IDXB-1:0] - head;      // slot distance from the head
+            assign oldm[gs] = v[gs] & ({1'b0, sd} < l_dist);
          end
          // An older store whose address has not arrived cannot be compared, so it blocks --
          // conservative and correct, and the same rule the compare form used.
          assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | ~av)));
+         // A load can have at most cnt older live stores: a distance beyond the occupancy
+         // is a seqno that wrapped, i.e. the defect above in any new clothing.
+         always @(posedge clk) if (!reset & l_av[gl] & (l_dist > cnt))
+            $fatal(1, "ooo2_sq: load %0d claims %0d older stores with %0d live", gl, l_dist, cnt);
       end
    endgenerate
    // Older-and-live, regardless of overlap. ld_block is the subset that actually conflicts,
@@ -206,7 +222,8 @@ module ooo2_sq
    genvar go;
    generate
       for (go = 0; go < NENT; go = go + 1) begin : g_old
-         assign oldv[go] = v[go] & (((go[IDXB-1:0] - head)) < ld_dist);
+         wire [IDXB-1:0] od = go[IDXB-1:0] - head;
+         assign oldv[go] = v[go] & ({1'b0, od} < ld_dist);
       end
    endgenerate
    assign ld_older = |oldv;
@@ -215,7 +232,7 @@ module ooo2_sq
       if (reset | flush) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}};
          ld_v <= {NENT{1'b0}};          // a landing noted for a flushed entry is nobody's
-         head <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}}; cnt <= {(IDXB+1){1'b0}};
+         headc <= {(IDXB+1){1'b0}}; tailc <= {(IDXB+1){1'b0}}; cnt <= {(IDXB+1){1'b0}};
          for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
       end else begin
          // A STORE's address arrives: its COLUMN, against every queued load.
@@ -235,13 +252,13 @@ module ooo2_sq
          // commit the head
          if (c_v & c_take) begin
             v[head] <= 1'b0; av[head] <= 1'b0; dv[head] <= 1'b0;
-            head <= head + 1'b1;
+            headc <= headc + 1'b1;
          end
          // allocate at the tail
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0;
             rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;
-            tail <= tail + 1'b1;
+            tailc <= tailc + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;
          else if (~(d_alloc & d_ready) & (c_v & c_take)) cnt <= cnt - 1'b1;
