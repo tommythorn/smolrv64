@@ -297,6 +297,8 @@ module csr_file
 `endif
    // ---- timer/interrupt-path debug bus (ILA_TIMER; assembled always, pruned when the
    // wrapper doesn't consume it). Layout documented in rk_xcku5p.v's ila_timer block. ----
+   reg         stip_sstc;
+   initial     stip_sstc = 1'b0;
    wire dbgt_stw  = upd_valid & upd_is_csr & (upd_addr == STIMECMP);
    wire dbgt_msw  = upd_valid & upd_is_csr & (upd_addr == MSCRATCH);
    assign dbg_mtvec = mtvec;
@@ -313,7 +315,7 @@ module csr_file
    assign dbg_timer = {
       stimecmp[19:0],                        // [63:44] deadline (low bits)
       mtime[23:0],                           // [43:20] now (low bits)
-      (mtime >= stimecmp),                   // [19]    raw Sstc comparator (= STIP level w/ STCE)
+      stip_sstc,                             // [19]    the Sstc comparator (= STIP level w/ STCE), registered
       (mscratch[63:20] == 44'h00000000800),  // [18]    mscratch inside OpenSBI (0x800xxxxx)
       menvcfg[63],                           // [17]    STCE
       do_sret, do_mret,                      // [16:15]
@@ -325,7 +327,14 @@ module csr_file
       priv };                                // [1:0]
    // Sstc: when menvcfg.STCE, sip/mip.STIP(5) is driven by the stimecmp deadline
    // (read-only to software); otherwise it is the software-/device-written bit.
-   wire        stip_sstc = menvcfg[63] & ~SSTC_HIDDEN & (mtime >= stimecmp);
+   // REGISTERED, like the CLINT's mtip. The comparator is four CARRY8 stages on two 64-bit
+   // registers, and its live output was the head of the interrupt-take cone: stimecmp ->
+   // (mtime >= stimecmp) -> eff_mip -> take_m -> irq_v -> the trap and redirect -> the
+   // writeback valid's trap qualifier -> the wakeup -> the issue capture enable, 19 levels,
+   // the worst family (+0.014, 559 endpoints under +0.35) of the 2026-09-04 build. A
+   // level one cycle late is nothing to a timer that ticks every SCALE_DIV core clocks,
+   // and STIP is asynchronous to the instruction stream by definition.
+   always @(posedge clk) stip_sstc <= menvcfg[63] & ~SSTC_HIDDEN & (mtime >= stimecmp);
    wire [63:0] base_mip  = mip | {52'd0, hw_ip};
    wire [63:0] eff_mip   = (menvcfg[63] & ~SSTC_HIDDEN) ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
 
