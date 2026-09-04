@@ -139,6 +139,8 @@ got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_di
 exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
 tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
 
+# an expectation that is not a number is no expectation (a placeholder row passed as "ok" once)
+case "$exp" in ''|*[!0-9]*) exp="";; esac
 if [ -n "$got" ] && [ -n "$exp" ]; then
    floor=$(awk -v e="$exp" -v t="$tol" 'BEGIN{printf "%d", e*(100-t)/100}')
    pct=$(awk -v g="$got" -v e="$exp" 'BEGIN{printf "%+.2f", 100*(g-e)/e}')
