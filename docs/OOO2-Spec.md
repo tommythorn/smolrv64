@@ -765,18 +765,21 @@ Per cache instance; there are two (I$, D$), identical geometry.
 | array | shape | width | bits | storage |
 |---|---|---|---|---|
 | data banks | 4 × 2048 | 64 | 524 288 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
-| `tagm` | 1024 | 49 | 50 176 | LUTRAM |
-| `valm` | 1024 | 1 | 1 024 | flops |
-| `dirm` | 1024 | 1 | 1 024 | flops (D$ only in effect) |
-| `vicm` | 512 | 1 | 512 | flops — victim/replacement bit per set |
+| `tagm` | 1024 | 19 | 19 456 | LUTRAM (three read ports on the D$: two lookups, one victim/scan) |
+| `valm` | 1024 | 1 | 1 024 | LUTRAM (`RAM256X1D`, one copy per read port) |
+| `dirm` | 1024 | 1 | 1 024 | LUTRAM (D$ only in effect) |
+| `vicm` | 512 | 1 | 512 | LUTRAM — victim/replacement bit per set |
 
 Data is 4 banks (`2*WAYS`) of `2048 × 64`, which is the 64 KB: even/odd chunk banking per
 way, so any read at any byte offset is served by one access (§9.1).
 
-**`PTAGB` = 49 bits and does not need to be.** It is `PAW - IDXB - OFFB` with `PAW`=64 as
-instantiated, but the MMU produces 56-bit physical addresses, so eight tag bits per way are
-structurally zero — ~8 Kib per cache, ~16 Kib total. Untested observation, not a measurement;
-narrowing `PAW` to 56 is a one-parameter change that needs a build to confirm it is free.
+**The tag is `PAW_SIG - IDXB - OFFB` = 34 - 9 - 6 = 19 bits, not the port width's 49.** The
+ports are 64 wide because a PA rides in a 64-bit bus, but the platform decodes 34 bits (2 GiB
+of DDR at `0x8000_0000`, every device below it), so 30 of the 49 tag bits were structurally
+zero: a 49-bit compare on the hit path, a 1K x 49 array (`RAM64M8` x 224 per read port) and
+an index fanning out to all of it. `PAW_SIG` is a parameter of `rv_cache` set at both
+instantiations; a request at or above `2^PAW_SIG` is an always-on `$fatal` at the door, and
+the writeback address is rebuilt from the tag and zero-extended, exact under that check.
 
 Address translation, two instances (iTLB in `ooo2_core`, dTLB in `ooo2_lsu`):
 

@@ -27,6 +27,15 @@ module rv_cache #(
    parameter RTW      = 4,      // opaque request-tag width (see rd_tag). 4 leaves room for
                                // a load-queue index when multiple outstanding loads land.
    parameter PAW      = 34,
+   // THE TAG COVERS THE SIGNIFICANT PHYSICAL ADDRESS BITS, NOT THE PORT WIDTH. The SoC's
+   // ports are 64 wide (a PA rides in a 64-bit bus), but the platform decodes 34 bits: 2 GiB
+   // of DDR at 0x8000_0000 and every device below it. Tagging all 64 made the tag 49 bits
+   // wide -- 30 of them structurally zero -- so the compare was 49 bits, the tag array
+   // 1K x 49 (RAM64M8 x 224 per read port) and its index fanned out to every one of them.
+   // A PA at or above 2^PAW_SIG cannot be tagged and is asserted never to arrive; the
+   // writeback address is rebuilt from the tag and zero-extended, which is exact under that
+   // assertion. Spec section 9.1 / 10.3.
+   parameter PAW_SIG  = 34,
    parameter SIZE_KB  = 128,
    parameter WAYS     = 2,
    parameter LINEB    = 512,
@@ -84,7 +93,8 @@ module rv_cache #(
    localparam WORDB = LINEB/8;
    localparam SETS  = (SIZE_KB*1024)/(WAYS*WORDB);
    localparam IDXB  = $clog2(SETS);
-   localparam PTAGB = PAW - IDXB - OFFB;
+   localparam PTAGB = PAW_SIG - IDXB - OFFB;
+   initial if (PAW < PAW_SIG) $fatal(1, "rv_cache: PAW_SIG=%0d exceeds the port width PAW=%0d", PAW_SIG, PAW);
    localparam RDB   = RDW/8;
    localparam WRB   = WDW/8;
    localparam NW    = WAYS*SETS;
@@ -853,7 +863,7 @@ module rv_cache #(
               v_we=1; v_wa=vflat; v_wd=1'b0;
               if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
                  wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
-                 wb_laddr <= {vtag, vbase};
+                 wb_laddr <= {{(PAW-PAW_SIG){1'b0}}, vtag, vbase};
                  fst <= F_WBR;
               end else fst <= f_cbo_zero ? F_ZFILL : F_FILL;
            end
@@ -960,7 +970,8 @@ module rv_cache #(
            F_FLUSH: begin
               if (fscan == NW) begin inv_busy <= 0; fst <= F_IDLE; end
               else if (WRITABLE!=0 && WRTHRU==0 && valm[fscan[FW-1:0]] && dirm[fscan[FW-1:0]]) begin
-                 wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0; wb_laddr <= {ftag, fbase};
+                 wb_way <= fscan[FW-1]; wb_idx <= fidx; pc <= 0;
+                 wb_laddr <= {{(PAW-PAW_SIG){1'b0}}, ftag, fbase};
                  fst <= F_FLUSHR;
               end else begin
                  if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush keeps lines valid
@@ -1138,6 +1149,13 @@ module rv_cache #(
       // the pipeline is empty for it.
       if (accept && req_solo && f_v)
          $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
+      // THE TAG IS PAW_SIG BITS WIDE. Two addresses that differ only above bit PAW_SIG-1
+      // would hit the same line; the platform has no memory there, so such an address is a
+      // defect somewhere upstream (a wild PTE, a device decode that let something through)
+      // and the cache is where it would become silent corruption. It is a fault here instead.
+      if (PAW > PAW_SIG && accept && (|a_live[PAW-1:PAW_SIG]))
+         $fatal(1, "[cache id=%0d] request %h lies above the %0d-bit tagged physical range",
+                PERF_ID, a_live, PAW_SIG);
       // THE LINE A SOLO REQUEST HIT IS STILL THERE IN THE STATES AFTER S_CHECK. The store
       // merge (S_FIN), the span's second half (S_SPANW), the NC drop (S_NCI) and the Zicbom
       // dirty test (S_FIN) all act on the way/index REGISTERED at the lookup and no longer
