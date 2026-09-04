@@ -91,7 +91,7 @@ module frontend
       .redirect_seq(redirect_seq), .solo_all(solo_all), .irq_inject(irq_inject),
       // apc is unconnected here, so its whole cone drops out; apred_v only feeds it.
       .pred_v(bp_v), .apred_v(bp_v), .pred_tgt(bp_tgt), .npc(f_npc), .apc(/* ooo2 only */),
-      .pred_npc(f_pnpc), .ft_npc(f_ftn),
+      .pred_npc(f_pnpc), .pnpc_kind(), .ft_npc(f_ftn),
       .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .ready(accept), .valid(f_valid),

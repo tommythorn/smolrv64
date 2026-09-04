@@ -63,6 +63,16 @@ module fetch
     output wire [PCW-1:0]          npc,
     output wire [PCW-1:0]          apc,         // npc PREDICTED from registers only -- see below
     output wire [PCW-1:0]          pred_npc,
+    // pred_npc WITHOUT THE SUM: which of {pc + length, pred_tgt, pc} pred_npc is. A consumer
+    // that already knows the instruction's length (decode does) rebuilds pred_npc from this
+    // and pred_tgt and leaves the +2*consumed adder -- eight CARRY8 at the END of the fetch
+    // cloud -- out of whatever it stores. ooo2_frontend's F/X queue is that consumer: its
+    // write data was the design's second-worst family on 2026-09-03 (342 endpoints, 25
+    // levels, 13 CARRY8, iMMU -> fetch buffer -> aligner -> this adder -> LUTRAM data pin).
+    //   0 = fall-through: pc + the presented instruction's length (also the straddle's +4)
+    //   1 = the predicted target (pred_tgt)
+    //   2 = this PC (the interrupt pseudo-op holds it)
+    output wire [1:0]              pnpc_kind,
     output wire [PCW-1:0]          ft_npc,      // presented bundle's fall-through (RAS ret addr)
     output wire                    br_term,     // presented bundle ends on a real branch/jump
                                                 // (prediction is only safe on such bundles)
@@ -167,6 +177,8 @@ module fetch
    assign pred_npc = irq_inject ? pc_q
                    : strad      ? (pc_q + 64'd4)
                    :              norm_npc;
+   // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
+   assign pnpc_kind = irq_inject ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
    // computed next PC, mirroring the advance chain's priorities exactly -- this
    // is the predictor's BTB read address (registered there, rule A1). The
    // redirect arm MUST be included: without it the first bundle at a redirect

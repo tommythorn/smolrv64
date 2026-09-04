@@ -107,7 +107,8 @@ module ooo2_frontend
    wire [31:0]        fx_inst;
    wire [PCW-1:0]     fx_pc;
    wire [SEQW-1:0]    fx_seq;
-   wire [PCW-1:0]     f_apc, fx_pnpc, f_ftn, bp_tgt;
+   wire [PCW-1:0]     f_apc, f_ftn, bp_tgt;
+   wire [1:0]         fx_pk;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
@@ -124,7 +125,10 @@ module ooo2_frontend
       .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
       // `npc` (the true next PC) is left unconnected: the predictor reads at `apc`, so the
       // whole npc mux -- and with it the aligner -> array-index cone -- drops out here.
-      .npc(), .apc(f_apc), .pred_npc(fx_pnpc), .ft_npc(f_ftn), .br_term(f_brt),
+      // `pred_npc` (the chosen next PC, with its adder) is left unconnected too: the queue
+      // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
+      // the length it decodes anyway. See the queue below.
+      .npc(), .apc(f_apc), .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail),
       .ready(~q_full), .valid(fx_valid),
@@ -170,7 +174,15 @@ module ooo2_frontend
    // Depth 2, not 1: with one entry a clean ready (~q_valid, no `accept` term) drains and
    // refills on alternate cycles, halving throughput. With two the count oscillates 1<->2
    // and fetch pushes every cycle.
-   localparam QW = PDW + PCW + 32 + SEQW + PCW + 1 + 4 + PCW;
+   // THE QUEUE STORES THE PREDICTION'S CHOICE, NOT THE SUM. fetch's pred_npc is
+   // pc + 2*consumed unless the predictor steered, and `consumed` is the aligner's output:
+   // iMMU -> fetch buffer -> aligner -> a 64-bit adder -> this array's data pin was 342
+   // endpoints at -0.059 on 2026-09-03 (25 levels, 13 CARRY8). Decode computes the same
+   // fall-through from the length it decodes (s_ft_pc), so the queue carries a 2-bit
+   // selector and the predictor's target instead, and f_pnpc is rebuilt at the head with
+   // one mux. Same value on every bundle, including the straddle (+4 is its 32-bit
+   // length) and the interrupt pseudo-op (which holds its PC).
+   localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
    wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
    reg  [QW-1:0]  q_dat [0:QDEPTH-1];
    reg  [QAW-1:0] q_rp, q_wp;
@@ -180,12 +192,12 @@ module ooo2_frontend
    wire           q_push  = ~q_full & (fx_valid | fx_fault);
    wire           q_pop   = accept & ~q_empty;
    wire [QW-1:0]  q_in    = {pd_fetch, (fx_fault ? imem_ipc : fx_pc), fx_inst, fx_seq,
-                             fx_pnpc, fx_fault, imem_cause, imem_addr};
+                             fx_pk, bp_tgt, fx_fault, imem_cause, imem_addr};
    // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
-   wire [SEQW-1:0] f_seq;   wire [PCW-1:0] f_pnpc; wire fault_op;
+   wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
-   assign {q_pdet, f_pc, f_inst, f_seq, f_pnpc, fault_op, q_cause, q_tval} = q_dat[q_rp];
+   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_dat[q_rp];
 
    always @(posedge clk) begin
       if (reset | redirect) begin
@@ -237,6 +249,8 @@ module ooo2_frontend
    // pays an X-time 64-bit compare against its AGU result.
    wire [PCW-1:0] s_taken_pc = f_pc + s_imm;
    wire [PCW-1:0] s_ft_pc    = f_pc + (s_rvc ? 64'd2 : 64'd4);
+   // fetch's pred_npc, rebuilt from the queued choice (see the queue above)
+   wire [PCW-1:0] f_pnpc     = (f_pk == 2'd2) ? f_pc : (f_pk == 2'd1) ? f_tgt : s_ft_pc;
 
    // fetch-fault pseudo-op: presented only when fetch itself has nothing (an
    // interrupt injection wins -- fetch forces a valid bundle for it, and an

@@ -804,6 +804,10 @@ module rv_soc_top #(
       else if (ic_rd_valid) ic_sent<=1'b0;
    wire         ic_rd_req  = (fb_wantv | fb_pend) & ~ic_sent & ~ic_rd_valid;
    wire [63:0]  ic_rd_addr = fb_pend ? fb_reqpa : fb_want;
+   // ...and the VA of the same chunk, kept with the request so the arrival can be tested
+   // virtually (fb_arr below), exactly as the hit already is.
+   wire [63:0]  fb_wantva  = fb_miss ? fb_alv : (~fb_v0 ? fb_va : fb_va1);
+   reg  [63:0]  fb_reqva;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
    reg          ic_inv_req;
@@ -814,7 +818,7 @@ module rv_soc_top #(
    always @(posedge clk) if (reset) begin
          fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_pend <= 1'b0; fb_pa <= 64'd0; fb_va <= 64'd0; fb_pois <= 1'b0;
       end else begin
-         if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; fb_pois <= 1'b0; end
+         if (~fb_pend & fb_wantv) begin fb_pend <= 1'b1; fb_reqpa <= fb_want; fb_reqva <= fb_wantva; fb_pois <= 1'b0; end
          if (ic_rd_valid) begin fb_pend <= 1'b0; fb_pois <= 1'b0; end
 
          // POISON an in-flight fill whose translation context changed while it was out.
@@ -868,7 +872,20 @@ module rv_soc_top #(
    // the chunk the PC is in (ic_rd_data is already a register inside the cache, so this is a mux,
    // not array depth). Without it every redirect pays an extra cycle, and redirects are 11.5% of
    // instructions here.
-   wire             fb_arr  = ic_rd_valid & (ic_rd_resp_addr == fb_al);
+   // THE ARRIVAL TEST IS VIRTUAL, LIKE THE HIT TEST. It compared the response's PA against
+   // fb_al, the CURRENT translation of the PC -- which put the iMMU's tag compare, the
+   // t_paddr mux and a second 64-bit compare in front of imem_avail, and so in front of the
+   // aligner and the whole fetch loop (fe/u_fetch -> fe/u_fetch, 81 endpoints at -0.044 on
+   // 2026-09-03). The chunk that is arriving is the one that was REQUESTED, whose VA was
+   // kept with the request: serve it when the PC is in that chunk and the request was not
+   // poisoned by a context change, by the same argument the VA-tagged hit rests on. The
+   // invariant below checks the argument against the translation every cycle, as the
+   // hit's does.
+   wire             fb_arr  = ic_rd_valid & ~fb_pois & (fb_alv == fb_reqva);
+   always @(posedge clk)
+      if (!reset & fb_arr & imem_xlate_ok & ~imem_ctx_chg & (ic_rd_resp_addr != fb_al))
+         $fatal(1, "rv_soc_top: VA-matched arrival serves a STALE mapping: va=%h pa_now=%h arrived=%h",
+                fb_alv, fb_al, ic_rd_resp_addr);
    wire [CHA-1:0]   fb_aoff = fb_lo;                            // offset within the arriving chunk
 
    // Serve for a hit in EITHER chunk. The first cut served only on fb_in0, so the cycle the PC
