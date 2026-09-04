@@ -214,6 +214,7 @@ module ooo2_sq
    always @(posedge clk) begin
       if (reset | flush) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}};
+         ld_v <= {NENT{1'b0}};          // a landing noted for a flushed entry is nobody's
          head <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}}; cnt <= {(IDXB+1){1'b0}};
          for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
       end else begin
@@ -270,8 +271,9 @@ module ooo2_sq
          // read the PRF, `a_data_v` supplies it and no writeback is coming. The two paths are
          // disjoint by construction and `~dv` keeps them so if they ever overlap.
          // The match sets dv NOW and notes the port; the bytes land NEXT cycle from wb_q
-         // (below, outside the reset arm: a landing already noted must complete even if the
-         // entry was flushed, which only makes it a write into a dead slot).
+         // (below, outside this arm). A flush clears the note with the entry: the slot may
+         // be reallocated the cycle after, and a stale landing would overwrite the new
+         // entry's data at the same edge its own capture wrote it.
          for (k = 0; k < NENT; k = k + 1) begin
             sn_live = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? 1'b1     : (v[k] & ~dv[k]);
             sn_dpr  = (d_alloc & d_ready & (tail == k[IDXB-1:0])) ? d_dpreg  : dpr[k];
