@@ -155,6 +155,15 @@ ooc:
 	OOC_MODULE=$(MODULE) OOC_PERIOD=$(PERIOD) OOC_GENERICS="$(GENERICS)" OOC_REPORT="$(REPORT)" \
 	  $(VIVADO) $(VFLAGS) -source ooc.tcl
 
+# The near-critical CENSUS of a routed checkpoint: every endpoint under SLACK ns grouped
+# into families, the startpoint/endpoint module histograms and the slack histogram. WNS is
+# one path; this is what a timing change is judged by (rules I2, I8, I9). Read-only.
+#   make census [DCP=<checkpoint>] [OUT=<file>] [SLACK=0.35]
+census:
+	$(VIVADO) $(VFLAGS) -source report_census.tcl -tclargs \
+	  $(if $(DCP),$(DCP),rk_xcku5p.runs/impl_1/rk_xcku5p_postroute_physopt.dcp) \
+	  $(if $(OUT),$(OUT),census.txt) $(if $(SLACK),$(SLACK),0.35)
+
 # Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
 # (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
 physopt:

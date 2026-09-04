@@ -598,7 +598,7 @@ failing core paths merely END in logic the cache has starved" -- was wrong, and 
 that refuted it was already on disk: the routed checkpoint BEFORE post-route phys_opt was
 at -0.169 with 709 failing endpoints, all of them core; phys_opt then equalised the worst
 paths at -0.03 and only THEN did a cache family sit level with them. A census of that
-checkpoint (`scratchpad`-style: every endpoint under +0.35 ns, keyed by startpoint):
+checkpoint (`make census`: every endpoint under +0.35 ns, keyed by startpoint):
 
     u_sq/v_reg           1708 of 3401   one chain: pt port grant -> M's done -> wakeup, redirect
     u_dcache/cur_line     815           `hit` on enables and a dependent array read (I8)
