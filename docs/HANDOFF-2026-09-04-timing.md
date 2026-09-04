@@ -155,8 +155,12 @@ F's margin over B is larger than that, and its census is 10x thinner.
 
 Now at `3351a3d3`: G's RTL plus both fixes above cherry-picked (the load queue's
 uncached bit, the store-seqno wrap bit), lint clean, `tb_ooo2_lqsq` 66/66, 240/240,
-tiny128 cosim (see the gate log). Build J (this branch, AltSpread) and its board gate
-were launched as this file was written. Before the fixes: build G (`d8108049`, AltSpread) routes at -0.031 with 14 failing
+tiny128 cosim 16,725,431 (fresh model, unchanged by the fixes). **Build J (`3351a3d3`,
+AltSpread) closes at +0.047 routed and after phys_opt, 0 failing, and PASSES THE BOARD:
+NFS boot to `login:`, zero faults (`scratchpad/board-J`). Bitstream banked:
+`/var/tmp/ooo2_166MHz_3351a3d3_ipc_altspread.bit`.** So the branch is ready to fast-forward
+onto main when its +4.4% is wanted; the choice is only whether to take the thinner timing
+margin (+0.047 against I's +0.082). Before the fixes: build G (`d8108049`, AltSpread) routes at -0.031 with 14 failing
 and closes at **+0.026 / 0 failing** after post-route phys_opt; census 534 endpoints under
 +0.35 (F: 78), worst family `m_csr_func_reg -> ps_out` at +0.026 and fpnew-internal at
 +0.045. Thinner than F, as the new terms on the port grant predicted; it closes. Bitstream
