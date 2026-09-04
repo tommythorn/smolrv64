@@ -228,8 +228,13 @@ module ooo2_lsu
    // FSM's own access, and complete on their own), and the request is never withdrawn under
    // the walker by the FSM leaving S_IDLE -- which was the restart hazard the old gating
    // guarded against from the other side. The early START is still an FSM matter (xl_early).
+   // An FSM-starting request likewise ASKS the MMU whenever it waits in S_IDLE; the port's
+   // grant decides only whether it may START this cycle (xl_ok_f below). Gating the request
+   // itself on ~pt_start put the grant inside `fault`, and `fault` is M's completion: the
+   // 2026-09-03 build after the translate-only cut still had 1632 near-critical endpoints
+   // starting at u_lq/sqt_reg, all through pt_start -> xl_f -> fault -> lsu_done -> m_done.
    wire        xl_x     = req_valid & req_xlate;
-   wire        xl_f     = xl_want & ~req_xlate & ~pt_start;
+   wire        xl_f     = xl_want & ~req_xlate;
 
    // The request the FSM actually sees. In S_IDLE the selector is pt_start (src_pt still
    // holds the PREVIOUS access's source and would be stale); once running it is src_pt.
@@ -287,7 +292,7 @@ module ooo2_lsu
    assign fault_tval  = req_vaddr;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
-   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage;
+   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage & ~pt_start;
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
    wire xo_ok    = xl_x & t_ok & ~t_fault_raw & ~xpage;
    // NO disambiguation here any more. ooo2_lq owns the ordering test, against a REGISTERED

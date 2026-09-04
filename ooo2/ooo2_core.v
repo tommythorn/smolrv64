@@ -1423,6 +1423,7 @@ module ooo2_core
 
    // external (non-system-op) traps: fetch fault, illegal instruction, data fault
    wire        xtrap_v     = m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt));
+   wire        m_done_red;                // M's done with the LSU arm removed; defined with redirect
    wire [3:0]  xtrap_cause = m_fault  ? m_fault_cause
                            : m_ill_eff? 4'd2                     // illegal instruction
                            :            m_lsu_fc;
@@ -1576,7 +1577,10 @@ module ooo2_core
       // ungated effect applies EARLY (before the op is the ROB head) and then AGAIN on every
       // stalled cycle. That is what put the machine in supervisor mode one instruction ahead
       // of the reference, at the paging transition.
-      .xtrap_v(xtrap_v & m_done), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
+      // m_done_red, not m_done: a trap request is never a live memory completion (a data
+      // fault reaches here latched), and csr_file's redir_valid is combinational in this
+      // input -- with m_done here the LSU's whole done sat inside csr_redir_v -> redirect.
+      .xtrap_v(xtrap_v & m_done_red), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0),
       .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
@@ -1732,12 +1736,16 @@ module ooo2_core
                         : m_mem_op            ? 1'b0
                         : m_md_op             ? (md_div ? div_done : mul_done)
                         :                       1'b1;
-   wire m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
+   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
    assign redirect = m_valid & m_done_red & (csr_red | m_redirect | m_is_fencei);
    wire   redirect_ref = m_valid & m_done & (csr_red | m_redirect | m_is_fencei);
-   always @(posedge clk) if (!reset && (redirect != redirect_ref))
-      $fatal(1, "ooo2_core: redirect from the non-memory done disagrees with m_done (%b vs %b)",
-             redirect, redirect_ref);
+   always @(posedge clk) if (!reset) begin
+      if (redirect != redirect_ref)
+         $fatal(1, "ooo2_core: redirect from the non-memory done disagrees with m_done (%b vs %b)",
+                redirect, redirect_ref);
+      if ((xtrap_v & m_done_red) != (xtrap_v & m_done))
+         $fatal(1, "ooo2_core: trap request from the non-memory done disagrees with m_done");
+   end
 
    // ---- EARLY FRONTEND RESTART -------------------------------------------------------
    // On a mispredict, do NOT wait to become ROB head before refetching. Note the event,
