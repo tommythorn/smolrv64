@@ -1310,7 +1310,11 @@ module rv_cache #(
    // accesses into two aligned ones, the D$ must never be asked to span. If this ever
    // fires the experiment is invalid -- the span path is still live. The I$ is exempt:
    // instruction fetch legitimately spans lines for a misaligned 128-bit window.
-   always @(posedge clk) if (!reset && (WRITABLE != 0) && r_span)
+   // ...on an ACCEPTED request: r_* are captured every idle cycle from whatever is at the
+   // door (1271c96d), and a device store's unaligned address on wr_addr looks like a span
+   // while the cache idles. A request is in S_CHECK once, in each phase, so that is where
+   // the check belongs (it fired on a PLIC store at offset 0x3c, 2026-09-04).
+   always @(posedge clk) if (!reset && (WRITABLE != 0) && (st == S_CHECK) && r_span)
       $fatal(1, "[cache id=%0d] NO-SPAN VIOLATED: D$ saw a spanning request addr=%h", PERF_ID, r_addr);
 
    // SPAN-LOW-STALE: the exposure this fork actually has. A line-crossing store writes
