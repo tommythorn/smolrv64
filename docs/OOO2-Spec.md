@@ -1671,6 +1671,28 @@ replayed on squash, and introduces a race between the replay and the ROB head ad
 Deferred deliberately: the first item here that makes an otherwise simple design
 complicated, and it must not cost frequency.
 
-### P8 -- stores and AMOs still block M
+### P8 -- stores and AMOs still block M -- and the STORE QUEUE is the measured wall
 
-Unmeasured in isolation. Listed so it is not forgotten, not because it is next.
+Stores no longer block M (they translate and leave, §8); what they block is DISPATCH, by
+filling the queue: >= 16 M of 60 M boot cycles held on `sq_d_ready` at `DDR_LAT`=4 and at
+80, mean occupancy 3.89 of 4 (P0's `SB-WHERE2` table, 2026-09-04). This is now the largest
+single stall in the design and the next IPC item.
+
+**Measured, `workloads/stbench` (L1-resident, `ipc/multi-loads`, 2026-09-04):**
+
+| loop | cyc/op | insn/op | note |
+|---|---:|---:|---|
+| 8 independent stores per iteration, different lines | **5.88** | 1.88 | the drain rate of `ooo2_sq`; loads do 2.25 (ldbench) |
+| 4 stores + 4 loads, different lines (the boot's 1:1) | 4.50 | 2.38 | 9.0 cycles per store+load pair |
+| store then load of the SAME word, 4 pairs/iteration | 11.75 | 4.75 | `ST_MEM` 7.00 per pair: the load waits for the store to commit |
+
+So a store that HITS costs the port ~6 cycles: it leaves the queue only at the ROB head,
+the LSU parks in `S_ST` until `mem_wready`, and the cache takes the write as a solo request
+(`S_IDLE -> S_CHECK -> S_FIN -> ack`) with nothing accepted meanwhile. A queue of four at
+six cycles each is what SB-WHERE2 sees full. The shape of the fix is the one the loads
+just took: the store leaves the queue when the cache ACCEPTS the write, not when it
+completes, and the cache takes a write under a fill (a write is solo today because it
+shares the fill machine's window registers, §8) and pipelines it behind the next lookup.
+The hazard that comes with it -- a load to a line whose write is still in the cache's
+pipeline -- is a one-entry compare, and the alias matrix in `ooo2_lq` already holds a load
+behind an older store in the QUEUE; what moves is where "committed" is decided.
