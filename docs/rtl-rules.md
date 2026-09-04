@@ -239,6 +239,22 @@ one build.
 
 ---
 
+**B7. Every attribute an access needs travels with its queue entry; none is re-derived
+or hardwired downstream.** `ooo2_lq` carried a load's PA, size, sign and fp-ness but not
+its Svpbmt uncached bit, and `ooo2_core` fed the LSU's pre-translated port
+`pt_unc(pt_store ? sq_c_unc : 1'b0)`: a queued load was cacheable by construction. A load
+that took the early start read the MMU's bit directly and was right; the same load a few
+cycles later, queued behind a live store, was cached. Linux's virtio rings are NC memory
+that a device writes behind the cache, so the guest read a stale used ring -- `virtio_net:
+id 0 is not a head!` -- on the board and nowhere else: the cosim's guest maps nothing NC, the
+riscv-tests never do, and the queue bench cannot know what the bit should have been. The
+defect was six days old (`cb028682`) and surfaced when the day's LSU changes shifted which
+loads got queued. The store queue had carried its own bit all along; the two entry formats
+should have been one list. When a request passes through a queue, diff the queue's entry
+against the request's port: every field on the port that the access consumes is on the
+entry, or the queue is a defect. There is no assertion for a value the design never had;
+the check is the diff, at review time.
+
 ## C. Cross-cutting predicates
 
 **C1. Computed once, applied at one site.**

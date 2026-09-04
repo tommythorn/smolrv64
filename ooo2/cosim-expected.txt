@@ -12,7 +12,16 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  4  14657366  0.5   # +0.32% from the D$ fill-machine split (aa0af4f): the lookup
+60000000  4  16025548  0.5   # +9.33% over the previous row, and NOT from one commit: the
+                              # 2026-09-03/04 core commits (translate-only pass off the port
+                              # grant, unit_busy after select, the sq snoop, latched faults,
+                              # ...) were each declared "bit-identical" against a binary that
+                              # did not contain them -- run-ooo2-cosim-linux.sh reused the
+                              # built model whenever BUILD was unset. Rebuilt from scratch at
+                              # c7e9051a (fresh model, lockstep clean at DDR_LAT=4, 80 and
+                              # 40+JIT 63) the number is this one. The stamp now hashes the
+                              # sources, so this cannot recur silently.
+                              # Previously 14657366: +0.32% from the D$ fill-machine split (aa0af4f): the lookup
                               # pipeline resolves a request while a line is fetched, so two
                               # can be in flight -- one in the pipeline, one in the MSHR.
                               # Small because the D$'s clients are the LSU and two page-table

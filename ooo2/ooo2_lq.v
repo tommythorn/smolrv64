@@ -73,6 +73,7 @@ module ooo2_lq
     input  wire [1:0]            a_size,
     input  wire                  a_signed,
     input  wire                  a_fp,
+    input  wire                  a_unc,       // Svpbmt NC/IO: decided by the translation, travels with the entry
 
     // ---- disambiguation: a BIT PER ENTRY, maintained by ooo2_sq -----------------------
     // The entries are exported so ooo2_sq can run the alias test where an ADDRESS ARRIVES
@@ -105,6 +106,7 @@ module ooo2_lq
     output wire [1:0]            x_size,
     output wire                  x_signed,
     output wire                  x_fp,
+    output wire                  x_unc,
     input  wire                  x_take,      // the LSU accepted it
 
     // ---- land: data back for an entry that was sent to memory ----
@@ -133,7 +135,14 @@ module ooo2_lq
    reg [NENT-1:0]        v, av;              // live / address known
    reg [PAW-1:0]         pa   [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
-   reg [NENT-1:0]        sgn, isfp;
+   // EVERY ATTRIBUTE THE ACCESS NEEDS TRAVELS WITH THE ENTRY. `unc` was missing: a queued
+   // load went to the LSU with the uncached bit hardwired to 0 (ooo2_core's pt_unc), so a
+   // Svpbmt NC load whose access came from the queue -- rather than the early start, which
+   // reads the MMU's bit directly -- was cached, the line stayed resident, and every later
+   // read of it hit stale data. Linux's virtio rings live in exactly such memory: "id 0 is
+   // not a head!" on the board, 2026-09-04, with no simulation able to see it (the cosim's
+   // guest maps nothing NC). The store queue had carried its own bit all along.
+   reg [NENT-1:0]        sgn, isfp, unc;
    reg [PBITS-1:0]       prd  [0:NENT-1];
    reg [5:0]             rdn  [0:NENT-1];
    reg [NENT-1:0]        rdv;
@@ -182,6 +191,7 @@ module ooo2_lq
    assign x_size  = sz[acc];
    assign x_signed= sgn[acc];
    assign x_fp    = isfp[acc];
+   assign x_unc   = unc[acc];
 
    // The landing entry's payload, selected by the tag the response carried.
    assign l_prd  = prd[l_idx];
@@ -211,7 +221,7 @@ module ooo2_lq
 
          if (a_v) begin
             pa[a_idx] <= a_pa;  sz[a_idx] <= a_size;
-            sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  av[a_idx] <= 1'b1;
+            sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  av[a_idx] <= 1'b1;
          end
          // Filled AND already gone. It cannot collide with x_take above: that one needs
          // av[acc], and a_sent is asserted only while b_ok says ~av[acc].

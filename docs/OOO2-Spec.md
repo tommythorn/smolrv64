@@ -578,6 +578,12 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   with M's completion for every plain load and store, and M's completion is the wakeup
   broadcast, the redirect and the hpm events: 1708 of the 3401 endpoints under +0.35 ns in
   that day's routed checkpoint started at `u_sq/v_reg` for this reason alone. Rule I9.
+- **A queued load carries everything its access needs**: PA, size, sign, fp-ness and the
+  Svpbmt uncached bit, all written into `ooo2_lq` at the translate pass. The uncached bit
+  was missing until 2026-09-04 and the pre-translated port hardwired it to 0 for loads, so
+  an NC load that went through the queue (rather than the early start) was cached: the
+  board's virtio rings read stale (`id 0 is not a head!`), and no simulation could see it.
+  Rule B7.
 - **A queued load's access is one cycle after its fill, unless nothing is ordering it.**
   `ooo2_lq` registers the address, then selects the oldest entry no older store can alias,
   then accesses; the SELECT cycle is what pays for the alias test. When no store older than

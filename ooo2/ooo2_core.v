@@ -914,7 +914,7 @@ module ooo2_core
    wire sq_ld_reorder = lq_x_take & sq_ld_older;
 
    // ------------------------------------------------------------------- LOAD QUEUE
-   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_l_rd_v, lq_b_ok;
+   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v, lq_b_ok;
    wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
    wire [55:0]         lq_x_pa;
    wire [1:0]          lq_x_size;
@@ -939,12 +939,12 @@ module ooo2_core
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_size(m_mem_size),
-      .a_signed(m_mem_signed), .a_fp(m_is_fp),
+      .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc),
       .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
-      .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_take(lq_x_take),
+      .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
       .occupancy(lq_occ), .flush(redirect));
@@ -1175,7 +1175,7 @@ module ooo2_core
       .pt_v(pt_v), .pt_store(pt_store),
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
-      .pt_unc(pt_store ? sq_c_unc : 1'b0), .pt_done(lsu_pt_done),
+      .pt_unc(pt_store ? sq_c_unc : lq_x_unc), .pt_done(lsu_pt_done),
       .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),

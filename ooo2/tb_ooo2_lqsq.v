@@ -30,7 +30,7 @@ module tb;
    reg [ROBB-1:0]   lq_d_rob=0;  reg [PBITS-1:0] lq_d_prd=0;  reg [5:0] lq_d_rd=0;  reg lq_d_rd_v=1;
    reg [IDXB-1:0]   lq_d_sqtag=0, lq_a_idx=0, lq_b_idx=0, lq_l_idx=0;
    reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0;
-   wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_l_rd_v;
+   wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v;
    wire [IDXB-1:0]  lq_d_idx, lq_x_idx, lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
    wire [PBITS-1:0] lq_l_prd;  wire [5:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
@@ -50,11 +50,11 @@ module tb;
       .d_alloc(lq_d_alloc),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
       .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_idx(lq_d_idx),
       .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_size(lq_a_size),
-      .a_signed(lq_a_signed),.a_fp(lq_a_fp),
+      .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(1'b0),
       .e_pa(e_pa),.e_size(e_size),.e_tag(e_tag),.e_av(e_av),.e_block(e_block),.x_block(lq_x_block),
       .q_tag(lq_q_tag),.b_idx(lq_b_idx),.b_ok(lq_b_ok),
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
-      .x_fp(lq_x_fp),.x_take(lq_x_take),
+      .x_fp(lq_x_fp),.x_unc(lq_x_unc),.x_take(lq_x_take),
       .l_v(lq_l_v),.l_idx(lq_l_idx),.l_prd(lq_l_prd),.l_rd(lq_l_rd),.l_rd_v(lq_l_rd_v),.l_rob(lq_l_rob),
       .l_pa(lq_l_pa),.occupancy(lq_occ),.flush(flush));
 

@@ -73,13 +73,23 @@ STAMP="obj_dir_ooo2_clinux/.config-stamp"
 # reuses a binary is exactly the one whose config you cannot see, and reading it back out of
 # .config-stamp after the fact is how you end up trusting a number you did not verify.
 echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>}"
-want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-}"
+# THE STAMP COVERS THE SOURCES TOO. Without this, a run with BUILD unset reused whatever
+# binary was there, and on 2026-09-04 a whole day of commits was declared "bit-identical"
+# against a model none of them had been compiled into -- every log said "building simmerv
+# cosim lib" and none said "building obj_dir_ooo2_clinux". A verdict from a binary that
+# does not contain the change is not a verdict. The hash is of every RTL file the model is
+# built from, so any edit forces the rebuild and BUILD=1 is only for a wiped/foreign tree.
+srchash=$(cat rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v \
+              ooo2_lsu.v rv_regfile.v $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v \
+              ../src/smolrv64_plic_arbiter.v ../src/smolrv64_cvfpu.sv tb_ooo2_linux.v \
+              ../src/probe_cosim.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
 need_build=0
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
    need_build=1
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
    need_build=1
-   echo "cosim config changed ($want) -> full rebuild"
+   echo "cosim config or sources changed ($want) -> full rebuild"
    rm -rf obj_dir_ooo2_clinux
 fi
 # Even on BUILD=1, a config difference means stale objects: wipe rather than trust make.
