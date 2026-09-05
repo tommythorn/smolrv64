@@ -130,7 +130,7 @@ complements.
 | `~rob_ready` | ROB full (16 entries) |
 | `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (policy is 8; 5 is the largest that closes timing) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
-| `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB has drained, and nothing dispatches behind it until it commits |
+| `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits |
 
 ### 3.3 M stalls — `m_done` low
 
@@ -158,6 +158,9 @@ latched or they are lost.
 | interrupt injection | `irq_inject`, a solo SYSTEM pseudo-op that traps in M | full refill |
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
+
+A restart drops the store queue's uncommitted tail only: stores the ROB has committed at
+the irrevocable pointer (§6) are architecturally done and drain after the flush.
 
 ---
 
@@ -265,6 +268,25 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 - Squash is **pointer-only**; there is nothing to walk.
 - `noret` exists because an injected `OP_IRQ` can commit with its trap not firing, and
   `minstret` must not count an instruction that architecturally does not exist.
+
+**The irrevocable pointer (`irr`, 2026-09-04).** A second pointer walks forward from the
+head, one entry per cycle, over entries that are done (with the head's write-forward) and
+stops at the first that is not. In this core every op that can restart the machine -- a
+mispredicted branch, a trap, a system op, `fence.i`, the interrupt pseudo-op -- waits in M
+for the ROB head and is done only once it has completed there, so an entry that is done can
+no longer restart, and everything older than the pointer is settled. A store is COMMITTED
+when the pointer reaches its slot: `ooo2_core` fires `sq_k_take` for the store queue's first
+uncommitted entry when its ROB index equals `irr_idx` and the entry has address and data;
+that commit is the write that sets the store's `done`, the head retires it like any other
+op, and the queue drains it to the cache behind retirement (§8). The head therefore no
+longer sits on every store for the ~6 cycles the cache takes. The pointer is conservative
+on purpose: it stops at ANY not-done entry, a load in flight or an FP op included, although
+neither can restart -- letting a store commit past an older load that has not read yet
+needs a write-after-read check in the load queue (the store's drain must not pass the
+load's read), and that is the next step, measured separately. On a flush the pointer
+returns to the head (`head + 1` when the head commits in that cycle);
+`(irr - head) > (tail - head)` is fatal. Cost: one 5-bit pointer, one `done` lookup, one
+4-bit compare in `ooo2_core`.
 
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
@@ -426,7 +448,7 @@ when stage F hands it to the unit, so **an frm change must be an FP barrier** --
 neither overtake nor be overtaken by an FP op in flight.
 
 Today that holds for a reason that is not about FP at all: `decode_exec.v:158` sets
-`is_serialize` on *every* CSRRW/S/C, and `ser_block` drains the ROB before such an op
+`is_serialize` on *every* CSRRW/S/C, and `ser_block` drains the ROB and the store queue before such an op
 dispatches and lets nothing dispatch behind it until it commits. An FP op commits only once
 its result has landed, so a drained ROB means nothing is in flight.
 
@@ -566,8 +588,18 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 - **A plain store and a plain load leave M without touching memory.** Their M pass only
   TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
-  the committing store and the load queue, the store winning -- it is at the ROB head, so it
-  is unconditionally older and it frees the port immediately.
+  the draining store and the load queue, the store winning: a store drains only once the ROB
+  has COMMITTED it (§6, the irrevocable pointer), which means every older op is done, so it
+  is older than any load still queued and it frees the port immediately. The store queue is
+  thus SENIOR to retirement (2026-09-04): a committed store's ROB slot completes and retires
+  while its bytes are still in the queue, and the queue keeps the entry until the LSU drains
+  it (`c_take`). Two consequences, both asserted: a redirect flushes only the UNCOMMITTED
+  tail of the queue (`tailc <= kcc`; a committed store is architecturally done and survives),
+  and "every older store is visible" is no longer implied by the ROB head or by `rob_empty`
+  -- the serialization drain (`drained`), the CBO start in M (`m_cbo_wait`) and a load's
+  early start (`ld_older`) each name the queue (rule C5). For a younger load nothing
+  changes: an entry in the queue, committed or not, is a store whose bytes are not in the
+  cache yet, and the alias matrix holds the load behind it.
 - **The translate-only pass does not arbitrate, and does not wait for the LSU's FSM.** It
   needs the MMU and nothing else, so `ooo2_lsu` presents it (`xl_x = req_valid & req_xlate`)
   whatever the FSM is doing and whoever the pre-translated port granted this cycle; a walk it
@@ -745,6 +777,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent` | `ooo2_rob` | 16 | 16 | 256 | LUTRAM | 1W dispatch, 1R commit |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
+| `irr` | `ooo2_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
 | `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
@@ -861,7 +894,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 |
-| load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (72 directed checks) |
+| load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (82 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
@@ -1696,3 +1729,23 @@ shares the fill machine's window registers, §8) and pipelines it behind the nex
 The hazard that comes with it -- a load to a line whose write is still in the cache's
 pipeline -- is a one-entry compare, and the alias matrix in `ooo2_lq` already holds a load
 behind an older store in the QUEUE; what moves is where "committed" is decided.
+
+**2026-09-04, the senior store queue (item 3 of `docs/PLAN-2026-09-05-ipc.md`), the same
+bench on main, before and after:**
+
+| loop | before | after |
+|---|---:|---:|
+| 8 independent stores per iteration | 5.88 | **5.00** |
+| 4 stores + 4 loads, different lines | 4.88 | **4.50** |
+| store then load of the SAME word | 11.75 | 11.75 |
+
+The 0.88 cycles per store was the ROB head: a store's slot completed only when the cache
+took its write, so every store held the head for the cache's write and the window filled
+behind it. Now the ROB's irrevocable pointer (§6) commits the store as soon as everything
+older is done, the head retires it, and the queue drains it behind retirement. The 5.00
+that remains is the cache's own write cost -- accept, `S_CHECK`, `S_FIN`, the registered
+ack, the LSU's return to idle -- which is the next item. FWD is unchanged because the
+dependent load waits for the drain either way; a first version that released a store one
+cycle before it could drain measured 12.75 there, which is why a release at the head
+drains in its own cycle. tiny128 boot at 60 M cycles: +0.22% retires (11,604,336): the
+boot's store stall is the cache's write path (SOLO writes, none under a fill), not the head.

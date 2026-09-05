@@ -38,11 +38,12 @@ module tb;
    wire [NENT*PAW-1:0] e_pa;  wire [NENT*2-1:0] e_size;  wire [NENT*(IDXB+1)-1:0] e_tag;
    wire [NENT-1:0]  e_av, e_block;
    // ---- store queue ports ----
-   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0;
+   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
-   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older;
+   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
+   wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
 
@@ -69,6 +70,7 @@ module tb;
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
+      .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.k_take(sq_k_take),
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
       .l_block(e_block),.ld_tag(lq_q_tag),.ld_older(ld_older),
@@ -96,7 +98,11 @@ module tb;
    endtask
    task take;   begin lq_x_take=1; step; lq_x_take=0; #1; end endtask
    task land(input [IDXB-1:0] ix); begin lq_l_v=1; lq_l_idx=ix; step; lq_l_v=0; #1; end endtask
-   task commit; begin sq_c_take=1; step; sq_c_take=0; #1; end endtask
+   // commit = the ROB RELEASES the first unreleased entry (k_take), then the LSU DRAINS the
+   // head (c_take): two events since the senior store queue (plan item 3)
+   task rob_release; begin sq_k_take=1; step; sq_k_take=0; #1; end endtask
+   task lsu_drain; begin sq_c_take=1; step; sq_c_take=0; #1; end endtask
+   task commit;  begin rob_release; lsu_drain; end endtask
    task drain;  begin flush=1; step; flush=0; #1; end endtask
 
    initial begin
@@ -133,7 +139,7 @@ module tb;
       store_addr(S0, 56'h2000, 2, 1'b1, 64'h22);    // W at 0x2000..0x2003, data present
       load_addr(L0, 56'h2002, 1);                    // H at 0x2002: overlaps (row update)
       chk("3 overlap blocks", !lq_x_v && lq_x_block, 1'b1);
-      chk("3 the store can commit", sq_c_v && sq_c_data==64'h22, 1'b1);
+      chk("3 the store can commit", sq_kc_v && sq_c_data==64'h22, 1'b1);
       commit;
       chk("3 commit releases", lq_x_v, 1'b1);
       chk("3 no older store now", ld_older, 1'b0);
@@ -167,8 +173,8 @@ module tb;
       // ---- 5. a store commits in the SAME cycle a load's address arrives ----
       disp_store(9'd7, 4'd14, S0);  disp_load(9'd47, 4'd15, L0);
       store_addr(S0, 56'h2000, 2, 1'b1, 64'h55);
-      chk("5 head ready", sq_c_v, 1'b1);
-      sq_c_take=1; lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step; sq_c_take=0; lq_a_v=0; #1;
+      chk("5 head ready", sq_kc_v, 1'b1);
+      rob_release; sq_c_take=1; lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step; sq_c_take=0; lq_a_v=0; #1;
       chk("5 the committed store no longer blocks the load", lq_x_v, 1'b1);
       chk("5 no older store", ld_older, 1'b0);
       take; land(L0);
@@ -184,38 +190,38 @@ module tb;
       // ---- 7. the store queue's data path ----
       disp_store(9'd7, 4'd3, S0);
       store_addr(S0, 56'h2000, 2, 1'b0, 64'h0);      // address, data pending on p7
-      chk("7 no commit without data", sq_c_v, 1'b0);
+      chk("7 no commit without data", sq_kc_v, 1'b0);
       // the writeback lands on port 1 at this edge...
       wb_v=3'b010; wb_preg[1*PBITS +: PBITS]=9'd7; wb_data[1*64 +: 64]=64'hDEAD_BEEF; step;
       // ...and the bus MOVES the very next cycle: the bypass must read the copy, not the bus
       wb_v=0; wb_data[1*64 +: 64]=64'h0BAD_0BAD; #1;
-      chk("7 committable the cycle after the writeback", sq_c_v, 1'b1);
+      chk("7 committable the cycle after the writeback", sq_kc_v, 1'b1);
       chk("7 data through the landing bypass", sq_c_data==64'hDEAD_BEEF, 1'b1);
       step; #1;
-      chk("7 data from the entry a cycle later", sq_c_v && sq_c_data==64'hDEAD_BEEF, 1'b1);
+      chk("7 data from the entry a cycle later", sq_kc_v && sq_c_data==64'hDEAD_BEEF, 1'b1);
       chk("7 address", sq_c_addr==56'h2000, 1'b1);
       commit; chk("7 drained", sq_occ==0, 1'b1);
       // in-order commit: allocate two, fill the SECOND first
       disp_store(9'd0, 4'd4, S0); disp_store(9'd0, 4'd5, S1);
       store_addr(S1, 56'h4000, 2, 1'b1, 64'h22);
-      chk("7 head not ready -> no commit", sq_c_v, 1'b0);
+      chk("7 head not ready -> no commit", sq_kc_v, 1'b0);
       store_addr(S0, 56'h3000, 2, 1'b1, 64'h11);
-      chk("7 head ready -> commits first", sq_c_v && sq_c_data==64'h11, 1'b1);
-      commit; chk("7 then the second", sq_c_v && sq_c_data==64'h22, 1'b1);
+      chk("7 head ready -> commits first", sq_kc_v && sq_c_data==64'h11, 1'b1);
+      commit; chk("7 then the second", sq_kc_v && sq_c_data==64'h22, 1'b1);
       commit; chk("7 drained", sq_occ==0, 1'b1);
       // the early writeback: data BEFORE the address (rule A5 regression)
       disp_store(9'd5, 4'd6, S0);
       wb_v=3'b001; wb_preg[0 +: PBITS]=9'd5; wb_data[0 +: 64]=64'hFEED_FACE; step; wb_v=0; #1;
-      chk("7 no commit without an address", sq_c_v, 1'b0);
+      chk("7 no commit without an address", sq_kc_v, 1'b0);
       store_addr(S0, 56'h8000, 3, 1'b0, 64'h0);
-      chk("7 early writeback captured", sq_c_v && sq_c_data==64'hFEED_FACE, 1'b1);
+      chk("7 early writeback captured", sq_kc_v && sq_c_data==64'hFEED_FACE, 1'b1);
       commit;
       // ...and in the ALLOCATE cycle itself
       sq_d_dpreg=9'd6; sq_d_rob=4'd7; sq_d_alloc=1; S0=sq_d_idx;
       wb_v=3'b100; wb_preg[2*PBITS +: PBITS]=9'd6; wb_data[2*64 +: 64]=64'hC0FFEE; step;
       sq_d_alloc=0; wb_v=0; #1;
       store_addr(S0, 56'h9000, 3, 1'b0, 64'h0);
-      chk("7 same-cycle writeback captured", sq_c_v && sq_c_data==64'hC0FFEE, 1'b1);
+      chk("7 same-cycle writeback captured", sq_kc_v && sq_c_data==64'hC0FFEE, 1'b1);
       commit;
       chk("7 full buffer refuses", sq_d_ready, 1'b1);
       sq_d_alloc=1; repeat (NENT) step; sq_d_alloc=0; #1;
@@ -304,6 +310,33 @@ module tb;
       lq_a_signed=0; lq_a_fp=0; lq_a_unc=0; lq_a_size=2;
       take; land(L0);
       chk("10 drained", lq_occ==0, 1'b1);
+
+      // ---- 11. a FLUSH keeps the released stores and drops the rest (the senior queue) ----
+      disp_store(9'd7, 4'd14, S0); disp_store(9'd7, 4'd15, S1);
+      store_addr(S0, 56'hC000, 2, 1'b1, 64'hAA); store_addr(S1, 56'hC100, 2, 1'b1, 64'hBB);
+      chk("11 nothing drains before a release", sq_c_v, 1'b0);
+      chk("11 the first is releasable", sq_kc_v && sq_kc_addr==56'hC000, 1'b1);
+      rob_release;
+      chk("11 released head drains, the second is next to release", sq_c_v && sq_c_data==64'hAA && sq_kc_v && sq_kc_addr==56'hC100, 1'b1);
+      lsu_drain;                                    // S0 gone; S1 next to release
+      chk("11 drained one", sq_occ==1 && !sq_c_v && sq_kc_v, 1'b1);
+      rob_release;                                      // S1 released
+      disp_store(9'd7, 4'd0, S2);                   // a younger, unreleased store
+      store_addr(S2, 56'hC200, 2, 1'b1, 64'hCC);
+      chk("11 two live, one released", sq_occ==2 && sq_c_v && sq_c_data==64'hBB, 1'b1);
+      flush=1; step; flush=0; #1;
+      chk("11 flush keeps the released store, drops the unreleased", sq_occ==1 && sq_c_v && sq_c_data==64'hBB && !sq_kc_v, 1'b1);
+      lsu_drain;
+      chk("11 drained after the flush", sq_occ==0 && lq_occ==0, 1'b1);
+
+      // ---- 12. released and drained in the SAME cycle: the release costs no cycle ----
+      disp_store(9'd7, 4'd1, S0);
+      store_addr(S0, 56'hD000, 2, 1'b1, 64'hDD);
+      chk("12 releasable, not draining", sq_kc_v && !sq_c_v, 1'b1);
+      sq_k_take=1; #1;
+      chk("12 drains in the release cycle", sq_c_v && sq_c_data==64'hDD, 1'b1);
+      sq_c_take=1; step; sq_k_take=0; sq_c_take=0; #1;
+      chk("12 gone, nothing left to release", sq_occ==0 && !sq_c_v && !sq_kc_v, 1'b1);
 
       $display("---- tb_ooo2_lqsq pass=%0d fail=%0d", pass, fail);
       if (fail != 0) begin $display("LQSQ-TB FAIL"); $fatal(1, "tb_ooo2_lqsq FAILED"); end

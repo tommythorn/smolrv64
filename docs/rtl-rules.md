@@ -299,6 +299,21 @@ needed counters plus external-IRQ load to reproduce, which is why 15 minutes of
 plain NFS traffic never found it. Audit every CSR whose read differs from its
 stored value.
 
+**C5. "Everything older is visible" is the ROB empty AND the store queue empty.**
+Since the senior store queue (2026-09-04) a store RETIRES when the ROB's
+irrevocable pointer releases it and the LSU drains it to the cache later, so an
+empty ROB no longer means its stores have reached memory, and "at the ROB head"
+no longer means "every older store has drained". Every precondition that used
+either as a proxy for visibility names the queue explicitly, at one site each:
+the serialization drain (`drained = rob_empty & sq_occ == 0`, which every fence,
+fence.i, sfence.vma, AMO/LR/SC, CSR and trap op waits on), the CBO start in M
+(`m_cbo_wait`: memory ops issue in order, so a non-empty queue IS an older store),
+and a load's early start (`ld_older`). Before the change a CBO could already pass
+an older store that was not yet at the head; the senior queue widened that to
+retired stores, which is when it was found. A new M-executed access that reads or
+maintains memory routes through one of these three gates or adds its own by name;
+it never assumes the head or `rob_empty` ordered it.
+
 ---
 
 ## D. Staleness

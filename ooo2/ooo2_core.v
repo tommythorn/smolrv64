@@ -891,7 +891,13 @@ module ooo2_core
    wire d_st_alloc = rn_valid & d_st_nb;
    // The head entry may go to memory only once it IS the ROB head: that is the point at
    // which no older instruction can still trap and no redirect can still squash it.
-   wire sq_go     = sq_c_v & (sq_c_rob == rob_head_idx);
+   // A committed store drains whenever the port is free: it was released by the ROB's
+   // irrevocable pointer (sq_k_take below), not by reaching the head, so the head no
+   // longer sits on every store for the ~6 cycles the cache takes.
+   wire sq_go     = sq_c_v;
+   wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [55:0] sq_kc_addr;
+   wire [ROB_IDXB-1:0] rob_irr_idx;  wire rob_irr_v;
+   wire sq_k_take = sq_kc_v & rob_irr_v & (sq_kc_rob == rob_irr_idx);
    wire sq_c_take = lsu_pt_done & lsu_pt_is_store;
 
    ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
@@ -904,6 +910,7 @@ module ooo2_core
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
+      .kc_v(sq_kc_v), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .k_take(sq_k_take),
       // THE ALIAS TEST LIVES HERE, not at issue: ooo2_lq exports its entries, ooo2_sq keeps
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
       .l_pa(lq_e_pa), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
@@ -1007,12 +1014,13 @@ module ooo2_core
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .w_v({sq_c_take, fp_land, iss_alu, rob_w_valid}),
-      .w_ix({sq_c_rob, ft_rob, i_rob, rob_w_idx}),
+      .w_v({sq_k_take, fp_land, iss_alu, rob_w_valid}),
+      .w_ix({sq_kc_rob, ft_rob, i_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
-      .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx));
+      .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
+      .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
    // and by construction: it said the ROB's commit equals what M would have done in the same
@@ -1164,13 +1172,20 @@ module ooo2_core
    wire [3:0]  lsu_fault_cause;
    wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
 
+   // A CBO executes from M and is not serialized (cbo.zero clears every page the kernel
+   // hands out), so it would start while an older store still sits in the queue -- and with
+   // the senior store queue that includes stores already RETIRED. Memory ops issue in order,
+   // so every queue entry is older than the op in M and "no older store pending" is the
+   // queue being empty. The other M-executed accesses are covered elsewhere: AMO/LR/SC are
+   // serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
+   wire m_cbo_wait = m_is_cbo & (sq_occ != {(SQ_IB+1){1'b0}});
    ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
      (.clk(clk), .reset(reset),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
       // ld_land or the ROB head) the request would still be presented, the LSU would fall
       // back to S_IDLE, and xl_req would start the very same access A SECOND TIME -- a store
       // written twice. mul/div are already safe this way via md_started; the LSU was not.
-      .req_valid(m_mem_op & ~m_unit_done_q),
+      .req_valid(m_mem_op & ~m_unit_done_q & ~m_cbo_wait),
       // A plain store TRANSLATES here and goes no further: its address lands in ooo2_sq and
       // memory is written later, from the buffer's commit port below.
       // Loads AND buffered stores translate here and go no further; the access itself
@@ -1986,11 +2001,12 @@ module ooo2_core
          cs_mkind[m_rob_idx] <= (m_mem_op & ~m_st_nb) ? lsu_cos_kind : 2'd0;
          cs_mpa[m_rob_idx]   <= m_st_nb ? 56'd0 : lsu_cos_pa;
       end
-      // The buffered store's real memory effect, in the cycle the buffer writes memory.
-      // lsu_cos_* were latched from the commit port's own S_IDLE, so they are this store's.
-      if (sq_c_take) begin
-         cs_mkind[sq_c_rob] <= lsu_cos_kind;
-         cs_mpa[sq_c_rob]   <= lsu_cos_pa;
+      // The buffered store's real memory effect, recorded when the ROB RELEASES it: from
+      // then on the store may retire before the LSU drains it, so the queue's own PA is
+      // the source, not lsu_cos_* (which would name whatever the port did last).
+      if (sq_k_take) begin
+         cs_mkind[sq_kc_rob] <= 2'd2;
+         cs_mpa[sq_kc_rob]   <= sq_kc_addr;
       end
       // A LANDING LOAD'S EFFECT COMES FROM THE ENTRY THAT OWNS IT. This read lsu_cos_*,
       // justified as "they are still this load's values when it lands: the LSU is
@@ -2023,7 +2039,7 @@ module ooo2_core
    wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
-   wire        cs_hit_sq  = sq_c_take & (sq_c_rob == rob_head_idx);
+   wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_sq ? 64'd0          // a store writes no register
@@ -2031,12 +2047,12 @@ module ooo2_core
                           : cs_hit_alu ? x_result
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
-   wire [1:0]  cs_mkind_h = cs_hit_sq ? lsu_cos_kind
+   wire [1:0]  cs_mkind_h = cs_hit_sq ? 2'd2
                           : cs_hit_ld ? 2'd1
                           : cs_hit_alu ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
-   wire [55:0] cs_mpa_h   = cs_hit_sq ? lsu_cos_pa
+   wire [55:0] cs_mpa_h   = cs_hit_sq ? sq_kc_addr
                           : cs_hit_ld ? lq_l_pa
                           : cs_hit_alu ? 56'd0
                           : cs_hit_fp ? 56'd0
@@ -2218,15 +2234,21 @@ module ooo2_core
    // directly and emptied when it handed over. Dispatch is decoupled now, so the property
    // that actually matters is that a serializing op is ALONE IN FLIGHT: it may not dispatch
    // until the window has drained, and nothing may dispatch behind it until it has
-   // committed. `rob_empty` is the drain test, and it is exact -- nothing dispatches while
-   // ser_inflight, so the window can only shrink.
+   // committed. `drained` is the drain test, and it is exact -- nothing dispatches while
+   // ser_inflight, so the window can only shrink. It is the ROB empty AND the store queue
+   // empty: since the senior store queue (2026-09-04) a store retires when the ROB releases
+   // it and the LSU drains it later, so an empty ROB no longer means its stores are in the
+   // cache. A fence, fence.i, sfence.vma, AMO, CSR or trap op therefore waits for the queue
+   // exactly as it did when every store drained at the head -- the ONE site for that
+   // precondition (docs/rtl-rules.md C5).
+   wire drained = rob_empty & (sq_occ == {(SQ_IB+1){1'b0}});
    reg  ser_inflight;
    initial ser_inflight = 1'b0;
    always @(posedge clk)
       if (reset | redirect)               ser_inflight <= 1'b0;
       else if (rn_valid & d_is_serialize) ser_inflight <= 1'b1;
-      else if (rob_empty)                 ser_inflight <= 1'b0;
-   wire ser_block = ser_inflight | (d_valid & d_is_serialize & ~rob_empty);
+      else if (drained)                   ser_inflight <= 1'b0;
+   wire ser_block = ser_inflight | (d_valid & d_is_serialize & ~drained);
 
    // An instruction may not enter M while it reads the in-flight load's destination. Compared
    // as TAGS, not through a pending bit per physical register: NPHYS is 320, so a pending

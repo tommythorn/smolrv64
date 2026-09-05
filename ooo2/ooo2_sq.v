@@ -70,6 +70,17 @@ module ooo2_sq
     output wire [1:0]            c_size,
     output wire                  c_unc,
     input  wire                  c_take,
+    // ---- the RELEASE: the ROB says the first uncommitted entry can no longer be undone ----
+    // A store is COMMITTED when the ROB's irrevocable pointer reaches it (ooo2_core computes
+    // k_take = kc_v & (kc_rob == rob_irr_idx)); its ROB slot completes then, the head retires
+    // it, and the entry stays here until the LSU DRAINS it (c_take). Committed entries survive
+    // a flush -- they are architecturally done -- so the flush keeps them and drops from the
+    // first uncommitted entry. For a younger load nothing changes: an entry in the queue,
+    // committed or not, is a store whose bytes are not in the cache yet.
+    output wire                  kc_v,        // the first uncommitted entry exists and has address + data
+    output wire [ROBB-1:0]       kc_rob,
+    output wire [PAW-1:0]        kc_addr,     // ...its PA, for the cosim's retire record
+    input  wire                  k_take,      // commit it
 
     // ---- load disambiguation: a CONFLICT MATRIX, not a compare at issue ----------------
     // The alias test runs where an ADDRESS ARRIVES -- one arriving store against every
@@ -108,6 +119,9 @@ module ooo2_sq
    reg [NENT-1:0]        unc;
    reg [PBITS-1:0]       dpr  [0:NENT-1];
    reg [ROBB-1:0]        rob  [0:NENT-1];
+   reg [NENT-1:0]        cmt;                // committed (released by the ROB), draining
+   reg [IDXB:0]          kcc;                // the first uncommitted entry; head <= kc <= tail
+   wire [IDXB-1:0]       kc = kcc[IDXB-1:0];
    // THE SEQNO IS ONE BIT WIDER THAN THE INDEX. A load captures the tail at dispatch and
    // "older" is (slot - head) < (tag - head). With tag and head both IDXB bits, a FULL queue
    // (tail == head) hands the load a distance of ZERO: every live store is older and the
@@ -141,8 +155,9 @@ module ooo2_sq
    initial begin ld_v = {NENT{1'b0}}; for (li2 = 0; li2 < NENT; li2 = li2 + 1) ld_w[li2] = 2'd0; end
    initial if (NWB > 4) $fatal(1, "ooo2_sq: ld_w holds a port index of at most 2 bits");
 
-   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}};
-                 headc = {(IDXB+1){1'b0}}; tailc = {(IDXB+1){1'b0}}; cnt = {(IDXB+1){1'b0}}; end
+   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}}; cmt = {NENT{1'b0}};
+                 headc = {(IDXB+1){1'b0}}; tailc = {(IDXB+1){1'b0}}; kcc = {(IDXB+1){1'b0}};
+                 cnt = {(IDXB+1){1'b0}}; end
 
    assign d_ready   = (cnt != NENT[IDXB:0]);
    assign d_idx     = tail;
@@ -152,7 +167,14 @@ module ooo2_sq
    // c_v says the head is READY (address and data present). Committing in program order
    // is the core's job: it takes the entry only when c_rob is the ROB head, so a store
    // reaches memory exactly where the cosim's retire stream expects it.
-   assign c_v    = v[head] & av[head] & dv[head];
+   // Only a committed store drains -- including one committed THIS cycle at the head, so the
+   // release costs no cycle on a store the LSU is waiting for (stbench FWD: 12.75 -> 11.75
+   // cycles per store-load pair without it). k_take is a compare of registered values in
+   // ooo2_core, the same shape as the old head-index compare this replaced.
+   assign c_v    = v[head] & av[head] & dv[head] & (cmt[head] | (k_take & (kcc == headc)));
+   assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc];
+   assign kc_rob = rob[kc];
+   assign kc_addr= addr[kc];
    assign c_rob  = rob[head];
    assign c_addr = addr[head];
    // the landing bypass: the cycle dv rose, the bytes are still in wb_q
@@ -229,10 +251,11 @@ module ooo2_sq
    assign ld_older = |oldv;
 
    always @(posedge clk) begin
-      if (reset | flush) begin
-         v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}};
+      if (reset) begin
+         v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}}; cmt <= {NENT{1'b0}};
          ld_v <= {NENT{1'b0}};          // a landing noted for a flushed entry is nobody's
-         headc <= {(IDXB+1){1'b0}}; tailc <= {(IDXB+1){1'b0}}; cnt <= {(IDXB+1){1'b0}};
+         headc <= {(IDXB+1){1'b0}}; tailc <= {(IDXB+1){1'b0}}; kcc <= {(IDXB+1){1'b0}};
+         cnt <= {(IDXB+1){1'b0}};
          for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
       end else begin
          // A STORE's address arrives: its COLUMN, against every queued load.
@@ -249,19 +272,36 @@ module ooo2_sq
                conf[l_fill_ix][k] <= (a_v && (k[IDXB-1:0] == a_idx))
                                    ? ovl_ab(l_fill_pa, l_fill_size, a_addr, a_size)
                                    : (av[k] & ovl_ab(l_fill_pa, l_fill_size, addr[k], sz[k]));
-         // commit the head
+         // commit the first uncommitted entry (the ROB released it)
+         if (k_take) begin
+            cmt[kc] <= 1'b1;
+            kcc <= kcc + 1'b1;
+         end
+         // drain the head (the LSU took it) -- AFTER the commit arm: when both name the same
+         // entry (released and drained in one cycle) the clear must win
          if (c_v & c_take) begin
-            v[head] <= 1'b0; av[head] <= 1'b0; dv[head] <= 1'b0;
+            v[head] <= 1'b0; av[head] <= 1'b0; dv[head] <= 1'b0; cmt[head] <= 1'b0;
             headc <= headc + 1'b1;
          end
          // allocate at the tail
          if (d_alloc & d_ready) begin
-            v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0;
+            v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0; cmt[tail] <= 1'b0;
             rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;
             tailc <= tailc + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;
          else if (~(d_alloc & d_ready) & (c_v & c_take)) cnt <= cnt - 1'b1;
+         // A FLUSH KEEPS THE COMMITTED ENTRIES. They are the oldest, so the queue is cut at
+         // the first uncommitted one; a drain in this same cycle still counts (the arm above
+         // ran). Nothing allocates in a redirect cycle (asserted below).
+         if (flush) begin
+            for (k = 0; k < NENT; k = k + 1)
+               if (~cmt[k]) begin v[k] <= 1'b0; av[k] <= 1'b0; dv[k] <= 1'b0; end
+            ld_v  <= {NENT{1'b0}};
+            tailc <= kcc;
+            cnt   <= (kcc - headc) - {{IDXB{1'b0}}, (c_v & c_take)};
+            for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
+         end
 
          // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
@@ -324,7 +364,15 @@ module ooo2_sq
       if (a_v & ~a_data_v & ~dv[a_idx] & (dpr[a_idx] == {PBITS{1'b0}}))
          $fatal(1, "ooo2_sq: entry %0d has no data and no producer -- it can never commit", a_idx);
       if (c_take & ~c_v)
-         $fatal(1, "ooo2_sq: commit taken with no committable head");
+         $fatal(1, "ooo2_sq: drain taken with no committed, ready head");
+      if (k_take & ~kc_v)
+         $fatal(1, "ooo2_sq: commit with no uncommitted, ready entry");
+      if (k_take & flush)
+         $fatal(1, "ooo2_sq: a store committed in a redirect cycle (the redirecting op is at the irrevocable point)");
+      if (flush & d_alloc)
+         $fatal(1, "ooo2_sq: allocation in a redirect cycle");
+      if ((kcc - headc) > cnt)
+         $fatal(1, "ooo2_sq: committed count %0d exceeds occupancy %0d", kcc - headc, cnt);
       // The landing bypass is exact only if nothing else writes the entry's data in the one
       // cycle the bytes are in flight: the address-time capture is guarded by ~dv, and dv
       // rose with the note, so a collision here is a second producer for one physreg.

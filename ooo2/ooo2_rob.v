@@ -69,7 +69,16 @@ module ooo2_rob
     // Which slot is oldest. An instruction that does anything beyond writing its own
     // register -- trap, redirect -- may act only when it IS this slot, or it would squash an
     // older op still in flight ahead of it.
-    output wire [IDXB-1:0]  head_idx);
+    output wire [IDXB-1:0]  head_idx,
+    // THE IRREVOCABLE POINT: the oldest entry that is not done. In this core every op that
+    // can restart the machine -- a mispredicted branch, a trap, a system op, fence.i, the
+    // interrupt pseudo-op -- waits in M for the ROB head and sets `done` only when it has
+    // completed there, so an entry that is done can no longer restart, and everything older
+    // than the first not-done entry is settled. A store is committable exactly when this
+    // pointer reaches it (its own `done` is what the commit sets); it need not wait for the
+    // head, which used to sit on every store for the ~6 cycles the cache takes.
+    output wire [IDXB-1:0]  irr_idx,
+    output wire             irr_v);       // ...and that entry exists
 
    // {noret, rd, prd} and nothing else -- 16 bits/entry against 28. rd_v is `|prd`; the
    // destination SHARD is the top bits of prd (a physical register's shard is encoded in its
@@ -83,9 +92,10 @@ module ooo2_rob
    reg [EW-1:0]    ent [0:DEPTH-1];
    reg [DEPTH-1:0] v, done;                     // bulk-cleared on flush, so flops by necessity
    reg [IDXB:0]    head, tail;                  // one extra MSB: full and empty differ by it
+   reg [IDXB:0]    irr;                         // head <= irr <= tail, same width
    integer         ri, rj;
    initial begin
-      v = {DEPTH{1'b0}}; done = {DEPTH{1'b0}}; head = 0; tail = 0;
+      v = {DEPTH{1'b0}}; done = {DEPTH{1'b0}}; head = 0; tail = 0; irr = 0;
       for (ri = 0; ri < DEPTH; ri = ri + 1) ent[ri] = {EW{1'b0}};
    end
 
@@ -113,6 +123,12 @@ module ooo2_rob
       end
    endfunction
    wire head_done = v[hidx] & (done[hidx] | w_hits(hidx));
+   wire [IDXB-1:0] iidx = irr[IDXB-1:0];
+   assign irr_idx = iidx;
+   assign irr_v   = (irr != tail);
+   // one entry per cycle, with the same write-forward the head uses: the commit that sets a
+   // store's `done` this cycle moves the pointer past it next cycle
+   wire irr_done  = (irr != tail) & v[iidx] & (done[iidx] | w_hits(iidx));
 
    // c_kill: the head is trapping. It must NOT commit -- a trap does not write rd -- and the
    // redirect that follows flushes it, which returns its allocation through the free list's
@@ -144,6 +160,7 @@ module ooo2_rob
             v[hidx] <= 1'b0;
             head    <= head + 1'b1;
          end
+         if (irr_done) irr <= irr + 1'b1;
          // A flush kills everything YOUNGER than the entry committing this cycle -- the
          // redirecting instruction is itself older and must still commit. Ordered after the
          // commit arm above so the head's own retirement stands.
@@ -151,9 +168,15 @@ module ooo2_rob
             v    <= {DEPTH{1'b0}};
             done <= {DEPTH{1'b0}};
             tail <= do_commit ? (head + 1'b1) : head;
+            irr  <= do_commit ? (head + 1'b1) : head;
             if (do_commit) head <= head + 1'b1;
          end
       end
+   end
+   // The pointer never lags the head and never passes the tail (docs/rtl-rules.md A1).
+   always @(posedge clk) if (!reset) begin
+      if ((irr - head) > (tail - head))
+         $fatal(1, "ooo2_rob: the irrevocable pointer left [head, tail]: head=%0d irr=%0d tail=%0d", head, irr, tail);
    end
 
    // ---- invariants (always on: docs/rtl-rules.md A1) --------------------------------

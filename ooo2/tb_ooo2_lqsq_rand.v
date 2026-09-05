@@ -43,11 +43,12 @@ module tb;
    wire [NENT*PAW-1:0] e_pa;  wire [NENT*2-1:0] e_size;  wire [NENT*(IDXB+1)-1:0] e_tag;
    wire [NENT-1:0]  e_av, e_block;
    // ---- store queue ports ----
-   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0;
+   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
-   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older;
+   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
+   wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
 
@@ -72,6 +73,7 @@ module tb;
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
+      .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.k_take(sq_k_take),
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
       .l_block(e_block),.ld_tag(lq_q_tag),.ld_older(ld_older),
@@ -79,7 +81,10 @@ module tb;
 
    // ------------------------------------------------------------- the program-order model
    // st: 0 dispatched (no address) | 1 address known (store: uncommitted; load: waiting)
-   //     2 store committed / load in flight | 3 load landed | 4 dead (flushed)
+   //     2 store COMMITTED (released by the ROB, still in the queue) / load in flight
+   //     3 load landed | 4 dead (flushed) | 5 store DRAINED (the LSU took it)
+   // A committed store is still in the queue: younger loads that overlap it wait for the
+   // drain, and a flush keeps it. That is the senior store queue (plan item 3).
    localparam MAXOPS = 65536;
    reg           is_st [0:MAXOPS-1];
    reg [PAW-1:0] addr  [0:MAXOPS-1];
@@ -118,7 +123,7 @@ module tb;
    // an older store that is live in the queue (allocated, uncommitted, not dead)?
    function older_live(input integer o);
       integer k; begin older_live = 0;
-         for (k = 0; k < o; k = k + 1) if (is_st[k] && (st[k] == 0 || st[k] == 1)) older_live = 1;
+         for (k = 0; k < o; k = k + 1) if (is_st[k] && (st[k] == 0 || st[k] == 1 || st[k] == 2)) older_live = 1;
       end
    endfunction
 
@@ -148,7 +153,7 @@ module tb;
          n_cyc = n_cyc + 1;
          act = rnd(0) % 8;
          lq_d_alloc = 0; lq_a_v = 0; lq_a_sent = 0; lq_x_take = 0; lq_l_v = 0;
-         sq_d_alloc = 0; sq_a_v = 0; sq_a_data_v = 0; sq_c_take = 0; flush = 0;
+         sq_d_alloc = 0; sq_a_v = 0; sq_a_data_v = 0; sq_c_take = 0; sq_k_take = 0; flush = 0;
          if (verbose && n_cyc >= vfrom && n_cyc < vto)
             $display("  c=%0d act=%0d p_disp=%0d p_addr=%0d lq_occ=%0d sq_occ=%0d x_v=%b x_idx=%0d(op %0d) c_v=%b",
                      n_cyc, act, p_disp, p_addr, lq_occ, sq_occ, lq_x_v, lq_x_idx, lq_op[lq_x_idx], sq_c_v);
@@ -202,9 +207,9 @@ module tb;
                     fail("candidate attributes differ from those presented", op);
                  for (j = 0; j < op; j = j + 1) if (is_st[j] && st[j] != 4) begin
                     if (st[j] == 0) fail("offered with an older store's address unknown", op);
-                    if (st[j] == 1 && ovl(addr[j], sz[j], addr[op], sz[op]))
-                       fail("offered past an uncommitted older store that overlaps it", op);
-                    if (st[j] == 1) n_reord = n_reord + 1;
+                    if ((st[j] == 1 || st[j] == 2) && ovl(addr[j], sz[j], addr[op], sz[op]))
+                       fail("offered past an undrained older store that overlaps it", op);
+                    if (st[j] == 1 || st[j] == 2) n_reord = n_reord + 1;
                  end
                  lq_x_take = 1; st[op] = 2; n_take = n_take + 1; live_ld_inflight = live_ld_inflight + 1;
               end
@@ -221,20 +226,34 @@ module tb;
                  end
               end
            end
-           6: begin // ---- commit the store at the head, once it IS the ROB head ----
-              while (p_scmt < p_disp && (!is_st[p_scmt] || st[p_scmt] >= 2)) p_scmt = p_scmt + 1;
-              if (p_scmt < p_disp && sq_c_v) begin
+           6: begin // ---- RELEASE the first unreleased store once nothing older can restart ----
+              // the bench plays the ROB's irrevocable pointer: every older op done (loads
+              // landed, stores released)
+              while (p_scmt < p_disp && (!is_st[p_scmt] || st[p_scmt] == 2 || st[p_scmt] == 5 || st[p_scmt] == 4)) p_scmt = p_scmt + 1;
+              if (p_scmt < p_disp && sq_kc_v) begin
                  op = p_scmt; j = 1;
-                 for (i = 0; i < op; i = i + 1) if (!is_st[i] && st[i] != 3 && st[i] != 4) j = 0;
+                 for (i = 0; i < op; i = i + 1)
+                    if (st[i] != 4 && ((!is_st[i] && st[i] != 3) || (is_st[i] && st[i] != 2 && st[i] != 5))) j = 0;
                  if (j && st[op] == 1) begin
-                    if (sq_c_addr !== addr[op]) fail("committing head is not the model's oldest store", op);
-                    sq_c_take = 1; st[op] = 2;
+                    if (sq_kc_addr !== addr[op]) fail("the first unreleased entry is not the model's oldest unreleased store", op);
+                    sq_k_take = 1; st[op] = 2;
+                 end
+              end
+              // ...and DRAIN the head when it is committed: the LSU taking it, any cycle
+              if (sq_c_v && (rnd(0) % 2)) begin
+                 op = -1;
+                 for (i = 0; i < p_disp; i = i + 1) if (op < 0 && is_st[i] && st[i] == 2) op = i;
+                 if (op < 0) fail("a committed head to drain but the model has no committed store", 0);
+                 else begin
+                    if (sq_c_addr !== addr[op]) fail("draining head is not the model's oldest committed store", op);
+                    sq_c_take = 1; st[op] = 5;
                  end
               end
            end
            7: begin // ---- a wholesale flush, rarely, only with nothing in flight ----
               if (live_ld_inflight == 0 && (rnd(0) % 64) == 0 && p_disp > 0) begin
                  flush = 1; n_flush = n_flush + 1;
+                 // committed stores (2) survive a flush and drain later; the rest die
                  for (i = 0; i < p_disp; i = i + 1)
                     if ((is_st[i] && st[i] < 2) || (!is_st[i] && st[i] < 3)) st[i] = 4;
                  for (i = 0; i < NENT; i = i + 1) lq_op[i] = -1;
@@ -251,7 +270,7 @@ module tb;
          step;
       end
       lq_d_alloc = 0; lq_a_v = 0; lq_a_sent = 0; lq_x_take = 0; lq_l_v = 0;
-      sq_d_alloc = 0; sq_a_v = 0; sq_c_take = 0; flush = 0; step;
+      sq_d_alloc = 0; sq_a_v = 0; sq_c_take = 0; sq_k_take = 0; flush = 0; step;
       if (n_cyc >= 40*nops) begin
          $display("FAIL: the run wedged (cycle %0d, p_disp=%0d p_addr=%0d p_scmt=%0d lq=%0d sq=%0d x_v=%b x_block=%b c_v=%b inflight=%0d)",
                   n_cyc, p_disp, p_addr, p_scmt, lq_occ, sq_occ, lq_x_v, lq_x_block, sq_c_v, live_ld_inflight);
