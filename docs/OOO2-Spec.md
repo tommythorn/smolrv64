@@ -678,6 +678,20 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   the row being written this cycle returns the OLD chunk, so a request into the SET being
   written (`fin_hazard`, both ways, conservatively) waits for `S_IDLE`; replays keep to
   `S_IDLE`. `tb_ooo2_dcache` T14 measures both doors by the load's wait at the door.
+- **A plain cached write is not SOLO** (2026-09-05, plan item 4c). Its miss is completed by
+  the fill machine: the chunk is merged into the line as it lands from L2 (`F_FILLW`,
+  `l2_merged`, one byte-masked chunk -- the LSU aligns every DRAM store to its 8-byte word,
+  asserted at the door) and the line installs dirty; the request never replays, so a write
+  in the MSHR no longer blocks every other request for the length of a fill, and a write is
+  accepted under a fill like a read, holding in `S_CHECK` on a miss like a read. `F_ANS` has
+  its own window (`f_wlo`/`f_whi`) because a write's `wlo`/`whi` can be live under the fill
+  that answers a read. Two holds keep the banks honest: a write's `S_FIN` waits out an
+  install (`fill_wr_banks`: `F_FILLI` owns the bank write ports and the dirty port, and the
+  door is shut meanwhile), and a write that HITS the fill's victim re-looks until the fill
+  is over (the writeback would otherwise stream the line out from under it). Still solo: an
+  NC or write-through write, a CBO, a span. `tb_ooo2_dcache` T15-T17: the merged miss and
+  its writeback, a store under a read's fill and a hit under the store's, two stores to one
+  missing line.
 - **Zicbom clean/flush/inval on a resident line take their dirty test in `S_FIN`**, one cycle
   after the lookup, on the way/index registered there. Reading `dirm[flat(hway,cih)]` in
   `S_CHECK` was a second array read addressed by the first one's compare -- the D$'s own
@@ -919,7 +933,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | riscv-tests, this core | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
-| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 and the write-door timing T14 |
+| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
@@ -1797,3 +1811,9 @@ sits idle and the door is free. The 16-byte window (item 2, build K) takes it to
 floor is 2.00. tiny128 boot at 60 M cycles: 11,604,336 -> 13,291,779 (4a, **+14.5%**) ->
 13,466,847 (4b, +1.3%): the boot's store stall was the LSU holding every store to its ack
 while the queue filled behind it, more than the cache's write cost itself.
+
+**2026-09-05, plan item 4c: the write miss is completed by the fill machine (§8), so a plain
+write is no longer solo.** stbench is unchanged (L1-resident, no misses); tiny128 boot at
+60 M cycles 13,466,847 -> 13,783,921 (+2.35%): the boot's remaining store cost is the
+misses themselves (a page clear or copy is a miss per line), and a write miss no longer
+closes the cache to every load behind it for the length of the fill.

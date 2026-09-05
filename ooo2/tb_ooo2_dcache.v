@@ -110,7 +110,9 @@ module tb;
       begin rd_addr=a; rd_tag=t; req_pend=1'b1; while (req_pend) @(negedge clk); end
    endtask
 
-   integer errors, i, k, g14;
+   integer errors, i, k, g14, tcyc;
+   initial tcyc = 0;
+   always @(posedge clk) tcyc <= tcyc + 1;
    reg [63:0] got;
    reg [PAW-1:0] A;
 
@@ -131,15 +133,25 @@ module tb;
          @(negedge clk);
       end
    endtask
-   // A store, then a load presented from the store's second cycle on (the tb changes inputs
-   // at negedge, the DUT samples at posedge, so the accept seen at one negedge is held through
-   // its posedge). `gap` counts the cycles the load waited at the door.
+   // A store presented until the D$ TAKES it. wr_acc is combinational: seen once the inputs
+   // have settled, it is what the next posedge latches, so the request is dropped only after
+   // that edge. Sampling it at the FOLLOWING negedge misses an accept that already happened
+   // and then sees a second accept of the same store at the next open door (the phantom that
+   // lost T16's store while the bench believed it had been taken, 2026-09-05).
+   task store_go(input [PAW-1:0] a, input [63:0] d, input [7:0] m);
+      begin
+         wr_addr=a; wr_data=d; wr_mask=m; wr_req=1'b1;
+         #1; while (!wr_acc) begin @(negedge clk); #1; end
+         @(posedge clk); #1; wr_req=1'b0;
+      end
+   endtask
+   // A store, then a load presented from the store's S_CHECK cycle on; `gap` counts the
+   // negedges until the load's ack: 2 through the door in S_FIN, 3 through S_IDLE.
    task store_then_load(input [PAW-1:0] sa, input [63:0] d, input [PAW-1:0] la, input [3:0] t, output integer gap);
       begin
-         wr_addr=sa; wr_data=d; wr_mask=8'hFF; wr_req=1'b1;
-         @(negedge clk); while (!wr_acc) @(negedge clk);     // the accept cycle
-         @(negedge clk);                                     // S_CHECK: the write is in the pipeline
-         wr_req=1'b0; rd_addr=la; rd_tag=t; req_pend=1'b1; gap=0;
+         store_go(sa, d, 8'hFF);
+         @(negedge clk);
+         rd_addr=la; rd_tag=t; req_pend=1'b1; gap=0;
          while (req_pend) begin @(negedge clk); gap=gap+1; end
          i=0; while (!rd_valid && i<(8*LAT+400)) begin @(negedge clk); i=i+1; end
          if (i>=(8*LAT+400)) begin $display("FAIL: load timed out at a=%h", la); errors=errors+1; end
@@ -360,6 +372,45 @@ module tb;
       expect64(got, 64'hBBBB_0002_BBBB_0002, "T14 a load of the line JUST stored");
       if (g14 != 3) begin $display("FAIL T14 same-set load: gap %0d, expected 3 (a bank collision is refused, S_IDLE)", g14); errors=errors+1; end
       do_load(A, 4'd5); expect64(got, 64'hAAAA_0001_AAAA_0001, "T14 the first store landed");
+
+      // ---- T15-T17: A PLAIN WRITE IS NOT SOLO (plan item 4c, 2026-09-05). Its miss is
+      // completed by the fill machine -- merged as the line lands, installed dirty -- so it
+      // is accepted under a fill and blocks nothing while its own fill runs. ----
+      begin : wr_under_fill
+         reg [PAW-1:0] B, C, D, E;
+         integer t0;
+         B = 64'h8005_0C40;  C = B + 64'd64;  D = B + 64'd128;  E = B + 64'd192;   // fresh lines, four sets
+         // T15: a store MISS, byte-masked, merged as the line lands; the neighbour word is
+         // the line's; the line installed DIRTY, so it survives eviction.
+         do_store(B + 64'd8, 64'hCC00_0000_0000_00DD, 8'h81);
+         do_load(B + 64'd8, 4'h1);
+         expect64(got, (expect_word(B + 64'd8) & 64'h00FF_FFFF_FFFF_FF00) | 64'hCC00_0000_0000_00DD, "T15 store miss merged as the line landed");
+         do_load(B + 64'd16, 4'h2); expect64(got, expect_word(B + 64'd16), "T15 the neighbour word is the line's");
+         for (k=1; k<=6; k=k+1) do_load(B + (k<<16), 4'h3);                     // evict it
+         do_load(B + 64'd8, 4'h4);
+         expect64(got, (expect_word(B + 64'd8) & 64'h00FF_FFFF_FFFF_FF00) | 64'hCC00_0000_0000_00DD, "T15 the merged line installed dirty and came back from L2");
+         // T16: a store accepted UNDER a read's fill, and a hit read accepted under the
+         // store's own fill. Blocked would mean waiting out a fill (LAT and more).
+         gotq[6] = 1'b0;
+         issue_nb(C, 4'h6);                                                    // a read miss: fill in flight
+         t0 = tcyc; store_go(D, 64'h0D0D_0D0D_0D0D_0D0D, 8'hFF);
+         if (tcyc - t0 > LAT/2 + 8) begin $display("FAIL T16 the store waited %0d cycles under the read's fill (LAT=%0d): still solo", tcyc - t0, LAT); errors=errors+1; end
+         i=0; while (!gotq[6] && i<(8*LAT+400)) begin @(negedge clk); i=i+1; end
+         expect64(gotv[6], expect_word(C), "T16 the read miss the store went under");
+         t0 = tcyc; do_load(B + 64'd8, 4'h7);                                  // a hit while the store's fill runs
+         expect64(got, (expect_word(B + 64'd8) & 64'h00FF_FFFF_FFFF_FF00) | 64'hCC00_0000_0000_00DD, "T16 a hit read under the store's fill");
+         if (tcyc - t0 > LAT/2 + 8) begin $display("FAIL T16 the hit read took %0d cycles under the store's fill (LAT=%0d)", tcyc - t0, LAT); errors=errors+1; end
+         for (i=0; i<3*LAT+100; i=i+1) @(negedge clk);                          // let the store's fill land
+         do_load(D, 4'h8); expect64(got, 64'h0D0D_0D0D_0D0D_0D0D, "T16 the store that went under the fill");
+         // T17: two stores to the SAME missing line: the second holds under the first's
+         // fill, then hits and merges.
+         store_go(E, 64'h1E1E_1E1E_1E1E_1E1E, 8'hFF);
+         @(negedge clk);
+         do_store(E + 64'd8, 64'h2E2E_2E2E_2E2E_2E2E, 8'hFF);                  // accepted at once; holds until E lands
+         do_load(E, 4'h9);          expect64(got, 64'h1E1E_1E1E_1E1E_1E1E, "T17 the first store, merged by the fill");
+         do_load(E + 64'd8, 4'hA);  expect64(got, 64'h2E2E_2E2E_2E2E_2E2E, "T17 the second store, merged after its hold");
+         do_load(E + 64'd16, 4'hB); expect64(got, expect_word(E + 64'd16), "T17 the rest of the line");
+      end
 
       if (errors==0) $display("rv_cache D$ directed: PASS");
       else           $display("rv_cache D$ directed: FAIL (%0d errors)", errors);
