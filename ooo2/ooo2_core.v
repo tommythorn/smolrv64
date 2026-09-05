@@ -204,6 +204,9 @@ module ooo2_core
    ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
+      // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
+      .consume_b(1'b0), .two_wide(1'b0),
+      .d2_valid(), .d2_pc(), .d2_insn(), .d2_rvc(), .d2_seq(), .d2_pdet(), .d2_pred_npc(), .d2_rd(), .d2_rs1(), .d2_rs2(), .d2_rs3(), .d2_rd_v(), .d2_rs1_v(), .d2_rs2_v(), .d2_rs3_v(), .d2_imm(), .d2_alu_op(), .d2_alu_w(), .d2_alu_uw(), .d2_op1_sel(), .d2_op2_imm(), .d2_res_link(), .d2_is_mem(), .d2_is_store(), .d2_mem_size(), .d2_mem_signed(), .d2_is_branch(), .d2_br_func(), .d2_is_jump(), .d2_is_jalr(), .d2_is_mul(), .d2_is_csr(), .d2_csr_func(), .d2_is_serialize(), .d2_is_amo(), .d2_amo_func(), .d2_is_fp(), .d2_is_fencei(), .d2_is_cbo(), .d2_cbo_zero(), .d2_cbo_keep(), .d2_illegal(), .d2_mis_taken(), .d2_mis_nt(), .d2_fault(), .d2_fault_cause(), .d2_fault_tval(),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
@@ -370,6 +373,11 @@ module ooo2_core
       .r_mprs1(rn_mprs1), .r_mprs2(rn_mprs2), .r_mprs3(rn_mprs3),
       .r_lv1(rn_lv1), .r_lv2(rn_lv2), .r_lv3(rn_lv3),
       .r_prd(rn_prd),
+      // port B (item 10b): idle until the second dispatch slot exists
+      .r_valid_b(1'b0), .r_rs1_b(6'd0), .r_rs2_b(6'd0), .r_rs3_b(6'd0), .r_rd_b(6'd0), .r_rd_v_b(1'b0),
+      .r_shard_b(2'd0), .r_prs1_b(), .r_prs2_b(), .r_prs3_b(), .r_sprs1_b(), .r_sprs2_b(), .r_sprs3_b(),
+      .r_mprs1_b(), .r_mprs2_b(), .r_mprs3_b(), .r_lv1_b(), .r_lv2_b(), .r_lv3_b(),
+      .r_byp1_b(), .r_byp2_b(), .r_byp3_b(), .r_prd_b(),
       // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
       // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
       // way rename itself was switched over once its shadow had earned it.
@@ -1021,6 +1029,7 @@ module ooo2_core
       .d_valid(rn_valid), .d_rd(d_rd),
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
+      .d_valid2(1'b0), .d_rd2(6'd0), .d_prd2({RN_PBITS{1'b0}}), .d_noret2(1'b0), .d_ready2(), .d_idx2(),
       .w_v({sq_k_take, fp_land, iss_alu, rob_w_valid}),
       .w_ix({sq_kc_rob, ft_rob, i_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),

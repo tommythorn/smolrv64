@@ -44,6 +44,14 @@ module ooo2_rob
     input  wire             d_noret,
     output wire             d_ready,      // room to allocate
     output wire [IDXB-1:0]  d_idx,        // the slot this dispatch takes; ride it with the op
+    // second allocation, the same cycle, YOUNGER (2026-09-05, item 10b): tie d_valid2 low
+    // and the buffer allocates one per cycle as before
+    input  wire             d_valid2,
+    input  wire [5:0]       d_rd2,
+    input  wire [PBITS-1:0] d_prd2,
+    input  wire             d_noret2,
+    output wire             d_ready2,     // room for TWO
+    output wire [IDXB-1:0]  d_idx2,
 
     // ---- completion: out of order, names its slot by the tag it was given ----
     // NW ports. One was enough while a single stage completed everything; with units
@@ -104,8 +112,12 @@ module ooo2_rob
    assign empty   = (head == tail);
    wire   full    = (head[IDXB-1:0] == tail[IDXB-1:0]) && (head[IDXB] != tail[IDXB]);
    assign d_ready = ~full;
+   wire [IDXB:0] occ = tail - head;
+   assign d_ready2 = (occ <= DEPTH_S - 2);
    assign head_idx = hidx;
    assign d_idx   = tidx;
+   wire [IDXB-1:0] tidx2 = tidx + 1'b1;
+   assign d_idx2  = tidx2;
 
    // Write-forward on the head's done bit. An op that completes IN the cycle its entry is at
    // the head must commit that same cycle, or every completion costs an extra cycle -- and
@@ -142,7 +154,10 @@ module ooo2_rob
    assign c_rd_v  = |c_prd;
 
    wire do_alloc  = d_valid & d_ready & ~flush;
+   wire do_alloc2 = do_alloc & d_valid2 & d_ready2;
    wire do_commit = c_valid;
+   always @(posedge clk) if (!reset && d_valid2 && !d_valid)
+      $fatal(1, "ooo2_rob: second allocation without a first");
 
    always @(posedge clk) begin
       if (reset) begin
@@ -152,7 +167,12 @@ module ooo2_rob
             ent[tidx]  <= {d_noret, d_rd, d_prd};
             v[tidx]    <= 1'b1;
             done[tidx] <= 1'b0;
-            tail       <= tail + 1'b1;
+            tail       <= tail + 1'b1 + {{IDXB{1'b0}}, do_alloc2};
+         end
+         if (do_alloc2) begin
+            ent[tidx2]  <= {d_noret2, d_rd2, d_prd2};
+            v[tidx2]    <= 1'b1;
+            done[tidx2] <= 1'b0;
          end
          for (ri = 0; ri < NW; ri = ri + 1)
             if (w_v[ri]) done[w_ix[ri*IDXB +: IDXB]] <= 1'b1;

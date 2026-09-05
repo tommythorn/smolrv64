@@ -17,8 +17,8 @@
 //
 // Correct because RMAP holds committed state: after a flush every read falls through to it,
 // and stale SMAP entries are simply invisible until re-renamed.  Only lv[] is flops; SMAP
-// and RMAP are arrays the tools can infer as LUTRAM.  Scalar issue only -- at IW>1 SMAP
-// needs multiple write ports, which is the same problem one level up.
+// and RMAP are arrays the tools can infer as LUTRAM.  Two renames per cycle (item 10b):
+// SMAP is two copies, one per rename port, plus newer[] -- see the map below.
 //
 // THE FREE LISTS.  One per shard, because a physical register belongs to exactly one shard.
 // This is where the design departs from docs/Area-Efficient-Scalar-OoO.md 9.1: that scheme
@@ -60,6 +60,26 @@ module ooo2_rename
     output wire             r_lv1, r_lv2, r_lv3,         // lv[rs]: 1 = take the speculative
     output wire [PBITS-1:0] r_prd,        // newly allocated physical register
 
+    // ---- second rename port: slot B, YOUNGER than A in the same cycle (2026-09-05, item 10b) ----
+    // B's sources see A's destination (the bypass), B's destination shadows A's when they
+    // are the same register, and B takes the second free entry when both allocate from one
+    // shard. Tie r_valid_b low and the module is the one-per-cycle unit it was.
+    input  wire             r_valid_b,
+    input  wire [5:0]       r_rs1_b,
+    input  wire [5:0]       r_rs2_b,
+    input  wire [5:0]       r_rs3_b,
+    input  wire [5:0]       r_rd_b,
+    input  wire             r_rd_v_b,
+    input  wire [1:0]       r_shard_b,
+    output wire [PBITS-1:0] r_prs1_b,
+    output wire [PBITS-1:0] r_prs2_b,
+    output wire [PBITS-1:0] r_prs3_b,
+    output wire [PBITS-1:0] r_sprs1_b, r_sprs2_b, r_sprs3_b, // speculative candidate (A's prd when bypassed)
+    output wire [PBITS-1:0] r_mprs1_b, r_mprs2_b, r_mprs3_b, // committed candidate
+    output wire             r_lv1_b, r_lv2_b, r_lv3_b,       // 1 = take the speculative
+    output wire             r_byp1_b, r_byp2_b, r_byp3_b,    // the source IS A's destination: not ready
+    output wire [PBITS-1:0] r_prd_b,
+
     // ---- commit port (in order, one per cycle) ----
     input  wire             c_valid,
     input  wire [5:0]       c_rd,
@@ -77,20 +97,42 @@ module ooo2_rename
    localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
 
    // ---- the map -------------------------------------------------------------------
-   (* ram_style = "distributed" *) reg [PBITS-1:0] smap [0:63];
-   (* ram_style = "distributed" *) reg [PBITS-1:0] rmap [0:63];
+   // TWO COPIES OF THE SPECULATIVE MAP, one write port each: port A writes smap_a, port B
+   // writes smap_b, and newer[] says which copy holds the latest mapping -- the same
+   // one-bit select that lv[] already makes between speculative and committed. A LUTRAM has
+   // one write port, and two renames per cycle need two; duplicating the array by WRITER
+   // is the map's version of the PRF's sharding rule.
+   (* ram_style = "distributed" *) reg [PBITS-1:0] smap_a [0:63];
+   (* ram_style = "distributed" *) reg [PBITS-1:0] smap_b [0:63];
+   (* ram_style = "distributed" *) reg [PBITS-1:0] rmap   [0:63];
    reg [63:0]      lv;
+   reg [63:0]      newer;                    // 1 = smap_b is the latest speculative mapping
+   function [PBITS-1:0] smap_rd(input [5:0] a);
+      smap_rd = newer[a] ? smap_b[a] : smap_a[a];
+   endfunction
 
    // Reads are of the PRE-rename mapping for all three sources, including the case where a
    // source equals this instruction's own destination -- rd is written at the clock edge,
    // so the combinational reads below see the old value by construction.  (Matches
    // docs/Area-Efficient-Scalar-OoO.md 14.1 "dispatch -> dispatch, map".)
-   assign r_sprs1 = smap[r_rs1];  assign r_mprs1 = rmap[r_rs1];  assign r_lv1 = lv[r_rs1];
-   assign r_sprs2 = smap[r_rs2];  assign r_mprs2 = rmap[r_rs2];  assign r_lv2 = lv[r_rs2];
-   assign r_sprs3 = smap[r_rs3];  assign r_mprs3 = rmap[r_rs3];  assign r_lv3 = lv[r_rs3];
+   assign r_sprs1 = smap_rd(r_rs1);  assign r_mprs1 = rmap[r_rs1];  assign r_lv1 = lv[r_rs1];
+   assign r_sprs2 = smap_rd(r_rs2);  assign r_mprs2 = rmap[r_rs2];  assign r_lv2 = lv[r_rs2];
+   assign r_sprs3 = smap_rd(r_rs3);  assign r_mprs3 = rmap[r_rs3];  assign r_lv3 = lv[r_rs3];
    assign r_prs1 = r_lv1 ? r_sprs1 : r_mprs1;
    assign r_prs2 = r_lv2 ? r_sprs2 : r_mprs2;
    assign r_prs3 = r_lv3 ? r_sprs3 : r_mprs3;
+   // Port B reads the same pre-rename map, then A's destination is bypassed in: B is younger,
+   // so a source equal to A's rd names A's NEW register, which is speculative and not ready.
+   wire a_writes = r_valid & r_rd_v & ~stall;
+   assign r_byp1_b = a_writes & (r_rs1_b == r_rd);
+   assign r_byp2_b = a_writes & (r_rs2_b == r_rd);
+   assign r_byp3_b = a_writes & (r_rs3_b == r_rd);
+   assign r_sprs1_b = r_byp1_b ? r_prd : smap_rd(r_rs1_b);  assign r_mprs1_b = rmap[r_rs1_b];  assign r_lv1_b = r_byp1_b | lv[r_rs1_b];
+   assign r_sprs2_b = r_byp2_b ? r_prd : smap_rd(r_rs2_b);  assign r_mprs2_b = rmap[r_rs2_b];  assign r_lv2_b = r_byp2_b | lv[r_rs2_b];
+   assign r_sprs3_b = r_byp3_b ? r_prd : smap_rd(r_rs3_b);  assign r_mprs3_b = rmap[r_rs3_b];  assign r_lv3_b = r_byp3_b | lv[r_rs3_b];
+   assign r_prs1_b = r_lv1_b ? r_sprs1_b : r_mprs1_b;
+   assign r_prs2_b = r_lv2_b ? r_sprs2_b : r_mprs2_b;
+   assign r_prs3_b = r_lv3_b ? r_sprs3_b : r_mprs3_b;
 
    // ---- free lists, one per shard ---------------------------------------------------
    // Pointers carry an extra MSB so full and empty are distinguishable without a separate
@@ -153,11 +195,23 @@ module ooo2_rename
                        avail_ie < LOWAT[PW_IE-1:0]};
    assign stall = |shard_low;
 
-   wire alloc = r_valid & r_rd_v & ~stall;
+   wire alloc   = r_valid   & r_rd_v   & ~stall;
+   wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
+   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE);
+   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE);
    wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? fl_ie[h_ie[PW_IE-2:0]]
                             : (r_shard == SH_LD) ? fl_ld[h_ld[PW_LD-2:0]]
                                                  : fl_fe[h_fe[PW_FE-2:0]];
    assign r_prd = {r_shard, head_idx};
+   // B's entry: the head, or the one after it when A allocates from the same shard. A second
+   // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
+   wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, a_ie};
+   wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
+   wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
+   wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? fl_ie[hb_ie]
+                              : (r_shard_b == SH_LD) ? fl_ld[hb_ld]
+                                                     : fl_fe[hb_fe];
+   assign r_prd_b = {r_shard_b, head_idx_b};
 
    // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
    //
@@ -191,10 +245,10 @@ module ooo2_rename
       // writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard starts
       // entirely free.
       for (j = 0; j < 32; j = j + 1) begin
-         rmap[j]      = {SH_IE, j[IDXB-1:0]};
-         smap[j]      = {SH_IE, j[IDXB-1:0]};
-         rmap[32 + j] = {SH_FE, j[IDXB-1:0]};
-         smap[32 + j] = {SH_FE, j[IDXB-1:0]};
+         rmap[j]        = {SH_IE, j[IDXB-1:0]};
+         smap_a[j]      = {SH_IE, j[IDXB-1:0]};  smap_b[j]      = {SH_IE, j[IDXB-1:0]};
+         rmap[32 + j]   = {SH_FE, j[IDXB-1:0]};
+         smap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  smap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
       end
       // Indices 0..31 of SH_IE and SH_FE are taken by the initial architectural mappings, so
       // their free lists start with 32..N-1 -- N-32 entries.  SH_LD starts wholly free.
@@ -212,7 +266,7 @@ module ooo2_rename
       h_ie = {PW_IE{1'b0}}; hc_ie = {PW_IE{1'b0}}; t_ie = T0_IE;
       h_ld = {PW_LD{1'b0}}; hc_ld = {PW_LD{1'b0}}; t_ld = T0_LD;
       h_fe = {PW_FE{1'b0}}; hc_fe = {PW_FE{1'b0}}; t_fe = T0_FE;
-      lv = 64'd0;
+      lv = 64'd0; newer = 64'd0;
    end
 
    integer i;
@@ -246,9 +300,16 @@ module ooo2_rename
          // cycle squashes this instruction, so the flush arm below wins on the pointers;
          // lv is cleared wholesale so the SMAP write becomes invisible either way.
          if (alloc) begin
-            smap[r_rd] <= r_prd;
-            lv[r_rd]   <= 1'b1;
+            smap_a[r_rd] <= r_prd;
+            newer[r_rd]  <= 1'b0;
+            lv[r_rd]     <= 1'b1;
             if (r_shard > SH_FE) $fatal(1, "ooo2_rename: rename to shard %0d", r_shard);
+         end
+         if (alloc_b) begin                     // after A: when rd_b == rd, B's is the newer mapping
+            smap_b[r_rd_b] <= r_prd_b;
+            newer[r_rd_b]  <= 1'b1;
+            lv[r_rd_b]     <= 1'b1;
+            if (r_shard_b > SH_FE) $fatal(1, "ooo2_rename: rename (B) to shard %0d", r_shard_b);
          end
 
          // ---- rollback
@@ -257,10 +318,10 @@ module ooo2_rename
             h_ie <= hc_ie_n;
             h_ld <= hc_ld_n;
             h_fe <= hc_fe_n;
-         end else if (alloc) begin
-            if (r_shard == SH_IE) h_ie <= h_ie + 1'b1;
-            if (r_shard == SH_LD) h_ld <= h_ld + 1'b1;
-            if (r_shard == SH_FE) h_fe <= h_fe + 1'b1;
+         end else begin
+            h_ie <= h_ie + {{(PW_IE-1){1'b0}}, a_ie} + {{(PW_IE-1){1'b0}}, b_ie};
+            h_ld <= h_ld + {{(PW_LD-1){1'b0}}, a_ld} + {{(PW_LD-1){1'b0}}, b_ld};
+            h_fe <= h_fe + {{(PW_FE-1){1'b0}}, a_fe} + {{(PW_FE-1){1'b0}}, b_fe};
          end
       end
    end
@@ -288,6 +349,16 @@ module ooo2_rename
       // physical register 0 into a free list.
       if (alloc && r_rd == 6'd0)
          $fatal(1, "ooo2_rename: renamed x0");
+      if (alloc_b && r_rd_b == 6'd0)
+         $fatal(1, "ooo2_rename: renamed x0 (B)");
+      if (r_valid_b && !r_valid)
+         $fatal(1, "ooo2_rename: port B without port A");
+      if (b_ie && (avail_ie < {{(PW_IE-2){1'b0}}, 1'b1, a_ie}))
+         $fatal(1, "ooo2_rename: B allocated past the int-exec free list");
+      if (b_ld && (avail_ld < {{(PW_LD-2){1'b0}}, 1'b1, a_ld}))
+         $fatal(1, "ooo2_rename: B allocated past the load free list");
+      if (b_fe && (avail_fe < {{(PW_FE-2){1'b0}}, 1'b1, a_fe}))
+         $fatal(1, "ooo2_rename: B allocated past the fp-exec free list");
    end
 
    initial begin

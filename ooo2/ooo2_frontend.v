@@ -34,7 +34,9 @@ module ooo2_frontend
     // is free. `accept`: a new instruction may be loaded into it (consume, and no
     // serializing op in flight). accept implies consume.
     input  wire                    accept,
-    input  wire                    consume,
+    input  wire                    consume,           // slot A dispatched (leaves the IR)
+    input  wire                    consume_b,         // slot B dispatched (only ever with A)
+    input  wire                    two_wide,          // fill slot B at all; low = the one-IR machine
 
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
@@ -100,6 +102,44 @@ module ooo2_frontend
     output reg                     d_fault,
     output reg  [3:0]              d_fault_cause,
     output reg  [PCW-1:0]          d_fault_tval,
+
+    // ---- slot B: the second IR (2026-09-05, item 10b), a mirror of slot A ----
+    output reg                     d2_valid,
+    output reg  [PCW-1:0]          d2_pc,
+    output reg  [31:0]             d2_insn,      // RVC-expanded 32-bit form
+    output reg                     d2_rvc,
+    output reg  [SEQW-1:0]         d2_seq,
+    output reg  [PDW-1:0]          d2_pdet,          // this op's predict details -> rides to M
+    output reg  [PCW-1:0]          d2_pred_npc,
+    // operands
+    output reg  [5:0]              d2_rd, d2_rs1, d2_rs2, d2_rs3,
+    output reg                     d2_rd_v, d2_rs1_v, d2_rs2_v, d2_rs3_v,
+    output reg  [63:0]             d2_imm,
+    // execute control
+    output reg  [5:0]              d2_alu_op,
+    output reg                     d2_alu_w, d2_alu_uw,
+    output reg  [1:0]              d2_op1_sel,
+    output reg                     d2_op2_imm, d2_res_link,
+    output reg                     d2_is_mem, d2_is_store,
+    output reg  [1:0]              d2_mem_size,
+    output reg                     d2_mem_signed,
+    output reg                     d2_is_branch,
+    output reg  [2:0]              d2_br_func,
+    output reg                     d2_is_jump, d2_is_jalr,
+    output reg                     d2_is_mul, d2_is_csr,
+    output reg  [2:0]              d2_csr_func,
+    output reg                     d2_is_serialize,
+    output reg                     d2_is_amo,
+    output reg  [4:0]              d2_amo_func,
+    output reg                     d2_is_fp, d2_is_fencei,
+    output reg                     d2_is_cbo, d2_cbo_zero, d2_cbo_keep,
+    output reg                     d2_illegal,
+    // precomputed branch compares (payload-static -> keeps them out of X's cone)
+    output reg                     d2_mis_taken, d2_mis_nt,
+    // fetch-side fault poison
+    output reg                     d2_fault,
+    output reg  [3:0]              d2_fault_cause,
+    output reg  [PCW-1:0]          d2_fault_tval,
     output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
 
    // ---------------------------------------------------------------- fetch
@@ -205,7 +245,7 @@ module ooo2_frontend
    wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
    wire           q_push  = q_room & (fx_valid | fx_fault);
    wire           q_two   = q_push & fx_sv[1];            // the bundle has a second instruction
-   wire           q_pop   = accept & ~q_empty;
+   wire           q_have2 = (q_cnt >= 2);
    // slot 0 falls through when slot 1 exists; the bundle's prediction rides with its last slot
    wire [QW-1:0]  q_in0   = {pd_fetch, (fx_fault ? imem_ipc : fx_pc[0 +: PCW]), fx_inst[0 +: 32], fx_seq[0 +: SEQW],
                              (fx_sv[1] ? 2'd0 : fx_pk), bp_tgt, fx_fault, imem_cause, imem_addr};
@@ -221,6 +261,14 @@ module ooo2_frontend
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
    wire [QW-1:0]  q_head  = q_rp[0] ? q_dat1[q_rp[QAW-1:1]] : q_dat0[q_rp[QAW-1:1]];
    assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
+   // the second head, from the other bank at the next index (no mux beyond the head's own)
+   wire [QAW-1:0] q_rp1   = q_rp + 1'b1;
+   wire [QW-1:0]  q_head1 = q_rp1[0] ? q_dat1[q_rp1[QAW-1:1]] : q_dat0[q_rp1[QAW-1:1]];
+   wire [PDW-1:0] q1_pdet;  wire [PCW-1:0] f1_pc;  wire [31:0] f1_inst;
+   wire [SEQW-1:0] f1_seq;  wire [1:0] f1_pk;  wire [PCW-1:0] f1_tgt;  wire fault1_op;
+   wire [3:0]     q1_cause; wire [PCW-1:0] q1_tval;
+   assign {q1_pdet, f1_pc, f1_inst, f1_seq, f1_pk, f1_tgt, fault1_op, q1_cause, q1_tval} = q_head1;
+   wire [1:0]     q_pop;                       // 0..2 entries leave this cycle (see the IR)
 
    always @(posedge clk) begin
       if (reset | redirect) begin
@@ -236,8 +284,8 @@ module ooo2_frontend
             end
             q_wp <= q_wp + {{(QAW-1){1'b0}}, q_two} + 1'b1;
          end
-         if (q_pop)  q_rp <= q_rp + 1'b1;
-         q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_two} + {{QAW{1'b0}}, q_push} - {{QAW{1'b0}}, q_pop};
+         q_rp  <= q_rp + {{(QAW-2){1'b0}}, q_pop};
+         q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_two} + {{QAW{1'b0}}, q_push} - {{(QAW-1){1'b0}}, q_pop};
       end
    end
 
@@ -261,6 +309,20 @@ module ooo2_frontend
    wire        s_is_mul, s_is_csr, s_is_serialize, s_is_amo, s_is_fencei;
    wire [4:0]  s_amo_func;
    wire        s_is_cbo, s_cbo_zero, s_cbo_keep, s_illegal;
+   wire        s1_rvc, s1_rd_v, s1_rs1_v, s1_rs2_v, s1_rs3_v, s1_legal;
+   wire [31:0] s1_exp;
+   wire [5:0]  s1_rd, s1_rs1, s1_rs2, s1_rs3;
+   wire [63:0] s1_imm;
+   wire        s1_has_imm;
+   wire [5:0]  s1_alu_op;
+   wire        s1_alu_w, s1_alu_uw, s1_op2_imm, s1_res_link;
+   wire [1:0]  s1_op1_sel;
+   wire        s1_is_mem, s1_is_store, s1_mem_signed, s1_is_branch, s1_is_jump;
+   wire [1:0]  s1_mem_size;
+   wire [2:0]  s1_br_func, s1_csr_func;
+   wire        s1_is_mul, s1_is_csr, s1_is_serialize, s1_is_amo, s1_is_fencei;
+   wire [4:0]  s1_amo_func;
+   wire        s1_is_cbo, s1_cbo_zero, s1_cbo_keep, s1_illegal;
 
    decode_slot #(.SEQW(SEQW)) u_dec
      (.inst(f_inst), .in_valid(1'b1), .seq_in(f_seq),
@@ -289,74 +351,237 @@ module ooo2_frontend
    // fetch's pred_npc, rebuilt from the queued choice (see the queue above)
    wire [PCW-1:0] f_pnpc     = (f_pk == 2'd2) ? f_pc : (f_pk == 2'd1) ? f_tgt : s_ft_pc;
 
+   // ---- the second head, decoded the same way ----
+   decode_slot #(.SEQW(SEQW)) u_dec1
+     (.inst(f1_inst), .in_valid(1'b1), .seq_in(f1_seq),
+      .valid(), .seq(), .is_rvc(s1_rvc), .expanded(s1_exp),
+      .rd(s1_rd), .rd_v(s1_rd_v), .rs1(s1_rs1), .rs1_v(s1_rs1_v),
+      .rs2(s1_rs2), .rs2_v(s1_rs2_v), .rs3(s1_rs3), .rs3_v(s1_rs3_v),
+      .imm(s1_imm), .has_imm(s1_has_imm), .legal(s1_legal),
+      .alu_op(s1_alu_op), .alu_w(s1_alu_w), .alu_uw(s1_alu_uw), .op1_sel(s1_op1_sel),
+      .op2_imm(s1_op2_imm), .res_link(s1_res_link), .is_mem(s1_is_mem),
+      .is_store(s1_is_store), .mem_size(s1_mem_size), .mem_signed(s1_mem_signed),
+      .is_branch(s1_is_branch), .br_func(s1_br_func), .is_jump(s1_is_jump),
+      .is_mul(s1_is_mul), .is_csr(s1_is_csr), .csr_func(s1_csr_func),
+      .is_serialize(s1_is_serialize), .is_amo(s1_is_amo), .amo_func(s1_amo_func),
+      .is_fencei(s1_is_fencei), .is_cbo(s1_is_cbo), .cbo_zero(s1_cbo_zero),
+      .cbo_keep(s1_cbo_keep), .illegal(s1_illegal));
+   wire s1_is_jalr = (s1_exp[6:2] == 5'b11001);
+   wire [PCW-1:0] s1_taken_pc = f1_pc + s1_imm;
+   wire [PCW-1:0] s1_ft_pc    = f1_pc + (s1_rvc ? 64'd2 : 64'd4);
+   wire [PCW-1:0] f1_pnpc     = (f1_pk == 2'd2) ? f1_pc : (f1_pk == 2'd1) ? f1_tgt : s1_ft_pc;
+
    // fetch-fault pseudo-op: presented only when fetch itself has nothing (an
    // interrupt injection wins -- fetch forces a valid bundle for it, and an
    // interrupt is taken before the instruction that would have faulted).
    wire ld_valid = ~q_empty;      // the head is a real bundle (fault pseudo-op included)
 
-   // ------------------------------------------------------- IR register (F/X)
+   // ------------------------------------------------------- IR registers (F/X), two slots
+   // Slot A is the instruction dispatch sees first, slot B the one behind it. A frees when
+   // empty or consumed; if B then holds an unconsumed op it SHIFTS into A and B refills from
+   // the queue, else A refills from the first head and B from the second. With two_wide low
+   // B never fills and A's timing is the one-IR machine's, cycle for cycle.
+   wire a_free  = ~d_valid | consume;
+   wire b_free  = ~d2_valid | consume_b;
+   wire shift   = a_free & d2_valid & ~consume_b;
+   wire a_src_q = a_free & ~shift;                       // A takes the first head
+   wire b_load  = two_wide & (b_free | shift);           // B refills: head 2 if A took head 1, else head 1
+   wire b_v_new = a_src_q ? q_have2 : ~q_empty;
+   assign q_pop = {1'b0, a_src_q & ~q_empty} + {1'b0, b_load & b_v_new};
+   always @(posedge clk) if (!reset && consume_b && !consume)
+      $fatal(1, "ooo2_frontend: slot B consumed without slot A");
+   // the two heads, decoded and fault-masked, as slot contents
+   wire [PDW-1:0] m0_pdet = q_pdet;                 wire [PDW-1:0] m1_pdet = q1_pdet;
+   wire [PCW-1:0] m0_pc   = f_pc;                   wire [PCW-1:0] m1_pc   = f1_pc;
+   wire [PCW-1:0] m0_fault_tval = q_tval;           wire [PCW-1:0] m1_fault_tval = q1_tval;   // faulting VA (straddle: pc+2)
+   wire m0_is_fp = fault_op  ? 1'b0 : ((s_exp[6:2] == 5'b10100) | (s_exp[6:2] == 5'b10000) | (s_exp[6:2] == 5'b10001) | (s_exp[6:2] == 5'b10010) | (s_exp[6:2] == 5'b10011) | (s_exp[6:2] == 5'b00001) | (s_exp[6:2] == 5'b01001));
+   wire m1_is_fp = fault1_op ? 1'b0 : ((s1_exp[6:2] == 5'b10100) | (s1_exp[6:2] == 5'b10000) | (s1_exp[6:2] == 5'b10001) | (s1_exp[6:2] == 5'b10010) | (s1_exp[6:2] == 5'b10011) | (s1_exp[6:2] == 5'b00001) | (s1_exp[6:2] == 5'b01001));
+   wire [SEQW-1:0] m0_seq = f_seq;
+   wire [SEQW-1:0] m1_seq = f1_seq;
+   wire [PCW-1:0] m0_pred_npc = f_pnpc;
+   wire [PCW-1:0] m1_pred_npc = f1_pnpc;
+   wire  m0_fault = fault_op;
+   wire  m1_fault = fault1_op;
+   wire [3:0] m0_fault_cause = q_cause;
+   wire [3:0] m1_fault_cause = q1_cause;
+   wire [31:0] m0_insn = fault_op ? 32'd0  : s_exp;
+   wire [31:0] m1_insn = fault1_op ? 32'd0  : s1_exp;
+   wire  m0_rvc = fault_op ? 1'b0   : s_rvc;
+   wire  m1_rvc = fault1_op ? 1'b0   : s1_rvc;
+   wire [5:0] m0_rd = fault_op ? 6'd0   : s_rd;
+   wire [5:0] m1_rd = fault1_op ? 6'd0   : s1_rd;
+   wire  m0_rd_v = fault_op ? 1'b0   : s_rd_v;
+   wire  m1_rd_v = fault1_op ? 1'b0   : s1_rd_v;
+   wire [5:0] m0_rs1 = fault_op ? 6'd0   : s_rs1;
+   wire [5:0] m1_rs1 = fault1_op ? 6'd0   : s1_rs1;
+   wire  m0_rs1_v = fault_op ? 1'b0   : s_rs1_v;
+   wire  m1_rs1_v = fault1_op ? 1'b0   : s1_rs1_v;
+   wire [5:0] m0_rs2 = fault_op ? 6'd0   : s_rs2;
+   wire [5:0] m1_rs2 = fault1_op ? 6'd0   : s1_rs2;
+   wire  m0_rs2_v = fault_op ? 1'b0   : s_rs2_v;
+   wire  m1_rs2_v = fault1_op ? 1'b0   : s1_rs2_v;
+   wire [5:0] m0_rs3 = fault_op ? 6'd0   : s_rs3;
+   wire [5:0] m1_rs3 = fault1_op ? 6'd0   : s1_rs3;
+   wire  m0_rs3_v = fault_op ? 1'b0   : s_rs3_v;
+   wire  m1_rs3_v = fault1_op ? 1'b0   : s1_rs3_v;
+   wire [63:0] m0_imm = fault_op ? 64'd0  : s_imm;
+   wire [63:0] m1_imm = fault1_op ? 64'd0  : s1_imm;
+   wire [5:0] m0_alu_op = s_alu_op;
+   wire [5:0] m1_alu_op = s1_alu_op;
+   wire  m0_alu_w = fault_op ? 1'b0   : s_alu_w;
+   wire  m1_alu_w = fault1_op ? 1'b0   : s1_alu_w;
+   wire  m0_alu_uw = fault_op ? 1'b0   : s_alu_uw;
+   wire  m1_alu_uw = fault1_op ? 1'b0   : s1_alu_uw;
+   wire [1:0] m0_op1_sel = fault_op ? 2'd0   : s_op1_sel;
+   wire [1:0] m1_op1_sel = fault1_op ? 2'd0   : s1_op1_sel;
+   wire  m0_op2_imm = fault_op ? 1'b0   : s_op2_imm;
+   wire  m1_op2_imm = fault1_op ? 1'b0   : s1_op2_imm;
+   wire  m0_res_link = fault_op ? 1'b0   : s_res_link;
+   wire  m1_res_link = fault1_op ? 1'b0   : s1_res_link;
+   wire  m0_is_mem = fault_op ? 1'b0   : s_is_mem;
+   wire  m1_is_mem = fault1_op ? 1'b0   : s1_is_mem;
+   wire  m0_is_store = fault_op ? 1'b0   : s_is_store;
+   wire  m1_is_store = fault1_op ? 1'b0   : s1_is_store;
+   wire [1:0] m0_mem_size = s_mem_size;
+   wire [1:0] m1_mem_size = s1_mem_size;
+   wire  m0_mem_signed = s_mem_signed;
+   wire  m1_mem_signed = s1_mem_signed;
+   wire  m0_is_branch = fault_op ? 1'b0   : s_is_branch;
+   wire  m1_is_branch = fault1_op ? 1'b0   : s1_is_branch;
+   wire [2:0] m0_br_func = s_br_func;
+   wire [2:0] m1_br_func = s1_br_func;
+   wire  m0_is_jump = fault_op ? 1'b0   : s_is_jump;
+   wire  m1_is_jump = fault1_op ? 1'b0   : s1_is_jump;
+   wire  m0_is_jalr = fault_op ? 1'b0   : s_is_jalr;
+   wire  m1_is_jalr = fault1_op ? 1'b0   : s1_is_jalr;
+   wire  m0_is_mul = fault_op ? 1'b0   : s_is_mul;
+   wire  m1_is_mul = fault1_op ? 1'b0   : s1_is_mul;
+   wire  m0_is_csr = fault_op ? 1'b0   : s_is_csr;
+   wire  m1_is_csr = fault1_op ? 1'b0   : s1_is_csr;
+   wire [2:0] m0_csr_func = s_csr_func;
+   wire [2:0] m1_csr_func = s1_csr_func;
+   wire  m0_is_serialize = fault_op ? 1'b1   : s_is_serialize;
+   wire  m1_is_serialize = fault1_op ? 1'b1   : s1_is_serialize;
+   wire  m0_is_amo = fault_op ? 1'b0   : s_is_amo;
+   wire  m1_is_amo = fault1_op ? 1'b0   : s1_is_amo;
+   wire [4:0] m0_amo_func = s_amo_func;
+   wire [4:0] m1_amo_func = s1_amo_func;
+   wire  m0_is_fencei = fault_op ? 1'b0   : s_is_fencei;
+   wire  m1_is_fencei = fault1_op ? 1'b0   : s1_is_fencei;
+   wire  m0_is_cbo = fault_op ? 1'b0   : s_is_cbo;
+   wire  m1_is_cbo = fault1_op ? 1'b0   : s1_is_cbo;
+   wire  m0_cbo_zero = s_cbo_zero;
+   wire  m1_cbo_zero = s1_cbo_zero;
+   wire  m0_cbo_keep = s_cbo_keep;
+   wire  m1_cbo_keep = s1_cbo_keep;
+   wire  m0_illegal = fault_op ? 1'b0   : s_illegal;
+   wire  m1_illegal = fault1_op ? 1'b0   : s1_illegal;
+   wire  m0_mis_taken = (s_taken_pc != f_pnpc);
+   wire  m1_mis_taken = (s1_taken_pc != f1_pnpc);
+   wire  m0_mis_nt = (s_ft_pc    != f_pnpc);
+   wire  m1_mis_nt = (s1_ft_pc    != f1_pnpc);
    always @(posedge clk) begin
-      if (reset) begin
-         d_valid <= 1'b0;
-      end else if (redirect) begin
-         d_valid <= 1'b0;
+      if (reset | redirect) begin
+         d_valid <= 1'b0; d2_valid <= 1'b0;
       end else begin
-         if (consume) d_valid <= 1'b0;      // X emptied; overridden by the load below
-         if (accept) begin
-            d_valid <= ld_valid;
-            d_pdet        <= q_pdet;     // captured at push, rode the queue with its bundle
-            d_seq         <= f_seq;
-            d_pc          <= f_pc;   // fault EPC already selected at push
-            d_pred_npc    <= f_pnpc;
-            d_fault       <= fault_op;
-            d_fault_cause <= q_cause;
-            d_fault_tval  <= q_tval;         // faulting VA (straddle: pc+2)
-
-            // A poisoned fetch carries no operation: every class flag is cleared so
-            // it slides to M as a pure trap request. Serializing keeps it alone.
-            d_insn        <= fault_op ? 32'd0  : s_exp;
-            d_rvc         <= fault_op ? 1'b0   : s_rvc;
-            d_rd          <= fault_op ? 6'd0   : s_rd;
-            d_rd_v        <= fault_op ? 1'b0   : s_rd_v;
-            d_rs1         <= fault_op ? 6'd0   : s_rs1;
-            d_rs1_v       <= fault_op ? 1'b0   : s_rs1_v;
-            d_rs2         <= fault_op ? 6'd0   : s_rs2;
-            d_rs2_v       <= fault_op ? 1'b0   : s_rs2_v;
-            d_rs3         <= fault_op ? 6'd0   : s_rs3;
-            d_rs3_v       <= fault_op ? 1'b0   : s_rs3_v;
-            d_imm         <= fault_op ? 64'd0  : s_imm;
-            d_alu_op      <= s_alu_op;
-            d_alu_w       <= fault_op ? 1'b0   : s_alu_w;
-            d_alu_uw      <= fault_op ? 1'b0   : s_alu_uw;
-            d_op1_sel     <= fault_op ? 2'd0   : s_op1_sel;
-            d_op2_imm     <= fault_op ? 1'b0   : s_op2_imm;
-            d_res_link    <= fault_op ? 1'b0   : s_res_link;
-            d_is_mem      <= fault_op ? 1'b0   : s_is_mem;
-            d_is_store    <= fault_op ? 1'b0   : s_is_store;
-            d_mem_size    <= s_mem_size;
-            d_mem_signed  <= s_mem_signed;
-            d_is_branch   <= fault_op ? 1'b0   : s_is_branch;
-            d_br_func     <= s_br_func;
-            d_is_jump     <= fault_op ? 1'b0   : s_is_jump;
-            d_is_jalr     <= fault_op ? 1'b0   : s_is_jalr;
-            d_is_mul      <= fault_op ? 1'b0   : s_is_mul;
-            d_is_csr      <= fault_op ? 1'b0   : s_is_csr;
-            d_csr_func    <= s_csr_func;
-            d_is_serialize<= fault_op ? 1'b1   : s_is_serialize;
-            d_is_amo      <= fault_op ? 1'b0   : s_is_amo;
-            d_amo_func    <= s_amo_func;
-            d_is_fp       <= fault_op ? 1'b0   : (s_exp[6:2] == 5'b10100) |
-                                                 (s_exp[6:2] == 5'b10000) | (s_exp[6:2] == 5'b10001) |
-                                                 (s_exp[6:2] == 5'b10010) | (s_exp[6:2] == 5'b10011) |
-                                                 (s_exp[6:2] == 5'b00001) | (s_exp[6:2] == 5'b01001);
-            d_is_fencei   <= fault_op ? 1'b0   : s_is_fencei;
-            d_is_cbo      <= fault_op ? 1'b0   : s_is_cbo;
-            d_cbo_zero    <= s_cbo_zero;
-            d_cbo_keep    <= s_cbo_keep;
-            d_illegal     <= fault_op ? 1'b0   : s_illegal;
-            d_mis_taken   <= (s_taken_pc != f_pnpc);
-            d_mis_nt      <= (s_ft_pc    != f_pnpc);
+         if (a_free) begin
+            d_valid <= shift ? 1'b1 : ~q_empty;
+            d_pdet <= shift ? d2_pdet : m0_pdet;
+            d_pc <= shift ? d2_pc : m0_pc;
+            d_fault_tval <= shift ? d2_fault_tval : m0_fault_tval;
+            d_is_fp <= shift ? d2_is_fp : m0_is_fp;
+            d_seq <= shift ? d2_seq : m0_seq;
+            d_pred_npc <= shift ? d2_pred_npc : m0_pred_npc;
+            d_fault <= shift ? d2_fault : m0_fault;
+            d_fault_cause <= shift ? d2_fault_cause : m0_fault_cause;
+            d_insn <= shift ? d2_insn : m0_insn;
+            d_rvc <= shift ? d2_rvc : m0_rvc;
+            d_rd <= shift ? d2_rd : m0_rd;
+            d_rd_v <= shift ? d2_rd_v : m0_rd_v;
+            d_rs1 <= shift ? d2_rs1 : m0_rs1;
+            d_rs1_v <= shift ? d2_rs1_v : m0_rs1_v;
+            d_rs2 <= shift ? d2_rs2 : m0_rs2;
+            d_rs2_v <= shift ? d2_rs2_v : m0_rs2_v;
+            d_rs3 <= shift ? d2_rs3 : m0_rs3;
+            d_rs3_v <= shift ? d2_rs3_v : m0_rs3_v;
+            d_imm <= shift ? d2_imm : m0_imm;
+            d_alu_op <= shift ? d2_alu_op : m0_alu_op;
+            d_alu_w <= shift ? d2_alu_w : m0_alu_w;
+            d_alu_uw <= shift ? d2_alu_uw : m0_alu_uw;
+            d_op1_sel <= shift ? d2_op1_sel : m0_op1_sel;
+            d_op2_imm <= shift ? d2_op2_imm : m0_op2_imm;
+            d_res_link <= shift ? d2_res_link : m0_res_link;
+            d_is_mem <= shift ? d2_is_mem : m0_is_mem;
+            d_is_store <= shift ? d2_is_store : m0_is_store;
+            d_mem_size <= shift ? d2_mem_size : m0_mem_size;
+            d_mem_signed <= shift ? d2_mem_signed : m0_mem_signed;
+            d_is_branch <= shift ? d2_is_branch : m0_is_branch;
+            d_br_func <= shift ? d2_br_func : m0_br_func;
+            d_is_jump <= shift ? d2_is_jump : m0_is_jump;
+            d_is_jalr <= shift ? d2_is_jalr : m0_is_jalr;
+            d_is_mul <= shift ? d2_is_mul : m0_is_mul;
+            d_is_csr <= shift ? d2_is_csr : m0_is_csr;
+            d_csr_func <= shift ? d2_csr_func : m0_csr_func;
+            d_is_serialize <= shift ? d2_is_serialize : m0_is_serialize;
+            d_is_amo <= shift ? d2_is_amo : m0_is_amo;
+            d_amo_func <= shift ? d2_amo_func : m0_amo_func;
+            d_is_fencei <= shift ? d2_is_fencei : m0_is_fencei;
+            d_is_cbo <= shift ? d2_is_cbo : m0_is_cbo;
+            d_cbo_zero <= shift ? d2_cbo_zero : m0_cbo_zero;
+            d_cbo_keep <= shift ? d2_cbo_keep : m0_cbo_keep;
+            d_illegal <= shift ? d2_illegal : m0_illegal;
+            d_mis_taken <= shift ? d2_mis_taken : m0_mis_taken;
+            d_mis_nt <= shift ? d2_mis_nt : m0_mis_nt;
          end
+         if (b_load) begin
+            d2_valid <= b_v_new;
+            d2_pdet <= a_src_q ? m1_pdet : m0_pdet;
+            d2_pc <= a_src_q ? m1_pc : m0_pc;
+            d2_fault_tval <= a_src_q ? m1_fault_tval : m0_fault_tval;
+            d2_is_fp <= a_src_q ? m1_is_fp : m0_is_fp;
+            d2_seq <= a_src_q ? m1_seq : m0_seq;
+            d2_pred_npc <= a_src_q ? m1_pred_npc : m0_pred_npc;
+            d2_fault <= a_src_q ? m1_fault : m0_fault;
+            d2_fault_cause <= a_src_q ? m1_fault_cause : m0_fault_cause;
+            d2_insn <= a_src_q ? m1_insn : m0_insn;
+            d2_rvc <= a_src_q ? m1_rvc : m0_rvc;
+            d2_rd <= a_src_q ? m1_rd : m0_rd;
+            d2_rd_v <= a_src_q ? m1_rd_v : m0_rd_v;
+            d2_rs1 <= a_src_q ? m1_rs1 : m0_rs1;
+            d2_rs1_v <= a_src_q ? m1_rs1_v : m0_rs1_v;
+            d2_rs2 <= a_src_q ? m1_rs2 : m0_rs2;
+            d2_rs2_v <= a_src_q ? m1_rs2_v : m0_rs2_v;
+            d2_rs3 <= a_src_q ? m1_rs3 : m0_rs3;
+            d2_rs3_v <= a_src_q ? m1_rs3_v : m0_rs3_v;
+            d2_imm <= a_src_q ? m1_imm : m0_imm;
+            d2_alu_op <= a_src_q ? m1_alu_op : m0_alu_op;
+            d2_alu_w <= a_src_q ? m1_alu_w : m0_alu_w;
+            d2_alu_uw <= a_src_q ? m1_alu_uw : m0_alu_uw;
+            d2_op1_sel <= a_src_q ? m1_op1_sel : m0_op1_sel;
+            d2_op2_imm <= a_src_q ? m1_op2_imm : m0_op2_imm;
+            d2_res_link <= a_src_q ? m1_res_link : m0_res_link;
+            d2_is_mem <= a_src_q ? m1_is_mem : m0_is_mem;
+            d2_is_store <= a_src_q ? m1_is_store : m0_is_store;
+            d2_mem_size <= a_src_q ? m1_mem_size : m0_mem_size;
+            d2_mem_signed <= a_src_q ? m1_mem_signed : m0_mem_signed;
+            d2_is_branch <= a_src_q ? m1_is_branch : m0_is_branch;
+            d2_br_func <= a_src_q ? m1_br_func : m0_br_func;
+            d2_is_jump <= a_src_q ? m1_is_jump : m0_is_jump;
+            d2_is_jalr <= a_src_q ? m1_is_jalr : m0_is_jalr;
+            d2_is_mul <= a_src_q ? m1_is_mul : m0_is_mul;
+            d2_is_csr <= a_src_q ? m1_is_csr : m0_is_csr;
+            d2_csr_func <= a_src_q ? m1_csr_func : m0_csr_func;
+            d2_is_serialize <= a_src_q ? m1_is_serialize : m0_is_serialize;
+            d2_is_amo <= a_src_q ? m1_is_amo : m0_is_amo;
+            d2_amo_func <= a_src_q ? m1_amo_func : m0_amo_func;
+            d2_is_fencei <= a_src_q ? m1_is_fencei : m0_is_fencei;
+            d2_is_cbo <= a_src_q ? m1_is_cbo : m0_is_cbo;
+            d2_cbo_zero <= a_src_q ? m1_cbo_zero : m0_cbo_zero;
+            d2_cbo_keep <= a_src_q ? m1_cbo_keep : m0_cbo_keep;
+            d2_illegal <= a_src_q ? m1_illegal : m0_illegal;
+            d2_mis_taken <= a_src_q ? m1_mis_taken : m0_mis_taken;
+            d2_mis_nt <= a_src_q ? m1_mis_nt : m0_mis_nt;
+         end else if (consume_b) d2_valid <= 1'b0;
       end
    end
 endmodule
