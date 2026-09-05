@@ -45,6 +45,13 @@ module ooo2_sq
     input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
+    // An entry with an ADDRESS is a store older than whatever M holds: M translates in
+    // program order, and an entry is allocated at dispatch, so the queue can also hold
+    // stores YOUNGER than M's op -- entries that cannot get an address until M frees. An
+    // M-executed access that must follow every older store (a CBO) waits on this, not on
+    // the occupancy: waiting for the occupancy is a deadlock, found on the board 2026-09-04
+    // (Ubuntu's clear_page is cbo.zero; the tiny128 kernel never issues one). Rule C5.
+    output wire                  av_any,
     output wire [IDXB:0]         d_tag,       // the STORE-SEQNO a load captures at dispatch: the
                                               // tail COUNTER, one bit wider than the index (below)
 
@@ -162,6 +169,7 @@ module ooo2_sq
    assign d_ready   = (cnt != NENT[IDXB:0]);
    assign d_idx     = tail;
    assign d_tag     = tailc;
+   assign av_any    = |(v & av);
    assign occupancy = cnt;
 
    // c_v says the head is READY (address and data present). Committing in program order

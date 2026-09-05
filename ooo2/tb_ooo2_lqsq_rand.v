@@ -47,7 +47,7 @@ module tb;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
-   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
+   wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v, sq_av_any;
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
@@ -67,7 +67,7 @@ module tb;
 
    ooo2_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
-      .d_alloc(sq_d_alloc),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag),
+      .d_alloc(sq_d_alloc),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_size(sq_a_size),.a_unc(sq_a_unc),
       .a_data_v(sq_a_data_v),.a_data(sq_a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),

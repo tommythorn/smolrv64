@@ -880,6 +880,7 @@ module ooo2_core
    wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_older;
    wire                sq_ld_block;      // instrumentation: candidate held by an alias
    wire [SQ_IB:0]      sq_occ;
+   wire                sq_av_any;
    wire [SQ_IB-1:0]    sq_d_idx;
    wire [SQ_TB-1:0]    sq_d_tag;
    wire [ROB_IDXB-1:0] sq_c_rob;
@@ -904,7 +905,7 @@ module ooo2_core
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
      (.clk(clk), .reset(reset),
       .d_alloc(d_st_alloc), .d_rob(rob_d_idx), .d_dpreg(rn_prs2),
-      .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag),
+      .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, wb_ie}),
@@ -1174,11 +1175,14 @@ module ooo2_core
 
    // A CBO executes from M and is not serialized (cbo.zero clears every page the kernel
    // hands out), so it would start while an older store still sits in the queue -- and with
-   // the senior store queue that includes stores already RETIRED. Memory ops issue in order,
-   // so every queue entry is older than the op in M and "no older store pending" is the
-   // queue being empty. The other M-executed accesses are covered elsewhere: AMO/LR/SC are
-   // serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
-   wire m_cbo_wait = m_is_cbo & (sq_occ != {(SQ_IB+1){1'b0}});
+   // the senior store queue that includes stores already RETIRED. "An older store is live"
+   // is `sq_av_any`, an entry WITH AN ADDRESS: M translates in program order, so every
+   // entry older than M's op has one and no younger entry can get one while M is held.
+   // NOT the occupancy -- entries are allocated at dispatch, so the queue can hold stores
+   // younger than the CBO, which then wait for M: the deadlock that hung build L at
+   // SLUB init on 2026-09-04. The other M-executed accesses are covered elsewhere: AMO/LR/SC
+   // are serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
+   wire m_cbo_wait = m_is_cbo & sq_av_any;
    ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
      (.clk(clk), .reset(reset),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on

@@ -42,6 +42,7 @@ module tb;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
+   wire             sq_av_any;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
@@ -64,7 +65,7 @@ module tb;
    // fills the load queue -- exactly ooo2_core's m_lq_fill wiring
    ooo2_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
-      .d_alloc(sq_d_alloc),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag),
+      .d_alloc(sq_d_alloc),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_size(sq_a_size),.a_unc(sq_a_unc),
       .a_data_v(sq_a_data_v),.a_data(sq_a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
@@ -337,6 +338,16 @@ module tb;
       chk("12 drains in the release cycle", sq_c_v && sq_c_data==64'hDD, 1'b1);
       sq_c_take=1; step; sq_k_take=0; sq_c_take=0; #1;
       chk("12 gone, nothing left to release", sq_occ==0 && !sq_c_v && !sq_kc_v, 1'b1);
+
+      // ---- 13. av_any, the CBO's wait: "an older store HAS AN ADDRESS", never the occupancy.
+      // An entry is allocated at dispatch, so a store YOUNGER than the op in M is in the queue
+      // without an address; waiting for it to leave is the deadlock that hung build L. ----
+      disp_store(9'd7, 4'd2, S0);
+      chk("13 an entry without an address is no older store", sq_occ==1 && !sq_av_any, 1'b1);
+      store_addr(S0, 56'hE000, 2, 1'b1, 64'hEE);
+      chk("13 with an address it is one", sq_av_any, 1'b1);
+      commit;
+      chk("13 drained, none", sq_occ==0 && !sq_av_any, 1'b1);
 
       $display("---- tb_ooo2_lqsq pass=%0d fail=%0d", pass, fail);
       if (fail != 0) begin $display("LQSQ-TB FAIL"); $fatal(1, "tb_ooo2_lqsq FAILED"); end

@@ -66,3 +66,10 @@ csrreplay.bin: csrreplay.elf
 csrreplay.elf: csrreplay.c crt0.s fphammer.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
 		-Wl,-Tfphammer.ld -O2 crt0.s csrreplay.c -o csrreplay.elf
+
+cbozero.bin: cbozero.elf
+	$(RV)objcopy -O binary cbozero.elf cbozero.bin
+
+cbozero.elf: cbozero.c crt0.s fphammer.ld
+	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr_zicboz -fno-builtin -nostdlib \
+		-Wl,-Tfphammer.ld -O2 crt0.s cbozero.c -o cbozero.elf

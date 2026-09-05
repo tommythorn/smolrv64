@@ -41,7 +41,13 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             rv_cache.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
             ../src/ddr_hpm.v"
 
-if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
+# THE MODEL IS REBUILT WHEN THE SOURCES CHANGE (rule G5), as the cosim runner does: a verdict
+# from a binary that does not contain the change is not a verdict, and this runner used to
+# reuse whatever obj_dir_ooo2_linux held whenever BUILD was unset.
+STAMP=obj_dir_ooo2_linux/.config-stamp
+srchash=$(cat *.v ../src/*.v ../src/*.sv $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
+want="MEM_LG2=$MEM_LG2 SRC=$srchash"
+if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ "$(cat $STAMP 2>/dev/null)" != "$want" ]; then
    echo "building obj_dir_ooo2_linux/tb_ooo2_linux (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
@@ -54,6 +60,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
       tb_ooo2_linux.v > /tmp/ooo2linuxbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2linuxbuild.log | head -20; exit 1; fi
+   echo "$want" > "$STAMP"
 fi
 
 echo "=== booting: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 ==="

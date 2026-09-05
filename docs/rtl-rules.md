@@ -306,13 +306,21 @@ empty ROB no longer means its stores have reached memory, and "at the ROB head"
 no longer means "every older store has drained". Every precondition that used
 either as a proxy for visibility names the queue explicitly, at one site each:
 the serialization drain (`drained = rob_empty & sq_occ == 0`, which every fence,
-fence.i, sfence.vma, AMO/LR/SC, CSR and trap op waits on), the CBO start in M
-(`m_cbo_wait`: memory ops issue in order, so a non-empty queue IS an older store),
-and a load's early start (`ld_older`). Before the change a CBO could already pass
-an older store that was not yet at the head; the senior queue widened that to
-retired stores, which is when it was found. A new M-executed access that reads or
-maintains memory routes through one of these three gates or adds its own by name;
-it never assumes the head or `rob_empty` ordered it.
+fence.i, sfence.vma, AMO/LR/SC, CSR and trap op waits on -- sound there because a
+serializing op dispatches only once nothing older is in flight, so the queue holds
+nothing younger either), the CBO start in M (`m_cbo_wait = sq_av_any`: an entry
+WITH AN ADDRESS, because M translates in program order so every older store has
+one and no younger store can get one while M is held), and a load's early start
+(`ld_older`, by store-seqno). The occupancy is NOT "older stores": entries are
+allocated at dispatch, so the queue holds stores younger than M's op, which cannot
+translate until M frees -- a CBO waiting on `sq_occ != 0` deadlocked build L at
+SLUB init on 2026-09-04 (Ubuntu's clear_page is cbo.zero; the tiny128 kernel never
+issues one, so the tiny128 cosim was blind to it -- the Geekbench image is the gate
+for CBOs). Before the change a CBO could already pass an older store that was not
+yet at the head; the senior queue widened that to retired stores, which is when it
+was found. A new M-executed access that reads or maintains memory routes through
+one of these three gates or adds its own by name; it never assumes the head or
+`rob_empty` ordered it, and it never reads the occupancy as "older".
 
 ---
 

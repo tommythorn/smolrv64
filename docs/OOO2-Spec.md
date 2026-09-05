@@ -597,9 +597,14 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   tail of the queue (`tailc <= kcc`; a committed store is architecturally done and survives),
   and "every older store is visible" is no longer implied by the ROB head or by `rob_empty`
   -- the serialization drain (`drained`), the CBO start in M (`m_cbo_wait`) and a load's
-  early start (`ld_older`) each name the queue (rule C5). For a younger load nothing
-  changes: an entry in the queue, committed or not, is a store whose bytes are not in the
-  cache yet, and the alias matrix holds the load behind it.
+  early start (`ld_older`) each name the queue (rule C5). The CBO's predicate is an entry
+  WITH AN ADDRESS (`sq_av_any`), never the occupancy: entries are allocated at dispatch,
+  so the queue holds stores younger than the op in M, which cannot translate until M
+  frees -- a CBO waiting for an empty queue deadlocked build L at SLUB init (2026-09-04;
+  `workloads/fphammer/cbozero.c` is that shape, 129 retires then silence on the unfixed
+  RTL). Only an older store can have an address, because M translates in program order.
+  For a younger load nothing changes: an entry in the queue, committed or not, is a store
+  whose bytes are not in the cache yet, and the alias matrix holds the load behind it.
 - **The translate-only pass does not arbitrate, and does not wait for the LSU's FSM.** It
   needs the MMU and nothing else, so `ooo2_lsu` presents it (`xl_x = req_valid & req_xlate`)
   whatever the FSM is doing and whoever the pre-translated port granted this cycle; a walk it
@@ -894,8 +899,9 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 |
-| load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (82 directed checks) |
+| load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
+| CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
 | the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, rtl= recorded |
