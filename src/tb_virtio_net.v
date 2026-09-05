@@ -68,18 +68,20 @@ module tb;
       integer b; begin merge = old; for (b = 0; b < 8; b = b + 1) if (s[b]) merge[b*8 +: 8] = d[b*8 +: 8]; end
    endfunction
    reg [30:0] wa; reg [63:0] wd; reg [7:0] ws; reg aw_got = 0, w_got = 0; integer wcnt = 0, rcnt = 0;
+   reg jit = 0; integer jseed = 3;
+   function integer jitter(input integer base); begin jitter = jit ? base + ($urandom % 9) : base; end endfunction
    integer n_wr = 0, n_rd = 0;
    always @(posedge clk) begin
       awready <= 1'b0; wready <= 1'b0; bvalid <= 1'b0; arready <= 1'b0; rvalid <= 1'b0;
-      if (awvalid && !aw_got && !awready) begin wa <= awaddr; aw_got <= 1'b1; awready <= 1'b1; end
-      if (wvalid && !w_got && !wready)    begin wd <= wdata; ws <= wstrb; w_got <= 1'b1; wready <= 1'b1; end
-      if (aw_got && w_got && wcnt == 0) wcnt <= WLAT;
+      if (awvalid && !aw_got && !awready && (!jit || ($urandom % 3) != 0)) begin wa <= awaddr; aw_got <= 1'b1; awready <= 1'b1; end
+      if (wvalid && !w_got && !wready && (!jit || ($urandom % 3) != 0))    begin wd <= wdata; ws <= wstrb; w_got <= 1'b1; wready <= 1'b1; end
+      if (aw_got && w_got && wcnt == 0) wcnt <= jitter(WLAT);
       if (wcnt > 1) wcnt <= wcnt - 1;
       else if (wcnt == 1) begin
          mem[wa[20:3]] <= merge(mem[wa[20:3]], wd, ws); n_wr <= n_wr + 1;
          bvalid <= 1'b1; aw_got <= 1'b0; w_got <= 1'b0; wcnt <= 0;
       end
-      if (arvalid && rcnt == 0 && !arready) begin arready <= 1'b1; rcnt <= RLAT; rdata <= mem[araddr[20:3]]; end
+      if (arvalid && rcnt == 0 && !arready && (!jit || ($urandom % 3) != 0)) begin arready <= 1'b1; rcnt <= jitter(RLAT); rdata <= mem[araddr[20:3]]; end
       if (rcnt > 1) rcnt <= rcnt - 1;
       else if (rcnt == 1) begin rvalid <= 1'b1; rcnt <= 0; n_rd <= n_rd + 1; end
    end
@@ -94,6 +96,7 @@ module tb;
    function [7:0] pat(input integer i); begin pat = i[7:0] ^ {i[11:8], 4'h5}; end endfunction
 
    integer errors = 0, i, t0, tx_cyc, rx_cyc, cyc = 0;
+   integer stress_len [0:3]; integer stress_key [0:3];
    always @(posedge clk) cyc <= cyc + 1;
    reg [10:0] sent_len; reg sent = 0;
    always @(posedge clk) if (tx_send) begin sent <= 1'b1; sent_len <= tx_send_len; end
@@ -163,7 +166,75 @@ module tb;
          chk(get32(rxu[30:0] + 8 + n*8) == 32'd12 + flen, "RX: used.ring[n].len");
          repeat (4) step;
       end
-      n_rd = n_rd; // (counts cover all cases; the per-frame figures are case 0, 1500 bytes)
+      // ================= STRESS: 200 frames, random direction, length and alignment, with
+      // the AXI slave's AW/W/R timing jittered, RX buffers posted one at a time and sometimes
+      // not at all (the drop path), TX batches of up to 3 descriptors per notify. ==========
+      begin : stress
+         integer q, tn, rn, nb, b, dir, seed, want_drop;
+         reg [30:0] ba;
+         seed = 7; tn = 8; rn = 8;                                 // avail/used indices continue from the directed cases
+         for (q = 0; q < 200; q = q + 1) begin
+            dir = $urandom(seed) % 2; seed = seed + 1;
+            jit = 1;
+            if (dir == 0) begin                                       // ---- TX, 1..3 descriptors in one notify
+               nb = 1 + ($urandom(seed) % 3); seed = seed + 1;
+               for (b = 0; b < nb; b = b + 1) begin
+                  flen = 14 + ($urandom(seed) % 1501); seed = seed + 1;
+                  off  = $urandom(seed) % 8; seed = seed + 1;
+                  ba = 31'h40000 + ((tn + b) % 64) * 31'h1000 + off;
+                  for (i = 0; i < 12; i = i + 1) put8(ba + i, 8'h00);
+                  for (i = 0; i < flen; i = i + 1) put8(ba + 12 + i, pat(i + tn + b));
+                  put64(txd[30:0] + ((tn + b) % QS)*16, {33'd0, ba}); put32(txd[30:0] + ((tn + b) % QS)*16 + 8, 32'd12 + flen);
+                  put16(txd[30:0] + ((tn + b) % QS)*16 + 12, 16'd0); put16(txd[30:0] + ((tn + b) % QS)*16 + 14, 16'd0);
+                  put16(txa[30:0] + 4 + ((tn + b) % QS)*2, ((tn + b) % QS));
+                  stress_len[b] = flen; stress_key[b] = tn + b;
+               end
+               put16(txa[30:0] + 2, (tn + nb));
+               notify = 1; notify_q = 1; step; notify = 0;
+               for (b = 0; b < nb; b = b + 1) begin
+                  for (i = 0; i < 2048; i = i + 1) txbuf[i] = 8'hEE;
+                  sent = 0; i = 0; while (!sent && i < 400000) begin step; i = i + 1; end
+                  chk(sent, "STRESS TX: no tx_send");
+                  chk(sent_len == stress_len[b], "STRESS TX: send length");
+                  for (i = 0; i < stress_len[b]; i = i + 1) if (txbuf[i] !== pat(i + stress_key[b])) begin errors = errors + 1; if (errors < 8) $display("FAIL STRESS TX frame %0d byte %0d: %h want %h", tn + b, i, txbuf[i], pat(i + stress_key[b])); end
+                  chk(txbuf[stress_len[b]] == 8'hEE, "STRESS TX: wrote past the frame");
+                  tx_busy = 1; repeat (3 + ($urandom(seed) % 40)) step; seed = seed + 1; tx_busy = 0;
+               end
+               i = 0; while (get16(txu[30:0] + 2) != ((tn + nb) & 16'hFFFF) && i < 8000) begin step; i = i + 1; end
+               chk(get16(txu[30:0] + 2) == ((tn + nb) & 16'hFFFF), "STRESS TX: used.idx");
+               tn = tn + nb;
+            end else begin                                            // ---- RX, one frame; sometimes no buffer
+               flen = 14 + ($urandom(seed) % 1501); seed = seed + 1;
+               off  = $urandom(seed) % 8; seed = seed + 1;
+               want_drop = ($urandom(seed) % 8) == 0; seed = seed + 1;
+               ba = 31'h80000 + (rn % 64) * 31'h1000 + off;
+               for (i = -8; i < 12 + flen + 8; i = i + 1) put8(ba + i, 8'hA5);
+               if (!want_drop) begin
+                  put64(rxd[30:0] + (rn % QS)*16, {33'd0, ba}); put32(rxd[30:0] + (rn % QS)*16 + 8, 32'd2048);
+                  put16(rxd[30:0] + (rn % QS)*16 + 12, 16'd2); put16(rxd[30:0] + (rn % QS)*16 + 14, 16'd0);
+                  put16(rxa[30:0] + 4 + (rn % QS)*2, (rn % QS)); put16(rxa[30:0] + 2, (rn + 1));
+               end
+               for (i = 0; i < flen; i = i + 1) rxbuf[i] = pat(i + 3 * rn + 5);
+               rx_frame_len = flen; rx_frame_valid = 1;
+               i = 0; while (!rx_frame_ack && i < 400000) begin step; i = i + 1; end
+               chk(rx_frame_ack, "STRESS RX: no frame_ack");
+               rx_frame_valid = 0; step;
+               if (want_drop) begin
+                  for (i = -8; i < 12 + flen + 8; i = i + 1) chk(get8(ba + i) == 8'hA5, "STRESS RX: a dropped frame wrote memory");
+                  chk(get16(rxu[30:0] + 2) == (rn & 16'hFFFF), "STRESS RX: used.idx moved on a drop");
+               end else begin
+                  for (i = 0; i < 12; i = i + 1) if (get8(ba + i) !== (i == 10 ? 8'h01 : 8'h00)) begin errors = errors + 1; if (errors < 8) $display("FAIL STRESS RX frame %0d hdr byte %0d: %h", rn, i, get8(ba + i)); end
+                  for (i = 0; i < flen; i = i + 1) if (get8(ba + 12 + i) !== pat(i + 3 * rn + 5)) begin errors = errors + 1; if (errors < 8) $display("FAIL STRESS RX frame %0d byte %0d: %h want %h", rn, i, get8(ba + 12 + i), pat(i + 3 * rn + 5)); end
+                  for (i = 1; i <= 8; i = i + 1) begin chk(get8(ba - i) == 8'hA5, "STRESS RX: wrote below"); chk(get8(ba + 12 + flen + i - 1) == 8'hA5, "STRESS RX: wrote past"); end
+                  i = 0; while (get16(rxu[30:0] + 2) != ((rn + 1) & 16'hFFFF) && i < 8000) begin step; i = i + 1; end
+                  chk(get16(rxu[30:0] + 2) == ((rn + 1) & 16'hFFFF), "STRESS RX: used.idx");
+                  chk(get32(rxu[30:0] + 8 + (rn % QS)*8) == 32'd12 + flen, "STRESS RX: used len");
+                  rn = rn + 1;
+               end
+            end
+         end
+         $display("VNET-TB stress: %0d frames, %0d errors", q, errors);
+      end
       $display("VNET-TB tx=%0d rx=%0d cycles per %0d-byte frame (8 TX + 8 RX cases, every alignment; RLAT=%0d WLAT=%0d)",
                tx_cyc, rx_cyc, FLEN, RLAT, WLAT);
       if (errors == 0) $display("VNET-TB PASS"); else begin $display("VNET-TB FAIL (%0d errors)", errors); $fatal(1, "tb_virtio_net FAILED"); end

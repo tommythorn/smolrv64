@@ -124,11 +124,16 @@ module tb;
    reg [63:0] got;
    reg [PAW-1:0] A;
 
+   // A plain store the way the LSU presents one: dropped the cycle after the registered
+   // accept is seen (so it is not in front of the S_FIN door a second time), then its
+   // completion awaited so the test that follows sees the write landed.
    task do_store(input [PAW-1:0] a, input [63:0] d, input [7:0] m);
       begin
          wr_addr=a; wr_data=d; wr_mask=m; wr_req=1'b1;
+         @(negedge clk); while (!wr_acc) @(negedge clk);
+         @(posedge clk); #1; wr_req=1'b0;
          @(negedge clk); while (!wr_ack) @(negedge clk);
-         wr_req=1'b0; @(negedge clk);
+         @(negedge clk);
       end
    endtask
    task do_load(input [PAW-1:0] a, input [3:0] t);
