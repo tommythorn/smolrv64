@@ -12,7 +12,13 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  18818417  0.5   # The D$ accept is REGISTERED (2026-09-05): the combinational accept
+60000000  8  14057886  0.5   # The D$ stream buffer is OFF (2026-09-05): with it on, the board faults
+                              # (P1: a corrupted preempt count and a wild pointer in the network
+                              # setup; O: a python segfault, a dentry-LRU Oops), and without it (P3)
+                              # the same core boots clean. The cosim, DMA-blind, cannot see why;
+                              # tb_ooo2_dcache T18-T20 and the random stress pass. -25%: the boot's
+                              # memory-init walk was where the buffer paid. The RTL stays, PREFETCH(0).
+                              # Previously 18818417: The D$ accept is REGISTERED (2026-09-05): the combinational accept
                               # fed the LSU, M's done and the scheduler in one cycle and build N
                               # failed timing at -0.58 ns. -0.85% on this boot: an isolated store
                               # frees the LSU a cycle later; a store stream is unchanged (the LSU
@@ -29,7 +35,8 @@
                               # Previously 11624624: OOO2_HW=8, the 16-byte fetch window (2026-09-05): +0.4% on this
                               # boot (kernel code is RVC-dense); febench's 32-bit code goes
                               # 0.66 -> 0.98 (aligned) and 0.40 -> 0.79 (2-byte offset).
-60000000  4  18410937  0.5   # The registered D$ accept at OOO2_HW=4 (2026-09-05): -0.73%, see the row above.
+60000000  4  13732722  0.5   # The D$ stream buffer OFF at OOO2_HW=4 (2026-09-05): see the row above.
+                              # Previously 18410937: The registered D$ accept at OOO2_HW=4 (2026-09-05): -0.73%, see the row above.
                               # Previously 18546835: Plan item 6 at OOO2_HW=4 (2026-09-05): the D$ stream buffer.
                               # Previously 13783921: Plan item 4c (2026-09-05): a write miss is merged by the fill
                               # machine and installs dirty, so a plain write is not solo. +2.35%.

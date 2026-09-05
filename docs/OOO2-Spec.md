@@ -700,7 +700,13 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   NC or write-through write, a CBO, a span. `tb_ooo2_dcache` T15-T17: the merged miss and
   its writeback, a store under a read's fill and a hit under the store's, two stores to one
   missing line.
-- **The D$ has the I$'s next-line stream buffer** (2026-09-05, plan item 6). A demand fill
+- **The D$ has the I$'s next-line stream buffer, OFF** (`PREFETCH(0)` in `rv_soc_top`,
+  2026-09-05, plan item 6): on the board the same core faults with it on (P1: a corrupted
+  preempt count and a wild pointer during network setup; O: a python segfault and a
+  dentry-LRU Oops) and boots clean with it off (P3), while the DMA-blind cosim and every
+  bench, the random stress included, pass. Something a real kernel with DMA does to a line
+  the buffer holds is not covered by the rules below; until it is named, the buffer is off.
+  What was built and how it is meant to work: a demand fill
   arms a prefetch of the next line on the idle L2 port; a miss on that line takes it from
   the buffer instead of L2. What a writable cache adds, each asserted or tested: the
   buffered line can be STALE against a dirty resident copy, so a writeback of that line
@@ -758,7 +764,7 @@ Both are the **same module** (`rv_cache`), specialised by parameter.
 | Indexing | **PIPT** | **PIPT** |
 | Read width | `OOO2_HW*16` = 128 bit, two 64-bit banks | 64 bit |
 | Write policy | fill-only (`WRITABLE=0`) | **write-back** (`WRTHRU=0`) |
-| Prefetch | next-line, single-line stream buffer | the same buffer (2026-09-05, plan item 6) |
+| Prefetch | next-line, single-line stream buffer | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
 
 **Not UltraRAM.** Data is even/odd **banks** of `BANKW` bits per way — `2*WAYS` sync-read
