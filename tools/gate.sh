@@ -70,7 +70,13 @@ WORST=$(grep -A9 -E "Slack \((VIOLATED|MET)\)" "$RES/timing_summary.rpt" 2>/dev/
         | grep -E "Slack|Source:|Destination:" | head -3)
 [ -n "$WORST" ] && printf '%s\n' "$WORST" > "$RES/worst-path.txt"
 if [ ! -f "$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit" ]; then
-   echo "GATE: FAIL (timing) $WNS   [evidence: gate-results/$SHA/]"
+   # Name the stage that failed: a build that never reached timing is not a timing failure
+   # (gate U, 2026-09-05: two "FAIL (timing)" verdicts were the RAM-inference check, and
+   # one of them was misread as memory pressure).
+   if grep -q 'RAM INFERENCE REGRESSED' "$RES/build.log"; then WHY="ram-inference: $(grep -oE '^ +[a-z_0-9]+ +is no longer a RAM' "$RES/build.log" | awk '{print $1}' | tr '\n' ' ')"
+   elif [ -z "$WNS" ]; then WHY="build: $(grep -E '^ERROR:|^Error|^make: ' "$RES/build.log" | head -1 | cut -c1-120)"
+   else WHY="timing"; fi
+   echo "GATE: FAIL ($WHY) $WNS   [evidence: gate-results/$SHA/]"
    printf '%s\n' "$WORST"
    exit 1
 fi

@@ -36,7 +36,8 @@ smap    : speculative map; flush clears `lv`, so no wholesale copy is ever neede
 # ---- reorder buffer, frontend, predictor, MMU -------------------------------------------
 rob     : ROB status
 ent     : ROB entries
-q_dat   : fetch queue data
+q_dat0  : fetch queue data, bank 0 -- entry parity, two pushes per cycle (item 10a, 2026-09-05)
+q_dat1  : fetch queue data, bank 1
 ras     : return address stack
 btb     : branch target buffer, 1024 x 53 -- would be larger than the whole design in flops
 ycorr   : YAGS correlated table (Block RAM)
