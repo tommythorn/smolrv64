@@ -179,10 +179,20 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   2026-09-05; 4 before), so the I$ read width is `HW*16` = 128 bits, read as the 64-bit
   chunk pair (§9.1). On sha256sum the frontend bubble went from 43.4% of cycles (I, HW=4) to
   10.1% (M, HW=8 with the senior store queue), IPC 0.435 → 0.714.
-- **Fetch buffer: two chunk-aligned 16-byte chunks, the next one requested on the slide
-  cycle.** The buffer holds chunk0/chunk1 and serves any window across the pair; when the PC
-  enters chunk1 (the *slide*: chunk1 becomes chunk0) chunk2 is requested in that same cycle,
-  and lands 3 cycles later, usable the cycle after. Until 2026-09-05 the request waited for
+- **Fetch buffer: three chunk-aligned 16-byte chunks, two requests in flight, running two
+  chunks ahead** (plan item 10e, 2026-09-05; two chunks and one request before). The pair
+  chunk0/chunk1 serves any window across it, as before; chunk2 is a landing pad that feeds
+  chunk1 at the *slide* (the PC entering chunk1: chunk1 becomes chunk0). A request leaves for
+  the first of chunk0..2 neither held nor in flight -- chunk1..3 in the slide cycle -- inside
+  chunk0's page; two may be outstanding; the I$ port's tag names the request entry and the
+  answer's address names the slot (both asserted). Shifts are chosen by address, so the PC
+  entering a chunk whose bytes are in flight keeps the other slots. Why: one request in
+  flight, asked for on the slide and answered two cycles later, kept a one-wide consumer fed
+  and left a two-wide one -- a chunk eaten in two cycles -- idle one cycle in three;
+  `tools/fe-pipe-model.py` put fetch at 1.23 instructions per cycle on the sha256 kernel as
+  built and 1.99 with this. The history of the single-request buffer, kept: when the PC
+  entered chunk1 chunk2 was requested in that same cycle,
+  and landed 3 cycles later, usable the cycle after. Until 2026-09-05 the request waited for
   the registered state, one cycle later, and a chunk holding three whole 32-bit ops and a
   straddler (compiled code between its compressed ops: half of sha256's chunks) starved the
   aligner one cycle each: `FE_QUE` 8.0% of the sha256 kernel's cycles in sim, 8.2–8.5% for
@@ -195,9 +205,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
 - **Two-wide fetch** (2026-09-05, plan item 10a): the aligner emits up to two instructions per
   cycle (`IW=2`) and both enter the F/X queue in one cycle; the queue is two LUTRAM banks on
   entry parity, so each bank takes one write per cycle and the head is a 2:1 mux. Decode still
-  pops one. A bundle ends at its first CTI or SYSTEM op, and slot 1 may not cross a 16-byte
-  chunk boundary (slot 0 may straddle it through the fetch buffer's pair), so a bundle's shape
-  is a function of the code alone, never of chunk-arrival timing. The bundle's prediction
+  pops one. A bundle ends at its first CTI or SYSTEM op or at the page boundary; when a later
+  slot's bytes are not in the window yet but are coming (the shortfall is the buffer's, not
+  the page's: `bytes_late`) the bundle WAITS rather than cutting (item 10e; until then slot 1
+  could not cross a 16-byte chunk boundary, which made 338 of the sha256 kernel's 934 bundles
+  singles), so a bundle's shape is a function of the code alone, never of chunk-arrival
+  timing -- which is what the predictor, keyed by the bundle base, requires. The bundle's prediction
   belongs to its last slot; slot 1 carries its offset from the bundle base in the predict
   details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2). The
   ahead-PC length table (`lenp`) holds the bundle's consumed count (1..4 halfwords) in 4,096
@@ -845,9 +858,10 @@ Making the memory 20x slower did NOT widen its advantage, which is the measureme
 matters: if the win came from hiding miss latency it would have grown, and it did not.
 
 The reason is that the split gives the CACHE the ability to overlap a hit with a fill while
-nothing in the design produces the second request. The LSU, the I$ fetch buffer and each PTW
-walk are all single-outstanding (section 8), so `S_CHECK` usually has nothing to run under
-the miss. The cache is now READY for memory-level parallelism and is not the thing limiting
+nothing on the data side produces the second request. The LSU and each PTW walk are
+single-outstanding (section 8) -- the I$ fetch buffer has had two requests in flight since
+item 10e (2026-09-05), which the I$ serves at a hit per two cycles -- so the D$'s `S_CHECK`
+usually has nothing to run under the miss. The cache is now READY for memory-level parallelism and is not the thing limiting
 it. Any further work inside `rv_cache` aimed at hiding latency is optimising a resource that
 is not the constraint -- the constraint is the number of independent requests the core can
 have in flight, i.e. the multi-outstanding load queue in the work list below.

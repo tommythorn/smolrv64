@@ -21,7 +21,7 @@ module tb;
 
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) dut
      (.hwin(hwin), .avail(avail), .base_pc(base_pc), .base_seq(base_seq),
-      .solo_all(1'b0),
+      .solo_all(1'b0), .bytes_late(1'b0),
       .valid(valid), .inst(inst), .pc(pc), .seq(seq), .consumed(consumed));
 
    reg [15:0] h [0:HW-1];
