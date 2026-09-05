@@ -30,7 +30,7 @@ module ooo2_core
     parameter SEQW = 8,
     parameter HW   = `OOO2_HW,
     parameter AW   = 64,
-    parameter PDW   = 16,          // ooo2_predictor predict-detail width (BIMW+YW)
+    parameter PDW   = 18,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
     parameter [PCW-1:0] RESET_PC = 0)
    (input  wire                    clk,
     input  wire                    reset,

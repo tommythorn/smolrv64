@@ -185,6 +185,18 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   644f732c, interrupt-bracketed): `sha256sum` 0.80 → 0.86–0.87 with `FE_QUE` 8.4% → 0.4%,
   the C loop 0.876 → 0.90, libcrypto under `openssl speed` 0.784 → 0.820; the boot is
   −0.19% (memory-bound; wasted chunk requests at taken branches, presumably).
+- **Two-wide fetch** (2026-09-05, plan item 10a): the aligner emits up to two instructions per
+  cycle (`IW=2`) and both enter the F/X queue in one cycle; the queue is two LUTRAM banks on
+  entry parity, so each bank takes one write per cycle and the head is a 2:1 mux. Decode still
+  pops one. A bundle ends at its first CTI or SYSTEM op, and slot 1 may not cross a 16-byte
+  chunk boundary (slot 0 may straddle it through the fetch buffer's pair), so a bundle's shape
+  is a function of the code alone, never of chunk-arrival timing. The bundle's prediction
+  belongs to its last slot; slot 1 carries its offset from the bundle base in the predict
+  details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2). The
+  ahead-PC length table (`lenp`) holds the bundle's consumed count (1..4 halfwords) in 4,096
+  entries: at 1,024, bundle lengths of 4, 6 and 8 bytes aliased between the sha256 kernel's
+  unrolled rounds and its loop, a lost prediction per alias and two mispredicts per block
+  (0.45 redirects per thousand; 0.002 at 4,096).
 - **Ahead prediction**: the predictor arrays are addressed from `apc`, a register-only ahead
   PC, never from a combinational `npc`. This is what bought the predictor a full stage of
   slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the
@@ -200,6 +212,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   Predicts RVC-vs-32-bit so `apc` can advance without decoding.
 
 ### 4.2 Branch prediction
+
+**Keyed by the bundle base.** Prediction is looked up under the bundle's base PC (`apc`, then
+the `btb_qpc == base_pc` check); training recomputes the BTB index and tags from the resolving
+CTI's PC minus its carried offset from that base (`res_base`). At one instruction per bundle
+the two were the same address; with two, a branch in slot 1 trained under its own PC was never
+found under slot 0's, and mispredicted every execution.
 
 | structure | size | organisation | storage |
 |---|---|---|---|

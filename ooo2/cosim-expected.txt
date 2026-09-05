@@ -12,7 +12,7 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  14031295  0.5   # Chunk2 requested on the slide cycle (2026-09-05): -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
+60000000  8  14136876  0.5   # Two-wide fetch, IW=2 into the banked F/X queue (2026-09-05, item 10a): +0.75% on the boot. Was 14031295 with chunk2 requested on the slide cycle: -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
                               # (P1: a corrupted preempt count and a wild pointer in the network
                               # setup; O: a python segfault, a dentry-LRU Oops), and without it (P3)
                               # the same core boots clean. The cosim, DMA-blind, cannot see why;

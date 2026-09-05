@@ -108,15 +108,29 @@ module aligner
    reg           is32, have, is_sys;
    // Explicit sensitivity: hwin is read via the hwr() function, which iverilog's
    // @* does not pull into the list -- name it so the block re-evaluates on it.
-   always @(hwin or avail or base_pc or base_seq or solo_all) begin
+   // A BUNDLE DOES NOT CROSS A CHUNK BOUNDARY AFTER SLOT 0 (2026-09-05, two-wide fetch).
+   // The fetch buffer serves the window across a chunk PAIR whose second chunk may or may
+   // not have arrived yet, so a bundle allowed to span the boundary has a shape that depends
+   // on timing -- and the predictor, keyed by the bundle's base PC, then meets the same
+   // branch in differently-based bundles from one iteration to the next: on the sha256
+   // kernel every loop branch mispredicted (0.003 -> 1.36 redirects per thousand). Slot 0
+   // keeps the whole window (a straddler at the boundary is served from the pair, which is
+   // deterministic: it is always a straddler there); later slots see the window clipped at
+   // the chunk end, so a bundle's shape is a function of the code alone.
+   localparam CHA = $clog2(2*HW);                             // chunk = HW halfwords = 2*HW bytes
+   wire [PBW-1:0] to_chunk_end = HW[PBW-1:0] - {1'b0, base_pc[CHA-1:1]};
+   wire [PBW-1:0] avail_late   = (avail < to_chunk_end) ? avail : to_chunk_end;
+   reg  [PBW-1:0] av;
+   always @(hwin or avail or avail_late or base_pc or base_seq or solo_all) begin
       pos = 0;
       run = 1'b1;
       bt  = 1'b0;
       for (k = 0; k < IW; k = k + 1) begin
          h0   = hwr(pos);
          is32 = (h0[1:0] == 2'b11);
+         av   = (k == 0) ? avail : avail_late;
          // all needed halfwords present?  first always, second only if 32-bit
-         have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
+         have = (pos < av) && (!is32 || ((pos + 1'b1) < av));
          // A SYSTEM op (ecall/ebreak/csr/xret), an AMO, or a FENCE is SOLO in its bundle:
          // terminate the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo
          // SYSTEM lets a trap roll back TO that checkpoint and precisely annul the faulting op's

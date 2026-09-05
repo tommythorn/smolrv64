@@ -227,28 +227,32 @@ module fetch
    // ~fire, so the consumer holds its entry -- which is exactly the right answer, because
    // pc_q holds too.
    //
-   // IW=1, so a bundle IS one instruction and its fall-through is pc_q+2 or pc_q+4: one
-   // bit. `lenp` is an untagged direct-mapped table of that bit, trained on every fire from
+   // The bundle's fall-through is pc_q + 2*consumed, consumed being 1..2*IW halfwords, so
+   // `lenp` is an untagged direct-mapped table of (consumed - 1), trained on every fire from
    // the aligner's own count. Untagged is fine for the same reason as above -- an alias
-   // costs a lost prediction. Unconnected in the OoO frontend, where synthesis drops it.
-   localparam LENB = 10, NLEN = 1 << LENB;
+   // costs a lost prediction, never a wrong one. At IW=1 this was one bit (2 or 4 bytes);
+   // at IW=2 (2026-09-05, two-wide fetch) it is two.
+   localparam LENB = 12, NLEN = 1 << LENB;   // 4096 (was 1024): aliasing test 2026-09-05
+   localparam CW = (IW > 1) ? $clog2(2*IW) : 1;      // holds consumed-1 for consumed in 1..2*IW
    (* ram_style = "distributed" *)
-   reg  lenp [0:NLEN-1];
+   reg  [CW-1:0] lenp [0:NLEN-1];
    integer li;
-   initial for (li = 0; li < NLEN; li = li + 1) lenp[li] = 1'b0;   // cold: assume 4 bytes
+   initial for (li = 0; li < NLEN; li = li + 1) lenp[li] = {{(CW-1){1'b0}}, 1'b1};   // cold: 4 bytes
    wire [LENB-1:0] lidx    = pc_q[LENB:1];
-   wire            len_rvc = lenp[lidx];
+   wire [CW-1:0]   len_g   = lenp[lidx];                              // consumed - 1
+   wire [63:0]     len_adv = {{(63-CW){1'b0}}, len_g, 1'b0} + 64'd2;  // 2*consumed bytes
    assign apc = reset        ? RESET_PC
               : redirect     ? redirect_pc
               : irq_inject   ? pc_q
               : strad        ? (pc_q + 64'd4)
               : apred_v      ? pred_tgt
-              :                (pc_q + (len_rvc ? 64'd2 : 64'd4));
+              :                (pc_q + len_adv);
 
+   wire [PBW-1:0] al_cons_m1 = al_consumed - 1'b1;
    always @(posedge clk) begin
       // Train from the truth: a straddler is a 32-bit op by construction; the interrupt
       // pseudo-op is not the instruction at pc_q at all, so it must not train.
-      if (fire & ~irq_inject) lenp[lidx] <= ~strad & (al_consumed == 1'b1);
+      if (fire & ~irq_inject) lenp[lidx] <= strad ? {{(CW-1){1'b0}}, 1'b1} : al_cons_m1[CW-1:0];
    end
 
    always @(posedge clk) begin

@@ -18,7 +18,7 @@ module ooo2_frontend
   #(parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
-    parameter PDW   = 16,            // ooo2_predictor's predict-detail width (BIMW+YW)
+    parameter PDW   = 18,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
     // F/X queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -103,10 +103,20 @@ module ooo2_frontend
     output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
 
    // ---------------------------------------------------------------- fetch
+   // TWO-WIDE FETCH (2026-09-05, plan item 10a): the aligner emits up to two instructions per
+   // cycle and both enter the queue in one cycle; decode still pops one. The queue then runs
+   // ahead of dispatch and absorbs every fetch gap (a redirect's refill, a taken target's
+   // arrival) instead of exposing it two cycles later as FE_QUE -- and it is the frontend a
+   // two-wide dispatch (10b) needs. A bundle ends at its first CTI, so slot 1 is never
+   // followed by anything and slot 0 is never a CTI when slot 1 is valid: the bundle's
+   // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
+   // falls through.
+   localparam FW = 2;
    wire               fx_valid, f_brt, bp_v, bp_av;
-   wire [31:0]        fx_inst;
-   wire [PCW-1:0]     fx_pc;
-   wire [SEQW-1:0]    fx_seq;
+   wire [FW-1:0]      fx_sv;                      // per-slot valid
+   wire [FW*32-1:0]   fx_inst;
+   wire [FW*PCW-1:0]  fx_pc;
+   wire [FW*SEQW-1:0] fx_seq;
    wire [PCW-1:0]     f_apc, f_ftn, bp_tgt;
    wire [1:0]         fx_pk;
 
@@ -114,10 +124,10 @@ module ooo2_frontend
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
    // is no tag to allocate and nothing to pin against reuse.
 
-   fetch #(.IW(1), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
+   fetch #(.IW(FW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset),
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
-      .solo_all(1'b0),                 // IW=1: every bundle is already one instruction
+      .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
       .irq_inject(irq_inject),
       // `bp_av` on the apc arm, `bp_v` on the real advance: the predictor's steer minus
       // its aligner term, so the array read address stays register-only (ooo2_predictor
@@ -131,10 +141,10 @@ module ooo2_frontend
       .npc(), .apc(f_apc), .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail),
-      .ready(~q_full), .valid(fx_valid),
-      .slot_valid(), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
+      .ready(q_room), .valid(fx_valid),
+      .slot_valid(fx_sv), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
 
-   wire fire = ~q_full & fx_valid;    // fetch handshake: a bundle enters the QUEUE
+   wire fire = q_room & fx_valid;     // fetch handshake: a bundle enters the QUEUE
 
    // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
    // `accept`, which is the queue POP. Those were the same edge until this module grew a
@@ -184,30 +194,57 @@ module ooo2_frontend
    // length) and the interrupt pseudo-op (which holds its PC).
    localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
    wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
-   reg  [QW-1:0]  q_dat [0:QDEPTH-1];
+   // TWO ENTRIES PER CYCLE INTO A LUTRAM: banked on entry parity, so each bank takes one write
+   // per cycle (entry q_wp goes to bank q_wp[0], entry q_wp+1 to the other) and the head is a
+   // 2:1 mux on q_rp[0]. `q_room` asks for two free entries, so a bundle never has to split.
+   reg  [QW-1:0]  q_dat0 [0:QDEPTH/2-1];
+   reg  [QW-1:0]  q_dat1 [0:QDEPTH/2-1];
    reg  [QAW-1:0] q_rp, q_wp;
    reg  [QAW:0]   q_cnt;
-   wire           q_full  = (q_cnt == QDEPTH[QAW:0]);
+   wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - 2);
    wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
-   wire           q_push  = ~q_full & (fx_valid | fx_fault);
+   wire           q_push  = q_room & (fx_valid | fx_fault);
+   wire           q_two   = q_push & fx_sv[1];            // the bundle has a second instruction
    wire           q_pop   = accept & ~q_empty;
-   wire [QW-1:0]  q_in    = {pd_fetch, (fx_fault ? imem_ipc : fx_pc), fx_inst, fx_seq,
-                             fx_pk, bp_tgt, fx_fault, imem_cause, imem_addr};
+   // slot 0 falls through when slot 1 exists; the bundle's prediction rides with its last slot
+   wire [QW-1:0]  q_in0   = {pd_fetch, (fx_fault ? imem_ipc : fx_pc[0 +: PCW]), fx_inst[0 +: 32], fx_seq[0 +: SEQW],
+                             (fx_sv[1] ? 2'd0 : fx_pk), bp_tgt, fx_fault, imem_cause, imem_addr};
+   // slot 1's details carry its offset from the bundle base (slot 0's length in halfwords),
+   // so the predictor trains the entry the prediction was looked up under (see res_base).
+   wire [1:0]     fx_off1 = (fx_inst[1:0] == 2'b11) ? 2'd2 : 2'd1;
+   wire [QW-1:0]  q_in1   = {fx_off1, pd_fetch[PDW-3:0], fx_pc[PCW +: PCW], fx_inst[32 +: 32], fx_seq[SEQW +: SEQW],
+                             fx_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
+   wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
    // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
    wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
-   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_dat[q_rp];
+   wire [QW-1:0]  q_head  = q_rp[0] ? q_dat1[q_rp[QAW-1:1]] : q_dat0[q_rp[QAW-1:1]];
+   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
 
    always @(posedge clk) begin
       if (reset | redirect) begin
          q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin
-         if (q_push) begin q_dat[q_wp] <= q_in; q_wp <= q_wp + 1'b1; end
+         if (q_push) begin
+            if (q_wp[0]) begin
+               q_dat1[q_wp[QAW-1:1]]  <= q_in0;
+               if (q_two) q_dat0[q_wp1[QAW-1:1]] <= q_in1;
+            end else begin
+               q_dat0[q_wp[QAW-1:1]]  <= q_in0;
+               if (q_two) q_dat1[q_wp1[QAW-1:1]] <= q_in1;
+            end
+            q_wp <= q_wp + {{(QAW-1){1'b0}}, q_two} + 1'b1;
+         end
          if (q_pop)  q_rp <= q_rp + 1'b1;
-         q_cnt <= q_cnt + {{QAW{1'b0}}, q_push} - {{QAW{1'b0}}, q_pop};
+         q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_two} + {{QAW{1'b0}}, q_push} - {{QAW{1'b0}}, q_pop};
       end
    end
+
+   // A second slot without a first, or a fault pseudo-op beside a real slot, is a fetch defect.
+   always @(posedge clk)
+      if (!reset && ((fx_sv[1] & ~fx_sv[0]) || (fx_fault & fx_valid)))
+         $fatal(1, "ooo2_frontend: malformed bundle sv=%b fault=%b", fx_sv, fx_fault);
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;

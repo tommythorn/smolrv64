@@ -302,12 +302,20 @@ module ooo2_predictor
    // which is speculative state no later cycle can reconstruct.
    localparam BIMW = 1 + 2;
    localparam YW   = 1 + 2 + YBITS;
+   // BASE OFFSET (2026-09-05, two-wide fetch): the instruction's distance from its bundle's
+   // base PC in halfwords (0 for slot 0; 1 or 2 for slot 1), stamped by the frontend into
+   // the top BOW bits of the details. Prediction is looked up under the bundle's BASE PC
+   // (apc / base_pc); training recomputes the index and tags from res_pc, the CTI's OWN PC,
+   // which at IW=1 was the same address. At IW=2 a branch in slot 1 was trained under its
+   // own PC and looked up under slot 0's -- never a hit, a mispredict every execution (the
+   // sha256 kernel: 0.003 -> 1.36 redirects per thousand). res_base undoes the offset.
+   localparam BOW  = PDW - BIMW - YW;
    // COMBINATIONAL, not registered: every term is a fetch-time value of the bundle being
    // presented right now, so the consumer latches it in the SAME cycle as `fire` and gets
    // this bundle's details. src/predictor.v registers it into pdet_f and writes the ring a
    // cycle later at `create`, which is why that version needs the lag; carrying the payload
    // removes both the lag and the ring.
-   assign pd_fetch = {p_yhit, yctr_eff, yidx(base_pc, ghr), hit, ctr_eff};
+   assign pd_fetch = {{BOW{1'b0}}, p_yhit, yctr_eff, yidx(base_pc, ghr), hit, ctr_eff};
    wire [1:0]    ctr_eff  = hit    ? q_type[1:0]  : 2'b01;  // miss -> install weakly-not-taken base
    wire [1:0]    yctr_eff = p_yhit ? ycorr_q[1:0] : 2'b01;  // p_yhit, not yhit: pd_fetch is the
                                                             // CTI cone's payload, unchanged
@@ -354,10 +362,12 @@ module ooo2_predictor
    wire [PDW-1:0]  td      = res_pdet;   // carried with the instruction, not looked up
    wire            t_hit   = td[BIMW-1];
    wire [1:0]      t_ctr   = td[BIMW-2 -: 2];
-   // RECOMPUTED, not carried. res_pc is the resolving CTI's own PC, and bidx/btag are
-   // pure functions of it -- the same functions the predict side applied to base_pc.
-   wire [BTBB-1:0] t_idx   = bidx(res_pc);
-   wire [TAGW-1:0] t_tag   = btag(res_pc);
+   // RECOMPUTED, not carried. res_base is the resolving CTI's BUNDLE BASE (its own PC minus
+   // the carried offset), and bidx/btag are pure functions of it -- the same functions the
+   // predict side applied to base_pc.
+   wire [PCW-1:0]  res_base = res_pc - {{(PCW-BOW-1){1'b0}}, td[PDW-1 -: BOW], 1'b0};
+   wire [BTBB-1:0] t_idx   = bidx(res_base);
+   wire [TAGW-1:0] t_tag   = btag(res_base);
    wire [1:0]      t_base  = t_hit ? t_ctr : (res_taken ? 2'b10 : 2'b01);  // miss -> install weak
    wire [1:0]      t_nudge = res_taken ? ((t_base == 2'b11) ? 2'b11 : t_base + 1'b1)
                                        : ((t_base == 2'b00) ? 2'b00 : t_base - 1'b1);
@@ -367,11 +377,11 @@ module ooo2_predictor
    // YAGS corrector training: decode carried predict details, nudge, decide (re)alloc.
    // Update when the corrector was consulted (yc_hit) OR the bimodal mispredicted this
    // conditional -- so the corrector holds exactly the bimodal-exceptions.
-   wire [YW-1:0]    yd     = td[PDW-1 -: YW];
+   wire [YW-1:0]    yd     = td[BIMW+YW-1 -: YW];
    wire             yc_hit = yd[YW-1];
    wire [1:0]       yc_ctr = yd[YW-2 -: 2];
    wire [YBITS-1:0] yc_idx = yd[YBITS-1:0];      // carried: folds the predict-time GHR
-   wire [YTAGW-1:0] yc_tag = ytagf(res_pc);      // recomputed: PC-only
+   wire [YTAGW-1:0] yc_tag = ytagf(res_base);    // recomputed: PC-only, from the bundle base
    wire [1:0]       y_base = yc_hit ? yc_ctr : (res_taken ? 2'b10 : 2'b01);
    wire [1:0]       y_nudge= res_taken ? ((y_base == 2'b11) ? 2'b11 : y_base + 1'b1)
                                        : ((y_base == 2'b00) ? 2'b00 : y_base - 1'b1);
