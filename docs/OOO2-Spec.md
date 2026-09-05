@@ -790,6 +790,16 @@ have in flight, i.e. the multi-outstanding load queue in the work list below.
 | PLIC | `0x0c00_0000` | 64 MiB |
 | UART (NS16550) | `0x1000_0000` | 8 byte registers |
 | virtio-mmio (blk + net) | `0x1000_2000` | 8 KiB |
+
+**virtio-net's DMA moves 8-byte words** (2026-09-05, plan item 7): RX gathers a frame one
+byte per clock from the engine's async-read buffer into a 64-bit word and issues ONE AXI
+write per word, strobed at the buffer's head and tail, with the previous word's write in
+flight; TX fetches the next frame word while the current one is byte-written into the
+engine. Before this every RX byte was its own AXI transaction (1,518 round trips per
+1500-byte frame) and every TX word was fetched and then copied in series. `tb_virtio_net`
+at the DDR latencies measured on the board (reads 28, writes 15): RX 31,919 -> 3,953
+cycles per 1500-byte frame, TX 7,839 -> 6,534. The AXI master is still single-beat; a
+burst master is the next step if the link, not the device, stops being the limit.
 | on-chip SRAM (boot/monitor) | `0x7000_0000` | 256 KiB |
 | DDR4 | `0x8000_0000` | platform |
 
@@ -936,6 +946,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
+| virtio-net DMA, both directions | `ooo2/run-ooo2-vnet-tb.sh` | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |

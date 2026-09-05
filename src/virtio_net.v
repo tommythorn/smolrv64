@@ -142,6 +142,8 @@ module virtio_net #(
    localparam [5:0] S_RX_WAIT_USED_IDX = 6'd35;
    localparam [5:0] S_RX_COMPLETE    = 6'd36;
    localparam [5:0] S_RX_DROP        = 6'd37;  // no free buffer: drop the frame
+   localparam [5:0] S_RX_GATHER      = 6'd38;  // gather up to 8 bytes into the write word
+   localparam [5:0] S_WAIT_NEXT      = 6'd39;  // TX: the read-ahead word has not landed yet
 
    localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
    localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
@@ -214,6 +216,16 @@ module virtio_net #(
    wire [ 7:0] rx_wbyte = (rx_widx == 11'd10) ? 8'd1 :
                           (rx_widx <  11'd12) ? 8'd0 : rx_rd_data;
    wire [63:0] rx_waddr = rx_buf_addr + {53'd0, rx_widx};
+   // The RX write word (plan item 7, 2026-09-05): bytes are gathered one per clock from the
+   // engine's async-read buffer into their lanes and go out as ONE AXI write per 8-byte word
+   // (strobed at the buffer's head and tail), the previous word's write in flight meanwhile.
+   // Before this every byte was its own AXI transaction: 1,518 round trips and 31,919 cycles
+   // per 1500-byte frame in tb_virtio_net, which made RX the slow direction of NFS.
+   reg  [63:0] rx_wbuf;  reg [7:0] rx_wstrb;  reg rx_wlast;
+   // TX read-ahead (plan item 7): the next frame word is fetched while the current one is
+   // byte-written into the engine, so the fill hides under the DDR round trip instead of
+   // following it. One outstanding read (the master's limit); rd_end is the last word.
+   reg  [63:0] nxt_word;  reg nxt_valid, rd_ahead, rd_err;  reg [63:0] rd_end;
 
    assign debug_tx_frame_count = tx_frame_count;
    assign debug_tx_last_len    = {21'd0, tx_last_len};
@@ -372,10 +384,16 @@ module virtio_net #(
       end
    endtask
 
+   always @(posedge clock) if (!reset && state == S_RX_WRITE && dma_cmd_ready && rx_wstrb == 8'd0)
+      $fatal(1, "virtio_net: an RX write word with no bytes (widx=%0d total=%0d)", rx_widx, rx_total);
    always @(posedge clock) begin
       dma_cmd_valid <= 1'b0;
       used_buffer_interrupt <= 1'b0;
       tx_wr_en <= 1'b0;
+      if (dma_rsp_valid && rd_ahead) begin        // the TX read-ahead word lands
+         nxt_word <= dma_rsp_rdata; nxt_valid <= 1'b1; rd_ahead <= 1'b0;
+         if (dma_rsp_error) begin rd_err <= 1'b1; dma_error_count <= dma_error_count + 32'd1; end
+      end
       tx_send  <= 1'b0;
       rx_frame_ack <= 1'b0;
 
@@ -537,6 +555,8 @@ module virtio_net #(
                     // bytes (drops addr[2:0]), so read from the aligned word
                     // containing frame[0] and extract from its byte offset.
                     frame_total <= dlen[10:0] - 11'd12;
+                    rd_end      <= (desc_addr + {53'd0, dlen[10:0]} - 64'd1) & ~64'd7;   // the word of the last frame byte
+                    nxt_valid <= 1'b0; rd_ahead <= 1'b0; rd_err <= 1'b0;
                     byte_idx    <= 11'd0;
                     first_word  <= 1'b1;
                     start_off   <= desc_addr[2:0] + 3'd4;            // (desc+12)[2:0]
@@ -545,9 +565,10 @@ module virtio_net #(
                  end
               end
            end
-           S_FRAME_RD: begin
+           S_FRAME_RD: begin                          // the first word (later ones are read ahead)
               if (dma_cmd_ready) begin
                  start_read64(desc_addr);
+                 desc_addr <= desc_addr + 64'd8;
                  state <= S_WAIT_FRAME;
               end
            end
@@ -555,23 +576,33 @@ module virtio_net #(
               if (dma_rsp_valid) begin
                  cur_word  <= dma_rsp_rdata;
                  word_byte <= first_word ? start_off : 3'd0;
-                 desc_addr <= desc_addr + 64'd8;
                  first_word <= 1'b0;
                  state <= dma_rsp_error ? S_SEND : S_FILL;
               end
            end
            S_FILL: begin
-              // byte-write the engine buffer one byte/clock
+              // byte-write the engine buffer one byte/clock; meanwhile read the next word
+              if (!rd_ahead && !nxt_valid && desc_addr <= rd_end && dma_cmd_ready) begin
+                 start_read64(desc_addr);
+                 desc_addr <= desc_addr + 64'd8;
+                 rd_ahead  <= 1'b1;
+              end
               tx_wr_en   <= 1'b1;
               tx_wr_addr <= byte_idx;
               tx_wr_data <= cur_word[{word_byte, 3'd0} +: 8];
               byte_idx   <= byte_idx + 11'd1;
               if (byte_idx == frame_total - 11'd1)
                  state <= S_SEND;
-              else if (word_byte == 3'd7)
-                 state <= S_FRAME_RD;       // next word
-              else
+              else if (word_byte == 3'd7) begin
+                 word_byte <= 3'd0;
+                 if (nxt_valid) begin cur_word <= nxt_word; nxt_valid <= 1'b0; end   // landed already: no bubble
+                 else state <= rd_err ? S_SEND : S_WAIT_NEXT;
+              end else
                  word_byte <= word_byte + 3'd1;
+           end
+           S_WAIT_NEXT: begin                          // the read-ahead is still in flight
+              if (nxt_valid) begin cur_word <= nxt_word; nxt_valid <= 1'b0; state <= S_FILL; end
+              else if (rd_err) state <= S_SEND;
            end
            S_SEND: begin
               tx_send      <= 1'b1;
@@ -703,31 +734,40 @@ module virtio_net #(
                  rx_widx     <= 11'd0;
                  rx_total    <= rx_frame_len + 11'd12;    // 12B hdr + frame
                  rx_rd_addr  <= 11'd0;
-                 state <= dma_rsp_error ? S_RX_DROP : S_RX_WRITE;
+                 rx_wbuf <= 64'd0; rx_wstrb <= 8'd0; rx_wlast <= 1'b0;
+                 state <= dma_rsp_error ? S_RX_DROP : S_RX_GATHER;
+              end
+           end
+           S_RX_GATHER: begin
+              // One byte per clock into its lane of the write word: the 12-byte header
+              // (byte 10 = num_buffers = 1) and then the frame. The word goes out when its
+              // last lane fills or the frame ends; the previous word's write is still in
+              // flight, and its response is counted here when it lands.
+              rx_wbuf[{rx_waddr[2:0], 3'd0} +: 8] <= rx_wbyte;
+              rx_wstrb[rx_waddr[2:0]] <= 1'b1;
+              rx_widx    <= rx_widx + 11'd1;
+              rx_rd_addr <= (rx_widx + 11'd1 >= 11'd12) ? (rx_widx + 11'd1 - 11'd12) : 11'd0;
+              if (dma_rsp_valid && dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+              if (rx_waddr[2:0] == 3'd7 || rx_widx == rx_total - 11'd1) begin
+                 rx_wlast <= (rx_widx == rx_total - 11'd1);
+                 state <= S_RX_WRITE;
               end
            end
            S_RX_WRITE: begin
-              // One byte/clock; the AXI master aligns to 8 bytes and uses
-              // wstrb, so any RX-buffer alignment works.
+              // The gathered word, to the word that holds its last byte (the master drops
+              // addr[2:0]; the strobes carry the alignment). Issued as soon as the master is
+              // free, which means the previous write's response has already landed.
+              if (dma_rsp_valid && dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
               if (dma_cmd_ready) begin
-                 start_write(rx_waddr,
-                             write_shift({56'd0, rx_wbyte}, rx_waddr[2:0]),
-                             write_strobe(rx_waddr[2:0], 4'd1));
-                 state <= S_RX_WRITE_WAIT;
+                 start_write(rx_buf_addr + {53'd0, rx_widx - 11'd1}, rx_wbuf, rx_wstrb);
+                 rx_wbuf <= 64'd0; rx_wstrb <= 8'd0;
+                 state <= rx_wlast ? S_RX_WRITE_WAIT : S_RX_GATHER;
               end
            end
-           S_RX_WRITE_WAIT: begin
+           S_RX_WRITE_WAIT: begin                       // the last word's response
               if (dma_rsp_valid) begin
                  if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
-                 if (rx_widx == rx_total - 11'd1)
-                    state <= S_RX_USED_ID;
-                 else begin
-                    rx_widx <= rx_widx + 11'd1;
-                    // pre-issue the next frame byte address to the engine
-                    rx_rd_addr <= (rx_widx + 11'd1 >= 11'd12)
-                                  ? (rx_widx + 11'd1 - 11'd12) : 11'd0;
-                    state <= S_RX_WRITE;
-                 end
+                 state <= S_RX_USED_ID;
               end
            end
            S_RX_USED_ID: begin
