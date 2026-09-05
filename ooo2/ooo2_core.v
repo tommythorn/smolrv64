@@ -380,9 +380,9 @@ module ooo2_core
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    ooo2_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
-      .we_ie(we_ie), .we_ld(we_ld), .we_fe(we_fe),
-      .wa_ie(wa_ie), .wa_ld(wa_ld), .wa_fe(wa_fe),
-      .wd_ie(wb_ie), .wd_ld(wb_ld), .wd_fe(wb_fe),
+      .we_ie(alu_q_v), .we_ld(we_ld), .we_fe(we_fe),       // int-exec: from the writeback register
+      .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
+      .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
@@ -1137,9 +1137,27 @@ module ooo2_core
    // producer wrote it at the end of the cycle in between -- the value is always already
    // there. This is what the extra stage buys back: the forward mux, its self-forwarding
    // loop, and the whole question of which writebacks are forwardable all disappear.
-   wire [63:0] x_rs1 = prf_rs1;
-   wire [63:0] x_rs2 = prf_rs2;
-   wire [63:0] x_rs3 = prf_rs3;
+   // THE ALU'S WRITEBACK IS REGISTERED (2026-09-05). Read -> ALU -> PRF write in one cycle
+   // was the design's critical path (13 levels, 82% route: issue register to the int-exec
+   // LUTRAM's data pin, +0.001 ns on Q, -0.034 on S), and a second ALU on it is hopeless.
+   // The value now lands in alu_q at the end of the issue cycle and is written a cycle
+   // later. Everything ISSUE-timed stays at issue -- the wake, the pending clear, the store
+   // queue's data snoop, the ROB's done, the cosim capture -- so no consumer waits longer;
+   // the one cycle in which a consumer could read the register before the write lands is
+   // covered by this forward from the writeback register, a tag compare and a 2:1 mux. A
+   // squashed op's write still lands: it goes to a register rename rolled back and nothing
+   // can have re-allocated before the edge after the flush, and its pending bit was
+   // cleared at issue, as before.
+   reg                 alu_q_v;
+   reg  [RN_PBITS-1:0] alu_q_prd;
+   reg  [63:0]         alu_q_val;
+   initial begin alu_q_v = 1'b0; alu_q_prd = {RN_PBITS{1'b0}}; alu_q_val = 64'd0; end
+   wire fwd1 = alu_q_v & (i_ps1 == alu_q_prd);
+   wire fwd2 = alu_q_v & (i_ps2 == alu_q_prd);
+   wire fwd3 = alu_q_v & (i_ps3 == alu_q_prd);
+   wire [63:0] x_rs1 = fwd1 ? alu_q_val : prf_rs1;
+   wire [63:0] x_rs2 = fwd2 ? alu_q_val : prf_rs2;
+   wire [63:0] x_rs3 = fwd3 ? alu_q_val : prf_rs3;
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
@@ -1941,7 +1959,11 @@ module ooo2_core
    // at issue. They cannot collide: unit_busy holds the ALU off in any cycle m_wb_ie is
    // set, which is asserted below.
    wire alu_wb = iss_alu & q_rd_v;
-   wire we_ie = alu_wb;
+   wire we_ie = alu_wb;                    // the ISSUE-timed event: wake, pending clear, snoop
+   always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)
+      alu_q_v <= ~reset & alu_wb;
+      if (alu_wb) begin alu_q_prd <= q_prd; alu_q_val <= x_result; end
+   end
    wire we_ld = m_wb_ld | ld_wb;
    wire we_fe = m_wb_fe | fp_wb;
    wire [RN_PBITS-1:0] wa_ie = q_prd;

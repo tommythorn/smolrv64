@@ -87,9 +87,16 @@ construction.
 
 Wakeup is split in two. **Fast** wakeups are writebacks whose value can be forwarded in the
 same cycle, and none of them may depend on which entry was selected or readiness becomes a
-function of itself. **Slow** is the ALU op completing at issue: its result is written at the
-end of the cycle, so a dependent cannot read it before the next one anyway, and waking it
-late costs nothing.
+function of itself. **Slow** is the ALU op completing at issue: its result is registered at the
+end of the issue cycle and written to the PRF a cycle later (2026-09-05; before that the write
+landed at the end of the issue cycle itself), so a dependent cannot read it before the next
+cycle anyway, and waking it late costs nothing. The one cycle in which a dependent selected
+right behind its producer reads the file before the write lands is covered by a forward from
+that writeback register (`alu_q`, a tag compare and a 2:1 mux on each operand). Everything
+issue-timed -- the wake, the pending clear, the store queue's data snoop, the ROB's done, the
+cosim capture -- stays at issue, so no consumer waits longer. Registering the write took the
+write leg off what was the design's critical path: issue register → PRF read → ALU → PRF
+write data in one cycle, 13 levels and 82% route, +0.001 ns on Q, −0.034 on S.
 
 Measured, 300 M-cycle Linux cosim, retires: **67,160,189 → 68,981,116** (dispatch decoupled)
 **→ 69,754,834** (dynamic issue) — **+3.9%**. Small on this workload because a Linux boot is
