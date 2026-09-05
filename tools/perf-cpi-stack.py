@@ -15,8 +15,11 @@ generates from src/csr_file.v and src/lint.sh verifies -- so this cannot drift f
 RTL.  Do not hardcode codes here.
 
 Usage:
-    perf stat -e cycles,instructions,r0005,r0100,r0102,r0110,r0112,\\
-        r0300,r0301,r0302,r0303,r0304,r0310,r0311,r0312 CMD 2>&1 | tools/perf-cpi-stack.py
+    perf stat -e cycles,instructions,r0005,r0006,r0007,r0008,r0100,r0102,r0110,r0112,\\
+        r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0315,r0316 \\
+        CMD 2>&1 | tools/perf-cpi-stack.py
+    (r0313/r0314 are the straddle and F/X-queue buckets: without them 46% of sha256sum's
+     cycles read as "unattributed" on 2026-09-05; with them, 0.1% does.)
     tools/perf-cpi-stack.py saved-perf-output.txt
 """
 import json, os, re, sys
