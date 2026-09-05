@@ -127,13 +127,47 @@ module fetch
    wire [IW-1:0]     al_valid;
    wire [IW*32-1:0]  al_inst;
    wire [IW*PCW-1:0] al_pc;
+   wire [IW*PBW-1:0] al_offs;
    wire [IW*SEQW-1:0] al_seq;
    wire al_br_term;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(eff_avail), .base_pc(pc_q), .base_seq(seq_q),
       .solo_all(solo_all),
-      .valid(al_valid), .inst(al_inst), .pc(al_pc), .seq(al_seq), .consumed(al_consumed),
+      .valid(al_valid), .inst(al_inst), .pc(al_pc), .offs(al_offs), .seq(al_seq), .consumed(al_consumed),
       .br_term(al_br_term));
+   // THE FALL-THROUGH AND THE SLOT PCs ARE MUXES, NOT ADDERS (2026-09-05). Gate U, the first
+   // build of the two-wide fetch, failed at -0.620 ns on pc_q -> iMMU -> fetch buffer ->
+   // aligner -> +2*consumed -> the RAS write and the F/X queue's slot-1 PC: 23 levels with
+   // ten CARRY8, three quarters of it route. pc_q is a register, so pc_q + 2i for i = 0..2*IW
+   // is ready a nanosecond into the cycle; the aligner's count and offsets then SELECT one.
+   // al_pc (the aligner's own sum) is kept for the benches and is unused here.
+   // A bundle consumes at most the WINDOW, so the sums run to min(2*IW, HW) halfwords -- and
+   // that bound is what keeps the loop index inside the count's width: the first cut ran to
+   // 2*IW, and at the riscv-tests' HW=2 window (2-bit counts) index 4 read as 0, matched
+   // offset 0, and every PC came out pc_q + 8 while the HW=8 cosim was exact.
+   localparam integer NP = (2*IW < HW) ? 2*IW : HW;
+   wire [PCW-1:0] pc_plus [0:NP];
+   genvar gp;
+   generate for (gp = 0; gp <= NP; gp = gp + 1) begin : pcp
+      localparam [PCW-1:0] K = 2*gp;
+      assign pc_plus[gp] = pc_q + K;
+   end endgenerate
+   // Explicit selects, not a function: a function reading pc_q and pc_plus from module scope
+   // is invisible to `always @*` (iverilog's list, and the 240 riscv-tests that timed out
+   // under Verilator on the first cut agree), so the block names everything it reads.
+   reg  [IW*PCW-1:0] al_pcm;
+   reg  [PCW-1:0]    ft_sel;
+   integer ps, pi;
+   always @* begin
+      ft_sel = pc_q;
+      for (pi = 1; pi <= NP; pi = pi + 1)
+         if (al_consumed == pi[PBW-1:0]) ft_sel = pc_plus[pi];
+      for (ps = 0; ps < IW; ps = ps + 1) begin
+         al_pcm[ps*PCW +: PCW] = pc_q;
+         for (pi = 1; pi <= NP; pi = pi + 1)
+            if (al_offs[ps*PBW +: PBW] == pi[PBW-1:0]) al_pcm[ps*PCW +: PCW] = pc_plus[pi];
+      end
+   end
    // straddle/irq bundles bypass the aligner: never predict on them (the straddle
    // FSM owns its +4 advance; the pseudo-op holds PC).
    assign br_term = al_br_term & ~strad & ~irq_inject;
@@ -155,7 +189,7 @@ module fetch
    assign inst       = irq_inject ? {{((IW-1)*32){1'b0}}, IRQ_INSN}
                      : strad      ? strad_inst
                      :              al_inst;
-   assign pc         = (irq_inject | strad) ? {{((IW-1)*PCW){1'b0}}, pc_q} : al_pc;
+   assign pc         = (irq_inject | strad) ? {{((IW-1)*PCW){1'b0}}, pc_q} : al_pcm;
    assign seq        = (irq_inject | strad) ? {{((IW-1)*SEQW){1'b0}}, seq_q} : al_seq;
 
    assign valid = |slot_valid;          // a bundle is present iff >=1 instr aligned
@@ -171,11 +205,11 @@ module fetch
    // normal-path advance: predicted-taken CTI -> target, else fall-through. The
    // straddle/irq arms of the advance chain come first, so pred_v is naturally
    // ignored there (the straddle FSM owns its +4; the pseudo-op holds PC).
-   assign         ft_npc   = pc_q + {{(PCW-PBW-1){1'b0}}, al_consumed, 1'b0};  // += 2*consumed
+   assign         ft_npc   = ft_sel;                                            // += 2*consumed, by selection
    wire [PCW-1:0] norm_npc = pred_v ? pred_tgt : ft_npc;
    // the presented bundle's chosen next PC (mispredict reference at execute)
    assign pred_npc = irq_inject ? pc_q
-                   : strad      ? (pc_q + 64'd4)
+                   : strad      ? pc_plus[2]
                    :              norm_npc;
    // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
    assign pnpc_kind = irq_inject ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
@@ -189,7 +223,7 @@ module fetch
    assign npc = reset        ? RESET_PC
               : redirect     ? redirect_pc
               : irq_inject   ? pc_q
-              : strad        ? (fire ? (pc_q + 64'd4) : pc_q)
+              : strad        ? (fire ? pc_plus[2] : pc_q)
               : straddle_det ? pc_q
               : fire         ? norm_npc : pc_q;
 

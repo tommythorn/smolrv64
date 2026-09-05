@@ -66,8 +66,15 @@ echo "$WNS" > "$RES/wns.txt"
 # the next change has to avoid, and that is the whole input to headroom work.
 R=$(ls -t "$PLAT"/rk_xcku5p.runs/impl_1/*timing_summary*.rpt 2>/dev/null | head -1)
 [ -n "$R" ] && cp "$R" "$RES/timing_summary.rpt"
-WORST=$(grep -A9 -E "Slack \((VIOLATED|MET)\)" "$RES/timing_summary.rpt" 2>/dev/null \
-        | grep -E "Slack|Source:|Destination:" | head -3)
+# The first VIOLATED path, else the first path in the core clock's group: the first "Slack"
+# in the report is a debug-hub path with 11 ns to spare, which is what this printed for
+# every failed gate until 2026-09-05.
+WORST=$(awk '/^Slack \(VIOLATED\)/{sl=$4+0; blk=$0; p=1; next}
+             p&&/Source:|Destination:|Data Path Delay|Logic Levels/{blk=blk"\n"$0}
+             p&&/Logic Levels/{p=0; if(sl<best){best=sl; keep=blk}}
+             END{if(keep!="")print keep}' best=0 "$RES/timing_summary.rpt" 2>/dev/null)
+[ -z "$WORST" ] && WORST=$(awk '/^Slack \(MET\)/{blk=$0; n=0; p=1; next} p{blk=blk"\n"$0; if(/Path Group:/){ if($3=="probe_clk"){print blk; exit} else p=0}}' \
+                              "$RES/timing_summary.rpt" 2>/dev/null | grep -E "Slack|Source:|Destination:")
 [ -n "$WORST" ] && printf '%s\n' "$WORST" > "$RES/worst-path.txt"
 if [ ! -f "$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit" ]; then
    # Name the stage that failed: a build that never reached timing is not a timing failure

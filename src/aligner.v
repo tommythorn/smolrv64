@@ -26,7 +26,8 @@ module aligner
   #(parameter IW   = 4,
     parameter HW   = 8,                 // window halfwords (>= 2*IW for a full 32b bundle)
     parameter PCW  = 64,
-    parameter SEQW = 8)
+    parameter SEQW = 8,
+    parameter PBW_O = $clog2(HW+2))     // = PBW below; a port width needs it before the body
    (input  wire [HW*16-1:0]        hwin,
     input  wire [$clog2(HW+2)-1:0] avail,    // halfwords present (0..HW)
     input  wire [PCW-1:0]          base_pc,  // PC of hwin[0]
@@ -35,6 +36,9 @@ module aligner
     output wire [IW-1:0]           valid,
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
+    output wire [IW*PBW_O-1:0]     offs,     // each slot's halfword offset from base_pc (fetch builds
+                                             // the PCs from precomputed sums: the adder here is
+                                             // for the benches, and off the fetch path)
     output wire [IW*SEQW-1:0]      seq,
     output wire [$clog2(HW+2)-1:0] consumed,
     output wire                    br_term);  // bundle ends on a genuine branch/jump (not a
@@ -97,6 +101,7 @@ module aligner
    reg  [IW-1:0]    v;
    reg  [31:0]      ir   [0:IW-1];
    reg  [PCW-1:0]   pcv  [0:IW-1];
+   reg  [PBW-1:0]   ofv  [0:IW-1];
    reg  [SEQW-1:0]  sqv  [0:IW-1];
    reg  [PBW-1:0]   cons;
    reg              bt;
@@ -141,6 +146,7 @@ module aligner
                            || ((h0[6:0] == 7'b0001111) && (h0[14:13] == 2'b00))); // FENCE / FENCE.I solo
          ir[k]  = {hwr(pos + 1'b1), h0};      // uniform 32-bit window
          pcv[k] = base_pc + (pos << 1);
+         ofv[k] = pos;
          sqv[k] = base_seq + k[SEQW-1:0];
          if ((k != 0) && (is_sys || solo_all)) begin
             v[k] = 1'b0; run = 1'b0;           // SYSTEM (or fault replay) begins a fresh (solo) bundle
@@ -161,6 +167,7 @@ module aligner
       for (g = 0; g < IW; g = g + 1) begin : pk
          assign inst[g*32  +: 32]   = ir[g];
          assign pc  [g*PCW +: PCW]  = pcv[g];
+         assign offs[g*PBW +: PBW]  = ofv[g];
          assign seq [g*SEQW +: SEQW] = sqv[g];
       end
    endgenerate
