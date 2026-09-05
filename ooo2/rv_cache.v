@@ -102,7 +102,15 @@ module rv_cache #(
    // flat() concatenates {way, index}, which is only the flat index when WAYS is 2.
    initial if (WAYS != 2) $fatal(1, "rv_cache: flat() assumes WAYS==2, got %0d", WAYS);
 
-   localparam BANKW  = RDW;
+   // THE BANK IS NEVER WIDER THAN 64 BITS. A 128-bit sdpram bank (the old 4-wide I$) passed
+   // every simulation and fetched garbage on real BRAM -- the width-cascade geometry no sim
+   // model reflects (smolrv64_sdpram's guard). A 128-bit READ does not need a 128-bit bank:
+   // the even/odd pair already forms a 2*BANKW window, and a read of exactly that width at
+   // an address aligned to it IS the pair, in order, with no shift. So RDW may be 2*64 while
+   // the banks stay 64 (RDW > BANKW requires the request to be RDW/8-aligned, asserted
+   // below); the D$ keeps RDW == BANKW == 64 (= store granularity). 2026-09-05, for the
+   // 16-byte fetch window.
+   localparam BANKW  = (RDW > 64) ? 64 : RDW;
    localparam CBY    = BANKW/8;
    localparam CHUNKS = LINEB/BANKW;
    localparam HALF   = CHUNKS/2;
@@ -1314,6 +1322,10 @@ module rv_cache #(
    // door (1271c96d), and a device store's unaligned address on wr_addr looks like a span
    // while the cache idles. A request is in S_CHECK once, in each phase, so that is where
    // the check belongs (it fired on a PLIC store at offset 0x3c, 2026-09-04).
+   // RDW > BANKW: the read is the whole chunk pair, so it must start on a pair boundary.
+   always @(posedge clk) if (!reset && (RDW > BANKW) && (st == S_CHECK) && !r_is_wr && !r_cbo
+                              && (r_off[$clog2(RDB)-1:0] != {$clog2(RDB){1'b0}}))
+      $fatal(1, "[cache id=%0d] a %0d-bit read must be %0d-byte aligned: addr=%h", PERF_ID, RDW, RDB, r_addr);
    always @(posedge clk) if (!reset && (WRITABLE != 0) && (st == S_CHECK) && r_span)
       $fatal(1, "[cache id=%0d] NO-SPAN VIOLATED: D$ saw a spanning request addr=%h", PERF_ID, r_addr);
 

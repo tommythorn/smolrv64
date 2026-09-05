@@ -788,6 +788,14 @@ Per cache instance; there are two (I$, D$), identical geometry.
 Data is 4 banks (`2*WAYS`) of `2048 × 64`, which is the 64 KB: even/odd chunk banking per
 way, so any read at any byte offset is served by one access (§9.1).
 
+**The bank is never wider than 64 bits, whatever the port width.** The I$ at `HW=8` reads
+128 bits: the even/odd chunk pair at a 16-byte-aligned address, which is the 2*BANKW window
+the cache already assembles, delivered without a shift (an unaligned 128-bit read is an
+always-on `$fatal`). The old 4-wide I$ widened the BANK to 128 and fetched garbage on real
+BRAM (the width-cascade geometry no simulation models); `smolrv64_sdpram`'s guard still
+refuses that, and this never reaches it. `febench` (straight-line 32-bit code): 0.66 ->
+0.98 aligned, 0.40 -> 0.79 at a 2-byte offset, at `HW=4` -> `HW=8`.
+
 **The tag is `PAW_SIG - IDXB - OFFB` = 34 - 9 - 6 = 19 bits, not the port width's 49.** The
 ports are 64 wide because a PA rides in a 64-bit bus, but the platform decodes 34 bits (2 GiB
 of DDR at `0x8000_0000`, every device below it), so 30 of the 49 tag bits were structurally

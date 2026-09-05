@@ -309,10 +309,12 @@ if {$probe_core} {
     # BRAM width-cascade regression that passed every Verilator test and fetched garbage on
     # real BRAM), so 4 is the useful setting.
     if {[info exists env(OOO2_HW)] && $env(OOO2_HW) ne ""} {
-        if {$env(OOO2_HW) != 2 && $env(OOO2_HW) != 4} {
-            error "OOO2_HW=$env(OOO2_HW): the shipping build is 4; only 2 or 4 elaborate at all,\
- and 2 is a 32-bit fetch window that no bitstream should ship. 8 sets the I$ RDW to 128 and\
- trips the sdpram geometry guard; odd values cannot hold a 32-bit instruction."
+        # 8 is allowed since 2026-09-05: rv_cache caps its BANK width at 64 whatever RDW is
+        # (a 128-bit read is the even/odd chunk pair, 16-byte aligned), so the sdpram guard is
+        # never reached and the BRAM geometry is the one every bitstream has shipped with.
+        if {$env(OOO2_HW) != 2 && $env(OOO2_HW) != 4 && $env(OOO2_HW) != 8} {
+            error "OOO2_HW=$env(OOO2_HW): only 2, 4 or 8 elaborate; 2 is a 32-bit fetch window\
+ that no bitstream should ship; odd values cannot hold a 32-bit instruction."
         }
         puts "OOO2_HW override: fetch window = $env(OOO2_HW) halfwords (the shipping build is 4)."
         lappend vdefines "OOO2_HW=$env(OOO2_HW)"

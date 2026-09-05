@@ -12,6 +12,9 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
+60000000  8  11624624  0.5   # OOO2_HW=8, the 16-byte fetch window (2026-09-05): +0.4% on this
+                              # boot (kernel code is RVC-dense); febench's 32-bit code goes
+                              # 0.66 -> 0.98 (aligned) and 0.40 -> 0.79 (2-byte offset).
 60000000  4  11578974  0.5   # The DDR model is the one MEASURED on the board at 166.67 MHz
                               # (2026-09-04, src/ddr_hpm.v via workloads/ddrhpm: reads mean
                               # 28.75 cycles, 96.5% in 16-31; writes mean 15.6, 95% in 8-15;
