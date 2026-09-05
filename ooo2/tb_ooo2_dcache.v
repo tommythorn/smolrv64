@@ -460,6 +460,82 @@ module tb;
          do_load(Z + 64'd64, 4'h8);  expect64(got, 64'h2020_2020_2020_2020, "T20 after cbo.inval the DMA data, not the buffer");
       end
 
+      // ---- RANDOM: thousands of loads, masked stores, cbo.zero/clean/inval and DMA writes over
+      // a small address set (four sets, both ways, and their neighbours, so evictions, the
+      // stream buffer, writes under fills and CBOs interleave), against a golden byte array.
+      // Directed cases name one interleaving each; this is for the ones nobody named. ----
+      begin : random_stress
+         reg [7:0]  gold [0:8191];          // 8 KiB golden image of the region
+         reg [PAW-1:0] R0, ra; integer op, n, len, seed2, b, m, ln, w, s;
+         reg [63:0] rv, wv; reg [7:0] wm;
+         R0 = 64'h8009_0000; seed2 = 11;
+         for (n = 0; n < 8192; n = n + 1) begin
+            ra = R0 + (n & ~7);                                          // the word this byte is in
+            rv = expect_word(ra);                                        // what L2 holds for it
+            gold[n] = rv[(n & 7)*8 +: 8];
+         end
+         for (op = 0; op < 3000; op = op + 1) begin
+            // address: 4 sets (index bits from the line address), ways via +64K, lines +/-64
+            s = $urandom(seed2) % 4; seed2 = seed2 + 1;
+            w = $urandom(seed2) % 2; seed2 = seed2 + 1;
+            ln = $urandom(seed2) % 4; seed2 = seed2 + 1;
+            ra = R0 + s*64'd256 + ln*64'd64 + (w ? 64'h10000 : 64'd0);
+            if (ra - R0 >= 8192) ra = ra - 64'h10000 + 64'd1024;      // keep the golden image small: way 1 lines alias to +1 KiB
+            n = ra - R0;
+            m = $urandom(seed2) % 10; seed2 = seed2 + 1;
+            if (m < 4) begin                                              // load a word
+               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
+               do_load(ra + b, 4'd1);
+               for (k = 0; k < 8; k = k + 1) wv[k*8 +: 8] = gold[n + b + k];
+               if (got !== wv) begin errors = errors + 1; if (errors < 8) $display("FAIL RANDOM op %0d load @%h: %h want %h", op, ra + b, got, wv); end
+            end else if (m < 7) begin                                     // store, random mask
+               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
+               wv = {$urandom(seed2), $urandom(seed2 + 1)}; seed2 = seed2 + 2;
+               wm = $urandom(seed2) % 256; seed2 = seed2 + 1; if (wm == 0) wm = 8'hFF;
+               do_store(ra + b, wv, wm);
+               for (k = 0; k < 8; k = k + 1) if (wm[k]) gold[n + b + k] = wv[k*8 +: 8];
+            end else if (m == 7) begin                                    // cbo.zero
+               do_cbo_zero(ra);
+               for (k = 0; k < 64; k = k + 1) gold[n + k] = 8'h00;
+            end else if (m == 8) begin                                    // cbo.clean or inval+DMA
+               if ($urandom(seed2) % 2) begin do_cbo(ra, 1'b1); end       // clean: memory now equals gold (checked by a later refetch)
+               else begin
+                  do_cbo(ra, 1'b1);                                       // clean first so the DMA does not race a dirty line
+                  wv = {$urandom(seed2 + 5), $urandom(seed2 + 6)};
+                  dma_write(ra + 64'd8, wv);                              // the device writes word 1 of the line in memory
+                  for (k = 0; k < 8; k = k + 1) gold[n + 8 + k] = wv[k*8 +: 8];
+                  do_cbo(ra, 1'b0);                                       // inval: the CPU must see the DMA data next
+               end
+               seed2 = seed2 + 8;
+            end else if (m == 9 && (op % 2)) begin                        // CONCURRENT: a store without waiting, then
+               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;          // two loads issued back to back (other lines
+               wv = {$urandom(seed2), $urandom(seed2 + 1)}; seed2 = seed2 + 2;   // in the set, or the next line: the
+               store_go(ra + b, wv, 8'hFF);                                // buffer, the S_FIN door, a fill in flight)
+               for (k = 0; k < 8; k = k + 1) gold[n + b + k] = wv[k*8 +: 8];
+               begin : two_loads
+                  reg [PAW-1:0] la1, la2; integer n1, n2; reg [63:0] w1, w2;
+                  la1 = ra + 64'd64; la2 = ra + (($urandom(seed2) % 4) * 64'd8); seed2 = seed2 + 1;
+                  if (la1 - R0 >= 8192) la1 = ra - 64'd64;
+                  n1 = la1 - R0; n2 = la2 - R0;
+                  gotq[4'd10] = 1'b0; gotq[4'd11] = 1'b0;
+                  issue_nb(la1, 4'd10); issue_nb(la2, 4'd11);
+                  i = 0; while (!(gotq[4'd10] && gotq[4'd11]) && i < (8*LAT+400)) begin @(negedge clk); i = i + 1; end
+                  for (k = 0; k < 8; k = k + 1) begin w1[k*8 +: 8] = gold[n1 + k]; w2[k*8 +: 8] = gold[n2 + k]; end
+                  if (gotv[4'd10] !== w1) begin errors = errors + 1; if (errors < 8) $display("FAIL RANDOM op %0d concurrent load A @%h: %h want %h", op, la1, gotv[4'd10], w1); end
+                  if (gotv[4'd11] !== w2) begin errors = errors + 1; if (errors < 8) $display("FAIL RANDOM op %0d concurrent load B @%h: %h want %h", op, la2, gotv[4'd11], w2); end
+               end
+               i = 0; while (!wr_ack && i < (8*LAT+400)) begin @(negedge clk); i = i + 1; end   // let the store's fill land
+            end else begin                                                // a non-blocking load, checked later
+               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
+               gotq[4'd9] = 1'b0; issue_nb(ra + b, 4'd9);
+               i = 0; while (!gotq[4'd9] && i < (8*LAT+400)) begin @(negedge clk); i = i + 1; end
+               for (k = 0; k < 8; k = k + 1) wv[k*8 +: 8] = gold[n + b + k];
+               if (gotv[4'd9] !== wv) begin errors = errors + 1; if (errors < 8) $display("FAIL RANDOM op %0d nb-load @%h: %h want %h", op, ra + b, gotv[4'd9], wv); end
+            end
+         end
+         $display("rv_cache D$ random: %0d ops, %0d errors", op, errors);
+      end
+
       if (errors==0) $display("rv_cache D$ directed: PASS");
       else           $display("rv_cache D$ directed: FAIL (%0d errors)", errors);
       $finish;
