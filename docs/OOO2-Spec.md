@@ -172,6 +172,16 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   2026-09-05; 4 before), so the I$ read width is `HW*16` = 128 bits, read as the 64-bit
   chunk pair (§9.1). On sha256sum the frontend bubble went from 43.4% of cycles (I, HW=4) to
   10.1% (M, HW=8 with the senior store queue), IPC 0.435 → 0.714.
+- **Fetch buffer: two chunk-aligned 16-byte chunks, the next one requested on the slide
+  cycle.** The buffer holds chunk0/chunk1 and serves any window across the pair; when the PC
+  enters chunk1 (the *slide*: chunk1 becomes chunk0) chunk2 is requested in that same cycle,
+  and lands 3 cycles later, usable the cycle after. Until 2026-09-05 the request waited for
+  the registered state, one cycle later, and a chunk holding three whole 32-bit ops and a
+  straddler (compiled code between its compressed ops: half of sha256's chunks) starved the
+  aligner one cycle each: `FE_QUE` 8.0% of the sha256 kernel's cycles in sim, 8.2–8.5% for
+  `sha256sum` on the board, traced to 1,835 of 3,342 four-instruction chunks (`FB_TRACE` in
+  `rv_soc_top`). With the slide-cycle request: febench `shifted` 0.79 → 0.98, the sha256
+  kernel (`workloads/shabench`, sim) IPC 0.898 → 0.951 with `FE_QUE` 0.0%.
 - **Ahead prediction**: the predictor arrays are addressed from `apc`, a register-only ahead
   PC, never from a combinational `npc`. This is what bought the predictor a full stage of
   slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the
@@ -911,7 +921,9 @@ the cache already assembles, delivered without a shift (an unaligned 128-bit rea
 always-on `$fatal`). The old 4-wide I$ widened the BANK to 128 and fetched garbage on real
 BRAM (the width-cascade geometry no simulation models); `smolrv64_sdpram`'s guard still
 refuses that, and this never reaches it. `febench` (straight-line 32-bit code): 0.66 ->
-0.98 aligned, 0.40 -> 0.79 at a 2-byte offset, at `HW=4` -> `HW=8`.
+0.98 aligned, 0.40 -> 0.79 at a 2-byte offset, at `HW=4` -> `HW=8`; the 2-byte offset then
+went to 0.98 when the fetch buffer started requesting the next chunk on the slide cycle
+(§4.1, 2026-09-05).
 
 **The tag is `PAW_SIG - IDXB - OFFB` = 34 - 9 - 6 = 19 bits, not the port width's 49.** The
 ports are 64 wide because a PA rides in a 64-bit bus, but the platform decodes 34 bits (2 GiB

@@ -7,6 +7,9 @@ branches inside), run 64 times, cycles and instructions read around each:
   shifted   : one c.nop first, so every 32-bit instruction sits at a 2-byte offset
               and straddles the 8-byte fetch window at every other window
   compressed: c.add/c.and/c.xor/c.or only, two per 4 bytes
+  mixed     : a compiled-like mix -- each instruction 16-bit or 32-bit by a fixed LCG,
+              half and half, so chunk boundaries fall inside 32-bit ops at random and
+              chunks hold a random number of instructions (the sha256sum case, 2026-09-05)
 IPC = the fetch rate, since dispatch is one per cycle and nothing stalls. The CPI stack of
 sha256sum on the board (2026-09-05) put 42% of its cycles in the fetch buckets; this is
 the bench that measures the window and the straddle in isolation, before and after HW=8.
@@ -16,17 +19,21 @@ def block(kind, n=4096):
     out = []
     if kind == "shifted":
         out += ["    .option push", "    .option rvc", "    c.nop", "    .option pop"]
-    if kind == "compressed":
+    if kind in ("compressed", "mixed"):
         out += ["    .option push", "    .option rvc"]
+    lcg = 12345
     for i in range(n):
         d, a, b = regs[i % len(regs)], regs[(i + 7) % len(regs)], regs[(i + 13) % len(regs)]
-        if kind == "compressed":
+        lcg = (lcg * 1103515245 + 12345) & 0x7fffffff
+        # 32-bit ops keep rd, rs1, rs2 distinct, so the assembler cannot compress them
+        # under .option rvc; the 16-bit ones are written as c.* explicitly.
+        if kind == "compressed" or (kind == "mixed" and (lcg >> 16) & 1):
             # c.and/c.or/c.xor need rd=rs1 in x8..x15: use a-registers
             r1, r2 = ["a0","a1","a2","a3","a4","a5"][i % 6], ["a0","a1","a2","a3","a4","a5"][(i + 3) % 6]
             out.append("    c.%s %s, %s" % (["and","or","xor"][i % 3], r1, r2))
         else:
             out.append("    %s %s, %s, %s" % (["addw","xor","or","and","subw"][i % 5], d, a, b))
-    if kind == "compressed":
+    if kind in ("compressed", "mixed"):
         out.append("    .option pop")
     return "\n".join(out)
 print(""".option norvc
@@ -36,7 +43,7 @@ main:
     addi sp, sp, -16
     sd ra, 8(sp)
 """)
-for kind in ["aligned", "shifted", "compressed"]:
+for kind in ["aligned", "shifted", "compressed", "mixed"]:
     print("    .balign 4")
     print("    rdcycle s0")
     print("    rdinstret s1")
@@ -61,4 +68,5 @@ print("""    ld ra, 8(sp)
 name_aligned:    .asciz "aligned   "
 name_shifted:    .asciz "shifted   "
 name_compressed: .asciz "compressed"
+name_mixed:      .asciz "mixed     "
 """)

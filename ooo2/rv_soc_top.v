@@ -639,6 +639,11 @@ module rv_soc_top #(
    assign fb_pa1    = fb_pa + CHB;
    assign fb_va1    = fb_va + CHB;
    assign fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
+   // chunk2, wanted on the SLIDE cycle (see fb_wantv): from the registers, in parallel with
+   // fb_pa1, so the request address mux gains an arm and no adder depth.
+   wire [63:0]      fb_pa2 = fb_pa + 2*CHB;
+   wire [63:0]      fb_va2 = fb_va + 2*CHB;
+   wire             fb_samepg2 = (fb_pa2[63:PGB] == fb_pa1[63:PGB]);
 
    // Hit test is an EQUALITY on chunk-aligned addresses, not a subtract-and-compare on byte
    // offsets. The first cut computed `imem_addr - fb_pa` and compared the 64-bit result against
@@ -803,11 +808,24 @@ module rv_soc_top #(
    // invalidation while it was outstanding, and the address it is compared against must be a
    // real translation rather than a mid-walk stale leaf.
    wire        fb_fill_ok = ic_rd_valid & ~fb_pois & imem_xlate_ok;
-   wire [63:0] fb_want  = fb_miss ? fb_al : (~fb_v0 ? fb_pa : fb_pa1);
+   // THE NEXT CHUNK IS REQUESTED ON THE SLIDE CYCLE, NOT THE ONE AFTER.  The slide (fb_in1:
+   // the PC has entered chunk1) is registered, and the request for the chunk beyond it used
+   // to wait for the registered state (~fb_v1 next cycle): request at t+1, arrival at t+3,
+   // usable at t+4.  A chunk holding three whole 32-bit ops and a straddler is consumed at
+   // t+1..t+3 and its straddler needs the next chunk at t+3 -- one cycle short, every such
+   // chunk.  Compiled code is mostly 32-bit ops at a 2-byte offset between its compressed
+   // ones (sha256: 14% compressed), so half its chunks are that shape: the F/X queue read
+   // empty 8% of sha256's cycles on the board and 1,835 of 3,342 four-instruction chunks in a
+   // traced window (2026-09-05, FB_TRACE below).  Wanting chunk2 while the PC is in chunk1
+   // moves the request to t, the arrival to t+2, usable at t+3.  Storage is unchanged: at the
+   // slide edge chunk1 becomes chunk0 and fb_pa1 becomes exactly this address, which is what
+   // the fill in the steady-state arm matches.  Same-page rule as chunk1's, against chunk1.
+   wire [63:0] fb_want  = fb_miss ? fb_al : ~fb_v0 ? fb_pa : ~fb_v1 ? fb_pa1 : fb_pa2;
    // & imem_xlate_ok: NEVER fill from an untranslated PA.  Mid-walk the iMMU presents a
    // stale leaf; under the old PA tag those wrong bytes carried the wrong PA and simply
    // missed next cycle, but under a VA tag they would carry the RIGHT VA and hit.
-   wire        fb_wantv = (fb_miss | ~fb_v0 | (fb_v0 & ~fb_v1 & fb_samepg)) & imem_xlate_ok;
+   wire        fb_wantv = (fb_miss | ~fb_v0 | (fb_v0 & ~fb_v1 & fb_samepg)
+                          | (fb_v0 & fb_v1 & fb_in1 & fb_samepg2)) & imem_xlate_ok;
 
    // NOT gated on fi_stall: it is declared further down, and the adapter this replaces did not
    // gate on it either -- ic_inv_req clears the buffer, and imem_avail below holds fetch off.
@@ -822,7 +840,7 @@ module rv_soc_top #(
    wire [63:0]  ic_rd_addr = fb_pend ? fb_reqpa : fb_want;
    // ...and the VA of the same chunk, kept with the request so the arrival can be tested
    // virtually (fb_arr below), exactly as the hit already is.
-   wire [63:0]  fb_wantva  = fb_miss ? fb_alv : (~fb_v0 ? fb_va : fb_va1);
+   wire [63:0]  fb_wantva  = fb_miss ? fb_alv : ~fb_v0 ? fb_va : ~fb_v1 ? fb_va1 : fb_va2;
    reg  [63:0]  fb_reqva;
    wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
    wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
@@ -942,6 +960,26 @@ module rv_soc_top #(
    assign imem_avail = (fi_stall | ~(fb_hit | fb_arr)) ? {AVW{1'b0}}
                      : (fb_vhw >= HW)                     ? AV_HW
                      :                                      fb_vhw[AVW-1:0];
+
+`ifdef FB_TRACE
+   // Fetch-buffer trace, one line per cycle inside the tb's +trace_from/+trace_to window
+   // (rule G6: an `ifdef` trace reads the two plusargs itself). Post-process for the cycles
+   // from a slide (in1: the PC entered chunk1, chunk2 is requested) to the next arrival
+   // (val), and for the cycles the aligner emitted nothing (fx=0) while the PC's chunk was
+   // present. Built to name sha256's 8% F/X-queue-empty on 2026-09-05.
+   reg [63:0] fbt_cyc = 64'd0, fbt_from = 64'd0, fbt_to = 64'hFFFF_FFFF_FFFF_FFFF;
+   initial begin
+      if (!$value$plusargs("trace_from=%d", fbt_from)) fbt_from = 64'd0;
+      if (!$value$plusargs("trace_to=%d",   fbt_to))   fbt_to   = 64'hFFFF_FFFF_FFFF_FFFF;
+   end
+   always @(posedge clk) begin
+      fbt_cyc <= fbt_cyc + 64'd1;
+      if (!reset && fbt_cyc >= fbt_from && fbt_cyc < fbt_to)
+         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d fx=%b q=%0d d=%b",
+                  fbt_cyc, imem_va, fb_in1, fb_v0, fb_v1, fb_hit, fb_arr, ic_rd_req, ic_rd_ack, ic_rd_valid,
+                  imem_avail, core.fe.fx_valid, core.fe.q_cnt, core.fe.d_valid);
+   end
+`endif
 
    rv_cache #(.PAW(64), .PAW_SIG(34), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache

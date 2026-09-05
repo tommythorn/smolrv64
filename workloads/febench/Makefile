@@ -9,6 +9,9 @@ endif
 
 all: febench.bin
 
+febench_body.s: gen.py
+	python3 gen.py > febench_body.s
+
 febench.bin: febench.elf
 	$(RV)objcopy -O binary febench.elf febench.bin
 
