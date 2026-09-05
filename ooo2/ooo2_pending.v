@@ -43,7 +43,9 @@ module ooo2_pending
     output wire                  r4, r5, r6,
     output wire                  r7, r8, r9,
     input  wire [PBITS-1:0]      q10, q11, q12, q13, q14, q15,   // slot B's six candidates
-    output wire                  r10, r11, r12, r13, r14, r15,
+        output wire                  r10, r11, r12, r13, r14, r15,
+    input  wire [PBITS-1:0]      q16, q17,        // the ALU port's two operands (item 10d-i)
+    output wire                  r16, r17,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -78,7 +80,8 @@ module ooo2_pending
    assign r8 = rdy_of(q8);
    assign r9 = rdy_of(q9);
    assign r10 = rdy_of(q10); assign r11 = rdy_of(q11); assign r12 = rdy_of(q12);
-   assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
+      assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
+   assign r16 = rdy_of(q16); assign r17 = rdy_of(q17);
 
    always @(posedge clk) begin
       if (reset) begin

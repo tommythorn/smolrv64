@@ -82,7 +82,11 @@ module ooo2_prf
     input  wire [PBITS-1:0] ra3,
     output wire [63:0]      rd1,
     output wire [63:0]      rd2,
-    output wire [63:0]      rd3);
+        output wire [63:0]      rd3,
+    input  wire [PBITS-1:0] ra4,      // the ALU's own issue port (item 10d-i)
+    input  wire [PBITS-1:0] ra5,
+    output wire [63:0]      rd4,
+    output wire [63:0]      rd5);
 
    localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
 
@@ -102,7 +106,9 @@ module ooo2_prf
    reg [63:0] mem_fe [0:N_FE-1];
 
    wire [1:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
-   wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
+      wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
+   wire [1:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0];
 
    // WRITE-THROUGH, and why it is OFF by default.
    //
@@ -150,9 +156,15 @@ module ooo2_prf
    assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]], mem_ld[ix2[AB_LD-1:0]],
                          mem_fe[ix2[AB_FE-1:0]]);
-   assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
+      assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]], mem_ld[ix3[AB_LD-1:0]],
                          mem_fe[ix3[AB_FE-1:0]]);
+   assign rd4 = (ra4 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh4, ix4, mem_ie[ix4[AB_IE-1:0]], mem_ld[ix4[AB_LD-1:0]],
+                         mem_fe[ix4[AB_FE-1:0]]);
+   assign rd5 = (ra5 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh5, ix5, mem_ie[ix5[AB_IE-1:0]], mem_ld[ix5[AB_LD-1:0]],
+                         mem_fe[ix5[AB_FE-1:0]]);
 
    integer j;
    initial begin

@@ -473,7 +473,8 @@ module ooo2_core
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
-   wire [63:0] prf_rs1, prf_rs2, prf_rs3;
+      wire [63:0] prf_rs1, prf_rs2, prf_rs3;
+   wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
    ooo2_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
       .we_ie(alu_q_v), .we_ld(we_ld), .we_fe(we_fe),       // int-exec: from the writeback register
@@ -482,8 +483,9 @@ module ooo2_core
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
-      .ra1(i_ps1), .ra2(i_ps2), .ra3(i_ps3),
-      .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3));
+            .ra1(i_ps1), .ra2(i_ps2), .ra3(i_ps3),
+      .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
+      .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
    // The step from "M is the commit point" to "the ROB head is the commit point" -- the
@@ -571,7 +573,8 @@ module ooo2_core
    wire pnd_r1 = rn_lv1 ? pnd_s1 : pnd_m1;
    wire pnd_r2 = rn_lv2 ? pnd_s2 : pnd_m2;
    wire pnd_r3 = rn_lv3 ? pnd_s3 : pnd_m3;
-   wire pnd_i1, pnd_i2, pnd_i3;
+      wire pnd_i1, pnd_i2, pnd_i3;
+   wire pnd_a1, pnd_a2;                                // the ALU port's operands (10d-i)
    // slot B: the same two-candidate query; a source that IS A's destination is not ready
    wire pnd_s1_b, pnd_s2_b, pnd_s3_b, pnd_m1_b, pnd_m2_b, pnd_m3_b;
    wire pnd_r1_b = ~rn_byp1_b & (rn_lv1_b ? pnd_s1_b : pnd_m1_b);
@@ -582,7 +585,8 @@ module ooo2_core
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
       .a_v2(rn_valid_b & d2_rd_v), .a_preg2(rn_prd_b),
       .q10(rn_sprs1_b), .q11(rn_sprs2_b), .q12(rn_sprs3_b), .r10(pnd_s1_b), .r11(pnd_s2_b), .r12(pnd_s3_b),
-      .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
+            .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
+      .q16(a_ps1), .q17(a_ps2), .r16(pnd_a1), .r17(pnd_a2),
       .w_v({we_fe, we_ld, we_ie}), .w_preg({wa_fe, wa_ld, wa_ie}),
       .q1(rn_sprs1), .q2(rn_sprs2), .q3(rn_sprs3),
       .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
@@ -605,7 +609,7 @@ module ooo2_core
    // instruction to M. Consumption has moved to ISSUE and the scheduler enforces the same
    // property structurally -- an entry is not selectable until every source is ready -- so
    // the check moves with it: nothing may issue with a source still pending and no forward.
-   always @(posedge clk) if (!reset & (iss_alu | iss_m)) begin
+      always @(posedge clk) if (!reset & iss_m) begin
       // "pending" is the REGISTER, cleared at the writeback edge -- so an entry the
       // scheduler woke this cycle is legitimately still marked pending while its value
       // arrives on a forward. The property is that a source is available, by either route.
@@ -619,6 +623,12 @@ module ooo2_core
          $fatal(1, "ooo2: executed with rs2 p%0d still pending (rob=%0d)", i_ps2, i_rob);
       if (q_rs3_v & ~pnd_i3)
          $fatal(1, "ooo2: executed with rs3 p%0d still pending (rob=%0d)", i_ps3, i_rob);
+   end
+   always @(posedge clk) if (!reset & iss_alu) begin
+      if (qa_rs1_v & ~pnd_a1)
+         $fatal(1, "ooo2: ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a_ps1, a_rob, qa_pc);
+      if (qa_rs2_v & ~pnd_a2)
+         $fatal(1, "ooo2: ALU port executed with rs2 p%0d still pending (rob=%0d)", a_ps2, a_rob);
    end
 
    // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
@@ -778,6 +788,19 @@ module ooo2_core
    wire i_needs_f;                     // ...or an F-class one
    wire f_advance;
 
+      // ---- THE ALU'S OWN ISSUE PORT (item 10d-i, 2026-09-05) -----------------------------
+   // One issue register served every scheduler, so the machine issued ONE instruction per
+   // cycle whatever dispatch and retire did, and the ALU waited whenever a load, store or
+   // branch went first. The integer scheduler now picks into its own register, beside the
+   // M/F one: an ALU op and a memory op issue in the same cycle. The ALU op completes in
+   // its issue cycle, so this port is free every cycle (unit_busy 0); it has two operand
+   // reads of its own (ra4/ra5), its own exec unit and the same one-deep forward.
+   reg                 a_v;
+   reg [IBI-1:0]       a_ent;
+   reg [ROB_IDXB-1:0]  a_rob;
+   reg [RN_PBITS-1:0]  a_ps1, a_ps2;
+   initial begin a_v = 1'b0; a_ent = {IBI{1'b0}}; a_rob = {ROB_IDXB{1'b0}}; a_ps1 = {RN_PBITS{1'b0}}; a_ps2 = {RN_PBITS{1'b0}}; end
+   wire   iss_alu = a_v & ~redirect;                      // completes here, always
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
@@ -788,7 +811,7 @@ module ooo2_core
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
-      .hold_v(i_v & (i_cls == C_I)),.hold_ent(i_ent[IBI-1:0]),
+            .hold_v(a_v),.hold_ent(a_ent),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
 
    ooo2_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
@@ -837,13 +860,12 @@ module ooo2_core
    // progress, while an ALU op can always go next cycle instead.
    wire pick_l = rl_iss_v;
    wire pick_f = rf_iss_v & ~pick_l;
-   wire pick_i = ri_iss_v & ~pick_l & ~pick_f;
-   wire iq_iss_v = pick_l | pick_f | pick_i;
-   wire [1:0] pick_cls = pick_l ? C_L : pick_f ? C_F : C_I;
-   wire [RS_IDXB-1:0] iq_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
-                                 : pick_f ? {{(RS_IDXB-IBF){1'b0}}, rf_iss_ent}
-                                 :          {{(RS_IDXB-IBI){1'b0}}, ri_iss_ent};
-   wire [ROB_IDXB-1:0] iq_iss_rob = pick_l ? rl_iss_rob : pick_f ? rf_iss_rob : ri_iss_rob;
+      wire pick_i = ri_iss_v;                                // its own port: never waits for M/F
+   wire iq_iss_v = pick_l | pick_f;                       // the M/F port
+   wire [1:0] pick_cls = pick_l ? C_L : C_F;
+      wire [RS_IDXB-1:0] iq_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
+                                 :          {{(RS_IDXB-IBF){1'b0}}, rf_iss_ent};
+      wire [ROB_IDXB-1:0] iq_iss_rob = pick_l ? rl_iss_rob : rf_iss_rob;
    // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
    // with it. The source tags used to come OUT of each queue as `iss_ps` -- an async read of
    // the entry array (e_ps[sel], a 16:1 mux over FLOPS) then a 3-way class mux, two levels
@@ -883,9 +905,8 @@ module ooo2_core
    reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
-   wire [3*RN_PBITS-1:0] ps_out = pick_l ? psmem_l[rl_iss_ent]
-                                : pick_f ? psmem_f[rf_iss_ent]
-                                :          psmem_i[ri_iss_ent];
+      wire [3*RN_PBITS-1:0] ps_out   = pick_l ? psmem_l[rl_iss_ent] : psmem_f[rf_iss_ent];
+   wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
    always @(posedge clk) begin
@@ -897,7 +918,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
    wire [RN_PBITS-1:0] iq_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
    wire iq_iss_take;
-   assign ri_take = pick_i & iq_iss_take;               // the ALU shares the M/F port on this branch; no ~redirect (rule I11)
+   assign ri_take = pick_i;                              // the ALU port takes every cycle; no ~redirect (rule I11)
    assign rl_take = pick_l & iq_iss_take;
    assign rf_take = pick_f & iq_iss_take;
    wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
@@ -930,7 +951,7 @@ module ooo2_core
    // SH_IE has exactly one writer and it is this one. Nothing can be in the way.
    assign i_needs_f   = i_v & (i_cls == C_F);
    assign i_needs_m   = i_v & q_ord & ~i_needs_f;
-   wire   i_done      = i_v & (i_needs_f ? f_advance : q_ord ? m_advance : 1'b1);
+      wire   i_done      = i_v & (i_needs_f ? f_advance : m_advance);   // only M/F ops live here now
    wire   iss_ready   = ~i_v | i_done;
    assign iq_iss_take = iq_iss_v & iss_ready;            // likewise: i_v is cleared by the redirect
    // ~redirect on BOTH. The register is cleared on a redirect, but these are
@@ -940,7 +961,16 @@ module ooo2_core
    // is what failed all 61 virtual-memory tests: they are the ones that trap often.
    wire   iss_m       = i_needs_m & m_advance & ~redirect;     // loads M this cycle
    wire   iss_f       = i_needs_f & f_advance & ~redirect;     // loads the F stage
-   wire   iss_alu     = i_v & ~q_ord & ~redirect;  // completes here, always
+      always @(posedge clk) begin                            // the ALU port (see above)
+      if (reset | redirect) a_v <= 1'b0;
+      else begin
+         a_v <= ri_take;
+         if (ri_take) begin
+            a_ent <= ri_iss_ent;  a_rob <= ri_iss_rob;
+            a_ps1 <= ps_out_a[0 +: RN_PBITS];  a_ps2 <= ps_out_a[RN_PBITS +: RN_PBITS];
+         end
+      end
+   end
 
    always @(posedge clk) begin
       if (reset | redirect) i_v <= 1'b0;
@@ -989,22 +1019,8 @@ module ooo2_core
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
-   // THE PAYLOAD IS READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
-   // 2026-09-06). It used to be read in M's cycle at i_ent (last cycle's pick), so every
-   // control M derives from it -- the pending table's dispatch-cycle compare, the store
-   // queue's data valid, the FPU's request -- began with a LUTRAM read: T1F2's census had
-   // `i_ent_reg -> u_pend/pend_reg` (462 endpoints, 14 levels) and `-> u_sq/dv` at the top.
-   // Now, like psmem's tags: one read per class at that class's own candidate (the LUTRAM
-   // address is the scheduler's select, not the pick), the pick selects the result, and the
-   // issue register's load captures it. M's cycle starts from flops. A dispatch writes a
-   // different entry than the one being read (an entry issues no earlier than the cycle
-   // after its dispatch), so the read-during-write question does not arise.
-   wire [PLW-1:0] pl_cand = pick_l ? plmem_l[rl_iss_ent]
-                          : pick_f ? plmem_f[rf_iss_ent]
-                          :          plmem_i[ri_iss_ent];
-   reg  [PLW-1:0] pl_q;
-   always @(posedge clk) if (iss_ready & iq_iss_take) pl_q <= pl_cand;
-   wire [PLW-1:0] pl_out = pl_q;
+   wire [PLW-1:0] pl_out  = (i_cls == C_L) ? plmem_l[i_ent[IBL-1:0]] : plmem_f[i_ent[IBF-1:0]];
+   wire [PLW-1:0] pla_out = plmem_i[a_ent];                 // the ALU port's payload
    always @(posedge clk) begin
       if ((rn_valid & d_cls_i) | b_to_i) plmem_i[ri_d_ent] <= b_to_i ? pl_in_b : pl_in;
       if ((rn_valid & d_cls_l) | b_to_l) plmem_l[rl_d_ent] <= b_to_l ? pl_in_b : pl_in;
@@ -1041,6 +1057,37 @@ module ooo2_core
            q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
            q_br_func, q_mis_taken, q_mis_nt,
            q_rs1_v, q_rs2_v, q_rs3_v, q_ord, q_sq_tag, q_lq_idx} = pl_out;
+   // the same unpack for the ALU port (unused fields fall away)
+   wire [PCW-1:0]      qa_pc, qa_pred_npc, qa_fault_tval;
+   wire [31:0]         qa_insn;
+   wire [SQ_IB-1:0]    qa_sq_tag;
+   wire [LQ_IB-1:0]    qa_lq_idx;
+   wire                qa_rvc, qa_rd_v, qa_mem_signed, qa_is_mem, qa_is_store, qa_is_amo;
+   wire [SEQW-1:0]     qa_seq;
+   wire [PDW-1:0]      qa_pdet;
+   wire [5:0]          qa_rd, qa_rs1;
+   wire [RN_PBITS-1:0] qa_prd;
+   wire [1:0]          qa_shard, qa_mem_size;
+   wire [63:0]         qa_imm;
+   wire [4:0]          qa_amo_func;
+   wire                qa_is_branch, qa_is_jump, qa_is_jalr, qa_is_mul, qa_is_csr;
+   wire [2:0]          qa_csr_func;
+   wire                qa_is_serialize, qa_is_fp, qa_is_fencei, qa_is_cbo, qa_cbo_zero;
+   wire                qa_cbo_keep, qa_illegal, qa_fault;
+   wire [3:0]          qa_fault_cause;
+   wire [5:0]          qa_alu_op;
+   wire                qa_alu_w, qa_alu_uw, qa_op2_imm, qa_res_link, qa_mis_taken, qa_mis_nt;
+   wire [1:0]          qa_op1_sel;
+   wire [2:0]          qa_br_func;
+   wire                qa_rs1_v, qa_rs2_v, qa_rs3_v, qa_ord;
+   assign {qa_pc, qa_insn, qa_rvc, qa_seq, qa_pdet, qa_pred_npc, qa_rd, qa_rd_v, qa_prd, qa_shard,
+           qa_rs1, qa_imm, qa_mem_size, qa_mem_signed, qa_is_mem, qa_is_store, qa_is_amo,
+           qa_amo_func, qa_is_branch, qa_is_jump, qa_is_jalr, qa_is_mul, qa_is_csr, qa_csr_func,
+           qa_is_serialize, qa_is_fp, qa_is_fencei, qa_is_cbo, qa_cbo_zero, qa_cbo_keep,
+           qa_illegal, qa_fault, qa_fault_cause, qa_fault_tval,
+           qa_alu_op, qa_alu_w, qa_alu_uw, qa_op1_sel, qa_op2_imm, qa_res_link,
+           qa_br_func, qa_mis_taken, qa_mis_nt,
+           qa_rs1_v, qa_rs2_v, qa_rs3_v, qa_ord, qa_sq_tag, qa_lq_idx} = pla_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -1203,7 +1250,7 @@ module ooo2_core
       .d_ready(rob_ready), .d_idx(rob_d_idx),
       .d_valid2(rn_valid_b), .d_rd2(d2_rd), .d_prd2(d2_prd_g), .d_noret2(1'b0), .d_ready2(rob_ready2), .d_idx2(rob_d_idx2),
       .w_v({sq_k_take, fp_land, iss_alu, rob_w_valid}),
-      .w_ix({sq_kc_rob, ft_rob, i_rob, rob_w_idx}),
+            .w_ix({sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
             .c_kill(m_valid & m_done & m_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
@@ -1341,9 +1388,22 @@ module ooo2_core
    wire fwd1 = alu_q_v & (i_ps1 == alu_q_prd);
    wire fwd2 = alu_q_v & (i_ps2 == alu_q_prd);
    wire fwd3 = alu_q_v & (i_ps3 == alu_q_prd);
-   wire [63:0] x_rs1 = fwd1 ? alu_q_val : prf_rs1;
+      wire [63:0] x_rs1 = fwd1 ? alu_q_val : prf_rs1;
    wire [63:0] x_rs2 = fwd2 ? alu_q_val : prf_rs2;
    wire [63:0] x_rs3 = fwd3 ? alu_q_val : prf_rs3;
+   // the ALU port's operands, with the same forward
+   wire fwd_a1 = alu_q_v & (a_ps1 == alu_q_prd);
+   wire fwd_a2 = alu_q_v & (a_ps2 == alu_q_prd);
+   wire [63:0] xa_rs1 = fwd_a1 ? alu_q_val : prf_a1;
+   wire [63:0] xa_rs2 = fwd_a2 ? alu_q_val : prf_a2;
+   wire [63:0] xa_result;
+   ooo2_exec u_xa
+     (.alu_op(qa_alu_op), .alu_w(qa_alu_w), .alu_uw(qa_alu_uw), .op1_sel(qa_op1_sel),
+      .op2_imm(qa_op2_imm), .res_link(qa_res_link), .is_rvc(qa_rvc),
+      .is_branch(1'b0), .is_jump(1'b0), .is_jalr(1'b0), .br_func(3'd0),
+      .rs1_val(xa_rs1), .rs2_val(xa_rs2), .imm(qa_imm), .pc(qa_pc),
+      .pred_npc(qa_pred_npc), .mis_taken(1'b0), .mis_nt(1'b0),
+      .result(xa_result), .addr(), .redirect(), .target(), .taken(), .taken_tgt());
 
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
@@ -1698,7 +1758,7 @@ module ooo2_core
    // proceed". With three units it silently masks: on workloads/mlbench M is busy with
    // loads nearly every cycle, so dep_fp could never fire and the FP add chain that IS the
    // critical path reported 0%.
-   wire no_issue  = ~iq_iss_v;
+      wire no_issue  = ~(iq_iss_v | pick_i);
    wire dep_ld    = no_issue & ((rl_blk_v & (bsh_l == SH_LD))
                               | (rf_blk_v & (bsh_f == SH_LD))
                               | (ri_blk_v & (bsh_i == SH_LD)));
@@ -2087,7 +2147,7 @@ module ooo2_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   assign wb_ie = x_result;                       // one writer: the ALU
+      assign wb_ie = xa_result;                      // one writer: the ALU, on its own port
    // SH_LD is now M's shard outright, so this mux carries every result M produces, not
    // just the memory and mul/div ones it started as. The two new arms are the two classes
    // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
@@ -2143,15 +2203,15 @@ module ooo2_core
    // IE is written by M (a jump's link register, a CSR result) and by an ALU op completing
    // at issue. They cannot collide: unit_busy holds the ALU off in any cycle m_wb_ie is
    // set, which is asserted below.
-   wire alu_wb = iss_alu & q_rd_v;
+      wire alu_wb = iss_alu & qa_rd_v;
    wire we_ie = alu_wb;                    // the ISSUE-timed event: wake, pending clear, snoop
    always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)
       alu_q_v <= ~reset & alu_wb;
-      if (alu_wb) begin alu_q_prd <= q_prd; alu_q_val <= x_result; end
+            if (alu_wb) begin alu_q_prd <= qa_prd; alu_q_val <= xa_result; end
    end
    wire we_ld = m_wb_ld | ld_wb;
    wire we_fe = m_wb_fe | fp_wb;
-   wire [RN_PBITS-1:0] wa_ie = q_prd;
+      wire [RN_PBITS-1:0] wa_ie = qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : m_prd;
    always @(posedge clk) if (!reset) begin
@@ -2255,10 +2315,10 @@ module ooo2_core
          cs_mkind[ft_rob] <= 2'd0;      // an FP op has no memory effect
          cs_mpa[ft_rob]   <= 56'd0;
       end
-      if (iss_alu) begin                // completed at issue, never saw M
-         cs_val[i_rob]   <= x_result;
-         cs_mkind[i_rob] <= 2'd0;
-         cs_mpa[i_rob]   <= 56'd0;
+            if (iss_alu) begin                // completed at issue on the ALU port, never saw M
+         cs_val[a_rob]   <= xa_result;
+         cs_mkind[a_rob] <= 2'd0;
+         cs_mpa[a_rob]   <= 56'd0;
       end
    end
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
@@ -2269,10 +2329,10 @@ module ooo2_core
    wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
    wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
-   wire        cs_hit_alu = iss_alu & (i_rob == rob_head_idx);
+      wire        cs_hit_alu = iss_alu & (a_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_sq ? 64'd0          // a store writes no register
                           : cs_hit_ld ? lsu_rd_val
-                          : cs_hit_alu ? x_result
+                                                    : cs_hit_alu ? xa_result
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_sq ? 2'd2
@@ -2290,8 +2350,8 @@ module ooo2_core
    wire        cs2_hit_ld  = ld_land & (lq_l_rob == rob_head2_idx);
    wire        cs2_hit_sq  = sq_k_take & (sq_kc_rob == rob_head2_idx);
    wire        cs2_hit_fp  = fp_land & (ft_rob == rob_head2_idx);
-   wire        cs2_hit_alu = iss_alu & (i_rob == rob_head2_idx);
-   wire [63:0] cs_val_h2   = cs2_hit_sq ? 64'd0 : cs2_hit_ld ? lsu_rd_val : cs2_hit_alu ? x_result
+      wire        cs2_hit_alu = iss_alu & (a_rob == rob_head2_idx);
+      wire [63:0] cs_val_h2   = cs2_hit_sq ? 64'd0 : cs2_hit_ld ? lsu_rd_val : cs2_hit_alu ? xa_result
                            : cs2_hit_fp ? fp_wval : cs2_hit_m ? m_wb_val : cs_val[rob_head2_idx];
    wire [1:0]  cs_mkind_h2 = cs2_hit_sq ? 2'd2 : cs2_hit_ld ? 2'd1 : cs2_hit_alu ? 2'd0 : cs2_hit_fp ? 2'd0
                            : cs2_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head2_idx];
