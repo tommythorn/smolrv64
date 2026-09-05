@@ -125,6 +125,8 @@ module ooo2_lsu
     // access cannot fault, so M can let go here.
     output wire            started,
     output wire            done,
+    output wire            dtlb_walking,   // the data MMU is walking this cycle (HPM DT_WALK)
+    output wire            dtlb_walk_beg,  // ...and this is the walk's first cycle (HPM DTLB_MISS)
     output wire            done_acc,       // the ACCESS part of `done` alone: an access this
                                            // stage started has completed. Never the translate
                                            // pass or a fault -- see ooo2_core's writeback valids
@@ -214,6 +216,13 @@ module ooo2_lsu
    // which is exactly what the first attempt did, and Verilator reported it as "Active
    // region did not converge" rather than as a hang.
    wire        mmu_walking;
+   // Named for the CPI stack (2026-09-05): a walk costs its cycles inside ST_MEM, where a
+   // 16-entry direct-mapped dTLB could hide a whole run's loss (three runs in ~25 of the
+   // sha256 loop read 0.71 with LSU 36% and the same miss rate) and nothing counted it.
+   reg         mmu_walking_q;
+   always @(posedge clk) mmu_walking_q <= reset ? 1'b0 : mmu_walking;
+   assign dtlb_walking  = mmu_walking;
+   assign dtlb_walk_beg = mmu_walking & ~mmu_walking_q;
    wire        xl_want  = req_valid & (st == S_IDLE);
    wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking;
    // A TRANSLATE-ONLY REQUEST DOES NOT ARBITRATE, AND DOES NOT WAIT FOR THE FSM. It needs the

@@ -76,7 +76,7 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
     // STALL-ATTRIBUTION taps (see ooo2_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
-    input  wire [23:0] hpm_ev,
+    input  wire [25:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -204,7 +204,9 @@ module csr_file
                       HPMEV_RED_TRP= 16'h0008,   // Redirect: trap / exception / system op
                       HPMEV_FB_HIT = 16'h0315,   // Fetch buffer served the PC (hit)
                       HPMEV_FB_RHIT= 16'h0316,   // ...on the first fetch after a redirect
-                      HPMEV_RD_WAIT= 16'h0317;   // Redirect resolved in M, waiting for the ROB head (the mispredict drain)
+                      HPMEV_RD_WAIT= 16'h0317,   // Redirect resolved in M, waiting for the ROB head (the mispredict drain)
+                     HPMEV_DT_WALK= 16'h0318,   // Data MMU walking (cycles; inside ST_MEM)
+                     HPMEV_DTLB_MISS=16'h0104;  // dTLB miss: a data page-table walk began
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    // EVERY input here is a register as far as this module is concerned: `hpm_ev` and
    // `hpm_retire_cnt` are both the caller's delayed copies. That is what keeps the mux and
@@ -238,6 +240,8 @@ module csr_file
         HPMEV_FB_RHIT: hpm_inc = {5'd0, hpm_ev[21]};
         HPMEV_ST_ROB:  hpm_inc = {5'd0, hpm_ev[22]};
         HPMEV_RD_WAIT: hpm_inc = {5'd0, hpm_ev[23]};
+        HPMEV_DT_WALK: hpm_inc = {5'd0, hpm_ev[24]};
+        HPMEV_DTLB_MISS: hpm_inc = {5'd0, hpm_ev[25]};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

@@ -111,6 +111,11 @@ def main():
     for k, label in BACKEND:
         if v.get(k) is not None and g(k):
             print("    %-30s %10.3f  %5.1f%%" % ("stall: " + label, g(k)/ins, 100.0*g(k)/cyc))
+            # DT_WALK is a SUBSET of ST_MEM (a walk holds the LSU), reported underneath it, never
+            # added: the dTLB is 16 entries direct-mapped, and a layout that thrashes it costs a
+            # walk per load with no D$ miss to show for it (2026-09-05).
+            if k == "ST_MEM" and v.get("DT_WALK") is not None:
+                print("      %-28s %10.3f  %5.1f%%" % ("- of which dTLB walking", g("DT_WALK")/ins, 100.0*g("DT_WALK")/cyc))
     if fe_bub:
         tag = " (derived)" if v.get("_FE_BUB_DERIVED") else ""
         print("    %-30s %10.3f  %5.1f%%%s" % ("frontend bubble", fe_bub/ins, 100.0*fe_bub/cyc, tag))
@@ -144,6 +149,9 @@ def main():
         # a rename walk-back (P7) would recover. Cycles per instruction and share of cycles.
         mpki.append("    %-30s %10.3f   (%.1f%% of cycles: a resolved redirect waiting for the head)"
                     % ("redirect drain, cycles/insn", g("RD_WAIT")/ins, 100.0*g("RD_WAIT")/cyc))
+    if v.get("DTLB_MISS") is not None:
+        per_walk = "" if not g("DTLB_MISS") or v.get("DT_WALK") is None else "     (%.1f cycles per walk)" % (g("DT_WALK")/g("DTLB_MISS"))
+        mpki.append("    %-30s %10.3f%s" % ("dTLB misses (walks)", per_k(g("DTLB_MISS")), per_walk))
     for code, label, acc in (("REDIR", "pipeline redirects", None),
                              ("DCMISS", "D$ misses", "DCACC"),
                              ("ICMISS", "I$ misses", "ICACC")):

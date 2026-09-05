@@ -1173,6 +1173,7 @@ module ooo2_core
    wire        lsu_done, lsu_done_acc, lsu_fault, lsu_idle, lsu_xo_early;
    wire [55:0] lsu_cos_pa;  wire [1:0] lsu_cos_kind;   // cosim memory-effect capture
    wire [63:0] lsu_rd_val, lsu_fault_tval;
+   wire        lsu_dtlb_walking, lsu_dtlb_walk_beg;   // HPM: DT_WALK / DTLB_MISS
    wire [3:0]  lsu_fault_cause;
    wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
 
@@ -1188,6 +1189,7 @@ module ooo2_core
    wire m_cbo_wait = m_is_cbo & sq_av_any;
    ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
      (.clk(clk), .reset(reset),
+      .dtlb_walking(lsu_dtlb_walking), .dtlb_walk_beg(lsu_dtlb_walk_beg),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
       // ld_land or the ROB head) the request would still be presented, the LSU would fall
       // back to S_IDLE, and xl_req would start the very same access A SECOND TIME -- a store
@@ -1550,7 +1552,7 @@ module ooo2_core
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
    wire rd_wait = m_valid & m_redirect & ~m_at_head;
-   wire [23:0] hpm_ev = {rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
+   wire [25:0] hpm_ev = {lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
@@ -1579,11 +1581,11 @@ module ooo2_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [23:0] hpm_ev_q;
+   reg [25:0] hpm_ev_q;
    reg [5:0]  hpm_ret_q;
-   initial begin hpm_ev_q = 24'd0; hpm_ret_q = 6'd0; end
+   initial begin hpm_ev_q = 26'd0; hpm_ret_q = 6'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 24'd0 : hpm_ev;
+      hpm_ev_q  <= reset ? 26'd0 : hpm_ev;
       hpm_ret_q <= (reset | ~retire) ? 6'd0 : 6'd1;
    end
 

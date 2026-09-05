@@ -967,7 +967,7 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 
 ## 11. Counters and observability
 
-`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 24-bit `hpm_ev`
+`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 26-bit `hpm_ev`
 bus. This is exactly the width of the event list, so a 13-event `perf stat` is full — adding
 an event to a run means dropping one.
 
@@ -986,6 +986,7 @@ an event to a run means dropping one.
 | `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
 | `FB_HIT` / `FB_RHIT` | r0315 / r0316 | the fetch buffer served the PC / on the first fetch after a redirect |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
+| `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
 
 `ST_MEM` and `ST_FPU` deliberately include the *dependent* wait, charged to the unit that
 owns the register being waited on: when a unit stopped blocking M, the wait did not go away,

@@ -128,5 +128,15 @@
     "EventName": "RD_WAIT",
     "EventCode": "0x0317",
     "BriefDescription": "Redirect resolved in M, waiting for the ROB head (the mispredict drain)"
+  },
+  {
+    "EventName": "DT_WALK",
+    "EventCode": "0x0318",
+    "BriefDescription": "Data MMU walking (cycles; inside ST_MEM)"
+  },
+  {
+    "EventName": "DTLB_MISS",
+    "EventCode": "0x0104",
+    "BriefDescription": "dTLB miss: a data page-table walk began"
   }
 ]
