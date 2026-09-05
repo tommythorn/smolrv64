@@ -912,7 +912,7 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 
 ## 11. Counters and observability
 
-`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 22-bit `hpm_ev`
+`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 24-bit `hpm_ev`
 bus. This is exactly the width of the event list, so a 13-event `perf stat` is full — adding
 an event to a run means dropping one.
 
@@ -927,6 +927,10 @@ an event to a run means dropping one.
 | `FE_ALN` / `FE_QUE` | r0313 / r0314 | no whole instruction / queue empty |
 | D$ / I$ access, miss | r0100/r0102, r0110/r0112 | |
 | redirects | r0005 | |
+| `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
+| `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
+| `FB_HIT` / `FB_RHIT` | r0315 / r0316 | the fetch buffer served the PC / on the first fetch after a redirect |
+| `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 
 `ST_MEM` and `ST_FPU` deliberately include the *dependent* wait, charged to the unit that
 owns the register being waited on: when a unit stopped blocking M, the wait did not go away,

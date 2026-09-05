@@ -16,7 +16,7 @@ RTL.  Do not hardcode codes here.
 
 Usage:
     perf stat -e cycles,instructions,r0005,r0006,r0007,r0008,r0100,r0102,r0110,r0112,\\
-        r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0315,r0316 \\
+        r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0315,r0316,r0317 \\
         CMD 2>&1 | tools/perf-cpi-stack.py
     (r0313/r0314 are the straddle and F/X-queue buckets: without them 46% of sha256sum's
      cycles read as "unattributed" on 2026-09-05; with them, 0.1% does.)
@@ -129,6 +129,11 @@ def main():
         if tot:
             rest = tot - sum(g(k) for k, _ in REDIR_SUB)
             print("    %-30s %10.3f   (fence.i / direct jal)" % ("redirect: other", per_k(rest)))
+    if v.get("RD_WAIT") is not None:
+        # a redirect resolved in M sits there until it is the ROB head (head_block): the cycles
+        # a rename walk-back (P7) would recover. Cycles per instruction and share of cycles.
+        print("    %-30s %10.3f   (%.1f%% of cycles: a resolved redirect waiting for the head)"
+              % ("redirect drain, cycles/insn", g("RD_WAIT")/ins, 100.0*g("RD_WAIT")/cyc))
     for code, label, acc in (("REDIR", "pipeline redirects", None),
                              ("DCMISS", "D$ misses", "DCACC"),
                              ("ICMISS", "I$ misses", "ICACC")):

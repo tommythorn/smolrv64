@@ -123,5 +123,10 @@
     "EventName": "FB_RHIT",
     "EventCode": "0x0316",
     "BriefDescription": "Fetch buffer served the PC (hit) on the first fetch after a redirect"
+  },
+  {
+    "EventName": "RD_WAIT",
+    "EventCode": "0x0317",
+    "BriefDescription": "Redirect resolved in M, waiting for the ROB head (the mispredict drain)"
   }
 ]

@@ -1544,7 +1544,11 @@ module ooo2_core
    // ST_FPU correctly reads 0%. Without this bit that workload's real limiter is invisible
    // in the CPI stack.
    wire st_rob = d_valid & ~rob_ready;
-   wire [22:0] hpm_ev = {st_rob, hpm_fb_rhit, hpm_fb_hit,
+   // The mispredict DRAIN (plan item 5, 2026-09-05): a redirect resolved in M waits for the
+   // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
+   // would recover; on the stack they show what the drain costs before it is built.
+   wire rd_wait = m_valid & m_redirect & ~m_at_head;
+   wire [23:0] hpm_ev = {rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
@@ -1573,11 +1577,11 @@ module ooo2_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [22:0] hpm_ev_q;
+   reg [23:0] hpm_ev_q;
    reg [5:0]  hpm_ret_q;
-   initial begin hpm_ev_q = 23'd0; hpm_ret_q = 6'd0; end
+   initial begin hpm_ev_q = 24'd0; hpm_ret_q = 6'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 23'd0 : hpm_ev;
+      hpm_ev_q  <= reset ? 24'd0 : hpm_ev;
       hpm_ret_q <= (reset | ~retire) ? 6'd0 : 6'd1;
    end
 
