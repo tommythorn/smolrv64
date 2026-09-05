@@ -33,6 +33,7 @@ module aligner
     input  wire [PCW-1:0]          base_pc,  // PC of hwin[0]
     input  wire [SEQW-1:0]         base_seq, // seq of slot 0
     input  wire                    solo_all, // force one instruction per bundle (fault replay)
+    input  wire                    bytes_late, // the window is short of the page end: more is coming
     output wire [IW-1:0]           valid,
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
@@ -113,29 +114,29 @@ module aligner
    reg           is32, have, is_sys;
    // Explicit sensitivity: hwin is read via the hwr() function, which iverilog's
    // @* does not pull into the list -- name it so the block re-evaluates on it.
-   // A BUNDLE DOES NOT CROSS A CHUNK BOUNDARY AFTER SLOT 0 (2026-09-05, two-wide fetch).
-   // The fetch buffer serves the window across a chunk PAIR whose second chunk may or may
-   // not have arrived yet, so a bundle allowed to span the boundary has a shape that depends
-   // on timing -- and the predictor, keyed by the bundle's base PC, then meets the same
-   // branch in differently-based bundles from one iteration to the next: on the sha256
-   // kernel every loop branch mispredicted (0.003 -> 1.36 redirects per thousand). Slot 0
-   // keeps the whole window (a straddler at the boundary is served from the pair, which is
-   // deterministic: it is always a straddler there); later slots see the window clipped at
-   // the chunk end, so a bundle's shape is a function of the code alone.
-   localparam CHA = $clog2(2*HW);                             // chunk = HW halfwords = 2*HW bytes
-   wire [PBW-1:0] to_chunk_end = HW[PBW-1:0] - {1'b0, base_pc[CHA-1:1]};
-   wire [PBW-1:0] avail_late   = (avail < to_chunk_end) ? avail : to_chunk_end;
-   reg  [PBW-1:0] av;
-   always @(hwin or avail or avail_late or base_pc or base_seq or solo_all) begin
+   // A BUNDLE WAITS FOR ITS BYTES RATHER THAN CUTTING AT THEM (item 10e, 2026-09-05). The
+   // two-wide fetch's first cut ended a bundle at the 16-byte chunk boundary after slot 0:
+   // the chunk beyond may or may not have arrived, so a bundle allowed to span it has a
+   // shape that depends on timing, and the predictor, keyed by the bundle's base PC, then
+   // meets the same branch under different bases from one iteration to the next (every
+   // sha256 loop branch mispredicted, 0.003 -> 1.36 redirects per thousand). The cut made
+   // a bundle's shape a function of the code alone -- and 338 of that kernel's 934 bundles
+   // singles. The OTHER choice has the same property: when a later slot needs halfwords the
+   // window does not have yet but WILL (`bytes_late`: the shortfall is the buffer's, not
+   // the page's), the whole bundle waits, and its shape is still the code's. The buffer
+   // runs two chunks ahead now (rv_soc_top), so the wait is rare; at the page end the
+   // window is cut as before, deterministic because the page boundary is the code's too.
+   reg wt;
+   always @(hwin or avail or base_pc or base_seq or solo_all or bytes_late) begin
       pos = 0;
       run = 1'b1;
       bt  = 1'b0;
+      wt  = 1'b0;
       for (k = 0; k < IW; k = k + 1) begin
          h0   = hwr(pos);
          is32 = (h0[1:0] == 2'b11);
-         av   = (k == 0) ? avail : avail_late;
          // all needed halfwords present?  first always, second only if 32-bit
-         have = (pos < av) && (!is32 || ((pos + 1'b1) < av));
+         have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
          // A SYSTEM op (ecall/ebreak/csr/xret), an AMO, or a FENCE is SOLO in its bundle:
          // terminate the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo
          // SYSTEM lets a trap roll back TO that checkpoint and precisely annul the faulting op's
@@ -156,10 +157,14 @@ module aligner
                pos = pos + (is32 ? 2'd2 : 2'd1);
                if (is_cti(h0)) run = 1'b0;  // CTI / SYSTEM / FENCE ends the bundle (youngest)
                if (is_br(h0))  bt  = 1'b1;  // ... and it is a real branch/jump (is_br implies is_cti)
-            end else run = 1'b0;               // prefix: stop at first that doesn't fit
+            end else begin                     // prefix: stop at the first that doesn't fit...
+               if ((k != 0) && run && bytes_late) wt = 1'b1;   // ...or wait, when it is coming
+               run = 1'b0;
+            end
          end
       end
-      cons = pos;                             // halfwords consumed (straddler excluded)
+      if (wt) begin v = {IW{1'b0}}; bt = 1'b0; end
+      cons = wt ? {PBW{1'b0}} : pos;          // halfwords consumed (straddler excluded)
    end
 
    genvar g;

@@ -112,7 +112,8 @@ module fetch
    wire           at_bound = (off == 12'hFFE);                  // pc_q is the page's last halfword
    wire [12:0]    hw_bound = (13'd4096 - {1'b0, off}) >> 1;     // 1..2048 halfwords to the boundary
    wire [PBW-1:0] hw_cap   = (hw_bound > HW) ? HW[PBW-1:0] : hw_bound[PBW-1:0];
-   wire [PBW-1:0] eff_avail = (imem_avail < hw_cap) ? imem_avail : hw_cap;
+   wire           bytes_late = (imem_avail < hw_cap);          // short of the page end: the buffer's shortfall
+   wire [PBW-1:0] eff_avail  = bytes_late ? imem_avail : hw_cap;
 
    assign cur_seq   = seq_q;
    // While straddling, present PC+2 so the iMMU translates the high halfword's (next) page.
@@ -136,7 +137,7 @@ module fetch
    wire al_br_term;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(eff_avail), .base_pc(pc_q), .base_seq(seq_q),
-      .solo_all(solo_all),
+      .solo_all(solo_all), .bytes_late(bytes_late),
       .valid(al_valid), .inst(al_inst), .pc(al_pc), .offs(al_offs), .seq(al_seq), .consumed(al_consumed),
       .br_term(al_br_term));
    // THE FALL-THROUGH AND THE SLOT PCs ARE MUXES, NOT ADDERS (2026-09-05). Gate U, the first
