@@ -14,13 +14,19 @@ Event names come from docs/smolrv64-perf-events.json, which tools/gen-perf-event
 generates from src/csr_file.v and src/lint.sh verifies -- so this cannot drift from the
 RTL.  Do not hardcode codes here.
 
-Usage:
-    perf stat -e cycles,instructions,r0005,r0006,r0007,r0008,r0100,r0102,r0110,r0112,\\
-        r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0315,r0316,r0317 \\
-        CMD 2>&1 | tools/perf-cpi-stack.py
-    (r0313/r0314 are the straddle and F/X-queue buckets: without them 46% of sha256sum's
-     cycles read as "unattributed" on 2026-09-05; with them, 0.1% does.)
+Usage (13 programmable counters -- one set per run, never the union, see perf-smol.sh):
+    tools/perf-smol.sh cpi CMD 2>&1 | tools/perf-cpi-stack.py     # the stack + ROB-full,
+                                                                  # drain, redirects, D$ misses
+    tools/perf-smol.sh br  CMD 2>&1 | tools/perf-cpi-stack.py     # redirects by cause
+    tools/perf-smol.sh mem CMD 2>&1 | tools/perf-cpi-stack.py     # D$/I$ traffic, loads/stores
     tools/perf-cpi-stack.py saved-perf-output.txt
+
+The identity this checks: dispatch is one instruction per cycle, so
+    cycles = instructions + sum(named stall cycles) + frontend bubbles + UNATTRIBUTED
+and "unattributed" is what no event names.  A run with only the FE_* events is not a stack:
+every backend stall lands there (2026-09-05: 10.7% of sha256sum's cycles), and the tool says
+so rather than folding it into a "retire" line.  Events can overlap (a cycle blocked on a load
+AND on ROB space counts in both), so a small negative is overlap, not an error.
 """
 import json, os, re, sys
 
@@ -37,7 +43,8 @@ CANDIDATES = [os.environ.get("SMOLRV_PERF_EVENTS"),
 # FE_MMU and FE_IC are SUBSETS of FE_BUB ("X idle ... because"), so they are reported as a
 # breakdown underneath it and never added alongside it.
 BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
-           ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"), ("ST_SER", "serializing op")]
+           ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"), ("ST_SER", "serializing op"),
+           ("ST_ROB", "dispatch: ROB full")]
 FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all"),
            ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, F/X queue empty")]
 REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)"),
@@ -94,12 +101,13 @@ def main():
 
     cpi, per_k = cyc / ins, lambda n: 1000.0 * n / ins
     fe_bub = g("FE_BUB")
-    stalls = sum(g(k) for k, _ in BACKEND) + fe_bub
-    issue  = cyc - stalls
+    named  = sum(g(k) for k, _ in BACKEND) + fe_bub
+    unattr = cyc - ins - named            # cycles beyond one per instruction that nothing names
+    no_backend = not any(v.get(k) is not None for k, _ in BACKEND)
 
     print("  cycles %-16d instructions %-16d IPC %.3f   CPI %.3f" % (cyc, ins, ins/cyc, cpi))
-    print("\n  CPI stack (each cycle charged to exactly one cause)")
-    print("    %-30s %10.3f  %5.1f%%" % ("issue / retire", issue/ins, 100.0*issue/cyc))
+    print("\n  CPI stack (each cycle charged to one cause; dispatch is one per cycle, so 1.000 is the floor)")
+    print("    %-30s %10.3f  %5.1f%%" % ("retire (one per cycle)", 1.0, 100.0*ins/cyc))
     for k, label in BACKEND:
         if v.get(k) is not None and g(k):
             print("    %-30s %10.3f  %5.1f%%" % ("stall: " + label, g(k)/ins, 100.0*g(k)/cyc))
@@ -114,26 +122,28 @@ def main():
         if abs(other) > 0.0005 * cyc:
             print("      %-28s %10.3f  %5.1f%%   <-- unattributed"
                   % ("- other", other/ins, 100.0*other/cyc))
+    flag = ""
+    if unattr > 0.005 * cyc:
+        flag = ("   <-- no backend events in this run: use perf-smol.sh cpi" if no_backend
+                else "   <-- a cause with no counter (or events dropped from the set)")
+    elif unattr < -0.005 * cyc:
+        flag = "   (events overlap: a cycle blocked on two units counts in both)"
+    print("    %-30s %10.3f  %5.1f%%%s" % ("unattributed", unattr/ins, 100.0*unattr/cyc, flag))
 
-    total = issue/ins + stalls/ins
-    resid = cpi - total
-    flag = "" if abs(resid) < 0.005 else "   <-- CHECK: events do not account for CPI"
-    print("    %-30s %10.3f%s" % ("residual vs measured CPI", resid, flag))
-
-    print("\n  MPKI (per 1000 instructions)")
+    mpki = []
     if any(v.get(k) is not None for k, _ in REDIR_SUB):
         tot = g("REDIR")
         for k, label in REDIR_SUB:
             if v.get(k) is not None:
-                print("    %-30s %10.3f" % ("redirect: " + label, per_k(g(k))))
+                mpki.append("    %-30s %10.3f" % ("redirect: " + label, per_k(g(k))))
         if tot:
             rest = tot - sum(g(k) for k, _ in REDIR_SUB)
-            print("    %-30s %10.3f   (fence.i / direct jal)" % ("redirect: other", per_k(rest)))
+            mpki.append("    %-30s %10.3f   (fence.i / direct jal)" % ("redirect: other", per_k(rest)))
     if v.get("RD_WAIT") is not None:
         # a redirect resolved in M sits there until it is the ROB head (head_block): the cycles
         # a rename walk-back (P7) would recover. Cycles per instruction and share of cycles.
-        print("    %-30s %10.3f   (%.1f%% of cycles: a resolved redirect waiting for the head)"
-              % ("redirect drain, cycles/insn", g("RD_WAIT")/ins, 100.0*g("RD_WAIT")/cyc))
+        mpki.append("    %-30s %10.3f   (%.1f%% of cycles: a resolved redirect waiting for the head)"
+                    % ("redirect drain, cycles/insn", g("RD_WAIT")/ins, 100.0*g("RD_WAIT")/cyc))
     for code, label, acc in (("REDIR", "pipeline redirects", None),
                              ("DCMISS", "D$ misses", "DCACC"),
                              ("ICMISS", "I$ misses", "ICACC")):
@@ -141,7 +151,12 @@ def main():
             continue
         rate = "" if not acc or not g(acc) else "     (%.3f%% of %s accesses)" % (
             100.0*g(code)/g(acc), acc[:2])
-        print("    %-30s %10.3f%s" % (label, per_k(g(code)), rate))
+        mpki.append("    %-30s %10.3f%s" % (label, per_k(g(code)), rate))
+    if mpki:
+        print("\n  MPKI (per 1000 instructions)")
+        print("\n".join(mpki))
+    else:
+        print("\n  MPKI: no redirect / miss / drain events in this run (perf-smol.sh cpi, br, mem)")
 
     # Fetch-buffer payoff: FB_RHIT is exactly what flush-on-redirect would turn into misses.
     if v.get("FB_RHIT") is not None:
