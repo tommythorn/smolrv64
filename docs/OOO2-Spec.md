@@ -833,7 +833,8 @@ have in flight, i.e. the multi-outstanding load queue in the work list below.
 | virtio-mmio (blk + net) | `0x1000_2000` | 8 KiB |
 
 **virtio-net's DMA moves 8-byte words** (2026-09-05, plan item 7): RX gathers a frame one
-byte per clock from the engine's async-read buffer into a 64-bit word and issues ONE AXI
+byte per clock from the engine's slot ring (a registered BRAM read: the backend presents
+the byte it consumes NEXT cycle) into a 64-bit word and issues ONE AXI
 write per word, strobed at the buffer's head and tail, with the previous word's write in
 flight; TX fetches the next frame word while the current one is byte-written into the
 engine. Before this every RX byte was its own AXI transaction (1,518 round trips per
@@ -841,7 +842,12 @@ engine. Before this every RX byte was its own AXI transaction (1,518 round trips
 at the DDR latencies measured on the board (reads 28, writes 15): RX 31,919 -> 3,953
 cycles per 1500-byte frame, TX 7,839 -> 6,534 (RX 4,018 with the flag re-read below). The
 AXI master is still single-beat; a burst master is the next step if the link, not the
-device, stops being the limit. **The interrupt decision re-reads `avail.flags` after
+device, stops being the limit. **The RX engine holds eight 2 KiB slots** (2026-09-05): a
+frame is captured only if its first byte finds its slot free, the decision is never
+revisited, and every declined frame is counted (busy, FCS-bad, over-long). The single-buffered
+engine let the backend's ack land mid-frame and then committed the frame's TAIL as a good
+frame: on the board one kernel `rx_dropped` per retransmitted NFS segment (23,347 vs 23,528
+over a 117 MB read at 0.52 MB/s), FCS-bad 0. **The interrupt decision re-reads `avail.flags` after
 `used.idx` has landed** (both queues): the driver clears NO_INTERRUPT when it re-arms and
 then re-checks the used ring, so a flag sampled when the frame started can be stale by
 the time the device decides, and a suppressed interrupt then is a lost wakeup the driver
@@ -1000,6 +1006,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | virtio-net DMA, both directions | `ooo2/run-ooo2-vnet-tb.sh` | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |
+| Ethernet RX engine (MACs + the slot ring, two clocks) | `ooo2/run-ooo2-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |

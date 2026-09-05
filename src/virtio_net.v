@@ -58,7 +58,7 @@ module virtio_net #(
     input  wire [63:0] rx_queue_device,
     input  wire        rx_frame_valid,      // eth_rx_engine has a frame
     input  wire [10:0] rx_frame_len,
-    output reg  [10:0] rx_rd_addr,          // read frame bytes from the engine
+    output wire [10:0] rx_rd_addr,          // read frame bytes from the engine (registered read: leads by a cycle)
     input  wire [ 7:0] rx_rd_data,
     output reg         rx_frame_ack,        // release the engine buffer
     output wire [31:0] debug_rx_deliver_count,
@@ -219,6 +219,13 @@ module virtio_net #(
    // when VIRTIO_NET_F_MRG_RXBUF is not negotiated.
    wire [ 7:0] rx_wbyte = (rx_widx == 11'd10) ? 8'd1 :
                           (rx_widx <  11'd12) ? 8'd0 : rx_rd_data;
+   // The engine's read is REGISTERED (a BRAM ring of slots since 2026-09-05), so the address
+   // presented now is the byte consumed NEXT cycle: in S_RX_GATHER that is rx_widx+1, and in
+   // any other state it is rx_widx itself (S_RX_WRITE sits between two gathers with rx_widx
+   // already advanced, and the RAM holds its output while the address holds). Bytes below
+   // 12 are the header, so the address saturates at 0 there and nothing is read.
+   wire [10:0] rx_nxt = (state == S_RX_GATHER) ? rx_widx + 11'd1 : rx_widx;
+   assign rx_rd_addr = (rx_nxt >= 11'd12) ? rx_nxt - 11'd12 : 11'd0;
    wire [63:0] rx_waddr = rx_buf_addr + {53'd0, rx_widx};
    // The RX write word (plan item 7, 2026-09-05): bytes are gathered one per clock from the
    // engine's async-read buffer into their lanes and go out as ONE AXI write per 8-byte word
@@ -417,7 +424,6 @@ module virtio_net #(
          rx_head_desc <= 16'd0;
          rx_widx <= 11'd0;
          rx_total <= 11'd0;
-         rx_rd_addr <= 11'd0;
          rx_deliver_count <= 32'd0;
          rx_nobuf_count <= 32'd0;
          tx_no_irq <= 1'b0;
@@ -756,7 +762,6 @@ module virtio_net #(
                  rx_buf_addr <= dma_rsp_rdata;           // RX buffer guest addr
                  rx_widx     <= 11'd0;
                  rx_total    <= rx_frame_len + 11'd12;    // 12B hdr + frame
-                 rx_rd_addr  <= 11'd0;
                  rx_wbuf <= 64'd0; rx_wstrb <= 8'd0; rx_wlast <= 1'b0;
                  state <= dma_rsp_error ? S_RX_DROP : S_RX_GATHER;
               end
@@ -769,7 +774,6 @@ module virtio_net #(
               rx_wbuf[{rx_waddr[2:0], 3'd0} +: 8] <= rx_wbyte;
               rx_wstrb[rx_waddr[2:0]] <= 1'b1;
               rx_widx    <= rx_widx + 11'd1;
-              rx_rd_addr <= (rx_widx + 11'd1 >= 11'd12) ? (rx_widx + 11'd1 - 11'd12) : 11'd0;
               if (dma_rsp_valid && dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
               if (rx_waddr[2:0] == 3'd7 || rx_widx == rx_total - 11'd1) begin
                  rx_wlast <= (rx_widx == rx_total - 11'd1);

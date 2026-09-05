@@ -1052,7 +1052,8 @@ module rk_xcku5p(
    wire [10:0] eth_rx_rd_addr;
    wire [ 7:0] eth_rx_rd_data;
    wire        eth_rx_frame_ack;
-   wire [15:0] eth_rx_drop_count;
+   wire [15:0] eth_rx_drop_count;             // engine: no free slot at a frame's first byte
+   wire [15:0] eth_rx_bad_count, eth_rx_oflow_count;   // engine: FCS bad / longer than a slot
 
    // RX-capture MMCM supervision: MMCME4 does not reliably relock after its
    // input clock (the PHY's rxc) is interrupted -- link renegotiation -- without
@@ -1128,7 +1129,8 @@ module rk_xcku5p(
 
    // RX engine buffers each good frame and hands it to the backend (ui_clk),
    // which DMAs it into a guest RX-queue buffer.
-   eth_rx_engine #(.BUF_BYTES(1536)) eth_rx_engine_inst(
+   // Eight 2 KiB slots in BRAM (2026-09-05): a gigabit burst is held, not truncated.
+   eth_rx_engine #(.SLOTS(8), .SLOT_BYTES(2048)) eth_rx_engine_inst(
       .gmii_clk    (gmii_rx_clk),
       .gmii_rst    (gmii_rst),
       .rx_valid    (eth_rx_valid),
@@ -1142,7 +1144,9 @@ module rk_xcku5p(
       .rd_addr     (eth_rx_rd_addr),
       .rd_data     (eth_rx_rd_data),
       .frame_ack   (eth_rx_frame_ack),
-      .drop_count  (eth_rx_drop_count)
+      .drop_count  (eth_rx_drop_count),
+      .bad_count   (eth_rx_bad_count),
+      .oflow_count (eth_rx_oflow_count)
    );
 
    // Passive good/bad frame counters (count every frame eth_mac_rx sees, incl
@@ -1214,6 +1218,7 @@ module rk_xcku5p(
         6'd20: virtio_net_debug_word = virtio_net_debug_rx_deliver_count;
         6'd21: virtio_net_debug_word = virtio_net_debug_rx_nobuf_count;
         6'd22: virtio_net_debug_word = {16'd0, eth_rx_drop_count}; // engine busy-drops
+        6'd26: virtio_net_debug_word = {eth_rx_oflow_count, eth_rx_bad_count}; // engine: too long / FCS bad
         6'd23: virtio_net_debug_word = rx_dbg_head_ui[31:0];   // RX bytes 0..3
         6'd24: virtio_net_debug_word = rx_dbg_head_ui[63:32];  // RX bytes 4..7
         6'd25: virtio_net_debug_word = {20'd0, rx_dbg_lg_ui};  // {good, len} of last RX

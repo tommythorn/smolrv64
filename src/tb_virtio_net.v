@@ -28,7 +28,8 @@ module tb;
    reg         tx_busy = 0;
    reg         rx_frame_valid = 0; reg [10:0] rx_frame_len = 0;
    wire [10:0] rx_rd_addr; wire rx_frame_ack;
-   reg  [7:0]  rxbuf [0:2047]; wire [7:0] rx_rd_data = rxbuf[rx_rd_addr];   // async-read, like eth_rx_engine
+   reg  [7:0]  rxbuf [0:2047]; reg [7:0] rx_rd_data;                       // registered read, like eth_rx_engine's ring
+   always @(posedge clk) rx_rd_data <= rxbuf[rx_rd_addr];
    reg  [7:0]  txbuf [0:2047];
    always @(posedge clk) if (tx_wr_en) txbuf[tx_wr_addr] <= tx_wr_data;
    // ---- AXI ----
