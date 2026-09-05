@@ -12,10 +12,15 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  11624624  0.5   # OOO2_HW=8, the 16-byte fetch window (2026-09-05): +0.4% on this
+60000000  8  13805286  0.5   # Plan item 4a+4b at OOO2_HW=8 (2026-09-05); the senior store queue
+                              # (2026-09-04) is in it too. The row below is the same RTL at HW=4.
+                              # Previously 11624624: OOO2_HW=8, the 16-byte fetch window (2026-09-05): +0.4% on this
                               # boot (kernel code is RVC-dense); febench's 32-bit code goes
                               # 0.66 -> 0.98 (aligned) and 0.40 -> 0.79 (2-byte offset).
-60000000  4  11604336  0.5   # The senior store queue (2026-09-04): a store commits at the ROB's
+60000000  4  13466847  0.5   # Plan item 4a+4b (2026-09-05): a plain store is done when the D$
+                              # TAKES it (wr_acc), not when it acks, and the D$'s door is open in
+                              # a write's last cycle. +16.0%: +14.5% from 4a alone (13291779).
+                              # Previously 11604336: The senior store queue (2026-09-04): a store commits at the ROB's
                               # irrevocable pointer and retires before the cache takes its
                               # write. +0.22% on this boot, whose store stall is the cache's
                               # SOLO write path, not the head; stbench 5.88 -> 5.00 per store.

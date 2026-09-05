@@ -46,7 +46,7 @@ module tb;
    reg  [PAW-1:0]   wr_addr=0;
    reg  [63:0]      wr_data=0;
    reg  [7:0]       wr_mask=0;
-   wire             wr_ack;
+   wire             wr_ack, wr_acc;
    wire             l2_req, l2_we;
    wire [PAW-OFFB-1:0] l2_addr;
    wire [LINEB-1:0] l2_wdata;
@@ -61,7 +61,7 @@ module tb;
       .rd_resp_addr(), .rd_tag(rd_tag), .rd_resp_tag(rd_resp_tag),
       .rd_ack(rd_ack), .rd_uncached(rd_unc),
       .wr_req(wr_req), .wr_addr(wr_addr), .wr_data(wr_data), .wr_mask(wr_mask),
-      .wr_ack(wr_ack), .wr_uncached(wr_unc),
+      .wr_ack(wr_ack), .wr_acc(wr_acc), .wr_cpl(), .wr_uncached(wr_unc),
       .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep),
       .inv_req(1'b0), .inv_clean(1'b0), .inv_busy(),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
@@ -110,7 +110,7 @@ module tb;
       begin rd_addr=a; rd_tag=t; req_pend=1'b1; while (req_pend) @(negedge clk); end
    endtask
 
-   integer errors, i, k;
+   integer errors, i, k, g14;
    reg [63:0] got;
    reg [PAW-1:0] A;
 
@@ -127,6 +127,22 @@ module tb;
          while (req_pend) @(negedge clk);
          i=0; while (!rd_valid && i<(8*LAT+400)) begin @(negedge clk); i=i+1; end
          if (i>=(8*LAT+400)) begin $display("FAIL: load timed out at a=%h", a); errors=errors+1; end
+         got = rd_data;
+         @(negedge clk);
+      end
+   endtask
+   // A store, then a load presented from the store's second cycle on (the tb changes inputs
+   // at negedge, the DUT samples at posedge, so the accept seen at one negedge is held through
+   // its posedge). `gap` counts the cycles the load waited at the door.
+   task store_then_load(input [PAW-1:0] sa, input [63:0] d, input [PAW-1:0] la, input [3:0] t, output integer gap);
+      begin
+         wr_addr=sa; wr_data=d; wr_mask=8'hFF; wr_req=1'b1;
+         @(negedge clk); while (!wr_acc) @(negedge clk);     // the accept cycle
+         @(negedge clk);                                     // S_CHECK: the write is in the pipeline
+         wr_req=1'b0; rd_addr=la; rd_tag=t; req_pend=1'b1; gap=0;
+         while (req_pend) begin @(negedge clk); gap=gap+1; end
+         i=0; while (!rd_valid && i<(8*LAT+400)) begin @(negedge clk); i=i+1; end
+         if (i>=(8*LAT+400)) begin $display("FAIL: load timed out at a=%h", la); errors=errors+1; end
          got = rd_data;
          @(negedge clk);
       end
@@ -326,6 +342,24 @@ module tb;
          do_load(X + 64'd48, 4'h9);
          expect64(got, 64'hD0D0_0006_0000_0006, "T13 after an NC store the line was not kept");
       end
+
+      // ---- T14: THE DOOR IN A WRITE'S LAST CYCLE (plan item 4b, 2026-09-05). A request into
+      // another set is accepted while the store's chunk is being written (S_FIN admits it);
+      // one into the SAME set waits for S_IDLE, because its bank read would collide with the
+      // write and return the old chunk. Both read back what was stored; the gap is what proves
+      // which door it went through: the load is presented from the write's S_CHECK cycle, and
+      // the tb counts negedges until it sees the ack, so an accept in S_FIN counts 2 and one
+      // in S_IDLE counts 3. ----
+      A = 64'h0000_0000_0010_0000;
+      do_store(A,          64'h1111_1111_1111_1111, 8'hFF);       // both lines resident
+      do_store(A + 64'd64, 64'h2222_2222_2222_2222, 8'hFF);
+      store_then_load(A, 64'hAAAA_0001_AAAA_0001, A + 64'd64, 4'd3, g14);
+      expect64(got, 64'h2222_2222_2222_2222, "T14 a load of the NEXT set behind a store");
+      if (g14 != 2) begin $display("FAIL T14 next-set load: gap %0d, expected 2 (the door in S_FIN)", g14); errors=errors+1; end
+      store_then_load(A + 64'd64, 64'hBBBB_0002_BBBB_0002, A + 64'd64, 4'd4, g14);
+      expect64(got, 64'hBBBB_0002_BBBB_0002, "T14 a load of the line JUST stored");
+      if (g14 != 3) begin $display("FAIL T14 same-set load: gap %0d, expected 3 (a bank collision is refused, S_IDLE)", g14); errors=errors+1; end
+      do_load(A, 4'd5); expect64(got, 64'hAAAA_0001_AAAA_0001, "T14 the first store landed");
 
       if (errors==0) $display("rv_cache D$ directed: PASS");
       else           $display("rv_cache D$ directed: FAIL (%0d errors)", errors);

@@ -239,6 +239,11 @@ module tb;
    reg [63:0] n_ldstart, n_ldreord, n_ldblk, n_sqocc, n_sqfull;
    // Where did the cycles the scoreboard freed actually go?
    reg [63:0] n_stm, n_hold, n_headblk, n_mempty, n_ldland, n_robfull, n_srcpend;
+   // THE STORE PATH, cycle by cycle (plan item 4): where a store waits between the queue
+   // and the cache. n_stdoor: the LSU holds a store at the D$ door, not accepted this cycle;
+   // n_sqidle: the queue has a drainable head, the LSU is idle and does not start it;
+   // n_sqwait: the queue has entries and none is drainable (unreleased, or no data yet).
+   reg [63:0] n_stdoor, n_sqidle, n_sqwait;
    always @(posedge clk) if (!reset) begin
       if (dut.core.st_mem) n_stmem <= n_stmem + 1;
       if (sb_recov)        n_recov <= n_recov + 1;
@@ -265,6 +270,9 @@ module tb;
       if (~dut.core.sq_d_ready)    n_sqfull  <= n_sqfull  + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
       if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
+      if (dut.core.u_lsu.st_go & ~dut.dmem_waccept) n_stdoor  <= n_stdoor + 1;
+      if (dut.core.u_lsu.idle & dut.core.sq_c_v & ~dut.core.u_lsu.pt_start) n_sqidle <= n_sqidle + 1;
+      if ((dut.core.sq_occ != 0) & ~dut.core.sq_c_v)  n_sqwait  <= n_sqwait + 1;
       if (dut.core.iq_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
       if (~dut.core.rob_ready & dut.core.d_valid)   n_robfull <= n_robfull + 1;
       if (dut.core.head_block)                      n_headblk <= n_headblk + 1;
@@ -282,7 +290,7 @@ module tb;
       n_nov = 0; n_nov_mmu = 0; n_nov_ic = 0; n_nov_qrdy = 0;
       n_stmul = 0; n_stdiv = 0; n_stfpu = 0;
       n_stm = 0; n_hold = 0; n_headblk = 0; n_mempty = 0; n_ldland = 0;
-      n_robfull = 0; n_srcpend = 0;
+      n_robfull = 0; n_srcpend = 0; n_stdoor = 0; n_sqidle = 0; n_sqwait = 0;
       // +trace_from=<cycle> +trace_to=<cycle>: the window every tb-side trace honours, so a
       // trace is aimed by plusarg and never by a compile-time literal (three 17 M-cycle
       // rebuilds on 2026-09-04 went to a `$time` threshold in the wrong unit). RTL-side
@@ -337,6 +345,8 @@ module tb;
                n_stmul, n_stdiv, n_stfpu, n_stmem);
       $display("SB-WHERE  M-stall=%0d  M-empty=%0d | d_hold=%0d (src_pend=%0d rob_full=%0d) head_block=%0d ld_land=%0d",
                n_stm, n_mempty, n_hold, n_srcpend, n_robfull, n_headblk, n_ldland);
+      $display("SB-STORE  at the D$ door unaccepted=%0d  drainable but LSU idle=%0d  queued, none drainable=%0d  (sq full at dispatch=%0d)",
+               n_stdoor, n_sqidle, n_sqwait, n_sqfull);
       $display("SB-SIZING   FLOOR %0d.%02d%% of cycles / CEILING %0d.%02d%% (floor + queue-ready X-empty)",
                (n_recov*100)/c, ((n_recov*10000)/c)%100,
                ((n_recov+n_nov_qrdy)*100)/c, (((n_recov+n_nov_qrdy)*10000)/c)%100);

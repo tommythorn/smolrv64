@@ -73,6 +73,11 @@ module rv_cache #(
    input  wire [WDW-1:0]   wr_data,
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
+   output wire             wr_acc,      // the write is TAKEN this cycle: captured with its data, it completes on its own
+   output reg              wr_cpl,      // ...and the COMPLETION its requester waits for: a CBO or an uncached write only.
+                                        // A plain cached write is done for the requester at wr_acc; its wr_ack is a
+                                        // counter pulse nobody waits on, so it must not look like an ack to a later
+                                        // request that does wait (the requester matches acks by class, not by timing).
    input  wire             wr_uncached, // Svpbmt: this store is NC/IO -> write through to L2 + invalidate
    input  wire             cbo_req,     // Zicbom/Zicboz: this write-port request is a cache-maintenance op
    input  wire             cbo_zero,    // cbo.zero: install a zero line (else clean/flush/inval)
@@ -432,16 +437,28 @@ module rv_cache #(
    // scan is abandoned with inv_pend already clear, so it never resumes: the same dead
    // board by a different road. inv_busy spans request-to-completion, which is the window.
    wire inv_go   = inv_req | inv_pend;
-   wire acc_slot = (st == S_IDLE) & ~fill_banks;
+   // THE DOOR IS ALSO OPEN IN A PLAIN WRITE'S LAST CYCLE (item 4b, 2026-09-05). S_FIN writes
+   // the chunk from registers captured at the lookup and ends the request; it needs nothing
+   // from the door, and the next request's bank read is presented unconditionally anyway. So
+   // a write costs the pipeline two cycles (S_CHECK, S_FIN) instead of three, and stores
+   // stream at one per two cycles. The one hazard is the bank itself: a read of the row
+   // being written this cycle would return the OLD chunk (a BRAM collision corrupts the
+   // read), so a request into the set the write is landing in waits for S_IDLE -- the set,
+   // both ways, conservatively: the compare is on the door, where rule I6 wants nothing
+   // wider than it must be. Replays keep to S_IDLE (rare; their address is the MSHR's).
+   wire fin_wr     = (st == S_FIN) & r_is_wr & ~r_cbo & ~r_span & ~r_uncached & (WRTHRU == 0);
+   wire fin_hazard = fin_wr & ((way_idx(0, a_live) == w0_idx) | (way_idx(1, a_live) == w0_idx));
+   wire acc_slot = ((st == S_IDLE) | fin_wr) & ~fill_banks;
    wire req_wr   = wr_req & ~rd_req & (WRITABLE != 0);
    wire req_span = ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
                      + (rd_req ? RDB : WRB)) > WORDB);
    wire req_solo = req_wr | (rd_req & rd_uncached) | req_span;
    wire f_solo   = f_v & (f_is_wr | f_cbo | f_uncached | f_span);
-   wire do_replay = acc_slot & f_replay;
-   wire accept    = acc_slot & ~inv_go & ~inv_busy
+   wire do_replay = (st == S_IDLE) & ~fill_banks & f_replay;
+   wire accept    = acc_slot & ~inv_go & ~inv_busy & ~fin_hazard
                   & ~f_replay & ~f_solo & (rd_req | req_wr) & ~(req_solo & f_v);
    assign rd_ack  = accept & rd_req;
+   assign wr_acc  = accept & req_wr;
 
    // ---- combinational bank port drive ----
    always @* begin
@@ -540,11 +557,11 @@ module rv_cache #(
       v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
          st <= S_IDLE; fst <= F_IDLE; f_v <= 1'b0; f_replay <= 1'b0; b_live <= 1'b0;
-         rd_valid <= 0; wr_ack <= 0; inv_busy <= 0;
+         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
       end else begin
-         rd_valid <= 0; wr_ack <= 0; l2_req <= 0;
+         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; l2_req <= 0;
          // The three cycles that address the banks for the request S_CHECK will hold next
          // cycle -- and only if the fill machine's victim stream did not take the read port
          // out from under them (that drive is last in the comb block, so it wins).
@@ -594,39 +611,43 @@ module rv_cache #(
          // fence.i / sfence flush. Raising inv_busy now also keeps the requester waiting
          // until the invalidate actually runs (it polls !inv_busy).
          if (inv_req) begin inv_pend <= 1'b1; inv_busy <= 1'b1; end
+         if ((st == S_IDLE) | fin_wr) begin
+            phase <= 0;
+            // THE REQUEST REGISTERS ARE CAPTURED EVERY CYCLE THE DOOR IS OPEN -- S_IDLE, and a
+            // plain write's S_FIN (fin_wr, item 4b), whose arm consumes r_*/cur_line only through
+            // this cycle's combinational paths -- FROM THE SAME MUX THAT
+            // ADDRESSES THE BANKS. Their clock-enable used to be `accept`, which is the
+            // whole front door -- the requester's request (for the I$, the fetch buffer's
+            // hit test behind the iTLB compare), acc_slot, the invalidate gates and the
+            // solo rules -- fanned out to ~200 flops. A value captured in a cycle that is
+            // NOT accepted is never read: nothing consumes r_*/cur_line while st is S_IDLE,
+            // and the next idle cycle overwrites it. So the enable is the state alone and
+            // `accept` decides only whether the pipeline leaves S_IDLE. The select is
+            // f_replay, a register, exactly as a_live's is (rule I6 for the bank address).
+            //
+            // A completed fill's own request re-enters the pipeline that was held empty for
+            // it; the banks were addressed from f_addr this cycle by the same a_live mux
+            // the door uses, so from S_CHECK on it is an ordinary request again.
+            r_is_wr    <= f_replay ? f_is_wr    : (wr_req && !rd_req);
+            r_uncached <= f_replay ? f_uncached : (rd_req ? rd_uncached : wr_uncached);   // Svpbmt
+            // CBO flags qualify a write-port maintenance op only. Reads win arbitration
+            // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
+            // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
+            // making its refill zero-fill the line instead of fetching it.
+            r_cbo      <= f_replay ? f_cbo      : ((wr_req && !rd_req) & cbo_req);
+            r_cbo_zero <= f_replay ? f_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
+            r_cbo_keep <= f_replay ? f_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
+            r_addr     <= a_live;
+            r_tag      <= f_replay ? f_tag      : rd_tag;
+            r_wdata    <= f_replay ? f_wdata    : wr_data;
+            r_wmask    <= f_replay ? f_wmask    : wr_mask;
+            r_off      <= a_live[OFFB-1:0];
+            // a CBO is a single-line op (never spans); req_span is the door's own test
+            r_span     <= f_replay ? f_span     : req_span;
+            cur_line   <= {a_live[PAW-1:OFFB], {OFFB{1'b0}}};
+         end
          case (st)
            S_IDLE: begin
-              phase <= 0;
-              // THE REQUEST REGISTERS ARE CAPTURED EVERY IDLE CYCLE, FROM THE SAME MUX THAT
-              // ADDRESSES THE BANKS. Their clock-enable used to be `accept`, which is the
-              // whole front door -- the requester's request (for the I$, the fetch buffer's
-              // hit test behind the iTLB compare), acc_slot, the invalidate gates and the
-              // solo rules -- fanned out to ~200 flops. A value captured in a cycle that is
-              // NOT accepted is never read: nothing consumes r_*/cur_line while st is S_IDLE,
-              // and the next idle cycle overwrites it. So the enable is the state alone and
-              // `accept` decides only whether the pipeline leaves S_IDLE. The select is
-              // f_replay, a register, exactly as a_live's is (rule I6 for the bank address).
-              //
-              // A completed fill's own request re-enters the pipeline that was held empty for
-              // it; the banks were addressed from f_addr this cycle by the same a_live mux
-              // the door uses, so from S_CHECK on it is an ordinary request again.
-              r_is_wr    <= f_replay ? f_is_wr    : (wr_req && !rd_req);
-              r_uncached <= f_replay ? f_uncached : (rd_req ? rd_uncached : wr_uncached);   // Svpbmt
-              // CBO flags qualify a write-port maintenance op only. Reads win arbitration
-              // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
-              // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
-              // making its refill zero-fill the line instead of fetching it.
-              r_cbo      <= f_replay ? f_cbo      : ((wr_req && !rd_req) & cbo_req);
-              r_cbo_zero <= f_replay ? f_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
-              r_cbo_keep <= f_replay ? f_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
-              r_addr     <= a_live;
-              r_tag      <= f_replay ? f_tag      : rd_tag;
-              r_wdata    <= f_replay ? f_wdata    : wr_data;
-              r_wmask    <= f_replay ? f_wmask    : wr_mask;
-              r_off      <= a_live[OFFB-1:0];
-              // a CBO is a single-line op (never spans); req_span is the door's own test
-              r_span     <= f_replay ? f_span     : req_span;
-              cur_line   <= {a_live[PAW-1:OFFB], {OFFB{1'b0}}};
               if (do_replay) begin
                  f_v <= 1'b0;  f_replay <= 1'b0;
                  st <= S_CHECK;
@@ -705,7 +726,7 @@ module rv_cache #(
                        vi <= way_idx(vicm[base_idx(cur_line)] ? 1 : 0, cur_line);
                        f_v <= 1'b1;
                        fst <= F_WB; st <= S_IDLE;
-                    end else begin wr_ack <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
+                    end else begin wr_ack <= 1; wr_cpl <= 1; st <= S_IDLE; end   // clean/flush/inval miss = no-op
                  end
               end else if (pipe_hold) begin
               // ONE REASON TO HOLD, not three. Everything S_CHECK consumes below comes out of
@@ -772,7 +793,7 @@ module rv_cache #(
                     wb_way <= w0_way; wb_idx <= w0_idx; pc <= 0; st <= S_WTR;
                  end else begin
                     if (!r_cbo_keep) begin v_we=1; v_wa=flat(w0_way,w0_idx); v_wd=1'b0; end
-                    wr_ack <= 1; st <= S_IDLE;
+                    wr_ack <= 1; wr_cpl <= 1; st <= S_IDLE;
                  end
               end else if (!r_is_wr) begin
                  rd_data  <= win_sh[RDW-1:0];
@@ -797,7 +818,7 @@ module rv_cache #(
                     // (a line-crossing store always has store_hi -> the S_SPANW arm above,
                     // so no second dirty write can be needed here)
                     d_we=1; d_wa=flat(w0_way,w0_idx); d_wd=1'b1;
-                    wr_ack <= 1; st <= S_IDLE;
+                    wr_ack <= 1; st <= accept ? S_CHECK : S_IDLE;   // the door was open (fin_wr)
                  end
               end
            end
@@ -829,7 +850,7 @@ module rv_cache #(
                  d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
                  if (!r_cbo_keep) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // flush/inval drop
               end else if (r_uncached) begin v_we=1; v_wa=flat(wb_way,wb_idx); v_wd=1'b0; end  // NC store: flush-around
-              wr_ack <= 1; st <= S_IDLE;
+              wr_ack <= 1; wr_cpl <= 1; st <= S_IDLE;
            end
 
            // "This cannot happen" is an assertion or it is deleted (docs/rtl-rules.md).
@@ -952,7 +973,7 @@ module rv_cache #(
                  // The two chunks the read needs are selected out of linebuf and handed to the
                  // SAME shift network a hit uses (win_sh), so this costs one 8:1 chunk mux and
                  // not the 512->64 byte mux that answering from a line buffer usually implies.
-                 if (f_cbo_zero) begin wr_ack <= 1; fst <= F_IDLE; f_v <= 1'b0; end
+                 if (f_cbo_zero) begin wr_ack <= 1; wr_cpl <= 1; fst <= F_IDLE; f_v <= 1'b0; end
                  else if (f_is_wr | f_cbo | f_uncached | f_span) begin
                     f_replay <= 1'b1; fst <= F_IDLE;
                  end else begin

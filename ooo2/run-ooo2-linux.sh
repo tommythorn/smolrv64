@@ -46,7 +46,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
 # reuse whatever obj_dir_ooo2_linux held whenever BUILD was unset.
 STAMP=obj_dir_ooo2_linux/.config-stamp
 srchash=$(cat *.v ../src/*.v ../src/*.sv $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
-want="MEM_LG2=$MEM_LG2 SRC=$srchash"
+want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
 if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ "$(cat $STAMP 2>/dev/null)" != "$want" ]; then
    echo "building obj_dir_ooo2_linux/tb_ooo2_linux (MEM_LG2=$MEM_LG2) ..."
    verilator --binary --timing -j 0 -sv -Wall \

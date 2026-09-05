@@ -46,7 +46,7 @@ module tb;
       .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask), .dmem_wuncached(),
-      .dmem_cbo(), .dmem_cbo_zero(), .dmem_cbo_keep(), .dmem_wready(1'b1),
+      .dmem_cbo(), .dmem_cbo_zero(), .dmem_cbo_keep(), .dmem_wready(1'b1), .dmem_waccept(1'b1),
       .dmem_idle(), .ifence(),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),

@@ -605,6 +605,18 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   RTL). Only an older store can have an address, because M translates in program order.
   For a younger load nothing changes: an entry in the queue, committed or not, is a store
   whose bytes are not in the cache yet, and the alias matrix holds the load behind it.
+  **The drain ends at the D$'s ACCEPT** (`wr_acc`, 2026-09-05, plan item 4a): the cache has
+  captured address, data and mask and completes the write on its own, so the LSU is back in
+  `S_IDLE` the next cycle and the queue entry is gone (`c_take` is the LSU's `pt_done`, which
+  is the accept for a plain store). Two classes wait for COMPLETION instead, `wr_cpl`, which
+  the D$ raises only for them: a CBO, whose flush must be in L2 before the doorbell store
+  behind it, and an uncached write, whose bytes must be in DDR before a later device write
+  starts the DMA that reads them. The plain write's `wr_ack` is a counter pulse nobody waits
+  on, and it must not reach `dmem_wready`: it used to land while the LSU waited on a device
+  store started since (the `two write acks at once` assertion caught it). A device store
+  carries no NC bit without page tables, so the device acks are in the accept term as well
+  (`workloads/fphammer/cbozero.c`'s UART printed `c` forever when they were not). What the
+  LSU waits on is decided by the request's class (`st_fin`), never by which ack shows up.
 - **The translate-only pass does not arbitrate, and does not wait for the LSU's FSM.** It
   needs the MMU and nothing else, so `ooo2_lsu` presents it (`xl_x = req_valid & req_xlate`)
   whatever the FSM is doing and whoever the pre-translated port granted this cycle; a walk it
@@ -657,6 +669,15 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   writeback valids `we_ld`/`we_fe` (the wakeup broadcast) use `lsu_done_acc`, the completion
   of an access this stage started: a translate pass or a fault never writes a register.
   Both are asserted equal to the full expressions every cycle.
+- **The D$'s door is open in a plain write's last cycle** (`fin_wr`, 2026-09-05, plan item
+  4b). `S_FIN` writes the chunk from registers captured at the lookup and needs nothing from
+  the door, and the next request's bank read is presented unconditionally, so `acc_slot`
+  admits it there and a write costs the pipeline two cycles (`S_CHECK`, `S_FIN`), stores
+  streaming at one per two. The request registers are captured in every door-open cycle,
+  `S_IDLE` or `fin_wr`, on the state alone as before. The one hazard is the bank: a read of
+  the row being written this cycle returns the OLD chunk, so a request into the SET being
+  written (`fin_hazard`, both ways, conservatively) waits for `S_IDLE`; replays keep to
+  `S_IDLE`. `tb_ooo2_dcache` T14 measures both doors by the load's wait at the door.
 - **Zicbom clean/flush/inval on a resident line take their dirty test in `S_FIN`**, one cycle
   after the lookup, on the way/index registered there. Reading `dirm[flat(hway,cih)]` in
   `S_CHECK` was a second array read addressed by the first one's compare -- the D$'s own
@@ -898,7 +919,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | riscv-tests, this core | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
-| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 |
+| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13 and the write-door timing T14 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
@@ -1755,3 +1776,24 @@ dependent load waits for the drain either way; a first version that released a s
 cycle before it could drain measured 12.75 there, which is why a release at the head
 drains in its own cycle. tiny128 boot at 60 M cycles: +0.22% retires (11,604,336): the
 boot's store stall is the cache's write path (SOLO writes, none under a fill), not the head.
+
+**2026-09-05, plan item 4a+4b: the store leaves the LSU at the D$'s ACCEPT, and the D$'s door
+is open in a plain write's last cycle.** The same bench:
+
+| loop | senior queue | + 4a | + 4b, HW=4 | + 4b, HW=8 |
+|---|---:|---:|---:|---:|
+| 8 independent stores per iteration | 5.00 | 3.00 | 3.00 | **2.31** |
+| 4 stores + 4 loads, different lines | 4.50 | 3.88 | 3.88 | 3.25 |
+| store then load of the SAME word | 11.75 | 9.75 | 9.75 | 9.75 |
+
+4a is the LSU (§8): a plain store is done when the D$ takes it, not when it acks. 4b is the
+cache's door (§8, `fin_wr`). At HW=4 the 3.00 that remains is the FRONTEND, not the store
+path: stbench's loop is 15 instructions of mixed 16- and 32-bit code per 8 stores, and at
+8 bytes per fetch window the 32-bit stores straddle (febench's 2-byte-offset case, 0.40
+IPC). In that loop M is empty 63% of the cycles, dispatch is held 0.05%, and the new
+`SB-STORE` line of `tb_ooo2_linux` shows the queue holding stores that cannot drain yet --
+allocated at dispatch, waiting for their translate pass through a starved M -- while the LSU
+sits idle and the door is free. The 16-byte window (item 2, build K) takes it to 2.31; the
+floor is 2.00. tiny128 boot at 60 M cycles: 11,604,336 -> 13,291,779 (4a, **+14.5%**) ->
+13,466,847 (4b, +1.3%): the boot's store stall was the LSU holding every store to its ack
+while the queue filled behind it, more than the cache's write cost itself.

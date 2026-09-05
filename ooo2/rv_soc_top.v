@@ -128,7 +128,7 @@ module rv_soc_top #(
    wire                dmem_cbo, dmem_cbo_zero, dmem_cbo_keep;  // Zicbom/Zicboz cache maintenance
    wire [63:0]         dmem_rdata;
    wire [63:0]         dmem_wabase;   // store base PA, unmuxed by the straddle beat
-   wire                dmem_rvalid, dmem_wready, dmem_idle, ifence;
+   wire                dmem_rvalid, dmem_wready, dmem_waccept, dmem_idle, ifence;
    wire [55:0]         ptw_addr, dptw_addr;
    wire                ptw_read, dptw_read;
    wire [63:0]         ptw_rdata, dptw_rdata;
@@ -148,7 +148,7 @@ module rv_soc_top #(
       .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
       .dmem_cbo(dmem_cbo), .dmem_cbo_zero(dmem_cbo_zero), .dmem_cbo_keep(dmem_cbo_keep),
-      .dmem_wready(dmem_wready), .dmem_idle(dmem_idle), .ifence(ifence),
+      .dmem_wready(dmem_wready), .dmem_waccept(dmem_waccept), .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
       .retire(retire), .retire_pc(), .retire_insn(),
@@ -426,7 +426,7 @@ module rv_soc_top #(
 
    // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
    reg          c_rd_pend;
-   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack;  wire [63:0] dc_rd_resp_addr;
+   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_wr_acc, dc_wr_cpl;  wire [63:0] dc_rd_resp_addr;
    wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
    wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
    // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
@@ -522,16 +522,30 @@ module rv_soc_top #(
    // The select carried no information. Each term is already gated by its own device class
    // AT ITS SOURCE, so at most one can ever be asserted:
    //   dev_wack      <= dmem_wen & is_dev_w & ~is_virtio_w & ~dev_wack
-   //   cache .wr_req  = dmem_wen & ~dc_wr_ack & ~is_dev_w      (a device store never reaches it)
+   //   cache .wr_req  = dmem_wen & ~dc_wr_cpl & ~is_dev_w      (a device store never reaches it)
    //   vio_wpending  <= set only by dmem_wen & is_virtio_w
    // So an OR is equivalent -- and it is an OR of registered signals, with no compare in it.
    // The exclusivity is asserted rather than assumed.
    wire         vio_wack = virtio_rvalid & vio_wpending;
-   assign       dmem_wready = vio_wack | dev_wack | dc_wr_ack;
+   // dc_wr_cpl, NOT dc_wr_ack: the LSU leaves a plain cached store at the D$'s ACCEPT (below),
+   // so the ack that write produces two cycles later is nobody's -- and it would land while
+   // the LSU waits on a device or virtio store started since, completing THAT one early. The
+   // D$ raises wr_cpl only for the writes whose requester waits (CBO, uncached), which the
+   // LSU serializes, so the three terms stay exclusive (asserted). Plan item 4, 2026-09-04.
+   assign       dmem_wready = vio_wack | dev_wack | dc_wr_cpl;
+   // The ACCEPT, for the LSU's store state: the D$ captures a plain write in the cycle it
+   // takes it (wr_acc, combinational from the same cone as rd_ack); a device or virtio
+   // write is done at its own ack. The device acks MUST be here and not only in wready:
+   // a device store carries no NC bit when there are no page tables (bare M-mode has no
+   // PBMT), so the LSU classes it as plain and waits on the accept -- and while it waited,
+   // the device path re-executed the write every other cycle (cbozero's UART printed `c`
+   // forever, 2026-09-05). The three terms are exclusive: a cache accept needs ~is_dev_w,
+   // and the LSU has one write in flight.
+   assign       dmem_waccept = dc_wr_acc | dev_wack | vio_wack;
    always @(posedge clk)
-      if (!reset & ((vio_wack & dev_wack) | (vio_wack & dc_wr_ack) | (dev_wack & dc_wr_ack)))
+      if (!reset & ((vio_wack & dev_wack) | (vio_wack & dc_wr_cpl) | (dev_wack & dc_wr_cpl)))
          $fatal(1, "rv_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
-                vio_wack, dev_wack, dc_wr_ack);
+                vio_wack, dev_wack, dc_wr_cpl);
 
    // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
    // store buffer drains in ~1-2c instead of a full L2 round-trip. PTW reads are routed THROUGH
@@ -550,9 +564,11 @@ module rv_soc_top #(
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
       .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
-      .cbo_req(dmem_cbo & ~dc_wr_ack & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
-      .wr_req(dmem_wen & ~dc_wr_ack & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
-      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
+      // ~dc_wr_cpl: a CBO or uncached write holds its request through the cycle its completion
+      // is registered, and the D$ is idle again in that cycle -- without this it is taken twice.
+      .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
+      .wr_req(dmem_wen & ~dc_wr_cpl & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
+      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
       .perf_access(dc_access), .perf_miss(dc_miss));
@@ -936,7 +952,7 @@ module rv_soc_top #(
       // Named and empty on purpose: converting it is a separate change with its own measurement.
       .rd_ack(ic_rd_ack), .rd_tag(4'd0), .rd_resp_tag(),
       .rd_uncached(1'b0),
-      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_uncached(1'b0),
+      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_acc(), .wr_cpl(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),

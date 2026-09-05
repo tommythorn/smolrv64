@@ -74,6 +74,7 @@ module ooo2_core
     output wire                    dmem_cbo_zero,
     output wire                    dmem_cbo_keep,
     input  wire                    dmem_wready,
+    input  wire                    dmem_waccept,
     output wire                    dmem_idle,          // no memory op in flight (fence.i drain)
     output wire                    ifence,             // FENCE.I this cycle -> flush D$/I$
     // ---- page-table-walker ports (instruction side, data side) ----
@@ -1215,7 +1216,7 @@ module ooo2_core
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wabase(dmem_wabase), .mem_wdata(dmem_wdata),
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
-      .mem_wready(dmem_wready),
+      .mem_wready(dmem_wready), .mem_waccept(dmem_waccept),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .idle(lsu_idle));

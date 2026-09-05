@@ -115,6 +115,7 @@ module ooo2_lsu
     output wire            mem_cbo_zero,
     output wire            mem_cbo_keep,
     input  wire            mem_wready,
+    input  wire            mem_waccept,    // the write was TAKEN (the cache captured it); a plain store is done here, not at wready
 
     // ---- completion ----
     // `started` is the DISPATCH point, and the reason non-blocking loads stay precise with no
@@ -409,12 +410,19 @@ module ooo2_lsu
    // `started` is M's early-release signal for a non-blocking load. A commit store starting
    // is not M's access and must not pulse it.
    assign started = start_ok & ~pt_start;
-   wire acc_done = ((st == S_ST)  & mem_wready & ~xword_q)
-                 | ((st == S_ST2) & mem_wready)
+   // WHAT ENDS A WRITE. A plain cached store (and an AMO's write) is done when the D$ TAKES
+   // it (mem_waccept: address, data and mask captured, the write completes on its own). A
+   // CBO or an uncached write waits for its completion (mem_wready): a cbo.flush must have
+   // reached L2 before the doorbell store behind it, and an NC store must be in DDR before
+   // a later device write can start the DMA that reads it. Decided by the request's class,
+   // registered at start (nc_q) or held by M (eff_cbo) -- never by which ack shows up.
+   wire st_fin   = (eff_cbo | nc_q) ? mem_wready : mem_waccept;
+   wire acc_done = ((st == S_ST)  & st_fin & ~xword_q)
+                 | ((st == S_ST2) & st_fin)
                  | ((st == S_LD)  & mem_rvalid & ~xword_q)
                  | ((st == S_LD2) & mem_rvalid)
                  | ((st == S_ARD) & mem_rvalid & ~a_dowr)
-                 | (amo_go & mem_wready);
+                 | (amo_go & st_fin);
    // done/fault/rd_val are single outputs, so the completion is routed to whoever owns the
    // access. Without this a commit store finishing under M's pending op would be latched by
    // M as its own -- the same class of defect as rule D5's re-presented request.
@@ -485,15 +493,18 @@ module ooo2_lsu
                      end else st <= S_IDLE;
                   end
            S_LD2: if (mem_rvalid) st <= S_IDLE;
-           S_ST:  if (mem_wready) st <= (xword_q ? S_ST2 : S_IDLE);
-           S_ST2: if (mem_wready) st <= S_IDLE;
+           // A plain store leaves on ACCEPT, not on the ack (st_fin above): the cache captured
+           // address, data and mask and finishes the write on its own, so the FSM is free for
+           // the next request while that happens. Plan item 4, 2026-09-04: 5.00 -> 4.00 per store.
+           S_ST:  if (st_fin) st <= (xword_q ? S_ST2 : S_IDLE);
+           S_ST2: if (st_fin) st <= S_IDLE;
            S_ARD: if (mem_rvalid) begin
                      amo_old_q <= a_rdval;
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end
                      if (is_sc) rsv_v <= 1'b0;
                      st <= a_dowr ? S_AWR : S_IDLE;
                   end
-           S_AWR: if (mem_wready) st <= S_IDLE;
+           S_AWR: if (st_fin) st <= S_IDLE;
            default: st <= S_IDLE;
          endcase
          // a plain store to the reserved word breaks the reservation
@@ -503,7 +514,7 @@ module ooo2_lsu
          // sequence may not contain a store, so the only way to clear a live reservation is
          // an OLDER buffered store draining after the LR executed -- and that store is one
          // dynamic instruction, gone once it commits, so the retry succeeds.
-         if (st_go && mem_wready && rsv_v && (own_pt_st || (req_vaddr[38:3] == rsv_w)))
+         if (st_go && st_fin && rsv_v && (own_pt_st || (req_vaddr[38:3] == rsv_w)))
             rsv_v <= 1'b0;
       end
    end
