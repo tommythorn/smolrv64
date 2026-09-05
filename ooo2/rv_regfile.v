@@ -27,9 +27,12 @@ module rv_regfile
     output wire [63:0]      rs2_val,
     input  wire [ABITS-1:0] rs3,
     output wire [63:0]      rs3_val,
-    input  wire             we,
+        input  wire             we,
     input  wire [ABITS-1:0] wa,
-    input  wire [63:0]      wd);
+    input  wire [63:0]      wd,
+    input  wire             we2,     // the second retire of the cycle (item 10c), younger
+    input  wire [ABITS-1:0] wa2,
+    input  wire [63:0]      wd2);
 
    reg [63:0] r [0:AREGS-1];
    integer i;
@@ -53,7 +56,10 @@ module rv_regfile
    assign rs2_val = r[rs2];
    assign rs3_val = r[rs3];
 
-   always @(posedge clk) if (we) r[wa] <= wd;
+   always @(posedge clk) begin
+      if (we)  r[wa]  <= wd;
+      if (we2) r[wa2] <= wd2;      // ordered after the first: the younger retire's value stands
+   end
 
 `ifndef SYNTHESIS
    // The x0-stays-zero invariant above is load-bearing and would fail silently, so

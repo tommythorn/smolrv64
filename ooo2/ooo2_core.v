@@ -87,9 +87,12 @@ module ooo2_core
     input  wire [63:0]             dptw_rdata,
     input  wire                    dptw_rvalid,
     // ---- observation ----
-    output wire                    retire,             // an instruction retired this cycle
+        output wire                    retire,             // an instruction retired this cycle
     output wire [PCW-1:0]          retire_pc,
     output wire [31:0]             retire_insn,
+    output wire                    retire2,            // ...and a second one behind it (item 10c)
+    output wire [PCW-1:0]          retire2_pc,
+    output wire [31:0]             retire2_insn,
     output wire                    redirect,
     output wire [PCW-1:0]          redirect_target);
 
@@ -341,7 +344,8 @@ module ooo2_core
 
    // =========================================================== stage X
    wire [63:0] rf_rs1, rf_rs2, rf_rs3;
-   wire        rf_we;
+      wire        rf_we, rf_we2;
+   wire [5:0]  rf_wa2;  wire [63:0] rf_wd2;
    wire [5:0]  rf_wa;
    wire [63:0] rf_wd;
 
@@ -353,7 +357,8 @@ module ooo2_core
 `ifndef SYNTHESIS
    rv_regfile u_rf
      (.clk(clk), .rs1(d_rs1), .rs1_val(rf_rs1), .rs2(d_rs2), .rs2_val(rf_rs2),
-      .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd));
+      .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd),
+      .we2(rf_we2), .wa2(rf_wa2), .wd2(rf_wd2));
 `else
    assign rf_rs1 = 64'd0;  assign rf_rs2 = 64'd0;  assign rf_rs3 = 64'd0;
 `endif
@@ -445,7 +450,8 @@ module ooo2_core
       // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
       // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
       // way rename itself was switched over once its shadow had earned it.
-      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_prd(rob_c_prd),
+            .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_prd(rob_c_prd),
+      .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
@@ -481,7 +487,10 @@ module ooo2_core
    // register write. Not consumed yet -- see the note above lsu_started.
    wire [ROB_IDXB-1:0] rob_head_idx;
    wire                m_at_head = (rob_head_idx == m_rob_idx);
-   wire                rob_c_valid, rob_c_rd_v, rob_c_noret;
+      wire                rob_c_valid, rob_c_rd_v, rob_c_noret;
+   wire                rob_c2_valid, rob_c2_rd_v, rob_c2_noret;
+   wire [5:0]          rob_c2_rd;
+   wire [RN_PBITS-1:0] rob_c2_prd;
    // Mirrors m_is_irqop one stage earlier. That signal is
    //   m_is_sys & funct3==0 & imm==0x7F0, with m_is_sys carrying ~m_ill_eff & ~m_fault,
    // and m_ill_eff reduces to m_illegal here because a SYSTEM op is never m_is_fp -- so
@@ -1163,9 +1172,11 @@ module ooo2_core
       .d_valid2(rn_valid_b), .d_rd2(d2_rd), .d_prd2(d2_prd_g), .d_noret2(1'b0), .d_ready2(rob_ready2), .d_idx2(rob_d_idx2),
       .w_v({sq_k_take, fp_land, iss_alu, rob_w_valid}),
       .w_ix({sq_kc_rob, ft_rob, i_rob, rob_w_idx}),
-      .c_kill(m_valid & m_done & m_trap),
+            .c_kill(m_valid & m_done & m_trap),
+      .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
-      .c_prd(rob_c_prd), .c_noret(rob_c_noret),
+            .c_prd(rob_c_prd), .c_noret(rob_c_noret),
+      .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
@@ -1747,7 +1758,7 @@ module ooo2_core
    initial begin hpm_ev_q = 26'd0; hpm_ret_q = 6'd0; end
    always @(posedge clk) begin
       hpm_ev_q  <= reset ? 26'd0 : hpm_ev;
-      hpm_ret_q <= (reset | ~retire) ? 6'd0 : 6'd1;
+            hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2};
    end
 
    csr_file u_csr
@@ -1776,7 +1787,7 @@ module ooo2_core
       // input -- with m_done here the LSU's whole done sat inside csr_redir_v -> redirect.
       .xtrap_v(xtrap_v & m_done_red), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(retire ? 6'd1 : 6'd0),
+            .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({5'd0, retire} + {5'd0, retire2}),
       .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The in-order SoC puts no ILA on the CSR file, so these
@@ -2129,18 +2140,24 @@ module ooo2_core
    // and clobbers the same architectural location. Driving it from the ROB head keeps it a
    // valid architectural model, which is what tb_ooo2_riscv's trace reads it as.
 `ifndef SYNTHESIS
-   assign rf_we = rob_c_valid & rob_c_rd_v;
+      assign rf_we = rob_c_valid & rob_c_rd_v;
    assign rf_wa = rob_c_rd;
    assign rf_wd = cs_val_h;
+   assign rf_we2 = rob_c2_valid & rob_c2_rd_v;
+   assign rf_wa2 = rob_c2_rd;
+   assign rf_wd2 = cs_val_h2;
 `else
-   assign rf_we = 1'b0;  assign rf_wa = 6'd0;  assign rf_wd = 64'd0;
+      assign rf_we = 1'b0;  assign rf_wa = 6'd0;  assign rf_wd = 64'd0;
+   assign rf_we2 = 1'b0; assign rf_wa2 = 6'd0; assign rf_wd2 = 64'd0;
 `endif
 
    // RETIRE IS THE ROB HEAD, not the M stage. Not merely for the cosim: it drives minstret
    // through retire_cnt and csr_file's fp_dirty_commit, both architectural, and both of
    // which must count an instruction when it COMMITS rather than when it happens to finish.
    // With M still blocking the two coincide, which is what makes this step checkable.
-   assign retire      = rob_c_valid & ~rob_c_noret;
+      assign retire      = rob_c_valid & ~rob_c_noret;
+   assign retire2     = rob_c2_valid & ~rob_c2_noret;
+   wire [ROB_IDXB-1:0] rob_head2_idx = rob_head_idx + 1'b1;
 
    // retire_pc/retire_insn are verification payload -- tb_ooo2_riscv traces them and
    // rv_soc_top leaves both unconnected -- so they come from a simulation-only side array
@@ -2153,8 +2170,10 @@ module ooo2_core
       if (rn_valid)   begin cs_pc[rob_d_idx]  <= d_pc;  cs_insn[rob_d_idx]  <= d_insn;  end
       if (rn_valid_b) begin cs_pc[rob_d_idx2] <= d2_pc; cs_insn[rob_d_idx2] <= d2_insn; end
    end
-   assign retire_pc   = cs_pc[rob_head_idx];
+      assign retire_pc   = cs_pc[rob_head_idx];
    assign retire_insn = cs_insn[rob_head_idx];
+   assign retire2_pc   = cs_pc[rob_head2_idx];
+   assign retire2_insn = cs_insn[rob_head2_idx];
 
    // Values that are only known at COMPLETION, held per ROB slot until that slot commits.
    // Simulation-only, so the ROB stays status-only in hardware. The capture is keyed on M's
@@ -2230,14 +2249,28 @@ module ooo2_core
                           : cs_hit_alu ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
-   wire [55:0] cs_mpa_h   = cs_hit_sq ? sq_kc_addr
+      wire [55:0] cs_mpa_h   = cs_hit_sq ? sq_kc_addr
                           : cs_hit_ld ? lq_l_pa
                           : cs_hit_alu ? 56'd0
                           : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
+   // ...and for the entry behind the head, retiring in the same cycle (item 10c)
+   wire        cs2_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith & (m_rob_idx == rob_head2_idx);
+   wire        cs2_hit_ld  = ld_land & (lq_l_rob == rob_head2_idx);
+   wire        cs2_hit_sq  = sq_k_take & (sq_kc_rob == rob_head2_idx);
+   wire        cs2_hit_fp  = fp_land & (ft_rob == rob_head2_idx);
+   wire        cs2_hit_alu = iss_alu & (i_rob == rob_head2_idx);
+   wire [63:0] cs_val_h2   = cs2_hit_sq ? 64'd0 : cs2_hit_ld ? lsu_rd_val : cs2_hit_alu ? x_result
+                           : cs2_hit_fp ? fp_wval : cs2_hit_m ? m_wb_val : cs_val[rob_head2_idx];
+   wire [1:0]  cs_mkind_h2 = cs2_hit_sq ? 2'd2 : cs2_hit_ld ? 2'd1 : cs2_hit_alu ? 2'd0 : cs2_hit_fp ? 2'd0
+                           : cs2_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head2_idx];
+   wire [55:0] cs_mpa_h2   = cs2_hit_sq ? sq_kc_addr : cs2_hit_ld ? lq_l_pa : cs2_hit_alu ? 56'd0 : cs2_hit_fp ? 56'd0
+                           : cs2_hit_m ? lsu_cos_pa : cs_mpa[rob_head2_idx];
 `else
-   assign retire_pc   = {PCW{1'b0}};
+      assign retire_pc   = {PCW{1'b0}};
    assign retire_insn = 32'd0;
+   assign retire2_pc   = {PCW{1'b0}};
+   assign retire2_insn = 32'd0;
 `endif
 
    // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
@@ -2359,15 +2392,22 @@ module ooo2_core
 
    // Destination class comes from the COMMITTING entry, not from M -- the ROB already
    // carries rd/rd_v, so this needs no side array.
-   wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
-
-
+      wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
+   wire [1:0] ck_rk2 = ~rob_c2_rd_v ? 2'd0 : rob_c2_rd[5] ? 2'd2 : 2'd1;
    reg        e_v, e_trap;
    reg [63:0] e_pc, e_val, e_cause, e_tval;
    reg [31:0] e_insn;
    reg [1:0]  e_rk, e_prv;
    reg [4:0]  e_ri;
    initial    e_v = 1'b0;
+   // the second retire of the cycle (item 10c): its own record, handed over after the first
+   reg        e2_v;
+   reg [63:0] e2_pc, e2_val;
+   reg [31:0] e2_insn;
+   reg [1:0]  e2_rk, e2_mkind;
+   reg [4:0]  e2_ri;
+   reg [55:0] e2_mpa;
+   initial    e2_v = 1'b0;
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
@@ -2390,8 +2430,15 @@ module ooo2_core
             e_prv <= u_csr.priv;
             // Memory effect of the COMMITTING instruction, for the cosim's store/load check
             // -- captured when it completed, replayed when it commits.
-            e_mkind <= cs_mkind_h;
+                        e_mkind <= cs_mkind_h;
             e_mpa   <= cs_mpa_h;
+         end
+         e2_v <= 1'b0;
+         if (retire2 && !(m_valid && m_done && cot_fire)) begin
+            e2_v <= 1'b1;
+            e2_pc <= cs_pc[rob_head2_idx];  e2_insn <= cs_insn[rob_head2_idx];
+            e2_rk <= ck_rk2;  e2_ri <= rob_c2_rd[4:0];  e2_val <= cs_val_h2;
+            e2_mkind <= cs_mkind_h2;  e2_mpa <= cs_mpa_h2;
          end
       end
       // emit one cycle later, so this instruction's own CSR writes have landed
@@ -2399,8 +2446,14 @@ module ooo2_core
          probe_retire(e_pc, e_insn, {6'd0, e_rk},
                       (e_rk == 2'd0) ? 8'd0 : {3'd0, e_ri},
                       {6'd0, e_prv}, {7'd0, e_trap}, e_val, e_cause, e_tval,
-                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
+                                            64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
                       {6'd0, e_mkind}, {8'd0, e_mpa});
+      if (e2_v)
+         probe_retire(e2_pc, e2_insn, {6'd0, e2_rk},
+                      (e2_rk == 2'd0) ? 8'd0 : {3'd0, e2_ri},
+                      {6'd0, e_prv}, 8'd0, e2_val, 64'd0, 64'd0,
+                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
+                      {6'd0, e2_mkind}, {8'd0, e2_mpa});
    end
 `endif
 

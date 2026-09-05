@@ -25,7 +25,7 @@ module tb;
 
    reg clk = 0; always #5 clk = ~clk;
    reg reset;
-   wire        retire, dmem_wen;
+      wire        retire, retire2, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
@@ -46,7 +46,7 @@ module tb;
       else if (txcnt != 8'd0)           txcnt <= txcnt - 8'd1;
 
    rv_soc_top #(.RESET_PC(64'h8000_0000)) dut
-     (.clk(clk), .reset(reset), .retire(retire),
+     (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
@@ -313,7 +313,7 @@ module tb;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
       for (c = 0; (ncyc == 0) || (c < ncyc); c = c + 1) begin
          @(negedge clk);
-         if (retire) nret = nret + 1;
+                  nret = nret + retire + retire2;
          if ((c % 1000000) == 0)
             $display("[c=%0d retires=%0d va=%h pa=%h prv=%0d satp=%h inj=%0d uirq=%0d seip=%0d ier=%h]",
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,

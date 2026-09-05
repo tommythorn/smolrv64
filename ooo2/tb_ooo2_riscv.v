@@ -33,9 +33,9 @@ module tb;
    wire             ptw_read, dptw_read;
    reg  [63:0]      ptw_rdata, dptw_rdata;
    reg              ptw_rvalid, dptw_rvalid;
-   wire             retire, redirect;
-   wire [PCW-1:0]   retire_pc, redirect_target;
-   wire [31:0]      retire_insn;
+      wire             retire, retire2, redirect;
+   wire [PCW-1:0]   retire_pc, retire2_pc, redirect_target;
+   wire [31:0]      retire_insn, retire2_insn;
 
    ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
@@ -52,7 +52,8 @@ module tb;
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .dptw_addr(dptw_addr), .dptw_read(dptw_read),
       .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
-      .retire(retire), .retire_pc(retire_pc), .retire_insn(retire_insn),
+            .retire(retire), .retire_pc(retire_pc), .retire_insn(retire_insn),
+      .retire2(retire2), .retire2_pc(retire2_pc), .retire2_insn(retire2_insn),
       .redirect(redirect), .redirect_target(redirect_target));
 
    // ---------------------------------------------------------- byte memory
@@ -113,11 +114,14 @@ module tb;
       // a bare $finish here let the loop run on and print a bogus TIMEOUT after PASS.
       for (c=0; c<ncyc && !done; c=c+1) begin
          @(negedge clk);
-         if (retire) nret = nret + 1;
+                  nret = nret + retire + retire2;
          if (trace) begin
             if (retire &&  dut.rf_we) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire_pc,
                                               retire_insn, dut.rf_wa, dut.rf_wd);
-            if (retire && !dut.rf_we) $display("[%0d] R pc=%h insn=%h", c, retire_pc, retire_insn);
+                        if (retire && !dut.rf_we) $display("[%0d] R pc=%h insn=%h", c, retire_pc, retire_insn);
+            if (retire2 &&  dut.rf_we2) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire2_pc,
+                                                retire2_insn, dut.rf_wa2, dut.rf_wd2);
+            if (retire2 && !dut.rf_we2) $display("[%0d] R pc=%h insn=%h", c, retire2_pc, retire2_insn);
             if (dmem_wen) $display("[%0d]   ST @%h data=%h mask=%b", c, dmem_waddr, dmem_wdata,
                                    dmem_wmask);
             if (redirect) $display("[%0d] REDIRECT -> %h", c, redirect_target);

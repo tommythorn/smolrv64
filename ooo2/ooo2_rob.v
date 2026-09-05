@@ -62,12 +62,25 @@ module ooo2_rob
     input  wire [NW*IDXB-1:0]      w_ix,
 
     // ---- commit: the head, in order, straight into ooo2_rename's commit port ----
-    input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
+        input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
+    // The entry behind the head may not retire while M still holds its op: a trap or a
+    // redirect resolved in M waits there for the HEAD with the done bit already set, and
+    // retiring it from behind the head would retire the wrong path (109 of 240 riscv-tests,
+    // 2026-09-05, all at the first mispredict). The core drives this from M's slot compare.
+    input  wire             c2_kill,
     output wire             c_valid,
     output wire [5:0]       c_rd,
     output wire             c_rd_v,      // derived: |c_prd
     output wire [PBITS-1:0] c_prd,
-    output wire             c_noret,
+        output wire             c_noret,
+    // the entry behind the head, retired in the same cycle when it is done (item 10c):
+    // a done entry can no longer restart the machine (every restart waits for the head
+    // and is done only after), so nothing between the two can intervene
+    output wire             c2_valid,
+    output wire [5:0]       c2_rd,
+    output wire             c2_rd_v,
+    output wire [PBITS-1:0] c2_prd,
+    output wire             c2_noret,
 
     // ---- recovery ----
     // Younger-than-the-committing-entry dies. Pointer-only, to match the free list's own
@@ -151,11 +164,27 @@ module ooo2_rob
    assign c_prd   = he[PBITS-1:0];
    assign c_rd    = he[PBITS +: 6];
    assign c_noret = he[PBITS+6];
-   assign c_rd_v  = |c_prd;
-
+      assign c_rd_v  = |c_prd;
+   wire [IDXB-1:0] h2idx = hidx + 1'b1;
+   wire [EW-1:0]   he2   = ent[h2idx];
+   wire            head2_done = v[h2idx] & (done[h2idx] | w_hits(h2idx));
+      // ...and never in a flush cycle: a mispredicted branch COMMITS and redirects in the same
+   // cycle, and the entry behind it is the wrong path (rv64ui-v-add retired the fall-through
+   // of a taken loop branch, 2026-09-05).
+   assign c2_valid = c_valid & head2_done & ~c2_kill & ~flush;
+   assign c2_prd   = he2[PBITS-1:0];
+   assign c2_rd    = he2[PBITS +: 6];
+   assign c2_noret = he2[PBITS+6];
+   assign c2_rd_v  = |c2_prd;
    wire do_alloc  = d_valid & d_ready & ~flush;
    wire do_alloc2 = do_alloc & d_valid2 & d_ready2;
    wire do_commit = c_valid;
+   wire do_commit2 = c2_valid;
+   wire [IDXB:0] head_n = head + {{IDXB{1'b0}}, do_commit} + {{IDXB{1'b0}}, do_commit2};
+   // the irrevocable pointer never falls behind the head: two entries retiring in one cycle
+   // are both done, so the pointer is at least past them
+   wire [IDXB:0] irr_step = irr_done ? irr + 1'b1 : irr;
+   wire [IDXB:0] irr_n    = (do_commit2 && ((irr_step == head) || (irr_step == head + 1'b1))) ? head + 2'd2 : irr_step;
    always @(posedge clk) if (!reset && d_valid2 && !d_valid)
       $fatal(1, "ooo2_rob: second allocation without a first");
 
@@ -176,20 +205,21 @@ module ooo2_rob
          end
          for (ri = 0; ri < NW; ri = ri + 1)
             if (w_v[ri]) done[w_ix[ri*IDXB +: IDXB]] <= 1'b1;
-         if (do_commit) begin
+                  if (do_commit) begin
             v[hidx] <= 1'b0;
-            head    <= head + 1'b1;
+            if (do_commit2) v[h2idx] <= 1'b0;
+            head    <= head_n;
          end
-         if (irr_done) irr <= irr + 1'b1;
+         irr <= irr_n;
          // A flush kills everything YOUNGER than the entry committing this cycle -- the
          // redirecting instruction is itself older and must still commit. Ordered after the
          // commit arm above so the head's own retirement stands.
          if (flush) begin
             v    <= {DEPTH{1'b0}};
             done <= {DEPTH{1'b0}};
-            tail <= do_commit ? (head + 1'b1) : head;
-            irr  <= do_commit ? (head + 1'b1) : head;
-            if (do_commit) head <= head + 1'b1;
+                        tail <= head_n;
+            irr  <= head_n;
+            head <= head_n;
          end
       end
    end

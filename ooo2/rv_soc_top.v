@@ -64,7 +64,8 @@ module rv_soc_top #(
    input  wire             clk,
    input  wire             reset,
    // observation for a TB (retire + the store stream, to watch tohost)
-   output wire             retire,
+       output wire             retire,
+    output wire             retire2,            // a second retire in the same cycle (item 10c)
    output wire             dmem_wen,
    output wire [63:0]      dmem_waddr,
    output wire [63:0]      dmem_wdata,
@@ -151,7 +152,8 @@ module rv_soc_top #(
       .dmem_wready(dmem_wready), .dmem_waccept(dmem_waccept), .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
-      .retire(retire), .retire_pc(), .retire_insn(),
+            .retire(retire), .retire_pc(), .retire_insn(),
+      .retire2(retire2), .retire2_pc(), .retire2_insn(),
       .redirect(redirect), .redirect_target(redirect_target));
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
