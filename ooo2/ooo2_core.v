@@ -549,9 +549,12 @@ module ooo2_core
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
    localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
-   // NF=5, the largest FP scheduler that closes 166.67 MHz. FREQUENCY IS NOT A KNOB --
-   // it is never traded away except for a diagnostic run -- so the scheduler was dialled
-   // down one entry at a time until it passed:
+   // NF=8, the policy minimum, since 2026-08-28 (47e1d26a); every gated build since has
+   // closed 166.67 MHz with it, at +0.001-0.002 ns. Before that NF=5 was the largest FP
+   // scheduler that closed. FREQUENCY IS NOT A KNOB -- it is never traded away except for a
+   // diagnostic run -- and INTEGER PERFORMANCE IS NEVER TRADED FOR FP (Tommy, 2026-09-05):
+   // when slack is needed, NF gives first, back to 5. The history that set 5, kept -- the
+   // scheduler was dialled down one entry at a time until it passed:
    //
    //   NF=8  -0.012   "frontend PC increment"    24 levels,  6x CARRY8
    //   NF=7  -0.082   u_csr/mhpmcounter[12]      32 levels, 10x CARRY8

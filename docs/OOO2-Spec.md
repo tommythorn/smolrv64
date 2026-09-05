@@ -135,7 +135,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (policy is 8; 5 is the largest that closes timing) (§6.1) |
+| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 8 (policy; 5 was the largest that closed 166.67 MHz until the two failing path families were removed on 2026-08-28, and every gated build since has closed at 8) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits |
 
@@ -347,7 +347,7 @@ DISTINGUISH THE CONFIGURATIONS.** Rule I2: four placer directives over IDENTICAL
 | `NF`=8 | -0.012 | frontend PC increment, 24 levels, 6x CARRY8 |
 | `NF`=7 | **-0.082** | `u_csr/mhpmcounter[12]` carry, 32 levels, 10x CARRY8 |
 | `NF`=6 | **-0.210** | `fpnew` `i_fpnew_cast_multi` internal pipeline |
-| `NF`=5 | **+0.038** | PASSES — this is the shipped size |
+| `NF`=5 | **+0.038** | PASSES — the shipped size until 2026-08-28; 8 since (47e1d26a), closing at +0.001–0.002 ns on every gated build |
 | `NF`=4 | +0.050 | -- |
 
 `NF`=7 is 70 ps WORSE than `NF`=8, from REMOVING an entry. That is not a logic effect. All
@@ -379,7 +379,11 @@ independent of NF:
   splitting them across cycles (register `hpm_inc` per counter, 13x6 flops). Not done:
   unmeasured, and it is 78 flops for a path that may already fit.
 
-**NF=8 DOES NOT CLOSE TIMING at 166.67 MHz, and the reason is not the scheduler.**
+**Standing rule (2026-09-05): integer performance is never traded for FP.** When a build
+misses timing or an integer change needs slack, `NF` is the first thing to give -- back to 5,
+which closed with +0.038 ns -- never the integer scheduler, the ALU path or the frontend.
+
+**NF=8 DID NOT CLOSE TIMING at 166.67 MHz on 2026-08-27, and the reason was not the scheduler.**
 
 | | `probe_clk` |
 |---|---:|
@@ -449,7 +453,7 @@ moves the wall.
 
 | | `u_iq_i` | `u_iq_l` | `u_iq_f` |
 |---|---|---|---|
-| entries (`NENT`) | 10 | 12 | 5 |
+| entries (`NENT`) | 10 | 12 | 8 |
 | sources (`NSRC`) | 2 | 3 | 3 |
 | holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
@@ -908,7 +912,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `irr` | `ooo2_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `u_iq_f` entry | `ooo2_iq` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 283 | 2 264 | LUTRAM | F/X queue: carries the prediction's 2-bit choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
