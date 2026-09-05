@@ -38,9 +38,9 @@ ifneq ($(strip $(OOO2_CORE)),)
 export OOO2_CORE
 endif
 
-# Fetch window halfwords.  4 is the default in the RTL, in build.tcl and here; it gives the
-# chunk-aligned fetch buffer 8-byte chunks.  Only 2 or 4 elaborate; 8 trips the sdpram
-# geometry guard.  Setting 2 builds a 32-bit fetch window that no bitstream should ship.
+# Fetch window halfwords.  8 is the default in the RTL, in build.tcl and here (since 2026-09-05;
+# 4 before): a 16-byte window.  2, 4 and 8 elaborate.  Setting 2 builds a 32-bit fetch window
+# that no bitstream should ship.
 ifneq ($(strip $(OOO2_HW)),)
 export OOO2_HW
 endif

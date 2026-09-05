@@ -303,11 +303,11 @@ if {$probe_core} {
         puts "probe_clk = 166.67 MHz (PROBE_CLK_DIV8=48) -- the shipping clock."
         lappend vdefines "PROBE_CLK_DIV8=48"
     }
-    # Fetch window halfwords. 4 is the shipping build AND the RTL default (ooo2_core.v and
-    # rv_soc_top.v agree); it makes the chunk-aligned fetch buffer 8-byte chunks. HW=8 would make
-    # the I$ RDW=128, which trips smolrv64_sdpram's hardware-proven-geometry guard (the wide-I$
-    # BRAM width-cascade regression that passed every Verilator test and fetched garbage on
-    # real BRAM), so 4 is the useful setting.
+    # Fetch window halfwords. 8 is the shipping build AND the RTL default since 2026-09-05
+    # (ooo2_core.v and rv_soc_top.v agree): a 16-byte window, validated on the board as builds
+    # K, M and N; sha256sum's frontend bubble went from 43% of cycles to 10%. The I$ reads it
+    # as the 64-bit chunk pair (rv_cache caps the bank width), so the wide-BRAM geometry that
+    # once fetched garbage on real BRAM is never built. 4 was the shipping build before.
     if {[info exists env(OOO2_HW)] && $env(OOO2_HW) ne ""} {
         # 8 is allowed since 2026-09-05: rv_cache caps its BANK width at 64 whatever RDW is
         # (a 128-bit read is the even/odd chunk pair, 16-byte aligned), so the sdpram guard is
@@ -316,11 +316,11 @@ if {$probe_core} {
             error "OOO2_HW=$env(OOO2_HW): only 2, 4 or 8 elaborate; 2 is a 32-bit fetch window\
  that no bitstream should ship; odd values cannot hold a 32-bit instruction."
         }
-        puts "OOO2_HW override: fetch window = $env(OOO2_HW) halfwords (the shipping build is 4)."
+        puts "OOO2_HW override: fetch window = $env(OOO2_HW) halfwords (the shipping build is 8)."
         lappend vdefines "OOO2_HW=$env(OOO2_HW)"
     } else {
-        puts "fetch window = 4 halfwords (OOO2_HW=4) -- the shipping build."
-        lappend vdefines "OOO2_HW=4"
+        puts "fetch window = 8 halfwords (OOO2_HW=8) -- the shipping build."
+        lappend vdefines "OOO2_HW=8"
     }
     if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
         puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."

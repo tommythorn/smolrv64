@@ -46,7 +46,7 @@
 // all dmem currently routes to the D$). RAM is byte-addressable internally (loadable
 // via $readmemh from a TB) with a 64-byte line port for the arbiter.
 `ifndef OOO2_HW
- `define OOO2_HW 4                 // fetch window halfwords (must match ooo2_core.v)
+ `define OOO2_HW 8                 // fetch window halfwords (must match ooo2_core.v)
 `endif
 module rv_soc_top #(
    parameter HW=`OOO2_HW, PCW=64, SEQW=8,   // fetch window halfwords (must match ooo2_core.v)

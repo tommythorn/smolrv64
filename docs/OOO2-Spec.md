@@ -168,8 +168,10 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
 
 ### 4.1 Fetch
 
-- Window: `OOO2_HW` halfwords. FPGA builds use `OOO2_HW=4` → **8-byte window**, so the I$
-  read width is `HW*16` = 64 bits.
+- Window: `OOO2_HW` halfwords. The shipping build is `OOO2_HW=8` → **16-byte window** (since
+  2026-09-05; 4 before), so the I$ read width is `HW*16` = 128 bits, read as the 64-bit
+  chunk pair (§9.1). On sha256sum the frontend bubble went from 43.4% of cycles (I, HW=4) to
+  10.1% (M, HW=8 with the senior store queue), IPC 0.435 → 0.714.
 - **Ahead prediction**: the predictor arrays are addressed from `apc`, a register-only ahead
   PC, never from a combinational `npc`. This is what bought the predictor a full stage of
   slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the
@@ -734,7 +736,7 @@ Both are the **same module** (`rv_cache`), specialised by parameter.
 | Sets | 512 | 512 |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **PIPT** | **PIPT** |
-| Read width | `OOO2_HW*16` = 64 bit | 64 bit |
+| Read width | `OOO2_HW*16` = 128 bit, two 64-bit banks | 64 bit |
 | Write policy | fill-only (`WRITABLE=0`) | **write-back** (`WRTHRU=0`) |
 | Prefetch | next-line, single-line stream buffer | none |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
@@ -810,7 +812,7 @@ UART is **3 Mbps, hardwired in RTL** — not derived from the DTS or the kernel 
 ## 10. Array inventory
 
 Every array in the core, with the shape the RTL actually declares. Sizes are for the
-shipping configuration (`SIZE_KB`=64, `OOO2_HW`=4, `PAW`=64 into the caches).
+shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 
 ### 10.1 Core
 
@@ -980,7 +982,7 @@ tracers and stats are gated.
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |
-| Build | `OOO2_CORE=1 OOO2_HW=4 PROBE_CLK_DIV8=48 make bit` |
+| Build | `make bit` (`OOO2_CORE=1 OOO2_HW=8 PROBE_CLK_DIV8=48` are the defaults; HW=4 until 2026-09-05) |
 
 Read `probe_clk` from the **Intra Clock Table**, not global WNS — global WNS is usually
 pinned by the MIG's `ui_clk`.
@@ -1012,7 +1014,7 @@ CONFIGURATION it was measured in; anything unmeasured says so.
 
 ### Measurement discipline (read before adding a number here)
 
-**`OOO2_HW=4` IS THE DEFAULT EVERYWHERE NOW** -- the RTL, `build.tcl` and the sim
+**THE SHIPPING `OOO2_HW` IS THE DEFAULT EVERYWHERE** (8 since 2026-09-05, 4 before) -- the RTL, `build.tcl` and the sim
 runners -- because a shipping configuration that has to be remembered is one that will be
 forgotten, and this one was: `OOO2_HW` and `PROBE_CLK_DIV8` live only on the command line
 (`build.tcl` rebuilds the define list from scratch every run, so the `.xpr` records the
@@ -1021,7 +1023,7 @@ last build and carries nothing forward), and the command anybody actually types 
 table below is why that is not a small thing -- the two widths do not merely differ in
 degree, they disagree about which unit is the bottleneck:
 
-| workloads/aesbench | HW=2 (never build this) | **HW=4 (the shipping build)** |
+| workloads/aesbench | HW=2 (never build this) | **HW=4 (the shipping build until 2026-09-05)** |
 |---|---:|---:|
 | cycles/byte | 222.90 | **122.70** |
 | IPC | 0.277 | **0.506** |

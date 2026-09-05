@@ -23,7 +23,7 @@
 // SERIALIZATION. A CSR/system/fence op lets nothing follow it into X until it has
 // left M, so CSR values, privilege, satp and mstatus.FS are never read stale.
 `ifndef OOO2_HW
- `define OOO2_HW 4                 // fetch window halfwords (a 64-bit fetch window)
+ `define OOO2_HW 8                 // fetch window halfwords: 16 bytes, the shipping build since 2026-09-05 (4 before)
 `endif
 module ooo2_core
   #(parameter PCW  = 64,
