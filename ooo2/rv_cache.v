@@ -73,7 +73,9 @@ module rv_cache #(
    input  wire [WDW-1:0]   wr_data,
    input  wire [WDW/8-1:0] wr_mask,
    output reg              wr_ack,
-   output wire             wr_acc,      // the write is TAKEN this cycle: captured with its data, it completes on its own
+   output reg              wr_acc,      // the write was TAKEN last cycle: captured with its data, it completes on its own.
+                                        // REGISTERED: combinational, it fed the LSU and the store queue in the same cycle
+                                        // (0.65 ns over, build N); the LSU still presents the request that cycle.
    output reg              wr_cpl,      // ...and the COMPLETION its requester waits for: a CBO or an uncached write only.
                                         // A plain cached write is done for the requester at wr_acc; its wr_ack is a
                                         // counter pulse nobody waits on, so it must not look like an ack to a later
@@ -493,7 +495,6 @@ module rv_cache #(
    wire accept    = acc_slot & ~inv_go & ~inv_busy & ~fin_hazard
                   & ~f_replay & ~f_solo & (rd_req | req_wr) & ~(req_solo & f_v);
    assign rd_ack  = accept & rd_req;
-   assign wr_acc  = accept & req_wr;
 
    // ---- combinational bank port drive ----
    always @* begin
@@ -592,11 +593,11 @@ module rv_cache #(
       v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
          st <= S_IDLE; fst <= F_IDLE; f_v <= 1'b0; f_replay <= 1'b0; b_live <= 1'b0;
-         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; inv_busy <= 0;
+         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; wr_acc <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
       end else begin
-         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; l2_req <= 0;
+         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; wr_acc <= accept & req_wr; l2_req <= 0;
          // The three cycles that address the banks for the request S_CHECK will hold next
          // cycle -- and only if the fill machine's victim stream did not take the read port
          // out from under them (that drive is last in the comb block, so it wins).

@@ -141,11 +141,11 @@ module tb;
          @(negedge clk);
       end
    endtask
-   // A store presented until the D$ TAKES it. wr_acc is combinational: seen once the inputs
-   // have settled, it is what the next posedge latches, so the request is dropped only after
-   // that edge. Sampling it at the FOLLOWING negedge misses an accept that already happened
-   // and then sees a second accept of the same store at the next open door (the phantom that
-   // lost T16's store while the bench believed it had been taken, 2026-09-05).
+   // A store presented until the D$ TAKES it. wr_acc is registered: it says the write was
+   // taken at the previous posedge, while the request is still presented; the door is shut
+   // in that cycle (S_CHECK), and the request is dropped after the next edge. (A first
+   // version sampled a combinational accept at the following negedge, missed it, and then
+   // saw a phantom second accept at the next open door -- T16's store was lost.)
    task store_go(input [PAW-1:0] a, input [63:0] d, input [7:0] m);
       begin
          wr_addr=a; wr_data=d; wr_mask=m; wr_req=1'b1;
@@ -153,8 +153,9 @@ module tb;
          @(posedge clk); #1; wr_req=1'b0;
       end
    endtask
-   // A store, then a load presented from the store's S_CHECK cycle on; `gap` counts the
-   // negedges until the load's ack: 2 through the door in S_FIN, 3 through S_IDLE.
+   // A store, then a load presented from the cycle the accept is seen (the store's S_FIN
+   // cycle); `gap` counts the negedges until the load's ack: 1 through the door in S_FIN,
+   // 2 through S_IDLE.
    task store_then_load(input [PAW-1:0] sa, input [63:0] d, input [PAW-1:0] la, input [3:0] t, output integer gap);
       begin
          store_go(sa, d, 8'hFF);
@@ -367,18 +368,18 @@ module tb;
       // another set is accepted while the store's chunk is being written (S_FIN admits it);
       // one into the SAME set waits for S_IDLE, because its bank read would collide with the
       // write and return the old chunk. Both read back what was stored; the gap is what proves
-      // which door it went through: the load is presented from the write's S_CHECK cycle, and
-      // the tb counts negedges until it sees the ack, so an accept in S_FIN counts 2 and one
-      // in S_IDLE counts 3. ----
+      // which door it went through: the load is presented from the write's S_FIN cycle, and
+      // the tb counts negedges until it sees the ack, so an accept in S_FIN counts 1 and one
+      // in S_IDLE counts 2. ----
       A = 64'h0000_0000_0010_0000;
       do_store(A,          64'h1111_1111_1111_1111, 8'hFF);       // both lines resident
       do_store(A + 64'd64, 64'h2222_2222_2222_2222, 8'hFF);
       store_then_load(A, 64'hAAAA_0001_AAAA_0001, A + 64'd64, 4'd3, g14);
       expect64(got, 64'h2222_2222_2222_2222, "T14 a load of the NEXT set behind a store");
-      if (g14 != 2) begin $display("FAIL T14 next-set load: gap %0d, expected 2 (the door in S_FIN)", g14); errors=errors+1; end
+      if (g14 != 1) begin $display("FAIL T14 next-set load: gap %0d, expected 1 (the door in S_FIN)", g14); errors=errors+1; end
       store_then_load(A + 64'd64, 64'hBBBB_0002_BBBB_0002, A + 64'd64, 4'd4, g14);
       expect64(got, 64'hBBBB_0002_BBBB_0002, "T14 a load of the line JUST stored");
-      if (g14 != 3) begin $display("FAIL T14 same-set load: gap %0d, expected 3 (a bank collision is refused, S_IDLE)", g14); errors=errors+1; end
+      if (g14 != 2) begin $display("FAIL T14 same-set load: gap %0d, expected 2 (a bank collision is refused, S_IDLE)", g14); errors=errors+1; end
       do_load(A, 4'd5); expect64(got, 64'hAAAA_0001_AAAA_0001, "T14 the first store landed");
 
       // ---- T15-T17: A PLAIN WRITE IS NOT SOLO (plan item 4c, 2026-09-05). Its miss is

@@ -173,8 +173,7 @@ module ooo2_lsu
    // PLIC 0x0C00_0000, UART 0x1000_0000, virtio 0x1000_2000/3000) and DRAM above it.
    localparam [55:0] LSU_DRAM_BASE = 56'h8000_0000;
    // The effective physical address: the MMU's for an M request, ooo2_sq's for a commit.
-   wire [55:0] eff_pa  = pt_start ? pt_pa : t_paddr;
-   wire        eff_unc = pt_start ? pt_unc : t_uncached;
+   wire [55:0] eff_pa;  wire eff_unc;   // the port's fields when it starts or continues, else M's (below)
    wire        pa_dram = (eff_pa >= LSU_DRAM_BASE);
    wire        xl_can = ~req_amo & ~eff_cbo & pa_dram; // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
@@ -244,7 +243,10 @@ module ooo2_lsu
    wire        sel_pt      = (st == S_IDLE) ? pt_start : src_pt;
    wire [63:0] eff_vaddr   = sel_pt ? {8'd0, pt_pa}  : req_vaddr;
    wire [1:0]  eff_size    = sel_pt ? pt_size        : req_size;
-   wire [63:0] eff_st_data = sel_pt ? pt_data        : req_st_data;
+   // The store data is REGISTERED at the handoff (st_data_q): the queue pops its entry then,
+   // so the head has moved on by the time the write is presented.
+   reg  [63:0] st_data_q;
+   wire [63:0] eff_st_data = src_pt ? st_data_q      : req_st_data;
    wire        eff_cbo     = sel_pt ? 1'b0           : req_cbo;
    wire        eff_signed  = sel_pt ? pt_signed      : req_signed;
    wire        eff_fp      = sel_pt ? pt_fp          : req_fp;
@@ -381,7 +383,9 @@ module ooo2_lsu
    // ------------------------------------------------------------ write port
    wire st_go = (st == S_ST) || (st == S_ST2), amo_go = (st == S_AWR);
    wire st2_go = (st == S_ST2);
-   wire [7:0] st_mask = (8'd1 << nb) - 8'd1;
+   // nb_q, NOT nb: the queue pops at the handoff, so the port's size names the NEXT entry
+   // while this store is presented (the first version wrote an `sd` with a one-byte mask).
+   wire [7:0] st_mask = (8'd1 << nb_q) - 8'd1;
    assign mem_wen       = st_go | amo_go;
    assign mem_waddr     = {{(AW-56){1'b0}}, (st2_go ? pa2_q : pa_q)};
    // The access BASE, distinct from mem_waddr's per-beat address. A straddling store's second
@@ -417,6 +421,17 @@ module ooo2_lsu
    // a later device write can start the DMA that reads it. Decided by the request's class,
    // registered at start (nc_q) or held by M (eff_cbo) -- never by which ack shows up.
    wire st_fin   = (eff_cbo | nc_q) ? mem_wready : mem_waccept;
+   // BACK-TO-BACK STORES WITHOUT THE TRIP THROUGH S_IDLE (2026-09-05). The D$'s accept is a
+   // REGISTER now -- the combinational accept -> LSU -> store queue path of the first
+   // version cost 0.65 ns and failed timing (build N) -- so it lands the cycle after the
+   // door took the write, while this FSM still presents it (the door is shut that cycle:
+   // S_CHECK). In that cycle the next queued store, if any, is loaded straight into S_ST,
+   // which keeps the store stream at one write per two cycles: the D$'s S_FIN door takes
+   // it. The queue pops at the handoff (pt_ack), never at the accept; nothing can pass a
+   // store that sits here, because every access goes through this FSM.
+   wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~mmu_walking;   // src_pt: M's op (a CBO) is not a store to chain from
+   assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr;
+   assign eff_unc = (pt_start | take_next) ? pt_unc : t_uncached;
    wire acc_done = ((st == S_ST)  & st_fin & ~xword_q)
                  | ((st == S_ST2) & st_fin)
                  | ((st == S_LD)  & mem_rvalid & ~xword_q)
@@ -431,7 +446,7 @@ module ooo2_lsu
    assign done_acc = acc_done & ~own_pt;
    assign done     = fault | xo_ok | done_acc;
    assign pt_done  = acc_done & own_pt;
-   assign pt_ack  = pt_start;
+   assign pt_ack  = pt_start | take_next;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
 
@@ -463,6 +478,7 @@ module ooo2_lsu
                 nb_q    <= nb;  sgn_q <= eff_signed;  fp_q <= eff_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
                 pa2_q   <= (eff_pa & ~56'd7) + 56'd8;
+                if (pt_start) st_data_q <= pt_data;
                 if (pt_start ? pt_store : req_store) begin
                    pa_q <= xl_can ? (eff_pa & ~56'd7) : eff_pa;
                    st   <= S_ST;
@@ -496,7 +512,17 @@ module ooo2_lsu
            // A plain store leaves on ACCEPT, not on the ack (st_fin above): the cache captured
            // address, data and mask and finishes the write on its own, so the FSM is free for
            // the next request while that happens. Plan item 4, 2026-09-04: 5.00 -> 4.00 per store.
-           S_ST:  if (st_fin) st <= (xword_q ? S_ST2 : S_IDLE);
+           S_ST:  if (st_fin) begin
+                     if (take_next) begin                 // the next queued store, from here
+                        own_pt <= 1'b1; own_pt_st <= 1'b1; src_pt <= 1'b1;
+                        nc_q <= pt_unc; mem_runcached <= pt_unc;
+                        cos_pa <= pt_pa; cos_kind <= 2'd2;
+                        xword_q <= xword; nb_q <= nb; boff_q <= xl_can ? boff : 3'd0;
+                        pa2_q <= (pt_pa & ~56'd7) + 56'd8;
+                        pa_q  <= xl_can ? (pt_pa & ~56'd7) : pt_pa;
+                        st_data_q <= pt_data;
+                     end else st <= (xword_q ? S_ST2 : S_IDLE);
+                  end
            S_ST2: if (st_fin) st <= S_IDLE;
            S_ARD: if (mem_rvalid) begin
                      amo_old_q <= a_rdval;

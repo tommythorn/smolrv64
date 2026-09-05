@@ -608,9 +608,15 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   For a younger load nothing changes: an entry in the queue, committed or not, is a store
   whose bytes are not in the cache yet, and the alias matrix holds the load behind it.
   **The drain ends at the D$'s ACCEPT** (`wr_acc`, 2026-09-05, plan item 4a): the cache has
-  captured address, data and mask and completes the write on its own, so the LSU is back in
-  `S_IDLE` the next cycle and the queue entry is gone (`c_take` is the LSU's `pt_done`, which
-  is the accept for a plain store). Two classes wait for COMPLETION instead, `wr_cpl`, which
+  captured address, data and mask and completes the write on its own. The accept is a
+  REGISTER: the first version fed it combinationally into the LSU's completion and from
+  there into M's `done` and the scheduler, 0.65 ns over at 166 MHz (build N). It lands the
+  cycle after the door took the write, while the LSU still presents it (the door is shut
+  that cycle); in that cycle the LSU loads the next queued store straight into `S_ST`
+  (`take_next`), so stores stream at one per two cycles without the trip through `S_IDLE`.
+  The queue pops at the HANDOFF (`c_take` = `pt_ack` for a store) and the LSU registers the
+  data (`st_data_q`); nothing can pass a store parked in the LSU, since every access goes
+  through its FSM. Two classes wait for COMPLETION instead, `wr_cpl`, which
   the D$ raises only for them: a CBO, whose flush must be in L2 before the doorbell store
   behind it, and an uncached write, whose bytes must be in DDR before a later device write
   starts the DMA that reads them. The plain write's `wr_ack` is a counter pulse nobody waits

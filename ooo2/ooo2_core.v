@@ -900,7 +900,9 @@ module ooo2_core
    wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [55:0] sq_kc_addr;
    wire [ROB_IDXB-1:0] rob_irr_idx;  wire rob_irr_v;
    wire sq_k_take = sq_kc_v & rob_irr_v & (sq_kc_rob == rob_irr_idx);
-   wire sq_c_take = lsu_pt_done & lsu_pt_is_store;
+   // The queue pops at the HANDOFF to the LSU (pt_ack for a store), which registers the data;
+   // the LSU holds the store until the D$ takes it and nothing can pass it there.
+   wire sq_c_take = lsu_pt_ack & pt_store;
 
    ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
