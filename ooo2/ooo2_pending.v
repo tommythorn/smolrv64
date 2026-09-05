@@ -22,6 +22,8 @@ module ooo2_pending
     // ---- allocate: rename gives the destination a pending bit ----
     input  wire                  a_v,
     input  wire [PBITS-1:0]      a_preg,
+    input  wire                  a_v2,       // slot B's destination (item 10b), the same cycle
+    input  wire [PBITS-1:0]      a_preg2,
 
     // ---- writeback: the value has landed ----
     input  wire [NWB-1:0]        w_v,
@@ -40,6 +42,8 @@ module ooo2_pending
     input  wire [PBITS-1:0]      q7, q8, q9,
     output wire                  r4, r5, r6,
     output wire                  r7, r8, r9,
+    input  wire [PBITS-1:0]      q10, q11, q12, q13, q14, q15,   // slot B's six candidates
+    output wire                  r10, r11, r12, r13, r14, r15,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -73,6 +77,8 @@ module ooo2_pending
    assign r7 = rdy_of(q7);
    assign r8 = rdy_of(q8);
    assign r9 = rdy_of(q9);
+   assign r10 = rdy_of(q10); assign r11 = rdy_of(q11); assign r12 = rdy_of(q12);
+   assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
 
    always @(posedge clk) begin
       if (reset | flush) begin
@@ -86,7 +92,8 @@ module ooo2_pending
          // Ordered last: an allocation in the same cycle as a writeback to the SAME
          // register means the register was just freed and re-allocated, and the new
          // producer owns it.
-         if (a_v) pend[a_preg] <= 1'b1;
+         if (a_v)  pend[a_preg]  <= 1'b1;
+         if (a_v2) pend[a_preg2] <= 1'b1;
       end
    end
 
@@ -96,6 +103,10 @@ module ooo2_pending
          $fatal(1, "ooo2_pending: physical register 0 allocated");
       if (a_v & pend[a_preg] & ~flush)
          $fatal(1, "ooo2_pending: p%0d allocated while already pending", a_preg);
+      if (a_v2 & (a_preg2 == {PBITS{1'b0}}))
+         $fatal(1, "ooo2_pending: physical register 0 allocated (B)");
+      if (a_v2 & (pend[a_preg2] | (a_v & (a_preg == a_preg2))) & ~flush)
+         $fatal(1, "ooo2_pending: p%0d allocated (B) while already pending", a_preg2);
       for (i = 0; i < NWB; i = i + 1)
          if (w_v[i] & ~pend[w_preg[i*PBITS +: PBITS]] & ~flush)
             $fatal(1, "ooo2_pending: writeback to p%0d, which was not pending",
