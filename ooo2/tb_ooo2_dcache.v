@@ -55,7 +55,7 @@ module tb;
    always @(posedge clk) if (reset) req_pend<=1'b0; else if (rd_ack) req_pend<=1'b0;
 
    rv_cache #(.PAW(PAW), .SIZE_KB(128), .RDW(RDW), .WDW(64),
-              .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) dut
+              .WRITABLE(1), .WRTHRU(0), .PREFETCH(1), .PERF_ID(1)) dut
      (.clk(clk), .reset(reset),
       .rd_req(rd_req), .rd_addr(rd_addr), .rd_data(rd_data), .rd_valid(rd_valid),
       .rd_resp_addr(), .rd_tag(rd_tag), .rd_resp_tag(rd_resp_tag),
@@ -76,6 +76,13 @@ module tb;
       for (w=0;w<8;w=w+1) mem[mi][w*64 +: 64] = {mi[31:0], w[2:0], 1'b0, 28'h5A5A5A5};
 
    integer seed = 1;
+   integer l2_reads = 0;   // accepted L2 reads (demand + prefetch)
+   // ONE request at a time on the L2 port: a second one while one is outstanding would be
+   // dropped by this model and hang the cache; with the stream buffer on a writable cache the
+   // writeback and push issues must wait a prefetch out (plan item 6).
+   always @(posedge clk) if (!reset && l2_req && lbusy) begin
+      $display("FAIL: L2 request while one is outstanding (we=%b addr=%h)", l2_we, l2_addr); errors = errors + 1;
+   end
    integer lcnt; reg lbusy=0; reg [PAW-OFFB-1:0] laddr; reg lwe; reg [LINEB-1:0] lwd;
    always @(posedge clk) begin
       l2_ack <= 1'b0;
@@ -86,6 +93,7 @@ module tb;
          // ONE interleaving of fill against lookup, so a race needing any other is invisible
          // however long the sweep. LAT is the floor, JIT the jitter on top.
          lbusy<=1'b1; lcnt<=LAT + ({$random(seed)} % (JIT+1)); laddr<=l2_addr;
+         if (!l2_we) l2_reads <= l2_reads + 1;
          lwe<=l2_we; lwd<=l2_wdata;
       end else if (lbusy) begin
          if (lcnt==0) begin
@@ -410,6 +418,40 @@ module tb;
          do_load(E, 4'h9);          expect64(got, 64'h1E1E_1E1E_1E1E_1E1E, "T17 the first store, merged by the fill");
          do_load(E + 64'd8, 4'hA);  expect64(got, 64'h2E2E_2E2E_2E2E_2E2E, "T17 the second store, merged after its hold");
          do_load(E + 64'd16, 4'hB); expect64(got, expect_word(E + 64'd16), "T17 the rest of the line");
+      end
+
+      // ---- T18-T20: THE STREAM BUFFER ON THE D$ (plan item 6, 2026-09-05). Next-line
+      // prefetch on a miss; what a writable cache adds is that the buffered line can be
+      // stale against a dirty resident copy, a writeback or a CBO/DMA. ----
+      begin : d_prefetch
+         reg [PAW-1:0] X, Y, Z;
+         integer r0;
+         X = 64'h8007_0800;
+         // T18: a sequential miss stream: the second line comes from the buffer -- no L2 round
+         // trip in its latency (the L2 read that does happen is the prefetch of the line after).
+         do_load(X, 4'h1); expect64(got, expect_word(X), "T18 first line");
+         for (i=0; i<3*LAT+40; i=i+1) @(negedge clk);                          // the prefetch lands
+         r0 = tcyc;
+         do_load(X + 64'd64, 4'h2); expect64(got, expect_word(X + 64'd64), "T18 the next line");
+         if (tcyc - r0 > LAT/2 + 16) begin $display("FAIL T18 the next line took %0d cycles (LAT=%0d): not from the buffer", tcyc - r0, LAT); errors=errors+1; end
+         // T19: a buffered line that is ALSO resident and dirty: read Y (miss), read Y-64 (miss:
+         // prefetches Y into the buffer while Y is resident), write Y (hit, dirty), evict Y (the
+         // writeback drops the buffer), read Y: the write, not the stale buffered copy.
+         Y = 64'h8007_1040;
+         do_load(Y, 4'h3);           expect64(got, expect_word(Y), "T19 Y resident");
+         do_load(Y - 64'd64, 4'h4);  expect64(got, expect_word(Y - 64'd64), "T19 Y-64 (prefetches Y)");
+         for (i=0; i<3*LAT+40; i=i+1) @(negedge clk);
+         do_store(Y + 64'd8, 64'h19191919_19191919, 8'hFF);                    // Y dirty
+         for (k=1; k<=6; k=k+1) do_load(Y + (k<<16), 4'h5);                    // evict Y: written back
+         do_load(Y + 64'd8, 4'h6);   expect64(got, 64'h19191919_19191919, "T19 the write survives against a stale buffered copy");
+         // T20: a CBO drops the buffer: read Z (prefetches Z+64), DMA rewrites Z+64 in memory,
+         // cbo.inval Z+64, read Z+64: the DMA data, not the buffered line.
+         Z = 64'h8007_2080;
+         do_load(Z, 4'h7);           expect64(got, expect_word(Z), "T20 Z");
+         for (i=0; i<3*LAT+40; i=i+1) @(negedge clk);
+         dma_write(Z + 64'd64, 64'h2020_2020_2020_2020);
+         do_cbo(Z + 64'd64, 1'b0);
+         do_load(Z + 64'd64, 4'h8);  expect64(got, 64'h2020_2020_2020_2020, "T20 after cbo.inval the DMA data, not the buffer");
       end
 
       if (errors==0) $display("rv_cache D$ directed: PASS");

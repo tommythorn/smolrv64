@@ -694,6 +694,20 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   NC or write-through write, a CBO, a span. `tb_ooo2_dcache` T15-T17: the merged miss and
   its writeback, a store under a read's fill and a hit under the store's, two stores to one
   missing line.
+- **The D$ has the I$'s next-line stream buffer** (2026-09-05, plan item 6). A demand fill
+  arms a prefetch of the next line on the idle L2 port; a miss on that line takes it from
+  the buffer instead of L2. What a writable cache adds, each asserted or tested: the
+  buffered line can be STALE against a dirty resident copy, so a writeback of that line
+  drops the buffer (`F_WB`, and the NC push at `S_WTI`); a CBO drops it (cbo.zero rewrites
+  the line, Zicbom reconciles DMA memory); a write miss that takes the buffered line merges
+  its chunk at the install (the item-4c merge moved from `F_FILLW` to `F_FILLI`, one site for
+  both line sources); the D$ takes the buffer through `F_WB -> F_FILL` because its victim
+  may be dirty, not `S_CHECK`'s shortcut; and the L2 port stays one request at a time, so
+  `F_WBI`, `S_WTI` and `F_FLUSHI` wait out a prefetch in flight. `workloads/membench` (1 MiB
+  streams through the 64 KiB D$, the measured DDR model): fill 92.8 -> 60.7 cycles per
+  line, sum 75.7 -> 43.4, copy 156 unchanged (one buffer and one L2 port cannot overlap a
+  read and a write stream). tiny128 boot at 60 M cycles +34.3% (14,132,961 -> 18,979,633
+  at HW=8): the kernel's memory init walks memory linearly. `tb_ooo2_dcache` T18-T20.
 - **Zicbom clean/flush/inval on a resident line take their dirty test in `S_FIN`**, one cycle
   after the lookup, on the way/index registered there. Reading `dirm[flat(hway,cih)]` in
   `S_CHECK` was a second array read addressed by the first one's compare -- the D$'s own
@@ -738,7 +752,7 @@ Both are the **same module** (`rv_cache`), specialised by parameter.
 | Indexing | **PIPT** | **PIPT** |
 | Read width | `OOO2_HW*16` = 128 bit, two 64-bit banks | 64 bit |
 | Write policy | fill-only (`WRITABLE=0`) | **write-back** (`WRTHRU=0`) |
-| Prefetch | next-line, single-line stream buffer | none |
+| Prefetch | next-line, single-line stream buffer | the same buffer (2026-09-05, plan item 6) |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
 
 **Not UltraRAM.** Data is even/odd **banks** of `BANKW` bits per way — `2*WAYS` sync-read
@@ -949,7 +963,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | riscv-tests, this core | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
-| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17 |
+| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17, the D$ stream buffer T18-T20 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | virtio-net DMA, both directions | `ooo2/run-ooo2-vnet-tb.sh` | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |

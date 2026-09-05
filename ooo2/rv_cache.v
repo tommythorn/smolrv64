@@ -274,7 +274,14 @@ module rv_cache #(
                      // pf_next can be re-armed (S_PFI) while a fetch is in flight, so the
                      // ack must be stamped with the issued address, never the live pf_next
    reg [LINEB-1:0]  pf_line;
-   localparam PF_EN = (PREFETCH != 0) && (WRITABLE == 0);  // engine is I$-shaped only: its
+   // The stream buffer serves the D$ too since plan item 6 (2026-09-05). What a writable
+   // cache adds: a line in the buffer can be STALE against a dirty resident copy, so a
+   // writeback of the buffered line drops it (F_WB, S_WTI); a CBO drops it (the kernel
+   // reconciles DMA memory by CBO, and cbo.zero rewrites the line); a write miss that takes
+   // the buffered line still merges its chunk at the install; and the D$ takes the buffer
+   // through F_WB -> F_FILL (the victim may be dirty), not S_CHECK's shortcut. The L2 port
+   // is one request at a time: the writeback and push issues wait out a prefetch in flight.
+   localparam PF_EN = (PREFETCH != 0);                   // (was I$-only: its
                      // interlocks assume the FSM's only L2 state is the S_FILL fill path
    // PF_EN implies WRITABLE==0: the pf-hit install path (S_PFI) skips S_WB, sound
    // only when a victim can never be dirty -- i.e. the I$.
@@ -334,15 +341,18 @@ module rv_cache #(
    // LSU aligns every DRAM store to its 8-byte word (asserted at the door), so a write never
    // straddles chunks. Only the demand fill merges; a writable cache has no stream buffer.
    wire f_wmerge = f_is_wr & ~f_cbo & ~f_uncached & ~f_span & (WRTHRU == 0);
-   reg [LINEB-1:0] l2_merged;
+   // ...merged at the INSTALL (F_FILLI), so the line's source -- L2 or the stream buffer --
+   // does not matter: the pair being written that holds the write's chunk takes the masked
+   // bytes; register-sourced, off every timing path.
+   wire f_wm_pair = f_wmerge & (f_clo[CHB-1:1] == pc[PAIRB-1:0]);
+   reg [BANKW-1:0] wm_lo, wm_hi;
    integer mb;
    always @* begin
-      l2_merged = l2_rdata;
+      wm_lo = linebuf[(2*pc)  *BANKW +: BANKW];
+      wm_hi = linebuf[(2*pc+1)*BANKW +: BANKW];
       for (mb = 0; mb < BANKW/8; mb = mb + 1)
-         if (f_wmask[mb]) l2_merged[f_clo*BANKW + mb*8 +: 8] = f_wdata[mb*8 +: 8];
+         if (f_wmask[mb]) begin wm_lo[mb*8 +: 8] = f_wdata[mb*8 +: 8]; wm_hi[mb*8 +: 8] = f_wdata[mb*8 +: 8]; end
    end
-   initial if (PF_EN != 0 && WRITABLE != 0)
-      $fatal(1, "rv_cache: PF_EN with WRITABLE -- the stream-buffer install does not merge a write miss");
 
    // linebuf/pc/wb_* are ONE set of resources. The fill machine's writeback and the
    // pipeline's write-through push both stream a line through them, so the two are mutually
@@ -543,10 +553,10 @@ module rv_cache #(
       if (fst==F_FILLI) begin
          bk_wren  [vw*2+0] = 1'b1;
          bk_wraddr[vw*2+0] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+0] = f_cbo_zero ? {BANKW{1'b0}} : linebuf[(2*pc)  *BANKW +: BANKW];
+         bk_wrdata[vw*2+0] = f_cbo_zero ? {BANKW{1'b0}} : (f_wm_pair & ~f_clo[0]) ? wm_lo : linebuf[(2*pc)  *BANKW +: BANKW];
          bk_wren  [vw*2+1] = 1'b1;
          bk_wraddr[vw*2+1] = { vi, pc[PAIRB-1:0] };
-         bk_wrdata[vw*2+1] = f_cbo_zero ? {BANKW{1'b0}} : linebuf[(2*pc+1)*BANKW +: BANKW];
+         bk_wrdata[vw*2+1] = f_cbo_zero ? {BANKW{1'b0}} : (f_wm_pair &  f_clo[0]) ? wm_hi : linebuf[(2*pc+1)*BANKW +: BANKW];
       end
       // store merge: write the low chunk (and same-line high chunk if the store spilled).
       // Uses the captured LINE0 way/idx (w0_*) -- in a span, the live hway/cih are line1's.
@@ -727,10 +737,13 @@ module rv_cache #(
               // to be taken AT THIS EDGE -- a prefetch ack can land this very cycle and
               // overwrite pf_line with a different line -- but not under `hit`: pf_hit is a
               // register compare, and ~f_v says the fill machine is idle, so linebuf is free.
-              if (PF_EN && pf_hit && !f_v) linebuf <= pf_line;
+              if (PF_EN && WRITABLE == 0 && pf_hit && !f_v) linebuf <= pf_line;
 
               if (r_cbo) begin
                  // Zicbom/Zicboz: single-line maintenance on the addressed line.
+                 // The stream buffer does not survive it: DMA memory is reconciled by CBO
+                 // only, and cbo.zero rewrites the line the buffer may hold.
+                 if (PF_EN) begin pf_val <= 0; pf_want <= 0; if (pf_infl) pf_drop <= 1; end
                  if (hit) begin
                     w0_way <= hway; w0_idx <= cih;
                     if (r_cbo_zero) begin
@@ -794,12 +807,12 @@ module rv_cache #(
                     // stream-buffer hit: skip the L2 round trip. The line was captured
                     // above at this same edge; consume the buffer here (a same-edge ack's
                     // fresh line is discarded: hint loss only).
-                    if (pf_hit) pf_val <= 0;
+                    if (pf_hit && WRITABLE == 0) pf_val <= 0;
                     f_v <= 1'b1;
                     // THE REQUEST LEAVES THE PIPELINE HERE. That is the split: what used to be
                     // `st <= S_WB`, dragging the one machine into ten states from which the
                     // accept state was unreachable, is now a handoff that empties stage B.
-                    fst <= pf_hit ? F_PFI : F_WB;
+                    fst <= (pf_hit && WRITABLE == 0) ? F_PFI : F_WB;   // a writable cache's victim may be dirty
                     st  <= S_IDLE;
                  end
               end
@@ -874,7 +887,9 @@ module rv_cache #(
               if (pc == HALF-1) begin pc <= 0; st <= S_WTI; end
               else begin pc <= pc + 1'b1; st <= S_WTR; end
            end
-           S_WTI: begin l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
+           S_WTI: if (!(PF_EN && pf_infl)) begin
+              if (PF_EN && pf_val && pf_addr == line0[PAW-1:OFFB]) pf_val <= 0;   // the push makes the buffer stale
+              l2_req<=1; l2_we<=1; l2_addr<=line0[PAW-1:OFFB]; l2_wdata<=linebuf; st<=S_WTA; end
            S_WTA: if (l2_ack) begin
               if (r_cbo) begin                                     // Zicbom writeback complete
                  d_we=1; d_wa=flat(wb_way,wb_idx); d_wd=1'b0;      // it is now clean in L2
@@ -923,6 +938,8 @@ module rv_cache #(
               if (WRITABLE!=0 && WRTHRU==0 && valm[vflat] && dirm[vflat]) begin
                  wb_way <= vw?1'b1:1'b0; wb_idx <= vi; pc <= 0;
                  wb_laddr <= {{(PAW-PAW_SIG){1'b0}}, vtag, vbase};
+                 if (PF_EN && pf_val  && pf_addr == {{(PAW-PAW_SIG){1'b0}}, vtag, vbase}) pf_val  <= 0;   // stale against the line going out
+                 if (PF_EN && pf_infl && pf_ia   == {{(PAW-PAW_SIG){1'b0}}, vtag, vbase}) pf_drop <= 1;
                  fst <= F_WBR;
               end else fst <= f_cbo_zero ? F_ZFILL : F_FILL;
            end
@@ -933,7 +950,7 @@ module rv_cache #(
               if (pc == HALF-1) begin pc <= 0; fst <= F_WBI; end
               else begin pc <= pc + 1'b1; fst <= F_WBR; end
            end
-           F_WBI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_WBA; end
+           F_WBI: if (!(PF_EN && pf_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_WBA; end
            F_WBA: if (l2_ack) fst <= f_cbo_zero ? F_ZFILL : F_FILL;
 
            // cbo.zero miss: victim evicted -> install a fresh zero line (no L2 read) + mark
@@ -958,7 +975,7 @@ module rv_cache #(
               // moved to the LAST install cycle. Advertising a line as valid before its
               // data is in the banks is only harmless while nothing can look it up; the
               // whole point of splitting the fill machine out is that something can.
-              linebuf <= f_wmerge ? l2_merged : l2_rdata; pc <= 0;   // the write's chunk lands with the line (item 4c)
+              linebuf <= l2_rdata; pc <= 0;                 // a write miss merges its chunk at the install
               fst <= F_FILLI;
               if (PF_EN && !f_uncached && !f_cbo_zero) begin
                  pf_want <= 1; pf_next <= f_line[PAW-1:OFFB] + 1'b1;  // arm next-line
@@ -1048,7 +1065,7 @@ module rv_cache #(
               if (pc == HALF-1) begin pc <= 0; fst <= F_FLUSHI; end
               else begin pc <= pc + 1'b1; fst <= F_FLUSHR; end
            end
-           F_FLUSHI: begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_FLUSHA; end
+           F_FLUSHI: if (!(PF_EN && pf_infl)) begin l2_req<=1; l2_we<=1; l2_addr<=wb_laddr; l2_wdata<=linebuf; fst<=F_FLUSHA; end
            F_FLUSHA: if (l2_ack) begin
               if (!flush_clean) begin v_we=1; v_wa=fscan[FW-1:0]; v_wd=1'b0; end  // clean flush: written back, stays valid+clean
               d_we=1; d_wa=fscan[FW-1:0]; d_wd=1'b0;
