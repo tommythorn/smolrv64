@@ -181,7 +181,10 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   aligner one cycle each: `FE_QUE` 8.0% of the sha256 kernel's cycles in sim, 8.2–8.5% for
   `sha256sum` on the board, traced to 1,835 of 3,342 four-instruction chunks (`FB_TRACE` in
   `rv_soc_top`). With the slide-cycle request: febench `shifted` 0.79 → 0.98, the sha256
-  kernel (`workloads/shabench`, sim) IPC 0.898 → 0.951 with `FE_QUE` 0.0%.
+  kernel (`workloads/shabench`, sim) IPC 0.898 → 0.951 with `FE_QUE` 0.0%. Board (build Q,
+  644f732c, interrupt-bracketed): `sha256sum` 0.80 → 0.86–0.87 with `FE_QUE` 8.4% → 0.4%,
+  the C loop 0.876 → 0.90, libcrypto under `openssl speed` 0.784 → 0.820; the boot is
+  −0.19% (memory-bound; wasted chunk requests at taken branches, presumably).
 - **Ahead prediction**: the predictor arrays are addressed from `apc`, a register-only ahead
   PC, never from a combinational `npc`. This is what bought the predictor a full stage of
   slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the

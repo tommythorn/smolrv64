@@ -43,6 +43,15 @@ int main(int argc, char **argv)
    hash(reps, out);
    for (i = 0; i < 32; i++) { putchar(HEX[out[i] >> 4]); putchar(HEX[out[i] & 15]); }
    printf("  reps=%lu\n", reps);
+   // The dTLB is 16 entries direct-mapped on VPN[3:0]. Every round touches X[] (this stack
+   // page) and K256 (a rodata page); if the two share an index they evict each other on every
+   // access and the run pays a page walk per load, which no D$ counter shows. Print the
+   // indexes so a run's IPC can be read against its layout (ASLR moves the stack per run).
+   {
+      unsigned long vs = (unsigned long)&out, vk = (unsigned long)sha256_k_addr(), vb = (unsigned long)buf;
+      printf("  dtlb idx (vpn mod 16): stack %lu  K256 %lu  buf %lu..  %s\n", (vs >> 12) & 15, (vk >> 12) & 15,
+             (vb >> 12) & 15, ((vs >> 12) & 15) == ((vk >> 12) & 15) ? "STACK/K256 COLLIDE" : "");
+   }
    return 0;
 }
 #else

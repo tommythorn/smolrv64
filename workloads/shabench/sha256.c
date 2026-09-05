@@ -74,6 +74,8 @@ void sha256_blocks(uint32_t st[8], const unsigned char *data, unsigned long num)
    }
 }
 
+const void *sha256_k_addr(void) { return K256; }
+
 void sha256_init(uint32_t st[8])
 {
    st[0] = 0x6a09e667; st[1] = 0xbb67ae85; st[2] = 0x3c6ef372; st[3] = 0xa54ff53a;
