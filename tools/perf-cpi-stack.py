@@ -20,10 +20,14 @@ Usage (13 programmable counters -- one set per run, never the union, see perf-sm
     tools/perf-smol.sh br  CMD 2>&1 | tools/perf-cpi-stack.py     # redirects by cause
     tools/perf-smol.sh mem CMD 2>&1 | tools/perf-cpi-stack.py     # D$/I$ traffic, loads/stores
     tools/perf-cpi-stack.py saved-perf-output.txt
+    tools/perf-cpi-stack.py --width 2 ...        # a two-wide core (plan item 10, 2026-09-05)
 
-The identity this checks: dispatch is one instruction per cycle, so
-    cycles = instructions + sum(named stall cycles) + frontend bubbles + UNATTRIBUTED
-and "unattributed" is what no event names.  A run with only the FE_* events is not a stack:
+The identity this checks: dispatch is WIDTH instructions per cycle (1 until the two-wide core
+ships to the board, --width 2 after), so
+    cycles = instructions/WIDTH + sum(named stall cycles) + frontend bubbles + UNATTRIBUTED
+and "unattributed" is what no event names.  On a two-wide core a cycle that dispatches ONE
+instruction has no counter yet: half of it lands in unattributed, which is where the
+frontend's single-instruction bundles (the chunk-boundary cap, item 10e) show up.  A run with only the FE_* events is not a stack:
 every backend stall lands there (2026-09-05: 10.7% of sha256sum's cycles), and the tool says
 so rather than folding it into a "retire" line.  Events can overlap (a cycle blocked on a load
 AND on ROB space counts in both), so a small negative is overlap, not an error.
@@ -84,7 +88,10 @@ def parse(text, names):
     return vals, unknown
 
 def main():
-    text = open(sys.argv[1]).read() if len(sys.argv) > 1 else sys.stdin.read()
+    args, width = sys.argv[1:], 1
+    if "--width" in args:
+        i = args.index("--width"); width = int(args[i + 1]); del args[i:i + 2]
+    text = open(args[0]).read() if args else sys.stdin.read()
     names = load_names()
     v, unknown = parse(text, names)
     g = lambda k: (v.get(k) or 0)
@@ -102,12 +109,14 @@ def main():
     cpi, per_k = cyc / ins, lambda n: 1000.0 * n / ins
     fe_bub = g("FE_BUB")
     named  = sum(g(k) for k, _ in BACKEND) + fe_bub
-    unattr = cyc - ins - named            # cycles beyond one per instruction that nothing names
+    floor  = ins / width                  # the dispatch floor: every cycle full
+    unattr = cyc - floor - named          # cycles beyond the floor that nothing names
     no_backend = not any(v.get(k) is not None for k, _ in BACKEND)
 
     print("  cycles %-16d instructions %-16d IPC %.3f   CPI %.3f" % (cyc, ins, ins/cyc, cpi))
-    print("\n  CPI stack (each cycle charged to one cause; dispatch is one per cycle, so 1.000 is the floor)")
-    print("    %-30s %10.3f  %5.1f%%" % ("retire (one per cycle)", 1.0, 100.0*ins/cyc))
+    print("\n  CPI stack (each cycle charged to one cause; dispatch is %d per cycle, so %.3f is the floor)"
+          % (width, 1.0 / width))
+    print("    %-30s %10.3f  %5.1f%%" % ("dispatch floor (%d per cycle)" % width, 1.0 / width, 100.0*floor/cyc))
     for k, label in BACKEND:
         if v.get(k) is not None and g(k):
             print("    %-30s %10.3f  %5.1f%%" % ("stall: " + label, g(k)/ins, 100.0*g(k)/cyc))
