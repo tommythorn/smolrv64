@@ -98,7 +98,8 @@ module tb;
    integer errors = 0, i, t0, tx_cyc, rx_cyc, cyc = 0;
    integer stress_len [0:3]; integer stress_key [0:3];
    always @(posedge clk) cyc <= cyc + 1;
-   reg [10:0] sent_len; reg sent = 0;
+   reg [10:0] sent_len; reg sent = 0; reg irq_seen = 0;
+   always @(posedge clk) if (irq) irq_seen <= 1'b1;
    always @(posedge clk) if (tx_send) begin sent <= 1'b1; sent_len <= tx_send_len; end
    task step; begin @(posedge clk); #1; end endtask
    task chk(input cond, input [511:0] what); begin if (!cond) begin $display("FAIL %0s", what); errors = errors + 1; end end endtask
@@ -234,6 +235,38 @@ module tb;
             end
          end
          $display("VNET-TB stress: %0d frames, %0d errors", q, errors);
+      end
+      // ================= NOTIFICATION SUPPRESSION: the flag the driver toggles while a frame
+      // is in flight must be the one the device acts on -- read after used.idx, not before.
+      begin : suppression
+         reg [30:0] ba; integer rn2;
+         rn2 = get16(rxu[30:0] + 2);                                     // the next RX slot
+         // (a) NO_INTERRUPT set when the frame arrives, cleared while it is being written: interrupt expected
+         ba = 31'h90000;
+         put64(rxd[30:0] + (rn2 % QS)*16, {33'd0, ba}); put32(rxd[30:0] + (rn2 % QS)*16 + 8, 32'd2048);
+         put16(rxd[30:0] + (rn2 % QS)*16 + 12, 16'd2); put16(rxd[30:0] + (rn2 % QS)*16 + 14, 16'd0);
+         put16(rxa[30:0] + 4 + (rn2 % QS)*2, (rn2 % QS)); put16(rxa[30:0] + 2, (rn2 + 1));
+         put16(rxa[30:0], 16'd1);                                        // NO_INTERRUPT
+         for (i = 0; i < 1500; i = i + 1) rxbuf[i] = pat(i);
+         irq_seen = 0; rx_frame_len = 1500; rx_frame_valid = 1;
+         repeat (400) step;                                              // the device has read the flags and is streaming
+         put16(rxa[30:0], 16'd0);                                        // the driver re-arms
+         i = 0; while (!rx_frame_ack && i < 400000) begin step; i = i + 1; end
+         rx_frame_valid = 0; repeat (4) step;
+         chk(irq_seen, "SUPPRESSION: the driver re-armed during delivery and got no interrupt (flag sampled too early)");
+         // (b) enabled when the frame arrives, NO_INTERRUPT set while it is written: no interrupt
+         rn2 = rn2 + 1;
+         put64(rxd[30:0] + (rn2 % QS)*16, {33'd0, ba}); put32(rxd[30:0] + (rn2 % QS)*16 + 8, 32'd2048);
+         put16(rxd[30:0] + (rn2 % QS)*16 + 12, 16'd2); put16(rxd[30:0] + (rn2 % QS)*16 + 14, 16'd0);
+         put16(rxa[30:0] + 4 + (rn2 % QS)*2, (rn2 % QS)); put16(rxa[30:0] + 2, (rn2 + 1));
+         put16(rxa[30:0], 16'd0);
+         irq_seen = 0; rx_frame_valid = 1;
+         repeat (400) step;
+         put16(rxa[30:0], 16'd1);                                        // the driver suppresses
+         i = 0; while (!rx_frame_ack && i < 400000) begin step; i = i + 1; end
+         rx_frame_valid = 0; repeat (4) step;
+         chk(!irq_seen, "SUPPRESSION: interrupt raised although the driver suppressed it during delivery");
+         put16(rxa[30:0], 16'd0);
       end
       $display("VNET-TB tx=%0d rx=%0d cycles per %0d-byte frame (8 TX + 8 RX cases, every alignment; RLAT=%0d WLAT=%0d)",
                tx_cyc, rx_cyc, FLEN, RLAT, WLAT);

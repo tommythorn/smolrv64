@@ -144,6 +144,10 @@ module virtio_net #(
    localparam [5:0] S_RX_DROP        = 6'd37;  // no free buffer: drop the frame
    localparam [5:0] S_RX_GATHER      = 6'd38;  // gather up to 8 bytes into the write word
    localparam [5:0] S_WAIT_NEXT      = 6'd39;  // TX: the read-ahead word has not landed yet
+   localparam [5:0] S_TX_FLAGS       = 6'd40;  // re-read avail.flags after used.idx landed
+   localparam [5:0] S_TX_FLAGS_WAIT  = 6'd41;
+   localparam [5:0] S_RX_FLAGS       = 6'd42;
+   localparam [5:0] S_RX_FLAGS_WAIT  = 6'd43;
 
    localparam [ 7:0] EMPTY_RETRY_COUNT = 8'hff;
    localparam [15:0] EMPTY_RETRY_DELAY = 16'hffff;
@@ -668,6 +672,25 @@ module virtio_net #(
               if (dma_rsp_valid) begin
                  if (dma_rsp_error)
                     dma_error_count <= dma_error_count + 32'd1;
+                 state <= S_TX_FLAGS;
+              end
+           end
+           // THE INTERRUPT DECISION READS avail.flags AFTER used.idx HAS LANDED (virtio 1.x,
+           // "Device Requirements: Notification Suppression"): the driver clears NO_INTERRUPT
+           // when it re-arms, then re-checks the used ring; a flag sampled when this frame
+           // started can be stale by then, and a suppressed interrupt then is a lost wakeup
+           // the driver only recovers from by a timeout -- NFS "server not responding" every
+           // few minutes on the board (2026-09-05), rarer when a frame took 30 k cycles.
+           S_TX_FLAGS: begin
+              if (dma_cmd_ready) begin
+                 start_read31(txq_drv_ok, txq_drv_b);
+                 state <= S_TX_FLAGS_WAIT;
+              end
+           end
+           S_TX_FLAGS_WAIT: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 else tx_no_irq <= |(get16(dma_rsp_rdata, tx_queue_driver[2:0] & 3'h7) & 16'h0001);
                  state <= S_COMPLETE;
               end
            end
@@ -809,6 +832,19 @@ module virtio_net #(
            S_RX_WAIT_USED_IDX: begin
               if (dma_rsp_valid) begin
                  if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 state <= S_RX_FLAGS;
+              end
+           end
+           S_RX_FLAGS: begin                            // see S_TX_FLAGS
+              if (dma_cmd_ready) begin
+                 start_read31(rxq_drv_ok, rxq_drv_b);
+                 state <= S_RX_FLAGS_WAIT;
+              end
+           end
+           S_RX_FLAGS_WAIT: begin
+              if (dma_rsp_valid) begin
+                 if (dma_rsp_error) dma_error_count <= dma_error_count + 32'd1;
+                 else rx_no_irq <= |(get16(dma_rsp_rdata, rx_queue_driver[2:0] & 3'h7) & 16'h0001);
                  state <= S_RX_COMPLETE;
               end
            end

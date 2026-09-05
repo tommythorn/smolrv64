@@ -820,8 +820,14 @@ flight; TX fetches the next frame word while the current one is byte-written int
 engine. Before this every RX byte was its own AXI transaction (1,518 round trips per
 1500-byte frame) and every TX word was fetched and then copied in series. `tb_virtio_net`
 at the DDR latencies measured on the board (reads 28, writes 15): RX 31,919 -> 3,953
-cycles per 1500-byte frame, TX 7,839 -> 6,534. The AXI master is still single-beat; a
-burst master is the next step if the link, not the device, stops being the limit.
+cycles per 1500-byte frame, TX 7,839 -> 6,534 (RX 4,018 with the flag re-read below). The
+AXI master is still single-beat; a burst master is the next step if the link, not the
+device, stops being the limit. **The interrupt decision re-reads `avail.flags` after
+`used.idx` has landed** (both queues): the driver clears NO_INTERRUPT when it re-arms and
+then re-checks the used ring, so a flag sampled when the frame started can be stale by
+the time the device decides, and a suppressed interrupt then is a lost wakeup the driver
+only recovers from by a timeout -- NFS "server not responding" every few minutes on the
+board with bitstream O. `tb_virtio_net` toggles the flag mid-delivery both ways.
 | on-chip SRAM (boot/monitor) | `0x7000_0000` | 256 KiB |
 | DDR4 | `0x8000_0000` | platform |
 
