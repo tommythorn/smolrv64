@@ -78,5 +78,9 @@ lint_top ooo2 rv_soc_top $(ooo2_sources)
 ../tools/check-dts-timebase.py 48 ../workloads/ubuntu/ubuntu-nfs.dts \
                                  ../workloads/gb5/gb5-fpga.dts || fail=1
 
+# Rule F4: no function reads an array -- Vivado keeps one read port per such function and
+# folds the other call sites to 0 (rename port A wrote p0 on four bitstreams, 2026-09-06).
+../tools/check-func-ram-reads.py ../ooo2/*.v ../src/*.v || fail=1
+
 [ $fail -ne 0 ] && exit 1
 echo "lint: clean"

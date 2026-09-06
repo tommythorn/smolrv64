@@ -116,20 +116,17 @@ module ooo2_rename
    reg [63:0]      lv;
    reg [63:0]      newer;                    // 1 = smap_b is the latest speculative mapping
    reg [63:0]      rnewer;                   // 1 = rmap_b is the current committed mapping
-   function [PBITS-1:0] smap_rd(input [5:0] a);
-      smap_rd = newer[a] ? smap_b[a] : smap_a[a];
-   endfunction
-   function [PBITS-1:0] rmap_rd(input [5:0] a);
-      rmap_rd = rnewer[a] ? rmap_b[a] : rmap_a[a];
-   endfunction
+   // The copy-select reads are written out per reader (rule F4: no function reads an array;
+   // these two happened to survive synthesis with every call site live, the free-list ones
+   // did not -- the rule does not distinguish, and tools/check-func-ram-reads.py enforces it).
 
    // Reads are of the PRE-rename mapping for all three sources, including the case where a
    // source equals this instruction's own destination -- rd is written at the clock edge,
    // so the combinational reads below see the old value by construction.  (Matches
    // docs/Area-Efficient-Scalar-OoO.md 14.1 "dispatch -> dispatch, map".)
-   assign r_sprs1 = smap_rd(r_rs1);  assign r_mprs1 = rmap_rd(r_rs1);  assign r_lv1 = lv[r_rs1];
-   assign r_sprs2 = smap_rd(r_rs2);  assign r_mprs2 = rmap_rd(r_rs2);  assign r_lv2 = lv[r_rs2];
-   assign r_sprs3 = smap_rd(r_rs3);  assign r_mprs3 = rmap_rd(r_rs3);  assign r_lv3 = lv[r_rs3];
+   assign r_sprs1 = (newer[r_rs1] ? smap_b[r_rs1] : smap_a[r_rs1]);  assign r_mprs1 = (rnewer[r_rs1] ? rmap_b[r_rs1] : rmap_a[r_rs1]);  assign r_lv1 = lv[r_rs1];
+   assign r_sprs2 = (newer[r_rs2] ? smap_b[r_rs2] : smap_a[r_rs2]);  assign r_mprs2 = (rnewer[r_rs2] ? rmap_b[r_rs2] : rmap_a[r_rs2]);  assign r_lv2 = lv[r_rs2];
+   assign r_sprs3 = (newer[r_rs3] ? smap_b[r_rs3] : smap_a[r_rs3]);  assign r_mprs3 = (rnewer[r_rs3] ? rmap_b[r_rs3] : rmap_a[r_rs3]);  assign r_lv3 = lv[r_rs3];
    assign r_prs1 = r_lv1 ? r_sprs1 : r_mprs1;
    assign r_prs2 = r_lv2 ? r_sprs2 : r_mprs2;
    assign r_prs3 = r_lv3 ? r_sprs3 : r_mprs3;
@@ -139,9 +136,9 @@ module ooo2_rename
    assign r_byp1_b = a_writes & (r_rs1_b == r_rd);
    assign r_byp2_b = a_writes & (r_rs2_b == r_rd);
    assign r_byp3_b = a_writes & (r_rs3_b == r_rd);
-   assign r_sprs1_b = r_byp1_b ? r_prd : smap_rd(r_rs1_b);  assign r_mprs1_b = rmap_rd(r_rs1_b);  assign r_lv1_b = r_byp1_b | lv[r_rs1_b];
-   assign r_sprs2_b = r_byp2_b ? r_prd : smap_rd(r_rs2_b);  assign r_mprs2_b = rmap_rd(r_rs2_b);  assign r_lv2_b = r_byp2_b | lv[r_rs2_b];
-   assign r_sprs3_b = r_byp3_b ? r_prd : smap_rd(r_rs3_b);  assign r_mprs3_b = rmap_rd(r_rs3_b);  assign r_lv3_b = r_byp3_b | lv[r_rs3_b];
+   assign r_sprs1_b = r_byp1_b ? r_prd : (newer[r_rs1_b] ? smap_b[r_rs1_b] : smap_a[r_rs1_b]);  assign r_mprs1_b = (rnewer[r_rs1_b] ? rmap_b[r_rs1_b] : rmap_a[r_rs1_b]);  assign r_lv1_b = r_byp1_b | lv[r_rs1_b];
+   assign r_sprs2_b = r_byp2_b ? r_prd : (newer[r_rs2_b] ? smap_b[r_rs2_b] : smap_a[r_rs2_b]);  assign r_mprs2_b = (rnewer[r_rs2_b] ? rmap_b[r_rs2_b] : rmap_a[r_rs2_b]);  assign r_lv2_b = r_byp2_b | lv[r_rs2_b];
+   assign r_sprs3_b = r_byp3_b ? r_prd : (newer[r_rs3_b] ? smap_b[r_rs3_b] : smap_a[r_rs3_b]);  assign r_mprs3_b = (rnewer[r_rs3_b] ? rmap_b[r_rs3_b] : rmap_a[r_rs3_b]);  assign r_lv3_b = r_byp3_b | lv[r_rs3_b];
    assign r_prs1_b = r_lv1_b ? r_sprs1_b : r_mprs1_b;
    assign r_prs2_b = r_lv2_b ? r_sprs2_b : r_mprs2_b;
    assign r_prs3_b = r_lv3_b ? r_sprs3_b : r_mprs3_b;
@@ -193,9 +190,9 @@ module ooo2_rename
    // rmap holds committed state, so in the cycle this entry commits rmap[c_rd] is still the
    // mapping it displaced -- the write below is what replaces it. And a physical register's
    // shard is the top bits of its number, so the allocation shard is read off c_prd.
-      wire [PBITS-1:0] c_pold  = rmap_rd(c_rd);
+      wire [PBITS-1:0] c_pold  = (rnewer[c_rd] ? rmap_b[c_rd] : rmap_a[c_rd]);
    // the second commit displaces the FIRST's mapping when both write one architectural register
-   wire [PBITS-1:0] c2_pold = (c_valid & c_rd_v & (c2_rd == c_rd)) ? c_prd : rmap_rd(c2_rd);
+   wire [PBITS-1:0] c2_pold = (c_valid & c_rd_v & (c2_rd == c_rd)) ? c_prd : (rnewer[c2_rd] ? rmap_b[c2_rd] : rmap_a[c2_rd]);
    wire [1:0] c2_shard  = c2_prd[PBITS-1:IDXB];
    wire [1:0] pold2_sh  = c2_pold[PBITS-1:IDXB];
    wire cmt2_ie = c2_valid & c2_rd_v & (c2_shard == SH_IE);
