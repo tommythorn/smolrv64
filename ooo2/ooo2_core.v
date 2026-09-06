@@ -154,7 +154,7 @@ module ooo2_core
    wire [PCW-1:0]           res_tgt;
    wire                     redirect_is_trap;
    wire [SEQW-1:0]          redirect_seq;
-   wire                     fe_red_pulse, fr_set, fr_active;
+   wire                     fe_red_pulse, fr_set;
    wire [PCW-1:0]           fe_red_tgt;
    wire [SEQW-1:0]          fe_red_seq;
 
@@ -1994,7 +1994,6 @@ module ooo2_core
    // Measured motivation: FE_BUB per redirect went 9.6 -> 54.4 cycles when the window
    // grew from ~2 instructions to 16, while mispredicts fell 37% (docs/OOO2-Spec.md).
    assign fr_set    = m_valid & m_redirect & ~m_trap & ~fr_v & ~redirect;
-   assign fr_active = fr_set | fr_v;
    always @(posedge clk) begin
       if (reset)         fr_v <= 1'b0;
       else if (redirect) fr_v <= 1'b0;      // the squash consumes it
@@ -2329,12 +2328,18 @@ module ooo2_core
          // Present it until fetch actually TAKES it, then latch the interlock on that
          // same event. Scheduling and holding are separated so one interrupt can never be
          // presented twice while the interlock is still catching up.
-         irq_inject_q <= ~redirect & ~redirect_q & ~fr_active &
+         // Registered redirect terms only (rule I11, 2026-09-05): the live redirect and fr_set
+         // are M's completion, and this register's input cone fanned out into the whole fetch
+         // cycle (gate V5's worst family started here). A pseudo-op presented in the redirect
+         // cycle is taken into a queue the redirect empties at the same edge; inject_inflight
+         // is cleared by redirect_q the cycle after, and the interrupt, still pending, is
+         // presented again.
+         irq_inject_q <= ~redirect_q & ~fr_v &
                          (irq_inject_q ? ~irq_taken                     // hold until taken
                                        : csr_irq_v & ~inject_inflight); // schedule
 
          if (irq_taken)                               inject_inflight <= 1'b1;
-         else if (redirect | redirect_q | fr_active | ~csr_irq_v) inject_inflight <= 1'b0;
+         else if (redirect_q | fr_v | ~csr_irq_v)     inject_inflight <= 1'b0;
       end
    end
 
