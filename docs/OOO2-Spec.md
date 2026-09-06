@@ -908,6 +908,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `fl_ld` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent0`, `ent1` | `ooo2_rob` | 8 each | 16 | 256 | LUTRAM | entry parity: 1W dispatch each, read at head and head+1 |
+| *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `irr` | `ooo2_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
