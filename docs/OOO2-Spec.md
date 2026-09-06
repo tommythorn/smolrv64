@@ -913,7 +913,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
 | `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
+| `plmem` (payload) | `ooo2_core` | 27 (10+12+5) | 413 | 11 151 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 283 | 2 264 | LUTRAM | F/X queue: carries the prediction's 2-bit choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
 
