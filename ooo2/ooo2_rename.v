@@ -217,6 +217,25 @@ module ooo2_rename
    wire [PW_IE-1:0] avail_ie = t_ie - h_ie;
    wire [PW_LD-1:0] avail_ld = t_ld - h_ld;
    wire [PW_FE-1:0] avail_fe = t_fe - h_fe;
+   // ONE WRITE PER BANK, as one {we, addr, data} each. The head's free and the second's land in
+   // different banks by parity (t2 = t + fre), but written as two statements per bank synthesis
+   // sees two write ports and demotes every bank to flops -- gate V2's RAM-inference check
+   // caught all eight (2026-09-05). The ROB's entries had the same shape; same fix there.
+   wire            fw_ie0 = (fre_ie & ~t_ie[0]) | (fre2_ie & ~t2_ie[0]),  fw_ie1 = (fre_ie & t_ie[0]) | (fre2_ie & t2_ie[0]);
+   wire [PW_IE-3:0] fa_ie0 = (fre_ie & ~t_ie[0]) ? t_ie[PW_IE-2:1] : t2_ie[PW_IE-2:1];
+   wire [PW_IE-3:0] fa_ie1 = (fre_ie &  t_ie[0]) ? t_ie[PW_IE-2:1] : t2_ie[PW_IE-2:1];
+   wire [IDXB-1:0]  fd_ie0 = (fre_ie & ~t_ie[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire [IDXB-1:0]  fd_ie1 = (fre_ie &  t_ie[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire            fw_ld0 = (fre_ld & ~t_ld[0]) | (fre2_ld & ~t2_ld[0]),  fw_ld1 = (fre_ld & t_ld[0]) | (fre2_ld & t2_ld[0]);
+   wire [PW_LD-3:0] fa_ld0 = (fre_ld & ~t_ld[0]) ? t_ld[PW_LD-2:1] : t2_ld[PW_LD-2:1];
+   wire [PW_LD-3:0] fa_ld1 = (fre_ld &  t_ld[0]) ? t_ld[PW_LD-2:1] : t2_ld[PW_LD-2:1];
+   wire [IDXB-1:0]  fd_ld0 = (fre_ld & ~t_ld[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire [IDXB-1:0]  fd_ld1 = (fre_ld &  t_ld[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire            fw_fe0 = (fre_fe & ~t_fe[0]) | (fre2_fe & ~t2_fe[0]),  fw_fe1 = (fre_fe & t_fe[0]) | (fre2_fe & t2_fe[0]);
+   wire [PW_FE-3:0] fa_fe0 = (fre_fe & ~t_fe[0]) ? t_fe[PW_FE-2:1] : t2_fe[PW_FE-2:1];
+   wire [PW_FE-3:0] fa_fe1 = (fre_fe &  t_fe[0]) ? t_fe[PW_FE-2:1] : t2_fe[PW_FE-2:1];
+   wire [IDXB-1:0]  fd_fe0 = (fre_fe & ~t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire [IDXB-1:0]  fd_fe1 = (fre_fe &  t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
 
    // STALL WHEN *ANY* SHARD IS LOW, not when the destination's shard is.  A shard that runs
    // dry stalls rename regardless of which one the next instruction wants, so throttling on
@@ -331,12 +350,9 @@ module ooo2_rename
             if (c2_shard > SH_FE) $fatal(1, "ooo2_rename: commit (2) to shard %0d", c2_shard);
          end
          // the frees: the head's at the tail, the second's at the slot after it when both push
-         if (fre_ie)  begin if (t_ie[0])  fl_ie1[t_ie[PW_IE-2:1]]  <= c_pold[IDXB-1:0];  else fl_ie0[t_ie[PW_IE-2:1]]  <= c_pold[IDXB-1:0];  end
-         if (fre_ld)  begin if (t_ld[0])  fl_ld1[t_ld[PW_LD-2:1]]  <= c_pold[IDXB-1:0];  else fl_ld0[t_ld[PW_LD-2:1]]  <= c_pold[IDXB-1:0];  end
-         if (fre_fe)  begin if (t_fe[0])  fl_fe1[t_fe[PW_FE-2:1]]  <= c_pold[IDXB-1:0];  else fl_fe0[t_fe[PW_FE-2:1]]  <= c_pold[IDXB-1:0];  end
-         if (fre2_ie) begin if (t2_ie[0]) fl_ie1[t2_ie[PW_IE-2:1]] <= c2_pold[IDXB-1:0]; else fl_ie0[t2_ie[PW_IE-2:1]] <= c2_pold[IDXB-1:0]; end
-         if (fre2_ld) begin if (t2_ld[0]) fl_ld1[t2_ld[PW_LD-2:1]] <= c2_pold[IDXB-1:0]; else fl_ld0[t2_ld[PW_LD-2:1]] <= c2_pold[IDXB-1:0]; end
-         if (fre2_fe) begin if (t2_fe[0]) fl_fe1[t2_fe[PW_FE-2:1]] <= c2_pold[IDXB-1:0]; else fl_fe0[t2_fe[PW_FE-2:1]] <= c2_pold[IDXB-1:0]; end
+         if (fw_ie0) fl_ie0[fa_ie0] <= fd_ie0;   if (fw_ie1) fl_ie1[fa_ie1] <= fd_ie1;
+         if (fw_ld0) fl_ld0[fa_ld0] <= fd_ld0;   if (fw_ld1) fl_ld1[fa_ld1] <= fd_ld1;
+         if (fw_fe0) fl_fe0[fa_fe0] <= fd_fe0;   if (fw_fe1) fl_fe1[fa_fe1] <= fd_fe1;
          t_ie <= t_ie + {{(PW_IE-1){1'b0}}, fre_ie} + {{(PW_IE-1){1'b0}}, fre2_ie};
          t_ld <= t_ld + {{(PW_LD-1){1'b0}}, fre_ld} + {{(PW_LD-1){1'b0}}, fre2_ld};
          t_fe <= t_fe + {{(PW_FE-1){1'b0}}, fre_fe} + {{(PW_FE-1){1'b0}}, fre2_fe};

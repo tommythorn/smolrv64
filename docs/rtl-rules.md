@@ -921,3 +921,17 @@ valid, a redirect) is built only from the terms that can actually produce it -- 
 that completed, a latched fault, a fixed-latency unit -- never from the whole `done` mux.
 Keep the full expression alongside and assert the two equal every cycle, so the narrowing
 is checked rather than argued.
+
+**I10. A LUTRAM bank has ONE write port, and it must be written by ONE statement.**
+Two `if`s that write the same bank under conditions that can never both be true are still
+two write ports to synthesis, which cannot prove the exclusion and demotes the whole bank to
+flops -- silently, with a warning nobody reads, and with every read of that bank becoming a
+mux across N flops (I7). Gate V2 (2026-09-05) lost all eight parity banks of the rename
+free lists and the ROB's entry array this way: the head's free and the second's land in
+different banks by parity (`t2 = t + fre`), and each was written as its own `if`. The shape
+that stays a RAM is one `{we, addr, data}` per bank, muxed from the writers BEFORE the
+array: `if (fw0) fl0[fa0] <= fd0;`. Reads are free to multiply (duplication buys read
+ports); writes never are. tools/ram-manifest.txt names every array that must stay a RAM and
+the build fails the moment one does not -- that is the check that caught this, six minutes
+into synthesis, and the reason the manifest lists the banks by name.
+

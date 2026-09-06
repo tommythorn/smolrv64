@@ -35,7 +35,8 @@ smap    : speculative map; flush clears `lv`, so no wholesale copy is ever neede
 
 # ---- reorder buffer, frontend, predictor, MMU -------------------------------------------
 rob     : ROB status
-ent     : ROB entries
+ent0    : ROB entries, bank 0 -- entry parity, two allocations per cycle (item 10b)
+ent1    : ROB entries, bank 1
 q_dat0  : fetch queue data, bank 0 -- entry parity, two pushes per cycle (item 10a, 2026-09-05)
 q_dat1  : fetch queue data, bank 1
 ras     : return address stack
