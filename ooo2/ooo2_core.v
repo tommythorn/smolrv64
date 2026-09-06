@@ -137,7 +137,17 @@ module ooo2_core
    // imem_ctx_chg -- which contains a 64-bit satp compare -- into the fb_hit cone would put
    // back exactly the compare the VA tag was introduced to remove.
    // Costs one fetch bubble per satp write / sfence.vma / privilege change.
-   wire [$clog2(HW+2)-1:0]  imem_avail_g = (immu_ready & ~immu_fault & ~imem_ctx_chg) ? imem_avail
+   // THE CONTEXT CHANGE GATES THE WINDOW A CYCLE LATE (2026-09-05, gate V4 at 0.000 ns). Live,
+   // imem_ctx_chg is M's completion -- the CSR op's satp/sfence write, the trap's privilege
+   // change -- and through this gate it ran on into the aligner and the F/X queue's data
+   // pins: M's address register to the queue in one cycle, 20 levels. Every context change
+   // arrives with the redirect that ends the serializing op or takes the trap, so the bytes
+   // consumed in that cycle are wrong-path and the flush takes them; the fetch buffer drops
+   // its slots at the same edge, so the cycle after has nothing to consume anyway. The
+   // registered gate keeps the belt on the braces at no cost.
+   reg imem_ctx_chg_q;
+   always @(posedge clk) imem_ctx_chg_q <= reset ? 1'b0 : imem_ctx_chg;
+   wire [$clog2(HW+2)-1:0]  imem_avail_g = (immu_ready & ~immu_fault & ~imem_ctx_chg_q) ? imem_avail
                                                                       : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
    wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
@@ -2522,7 +2532,12 @@ module ooo2_core
    // younger: every structure's flush arm is ordered after its allocation and wins (the
    // ROB, the schedulers, the pending table, the load and store queues, rename). The
    // registered `redirect_q` stays: the frontend has nothing valid the cycle after anyway.
-   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_active;
+   // ...and not on the live fr_set either (gate V5, 2026-09-05, -0.968 ns): fr_set is M's
+   // resolved mispredict that cannot redirect yet (`~redirect`, itself ld_land and the store
+   // queue's drain), and through fr_active it re-imported the whole completion cone this
+   // gate had just been freed of. The registered fr_v holds dispatch from the cycle after
+   // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
+   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v;
    // slot B's own hold (see the rules where d2_cls is defined); d_take carries the redirect terms
    wire d2_hold = ~d_plain | ~d2_plain | (d2_cls == d_cls) | ~iq_ready_b | ~rob_ready2 | rn_stall
                 | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));
