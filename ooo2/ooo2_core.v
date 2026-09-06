@@ -426,9 +426,11 @@ module ooo2_core
    wire                rn_lv1, rn_lv2, rn_lv3;
    wire                rn_stall;
    wire [2:0]          rn_shard_low;
-   // Rename exactly when the instruction actually enters M and is not being squashed --
-   // the same condition that sets m_valid below.  Renaming on any looser condition would
-   // allocate twice for one instruction, or allocate for a squashed one.
+   // Rename exactly when the instruction is dispatched (d_take: structural room, no fault
+   // replay, not the cycle after a redirect). It MAY be renamed in the redirect cycle
+   // itself: that instruction is younger than the redirecting op and the rename's flush arm
+   // rolls the pointers back over it (rule I11) -- gating on the same-cycle redirect put M's
+   // completion in front of every dispatch write (gate V3, 2026-09-05).
    wire rn_valid = d_take;      // dispatch is no longer gated on M being free
 
    ooo2_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
@@ -878,7 +880,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
    wire [RN_PBITS-1:0] iq_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
    wire iq_iss_take;
-   assign ri_take = pick_i & iq_iss_take;
+   assign ri_take = pick_i & iq_iss_take;               // the ALU shares the M/F port on this branch; no ~redirect (rule I11)
    assign rl_take = pick_l & iq_iss_take;
    assign rf_take = pick_f & iq_iss_take;
    wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
@@ -913,7 +915,7 @@ module ooo2_core
    assign i_needs_m   = i_v & q_ord & ~i_needs_f;
    wire   i_done      = i_v & (i_needs_f ? f_advance : q_ord ? m_advance : 1'b1);
    wire   iss_ready   = ~i_v | i_done;
-   assign iq_iss_take = iq_iss_v & iss_ready & ~redirect;
+   assign iq_iss_take = iq_iss_v & iss_ready;            // likewise: i_v is cleared by the redirect
    // ~redirect on BOTH. The register is cleared on a redirect, but these are
    // combinational off i_v -- without the guard an instruction being squashed still writes
    // the register file and still marks its ROB slot done, in the very cycle rename is
@@ -2511,7 +2513,16 @@ module ooo2_core
    wire d_hold = d_valid & (~rob_ready | ~iq_ready | rn_stall | ser_block
                             | (d_st_nb & ~sq_d_ready)
                             | (d_ld_nb & ~lq_d_ready));
-   wire d_take = d_valid & ~d_hold & ~redirect & ~redirect_q & ~fr_active;
+   // NOT GATED ON THIS CYCLE'S REDIRECT (2026-09-05, gate V3 at -0.919 ns). The redirect is
+   // M's completion, which a landing load can veto (ld_land), which the load queue's store
+   // ordering decides: through `~redirect` here that whole chain -- the store queue's conflict
+   // compare, the LSU/MMU arbitration, M's done -- ran on into rename port B, the pending
+   // table's queries and the schedulers' entry writes, 34 levels. An instruction dispatched
+   // in the redirect cycle is younger than the redirecting op and dies with everything else
+   // younger: every structure's flush arm is ordered after its allocation and wins (the
+   // ROB, the schedulers, the pending table, the load and store queues, rename). The
+   // registered `redirect_q` stays: the frontend has nothing valid the cycle after anyway.
+   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_active;
    // slot B's own hold (see the rules where d2_cls is defined); d_take carries the redirect terms
    wire d2_hold = ~d_plain | ~d2_plain | (d2_cls == d_cls) | ~iq_ready_b | ~rob_ready2 | rn_stall
                 | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));

@@ -935,3 +935,20 @@ ports); writes never are. tools/ram-manifest.txt names every array that must sta
 the build fails the moment one does not -- that is the check that caught this, six minutes
 into synthesis, and the reason the manifest lists the banks by name.
 
+**I11. A late completion never gates a same-cycle ENABLE. The flush arm is ordered last,
+and wins.**
+`d_take = ... & ~redirect` looked like hygiene -- do not dispatch what is about to be
+flushed -- and it put M's entire completion cone (the store-to-load conflict compare, the
+LSU/MMU arbitration, `ld_land`, the branch/CSR redirect) in front of rename port B, the
+pending table's queries and every scheduler's entry write: 34 levels, -0.919 ns on gate
+V3 (2026-09-05). The same term hid inside each structure (`do_alloc & ~flush`, `do_disp &
+~flush`, `iss_take & ~redirect`), so removing it at one site would only have moved it.
+The shape that closes: an allocation or a take proceeds on registered conditions alone,
+the instruction it admits in a redirect cycle is younger than the redirecting op by
+construction (the redirect resolves at the ROB head), and every structure's flush arm --
+the bulk clear of valid bits and the pointer reset -- is the LAST statement in its block,
+so the nonblocking assignment order makes the flush win over the allocation without any
+combinational term. Data writes (LUTRAM payloads) simply land in slots the flush frees.
+Corollary: an assertion that "nothing allocates in a redirect cycle" (the store queue had
+one) is an assertion that the critical path exists.
+

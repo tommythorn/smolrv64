@@ -212,7 +212,7 @@ module ooo2_lq
    assign l_pa   = pa[l_idx];
 
    always @(posedge clk) begin
-      if (reset | flush) begin
+      if (reset) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; sent <= {NENT{1'b0}};
          acc <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}};
          cnt <= {(IDXB+1){1'b0}};
@@ -237,6 +237,14 @@ module ooo2_lq
          // Filled AND already gone. It cannot collide with x_take above: that one needs
          // av[acc], and a_sent is asserted only while b_ok says ~av[acc].
          if (a_v & a_sent) begin sent[a_idx] <= 1'b1; acc <= acc + 1'b1; end
+         // The flush, ordered LAST: it wins over an allocation made in its cycle (dispatch
+         // is not gated on the redirect since gate V3, 2026-09-05). Nothing older than the
+         // redirecting op is in flight, so every entry is younger and dies.
+         if (flush) begin
+            v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; sent <= {NENT{1'b0}};
+            acc <= {IDXB{1'b0}}; tail <= {IDXB{1'b0}};
+            cnt <= {(IDXB+1){1'b0}};
+         end
       end
    end
 

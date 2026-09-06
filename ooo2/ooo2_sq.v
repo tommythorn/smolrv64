@@ -301,7 +301,8 @@ module ooo2_sq
          else if (~(d_alloc & d_ready) & (c_v & c_take)) cnt <= cnt - 1'b1;
          // A FLUSH KEEPS THE COMMITTED ENTRIES. They are the oldest, so the queue is cut at
          // the first uncommitted one; a drain in this same cycle still counts (the arm above
-         // ran). Nothing allocates in a redirect cycle (asserted below).
+         // ran). An allocation in the redirect cycle (dispatch is not gated on the redirect
+         // since gate V3, 2026-09-05) landed above kcc in the arm above and is cut here.
          if (flush) begin
             for (k = 0; k < NENT; k = k + 1)
                if (~cmt[k]) begin v[k] <= 1'b0; av[k] <= 1'b0; dv[k] <= 1'b0; end
@@ -377,8 +378,6 @@ module ooo2_sq
          $fatal(1, "ooo2_sq: commit with no uncommitted, ready entry");
       if (k_take & flush)
          $fatal(1, "ooo2_sq: a store committed in a redirect cycle (the redirecting op is at the irrevocable point)");
-      if (flush & d_alloc)
-         $fatal(1, "ooo2_sq: allocation in a redirect cycle");
       if ((kcc - headc) > cnt)
          $fatal(1, "ooo2_sq: committed count %0d exceeds occupancy %0d", kcc - headc, cnt);
       // The landing bypass is exact only if nothing else writes the entry's data in the one

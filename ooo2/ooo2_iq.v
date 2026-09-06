@@ -169,8 +169,11 @@ module ooo2_iq
    end
    assign occupancy = occ;
 
-   wire do_disp = d_valid & d_ready & ~flush;
-   wire do_iss  = iss_v & iss_take & ~flush;
+   // Neither gated on the flush: a dispatch or an issue in the flush cycle is wrong-path and
+   // the flush arm, ordered last below, clears it. Gating them put M's completion (which a
+   // landing load decides) in front of every entry write (gate V3, 2026-09-05).
+   wire do_disp = d_valid & d_ready;
+   wire do_iss  = iss_v & iss_take;
 
    // Wake-at-select, for a fixed-latency unit only. Internal, and it only ever writes
    // registered ready bits -- so selection never feeds back into readiness.
@@ -195,7 +198,7 @@ module ooo2_iq
    assign blk_pr = b_pr;
 
    always @(posedge clk) begin
-      if (reset | flush) begin
+      if (reset) begin
          v <= {NENT{1'b0}};
          qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
       end else begin
@@ -217,6 +220,10 @@ module ooo2_iq
             for (q = 0; q < NSRC; q = q + 1)
                e_r[fsel][q] <= d_r[q] | hit(d_ps[q*PBITS +: PBITS])
                              | (self_v && (self_pr == d_ps[q*PBITS +: PBITS]));
+         end
+         if (flush) begin                                  // last: wins over the dispatch above
+            v <= {NENT{1'b0}};
+            qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
          end
       end
    end

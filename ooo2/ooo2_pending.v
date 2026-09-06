@@ -81,19 +81,22 @@ module ooo2_pending
    assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
 
    always @(posedge clk) begin
-      if (reset | flush) begin
-         // Total recovery. Everything uncommitted dies, and every COMMITTED register's
-         // value is by definition already in the PRF, so no live pending bit survives a
-         // flush. doc 1, property 4.
+      if (reset) begin
          pend <= {NP{1'b0}};
       end else begin
          for (i = 0; i < NWB; i = i + 1)
             if (w_v[i]) pend[w_preg[i*PBITS +: PBITS]] <= 1'b0;
-         // Ordered last: an allocation in the same cycle as a writeback to the SAME
-         // register means the register was just freed and re-allocated, and the new
-         // producer owns it.
+         // Ordered after the writebacks: an allocation in the same cycle as a writeback to
+         // the SAME register means the register was just freed and re-allocated, and the
+         // new producer owns it.
          if (a_v)  pend[a_preg]  <= 1'b1;
          if (a_v2) pend[a_preg2] <= 1'b1;
+         // Total recovery, ordered LAST so it wins over an allocation made in the flush
+         // cycle (dispatch is no longer gated on the redirect, gate V3 2026-09-05).
+         // Everything uncommitted dies, and every COMMITTED register's value is by
+         // definition already in the PRF, so no live pending bit survives a flush.
+         // doc 1, property 4.
+         if (flush) pend <= {NP{1'b0}};
       end
    end
 

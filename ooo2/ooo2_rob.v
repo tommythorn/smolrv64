@@ -181,7 +181,7 @@ module ooo2_rob
    assign c2_rd    = he2[PBITS +: 6];
    assign c2_noret = he2[PBITS+6];
    assign c2_rd_v  = |c2_prd;
-   wire do_alloc  = d_valid & d_ready & ~flush;
+   wire do_alloc  = d_valid & d_ready;                  // in a flush cycle too: the flush arm below wins
    wire do_alloc2 = do_alloc & d_valid2 & d_ready2;
    wire do_commit = c_valid;
    wire do_commit2 = c2_valid;
