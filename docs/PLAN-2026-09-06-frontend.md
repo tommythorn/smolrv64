@@ -634,6 +634,9 @@ the length guess with an exact field buys almost nothing in *accuracy*. Every bi
 this idea's payoff is in **throughput of predictions**, and that payoff is zero unless
 something consumes predictions faster than fetch does.
 
+Spending that throughput on *getting ahead of the I$* is the obvious use. The better
+one is spending it on **not needing a prediction every cycle at all** — §3.9.
+
 ### 3.3 Which means: a queue between the predictor and fetch
 
 A prediction per block is useless while the predictor produces one per cycle and fetch
@@ -734,6 +737,72 @@ Two of them are already in §2.11 — the same pass over the same trace:
 4. `lenp`'s current 0.002 redirects/1 000 is the **accuracy baseline to not regress**;
    idea 3 must be measured as neutral there, not better.
 
+### 3.9 What the run-ahead is actually for: a predictor that gets two cycles
+
+The predictor's hard limit is not its arrays, it is a **single-cycle recurrence**:
+`apc` addresses the BTB and YAGS, and the entry that comes back computes the next
+`apc`. `apc` exists at all because that loop did not fit — making it register-only is
+what "bought the predictor a full stage of slack at 166 MHz". Everything the predictor
+could be is bounded by what fits inside one turn of that loop.
+
+Run-ahead breaks the loop's period. If one prediction covers a whole block, the
+predictor only has to produce one every **B/W** cycles, where B is the block length in
+instructions and W the dispatch width. A **two-cycle initiation interval** is therefore
+affordable whenever
+
+> mean(B) ≥ II × W
+
+with the FTQ absorbing the variance — a short block drains the queue by a little, a long
+one fills it by a lot. At W=2 that asks for a mean block of 4 instructions; at W=4 (idea
+2's target) it asks for 8, which is marginal for integer code and is exactly what the
+block-length histogram in §2.11 item 1 already has to report. **The queue depth is set by
+the longest *run* of short blocks, not by the mean**, so the histogram has to report runs
+too.
+
+**What a second cycle buys, in rough order of value:**
+
+- **A real direction predictor.** YAGS at 1 024 entries with an 8-bit tag is modest. Two
+  cycles is enough for a hashed multi-table lookup with a priority select — a
+  TAGE-shaped predictor — where one cycle is not: the hash of a long GHR, the banked
+  read and the provider select do not fit in one turn of the current loop at 166 MHz.
+- **An indirect-target predictor.** §1.11 identified the true `jalr` as the only CTI
+  whose target is not a static property of the instruction, and §1.4 identified
+  PLT/libc/callback control flow as the crossing traffic that survives 2 MiB pages.
+  Both point at the same missing structure, and it is a second-cycle structure.
+- **A bigger and set-associative BTB.** 1 024 entries with a 12-bit tag is small. What
+  does not fit in one cycle is not the array, it is the *tag compare plus way mux
+  after* the array.
+- **The BRAM output register.** With II=1 the predictor arrays cannot afford
+  `DO_REG`; with II=2 they can, and on UltraScale+ that is the standard way to make a
+  block RAM fast. Read the actual gain off a report rather than assuming it, but it is
+  free slack that is currently unavailable by construction.
+
+**And the cost, which is real and points the other way:** the FTQ is *empty* after a
+redirect, so run-ahead cannot hide the first prediction. A two-cycle II therefore adds
+**one cycle to every mispredict** — against plan item 5, "the mispredict drain", which
+is already on the list. So this is an accuracy-versus-redirect-latency trade, and it is
+only a good one if the better predictor removes more mispredicts than the extra cycle
+costs on the ones that remain. Given a mispredict already costs the drain plus the
+frontend restart, +1 cycle is order 10%, and a materially better direction predictor
+should beat that easily — but "should" is not a measurement.
+
+If it does not, the standard escape is an **overriding predictor**: a small
+single-cycle micro-BTB that covers the redirect target and the first block or two while
+the slow predictor spins up, overridden when the slow one disagrees. Note it, do not
+build it first — it doubles the predictor's state machine and it is only worth it if
+the measurement says the redirect cycle matters.
+
+**The general statement**, of which II=2 is only the first step: *the predictor's rate
+is decoupled from the machine's rate.* It runs at one prediction per k cycles, k chosen
+by what its arrays need, and the FTQ hides k for as long as mean(B) ≥ k·W. That is the
+frame to design in, rather than picking k=2 and stopping.
+
+**The measurement**, and it is cheap: over the same trace as §3.7, (a) the affordable II
+at each W from mean(B) and the run-length distribution, (b) the fraction of cycles the
+FTQ would be empty at II=1 versus II=2, which is the direct cost, and (c) a *model* of
+the candidate predictor — TAGE-shaped versus today's YAGS — over the branch trace alone.
+(c) is the one that decides it, and it needs no RTL at all.
+
 ### 3.8 Staging
 
 - **3a — the extent field.** Add it to the entry, train it (decode or carry-forward per
@@ -742,7 +811,10 @@ Two of them are already in §2.11 — the same pass over the same trace:
 - **3b — the FTQ.** Predictor decoupled, fetch requests driven from the queue instead of
   from `fb_want`'s view of the PC. This is where the win is.
 - **3c — pre-translate from the FTQ**, folding most of §1.8.
-- **3d — index the packet cache from the FTQ** (idea 2).
+- **3d — spend the run-ahead**: lengthen the initiation interval (§3.9) and put the
+  second cycle into the direction and indirect predictors. This is the step the other
+  three exist to make possible.
+- **3e — index the packet cache from the FTQ** (idea 2).
 
 ---
 
@@ -750,6 +822,12 @@ Two of them are already in §2.11 — the same pass over the same trace:
 
 - 2026-09-06: idea 1 written from a read of `ooo2/rv_soc_top.v`, `ooo2/ooo2_core.v`,
   `src/fetch.v`, `src/mmu.v` and the impl_1 routed timing report. Nothing measured.
+- 2026-09-06: §3.9 added — the run-ahead's real use is to break the predictor's
+  single-cycle `apc` -> array -> `apc` recurrence, making a two-cycle initiation
+  interval affordable whenever mean(block) >= II x width. That is what a TAGE-shaped
+  direction predictor, an indirect-target predictor, a set-associative BTB and the BRAM
+  output register all need. It costs one cycle on every mispredict, which is the trade
+  the study has to settle.
 - 2026-09-06: idea 3 (predict basic blocks) written. Its value is run-ahead, not
   accuracy — `lenp` is already at 0.002 redirects/1 000 — so it is worth nothing without
   the FTQ of §3.3. It composes hard: an FTQ removes most of §1.8, and its entry and idea
