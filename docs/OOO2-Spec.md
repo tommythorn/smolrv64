@@ -135,7 +135,7 @@ complements.
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
 | `~rob_ready` | ROB full (16 entries) |
-| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 8 (policy; 5 was the largest that closed 166.67 MHz until the two failing path families were removed on 2026-08-28, and every gated build since has closed at 8) (§6.1) |
+| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (8 from 2026-08-28 to gate V4 on 2026-09-05; the two-wide core closed at exactly 0.000 ns and did not boot, and FP gives first) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits |
 
@@ -453,7 +453,7 @@ moves the wall.
 
 | | `u_iq_i` | `u_iq_l` | `u_iq_f` |
 |---|---|---|---|
-| entries (`NENT`) | 10 | 12 | 8 |
+| entries (`NENT`) | 10 | 12 | 5 |
 | sources (`NSRC`) | 2 | 3 | 3 |
 | holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
@@ -912,7 +912,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `irr` | `ooo2_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
-| `u_iq_f` entry | `ooo2_iq` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `ooo2_core` | 30 | 413 | 12 390 | LUTRAM | 1W dispatch, 1R issue |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 283 | 2 264 | LUTRAM | F/X queue: carries the prediction's 2-bit choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
