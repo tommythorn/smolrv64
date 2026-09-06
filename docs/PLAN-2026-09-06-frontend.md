@@ -22,7 +22,9 @@ arriving at the same pins on the data side.
 frontend width — `IW=3/4`, `HW=16`, two decodes — has to be paid for out of slack
 that is already spent. These ideas are about finding that slack in the front of the
 fetch cloud rather than the back — idea 1 clears the front of it, idea 2 clears the
-middle and the back, and §2.9 argues they combine to about two stages.
+middle and the back (§2.9 argues those two combine to about two stages), and idea 3
+lets the predictor run ahead of both, which is what turns the cleared path into fetch
+that is early rather than merely short.
 
 ---
 
@@ -594,10 +596,164 @@ Linux cosim with the §2.10 invariant on, `src/sweep.sh`, then the board.
 
 ---
 
+## Idea 3 — predict basic blocks, not destinations
+
+**Make the BTB entry describe the whole block that starts at its key — extent, tail CTI
+class, target — instead of only the CTI that ends the bundle.** One prediction then
+covers a basic block rather than a bundle, so the predictor can run ahead of fetch.
+
+### 3.1 What it changes relative to what is here now
+
+Today the predictor is read **once per bundle**, keyed by the bundle base, and `apc`'s
+fall-through arm guesses that bundle's byte length from `lenp` — 4 096 entries, 2 bits,
+untagged, trained on the aligner's own count. The entry answers "what terminates the
+bundle starting at A".
+
+A block entry answers "what terminates the **block** starting at A", and carries the
+distance to it. The well-definedness argument is already in the tree, one step short:
+`branch-predictor-plan.md` observes that "the aligner is a pure function of the fetched
+bytes, so a given block-start PC deterministically produces the same bundle and the same
+terminating CTI". The first CTI *at or after* A is a function of the code in exactly the
+same way, so a block entry keyed by A is equally well-defined. Consequences:
+
+- **`lenp` disappears.** The fall-through arm of `apc` becomes a tagged, exact field.
+- **The predictor is read once per block, not once per cycle.** The entry is held from
+  block entry until the CTI is reached; the existing `btb_qpc == base_pc` check still
+  proves the entry belongs to this block. That takes read pressure off the BTB and YAGS
+  BRAMs, which is worth something — those are the arrays §4.2 moved into BRAM.
+- **One prediction covers ~5–8 instructions instead of ~2.**
+- The GHR update rate is unchanged: one CTI per block is one CTI per bundle-with-a-CTI,
+  so the GHR/rollback repair (`res_rep`) does not move. Worth stating because that
+  machinery is delicate.
+
+### 3.2 The value is run-ahead, not accuracy — say so plainly
+
+`lenp` at 4 096 entries already costs **0.002 redirects per thousand** (0.45 at 1 024,
+which is why it was grown), and a wrong `apc` costs **0.13% of retires**. So replacing
+the length guess with an exact field buys almost nothing in *accuracy*. Every bit of
+this idea's payoff is in **throughput of predictions**, and that payoff is zero unless
+something consumes predictions faster than fetch does.
+
+### 3.3 Which means: a queue between the predictor and fetch
+
+A prediction per block is useless while the predictor produces one per cycle and fetch
+consumes two instructions per cycle — they are matched, and the predictor simply idles
+more. The structure that cashes it in is a **fetch target queue**: predictor → FTQ →
+the fetch buffer's *request* stream.
+
+The existing request logic wants exactly this. Today `fb_want` is derived from where the
+PC **is** — `fb_al`, `fb_pa1..3`, gated by `fb_samepg*` — and item 10e's entire content
+was "run two chunks ahead, two requests in flight". With an FTQ the request stream comes
+from where the **predictor** has got to, and the run-ahead distance is set by the queue
+depth and the block length, not by three chunk slots.
+
+**Cap a block descriptor at a chunk (or line) boundary** so one FTQ entry is exactly one
+I$ request; a long block becomes several entries. Then the FTQ *is* a fetch-request
+queue, and line-granular instruction prefetch falls out of it rather than being a
+separate mechanism.
+
+### 3.4 The correction question
+
+"We don't know the correction until the following branch is seen (or we can update
+twice)." Sorting the failure modes says where each correction actually lives:
+
+| error | detected | costs |
+|---|---|---|
+| wrong direction / target | resolve, as today | a full mispredict, unchanged |
+| extent **too long** | decode: the aligner cuts at the first CTI regardless | wasted FTQ entries and I$ requests; `apc` wrong once |
+| extent **too short** | decode: `cti_ok` says the bundle does not end on a CTI | `pred_v = apred_v & cti_ok` already drops it — a lost prediction |
+
+So both extent errors degrade to *lost predictions plus wasted fetch*, never to a wrong
+architectural result — the same degradation property §4.1 already leans on. And the
+correction is **available at decode**: the aligner is the authority on where the block
+really ends, and the design already carries the terminating CTI's offset from the base
+in the predict details (`BOW`, PDW 16 → 18) so that training can recompute the key.
+
+**The second update is not an optimisation, it is the forward-progress argument.**
+Resolve-only training does eventually learn the extent — every block ends in a CTI that
+resolves — but it leaves the entry wrong between the decode-time redirect and that
+resolve, and the re-fetch reads the same stale entry and takes the same wrong turn. That
+shape has already hung this design once: `fetch.v` records the 2026-08-23 attempt that
+indexed from `norm_npc` while stamping with `npc`, where "a redirect could read a stale
+entry stamped with the redirect target, and the mispredict it caused re-read the same
+stale entry — a loop that never resynchronised (it hung `rv64mi-p-illegal`)". So either
+
+- **update the extent at decode** — the BTB is BRAM, so the second port is a true
+  dual-port port, and the two writers touch disjoint fields (extent/class vs
+  direction/target) so per-field write enables keep them apart; resolve wins a
+  same-cycle tie — or
+- **carry the corrected extent forward past the redirect**, so the re-fetch does not
+  consult the entry at all.
+
+Pick one deliberately and write down which. An always-on assertion that the same block
+base takes the same wrong extent twice in a row is the cheap detector for having picked
+wrong.
+
+### 3.5 Where it composes — and why it probably comes first
+
+- **With idea 1.** The FTQ hands over the *next block's start address* many cycles
+  before its bytes are wanted, so a leaf crossing can be translated early and the §1.7
+  bubble disappears — including for the ping-pong residue §1.4 is about. §1.8's whole
+  ladder (the FTR file, PPNs in the redirect, the RAS and the BTB) is a set of
+  workarounds for **not knowing the next fetch address early enough**. An FTQ knows it.
+  If idea 3 lands, most of §1.8 should never be built, and §1.8 item 0 shrinks to
+  "enough FTR entries to cover the queue's live leaves".
+- **With idea 2.** Idea 2's packet header holds base PC, length, slot count, `br_term`,
+  tail CTI class and fall-through PC. Idea 3's entry needs length, tail CTI class,
+  target and direction state, keyed by the block start. **These are the same object.**
+  One tag array keyed by the block's start PC with two payloads: the predictor's
+  (direction, target, counters) and the packet's (slots). The predictor names the next
+  packet; the packet cache says what is in it — and a packet-cache hit *is* the exact
+  extent, which is §3.4's decode-time update for free, with no second BTB port.
+
+That composition is the argument for doing idea 3 **before** idea 2: it is much smaller,
+it de-risks idea 1 by removing most of §1.8, and it builds the key that idea 2's cache
+is indexed by.
+
+### 3.6 What it costs
+
+- A length field on the BTB entry: 5–6 bits if capped at a chunk or a line, which is the
+  cap that makes an FTQ entry one I$ request. The BTB is 1 024 × 53 bits in 1 RAMB36 +
+  1 RAMB18 today; this fits without a second tile.
+- The FTQ itself: a shallow queue of {block start VA, length, tail class, predicted next}.
+- `lenp` (4 096 × 2 bits of LUTRAM) is deleted.
+- A second BTB write port, or the carry-forward alternative (§3.4).
+
+### 3.7 The measurements
+
+Two of them are already in §2.11 — the same pass over the same trace:
+
+1. **Basic-block length distribution** (§2.11 item 1). It sets both the packet size and
+   the predictions-per-instruction ratio, i.e. how much run-ahead there is to have.
+2. **How far ahead the predictor gets**, simulated: run the FTQ against the trace and
+   find the depth at which run-ahead saturates. Beyond that depth the queue is area for
+   nothing.
+3. **What fraction of I$ misses that run-ahead would convert into prefetches.** This is
+   the number that decides whether the FTQ pays, and it is the only one of the three
+   that cannot be guessed from the block-length histogram.
+4. `lenp`'s current 0.002 redirects/1 000 is the **accuracy baseline to not regress**;
+   idea 3 must be measured as neutral there, not better.
+
+### 3.8 Staging
+
+- **3a — the extent field.** Add it to the entry, train it (decode or carry-forward per
+  §3.4), delete `lenp`, keep everything else. Pure plumbing; the gate is *no regression*
+  against 0.002 redirects/1 000, not an improvement.
+- **3b — the FTQ.** Predictor decoupled, fetch requests driven from the queue instead of
+  from `fb_want`'s view of the PC. This is where the win is.
+- **3c — pre-translate from the FTQ**, folding most of §1.8.
+- **3d — index the packet cache from the FTQ** (idea 2).
+
+---
+
 ## Status log
 
 - 2026-09-06: idea 1 written from a read of `ooo2/rv_soc_top.v`, `ooo2/ooo2_core.v`,
   `src/fetch.v`, `src/mmu.v` and the impl_1 routed timing report. Nothing measured.
+- 2026-09-06: idea 3 (predict basic blocks) written. Its value is run-ahead, not
+  accuracy — `lenp` is already at 0.002 redirects/1 000 — so it is worth nothing without
+  the FTQ of §3.3. It composes hard: an FTQ removes most of §1.8, and its entry and idea
+  2's packet header are the same object, which argues for doing it first.
 - 2026-09-06: §1.4's "calls and returns stop crossing" was wrong — text spans leaves,
   and PLT/libc/syscall control flow crosses at any leaf size, twice per call. Replaced
   with what still crosses, and the ping-pong shape of the residue produced §1.8 item 0
