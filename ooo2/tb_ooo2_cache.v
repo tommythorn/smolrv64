@@ -147,6 +147,25 @@ module tb;
             expect_eq(got[2], expect_word(B),          "the missing read");
          end
 
+         // TWO PLAIN READS THAT BOTH MISS, DIFFERENT LINES, the second under the first's fill
+         // (2026-09-06): what the run-ahead fetch buffer sends at every line boundary of a
+         // first-touch page. The second holds in S_CHECK (~hit & f_v) while the first's replay
+         // needs the door idle -- the bench says whether that resolves or wedges, and whether
+         // both answers carry their own tag and data.
+         issue(64'h8000_0000 + (dly << 16) + 64'h5008, 4'h5);      // misses -> MSHR
+         repeat (dly) @(negedge clk);
+         issue(64'h8000_0000 + (dly << 16) + 64'h6010, 4'h6);      // another line, misses under the fill
+         i = 0;
+         while ((!got_v[5] || !got_v[6]) && i < 2000) begin @(negedge clk); i = i+1; end
+         if (!got_v[5] || !got_v[6]) begin
+            $display("FAIL dly=%0d: two different-line misses: response lost (v5=%b v6=%b f_v=%b f_replay=%b fst=%0d st=%0d)",
+                     dly, got_v[5], got_v[6], dut.f_v, dut.f_replay, dut.fst, dut.st);
+            errors = errors + 1;
+         end else begin
+            expect_eq(got[5], expect_word(64'h8000_0000 + (dly << 16) + 64'h5008), "first miss");
+            expect_eq(got[6], expect_word(64'h8000_0000 + (dly << 16) + 64'h6010), "second miss, other line, under the fill");
+         end
+
          issue(S, 4'h7);                                  // solo: its miss is REPLAYED
          repeat (dly) @(negedge clk);
          inv_req = 1'b1; @(negedge clk); inv_req = 1'b0;  // fence.i inside that fill
