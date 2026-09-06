@@ -14,6 +14,11 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
+# The serial console (`screen -L`, screenlog.0) lives in ONE checkout's workloads/ubuntu --
+# the main one. A gate run from a worktree programs the board and then cannot watch it boot
+# (gate V4, 2026-09-05: "BOARD: FAIL (upload)" with the bitstream already on the board), so
+# fall back to the main worktree's copy, which `git worktree list` prints first.
+[ -f "$UB/screenlog.0" ] || UB=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG'
 
