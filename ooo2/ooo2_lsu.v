@@ -29,7 +29,9 @@
 module ooo2_lsu
   #(parameter AW = 64,
     parameter [63:0] DRAM_BASE = 64'd0,
-    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF)
+    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF,
+    parameter [63:0] LRAM_BASE = 64'h7000_0000,  // the local SRAM: memory behind the D$, aligned like DRAM
+    parameter        LRAM_LG2  = 18)
    (input  wire            clk,
     input  wire            reset,
 
@@ -177,7 +179,13 @@ module ooo2_lsu
    // The effective physical address: the MMU's for an M request, ooo2_sq's for a commit.
    wire [55:0] eff_pa;  wire eff_unc;   // the port's fields when it starts or continues, else M's (below)
    wire        pa_dram = (eff_pa >= LSU_DRAM_BASE);
-   wire        xl_can = ~req_amo & ~eff_cbo & pa_dram; // AMO pre-aligned; CBO is line-wide
+   // The local SRAM (the ROM monitor's home, 0x7000_0000 on the platform) is memory behind
+   // the D$ too, and below DRAM: unaligned, its byte loads reached the D$ as spans and the
+   // monitor could not be simulated at all until 2026-09-05 (it worked on the board on the
+   // D$'s span path, the one this LSU exists to keep the cache from ever seeing).
+   wire        pa_lram = (eff_pa[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
+   wire        pa_mem  = pa_dram | pa_lram;
+   wire        xl_can = ~req_amo & ~eff_cbo & pa_mem;  // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
    reg         xword_q;
    reg  [2:0]  boff_q;
@@ -472,7 +480,7 @@ module ooo2_lsu
                 // See the ASSUMPTION above: non-DRAM traffic is never aligned by this
                 // LSU, so if it straddles, the cache sees a span it is asserted never to
                 // see -- and for MMIO the second beat would address the wrong register.
-                if (~pa_dram & (wend > 5'd8))
+                if (~pa_mem & (wend > 5'd8))
                    $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
                           eff_pa, nb, boff);
                 own_pt        <= pt_start | xl_early;   // ooo2_lq lands it either way

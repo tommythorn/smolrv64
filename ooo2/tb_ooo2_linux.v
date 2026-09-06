@@ -45,7 +45,14 @@ module tb;
       else if (uart_tx_v & uart_tx_rdy) txcnt <= TX_DRAIN[7:0];
       else if (txcnt != 8'd0)           txcnt <= txcnt - 8'd1;
 
-   rv_soc_top #(.RESET_PC(64'h8000_0000)) dut
+   // The reset PC is a define so the same bench boots the ROM MONITOR from the SoC's SRAM:
+   //   VDEFS='-DSOC_BOOT_HEX="<src/binline.py monitor.bin>" -DTB_RESET_PC=64'"'"'h7000_0000'
+   // (2026-09-05: gate V4 printed no monitor banner on the board while every cosim passed;
+   // nothing had ever run the monitor's code through the two-wide core in simulation).
+`ifndef TB_RESET_PC
+ `define TB_RESET_PC 64'h8000_0000
+`endif
+   rv_soc_top #(.RESET_PC(`TB_RESET_PC)) dut
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),

@@ -1400,7 +1400,13 @@ module rv_cache #(
    always @(posedge clk) if (!reset && (RDW > BANKW) && (st == S_CHECK) && !r_is_wr && !r_cbo
                               && (r_off[$clog2(RDB)-1:0] != {$clog2(RDB){1'b0}}))
       $fatal(1, "[cache id=%0d] a %0d-bit read must be %0d-byte aligned: addr=%h", PERF_ID, RDW, RDB, r_addr);
-   always @(posedge clk) if (!reset && (WRITABLE != 0) && (st == S_CHECK) && r_span)
+   // Cached requests only: the LSU aligns those to their word. An UNCACHED read carries its
+   // own byte address and size to the bus (the ROM monitor's byte loads from the local SRAM
+   // at 0x7000_0000, which is memory, not MMIO), and the door's width-based span test calls
+   // that a span. It fired on main's RTL booting the monitor in simulation on 2026-09-05
+   // while the same RTL booted the monitor on the board -- the first time the monitor was
+   // ever simulated on this core.
+   always @(posedge clk) if (!reset && (WRITABLE != 0) && (st == S_CHECK) && r_span && !r_uncached)
       $fatal(1, "[cache id=%0d] NO-SPAN VIOLATED: D$ saw a spanning request addr=%h", PERF_ID, r_addr);
 
    // SPAN-LOW-STALE: the exposure this fork actually has. A line-crossing store writes

@@ -31,7 +31,9 @@ module ooo2_core
     parameter HW   = `OOO2_HW,
     parameter AW   = 64,
     parameter PDW   = 18,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
-    parameter [PCW-1:0] RESET_PC = 0)
+    parameter [PCW-1:0] RESET_PC = 0,
+    parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
+    parameter        LRAM_LG2 = 18)
    (input  wire                    clk,
     input  wire                    reset,
     // ---- instruction memory (combinational window at the translated PA) ----
@@ -1372,7 +1374,7 @@ module ooo2_core
    // SLUB init on 2026-09-04. The other M-executed accesses are covered elsewhere: AMO/LR/SC
    // are serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
    wire m_cbo_wait = m_is_cbo & sq_av_any;
-   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_lsu
+   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lsu
      (.clk(clk), .reset(reset),
       .dtlb_walking(lsu_dtlb_walking), .dtlb_walk_beg(lsu_dtlb_walk_beg),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
