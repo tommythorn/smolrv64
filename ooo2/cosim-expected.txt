@@ -12,11 +12,11 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  14136876  0.5   # Two-wide fetch, IW=2 into the banked F/X queue (2026-09-05, item 10a): +0.75% on the boot. Was 14031295 with chunk2 requested on the slide cycle: -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
+60000000  8  14308077  0.5   # Two-wide dispatch and retire (2026-09-06, items 10b/10c with the bank and enable fixes): +1.21% on the boot over two-wide fetch
+                              # (14136876), measured on the tree whose netlist boots (rule F4's fix). The comment below is that row's history.
+                              # Was: Two-wide fetch, IW=2 into the banked F/X queue (2026-09-05, item 10a): +0.75% on the boot. Was 14031295 with chunk2 requested on the slide cycle: -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
 ||||||| parent of 6cf6b7b9 (dispatch, issue: the redirect gates no same-cycle enable -- each flush arm is ordered last and wins)
-60000000  8  14441735  0.5   # The run-ahead fetch buffer (2026-09-05, item 10e): -0.48% on this I$-miss-bound boot against the second ALU (14511001; sha256 +34%), which was +0.85% over the ALU's own issue port (14388779), which was +1.78% over two-wide fetch (14136876), which was +0.75% over the slide-cycle chunk request (14031295): -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
 ||||||| parent of 21ac5b69 (core: two more late enables off M's completion -- dispatch holds on the registered fr_v, fetch's window on a registered context change)
-60000000  8  14441760  0.5   # Dispatch not gated on the same-cycle redirect (2026-09-05, gate V3's fix): +25 retires over the run-ahead buffer's 14441735, interrupt timing (the sha256 kernel is cycle-identical). The run-ahead fetch buffer (item 10e): -0.48% on this I$-miss-bound boot against the second ALU (14511001; sha256 +34%), which was +0.85% over the ALU's own issue port (14388779), which was +1.78% over two-wide fetch (14136876), which was +0.75% over the slide-cycle chunk request (14031295): -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
                               # (P1: a corrupted preempt count and a wild pointer in the network
                               # setup; O: a python segfault, a dentry-LRU Oops), and without it (P3)
                               # the same core boots clean. The cosim, DMA-blind, cannot see why;

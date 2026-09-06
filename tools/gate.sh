@@ -58,6 +58,16 @@ for tb in "$REPO"/ooo2/run-ooo2-*-tb.sh; do
 done
 
 # ---- 2. the floor: `make` alone, from a clean tree ------------------------------------
+# The post-synthesis netlist boots the monitor before an hour of Vivado is spent (rule F5):
+# four two-wide bitstreams were silent on the board while every simulation passed, and the
+# netlist wedged inside 1000 cycles (2026-09-06).
+echo "--- netlist boot (rule F5) ---"
+"$REPO"/tools/netlist-boot.sh > "$RES/netlist-boot.log" 2>&1
+NB=$(grep -a "^NETLIST-BOOT:" "$RES/netlist-boot.log" | tail -1)
+echo "$NB"
+if ! echo "$NB" | grep -q "NETLIST-BOOT: PASS"; then
+   echo "GATE: FAIL (netlist)   [evidence: gate-results/$SHA/netlist-boot.log]"; exit 1
+fi
 echo "--- building (no arguments; the shipping config is the default) ---"
 ( cd "$PLAT" && git clean -fxdq . && timeout 10800 make ) > "$RES/build.log" 2>&1
 WNS=$(grep -oE "Timing met: WNS=[-0-9.]+|TIMING VIOLATION: WNS=[-0-9.]+" "$RES/build.log" | grep -v '^#' | tail -1)

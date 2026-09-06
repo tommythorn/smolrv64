@@ -506,6 +506,29 @@ checked-in check.**
 CDC false paths are function, not timing (`make cdc`; the CVFPU
 `clock_groups` bug).
 
+**F4. No function reads a RAM array.**
+`function rd_ie(i) = i[0] ? fl_ie1[i[..:1]] : fl_ie0[i[..:1]]`, called once for rename
+port A and once for port B, simulated correctly everywhere and synthesized to ONE read
+port: Vivado gives it to the last call site and folds every earlier call to constant 0.
+Port A's destination tag became `r_prd[6:0] = 0`, every instruction through port A wrote
+physical register 0, and four bitstreams (V4, V7, W2, W2M, 2026-09-05/06) printed nothing
+while riscv-tests, the cosims and the monitor boot in tb_ooo2_linux all passed. Splitting
+the argument or passing wires changed nothing; swapping the two call sites moved the zero
+to the other port. A read of a `(* ram_style *)` array is a continuous assign or an
+always-block statement at module scope, one per reader; Vivado then replicates the LUTRAM
+per read port (smap_a has six copies, correctly). `ooo2_rename.v` head reads, cdf30cb0+1.
+
+**F5. The post-synthesis netlist boots the monitor before a bitstream is built.**
+`tools/netlist-boot.sh`: rv_soc_top synthesized out of context with the shipping
+options and defines, `write_verilog -mode funcsim`, and the ROM monitor booted on that
+netlist under xsim with `ooo2/tb_ooo2_netlist.v` (clock, reset, DDR answering zeros, UART
+always ready). F4's netlist retires 45 instructions and wedges inside 1000 cycles; the RTL
+prints the banner by cycle 6000. Ten minutes, and the verdict is on the desk instead of
+on the board: a silent board with passing simulations is a netlist question first. The
+same testbench on the RTL (`-DRTL_RUN`, Verilator or xsim) is the reference trace, and
+its `NETLIST_PROBE` block plus `tools/cmp-probe.py` name the first cycle and port where
+the netlist disagrees with the RTL.
+
 ---
 
 ## G. Harness

@@ -162,9 +162,14 @@ module ooo2_rename
    reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
    reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
    reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
-   function [IDXB-1:0] rd_ie(input [PW_IE-2:0] i); rd_ie = i[0] ? fl_ie1[i[PW_IE-2:1]] : fl_ie0[i[PW_IE-2:1]]; endfunction
-   function [IDXB-1:0] rd_ld(input [PW_LD-2:0] i); rd_ld = i[0] ? fl_ld1[i[PW_LD-2:1]] : fl_ld0[i[PW_LD-2:1]]; endfunction
-   function [IDXB-1:0] rd_fe(input [PW_FE-2:0] i); rd_fe = i[0] ? fl_fe1[i[PW_FE-2:1]] : fl_fe0[i[PW_FE-2:1]]; endfunction
+   // NO FUNCTION READS THESE ARRAYS (rule I12, 2026-09-06). The parity banks were first read
+   // through `rd_ie(i) = i[0] ? fl_ie1[...] : fl_ie0[...]`, called once for port A and once
+   // for port B. Vivado keeps ONE read port for a function that reads a RAM: the last call
+   // site gets it and every earlier call folds to constant 0 -- port A's r_prd[6:0] became
+   // 0 in the netlist, every instruction through port A wrote physical register 0, and the
+   // board printed nothing (V4, V7, W2, W2M) while every simulator computed both calls. The
+   // reads are continuous assigns at module scope now, one per port, which Vivado
+   // replicates into as many LUTRAM read ports as there are readers.
 
    // Initial tails, sized: SH_IE/SH_FE start with N-32 free, SH_LD with all N.
    localparam [PW_IE-1:0] T0_IE = (N_IE - 32);
@@ -252,18 +257,24 @@ module ooo2_rename
    wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
    wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE);
    wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE);
-      wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? rd_ie(h_ie[PW_IE-2:0])
-                            : (r_shard == SH_LD) ? rd_ld(h_ld[PW_LD-2:0])
-                                                 : rd_fe(h_fe[PW_FE-2:0]);
+   wire [IDXB-1:0] ha_rd_ie = h_ie[0] ? fl_ie1[h_ie[PW_IE-2:1]] : fl_ie0[h_ie[PW_IE-2:1]];
+   wire [IDXB-1:0] ha_rd_ld = h_ld[0] ? fl_ld1[h_ld[PW_LD-2:1]] : fl_ld0[h_ld[PW_LD-2:1]];
+   wire [IDXB-1:0] ha_rd_fe = h_fe[0] ? fl_fe1[h_fe[PW_FE-2:1]] : fl_fe0[h_fe[PW_FE-2:1]];
+   wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
+                            : (r_shard == SH_LD) ? ha_rd_ld
+                                                 : ha_rd_fe;
    assign r_prd = {r_shard, head_idx};
    // B's entry: the head, or the one after it when A allocates from the same shard. A second
    // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
    wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, a_ie};
    wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
    wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
-      wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? rd_ie(hb_ie)
-                              : (r_shard_b == SH_LD) ? rd_ld(hb_ld)
-                                                     : rd_fe(hb_fe);
+   wire [IDXB-1:0] hb_rd_ie = hb_ie[0] ? fl_ie1[hb_ie[PW_IE-2:1]] : fl_ie0[hb_ie[PW_IE-2:1]];
+   wire [IDXB-1:0] hb_rd_ld = hb_ld[0] ? fl_ld1[hb_ld[PW_LD-2:1]] : fl_ld0[hb_ld[PW_LD-2:1]];
+   wire [IDXB-1:0] hb_rd_fe = hb_fe[0] ? fl_fe1[hb_fe[PW_FE-2:1]] : fl_fe0[hb_fe[PW_FE-2:1]];
+   wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
+                              : (r_shard_b == SH_LD) ? hb_rd_ld
+                                                     : hb_rd_fe;
    assign r_prd_b = {r_shard_b, head_idx_b};
 
    // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
