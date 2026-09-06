@@ -13,12 +13,14 @@
 # commit message, with the reason. Do not delete a line to make a build pass.
 
 # ---- the issue queue: the scheduler emits an INDEX, everything else is looked up ---------
-# One payload and one source-tag array PER SCHEDULER since two-wide dispatch (item 10b): a
-# pair dispatches to two different schedulers, so each array keeps one write.
-plmem_i : issue payload, the integer scheduler; read at the selected entry, one indexed read
+# One payload and one source-tag array PER SCHEDULER since two-wide dispatch (item 10b,
+# 2026-09-05): a pair dispatches to two different schedulers, so each array keeps one write.
+plmem_i : issue payload, slot A's integer scheduler; read at the selected entry, one indexed read
+plmem_i2: issue payload, slot B's integer scheduler (item 10d-ii)
 plmem_l : issue payload, the in-order scheduler
 plmem_f : issue payload, the FP scheduler
 psmem_i : source tags; added 3b518832 after e_ps was demoted by the wakeup broadcast
+psmem_i2: source tags, slot B's integer scheduler
 psmem_l : source tags, the in-order scheduler
 psmem_f : source tags, the FP scheduler
 e_prd   : issue-queue destination tag, read only at [sel]
@@ -28,19 +30,22 @@ e_rob   : issue-queue ROB index, read only at [sel]
 mem_ie  : PRF integer shard; sharded by WRITER so each has ONE write port
 mem_ld  : PRF load shard
 mem_fe  : PRF FP shard
+mem_ie2 : PRF second integer shard, written by the second ALU alone (item 10d-ii)
 
 # ---- rename: free lists and maps, initialised by the bitstream and never reset ----------
 # A `for` loop over every entry in the reset branch pinned all five into flops (~3,400 bits)
 # purely to initialise them. Configuration does that for free. If one of these regresses,
 # look for a reintroduced reset loop first.
-# Two parity banks per free list and two copies of each map since dispatch-two / retire-two
-# (items 10b/10c): one write per bank per cycle is all a LUTRAM has (rule I10).
+# Two parity banks per free list and two copies of each map since retire-two / dispatch-two
+# (items 10b/10c): one write per bank per cycle is all a LUTRAM has.
 fl_ie0  : free list bank 0, circular FIFO read at head / written at tail
 fl_ie1  : free list bank 1
 fl_ld0  : free list
 fl_ld1  : free list
 fl_fe0  : free list
 fl_fe1  : free list
+fl_i20  : free list, the second integer shard (item 10d-ii)
+fl_i21  : free list
 rmap_a  : committed map, copy A; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
 rmap_b  : committed map, copy B (the second commit port's write; `rnewer` picks)
 smap_a  : speculative map, copy A; flush clears `lv`, so no wholesale copy is ever needed

@@ -43,6 +43,7 @@ module ooo2_prf
     parameter N_IE  = 64,                  // > 32 (integer arch regs)
     parameter N_LD  = 128,                  // > 64 (integer AND fp arch regs can land here)
     parameter N_FE  = 128,                  // > 64: the FPU writes INTEGER regs too
+    parameter N_IE2 = 64,                   // the SECOND ALU's shard (item 10d-ii): > 32 like SH_IE
     parameter WRTHRU = 0)                   // see the write-through note below
    (input  wire             clk,
 
@@ -62,6 +63,8 @@ module ooo2_prf
     input  wire             we_ie,
     input  wire             we_ld,
     input  wire             we_fe,
+    input  wire             we_ie2,
+
     // ONE ADDRESS PER SHARD. They shared a single `wa` while exactly one writeback could
     // happen per cycle; dynamic issue makes simultaneous completions the normal case, and
     // docs/Area-Efficient-Scalar-OoO.md 7 names splitting the file as the way to delete
@@ -72,9 +75,13 @@ module ooo2_prf
     input  wire [PBITS-1:0] wa_ie,
     input  wire [PBITS-1:0] wa_ld,
     input  wire [PBITS-1:0] wa_fe,
+    input  wire [PBITS-1:0] wa_ie2,
+
     input  wire [63:0]      wd_ie,    // ALU / CSR result
     input  wire [63:0]      wd_ld,    // LSU load data, mul, div
     input  wire [63:0]      wd_fe,    // FPU result
+    input  wire [63:0]      wd_ie2,   // the second ALU's result
+
 
     // ---- three combinational read ports (rs1, rs2, rs3 for the FMA third operand) ----
     input  wire [PBITS-1:0] ra1,
@@ -86,9 +93,13 @@ module ooo2_prf
     input  wire [PBITS-1:0] ra4,      // the ALU's own issue port (item 10d-i)
     input  wire [PBITS-1:0] ra5,
     output wire [63:0]      rd4,
-    output wire [63:0]      rd5);
+        output wire [63:0]      rd5,
+    input  wire [PBITS-1:0] ra6,      // the second ALU port (item 10d-ii)
+    input  wire [PBITS-1:0] ra7,
+    output wire [63:0]      rd6,
+    output wire [63:0]      rd7);
 
-   localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
+      localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2, SH_IE2 = 2'd3;
 
    // Sized to the largest shard; the smaller shards simply never index above their
    // capacity, which ooo2_rename's free list enforces and the assertion below checks.
@@ -99,16 +110,17 @@ module ooo2_prf
    // caches (83-85% route on sub-1 ns logic), so congestion costs slack somewhere else.
    localparam integer NMAX  = (N_LD > N_IE) ? ((N_LD > N_FE) ? N_LD : N_FE)
                                             : ((N_IE > N_FE) ? N_IE : N_FE);
-   localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE);
+   localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE), AB_IE2 = $clog2(N_IE2);
 
    reg [63:0] mem_ie [0:N_IE-1];
    reg [63:0] mem_ld [0:N_LD-1];
    reg [63:0] mem_fe [0:N_FE-1];
+   reg [63:0] mem_ie2 [0:N_IE2-1];
 
    wire [1:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
-      wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
-   wire [1:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB];
-   wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0];
+   wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
+   wire [1:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB], sh6 = ra6[PBITS-1:IDXB], sh7 = ra7[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0],     ix6 = ra6[IDXB-1:0],     ix7 = ra7[IDXB-1:0];
 
    // WRITE-THROUGH, and why it is OFF by default.
    //
@@ -131,7 +143,7 @@ module ooo2_prf
    function automatic [63:0] rd_shard;
       input [1:0]      sh;
       input [IDXB-1:0] ix;
-      input [63:0]     m_ie, m_ld, m_fe;
+      input [63:0]     m_ie, m_ld, m_fe, m_ie2;
       begin
          case (sh)
            SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
@@ -140,6 +152,8 @@ module ooo2_prf
                               && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
            SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
                               && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
+           SH_IE2: rd_shard = (WRTHRU != 0 && we_ie2 && wa_ie2[IDXB-1:0] == ix
+                              && wa_ie2[PBITS-1:IDXB] == SH_IE2) ? wd_ie2 : m_ie2;
            default: rd_shard = 64'd0;
          endcase
       end
@@ -152,19 +166,25 @@ module ooo2_prf
    // but it must not be OUT OF RANGE, which for a smaller shard it otherwise would be.
    assign rd1 = (ra1 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh1, ix1, mem_ie[ix1[AB_IE-1:0]], mem_ld[ix1[AB_LD-1:0]],
-                         mem_fe[ix1[AB_FE-1:0]]);
+                         mem_fe[ix1[AB_FE-1:0]], mem_ie2[ix1[AB_IE2-1:0]]);
    assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]], mem_ld[ix2[AB_LD-1:0]],
-                         mem_fe[ix2[AB_FE-1:0]]);
-      assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
+                         mem_fe[ix2[AB_FE-1:0]], mem_ie2[ix2[AB_IE2-1:0]]);
+   assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]], mem_ld[ix3[AB_LD-1:0]],
-                         mem_fe[ix3[AB_FE-1:0]]);
+                         mem_fe[ix3[AB_FE-1:0]], mem_ie2[ix3[AB_IE2-1:0]]);
    assign rd4 = (ra4 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh4, ix4, mem_ie[ix4[AB_IE-1:0]], mem_ld[ix4[AB_LD-1:0]],
-                         mem_fe[ix4[AB_FE-1:0]]);
+                         mem_fe[ix4[AB_FE-1:0]], mem_ie2[ix4[AB_IE2-1:0]]);
    assign rd5 = (ra5 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh5, ix5, mem_ie[ix5[AB_IE-1:0]], mem_ld[ix5[AB_LD-1:0]],
-                         mem_fe[ix5[AB_FE-1:0]]);
+                         mem_fe[ix5[AB_FE-1:0]], mem_ie2[ix5[AB_IE2-1:0]]);
+   assign rd6 = (ra6 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh6, ix6, mem_ie[ix6[AB_IE-1:0]], mem_ld[ix6[AB_LD-1:0]],
+                         mem_fe[ix6[AB_FE-1:0]], mem_ie2[ix6[AB_IE2-1:0]]);
+   assign rd7 = (ra7 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh7, ix7, mem_ie[ix7[AB_IE-1:0]], mem_ld[ix7[AB_LD-1:0]],
+                         mem_fe[ix7[AB_FE-1:0]], mem_ie2[ix7[AB_IE2-1:0]]);
 
    integer j;
    initial begin
@@ -185,6 +205,7 @@ module ooo2_prf
       if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
       if (we_ld) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
       if (we_fe) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
+      if (we_ie2) mem_ie2[wa_ie2[AB_IE2-1:0]] <= wd_ie2;
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
@@ -203,10 +224,15 @@ module ooo2_prf
       if (we_fe && (wa_fe[PBITS-1:IDXB] != SH_FE))
          $fatal(1, "ooo2_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
                 wa_fe, wa_fe[PBITS-1:IDXB]);
+      if (we_ie2 && (wa_ie2[PBITS-1:IDXB] != SH_IE2))
+         $fatal(1, "ooo2_prf: second int-exec write to pr=%h, shard %0d is not SH_IE2",
+                wa_ie2, wa_ie2[PBITS-1:IDXB]);
       if (we_ie && ({1'b0, wa_ie[IDXB-1:0]} >= N_IE[IDXB:0]))
          $fatal(1, "ooo2_prf: int-exec write idx %0d >= N_IE %0d", wa_ie[IDXB-1:0], N_IE);
       if (we_ld && ({1'b0, wa_ld[IDXB-1:0]} >= N_LD[IDXB:0]))
          $fatal(1, "ooo2_prf: load write idx %0d >= N_LD %0d", wa_ld[IDXB-1:0], N_LD);
+      if (we_ie2 && ({1'b0, wa_ie2[IDXB-1:0]} >= N_IE2[IDXB:0]))
+         $fatal(1, "ooo2_prf: second int-exec write idx %0d >= N_IE2 %0d", wa_ie2[IDXB-1:0], N_IE2);
       if (we_fe && ({1'b0, wa_fe[IDXB-1:0]} >= N_FE[IDXB:0]))
          $fatal(1, "ooo2_prf: fp-exec write idx %0d >= N_FE %0d", wa_fe[IDXB-1:0], N_FE);
       if (we_ie && wa_ie == {PBITS{1'b0}})

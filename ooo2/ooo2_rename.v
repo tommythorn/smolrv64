@@ -37,6 +37,7 @@ module ooo2_rename
     parameter N_IE  = 64,
     parameter N_LD  = 128,
     parameter N_FE  = 128,
+    parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
     parameter LOWAT = 4)                  // stall fetch when any shard has < LOWAT free
    (input  wire             clk,
     input  wire             reset,
@@ -84,7 +85,7 @@ module ooo2_rename
     input  wire             c_valid,
     input  wire [5:0]       c_rd,
     input  wire             c_rd_v,
-        input  wire [PBITS-1:0] c_prd,        // becomes the committed mapping
+    input  wire [PBITS-1:0] c_prd,        // becomes the committed mapping
     // the second commit of the cycle, the entry behind the head (item 10c)
     input  wire             c2_valid,
     input  wire [5:0]       c2_rd,
@@ -96,9 +97,9 @@ module ooo2_rename
 
     // ---- back pressure and instrumentation ----
     output wire             stall,        // ANY shard low -- see the note below
-    output wire [2:0]       shard_low);   // per-shard, for the hpm counters
+        output wire [3:0]       shard_low);   // per-shard, for the hpm counters
 
-   localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2;
+      localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2, SH_IE2 = 2'd3;
    localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
 
    // ---- the map -------------------------------------------------------------------
@@ -109,16 +110,14 @@ module ooo2_rename
    // is the map's version of the PRF's sharding rule.
    (* ram_style = "distributed" *) reg [PBITS-1:0] smap_a [0:63];
    (* ram_style = "distributed" *) reg [PBITS-1:0] smap_b [0:63];
-      // ...and the COMMITTED map likewise, two commits per cycle (item 10c): rmap_a takes the
+   // ...and the COMMITTED map likewise, two commits per cycle (item 10c): rmap_a takes the
    // head's, rmap_b the second's, rnewer[] says which is current.
    (* ram_style = "distributed" *) reg [PBITS-1:0] rmap_a [0:63];
    (* ram_style = "distributed" *) reg [PBITS-1:0] rmap_b [0:63];
    reg [63:0]      lv;
    reg [63:0]      newer;                    // 1 = smap_b is the latest speculative mapping
    reg [63:0]      rnewer;                   // 1 = rmap_b is the current committed mapping
-   // The copy-select reads are written out per reader (rule F4: no function reads an array;
-   // these two happened to survive synthesis with every call site live, the free-list ones
-   // did not -- the rule does not distinguish, and tools/check-func-ram-reads.py enforces it).
+   // The copy-select reads are written out per reader (rule F4: no function reads an array).
 
    // Reads are of the PRE-rename mapping for all three sources, including the case where a
    // source equals this instruction's own destination -- rd is written at the clock edge,
@@ -149,29 +148,28 @@ module ooo2_rename
    localparam integer PW_IE = $clog2(N_IE) + 1;
    localparam integer PW_LD = $clog2(N_LD) + 1;
    localparam integer PW_FE = $clog2(N_FE) + 1;
+   localparam integer PW_I2 = $clog2(N_IE2) + 1;
 
-      // TWO PARITY BANKS PER LIST (item 10c): entry i lives in bank i[0] at index i>>1, so the
+   // TWO PARITY BANKS PER LIST (item 10c): entry i lives in bank i[0] at index i>>1, so the
    // two pushes of a cycle (tail, tail+1) and the two pops (head, head+1) each touch two
    // different banks -- one write per bank per cycle, which is all a LUTRAM has.
    (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ie0 [0:N_IE/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ie1 [0:N_IE/2-1];
    (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ld0 [0:N_LD/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ld1 [0:N_LD/2-1];
    (* ram_style = "distributed" *) reg [IDXB-1:0] fl_fe0 [0:N_FE/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_fe1 [0:N_FE/2-1];
+   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_i20 [0:N_IE2/2-1]; (* ram_style = "distributed" *) reg [IDXB-1:0] fl_i21 [0:N_IE2/2-1];
    reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
    reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
    reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
-   // NO FUNCTION READS THESE ARRAYS (rule I12, 2026-09-06). The parity banks were first read
-   // through `rd_ie(i) = i[0] ? fl_ie1[...] : fl_ie0[...]`, called once for port A and once
-   // for port B. Vivado keeps ONE read port for a function that reads a RAM: the last call
-   // site gets it and every earlier call folds to constant 0 -- port A's r_prd[6:0] became
-   // 0 in the netlist, every instruction through port A wrote physical register 0, and the
-   // board printed nothing (V4, V7, W2, W2M) while every simulator computed both calls. The
-   // reads are continuous assigns at module scope now, one per port, which Vivado
-   // replicates into as many LUTRAM read ports as there are readers.
+   reg [PW_I2-1:0] h_i2, hc_i2, t_i2;
+   // NO FUNCTION READS THESE ARRAYS (rule F4, 2026-09-06): Vivado keeps one read port for a
+   // function that reads a RAM, the last call site's, and folds the earlier call to 0 -- port
+   // A's r_prd[6:0] was 0 on V4, V7 and W2. One continuous assign per reader, below.
 
    // Initial tails, sized: SH_IE/SH_FE start with N-32 free, SH_LD with all N.
    localparam [PW_IE-1:0] T0_IE = (N_IE - 32);
    localparam [PW_LD-1:0] T0_LD = N_LD;
    localparam [PW_FE-1:0] T0_FE = (N_FE - 32);
+   localparam [PW_I2-1:0] T0_I2 = N_IE2;             // nothing maps there at reset: wholly free
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
    // instructions behind it are squashed.  The restore target must therefore be the
@@ -190,7 +188,7 @@ module ooo2_rename
    // rmap holds committed state, so in the cycle this entry commits rmap[c_rd] is still the
    // mapping it displaced -- the write below is what replaces it. And a physical register's
    // shard is the top bits of its number, so the allocation shard is read off c_prd.
-      wire [PBITS-1:0] c_pold  = (rnewer[c_rd] ? rmap_b[c_rd] : rmap_a[c_rd]);
+   wire [PBITS-1:0] c_pold  = (rnewer[c_rd] ? rmap_b[c_rd] : rmap_a[c_rd]);
    // the second commit displaces the FIRST's mapping when both write one architectural register
    wire [PBITS-1:0] c2_pold = (c_valid & c_rd_v & (c2_rd == c_rd)) ? c_prd : (rnewer[c2_rd] ? rmap_b[c2_rd] : rmap_a[c2_rd]);
    wire [1:0] c2_shard  = c2_prd[PBITS-1:IDXB];
@@ -201,24 +199,31 @@ module ooo2_rename
    wire fre2_ie = c2_valid & c2_rd_v & (pold2_sh == SH_IE);
    wire fre2_ld = c2_valid & c2_rd_v & (pold2_sh == SH_LD);
    wire fre2_fe = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
+   wire cmt2_i2 = c2_valid & c2_rd_v & (c2_shard == SH_IE2);
+   wire fre2_i2 = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
    wire [1:0] c_shard = c_prd[PBITS-1:IDXB];
    wire [1:0] pold_sh = c_pold[PBITS-1:IDXB];
    wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
    wire cmt_ld = c_valid & c_rd_v & (c_shard == SH_LD);
    wire cmt_fe = c_valid & c_rd_v & (c_shard == SH_FE);
+   wire cmt_i2 = c_valid & c_rd_v & (c_shard == SH_IE2);
    wire fre_ie = c_valid & c_rd_v & (pold_sh == SH_IE);   // free push: the register's shard
    wire fre_ld = c_valid & c_rd_v & (pold_sh == SH_LD);
    wire fre_fe = c_valid & c_rd_v & (pold_sh == SH_FE);
-      wire [PW_IE-1:0] hc_ie_n = hc_ie + {{(PW_IE-1){1'b0}}, cmt_ie} + {{(PW_IE-1){1'b0}}, cmt2_ie};
+   wire fre_i2 = c_valid & c_rd_v & (pold_sh == SH_IE2);
+   wire [PW_IE-1:0] hc_ie_n = hc_ie + {{(PW_IE-1){1'b0}}, cmt_ie} + {{(PW_IE-1){1'b0}}, cmt2_ie};
    wire [PW_LD-1:0] hc_ld_n = hc_ld + {{(PW_LD-1){1'b0}}, cmt_ld} + {{(PW_LD-1){1'b0}}, cmt2_ld};
    wire [PW_FE-1:0] hc_fe_n = hc_fe + {{(PW_FE-1){1'b0}}, cmt_fe} + {{(PW_FE-1){1'b0}}, cmt2_fe};
+   wire [PW_I2-1:0] hc_i2_n = hc_i2 + {{(PW_I2-1){1'b0}}, cmt_i2} + {{(PW_I2-1){1'b0}}, cmt2_i2};
 
-      wire [PW_IE-2:0] t2_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie};   // the second free's slot
+   wire [PW_IE-2:0] t2_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie};   // the second free's slot
    wire [PW_LD-2:0] t2_ld = t_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, fre_ld};
    wire [PW_FE-2:0] t2_fe = t_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, fre_fe};
+   wire [PW_I2-2:0] t2_i2 = t_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, fre_i2};
    wire [PW_IE-1:0] avail_ie = t_ie - h_ie;
    wire [PW_LD-1:0] avail_ld = t_ld - h_ld;
    wire [PW_FE-1:0] avail_fe = t_fe - h_fe;
+   wire [PW_I2-1:0] avail_i2 = t_i2 - h_i2;
    // ONE WRITE PER BANK, as one {we, addr, data} each. The head's free and the second's land in
    // different banks by parity (t2 = t + fre), but written as two statements per bank synthesis
    // sees two write ports and demotes every bank to flops -- gate V2's RAM-inference check
@@ -238,6 +243,11 @@ module ooo2_rename
    wire [PW_FE-3:0] fa_fe1 = (fre_fe &  t_fe[0]) ? t_fe[PW_FE-2:1] : t2_fe[PW_FE-2:1];
    wire [IDXB-1:0]  fd_fe0 = (fre_fe & ~t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
    wire [IDXB-1:0]  fd_fe1 = (fre_fe &  t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire            fw_i20 = (fre_i2 & ~t_i2[0]) | (fre2_i2 & ~t2_i2[0]),  fw_i21 = (fre_i2 & t_i2[0]) | (fre2_i2 & t2_i2[0]);
+   wire [PW_I2-3:0] fa_i20 = (fre_i2 & ~t_i2[0]) ? t_i2[PW_I2-2:1] : t2_i2[PW_I2-2:1];
+   wire [PW_I2-3:0] fa_i21 = (fre_i2 &  t_i2[0]) ? t_i2[PW_I2-2:1] : t2_i2[PW_I2-2:1];
+   wire [IDXB-1:0]  fd_i20 = (fre_i2 & ~t_i2[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+   wire [IDXB-1:0]  fd_i21 = (fre_i2 &  t_i2[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
 
    // STALL WHEN *ANY* SHARD IS LOW, not when the destination's shard is.  A shard that runs
    // dry stalls rename regardless of which one the next instruction wants, so throttling on
@@ -245,33 +255,39 @@ module ooo2_rename
    // discovers it one instruction too late.  The cost is that the stall probability is the
    // union across shards -- which is the argument for sizing them unequally rather than
    // adding more of them.
-   assign shard_low = {avail_fe < LOWAT[PW_FE-1:0],
+   assign shard_low = {avail_i2 < LOWAT[PW_I2-1:0],
+                       avail_fe < LOWAT[PW_FE-1:0],
                        avail_ld < LOWAT[PW_LD-1:0],
                        avail_ie < LOWAT[PW_IE-1:0]};
    assign stall = |shard_low;
 
    wire alloc   = r_valid   & r_rd_v   & ~stall;
    wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
-   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE);
-   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE);
+   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2);
+   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2);
    wire [IDXB-1:0] ha_rd_ie = h_ie[0] ? fl_ie1[h_ie[PW_IE-2:1]] : fl_ie0[h_ie[PW_IE-2:1]];
    wire [IDXB-1:0] ha_rd_ld = h_ld[0] ? fl_ld1[h_ld[PW_LD-2:1]] : fl_ld0[h_ld[PW_LD-2:1]];
    wire [IDXB-1:0] ha_rd_fe = h_fe[0] ? fl_fe1[h_fe[PW_FE-2:1]] : fl_fe0[h_fe[PW_FE-2:1]];
+   wire [IDXB-1:0] ha_rd_i2 = h_i2[0] ? fl_i21[h_i2[PW_I2-2:1]] : fl_i20[h_i2[PW_I2-2:1]];
    wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
                             : (r_shard == SH_LD) ? ha_rd_ld
-                                                 : ha_rd_fe;
+                            : (r_shard == SH_FE) ? ha_rd_fe
+                                                 : ha_rd_i2;
    assign r_prd = {r_shard, head_idx};
    // B's entry: the head, or the one after it when A allocates from the same shard. A second
    // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
    wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, a_ie};
    wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
    wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
+   wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2};
    wire [IDXB-1:0] hb_rd_ie = hb_ie[0] ? fl_ie1[hb_ie[PW_IE-2:1]] : fl_ie0[hb_ie[PW_IE-2:1]];
    wire [IDXB-1:0] hb_rd_ld = hb_ld[0] ? fl_ld1[hb_ld[PW_LD-2:1]] : fl_ld0[hb_ld[PW_LD-2:1]];
    wire [IDXB-1:0] hb_rd_fe = hb_fe[0] ? fl_fe1[hb_fe[PW_FE-2:1]] : fl_fe0[hb_fe[PW_FE-2:1]];
+   wire [IDXB-1:0] hb_rd_i2 = hb_i2[0] ? fl_i21[hb_i2[PW_I2-2:1]] : fl_i20[hb_i2[PW_I2-2:1]];
    wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
                               : (r_shard_b == SH_LD) ? hb_rd_ld
-                                                     : hb_rd_fe;
+                              : (r_shard_b == SH_FE) ? hb_rd_fe
+                                                     : hb_rd_i2;
    assign r_prd_b = {r_shard_b, head_idx_b};
 
    // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
@@ -306,7 +322,7 @@ module ooo2_rename
       // writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard starts
       // entirely free.
       for (j = 0; j < 32; j = j + 1) begin
-                  rmap_a[j]      = {SH_IE, j[IDXB-1:0]};  rmap_b[j]      = {SH_IE, j[IDXB-1:0]};
+         rmap_a[j]      = {SH_IE, j[IDXB-1:0]};  rmap_b[j]      = {SH_IE, j[IDXB-1:0]};
          smap_a[j]      = {SH_IE, j[IDXB-1:0]};  smap_b[j]      = {SH_IE, j[IDXB-1:0]};
          rmap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  rmap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
          smap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  smap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
@@ -316,9 +332,10 @@ module ooo2_rename
       // Slots at or beyond the tail are never read (a circular FIFO only reads between head
       // and tail) but are given a legal index anyway so a pointer bug shows up as an
       // assertion rather than as an out-of-range PRF access.
-            for (j = 0; j < N_IE/2; j = j + 1) begin fl_ie0[j] = OFF32 + 2*j[IDXB-1:0]; fl_ie1[j] = OFF32 + 2*j[IDXB-1:0] + 1'b1; end
+      for (j = 0; j < N_IE/2; j = j + 1) begin fl_ie0[j] = OFF32 + 2*j[IDXB-1:0]; fl_ie1[j] = OFF32 + 2*j[IDXB-1:0] + 1'b1; end
       for (j = 0; j < N_LD/2; j = j + 1) begin fl_ld0[j] = 2*j[IDXB-1:0];         fl_ld1[j] = 2*j[IDXB-1:0] + 1'b1; end
       for (j = 0; j < N_FE/2; j = j + 1) begin fl_fe0[j] = OFF32 + 2*j[IDXB-1:0]; fl_fe1[j] = OFF32 + 2*j[IDXB-1:0] + 1'b1; end
+      for (j = 0; j < N_IE2/2; j = j + 1) begin fl_i20[j] = 2*j[IDXB-1:0];         fl_i21[j] = 2*j[IDXB-1:0] + 1'b1; end
       // The pointers come from configuration for the same reason the arrays do. They are
       // the ONLY thing that says which slots are free, so resetting them while the arrays
       // keep the previous run's contents would republish stale slots as free and hand out
@@ -327,7 +344,8 @@ module ooo2_rename
       h_ie = {PW_IE{1'b0}}; hc_ie = {PW_IE{1'b0}}; t_ie = T0_IE;
       h_ld = {PW_LD{1'b0}}; hc_ld = {PW_LD{1'b0}}; t_ld = T0_LD;
       h_fe = {PW_FE{1'b0}}; hc_fe = {PW_FE{1'b0}}; t_fe = T0_FE;
-            lv = 64'd0; newer = 64'd0; rnewer = 64'd0;
+      h_i2 = {PW_I2{1'b0}}; hc_i2 = {PW_I2{1'b0}}; t_i2 = T0_I2;
+      lv = 64'd0; newer = 64'd0; rnewer = 64'd0;
    end
 
    integer i;
@@ -346,24 +364,25 @@ module ooo2_rename
          h_ie <= hc_ie;
          h_ld <= hc_ld;
          h_fe <= hc_fe;
+         h_i2 <= hc_i2;
       end else begin
          // ---- commit: RMAP takes the committed mapping, the displaced register is freed
-         hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;
-                  if (c_valid & c_rd_v) begin
+         hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;  hc_i2 <= hc_i2_n;
+         if (c_valid & c_rd_v) begin
             rmap_a[c_rd] <= c_prd;  rnewer[c_rd] <= 1'b0;
-            if (c_shard > SH_FE) $fatal(1, "ooo2_rename: commit to shard %0d", c_shard);
          end
          if (c2_valid & c2_rd_v) begin           // after the head's: the same register twice keeps the second
             rmap_b[c2_rd] <= c2_prd;  rnewer[c2_rd] <= 1'b1;
-            if (c2_shard > SH_FE) $fatal(1, "ooo2_rename: commit (2) to shard %0d", c2_shard);
          end
          // the frees: the head's at the tail, the second's at the slot after it when both push
          if (fw_ie0) fl_ie0[fa_ie0] <= fd_ie0;   if (fw_ie1) fl_ie1[fa_ie1] <= fd_ie1;
          if (fw_ld0) fl_ld0[fa_ld0] <= fd_ld0;   if (fw_ld1) fl_ld1[fa_ld1] <= fd_ld1;
          if (fw_fe0) fl_fe0[fa_fe0] <= fd_fe0;   if (fw_fe1) fl_fe1[fa_fe1] <= fd_fe1;
+         if (fw_i20) fl_i20[fa_i20] <= fd_i20;   if (fw_i21) fl_i21[fa_i21] <= fd_i21;
          t_ie <= t_ie + {{(PW_IE-1){1'b0}}, fre_ie} + {{(PW_IE-1){1'b0}}, fre2_ie};
          t_ld <= t_ld + {{(PW_LD-1){1'b0}}, fre_ld} + {{(PW_LD-1){1'b0}}, fre2_ld};
          t_fe <= t_fe + {{(PW_FE-1){1'b0}}, fre_fe} + {{(PW_FE-1){1'b0}}, fre2_fe};
+         t_i2 <= t_i2 + {{(PW_I2-1){1'b0}}, fre_i2} + {{(PW_I2-1){1'b0}}, fre2_i2};
 
          // ---- rename: SMAP takes the new mapping, the head advances.  A flush in the same
          // cycle squashes this instruction, so the flush arm below wins on the pointers;
@@ -372,13 +391,11 @@ module ooo2_rename
             smap_a[r_rd] <= r_prd;
             newer[r_rd]  <= 1'b0;
             lv[r_rd]     <= 1'b1;
-            if (r_shard > SH_FE) $fatal(1, "ooo2_rename: rename to shard %0d", r_shard);
          end
          if (alloc_b) begin                     // after A: when rd_b == rd, B's is the newer mapping
             smap_b[r_rd_b] <= r_prd_b;
             newer[r_rd_b]  <= 1'b1;
             lv[r_rd_b]     <= 1'b1;
-            if (r_shard_b > SH_FE) $fatal(1, "ooo2_rename: rename (B) to shard %0d", r_shard_b);
          end
 
          // ---- rollback
@@ -387,10 +404,12 @@ module ooo2_rename
             h_ie <= hc_ie_n;
             h_ld <= hc_ld_n;
             h_fe <= hc_fe_n;
+            h_i2 <= hc_i2_n;
          end else begin
             h_ie <= h_ie + {{(PW_IE-1){1'b0}}, a_ie} + {{(PW_IE-1){1'b0}}, b_ie};
             h_ld <= h_ld + {{(PW_LD-1){1'b0}}, a_ld} + {{(PW_LD-1){1'b0}}, b_ld};
             h_fe <= h_fe + {{(PW_FE-1){1'b0}}, a_fe} + {{(PW_FE-1){1'b0}}, b_fe};
+            h_i2 <= h_i2 + {{(PW_I2-1){1'b0}}, a_i2} + {{(PW_I2-1){1'b0}}, b_i2};
          end
       end
    end
@@ -409,15 +428,10 @@ module ooo2_rename
       // c_pold may legitimately belong to a DIFFERENT shard than c_shard (see pold_sh
       // above); what must hold is that it names a shard that exists, so it is returned to a
       // real free list rather than dropped.
-      if (c_valid && c_rd_v && (pold_sh > SH_FE))
-         $fatal(1, "ooo2_rename: freeing pr=%h whose shard %0d does not exist",
-                c_pold, pold_sh);
       if (c_valid && c_rd_v && (c_prd[PBITS-1:IDXB] != c_shard))
          $fatal(1, "ooo2_rename: committing pr=%h whose shard is not %0d", c_prd, c_shard);
       if (c2_valid && !c_valid)
          $fatal(1, "ooo2_rename: second commit without a first");
-      if (c2_valid && c2_rd_v && (pold2_sh > SH_FE))
-         $fatal(1, "ooo2_rename: freeing (2) pr=%h whose shard %0d does not exist", c2_pold, pold2_sh);
       // x0 must never be renamed: it has no value to hold and freeing it would inject
       // physical register 0 into a free list.
       if (alloc && r_rd == 6'd0)

@@ -64,8 +64,9 @@ The scheduler holds the instruction until its sources are ready and then issues 
 **fixed priority, lowest entry index** — there is no age anywhere (§6.1).
 
 What may reorder is deliberately narrow, but it is no longer only the ALU. **Pure ALU ops
-and FP arithmetic both reorder freely**, in `u_iq_i` and `u_iq_f` respectively. An ALU op
-completes at issue; an FP op goes to stage F. Neither ever enters M.
+and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2` and `u_iq_f` respectively (two
+integer schedulers since item 10d-ii, 2026-09-05: slot A's ALU ops and slot B's, each with its
+own ALU). An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
 
 Everything else carries an `ord` bit and keeps program order in `u_iq_l` — memory, AMO,
 mul, div, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault. Only
@@ -147,7 +148,7 @@ complements.
 |---|---|
 | unit not complete | LSU / mul / div / FPU still working |
 | `head_block` | the op is a trap, redirect, `fence.i`, CSR/SYSTEM, fault, or faulting memory op, and is **not yet the ROB head** |
-| `ld_land` | a non-blocking load is landing this cycle and takes the single PRF write port + the single ROB completion port; M yields |
+| `ld_land` | a non-blocking load is landing this cycle and takes the LD shard's write port + M's ROB completion port; M yields |
 | `fp_land` | same, for an FP result |
 
 Completion is **sticky** (`m_unit_done_q`): every unit's `done` is a one-cycle pulse, and
@@ -252,12 +253,13 @@ per-shard free list with a speculative head and a committed head. Rollback is `h
 
 ### 5.1 Sharding
 
-The PRF has **one write address and three shard-selected write enables**. Duplication buys
+The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
 read ports only; sharding by *writer* is what buys write ports.
 
 | shard | entries | written by | why the size |
 |---|---|---|---|
-| IE | 64 | **the ALU, alone** | > 32 (integer arch regs) |
+| IE | 64 | **the ALU, alone** (slot A's ALU ops) | > 32 (integer arch regs) |
+| IE2 | 64 | **the second ALU, alone** (slot B's ALU ops, item 10d-ii, 2026-09-05) | > 32, like IE; code 3 of the shard field was free |
 | LD | 128 | everything M completes: LSU, mul, div, CSR, jump link | > 64: can hold integer *and* FP mappings |
 | FE | 128 | FPU | > 64: the FPU writes integer regs too (`fcvt.w.d`, `fmv.x.d`, `fle.d`) |
 
@@ -336,7 +338,8 @@ cosim payload per slot so the ROB stays status-only in hardware.
 It selects what executes. See §2.1 for what may reorder and why the usual OoO machinery
 is not needed alongside it.
 
-**There are three schedulers, one per unit, and none stores age.**
+**There are four schedulers, one per unit (two integer since 10d-ii: slot A's ALU ops and
+slot B's), and none stores age.**
 
 **SCHEDULER-SIZE TIMING NUMBERS IN THIS DOCUMENT ARE SINGLE SAMPLES AND DO NOT
 DISTINGUISH THE CONFIGURATIONS.** Rule I2: four placer directives over IDENTICAL RTL span
@@ -451,16 +454,16 @@ latency, and in-order memory issue), so neither can see a deeper FP queue. Recor
 standing rule rather than a measured optimum, and worth re-measuring once the store buffer
 moves the wall.
 
-| | `u_iq_i` | `u_iq_l` | `u_iq_f` |
-|---|---|---|---|
-| entries (`NENT`) | 10 | 12 | 5 |
-| sources (`NSRC`) | 2 | 3 | 3 |
-| holds | pure ALU and non-trapping ops | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
-| ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
-| unit | completes at issue, writes IE | M | **stage F** |
-| `unit_busy` | **none** — IE has one writer | `~m_advance \| (i_v & i_needs_m)` | `~f_advance \| (i_v & i_needs_f)` |
+| | `u_iq_i` | `u_iq_i2` | `u_iq_l` | `u_iq_f` |
+|---|---|---|---|---|
+| entries (`NENT`) | 10 | 10 | 12 | 5 |
+| sources (`NSRC`) | 2 | 2 | 3 | 3 |
+| holds | pure ALU and non-trapping ops, slot A's | the same, slot B's (item 10d-ii) | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
+| ordering | **reorders freely** | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
+| unit | completes at issue, writes IE | completes at issue, writes IE2 | M | **stage F** |
+| `unit_busy` | **none** — IE has one writer | **none** — IE2 has one writer | `~m_advance \| (i_v & i_needs_m)` | `~f_advance \| (i_v & i_needs_f)` |
 
-**One scheduler per unit is what makes three safe.** Three schedulers feeding ONE execute
+**One scheduler per unit is what makes four safe.** Three schedulers feeding ONE execute
 stage deadlock (`Area-Efficient-Scalar-OoO.md` 12.2): an op reaches the shared stage, finds
 it must be ROB head to retire, and an older op in a different scheduler cannot issue to
 free it. Stage F removes the condition rather than arbitrating it -- **an FP arith op never
@@ -526,7 +529,8 @@ until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 `NSRC` is a parameter precisely so the integer scheduler does not pay for the third operand
 only `fmadd` has: 20 bits/entry against 29.
 
-- **Wakeup**: every PRF write broadcasts its destination; `NWB`=3 ports, one per shard.
+- **Wakeup**: every PRF write broadcasts its destination; `NWB`=4 ports, one per shard
+  (IE2's since 10d-ii).
   A source not yet ready is also compared against the live ports **in its dispatch cycle**,
   because a producer broadcasts exactly once and would otherwise be missed forever.
 - **Select**: **fixed priority**, lowest entry index first. Age is not stored, not
@@ -566,6 +570,7 @@ runs inside every 240-test and cosim run.
 | unit | latency | outstanding | blocks M? | writes |
 |---|---|---|---|---|
 | ALU / branch | 1 cycle (at issue) | — | no | IE shard |
+| second ALU (slot B's ALU ops, item 10d-ii) | 1 cycle (at issue) | — | no | IE2 shard |
 | jump link (`jal`/`jalr`) | 1 cycle | 1 | yes | LD shard (M writes it) |
 | CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 | yes | LD shard |
@@ -898,9 +903,10 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 
 | array | module | shape | width | bits | storage | ports |
 |---|---|---|---|---|---|---|
-| `mem_ie` | `ooo2_prf` | 64 | 64 | 4 096 | LUTRAM | 3R shared, 1W |
-| `mem_ld` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 3R shared, 1W |
-| `mem_fe` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 3R shared, 1W |
+| `mem_ie` | `ooo2_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared (3 for the M/F port, 2 per ALU port), 1W |
+| `mem_ld` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 7R shared, 1W |
+| `mem_fe` | `ooo2_prf` | 128 | 64 | 8 192 | LUTRAM | 7R shared, 1W |
+| `mem_ie2` | `ooo2_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W (item 10d-ii) |
 | `smap` | `ooo2_rename` | 64 | 9 | 576 | LUTRAM | 3R, 1W + bulk |
 | `rmap` | `ooo2_rename` | 64 | 9 | 576 | LUTRAM | 4R, 1W |
 | `lv` | `ooo2_rename` | 64 | 1 | 64 | flops | bulk-cleared on flush |
@@ -909,12 +915,14 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `fl_fe` | `ooo2_rename` | 128 | 7 | 896 | LUTRAM | free list |
 | `ent0`, `ent1` | `ooo2_rob` | 8 each | 16 | 256 | LUTRAM | entry parity: 1W dispatch each, read at head and head+1 |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
+| `fl_i20`, `fl_i21` | `ooo2_rename` | 32 each | 7 | 448 | LUTRAM | free list parity banks of the second ALU's shard IE2 (item 10d-ii) |
 | `v`, `done` | `ooo2_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `irr` | `ooo2_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
-| `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, `NSRC`=2 (§6.1) |
+| `u_iq_i` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
+| `u_iq_i2` entry | `ooo2_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot B's (item 10d-ii), `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `ooo2_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
 | `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
-| `plmem` (payload) | `ooo2_core` | 27 (10+12+5) | 413 | 11 151 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
+| `plmem` (payload) | `ooo2_core` | 37 (10+10+12+5) | 413 | 15 281 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
 | `q_dat` | `ooo2_frontend` | 8 | 283 | 2 264 | LUTRAM | F/X queue: carries the prediction's 2-bit choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
 
@@ -925,8 +933,8 @@ FPU, but **LD has two writers** — a landing load and M's mul/div — so LD sti
 arbiter, or mul/div needs its own shard. It costs nothing today because `m_done` is forced
 low on `ld_land`/`fp_land`, and an assertion fires the moment that stops being true.
 
-The remaining single point is the **ROB completion port**: widened to `NW` ports but pinned
-at `NW=1`, and it is now the only reason a cycle has to be yielded at all.
+The **ROB completion port** is `NW`=5 wide since 10d-ii (M, the ALU, the FPU, the store
+queue's commit, the second ALU); the only yield left is M's, to a landing load or FP result.
 
 ### 10.2 Front end
 
