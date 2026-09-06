@@ -761,6 +761,7 @@ module rv_soc_top #(
    reg [63:0] d_satp, d_va; reg [1:0] d_priv;
    always @(posedge clk) begin
       d_hit <= fb_hit;  d_in1 <= fb_in1;  d_ok <= imem_xlate_ok;  d_ctx <= imem_ctx_chg;
+      d_arr <= fb_arr;  d_rsp <= ic_rd_resp_addr;   // the arrival bypass, judged the same way (2026-09-06)
       d_al  <= fb_al;   d_pa  <= fb_pa;   d_pa1 <= fb_pa1;        d_alv <= fb_alv;
       d_satp <= imem_satp_q;  d_priv <= imem_priv_q;  d_va <= imem_va;
    end
@@ -772,7 +773,12 @@ module rv_soc_top #(
    // If the board comes back with stale=0 and a LARGE ctxhit count, that is positive
    // evidence the mechanism was identified correctly -- not just an absence of symptoms.
    wire fb_mism      = (d_al != (d_in1 ? d_pa1 : d_pa));
-   wire fb_stale_now = d_hit & d_ok & ~d_ctx & fb_mism;
+   // THE ARRIVAL BYPASS TOO (2026-09-06): the sim's $fatal on a VA-matched arrival that serves
+   // a stale PA had no silicon twin, and W1 (main + the run-ahead buffer) died in init with a
+   // return to a garbage address -- what wrong instruction bytes do. Same latch, same reset.
+   reg        d_arr;  reg [63:0] d_rsp;
+   wire fb_arr_stale_now = d_arr & d_ok & ~d_ctx & (d_rsp != d_al);
+   wire fb_stale_now = (d_hit & d_ok & ~d_ctx & fb_mism) | fb_arr_stale_now;
    wire fb_ctxhit_now = d_hit & d_ok &  d_ctx & fb_mism;
 
    // The OTHER failure class, and the reason this block reports two bits instead of one.
@@ -802,11 +808,11 @@ module rv_soc_top #(
          fbd_stale    <= 1'b1;                      // are consequences, not the cause
          fbd_va       <= d_alv;
          fbd_panow    <= d_al;
-         fbd_pacached <= d_in1 ? d_pa1 : d_pa;
+         fbd_pacached <= fb_arr_stale_now ? d_rsp : (d_in1 ? d_pa1 : d_pa);   // the answer's PA when it is the bypass
          fbd_satp     <= d_satp;
          fbd_pc       <= d_va;
          fbd_cyc      <= fbd_freecyc;
-         fbd_flags    <= {55'd0, fb_tagv, d_priv, d_ctx, |rq_v, fb_v1, fb_v0, d_in1, d_ok};
+         fbd_flags    <= {53'd0, fb_arr_stale_now, d_arr, fb_tagv, d_priv, d_ctx, |rq_v, fb_v1, fb_v0, d_in1, d_ok};
       end
    end
    // SELF-RESET.  key[1] is the only soft-reset today and it is a physical button; a VIO
