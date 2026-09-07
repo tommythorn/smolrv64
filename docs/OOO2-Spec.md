@@ -179,7 +179,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
 - Window: `OOO2_HW` halfwords. The shipping build is `OOO2_HW=8` → **16-byte window** (since
   2026-09-05; 4 before), so the I$ read width is `HW*16` = 128 bits, read as the 64-bit
   chunk pair (§9.1). On sha256sum the frontend bubble went from 43.4% of cycles (I, HW=4) to
-  10.1% (M, HW=8 with the senior store queue), IPC 0.435 → 0.714.
+  10.1% (M, HW=8 with the senior store queue), IPC 0.435 → 0.714. With the full two-wide
+  stack (two-wide fetch, dispatch and retire, the ALU's own port and a second ALU, the
+  run-ahead buffer with its page-crossing fix, the T1 cuts; board build 9b3050f9, 2026-09-07)
+  `perf stat -e cycles,instructions sha256sum` on a 30 MB tmpfs file reads IPC 1.32 / 1.38 /
+  1.39 on the board (three back-to-back runs after boot), against 0.90 with two-wide fetch
+  alone (T1F3).
 - **Fetch buffer: three chunk-aligned 16-byte chunks, two requests in flight, running two
   chunks ahead** (plan item 10e, 2026-09-05; two chunks and one request before). The pair
   chunk0/chunk1 serves any window across it, as before; chunk2 is a landing pad that feeds
