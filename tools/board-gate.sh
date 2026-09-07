@@ -26,6 +26,16 @@ PRE=$(wc -c < "$UB/screenlog.0")
 ( cd "$PLAT" && timeout 900 make program ${BIT:+BIT=$BIT} ) > "$RES/program.log" 2>&1
 grep -qi "programmed successfully" "$RES/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$RES/program.log"; exit 1; }
 echo "programmed ${BIT:-impl_1}"
+# The monitor's banner names the bitstream just programmed; wait for it past the offset (the
+# console log flushes late) and hand it to ubuntu-boot.sh, whose model-string stamp otherwise
+# reads the PREVIOUS build's banner (W7's board turn, 2026-09-07: the DTB said 9b3050f9 on
+# a 6c1eeff1 bitstream).
+for i in $(seq 1 30); do
+   RTL_BANNER=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]{7,12}' | tail -1 | cut -d= -f2)
+   [ -n "$RTL_BANNER" ] && break; sleep 2
+done
+echo "banner: rtl=${RTL_BANNER:-?}"
+export RTL_BANNER
 ( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
    || { echo "BOARD: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
 echo "booting, watching past byte $PRE"

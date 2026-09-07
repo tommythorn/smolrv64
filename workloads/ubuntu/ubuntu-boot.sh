@@ -55,8 +55,9 @@ fi
 # commit the bitstream was built from (rtl=...): when the last banner in the log names
 # another one, the DTS is regenerated with it (--rtl=), so /proc/device-tree/model on the
 # board answers "what is running" and a Geekbench result page names the right RTL.
-if [[ "$DTB" == ubuntu-nfs.dtb && -f "$LOG" ]]; then
-    banner_rtl=$(grep -aoE 'rtl=[0-9a-f]{7,12}' "$LOG" | tail -1 | cut -d= -f2)
+if [[ "$DTB" == ubuntu-nfs.dtb && ( -n "${RTL_BANNER:-}" || -f "$LOG" ) ]]; then
+    # board-gate.sh passes the banner it waited for (RTL_BANNER); alone, the last one in the log.
+    banner_rtl=${RTL_BANNER:-$(grep -aoE 'rtl=[0-9a-f]{7,12}' "$LOG" | tail -1 | cut -d= -f2)}
     if [[ -n "$banner_rtl" ]] && ! grep -q "SmolRV64 ooo2 $banner_rtl @" ubuntu-nfs.dts 2>/dev/null; then
         echo "[ubuntu-boot] model string: the banner says rtl=$banner_rtl, regenerating $DTB with it"
         python3 ../../tools/check-dts-timebase.py --gen "$(sed -n 's/^DIV8 *?= *//p' Makefile)" \
