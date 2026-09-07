@@ -1217,6 +1217,7 @@ module ooo2_core
    wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_older;
    wire                sq_ld_block;      // instrumentation: candidate held by an alias
    wire [LQ_N-1:0]     sq_l_older;       // per load, registered: an older store is live
+   wire [LQ_N-1:0]     sq_l_block_live;  // the live alias block, the oracle for the registered copy the queue reads
    wire [SQ_IB:0]      sq_occ;
    wire                sq_av_any;
    wire [SQ_IB-1:0]    sq_d_idx;
@@ -1225,7 +1226,7 @@ module ooo2_core
    wire [55:0]         sq_c_addr;
    wire [63:0]         sq_c_data;
    wire [1:0]          sq_c_size;
-   wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_xo_v, lsu_xo_unc;
+   wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_xo_v, lsu_xo_unc;
    wire [55:0]         lsu_xo_pa;
    wire st_b = rn_valid_b & d2_st_nb;                 // B is the store of the pair
    wire d_st_alloc = (rn_valid & d_st_nb) | st_b;
@@ -1258,7 +1259,7 @@ module ooo2_core
       .l_pa(lq_e_pa), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx),
       .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
-      .l_block(lq_e_block), .l_older(sq_l_older),
+      .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .occupancy(sq_occ), .flush(redirect));
 
@@ -1345,7 +1346,12 @@ module ooo2_core
    wire pt_v      = sq_go | lq_x_v;
    wire pt_store  = sq_go;
    wire lq_x_take = lq_x_v & ~sq_go & lsu_pt_ack;
-   wire ld_land   = lsu_pt_done & ~lsu_pt_is_store;
+   wire ld_land   = lsu_pt_ld_done;        // the load terms alone (ooo2_lsu pt_ld_done, T1 (L) 3)
+   // The registered alias block the queue's candidate select reads may only ever be the
+   // MORE conservative: a load that starts (x_v, on the copy) is never one the live block holds.
+   always @(posedge clk)
+      if (!reset && lq_x_v && sq_l_block_live[lq_x_idx])
+         $fatal(1, "ooo2_core: load %0d starts on the registered block copy while the live block holds it", lq_x_idx);
    // The tag of the access in flight. One at a time today, so a single register; when loads
    // are pipelined this becomes the D$'s rd_tag and the queue interface does not change.
    // Two ways an access leaves for memory now, and they name their entry differently: the
@@ -1608,7 +1614,7 @@ module ooo2_core
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
       .pt_unc(pt_store ? sq_c_unc : lq_x_unc), .pt_done(lsu_pt_done),
-      .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store),
+      .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store), .pt_ld_done(lsu_pt_ld_done),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),

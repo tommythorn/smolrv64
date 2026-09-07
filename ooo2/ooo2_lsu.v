@@ -71,6 +71,7 @@ module ooo2_lsu
     output wire            pt_done,
     output wire            pt_ack,         // accepted this cycle -- the requester may advance
     output wire            pt_is_store,    // direction of the access IN FLIGHT
+    output wire            pt_ld_done,     // pt_done for a LOAD, from the load terms alone (see acc_done)
 
     // ---- TRANSLATE-ONLY: the address pass of a buffered store or a queued load ------
     // Neither accesses memory when it executes: it translates, hands the PA to ooo2_sq or
@@ -463,6 +464,16 @@ module ooo2_lsu
    assign done_acc = acc_done & ~own_pt;
    assign done     = fault | xo_ok | done_acc;
    assign pt_done  = acc_done & own_pt;
+   // A LOAD'S LANDING FROM THE LOAD TERMS ALONE (plan item T1 (L) step 3, 2026-09-07). pt_done
+   // & ~pt_is_store is the same value, but its cone is all of acc_done, and the store terms'
+   // st_fin selects on eff_cbo, which selects on pt_start -- this cycle's NEW start -- so
+   // every landing wake began at pt_v: on 142 of gate W6's 200 worst paths. The load terms
+   // are the FSM state, the D$'s registered rvalid and xword_q. Asserted equal below.
+   wire ld_fin = ((st == S_LD) & mem_rvalid & ~xword_q) | ((st == S_LD2) & mem_rvalid);
+   assign pt_ld_done = ld_fin & own_pt & ~own_pt_st;
+   always @(posedge clk)
+      if (!reset && (pt_ld_done !== (pt_done & ~pt_is_store)))
+         $fatal(1, "ooo2_lsu: pt_ld_done %b != pt_done & ~store %b (st=%0d)", pt_ld_done, pt_done & ~pt_is_store, st);
    assign pt_ack  = pt_start | take_next;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);

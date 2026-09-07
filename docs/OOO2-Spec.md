@@ -691,7 +691,16 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   conservative, and a load reaches M no sooner than two cycles after the dispatch that
   wrote its tag. The live query port stays as the oracle the core asserts against. Why:
   `u_lq/sqt -> ld_older -> lq_b_early -> m_done -> iss_ready -> pl_q` was gate W5fix's
-  largest family (362 endpoints, 21 levels). The CBO's predicate is an entry
+  largest family (362 endpoints, 21 levels). The alias block is a register per load the same way
+  (`l_block_q`, T1 (L) step 2): once a load's address is in, its block only clears (oldm
+  shrinks; a store's address arriving turns "unknown, blocks" into the overlap), and the
+  fill cycle -- the one moment the copy would lag the wrong way -- computes it from the row
+  being written (`fill_row`, against `av_next`). The load queue's candidate select reads the
+  copy; a load never starts while the live block holds it (asserted). And the landing is
+  the LSU's load terms alone (`pt_ld_done`: S_LD/S_LD2, the D$'s registered rvalid,
+  xword_q, own_pt; step 3): `pt_done & ~pt_is_store` is the same value, but its cone is the
+  whole `acc_done`, whose store terms select on this cycle's new start -- gate W6's fan-out
+  report put `pt_v` on 142 of the 200 worst paths and `ld_land` on 140. The CBO's predicate is an entry
   WITH AN ADDRESS (`sq_av_any`), never the occupancy: entries are allocated at dispatch,
   so the queue holds stores younger than the op in M, which cannot translate until M
   frees -- a CBO waiting for an empty queue deadlocked build L at SLUB init (2026-09-04;

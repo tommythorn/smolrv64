@@ -111,6 +111,8 @@ module ooo2_sq
     input  wire [1:0]            l_fill_size,
     output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
     output wire [LQN-1:0]        l_older,     // per entry, REGISTERED: an older store is live (see below)
+    output wire [LQN-1:0]        l_block_q,   // per entry, REGISTERED: l_block one cycle old, never the less
+                                              // conservative -- what ooo2_lq's candidate select reads (T1 (L) 2)
     // ld_older keeps a query port: it is pointer arithmetic against head, no address and no
     // adder, so it is not part of the cone above.
     input  wire [IDXB:0]         ld_tag,     // this load's captured store-seqno
@@ -227,6 +229,19 @@ module ooo2_sq
    reg [NENT-1:0] conf [0:LQN-1];
    integer        li;
 
+   // The arriving load's row against every live store, computed ONCE (rule C1): the conf
+   // write and the registered block copy below both read it.
+   reg [NENT-1:0] fill_row;
+   integer        fk;
+   always @* begin
+      for (fk = 0; fk < NENT; fk = fk + 1)
+         fill_row[fk] = (a_v && (fk[IDXB-1:0] == a_idx))
+                      ? ovl_ab(l_fill_pa, l_fill_size, a_addr, a_size)
+                      : (av[fk] & ovl_ab(l_fill_pa, l_fill_size, addr[fk], sz[fk]));
+   end
+   // the stores' address-valid bits as they will stand next cycle (a store only gains one)
+   wire [NENT-1:0] av_next = av | (a_v ? ({{(NENT-1){1'b0}}, 1'b1} << a_idx) : {NENT{1'b0}});
+
    wire [IDXB:0] ld_dist = ld_tag - headc;
    genvar gl, gs;
    generate
@@ -240,6 +255,22 @@ module ooo2_sq
          // An older store whose address has not arrived cannot be compared, so it blocks --
          // conservative and correct, and the same rule the compare form used.
          assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | ~av)));
+         // THE BLOCK, TOO, IS A REGISTER PER LOAD (plan item T1 (L) step 2, 2026-09-07). The
+         // live l_block above fed the load queue's candidate select and so the LSU's start
+         // and, through the shared completion term, the landing wake: gate W6's worst path
+         // (u_lq/sqt -> l_block -> x_v -> pt_v -> ... -> u_iq_i2/e_r, 25 levels, -0.556 ns).
+         // Once a load's address is in, its block only clears: oldm shrinks, a store's
+         // address arriving turns "unknown, blocks" into the overlap, never the reverse. The
+         // fill cycle is the one moment the copy would lag the wrong way (l_av rises next
+         // cycle), so that cycle computes it from the row being written (fill_row, against
+         // av_next). A load is no candidate before its address is in, and the live form
+         // stays as the oracle ooo2_core asserts against.
+         reg blk_q;  initial blk_q = 1'b0;
+         always @(posedge clk)
+            blk_q <= (l_fill & (l_fill_ix == gl[LQIB-1:0]))
+                   ? (|(oldm & (fill_row | ~av_next)))
+                   : (l_av[gl] & (|(oldm & (conf[gl] | ~av))));
+         assign l_block_q[gl] = blk_q;
          // THE OLDER-STORE ANSWER IS A REGISTER, PER LOAD (plan item T1 (L), 2026-09-07).
          // The query port below (ld_tag -> ld_older) reads sqt[acc] from the load queue's
          // LUTRAM, subtracts headc and compares NENT distances, and its answer licensed M's
@@ -289,12 +320,8 @@ module ooo2_sq
          // A LOAD's address arrives: its ROW, against every live store. Written second, so
          // it wins the one cell both updates can touch -- and it must, because the column
          // update above would compare that cell against addr[a_idx], which is not written
-         // until this same edge. The a_v arm here forwards the arriving address instead.
-         if (l_fill)
-            for (k = 0; k < NENT; k = k + 1)
-               conf[l_fill_ix][k] <= (a_v && (k[IDXB-1:0] == a_idx))
-                                   ? ovl_ab(l_fill_pa, l_fill_size, a_addr, a_size)
-                                   : (av[k] & ovl_ab(l_fill_pa, l_fill_size, addr[k], sz[k]));
+         // until this same edge. The a_v arm (in fill_row) forwards the arriving address.
+         if (l_fill) conf[l_fill_ix] <= fill_row;
          // commit the first uncommitted entry (the ROB released it)
          if (k_take) begin
             cmt[kc] <= 1'b1;

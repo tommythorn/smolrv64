@@ -38,6 +38,7 @@ module tb;
    wire [NENT*PAW-1:0] e_pa;  wire [NENT*2-1:0] e_size;  wire [NENT*(IDXB+1)-1:0] e_tag;
    wire [NENT-1:0]  e_av, e_block;
    wire [NENT-1:0]  e_older;   // the registered per-load copy of ld_older (what ooo2_core reads)
+   wire [NENT-1:0]  l_block_q;  // the registered block copy (what ooo2_lq reads in the core)
    // ---- store queue ports ----
    reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
@@ -75,7 +76,7 @@ module tb;
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.k_take(sq_k_take),
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
-      .l_block(e_block),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
+      .l_block(e_block),.l_block_q(l_block_q),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
       .occupancy(sq_occ),.flush(flush));
 
    integer pass=0, fail=0;

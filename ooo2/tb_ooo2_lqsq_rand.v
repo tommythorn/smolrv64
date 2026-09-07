@@ -49,6 +49,7 @@ module tb;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v, sq_av_any;
    wire [NENT-1:0]  l_older;   // the registered per-load copy of ld_older (ooo2_core reads this one)
+   wire [NENT-1:0]  l_block_q;  // the registered block copy (what ooo2_lq reads in the core)
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
@@ -77,7 +78,7 @@ module tb;
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.k_take(sq_k_take),
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
-      .l_block(e_block),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
+      .l_block(e_block),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
       .occupancy(sq_occ),.flush(flush));
 
    // ------------------------------------------------------------- the program-order model
