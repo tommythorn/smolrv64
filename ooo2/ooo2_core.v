@@ -1063,9 +1063,25 @@ module ooo2_core
    reg [PLW-1:0] plmem_i2 [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
-   wire [PLW-1:0] pl_out  = (i_cls == C_L) ? plmem_l[i_ent[IBL-1:0]] : plmem_f[i_ent[IBF-1:0]];
-   wire [PLW-1:0] pla_out = plmem_i[a_ent];                 // the ALU port's payload
-   wire [PLW-1:0] pla2_out = plmem_i2[a2_ent];              // the second ALU port's
+   // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
+   // 2026-09-06). They used to be read in the execute cycle at last cycle's entry, so every
+   // control derived from them -- the pending table's dispatch-cycle compare, the store
+   // queue's data valid, the FPU's request -- began with a LUTRAM read: T1F2's census had
+   // `i_ent_reg -> u_pend/pend_reg` (462 endpoints, 14 levels) and `-> u_sq/dv` at the top.
+   // Now, like psmem's tags: one read per port at that port's own candidate (the LUTRAM
+   // address is the scheduler's select, not the pick), and the port's load captures it. An
+   // entry issues no earlier than the cycle after its dispatch, so a read never meets its
+   // own write.
+   wire [PLW-1:0] pl_cand  = pick_l ? plmem_l[rl_iss_ent] : plmem_f[rf_iss_ent];
+   reg  [PLW-1:0] pl_q, pla_q, pla2_q;
+   always @(posedge clk) begin
+      if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
+      if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
+      if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
+   end
+   wire [PLW-1:0] pl_out   = pl_q;
+   wire [PLW-1:0] pla_out  = pla_q;                         // the ALU port's payload
+   wire [PLW-1:0] pla2_out = pla2_q;                        // the second ALU port's
    always @(posedge clk) begin
       if (rn_valid & d_cls_i) plmem_i[ri_d_ent]  <= pl_in;
       if (b_to_i2)            plmem_i2[ri2_d_ent] <= pl_in_b;
