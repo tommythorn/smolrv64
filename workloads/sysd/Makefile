@@ -26,7 +26,13 @@ tiny128-sysd.cpio: S98sysd Makefile $(R)/$(SYSD) $(addprefix $(R)/$(LIBD)/,$(LIB
 	ln -s ../$(LIBD) ov/lib/riscv64-linux-gnu
 	cp S98sysd ov/etc/init.d/S98sysd; chmod +x ov/etc/init.d/S98sysd
 	cd ov && find . | cpio -o -H newc > ../overlay.cpio 2>/dev/null
-	cat ../tiny128/tiny128.cpio overlay.cpio > $@
+	# The kernel's initramfs loop recognises a cpio header only at a 4-byte-aligned offset
+	# (init/initramfs.c: `*buf == '0' && !(this_header & 3)`) and skips zero bytes one at a
+	# time, so the compressed first archive is padded to 4 before the overlay is appended.
+	# Unpadded (tiny128.cpio is 3,301,923 B) the kernel said "Initramfs unpacking failed:
+	# invalid magic at start of compressed archive" and the overlay never existed: no run
+	# of this harness before 2026-09-07 executed its test.
+	cat ../tiny128/tiny128.cpio > $@; truncate -s $$(( ($$(wc -c < $@) + 3) / 4 * 4 )) $@; cat overlay.cpio >> $@
 
 ../tiny128/tiny128-cosim-sysd.dtb: tiny128-sysd.cpio ../tiny128/tiny128-cosim.dts
 	@sz=$$(wc -c < tiny128-sysd.cpio); end=$$(printf '0x%x' $$(($(START) + sz))); \

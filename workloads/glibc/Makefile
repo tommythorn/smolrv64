@@ -24,7 +24,13 @@ tiny128-glibc.cpio: S98glibc glibc-test.sh Makefile $(addprefix $(R)/usr/bin/,$(
 	cp glibc-test.sh ov/usr/bin/glibc-test.sh; cp S98glibc ov/etc/init.d/S98glibc
 	chmod +x ov/usr/bin/* ov/etc/init.d/S98glibc
 	cd ov && find . | cpio -o -H newc > ../overlay.cpio 2>/dev/null
-	cat ../tiny128/tiny128.cpio overlay.cpio > $@
+	# The kernel's initramfs loop recognises a cpio header only at a 4-byte-aligned offset
+	# (init/initramfs.c: `*buf == '0' && !(this_header & 3)`) and skips zero bytes one at a
+	# time, so the compressed first archive is padded to 4 before the overlay is appended.
+	# Unpadded (tiny128.cpio is 3,301,923 B) the kernel said "Initramfs unpacking failed:
+	# invalid magic at start of compressed archive" and the overlay never existed: no run
+	# of this harness before 2026-09-07 executed its test.
+	cat ../tiny128/tiny128.cpio > $@; truncate -s $$(( ($$(wc -c < $@) + 3) / 4 * 4 )) $@; cat overlay.cpio >> $@
 
 # The device tree is tiny128's cosim one with the initrd window moved to START and its end
 # stamped from the archive's exact size, so the size can never skew from the archive.
