@@ -16,7 +16,7 @@ for tb in tb_*.v; do
    [ "$tb" = tb_mon.v ]    && continue  # +monhex monitor-boot harness (verilated)
    [ "$tb" = tb_linux.v ]  && continue  # +bin-driven Linux-boot harness (verilated)
    total=$((total+1))
-   if ! timeout 90 iverilog -g2012 -I. -s tb -o /tmp/tb.vvp $srcs "$tb" ./alu.v ./smolrv64_sdpram.v fp_unit_stub.sv ./smolrv64_plic_arbiter.v >/tmp/tb_cc.log 2>&1; then
+   if ! timeout 90 iverilog -g2012 -I. -s tb -o /tmp/tb.vvp $srcs "$tb" fp_unit_stub.sv >/tmp/tb_cc.log 2>&1; then
       printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
    fi
    out=$(timeout 60 vvp /tmp/tb.vvp 2>&1)

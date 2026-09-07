@@ -99,6 +99,13 @@ if [ ! -f "$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit" ]; then
 fi
 echo "timing: $WNS"
 printf '%s\n' "$WORST" | sed 's/^/  /'
+# NO_BOARD=1: stop here with the bitstream banked in the evidence directory -- for a build
+# whose board is busy (a Geekbench run on the last gate's bitstream); tools/board-gate.sh
+# on the evidence directory finishes the gate later.
+if [ "${NO_BOARD:-0}" != 0 ]; then
+   cp "$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit" "$RES/rk_xcku5p.bit"
+   echo "GATE: BUILT (board pending)  ($WHAT)  $WNS   [evidence: gate-results/$SHA/, bitstream banked there]"; exit 0
+fi
 
 # ---- 3. the board: tools/board-gate.sh, runnable alone on a banked bitstream ------------
 tools/board-gate.sh "$RES" | tee "$RES/board.log"
