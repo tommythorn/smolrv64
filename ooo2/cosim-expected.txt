@@ -85,3 +85,4 @@
                               # fail no matter what landed.  A throughput floor nothing can trip
                               # is not a gate.
 400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background.
+300000000  8   78964298  0.5   # The release tree (384fd599, RTL bit-identical to W7 + the counter split) at the required 300 M-cycle length, 2026-09-07; recorded so the standing gate has a floor at this length.
