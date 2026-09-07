@@ -989,9 +989,22 @@ module ooo2_core
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
-   wire [PLW-1:0] pl_out = (i_cls == C_I) ? plmem_i[i_ent[IBI-1:0]]
-                         : (i_cls == C_L) ? plmem_l[i_ent[IBL-1:0]]
-                         :                  plmem_f[i_ent[IBF-1:0]];
+   // THE PAYLOAD IS READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
+   // 2026-09-06). It used to be read in M's cycle at i_ent (last cycle's pick), so every
+   // control M derives from it -- the pending table's dispatch-cycle compare, the store
+   // queue's data valid, the FPU's request -- began with a LUTRAM read: T1F2's census had
+   // `i_ent_reg -> u_pend/pend_reg` (462 endpoints, 14 levels) and `-> u_sq/dv` at the top.
+   // Now, like psmem's tags: one read per class at that class's own candidate (the LUTRAM
+   // address is the scheduler's select, not the pick), the pick selects the result, and the
+   // issue register's load captures it. M's cycle starts from flops. A dispatch writes a
+   // different entry than the one being read (an entry issues no earlier than the cycle
+   // after its dispatch), so the read-during-write question does not arise.
+   wire [PLW-1:0] pl_cand = pick_l ? plmem_l[rl_iss_ent]
+                          : pick_f ? plmem_f[rf_iss_ent]
+                          :          plmem_i[ri_iss_ent];
+   reg  [PLW-1:0] pl_q;
+   always @(posedge clk) if (iss_ready & iq_iss_take) pl_q <= pl_cand;
+   wire [PLW-1:0] pl_out = pl_q;
    always @(posedge clk) begin
       if ((rn_valid & d_cls_i) | b_to_i) plmem_i[ri_d_ent] <= b_to_i ? pl_in_b : pl_in;
       if ((rn_valid & d_cls_l) | b_to_l) plmem_l[rl_d_ent] <= b_to_l ? pl_in_b : pl_in;
