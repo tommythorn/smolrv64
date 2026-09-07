@@ -51,7 +51,7 @@ module tb;
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_fetch
      (.clk(clk), .reset(reset),
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
-      .solo_all(1'b0), .irq_inject(1'b0),
+      .solo_all(1'b0), .irq_inject(1'b0), .irq_pres(),
       .pred_v(1'b0), .apred_v(1'b0), .pred_tgt(64'd0),
       .imem_addr(f_imem_va), .imem_ipc(f_imem_ipc),
       .imem_data(imem_data), .imem_avail(imem_avail_g), .imem_ok(1'b1),

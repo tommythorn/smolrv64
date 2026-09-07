@@ -169,7 +169,7 @@ module ooo2_frontend
      (.clk(clk), .reset(reset),
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
       .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
-      .irq_inject(irq_inject),
+      .irq_inject(irq_inject), .irq_pres(irq_pres),
       // `bp_av` on the apc arm, `bp_v` on the real advance: the predictor's steer minus
       // its aligner term, so the array read address stays register-only (ooo2_predictor
       // `predict`).
@@ -205,7 +205,8 @@ module ooo2_frontend
    // interlock was left keyed to the old one. Report the real event so the interlock can
    // name it: while the backend stalls, `accept` is low but `fire` is not, so fetch
    // re-emitted the SAME interrupt every cycle with nothing to stop it.
-   assign irq_taken = irq_inject & fire;
+   wire   irq_pres;                    // fetch presents the pseudo-op (a straddle finishes first)
+   assign irq_taken = irq_pres & fire;
 
    // Sub-attribution for the frontend bubble (see ooo2_core's fe_aln/fe_que).  fx_valid is
    // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not

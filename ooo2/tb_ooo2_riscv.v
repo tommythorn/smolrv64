@@ -25,6 +25,7 @@ module tb;
    wire [PCW-1:0]   imem_addr;
    reg  [HW*16-1:0] imem_data;
    wire [1:0]       imem_avail = HW[1:0];      // window always full from this TB memory
+   wire             imem_xlate_ok;             // the core's iMMU verdict on imem_addr's VA
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
    wire             dmem_ren, dmem_wen;
@@ -39,7 +40,12 @@ module tb;
 
    ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(1'b1),
+      // The SoC's fetch buffer holds bytes only of a translation that succeeded, so a served
+      // hit carries its translation and the core no longer consults the iMMU's verdict on a
+      // hit (2026-09-07, imem_ok_g). This memory answers every address; its "ok" is that
+      // same contract: the bytes are the PC's iff the translation is.
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(imem_xlate_ok),
+      .imem_xlate_ok(imem_xlate_ok),
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(),

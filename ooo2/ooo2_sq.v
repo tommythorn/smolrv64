@@ -110,6 +110,7 @@ module ooo2_sq
     input  wire [PAW-1:0]        l_fill_pa,
     input  wire [1:0]            l_fill_size,
     output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
+    output wire [LQN-1:0]        l_older,     // per entry, REGISTERED: an older store is live (see below)
     // ld_older keeps a query port: it is pointer arithmetic against head, no address and no
     // adder, so it is not part of the cone above.
     input  wire [IDXB:0]         ld_tag,     // this load's captured store-seqno
@@ -239,6 +240,20 @@ module ooo2_sq
          // An older store whose address has not arrived cannot be compared, so it blocks --
          // conservative and correct, and the same rule the compare form used.
          assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | ~av)));
+         // THE OLDER-STORE ANSWER IS A REGISTER, PER LOAD (plan item T1 (L), 2026-09-07).
+         // The query port below (ld_tag -> ld_older) reads sqt[acc] from the load queue's
+         // LUTRAM, subtracts headc and compares NENT distances, and its answer licensed M's
+         // early release: gate W5fix's largest family (1,773 endpoints, 21 levels) ran
+         // u_lq/sqt -> ld_older -> lq_b_early -> m_done -> iss_ready -> the issue port's
+         // payload register. For one load the set of older live stores only SHRINKS -- its
+         // tag is fixed at dispatch, a later store is younger by construction, and head and
+         // headc only advance -- so a copy one cycle old errs on the conservative side, and
+         // a load reaches M no sooner than two cycles after the dispatch that wrote its tag.
+         // The live port stays as the oracle (ooo2_core asserts the copy is never the less
+         // conservative of the two).
+         reg l_older_q;  initial l_older_q = 1'b0;
+         always @(posedge clk) l_older_q <= |oldm;
+         assign l_older[gl] = l_older_q;
          // A load can have at most cnt older live stores: a distance beyond the occupancy
          // is a seqno that wrapped, i.e. the defect above in any new clothing.
          always @(posedge clk) if (!reset & l_av[gl] & (l_dist > cnt))

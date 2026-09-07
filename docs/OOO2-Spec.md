@@ -213,6 +213,20 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   644f732c, interrupt-bracketed): `sha256sum` 0.80 → 0.86–0.87 with `FE_QUE` 8.4% → 0.4%,
   the C loop 0.876 → 0.90, libcrypto under `openssl speed` 0.784 → 0.820; the boot is
   −0.19% (memory-bound; wasted chunk requests at taken branches, presumably).
+- **The fetch address is the PC register, bare; a hit carries its translation** (plan item
+  T1 (F) steps 4-6, 2026-09-07). `imem_addr = pc_q` in every state: a page straddle steps
+  pc_q to the high halfword's address and `ipc_q` keeps the instruction's PC (the bundle's PC,
+  a fault's EPC); a pending interrupt waits out a straddle (`irq_go`) instead of abandoning
+  it, so no state reads `irq_inject` before the bundle muxes. A served hit is consumed on
+  the buffer's word alone (`imem_ok_g = imem_ok & ~imem_ctx_chg_q`): the buffer holds only
+  bytes captured under a real translation of that VA and drops them on a context change,
+  so the iMMU's live verdict (its 64-bit request match and TLB compare) is not in the
+  window's enable; a miss still takes the iMMU's fault. The page cap on the aligner's
+  window is chunk0's index in the page against the last (`in_last`, `hw_left`), not
+  `(4096 - off) >> 1` compared with HW. Why: gate W5fix (2026-09-07) missed 166.67 MHz by
+  0.271 ns on irq_inject_q -> the fetch VA mux -> the iMMU's match -> the served window ->
+  the straddle detect -> pc_q, 20 levels, and the census put 6,000 endpoints within 0.35
+  ns across every family. Cycle-exact on the 60 M boot (14,301,801 retires, unchanged).
 - **Two-wide fetch** (2026-09-05, plan item 10a): the aligner emits up to two instructions per
   cycle (`IW=2`) and both enter the F/X queue in one cycle; the queue is two LUTRAM banks on
   entry parity, so each bank takes one write per cycle and the head is a 2:1 mux. Decode still
@@ -669,7 +683,15 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   tail of the queue (`tailc <= kcc`; a committed store is architecturally done and survives),
   and "every older store is visible" is no longer implied by the ROB head or by `rob_empty`
   -- the serialization drain (`drained`), the CBO start in M (`m_cbo_wait`) and a load's
-  early start (`ld_older`) each name the queue (rule C5). The CBO's predicate is an entry
+  early start (`ld_older`) each name the queue (rule C5). Since 2026-09-07 (plan item T1 (L)) the
+  early start reads the store queue's REGISTERED per-load copy of that answer (`l_older`,
+  the OR of the distance vector `l_block` already computes, one cycle old) at M's own load
+  index; for one load the set of older live stores only shrinks (its tag is fixed at
+  dispatch, later stores are younger, head only advances), so the copy can only be the more
+  conservative, and a load reaches M no sooner than two cycles after the dispatch that
+  wrote its tag. The live query port stays as the oracle the core asserts against. Why:
+  `u_lq/sqt -> ld_older -> lq_b_early -> m_done -> iss_ready -> pl_q` was gate W5fix's
+  largest family (362 endpoints, 21 levels). The CBO's predicate is an entry
   WITH AN ADDRESS (`sq_av_any`), never the occupancy: entries are allocated at dispatch,
   so the queue holds stores younger than the op in M, which cannot translate until M
   frees -- a CBO waiting for an empty queue deadlocked build L at SLUB init (2026-09-04;

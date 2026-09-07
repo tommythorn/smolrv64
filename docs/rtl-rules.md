@@ -450,6 +450,22 @@ tiny128 cosim reproduced it at cycle 833,573,569 with the buffer's own invariant
 ran that far. The shape: `fb_in1a = fb_tagv & (fb_alv == fb_va1) & fb_samepg`. A page
 crossing is a realign from the iTLB, never a slide.
 
+**D11. A predicate that only ever shrinks for its subject may be read one cycle late, and
+that is how a completion cone leaves an enable.**
+The store queue's "an older store is live" for a given load is monotone: the load's tag is
+fixed at dispatch, later stores are younger by construction, head only advances. So a
+registered per-load copy (`l_older[gl] <= |oldm`) is never less conservative than the live
+query, and M's early release reads the copy at its own load index -- a register-indexed
+mux -- instead of `sqt[acc] - headc` compared NENT ways inside M's completion cone (gate
+W5fix, 2026-09-07: 362 endpoints, 21 levels, u_lq/sqt -> pl_q). Two conditions make it
+sound, and both are asserted: the subject reaches the consumer no sooner than two cycles
+after the write that defines it (dispatch to M is three), and the check that the copy is
+never the LESS conservative of the two runs only while the consumer actually holds the
+subject (`m_ld_nb`) -- the first cut checked it on M's stale index and fired on a load
+dispatched a cycle earlier that M was not looking at. The same shape serves any "may I
+proceed" that is a monotone function of registered state: register it, index it by the
+consumer's own registered key, keep the live form as the oracle.
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

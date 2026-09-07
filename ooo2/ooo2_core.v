@@ -150,9 +150,26 @@ module ooo2_core
    // registered gate keeps the belt on the braces at no cost.
    reg imem_ctx_chg_q;
    always @(posedge clk) imem_ctx_chg_q <= reset ? 1'b0 : imem_ctx_chg;
-   // The iMMU's verdict and the context gate join the buffer's late bit; the count itself is
+   // THE iMMU'S VERDICT IS NOT PART OF A HIT (2026-09-07). A served hit is bytes the buffer
+   // captured under a real translation of this very VA (fb_tagv, rv_soc_top) and has held
+   // through no context change since -- the translation is IN the hit. `immu_ready` is the
+   // iMMU's 64-bit request match and its TLB compare on the live fetch address, and through
+   // this gate it reached every aligner enable and the bundle count in one cycle: gate
+   // W5fix's worst path (-0.271 ns, 20 levels) went fetch address -> that match -> served
+   // window -> straddle -> pc_q. A miss is not served at all (imem_ok is low), so a fault
+   // is still delivered on the miss it belongs to (imem_fault below); a hit on a faulting
+   // translation is impossible by construction and asserted. The context gate stays: it is
+   // the one-cycle window between the change and the buffer's drop (above). The count is
    // register-derived in rv_soc_top and reaches the aligner ungated (item T1 (F)).
-   wire                     imem_ok_g = imem_ok & immu_ready & ~immu_fault & ~imem_ctx_chg_q;
+   wire                     imem_ok_g = imem_ok & ~imem_ctx_chg_q;
+   // The one cycle a hit may meet a fault is the context change's own (the buffer still
+   // serves the OLD context's bytes while the iMMU already answers for the new one): the
+   // tiny128 boot shows it at every satp switch, as an access fault on kernel text. That
+   // cycle's bundle is wrong-path by the argument above and the redirect flushes it, so it
+   // is excluded here and nowhere else.
+   always @(posedge clk)
+      if (!reset && imem_ok && ~imem_ctx_chg && immu_ready && immu_fault)
+         $fatal(1, "ooo2_core: the fetch buffer serves a hit on a faulting translation (va=%h cause=%0d)", imem_va, immu_cause);
    // The gated count survives for the counters only (FE_QUE's "no bytes" attribution below).
    wire [$clog2(HW+2)-1:0]  imem_avail_g = imem_ok_g ? imem_avail : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
@@ -1199,6 +1216,7 @@ module ooo2_core
    // retires only when this buffer has written it. Everything still live is younger.
    wire                sq_d_ready, sq_c_v, sq_c_unc, sq_ld_older;
    wire                sq_ld_block;      // instrumentation: candidate held by an alias
+   wire [LQ_N-1:0]     sq_l_older;       // per load, registered: an older store is live
    wire [SQ_IB:0]      sq_occ;
    wire                sq_av_any;
    wire [SQ_IB-1:0]    sq_d_idx;
@@ -1240,7 +1258,7 @@ module ooo2_core
       .l_pa(lq_e_pa), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx),
       .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
-      .l_block(lq_e_block),
+      .l_block(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .occupancy(sq_occ), .flush(redirect));
 
@@ -1310,7 +1328,16 @@ module ooo2_core
    //
    // ld_older answers about OUR load only while the queue's query port is asking about it:
    // q_tag is sqt[acc], so `b_idx == acc` -- inside lq_b_ok -- is what makes the read sound.
-   wire lq_b_early = m_ld_nb & lq_b_ok & ~sq_ld_older;
+   // ...and since 2026-09-07 the answer M reads is the store queue's REGISTERED per-load
+   // copy at M's own load index (a register), not the live query: see ooo2_sq l_older. The
+   // live one is the oracle, and the copy may only ever be the more conservative.
+   wire lq_b_early = m_ld_nb & lq_b_ok & ~sq_l_older[m_lq_idx];
+   // Checked only while M holds the load: m_lq_idx is a register that keeps the LAST load's
+   // index, and a load dispatched into that entry a cycle ago is the queue's candidate
+   // (lq_b_ok) before its copy has caught up -- one cycle, and M is not looking.
+   always @(posedge clk)
+      if (!reset && m_ld_nb && lq_b_ok && sq_ld_older && !sq_l_older[m_lq_idx])
+         $fatal(1, "ooo2_core: the registered older-store answer (0) is less conservative than the live one (1) for load %0d", m_lq_idx);
 
    // ONE pre-translated port, two users. The committing store wins: it is at the ROB head,
    // so it is unconditionally older than any queued load, and it frees the port immediately.

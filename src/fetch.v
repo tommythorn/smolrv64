@@ -20,14 +20,17 @@
 //      wrong contiguous-PA page, no speculative next-page access).
 //   2. When slot 0 IS such a straddler -- pc_q at offset 0xFFE and a genuine 32-bit
 //      op (low 2 bits == 11) -- we enter the STRADDLE state: latch the low halfword,
-//      present PC+2 to fetch (and translate) the high halfword from the next page,
-//      then emit the combined 32-bit op as a one-instruction bundle and advance by 4.
+//      step pc_q -- the fetch address, always this bare register -- to PC+2 to fetch
+//      (and translate) the high halfword from the next page while ipc_q keeps the
+//      instruction's PC, then emit the combined 32-bit op as a one-instruction bundle
+//      and advance past it.
 // A compressed op at 0xFFE (low 2 bits != 11) is complete in this page: the aligner
 // emits it from the single available halfword and we NEVER touch the next page, so
 // an unmapped next page raises no fault. If the next page is unmapped for a real
 // 32-bit straddler, the fetch stalls and the iMMU's fault is delivered precisely:
-// epc = the instruction PC (imem_ipc = pc_q), tval = the faulting VA (imem_addr =
-// pc_q+2) -- exactly simmerv's mepc/mtval for a page-crossing instruction fault.
+// epc = the instruction PC (imem_ipc = ipc_q), tval = the faulting VA (imem_addr =
+// pc_q, the high halfword's) -- exactly simmerv's mepc/mtval for a page-crossing
+// instruction fault.
 //
 // Instruction memory is an external combinational read (imem_addr -> imem_data /
 // imem_avail) so the real dual-bank I$ drops in later. Downstream handshake is
@@ -50,6 +53,8 @@ module fetch
     // instruction) at the current PC, WITHOUT advancing PC -- the displaced real
     // instruction re-fetches after the handler returns (mepc = this PC).
     input  wire                    irq_inject,
+    output wire                    irq_pres,    // ...and it is the presented bundle this cycle: a
+                                                // pending injection waits out a straddle (see irq_go)
     // branch prediction: when the presented bundle ends on a predicted-taken CTI,
     // the predictor overrides the fall-through advance. `npc` is the computed
     // next PC (all arms, redirect included) -- the predictor's BTB read address.
@@ -104,28 +109,42 @@ module fetch
    // a 32-bit op from PC+2 (the next page); `strad_lo` holds its already-read low half.
    reg            strad;
    reg [15:0]     strad_lo;
-   reg [PCW-1:0]  pc2_q;              // pc_q + 2, captured when the straddle is entered
-   initial begin pc_q = RESET_PC; seq_q = 0; strad = 1'b0; pc2_q = RESET_PC + 64'd2; end
+   reg [PCW-1:0]  ipc_q;              // the instruction's PC: pc_q, or pc_q - 2 while straddling
+   initial begin pc_q = RESET_PC; ipc_q = RESET_PC; seq_q = 0; strad = 1'b0; end
 
    // halfwords from pc_q to the 4 KiB page boundary; cap the aligner's view there.
    wire [11:0]    off      = pc_q[11:0];
    wire           at_bound = (off == 12'hFFE);                  // pc_q is the page's last halfword
-   wire [12:0]    hw_bound = (13'd4096 - {1'b0, off}) >> 1;     // 1..2048 halfwords to the boundary
-   wire [PBW-1:0] hw_cap   = (hw_bound > HW) ? HW[PBW-1:0] : hw_bound[PBW-1:0];
+   // The cap is HW unless pc_q is inside the page's last HW halfwords, and then it is what is
+   // left of them: a test of register bits and a (HB+1)-bit difference. It used to be
+   // `(4096 - off) >> 1` compared against HW -- two carry chains at the head of the
+   // frontend's PC loop (gate W5fix, 2026-09-07). The sum form is kept as the oracle.
+   localparam integer HB = $clog2(HW);
+   wire           in_last  = &off[11:HB+1];                     // the last HW halfwords of the page
+   wire [HB:0]    hw_left  = HW[HB:0] - {1'b0, off[HB:1]};       // 1..HW of them from pc_q
+   wire [PBW-1:0] hw_cap   = in_last ? {{(PBW-HB-1){1'b0}}, hw_left} : HW[PBW-1:0];
    wire           bytes_late = (imem_avail < hw_cap);          // short of the page end: the buffer's shortfall
    wire [PBW-1:0] eff_avail  = bytes_late ? imem_avail : hw_cap;
+   wire [12:0]    hw_bound = (13'd4096 - {1'b0, off}) >> 1;     // the oracle: 1..2048 halfwords to the boundary
+   wire [PBW-1:0] hw_cap_ref = (hw_bound > HW) ? HW[PBW-1:0] : hw_bound[PBW-1:0];
+   always @(posedge clk)
+     if (!reset && hw_cap !== hw_cap_ref)
+       $fatal(1, "fetch: hw_cap %0d != %0d at off=%h", hw_cap, hw_cap_ref, off);
 
    assign cur_seq   = seq_q;
-   // While straddling, present PC+2 so the iMMU translates the high halfword's (next) page.
-   // FMAX: pc2_q, not a live `pc_q + 2`. This adder was the first two CARRY8 stages of
-   // the worst path in the design -- pc_q -> +2 -> u_immu/req_match -> fetch buffer ->
-   // I$ data -> aligner -> npc -> predictor read, 28 levels in one cycle. It is pure
-   // waste there: `strad` is only ever high while pc_q is FROZEN (the straddle state
-   // holds PC until `fire`, and redirect/irq_inject both clear strad), so the sum can be
-   // computed once when the straddle is ENTERED, off the critical path, instead of every
-   // cycle at the head of it. Asserted below rather than argued.
-   assign imem_addr = (strad & ~irq_inject) ? pc2_q : pc_q;
-   assign imem_ipc  = pc_q;     // the instruction's PC in both states (trap EPC)
+   // THE FETCH ADDRESS IS THE PC REGISTER, BARE (2026-09-07). It was `(strad & ~irq_inject)
+   // ? pc2_q : pc_q` -- a mux at the head of the frontend's PC loop, and irq_inject_q was
+   // the source of that loop's worst path (gate W5fix: 20 levels through the iMMU's match,
+   // the served window, the straddle detect and the bundle count into pc_q). Now pc_q IS the
+   // fetch address in every state: a straddle steps it to the high halfword's address and
+   // ipc_q keeps the instruction's PC (the bundle's PC, the fault's EPC, the pseudo-op's).
+   // The pending interrupt waits out a straddle instead of abandoning it (irq_go): the
+   // straddle's own arm finishes first, so no state here reads irq_inject before the
+   // bundle muxes. Asserted below rather than argued.
+   assign imem_addr = pc_q;
+   assign imem_ipc  = ipc_q;
+   wire   irq_go    = irq_inject & ~strad;
+   assign irq_pres  = irq_go;
 
    // ---- aligner over the page-capped window (used in the NORMAL state) ----
    wire [PBW-1:0]    al_consumed;
@@ -175,27 +194,27 @@ module fetch
    end
    // straddle/irq bundles bypass the aligner: never predict on them (the straddle
    // FSM owns its +4 advance; the pseudo-op holds PC).
-   assign br_term = al_br_term & ~strad & ~irq_inject;
+   assign br_term = al_br_term & ~strad & ~irq_go;
 
    // slot-0 page-boundary straddler: pc_q at the last halfword, a 32-bit op (low2==11),
    // and that low halfword actually present (an I$ hit). The aligner excludes it (the
    // capped window has only one halfword), so we take over with the two-step fetch.
    wire lo_avail     = imem_ok & (imem_avail >= 1'b1);
-   wire straddle_det = ~strad & at_bound & (imem_data[1:0] == 2'b11) & lo_avail & ~irq_inject;
+   wire straddle_det = ~strad & at_bound & (imem_data[1:0] == 2'b11) & lo_avail & ~irq_go;
 
    // straddle output: the high halfword has arrived (PC+2's page resolved) in imem_data[15:0].
    wire              strad_ready = strad & lo_avail;
    wire [IW*32-1:0]  strad_inst  = {{((IW-1)*32){1'b0}}, imem_data[15:0], strad_lo};
 
    // bundle mux: irq inject (solo pseudo-op) > straddle (combined op) > aligner.
-   assign slot_valid = irq_inject ? {{(IW-1){1'b0}}, 1'b1}
+   assign slot_valid = irq_go     ? {{(IW-1){1'b0}}, 1'b1}
                      : strad      ? (strad_ready ? {{(IW-1){1'b0}}, 1'b1} : {IW{1'b0}})
                      :              (al_valid & {IW{imem_ok}});
-   assign inst       = irq_inject ? {{((IW-1)*32){1'b0}}, IRQ_INSN}
+   assign inst       = irq_go     ? {{((IW-1)*32){1'b0}}, IRQ_INSN}
                      : strad      ? strad_inst
                      :              al_inst;
-   assign pc         = (irq_inject | strad) ? {{((IW-1)*PCW){1'b0}}, pc_q} : al_pcm;
-   assign seq        = (irq_inject | strad) ? {{((IW-1)*SEQW){1'b0}}, seq_q} : al_seq;
+   assign pc         = (irq_go | strad) ? {{((IW-1)*PCW){1'b0}}, ipc_q} : al_pcm;
+   assign seq        = (irq_go | strad) ? {{((IW-1)*SEQW){1'b0}}, seq_q} : al_seq;
 
    assign valid = |slot_valid;          // a bundle is present iff >=1 instr aligned
    wire   fire  = ready && valid;        // advance only on a downstream handshake
@@ -213,11 +232,11 @@ module fetch
    assign         ft_npc   = ft_sel;                                            // += 2*consumed, by selection
    wire [PCW-1:0] norm_npc = pred_v ? pred_tgt : ft_npc;
    // the presented bundle's chosen next PC (mispredict reference at execute)
-   assign pred_npc = irq_inject ? pc_q
-                   : strad      ? pc_plus[2]
+   assign pred_npc = irq_go     ? ipc_q
+                   : strad      ? pc_plus[1]           // ipc_q + 4: the straddler's length
                    :              norm_npc;
    // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
-   assign pnpc_kind = irq_inject ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
+   assign pnpc_kind = irq_go ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
    // computed next PC, mirroring the advance chain's priorities exactly -- this
    // is the predictor's BTB read address (registered there, rule A1). The
    // redirect arm MUST be included: without it the first bundle at a redirect
@@ -227,8 +246,8 @@ module fetch
    // redirect cone's contribution here is a few address bits, not a 64-bit bus.
    assign npc = reset        ? RESET_PC
               : redirect     ? redirect_pc
-              : irq_inject   ? pc_q
-              : strad        ? (fire ? pc_plus[2] : pc_q)
+              : irq_go       ? ipc_q
+              : strad        ? (fire ? pc_plus[1] : pc_q)
               : straddle_det ? pc_q
               : fire         ? norm_npc : pc_q;
 
@@ -277,13 +296,13 @@ module fetch
    reg  [CW-1:0] lenp [0:NLEN-1];
    integer li;
    initial for (li = 0; li < NLEN; li = li + 1) lenp[li] = {{(CW-1){1'b0}}, 1'b1};   // cold: 4 bytes
-   wire [LENB-1:0] lidx    = pc_q[LENB:1];
+   wire [LENB-1:0] lidx    = ipc_q[LENB:1];               // the instruction's, in both states
    wire [CW-1:0]   len_g   = lenp[lidx];                              // consumed - 1
    wire [63:0]     len_adv = {{(63-CW){1'b0}}, len_g, 1'b0} + 64'd2;  // 2*consumed bytes
    assign apc = reset        ? RESET_PC
               : redirect     ? redirect_pc
-              : irq_inject   ? pc_q
-              : strad        ? (pc_q + 64'd4)
+              : irq_go       ? ipc_q
+              : strad        ? (pc_q + 64'd2)
               : apred_v      ? pred_tgt
               :                (pc_q + len_adv);
 
@@ -291,39 +310,39 @@ module fetch
    always @(posedge clk) begin
       // Train from the truth: a straddler is a 32-bit op by construction; the interrupt
       // pseudo-op is not the instruction at pc_q at all, so it must not train.
-      if (fire & ~irq_inject) lenp[lidx] <= strad ? {{(CW-1){1'b0}}, 1'b1} : al_cons_m1[CW-1:0];
+      if (fire & ~irq_go) lenp[lidx] <= strad ? {{(CW-1){1'b0}}, 1'b1} : al_cons_m1[CW-1:0];
    end
 
    always @(posedge clk) begin
       if (reset) begin
-         pc_q  <= RESET_PC; seq_q <= 0; strad <= 1'b0;
+         pc_q  <= RESET_PC; ipc_q <= RESET_PC; seq_q <= 0; strad <= 1'b0;
       end else if (redirect) begin
-         pc_q  <= redirect_pc; seq_q <= redirect_seq; strad <= 1'b0;
-      end else if (irq_inject) begin
-         // inject the pseudo-op at pc_q: hold PC, take one seqno, abandon any straddle
-         // (the straddler re-fetches when the handler returns to mepc = pc_q).
-         if (fire) seq_q <= seq_q + 1'b1;
-         strad <= 1'b0;
+         pc_q  <= redirect_pc; ipc_q <= redirect_pc; seq_q <= redirect_seq; strad <= 1'b0;
       end else if (strad) begin
-         // high halfword fetched: emit the combined 32-bit op and advance past it (4 bytes).
-         if (fire) begin pc_q <= pc_q + 64'd4; seq_q <= seq_q + 1'b1; strad <= 1'b0; end
+         // high halfword fetched: emit the combined 32-bit op and advance past it. pc_q is
+         // already the high halfword's address, so the next instruction is one halfword on.
+         if (fire) begin pc_q <= pc_plus[1]; ipc_q <= pc_plus[1]; seq_q <= seq_q + 1'b1; strad <= 1'b0; end
+      end else if (irq_go) begin
+         // inject the pseudo-op at pc_q: hold PC, take one seqno (the displaced instruction
+         // re-fetches when the handler returns to mepc = pc_q). Never during a straddle.
+         if (fire) seq_q <= seq_q + 1'b1;
       end else if (straddle_det) begin
-         // enter straddle: latch the low halfword, hold PC (the op is not consumed yet).
-         // pc_q is held from here until the straddle completes, so its +2 is captured
-         // once, right here, and read back as a flop for as long as `strad` is high.
-         strad <= 1'b1; strad_lo <= imem_data[15:0]; pc2_q <= pc_q + 64'd2;
+         // enter straddle: latch the low halfword, step the fetch address to the high one;
+         // ipc_q stays on the instruction (the op is not consumed yet).
+         strad <= 1'b1; strad_lo <= imem_data[15:0]; pc_q <= pc_plus[1];
       end else if (fire) begin
          pc_q  <= norm_npc;
+         ipc_q <= norm_npc;
          seq_q <= seq_q + nvalid;
       end
    end
 
-   // The precompute is sound only while `strad` implies a frozen pc_q. If any future
-   // path advances PC during a straddle, imem_addr would translate the wrong page and
-   // the straddler would splice a halfword from somewhere else entirely.
+   // ipc_q is pc_q except during a straddle, where the fetch address is one halfword on.
+   // A pending interrupt never sees a straddle (irq_go), so no arm above reads irq_inject
+   // while strad is high.
    always @(posedge clk)
-     if (!reset && strad && (pc2_q !== pc_q + 64'd2))
-       $fatal(1, "fetch: pc2_q stale during straddle (pc_q=%h pc2_q=%h)", pc_q, pc2_q);
+     if (!reset && (pc_q !== (strad ? ipc_q + 64'd2 : ipc_q)))
+       $fatal(1, "fetch: pc_q/ipc_q disagree (pc_q=%h ipc_q=%h strad=%b)", pc_q, ipc_q, strad);
 endmodule
 
 `default_nettype wire
