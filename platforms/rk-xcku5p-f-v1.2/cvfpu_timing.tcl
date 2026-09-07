@@ -111,3 +111,20 @@ if {[llength [get_drc_checks -quiet MDRV-1]]} {
    set_property SEVERITY {Warning} [get_drc_checks MDRV-1]
    puts "MDRV-1 downgraded to Warning (benign DDR4 bid-FIFO const-0 merge)"
 }
+
+# --- Optional floorplan: keep the core in a compact block ------------------------------
+# `make place-report` on T1F2 (2026-09-06): the core's 69k cells sit over 10 clock regions and
+# every near-critical path is 70-80% route -- twelve levels needing 4.7 ns of wire. Set
+# PBLOCK_CORE to a clock-region range (e.g. CLOCKREGION_X1Y0:CLOCKREGION_X3Y1) to pin
+# probe_core/core there; unset, nothing changes. An experiment knob, like PLACE_DIRECTIVE.
+if {[info exists env(PBLOCK_CORE)] && $env(PBLOCK_CORE) ne ""} {
+   set core_cell [get_cells -quiet probe_core/core]
+   if {[llength $core_cell]} {
+      puts "PBLOCK_CORE: probe_core/core -> $env(PBLOCK_CORE)"
+      set pb [create_pblock pb_core]
+      add_cells_to_pblock $pb $core_cell
+      resize_pblock $pb -add $env(PBLOCK_CORE)
+   } else {
+      puts "PBLOCK_CORE set but probe_core/core not found; skipping"
+   }
+}
