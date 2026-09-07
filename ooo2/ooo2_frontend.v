@@ -182,10 +182,22 @@ module ooo2_frontend
       .npc(), .apc(f_apc), .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_ok(imem_ok),
-      .ready(q_room), .valid(fx_valid),
+      .ready(pb_ready), .valid(fx_valid),
       .slot_valid(fx_sv), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
 
-   wire fire = q_room & fx_valid;     // fetch handshake: a bundle enters the QUEUE
+   // THE BUNDLE IS REGISTERED BEFORE THE QUEUE WRITE (plan item T1 (F), step 2, 2026-09-06).
+   // With the fetch buffer's compare out of the data path (step 1), the F/X queue's 826
+   // LUTRAM data pins were still the largest near-critical family (3,673 endpoints from
+   // irq_inject_q, 20 levels, 4 ns of route): the aligner, the interrupt/straddle bundle
+   // muxes and the slot-PC selects all end on those pins, spread across the chip. The
+   // queue's write data is now a register, and the fetch handshake lands in it: `fire`
+   // (the predictor's training edge, the interrupt pseudo-op's consumption, fetch's PC
+   // advance) is the register's load. A bundle in the register dies with the queue on a
+   // redirect -- it is younger than the redirecting op by the same argument (rule I11).
+   // Cost: one cycle of fetch-to-decode latency, visible only when the queue is empty.
+   reg            pb_v;
+   wire           pb_ready = ~pb_v | q_room;             // empty, or draining into the queue now
+   wire fire = pb_ready & fx_valid;    // fetch handshake: a bundle enters the register
 
    // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
    // `accept`, which is the queue POP. Those were the same edge until this module grew a
@@ -235,6 +247,7 @@ module ooo2_frontend
    // length) and the interrupt pseudo-op (which holds its PC).
    localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
    wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
+   wire           pb_load  = pb_ready & (fx_valid | fx_fault);   // the register takes a bundle or the fault op
    // TWO ENTRIES PER CYCLE INTO A LUTRAM: banked on entry parity, so each bank takes one write
    // per cycle (entry q_wp goes to bank q_wp[0], entry q_wp+1 to the other) and the head is a
    // 2:1 mux on q_rp[0]. `q_room` asks for two free entries, so a bundle never has to split.
@@ -244,8 +257,10 @@ module ooo2_frontend
    reg  [QAW:0]   q_cnt;
    wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - 2);
    wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
-   wire           q_push  = q_room & (fx_valid | fx_fault);
-   wire           q_two   = q_push & fx_sv[1];            // the bundle has a second instruction
+   reg  [QW-1:0]  pb_in0, pb_in1;
+   reg            pb_two;
+   wire           q_push  = q_room & pb_v;
+   wire           q_two   = q_push & pb_two;              // the bundle has a second instruction
    wire           q_have2 = (q_cnt >= 2);
    // slot 0 falls through when slot 1 exists; the bundle's prediction rides with its last slot
    wire [QW-1:0]  q_in0   = {pd_fetch, (fx_fault ? imem_ipc : fx_pc[0 +: PCW]), fx_inst[0 +: 32], fx_seq[0 +: SEQW],
@@ -256,6 +271,12 @@ module ooo2_frontend
    wire [QW-1:0]  q_in1   = {fx_off1, pd_fetch[PDW-3:0], fx_pc[PCW +: PCW], fx_inst[32 +: 32], fx_seq[SEQW +: SEQW],
                              fx_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
    wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
+   always @(posedge clk) begin
+      if (reset | redirect)  pb_v <= 1'b0;
+      else if (pb_load)       pb_v <= 1'b1;
+      else if (q_push)       pb_v <= 1'b0;
+      if (pb_load) begin pb_in0 <= q_in0; pb_in1 <= q_in1; pb_two <= fx_sv[1] & fx_valid; end
+   end
    // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
    wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
@@ -277,11 +298,11 @@ module ooo2_frontend
       end else begin
          if (q_push) begin
             if (q_wp[0]) begin
-               q_dat1[q_wp[QAW-1:1]]  <= q_in0;
-               if (q_two) q_dat0[q_wp1[QAW-1:1]] <= q_in1;
+               q_dat1[q_wp[QAW-1:1]]  <= pb_in0;
+               if (q_two) q_dat0[q_wp1[QAW-1:1]] <= pb_in1;
             end else begin
-               q_dat0[q_wp[QAW-1:1]]  <= q_in0;
-               if (q_two) q_dat1[q_wp1[QAW-1:1]] <= q_in1;
+               q_dat0[q_wp[QAW-1:1]]  <= pb_in0;
+               if (q_two) q_dat1[q_wp1[QAW-1:1]] <= pb_in1;
             end
             q_wp <= q_wp + {{(QAW-1){1'b0}}, q_two} + 1'b1;
          end
