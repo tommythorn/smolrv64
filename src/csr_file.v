@@ -7,7 +7,8 @@
  `define SMOLRV64_GIT_COMMIT 32'h0
 `endif
 
-// Architectural CSR state for the sharded-OoO backend, M/S/U privilege model.
+// Architectural CSR state, M/S/U privilege model (written for the sharded-OoO core, now
+// used by ooo2_core; comments naming backend_top/exec_shard describe that retired core).
 // Read is combinational; a single update per cycle (one system op executes at a
 // time -- the scheduler gates a serializing op until its checkpoint is oldest, so
 // the update is precise/non-speculative).
@@ -73,9 +74,9 @@ module csr_file
                                     // ooo2_core's hpm_ret_q.
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
-    // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
-    // STALL-ATTRIBUTION taps (see ooo2_core.v): they turn a CPI number into a CPI
-    // stack. The OoO core drives them zero, so its counters are unchanged.
+    // [6:0] are the original per-op/cache taps. [30:7] are ooo2_core's STALL-ATTRIBUTION
+    // taps (see ooo2_core.v and docs/OOO2-Spec.md section 11): they turn a CPI number into
+    // a CPI stack.
     input  wire [30:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)

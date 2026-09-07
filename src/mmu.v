@@ -2,7 +2,7 @@
 
 // Standalone Sv39 address-translation unit: a small TLB + a 3-level page-table
 // walker. Algorithm + PTE format lifted from smolrv64.v (cache-entangled there;
-// this is a clean cache-less version for the sharded-OoO probe). PTE layout:
+// this is a clean cache-less version; the walker is a line requester through the L2 arbiter). PTE layout:
 //   V[0] R[1] W[2] X[3] U[4] G[5] A[6] D[7]  PPN=[53:10]  N(NAPOT)=[63]
 // access: 0=fetch 1=load 2=store 3=amo.  satp[63:60]=MODE (0=Bare, 8=Sv39).
 //

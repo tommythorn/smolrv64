@@ -1,4 +1,3 @@
-SRC_DIR  = ../../src
 SIMMERV = $(HOME)/simmerv
 FW=fw_payload.bin
 
@@ -9,20 +8,12 @@ else # Assume Linux
   RV=riscv64-linux-gnu-
 endif
 
-# Byte offsets are relative to 0x80000000.  The DTB sits just above the
-# advertised RAM window, with the initrd packed immediately below it.
-mem.even mem.odd: tiny128.dtb $(FW) tiny128.cpio
-	$(SRC_DIR)/mkhex.py mem 0:$(FW) 1f52c000:tiny128.cpio 1ff00000:tiny128.dtb
+.PHONY: sim cosim
 
+# The tiny128 Linux boot in lockstep with simmerv (300 M cycles is the required length).
+cosim: tiny128.dtb $(FW) tiny128.cpio
+	CYC=300000000 ../../ooo2/run-ooo2-cosim-linux.sh
 
-
-.PHONY: sim
-
-
-
-
-
-.PHONY: cosim
 
 %: %.xz
 	xz -d < $^ > $@

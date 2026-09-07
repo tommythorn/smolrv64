@@ -5,8 +5,11 @@
 // backend TBs that instantiate the core compile against this instead. It mirrors fp_unit's
 // port list and a deferred (multi-cycle) completion so the scheduler's FP deferred-wake path
 // behaves the same; the arithmetic covers the common double ops (enough for any directed FP
-// poke). The real cvfpu is used by the verilator builds (run-vl-tests.sh / FP regression).
-module fp_unit #(parameter TAGW = 24)
+// poke). The real cvfpu is used by the verilator builds (ooo2/run-ooo2-vl.sh). PIPE_REGS and
+// NFLIGHT are accepted so the core's instantiation elaborates; the stub holds one op at a time.
+module fp_unit #(parameter TAGW = 24,
+                 parameter int unsigned PIPE_REGS = 4,
+                 parameter int unsigned NFLIGHT = 1)
    (input  wire             clk,
     input  wire             reset,
     input  wire             iss_valid,

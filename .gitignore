@@ -47,3 +47,6 @@ workloads/ubuntu/ubuntu-25.04-preinstalled-server-riscv64.img.zst
 workloads/ubuntu/*.img
 workloads/ubuntu/*.img.zst
 gate-results/
+
+# The monitor image build.tcl bakes into the boot BRAM, regenerated from workloads/monitor/monitor.bin.
+src/mem.linehex

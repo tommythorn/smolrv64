@@ -1,8 +1,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// riscv-tests harness for the in-order core (ooo2_core), a stripped sibling of
-// probe/tb_riscv.v: a flat byte memory at 0x80000000 serves both the
+// riscv-tests harness for ooo2_core: a flat byte memory at 0x80000000 serves both the
 // combinational fetch window and the LSU's data port, and a store to `tohost`
 // (+tohost=<hex>) ends the run -- 1 = PASS, else FAIL with test# = tohost>>1.
 //

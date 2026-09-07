@@ -1,8 +1,8 @@
 `default_nettype none
 
-// IN-ORDER frontend branch predictor. Forked from src/predictor.v, which checkpoints
-// {ghr, ras, ras_ptr} into an NCHK-deep ring as a structural clone of rename_shard's
-// chk_map. This core has NO checkpoints and needs none:
+// Frontend branch predictor. Forked from the retired sharded core's predictor.v, which
+// checkpointed {ghr, ras, ras_ptr} into an NCHK-deep ring keyed by rename checkpoint.
+// This core has NO checkpoints and needs none:
 //
 //   M is the only commit point, so at most one instruction can be redirecting and
 //   everything younger is squashed wholesale. There is never a second speculative
@@ -13,8 +13,8 @@
 // details ride the pipeline with their instruction (pd_fetch -> res_pdet) instead of
 // sitting in a side ring keyed by a checkpoint tag.
 //
-// Forked rather than parameterised so the in-order core's needs stop being negotiated
-// against the sharded-OoO core's. src/predictor.v is left untouched.
+// Forked rather than parameterised so this core's needs were never negotiated against the
+// sharded core's (that core and its predictor.v are gone since the 2026-09 release).
 //
 // Everything here is a HINT, never architectural: the mispredict check is the
 // exec-side `actual_npc != pred_npc` compare (branch_unit), so a stale BTB entry,

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Verilated regression for the in-order core, with the REAL CVFPU.
+# Verilated regression for the core, with the REAL CVFPU.
 #   ./run-ooo2-vl.sh [class-glob ...]      e.g. rv64uf-p rv64ud-p
 # Default: every standard class, F/D included.
 #
-# This is the flow that covers F/D: fpnew uses SystemVerilog concurrent assertions
-# iverilog cannot parse, so ./run-ooo2-tests.sh builds against fp_unit_stub.sv and is
-# the fast INTEGER regression. Builds one binary, then runs tests JOBS at a time.
+# The one riscv-tests flow: Verilator with the real CVFPU. (The iverilog flow with the FP
+# stub was dropped in the 2026-09 release: iverilog cannot elaborate the frontend.) Builds
+# one binary, then runs tests JOBS at a time.
 set -u
 cd "$(dirname "$0")"
 
@@ -20,7 +20,7 @@ classes=("$@")
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_slot.v ../src/decode_operands.v ../src/decode_exec.v \
-            ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
+            ../src/decode_fp.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv"
 
@@ -29,9 +29,9 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
-   -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2 -o tb_ooo2 \
+   -I. -I../src --top-module tb --Mdir obj_dir_ooo2 -o tb_ooo2 \
    ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
-   $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
+   $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
    tb_ooo2_riscv.v > /tmp/ooo2vlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2vlbuild.log | head -20; exit 1; fi
 BIN=$(pwd)/obj_dir_ooo2/tb_ooo2

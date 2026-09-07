@@ -1,6 +1,6 @@
 `default_nettype none
 
-// RV64I + F/D operand decode for the sharded decoder. Input is a full 32-bit
+// RV64I + F/D operand decode. Input is a full 32-bit
 // instruction (already RVC-expanded by rvc_expand). Produces the rename-facing
 // operand contract:
 //   rd/rs1/rs2/rs3 - UNIFIED 6-bit arch register ids: integer -> {1'b0,field},

@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// Linux-boot harness for the in-order SoC. Resets DIRECTLY to OpenSBI
+// Linux-boot harness for the SoC (rv_soc_top). Resets DIRECTLY to OpenSBI
 // (0x8000_0000) with a1 = the DTB pointer (+a1=, seeded into rv_regfile's x11),
 // so the monitor is bypassed and the DUT starts where the reference model would.
 // Console output comes out of rv_soc_top's UART $write.
@@ -11,7 +11,7 @@
 //
 // VIRTIO IS TIED OFF: the tiny128 workload is initrd-based and its DTB carries no
 // virtio node, so the region is never touched. A disk-backed workload needs the
-// virtio-blk subsystem from probe/tb_cosim_linux.v ported in.
+// virtio-blk subsystem ported in from the retired sharded core's tb_cosim_linux.v.
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
 `ifdef OOO2_MEM_SIZE_LG2

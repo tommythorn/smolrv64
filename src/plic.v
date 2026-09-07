@@ -12,7 +12,7 @@
 //   0x201000..0x201003  priority threshold (context 1)                         R/W
 //   0x201004..0x201007  claim (read) / complete (write), context 1
 //
-// MMIO contract (matches clint.v in soc_top): `we` is a 1-cycle write-accept strobe; `re`
+// MMIO contract (matches clint.v in rv_soc_top): `we` is a 1-cycle write-accept strobe; `re`
 // is a 1-cycle read strobe -- the CLAIM read has a side effect (clear pending, mark in
 // service) so it must fire exactly once, hence a strobe rather than a level. `rdata` is
 // registered and valid the cycle after `re`.

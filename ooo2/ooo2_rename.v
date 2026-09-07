@@ -1,6 +1,6 @@
 `default_nettype none
 
-// Register renaming for the in-order core: SMAP/RMAP + lv[], and one free list per PRF
+// Register renaming for ooo2_core: SMAP/RMAP + lv[], and one free list per PRF
 // shard.  Issue and commit remain IN ORDER at this milestone -- this module changes no
 // architectural behaviour, so the retire stream must stay bit-identical.  It exists to give
 // ooo2_prf a known destination shard, which is the only cheap way to get more than one write

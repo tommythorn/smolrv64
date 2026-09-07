@@ -1,5 +1,10 @@
 # VHPR L1 Cache
 
+> **Status (2026-09 release).** A design note. The shipping caches in `ooo2/rv_cache.v` are
+> PIPT, 2-way skew-associative (docs/OOO2-Spec.md §9.1); VHPR was the retired sharded
+> core's L1 and is kept here because plan item 9 (docs/PLAN-2026-09-05-ipc.md) names it as
+> the load-use lever.
+
 VHPR means "virtually hit, physically reconciled".  It is an L1 cache design
 that removes TLB lookup from the ordinary L1 hit path while preserving physical
 correctness on misses, writeback, and coherence operations.

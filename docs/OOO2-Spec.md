@@ -5,9 +5,10 @@ change it describes** (docs/rtl-rules.md H4). Every number here is read off the 
 figure is *measured* rather than structural it says so, with the workload.
 
 Naming: `rv_*` modules are generic RISC-V blocks, `ooo2_*` are specific to this core.
-Shared blocks (`fetch`, `aligner`, `rvc_expand`, `decode_*`, `alu`, `mul3`, `divider`,
-`mmu`, `csr_file`, `fp_unit`) live in `src/` and are used by both this core and the older
-sharded-OoO core rooted at `src/soc_top.v`.
+The blocks the core inherited from its predecessors (`fetch`, `aligner`, `rvc_expand`,
+`decode_*`, `alu`, `mul3`, `divider`, `mmu`, `csr_file`, `fp_unit`) and the SoC devices live
+in `src/`. The sequential core and the sharded-OoO core that came before it were removed in
+the 2026-09 release; their history is in git, and the dated records in `docs/history/`.
 
 ---
 
@@ -20,15 +21,18 @@ sharded-OoO core rooted at `src/soc_top.v`.
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
-| Issue | **in-order, 1 instruction/cycle** |
-| Completion | **out of order** (non-blocking loads and FP) |
-| Commit | in order, from the ROB head, 1/cycle |
+| Fetch / dispatch / retire | **two-wide** (plan items 10a-10c, 2026-09-05/06; one-wide before) |
+| Issue | **dynamic**: ALU ops (two schedulers, two ALUs) and FP ops reorder freely; memory, mul/div, CSR, branches and jumps issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
+| Commit | in order, from the ROB head, up to 2/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
 | Target | AMD XCKU5P, `probe_clk` **166.67 MHz** (6.000 ns) at `PROBE_CLK_DIV8=48` |
 
-It is called OOO2 because it is on the path to full out-of-order and because `src/` already
-holds a sharded-OoO core that keeps the plain `ooo` name. Issue is still in-order; the
-"out-of-order" is in completion and writeback.
+It is called OOO2 because it was the second out-of-order core in this tree (the sharded
+one it replaced kept the plain `ooo` name until it was deleted). It began life in 2026-08 as
+an in-order pipeline that only completed out of order; issue went dynamic on 2026-08-27 and
+the machine went two-wide on 2026-09-05. Older sections below describe it as it was when
+they were written and say so.
 
 ---
 
@@ -413,7 +417,7 @@ independent of NF:
   cycles ago — so `csr_file` now takes a second `hpm_retire_cnt` port and `ooo2_core`
   feeds it a registered copy (`hpm_ret_q`). `minstret` keeps the live count. Every input
   to `hpm_inc` is now a flop, so the mux and the adder start at the top of the cycle.
-  The src/ OoO core passes its live count to both ports and is bit-identical.
+  (The retired sharded core passed its live count to both ports and was bit-identical.)
 
   If the mux and the 64-bit adder still bind *together*, the same licence permits
   splitting them across cycles (register `hpm_inc` per counter, 13x6 flops). Not done:
@@ -622,10 +626,10 @@ has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
 
-`fp_unit` drives `fpnew_top` **directly**. It does *not* go through `smolrv64_cvfpu`, which
-is a two-clock-domain wrapper — both instantiations of `fp_unit` tie `fpu_clock` to `clk`, so
-its toggle handshake and two ASYNC_REG synchronisers cost ~9 cycles for a crossing that does
-not exist. (`smolrv64_cvfpu` is still used by `rk_xcku5p.v` on a real `fpu_clk`.)
+`fp_unit` drives `fpnew_top` **directly**. It used to go through `smolrv64_cvfpu`, a
+two-clock-domain wrapper whose toggle handshake and two ASYNC_REG synchronisers cost ~9
+cycles for a crossing that does not exist (`fpu_clock` is `clk`); that wrapper left with the
+scalar core in the 2026-09 release.
 
 - `PIPE_REGS`=4, `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
   `DivSqrtSel = THMULTI`.
@@ -1094,8 +1098,8 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | gate | command | pass |
 |---|---|---|
 | lint | `src/lint.sh` | `lint: clean` |
-| riscv-tests, this core | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
-| riscv-tests, `src/` core | `src/run-vl-tests.sh` | `failures: 0` (shares `fp_unit`) |
+| riscv-tests | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
+| unit benches of the shared blocks and devices | `src/run-tb.sh` | `tb pass=19 / 19` |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17, the D$ stream buffer T18-T20 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
@@ -1125,7 +1129,7 @@ tracers and stats are gated.
 
 | | |
 |---|---|
-| `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`, from an MMCM |
+| `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`: a BUFGCE_DIV of the 333.33 MHz DDR4 `ui_clk` (an MMCM was tried and reverted, 2026-08-20; only integer multiples of 3.000 ns time) |
 | Timing | `probe_clk` WNS **+0.015 ns**, TNS 0.000, 0 failing endpoints (`NF`=8, BTB 1024) |
 | Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.038 at `NF`=5; **+0.015 at `NF`=8** once the frontend's `apc` cone was cut (rule I6) -- the minimum-8 policy is affordable and was never the scheduler's fault. Block RAM 118 of 480 tiles. |
 | Measured clock | 164.2 MHz by on-chip counter |
@@ -1147,14 +1151,18 @@ pinned by the MIG's `ui_clk`.
   behind it. Freeing those needs the load queue and store buffer, and `head_block` gone.
 - **M is a single execute slot** for everything except ALU ops (which complete at issue) and
   FP arithmetic (stage F), so one M-class long-latency op is in flight at a time.
-- **`IW=1`.** The aligner emits at most one instruction per cycle, exactly what the backend
-  consumes, so the F/X queue can never build a backlog and every frontend hiccup is
-  unrecoverable. On integer workloads this is the dominant cost (frontend 41.8% of cycles on
-  `sha256sum`); on GB5 it is 2.2%.
+- **Two-wide, not wider.** The aligner emits up to two instructions per cycle and dispatch
+  and retire match it (items 10a-10c); the frontend is 4% of Geekbench's cycles and 10% of
+  `sha256sum`'s now (the two-wide stack, 2026-09-07). Going past two is a frontend redesign
+  (docs/PLAN-2026-09-06-frontend.md on `wip/fe-ideas`).
 - **Stores and AMOs still block M.**
 - **No memory disambiguation** — a younger memory op simply waits for `S_IDLE`.
-- Workload sensitivity is large and measured: GB5 is FPU- and serialisation-bound,
-  `sha256sum` is frontend-bound. Do not generalise a CPI stack from one workload.
+- Workload sensitivity is large and measured: Geekbench 5 is LSU-bound (47% of cycles on the
+  two-wide stack, FPU 19%), `sha256sum` was frontend-bound until the two-wide fetch. Do not
+  generalise a CPI stack from one workload.
+- **No vector extension.** Three Geekbench 5 subtests (Gaussian Blur, Structure from Motion,
+  Machine Learning) run at a normal IPC and score 0-2 because the reference machine's SIMD
+  does in one instruction what this core does in many (2026-09-07, per-subtest trace).
 
 ## 15. Prioritised work list
 
@@ -1398,8 +1406,8 @@ expense of `ST_FPU`. On `mlbench` the correction moved `ST_MEM` 41% → 33%.
 **`ST_ROB` (0x0305) now exists**: dispatch has an instruction and the ROB has no room,
 `d_valid & ~rob_ready`. The Zihpm bus was full at `[21:0]` and is now `[22:0]`, which
 reached `src/csr_file.v`, `src/exec_bundle.v` and `src/backend_top.v` (the other core keeps
-the new bit at zero). `ST_SER` now excludes it, so the two are disjoint rather than
-double-counting.
+the new bit at zero; both files are gone since the 2026-09 release). `ST_SER` now excludes
+it, so the two are disjoint rather than double-counting.
 
 **It immediately corrected the claim that motivated it.** This document said `mlbench` was
 ROB-full limited, on the strength of the testbench's `rob_full=68670`. That is a WHOLE-RUN
@@ -1853,11 +1861,14 @@ redirect is correct only while `head_block` holds -- a redirect fires only at RO
 anything in flight is younger by construction. **Removing `head_block` (P2) requires
 replacing this with an epoch tag first.**
 
-### P4 -- Machine Learning scores 0
+### P4 -- Machine Learning scores 0 -- ANSWERED 2026-09-07: the ISA, not the core
 
 GB5 aggregates a category as a **geometric mean**, so this single 0 (0.01 images/sec)
-zeroes the entire Floating Point score. Cause uninvestigated -- the cheapest possible score
-win if it is one pathology.
+zeroes the entire Floating Point score. The per-subtest counter trace of the 2026-09-07 run
+(`tools/gb5-trace-stack.py`) shows IPC 0.36, 0.04 traps per thousand instructions, LSU 61%,
+FPU 21%, D$ miss 4.4%: no pathology. The rate is the scalar instruction count, ~6 G per
+image against the reference machine's SIMD. Gaussian Blur and Structure from Motion read the
+same way. No IPC item reaches these three; the vector extension would.
 
 ### P5 -- frontend run-ahead (`IW>=2`)
 

@@ -1,6 +1,6 @@
 `default_nettype none
 
-// Blocking load/store unit for the in-order core -- stage M's memory engine.
+// Blocking load/store unit for ooo2_core -- stage M's memory engine.
 //
 // The OoO LSU exists to let loads and stores execute out of order against each
 // other: a store buffer, a load queue, byte-granular store-to-load forwarding,
@@ -16,7 +16,7 @@
 // The request is held stable by ooo2_core until `done` pulses. `done` is
 // combinational in the completing cycle and `rd_val` is valid with it.
 //
-// Semantics kept bit-identical to probe/lsu.v so the Simmerv cosim agrees:
+// Semantics kept bit-identical to the retired sharded core's lsu.v so the Simmerv cosim agrees:
 //   * the D$ port is BYTE-ADDRESS-RELATIVE both ways -- rd_data[7:0] is the byte at
 //     rd_addr, and wr_data[7:0] is written to wr_addr+0 under wr_mask -- so a
 //     misaligned access needs no lane rotation here; cache.v resolves any

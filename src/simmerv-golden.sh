@@ -1,6 +1,6 @@
 #!/bin/bash
 # Golden-reference trace of a riscv-test from simmerv (the RV64GC ISA model),
-# for comparing against the probe backend when a test diverges.
+# for comparing against the core when a test diverges.
 #
 #   ./simmerv-golden.sh <test-name> [> golden.trace]
 #   e.g. ./simmerv-golden.sh rv64ui-v-ma_data | grep ' 0000000000002a04 '

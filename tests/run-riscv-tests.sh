@@ -1,6 +1,5 @@
 #!/bin/bash
-# riscv-tests gate, retargeted at the current core: delegates to the Verilator
-# suite in src/ (one binary, parallel classes; the old sequential-core tester
-# this script used to build was retired with that core).
+# riscv-tests gate: delegates to the core's verilated suite (one binary, parallel classes,
+# the real CVFPU). Success is `pass=240 fail=0`.
 cd "$(dirname "$0")"
-exec ../src/run-vl-tests.sh "$@"
+exec ../ooo2/run-ooo2-vl.sh "$@"

@@ -11,23 +11,10 @@ foreach arg $argv {
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
-set probe_dir [file join $repo_root src]
 set ooo2_dir [file join $repo_root ooo2]
-set sram_even [file join $repo_root src mem.even]
-set sram_odd  [file join $repo_root src mem.odd]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
 set probe_clk_check_hook [file normalize [file join [file dirname [info script]] probe_clk_check.tcl]]
 
-# The sharded-OoO probe core (soc_top + DDR line/AXI bridge, gated by the
-# `PROBE_CORE ifdef in rk_xcku5p.v) is now the DEFAULT.  Set PROBE_CORE=0 to
-# build the legacy scalar smolrv64 instead.
-set probe_core 1
-if {[info exists env(PROBE_CORE)] && $env(PROBE_CORE) eq "0"} {
-    set probe_core 0
-    puts "PROBE_CORE=0: building the legacy scalar smolrv64 core."
-} else {
-    puts "Building the sharded-OoO probe core (soc_top) -- default."
-}
 puts "Opening project: $xpr"
 open_project $xpr
 
@@ -94,17 +81,12 @@ proc configure_cvfpu_sources {repo_root src_dir} {
         }
         add_source_if_missing $fileset $file $file_type
     }
-    add_source_if_missing $fileset [file join $src_dir smolrv64_cvfpu.sv] SystemVerilog
     add_source_if_missing $fileset [file join $src_dir axi_two_master_arbiter.v] Verilog
     add_source_if_missing $fileset [file join $src_dir axi_single_beat_master.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_net.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_blk.v] Verilog
     add_source_if_missing $fileset [file join $src_dir sd_spi_host.v] Verilog
-    # rgmii_mac_stub.v is no longer instantiated (replaced by gmii_to_rgmii +
-    # eth_tx_engine + eth_mac_rx) but stays in the fileset/.xpr so opening the
-    # project doesn't fault on a missing file; synthesis drops it (DCE).
-    add_source_if_missing $fileset [file join $src_dir rgmii_mac_stub.v] Verilog
     add_source_if_missing $fileset [file join $src_dir crc32_d8.v] Verilog
     add_source_if_missing $fileset [file join $src_dir eth_mac_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir eth_mac_rx.v] Verilog
@@ -121,54 +103,9 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     update_compile_order -fileset $fileset
 }
 
-# Add the sharded-OoO probe core RTL (soc_top + dependency set) to the fileset.
-# Mirrors the OOC source list: all probe/*.v except testbenches, cosim-only files,
-# flopwrap.v and rf_alu.v. fp_unit_synth.sv is the synth-clean FP tie-off (real
-# CVFPU is deferred — task 23). ddr_line_axi/cdc + smolrv64_sdpram come from src/.
-proc configure_probe_sources {repo_root src_dir probe_dir} {
-    set fileset [current_fileset]
-    foreach f [lsort [glob -nocomplain [file join $probe_dir *.v]]] {
-        set b [file tail $f]
-        if {[regexp {^tb_} $b]} continue
-        if {[string match *probe* $b]} continue
-        if {$b eq "flopwrap.v"} continue
-        if {$b eq "rf_alu.v"} continue
-        if {[string match "*_loop_top.v" $b]} continue
-        if {$b eq "eth_loop_top.v"} continue
-        add_source_if_missing $fileset $f Verilog
-    }
-    # REAL CVFPU, not the passthrough tie-off. fp_unit_synth.sv returns
-    # iss_operands[63:0] unchanged, so every FP arithmetic op on the FPGA produced its
-    # own first operand: grep's gnulib hash sizing (fcvt.s.lu -> fdiv.s -> fcvt.lu.s)
-    # yielded {ffffffff, candidate} instead of the quotient, and next_prime then
-    # trial-divided a ~1.8e19 candidate forever -- THE ubuntu boot "hang". It was only
-    # ever meant for an integer-core Fmax check (task 23), but was added unconditionally.
-    # Simulation always built the real unit, which is why no sim/cosim ever reproduced it.
-    # (the CVFPU library + smolrv64_cvfpu.sv are already added by
-    # configure_cvfpu_sources; only this wrapper choice was wrong.)
-    # The .xpr is persistent (and tracked), so a previously-added tie-off stays in the
-    # fileset and Vivado keeps synthesizing IT (both files define module `fp_unit`).
-    # Remove it explicitly before adding the real wrapper.
-    set tieoff [get_files -quiet */src/fp_unit_synth.sv]
-    if {[llength $tieoff]} {
-        puts "Removing FP tie-off from the fileset: $tieoff"
-        remove_files $tieoff
-    }
-    add_source_if_missing $fileset [file join $probe_dir fp_unit.sv] SystemVerilog
-    add_source_if_missing $fileset [file join $src_dir ddr_line_axi.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir ddr_line_cdc.v] Verilog
-    add_source_if_missing $fileset [file join $src_dir smolrv64_sdpram.v] Verilog
-    # alu_ops.vh / smolrv64_fp_ops.vh live in src/; the probe set `include`s them
-    # with bare names, so both probe/ and src/ must be on the include path.
-    add_unique_property_value $fileset include_dirs [file normalize $probe_dir]
-    add_unique_property_value $fileset include_dirs [file normalize $src_dir]
-    update_compile_order -fileset $fileset
-}
 
-# In-order core (OOO2_CORE=1): rv_soc_top + its modules. It pins its OWN memory
-# subsystem (rv_cache / rv_l2_arbiter) rather than src/cache.v -- see
-# docs/ooo2-plan.md. src/'s modules stay in the fileset but are unreachable from
-# the top under OOO2_CORE, so Vivado elaborates and drops them.
+# The core: rv_soc_top and its modules from ooo2/. It carries its own memory subsystem
+# (rv_cache / rv_l2_arbiter); the SoC devices and the DDR line bridge come from src/.
 proc configure_ooo2_sources {repo_root src_dir ooo2_dir} {
     set fileset [current_fileset]
     foreach f [lsort [glob -nocomplain [file join $ooo2_dir *.v]]] {
@@ -225,9 +162,9 @@ proc run_if_needed {run_id to_step jobs} {
 
 # Set SRAM base to 0x70000000 for this platform (below the DDR4 range at 0x80000000)
 set vdefines [list "MEM_BASEADDR=64'h70000000"]
-if {$probe_core} {
-    # The probe boots its monitor from on-chip SRAM (lmem, 512-bit lines). Bake the
-    # monitor binary into BRAM via $readmemh of a 64-byte-per-line hex (SOC_BOOT_HEX).
+# The ROM monitor boots from on-chip SRAM (lmem, 512-bit lines): bake the monitor binary
+# into BRAM via $readmemh of a 64-byte-per-line hex (SOC_BOOT_HEX).
+if {1} {
     set monitor_bin [file join $repo_root workloads monitor monitor.bin]
     set boot_hex    [file join $src_dir mem.linehex]
     if {![file exists $monitor_bin]} {
@@ -235,23 +172,8 @@ if {$probe_core} {
     }
     puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
-    lappend vdefines "PROBE_CORE"
-    # THE SHIPPING BUILD IS THE DEFAULT. It used to be reachable only by typing
-    # OOO2_CORE=1 OOO2_HW=4 PROBE_CLK_DIV8=48, and since this file rebuilds `vdefines` from
-    # scratch every run (the .xpr RECORDS the last build and carries nothing forward), a
-    # command that omitted any of them silently built something else -- which is what
-    # `make OOO2_CORE=1` did for weeks: HW=2 at 66.67 MHz. A configuration you have to
-    # remember is one you will forget. OOO2_CORE=0 opts out.
-    if {![info exists env(OOO2_CORE)] || $env(OOO2_CORE) ne "0"} {
-        puts "Building the ooo2 core (rv_soc_top) -- default."
-        lappend vdefines "OOO2_CORE"
-        configure_ooo2_sources $repo_root $src_dir $ooo2_dir
-    }
+    configure_ooo2_sources $repo_root $src_dir $ooo2_dir
     lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
-    if {[info exists env(NO_VIRTIO_WIRE)] && $env(NO_VIRTIO_WIRE) ne "" && $env(NO_VIRTIO_WIRE) ne "0"} {
-        puts "NO_VIRTIO_WIRE: deactivating virtio wrapper wiring (isolation experiment)."
-        lappend vdefines "NO_VIRTIO_WIRE"
-    }
     if {[info exists env(NO_VIRTIO_NET)] && $env(NO_VIRTIO_NET) ne "" && $env(NO_VIRTIO_NET) ne "0"} {
         puts "NO_VIRTIO_NET: dropping virtio-net + eth MAC (blk-only) to relieve ui_clk congestion."
         lappend vdefines "NO_VIRTIO_NET"
@@ -322,20 +244,6 @@ if {$probe_core} {
         puts "fetch window = 8 halfwords (OOO2_HW=8) -- the shipping build."
         lappend vdefines "OOO2_HW=8"
     }
-    if {[info exists env(PROBE_IW)] && $env(PROBE_IW) ne ""} {
-        puts "PROBE_IW override: building the $env(PROBE_IW)-wide core (RTL default is 2)."
-        lappend vdefines "PROBE_IW=$env(PROBE_IW)"
-    }
-} else {
-    foreach image [list $sram_even $sram_odd] {
-        if {![file exists $image]} {
-            error "SRAM init file missing: $image\nRun 'make load' or build the workload images first."
-        }
-    }
-    puts "SRAM init even: $sram_even"
-    puts "SRAM init odd:  $sram_odd"
-    lappend vdefines [format {SRAM_EVENHEX="%s"} $sram_even]
-    lappend vdefines [format {SRAM_ODDHEX="%s"} $sram_odd]
 }
 set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]
 puts "Build stamp: $build_stamp"
@@ -345,9 +253,7 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-# `ooo2` belongs here: it is the core these builds actually load (OOO2_CORE=1), so
-# leaving it out let a bitstream built from modified in-order RTL report itself clean.
-set source_paths [list src ooo2 platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/linux workloads/tiny128]
+set source_paths [list src ooo2 platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128]
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1
@@ -356,10 +262,6 @@ puts "Git commit: $git_commit"
 puts "Source dirty: $source_dirty"
 lappend vdefines "SMOLRV64_GIT_COMMIT=32'h$git_commit"
 lappend vdefines "SMOLRV64_GIT_DIRTY=1'b$source_dirty"
-if {[info exists env(PC_TRACE)] && $env(PC_TRACE) ne "" && $env(PC_TRACE) ne "0"} {
-    puts "Enabling PC_TRACE debug tracer."
-    lappend vdefines "PC_TRACE"
-}
 # ILA_VIRTIO=1: insert an ILA on the MMIO clock-bridge ui-side (virtio-mmio access + read data),
 # sampled on ui_clk. Lets us capture the driver's DeviceFeaturesSel-write / DeviceFeatures-read
 # sequence on hardware and see what virtio actually returns (probe VERSION_1 -22 root-cause).
@@ -383,7 +285,7 @@ if {[info exists env(ILA_VIRTIO)] && $env(ILA_VIRTIO) ne "" && $env(ILA_VIRTIO) 
         generate_target {instantiation_template synthesis} [get_ips ila_virtio]
     }
 }
-# ILA_IRQ=1: insert an ILA on the probe-clk interrupt path (plic src-11 lifecycle bus from soc_top),
+# ILA_IRQ=1: insert an ILA on the probe-clk interrupt path (plic src-11 lifecycle bus from rv_soc_top),
 # to diagnose the root-mount hang (does the virtio completion IRQ raise/pend/seip/claim/complete or
 # get lost with in_service stuck?).
 if {[info exists env(ILA_IRQ)] && $env(ILA_IRQ) ne "" && $env(ILA_IRQ) ne "0"} {
@@ -431,35 +333,6 @@ if {[info exists env(ILA_PARITY)] && $env(ILA_PARITY) ne "" && $env(ILA_PARITY) 
         generate_target {instantiation_template synthesis} [get_ips ila_parity]
     }
 }
-# ILA_TIMER=1: insert an ILA on the probe-clk csr_file timer/interrupt path (dbg_timer bus
-# from csr_file via soc_top.timer_dbg) -- the ubuntu post-generator freeze: STIP level vs
-# stimecmp/mscratch write strobes + trap/xret events. Layout documented in rk_xcku5p.v.
-if {[info exists env(ILA_TIMER)] && $env(ILA_TIMER) ne "" && $env(ILA_TIMER) ne "0"} {
-    puts "Enabling ILA_TIMER: probe-clk csr timer-path debug core (ila_timer)."
-    lappend vdefines "ILA_TIMER"
-    # Create only when absent. Do NOT remove+recreate: deleting the .xci leaves the name
-    # claimed in the .xpr ("IP name 'ila_timer' is already in use"). To CHANGE the probe
-    # set, delete the IP dirs AND restore the tracked .xpr (git checkout) first -- an
-    # in-place set_property leaves stale output products (Synth 8-11365 on a new probe).
-    if {[llength [get_ips -quiet ila_timer]] == 0} {
-    create_ip -name ila -vendor xilinx.com -library ip -module_name ila_timer
-    set_property -dict [list \
-        CONFIG.C_NUM_OF_PROBES {8} \
-        CONFIG.C_PROBE0_WIDTH {64} \
-        CONFIG.C_PROBE1_WIDTH {64} \
-        CONFIG.C_PROBE2_WIDTH {64} \
-        CONFIG.C_PROBE3_WIDTH {1} \
-        CONFIG.C_PROBE4_WIDTH {1} \
-        CONFIG.C_PROBE5_WIDTH {64} \
-        CONFIG.C_PROBE6_WIDTH {1} \
-        CONFIG.C_PROBE7_WIDTH {64} \
-        CONFIG.C_DATA_DEPTH {8192} \
-        CONFIG.C_INPUT_PIPE_STAGES {2} \
-        CONFIG.C_ADV_TRIGGER {true} \
-    ] [get_ips ila_timer]
-    generate_target {instantiation_template synthesis} [get_ips ila_timer]
-    }
-}
 # ILA_DEV=1: insert an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA handshakes +
 # SD SPI pins) to see WHERE a block request wedges (the IRQ ILA proved the device never completes).
 if {[info exists env(ILA_DEV)] && $env(ILA_DEV) ne "" && $env(ILA_DEV) ne "0"} {
@@ -503,9 +376,6 @@ if {[info exists env(ILA_CORE)] && $env(ILA_CORE) ne "" && $env(ILA_CORE) ne "0"
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir
-if {$probe_core} {
-    configure_probe_sources $repo_root $src_dir $probe_dir
-}
 
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {

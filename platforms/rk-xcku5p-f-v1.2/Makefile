@@ -6,36 +6,14 @@ RUNS_DIR := $(PROJECT).runs
 BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit
 TTY      := /dev/ttyUSB1
 WORKLOAD ?= ../../workloads/monitor
+
+# THE SHIPPING BUILD NEEDS NO ARGUMENTS: `make` builds ooo2/rv_soc_top at OOO2_HW=8 and
+# PROBE_CLK_DIV8=48 (166.67 MHz). Every knob below is a debug or experiment override.
 export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 
-# Optional: PC_TRACE=1 enables the synth-time debug PC tracer in smolrv64.v.
-# When set, the bitstream includes the tracer: SW sees a dummy UART after
-# OpenSBI's mret into Linux, and the real TX emits one line per retire.
-ifneq ($(strip $(PC_TRACE)),)
-export PC_TRACE
-endif
-
-# The sharded-OoO probe core is the DEFAULT build (soc_top + DDR line/AXI bridge,
-# via the `PROBE_CORE ifdef in rk_xcku5p.v).  Set PROBE_CORE=0 to build the legacy
-# scalar smolrv64 instead.  Exported here (incl. =0) so build.tcl sees it.
-ifneq ($(strip $(PROBE_CORE)),)
-export PROBE_CORE
-endif
-# Isolation experiment: NO_VIRTIO_WIRE=1 deactivates the virtio wrapper wiring.
-ifneq ($(strip $(NO_VIRTIO_WIRE)),)
-export NO_VIRTIO_WIRE
-endif
 # Diagnostic: PROBE_DIAG=1 decouples probe_clk from ui_rst + drives LED cal/clock heartbeats.
 ifneq ($(strip $(PROBE_DIAG)),)
 export PROBE_DIAG
-endif
-
-# THE SHIPPING BUILD NEEDS NO ARGUMENTS.  `make` builds ooo2/rv_soc_top at OOO2_HW=4 and
-# PROBE_CLK_DIV8=48 (166.67 MHz), because those three were the shipping configuration while
-# living only on the command line -- and the line people type is `make OOO2_CORE=1`, which
-# built HW=2 at 66.67 MHz for weeks without anyone noticing.  Opt out with OOO2_CORE=0.
-ifneq ($(strip $(OOO2_CORE)),)
-export OOO2_CORE
 endif
 
 # Fetch window halfwords.  8 is the default in the RTL, in build.tcl and here (since 2026-09-05;
@@ -43,11 +21,6 @@ endif
 # that no bitstream should ship.
 ifneq ($(strip $(OOO2_HW)),)
 export OOO2_HW
-endif
-
-# Width: PROBE_IW=1 (or 4, ...) overrides the RTL default (2). e.g. `make bit PROBE_IW=1`.
-ifneq ($(strip $(PROBE_IW)),)
-export PROBE_IW
 endif
 
 # Fmax sweep: probe_clk = 1000MHz*8/PROBE_CLK_DIV8, from an MMCM, so the frequency is
@@ -70,7 +43,7 @@ export ILA_VIRTIO
 endif
 
 # Debug: ILA_IRQ=1 inserts an ILA on the probe-clk interrupt path (plic src-11 lifecycle from
-# soc_top's irq_dbg bus) -- to see whether the virtio_blk completion IRQ is raised/serviced or lost.
+# rv_soc_top's irq_dbg bus) -- to see whether the virtio_blk completion IRQ is raised/serviced or lost.
 ifneq ($(strip $(ILA_IRQ)),)
 export ILA_IRQ
 endif
@@ -78,11 +51,6 @@ endif
 # Debug: NO_SSTC=1 hides Sstc (stimecmp traps) so OpenSBI uses the CLINT timer path.
 ifneq ($(strip $(NO_SSTC)),)
 export NO_SSTC
-endif
-# Debug: ILA_TIMER=1 inserts an ILA on the probe-clk csr_file timer/interrupt path (the
-# ubuntu post-generator freeze: STIP level, stimecmp/mscratch write strobes, trap/xret).
-ifneq ($(strip $(ILA_TIMER)),)
-export ILA_TIMER
 endif
 # Debug: ILA_PARITY=1 builds with -DCACHE_PARITY (parity bit per cache-bank word,
 # checked on every read) and inserts an ILA triggered by the error pulse -- catching a
@@ -105,7 +73,7 @@ ifneq ($(strip $(ILA_CORE)),)
 export ILA_CORE
 endif
 
-.PHONY: all synth impl bit program load clean timing ila-capture ila-strand fmax-report
+.PHONY: all synth impl bit program load clean timing ila-capture fmax-report
 
 all: bit
 
@@ -178,9 +146,6 @@ cdc:
 ila-capture:
 	$(VIVADO) $(VFLAGS) -source ila_capture.tcl $(if $(CSV),-tclargs $(CSV),)
 
-# ARMED capture: waits for the mtvec-stranding event (mtvec parked at OpenSBI's probe
-# handler) and dumps the window that caused it, with the system-op probes. Run it while
-# the board is booting; it blocks until the trigger fires. See ila_strand.tcl.
 # Per-clock achievable Fmax from the routed checkpoint. Global WNS is often pinned by the
 # virtio/MIG ui_clk domain, so this is the number that tells us what the CORE can clock.
 fmax-report:
@@ -191,9 +156,6 @@ fmax-report:
 # corruption. Run it while the board boots. See ila_parity.tcl.
 ila-parity:
 	$(VIVADO) $(VFLAGS) -source ila_parity.tcl -tclargs $(if $(CSV),$(CSV),ila_parity.csv) $(if $(HOURS),$(HOURS),0)
-
-ila-strand:
-	$(VIVADO) $(VFLAGS) -source ila_strand.tcl $(if $(CSV),-tclargs $(CSV),)
 
 load:
 	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000

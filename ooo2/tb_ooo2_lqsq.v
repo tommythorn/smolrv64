@@ -8,7 +8,7 @@
 // stopped compiling at that commit and nobody noticed (gate.sh now runs every
 // run-ooo2-*-tb.sh and treats a build failure as a failure).
 //
-// What is checked, in the order docs/HANDOFF-2026-09-03-multiple-loads.md lists it:
+// What is checked, in the order docs/history/HANDOFF-2026-09-03-multiple-loads.md lists it:
 //   * a load held because an older store MAY alias it (no address yet, or an overlapping
 //     address), released when that store's address disambiguates or the store commits
 //   * the no-older-store case: ld_older low, the candidate offered the cycle its address is in

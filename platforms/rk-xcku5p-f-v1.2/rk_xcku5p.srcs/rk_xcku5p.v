@@ -2,7 +2,7 @@
 
 // ---- probe-core clock (BUFGCE_DIV: ui_clk / N) --------------------------------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
-// src/soc_top.v and ooo2/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
+// ooo2/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
 // skew the console baud or the timebase (both bit us before -- see the comments at each
 // site).
 //
@@ -102,11 +102,8 @@ module rk_xcku5p(
 
    // DDR4 UI clock (333.33 MHz) and reset from the IP
    wire ui_clk;
-   wire core_clk;
-   wire fpu_clk;
    wire ui_rst;           // c0_ddr4_ui_clk_sync_rst (active high)
    wire init_calib_complete;
-   wire halted;
 
    // CPU is held in reset until calibration completes.
    // key[1] is a soft-reset button (active low): pulses the CPU reset without
@@ -127,24 +124,10 @@ module rk_xcku5p(
    wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | ~key[1] | fbdiag_rst_sync[1];
    reg  [1:0] ui_cpu_reset_sync = 2'b11;
    wire ui_cpu_reset = ui_cpu_reset_sync[1];
-   reg  [1:0] cpu_reset_core_sync = 2'b11;
-   wire cpu_reset = cpu_reset_core_sync[1];
 
 `ifndef PROBE_DIAG
    assign led = 4'b0000;
 `endif
-
-   // Run the CPU-side pipeline and hit path at half the DDR4 UI clock.  The
-   // cache refill/writeback engine inside smolrv64 still uses ui_clk through
-   // the separate mem_clock port.
-   BUFGCE_DIV #(
-      .BUFGCE_DIVIDE(2)
-   ) core_clk_buf (
-      .I  (ui_clk),
-      .CE (1'b1),
-      .CLR(ui_rst),
-      .O  (core_clk)
-   );
 
    always @(posedge ui_clk) begin
       if (ui_cpu_reset_req)
@@ -153,27 +136,7 @@ module rk_xcku5p(
          ui_cpu_reset_sync <= {ui_cpu_reset_sync[0], 1'b0};
    end
 
-   always @(posedge core_clk or posedge ui_cpu_reset) begin
-      if (ui_cpu_reset)
-         cpu_reset_core_sync <= 2'b11;
-      else
-         cpu_reset_core_sync <= {cpu_reset_core_sync[0], 1'b0};
-   end
-
-   // CVFPU is throughput-capable but much deeper than the integer core.  The
-   // core issues one FP operation at a time and waits, so run the FPU island at
-   // a conservative divided clock and bridge it inside smolrv64_cvfpu.
-   BUFGCE_DIV #(
-      .BUFGCE_DIVIDE(4)
-   ) fpu_clk_buf (
-      .I  (ui_clk),
-      .CE (1'b1),
-      .CLR(ui_rst),
-      .O  (fpu_clk)
-   );
-
-`ifdef PROBE_CORE
-   // The probe core (sharded OoO, or the in-order core under OOO2_CORE) runs on probe_clk,
+   // The core runs on probe_clk,
    // built by the MMCM below from PROBE_CLK_DIV8 -- see the knob at the top of this file.
    //
    // History, because the numbers below get quoted: on the old BUFGCE_DIV ladder the sharded
@@ -185,7 +148,7 @@ module rk_xcku5p(
    // find out where.
    //
    // The ddr_* line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc.
-   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (src/soc_top.v, ooo2/rv_soc_top.v)
+   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (ooo2/rv_soc_top.v)
    // are derived from the same knob, so they cannot drift out of sync with a sweep.
    wire probe_clk;
 
@@ -238,7 +201,6 @@ module rk_xcku5p(
    reg [26:0] hb_ui = 27'd0;    always @(posedge ui_clk)    hb_ui  <= hb_ui  + 1'b1;
    reg [23:0] hb_pr = 24'd0;    always @(posedge probe_clk) hb_pr  <= hb_pr  + 1'b1;
    assign led = {hb_ui[26], hb_pr[23] & probe_mmcm_locked, ui_rst, init_calib_complete};
-`endif
 `endif
 
    wire         dbg_clk;
@@ -405,10 +367,6 @@ module rk_xcku5p(
       .dbg_bus                        (dbg_bus)
    );
 
-   wire       uart_tx_valid;
-   wire [7:0] uart_tx_data;
-   wire       rx_valid;
-   wire [7:0] rx_data;
    wire [19:0] core_mmio_address;
    wire        core_mmio_read;
    wire        core_mmio_write;
@@ -467,10 +425,6 @@ module rk_xcku5p(
    reg  [31:0] build_id_readdata;
    wire        virtio_blk_irq;
    wire        virtio_net_irq;
-   reg         virtio_blk_irq_meta = 1'b0;
-   reg         virtio_blk_irq_core = 1'b0;
-   reg         virtio_net_irq_meta = 1'b0;
-   reg         virtio_net_irq_core = 1'b0;
    wire        virtio_net_queue_notify_pulse;
    wire [31:0] virtio_net_queue_notify_value;
    wire        virtio_net_used_buffer_interrupt;
@@ -632,20 +586,6 @@ module rk_xcku5p(
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
 
-   always @(posedge core_clk) begin
-      if (cpu_reset) begin
-         virtio_blk_irq_meta <= 1'b0;
-         virtio_blk_irq_core <= 1'b0;
-         virtio_net_irq_meta <= 1'b0;
-         virtio_net_irq_core <= 1'b0;
-      end else begin
-         virtio_blk_irq_meta <= virtio_blk_irq;
-         virtio_blk_irq_core <= virtio_blk_irq_meta;
-         virtio_net_irq_meta <= virtio_net_irq;
-         virtio_net_irq_core <= virtio_net_irq_meta;
-      end
-   end
-
    always @(posedge ui_clk) begin
       if (ui_cpu_reset) begin
          sd_cd_meta <= 1'b1;
@@ -697,18 +637,8 @@ module rk_xcku5p(
    assign ui_mmio_readdatavalid = mmio_read_d2;
    assign ui_mmio_readdata = mmio_readdata_q;
 
-   // Under PROBE_CORE the bridge's core side is driven by the probe soc_top's virtio passthrough
-   // at probe_clk (not the scalar core_clk); the async FIFOs handle probe_clk<->ui_clk CDC.
-`ifdef PROBE_CORE
- `ifdef NO_VIRTIO_WIRE
-   // Experiment: deactivate the virtio path -- bridge idle on core_clk (banner-build baseline).
-   wire mmio_bridge_clk = core_clk;    wire mmio_bridge_rst = cpu_reset;
- `else
+   // The MMIO bridge's core side runs at probe_clk; its async FIFOs are the probe_clk<->ui_clk CDC.
    wire mmio_bridge_clk = probe_clk;   wire mmio_bridge_rst = probe_reset;
- `endif
-`else
-   wire mmio_bridge_clk = core_clk;    wire mmio_bridge_rst = cpu_reset;
-`endif
    smolrv64_mmio_clock_bridge mmio_clock_bridge_inst(
       .core_clock          (mmio_bridge_clk),
       .core_reset          (mmio_bridge_rst),
@@ -860,13 +790,13 @@ module rk_xcku5p(
    // the surrounding cache/fetch/LSU activity that produced the bad read.
    //   probe0 = {I$,D$} parity-error pulse (the trigger)
    //   probe1 = sticky/bank/addr snapshot of the FIRST failure (survives the pulse)
-   //   probe2 = fetch PA        probe3 = LSU state
+   //   probe2, probe3 = tied off (they carried the retired core's fetch PA and LSU state)
    ila_parity u_ila_parity (
       .clk    (probe_clk),
       .probe0 (probe_par_err),
       .probe1 (probe_par_dbg),
-      .probe2 (probe_pc_dbg),
-      .probe3 (probe_lsu)
+      .probe2 (64'd0),   // the retired core's fetch PA; rv_soc_top has no such output
+      .probe3 (64'd0)    // the retired core's LSU state
    );
 `endif
 
@@ -1575,85 +1505,10 @@ module rk_xcku5p(
    end
    endgenerate
 
-`ifndef PROBE_CORE
-   smolrv64 smolrv64_inst(
-      .clock                (core_clk),
-      .mem_clock            (ui_clk),
-      .fpu_clock            (fpu_clk),
-      .reset                (cpu_reset),
-      .mmio_address         (core_mmio_address),
-      .mmio_read            (core_mmio_read),
-      .mmio_write           (core_mmio_write),
-      .mmio_writedata       (core_mmio_writedata),
-      .mmio_byteenable      (core_mmio_byteenable),
-      .mmio_readdatavalid   (core_mmio_readdatavalid),
-      .mmio_readdata        (core_mmio_readdata),
-
-      .ext_irq              ({51'd0, virtio_net_irq_core, virtio_blk_irq_core, 10'd0}),
-
-      .m_axi_awid           (core_axi_awid),
-      .m_axi_awaddr         (core_axi_awaddr),
-      .m_axi_awlen          (core_axi_awlen),
-      .m_axi_awsize         (core_axi_awsize),
-      .m_axi_awburst        (core_axi_awburst),
-      .m_axi_awlock         (core_axi_awlock),
-      .m_axi_awcache        (core_axi_awcache),
-      .m_axi_awprot         (core_axi_awprot),
-      .m_axi_awqos          (core_axi_awqos),
-      .m_axi_awvalid        (core_axi_awvalid),
-      .m_axi_awready        (core_axi_awready),
-      .m_axi_wdata          (core_axi_wdata),
-      .m_axi_wstrb          (core_axi_wstrb),
-      .m_axi_wlast          (core_axi_wlast),
-      .m_axi_wvalid         (core_axi_wvalid),
-      .m_axi_wready         (core_axi_wready),
-      .m_axi_bid            (core_axi_bid),
-      .m_axi_bresp          (core_axi_bresp),
-      .m_axi_bvalid         (core_axi_bvalid),
-      .m_axi_bready         (core_axi_bready),
-      .m_axi_arid           (core_axi_arid),
-      .m_axi_araddr         (core_axi_araddr),
-      .m_axi_arlen          (core_axi_arlen),
-      .m_axi_arsize         (core_axi_arsize),
-      .m_axi_arburst        (core_axi_arburst),
-      .m_axi_arlock         (core_axi_arlock),
-      .m_axi_arcache        (core_axi_arcache),
-      .m_axi_arprot         (core_axi_arprot),
-      .m_axi_arqos          (core_axi_arqos),
-      .m_axi_arvalid        (core_axi_arvalid),
-      .m_axi_arready        (core_axi_arready),
-      .m_axi_rid            (core_axi_rid),
-      .m_axi_rdata          (core_axi_rdata),
-      .m_axi_rresp          (core_axi_rresp),
-      .m_axi_rlast          (core_axi_rlast),
-      .m_axi_rvalid         (core_axi_rvalid),
-      .m_axi_rready         (core_axi_rready),
-
-      .uart_tx_valid        (uart_tx_valid),
-      .uart_tx_data         (uart_tx_data),
-      .uart_tx_ready        (tx_ready),
-      .uart_rx_valid        (rx_valid),
-      .uart_rx_data         (rx_data),
-
-      .halted_o             (halted)
-   );
-
-   // Core clock is half of the ~333.33 MHz UI clock; keep UART at 3 Mbaud.
-   wire tx_ready;
-   rs232tx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232tx_inst
-     (.clk(core_clk), .rst_n(~cpu_reset),
-      .data(uart_tx_data), .valid(uart_tx_valid), .ready(tx_ready),
-      .tx(txd));
-
-   rs232rx #(.CLK_FREQ(166_666_666), .BAUD(3_000_000)) rs232rx_inst
-     (.clk(core_clk), .rst_n(~cpu_reset),
-      .data(rx_data), .valid(rx_valid), .ready(1'b1),
-      .rxd(rxd), .overflow());
-`else
-   // ===================== Sharded-OoO probe core (PROBE_CORE) =====================
-   // soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its 512-bit
-   // line port -> ddr_line_cdc -> ddr_line_axi -> the existing core_axi_* arbiter input
-   // (unchanged MIG path). virtio/ethernet/MMIO-bridge stay but idle (trimmed DTB).
+   // ===================== The core: rv_soc_top at probe_clk =====================
+   // rv_soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its 512-bit
+   // line port -> ddr_line_cdc -> ddr_line_axi -> the core_axi_* arbiter input (the MIG
+   // path). virtio-blk/net and the MMIO bridge hang off its virtio passthrough below.
    wire        pddr_req, pddr_we;  wire [57:0] pddr_addr;  wire [511:0] pddr_wdata, pddr_rdata;  wire pddr_ack;
    wire        mddr_req, mddr_we;  wire [57:0] mddr_addr;  wire [511:0] mddr_wdata, mddr_rdata;  wire mddr_ack;
    wire [63:0] pddr_wmask, mddr_wmask;   // per-byte line strobes (NC stores push only their own bytes)
@@ -1662,9 +1517,9 @@ module rk_xcku5p(
 
    wire [12:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // bit12: blk(0)/net(1)
    wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
-   // virtio IRQs (ui_clk) synchronized into probe_clk for soc_top's internal PLIC.
+   // virtio IRQs (ui_clk) synchronized into probe_clk for rv_soc_top's internal PLIC.
    // blk -> src 11, net -> src 12 (both match the DTB `interrupts` properties).
-   // The net one was MISSING: virtio_net_irq was only synced on core_clk into the SCALAR SoC's
+   // The net one was MISSING: virtio_net_irq was only synced into the retired scalar SoC's
    // ext_irq, so the probe core never saw it. Measured symptom: virtio-net InterruptStatus stuck
    // at 1 (asserted, unacknowledged) with `virtio1: 0` in /proc/interrupts while virtio-blk on
    // src 11 took 44k -- the driver never harvested the RX ring, so DHCP never got a reply.
@@ -1680,38 +1535,9 @@ module rk_xcku5p(
    wire [1:0]  probe_par_err;   // cache data-array parity error pulses {I$,D$} (-DCACHE_PARITY)
    wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
-   wire [63:0] probe_timer_dbg; // csr_file timer/irq debug (probe_clk) for ILA_TIMER
-   wire [63:0] probe_pc_dbg;    // fetch PA (probe_clk) for ILA_TIMER probe1
-   wire [63:0] probe_mtvec_dbg; // M trap vector (probe_clk) for ILA_TIMER probe2
-   wire        probe_mtvec_we;  // mtvec write strobe for ILA_TIMER probe4
-   wire [63:0] probe_csrop;     // executing system op {pc,addr,func,is_csr} for ILA_TIMER probe5
-   wire        probe_csrop_v;   // ...its strobe for ILA_TIMER probe6
-   wire [63:0] probe_wedge;     // frontend/dispatch/interrupt state for ILA_TIMER probe7
-   wire [63:0] probe_lsu;       // full LSU state for ILA_TIMER probe5
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
-`ifdef OOO2_CORE
-   // ---------------- In-order core (OOO2_CORE=1) ----------------
-   // rv_soc_top pins its own memory subsystem (rv_cache / rv_l2_arbiter) -- see
-   // docs/ooo2-plan.md -- so it has neither the newer soc_top's per-byte DDR write
-   // strobes nor its ILA debug buses. It only ever pushes WHOLE lines, so wmask is
-   // all-ones; the remaining debug buses tie off (those ILAs are PROBE_CORE-only).
-   //
-   // EXCEPT THE PARITY BUS, which rv_soc_top now drives. It was tied to 0 here while
-   // ILA_PARITY was still selectable, so an ILA_PARITY build of the ooo2 core captured a
-   // CONSTANT and read as "no error ever" -- a diagnostic that cannot fail is worse than
-   // none, because it answers. Caught only because probe_pc_dbg and probe_lsu are also
-   // tied off here and a capture with every probe identically zero is not a clean result,
-   // it is a dead one. Those two stay tied: rv_soc_top has no such outputs yet, so probe2
-   // and probe3 of ila_parity remain uninformative for this core.
+   // rv_soc_top only ever pushes WHOLE lines, so the per-byte line strobes are all-ones.
    assign pddr_wmask      = {64{1'b1}};
-   assign probe_timer_dbg = 64'd0;
-   assign probe_pc_dbg    = 64'd0;
-   assign probe_mtvec_dbg = 64'd0;
-   assign probe_mtvec_we  = 1'b0;
-   assign probe_csrop     = 64'd0;
-   assign probe_csrop_v   = 1'b0;
-   assign probe_wedge     = 64'd0;
-   assign probe_lsu       = 64'd0;
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
@@ -1723,35 +1549,8 @@ module rk_xcku5p(
       .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
-`ifdef NO_VIRTIO_WIRE
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0),
-      .virtio_irq(1'b0), .virtio_net_irq(1'b0));
-`else
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
       .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
-`endif
-`else
-   soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
-      .clk(probe_clk), .reset(probe_reset),
-      .commit(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
-      .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
-      .ddr_wmask(pddr_wmask), .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
-      .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
-      .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
-      .irq_dbg(probe_irq_dbg), .timer_dbg(probe_timer_dbg), .pc_dbg(probe_pc_dbg), .mtvec_dbg(probe_mtvec_dbg), .mtvec_we_dbg(probe_mtvec_we),
-      .csrop_dbg(probe_csrop), .csrop_v_dbg(probe_csrop_v), .wedge_dbg(probe_wedge), .lsu_dbg(probe_lsu),
-      .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
-      // virtio-blk MMIO passthrough -> mmio_clock_bridge core side (probe_clk) -> virtio_blk
-      .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
-      .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
-`ifdef NO_VIRTIO_WIRE
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0),
-      .virtio_irq(1'b0), .virtio_net_irq(1'b0));
-`else
-      .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
-`endif
-`endif
 
 `ifdef ILA_IRQ
    // Debug (ILA_IRQ=1): capture the virtio_blk interrupt lifecycle on probe_clk. probe_irq_dbg =
@@ -1763,57 +1562,6 @@ module rk_xcku5p(
    ila_irq u_ila_irq (
       .clk    (probe_clk),
       .probe0 (probe_irq_dbg)
-   );
-`endif
-
-`ifdef ILA_TIMER
-   // Debug (ILA_TIMER=1): the ubuntu post-generator freeze. probe_timer_dbg (from csr_file):
-   //   [63:44]=stimecmp[19:0] [43:20]=mtime[23:0] [19]=mtime>=stimecmp (raw STIP level)
-   //   [18]=mscratch in 0x800xxxxx (OpenSBI range) [17]=menvcfg.STCE [16]=sret [15]=mret
-   //   [14:11]=trap cause[3:0] [10]=trap_is_intr [9]=trap_to_s [8]=trap_v
-   //   [7]=mscratch-write strobe [6]=stimecmp-write strobe [5]=STIE [4]=STIP(eff)
-   //   [3]=SPP [2]=SIE [1:0]=priv
-   // Two uses: (a) -trigger_now on a wedged board -- does HW show the sim storm signature
-   // (STIP held, ecall cycling, no stimecmp strobes)? (b) armed trigger on probe0[7]&&
-   // !probe0[18] (mscratch written with a non-OpenSBI value) to catch the corruption live.
-   // mtvec-stranding detector: OpenSBI installs __sbi_expected_trap only for the few
-   // dozen cycles of sbi_get_insn()'s MPRV read, so mtvec sitting there for thousands of
-   // cycles means a trap skipped the restoring `csrw mtvec` and stranded the vector --
-   // after which every kernel ecall is swallowed. Flag it in probe2[63] so the ILA can
-   // trigger on the STRANDING (with pre-trigger history showing the install), not on the
-   // steady state. SBI_PROBE_TRAP is fw_payload-specific (byte-verified 0x80000738).
-   localparam [31:0] SBI_PROBE_TRAP = 32'h80000738;
-   reg [15:0] mtvec_at_probe;  reg mtvec_stranded;
-   always @(posedge probe_clk) begin
-      if (probe_mtvec_dbg[31:0] == SBI_PROBE_TRAP) begin
-         if (~&mtvec_at_probe) mtvec_at_probe <= mtvec_at_probe + 16'd1;
-      end else
-         mtvec_at_probe <= 16'd0;
-      mtvec_stranded <= (mtvec_at_probe > 16'd2000);
-   end
-
-   ila_timer u_ila_timer (
-      .clk    (probe_clk),
-      // NEVER pack a debug flag into a concatenation: Vivado trims constant bits and
-      // SPLITS concats into separate probe segments, so the bit you trigger on is not
-      // the bit you wired (seen twice: probe2 arrived as [62:0] with the flag gone, then
-      // probe0 as two segments [63:19]+[17:0]). Give the flag its own named 1-bit probe.
-      .probe0 (probe_timer_dbg),
-      .probe1 (probe_pc_dbg),    // fetch PA: -trigger_now histogram identifies a spinning task's code
-      .probe2 (probe_mtvec_dbg), // mtvec value
-      .probe3 (mtvec_stranded),  // 1 = mtvec parked at the probe handler >2000 cycles
-      .probe4 (probe_mtvec_we),  // 1-cycle: a CSR op wrote mtvec (lost-write vs wrong-value)
-      // Which system op actually executed, tagged with its PC ([63:32]). The stranding
-      // capture shows mtvec never taking the install; this says whether the installing
-      // `csrrw x12,mtvec,x12` reached the CSR unit at all. Present => its write was
-      // dropped inside csr_file; absent => the instruction never got there.
-      // probe5 now carries the LSU state: the mtvec-stranding hunt that csrop was built for is
-      // finished, and the live bug is a fault-delivery deadlock inside the LSU.
-      .probe5 (probe_lsu),
-      .probe6 (probe_csrop_v),
-      // Why the core is frozen: frontend accept / dispatch-stall reasons / fetch-empty
-      // reasons / interrupt-injection state. See backend_top's dbg_wedge for the layout.
-      .probe7 (probe_wedge)
    );
 `endif
 
@@ -1866,7 +1614,7 @@ module rk_xcku5p(
    // CLK_FREQ MUST track probe_clk's divider: a stale value skews the baud (leaving 41.67
    // here while the clock runs /5 transmits ~60% too fast -> garbage on the wire).
    // Matches the scalar core + `make connect` (3 Mbaud); 26x faster fw load than 115200.
-   // rs232tx.ready (output, ready-to-accept) feeds soc_top.uart_tx_ready directly.
+   // rs232tx.ready (output, ready-to-accept) feeds rv_soc_top.uart_tx_ready directly.
    rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(3_000_000)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
@@ -1874,24 +1622,15 @@ module rk_xcku5p(
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
-   // Drive the MMIO bridge core side from the probe soc_top's virtio passthrough. soc_top emits
+   // Drive the MMIO bridge core side from rv_soc_top's virtio passthrough. rv_soc_top emits
    // the 13-bit offset within its 0x1000_2000 virtio region (8 KiB); addr[12] selects the device
    // (0 -> blk page 0x02, 1 -> net page 0x03) so ui_mmio_address[19:12] routes it to virtio_blk_inst
    // (0x02) or virtio_net_inst (0x03). virtio_net_irq is already wired to PLIC src 12 (ext_irq[11]).
-`ifdef NO_VIRTIO_WIRE
-   assign core_mmio_address    = 20'd0;
-   assign core_mmio_read       = 1'b0;
-   assign core_mmio_write      = 1'b0;
-   assign core_mmio_writedata  = 32'd0;
-   assign core_mmio_byteenable = 4'd0;
-`else
    assign core_mmio_address    = {p_virtio_addr[12] ? 8'h03 : 8'h02, p_virtio_addr[11:0]};
    assign core_mmio_read       = p_virtio_read;
    assign core_mmio_write      = p_virtio_write;
    assign core_mmio_writedata  = p_virtio_wdata;
    assign core_mmio_byteenable = p_virtio_be;
-`endif
-`endif
 endmodule
 
 module smolrv64_mmio_clock_bridge(
@@ -1925,7 +1664,7 @@ module smolrv64_mmio_clock_bridge(
 
    // Registered FIFO reset with bounded fanout. The two MMIO CDC FIFOs
    // take `core_reset | ui_reset` as their .reset() — combinational
-   // signals routing from cpu_reset_core_sync (core_clk domain) through
+   // signals routing from the core-side reset through
    // an OR into the BRAM-located FIFOs' internal reset FSMs were the new
    // worst paths after the BRAM forcing. Register here, gate fanout.
    (* max_fanout = 8 *) reg fifo_reset_q = 1'b1;
@@ -2028,7 +1767,7 @@ module smolrv64_mmio_clock_bridge(
                  if (cmd_is_read)
                     ui_state <= UI_WAIT_RSP;
                  else if (cmd_is_write)
-                    ui_state <= UI_SEND_RSP;   // writes send a completion too, so soc_top can BLOCK the
+                    ui_state <= UI_SEND_RSP;   // writes send a completion too, so rv_soc_top can BLOCK the
                                                // store until delivery (rsp data is don't-care for a write)
               end
            end

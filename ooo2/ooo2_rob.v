@@ -1,6 +1,6 @@
 `default_nettype none
 
-// Reorder buffer for the in-order core -- the step that turns "M is the commit point" into
+// Reorder buffer for ooo2_core -- the step that turns "M is the commit point" into
 // "the ROB head is the commit point", which is the substrate out-of-order issue needs.
 //
 // WHAT THIS DOES NOT DO, and why it is small. `ooo2_rename` already carries the whole

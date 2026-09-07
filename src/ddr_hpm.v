@@ -1,8 +1,8 @@
 `default_nettype none
 
-// DDR latency hardware performance monitor (docs/perf-observability-plan.md, step 3).
+// DDR latency hardware performance monitor.
 //
-// Taps the soc_top EXTERNAL DDR line port (ddr_req/ddr_we/ddr_ack) and measures the
+// Taps rv_soc_top's EXTERNAL DDR line port (ddr_req/ddr_we/ddr_ack) and measures the
 // per-transaction request->ack latency in CORE-CLOCK cycles -- exactly the latency the
 // core sees, and exactly what the sim DDR model approximates with `memlat`. So the HW
 // distribution captured here feeds straight back into a more accurate sim model.
@@ -13,7 +13,7 @@
 //     perftool bucket() convention so the same reader/plots apply).
 //   * SUM of latencies (mean = sum / count) and transaction COUNT.
 //
-// Read-only via a 64-bit MMIO window (soc_top decodes the base; this module just sees the
+// Read-only via a 64-bit MMIO window (rv_soc_top decodes the base; this module just sees the
 // byte offset). ANY write to the window clears all counters -- snapshot-then-clear lets a
 // tool isolate a phase. Pure observation: the taps are fan-out only, off the core path.
 //

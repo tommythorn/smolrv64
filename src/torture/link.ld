@@ -1,8 +1,0 @@
-OUTPUT_ARCH(riscv)
-ENTRY(_start)
-SECTIONS {
-  . = 0x80000000;
-  .text : { *(.text) }
-  . = 0x80001000;
-  .data : { *(.data) }      /* tohost lands at 0x80001000 */
-}

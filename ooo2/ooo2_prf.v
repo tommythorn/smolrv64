@@ -1,6 +1,6 @@
 `default_nettype none
 
-// Sharded physical register file for the in-order core.
+// Sharded physical register file for ooo2_core.
 //
 // WHY SHARDS.  rv_regfile is a unified 64-entry array with ONE write port
 // (`always @(posedge clk) if (we) r[wa] <= wd;`).  The moment completion goes out of order

@@ -1,26 +1,25 @@
 #!/bin/bash
-# Compile+run every probe unit testbench (tb_*.v), count PASS. tb_trace is a
-# trace-only harness (no PASS string) -> excluded.
+# Compile+run every unit testbench under src/ (tb_*.v), count PASS. These cover the blocks
+# the core shares (aligner, fetch, decode, ALU, MMU, mul/div, FPU wrapper) and the SoC
+# devices (CLINT, PLIC, DDR line bridge, virtio-net). The core's own benches live in
+# ooo2/run-ooo2-*-tb.sh. Rule G4: run this after any port change to a shared module.
 set -u
 cd "$(dirname "$0")"
 ulimit -v $((25 * 1024 * 1024)) 2>/dev/null || true   # cap @25 GiB: runaway aborts, not OOM
 srcs=$(. ./rtl-sources.sh; rtl_sources)
 pass=0; total=0; fails=""
 for tb in tb_*.v; do
-   [ "$tb" = tb_trace.v ] && continue
-   [ "$tb" = tb_riscv.v ] && continue
-   [ "$tb" = tb_vl.v ]    && continue   # +hex-driven riscv-test harnesses (run via
-   [ "$tb" = tb_irq.v ]   && continue   # run-vl-tests.sh / a custom interrupt program)
-   [ "$tb" = tb_soc.v ]   && continue   # +hex-driven SoC harness (run-soc-test.sh)
-   [ "$tb" = tb_soctop.v ] && continue  # +hex-driven soc_top harness (verilated)
-   [ "$tb" = tb_mon.v ]    && continue  # +monhex monitor-boot harness (verilated)
-   [ "$tb" = tb_linux.v ]  && continue  # +bin-driven Linux-boot harness (verilated)
+   # tb_virtio_net declares ring_mask after its first use, which iverilog rejects; it runs
+   # under Verilator in ooo2/run-ooo2-vnet-tb.sh.
+   [ "$tb" = tb_virtio_net.v ] && continue
    total=$((total+1))
-   if ! timeout 90 iverilog -g2012 -I. -s tb -o /tmp/tb.vvp $srcs "$tb" fp_unit_stub.sv >/tmp/tb_cc.log 2>&1; then
+   top=$(grep -m1 -oE '^module +[A-Za-z_0-9]+' "$tb" | awk '{print $2}')
+   if ! timeout 90 iverilog -g2012 -I. -s "$top" -o /tmp/tb.vvp $srcs "$tb" fp_unit_stub.sv >/tmp/tb_cc.log 2>&1; then
       printf "%-22s COMPILE-FAIL\n" "$tb"; fails="$fails $tb"; continue
    fi
    out=$(timeout 60 vvp /tmp/tb.vvp 2>&1)
-   if echo "$out" | grep -qiE 'ALL TESTS PASSED|ALL 65536 MATCH'; then
+   # Each bench prints its own verdict line; a PASS with no FAIL anywhere in the output is a pass.
+   if echo "$out" | grep -qiE 'ALL TESTS PASSED|ALL 65536 MATCH|(^|[: >])PASS\b' && ! echo "$out" | grep -qE '\bFAIL'; then
       pass=$((pass+1))
    else
       printf "%-22s FAIL\n" "$tb"; fails="$fails $tb"

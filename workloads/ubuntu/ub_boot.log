@@ -1,7 +1,0 @@
-[ubuntu-boot] session=140091
-[ubuntu-boot] sending ubuntu.dtb -> 0xfffff000, fw_payload.bin -> 0x80000000, tiny128.cpio -> 0xff62b000
-[ubuntu-boot]   Yfffff000 + sx -k ubuntu.dtb
-[ubuntu-boot]   done (ubuntu.dtb)
-[ubuntu-boot]   Y80000000 + sx -k fw_payload.bin
-[ubuntu-boot]   done (fw_payload.bin)
-[ubuntu-boot] done

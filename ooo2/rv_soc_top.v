@@ -19,22 +19,13 @@
  `define SMOLRV64_GIT_DIRTY 1'b0
 `endif
 
-// FORK of probe/soc_top.v, retargeted to the in-order core. Everything outside the
-// core instance -- MMIO routing, CLINT/PLIC/UART, virtio bridge, the I$/D$ adapters,
-// the PTW-through-D$ adapters, the l2_arbiter, local SRAM and the DDR line port -- is
-// carried over verbatim; keep the two in sync when touching those.
+// The SoC top: ooo2_core + its I$/D$ (rv_cache) + rv_l2_arbiter merging all memory
+// traffic onto ONE line memory port + the local boot SRAM. MMIO routing, CLINT/PLIC/UART,
+// the virtio bridge and the PTW-through-cache adapters live here. (Forked from the retired
+// sharded core's soc_top.v in 2026-08; two page-table walkers, iTLB and dTLB, since the
+// LSU translates one op at a time; `retire` is one pulse per retiring instruction.)
 //
-// Deltas vs soc_top.v:
-//   * backend_top -> ooo2_core (scalar: HW=2, one 32-bit fetch window; no POOL/PBITS,
-//     no per-shard writeback observation bus).
-//   * TWO page-table walkers, not three. The OoO LSU runs separate load and store
-//     walkers because loads and stores translate in parallel; the in-order LSU has
-//     one memory op in flight, so one data walker serves loads, stores and atomics.
-//   * `commit` -> `retire` (one instruction per pulse, in program order).
-//
-// Synthesizable SoC top: the in-order core (ooo2_core) + unified I$/D$ (cache.v)
-// + l2_arbiter merging all memory traffic onto ONE line memory port + a behavioral
-// line RAM. This lifts the proven tb_vl cache adapters (sticky-rvalid read port,
+// The cache adapters here are the ones the retired harness proved (sticky-rvalid read port,
 // write-through write port, fence.i drain+invalidate FSM) into a real module, and
 // replaces the per-cache L2 responders with the arbiter so I$-fill, D$-fill/write and
 // the 3 PTW ports share one memory -- the shape the real DRAM bridge plugs into.

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Linux-boot lockstep: the in-order SoC vs simmerv. Builds tb_ooo2_linux.v with
+# Linux-boot lockstep: the SoC (rv_soc_top) vs simmerv. Builds tb_ooo2_linux.v with
 # -DOOO2_COSIM (ooo2_core emits its probe_retire() stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, resets to OpenSBI (0x8000_0000)
 # with a1=DTB, and locksteps every retired instruction -- aborting on the first
 # divergence with a 320-deep DUT/REF history ring.
 #
-# This is the tool for the /init stall (docs/ooo2-plan.md): it names the first
+# This is the tool for a boot that stalls (docs/history/ooo2-plan.md): it names the first
 # architecturally wrong instruction instead of inferring from a spin address.
 #
 #   ./run-ooo2-cosim-linux.sh              default tiny128 initrd workload
@@ -49,7 +49,7 @@ fi
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_slot.v ../src/decode_operands.v ../src/decode_exec.v \
-            ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
+            ../src/decode_fp.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv \
             rv_cache.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
@@ -109,10 +109,10 @@ if [ "$need_build" = 1 ]; then
       -DOOO2_COSIM -DOOO2_MEM_SIZE_LG2=$MEM_LG2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
-      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_clinux -o tb_ooo2_clinux \
+      -I. -I../src --top-module tb --Mdir obj_dir_ooo2_clinux -o tb_ooo2_clinux \
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
-      -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
+      -f ../src/cvfpu_sources.f \
       tb_ooo2_linux.v ../src/probe_cosim.cpp > obj_dir_ooo2_clinux/build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' obj_dir_ooo2_clinux/build.log | head -20; exit 1; fi
    printf '%s' "$want" > "$STAMP"

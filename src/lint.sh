@@ -32,17 +32,14 @@ OFF="-Wno-TIMESCALEMOD -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME
 echo "lint: verilator $(verilator --version 2>&1 | head -1)"
 
 fail=0
-# One invocation, two tops. The in-order core ships to the FPGA alongside the OoO core but
-# was outside this gate entirely -- rv_soc_top.v, ooo2_lsu.v, rv_cache.v and the rest were
-# never width- or latch-checked, which is exactly the blind spot docs/rtl-rules.md exists to
-# close. Same ERRS/OFF for both: a rule that is load-bearing for one core is load-bearing
-# for the other.
+# One top: rv_soc_top, the core as it ships. (Until the 2026-09 release this ran a second
+# top for the retired sharded-OoO core; the rules are the same.)
 lint_top() {                      # <label> <top-module> <sources...>
    local label=$1 top=$2; shift 2
    local log=/tmp/smolrv64-lint-$label.log
    verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \
       -I. -I../ooo2 --top-module "$top" \
-      "$@" -f ./cvfpu_sources.f ./smolrv64_cvfpu.sv fp_unit.sv \
+      "$@" -f ./cvfpu_sources.f fp_unit.sv \
       ./verilator.vlt > "$log" 2>&1 || {
          echo "---- LINT FAILED ($label: top=$top) ----"
          grep -E '%Error' "$log" | head -40
@@ -56,7 +53,6 @@ lint_top() {                      # <label> <top-module> <sources...>
 }
 
 [ "${1:-}" = "-v" ] && VERBOSE=1
-lint_top ooo soc_top     $(rtl_sources)
 lint_top ooo2 rv_soc_top $(ooo2_sources)
 
 # docs/smolrv64-perf-events.json is generated from csr_file.v's event map. It is checked

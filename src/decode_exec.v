@@ -1,7 +1,7 @@
 `include "alu_ops.vh"
 `default_nettype none
 
-// Execution control decode ("ctl blob") for the sharded-OoO backend, sibling to
+// Execution control decode ("ctl blob"), sibling to
 // decode_operands (which produces the rename-facing rs/rd/imm). Input is the
 // RVC-EXPANDED 32-bit instruction, so only the 32-bit encodings exist here -- the
 // whole compressed half of smolrv64.v's pre-decode disappears. The ALU op map is

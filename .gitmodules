@@ -1,5 +1,3 @@
 [submodule "third_party/cvfpu"]
 	path = third_party/cvfpu
 	url = https://github.com/tommythorn/cvfpu.git
-[submodule "path/to/submodule"]
-	url = https://github.com/tommythorn/cvfpu.git

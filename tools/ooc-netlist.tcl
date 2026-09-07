@@ -20,7 +20,7 @@ while {[gets $mf line] >= 0} { set line [string trim $line]
 close $mf
 read_verilog -quiet $vfiles
 read_verilog -quiet -sv $svfiles
-set defs [list "MEM_BASEADDR=64'h70000000" PROBE_CORE OOO2_CORE "SOC_BOOT_HEX=\"$root/src/mem.linehex\"" \
+set defs [list "MEM_BASEADDR=64'h70000000" "SOC_BOOT_HEX=\"$root/src/mem.linehex\"" \
    PROBE_CLK_DIV8=48 OOO2_HW=8 "SMOLRV64_BUILD_STAMP=64'h20260906000000" "SMOLRV64_GIT_COMMIT=32'h$tag" "SMOLRV64_GIT_DIRTY=1'b0"]
 puts "defines: $defs"
 set opts [expr {[info exists ::env(OOC_OPTS)] ? $::env(OOC_OPTS) : "-flatten_hierarchy rebuilt -retiming -control_set_opt_threshold 16"}]

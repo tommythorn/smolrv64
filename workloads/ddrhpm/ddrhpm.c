@@ -1,8 +1,8 @@
 // ddrhpm -- read the on-chip DDR latency histogram (src/ddr_hpm.v) from Linux
 // userspace on the board, and print it in a form the sim model can be calibrated
-// against (see docs/perf-observability-plan.md step 3).
+// against.
 //
-// The gadget measures REQUEST->ACK latency of soc_top's external 64-byte line port
+// The gadget measures REQUEST->ACK latency of rv_soc_top's external 64-byte line port
 // in core-clock cycles -- exactly what the simulation's DDR model approximates
 // (tb_virtio / tb_cosim_linux `+ddr_real +ddr_lat=N`). Until this is read from a
 // real boot, that model is a GUESS.

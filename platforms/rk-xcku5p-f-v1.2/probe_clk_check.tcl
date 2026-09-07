@@ -20,9 +20,7 @@
 
 set probe_clk_pins [get_pins -quiet -hier -filter {NAME =~ *probe_clk_buf/O}]
 if {![llength $probe_clk_pins]} {
-   error "probe_clk_check: no probe_clk_buf/O pin in the design.  Either the probe\
- core is not built (PROBE_CORE off) or the clock buffer was renamed.  If the probe\
- core is genuinely absent this hook should not be running."
+   error "probe_clk_check: no probe_clk_buf/O pin in the design -- the clock buffer was renamed."
 }
 
 set probe_clks [get_clocks -quiet -of_objects $probe_clk_pins]

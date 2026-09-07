@@ -1302,9 +1302,9 @@ module rv_cache #(
    // unlike the PERF_TRACE DPI trace"). No FPGA build defines PERF_TRACE, so in every
    // bitstream these outputs were undriven -- tied low by synthesis -- and mhpmcounter's
    // DCACC/DCMISS/ICACC/ICMISS events counted zero on hardware. Verilator's UNDRIVEN caught
-   // it the moment the in-order core was brought under src/lint.sh.
+   // it the moment this core was brought under src/lint.sh.
    //
-   // Same defect and same fix as src/cache.v, which this file is a fork of; it was repaired
+   // Same defect and same fix as the retired src/cache.v, which this file was forked from; it was repaired
    // upstream and the fork never picked it up. Upstream additionally masks a PARKED S_CHECK
    // (a miss looping while it waits on the MSHR, or a CBO waiting on the write buffer) so
    // misses do not overcount. This fork has neither an MSHR nor a write buffer, so that term

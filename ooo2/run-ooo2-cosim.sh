@@ -1,5 +1,5 @@
 #!/bin/bash
-# Lockstep the in-order core against simmerv. Builds tb_ooo2_riscv.v with
+# Lockstep the core against simmerv. Builds tb_ooo2_riscv.v with
 # -DOOO2_COSIM (ooo2_core emits a probe_retire() DPI stream) linked against
 # ../src/probe_cosim.cpp + libsimmerv_cosim.a, then runs one riscv-test (or any
 # flat image), comparing every retired instruction to the golden model.
@@ -9,8 +9,8 @@
 #   BUILD=1 ./run-ooo2-cosim.sh <test>    force a rebuild
 #   RESET_PC=80000000 CYC=... ./run-ooo2-cosim.sh <test>
 #
-# The C++ side is probe/probe_cosim.cpp UNMODIFIED -- the DPI contract is the same
-# one the OoO core emits, and it is the RTL side that got simpler (see ooo2_core.v's
+# The C++ side is src/probe_cosim.cpp, the DPI contract the retired sharded core defined;
+# the RTL side is the simpler one (see ooo2_core.v's
 # OOO2_COSIM block: no reorder FIFO, no value-ready tracking, no squash truncation).
 set -u
 cd "$(dirname "$0")"
@@ -36,7 +36,7 @@ fi
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_slot.v ../src/decode_operands.v ../src/decode_exec.v \
-            ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
+            ../src/decode_fp.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv"
 
@@ -48,9 +48,9 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DOOO2_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
-      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_cosim -o tb_ooo2_cosim \
+      -I. -I../src --top-module tb --Mdir obj_dir_ooo2_cosim -o tb_ooo2_cosim \
       ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
-      $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
+      $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
       tb_ooo2_riscv.v ../src/probe_cosim.cpp > /tmp/ooo2cosimbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2cosimbuild.log | head -20; exit 1; fi
 fi

@@ -11,12 +11,9 @@
 //                   + 1 (resp toggle) + 2 (sync) + 1 (latch)  =  ~13 cycles
 //
 // and hardware measured exactly 14.02 stall cycles per FP op. But BOTH instantiations of
-// this module -- ooo2_core.v and exec_shard.v -- tie fpu_clock to clk, so every one of those
-// ~9 synchroniser cycles paid for a clock crossing that does not exist. On the in-order
-// core the FPU was 45% of all GB5 cycles, and two thirds of that was this handshake.
-//
-// smolrv64_cvfpu is NOT deleted: rk_xcku5p.v instantiates it directly on a genuinely
-// separate fpu_clk, which is the case its CDC was built for.
+// this module tied fpu_clock to clk, so every one of those ~9 synchroniser cycles paid for a
+// clock crossing that does not exist. The FPU was 45% of all GB5 cycles at the time, and two
+// thirds of that was this handshake. (smolrv64_cvfpu itself left with the scalar core.)
 module fp_unit #(parameter TAGW = 24,
                  parameter int unsigned PIPE_REGS = 4,
                  // OPS IN FLIGHT. fpnew is a PIPELINED unit (PipeRegs = PIPE_REGS), able to
@@ -26,9 +23,9 @@ module fp_unit #(parameter TAGW = 24,
                  // cycles/op against 8.00 for a serial chain: an overlap of 1.99x where the
                  // unit's own latency (PIPE_REGS) should have allowed far more.
                  //
-                 // DEFAULT 1 IS DELIBERATE. src/exec_shard.v instantiates this too; at
-                 // NFLIGHT=1 every expression below reduces to exactly what it was, so that
-                 // core is untouched by this. Only a caller that can route results by tag
+                 // The default stays 1 (the retired sharded core's value; ooo2_core passes 4):
+                 // at NFLIGHT=1 every expression below reduces to the single-slot wrapper it
+                 // replaced. Only a caller that can route results by tag
                  // may raise it -- with more than one in flight, results come back TAGGED and
                  // not necessarily in issue order, because fpnew's op groups (ADDMUL,
                  // DIVSQRT, NONCOMP, CONV) have different latencies.

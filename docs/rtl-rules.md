@@ -9,10 +9,16 @@ Every rule cites the commits that paid for it. If a rule looks like overhead,
 read the commits.
 
 **Enforced today:** `src/lint.sh` (load-bearing lint rules, file-scoped waivers
-in `src/verilator.vlt`); always-on invariants in the RTL; `CHECKS` in
-`run-vl-tests.sh` (the O(N) checkers, default on). **Not yet enforced:** the
-config sweep (G3) is manual, and there is no formal flow (H3). Rules marked
-against a defect with no assertion behind them are the backlog.
+in `src/verilator.vlt`); always-on invariants in the RTL; `tools/gate.sh` (the
+benches, the netlist boot, timing, the board). **Not yet enforced:** there is no
+formal flow (H3). Rules marked against a defect with no assertion behind them are
+the backlog.
+
+**On the examples.** Many rules cite the file and line that paid for them. Those
+naming `soc_top.v`, `backend_top.v`, `exec_shard.v`, `cache.v`, `lsu.v`, `tb_vl.v`
+or `run-vl-tests.sh` refer to the sharded-OoO core and its harness, removed in the
+2026-09 release; the commits are still in git history and the rules still apply
+to `ooo2/`.
 
 ---
 
@@ -65,9 +71,10 @@ Two tiers, because cost is real and a dogmatic rule gets quietly disabled:
   freelist double-alloc detector, the LSU order-safety check, the two-L2-
   transactions tripwire, illegal-FSM-state defaults.
 - **O(N) sweeps and shadow models → a define the GATE always builds in.**
-  `FL_ASSERT` (arch map vs free set, `AREGS×SHARDS` per cycle) and `SEQROB`
-  (shadow ROB) are in `run-vl-tests.sh`'s `CHECKS`, default on, measured under
-  2% on the suite. `CHECKS=` turns them off for a multi-hour soak.
+  The sharded core's `FL_ASSERT` and `SEQROB` were this tier; in `ooo2/` the
+  equivalents (`ooo2_pending`'s writeback-to-non-pending check, the rename
+  free-list checks, the scheduler payload compare) are unconditional, since they
+  measured cheap enough.
 
 The model to copy is already in the tree: `cache.v:462` `$fatal`s if two L2
 transactions are ever outstanding, unconditionally, because the ack is
@@ -583,8 +590,9 @@ out of history, which is the cheap version of this mistake — the expensive
 version is a bisect landing on a revision that does not build.
 
 **G3. The config space is swept, not just the default point.**
-`src/sweep.sh` runs `IW ∈ {1,2,3,4}` × `CKMAX ∈ {1,2}` × `CACHE ∈ {0,1}` and
-compares against `src/sweep-expected.txt`; a cell worse than recorded fails.
+(The sharded core's `src/sweep.sh` ran `IW` × `CKMAX` × `CACHE` against a recorded
+expectation; it left with that core. `ooo2/` has one shipping configuration,
+`OOO2_HW=8`, and the rule is the reason `build.tcl` refuses the others.)
 Known breakage is written down *with a reason* rather than silently tolerated —
 an unexplained non-zero entry is a bug someone owes an explanation for, not a
 passing test. `--record` carries the reasons across a re-record, because the

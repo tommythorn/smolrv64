@@ -1,5 +1,5 @@
-// Cosim glue for the sharded-OoO probe core, verilated under tb_vl.v with
-// -DPROBE_COSIM. backend_top emits one probe_retire() DPI call per committed
+// Cosim glue: ooo2_core (under -DOOO2_COSIM, ooo2/tb_ooo2_riscv.v and tb_ooo2_linux.v)
+// emits one probe_retire() DPI call per committed
 // instruction (and per trap) in program order; here we lockstep those against
 // the simmerv golden model (C ABI in ~/simmerv) and abort on the first
 // divergence. Mirrors src/sim_main.cpp's comparison/arming machinery; the one

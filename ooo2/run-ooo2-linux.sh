@@ -1,7 +1,7 @@
 #!/bin/bash
-# Boot Linux on the in-order SoC under Verilator.
+# Boot Linux on the SoC (rv_soc_top) under Verilator.
 #
-# Defaults = the tiny128 initrd workload the OoO core uses for its Linux cosim:
+# Defaults = the tiny128 initrd workload the Linux cosim uses:
 # workloads/ubuntu/fw_payload.bin (OpenSBI + the Ubuntu 6.x kernel -- the blessed
 # one; the old workloads/linux 5.4 payload dies with "FATAL: kernel too old"
 # against the tiny128 userspace) + tiny128.cpio + tiny128-cosim.dtb, which is
@@ -35,7 +35,7 @@ BIN=$(pwd)/obj_dir_ooo2_linux/tb_ooo2_linux
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_slot.v ../src/decode_operands.v ../src/decode_exec.v \
-            ../src/decode_fp.v ../src/predictor.v ../src/exec_alu.v \
+            ../src/decode_fp.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv \
             rv_cache.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
@@ -54,10 +54,10 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ "$(cat $STAMP 2>/dev/null)" != 
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DOOO2_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
-      -I. -I../probe -I../src --top-module tb --Mdir obj_dir_ooo2_linux -o tb_ooo2_linux \
+      -I. -I../src --top-module tb --Mdir obj_dir_ooo2_linux -o tb_ooo2_linux \
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
-      -f ../src/cvfpu_sources.f ../src/smolrv64_cvfpu.sv \
+      -f ../src/cvfpu_sources.f \
       tb_ooo2_linux.v > /tmp/ooo2linuxbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2linuxbuild.log | head -20; exit 1; fi
    echo "$want" > "$STAMP"

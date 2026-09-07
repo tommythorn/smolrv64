@@ -1,9 +1,0 @@
-[package]
-name = "rvdisasm"
-version = "0.1.0"
-edition = "2021"
-description = "Standalone RISC-V (RV64GC) disassembler, std-only, no deps"
-
-[lib]
-name = "rvdisasm"
-path = "src/lib.rs"

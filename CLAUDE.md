@@ -10,26 +10,21 @@
   over full rebuilds.
 
 - Always verify before committing that riscv-tests pass: run
-  `src/run-vl-tests.sh` (or the `tests/run-riscv-tests.sh` wrapper) —
-  success is `failures: 0` (215 tests). For cache-path changes also run
-  `CACHE=1 src/run-vl-tests.sh` (rv64si-p-dirty is a known pre-existing
-  failure there). The old sequential core and its 240-test harness were
-  retired when the OoO core migrated from probe/ into src/ (2026-08-03).
+  `ooo2/run-ooo2-vl.sh` (or the `tests/run-riscv-tests.sh` wrapper) —
+  success is `pass=240 fail=0`. The unit benches are `ooo2/run-ooo2-*-tb.sh`
+  and `src/run-tb.sh`; a port change on a shared module means all of them
+  (rule G4). The core is `ooo2/`; the sequential and sharded-OoO cores that
+  preceded it were deleted in the 2026-09 release.
 
 - Also run `src/lint.sh` before committing RTL — success is `lint: clean`.
   It gates the load-bearing Verilator rules (width truncation, incomplete
   case, latch, comb loop, undriven, duplicate module). Waivers go in
   `src/verilator.vlt` and must name a file; never add a global `-Wno-`.
 
-- `src/run-vl-tests.sh` builds the heavy invariant checkers in by default
-  (`CHECKS=-DFL_ASSERT -DSEQROB`, under 2% cost). Pass `CHECKS=` to drop
-  them for a long soak.
-
-- For width/checkpoint-sensitive changes run `src/sweep.sh` (IW × CKMAX ×
-  CACHE, ~25 min) — it compares against `src/sweep-expected.txt` and fails
-  only on a cell worse than recorded. That file lists the known-broken
-  configs with reasons; `IW=1 × CKMAX=2`, `IW=3` + cache, and `IW=5 -v` are
-  open pre-existing defects, so read it before assuming a cell is your fault.
+- Every non-trivial RTL change is validated by the Linux lockstep cosim
+  (`CYC=300000000 ooo2/run-ooo2-cosim-linux.sh`, docs/OOO2-Spec.md §12) and
+  then on the board (`tools/gate.sh`: build at the shipping configuration,
+  program, boot Ubuntu to `login:` with zero faults).
 
 ## Code Change Conventions
 

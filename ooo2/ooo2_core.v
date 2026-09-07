@@ -2043,7 +2043,7 @@ module ooo2_core
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({5'd0, retire} + {5'd0, retire2}),
       .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
-      // csr_file's ILA debug bus. The in-order SoC puts no ILA on the CSR file, so these
+      // csr_file's ILA debug bus. The SoC puts no ILA on the CSR file, so these
       // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build
       // and PINCONNECTEMPTY does not, so a deliberate non-connection has to say so instead
       // of being silently omitted (same treatment as the iMMU's t_uncached).
@@ -2621,7 +2621,7 @@ module ooo2_core
 `ifdef OOO2_COSIM
    // ======================= cosim retire stream (VERIFY-ONLY) =======================
    // Hand every retiring instruction (and every trap) to simmerv via probe_retire(),
-   // the same DPI contract probe/probe_cosim.cpp already implements.
+   // the DPI contract src/probe_cosim.cpp implements.
    //
    // The OoO core needs ~250 lines here: a 40-deep FIFO to rebuild program order from
    // out-of-order commit, per-entry value-ready tracking (an ALU op commits on the

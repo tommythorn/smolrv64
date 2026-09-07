@@ -1,6 +1,6 @@
 `default_nettype none
 
-// Unified architectural register file for the in-order core: 64 x 64b, where
+// Unified architectural register file for ooo2_core: 64 x 64b, where
 // arch 0..31 are the integer registers and 32..63 the FP registers -- the same
 // unified numbering decode_operands already emits ({fp_bit, field}), so the
 // decoders are reused untouched.

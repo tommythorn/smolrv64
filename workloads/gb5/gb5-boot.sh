@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gb5-boot.sh — boot the Geekbench 5 initramfs on the smolrv64 FPGA.
 #
-# Same monitor/XMODEM flow as ubuntu/nfs-boot.sh, but three pieces instead of two:
+# Same monitor/XMODEM flow as ubuntu/ubuntu-boot.sh, but three pieces instead of two:
 # the 164 MB initramfs is uploaded too, so the board needs no network, no NFS and
 # no Ubuntu.  Busybox runs /etc/init.d/S90geekbench, which execs the benchmark, so
 # AES-XTS (workload 101, the one that fails validation) starts seconds after boot.
