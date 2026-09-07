@@ -1130,8 +1130,8 @@ tracers and stats are gated.
 | | |
 |---|---|
 | `probe_clk` | 166.67 MHz (6.000 ns), `PROBE_CLK_DIV8=48`: a BUFGCE_DIV of the 333.33 MHz DDR4 `ui_clk` (an MMCM was tried and reverted, 2026-08-20; only integer multiples of 3.000 ns time) |
-| Timing | `probe_clk` WNS **+0.015 ns**, TNS 0.000, 0 failing endpoints (`NF`=8, BTB 1024) |
-| Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.038 at `NF`=5; **+0.015 at `NF`=8** once the frontend's `apc` cone was cut (rule I6) -- the minimum-8 policy is affordable and was never the scheduler's fault. Block RAM 118 of 480 tiles. |
+| Timing | `probe_clk` WNS **+0.023 ns**, TNS 0.000, 0 failing endpoints on the default directive (the 2026-09-07 release build 384fd599: the two-wide stack with the six T1 cuts; +0.019 on W7, +0.056 on the counter split) |
+| Margin | 50 ps against a placement spread of 81-400 ps (rule I2): closed, **not robustly**. History, because each step was paid for: +0.029 at 10/12 dynamic issue; +0.124 at 8/8 (reverted -- it cost 4.1% geomean on GB5); +0.069 with FP four-in-flight, which *gained* 40 ps by deleting `fpu_inflight`/`fb_busy` from M; +0.028 with the FP scheduler and stage F, which cost 41 ps; +0.038 at `NF`=5; **+0.015 at `NF`=8** once the frontend's `apc` cone was cut (rule I6) -- the minimum-8 policy is affordable and was never the scheduler's fault. Area of the release build 384fd599: 83,093 LUTs (38.3% of the XCKU5P), 49,498 flip-flops, 122 of 480 block RAM tiles, 28 DSPs, no UltraRAM. |
 | Measured clock | 164.2 MHz by on-chip counter |
 | Core voltage | 0.853 V measured against a 0.85 V design point |
 | 333 MHz | measured **−2.492 ns**, 39,389 failing endpoints. Operating-condition levers are worth exactly zero. |
