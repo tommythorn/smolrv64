@@ -12,8 +12,11 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  14511093  0.5   # The ALU's own issue port and a second ALU on a fourth PRF shard (2026-09-06, items 10d-i/10d-ii on the fixed two-wide dispatch,
-                              # with the V6/V7 late-enable fixes): +1.42% over two-wide dispatch and retire (14308077). Below, that row's history.
+60000000  8  14301801  0.5   # The full two-wide stack under the T1 cuts (2026-09-07, wip/w5: items 10a-10e plus T1 steps 1-3, the payload read at pick
+                              # registered) with the run-ahead buffer's page-crossing fix (rule D10): -1.44% on the boot against the 10d row (14511093),
+                              # the cuts' extra register stages on a miss-bound boot; 14301029 before the fix, +772 with it. Below, that row's history.
+                              # Was: The ALU's own issue port and a second ALU on a fourth PRF shard (2026-09-06, items 10d-i/10d-ii on the fixed two-wide dispatch,
+                              # with the V6/V7 late-enable fixes): +1.42% over two-wide dispatch and retire (14308077).
                               # Was: Two-wide dispatch and retire (2026-09-06, items 10b/10c with the bank and enable fixes): +1.21% on the boot over two-wide fetch
                               # (14136876), measured on the tree whose netlist boots (rule F4's fix). The comment below is that row's history.
                               # Was: Two-wide fetch, IW=2 into the banked F/X queue (2026-09-05, item 10a): +0.75% on the boot. Was 14031295 with chunk2 requested on the slide cycle: -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults

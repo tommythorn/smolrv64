@@ -126,7 +126,7 @@ echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_
 # the only instrument that sees it.
 set -o pipefail
 "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC 2>&1 | tee obj_dir_ooo2_clinux/last-run.out
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC ${PLUSARGS:-} 2>&1 | tee obj_dir_ooo2_clinux/last-run.out
 rc=$?
 
 # OOO2_HW, not INO_HW: the define was renamed with the core and this line was not, so it

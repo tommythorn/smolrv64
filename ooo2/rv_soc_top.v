@@ -687,8 +687,17 @@ module rv_soc_top #(
    // address while its bytes are still in flight, and that is a wait for the fill, not a
    // realign that would throw the other slots away.
    wire             fb_in0a = fb_tagv & (fb_alv == fb_va);
-   wire             fb_in1a = fb_tagv & (fb_alv == fb_va1);
-   wire             fb_in2a = fb_tagv & (fb_alv == fb_va2);
+   // ...AND ONLY WHEN THE CHUNK'S ASSUMED PA IS TRUSTWORTHY (2026-09-07). fb_pa1/fb_pa2 are
+   // fb_pa plus one or two chunks: a translation is linear inside a page and nothing beyond
+   // it. The first cut matched chunk1 and chunk2 on the VA alone, so a PC falling through
+   // the last chunk of a page took the slide arm below -- `fb_pa <= fb_pa1`, the next
+   // PHYSICAL page's first chunk, tagged with the next VIRTUAL page -- and the buffer then
+   // requested and served that neighbour as the new page's code. Kernel text never showed
+   // it (physically contiguous); ld.so did, deterministically, 2.4 s into every boot (W1,
+   // W5), and the glibc cosim at cycle 833,573,569 with the buffer's own invariant. With
+   // fb_samepg in the match, a page crossing is a realign: the PA comes from the iTLB.
+   wire             fb_in1a = fb_tagv & (fb_alv == fb_va1) & fb_samepg;
+   wire             fb_in2a = fb_tagv & (fb_alv == fb_va2) & fb_samepg2;
    wire             fb_in0 = fb_v0 & fb_in0a;
    wire             fb_in1 = fb_v1 & fb_in1a;
    wire             fb_hit = fb_in0 | fb_in1;
@@ -1080,9 +1089,11 @@ module rv_soc_top #(
    always @(posedge clk) begin
       fbt_cyc <= fbt_cyc + 64'd1;
       if (!reset && fbt_cyc >= fbt_from && fbt_cyc < fbt_to)
-         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b v2=%b rq=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d fx=%b q=%0d d=%b",
+         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b v2=%b rq=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d fx=%b q=%0d d=%b | va=%h pa=%h al=%h tagv=%b xok=%b ctx=%b inv=%b sent=%b pois=%b rq0=%h/%h rq1=%h/%h want=%h/%b tag=%0d rsp=%h/%0d",
                   fbt_cyc, imem_va, fb_in1, fb_v0, fb_v1, fb_v2, rq_v, fb_hit, fb_arr, ic_rd_req, ic_rd_ack, ic_rd_valid,
-                  imem_avail, core.fe.fx_valid, core.fe.q_cnt, core.fe.d_valid);
+                  imem_avail, core.fe.fx_valid, core.fe.q_cnt, core.fe.d_valid,
+                  fb_va, fb_pa, fb_al, fb_tagv, imem_xlate_ok, imem_ctx_chg, ic_inv_req, rq_sent, rq_pois,
+                  rq_va0, rq_pa0, rq_va1, rq_pa1, fb_want, fb_wantv, ic_tag, ic_rd_resp_addr, ic_rsp_tag);
    end
 `endif
 

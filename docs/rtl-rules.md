@@ -435,6 +435,21 @@ the thing that stops the next reader from checking.
 
 ---
 
+**D10. A physical address made by ADDING to another carries the same-page predicate in the
+expression that uses the sum, not only in the request gate.**
+The run-ahead fetch buffer names chunk1 and chunk2 as `fb_pa + 16` and `fb_pa + 32`, which
+is a translation inside chunk0's page and nothing beyond it. Its address-based slide
+(item 10e, 2026-09-05) matched the PC against chunk1 on the VIRTUAL address alone --
+validity had implied the same-page fill in the buffer it replaced, so nothing had ever
+needed the predicate -- and a PC falling through the last chunk of a user page took the
+slide arm: `fb_pa <= fb_pa1`, the next PHYSICAL page's first chunk, tagged with the next
+virtual page, then requested and served as that page's code. Kernel text is physically
+contiguous, so no cosim that stops before `/init` could see it; ld.so's pages are page
+cache, so init died 2.4 s into every board boot (W1, W5), deterministically, and the
+tiny128 cosim reproduced it at cycle 833,573,569 with the buffer's own invariant once it
+ran that far. The shape: `fb_in1a = fb_tagv & (fb_alv == fb_va1) & fb_samepg`. A page
+crossing is a realign from the iTLB, never a slide.
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

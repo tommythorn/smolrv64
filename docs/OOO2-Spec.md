@@ -187,7 +187,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   the first of chunk0..2 neither held nor in flight -- chunk1..3 in the slide cycle -- inside
   chunk0's page; two may be outstanding; the I$ port's tag names the request entry and the
   answer's address names the slot (both asserted). Shifts are chosen by address, so the PC
-  entering a chunk whose bytes are in flight keeps the other slots. Why: one request in
+  entering a chunk whose bytes are in flight keeps the other slots -- and only inside
+  chunk0's page (`fb_samepg`, rule D10): chunk1's PA is chunk0's plus 16, a translation
+  within the page and nowhere else. The first cut matched on the VA alone, and a PC falling
+  through a page's last chunk slid to the next PHYSICAL page tagged as the next virtual
+  one: init died 2.4 s into every board boot (2026-09-06), the tiny128 cosim reproduced it
+  at cycle 833 M, fixed 2026-09-07. Why: one request in
   flight, asked for on the slide and answered two cycles later, kept a one-wide consumer fed
   and left a two-wide one -- a chunk eaten in two cycles -- idle one cycle in three;
   `tools/fe-pipe-model.py` put fetch at 1.23 instructions per cycle on the sha256 kernel as
