@@ -81,6 +81,10 @@ module fetch
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    input  wire                    imem_ok,     // late: imem_data/imem_avail are the PC's bytes. The
+                                                // aligner runs on the (register-derived) window and
+                                                // count regardless; this bit gates the bundle's valid,
+                                                // the straddle entry and so every state update (T1 (F)).
     // downstream handshake + aligned bundle
     input  wire                    ready,
     output wire                    valid,
@@ -175,7 +179,7 @@ module fetch
    // slot-0 page-boundary straddler: pc_q at the last halfword, a 32-bit op (low2==11),
    // and that low halfword actually present (an I$ hit). The aligner excludes it (the
    // capped window has only one halfword), so we take over with the two-step fetch.
-   wire lo_avail     = (imem_avail >= 1'b1);
+   wire lo_avail     = imem_ok & (imem_avail >= 1'b1);
    wire straddle_det = ~strad & at_bound & (imem_data[1:0] == 2'b11) & lo_avail & ~irq_inject;
 
    // straddle output: the high halfword has arrived (PC+2's page resolved) in imem_data[15:0].
@@ -185,7 +189,7 @@ module fetch
    // bundle mux: irq inject (solo pseudo-op) > straddle (combined op) > aligner.
    assign slot_valid = irq_inject ? {{(IW-1){1'b0}}, 1'b1}
                      : strad      ? (strad_ready ? {{(IW-1){1'b0}}, 1'b1} : {IW{1'b0}})
-                     :              al_valid;
+                     :              (al_valid & {IW{imem_ok}});
    assign inst       = irq_inject ? {{((IW-1)*32){1'b0}}, IRQ_INSN}
                      : strad      ? strad_inst
                      :              al_inst;

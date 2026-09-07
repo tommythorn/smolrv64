@@ -50,7 +50,8 @@ module ooo2_frontend
     output wire [PCW-1:0]          imem_addr,         // VA to translate
     output wire [PCW-1:0]          imem_ipc,          // PC of the instruction (fault EPC)
     input  wire [HW*16-1:0]        imem_data,
-    input  wire [$clog2(HW+2)-1:0] imem_avail,        // 0 when translating/faulting/missing
+    input  wire [$clog2(HW+2)-1:0] imem_avail,        // register-derived count (item T1 (F))
+    input  wire                    imem_ok,           // late: the window is the PC's bytes; gates fire
     input  wire                    imem_fault,        // iMMU fault on this fetch (qualified ready)
     input  wire [3:0]              imem_cause,
 
@@ -180,7 +181,7 @@ module ooo2_frontend
       // the length it decodes anyway. See the queue below.
       .npc(), .apc(f_apc), .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
-      .imem_avail(imem_avail),
+      .imem_avail(imem_avail), .imem_ok(imem_ok),
       .ready(q_room), .valid(fx_valid),
       .slot_valid(fx_sv), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
 

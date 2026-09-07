@@ -56,6 +56,7 @@ module ooo2_core
     input  wire                    hpm_fb_rhit,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    input  wire                    imem_ok,         // the window is the PC's bytes (late; handshake only)
     // ---- platform interrupt lines + time ----
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,
@@ -149,8 +150,11 @@ module ooo2_core
    // registered gate keeps the belt on the braces at no cost.
    reg imem_ctx_chg_q;
    always @(posedge clk) imem_ctx_chg_q <= reset ? 1'b0 : imem_ctx_chg;
-   wire [$clog2(HW+2)-1:0]  imem_avail_g = (immu_ready & ~immu_fault & ~imem_ctx_chg_q) ? imem_avail
-                                                                      : {$clog2(HW+2){1'b0}};
+   // The iMMU's verdict and the context gate join the buffer's late bit; the count itself is
+   // register-derived in rv_soc_top and reaches the aligner ungated (item T1 (F)).
+   wire                     imem_ok_g = imem_ok & immu_ready & ~immu_fault & ~imem_ctx_chg_q;
+   // The gated count survives for the counters only (FE_QUE's "no bytes" attribution below).
+   wire [$clog2(HW+2)-1:0]  imem_avail_g = imem_ok_g ? imem_avail : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
    wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
    wire [PCW-1:0]           res_tgt;
@@ -275,7 +279,7 @@ module ooo2_core
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
-      .imem_avail(imem_avail_g),
+      .imem_avail(imem_avail), .imem_ok(imem_ok_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
       .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),

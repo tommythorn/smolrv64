@@ -94,7 +94,7 @@ module frontend
       .pred_npc(f_pnpc), .pnpc_kind(), .ft_npc(f_ftn),
       .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
-      .imem_avail(imem_avail), .ready(accept), .valid(f_valid),
+      .imem_avail(imem_avail), .imem_ok(1'b1), .ready(accept), .valid(f_valid),
       .slot_valid(f_slot_valid), .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
 
    // branch predictor: predicts from registered BTB/RAS state only (no byte

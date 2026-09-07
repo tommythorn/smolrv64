@@ -123,6 +123,7 @@ module rv_soc_top #(
    wire                fe_redirect;
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
+   wire                imem_ok;      // the served window is the PC's bytes (late; gates the handshake only)
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
@@ -138,7 +139,7 @@ module rv_soc_top #(
 
    ooo2_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
       .fe_redirect(fe_redirect), .hpm_fb_hit(fb_hit_q), .hpm_fb_rhit(fb_rhit_q),
@@ -694,6 +695,15 @@ module rv_soc_top #(
    end
    // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
    wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
+   // THE SAME OFFSET FROM REGISTER BITS ALONE (rule I13 / plan item T1 (F), 2026-09-06). The
+   // pair is two chunk-aligned chunks, so while the PC is inside it, "which chunk" is one bit:
+   // PC[CHA] differs from the chunk0 tag's bit CHA exactly when the PC is in chunk1. fb_roff
+   // therefore needs no 64-bit compare -- imem_addr and fb_va are registers -- and the served
+   // window below (the F/X queue's 4,112-path data cone in W4's census, 25 levels, 70% route)
+   // is a shift of registers by register bits followed by the aligner. Whether the bytes are
+   // the PC's at all is fb_hit, which leaves as imem_ok and gates only the handshake.
+   wire             fb_sel1 = imem_addr[CHA] ^ fb_va[CHA];
+   wire [CHA+1-1:0] fb_roff = {fb_sel1, fb_lo};
 
    // THE INVARIANT THE VA TAG RESTS ON, checked every cycle rather than argued once:
    // a virtual hit must name the same bytes the iMMU vouches for RIGHT NOW.  If a mapping
@@ -930,10 +940,13 @@ module rv_soc_top #(
    // is contiguous and within one page by construction, so a chunk1 hit is served by shifting
    // CHB further into the same pair; the shift is by fb_off, which now costs no arithmetic.
    wire [2*HW*16-1:0] fb_pair = {fb_w1, fb_w0};
-   wire [2*HW*16-1:0] fb_shf  = fb_pair >> {fb_off, 3'b000};
+   wire [2*HW*16-1:0] fb_shf  = fb_pair >> {fb_roff, 3'b000};
    wire [HW*16-1:0]   fb_srv  = fb_shf[HW*16-1:0];
-   wire [HW*16-1:0]   fb_asrv = ic_rd_data >> {fb_aoff, 3'b000};
-   assign imem_data  = fb_hit ? fb_srv : (fb_arr ? fb_asrv : {(HW*16){1'b0}});
+   // No arrival bypass in the data path any more: an arriving chunk lands in its slot and is
+   // served from the register the cycle after (one cycle on a buffer miss, for a data cone
+   // that no longer reaches the I$'s output register). fb_arr still names the arrival for the
+   // invariant check and the counters.
+   assign imem_data  = fb_srv;
 
    // Valid halfwords from the PC: to the end of chunk1 if it is present, else to the end of
    // chunk0, capped at the HW the frontend asked for. fetch.v caps this again at the 4 KiB
@@ -947,9 +960,10 @@ module rv_soc_top #(
    localparam [CHA+1:0] CHB_X1 = CHB[CHA+1:0];
    localparam [CHA:0]   CHB_A  = CHB[CHA:0];
    wire [CHA+1:0] fb_end = fb_v1 ? CHB_X2 : CHB_X1;             // first invalid byte of the pair
-   wire [CHA+1:0] fb_vb  = fb_end - {1'b0, fb_off};             // valid bytes from the PC
-   wire [CHA:0]   fb_avb = CHB_A - {1'b0, fb_aoff};             // ditto on the arrival path
-   wire [CHA+1:0] fb_vhw = fb_hit ? (fb_vb >> 1) : {1'b0, fb_avb[CHA:1]};
+   // From register bits (fb_roff, fb_v1), like the window: a chunk1 offset without chunk1 is
+   // zero bytes, not a wrapped count.
+   wire [CHA+1:0] fb_vb  = ({1'b0, fb_roff} < fb_end) ? fb_end - {1'b0, fb_roff} : {(CHA+2){1'b0}};
+   wire [CHA+1:0] fb_vhw = fb_vb >> 1;
    // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
    // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
    // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
@@ -959,9 +973,11 @@ module rv_soc_top #(
    // fb_vhw < HW, so the narrowing cannot lose a value.
    localparam AVW = $clog2(HW+2);
    localparam [AVW-1:0] AV_HW = HW;
-   assign imem_avail = (fi_stall | ~(fb_hit | fb_arr)) ? {AVW{1'b0}}
-                     : (fb_vhw >= HW)                     ? AV_HW
-                     :                                      fb_vhw[AVW-1:0];
+   assign imem_avail = (fb_vhw >= HW) ? AV_HW : fb_vhw[AVW-1:0];
+   // The late bit: these bytes are the PC's (the VA tag compare) and fetch is not frozen by a
+   // fence.i. It gates the frontend's handshake -- the bundle's push and the PC's advance --
+   // and nothing in the data or count path.
+   assign imem_ok    = fb_hit & ~fi_stall;
 
 `ifdef FB_TRACE
    // Fetch-buffer trace, one line per cycle inside the tb's +trace_from/+trace_to window
