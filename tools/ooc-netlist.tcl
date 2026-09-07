@@ -7,6 +7,7 @@ set fh [open $xpr r]; set txt [read $fh]; close $fh
 set vfiles {}; set svfiles {}
 foreach {m p} [regexp -all -inline {File Path="\$PPRDIR/\.\./\.\./([^"]+)"} $txt] {
    set f [file normalize [file join $root $p]]
+   if {![file exists $f]} continue          ;# the .xpr outlives its sources; read what is there
    if {[info exists seen($f)]} continue
    set seen($f) 1
    if {[string match *.sv $f]} { lappend svfiles $f } elseif {[string match *.v $f]} { lappend vfiles $f }

@@ -17,6 +17,15 @@ set probe_clk_check_hook [file normalize [file join [file dirname [info script]]
 
 puts "Opening project: $xpr"
 open_project $xpr
+# The .xpr is tracked and records every source ever added; a source deleted from the tree
+# would otherwise stay in the fileset and stop synthesis ("No HDL sources found" at the
+# 2026-09 release, when the retired cores left). Drop what no longer exists, loudly.
+foreach f [get_files -quiet -of_objects [get_filesets sources_1]] {
+    if {![file exists $f]} {
+        puts "  dropping missing source from the fileset: $f"
+        remove_files -fileset sources_1 $f
+    }
+}
 
 proc add_source_if_missing {fileset file file_type} {
     set normalized [file normalize $file]
