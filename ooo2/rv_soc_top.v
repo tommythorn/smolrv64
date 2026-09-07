@@ -655,7 +655,6 @@ module rv_soc_top #(
    wire [3:0]       ic_rsp_tag;
    assign fb_pa1    = fb_pa + CHB;
    assign fb_va1    = fb_va + CHB;
-   assign fb_samepg = (fb_pa1[63:PGB] == fb_pa[63:PGB]);
    // chunk2 and chunk3: from the registers, in parallel with fb_pa1, so the request address
    // mux gains arms and no adder depth. Every same-page test is against chunk0's page: a
    // chunk inside it has every chunk between them inside it too.
@@ -663,8 +662,16 @@ module rv_soc_top #(
    wire [63:0]      fb_va2 = fb_va + 2*CHB;
    wire [63:0]      fb_pa3 = fb_pa + 3*CHB;
    wire [63:0]      fb_va3 = fb_va + 3*CHB;
-   wire             fb_samepg2 = (fb_pa2[63:PGB] == fb_pa[63:PGB]);
-   wire             fb_samepg3 = (fb_pa3[63:PGB] == fb_pa[63:PGB]);
+   // "chunk0 + k is in chunk0's page" is chunk0's index in the page against the page's last
+   // index -- a test of register bits, not a compare of the sums' upper halves (a carry
+   // chain and 52 XNORs). Since 2026-09-07 fb_samepg is in fb_hit and so in the fetch PC's
+   // next-state cone (rule D10); written as the sum compare that cone missed 166.67 MHz by
+   // 0.271 ns (gate W5fix).
+   localparam [PGB-CHA-1:0] LASTC = {(PGB-CHA){1'b1}};
+   wire [PGB-CHA-1:0] fb_ci = fb_pa[PGB-1:CHA];
+   assign fb_samepg = (fb_ci != LASTC);
+   wire             fb_samepg2 = (fb_ci < LASTC - 1'b1);
+   wire             fb_samepg3 = (fb_ci < LASTC - 2'd2);
 
    // Hit test is an EQUALITY on chunk-aligned addresses, not a subtract-and-compare on byte
    // offsets. The first cut computed `imem_addr - fb_pa` and compared the 64-bit result against
