@@ -76,7 +76,7 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [14:7] are the in-order core's
     // STALL-ATTRIBUTION taps (see ooo2_core.v): they turn a CPI number into a CPI
     // stack. The OoO core drives them zero, so its counters are unchanged.
-    input  wire [25:0] hpm_ev,
+    input  wire [30:0] hpm_ev,
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -192,8 +192,13 @@ module csr_file
                       HPMEV_ST_DIV = 16'h0301,   // ...on the iterative divider
                       HPMEV_ST_MUL = 16'h0302,   // ...on the 3-cycle multiplier
                       HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU, + X held for a pending FP result
-                      HPMEV_ST_SER = 16'h0304,   // serializing op holds the frontend off (not data deps)
+                      HPMEV_ST_DSP = 16'h0304,   // dispatch held, not a data dependency and not the ROB: the sum of ST_IQ..ST_SRZ
                       HPMEV_ST_ROB = 16'h0305,   // dispatch blocked: the ROB is full
+                      HPMEV_ST_IQ  = 16'h0306,   // dispatch held: the instruction's scheduler is full
+                      HPMEV_ST_RN  = 16'h0307,   // dispatch held: rename, a free list is empty
+                      HPMEV_ST_SQ  = 16'h0308,   // dispatch held: the store queue is full
+                      HPMEV_ST_LQ  = 16'h0309,   // dispatch held: the load queue is full
+                      HPMEV_ST_SRZ = 16'h030a,   // dispatch held: a serializing op drains (the rest of ST_DSP)
                       HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
                       HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
@@ -227,7 +232,7 @@ module csr_file
         HPMEV_ST_DIV:  hpm_inc = {5'd0, hpm_ev[8]};
         HPMEV_ST_MUL:  hpm_inc = {5'd0, hpm_ev[9]};
         HPMEV_ST_FPU:  hpm_inc = {5'd0, hpm_ev[10]};
-        HPMEV_ST_SER:  hpm_inc = {5'd0, hpm_ev[11]};
+        HPMEV_ST_DSP:  hpm_inc = {5'd0, hpm_ev[11]};
         HPMEV_FE_BUB:  hpm_inc = {5'd0, hpm_ev[12]};
         HPMEV_FE_MMU:  hpm_inc = {5'd0, hpm_ev[13]};
         HPMEV_FE_IC:   hpm_inc = {5'd0, hpm_ev[14]};
@@ -239,6 +244,11 @@ module csr_file
         HPMEV_FB_HIT:  hpm_inc = {5'd0, hpm_ev[20]};
         HPMEV_FB_RHIT: hpm_inc = {5'd0, hpm_ev[21]};
         HPMEV_ST_ROB:  hpm_inc = {5'd0, hpm_ev[22]};
+        HPMEV_ST_IQ:   hpm_inc = {5'd0, hpm_ev[26]};
+        HPMEV_ST_RN:   hpm_inc = {5'd0, hpm_ev[27]};
+        HPMEV_ST_SQ:   hpm_inc = {5'd0, hpm_ev[28]};
+        HPMEV_ST_LQ:   hpm_inc = {5'd0, hpm_ev[29]};
+        HPMEV_ST_SRZ:  hpm_inc = {5'd0, hpm_ev[30]};
         HPMEV_RD_WAIT: hpm_inc = {5'd0, hpm_ev[23]};
         HPMEV_DT_WALK: hpm_inc = {5'd0, hpm_ev[24]};
         HPMEV_DTLB_MISS: hpm_inc = {5'd0, hpm_ev[25]};

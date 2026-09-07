@@ -47,8 +47,12 @@ CANDIDATES = [os.environ.get("SMOLRV_PERF_EVENTS"),
 # FE_MMU and FE_IC are SUBSETS of FE_BUB ("X idle ... because"), so they are reported as a
 # breakdown underneath it and never added alongside it.
 BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
-           ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"), ("ST_SER", "serializing op"),
+           ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"),
+           ("ST_DSP", "dispatch held (scheduler / rename / queues / serializing)"),
            ("ST_ROB", "dispatch: ROB full")]
+# ST_IQ..ST_SRZ are the disjoint parts of ST_DSP (the `hold` set): a breakdown underneath it.
+DSP_SUB = [("ST_IQ", "the scheduler is full"), ("ST_RN", "rename: a free list is empty"),
+           ("ST_SQ", "store queue full"), ("ST_LQ", "load queue full"), ("ST_SRZ", "serializing op")]
 FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all"),
            ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, F/X queue empty")]
 REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)"),
@@ -125,6 +129,11 @@ def main():
             # walk per load with no D$ miss to show for it (2026-09-05).
             if k == "ST_MEM" and v.get("DT_WALK") is not None:
                 print("      %-28s %10.3f  %5.1f%%" % ("- of which dTLB walking", g("DT_WALK")/ins, 100.0*g("DT_WALK")/cyc))
+            # ST_DSP's disjoint parts (the `hold` set): a breakdown, never added alongside it.
+            if k == "ST_DSP" and any(v.get(kk) is not None for kk, _ in DSP_SUB):
+                for kk, ll in DSP_SUB:
+                    if g(kk):
+                        print("      %-28s %10.3f  %5.1f%%" % ("- " + ll, g(kk)/ins, 100.0*g(kk)/cyc))
     if fe_bub:
         tag = " (derived)" if v.get("_FE_BUB_DERIVED") else ""
         print("    %-30s %10.3f  %5.1f%%%s" % ("frontend bubble", fe_bub/ins, 100.0*fe_bub/cyc, tag))

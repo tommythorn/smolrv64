@@ -1924,7 +1924,19 @@ module ooo2_core
    wire st_fpu    = (f_valid & ~fp_disp) | dep_fp;  // ...on the FPU
    // ~st_rob: the two are now disjoint, so the stack does not count a ROB-full cycle
    // twice under two different names.
-   wire st_ser    = m_advance & ~accept & ~dep_ld & ~dep_fp & ~st_rob;
+   // THE DISPATCH HOLD, NAMED (2026-09-07). `st_ser` was this whole residual -- M could advance,
+   // dispatch did not, and it was not a load or FP dependency or the ROB -- and it read 6-13%
+   // of the cycles in EVERY Geekbench subtest, where serializing ops are rare: what it held
+   // was the schedulers filling up behind integer chains, the store and load queues, the
+   // rename free lists. Each cause has its own event now, in d_hold's order so they are
+   // disjoint and sum to ST_DSP, the bucket kept whole for the 13-counter `cpi` set.
+   wire st_dsp    = m_advance & ~accept & ~dep_ld & ~dep_fp & ~st_rob;
+   wire st_iq     = st_dsp & ~iq_ready;                              // the class's scheduler is full
+   wire st_rn     = st_dsp &  iq_ready & rn_stall;                   // rename: a free list is empty
+   wire st_sq     = st_dsp &  iq_ready & ~rn_stall & (d_st_nb & ~sq_d_ready);
+   wire st_lq     = st_dsp &  iq_ready & ~rn_stall & ~(d_st_nb & ~sq_d_ready) & (d_ld_nb & ~lq_d_ready);
+   wire st_srz    = st_dsp &  iq_ready & ~rn_stall & ~(d_st_nb & ~sq_d_ready) & ~(d_ld_nb & ~lq_d_ready);
+   wire st_ser    = st_dsp;                                          // the bus's bit 11, as before
    wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
@@ -1964,7 +1976,8 @@ module ooo2_core
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
    wire rd_wait = m_valid & m_redirect & ~m_at_head;
-   wire [25:0] hpm_ev = {lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
+   wire [30:0] hpm_ev = {st_srz, st_lq, st_sq, st_rn, st_iq,
+                         lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
@@ -1993,11 +2006,11 @@ module ooo2_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [25:0] hpm_ev_q;
+   reg [30:0] hpm_ev_q;
    reg [5:0]  hpm_ret_q;
-   initial begin hpm_ev_q = 26'd0; hpm_ret_q = 6'd0; end
+   initial begin hpm_ev_q = 31'd0; hpm_ret_q = 6'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 26'd0 : hpm_ev;
+      hpm_ev_q  <= reset ? 31'd0 : hpm_ev;
       hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2};
    end
 

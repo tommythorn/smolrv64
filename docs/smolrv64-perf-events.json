@@ -65,14 +65,39 @@
     "BriefDescription": "M stalled on the CVFPU, + X held for a pending FP result"
   },
   {
-    "EventName": "ST_SER",
+    "EventName": "ST_DSP",
     "EventCode": "0x0304",
-    "BriefDescription": "serializing op holds the frontend off (not data deps)"
+    "BriefDescription": "dispatch held, not a data dependency and not the ROB: the sum of ST_IQ..ST_SRZ"
   },
   {
     "EventName": "ST_ROB",
     "EventCode": "0x0305",
     "BriefDescription": "dispatch blocked: the ROB is full"
+  },
+  {
+    "EventName": "ST_IQ",
+    "EventCode": "0x0306",
+    "BriefDescription": "dispatch held: the instruction's scheduler is full"
+  },
+  {
+    "EventName": "ST_RN",
+    "EventCode": "0x0307",
+    "BriefDescription": "dispatch held: rename, a free list is empty"
+  },
+  {
+    "EventName": "ST_SQ",
+    "EventCode": "0x0308",
+    "BriefDescription": "dispatch held: the store queue is full"
+  },
+  {
+    "EventName": "ST_LQ",
+    "EventCode": "0x0309",
+    "BriefDescription": "dispatch held: the load queue is full"
+  },
+  {
+    "EventName": "ST_SRZ",
+    "EventCode": "0x030a",
+    "BriefDescription": "dispatch held: a serializing op drains (the rest of ST_DSP)"
   },
   {
     "EventName": "FE_BUB",

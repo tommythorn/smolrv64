@@ -1069,7 +1069,7 @@ an event to a run means dropping one.
 | `ST_MEM` | r0300 | M stalled on the LSU **+** X held for a pending load result |
 | `ST_DIV` / `ST_MUL` | r0301 / r0302 | M stalled on divider / multiplier |
 | `ST_FPU` | r0303 | M stalled on the FPU **+** X held for a pending FP result |
-| `ST_SER` | r0304 | frontend held by a serializing op (excludes the dependent waits above) |
+| `ST_DSP` | r0304 | dispatch held, not a data dependency and not the ROB: the scheduler, rename, a queue or a serializing op (was `ST_SER`, which named only the last) |
 | `FE_BUB` | r0310 | frontend bubble |
 | `FE_MMU` / `FE_IC` | r0311 / r0312 | iMMU walking / I$ no window |
 | `FE_ALN` / `FE_QUE` | r0313 / r0314 | no whole instruction / queue empty |
@@ -1077,6 +1077,7 @@ an event to a run means dropping one.
 | redirects | r0005 | |
 | `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
 | `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
+| `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in d_hold's order: the instruction's scheduler full / rename's free list empty / store queue full / load queue full / a serializing op draining (the `hold` set, 2026-09-07) |
 | `FB_HIT` / `FB_RHIT` | r0315 / r0316 | the fetch buffer served the PC / on the first fetch after a redirect |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |

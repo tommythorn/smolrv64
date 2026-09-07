@@ -32,6 +32,9 @@ case "$SET" in
   # + the dTLB: walks begun (r0104) and cycles walking (r0318), a subset of ST_MEM.
   mem) EV=r0003,r0004,r0100,r0102,r0110,r0112,r0104,r0318 ;;
   br)  EV=r0005,r0006,r0007,r0008,r0317 ;;
+  # The dispatch hold (ST_DSP) broken down: scheduler / rename / store queue / load queue /
+  # serializing, with the ROB and the redirects beside them (2026-09-07).
+  hold) EV=r0304,r0305,r0306,r0307,r0308,r0309,r030a,r0005 ;;
   # Does the fetch-buffer address comparison pay?  FB_RHIT counts hits in the redirect
   # shadow -- exactly what flush-on-redirect would turn into misses.  Paired with FE_* so the
   # cost side (queue-empty, no-bytes) is measured in the same pass.
@@ -39,7 +42,7 @@ case "$SET" in
   all) EV=r0003,r0004,r0005,r0006,r0007,r0008,r0100,r0102,r0104,r0110,r0112,r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0315,r0316,r0317,r0318
        echo "warning: 26 raw events > 13 counters -- perf will multiplex and every count is" >&2
        echo "         a scaled ESTIMATE.  The CPI-stack residual will not close.  Prefer 'cpi'." >&2 ;;
-  *)   echo "usage: $0 {cpi|mem|br|fb|all} COMMAND..." >&2; exit 2 ;;
+  *)   echo "usage: $0 {cpi|mem|br|fb|hold|all} COMMAND..." >&2; exit 2 ;;
 esac
 
 # No sudo if the admin lowered perf_event_paranoid (see tools/perf-smol-setup.sh); fall back
