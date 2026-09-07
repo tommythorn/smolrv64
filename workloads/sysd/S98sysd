@@ -1,0 +1,5 @@
+#!/bin/sh
+echo "=== S98sysd ==="
+/lib/ld-linux-riscv64-lp64d.so.1 --list /usr/lib/systemd/systemd | head -30
+/usr/lib/systemd/systemd --version && echo "SYSD-TEST PASS" || echo "SYSD-TEST FAIL exit=$?"
+echo "=== S98sysd: done ==="
