@@ -47,6 +47,23 @@ if [[ -z "${SESSION:-}" ]]; then
 fi
 
 [[ -f "$DTB" ]] || { echo "ERROR: $DTB not found" >&2; exit 1; }
+
+# THE MODEL STRING NAMES THE BITSTREAM, NOT THE CHECKOUT (2026-09-07). ubuntu-nfs.dts is
+# generated with git HEAD's short commit in `model`, which is the RTL on the board only when
+# the boot follows a gate in the same tree and nothing was committed while it built (the
+# W6 gate's tree moved two commits during its build). The monitor's banner carries the
+# commit the bitstream was built from (rtl=...): when the last banner in the log names
+# another one, the DTS is regenerated with it (--rtl=), so /proc/device-tree/model on the
+# board answers "what is running" and a Geekbench result page names the right RTL.
+if [[ "$DTB" == ubuntu-nfs.dtb && -f "$LOG" ]]; then
+    banner_rtl=$(grep -aoE 'rtl=[0-9a-f]{7,12}' "$LOG" | tail -1 | cut -d= -f2)
+    if [[ -n "$banner_rtl" ]] && ! grep -q "SmolRV64 ooo2 $banner_rtl @" ubuntu-nfs.dts 2>/dev/null; then
+        echo "[ubuntu-boot] model string: the banner says rtl=$banner_rtl, regenerating $DTB with it"
+        python3 ../../tools/check-dts-timebase.py --gen "$(sed -n 's/^DIV8 *?= *//p' Makefile)" \
+            "--rtl=$banner_rtl" ubuntu-nfs.dts.in ubuntu-nfs.dts
+        dtc -I dts -O dtb -o "$DTB" ubuntu-nfs.dts
+    fi
+fi
 [[ -f "$FW"  ]] || { echo "ERROR: $FW not found"  >&2; exit 1; }
 [[ -f "$LOG" ]] || { echo "ERROR: $LOG not found (is 'screen -L' active?)" >&2; exit 1; }
 
