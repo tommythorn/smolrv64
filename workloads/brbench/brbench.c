@@ -23,23 +23,26 @@ static uint64_t rdinstr(void) { uint64_t v; __asm__ volatile("rdinstret %0" : "=
 #define EV_REDIR 0x0005
 #define EV_RDWAIT 0x0317
 #define EV_FEBUB 0x0310
+#define EV_REDBR 0x0006
+#ifndef NITER
 #define NITER 100000
+#endif
 
 static uint64_t seed = 0x9E3779B97F4A7C15ul;
 static uint64_t big[1 << 16];               // 512 KiB: every stride-64 load misses the 64 KiB D$
 
-static void report(const char *name, uint64_t c, uint64_t i, uint64_t r, uint64_t w, uint64_t f) {
-    puts_("brbench: "); puts_(name);
+static void report(const char *name, uint64_t c0, uint64_t c, uint64_t i, uint64_t r, uint64_t w, uint64_t f, uint64_t rb) {
+    puts_("brbench: "); puts_(name); puts_(" start="); putdec(c0);
     puts_(" cyc/iter="); fixed2(c, NITER); puts_(" insn/iter="); fixed2(i, NITER);
     puts_(" redir/iter="); fixed2(r, NITER); puts_(" RD_WAIT/iter="); fixed2(w, NITER);
-    puts_(" FE_BUB/iter="); fixed2(f, NITER); puts_("\n");
+    puts_(" FE_BUB/iter="); fixed2(f, NITER); puts_(" RED_BR/iter="); fixed2(rb, NITER); puts_("\n");
 }
 
 #define MEASURE(name, body) do { \
     uint64_t x = seed, acc = 0, n = NITER; \
-    uint64_t c0 = rdcycle(), i0 = rdinstr(), r0 = RDCNT(3), w0 = RDCNT(4), f0 = RDCNT(5); \
+    uint64_t c0 = rdcycle(), i0 = rdinstr(), r0 = RDCNT(3), w0 = RDCNT(4), f0 = RDCNT(5), b0 = RDCNT(6); \
     __asm__ volatile(body : "+r"(x), "+r"(acc), "+r"(n) : "r"(big) : "t0", "t1", "t2", "memory"); \
-    report(name, rdcycle() - c0, rdinstr() - i0, RDCNT(3) - r0, RDCNT(4) - w0, RDCNT(5) - f0); \
+    report(name, c0, rdcycle() - c0, rdinstr() - i0, RDCNT(3) - r0, RDCNT(4) - w0, RDCNT(5) - f0, RDCNT(6) - b0); \
     seed = x + acc; \
 } while (0)
 
@@ -47,7 +50,7 @@ static void report(const char *name, uint64_t c, uint64_t i, uint64_t r, uint64_
 #define XS "slli t0, %0, 13\n xor %0, %0, t0\n srli t0, %0, 7\n xor %0, %0, t0\n slli t0, %0, 17\n xor %0, %0, t0\n"
 
 int main(void) {
-    SETEV(3, EV_REDIR); SETEV(4, EV_RDWAIT); SETEV(5, EV_FEBUB);
+    SETEV(3, EV_REDIR); SETEV(4, EV_RDWAIT); SETEV(5, EV_FEBUB); SETEV(6, EV_REDBR);
     for (int k = 0; k < (1 << 16); k++) big[k] = k;
 
     MEASURE("pred ", "1:\n" XS "andi t0, %0, 0\n bnez t0, 2f\n addi %1, %1, 1\n 2: addi %2, %2, -1\n bnez %2, 1b\n");

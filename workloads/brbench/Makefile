@@ -14,7 +14,7 @@ brbench.bin: brbench.elf
 
 brbench.elf: brbench.c crt0.s brbench.ld
 	$(RV)gcc -mabi=lp64d -mcmodel=medany -march=rv64gc_zicsr -fno-builtin -nostdlib \
-		-Wl,-Tbrbench.ld -O2 crt0.s brbench.c -o brbench.elf
+		-Wl,-Tbrbench.ld -O2 $(CFLAGS) crt0.s brbench.c -o brbench.elf
 
 clean:
 	rm -f brbench.elf brbench.bin
