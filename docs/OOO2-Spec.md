@@ -171,6 +171,31 @@ latched or they are lost.
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
+**Measured mispredict cost (`workloads/brbench`, 2026-09-08, L1-resident, the two-wide
+core).** The branch's path is fetch (the buffer serves the window, the aligner and decode
+write the F/X queue) -> dispatch the next cycle (the queue head is an asynchronous LUTRAM
+read) -> select in `u_iq_l` -> the issue register (`i_v`, the payload read) -> M, where
+`redirect` is combinational and steers `pc_q` at that edge: five cycles from the branch's
+fetch to the target's, when the branch is the ROB head and its operands are ready. A loop
+with one random-direction branch per iteration (xorshift64, so no 12-bit history predicts
+it) against the same loop with the branch always not taken:
+
+| loop | cyc/iter | redirects/iter | FE_BUB/iter | RD_WAIT/iter | per mispredict |
+|---|---:|---:|---:|---:|---:|
+| `pred`, never taken | 12.00 | 0 | 6.00 | 0 | -- |
+| `near`, target in the buffer | 18.02 | 0.50 | 10.24 | 0 | **12.0 cycles** (8.5 of them frontend) |
+| `far`, target 1 KiB away (buffer miss, I$ hit, and the jump back the same) | 22.05 | 0.51 | 14.54 | 0 | 19.7 cycles |
+| `drain`, an older D$-missing load in flight | 53.01 | 0.52 | 3.23 | 19.76 | the resolved branch waits **38 cycles** for the ROB head |
+
+The 6.00 bubble cycles per iteration of the never-mispredicting loop are the loop's own
+back edge: the fetch buffer runs FORWARD only (chunk0 is the PC's chunk, chunk1 and chunk2
+follow it), so a predicted-taken backward branch whose target chunk has already slid out
+finds nothing held and refetches through the I$ every iteration, three to four cycles a
+time. A loop buffer, or keeping the chunk the PC just left, would take that off every short
+loop; `FB_RHIT` (redirects served by the buffer) counts only the forward and in-chunk
+targets. The `drain` row is plan item 5: a mispredict resolved behind a miss waits the whole
+miss for the head while the wrong path keeps fetching.
+
 A restart drops the store queue's uncommitted tail only: stores the ROB has committed at
 the irrevocable pointer (§6) are architecturally done and drain after the flush.
 

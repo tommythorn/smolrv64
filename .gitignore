@@ -50,3 +50,5 @@ gate-results/
 
 # The monitor image build.tcl bakes into the boot BRAM, regenerated from workloads/monitor/monitor.bin.
 src/mem.linehex
+workloads/brbench/brbench.bin
+workloads/brbench/brbench.elf
