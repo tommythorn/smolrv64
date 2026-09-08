@@ -57,12 +57,18 @@
 			reg = <0>;
 			status = "okay";
 			compatible = "riscv";
-			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihpm_zba_zbb_zbs_zicond_zicbom_zicbop_zicboz_svpbmt";
+			riscv,isa = "rv64imafdcvsu_zicntr_zicsr_zifencei_zihpm_zba_zbb_zbs_zicond_zicbom_zicbop_zicboz_svpbmt_zfa_zawrs_zacas_zabha_zimop_zcmop_zcb_zvbb_zvkt";
 			riscv,isa-base = "rv64i";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicntr", "zicsr", "zifencei", "zihpm",
 				"zba", "zbb", "zbs", "zicond",
-				"zicbom", "zicbop", "zicboz", "svpbmt";
+				"zicbom", "zicbop", "zicboz", "svpbmt",
+				// Simmerv --rva23 (2026-09-08): V at VLEN=128 and the rest of the
+				// profile, so the kernel enables the vector unit and hwprobe reports
+				// the set Geekbench 7's rv64gcbv/rva23 builds want. The board's tree
+				// (ubuntu-nfs.dts.in) must NOT carry these.
+				"v", "zvl32b", "zvl64b", "zvl128b", "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+				"zfa", "zawrs", "zacas", "zabha", "zimop", "zcmop", "zcb", "zvbb", "zvkt";
 			riscv,cbom-block-size = <64>;
 			riscv,cbop-block-size = <64>;
 			riscv,cboz-block-size = <64>;
@@ -148,6 +154,6 @@
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0 0x80000000 0 0x7ff00000>; // 2 GiB less the DTB window at 0x9ff00000... (see simmerv-nfs.sh)
+		reg = <0 0x80000000 0 0xfff00000>; // 4 GiB less the last MiB: Geekbench 7 does not fit in the board's 2 GiB (Tommy tried), and this guest exists to count its instructions. MEM=4096 in simmerv-nfs.sh must agree.
 	};
 };
