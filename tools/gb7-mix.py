@@ -16,7 +16,7 @@ def per_subtest(raw):
         m = re.match(r'\d+ (\d+) (?:.*?)Running (.+?)\s*$', line)
         if m: stamps.append((int(m.group(1)), m.group(2).strip())); continue
         m = re.match(r'\d+ (\d+) === (?:single-core done|end)', line)
-        if m: stamps.append((int(m.group(1)), None))
+        if m: stamps.append((int(m.group(1)), None)); break   # multi-core repeats the names: stop here
     res = {}
     for i, (n0, name) in enumerate(stamps):
         if name is None or i + 1 >= len(stamps): continue
