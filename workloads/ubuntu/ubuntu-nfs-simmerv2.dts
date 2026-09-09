@@ -14,7 +14,7 @@
 	chosen {
 		linux,initrd-start = <0 0x9f52c000>;
 		linux,initrd-end   = <0 0x9ff00000>;
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.10.1:/srv/ubuntu-root,vers=4,tcp ip=192.168.10.2::192.168.10.1:255.255.255.0:smolrv64:eth0:off rw ignore_loglevel random.trust_bootloader=on";
+		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.11.1:/srv/ubuntu-root,vers=4,tcp ip=192.168.11.2::192.168.11.1:255.255.255.0:smolrv64b:eth0:off rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
@@ -154,6 +154,6 @@
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0 0x80000000 0x1 0xfff00000>; // 8 GiB less the last MiB (4 GiB from 2026-09-08 until the rva23 build died of bad_alloc in PDF Viewer on 2026-09-10): Geekbench 7 does not fit in the board's 2 GiB (Tommy tried), and this guest exists to count its instructions. MEM in simmerv-nfs.sh must agree.
+		reg = <0 0x80000000 0 0xfff00000>; // 4 GiB less the last MiB: Geekbench 7 does not fit in the board's 2 GiB (Tommy tried), and this guest exists to count its instructions. MEM=4096 in simmerv-nfs.sh must agree.
 	};
 };

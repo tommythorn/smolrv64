@@ -17,5 +17,5 @@ SV=${SIMMERV:-$HOME/simmerv}/target/release/simmerv_cli
 ip -br link show tap0 >/dev/null 2>&1 || { echo "no tap0: run the setup in the header"; exit 1; }
 dtc -q -I dts -O dtb -o ubuntu-nfs-simmerv.dtb ubuntu-nfs-simmerv.dts || exit 1
 # MEM must equal the memory node in ubuntu-nfs-simmerv.dts (-d disables simmerv's size patching):
-# 4096 since 2026-09-08, because Geekbench 7 does not fit in 2 GiB.
-exec "$SV" -n -c -m "${MEM:-4096}" -T tap0 -d ubuntu-nfs-simmerv.dtb,0x9ff00000 fw_payload.bin,0x80000000 "$@"
+# 8192 since 2026-09-10 (4096 before): Geekbench 7's rva23 build threw bad_alloc in 4 GiB.
+exec "$SV" -n -c -m "${MEM:-8192}" -T tap0 -d ubuntu-nfs-simmerv.dtb,0x9ff00000 fw_payload.bin,0x80000000 "$@"
