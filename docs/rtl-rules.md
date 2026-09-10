@@ -277,6 +277,15 @@ stores than are live. The same arithmetic error is possible in any ring whose oc
 can reach its size; when a pointer is captured as an age, check what a FULL ring hands
 out.
 
+**B9. A tag identifies what the index cannot.**
+When an index folds something the tag does not carry -- the YAGS corrector's index is
+PC[10:1] xor the global history -- the PC bits the index consumed are not recoverable
+from the slot and must be in the tag. The corrector's tag was PC[26:11] alone: 0 for
+every branch within 2 KiB, so every slot hit every such branch, and a loop's back edge
+next to an unpredictable branch read cold and foreign counters as its own, 50 of 300
+iterations mispredicted (30984a0e; found in one run of `BP_TRACE` on `workloads/brbench`).
+The BTB's tag may omit PC[10:1] only because its index is PC[10:1] itself.
+
 ## C. Cross-cutting predicates
 
 **C1. Computed once, applied at one site.**

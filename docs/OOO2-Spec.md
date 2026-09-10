@@ -187,6 +187,11 @@ it) against the same loop with the branch always not taken:
 | `far`, target 1 KiB away (buffer miss, I$ hit, and the jump back the same) | 22.05 | 0.51 | 14.54 | 0 | 19.7 cycles |
 | `drain`, an older D$-missing load in flight | 53.01 | 0.52 | 3.23 | 19.76 | the resolved branch waits **38 cycles** for the ROB head |
 
+With the corrector's tag and the aligner's solo-op test fixed (2026-09-10, on the binary
+whose loop top sits at a chunk boundary): `near` 20.37 -> 18.32 cycles per iteration at
+0.73 -> 0.51 redirects (the random branch's own 0.50 plus two lost predictions in 300),
+`drain` 83.7 -> 78.5 at 0.96 -> 0.55. The back edge no longer mispredicts.
+
 The 6.00 bubble cycles per iteration of the never-mispredicting loop are the loop's own
 back edge: the fetch buffer runs FORWARD only (chunk0 is the PC's chunk, chunk1 and chunk2
 follow it), so a predicted-taken backward branch whose target chunk has already slid out
