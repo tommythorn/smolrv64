@@ -403,6 +403,40 @@ module ooo2_predictor
    // arrives at a 1-bit RAM enable instead of steering a 10-bit index into an array -- and
    // `rollback` is M's registered redirect, which costs nothing.
    wire apc_en = fire | rollback | reset;
+
+`ifdef BP_TRACE
+   // Per-control-transfer trace (flood volume, so gated; +trace_from/+trace_to like FB_TRACE).
+   // PRED: the lookup as the bundle fires -- base, the address the read was stamped with
+   // (a mismatch is a LOST prediction), tag hit, entry type/counter, corrector hit/counter,
+   // the direction and target chosen, the speculative history, and the next read address.
+   // RES: what resolve saw and trained -- the carried details, the direction they implied,
+   // the outcome, and the indices written. Written for the loop back edge that mispredicts
+   // next to a random branch (docs/PLAN-2026-09-05-ipc.md, item 5, 2026-09-10).
+   reg [63:0] bpt_cyc, bpt_from, bpt_to;
+   initial begin
+      bpt_cyc = 64'd0;
+      if (!$value$plusargs("trace_from=%d", bpt_from)) bpt_from = 64'd0;
+      if (!$value$plusargs("trace_to=%d",   bpt_to))   bpt_to   = 64'hFFFF_FFFF_FFFF_FFFF;
+   end
+   wire bpt_on = (bpt_cyc >= bpt_from) & (bpt_cyc <= bpt_to);
+   wire bpt_pdir = yc_hit ? yc_ctr[1] : bim_pred;
+   always @(posedge clk) begin
+      bpt_cyc <= bpt_cyc + 64'd1;
+      if (bpt_on & fire & (cti_ok | tag_hit))
+         $display("[BP] c=%0d PRED base=%h qpc=%h tag_hit=%b cti=%b type=%b yhit=%b yctr=%0d yidx=%0d dir=%b apred=%b pred=%b tgt=%h ghr=%h apc=%h",
+                  bpt_cyc, base_pc, btb_qpc, tag_hit, cti_ok, q_type, yhit, ycorr_q[1:0], yidx(base_pc, ghr),
+                  cbr_taken, apred_v, pred_v, pred_tgt, ghr, apc);
+      if (bpt_on & res_v)
+         $display("[BP] c=%0d RES pc=%h base=%h cbr=%b call=%b ret=%b taken=%b tgt=%h | carried hit=%b ctr=%0d yhit=%b yctr=%0d yidx=%0d pdir=%b mis=%b rep=%b | train bidx=%0d type=%b ywr=%b ynudge=%0d ghr_c=%h",
+                  bpt_cyc, res_pc, res_base, res_cbr, res_call, res_ret, res_taken, res_tgt,
+                  t_hit, t_ctr, yc_hit, yc_ctr, yc_idx, bpt_pdir, res_cbr & (bpt_pdir != res_taken), res_rep,
+                  t_idx, t_type, y_wr, y_nudge, ghr_c);
+      if (bpt_on & rollback)
+         $display("[BP] c=%0d ROLLBACK ghr<=%h ras_ptr<=%0d", bpt_cyc,
+                  (res_rep & res_cbr) ? {ghr_c[GHL-2:0], res_taken} : ghr_c,
+                  (res_rep & res_call) ? rptr_c + 1'b1 : (res_rep & res_ret) ? rptr_c - 1'b1 : rptr_c);
+   end
+`endif
    always @(posedge clk) begin
       // Read a cycle ahead (rule A1). Nonblocking, so these see the array as it was BEFORE
       // this edge's write regardless of statement order -- the forward covers the collision.
