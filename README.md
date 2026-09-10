@@ -152,6 +152,11 @@ comparable number across builds, and the subtest rates are what the scores follo
 | 2026-08-28 | dynamic issue, one-wide | 166.67 MHz | 9 h 05 min | 0.26 | |
 | 2026-09-07 | two-wide, the full stack | 166.67 MHz | 5 h 35 min | 0.40 | **5** |
 
+Geekbench 6.7.1 on the same bitstream ([result 19145035](https://browser.geekbench.com/v6/cpu/19145035),
+2026-09-10): 10.9 T instructions at IPC 0.335, single-core in 18.5 h. Its stack is more
+load-bound than Geekbench 5's (LSU 56% of cycles), the 16-entry window binds on it (ROB
+full 16%), and it multiplies nine times as much (multiplier 9%).
+
 The CPI stack of the 2026-09-07 run: 2.49 cycles per instruction, of which 0.50 is the
 two-wide issue floor, 1.18 the load/store unit, 0.48 the FPU, 0.16 serializing operations,
 0.05 multiply and divide and 0.10 the frontend. Geekbench is now bound by the data-side
