@@ -264,7 +264,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   the page's: `bytes_late`) the bundle WAITS rather than cutting (item 10e; until then slot 1
   could not cross a 16-byte chunk boundary, which made 338 of the sha256 kernel's 934 bundles
   singles), so a bundle's shape is a function of the code alone, never of chunk-arrival
-  timing -- which is what the predictor, keyed by the bundle base, requires. The bundle's prediction
+  timing -- which is what the predictor, keyed by the bundle base, requires. (One hole in
+  that, closed 2026-09-10: the aligner's "a SYSTEM/AMO/FENCE op starts a fresh bundle" test
+  ran on slot 1's halfwords before checking they were in the window, so after a restart into
+  a chunk whose successor had not landed, the pair register's stale bytes could end the
+  bundle after slot 0 -- a shape the code did not determine, and a third bundle base for the
+  loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) The bundle's prediction
   belongs to its last slot; slot 1 carries its offset from the bundle base in the predict
   details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2). The
   ahead-PC length table (`lenp`) holds the bundle's consumed count (1..4 halfwords) in 4,096

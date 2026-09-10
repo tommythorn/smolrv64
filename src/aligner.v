@@ -149,7 +149,14 @@ module aligner
          pcv[k] = base_pc + (pos << 1);
          ofv[k] = pos;
          sqv[k] = base_seq + k[SEQW-1:0];
-         if ((k != 0) && (is_sys || solo_all)) begin
+         // A solo op begins a fresh bundle only if its halfwords are PRESENT. Testing `is_sys`
+         // on a slot beyond the window read the pair register's STALE bytes -- after a restart
+         // into a chunk whose successor had not landed, a csrr further down the loop sat at
+         // slot 1's position and ended the bundle after slot 0 without the wait below, so the
+         // bundle's shape depended on what the buffer used to hold: the predictor, keyed by
+         // the bundle base, then met the loop's back edge under a third base and lost its
+         // prediction (workloads/brbench near: 15 of 300 iterations, BP_TRACE, 2026-09-10).
+         if ((k != 0) && (solo_all || (have && is_sys))) begin
             v[k] = 1'b0; run = 1'b0;           // SYSTEM (or fault replay) begins a fresh (solo) bundle
          end else begin
             v[k] = run & have;
