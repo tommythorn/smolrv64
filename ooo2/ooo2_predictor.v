@@ -182,8 +182,14 @@ module ooo2_predictor
    function [YBITS-1:0]  yidx (input [PCW-1:0] a, input [GHL-1:0] h);
       yidx  = a[YBITS:1] ^ h[YBITS-1:0] ^ {{(YBITS-2){1'b0}}, h[GHL-1:YBITS]};
    endfunction
+   // The index is PC ^ history, so the PC bits it consumes (a[YBITS:1]) are not recoverable
+   // from the slot and MUST be in the tag: without them every branch within 2^(YBITS+1)
+   // bytes carries the same tag, every slot "hits" for every such branch, and a branch whose
+   // history is polluted by an unpredictable neighbour reads cold and foreign counters as its
+   // own (the loop back edge in workloads/brbench: 66 of 300 mispredicts, 50 of them this).
    function [YTAGW-1:0] ytagf(input [PCW-1:0] a);
-      ytagf = a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
+      ytagf = a[YTAGW:1] ^ {{(YTAGW-2){1'b0}}, a[YBITS:YTAGW+1]}
+            ^ a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
    endfunction
    // NO VALID BIT, unlike the BTB above: the tag already carries it. An entry that has
    // never been written reads as tag 0, so it can only be believed by a PC whose

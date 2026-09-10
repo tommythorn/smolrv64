@@ -300,6 +300,15 @@ found under slot 0's, and mispredicted every execution.
 | GHR | 12 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
 
+**The corrector's tag carries the PC bits its index consumes** (2026-09-10): the index is
+PC[10:1] xor the history, so those PC bits are not recoverable from the slot; the tag used to
+be built from PC[26:11] alone, which is 0 for every branch within the same 2 KiB, so every
+slot "hit" for every such branch and a branch whose history is polluted by an unpredictable
+neighbour read cold and foreign counters as its own. `workloads/brbench`: the loop back edge
+next to a random branch mispredicted 66 times in 300 iterations, 50 of them this way; with
+PC[10:1] folded into the tag the loop's redirects are the random branch's alone (0.73 ->
+0.51 per iteration, 20.4 -> 18.3 cycles) and the drain loop's fall 0.96 -> 0.55.
+
 **Neither array has a valid bit.** Validity *is* the tag match; a mismatched tag is a
 miss. Removing them was bit-identical in simulation and moved both arrays from LUT/flop
 structures into BRAM — a valid bit kept outside its array is a mux the size of the array
