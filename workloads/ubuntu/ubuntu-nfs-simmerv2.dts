@@ -1,3 +1,9 @@
+// DO NOT BOOT THIS while the board or the other guest is up (Tommy, 2026-09-10): every client
+// of /srv/ubuntu-root shares one machine-id, one journal, /var/tmp, /home and every lock file,
+// and the guest's own dmesg already shows journald repairing journals two writers corrupted.
+// A second guest needs its own writable layer first -- an overlayfs upper on tmpfs or a
+// per-guest virtio-blk image over the read-only NFS root, or a per-guest copy of the tree
+// with its own export. Kept as the network half of that setup (192.168.11.2 on tap1).
 // GENERATED SHAPE, hand-derived 2026-09-04: tiny128-simmerv.dts (simmerv's device layout) with
 // the board's NFS-root bootargs pointed at a host-only TAP (192.168.10.1 = coffee's tap0,
 // the guest at .2) and simmerv's virtio-net at its NET_BASE 0x10002000, PLIC source 2
