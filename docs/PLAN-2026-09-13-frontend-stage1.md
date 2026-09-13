@@ -44,6 +44,27 @@ the OLD value, and the redirect refetch a cycle later reads the updated array, s
 needed; `tag_hit` drops the `btb_qpc == base_pc` term; the BTB/YAGS `ram_style` goes
 block→distributed; the BP_TRACE block loses its `apc`/`btb_qpc` fields.
 
+**LANDED — increments 1+2 (2026-09-13, wip/fe-stage1).** Done exactly as the refinement
+describes: `ooo2_predictor.v` reads `btb`/`ycorr` combinationally at `base_pc` (distributed
+LUTRAM, `ram_style` block→distributed), the `apc` input / `apred_v` output / `btb_qpc` /
+`btb_raw` / `ycorr_raw` / write-forward / `apc_en` all gone, `tag_hit` drops `btb_qpc ==
+base_pc`; `src/fetch.v` loses `apc`, `npc`, `lenp`, `len_adv`, `lidx`, `al_cons_m1`;
+`ooo2_frontend.v` drops the `.apc`/`.apred_v` wires. `pnpc_kind`, the queue and the decode
+rebuild are untouched. Gates: `lint: clean`, riscv-tests `pass=240 fail=0`, `src/run-tb.sh`
+`tb pass=19/19` (fetch benches lost their `.apred_v(1'b0)`), 60 M Linux cosim **lockstep
+clean, retires 14,461,521 vs 14,301,801 = +1.12%** (`cosim-expected.txt` raised). The gain is
+~8× the +0.13% estimate: the ahead scheme lost predictions not only on `apc`-vs-`base_pc`
+mismatches but on every `lenp` length misprediction and every ahead-vs-current GHR skew;
+reading the exact entry with the current GHR recovers them all. **Census/timing PASSED** in the full design (`make bit` + `make timing`/`make census`,
+routed DCP): WNS **+0.061 ns**, TNS 0 (baseline release was +0.023); worst path is the D-cache
+`cur_line`→`rd_data`, not the frontend. The base_pc→BTB read family is +0.104 ns / 68
+endpoints / 15 levels — near-critical but positive and register-derived (from `va_q`/`ipc_q`,
+not the aligner). `btb`/`ycorr` inferred as **distributed LUTRAM, zero block RAM in `u_bp`**
+(BRAM tiles 122→120; LUTs 83,093→83,981 = +888; flops 49,498→49,291 = −207). Rule I7 risk
+retired. **Board boot is reserved for the last increment** (per this section's header). `npc`
+was deleted too — it was already unconnected dead code whose stated purpose (the read address)
+this change obsoletes.
+
 1. **Predictor read at `base_pc`, combinational** (`ooo2_predictor.v`). Convert `btb`/`ycorr`
    from BRAM synchronous-read addressed by `apc` to distributed-RAM combinational-read addressed
    by `base_pc`; the tag/target/direction resolve stays where it is. Delete the `apc` input, the

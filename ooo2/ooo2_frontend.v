@@ -153,12 +153,12 @@ module ooo2_frontend
    // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
    // falls through.
    localparam FW = 2;
-   wire               fx_valid, f_brt, bp_v, bp_av;
+   wire               fx_valid, f_brt, bp_v;
    wire [FW-1:0]      fx_sv;                      // per-slot valid
    wire [FW*32-1:0]   fx_inst;
    wire [FW*PCW-1:0]  fx_pc;
    wire [FW*SEQW-1:0] fx_seq;
-   wire [PCW-1:0]     f_apc, f_ftn, bp_tgt;
+   wire [PCW-1:0]     f_ftn, bp_tgt;
    wire [1:0]         fx_pk;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
@@ -170,16 +170,12 @@ module ooo2_frontend
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
       .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
       .irq_inject(irq_inject), .irq_pres(irq_pres),
-      // `bp_av` on the apc arm, `bp_v` on the real advance: the predictor's steer minus
-      // its aligner term, so the array read address stays register-only (ooo2_predictor
-      // `predict`).
-      .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
-      // `npc` (the true next PC) is left unconnected: the predictor reads at `apc`, so the
-      // whole npc mux -- and with it the aligner -> array-index cone -- drops out here.
-      // `pred_npc` (the chosen next PC, with its adder) is left unconnected too: the queue
+      .pred_v(bp_v), .pred_tgt(bp_tgt),
+      // `pred_npc` (the chosen next PC, with its adder) is left unconnected: the queue
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
-      // the length it decodes anyway. See the queue below.
-      .npc(), .apc(f_apc), .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
+      // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
+      // predictor reads its arrays combinationally at base_pc (= imem_ipc).
+      .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(fx_valid),
@@ -219,8 +215,8 @@ module ooo2_frontend
    wire [PDW-1:0] pd_fetch;
    ooo2_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
-      .apc(f_apc), .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
-      .pred_v(bp_v), .apred_v(bp_av), .pred_tgt(bp_tgt),
+      .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
+      .pred_v(bp_v), .pred_tgt(bp_tgt),
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),

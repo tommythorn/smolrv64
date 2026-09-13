@@ -37,11 +37,11 @@
 //
 //     NO signal that reaches an ARRAY ADDRESS may depend on the aligner.
 //
-// `apc` is the BTB and corrector read address, so `apred_v` and `pred_tgt` -- the
-// two outputs `apc` selects on -- are register-only. `pred_v` keeps `cti_ok` and
-// steers the real PC, which ends at fetch's pc_q flops. `apc_en` keeps `fire`,
-// because a RAM enable pin is one bit, not an index. See `predict` for what the
-// violation cost when `cti_ok` sat at the top of the cone instead.
+// `base_pc` is fetch's pc_q (a register) and is the BTB and corrector read address,
+// so the array read never depends on the aligner. `apred_v`, `pred_tgt` and the
+// tag/history compares hang off that register-only read. `pred_v` ALONE keeps
+// `cti_ok` and steers the real PC, which ends at fetch's pc_q flops. See `predict`
+// for what the violation cost when `cti_ok` sat at the top of the cone instead.
 //
 // Bundle-granularity: the aligner ends every bundle at its first CTI, so a
 // bundle has at most one control transfer, it is the last valid slot, and the
@@ -78,12 +78,6 @@ module ooo2_predictor
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
-    input  wire [PCW-1:0]       apc,        // fetch's AHEAD next PC -> BTB read address. A
-                                            // register-only PREDICTION of the next base PC,
-                                            // not the real one: see fetch.v's `apc`. The
-                                            // entry is stamped with it (btb_qpc <= apc) and
-                                            // unusable unless btb_qpc == base_pc, so a wrong
-                                            // apc loses a prediction and never fakes one.
     input  wire                 fire,       // fetch handshake: bundle leaves fetch this cycle
     input  wire [PCW-1:0]       base_pc,    // presented bundle's base PC (= pc_q)
     input  wire [PCW-1:0]       ft_npc,     // presented bundle's fall-through (= call return address)
@@ -91,10 +85,6 @@ module ooo2_predictor
                                             // ONLY such bundles have the exec-side compare, so a
                                             // stale entry may never steer any other bundle shape
     output wire                 pred_v,     // predict taken: fetch overrides its next PC
-    output wire                 apred_v,    // the SAME decision minus `cti_ok` -- register-only,
-                                            // and therefore the only one `apc` may consume. Being
-                                            // wrong costs one lost prediction (btb_qpc != base_pc
-                                            // next cycle); it can never fake one. See `predict`.
     output wire [PCW-1:0]       pred_tgt,
     // ---- redirect ----
     input  wire                 rollback,     // a redirect is entering the frontend this cycle
@@ -149,13 +139,10 @@ module ooo2_predictor
    // do anyway. Configuration INIT zeroes the array, so a cold FPGA and a fresh simulation
    // both start with every entry untagged.
    localparam EW = TAGW + 3 + TGTW;
-   (* ram_style = "block" *)
+   (* ram_style = "distributed" *)
    reg [EW-1:0]   btb   [0:NBTB-1];          // {tag, type, target} -- validity IS the tag match
-   reg [EW-1:0]   btb_raw;                   // registered read (rule A1)
-   reg [PCW-1:0]  btb_qpc;                   // address the read was for
    integer bi;
    initial begin
-      btb_raw = {EW{1'b0}}; btb_qpc = {PCW{1'b0}};
       for (bi = 0; bi < NBTB; bi = bi + 1) btb[bi] = {EW{1'b0}};
    end
 
@@ -199,30 +186,23 @@ module ooo2_predictor
    // counter, and the entry is right from then on. A corrector is a hint whose whole job
    // is to be repaired by training; a valid bit here only buys the first execution of
    // 0.4% of cold branches, and costs a bit of array plus a term in the yhit AND.
-   (* ram_style = "block" *)
+   (* ram_style = "distributed" *)
    reg [YEW-1:0]  ycorr [0:NYAGS-1];         // {tag, ctr} -- validity IS the tag match
-   reg [YEW-1:0]  ycorr_raw;
    integer yi;
    initial begin
-      ycorr_raw = {YEW{1'b0}};
       for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {YEW{1'b0}};
    end
 
-   // ---------------------------------------- write-forward, applied AFTER the read register
-   // A training write lands on the same edge as the read a cycle ahead of it, so the read
-   // must see it. Forwarding on the ARRAY OUTPUT is what the previous version did, and it is
-   // exactly what stops block-RAM inference: a BRAM's read register is INSIDE the primitive,
-   // so a mux between array and flop forces the array back into LUTs. Register the decision
-   // instead and mux in the cycle the entry is consumed -- the compare `write index == read
-   // index` is evaluated against the same `npc` the read used, so it still means the same
-   // thing one cycle later. It also DEFINES the read-during-write result, which a simple
-   // dual-port BRAM leaves indeterminate in hardware.
-   reg            t_fwd_q, y_fwd_q;
-   reg [EW-1:0]   t_dat_q;
-   reg [YEW-1:0]  y_dat_q;
-   initial begin t_fwd_q = 1'b0; y_fwd_q = 1'b0; end
-   wire [EW-1:0]  btb_q    = t_fwd_q ? t_dat_q : btb_raw;
-   wire [YEW-1:0] ycorr_q  = y_fwd_q ? y_dat_q : ycorr_raw;
+   // ---------------------------------------- combinational read at the presented base PC
+   // The array is read where the bundle is presented, not a cycle ahead of a guessed
+   // successor, so there is no ahead-PC to guess wrong and no read register to forward
+   // around: a training write that lands on one edge is visible to the very next cycle's
+   // combinational read (the mispredict refetch that retrained the entry reads the new
+   // value). Distributed (LUTRAM), because an asynchronous read cannot be block RAM --
+   // confirmed to close 166.667 MHz with margin by the Stage 1 BTB spike. (ghr is declared
+   // just below; a continuous assign may reference it.)
+   wire [EW-1:0]  btb_q    = btb[bidx(base_pc)];
+   wire [YEW-1:0] ycorr_q  = ycorr[yidx(base_pc, ghr)];
 
    // ------------------------------------------------- speculative state {ghr,ras}
    reg [GHL-1:0]  ghr;
@@ -245,10 +225,10 @@ module ooo2_predictor
    // ------------------------------------------------------------------- predict
    // TWO cones, and the split between them is the load-bearing property.
    //
-   // TAG cone -- REGISTERS ONLY. btb_q/ycorr_q are the arrays' read registers (rule A1),
-   // btb_qpc is the address that read was for, base_pc is fetch's pc_q, ras/ras_ptr are
-   // flops. Nothing here comes from the I$-data -> aligner cloud, so this is the cone
-   // fetch's `apc` -- the NEXT array read address -- is allowed to hang off.
+   // TAG cone -- the array read at base_pc AND the tag/history compares, NO `cti_ok`.
+   // btb_q/ycorr_q are combinational reads of the distributed arrays at the presented
+   // base PC, base_pc is fetch's pc_q, ras/ras_ptr are flops. Nothing here comes from the
+   // I$-data -> aligner cloud.
    //
    // CTI cone -- the tag cone AND `cti_ok`, the aligner's "this bundle really does end on
    // a control transfer". Only that may steer fetch's ACTUAL next PC, because the
@@ -256,16 +236,13 @@ module ooo2_predictor
    // bundles: a stale entry allowed to redirect any other bundle shape would never be
    // caught.
    //
-   // Keeping the two apart is worth 22 logic levels. `cti_ok` used to be ANDed in at the
-   // TOP, so p_ret -- the RAS-vs-BTB target select -- sat downstream of the whole fetch
-   // cloud, and `apc` carried it to a block-RAM address pin. The routed path was
-   //   strad -> imem_addr -> iMMU req_match -> I$ fb_w0 compare -> I$ data -> p_ret
-   //          -> bp_tgt -> u_bp/btb_reg/ADDRARDADDR[12]
-   // 5.521 ns of a 6.000 ns budget, 69.7% of it pure route, and a twin ending at the
-   // corrector's address pin. This is the same defect ooo2_core.v's irq_inject note
-   // records, one input over: a late term reaching an array INDEX.
-   wire            tag_hit  = (btb_qpc == base_pc)
-                            & (btb_q[EW-1 -: TAGW] == btag(base_pc));
+   // Keeping the two apart is worth 22 logic levels: `cti_ok` (the aligner cloud) ANDs in
+   // only at pred_v/hit, so the RAS-vs-BTB target select and the tag/history compares stay
+   // out from under it. ANDing `cti_ok` in at the TOP once put p_ret downstream of the
+   // whole fetch cloud (strad -> imem_addr -> iMMU -> I$ -> p_ret -> bp_tgt), 5.521 ns of
+   // a 6.000 ns budget, 69.7% pure route. The same defect ooo2_core.v's irq_inject note
+   // records: a late term reaching an array output/select.
+   wire            tag_hit  = (btb_q[EW-1 -: TAGW] == btag(base_pc));
    wire [2:0]      q_type   = btb_q[TGTW +: 3];
    wire [TGTW-1:0] q_tgt    = btb_q[TGTW-1:0];
    wire [PCW-1:0]  btb_tgt  = {{(PCW-TGTW-1){q_tgt[TGTW-1]}}, q_tgt, 1'b0};  // sign-extend canonical VA
@@ -274,8 +251,9 @@ module ooo2_predictor
    // YAGS: a tag-hitting corrector overrides the bimodal weight for a conditional
    wire            yhit     = t_cbr & (ycorr_q[YEW-1 -: YTAGW] == ytagf(base_pc));
    wire            cbr_taken= yhit ? ycorr_q[1] : q_type[1];
-   // The steer, from registers only: "the entry read for this base PC says taken".
-   assign apred_v  = tag_hit & (q_type[2] | (t_cbr & cbr_taken));
+   // The steer before `cti_ok`: "the entry read for this base PC says taken". This is the
+   // tag-cone half of the pred_v split (pred_v = apred_v & cti_ok, below).
+   wire            apred_v  = tag_hit & (q_type[2] | (t_cbr & cbr_taken));
    // The TARGET is register-only too -- `t_ret`, not `p_ret`. pred_tgt is consumed only
    // where pred_v is high, and pred_v implies cti_ok, so t_ret == p_ret at every point
    // fetch looks at it: the value is bit-identical, the cone it hangs off is not.
@@ -311,7 +289,7 @@ module ooo2_predictor
    // BASE OFFSET (2026-09-05, two-wide fetch): the instruction's distance from its bundle's
    // base PC in halfwords (0 for slot 0; 1 or 2 for slot 1), stamped by the frontend into
    // the top BOW bits of the details. Prediction is looked up under the bundle's BASE PC
-   // (apc / base_pc); training recomputes the index and tags from res_pc, the CTI's OWN PC,
+   // (base_pc); training recomputes the index and tags from res_pc, the CTI's OWN PC,
    // which at IW=1 was the same address. At IW=2 a branch in slot 1 was trained under its
    // own PC and looked up under slot 0's -- never a hit, a mispredict every execution (the
    // sha256 kernel: 0.003 -> 1.36 redirects per thousand). res_base undoes the offset.
@@ -394,21 +372,11 @@ module ooo2_predictor
    wire             bim_pred = t_hit & t_ctr[1];            // bimodal predicted-taken (miss = NT)
    wire             y_wr   = res_v & res_cbr & (yc_hit | (bim_pred != res_taken));
 
-   // write-forward: a mispredict's redirected refetch reads the BTB the same edge
-   // its own training write lands -- without forwarding the retrained entry is
-   // invisible to that first refetch and every cold-taken CTI mispredicts twice.
-   // Decided here, applied a cycle later at btb_q/ycorr_q (see that comment).
-   wire t_fwd = res_v && (t_idx == bidx(apc));
-   wire y_fwd = y_wr  && (yc_idx == yidx(apc, ghr));        // same write-forward for the corrector
-   // Read enable: exactly the cycles in which fetch's base PC MOVES. fetch advances pc_q on
-   // reset, on a redirect (unconditionally -- it does not wait for the handshake), and
-   // otherwise only on `fire`; every other cycle re-presents the same bundle, so holding the
-   // entry is what keeps it matched to it. Without this a stall would re-read at the guessed
-   // SUCCESSOR and the held-back bundle would lose the prediction it already had.
-   //   This is where the late signal went. `fire` still comes off the aligner, but it now
-   // arrives at a 1-bit RAM enable instead of steering a 10-bit index into an array -- and
-   // `rollback` is M's registered redirect, which costs nothing.
-   wire apc_en = fire | rollback | reset;
+   // No write-forward and no read enable: the combinational read at base_pc (btb_q/ycorr_q)
+   // sees a training write on the very next cycle after its edge -- so the mispredict refetch
+   // reads its own retrained entry -- and re-presents the same bundle, hence the same read,
+   // whenever fetch stalls, because base_pc itself holds. `fire`/`rollback` no longer steer
+   // an array read at all.
 
 `ifdef BP_TRACE
    // Per-control-transfer trace (flood volume, so gated; +trace_from/+trace_to like FB_TRACE).
@@ -429,9 +397,9 @@ module ooo2_predictor
    always @(posedge clk) begin
       bpt_cyc <= bpt_cyc + 64'd1;
       if (bpt_on & fire & (cti_ok | tag_hit))
-         $display("[BP] c=%0d PRED base=%h qpc=%h tag_hit=%b cti=%b type=%b yhit=%b yctr=%0d yidx=%0d dir=%b apred=%b pred=%b tgt=%h ghr=%h apc=%h",
-                  bpt_cyc, base_pc, btb_qpc, tag_hit, cti_ok, q_type, yhit, ycorr_q[1:0], yidx(base_pc, ghr),
-                  cbr_taken, apred_v, pred_v, pred_tgt, ghr, apc);
+         $display("[BP] c=%0d PRED base=%h tag_hit=%b cti=%b type=%b yhit=%b yctr=%0d yidx=%0d dir=%b apred=%b pred=%b tgt=%h ghr=%h",
+                  bpt_cyc, base_pc, tag_hit, cti_ok, q_type, yhit, ycorr_q[1:0], yidx(base_pc, ghr),
+                  cbr_taken, apred_v, pred_v, pred_tgt, ghr);
       if (bpt_on & res_v)
          $display("[BP] c=%0d RES pc=%h base=%h cbr=%b call=%b ret=%b taken=%b tgt=%h | carried hit=%b ctr=%0d yhit=%b yctr=%0d yidx=%0d pdir=%b mis=%b rep=%b | train bidx=%0d type=%b ywr=%b ynudge=%0d ghr_c=%h",
                   bpt_cyc, res_pc, res_base, res_cbr, res_call, res_ret, res_taken, res_tgt,
@@ -444,20 +412,12 @@ module ooo2_predictor
    end
 `endif
    always @(posedge clk) begin
-      // Read a cycle ahead (rule A1). Nonblocking, so these see the array as it was BEFORE
-      // this edge's write regardless of statement order -- the forward covers the collision.
-      if (apc_en) begin
-         btb_raw   <= btb[bidx(apc)];
-         btb_qpc   <= apc;
-         ycorr_raw <= ycorr[yidx(apc, ghr)];
-         t_fwd_q   <= t_fwd;   t_dat_q <= {t_tag,  t_type, res_tgt[TGTW:1]};
-         y_fwd_q   <= y_fwd;   y_dat_q <= {yc_tag, y_nudge};
-      end
+      // Training writes only; the read is combinational (btb_q/ycorr_q above). One BTB and
+      // one corrector write per resolved CTI keeps each array 1R1W (async read, sync write).
       if (res_v) btb[t_idx]    <= {t_tag,  t_type, res_tgt[TGTW:1]};
       if (y_wr)  ycorr[yc_idx] <= {yc_tag, y_nudge};
       // The arrays themselves are NOT cleared: see the BTB declaration for why a stale hint
-      // is harmless. Only the forward flags need it, so a reset cannot inject a bogus entry.
-      if (reset) begin t_fwd_q <= 1'b0; y_fwd_q <= 1'b0; end
+      // is harmless.
    end
 endmodule
 

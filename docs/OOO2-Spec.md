@@ -276,37 +276,36 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   bundle after slot 0 -- a shape the code did not determine, and a third bundle base for the
   loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) The bundle's prediction
   belongs to its last slot; slot 1 carries its offset from the bundle base in the predict
-  details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2). The
-  ahead-PC length table (`lenp`) holds the bundle's consumed count (1..4 halfwords) in 4,096
-  entries: at 1,024, bundle lengths of 4, 6 and 8 bytes aliased between the sha256 kernel's
-  unrolled rounds and its loop, a lost prediction per alias and two mispredicts per block
-  (0.45 redirects per thousand; 0.002 at 4,096).
-- **Ahead prediction**: the predictor arrays are addressed from `apc`, a register-only ahead
-  PC, never from a combinational `npc`. This is what bought the predictor a full stage of
-  slack at 166 MHz. A wrong guess degrades to a *lost* prediction, never a wrong one — the
-  existing `btb_qpc == base_pc` tag check catches it. Cost: **0.13% of retires**.
-  - Register-only means *every arm and every select*. `apc` selects on `apred_v` and
-    `pred_tgt`, which `ooo2_predictor` computes from its `tag_hit` cone — the arrays' read
-    registers, `btb_qpc`, `base_pc`, the RAS — with no `cti_ok` term. The aligner reaches
-    the predictor only at `apc_en`, a one-bit RAM enable. Rule I6.
-  - `pred_v` (`= apred_v & cti_ok`) and `pred_npc` steer the *real* PC and end at `pc_q`'s
-    flops, so the aligner term is free there. `apred_v` differs from `pred_v` only on a BTB
-    alias: measured **1 retire in 10,444,329** over 40 M cycles of Linux cosim.
-- **Length predictor**: 1024-entry, 1 bit/entry, distributed RAM, indexed `pc_q[10:1]`.
-  Predicts RVC-vs-32-bit so `apc` can advance without decoding.
+  details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2).
+- **Combinational read at `base_pc`** (Stage 1, 2026-09-13): the predictor addresses its BTB
+  and YAGS arrays directly with the presented bundle's base PC (`base_pc` = fetch's `pc_q`, a
+  register), not with a cycle-ahead guess. The arrays are distributed LUTRAM (asynchronous
+  read); a training write that lands on one edge is visible to the very next cycle's read, so a
+  mispredict's redirected refetch reads its own retrained entry with no write-forward. The
+  Stage 1 BTB spike confirmed this cone closes 166.667 MHz with 2.6–3.5 ns of margin at every
+  depth. This replaced the register-only ahead-PC (`apc`) and its length table (`lenp`);
+  reading each bundle's own entry with the current GHR gained **+1.12% of retires** on the boot
+  (§12), well above the +0.13% the ahead scheme's misses had cost.
+  - The read address is register-derived (`pc_q`), so nothing on the array-address path depends
+    on the aligner (rule I6). `cti_ok` (the aligner's "this bundle ends on a control transfer")
+    enters only at `pred_v = apred_v & cti_ok` and `hit`, which steer the real PC and end at
+    `pc_q`'s flops — never at an array address.
+  - `apred_v` is the tag-cone steer without `cti_ok`; `pred_v` adds it. They differ only on a
+    BTB alias, and the exec-side compare turns that into at most one lost prediction, never a
+    wrong one.
 
 ### 4.2 Branch prediction
 
-**Keyed by the bundle base.** Prediction is looked up under the bundle's base PC (`apc`, then
-the `btb_qpc == base_pc` check); training recomputes the BTB index and tags from the resolving
-CTI's PC minus its carried offset from that base (`res_base`). At one instruction per bundle
+**Keyed by the bundle base.** Prediction is looked up under the bundle's base PC (`base_pc`,
+read combinationally); training recomputes the BTB index and tags from the resolving CTI's PC
+minus its carried offset from that base (`res_base`). At one instruction per bundle
 the two were the same address; with two, a branch in slot 1 trained under its own PC was never
 found under slot 0's, and mispredicted every execution.
 
 | structure | size | organisation | storage |
 |---|---|---|---|
-| BTB | **1024 entries** (`BTBB`=10) | 12-bit tag + 3-bit type + 38-bit target | BRAM, sync read |
-| YAGS correector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | BRAM, sync read |
+| BTB | **1024 entries** (`BTBB`=10) | 12-bit tag + 3-bit type + 38-bit target | distributed LUTRAM, async read |
+| YAGS corrector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | distributed LUTRAM, async read |
 | GHR | 12 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
 
@@ -1045,10 +1044,9 @@ queue's commit, the second ALU); the only yield left is M's, to a landing load o
 
 | array | module | shape | width | bits | storage |
 |---|---|---|---|---|---|
-| `btb` | `ooo2_predictor` | **1024** | 53 | 54 272 | **BRAM**, sync read (1x RAMB36 + 1x RAMB18) |
-| `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | **BRAM**, sync read |
+| `btb` | `ooo2_predictor` | **1024** | 53 | 54 272 | distributed LUTRAM, async read |
+| `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | distributed LUTRAM, async read |
 | `ras` | `ooo2_predictor` | 8 | 64 | 512 | flops |
-| `lenp` | `src/fetch` | 1024 | 1 | 1 024 | LUTRAM |
 
 Neither `btb` nor `ycorr` has a valid bit — validity is the tag match (§4.2).
 

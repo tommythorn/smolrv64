@@ -56,17 +56,13 @@ module fetch
     output wire                    irq_pres,    // ...and it is the presented bundle this cycle: a
                                                 // pending injection waits out a straddle (see irq_go)
     // branch prediction: when the presented bundle ends on a predicted-taken CTI,
-    // the predictor overrides the fall-through advance. `npc` is the computed
-    // next PC (all arms, redirect included) -- the predictor's BTB read address.
-    // `pred_npc` is the next PC actually chosen for the PRESENTED bundle; it
-    // rides to dispatch and is the exec-side mispredict reference (branch_unit
-    // redirects iff actual_npc != pred_npc).
+    // the predictor overrides the fall-through advance. The predictor reads its
+    // arrays combinationally at base_pc, so there is no separately-computed read
+    // address here any more. `pred_npc` is the next PC actually chosen for the
+    // PRESENTED bundle; it rides to dispatch and is the exec-side mispredict
+    // reference (branch_unit redirects iff actual_npc != pred_npc).
     input  wire                    pred_v,
-    input  wire                    apred_v,     // pred_v computed from REGISTERS ONLY (no aligner
-                                                // term) -- the `apc` arm. See apc below.
     input  wire [PCW-1:0]          pred_tgt,
-    output wire [PCW-1:0]          npc,
-    output wire [PCW-1:0]          apc,         // npc PREDICTED from registers only -- see below
     output wire [PCW-1:0]          pred_npc,
     // pred_npc WITHOUT THE SUM: which of {pc + length, pred_tgt, pc} pred_npc is. A consumer
     // that already knows the instruction's length (decode does) rebuilds pred_npc from this
@@ -237,81 +233,6 @@ module fetch
                    :              norm_npc;
    // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
    assign pnpc_kind = irq_go ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
-   // computed next PC, mirroring the advance chain's priorities exactly -- this
-   // is the predictor's BTB read address (registered there, rule A1). The
-   // redirect arm MUST be included: without it the first bundle at a redirect
-   // target never gets a valid BTB read, and a hot loop re-entered by its own
-   // mispredict never re-engages prediction (perpetual mispredict). Only
-   // npc[8:1] reaches the BTB address pins (synthesis slices the mux), so the
-   // redirect cone's contribution here is a few address bits, not a 64-bit bus.
-   assign npc = reset        ? RESET_PC
-              : redirect     ? redirect_pc
-              : irq_go       ? ipc_q
-              : strad        ? (fire ? pc_plus[1] : pc_q)
-              : straddle_det ? pc_q
-              : fire         ? norm_npc : pc_q;
-
-   // ------------------------------------------------ AHEAD PC (the predictor's read address)
-   // `npc` above is the TRUE next PC, and it is not known until the I$ data has been
-   // aligned. Measured at 166 MHz: iMMU translate -> I$ data -> aligner puts ft_npc 4.35 ns
-   // into a 6.245 ns budget, and hanging the predictor's array read off the end of that is
-   // what pins Fmax. `apc` is the same value predicted from state already registered at the
-   // top of the cycle, so the array read gets the WHOLE cycle -- the frontend stops caring
-   // how late the fetch cloud is. Every arm below is a flop output:
-   //   redirect_pc  M drives it through a register (ooo2_core's redirect_target_q)
-   //   pc_q, strad  this module's own state
-   //   apred_v      the predictor's steer with its `cti_ok` term removed
-   //   pred_tgt     the predictor's registered BTB entry / RAS
-   // and the one term that is NOT available -- the fall-through -- is predicted here.
-   //
-   // THE SELECT COUNTS AS MUCH AS THE ARM. `pred_v` and `pred_tgt` both used to carry
-   // the aligner's `br_term`, so this mux -- and with it a block-RAM address pin -- sat
-   // at the end of iMMU -> I$ -> aligner after all: 22 levels, 5.521 ns of 6.000, 70%
-   // route. ooo2_predictor now splits its tag cone from its CTI cone and exports the
-   // register-only half as `apred_v`. Using it here is safe by the very argument below:
-   // `apred_v` differs from `pred_v` only on a bundle whose entry says taken while the
-   // aligner says the bundle is not CTI-terminated, and the stamp-and-compare turns that
-   // into one LOST prediction, never a wrong one.
-   //
-   // WHY THIS IS SAFE, and why the 2026-08-23 attempt was not: the predictor stamps its
-   // registered entry with the address it ACTUALLY read (btb_qpc <= apc) and will not use
-   // it unless btb_qpc == base_pc. So a wrong `apc` costs one LOST prediction and can never
-   // produce a wrong one. The earlier attempt indexed from norm_npc but kept stamping with
-   // npc; entry and label then disagreed, a redirect could read a stale entry stamped with
-   // the redirect target, and the mispredict it caused re-read the same stale entry -- a
-   // loop that never resynchronised (it hung rv64mi-p-illegal). Label with what you read.
-   //
-   // `straddle_det` is deliberately absent: it implies the aligner produced nothing, so
-   // ~fire, so the consumer holds its entry -- which is exactly the right answer, because
-   // pc_q holds too.
-   //
-   // The bundle's fall-through is pc_q + 2*consumed, consumed being 1..2*IW halfwords, so
-   // `lenp` is an untagged direct-mapped table of (consumed - 1), trained on every fire from
-   // the aligner's own count. Untagged is fine for the same reason as above -- an alias
-   // costs a lost prediction, never a wrong one. At IW=1 this was one bit (2 or 4 bytes);
-   // at IW=2 (2026-09-05, two-wide fetch) it is two.
-   localparam LENB = 12, NLEN = 1 << LENB;   // 4096 (was 1024): aliasing test 2026-09-05
-   localparam CW = (IW > 1) ? $clog2(2*IW) : 1;      // holds consumed-1 for consumed in 1..2*IW
-   (* ram_style = "distributed" *)
-   reg  [CW-1:0] lenp [0:NLEN-1];
-   integer li;
-   initial for (li = 0; li < NLEN; li = li + 1) lenp[li] = {{(CW-1){1'b0}}, 1'b1};   // cold: 4 bytes
-   wire [LENB-1:0] lidx    = ipc_q[LENB:1];               // the instruction's, in both states
-   wire [CW-1:0]   len_g   = lenp[lidx];                              // consumed - 1
-   wire [63:0]     len_adv = {{(63-CW){1'b0}}, len_g, 1'b0} + 64'd2;  // 2*consumed bytes
-   assign apc = reset        ? RESET_PC
-              : redirect     ? redirect_pc
-              : irq_go       ? ipc_q
-              : strad        ? (pc_q + 64'd2)
-              : apred_v      ? pred_tgt
-              :                (pc_q + len_adv);
-
-   wire [PBW-1:0] al_cons_m1 = al_consumed - 1'b1;
-   always @(posedge clk) begin
-      // Train from the truth: a straddler is a 32-bit op by construction; the interrupt
-      // pseudo-op is not the instruction at pc_q at all, so it must not train.
-      if (fire & ~irq_go) lenp[lidx] <= strad ? {{(CW-1){1'b0}}, 1'b1} : al_cons_m1[CW-1:0];
-   end
 
    always @(posedge clk) begin
       if (reset) begin

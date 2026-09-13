@@ -12,7 +12,11 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  14301801  0.5   # The full two-wide stack under the T1 cuts (2026-09-07, wip/w5: items 10a-10e plus T1 steps 1-3, the payload read at pick
+60000000  8  14461521  0.5   # Stage 1 increment 1 (2026-09-13, wip/fe-stage1): the predictor reads its BTB and YAGS arrays combinationally at
+                              # base_pc instead of a cycle ahead at the register-predicted `apc`; `apc`, `npc` and the `lenp` length table are gone.
+                              # +1.12% on the boot -- every presented bundle now reads its OWN entry (no apc/lenp mismatch loses a prediction) with the current
+                              # GHR (yidx consistent with pd_fetch), recovering far more than the +0.13% the design estimated from apc-mismatch alone. Lockstep clean.
+                              # Was 14301801: The full two-wide stack under the T1 cuts (2026-09-07, wip/w5: items 10a-10e plus T1 steps 1-3, the payload read at pick
                               # registered) with the run-ahead buffer's page-crossing fix (rule D10): -1.44% on the boot against the 10d row (14511093),
                               # the cuts' extra register stages on a miss-bound boot; 14301029 before the fix, +772 with it. Below, that row's history.
                               # Was: The ALU's own issue port and a second ALU on a fourth PRF shard (2026-09-06, items 10d-i/10d-ii on the fixed two-wide dispatch,

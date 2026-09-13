@@ -707,8 +707,8 @@ module ooo2_core
    //   NF=5  +0.038   PASSES
    //
    // The NF=8 family has since been DIAGNOSED and REMOVED: it was not an increment at all
-   // but `cti_ok` leaking from the aligner into `apc`, the BTB read address, through
-   // ooo2_predictor's `hit`/`p_ret` (see that module's `predict`, and rule I6). NF is back
+   // but `cti_ok` leaking from the aligner into the BTB read address (`apc`, since removed)
+   // through ooo2_predictor's `hit`/`p_ret` (see that module's `predict`, and rule I6). NF is back
    // at 8 -- the standing policy -- to retest with that path gone.
    //
    // FOUR SIZES, FOUR DIFFERENT FAILING FAMILIES, and none of them the scheduler. The
