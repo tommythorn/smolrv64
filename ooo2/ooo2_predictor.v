@@ -279,7 +279,7 @@ module ooo2_predictor
    // WHAT IS *NOT* CARRIED, and why the payload got smaller as the BTB got 16x bigger:
    // bidx, btag and ytagf are pure functions of the branch's own PC, and the pipeline
    // already carries that PC (ooo2_core's d_pc -> m_pc). Carrying their results too was
-   // 28 redundant bits in every F/X queue entry and every payload slot, and it coupled
+   // 28 redundant bits in every decoupling queue entry and every payload slot, and it coupled
    // PDW to BTBB -- so growing the BTB used to widen the whole pipeline. Recomputing
    // them at resolve costs one slice and two XORs off a registered PC.
    //   yidx is the exception and stays: it folds the GHR AS IT WAS AT PREDICT TIME,

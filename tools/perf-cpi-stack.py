@@ -54,7 +54,7 @@ BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
 DSP_SUB = [("ST_IQ", "the scheduler is full"), ("ST_RN", "rename: a free list is empty"),
            ("ST_SQ", "store queue full"), ("ST_LQ", "load queue full"), ("ST_SRZ", "serializing op")]
 FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all"),
-           ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, F/X queue empty")]
+           ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, decoupling queue empty")]
 REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)"),
              ("RED_TRP", "trap / system op")]
 

@@ -84,6 +84,15 @@ this change obsoletes.
 3. **Rename the F/X queue → the decoupling queue** (`ooo2_frontend.v`): `dq_*`, relabel
    `FE_QUE` keeping its counter id/bit. Cosmetic; cosim retire count identical.
 
+   **LANDED (2026-09-13).** `fx_*` → `dq_*` and the cross-module port `fe_fx_valid` →
+   `fe_dq_valid` (ooo2_frontend.v + ooo2_core.v). Every "F/X" comment and diagnostic string
+   across the tree → "decoupling queue" (frontend, core, rv_soc_top incl. the FB_TRACE probe's
+   `core.fe.fx_valid` hierarchical ref, tb_ooo2_linux, src/fetch, src/csr_file, ooo2_predictor,
+   tools/perf-cpi-stack.py, tools/fe-pipe-model.py). `FE_QUE`/`HPMEV_FE_QUE` keep their token
+   and counter bit (0x0314 / hpm_ev[19]); only the description text changed, so board perf
+   tooling is unaffected. Regenerated the generated docs/smolrv64-perf-events.json. Retire-
+   identical as promised: lint clean, 240/0, 60M cosim 14,461,521 vs 14,461,521 = +0.00%.
+
 4. **Straddle: deferred to Stage 2.** The `strad`/`ipc_q` FSM handles a 32-bit op crossing the
    page/window end; the alignment latch + aligner carry that replace it belong with the VHPR I$
    (Stage 2). Stage 1 keeps `strad` unchanged. (The plan's "straddle FSM → aligner's carry" lands

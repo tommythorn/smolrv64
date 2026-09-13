@@ -7,7 +7,7 @@ backend that never stalls -- the frontend-only ceiling, per design variant, in s
     tools/fe-pipe-model.py <objdump -d output> <function>      # e.g. shabench.dis sha256_blocks
 
 Written 2026-09-05 (plan item 10e) when the second ALU left sha256's kernel at 1.171 IPC with
-the F/X queue empty 22.5% of its cycles. Two hypotheses, ranked here before any build: the
+the decoupling queue empty 22.5% of its cycles. Two hypotheses, ranked here before any build: the
 aligner's chunk-boundary cap on slot 1 (338 of 934 bundles are singles because of it), and
 the fetch buffer's single outstanding request (one 16-byte chunk per request, response two
 cycles later, the next request only after the response). The model says the second is the

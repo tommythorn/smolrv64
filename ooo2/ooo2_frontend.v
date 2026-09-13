@@ -19,7 +19,7 @@ module ooo2_frontend
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter PDW   = 18,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
-    // F/X queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
+    // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
     // what that costs: 0.666 CPI on hardware, 2.7x the entire LSU stall.
@@ -44,7 +44,7 @@ module ooo2_frontend
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire                    irq_inject,        // present the interrupt pseudo-op
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
-    output wire                    fe_fx_valid,       // fetch produced an instruction this cycle
+    output wire                    fe_dq_valid,       // fetch produced an instruction this cycle
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
     output wire [PCW-1:0]          imem_addr,         // VA to translate
@@ -66,7 +66,7 @@ module ooo2_frontend
     input  wire [PCW-1:0]          res_tgt,
     input  wire                    res_rep,
 
-    // ================= IR register: the F/X boundary =================
+    // ================= IR register: the decoupling-queue boundary =================
     output reg                     d_valid,
     output reg  [PCW-1:0]          d_pc,
     output reg  [31:0]             d_insn,      // RVC-expanded 32-bit form
@@ -153,13 +153,13 @@ module ooo2_frontend
    // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
    // falls through.
    localparam FW = 2;
-   wire               fx_valid, f_brt, bp_v;
-   wire [FW-1:0]      fx_sv;                      // per-slot valid
-   wire [FW*32-1:0]   fx_inst;
-   wire [FW*PCW-1:0]  fx_pc;
-   wire [FW*SEQW-1:0] fx_seq;
+   wire               dq_valid, f_brt, bp_v;
+   wire [FW-1:0]      dq_sv;                      // per-slot valid
+   wire [FW*32-1:0]   dq_inst;
+   wire [FW*PCW-1:0]  dq_pc;
+   wire [FW*SEQW-1:0] dq_seq;
    wire [PCW-1:0]     f_ftn, bp_tgt;
-   wire [1:0]         fx_pk;
+   wire [1:0]         dq_pk;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
@@ -175,14 +175,14 @@ module ooo2_frontend
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
       // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
       // predictor reads its arrays combinationally at base_pc (= imem_ipc).
-      .pred_npc(), .pnpc_kind(fx_pk), .ft_npc(f_ftn), .br_term(f_brt),
+      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_ok(imem_ok),
-      .ready(pb_ready), .valid(fx_valid),
-      .slot_valid(fx_sv), .inst(fx_inst), .pc(fx_pc), .seq(fx_seq), .cur_seq(cur_seq));
+      .ready(pb_ready), .valid(dq_valid),
+      .slot_valid(dq_sv), .inst(dq_inst), .pc(dq_pc), .seq(dq_seq), .cur_seq(cur_seq));
 
    // THE BUNDLE IS REGISTERED BEFORE THE QUEUE WRITE (plan item T1 (F), step 2, 2026-09-06).
-   // With the fetch buffer's compare out of the data path (step 1), the F/X queue's 826
+   // With the fetch buffer's compare out of the data path (step 1), the decoupling queue's 826
    // LUTRAM data pins were still the largest near-critical family (3,673 endpoints from
    // irq_inject_q, 20 levels, 4 ns of route): the aligner, the interrupt/straddle bundle
    // muxes and the slot-PC selects all end on those pins, spread across the chip. The
@@ -193,7 +193,7 @@ module ooo2_frontend
    // Cost: one cycle of fetch-to-decode latency, visible only when the queue is empty.
    reg            pb_v;
    wire           pb_ready = ~pb_v | q_room;             // empty, or draining into the queue now
-   wire fire = pb_ready & fx_valid;    // fetch handshake: a bundle enters the register
+   wire fire = pb_ready & dq_valid;    // fetch handshake: a bundle enters the register
 
    // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
    // `accept`, which is the queue POP. Those were the same edge until this module grew a
@@ -204,12 +204,12 @@ module ooo2_frontend
    wire   irq_pres;                    // fetch presents the pseudo-op (a straddle finishes first)
    assign irq_taken = irq_pres & fire;
 
-   // Sub-attribution for the frontend bubble (see ooo2_core's fe_aln/fe_que).  fx_valid is
+   // Sub-attribution for the frontend bubble (see ooo2_core's fe_aln/fe_que).  dq_valid is
    // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not
    // the iMMU and not an empty fetch window splits into two very different problems:
    // fetch had BYTES but could not make an instruction (aligner/straddle), versus fetch
    // made one and the queue simply had nothing to hand over (refill latency).
-   assign fe_fx_valid = fx_valid;
+   assign fe_dq_valid = dq_valid;
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;
@@ -222,7 +222,7 @@ module ooo2_frontend
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),
       .res_rep(res_rep));
 
-   // ------------------------------------------------------------- F/X queue
+   // ------------------------------------------------------------- decoupling queue
    // THE point of this module's shape. fetch's .ready() used to be `accept`, which is
    // m_advance, which is lsu_done -- so the fetch pointer could not move without knowing
    // whether M completed this cycle, and that put the whole memory pipeline in the
@@ -243,8 +243,8 @@ module ooo2_frontend
    // one mux. Same value on every bundle, including the straddle (+4 is its 32-bit
    // length) and the interrupt pseudo-op (which holds its PC).
    localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
-   wire           fx_fault = imem_fault & ~fx_valid;    // fetch-fault pseudo-op, pushed like a bundle
-   wire           pb_load  = pb_ready & (fx_valid | fx_fault);   // the register takes a bundle or the fault op
+   wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
+   wire           pb_load  = pb_ready & (dq_valid | dq_fault);   // the register takes a bundle or the fault op
    // TWO ENTRIES PER CYCLE INTO A LUTRAM: banked on entry parity, so each bank takes one write
    // per cycle (entry q_wp goes to bank q_wp[0], entry q_wp+1 to the other) and the head is a
    // 2:1 mux on q_rp[0]. `q_room` asks for two free entries, so a bundle never has to split.
@@ -260,19 +260,19 @@ module ooo2_frontend
    wire           q_two   = q_push & pb_two;              // the bundle has a second instruction
    wire           q_have2 = (q_cnt >= 2);
    // slot 0 falls through when slot 1 exists; the bundle's prediction rides with its last slot
-   wire [QW-1:0]  q_in0   = {pd_fetch, (fx_fault ? imem_ipc : fx_pc[0 +: PCW]), fx_inst[0 +: 32], fx_seq[0 +: SEQW],
-                             (fx_sv[1] ? 2'd0 : fx_pk), bp_tgt, fx_fault, imem_cause, imem_addr};
+   wire [QW-1:0]  q_in0   = {pd_fetch, (dq_fault ? imem_ipc : dq_pc[0 +: PCW]), dq_inst[0 +: 32], dq_seq[0 +: SEQW],
+                             (dq_sv[1] ? 2'd0 : dq_pk), bp_tgt, dq_fault, imem_cause, imem_addr};
    // slot 1's details carry its offset from the bundle base (slot 0's length in halfwords),
    // so the predictor trains the entry the prediction was looked up under (see res_base).
-   wire [1:0]     fx_off1 = (fx_inst[1:0] == 2'b11) ? 2'd2 : 2'd1;
-   wire [QW-1:0]  q_in1   = {fx_off1, pd_fetch[PDW-3:0], fx_pc[PCW +: PCW], fx_inst[32 +: 32], fx_seq[SEQW +: SEQW],
-                             fx_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
+   wire [1:0]     dq_off1 = (dq_inst[1:0] == 2'b11) ? 2'd2 : 2'd1;
+   wire [QW-1:0]  q_in1   = {dq_off1, pd_fetch[PDW-3:0], dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
+                             dq_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
    wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
    always @(posedge clk) begin
       if (reset | redirect)  pb_v <= 1'b0;
       else if (pb_load)       pb_v <= 1'b1;
       else if (q_push)       pb_v <= 1'b0;
-      if (pb_load) begin pb_in0 <= q_in0; pb_in1 <= q_in1; pb_two <= fx_sv[1] & fx_valid; end
+      if (pb_load) begin pb_in0 <= q_in0; pb_in1 <= q_in1; pb_two <= dq_sv[1] & dq_valid; end
    end
    // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
@@ -310,8 +310,8 @@ module ooo2_frontend
 
    // A second slot without a first, or a fault pseudo-op beside a real slot, is a fetch defect.
    always @(posedge clk)
-      if (!reset && ((fx_sv[1] & ~fx_sv[0]) || (fx_fault & fx_valid)))
-         $fatal(1, "ooo2_frontend: malformed bundle sv=%b fault=%b", fx_sv, fx_fault);
+      if (!reset && ((dq_sv[1] & ~dq_sv[0]) || (dq_fault & dq_valid)))
+         $fatal(1, "ooo2_frontend: malformed bundle sv=%b fault=%b", dq_sv, dq_fault);
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;
@@ -395,7 +395,7 @@ module ooo2_frontend
    // interrupt is taken before the instruction that would have faulted).
    wire ld_valid = ~q_empty;      // the head is a real bundle (fault pseudo-op included)
 
-   // ------------------------------------------------------- IR registers (F/X), two slots
+   // ------------------------------------------------------- IR registers (decoupling queue), two slots
    // Slot A is the instruction dispatch sees first, slot B the one behind it. A frees when
    // empty or consumed; if B then holds an unconsumed op it SHIFTS into A and B refills from
    // the queue, else A refills from the first head and B from the second. With two_wide low

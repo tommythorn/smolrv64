@@ -204,7 +204,7 @@ module csr_file
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
                       HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
                       HPMEV_FE_ALN = 16'h0313,   // ...had bytes but no complete instruction
-                      HPMEV_FE_QUE = 16'h0314,   // ...had an instruction; F/X queue empty
+                      HPMEV_FE_QUE = 16'h0314,   // ...had an instruction; decoupling queue empty
                       HPMEV_RED_BR = 16'h0006,   // Redirect: conditional branch mispredict
                       HPMEV_RED_JLR= 16'h0007,   // Redirect: indirect jump (jalr) target
                       HPMEV_RED_TRP= 16'h0008,   // Redirect: trap / exception / system op

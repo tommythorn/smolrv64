@@ -263,7 +263,7 @@ module tb;
           & (dut.core.imem_avail_g == 0))    n_nov_ic  <= n_nov_ic  + 1;
       // THE distinction that decides whether the empty-X bucket is recoverable. The IR can
       // only be loaded on `accept` (= m_advance), so a stalled M freezes it even when the
-      // F/X queue behind it is holding instructions. Those cycles ARE recoverable by the
+      // decoupling queue behind it is holding instructions. Those cycles ARE recoverable by the
       // scoreboard -- one cycle later, as the IR refills. Only ~q_empty is genuinely dry.
       if (sb_novalid & ~dut.core.fe.q_empty) n_nov_qrdy <= n_nov_qrdy + 1;
       if (dut.core.st_mul) n_stmul <= n_stmul + 1;
@@ -346,7 +346,7 @@ module tb;
                n_bser, (n_bser*100)/n_stmem);
       $display("SB-SIZING   X EMPTY        %9d  %0d%% of st_mem   (iMMU %0d, I$ empty %0d, other %0d)",
                n_nov, (n_nov*100)/n_stmem, n_nov_mmu, n_nov_ic, n_nov-n_nov_mmu-n_nov_ic);
-      $display("SB-SIZING     ...of which F/X QUEUE HAS WORK %0d  (%0d%% of X-empty) -- recoverable, IR just cannot reload while M stalls",
+      $display("SB-SIZING     ...of which DECOUPLING QUEUE HAS WORK %0d  (%0d%% of X-empty) -- recoverable, IR just cannot reload while M stalls",
                n_nov_qrdy, (n_nov_qrdy*100)/n_nov);
       $display("SB-SIZING   per-unit stall: mul=%0d div=%0d fpu=%0d  (vs LSU %0d)",
                n_stmul, n_stdiv, n_stfpu, n_stmem);

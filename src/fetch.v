@@ -67,7 +67,7 @@ module fetch
     // pred_npc WITHOUT THE SUM: which of {pc + length, pred_tgt, pc} pred_npc is. A consumer
     // that already knows the instruction's length (decode does) rebuilds pred_npc from this
     // and pred_tgt and leaves the +2*consumed adder -- eight CARRY8 at the END of the fetch
-    // cloud -- out of whatever it stores. ooo2_frontend's F/X queue is that consumer: its
+    // cloud -- out of whatever it stores. ooo2_frontend's decoupling queue is that consumer: its
     // write data was the design's second-worst family on 2026-09-03 (342 endpoints, 25
     // levels, 13 CARRY8, iMMU -> fetch buffer -> aligner -> this adder -> LUTRAM data pin).
     //   0 = fall-through: pc + the presented instruction's length (also the straddle's +4)
@@ -157,7 +157,7 @@ module fetch
       .br_term(al_br_term));
    // THE FALL-THROUGH AND THE SLOT PCs ARE MUXES, NOT ADDERS (2026-09-05). Gate U, the first
    // build of the two-wide fetch, failed at -0.620 ns on pc_q -> iMMU -> fetch buffer ->
-   // aligner -> +2*consumed -> the RAS write and the F/X queue's slot-1 PC: 23 levels with
+   // aligner -> +2*consumed -> the RAS write and the decoupling queue's slot-1 PC: 23 levels with
    // ten CARRY8, three quarters of it route. pc_q is a register, so pc_q + 2i for i = 0..2*IW
    // is ready a nanosecond into the cycle; the aligner's count and offsets then SELECT one.
    // al_pc (the aligner's own sum) is kept for the benches and is unused here.

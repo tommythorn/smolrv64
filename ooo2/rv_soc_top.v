@@ -456,7 +456,7 @@ module rv_soc_top #(
    // Same collapse as dmem_wready, on the READ side. This SELECT was the worst path at 6 ns
    // after the write side was fixed:
    //   u_lsu/mem_raddr -> is_uart_r (CARRY8 x3) -> is_dev_r -> raw_rvalid
-   //                   -> lsu_done -> redirect -> the F/X queue -> fe/u_bp/ycorr_q
+   //                   -> lsu_done -> redirect -> the decoupling queue -> fe/u_bp/ycorr_q
    // and the select carries no information -- each term is gated by its own device class at
    // its source, so at most one is ever asserted:
    //   dev_rvalid  <= dmem_ren & is_dev_r & ~is_virtio_r
@@ -731,7 +731,7 @@ module rv_soc_top #(
    // pair is two chunk-aligned chunks, so while the PC is inside it, "which chunk" is one bit:
    // PC[CHA] differs from the chunk0 tag's bit CHA exactly when the PC is in chunk1. fb_roff
    // therefore needs no 64-bit compare -- imem_addr and fb_va are registers -- and the served
-   // window below (the F/X queue's 4,112-path data cone in W4's census, 25 levels, 70% route)
+   // window below (the decoupling queue's 4,112-path data cone in W4's census, 25 levels, 70% route)
    // is a shift of registers by register bits followed by the aligner. Whether the bytes are
    // the PC's at all is fb_hit, which leaves as imem_ok and gates only the handshake.
    wire             fb_sel1 = imem_addr[CHA] ^ fb_va[CHA];
@@ -1077,8 +1077,8 @@ module rv_soc_top #(
    // Fetch-buffer trace, one line per cycle inside the tb's +trace_from/+trace_to window
    // (rule G6: an `ifdef` trace reads the two plusargs itself). Post-process for the cycles
    // from a slide (in1: the PC entered chunk1, chunk2 is requested) to the next arrival
-   // (val), and for the cycles the aligner emitted nothing (fx=0) while the PC's chunk was
-   // present. Built to name sha256's 8% F/X-queue-empty on 2026-09-05.
+   // (val), and for the cycles the aligner emitted nothing (dq=0) while the PC's chunk was
+   // present. Built to name sha256's 8% decoupling-queue-empty on 2026-09-05.
    reg [63:0] fbt_cyc = 64'd0, fbt_from = 64'd0, fbt_to = 64'hFFFF_FFFF_FFFF_FFFF;
    initial begin
       if (!$value$plusargs("trace_from=%d", fbt_from)) fbt_from = 64'd0;
@@ -1087,9 +1087,9 @@ module rv_soc_top #(
    always @(posedge clk) begin
       fbt_cyc <= fbt_cyc + 64'd1;
       if (!reset && fbt_cyc >= fbt_from && fbt_cyc < fbt_to)
-         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b v2=%b rq=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d fx=%b q=%0d d=%b | va=%h pa=%h al=%h tagv=%b xok=%b ctx=%b inv=%b sent=%b pois=%b rq0=%h/%h rq1=%h/%h want=%h/%b tag=%0d rsp=%h/%0d",
+         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b v2=%b rq=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d dq=%b q=%0d d=%b | va=%h pa=%h al=%h tagv=%b xok=%b ctx=%b inv=%b sent=%b pois=%b rq0=%h/%h rq1=%h/%h want=%h/%b tag=%0d rsp=%h/%0d",
                   fbt_cyc, imem_va, fb_in1, fb_v0, fb_v1, fb_v2, rq_v, fb_hit, fb_arr, ic_rd_req, ic_rd_ack, ic_rd_valid,
-                  imem_avail, core.fe.fx_valid, core.fe.q_cnt, core.fe.d_valid,
+                  imem_avail, core.fe.dq_valid, core.fe.q_cnt, core.fe.d_valid,
                   fb_va, fb_pa, fb_al, fb_tagv, imem_xlate_ok, imem_ctx_chg, ic_inv_req, rq_sent, rq_pois,
                   rq_va0, rq_pa0, rq_va1, rq_pa1, fb_want, fb_wantv, ic_tag, ic_rd_resp_addr, ic_rsp_tag);
    end

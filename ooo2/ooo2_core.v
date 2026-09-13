@@ -123,7 +123,7 @@ module ooo2_core
    wire                     accept;
    wire                     m_done, m_advance;   // M completed / M can take a new op
    wire                     irq_inject;
-   wire                     fe_fx_valid;   // fetch assembled an instruction (bubble sub-attribution)
+   wire                     fe_dq_valid;   // fetch assembled an instruction (bubble sub-attribution)
    wire [PCW-1:0]           imem_va;
    wire [55:0]              immu_pa;
    wire                     immu_ready, immu_fault;
@@ -142,7 +142,7 @@ module ooo2_core
    // Costs one fetch bubble per satp write / sfence.vma / privilege change.
    // THE CONTEXT CHANGE GATES THE WINDOW A CYCLE LATE (2026-09-05, gate V4 at 0.000 ns). Live,
    // imem_ctx_chg is M's completion -- the CSR op's satp/sfence write, the trap's privilege
-   // change -- and through this gate it ran on into the aligner and the F/X queue's data
+   // change -- and through this gate it ran on into the aligner and the decoupling queue's data
    // pins: M's address register to the queue in one cycle, 20 levels. Every context change
    // arrives with the redirect that ends the serializing op or takes the trap, so the bytes
    // consumed in that cycle are wrong-path and the flush takes them; the fetch buffer drops
@@ -294,7 +294,7 @@ module ooo2_core
       .consume_b(rn_valid_b), .two_wide(1'b1),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
-      .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_fx_valid(fe_fx_valid),
+      .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_ok(imem_ok_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
@@ -623,7 +623,7 @@ module ooo2_core
    // bypass. If the bits ever claim "not ready" for a source this machine went ahead and
    // read, they are wrong -- and they would be wrong in the direction that silently
    // corrupts a scheduler built on them.
-   // Keyed on rn_valid, NOT on `accept`. `accept` is the F/X QUEUE POP; in a redirect
+   // Keyed on rn_valid, NOT on `accept`. `accept` is the decoupling-queue POP; in a redirect
    // cycle it is high while d_take is low, so the instruction is discarded rather than
    // consumed and its sources are never read. rn_valid = m_advance & d_take is the
    // cycle the operands actually move into M.
@@ -1948,12 +1948,12 @@ module ooo2_core
    // in there and they call for opposite fixes:
    //   fe_aln  fetch had BYTES but could not assemble an instruction (partial window /
    //           straddle).  Fix = wider or better-aligned fetch.
-   //   fe_que  fetch DID assemble one; the F/X queue still had nothing for decode
+   //   fe_que  fetch DID assemble one; the decoupling queue still had nothing for decode
    //           (refill latency after a drain).  Fix = deeper queue / earlier restart.
    // That it grows with instruction size points at fe_aln, but pointing is not measuring.
    wire fe_rest   = fe_bub &  immu_ready & (imem_avail_g != {$clog2(HW+2){1'b0}});
-   wire fe_aln    = fe_rest & ~fe_fx_valid;
-   wire fe_que    = fe_rest &  fe_fx_valid;
+   wire fe_aln    = fe_rest & ~fe_dq_valid;
+   wire fe_que    = fe_rest &  fe_dq_valid;
 
    // REDIR was one counter for every reason the pipe restarts, so a 3.4-per-1000 redirect
    // rate could not be attributed to conditional branches, indirect jumps, or traps -- and
@@ -2156,7 +2156,7 @@ module ooo2_core
    // EVERY TRAP CONSUMER TAKES THE LATCHED VIEW, AND ONLY THE LATCHED VIEW. A data-side fault
    // is decided by the dTLB compare in the cycle the LSU reports it; taking the trap in that
    // same cycle put m_addr -> TLB -> lsu_fault -> xtrap_v -> redirect -> the fetch adder ->
-   // the F/X queue's write data in one 26-level path. Now the cycle that reports the fault
+   // the decoupling queue's write data in one 26-level path. Now the cycle that reports the fault
    // only LATCHES it (m_flt_pulse holds m_done low for that one cycle); the trap, the
    // redirect and the head gate all read the copy next cycle. One cycle per data fault, and
    // faults are the rarest thing M does. fault_tval needs no latch: it is req_vaddr, which
@@ -2215,7 +2215,7 @@ module ooo2_core
    // On a mispredict, do NOT wait to become ROB head before refetching. Note the event,
    // flush the frontend, freeze the renamer, and start fetching the resolved target now;
    // the ROB drains behind us. When the branch reaches the head the squash runs and the
-   // renamer is released -- onto a correct path that is already in the F/X queue.
+   // renamer is released -- onto a correct path that is already in the decoupling queue.
    //
    // Only a MISPREDICT can do this: its target (m_target) is resolved in execute. A trap's
    // target comes out of csr_file only once the op is at head, so traps keep the late path.
@@ -2223,7 +2223,7 @@ module ooo2_core
    // The renamer MUST freeze for the whole window. Rollback here is `h := hc` with no
    // snapshot (ooo2_rename), so anything renamed before the squash is undone by it --
    // renaming ahead would not merely waste work, it would lose the instructions. Frozen,
-   // the correct path accumulates in the F/X queue, which the squash does not touch.
+   // the correct path accumulates in the decoupling queue, which the squash does not touch.
    //
    // fr_v is the "frozen by an older redirect" interlock: a younger mispredict that
    // executes while one is pending is wrong-path by construction and must not retarget
@@ -2566,7 +2566,7 @@ module ooo2_core
    // level, so the injection simply happens a cycle later.
    //
    // THE INTERLOCK IS KEYED TO `irq_taken`, NOT `accept`. 49eecf48 gave this module's
-   // frontend an F/X queue and changed fetch's ready from `accept` to `~q_full`, so the
+   // frontend an decoupling queue and changed fetch's ready from `accept` to `~q_full`, so the
    // pseudo-op is consumed on the queue PUSH while inject_inflight was still armed by the
    // queue POP. Whenever the backend stalled -- accept low, queue not full -- fetch
    // re-emitted the SAME interrupt every cycle, because the only thing that would have
