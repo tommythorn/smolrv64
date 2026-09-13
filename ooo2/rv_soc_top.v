@@ -4,8 +4,8 @@
 `endif
 `define PROBE_CLK_HZ ((1_000_000_000 / `PROBE_CLK_DIV8) * 8)
 
-// No width knobs: the core is scalar, so the I$ window is fixed at HW=2 halfwords
-// (one 32-bit instruction) and there is no per-shard writeback bus to size.
+// The I$ fetch window is OOO2_HW halfwords (shipping HW=8 = 16 bytes, the even/odd chunk
+// pair) and there is no per-shard writeback bus to size.
 //
 // Build-id block (0x1000_F000). Guarded so the FPGA build's
 // -verilog_define git-commit/stamp/dirty reach it (build.tcl); sim/cosim default to 0.

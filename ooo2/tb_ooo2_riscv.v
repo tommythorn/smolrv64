@@ -9,8 +9,16 @@
 //   +tohost=<hex>  tohost address (default 0x80001000)
 //   +cycles=<n>    timeout (default 200000)
 //   +trace=1       per-retire disassembly-free trace (pc/insn/rd)
+`ifndef OOO2_HW
+ `define OOO2_HW 8
+`endif
 module tb;
-   localparam PCW = 64, SEQW = 8, HW = 2;
+   // HW defaults to the SHIPPING window (8 = 16 bytes), so the Verilator/iverilog riscv-tests
+   // exercise the width the board runs -- until 2026-09-13 this tb hardcoded HW=2 (a full 32-bit
+   // window every cycle, no partial window, no two-wide aligner path), the biggest coverage hole
+   // for a width-parameterizable front end. Override with VDEFS=-DOOO2_HW=2 for the old point.
+   localparam PCW = 64, SEQW = 8, HW = `OOO2_HW;
+   localparam AVW = $clog2(HW+2);
    localparam [63:0] BASE = 64'h8000_0000;
    // 4 MiB. 2 MiB is NOT enough: rv64ssvnapot-p-napot stores to PA 0x80208010 and
    // reads it back physically. The OoO probe's TB gets away with 2 MiB only because
@@ -23,7 +31,7 @@ module tb;
 
    wire [PCW-1:0]   imem_addr;
    reg  [HW*16-1:0] imem_data;
-   wire [1:0]       imem_avail = HW[1:0];      // window always full from this TB memory
+   wire [AVW-1:0]   imem_avail = HW[AVW-1:0];   // window always full from this TB memory
    wire             imem_xlate_ok;             // the core's iMMU verdict on imem_addr's VA
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
