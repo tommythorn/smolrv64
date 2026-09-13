@@ -73,15 +73,15 @@ with no translation on the hit path (that is Stage 2's point).
   16-byte-aligned request, so its pair is `{2n, 2n+1}` at one row.
 - **Spanning.** A 16-byte pair boundary and a 64-byte line boundary are ordinary: consecutive
   pairs are consecutive I$ reads, and the latch windows across them. The **translation** boundary
-  is the only truncating case (a pair never spans even 4 KiB). Cap at the *enclosing leaf's*
-  boundary, not a hardcoded 4096: store the walk's **leaf level** (2 bits: 4 K / 2 M / 1 G) in
-  each VHPR I$ line, and cap on `off[11:·]` / `off[20:·]` / `off[29:·]` accordingly. On Linux's
+  is the only truncating case (a pair never spans even 4 KiB). Cap at the *enclosing page's*
+  boundary, not a hardcoded 4096: store **one bit** per VHPR I$ line — `4 K` or `2 M`, the only
+  two sizes Linux maps code with — and cap on `off[11:·]` or `off[20:·]`. On Linux's
   2 MiB-mapped code a parcel then spans 4 KiB boundaries freely and only cuts at 2 MiB — ~0.4% of
   fetch cycles back on such code, and a 4 KiB-crossing instruction is fetched whole instead of
   split, so the cross-page straddle path (where the ld.so bug lived) runs 512× less often. The
-  straddler restarts as slot 0 of the next leaf's parcel, which does that leaf's virtual-tag
+  straddler restarts as slot 0 of the next page's parcel, which does that page's virtual-tag
   lookup and takes any fault precisely. An `sfence.vma` that re/demotes a page bumps the epoch,
-  dropping the line and its stale level bit — no new invalidation logic.
+  dropping the line and its stale size bit — no new invalidation logic.
 - **The cut-off residual is two different things, distinguished by the PC update.** A
   **predicted-taken** cut at halfword k discards slots after k (wrong path, cost nothing — the
   pair was read anyway) and sets the PC to the **target**. A **window-end / page-end** cut keeps
@@ -180,8 +180,8 @@ invariant: at most one valid line per physical line). The PC stays **virtual**, 
 targets need no translation. This **deletes the fetch buffer** and everything it drags in:
 `fb_pois`, the two STALE-mapping `$fatal`s, the FBDIAG block, the self-reset path, the
 `imem_ctx_chg`/`imem_xlate_ok`/`imem_vaddr` ports — replaced by one epoch bump. Store the walk's
-**leaf level** (2 bits) per line so the fetch cap is at the 4 K / 2 M / 1 G boundary the mapping
-actually has, not a hardcoded 4096 (fetch geometry, above). Its retention tag
+**page size** (one bit, 4 K or 2 M — the only sizes Linux maps code with) per line so the fetch
+cap is at the mapping's real boundary, not a hardcoded 4096 (fetch geometry, above). Its retention tag
 earns nothing (`FB_RHIT/FB_HIT = 0.3%`), and its forward-only slide is what makes a predicted
 loop back-edge refetch the I$ every iteration (brbench, 2026-09-10). **I$ only** (no dirty lines;
 the D$ is the hard half, left alone — IPC item 9). Keep and assert: the `fence.i` FSM, the
@@ -236,7 +236,7 @@ regression: straddle at a page boundary, a not-taken branch mid-parcel, `fence.i
 
 §2/§2.2 (the FP/FA/FD pipeline and the decoupling queue, renamed, drawn before rename), §3.4
 (redirect path, Stage 2), §4.1/§4.2 (ahead-PC/`pnpc_kind`/`lenp` gone; parcel prediction with the
-halfword offset), §5/§5.1 (the livemap-banked map), §8.1/§9.1 (I$ PIPT → VHPR; the per-line leaf-level cap), §9.2 (`NREQ=2`),
+halfword offset), §5/§5.1 (the livemap-banked map), §8.1/§9.1 (I$ PIPT → VHPR; the per-line 4K/2M cap bit), §9.2 (`NREQ=2`),
 §10.1 (`q_dat` 255; the `mem_ld` two-writer arbiter), §10.2/§10.3, §11 (`RD_WAIT`, and the
 `FE_QUE` relabel), §14 (the `IW=1` limit), §15 (P5 re-scoped; P2/P7 re-scoped by Stage 3).
 Replace the missing fetch-buffer section with the VHPR I$ section from `docs/VHPR.md`.
