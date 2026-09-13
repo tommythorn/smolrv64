@@ -89,11 +89,14 @@ with no translation on the hit path (that is Stage 2's point).
   becomes slot 0 of next cycle's parcel, served from the latch (window end) or the next page's
   read (page end).
 
-**Register boundaries are the spike's to set, not this document's.** FP→FA is fixed by the VHPR
-I$'s one-cycle read. Whether **FA and FD are one step or two**, and whether **RVC-expand and
-decode share a step**, is exactly what the timing spike measures — the logical work is fixed, the
-pipelining is not. My expectation: RVC-expand (a ROM lookup) and decode fit one combinational
-step, and FA/FD is the boundary most likely to need splitting.
+**Stage boundaries.** FP→FA is fixed by the VHPR I$'s one-cycle read. **FA and FD are two
+separate stages by default** — that is how the spec has them (implicitly). Merge them into one
+align+decode stage **iff it closes timing at IW=3**, and try, because the merge is an IPC win as
+well as one fewer register: a shorter front end takes a cycle off every mispredict refill (fewer
+fetch stages ahead of the resolving branch). The clock floor decides — it stays two stages
+unless the spike shows one holds 166.667 at IW=3. RVC-expand (a ROM lookup) sits inside FD with
+decode; that the two share one combinational step within FD is the expectation, and is a
+separate question from the FA/FD merge.
 
 ## Branch prediction at `IW > 1`
 
