@@ -98,6 +98,24 @@ unless the spike shows one holds 166.667 at IW=3. RVC-expand (a ROM lookup) sits
 decode; that the two share one combinational step within FD is the expectation, and is a
 separate question from the FA/FD merge.
 
+**Spike result (2026-09-13, `wip/fe-spike` `ooo2_fadd_spike.v` — the real aligner at IW feeding
+IW `decode_slot`s plus the intra-bundle dependency compare, OOC at 6 ns, both directives):**
+
+| IW | place Explore | place AltSpreadLogic_medium | logic levels |
+|---|---:|---:|---:|
+| 3 | WNS +1.253 (211 MHz) | +1.167 (207 MHz) | 13 |
+| 2 | +2.434 (280 MHz) | +2.061 (254 MHz) | 8 |
+
+The merged cone (window register → aligner → decode → dep compare → boundary register) closes
+OOC at both widths, but IW=2→3 adds **five logic levels** (the aligner's length-scan across the
+third slot, plus a third decode and its dependency comparators) and drops the merged margin to
+**~+1.2 ns at 73% route** — too little to survive full-design congestion (rule I7). So: **keep
+FA and FD split at IW=3** (the default holds — each half is a sub-cone of a path that is already
+positive merged). Merging is comfortable only at IW=2 (+2 ns, 8 levels), but merging there and
+splitting at IW=3 re-pipelines the front end across the width step, so it is not worth the
+mispredict-cycle it saves. **Conclusion: FA and FD are separate stages at the IW=3 target;
+do not merge.**
+
 ## Branch prediction: structures, timing, and the late redirect
 
 Three structures, unchanged in function from today: a **BTB** (target + type), a **YAGS**
