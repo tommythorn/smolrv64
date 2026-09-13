@@ -49,10 +49,35 @@ with no translation on the hit path (that is Stage 2's point).
 | step | name | work |
 |---|---|---|
 | **FP** | fetch / predict | the PC register (which *is* the fetch-target register) addresses the VHPR I$ (virtual tag) **and** the branch predictor in parallel; the predictor computes the next PC and latches it into the PC register for next cycle |
-| **FA** | align | the I$ returns the parcel bytes (1-cycle synchronous BRAM read); the aligner carves up to `IW` instructions and cuts the parcel at the predicted-taken branch (below) |
+| **FA** | align | the I$ returns a 16-byte chunk pair (1-cycle synchronous BRAM read); the aligner windows it against the held pair (fetch geometry, below) and carves up to `IW` instructions, cutting at the predicted-taken halfword or, failing that, at the window/page end |
 | **FD** | decode | RVC-expand each slot, decode (control blob + operands), and **resolve intra-bundle dependencies**: mark each source that reads an earlier slot's destination with that slot's index |
 | — | **decoupling queue** | a small FIFO (depth 8) of decoded bundles; lets FP–FD run ahead of the backend so a fetch bubble or a backend stall does not serialise the two. This is today's opaquely-named "F/X queue" — rename the RTL to `dq_*` and relabel `FE_QUE`, keeping the counter's id/bit (the perf JSON is keyed to it) |
 | **R** | rename / dispatch | 2·`IW` map reads, `IW` map writes (see the map below), allocate ROB + scheduler entries, dispatch |
+
+### Fetch geometry (FP/FA)
+
+- **Read per cycle: one 16-byte-aligned chunk pair** (`RDW = HW*16 = 128`, two 8-byte banks).
+  Not wider — a wider read needs more banks and the wide-BRAM geometry that "fetched garbage on
+  real BRAM" (spec §9.1). 16 bytes sustains `IW`=3 (a parcel is ≤ 12 bytes) on ~3-byte average
+  instructions.
+- **Alignment latch, not the run-ahead buffer.** Hold the last chunk pair in a 16-byte register
+  with a 1-bit valid, and window the aligner across `[latch : this cycle's read]` — up to 32
+  bytes, so any `IW`≤3 parcel from any 2-byte offset completes in one cycle without re-reading.
+  Because the I$ is virtual-hit, the latch protects no translation: it carries no VA-tag, no
+  in-flight-fill poison, no third chunk, no self-reset — just "is the PC still in this pair" (an
+  address compare) and a valid cleared on redirect and on an epoch bump. This is what "delete the
+  fetch buffer" leaves behind: a depth-1 register, ~5 lines, replacing ~350.
+- **Spanning.** A 16-byte pair boundary and a 64-byte line boundary are ordinary: consecutive
+  pairs are consecutive I$ reads (possibly different ways), and the latch windows across them. A
+  4 KiB **page** boundary is the only truncating case — a pair never spans a page (16 | 4096) —
+  so keep the page cap `eff_avail = min(imem_avail, hw_cap)`; the straddler restarts as slot 0 of
+  the next page's parcel, which does that page's virtual-tag lookup and takes any fault precisely.
+- **The cut-off residual is two different things, distinguished by the PC update.** A
+  **predicted-taken** cut at halfword k discards slots after k (wrong path, cost nothing — the
+  pair was read anyway) and sets the PC to the **target**. A **window-end / page-end** cut keeps
+  the residual (sequential path): the PC advances to the **first uncovered halfword**, which
+  becomes slot 0 of next cycle's parcel, served from the latch (window end) or the next page's
+  read (page end).
 
 **Register boundaries are the spike's to set, not this document's.** FP→FA is fixed by the VHPR
 I$'s one-cycle read. Whether **FA and FD are one step or two**, and whether **RVC-expand and
