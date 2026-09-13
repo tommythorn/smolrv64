@@ -48,8 +48,8 @@ with no translation on the hit path (that is Stage 2's point).
 
 | step | name | work |
 |---|---|---|
-| **FP** | fetch / predict | the PC register (which *is* the fetch-target register) addresses the VHPR I$ (virtual tag) **and** the branch predictor in parallel; the predictor computes the next PC and latches it into the PC register for next cycle |
-| **FA** | align | the I$ returns a 16-byte chunk pair (1-cycle synchronous BRAM read); the aligner windows it against the held pair (fetch geometry, below) and carves up to `IW` instructions, cutting at the predicted-taken halfword or, failing that, at the window/page end |
+| **FP** | fetch / predict | the PC register addresses the VHPR I$ **and** the BTB/YAGS BRAMs in parallel; a small single-cycle next-PC predictor produces the next fetch PC and latches it — so fetch never stalls. The full BTB/YAGS/RAS *resolve* one cycle later, in FA (branch prediction, below) |
+| **FA** | align | the I$ returns a 16-byte chunk pair (1-cycle synchronous BRAM read); the aligner windows it against the held pair (fetch geometry, below) and carves up to `IW` instructions, cutting at the predicted-taken halfword or else the page end. The full predictor resolves here and may **override** the fast next-PC (a 1–2-cycle bubble, only on disagreement) |
 | **FD** | decode | RVC-expand each slot, decode (control blob + operands), and **resolve intra-bundle dependencies**: mark each source that reads an earlier slot's destination with that slot's index |
 | — | **decoupling queue** | a small FIFO (depth 8) of decoded bundles; lets FP–FD run ahead of the backend so a fetch bubble or a backend stall does not serialise the two. This is today's opaquely-named "F/X queue" — rename the RTL to `dq_*` and relabel `FE_QUE`, keeping the counter's id/bit (the perf JSON is keyed to it) |
 | **R** | rename / dispatch | 2·`IW` map reads, `IW` map writes (see the map below), allocate ROB + scheduler entries, dispatch |
@@ -98,11 +98,71 @@ unless the spike shows one holds 166.667 at IW=3. RVC-expand (a ROM lookup) sits
 decode; that the two share one combinational step within FD is the expectation, and is a
 separate question from the FA/FD merge.
 
-## Branch prediction at `IW > 1`
+## Branch prediction: structures, timing, and the late redirect
 
-**One prediction per fetch parcel, keyed by the parcel's base PC** — one BTB + direction lookup
-per cycle, which scales, unlike `IW` independent per-slot predictors. The entry yields
-`{taken?, the taken branch's halfword offset within the parcel, its target}`.
+Three structures, unchanged in function from today: a **BTB** (target + type), a **YAGS**
+direction corrector (history-indexed, tag-checked), and an 8-entry **RAS** for returns. The hard
+part, and the one the `apc` hack exists to dodge, is **latency: none of this resolves in the
+cycle it is read.**
+
+### The latency reality
+
+A useful-capacity BTB and YAGS are BRAM (1024 entries each today):
+- **read** at FP (cycle T), addressed by the PC register — synchronous BRAM, data at **T+1**;
+- **resolve** at T+1 — the combinational cone: tag-compare against the fetched PC, YAGS override,
+  RAS select, target form. **Rule I6 exists because this cone was the critical path**; it cannot
+  also compute the address that reads the arrays.
+
+So the accurate prediction for the block fetched at T lands at T+1 — one cycle after fetch had
+to choose where to go. Feeding the full predictor's output straight back to the PC register
+bubbles **one cycle on every predicted-taken branch**: a taken branch every ~3 fetch cycles on
+branchy code, ~30% of fetch cycles gone. That is unacceptable, and it is exactly why `apc`
+guesses the next array-read address a cycle early. We delete `apc`; something conventional must
+take its place.
+
+### The conventional replacement: a single-cycle next-PC predictor, overridden by the full one
+
+- In **FP**, alongside the BRAM reads, a small **single-cycle next-fetch-PC predictor** (a
+  direct-mapped LUTRAM, low-PC-indexed, holding the last-observed next-block PC; sequential on a
+  miss) produces the next fetch PC combinationally and latches it into the PC register. **Fetch
+  never stalls** — it always has a next PC.
+- In **FA**, the full BTB/YAGS/RAS resolve (read at FP) completes: the accurate next-block PC and
+  the exact taken-halfword cut. If it disagrees with the fast guess, it raises an **override
+  redirect** — squash the younger in-flight fetch(es), set the PC register to the correct target.
+- **The override bubble is one cycle** if the resolve fits in FA, **two** if it spills a stage
+  (the spike measures which). It is paid **only when the fast predictor disagreed with the full
+  one**, which training drives toward rare (the fast table is written from the full predictor's
+  outcomes) — *not* on every taken branch.
+- The **exec-side mispredict** is separate and unchanged: a branch resolving in M against the
+  *full* prediction that is genuinely wrong is the full front-end refill (brbench's 12-cycle
+  path) and retrains both predictors.
+
+Three redirect classes, cheapest first: the fast→full **override** (1–2 cycles, cheap) and the
+**exec mispredict** (full refill, expensive). The fast predictor's whole job is to turn a
+per-taken-branch bubble into a rare override. This is the conventional *decomposition* of what
+`apc` did as one tangled `apred_v`/`pnpc_kind` cone — a separate fast table plus an explicit
+override port, not an entangled ahead/real split.
+
+### The fork the spike settles
+
+- **(A) One small single-cycle predictor, no override.** Keep the BTB+direction small enough
+  (LUTRAM, ~128–256 entries) that read+resolve fits one cycle at 166.667. Simplest and most
+  conventional — no fast/slow split, no override port. Cost: less capacity, so more exec
+  mispredicts on branchy code (trace study: 256→1024 BTB moved html5 taken-miss 3.6%→1.8%; Clang
+  is 41% cold regardless).
+- **(B) Large BRAM predictor + fast next-PC + override**, as above. More accurate, at one extra
+  structure and the rare 1–2-cycle override.
+
+Prefer **(A)** if it holds 166.667 *and* its accuracy costs less IPC than (B)'s overrides save —
+measure both. (A) is the readable default the rewrite is for; (B) is the fallback when capacity
+matters more than a single-cycle table can hold. Either beats `apc` on readability. An FTQ
+(below) is the third point on this axis and turns overrides into queue corrections with no fetch
+bubble — deferred.
+
+### Parcel prediction and in-flight tracking (both (A) and (B))
+
+**One prediction per fetch parcel, keyed by the parcel's base PC** yields `{taken?, the taken
+branch's halfword offset in the parcel, target}`.
 
 - **Halfword offset, not slot index.** At predict time (FP) the aligner has not run, so slots do
   not exist yet; the cut must be expressed PC-relative. The aligner (FA), which *does* know slot
@@ -119,6 +179,9 @@ per cycle, which scales, unlike `IW` independent per-slot predictors. The entry 
   slots. The scheme above lets the predictor pick the cut, so a not-taken branch flows through.
   That is the reason the predictor must name the taken branch rather than the aligner always
   cutting at the first one — and it is where width actually pays.
+- **RAS** is speculative: pushed/popped in FP on the fast prediction, repaired on an override or
+  an exec mispredict from the committed pointer (as today: `ghr_c`/`rptr_c` restore, the array
+  not walked).
 
 ### Fetch Target Queue — considered, deferred
 
@@ -238,8 +301,7 @@ regression: straddle at a page boundary, a not-taken branch mid-parcel, `fence.i
 ## Spec (`docs/rtl-rules.md` H4, part of each commit)
 
 §2/§2.2 (the FP/FA/FD pipeline and the decoupling queue, renamed, drawn before rename), §3.4
-(redirect path, Stage 2), §4.1/§4.2 (ahead-PC/`pnpc_kind`/`lenp` gone; parcel prediction with the
-halfword offset), §5/§5.1 (the livemap-banked map), §8.1/§9.1 (I$ PIPT → VHPR; the per-line 4K/2M cap bit), §9.2 (`NREQ=2`),
+(redirect path, Stage 2), §4.1/§4.2 (ahead-PC/`pnpc_kind`/`lenp` gone; the single-cycle next-PC predictor + full-predictor override, or the small single-cycle predictor if the spike allows it; parcel prediction with the halfword offset), §5/§5.1 (the livemap-banked map), §8.1/§9.1 (I$ PIPT → VHPR; the per-line 4K/2M cap bit), §9.2 (`NREQ=2`),
 §10.1 (`q_dat` 255; the `mem_ld` two-writer arbiter), §10.2/§10.3, §11 (`RD_WAIT`, and the
 `FE_QUE` relabel), §14 (the `IW=1` limit), §15 (P5 re-scoped; P2/P7 re-scoped by Stage 3).
 Replace the missing fetch-buffer section with the VHPR I$ section from `docs/VHPR.md`.
