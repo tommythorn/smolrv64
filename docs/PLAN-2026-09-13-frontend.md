@@ -158,6 +158,24 @@ ways. **Fallback, only if even a small BTB will not close single-cycle:** a µBT
 next-PC table) ahead of a BRAM BTB — one more structure, the same override machinery one level
 out. Expected unnecessary if the hypothesis holds.
 
+**Spike result (2026-09-13, `wip/fe-spike` `ooo2_btb_spike.v`, OOC at 6 ns, two place
+directives).** The BTB single-cycle cone closes with **2.6-3.5 ns to spare at every depth**,
+YAGS excluded — your hypothesis holds decisively:
+
+| BTB entries | place Explore | place AltSpreadLogic_medium | logic levels |
+|---|---:|---:|---:|
+| 1024 | WNS +3.093 (344 MHz) | +2.677 (301 MHz) | 6 |
+| 512 | +3.086 (343) | +2.636 (297) | 5 |
+| 256 | +3.449 (392) | +3.545 (407) | 5 |
+
+Depth barely moves it (distributed-RAM read + a 12-bit tag compare + target/RAS mux, ~0.7 ns
+logic; the rest is route). So: **the BTB is the single-cycle predictor, no µBTB, and 1024
+capacity is free from this cone** — take the accurate depth. Caveat (rule I7): OOC is a module
+alone on the die (route here 1.8-2.6 ns vs 65-83% route in the congested full design), so this
+retires the *predictor-timing* risk the plan was built around, but the integrated FP→FA→FD
+number is still Stage 5's to confirm. **Not yet measured, the other timing unknown:** the
+aligner + RVC + decode cone at IW=3 (the FA/FD merge question) — the natural next spike.
+
 ### Parcel prediction and in-flight tracking
 
 **One prediction per fetch parcel, keyed by the parcel's base PC** yields `{taken?, the taken
