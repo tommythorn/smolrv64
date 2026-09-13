@@ -28,6 +28,22 @@ needs it (the census will say). Stage 1 does not add the override.
 
 ## Increments (each: lint → 240/0 → cosim retire ±0.5% → census/timing; board on the last)
 
+**Refinement after reading the code (2026-09-13):** `apc` is *only* the predictor's read
+address — `pc_q` already advances on `norm_npc` (which folds in `pred_npc` when `pred_v`), and
+`lenp` feeds `apc`'s advance alone. So increments 1 and 2 **collapse into one change** that
+touches only `ooo2_predictor.v` (read at `base_pc`), `src/fetch.v` (delete the `apc` output,
+`lenp`, `len_adv`, `lidx`, `al_cons_m1` training) and `ooo2_frontend.v` (drop the `.apc`/
+`.apred_v` wires). **`pnpc_kind`, the queue, and the decode rebuild stay untouched in Stage 1**
+— they are the queue-width optimisation, not the `apc` hack; revisit later if wanted. Not
+literally bit-identical: the exact `base_pc` read drops the `apc`-mismatch lost predictions
+(~0.13% of retires), so the retire count rises slightly — strictly better, within the 0.5%
+band. Exact anchors in `ooo2_predictor.v`: the registered read block (`apc_en`, `btb_raw`/
+`btb_qpc`/`ycorr_raw`) and the write-forward (`t_fwd_q`/`y_fwd_q`/`t_dat_q`/`y_dat_q`) delete
+together — a combinational distributed-RAM read at `base_pc` sees a same-cycle train write as
+the OLD value, and the redirect refetch a cycle later reads the updated array, so no forward is
+needed; `tag_hit` drops the `btb_qpc == base_pc` term; the BTB/YAGS `ram_style` goes
+block→distributed; the BP_TRACE block loses its `apc`/`btb_qpc` fields.
+
 1. **Predictor read at `base_pc`, combinational** (`ooo2_predictor.v`). Convert `btb`/`ycorr`
    from BRAM synchronous-read addressed by `apc` to distributed-RAM combinational-read addressed
    by `base_pc`; the tag/target/direction resolve stays where it is. Delete the `apc` input, the
