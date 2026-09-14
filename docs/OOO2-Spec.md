@@ -171,12 +171,8 @@ latched or they are lost.
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
-**Measured mispredict cost (`workloads/brbench`, 2026-09-08, L1-resident, the two-wide
-core).** *These figures predate the Stage 2 VHPR landing (2026-09-13): they were taken on the
-run-ahead fetch buffer, so the "in the buffer" / "buffer miss" rows and `FB_RHIT` below refer
-to the deleted structure and the buffer-hit vs I$-hit delta is re-derived in Stage 2 increment
-4 (`docs/PLAN-2026-09-13-frontend-stage2.md`); the alignment latch that replaced the buffer is
-also forward-only, so the back-edge analysis still holds in shape.* The branch's path is fetch
+**Measured mispredict cost (`workloads/brbench`, re-measured on the VHPR I$, 43fbcfce,
+2026-09-14, L1-resident, the two-wide core).** The branch's path is fetch
 (the alignment window serves the aligner, the aligner and decode write the decoupling queue)
 -> dispatch the next cycle (the queue head is an asynchronous LUTRAM
 read) -> select in `u_iq_l` -> the issue register (`i_v`, the payload read) -> M, where
@@ -188,23 +184,26 @@ it) against the same loop with the branch always not taken:
 | loop | cyc/iter | redirects/iter | FE_BUB/iter | RD_WAIT/iter | per mispredict |
 |---|---:|---:|---:|---:|---:|
 | `pred`, never taken | 12.00 | 0 | 6.00 | 0 | -- |
-| `near`, target in the buffer | 18.02 | 0.50 | 10.24 | 0 | **12.0 cycles** (8.5 of them frontend) |
-| `far`, target 1 KiB away (buffer miss, I$ hit, and the jump back the same) | 22.05 | 0.51 | 14.54 | 0 | 19.7 cycles |
-| `drain`, an older D$-missing load in flight | 53.01 | 0.52 | 3.23 | 19.76 | the resolved branch waits **38 cycles** for the ROB head |
+| `near`, target a few bytes away (inside the 2-chunk window) | 19.73 | 0.50 | 12.23 | 0 | **15.5 cycles** |
+| `far`, target 1 KiB away (outside the window, I$ hit, the jump back the same) | 25.28 | 0.50 | 18.03 | 0 | 26.6 cycles |
+| `drain`, an older D$-missing load in flight | 52.83 | 0.50 | 4.72 | 19.44 | the resolved branch waits **~39 cycles** for the ROB head |
 
-With the corrector's tag and the aligner's solo-op test fixed (2026-09-10, on the binary
-whose loop top sits at a chunk boundary): `near` 20.37 -> 18.32 cycles per iteration at
-0.73 -> 0.51 redirects (the random branch's own 0.50 plus two lost predictions in 300),
-`drain` 83.7 -> 78.5 at 0.96 -> 0.55. The back edge no longer mispredicts.
+The VHPR alignment adapter costs MORE per mispredict than the deleted run-ahead buffer did
+(`near` 12.0 -> 15.5, `far` 19.7 -> 26.6 cycles, the pre-VHPR figures): its two-chunk window
+carries less run-ahead than the buffer's three chunks, so a taken target refetches more slowly
+-- the same reduced memory-level parallelism as the boot's -8.6% (§4.1), tracked as the
+recoverable IPC follow-up. `drain` (dominated by the D$-miss wait for the ROB head, plan item 5)
+is unchanged. The 2026-09-10 corrector-tag and solo-op aligner fixes (which took the pre-VHPR
+`near` 20.37 -> 18.32 and `drain` 83.7 -> 78.5, so the back edge no longer mispredicts) are in
+the current numbers.
 
 The 6.00 bubble cycles per iteration of the never-mispredicting loop are the loop's own
-back edge: the fetch buffer runs FORWARD only (chunk0 is the PC's chunk, chunk1 and chunk2
-follow it), so a predicted-taken backward branch whose target chunk has already slid out
-finds nothing held and refetches through the I$ every iteration, three to four cycles a
-time. A loop buffer, or keeping the chunk the PC just left, would take that off every short
-loop; `FB_RHIT` (redirects served by the buffer) counts only the forward and in-chunk
-targets. The `drain` row is plan item 5: a mispredict resolved behind a miss waits the whole
-miss for the head while the wrong path keeps fetching.
+back edge: the alignment window runs FORWARD only (the PC's chunk and the next), so a
+predicted-taken backward branch whose target chunk is no longer held refetches through the I$
+every iteration, three to four cycles a time. A loop buffer, or keeping the chunk the PC just
+left, would take that off every short loop (`FB_RHIT`, which counted buffer-served redirects,
+is retired to 0 with the buffer -- §11). The `drain` row is plan item 5: a mispredict resolved
+behind a miss waits the whole miss for the head while the wrong path keeps fetching.
 
 A restart drops the store queue's uncommitted tail only: stores the ROB has committed at
 the irrevocable pointer (§6) are architecturally done and drain after the flush.
@@ -1107,9 +1106,12 @@ the cache already assembles, delivered without a shift (an unaligned 128-bit rea
 always-on `$fatal`). The old 4-wide I$ widened the BANK to 128 and fetched garbage on real
 BRAM (the width-cascade geometry no simulation models); `smolrv64_sdpram`'s guard still
 refuses that, and this never reaches it. `febench` (straight-line 32-bit code): 0.66 ->
-0.98 aligned, 0.40 -> 0.79 at a 2-byte offset, at `HW=4` -> `HW=8`; the 2-byte offset then
-went to 0.98 when the fetch buffer started requesting the next chunk on the slide cycle
-(§4.1, 2026-09-05).
+0.98 aligned, 0.40 -> 0.79 at a 2-byte offset, at `HW=4` -> `HW=8` (2026-09-05); the 2-byte
+offset then reached 0.98 with the pre-VHPR run-ahead buffer's slide-cycle request. On the VHPR
+I$ + alignment adapter (43fbcfce, 2026-09-14, re-baselined for Stage 2 inc 4) `febench` reads
+aligned 1.28, 2-byte-offset 0.98, compressed 1.95, mixed 1.40 -- the adapter MATCHES the buffer
+on straight-line throughput (0.98 at the 2-byte offset); its reduced run-ahead shows on
+taken-branch refetch (the mispredict table, §3), not straight-line fetch.
 
 **The tag is `PAW_SIG - IDXB - OFFB` = 34 - 9 - 6 = 19 bits, not the port width's 49.** The
 ports are 64 wide because a PA rides in a 64-bit bus, but the platform decodes 34 bits (2 GiB

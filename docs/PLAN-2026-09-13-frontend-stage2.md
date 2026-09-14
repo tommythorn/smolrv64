@@ -129,6 +129,19 @@ ld.so page-cross bug) + a brbench re-baseline.
 4. **Re-derive timing** — `make census` + `make timing`. Re-baseline `cosim-expected.txt`, the
    febench numbers, and the mispredict-cost numbers (the buffer-hit vs I$-hit delta disappears).
 
+   **LANDED 2026-09-14** (docs-only; measured on the board-clean inc-3 build `43fbcfce`).
+   Timing/census: WNS +0.033 (build) / +0.052 (census), frontend NOT near-critical (fe families
+   +0.105/+0.123, worst path the store queue), banked in `gate-results/43fbcfce/`. `cosim-expected.txt`:
+   the tiny128 60 M/300 M rows are current (inc-2 baseline; inc-3 was within ±0.5%), so unchanged;
+   the gb5 400 M row stays flagged for its own per-batch re-baseline. `docs/OOO2-Spec.md` §3
+   mispredict-cost table re-measured on the VHPR I$ (`workloads/brbench`): `near` per-mispredict
+   12.0 -> 15.5, `far` 19.7 -> 26.6 cycles (the adapter's smaller run-ahead; the -8.6% MLP story
+   on redirects), `drain` unchanged; and the febench line (§"why HW=8") gained the VHPR numbers
+   (aligned 1.28, 2-byte-offset 0.98 -- MATCHING the buffer on straight-line throughput,
+   compressed 1.95, mixed 1.40). The buffer-only prose (`FB_RHIT`, forward-only slide) was
+   updated to the alignment window. **Stage 2 increments 1-4 are all landed and board-clean; the
+   -8.6% adapter-MLP recovery is the remaining IPC work, tracked separately.**
+
 ## Correctness assertions (always-on, from VHPR.md)
 
 - At most one valid I$ line per physical line, after every alloc / evict / inval / epoch-rollover.
