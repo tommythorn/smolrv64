@@ -38,7 +38,7 @@ module tb;
       .redirect_seq(redirect_seq), .solo_all(1'b0), .irq_inject(1'b0), .irq_pres(),
       .pred_v(1'b0), .pred_tgt(64'd0),
       .imem_addr(imem_addr), .imem_data(imem_data),
-      .imem_avail(imem_avail), .imem_ok(1'b1), .ready(ready), .valid(valid),
+      .imem_avail(imem_avail), .imem_lvl(2'd0), .imem_ok(1'b1), .ready(ready), .valid(valid),
       .slot_valid(slot_valid), .inst(inst), .pc(pc), .seq(seq));
 
    // behavioral halfword memory

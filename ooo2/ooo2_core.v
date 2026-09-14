@@ -38,6 +38,7 @@ module ooo2_core
     input  wire                    reset,
     // ---- instruction memory (combinational window at the translated PA) ----
     output wire [PCW-1:0]          imem_addr,
+    output wire [1:0]              imem_xlvl,       // iMMU leaf level of imem_addr (0=4K,else>=2M): the adapter stamps it per chunk
     // VA-tagged fetch buffer (rv_soc_top): the buffer hit test compares the VIRTUAL
     // address so a hit does not wait on address translation.  It therefore needs to know
     // (a) the VA, (b) when this cycle's PA is actually trustworthy, and (c) when the fetch
@@ -56,6 +57,7 @@ module ooo2_core
     input  wire                    hpm_fb_rhit,
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    input  wire [1:0]              imem_lvl,        // served chunk's page size (0=4K,else>=2M) -- VHPR enclosing-page cap
     input  wire                    imem_ok,         // the window is the PC's bytes (late; handshake only)
     // ---- platform interrupt lines + time ----
     input  wire [11:0]             hw_ip,
@@ -297,7 +299,7 @@ module ooo2_core
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
-      .imem_avail(imem_avail), .imem_ok(imem_ok_g),
+      .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
       .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),
@@ -347,6 +349,7 @@ module ooo2_core
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw());
    assign imem_addr = {8'd0, immu_pa};
+   assign imem_xlvl = immu_lvl;   // leaf page size of this fetch's translation (for the adapter's per-chunk stamp)
 
    // ---- VA-tagged fetch buffer support ------------------------------------------------
    // The buffer caches instruction bytes under a VA tag, so it must be dropped on every

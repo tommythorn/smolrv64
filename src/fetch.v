@@ -82,6 +82,7 @@ module fetch
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,
+    input  wire [1:0]              imem_lvl,    // served chunk's page size (0=4K, else >=2M): the enclosing-page cap
     input  wire                    imem_ok,     // late: imem_data/imem_avail are the PC's bytes. The
                                                 // aligner runs on the (register-derived) window and
                                                 // count regardless; this bit gates the bundle's valid,
@@ -108,20 +109,26 @@ module fetch
    reg [PCW-1:0]  ipc_q;              // the instruction's PC: pc_q, or pc_q - 2 while straddling
    initial begin pc_q = RESET_PC; ipc_q = RESET_PC; seq_q = 0; strad = 1'b0; end
 
-   // halfwords from pc_q to the 4 KiB page boundary; cap the aligner's view there.
-   wire [11:0]    off      = pc_q[11:0];
-   wire           at_bound = (off == 12'hFFE);                  // pc_q is the page's last halfword
-   // The cap is HW unless pc_q is inside the page's last HW halfwords, and then it is what is
-   // left of them: a test of register bits and a (HB+1)-bit difference. It used to be
-   // `(4096 - off) >> 1` compared against HW -- two carry chains at the head of the
-   // frontend's PC loop (gate W5fix, 2026-09-07). The sum form is kept as the oracle.
+   // Cap the aligner's view at the ENCLOSING page boundary: 4 KiB (imem_lvl==0) or 2 MiB
+   // (imem_lvl!=0; a 1 GiB leaf caps conservatively as 2 MiB, Stage 2 inc 1/3). The page size
+   // is the SERVED chunk's, carried by the VHPR I$ off the hit path -- the iMMU is never on the
+   // hit cone. Inside a 2 MiB page the window is no longer chopped every 4 KiB, and the straddle
+   // FSM below fires only at the true 2 MiB boundary, not at every 4 KiB sub-boundary.
    localparam integer HB = $clog2(HW);
-   wire           in_last  = &off[11:HB+1];                     // the last HW halfwords of the page
-   wire [HB:0]    hw_left  = HW[HB:0] - {1'b0, off[HB:1]};       // 1..HW of them from pc_q
+   wire           big      = (imem_lvl != 2'd0);                // >= 2 MiB page
+   wire [20:0]    off      = pc_q[20:0];                        // enclosing-page offset (up to 2 MiB)
+   wire           at_bound = big ? (&off[20:1]) : (&off[11:1]); // pc_q is the enclosing page's last halfword
+   // The cap is HW unless pc_q is inside the enclosing page's last HW halfwords, and then it is
+   // what is left of them: a reduction-AND of register bits and a (HB+1)-bit difference. The sum
+   // form `(pgsz - off) >> 1` is kept as the oracle below (gate W5fix, 2026-09-07).
+   wire           in_last  = big ? (&off[20:HB+1]) : (&off[11:HB+1]);  // last HW halfwords of the page
+   wire [HB:0]    hw_left  = HW[HB:0] - {1'b0, off[HB:1]};       // 1..HW of them from pc_q (page-size independent)
    wire [PBW-1:0] hw_cap   = in_last ? {{(PBW-HB-1){1'b0}}, hw_left} : HW[PBW-1:0];
    wire           bytes_late = (imem_avail < hw_cap);          // short of the page end: the buffer's shortfall
    wire [PBW-1:0] eff_avail  = bytes_late ? imem_avail : hw_cap;
-   wire [12:0]    hw_bound = (13'd4096 - {1'b0, off}) >> 1;     // the oracle: 1..2048 halfwords to the boundary
+   wire [21:0]    pgsz     = big ? 22'h200000 : 22'h001000;     // enclosing page size (2 MiB or 4 KiB)
+   wire [20:0]    off_pg   = big ? off : {9'b0, off[11:0]};      // offset within the ENCLOSING page (mask to 4K)
+   wire [21:0]    hw_bound = (pgsz - {1'b0, off_pg}) >> 1;       // the oracle: halfwords to the boundary
    wire [PBW-1:0] hw_cap_ref = (hw_bound > HW) ? HW[PBW-1:0] : hw_bound[PBW-1:0];
    always @(posedge clk)
      if (!reset && hw_cap !== hw_cap_ref)

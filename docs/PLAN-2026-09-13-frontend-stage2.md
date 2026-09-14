@@ -111,6 +111,21 @@ ld.so page-cross bug) + a brbench re-baseline.
    4K/2M bit per line at fill (increment 1); cap fetch at the enclosing page boundary; the
    aligner's carry replaces the `strad`/`ipc_q` FSM that Stage 1 kept. Gate: a page-boundary
    cosim regression (straddle at 4K and 2M).
+
+   **LANDED 2026-09-14** (`wip/fe-stage2`), with two scope refinements agreed at implementation:
+   (1) the page size is stored **per alignment-adapter chunk**, not per cache line — the iMMU
+   leaf level (`imem_xlvl`) is stamped onto the chunk slot at fill and read on a hit; the window
+   already drops on `imem_ctx_chg`, so the slot's level is always the current mapping's, and the
+   cache FSM (the increment-2 bug's home) is left untouched. (2) The `strad`/`ipc_q` FSM is
+   **kept but minimal** — it now fires only at the true enclosing-page boundary (4 KiB or, for a
+   ≥2 MiB leaf, the 2 MiB boundary; 1 GiB caps as 2 MiB), not at every 4 KiB sub-boundary inside
+   a superpage, where the adapter's 2-chunk carry assembles the straddler instead. The cap and
+   `samepg` both use `big = (imem_lvl != 0)`. Plumbing: `imem_lvl` soc→core→frontend→fetch,
+   `imem_xlvl` core→adapter. **Result: retire-neutral on the boot** (60 M cosim 13,423,520 vs
+   13,424,357, −0.01%; the 4K sub-boundary caps/straddles it removes are rare in the boot's hot
+   code) — the value is structural + potential wins on superpage-dense code; the big IPC lever
+   remains the −8.6% adapter-MLP gap. Gates: lint clean, riscv-tests 240/0 (the oracle underflow
+   the widened offset introduced was caught here and fixed), cosim clean.
 4. **Re-derive timing** — `make census` + `make timing`. Re-baseline `cosim-expected.txt`, the
    febench numbers, and the mispredict-cost numbers (the buffer-hit vs I$-hit delta disappears).
 

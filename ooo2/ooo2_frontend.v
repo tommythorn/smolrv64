@@ -51,6 +51,7 @@ module ooo2_frontend
     output wire [PCW-1:0]          imem_ipc,          // PC of the instruction (fault EPC)
     input  wire [HW*16-1:0]        imem_data,
     input  wire [$clog2(HW+2)-1:0] imem_avail,        // register-derived count (item T1 (F))
+    input  wire [1:0]              imem_lvl,          // served chunk's page size (0=4K,else>=2M): enclosing-page cap
     input  wire                    imem_ok,           // late: the window is the PC's bytes; gates fire
     input  wire                    imem_fault,        // iMMU fault on this fetch (qualified ready)
     input  wire [3:0]              imem_cause,
@@ -177,7 +178,7 @@ module ooo2_frontend
       // predictor reads its arrays combinationally at base_pc (= imem_ipc).
       .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
-      .imem_avail(imem_avail), .imem_ok(imem_ok),
+      .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(dq_valid),
       .slot_valid(dq_sv), .inst(dq_inst), .pc(dq_pc), .seq(dq_seq), .cur_seq(cur_seq));
 

@@ -109,6 +109,8 @@ module rv_soc_top #(
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
    wire [PCW-1:0]      imem_va;                 // VA of the same fetch -- the buffer's tag
+   wire [1:0]          immu_xlvl;               // iMMU leaf level of imem_addr (core -> adapter, stamped per chunk)
+   wire [1:0]          imem_lvl_srv;            // served chunk's page size (adapter -> core -> fetch enclosing-page cap)
    wire                imem_xlate_ok, imem_ctx_chg;
    wire [63:0]         imem_satp_q;  wire [1:0] imem_priv_q;
    wire                fe_redirect;
@@ -130,7 +132,7 @@ module rv_soc_top #(
 
    ooo2_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(imem_lvl_srv), .imem_xlvl(immu_xlvl), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
       .fe_redirect(fe_redirect), .hpm_fb_hit(1'b0), .hpm_fb_rhit(1'b0),   // no fetch buffer (VHPR I$)
@@ -637,12 +639,12 @@ module rv_soc_top #(
    wire [63:0] pc_ca   = {imem_va[63:CHA],   {CHA{1'b0}}};
    wire [63:0] pc_paca = {imem_addr[63:CHA], {CHA{1'b0}}};
    wire [63:0] nx_ca   = pc_ca + CHB;
-   wire        samepg  = (pc_ca[11:CHA] != {(12-CHA){1'b1}});   // next chunk shares the 4 KiB page
 
    // Two VA-tagged chunk slots -- the alignment window.
    reg              c0_v, c1_v;
    reg  [63:0]      c0_va, c1_va;
    reg  [HW*16-1:0] c0_d,  c1_d;
+   reg  [1:0]       c0_lvl, c1_lvl;              // page size of each resident chunk (iMMU leaf level at fill)
    initial begin c0_v=1'b0; c1_v=1'b0; end
 
    wire h0_0 = c0_v & (c0_va == pc_ca);   wire h0_1 = c1_v & (c1_va == pc_ca);
@@ -651,10 +653,19 @@ module rv_soc_top #(
    wire             have1    = h1_0 | h1_1;
    wire [HW*16-1:0] pc_chunk = h0_1 ? c1_d : c0_d;
    wire [HW*16-1:0] nx_chunk = h1_1 ? c1_d : c0_d;
+   // The served (PC) chunk's page size drives the enclosing-page cap (fetch) and whether the
+   // NEXT chunk is still in the same page (samepg): 4 KiB for a 4K leaf, 2 MiB for >=2M (a 1 GiB
+   // leaf caps as 2 MiB). Within a superpage the next chunk's PA is pc_paca+CHB (contiguous).
+   wire [1:0]       pc_lvl   = h0_1 ? c1_lvl : c0_lvl;
+   assign           imem_lvl_srv = pc_lvl;
+   wire             big_pg   = (pc_lvl != 2'd0);
+   wire             samepg   = big_pg ? (pc_ca[20:CHA] != {(21-CHA){1'b1}})
+                                      : (pc_ca[11:CHA] != {(12-CHA){1'b1}});
 
    // One demand read in flight.
    reg          rq_v, rq_pois;
    reg  [63:0]  rq_va, rq_pa;
+   reg  [1:0]   rq_lvl;                          // page size captured with the in-flight request
    initial begin rq_v=1'b0; rq_pois=1'b0; end
    wire need_pc = ~have0 & ~(rq_v & (rq_va == pc_ca));
    wire need_nx =  have0 & ~have1 & samepg & ~(rq_v & (rq_va == nx_ca));
@@ -686,13 +697,13 @@ module rv_soc_top #(
       if (reset) begin c0_v<=1'b0; c1_v<=1'b0; rq_v<=1'b0; rq_pois<=1'b0; end
       else begin
          // accept: latch the in-flight demand read
-         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_pa<=want_pa; rq_pois<=1'b0; end
+         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_pa<=want_pa; rq_pois<=1'b0; rq_lvl<=immu_xlvl; end
          // response: capture into the slot NOT holding the PC's chunk (keep pc_chunk resident)
          if (ic_rd_valid) begin
             rq_v <= 1'b0;
             if (~rq_pois) begin
-               if (h0_0) begin c1_va<=rq_va; c1_d<=ic_rd_data; c1_v<=1'b1; end
-               else      begin c0_va<=rq_va; c0_d<=ic_rd_data; c0_v<=1'b1; end
+               if (h0_0) begin c1_va<=rq_va; c1_d<=ic_rd_data; c1_lvl<=rq_lvl; c1_v<=1'b1; end
+               else      begin c0_va<=rq_va; c0_d<=ic_rd_data; c0_lvl<=rq_lvl; c0_v<=1'b1; end
             end
          end
          // invalidation LAST (wins a same-cycle capture): a mapping change or a flush in

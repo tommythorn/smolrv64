@@ -262,9 +262,17 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   PC (the bundle's PC, a fault's EPC); a pending interrupt waits out a straddle (`irq_go`)
   instead of abandoning it. The alignment window drops on a context change
   (`freeze = fi_stall | ic_inv_busy | imem_ctx_chg`, gating `imem_ok`); a miss still takes the
-  iMMU's fault. The page cap on the aligner's window is chunk0's index in the page against the
-  last (`in_last`, `hw_left`), not `(4096 - off) >> 1` compared with HW. (The straddle/`ipc_q`
-  FSM Stage 1 kept is retired in Stage 2 increment 3, once the per-line 4K/2M cap bit lands.)
+  iMMU's fault. The cap on the aligner's window is `pc_q`'s index against the **enclosing page's**
+  last `HW` halfwords (`in_last`, `hw_left`), not `(pgsz - off) >> 1` compared with HW — the sum
+  form is kept as the oracle. **Enclosing page** (Stage 2 inc 3): the cap and the straddle
+  boundary are the 4 KiB boundary for a 4K leaf and the **2 MiB** boundary for a ≥2 MiB leaf (a
+  1 GiB leaf caps conservatively as 2 MiB). The page size is the **served chunk's** — carried by
+  the VHPR I$ off the hit path (per-chunk in the alignment adapter, stamped from the iMMU leaf
+  level at fill; the iMMU is never on the hit cone, §9.1), never re-translated on a hit. Inside a
+  2 MiB page the window is no longer chopped every 4 KiB, and the `strad`/`ipc_q` FSM Stage 1 kept
+  now fires **only at the true enclosing-page boundary** (a 32-bit op whose high half is in the
+  next page, a different translation), not at every 4 KiB sub-boundary within a superpage — where
+  the adapter's 2-chunk carry (the next chunk is same-page, PA-contiguous) assembles it instead.
 - **Two-wide fetch** (2026-09-05, plan item 10a): the aligner emits up to two instructions per
   cycle (`IW=2`) and both enter the decoupling queue in one cycle; the queue is two LUTRAM banks on
   entry parity, so each bank takes one write per cycle and the head is a 2:1 mux. Decode still
@@ -900,9 +908,12 @@ The MMU also range-checks the resolved PA: anything outside {RAM, CLINT, PLIC, U
 virtio} faults rather than being silently dropped.
 
 Each `mmu` also drives **`t_lvl`** (the resolved leaf level, from the walk or the hit TLB
-entry; Stage 2 increment 1, additive). The iMMU's `t_lvl` is threaded to the VHPR I$ alongside
-the PA so a line can record its enclosing page size (4K vs ≥2M) at fill; the per-line cap bit
-that consumes it — and retires the fetch straddle FSM — is Stage 2 increment 3.
+entry; Stage 2 increment 1). The iMMU's `t_lvl` (`imem_xlvl` out of the core) is stamped onto
+the alignment adapter's chunk slot at fill (Stage 2 increment 3) and read back on a hit as the
+served chunk's page size (`imem_lvl` into the core → fetch), so the fetch's **enclosing-page
+cap** (§4.1) uses the actual 4K/≥2M page size without putting the iMMU on the hit cone. Storing
+it per adapter chunk (not per cache line) suffices because the window drops on `imem_ctx_chg`,
+so a slot's page size is always the current mapping's.
 
 ---
 

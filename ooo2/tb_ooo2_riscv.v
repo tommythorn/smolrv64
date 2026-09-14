@@ -51,7 +51,8 @@ module tb;
       // hit carries its translation and the core no longer consults the iMMU's verdict on a
       // hit (2026-09-07, imem_ok_g). This memory answers every address; its "ok" is that
       // same contract: the bytes are the PC's iff the translation is.
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(imem_xlate_ok),
+      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(2'd0), .imem_xlvl(),
+      .imem_ok(imem_xlate_ok),
       .imem_xlate_ok(imem_xlate_ok),
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
