@@ -552,7 +552,7 @@ module rv_soc_top #(
    wire dc_access, dc_miss, ic_access, ic_miss;
    rv_cache #(.PAW(64), .PAW_SIG(34), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
+      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_pa(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_ack(dc_rd_ack),
       .rd_resp_addr(dc_rd_resp_addr), .rd_tag(dcr_tag), .rd_resp_tag(dc_rd_resp_tag),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
@@ -1098,7 +1098,7 @@ module rv_soc_top #(
    rv_cache #(.PAW(64), .PAW_SIG(34), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
            .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr),
       // The tag names the request entry (two in flight, item 10e); the fetch buffer still
       // matches the answer to a SLOT by address (fb_al/fb_pa..fb_pa3), and asserts the two agree.

@@ -54,7 +54,7 @@ module tb;
    rv_cache #(.PAW(PAW), .SIZE_KB(128), .RDW(RDW), .WDW(64),
               .WRITABLE(0), .PREFETCH(0), .PERF_ID(0)) dut
      (.clk(clk), .reset(reset),
-      .rd_req(rd_req), .rd_addr(rd_addr), .rd_data(rd_data), .rd_valid(rd_valid),
+      .rd_req(rd_req), .rd_addr(rd_addr), .rd_pa(rd_addr), .rd_data(rd_data), .rd_valid(rd_valid),
       .rd_resp_addr(rd_resp_addr), .rd_tag(rd_tag), .rd_resp_tag(rd_resp_tag),
       .rd_ack(rd_ack), .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_acc(), .wr_cpl(),

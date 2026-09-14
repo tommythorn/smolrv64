@@ -51,6 +51,8 @@ module rv_cache #(
    input  wire             reset,
    input  wire             rd_req,
    input  wire [PAW-1:0]   rd_addr,
+   input  wire [PAW-1:0]   rd_pa,       // fill/L2 physical address. = rd_addr for a PIPT cache;
+                                        // for a virtual-hit I$ rd_addr is the VA and rd_pa the PA.
    output reg  [RDW-1:0]   rd_data,
    output reg              rd_valid,
    output reg  [PAW-1:0]   rd_resp_addr,
@@ -171,6 +173,7 @@ module rv_cache #(
    reg            r_uncached;          // Svpbmt: current access is NC/IO (flush-around)
    reg            r_cbo, r_cbo_zero, r_cbo_keep;   // Zicbom/Zicboz maintenance op latched at accept
    reg [PAW-1:0]  r_addr;
+   reg [PAW-1:0]  r_pa;                       // captured fill PA (parallels r_addr)
    reg [RTW-1:0]  r_tag;
    reg [WDW-1:0]  r_wdata;
    reg [WRB-1:0]  r_wmask;
@@ -315,6 +318,7 @@ module rv_cache #(
    reg            f_v;                        // a fill is in progress
    reg [PAW-1:0]  f_line;                     // the line being fetched (line1, for a span)
    reg [PAW-1:0]  f_addr;                     // ...and the request to re-issue when it lands
+   reg [PAW-1:0]  f_pa;                       // fill PA (= f_line for PIPT; the real PA for a virtual-hit I$)
    reg [RTW-1:0]  f_tag;
    reg            f_is_wr, f_uncached, f_cbo, f_cbo_zero, f_cbo_keep, f_span;
    reg [WDW-1:0]  f_wdata;
@@ -433,6 +437,7 @@ module rv_cache #(
    // consumes this address: the drive below is overridden by the states that need it, and
    // the FSM reads bk_rddata only in the cycle after it accepted.
    wire [PAW-1:0]  a_live    = f_replay ? f_addr : (rd_req ? rd_addr : wr_addr);
+   wire [PAW-1:0]  a_pa_live = f_replay ? f_pa   : (rd_req ? rd_pa   : wr_addr);   // PA parallel to a_live
    wire [CHB-1:0]  a_clo     = a_live[OFFB-1 -: CHB];
    wire [CHB-1:0]  a_chunk_e = a_clo[0] ? (a_clo + 1'b1) : a_clo;
    wire [CHB-1:0]  a_chunk_o = a_clo[0] ? a_clo : (a_clo + 1'b1);
@@ -674,6 +679,7 @@ module rv_cache #(
             r_cbo_zero <= f_replay ? f_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
             r_cbo_keep <= f_replay ? f_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
             r_addr     <= a_live;
+            r_pa       <= a_pa_live;
             r_tag      <= f_replay ? f_tag      : rd_tag;
             r_wdata    <= f_replay ? f_wdata    : wr_data;
             r_wmask    <= f_replay ? f_wmask    : wr_mask;
@@ -709,7 +715,7 @@ module rv_cache #(
               // it was under the old `hit` qualifier. A hit simply overwrites a copy nobody
               // reads. Never while f_v: those fields belong to the fill in flight.
               if (!f_v) begin
-                 f_line <= cur_line;  f_addr <= r_addr;  f_tag <= r_tag;
+                 f_line <= cur_line;  f_addr <= r_addr;  f_tag <= r_tag;  f_pa <= r_pa;
                  f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
                  f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
                  f_wdata <= r_wdata;  f_wmask <= r_wmask;
@@ -970,7 +976,7 @@ module rv_cache #(
            end else if (PF_EN && pf_infl) begin
               // a prefetch is mid-flight on the L2 port: wait it out (it may be
               // exactly the missing line, caught by the branch above on landing).
-           end else begin l2_req<=1; l2_we<=0; l2_addr<=f_line[PAW-1:OFFB]; fst<=F_FILLW; end
+           end else begin l2_req<=1; l2_we<=0; l2_addr<=f_pa[PAW-1:OFFB]; fst<=F_FILLW; end
            F_FILLW: if (l2_ack) begin
               // The line bookkeeping that stood here -- tag, valid, dirty, victim -- has
               // moved to the LAST install cycle. Advertising a line as valid before its
