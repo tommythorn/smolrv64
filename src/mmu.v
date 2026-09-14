@@ -50,6 +50,7 @@ module mmu
     output wire        t_fault,
     output wire [3:0]  t_cause,       // 12=instr, 13=load, 15=store page fault
     output wire        t_uncached,    // Svpbmt: leaf PBMT(pte[62:61])!=0 -> NC/IO (don't cache)
+    output wire [1:0]  t_lvl,          // leaf level (0=4K,1=2M,2=1G) -- for the VHPR I$ page cap
     // THE SAME ANSWERS WITHOUT THE req_valid QUALIFIER. t_ready and t_fault carry the
     // caller's req_valid inside them; a caller whose req_valid is an OR of two request
     // sources (ooo2_lsu: a translate-only pass and an FSM-starting access) would otherwise
@@ -166,7 +167,8 @@ module mmu
    reg        w_fault;
    reg [3:0]  w_cause;
    reg        w_nc;                  // Svpbmt: just-walked leaf is NC/IO
-   initial begin st=IDLE; ptw_read=0; w_done=0; end
+   reg [1:0]  w_lvl;                 // just-walked leaf level (drives t_lvl on w_done)
+   initial begin st=IDLE; ptw_read=0; w_done=0; w_lvl=2'd0; end
 
    wire hit_perm_fault = perm_fault({56'd0, tlb_perm[tlb_idx]}, req_access, priv, sum, mxr);
 
@@ -229,6 +231,8 @@ module mmu
    // Svpbmt memory type: NC/IO leaf -> uncached. Bare/non-canonical = normal (cacheable);
    // MMIO device regions are routed around the D$ by soc_top's address decode, not here.
    assign t_uncached = wdm ? w_nc : (xlate & tlb_hit & tlb_nc[tlb_idx]);
+   // leaf level, valid whenever t_ok: from the finished walk, else the hitting TLB entry.
+   assign t_lvl = wdm ? w_lvl : (tlb_hit ? tlb_lvl[tlb_idx] : 2'd0);
 
    // start a walk when the request can't resolve this cycle
    wire start_walk = req_valid & xlate & !noncanon & !tlb_ok & !wdm & (st==IDLE);
@@ -275,6 +279,7 @@ module mmu
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
                  end else begin
                     w_paddr <= leaf_pa(ptw_rdata[53:10], lvl, va_q, ptw_rdata[63]);
+                    w_lvl  <= lvl;
                     w_fault<=1'b0; w_done<=1'b1; st<=IDLE;
                     w_nc   <= ptw_rdata[62] | ptw_rdata[61];   // Svpbmt PBMT != 0
                     // fill TLB. A NAPOT page still occupies one entry per 4 KiB VA (the tag

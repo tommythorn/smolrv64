@@ -297,7 +297,7 @@ module ooo2_lsu
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
-      .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw));
+      .t_lvl(), .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw));
 
    // A misaligned access whose byte span leaves the page needs a second translation.
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software

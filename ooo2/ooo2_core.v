@@ -128,6 +128,7 @@ module ooo2_core
    wire [55:0]              immu_pa;
    wire                     immu_ready, immu_fault;
    wire [3:0]               immu_cause;
+   wire [1:0]               immu_lvl;    // iMMU leaf level (0=4K,1=2M,2=1G) -- VHPR I$ page cap (Stage 2)
    // ~imem_ctx_chg IS PART OF "IS THIS CYCLE'S FETCH DATA TRUSTWORTHY".  The VA-tagged
    // buffer is invalidated by imem_ctx_chg in rv_soc_top, but that invalidation lands at
    // the END of the cycle while fb_hit is combinational -- so for exactly one cycle the
@@ -344,7 +345,7 @@ module ooo2_core
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
-      .t_cause(immu_cause), .t_uncached(), .t_ok(), .t_fault_raw());
+      .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw());
    assign imem_addr = {8'd0, immu_pa};
 
    // ---- VA-tagged fetch buffer support ------------------------------------------------
