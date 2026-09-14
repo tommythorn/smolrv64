@@ -107,6 +107,16 @@ module rv_cache #(
    localparam SETS  = (SIZE_KB*1024)/(WAYS*WORDB);
    localparam IDXB  = $clog2(SETS);
    localparam PTAGB = PAW_SIG - IDXB - OFFB;
+   // VIRT reconcile physical tag: the I$ is virtually indexed, so the index bits ABOVE the
+   // 4 KiB page offset (VA[14:12], the virtual "colour") are NOT the physical colour -- only
+   // VA[11:6]==PA[11:6] is reliable within a page. The physical tag the reconcile matches must
+   // therefore reach DOWN to the page-offset boundary to carry PA[14:12]; a tag that started at
+   // the index top (PA[..:OFFB+IDXB]) omits the colour and reconciles a request against a
+   // DIFFERENT physical page in the same aligned region -> wrong instruction bytes (board SIGILL
+   // in libc, 2026-09-14). Correct for every page size: for >=2 MiB pages the colour bits match
+   // anyway, so the extra bits are redundant, never wrong.
+   localparam PGOFF  = 12;                 // 4 KiB page offset (VA[11:0]==PA[11:0], any page)
+   localparam PPTAGB = PAW_SIG - PGOFF;    // physical reconcile tag: PA above the page offset
    initial if (PAW < PAW_SIG) $fatal(1, "rv_cache: PAW_SIG=%0d exceeds the port width PAW=%0d", PAW_SIG, PAW);
    localparam RDB   = RDW/8;
    localparam WRB   = WDW/8;
@@ -134,7 +144,7 @@ module rv_cache #(
    localparam BAW    = IDXB + PAIRB;
 
    reg [PTAGB-1:0] tagm [0:NW-1];        // VIRT: this holds the VIRTUAL tag (rd_addr is the VA)
-   reg [PTAGB-1:0] ptagm[0:NW-1];        // VIRT: physical tag, for the miss-path reconcile (else dead)
+   reg [PPTAGB-1:0] ptagm[0:NW-1];       // VIRT: physical reconcile tag = PA above the 4K page offset (incl. the colour PA[14:12] the virtual index cannot vouch for; else dead)
    reg [EPW-1:0]   epm  [0:NW-1];        // VIRT: per-line epoch generation (else dead)
    reg [EPW-1:0]   cur_epoch;            // VIRT: current epoch; a mapping change advances it
    reg             valm [0:NW-1];
@@ -213,7 +223,7 @@ module rv_cache #(
    // so it is served like a hit (and keeps reconciling by physical tag until eviction or a
    // fence.i clear -- no re-stamp). ptag_r is the request PA's tag off r_pa (a REGISTER), so the
    // reconcile compare is not translation on the hit path.
-   wire [PTAGB-1:0] ptag_r = r_pa[OFFB+IDXB +: PTAGB];
+   wire [PPTAGB-1:0] ptag_r = r_pa[PGOFF +: PPTAGB];   // from the page-offset boundary: carries PA[14:12]
    wire vh0 = valm[flat(0,ci0)] & (tagm[flat(0,ci0)]==ctag) & (~VIRT | (epm[flat(0,ci0)]==cur_epoch));
    wire vh1 = valm[flat(1,ci1)] & (tagm[flat(1,ci1)]==ctag) & (~VIRT | (epm[flat(1,ci1)]==cur_epoch));
    wire rc0 = VIRT & valm[flat(0,ci0)] & (ptagm[flat(0,ci0)]==ptag_r);
@@ -1036,7 +1046,7 @@ module rv_cache #(
                  // visible". cbo.zero installs a line that is dirty by construction: it was
                  // never read from L2, so L2 does not have these zeros.
                  tagm[vflat] <= tag_of(f_line);
-                 if (VIRT) begin ptagm[vflat] <= f_pa[OFFB+IDXB +: PTAGB]; epm[vflat] <= cur_epoch; end
+                 if (VIRT) begin ptagm[vflat] <= f_pa[PGOFF +: PPTAGB]; epm[vflat] <= cur_epoch; end
                  v_we=1; v_wa=vflat; v_wd = (VIRT && (f_epoch != cur_epoch)) ? 1'b0 : 1'b1;  // poison a fill from a stale epoch
                  d_we=1; d_wa=vflat; d_wd=f_cbo_zero | f_wmerge;
                  k_we=1; k_wa=base_idx(f_line); k_wd=~vicm[base_idx(f_line)];
