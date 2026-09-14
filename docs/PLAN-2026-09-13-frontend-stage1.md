@@ -110,3 +110,17 @@ parent plan promises.
 §2/§2.2 (the F/X queue renamed; the ahead-PC gone from the fetch description), §4.1 (`apc`,
 `pnpc_kind`, `lenp` deleted; the fetch-target register), §4.2 (the predictor reads at `base_pc`
 combinationally; the override deferred), §10.2 (`lenp` row removed), §11 (`FE_QUE` relabel).
+
+## Board gate — Stage 1 COMPLETE (2026-09-13)
+
+`tools/gate.sh` at tip `7af5e773` (increments 1 + 3): lint clean, all unit benches PASS,
+netlist-boot PASS (`rtl=7af5e773`), **timing met WNS +0.011 ns** (worst path
+`fe/u_fetch/pc_q_reg[19]→[2]`, the fetch PC-increment family, not the predictor — the
+base_pc→BTB read cone was +0.104 at census), and **BOARD PASS**: programmed, NFS-booted Ubuntu
+to `login:` with **0 faults**, banner `rtl=7af5e773`. The +0.011 vs the census +0.061 on the
+same logic is placement noise (rule I2, 81 ps spread); ≥166.667 MHz is met either way. Evidence
+`gate-results/7af5e773/`.
+
+Stage 1 delivered the conventional frontend at IW=1 with **+1.12% IPC** and no timing
+regression. Remaining rewrite stages: Stage 2 (VHPR I$ + alignment latch, retires the straddle
+FSM), Stage 3 (widen to `OOO2_IW>1`, livemap-banked rename map), Stage 4 (re-derive timing).
