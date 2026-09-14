@@ -392,10 +392,110 @@ SFENCE.VMA:
 The full L1 flush avoids stale virtual tags and stale cached permissions after
 page table changes.
 
+**But a full clear is UNSAFE for the instruction cache in a write-back system, and an
+invalidation of either cache must poison outstanding fills.** Both points are developed in
+*Instruction-Cache Coherence, Outstanding Fills, And Mapping Changes* below; they are the
+difference between this note and a working VHPR I-cache, and were not obvious from the
+sections above.
+
 Later optimizations may add ASID-selective or VA-selective L1 invalidation.
 
 The hardware requirement is to honor the same `SFENCE.VMA` invalidation contract
 for both TLB entries and VHPR virtual-hit lines.
+
+## Instruction-Cache Coherence, Outstanding Fills, And Mapping Changes
+
+*(Added 2026-09-13, from the Stage 2 VHPR I-cache bring-up. The physical-tag reconcile
+machinery this section relies on is already specified — L1 Line Metadata, Miss Path, Synonym
+Cases — but the two REQUIREMENTS below are only implied there, and a first implementation that
+misses either one fails. Both were found the hard way: a VHPR I-cache that booted 6.2 M
+instructions in lockstep then diverged at the paging-enable transition, fetching a stale line
+where the reference model had the current instruction.)*
+
+### The instruction cache reads the physical hierarchy, never the dirty data cache
+
+The I-cache fills from L2 (the physical backing). Freshly written code is dirty in the
+WRITE-BACK data cache and reaches L2 only when that line is written back. The only
+architectural event that makes written code visible to instruction fetch on the same hart is
+`FENCE.I`, which — per *Coherence And DMA* — writes back the data cache and then invalidates
+the instruction cache, so the following refill reads current bytes from L2.
+
+A mapping change (`SFENCE.VMA`, or a SATP write / privilege transition that alters the effective
+translation) does NOT establish code coherence. It only retires stale VIRTUAL tags and cached
+permissions. Therefore:
+
+```text
+An I-cache line invalidated by a mapping change and then refilled from L2 returns
+whatever L2 holds. That is the current code ONLY if a prior FENCE.I has written back
+any modified copy. The I-cache must never be relied on to make dirty data-cache code
+visible, and a mapping change must never be treated as if it did.
+```
+
+### A mapping change must retain physical lines and reconcile, not flush and re-read
+
+This is a behavioural difference from a physically-tagged (PIPT) I-cache, and it is easy to
+miss. A PIPT I-cache does not invalidate on a mapping change at all — a physical tag cannot go
+stale when only the translation changes — so it RETAINS the physically-correct line it fetched
+earlier and keeps hitting it by physical tag across arbitrarily many context switches. That
+retention silently supplies a degree of I/D coherence for free: code fetched once, when L2 was
+current, stays fetchable regardless of later data-cache writes, until the line is evicted.
+Real software (the Linux boot path here) leans on this — it executes code across the
+paging-enable transition without a fresh `FENCE.I`, trusting the I-cache to still hold it.
+
+A VHPR I-cache that FLUSHES virtual lines on a mapping change loses that retention and is forced
+back to L2, exposing every such case as a stale fetch. So the design MUST NOT clear the arrays
+on a mapping change. It ADVANCES THE EPOCH (see *Epoch Roll-Over*), leaving every physical line
+and physical tag resident but virtually stale. A fetch after the change misses the virtual-hit
+compare (epoch mismatch) and takes the miss path, which — per *Miss Path* — probes the
+same-offset physical tags BEFORE reading L2. If the requested physical line is still resident
+(the one the pre-change fetch installed), the miss RECONCILES against it: re-stamp it with the
+new virtual tag, ASID, permissions, and the current epoch, and serve it, with no L2 read. The
+physically-correct bytes then survive the mapping change exactly as in a PIPT cache.
+
+```text
+Mapping change  -> advance epoch (retain lines + physical tags); DO NOT clear arrays.
+Fetch after it  -> virtual miss (epoch stale) -> probe same-offset physical tags
+                -> resident physical line found -> re-stamp {vtag, ASID, perms, epoch}
+                   and serve (reconcile); NO L2 read
+                -> none found -> ordinary miss: translate, fill from L2.
+```
+
+The full clear offered under *SFENCE.VMA And Mapping Changes* is safe ONLY for a cache with no
+write-back sibling on the same physical backing, or when every mapping change is known to be
+preceded by a `FENCE.I`. Neither holds for a split I-/D-cache with a write-back D-cache, so the
+I-cache uses epoch-retain-and-reconcile, not the clear.
+
+### An invalidation must poison outstanding fills, at the install point
+
+Retain-and-reconcile is not sufficient by itself. A fill that is OUTSTANDING when an
+invalidation occurs (a `FENCE.I`, or a mapping change's epoch bump) carries L2's contents as of
+the request — the OLD mapping/epoch. If its response installs a valid line after the
+invalidation has taken effect, that line re-enters the cache stamped current, and the
+invalidation meant to kill it is defeated: the classic "the cached copy outlived the event that
+was supposed to kill it" failure (compare `src/mmu.v`'s `ctx_poison`, and the retired fetch
+buffer's `rq_pois`). The rule:
+
+```text
+A fill is stamped with the invalidation epoch current when the request is ISSUED.
+On install, if that epoch != the current epoch, the fill is DROPPED — it installs no
+line. Equivalently: an invalidation poisons every fill then outstanding.
+```
+
+The poison MUST gate the cache's LINE INSTALL, not merely a downstream consumer (the fetch
+adapter, the frontend). The line persists in the arrays independently of whoever consumed — or
+discarded — the response, so poisoning only the consumer leaves a stale valid line behind that a
+later fetch of the same (now re-mapped) virtual address hits.
+
+### The concrete defect (2026-09-13)
+
+VHPR I-cache, Ubuntu boot cosim, retire ~6.20 M, at the paging-enable transition. A look-ahead
+fill for the kernel line at PA `0x80201080` was outstanding when the SATP write bumped the
+epoch. Its response landed after the flush and installed a line under the new virtual tag
+holding L2's then-current bytes (`00000013`, i.e. NOPs); a later fetch of that virtual address
+hit the stale line and retired a NOP where the reference retired the real instruction (an RVC
+`ret`). The shipping PIPT I-cache did not diverge — it does not flush on SATP, so it kept and
+physically hit the line it had fetched during identity boot. Epoch-retain + physical reconcile
+(§ above) plus issue-epoch-stamped fill install close it.
 
 ## Epoch Roll-Over
 
@@ -458,6 +558,11 @@ SFENCE.VMA invalidates stale virtual-hit state
 PTW reads use the physical L2 path rather than the VHPR hit path
 epoch roll-over cannot make an old line valid in the new epoch
 permission hits are rechecked against current privilege/control state
+a fill outstanding across an invalidation does not install a line afterward
+  (fills are stamped with the issue-time epoch and dropped on an epoch mismatch)
+a mapping change advances the epoch, never clears lines; a post-change fetch of a
+  resident physical line reconciles against it, it does not refill stale L2 (I-cache)
+the I-cache is never expected to make dirty data-cache code visible without FENCE.I
 ```
 
 Useful stress cases:
