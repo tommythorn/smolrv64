@@ -12,7 +12,13 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  14461521  0.5   # Stage 1 increment 1 (2026-09-13, wip/fe-stage1): the predictor reads its BTB and YAGS arrays combinationally at
+60000000  8  13424357  0.5   # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): the L1 I$ is virtually hit
+                              # (epoch-qualified vtag) with a physical-tag reconcile on miss (docs/VHPR.md); the ~500-line run-ahead fetch
+                              # buffer is gone, replaced by a 2-chunk alignment adapter. Lockstep clean to 60 M. -7.2% on the boot: the
+                              # adapter keeps ONE I$ request in flight + a 2-chunk window vs the buffer's two-in-flight/three-slot run-ahead
+                              # -- a KNOWN, recoverable MLP gap (clean structure first; IPC recovery is a tracked follow-up). Not the
+                              # prefetch (re-keyed VIRT-safe, on) nor the reconcile/epoch (negligible).
+                              # Was 14461521: Stage 1 increment 1 (2026-09-13, wip/fe-stage1): the predictor reads its BTB and YAGS arrays combinationally at
                               # base_pc instead of a cycle ahead at the register-predicted `apc`; `apc`, `npc` and the `lenp` length table are gone.
                               # +1.12% on the boot -- every presented bundle now reads its OWN entry (no apc/lenp mismatch loses a prediction) with the current
                               # GHR (yidx consistent with pd_fetch), recovering far more than the +0.13% the design estimated from apc-mismatch alone. Lockstep clean.
@@ -88,5 +94,11 @@
                               # found the real number was 26% above it, so the gate could not
                               # fail no matter what landed.  A throughput floor nothing can trip
                               # is not a gate.
-400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background.
-300000000  8   78964298  0.5   # The release tree (384fd599, RTL bit-identical to W7 + the counter split) at the required 300 M-cycle length, 2026-09-07; recorded so the standing gate has a floor at this length.
+400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background. NOTE: predates the Stage 2 VHPR I-cache landing (2026-09-13) -- re-baseline when this per-batch gate next runs.
+300000000  8   72184767  0.5   # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): re-baselined from 78964298 -- SAME VHPR landing as the
+                               # 60M/HW=8 row above. The run-ahead fetch buffer is gone, replaced by the 2-chunk alignment adapter. Lockstep
+                               # CLEAN to 300 M with the interrupt path exercised (inj first nonzero at c=99M, 2799 by c=299M) -- the correctness
+                               # acceptance this length exists for. -8.59% over the full boot vs -7.2% at 60 M: the longer run weights the
+                               # memory-active phase (past the tiny128 idle region) more heavily, and the adapter's single-outstanding + 2-chunk
+                               # window exposes less MLP than the buffer's two-in-flight/three-slot run-ahead. KNOWN, recoverable; IPC recovery
+                               # is a tracked follow-up. Prior release-tree floor: 78964298 (384fd599, W7 + counter split, 2026-09-07).

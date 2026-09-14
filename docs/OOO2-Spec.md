@@ -41,17 +41,17 @@ they were written and say so.
 Three architected stages plus a commit point. `F` is itself pipelined internally.
 
 ```
-  F  ── PC → iTLB → I$ → fetch buffer → aligner → RVC expand → decode ──┐
-                                                                        │  F/X queue (8)
-  X  ── rename → PRF read / M→X bypass → ALU, branch resolve ───────────┘
+  F  ── PC → I$ (VHPR: virtual hit) → alignment latch → aligner → RVC expand → decode ──┐
+       (the iMMU runs alongside: its PA is the I$ miss-path physical tag, not on the hit) │  decoupling queue (8)
+  X  ── rename → PRF read / M→X bypass → ALU, branch resolve ──────────────────────────────┘
   M  ── LSU / mul / div / FPU / CSR ── trap, redirect, BTB train
   C  ── ROB head: architectural commit, minstret, free-list release
 ```
 
 | stage | holds | can stall | can stall others | can restart the pipe |
 |---|---|---|---|---|
-| F | PC, predictor read, fetch buffer, aligner | yes | no | no |
-| F/X queue | up to 8 decoded instructions | — | back-pressures F when full | no |
+| F | PC, predictor read, VHPR I$ hit, alignment latch, aligner | yes | no | no |
+| decoupling queue | up to 8 decoded instructions | — | back-pressures F when full | no |
 | X | one decoded+renamed instruction | yes (`d_hold`) | holds F via `accept` | no |
 | M | one instruction | yes (`m_done` low) | holds X via `m_advance` | **yes** (`redirect`) |
 | C | ROB head | — | `head_block` holds M | no (the redirect fires from M) |
@@ -108,7 +108,7 @@ Measured, 300 M-cycle Linux cosim, retires: **67,160,189 → 68,981,116** (dispa
 frontend-bound (§14) and only ALU ops reorder; the buckets it targets are `ST_MEM` and
 `ST_FPU`, which dominate GB5 rather than a boot.
 
-### 2.2 Why the F/X queue exists
+### 2.2 Why the decoupling queue exists
 
 `accept` (X←F) is registered off M-stage state. The queue decouples fetch from the backend so
 a fetch bubble and a backend stall do not serialise. Depth 8 (`QDEPTH`), which bought ~3.9% on
@@ -129,7 +129,7 @@ complements.
 | I$ miss | `FE_IC` r0312 | line fill through the L2 arbiter |
 | iTLB miss / page-table walk | `FE_MMU` r0311 | PTW runs as a line requester |
 | had bytes, no complete instruction | `FE_ALN` r0313 | window is `OOO2_HW` halfwords |
-| had an instruction, F/X queue empty | `FE_QUE` r0314 | backend drained the queue |
+| had an instruction, decoupling queue empty | `FE_QUE` r0314 | backend drained the queue |
 | X idle for any other reason | `FE_BUB` r0310 | catch-all frontend bubble |
 
 ### 3.2 X stalls — `d_hold`
@@ -172,8 +172,13 @@ latched or they are lost.
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
 **Measured mispredict cost (`workloads/brbench`, 2026-09-08, L1-resident, the two-wide
-core).** The branch's path is fetch (the buffer serves the window, the aligner and decode
-write the F/X queue) -> dispatch the next cycle (the queue head is an asynchronous LUTRAM
+core).** *These figures predate the Stage 2 VHPR landing (2026-09-13): they were taken on the
+run-ahead fetch buffer, so the "in the buffer" / "buffer miss" rows and `FB_RHIT` below refer
+to the deleted structure and the buffer-hit vs I$-hit delta is re-derived in Stage 2 increment
+4 (`docs/PLAN-2026-09-13-frontend-stage2.md`); the alignment latch that replaced the buffer is
+also forward-only, so the back-edge analysis still holds in shape.* The branch's path is fetch
+(the alignment window serves the aligner, the aligner and decode write the decoupling queue)
+-> dispatch the next cycle (the queue head is an asynchronous LUTRAM
 read) -> select in `u_iq_l` -> the issue register (`i_v`, the payload read) -> M, where
 `redirect` is combinational and steers `pc_q` at that edge: five cycles from the branch's
 fetch to the target's, when the branch is the ROB head and its operands are ready. A loop
@@ -219,53 +224,52 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   `perf stat -e cycles,instructions sha256sum` on a 30 MB tmpfs file reads IPC 1.32 / 1.38 /
   1.39 on the board (three back-to-back runs after boot), against 0.90 with two-wide fetch
   alone (T1F3).
-- **Fetch buffer: three chunk-aligned 16-byte chunks, two requests in flight, running two
-  chunks ahead** (plan item 10e, 2026-09-05; two chunks and one request before). The pair
-  chunk0/chunk1 serves any window across it, as before; chunk2 is a landing pad that feeds
-  chunk1 at the *slide* (the PC entering chunk1: chunk1 becomes chunk0). A request leaves for
-  the first of chunk0..2 neither held nor in flight -- chunk1..3 in the slide cycle -- inside
-  chunk0's page; two may be outstanding; the I$ port's tag names the request entry and the
-  answer's address names the slot (both asserted). Shifts are chosen by address, so the PC
-  entering a chunk whose bytes are in flight keeps the other slots -- and only inside
-  chunk0's page (`fb_samepg`, rule D10): chunk1's PA is chunk0's plus 16, a translation
-  within the page and nowhere else. The first cut matched on the VA alone, and a PC falling
-  through a page's last chunk slid to the next PHYSICAL page tagged as the next virtual
-  one: init died 2.4 s into every board boot (2026-09-06), the tiny128 cosim reproduced it
-  at cycle 833 M, fixed 2026-09-07. Why: one request in
-  flight, asked for on the slide and answered two cycles later, kept a one-wide consumer fed
-  and left a two-wide one -- a chunk eaten in two cycles -- idle one cycle in three;
-  `tools/fe-pipe-model.py` put fetch at 1.23 instructions per cycle on the sha256 kernel as
-  built and 1.99 with this. The history of the single-request buffer, kept: when the PC
-  entered chunk1 chunk2 was requested in that same cycle,
-  and landed 3 cycles later, usable the cycle after. Until 2026-09-05 the request waited for
-  the registered state, one cycle later, and a chunk holding three whole 32-bit ops and a
-  straddler (compiled code between its compressed ops: half of sha256's chunks) starved the
-  aligner one cycle each: `FE_QUE` 8.0% of the sha256 kernel's cycles in sim, 8.2–8.5% for
-  `sha256sum` on the board, traced to 1,835 of 3,342 four-instruction chunks (`FB_TRACE` in
-  `rv_soc_top`). With the slide-cycle request: febench `shifted` 0.79 → 0.98, the sha256
-  kernel (`workloads/shabench`, sim) IPC 0.898 → 0.951 with `FE_QUE` 0.0%. Board (build Q,
-  644f732c, interrupt-bracketed): `sha256sum` 0.80 → 0.86–0.87 with `FE_QUE` 8.4% → 0.4%,
-  the C loop 0.876 → 0.90, libcrypto under `openssl speed` 0.784 → 0.820; the boot is
-  −0.19% (memory-bound; wasted chunk requests at taken branches, presumably).
-- **The fetch address is the PC register, bare; a hit carries its translation** (plan item
-  T1 (F) steps 4-6, 2026-09-07). `imem_addr = pc_q` in every state: a page straddle steps
-  pc_q to the high halfword's address and `ipc_q` keeps the instruction's PC (the bundle's PC,
-  a fault's EPC); a pending interrupt waits out a straddle (`irq_go`) instead of abandoning
-  it, so no state reads `irq_inject` before the bundle muxes. A served hit is consumed on
-  the buffer's word alone (`imem_ok_g = imem_ok & ~imem_ctx_chg_q`): the buffer holds only
-  bytes captured under a real translation of that VA and drops them on a context change,
-  so the iMMU's live verdict (its 64-bit request match and TLB compare) is not in the
-  window's enable; a miss still takes the iMMU's fault. The page cap on the aligner's
-  window is chunk0's index in the page against the last (`in_last`, `hw_left`), not
-  `(4096 - off) >> 1` compared with HW. Why: gate W5fix (2026-09-07) missed 166.67 MHz by
-  0.271 ns on irq_inject_q -> the fetch VA mux -> the iMMU's match -> the served window ->
-  the straddle detect -> pc_q, 20 levels, and the census put 6,000 endpoints within 0.35
-  ns across every family. Cycle-exact on the 60 M boot (14,301,801 retires, unchanged).
+- **VHPR I-cache: the run-ahead fetch buffer is gone; the I$ is virtually hit** (Stage 2,
+  2026-09-13). The L1 I$ is virtually indexed AND virtually tagged (`rv_cache` `VIRT=1`,
+  §9.1): a hit is `valid & (vtag == VA) & (epoch == cur_epoch)`, so address translation is
+  **off** the fetch hit path. The iMMU still translates every fetch, but its PA is used only
+  as the miss-path **physical tag** (for reconcile) and for the L2 fill — never on the hit
+  compare. VAs are Sv39, sign-extended to 64 bits and masked to the canonical 39
+  (`PAW_SIG=39`); the virtual tag is that 39-bit VA. A `satp`/`sfence.vma` mapping change
+  (`imem_ctx_chg`, narrowed to satp/sfence — a bare U↔S privilege change needs no I$ action;
+  permissions stay the iMMU's) advances a **2-bit epoch**, staling every virtual tag in one
+  cycle without clearing arrays. Retained lines are then re-validated by **physical-tag
+  reconcile** on the next miss, so code physically resident survives a mapping change exactly
+  as the old PIPT I$ retained it across `satp` — the coherence requirement that a virtual-hit
+  I$ must replicate (`docs/VHPR.md`, "Instruction-Cache Coherence, Outstanding Fills, And
+  Mapping Changes"). `fence.i` invalidates after the D$ writeback drains (the FSM ordering is
+  kept); an outstanding fill taken under the old mapping is **poisoned** at the install point
+  (`v_wd = 0` when `f_epoch != cur_epoch`). Prefetch (next-line stream) is kept and re-keyed
+  VIRT-safe (probe by `r_pa`/`f_pa`, arm by `f_pa`). The single-copy invariant (≤1 valid line
+  per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
+- **Alignment latch (replaces the run-ahead buffer)** (Stage 2, 2026-09-13). The ~500-line
+  VA-tagged run-ahead fetch buffer (three chunk-aligned 16-byte slots, two requests in
+  flight) is **deleted**; its virtual-tag job folded into the VHPR I$. What remains is a small
+  alignment adapter: two VA-tagged 16-byte chunk slots holding the recent I$ reads, the
+  aligner windowed across the PC's chunk and the next, and **one demand I$ read in flight**
+  (plus prefetch). Gone with it: the `rq_pois`/`fb_samepg` machinery, the FBDIAG readout +
+  self-reset, `FB_TRACE`, and the forward-only page-crossing slide that was the ld.so bug's
+  home (the run-ahead buffer slid across a page by physical addition; only the glibc cosim
+  caught it, 2026-09-07 — the whole slide mechanism is now gone). **Cost:** the adapter keeps
+  one request in flight + a two-chunk window against the buffer's two-in-flight, three-slot
+  run-ahead, so it exposes less memory-level parallelism — **−7.2% of retires on the boot**
+  (60 M cosim: 14,461,521 → 13,424,357, lockstep clean, §12). This is a **known, recoverable**
+  gap (clean structure first; deeper adapter run-ahead / more in-flight I$ requests is a
+  tracked follow-up), not the prefetch (VIRT-safe, on) nor the reconcile/epoch (negligible).
+- **The fetch address is the PC register, bare** (plan item T1 (F) steps 4-6, 2026-09-07; the
+  buffer's translation-carry is gone with the buffer). `imem_addr = pc_q` in every state: a
+  page straddle steps pc_q to the high halfword's address and `ipc_q` keeps the instruction's
+  PC (the bundle's PC, a fault's EPC); a pending interrupt waits out a straddle (`irq_go`)
+  instead of abandoning it. The alignment window drops on a context change
+  (`freeze = fi_stall | ic_inv_busy | imem_ctx_chg`, gating `imem_ok`); a miss still takes the
+  iMMU's fault. The page cap on the aligner's window is chunk0's index in the page against the
+  last (`in_last`, `hw_left`), not `(4096 - off) >> 1` compared with HW. (The straddle/`ipc_q`
+  FSM Stage 1 kept is retired in Stage 2 increment 3, once the per-line 4K/2M cap bit lands.)
 - **Two-wide fetch** (2026-09-05, plan item 10a): the aligner emits up to two instructions per
-  cycle (`IW=2`) and both enter the F/X queue in one cycle; the queue is two LUTRAM banks on
+  cycle (`IW=2`) and both enter the decoupling queue in one cycle; the queue is two LUTRAM banks on
   entry parity, so each bank takes one write per cycle and the head is a 2:1 mux. Decode still
   pops one. A bundle ends at its first CTI or SYSTEM op or at the page boundary; when a later
-  slot's bytes are not in the window yet but are coming (the shortfall is the buffer's, not
+  slot's bytes are not in the window yet but are coming (the shortfall is fetch's, not
   the page's: `bytes_late`) the bundle WAITS rather than cutting (item 10e; until then slot 1
   could not cross a 16-byte chunk boundary, which made 338 of the sha256 kernel's 934 bundles
   singles), so a bundle's shape is a function of the code alone, never of chunk-arrival
@@ -820,7 +824,7 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 - **A data-side fault completes M one cycle after the LSU reports it.** The cycle that
   reports it only latches it (`m_unit_flt_q`); the trap, the redirect and the ROB-head gate
   read the copy. That keeps `m_addr -> dTLB -> lsu_fault` out of `xtrap_v -> redirect -> the
-  fetch adder -> the F/X queue`, and costs one cycle per data fault -- the rarest thing M
+  fetch adder -> the decoupling queue`, and costs one cycle per data fault -- the rarest thing M
   does. For the same reason the redirect uses `m_done` with the LSU arm removed, and the
   writeback valids `we_ld`/`we_fe` (the wakeup broadcast) use `lsu_done_acc`, the completion
   of an access this stage started: a translate pass or a fault never writes a register.
@@ -895,6 +899,11 @@ Two independent `mmu` instances — **iTLB** in `ooo2_core`, **dTLB** in `ooo2_l
 The MMU also range-checks the resolved PA: anything outside {RAM, CLINT, PLIC, UART, LSRAM,
 virtio} faults rather than being silently dropped.
 
+Each `mmu` also drives **`t_lvl`** (the resolved leaf level, from the walk or the hit TLB
+entry; Stage 2 increment 1, additive). The iMMU's `t_lvl` is threaded to the VHPR I$ alongside
+the PA so a line can record its enclosing page size (4K vs ≥2M) at fill; the per-line cap bit
+that consumes it — and retires the fetch straddle FSM — is Stage 2 increment 3.
+
 ---
 
 ## 9. Memory system
@@ -906,13 +915,13 @@ Both are the **same module** (`rv_cache`), specialised by parameter.
 | | I$ | D$ |
 |---|---|---|
 | Size | 64 KB | 64 KB |
-| Associativity | **2-way skew-associative** | 2-way skew-associative |
+| Associativity | 2-way (**not** skewed under VIRT) | **2-way skew-associative** |
 | Sets | 512 | 512 |
 | Line | 64 B (512 bit) | 64 B |
-| Indexing | **PIPT** | **PIPT** |
+| Indexing | **VHPR** (virtual index+tag, physical reconcile) | **PIPT** |
 | Read width | `OOO2_HW*16` = 128 bit, two 64-bit banks | 64 bit |
 | Write policy | fill-only (`WRITABLE=0`) | **write-back** (`WRTHRU=0`) |
-| Prefetch | next-line, single-line stream buffer | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
+| Prefetch | next-line stream, **on**, re-keyed VIRT-safe (Stage 2) | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
 
 **Not UltraRAM.** Data is even/odd **banks** of `BANKW` bits per way — `2*WAYS` sync-read
@@ -921,8 +930,23 @@ consecutive chunks, which have opposite parity and therefore live in different b
 read serves it, with a byte shift instead of a full-line mux. A byte-masked store is a
 read-modify-write of one chunk, no cross-bank RMW.
 
-Skew: way 1 XORs low tag bits into the index; a victim's base index is recovered as
-`skewed_index ^ victim_tag`.
+Skew (D$): way 1 XORs low tag bits into the index; a victim's base index is recovered as
+`skewed_index ^ victim_tag`. The **VHPR I$ does not skew** (`VIRT=1`): the miss-path physical
+reconcile probes the same-offset synonym candidates by a straight index, and a tag-XORed index
+would scatter them across sets. Both ways use the plain virtual index.
+
+**VHPR I$ (`VIRT=1`, Stage 2, 2026-09-13).** The I$ is virtually indexed and virtually tagged
+so translation is off the hit path (§4.1). Per line it stores, besides the virtual tag: the
+**physical tag** (`ptagm`) and a **2-bit epoch** (`epm`). A hit is `valid & (vtag == VA) &
+(epoch == cur_epoch)`. A `satp`/`sfence.vma` (`ep_bump = imem_ctx_chg`) advances `cur_epoch`,
+staling every line in one cycle; on the next **miss** the physical tag is compared against the
+translated PA (`ptagm == r_pa[tag]`) and a physical match is re-validated in place under the
+new epoch (**reconcile**) rather than refetched — so physically-resident code survives a
+mapping change, matching what the old PIPT I$ got for free. The single-copy invariant (≤1
+valid line per physical line) holds it together; a fill taken under the old mapping is poisoned
+(`v_wd=0` when `f_epoch != cur_epoch`). Epoch roll-over (2-bit wrap) triggers a one-shot
+invalidate walk before publishing epoch 0. `fence.i` still invalidates after the D$ writeback
+drains. Full design and always-on assertions: `docs/VHPR.md`.
 
 Measured D$: **3.24 cycles per access** at a **0.195% miss rate** — i.e. the LSU cost is hit
 latency, not misses.
@@ -954,10 +978,11 @@ matters: if the win came from hiding miss latency it would have grown, and it di
 
 The reason is that the split gives the CACHE the ability to overlap a hit with a fill while
 nothing on the data side produces the second request. The LSU and each PTW walk are
-single-outstanding (section 8) -- the I$ fetch buffer has had two requests in flight since
-item 10e (2026-09-05), which the I$ serves at a hit per two cycles -- so the D$'s `S_CHECK`
-usually has nothing to run under the miss. The cache is now READY for memory-level parallelism and is not the thing limiting
-it. Any further work inside `rv_cache` aimed at hiding latency is optimising a resource that
+single-outstanding (section 8); the I$ side used to run two requests in flight (the run-ahead
+fetch buffer, item 10e), but the Stage 2 alignment adapter that replaced it is
+**single-outstanding** too (one demand read + prefetch, §4.1) -- so the D$'s `S_CHECK` usually
+has nothing to run under the miss. The cache is now READY for memory-level parallelism and is
+not the thing limiting it. Any further work inside `rv_cache` aimed at hiding latency is optimising a resource that
 is not the constraint -- the constraint is the number of independent requests the core can
 have in flight, i.e. the multi-outstanding load queue in the work list below.
 
@@ -1126,7 +1151,7 @@ an event to a run means dropping one.
 | `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
 | `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
 | `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in d_hold's order: the instruction's scheduler full / rename's free list empty / store queue full / load queue full / a serializing op draining (the `hold` set, 2026-09-07) |
-| `FB_HIT` / `FB_RHIT` | r0315 / r0316 | the fetch buffer served the PC / on the first fetch after a redirect |
+| `FB_HIT` / `FB_RHIT` | r0315 / r0316 | **retired with the fetch buffer (Stage 2): tied to 0.** The token/bit is kept so the board perf map stays stable; the alignment latch has no equivalent served-hit event yet |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
 
@@ -1229,7 +1254,7 @@ degree, they disagree about which unit is the bottleneck:
 | cycles/byte | 222.90 | **122.70** |
 | IPC | 0.277 | **0.506** |
 | `FE_ALN` (RVC aligner) | **37.0%** | 8.0% |
-| `FE_QUE` (F/X empty) | 24.0% | 24.0% |
+| `FE_QUE` (decoupling-queue empty) | 24.0% | 24.0% |
 | `ST_MEM` | 7.9% | **23.7%** |
 
 At HW=2 the RVC aligner looks like the largest stall in the machine and the scheduler
@@ -1834,9 +1859,10 @@ port needs the explicit one: an `rd_ack` combinational from the accept, with eve
 splitting its single pending bit into REQUESTING (cleared on ack) and OUTSTANDING (cleared on
 the response) -- rule D5, and the same defect `wip/pipelined-loads` hit as `pt_ack`.
 
-**And even with the ack it buys nothing alone**: the LSU, the I$ fetch buffer and each PTW
-walk are all single-outstanding, so each drops its request on the ack with no next address
-ready and `S_CHECK` never actually self-loops. Design the ack together with the
+**And even with the ack it buys nothing alone**: the LSU, the I$ alignment adapter (Stage 2;
+the run-ahead fetch buffer before it) and each PTW walk are all single-outstanding, so each
+drops its request on the ack with no next address ready and `S_CHECK` never actually
+self-loops. Design the ack together with the
 multi-outstanding LSU that consumes it, not ahead of it.
 
 ### P1 -- triage the regression against 95aff227 (8/22)

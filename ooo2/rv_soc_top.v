@@ -133,7 +133,7 @@ module rv_soc_top #(
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
-      .fe_redirect(fe_redirect), .hpm_fb_hit(fb_hit_q), .hpm_fb_rhit(fb_rhit_q),
+      .fe_redirect(fe_redirect), .hpm_fb_hit(1'b0), .hpm_fb_rhit(1'b0),   // no fetch buffer (VHPR I$)
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
@@ -562,7 +562,7 @@ module rv_soc_top #(
       // is registered, and the D$ is idle again in that cycle -- without this it is taken twice.
       .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_req(dmem_wen & ~dc_wr_cpl & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
-      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl), .inv_req(dc_inv_req), .inv_clean(1'b1), .inv_busy(dc_inv_busy),
+      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl), .inv_req(dc_inv_req), .inv_clean(1'b1), .ep_bump(1'b0), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
       .perf_access(dc_access), .perf_miss(dc_miss));
@@ -574,6 +574,11 @@ module rv_soc_top #(
    // below waits for this flush (df==DF_IDLE) before invalidating, so DDR is current before the
    // refetch. sfence.vma does NOT trigger this: PTW reads go through the D$ (coherent), so the
    // walk never sees stale memory -- sfence only flushes the TLB (in the MMU).
+   // fence.i CHANGES code: drain + clean-flush the D$ (df) then CLEAR the I$ (fi), so the refetch
+   // reads current L2. A MAPPING change (satp/sfence) does NOT change code -- it only stales
+   // virtual tags -- so it advances the I$ EPOCH (ic_ep_bump): the I$ retains its lines and
+   // reconciles them by physical tag on refetch (docs/VHPR.md), with no D$ writeback, no clear.
+   wire ic_ep_bump = imem_ctx_chg;
    localparam DF_IDLE=0, DF_DRAIN=1, DF_INV=2, DF_WAIT=3;
    reg [1:0] df;  wire df_stall = (df != DF_IDLE);
    reg dc_inv_req_r;  assign dc_inv_req = dc_inv_req_r;
@@ -588,517 +593,122 @@ module rv_soc_top #(
          endcase
       end
 
-   // ---------------- I$ (read-only) + fetch adapter + fence.i FSM (proven in tb_vl) ----------------
-   // ---- CHUNK-ALIGNED RUN-AHEAD FETCH BUFFER --------------------------------------
-   // Replaces a one-window adapter that tagged its single held window with the EXACT byte
-   // address it was fetched at (`i_pa == imem_addr`).  Every PC change therefore missed and
-   // re-looked-up the I$: 1.004 lookups per RETIRED INSTRUCTION, measured, costing ~2.0 CPI
-   // of FE_BUB on silicon on every workload tried (cold boot, tight hot loop, gzip alike) --
-   // ~1.0 waiting for a hit that need not have happened plus ~1.0 of arrival bubble.  It was
-   // invisible because at HW=2 the window is exactly one instruction wide, so an exact-match
-   // tag and a range check behave identically; the comparison only becomes WRONG once the
-   // window is wider than the instruction being fetched.
-   //
-   // Now: two CHUNK-ALIGNED windows held back to back, served to the frontend by a byte shift
-   // across the pair (and a third behind them that only feeds the second -- item 10e).  The I$ is looked up once per CHUNK (2 instructions at HW=4, up to 4
-   // with RVC) instead of once per instruction, and because the cache is idle while a chunk is
-   // being consumed, chunk1 is prefetched into that idle slot -- so the lookup latency lands
-   // off the critical path entirely rather than in front of every instruction.
-   //
-   // Requests are chunk-ALIGNED, so the I$ never sees a line-crossing fetch.  Given what the
-   // D-cache span path cost this project, removing a whole class of straddling access from the
-   // I$ is worth as much as the cycles.
-   //
-   // PAGES.  imem_addr is a PHYSICAL address, and the virtually-next page is not the
-   // physically-next page, so chunk1 is prefetched ONLY when it lies in the same 4 KiB page as
-   // chunk0.  At a page boundary fb_v1 simply stays 0, the next PC misses, and the buffer
-   // realigns on the freshly translated PA -- one extra lookup per page, which is nothing.
-   // This also keeps the pair within one translation, so serving across the pair is always
-   // serving bytes the iMMU actually vouched for.
-   localparam integer CHB  = HW*2;              // chunk bytes
-   localparam integer CHA  = $clog2(HW*2);      // chunk-align shift
-   localparam integer PGB  = 12;                // 4 KiB page
+   // ---------------- VHPR I$ (virtually hit) + alignment adapter + fence.i FSM ----------------
+   // Stage 2: the I$ is virtually indexed/tagged (rd_addr = the fetch VA, rd_pa = its PA), so
+   // translation is off the hit path and the ~500-line run-ahead fetch buffer is gone. What is
+   // left is a small alignment adapter: two VA-tagged 16-byte chunk slots hold the recent I$
+   // reads, the aligner is windowed across the PC's chunk and the next, and one demand I$ read
+   // refills in flight. Permissions/faults stay the iMMU's (immu_fault, in ooo2_core), so a
+   // plain U<->S privilege change needs NO I$ invalidation -- only a MAPPING change
+   // (imem_ctx_chg, narrowed to satp/sfence in ooo2_core) or fence.i does. Stage 2a invalidates
+   // with the I$'s existing full flush; the 2-bit epoch that makes it a 1-cycle bump is 2b.
+   localparam integer CHB = HW*2;              // chunk bytes = one 16-byte I$ read
+   localparam integer CHA = $clog2(HW*2);      // chunk-align shift (=4)
 
-   reg  [63:0]      fb_pa;                      // PA of chunk0 (chunk-aligned) -- FILL address
-   reg  [63:0]      fb_va;                      // VA of chunk0 (chunk-aligned) -- HIT tag
-   // chunk1 is only fetchable if it shares chunk0's page (see PAGES above)
-   wire [63:0]      fb_pa1;
-   wire [63:0]      fb_va1;
-   wire             fb_samepg;
-   reg              fb_v0, fb_v1;
-   reg  [HW*16-1:0] fb_w0, fb_w1;
-   // A THIRD SLOT AND TWO REQUESTS IN FLIGHT (item 10e, 2026-09-05). w2 is a landing pad
-   // that only ever feeds w1 at the slide: the frontend is still served from the pair and
-   // the serve shifter is untouched. The request entries carry the chunk's PA (what a fill
-   // is matched by) and VA (what the arrival bypass is matched by); the entry index rides
-   // the I$ port as the request tag and comes back with the answer. Why, at fb_want below.
-   reg  [HW*16-1:0] fb_w2;  reg fb_v2;
-   // fb_pa/fb_va name real bytes only while fb_tagv: the pair is captured under a REAL
-   // translation (imem_xlate_ok) and dropped on a context change. The address-based shifts
-   // below would otherwise match the PC's VA against a pair whose PA is a mid-walk stale
-   // leaf (the tiny128 cosim caught exactly that: va ..80001040 held pa 0x40) or the
-   // previous address space's, and then ask for it.
-   reg              fb_tagv;
-   reg  [1:0]       rq_v, rq_sent, rq_pois;
-   reg  [63:0]      rq_pa0, rq_pa1, rq_va0, rq_va1;
+   wire [HW*16-1:0] ic_rd_data;   wire ic_rd_valid, ic_inv_busy;
+   wire [63:0]      ic_rd_resp_addr;   wire [3:0] ic_rsp_tag;   wire ic_rd_ack;
+   wire             ic_l2_req, ic_l2_we;   wire [LAW-1:0] ic_l2_addr;   wire [511:0] ic_l2_wdata;
+   wire [511:0]     ic_l2_rdata;   wire ic_l2_ack;
 
-   wire [HW*16-1:0] ic_rd_data;  wire ic_rd_valid, ic_inv_busy;  wire [63:0] ic_rd_resp_addr;
-   wire [3:0]       ic_rsp_tag;
-   assign fb_pa1    = fb_pa + CHB;
-   assign fb_va1    = fb_va + CHB;
-   // chunk2 and chunk3: from the registers, in parallel with fb_pa1, so the request address
-   // mux gains arms and no adder depth. Every same-page test is against chunk0's page: a
-   // chunk inside it has every chunk between them inside it too.
-   wire [63:0]      fb_pa2 = fb_pa + 2*CHB;
-   wire [63:0]      fb_va2 = fb_va + 2*CHB;
-   wire [63:0]      fb_pa3 = fb_pa + 3*CHB;
-   wire [63:0]      fb_va3 = fb_va + 3*CHB;
-   // "chunk0 + k is in chunk0's page" is chunk0's index in the page against the page's last
-   // index -- a test of register bits, not a compare of the sums' upper halves (a carry
-   // chain and 52 XNORs). Since 2026-09-07 fb_samepg is in fb_hit and so in the fetch PC's
-   // next-state cone (rule D10); written as the sum compare that cone missed 166.67 MHz by
-   // 0.271 ns (gate W5fix).
-   localparam [PGB-CHA-1:0] LASTC = {(PGB-CHA){1'b1}};
-   wire [PGB-CHA-1:0] fb_ci = fb_pa[PGB-1:CHA];
-   assign fb_samepg = (fb_ci != LASTC);
-   wire             fb_samepg2 = (fb_ci < LASTC - 1'b1);
-   wire             fb_samepg3 = (fb_ci < LASTC - 2'd2);
+   // The deleted FBDIAG readout window and its self-reset: tied off (no buffer to observe).
+   assign fbdiag_rdata     = 64'd0;
+   assign fbdiag_reset_req = 1'b0;
 
-   // Hit test is an EQUALITY on chunk-aligned addresses, not a subtract-and-compare on byte
-   // offsets. The first cut computed `imem_addr - fb_pa` and compared the 64-bit result against
-   // CHB and 2*CHB; that put a 64-bit subtractor plus two magnitude comparators directly in the
-   // fetch path and cost 0.79 ns of WNS (+0.061 -> -0.728 at 111 MHz). Equality against a
-   // registered address is a comparator tree with no carry chain, and the offset within the
-   // chunk is then just the PC's low bits -- free.
-   wire [63:0]      fb_al  = {imem_addr[63:CHA], {CHA{1'b0}}};  // chunk containing the PC (PA)
-   wire [CHA-1:0]   fb_lo  = imem_addr[CHA-1:0];                // byte offset within that chunk
-   // THE HIT TEST IS VIRTUAL.  It used to compare fb_al (a PA) against fb_pa, which put the
-   // whole iMMU -- req_match's 64-bit compare plus this PA compute, six CARRY8 stages -- in
-   // front of the buffer hit, the I$ data mux, the aligner, the next-PC and the predictor
-   // read, all in one cycle.  Measured 2026-08-20 at 166.67 MHz: that head was ~2.9 ns of a
-   // 6.06 ns path.  The VA is available a translation earlier and is just as good a tag,
-   // because fb_samepg keeps BOTH chunks inside one 4 KiB page and therefore inside one
-   // translation (see PAGES above) -- so the pair is valid exactly as long as that
-   // translation is, which is what imem_ctx_chg tracks.
-   wire [63:0]      fb_alv = {imem_va[63:CHA], {CHA{1'b0}}};    // chunk containing the PC (VA)
-   // BY ADDRESS first, then by presence (item 10e): the PC's chunk can be chunk0, 1 or 2 by
-   // address while its bytes are still in flight, and that is a wait for the fill, not a
-   // realign that would throw the other slots away.
-   wire             fb_in0a = fb_tagv & (fb_alv == fb_va);
-   // ...AND ONLY WHEN THE CHUNK'S ASSUMED PA IS TRUSTWORTHY (2026-09-07). fb_pa1/fb_pa2 are
-   // fb_pa plus one or two chunks: a translation is linear inside a page and nothing beyond
-   // it. The first cut matched chunk1 and chunk2 on the VA alone, so a PC falling through
-   // the last chunk of a page took the slide arm below -- `fb_pa <= fb_pa1`, the next
-   // PHYSICAL page's first chunk, tagged with the next VIRTUAL page -- and the buffer then
-   // requested and served that neighbour as the new page's code. Kernel text never showed
-   // it (physically contiguous); ld.so did, deterministically, 2.4 s into every boot (W1,
-   // W5), and the glibc cosim at cycle 833,573,569 with the buffer's own invariant. With
-   // fb_samepg in the match, a page crossing is a realign: the PA comes from the iTLB.
-   wire             fb_in1a = fb_tagv & (fb_alv == fb_va1) & fb_samepg;
-   wire             fb_in2a = fb_tagv & (fb_alv == fb_va2) & fb_samepg2;
-   wire             fb_in0 = fb_v0 & fb_in0a;
-   wire             fb_in1 = fb_v1 & fb_in1a;
-   wire             fb_hit = fb_in0 | fb_in1;
-   wire             fb_miss = ~fb_hit;                                     // nothing to SERVE
-   wire             fb_realign = ~(fb_in0a | fb_in1a | (fb_in2a & fb_v2));  // nothing to KEEP
-
-   // DOES THE ADDRESS COMPARISON PAY?  The buffer is deliberately NOT flushed on redirect, and
-   // that retention is the ONLY reason a tag is needed at all -- a buffer that only ever holds
-   // fall-through bytes can be indexed by a pointer.  The retention earns something exactly
-   // when a redirect's target lands in the bytes already held, i.e. when the first fetch after
-   // a redirect HITS.  Nothing counted that, so the tag's value has never been measured; the
-   // justification in the RTL was "mispredicts are ~11.5% of instructions", which measurement
-   // later put at 0.17-0.34%.
-   //   FB_HIT  0x0315  buffer hits (denominator: how often the buffer serves at all)
-   //   FB_RHIT 0x0316  buffer hits in the redirect shadow == what flush-on-redirect would lose
-   // FB_RHIT near zero means the tag earns nothing and a stream buffer is free.  A large
-   // FB_RHIT means the buffer is already acting as a small loop buffer, and making it bigger
-   // is the interesting direction rather than removing it.
-   // REGISTERED before leaving this module.  fb_hit is a late combinational signal in the
-   // fetch path and fe_redirect crosses a hierarchy boundary; driving ooo2_core's hpm inputs
-   // from them directly adds load and a new endpoint to a cone that has ~zero slack.  A
-   // counter cannot observe which cycle an event landed on, which is the same argument that
-   // made hpm_ev_q free -- so pay the delay here instead.
-   reg              fb_red_q, fb_hit_q, fb_rhit_q;
-   always @(posedge clk) begin
-      fb_red_q  <= reset ? 1'b0 : fe_redirect;
-      fb_hit_q  <= reset ? 1'b0 : fb_hit;
-      fb_rhit_q <= reset ? 1'b0 : (fb_hit & fb_red_q);
-   end
-   // offset into the PAIR: chunk1 hits start CHB bytes in. No subtractor.
-   wire [CHA+1-1:0] fb_off = {fb_in1, fb_lo};
-   // THE SAME OFFSET FROM REGISTER BITS ALONE (rule I13 / plan item T1 (F), 2026-09-06). The
-   // pair is two chunk-aligned chunks, so while the PC is inside it, "which chunk" is one bit:
-   // PC[CHA] differs from the chunk0 tag's bit CHA exactly when the PC is in chunk1. fb_roff
-   // therefore needs no 64-bit compare -- imem_addr and fb_va are registers -- and the served
-   // window below (the decoupling queue's 4,112-path data cone in W4's census, 25 levels, 70% route)
-   // is a shift of registers by register bits followed by the aligner. Whether the bytes are
-   // the PC's at all is fb_hit, which leaves as imem_ok and gates only the handshake.
-   wire             fb_sel1 = imem_addr[CHA] ^ fb_va[CHA];
-   wire [CHA+1-1:0] fb_roff = {fb_sel1, fb_lo};
-
-   // THE INVARIANT THE VA TAG RESTS ON, checked every cycle rather than argued once:
-   // a virtual hit must name the same bytes the iMMU vouches for RIGHT NOW.  If a mapping
-   // changed without imem_ctx_chg firing, the tag still matches while the PA has moved --
-   // this is the difference between "the invalidation set is complete" and "we hope it is",
-   // and it is the only thing standing between a missed invalidation and silently executing
-   // instructions from the previous address space.
-   always @(posedge clk)
-      if (!reset & fb_hit & imem_xlate_ok & ~imem_ctx_chg & (fb_al != (fb_in1 ? fb_pa1 : fb_pa)))
-         $fatal(1, "rv_soc_top: VA-tagged fetch buffer hit with a STALE mapping: va=%h pa_now=%h pa_cached=%h (in1=%b)",
-                fb_alv, fb_al, (fb_in1 ? fb_pa1 : fb_pa), fb_in1);
-
-   // ---- SILICON READOUT for the same invariant (FBDIAG_BASE) --------------------------
-   // The $fatal above only exists in simulation, and the failure it is meant to catch has
-   // so far only ever appeared on the board -- in systemd's generator phase, which runs
-   // BEFORE networking and before sshd, so there is no login, no perf, no ssh.  The only
-   // channels alive at that moment are the LEDs and a CPU reset into the ROM monitor, and
-   // a CPU reset leaves DRAM and every register intact except the first 32 B of DRAM.
-   // So: latch the evidence into registers the monitor can read with R<addr>.
-   //
-   // EVERYTHING HERE IS A REGISTERED OBSERVER.  It reads one-cycle-delayed copies and
-   // nothing in the design reads its output, so it cannot appear on any timing path --
-   // which is what makes it safe to carry in a bitstream that closes at +0.0245 ns.
-   //
-   // NOT reset by `reset`: reset here is probe_reset, driven by ui_cpu_reset, and the whole
-   // point is to survive the reset that gets us back to the monitor.  These clear only on
-   // power-on / reconfiguration, via their initial values.
-   reg        d_hit, d_in1, d_ok, d_ctx;
-   reg [63:0] d_al, d_pa, d_pa1, d_alv;
-   reg [63:0] d_satp, d_va; reg [1:0] d_priv;
-   always @(posedge clk) begin
-      d_hit <= fb_hit;  d_in1 <= fb_in1;  d_ok <= imem_xlate_ok;  d_ctx <= imem_ctx_chg;
-      d_arr <= fb_arr;  d_rsp <= ic_rd_resp_addr;   // the arrival bypass, judged the same way (2026-09-06)
-      d_al  <= fb_al;   d_pa  <= fb_pa;   d_pa1 <= fb_pa1;        d_alv <= fb_alv;
-      d_satp <= imem_satp_q;  d_priv <= imem_priv_q;  d_va <= imem_va;
-   end
-   // TWO conditions, deliberately separated so the fix can be FALSIFIED rather than merely
-   // confirmed.  imem_avail_g now suppresses consumption when d_ctx is set, so:
-   //   fb_stale_now   -- a hit whose bytes ARE consumed and name the wrong PA.  Must be 0.
-   //   fb_ctxhit_now  -- the same tag/PA disagreement on the context-change cycle itself,
-   //                     now harmless because nothing consumes it.  Counted, not fatal.
-   // If the board comes back with stale=0 and a LARGE ctxhit count, that is positive
-   // evidence the mechanism was identified correctly -- not just an absence of symptoms.
-   wire fb_mism      = (d_al != (d_in1 ? d_pa1 : d_pa));
-   // THE ARRIVAL BYPASS TOO (2026-09-06): the sim's $fatal on a VA-matched arrival that serves
-   // a stale PA had no silicon twin, and W1 (main + the run-ahead buffer) died in init with a
-   // return to a garbage address -- what wrong instruction bytes do. Same latch, same reset.
-   reg        d_arr;  reg [63:0] d_rsp;
-   wire fb_arr_stale_now = d_arr & d_ok & ~d_ctx & (d_rsp != d_al);
-   wire fb_stale_now = (d_hit & d_ok & ~d_ctx & fb_mism) | fb_arr_stale_now;
-   wire fb_ctxhit_now = d_hit & d_ok &  d_ctx & fb_mism;
-
-   // The OTHER failure class, and the reason this block reports two bits instead of one.
-   // A's stale-mapping invariant has run clean for 78M retirements of cosim; the commit
-   // also gated fb_wantv on imem_xlate_ok, which can LOSE a fill or wedge the buffer.  A
-   // dark stale bit with a lit stuck bit says the invalidation set was never the problem.
-   // 64k cycles is ~0.6 ms at 111 MHz -- orders of magnitude past any legitimate page walk
-   // or DRAM fill, so this cannot fire on a merely slow one.
-   reg [15:0] pend_age, miss_age;
-   always @(posedge clk) begin
-      if (reset | ~|rq_v | ic_rd_valid)       pend_age <= 16'd0; else pend_age <= pend_age + 16'd1;
-      if (reset | ~fb_miss | imem_xlate_ok)   miss_age <= 16'd0; else miss_age <= miss_age + 16'd1;
-   end
-   wire fb_stuck_now = (&pend_age) | (&miss_age);
-
-   reg        fbd_stale = 1'b0, fbd_stuck = 1'b0;   // sticky, power-on clear only
-   reg [63:0] fbd_va = 64'd0, fbd_panow = 64'd0, fbd_pacached = 64'd0;
-   reg [63:0] fbd_satp = 64'd0, fbd_pc = 64'd0, fbd_cyc = 64'd0;
-   reg [63:0] fbd_flags = 64'd0;
-   reg [63:0] fbd_freecyc = 64'd0;
-   reg [63:0] fbd_ctxhits = 64'd0;                  // benign ctx-cycle coincidences, cumulative
-   always @(posedge clk) begin
-      fbd_freecyc <= fbd_freecyc + 64'd1;           // free-running, survives reset too
-      if (fb_ctxhit_now) fbd_ctxhits <= fbd_ctxhits + 64'd1;
-      if (fb_stuck_now) fbd_stuck <= 1'b1;
-      if (fb_stale_now & ~fbd_stale) begin          // FIRST occurrence only -- later ones
-         fbd_stale    <= 1'b1;                      // are consequences, not the cause
-         fbd_va       <= d_alv;
-         fbd_panow    <= d_al;
-         fbd_pacached <= fb_arr_stale_now ? d_rsp : (d_in1 ? d_pa1 : d_pa);   // the answer's PA when it is the bypass
-         fbd_satp     <= d_satp;
-         fbd_pc       <= d_va;
-         fbd_cyc      <= fbd_freecyc;
-         fbd_flags    <= {53'd0, fb_arr_stale_now, d_arr, fb_tagv, d_priv, d_ctx, |rq_v, fb_v1, fb_v0, d_in1, d_ok};
-      end
-   end
-   // SELF-RESET.  key[1] is the only soft-reset today and it is a physical button; a VIO
-   // would need a new IP core and a JTAG session.  Instead the design resets ITSELF into the
-   // monitor the moment the invariant fires.  fbd_stale is set-once and clears only on
-   // power-on, so this rising edge can happen at most once in the life of a configuration --
-   // a reset loop is impossible by construction, not by a guard that could be wrong.
-   // The delay lets the console UART drain so the last kernel output survives the reset.
-   reg        fbd_rst_arm = 1'b0, fbd_rst_done = 1'b0;
-   reg [23:0] fbd_rst_dly = 24'd0;
-   always @(posedge clk) begin
-      if ((fb_stale_now | fb_stuck_now) & ~fbd_rst_done & ~fbd_rst_arm) fbd_rst_arm <= 1'b1;
-      if (fbd_rst_arm) fbd_rst_dly <= fbd_rst_dly + 24'd1;
-      if (fbd_rst_arm & (&fbd_rst_dly)) begin fbd_rst_arm <= 1'b0; fbd_rst_done <= 1'b1; end
-   end
-   // A LEVEL, not a pulse, and a long one: asserted for the last 2^20 cycles of the window
-   // (~9 ms at 111 MHz).  It crosses into ui_clk through a 2-FF synchronizer, and a one-cycle
-   // pulse would be a coin flip there.  fbd_rst_done then latches it off forever.
-   assign fbdiag_reset_req = fbd_rst_arm & (&fbd_rst_dly[23:20]);
-
-   // "SMOLFBD\0" -- lets the monitor tell a decoded block from a dead bus returning zeros.
-   assign fbdiag_rdata      = (dmem_raddr[7:3] == 5'd0) ? 64'h534d4f4c46424400
-                            : (dmem_raddr[7:3] == 5'd1) ? {62'd0, fbd_stuck, fbd_stale}
-                            : (dmem_raddr[7:3] == 5'd2) ? fbd_va
-                            : (dmem_raddr[7:3] == 5'd3) ? fbd_panow
-                            : (dmem_raddr[7:3] == 5'd4) ? fbd_pacached
-                            : (dmem_raddr[7:3] == 5'd5) ? fbd_satp
-                            : (dmem_raddr[7:3] == 5'd6) ? fbd_pc
-                            : (dmem_raddr[7:3] == 5'd7) ? fbd_flags
-                            : (dmem_raddr[7:3] == 5'd8) ? fbd_cyc
-                            : (dmem_raddr[7:3] == 5'd9) ? fbd_freecyc
-                            : (dmem_raddr[7:3] == 5'd10) ? fbd_ctxhits : 64'd0;
-
-   // what we want next: the PC's chunk on a miss, else fill 0, else prefetch 1
-   // A fill may only be stored if it belongs to the CURRENT translation: not poisoned by an
-   // invalidation while it was outstanding, and the address it is compared against must be a
-   // real translation rather than a mid-walk stale leaf.
-   wire        fb_rsp_pois = ic_rsp_tag[0] ? rq_pois[1] : rq_pois[0];   // the answered entry's
-   wire        fb_fill_ok  = ic_rd_valid & ~fb_rsp_pois & imem_xlate_ok;
-   wire        fb_rsp_al   = fb_fill_ok & (ic_rd_resp_addr == fb_al);    // ...is the PC's chunk
-   // WHAT TO ASK FOR NEXT: THE BUFFER RUNS TWO CHUNKS AHEAD (item 10e, 2026-09-05). The
-   // chunk beyond chunk1 used to be asked for on the slide cycle, one request in flight, the
-   // answer two cycles later -- enough for a one-wide consumer, and exactly one cycle short
-   // for a two-wide one that eats a 16-byte chunk in two cycles: the second ALU left
-   // sha256's kernel fetch-bound, and tools/fe-pipe-model.py (these rules and the aligner's
-   // over the kernel's objdump) put fetch at 1.23 instructions per cycle there, one idle
-   // cycle in three. So: a third slot (w2), TWO requests in flight (the I$ door opens every
-   // second cycle, which is exactly a chunk per two cycles), and in the slide cycle a
-   // request THREE chunks ahead, for the slot the slide frees. The model says 1.63 with the
-   // aligner's chunk cap and 1.99 without it (src/aligner.v); 32-byte chunks would give the
-   // same 1.99 and widen the serve shifter, this widens nothing.
-   //
-   // Priority: the PC's chunk when it is outside the buffer (a realign; the request leaves
-   // this cycle, from fb_al, as it always has), else the first of chunk0..2 neither held nor
-   // in flight, else chunk3 in the slide cycle. Beyond chunk0 only inside its page (PAGES,
-   // above). "In flight" is a compare against the entries' registered addresses; the
-   // realign arm skips it (fb_al is on the iMMU path) and is masked only against the answer
-   // landing this cycle and against chunk2 in flight (a registered compare), so a redirect
-   // elsewhere into a chunk that is already in flight asks twice -- both answers land in the
-   // same slot; that costs a door slot, not correctness.
-   wire        rq_has0 = (rq_v[0] & (rq_pa0 == fb_pa )) | (rq_v[1] & (rq_pa1 == fb_pa ));
-   wire        rq_has1 = (rq_v[0] & (rq_pa0 == fb_pa1)) | (rq_v[1] & (rq_pa1 == fb_pa1));
-   wire        rq_has2 = (rq_v[0] & (rq_pa0 == fb_pa2)) | (rq_v[1] & (rq_pa1 == fb_pa2));
-   wire        rq_has3 = (rq_v[0] & (rq_pa0 == fb_pa3)) | (rq_v[1] & (rq_pa1 == fb_pa3));
-   // ...relative to where the PC IS: chunk0..2 while it is in chunk0, chunk1..3 in the slide
-   // cycle (chunk0 is behind it then and would waste an entry), chunk3 alone when it has
-   // jumped to chunk2. Nearest first.
-   wire        fb_need0 = fb_in0a & ~fb_v0 & ~rq_has0;
-   wire        fb_need1 = (fb_in0a | fb_in1a) & ~fb_v1 & ~rq_has1 & fb_samepg;
-   wire        fb_need2 = (fb_in0a | fb_in1a) & ~fb_v2 & ~rq_has2 & fb_samepg2;
-   wire        fb_need3 = (fb_in1a | (fb_in2a & fb_v2)) & ~rq_has3 & fb_samepg3;
-   wire [63:0] fb_want   = fb_realign ? fb_al  : fb_need0 ? fb_pa : fb_need1 ? fb_pa1 : fb_need2 ? fb_pa2 : fb_pa3;
-   wire [63:0] fb_wantva = fb_realign ? fb_alv : fb_need0 ? fb_va : fb_need1 ? fb_va1 : fb_need2 ? fb_va2 : fb_va3;
-   // & imem_xlate_ok: NEVER fill from an untranslated PA.  Mid-walk the iMMU presents a
-   // stale leaf; under the old PA tag those wrong bytes carried the wrong PA and simply
-   // missed next cycle, but under a VA tag they would carry the RIGHT VA and hit.
-   wire        fb_wantv  = ((fb_realign & ~fb_rsp_al & ~(fb_in2a & rq_has2))   // chunk2 in flight: it will land in chunk0
-                           | fb_need0 | fb_need1 | fb_need2 | fb_need3)
-                         & imem_xlate_ok & ~(&rq_v);
-
-   // THE I$ PORT: the unsent entry first, else the want itself in the cycle it arises (the
-   // request has always left in its want cycle; registering it first would cost the cycle
-   // the model says is the whole margin). Held until ACCEPTED, not until answered -- see
-   // c_rd_want on the D$ side for why the two are not the same question once the port can
-   // accept while it answers -- and it may be accepted IN the answer cycle: with a door
-   // that opens every second cycle and answers two cycles after accepting, that cycle is
-   // the door. The tag on the port is the entry index; the answer's tag names the entry
-   // (freed, and its VA for the arrival bypass), the answer's address names the slot.
-   wire         ic_rd_ack;
-   wire         rq_s0 = rq_v[0] & ~rq_sent[0], rq_s1 = rq_v[1] & ~rq_sent[1];
-   wire         rq_free = rq_v[0];                                  // the entry a new want takes: 0 unless busy
-   wire         ic_rd_req  = rq_s0 | rq_s1 | fb_wantv;
-   wire [63:0]  ic_rd_addr = rq_s0 ? rq_pa0 : rq_s1 ? rq_pa1 : fb_want;
-   wire         ic_tag     = rq_s0 ? 1'b0  : rq_s1 ? 1'b1   : rq_free;
-   always @(posedge clk) if (reset) begin
-         rq_v <= 2'b00; rq_sent <= 2'b00; rq_pois <= 2'b00;
-      end else begin
-         if (ic_rd_valid) rq_v[ic_rsp_tag[0]] <= 1'b0;
-         if (ic_rd_ack & (rq_s0 | rq_s1)) rq_sent[ic_tag] <= 1'b1;
-         if (fb_wantv) begin                                        // allocate; sent if the door took it now
-            rq_v[rq_free] <= 1'b1;  rq_sent[rq_free] <= ic_rd_ack & ~rq_s0 & ~rq_s1;  rq_pois[rq_free] <= 1'b0;
-            if (rq_free) begin rq_pa1 <= fb_want; rq_va1 <= fb_wantva; end
-            else         begin rq_pa0 <= fb_want; rq_va0 <= fb_wantva; end
-         end
-         // POISON every request in flight when the translation context changes (last, so a
-         // request allocated in the same cycle -- from the old context -- is poisoned too).
-         // ic_inv_req/imem_ctx_chg clear the slots but not the entries, so the answers for
-         // the OLD mapping are still coming.  Meanwhile the iMMU walks for the new mapping
-         // and mid-walk presents a STALE LEAF as t_paddr -- so fb_al reads the OLD pa and the
-         // acceptance test below matches it, storing old bytes under the new VA tag.
-         // Observed on silicon: va=3fa3d713a0 held pa=801b63a0 while the iMMU said 8215f3a0,
-         // priv=U, ctx_chg=0, v0=1, pend=1 -- systemd SEGV at 28.7 s.
-         // A gated the REQUEST on imem_xlate_ok (see fb_wantv) and named this exact stale-leaf
-         // hazard, but never gated the ACCEPTANCE.  This is the other half.
-         if (ic_inv_req | imem_ctx_chg) rq_pois <= 2'b11;
-      end
-   // An answer names an entry by tag and a chunk by address; both must agree with what was
-   // asked, or a response is being dropped or misfiled silently (docs/rtl-rules.md).
-   always @(posedge clk) if (!reset & ic_rd_valid) begin
-      if (ic_rsp_tag[3:1] != 3'd0)
-         $fatal(1, "rv_soc_top: I$ response tag %0d out of range", ic_rsp_tag);
-      if (!rq_v[ic_rsp_tag[0]])
-         $fatal(1, "rv_soc_top: I$ response tag %0d names an idle request entry (addr=%h)", ic_rsp_tag, ic_rd_resp_addr);
-      if (ic_rd_resp_addr != (ic_rsp_tag[0] ? rq_pa1 : rq_pa0))
-         $fatal(1, "rv_soc_top: I$ response addr %h is not entry %0d's %h", ic_rd_resp_addr, ic_rsp_tag,
-                (ic_rsp_tag[0] ? rq_pa1 : rq_pa0));
-   end
-   wire         ic_l2_req, ic_l2_we;  wire [LAW-1:0] ic_l2_addr;  wire [511:0] ic_l2_wdata;
-   wire [511:0] ic_l2_rdata;  wire ic_l2_ack;
-   reg          ic_inv_req;
-   // Advance/realign and fill are resolved TOGETHER, because they can land in the same cycle
-   // and the fill targets slots named relative to the CURRENT fb_pa. Ordering matters: each arm
-   // assigns the shift first and then lets a matching fill overwrite it (last nonblocking
-   // assignment wins), so a response arriving exactly as the buffer moves is not lost.
-   // The arms are chosen BY ADDRESS (fb_in*a), so the PC moving into a chunk whose bytes are
-   // still in flight is a shift that keeps the other slots, and the answer lands in whichever
-   // slot its address names after the shift (item 10e).
-   always @(posedge clk) if (reset) begin
-         fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_v2 <= 1'b0; fb_pa <= 64'd0; fb_va <= 64'd0; fb_tagv <= 1'b0;
-      end else begin
-         // imem_ctx_chg: satp write, sfence.vma, or a privilege change.  The tag is a VA, so
-         // the bytes are only valid while the translation that produced them is.  Ordinary
-         // redirects are deliberately NOT here -- mispredicts are ~11.5% of instructions and
-         // invalidating on those would destroy the hit rate the buffer exists for.
-         if (ic_inv_req | imem_ctx_chg) begin                   // fence.i / remap: drop everything, the tag too
-            fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_v2 <= 1'b0; fb_tagv <= 1'b0;
-         end else if (fb_realign) begin                         // redirect / page cross: realign
-            fb_v0 <= 1'b0; fb_v1 <= 1'b0; fb_v2 <= 1'b0;
-            if (imem_xlate_ok) begin                            // the pair is a translation, or it is nothing
-               fb_pa <= fb_al; fb_va <= fb_alv; fb_tagv <= 1'b1;
-               if (fb_rsp_al) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
-            end else fb_tagv <= 1'b0;
-         end else if (fb_in1a) begin                            // PC moved on: chunk1 -> chunk0, chunk2 -> chunk1
-            fb_pa <= fb_pa1; fb_va <= fb_va1;
-            fb_w0 <= fb_w1;  fb_v0 <= fb_v1;
-            fb_w1 <= fb_w2;  fb_v1 <= fb_v2;  fb_v2 <= 1'b0;
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa1)) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa2)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa3)) begin fb_w2 <= ic_rd_data; fb_v2 <= 1'b1; end
-         end else if (fb_in2a & fb_v2) begin                    // a short forward jump: chunk2 -> chunk0
-            fb_pa <= fb_pa2; fb_va <= fb_va2;
-            fb_w0 <= fb_w2;  fb_v0 <= 1'b1;  fb_v1 <= 1'b0;  fb_v2 <= 1'b0;
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa3)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
-         end else begin                                         // steady state: just fill
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa )) begin fb_w0 <= ic_rd_data; fb_v0 <= 1'b1; end
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa1)) begin fb_w1 <= ic_rd_data; fb_v1 <= 1'b1; end
-            if (fb_fill_ok & (ic_rd_resp_addr == fb_pa2)) begin fb_w2 <= ic_rd_data; fb_v2 <= 1'b1; end
-         end
-      end
+   // fence.i: drain the store buffer + D$ clean-flush (df, above), THEN invalidate the I$ so a
+   // refetch cannot read code still dirty in the D$. A MAPPING change invalidates directly --
+   // virtual-alias staleness, not I/D coherence, so no D$ writeback wait. Both drive the flush.
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  wire fi_stall = (fi != FI_IDLE);
-   always @(posedge clk) if (reset) begin fi<=FI_IDLE; ic_inv_req<=1'b0; end
+   reg fi_inv;
+   always @(posedge clk) if (reset) begin fi<=FI_IDLE; fi_inv<=1'b0; end
       else begin
-         ic_inv_req <= 1'b0;
+         fi_inv <= 1'b0;
          case (fi)
            FI_IDLE:  if (ifence) fi<=FI_DRAIN;
-           // wait for the D$ clean-flush (df, also triggered by ifence) to finish so DDR holds
-           // the freshly-written code BEFORE invalidating the I$ -> the refetch can't be stale.
-           FI_DRAIN: if (dmem_idle & (df == DF_IDLE)) begin ic_inv_req<=1'b1; fi<=FI_INV; end
+           FI_DRAIN: if (dmem_idle & (df == DF_IDLE)) begin fi_inv<=1'b1; fi<=FI_INV; end
            FI_INV:   fi<=FI_WAIT;
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
       end
-   // Arrival bypass: serve the window COMBINATIONALLY the cycle the I$ delivers it
-   // (ic_rd_data is a register inside the cache, so this adds a mux, not logic
-   // depth from the arrays). Guard with the response address: a redirect can move
-   // pc while a window is in flight, and the stale response must read as a miss.
-   // Arrival bypass, kept from the old adapter: serve COMBINATIONALLY the cycle the I$ delivers
-   // the chunk the PC is in (ic_rd_data is already a register inside the cache, so this is a mux,
-   // not array depth). Without it every redirect pays an extra cycle, and redirects are 11.5% of
-   // instructions here.
-   // THE ARRIVAL TEST IS VIRTUAL, LIKE THE HIT TEST. It compared the response's PA against
-   // fb_al, the CURRENT translation of the PC -- which put the iMMU's tag compare, the
-   // t_paddr mux and a second 64-bit compare in front of imem_avail, and so in front of the
-   // aligner and the whole fetch loop (fe/u_fetch -> fe/u_fetch, 81 endpoints at -0.044 on
-   // 2026-09-03). The chunk that is arriving is the one that was REQUESTED, whose VA was
-   // kept with the request: serve it when the PC is in that chunk and the request was not
-   // poisoned by a context change, by the same argument the VA-tagged hit rests on. The
-   // invariant below checks the argument against the translation every cycle, as the
-   // hit's does.
-   wire [63:0]      fb_rsp_va = ic_rsp_tag[0] ? rq_va1 : rq_va0;    // the answered entry's VA
-   wire             fb_arr  = ic_rd_valid & ~fb_rsp_pois & (fb_alv == fb_rsp_va);
-   always @(posedge clk)
-      if (!reset & fb_arr & imem_xlate_ok & ~imem_ctx_chg & (ic_rd_resp_addr != fb_al))
-         $fatal(1, "rv_soc_top: VA-matched arrival serves a STALE mapping: va=%h pa_now=%h arrived=%h",
-                fb_alv, fb_al, ic_rd_resp_addr);
-   wire [CHA-1:0]   fb_aoff = fb_lo;                            // offset within the arriving chunk
+   wire ic_inv_req = fi_inv;   // fence.i AND mapping changes go through fi (after the D$ clean-flush)
 
-   // Serve for a hit in EITHER chunk. The first cut served only on fb_in0, so the cycle the PC
-   // crossed into chunk1 imem_avail read 0 and the frontend took a bubble -- one per chunk
-   // crossing, i.e. roughly one per 3 instructions at HW=4, which ate much of the win. The pair
-   // is contiguous and within one page by construction, so a chunk1 hit is served by shifting
-   // CHB further into the same pair; the shift is by fb_off, which now costs no arithmetic.
-   wire [2*HW*16-1:0] fb_pair = {fb_w1, fb_w0};
-   wire [2*HW*16-1:0] fb_shf  = fb_pair >> {fb_roff, 3'b000};
-   wire [HW*16-1:0]   fb_srv  = fb_shf[HW*16-1:0];
-   // No arrival bypass in the data path any more: an arriving chunk lands in its slot and is
-   // served from the register the cycle after (one cycle on a buffer miss, for a data cone
-   // that no longer reaches the I$'s output register). fb_arr still names the arrival for the
-   // invariant check and the counters.
-   assign imem_data  = fb_srv;
+   // The PC's 16-byte chunk (VA) and its PA (the iMMU translated the PC; aligning to 16 stays
+   // in the same page), and the next chunk's VA.
+   wire [63:0] pc_ca   = {imem_va[63:CHA],   {CHA{1'b0}}};
+   wire [63:0] pc_paca = {imem_addr[63:CHA], {CHA{1'b0}}};
+   wire [63:0] nx_ca   = pc_ca + CHB;
+   wire        samepg  = (pc_ca[11:CHA] != {(12-CHA){1'b1}});   // next chunk shares the 4 KiB page
 
-   // Valid halfwords from the PC: to the end of chunk1 if it is present, else to the end of
-   // chunk0, capped at the HW the frontend asked for. fetch.v caps this again at the 4 KiB
-   // boundary (eff_avail), so page-straddling instructions stay its business, not ours.
-   // Valid bytes from the PC: to the end of chunk1 when it is present, else to the end of
-   // chunk0. Small arithmetic on CHA+1 bits, not on 64.
-   // CHB is a localparam integer, so `2*CHB` and `CHB - x` are 32-bit expressions that were
-   // truncated at these narrow wires. Sized copies keep the arithmetic at the declared width.
-   localparam integer   CHB_2I = 2*CHB;      // 32-bit intermediates, part-selected to width
-   localparam [CHA+1:0] CHB_X2 = CHB_2I[CHA+1:0];
-   localparam [CHA+1:0] CHB_X1 = CHB[CHA+1:0];
-   localparam [CHA:0]   CHB_A  = CHB[CHA:0];
-   wire [CHA+1:0] fb_end = fb_v1 ? CHB_X2 : CHB_X1;             // first invalid byte of the pair
-   // From register bits (fb_roff, fb_v1), like the window: a chunk1 offset without chunk1 is
-   // zero bytes, not a wrapped count.
-   wire [CHA+1:0] fb_vb  = ({1'b0, fb_roff} < fb_end) ? fb_end - {1'b0, fb_roff} : {(CHA+2){1'b0}};
-   wire [CHA+1:0] fb_vhw = fb_vb >> 1;
-   // Freeze fetch during a fence.i (fi_stall): the I$ must not refetch until the D$ has written
-   // back the freshly-stored code and the I$ has been invalidated. fi_stall spans the whole df
-   // clean-flush (fi waits for df==DF_IDLE before invalidating), so it covers df_stall too.
-   // sfence.vma no longer freezes fetch: the PTW reads through the coherent D$ (no flush).
-   // imem_avail is $clog2(HW+2) bits (:108). The literals were 32-bit and fb_vhw is CHA+2
-   // bits, so all three arms were truncated here. The last arm is reached only when
-   // fb_vhw < HW, so the narrowing cannot lose a value.
+   // Two VA-tagged chunk slots -- the alignment window.
+   reg              c0_v, c1_v;
+   reg  [63:0]      c0_va, c1_va;
+   reg  [HW*16-1:0] c0_d,  c1_d;
+   initial begin c0_v=1'b0; c1_v=1'b0; end
+
+   wire h0_0 = c0_v & (c0_va == pc_ca);   wire h0_1 = c1_v & (c1_va == pc_ca);
+   wire h1_0 = c0_v & (c0_va == nx_ca);   wire h1_1 = c1_v & (c1_va == nx_ca);
+   wire             have0    = h0_0 | h0_1;
+   wire             have1    = h1_0 | h1_1;
+   wire [HW*16-1:0] pc_chunk = h0_1 ? c1_d : c0_d;
+   wire [HW*16-1:0] nx_chunk = h1_1 ? c1_d : c0_d;
+
+   // One demand read in flight.
+   reg          rq_v, rq_pois;
+   reg  [63:0]  rq_va, rq_pa;
+   initial begin rq_v=1'b0; rq_pois=1'b0; end
+   wire need_pc = ~have0 & ~(rq_v & (rq_va == pc_ca));
+   wire need_nx =  have0 & ~have1 & samepg & ~(rq_v & (rq_va == nx_ca));
+   wire         want    = need_pc | need_nx;
+   wire [63:0]  want_va = need_pc ? pc_ca   : nx_ca;
+   wire [63:0]  want_pa = need_pc ? pc_paca : (pc_paca + CHB);
+
+   wire         ic_rd_req  = want & ~rq_v & ~ic_inv_busy & imem_xlate_ok;
+   wire [63:0]  ic_rd_addr = {25'b0, want_va[38:0]};  // VIRTUAL: canonical Sv39 VA (sign ext masked)
+   wire [63:0]  ic_rd_pa   = want_pa;                  // PA for the L2 fill
+   wire         ic_tag     = 1'b0;                     // one request in flight
+
+   // ---- serve: {next chunk, PC chunk} shifted to the PC's byte offset ----
+   wire [2*HW*16-1:0] win_pair = {(have1 ? nx_chunk : {(HW*16){1'b0}}), pc_chunk};
+   wire [CHA-1:0]     pc_off   = imem_va[CHA-1:0];
+   wire [2*HW*16-1:0] win_shf  = win_pair >> {pc_off, 3'b000};
+   assign imem_data = win_shf[HW*16-1:0];
+
    localparam AVW = $clog2(HW+2);
-   localparam [AVW-1:0] AV_HW = HW;
-   assign imem_avail = (fb_vhw >= HW) ? AV_HW : fb_vhw[AVW-1:0];
-   // The late bit: these bytes are the PC's (the VA tag compare) and fetch is not frozen by a
-   // fence.i. It gates the frontend's handshake -- the bundle's push and the PC's advance --
-   // and nothing in the data or count path.
-   assign imem_ok    = fb_hit & ~fi_stall;
+   localparam [AVW-1:0] AV_HW = HW[AVW-1:0];
+   wire [6:0] avail_b  = ~have0 ? 7'd0 : (have1 ? 7'd32 : 7'd16) - {3'b0, pc_off};
+   wire [6:0] avail_hw = avail_b >> 1;
+   wire       freeze   = fi_stall | ic_inv_busy | imem_ctx_chg;
+   assign imem_avail = (avail_hw >= HW) ? AV_HW : avail_hw[AVW-1:0];
+   assign imem_ok    = have0 & ~freeze;
 
-`ifdef FB_TRACE
-   // Fetch-buffer trace, one line per cycle inside the tb's +trace_from/+trace_to window
-   // (rule G6: an `ifdef` trace reads the two plusargs itself). Post-process for the cycles
-   // from a slide (in1: the PC entered chunk1, chunk2 is requested) to the next arrival
-   // (val), and for the cycles the aligner emitted nothing (dq=0) while the PC's chunk was
-   // present. Built to name sha256's 8% decoupling-queue-empty on 2026-09-05.
-   reg [63:0] fbt_cyc = 64'd0, fbt_from = 64'd0, fbt_to = 64'hFFFF_FFFF_FFFF_FFFF;
-   initial begin
-      if (!$value$plusargs("trace_from=%d", fbt_from)) fbt_from = 64'd0;
-      if (!$value$plusargs("trace_to=%d",   fbt_to))   fbt_to   = 64'hFFFF_FFFF_FFFF_FFFF;
-   end
+   // ---- window fill + invalidation ----
    always @(posedge clk) begin
-      fbt_cyc <= fbt_cyc + 64'd1;
-      if (!reset && fbt_cyc >= fbt_from && fbt_cyc < fbt_to)
-         $display("[FB] c=%0d pc=%h in1=%b v0=%b v1=%b v2=%b rq=%b hit=%b arr=%b req=%b ack=%b val=%b avail=%0d dq=%b q=%0d d=%b | va=%h pa=%h al=%h tagv=%b xok=%b ctx=%b inv=%b sent=%b pois=%b rq0=%h/%h rq1=%h/%h want=%h/%b tag=%0d rsp=%h/%0d",
-                  fbt_cyc, imem_va, fb_in1, fb_v0, fb_v1, fb_v2, rq_v, fb_hit, fb_arr, ic_rd_req, ic_rd_ack, ic_rd_valid,
-                  imem_avail, core.fe.dq_valid, core.fe.q_cnt, core.fe.d_valid,
-                  fb_va, fb_pa, fb_al, fb_tagv, imem_xlate_ok, imem_ctx_chg, ic_inv_req, rq_sent, rq_pois,
-                  rq_va0, rq_pa0, rq_va1, rq_pa1, fb_want, fb_wantv, ic_tag, ic_rd_resp_addr, ic_rsp_tag);
+      if (reset) begin c0_v<=1'b0; c1_v<=1'b0; rq_v<=1'b0; rq_pois<=1'b0; end
+      else begin
+         // accept: latch the in-flight demand read
+         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_pa<=want_pa; rq_pois<=1'b0; end
+         // response: capture into the slot NOT holding the PC's chunk (keep pc_chunk resident)
+         if (ic_rd_valid) begin
+            rq_v <= 1'b0;
+            if (~rq_pois) begin
+               if (h0_0) begin c1_va<=rq_va; c1_d<=ic_rd_data; c1_v<=1'b1; end
+               else      begin c0_va<=rq_va; c0_d<=ic_rd_data; c0_v<=1'b1; end
+            end
+         end
+         // invalidation LAST (wins a same-cycle capture): a mapping change or a flush in
+         // progress drops the window and poisons the in-flight response (it is the old mapping).
+         if (fi_stall | ic_inv_busy | imem_ctx_chg) begin  // fence.i flush OR a mapping change
+            c0_v<=1'b0; c1_v<=1'b0;                           // the window holds old-mapping lines -> drop
+            if (rq_v | (ic_rd_req & ic_rd_ack)) rq_pois<=1'b1;
+         end
+      end
    end
-`endif
 
-   rv_cache #(.PAW(64), .PAW_SIG(34), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1),
+
+   rv_cache #(.PAW(64), .PAW_SIG(39), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1), .VIRT(1),
            .PERF_ID(0)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_addr), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr),
       // The tag names the request entry (two in flight, item 10e); the fetch buffer still
       // matches the answer to a SLOT by address (fb_al/fb_pa..fb_pa3), and asserts the two agree.
@@ -1106,7 +716,7 @@ module rv_soc_top #(
       .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_acc(), .wr_cpl(), .wr_uncached(1'b0),
       .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
-      .inv_req(ic_inv_req), .inv_clean(1'b0), .inv_busy(ic_inv_busy),
+      .inv_req(ic_inv_req), .inv_clean(1'b0), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss));

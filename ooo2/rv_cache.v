@@ -45,6 +45,8 @@ module rv_cache #(
    parameter WRITABLE = 1,
    parameter WRTHRU   = 0,
    parameter PREFETCH = 0,         // next-line prefetch (I$): single-line stream buffer
+   parameter VIRT     = 0,         // VHPR virtual-hit mode (I$): rd_addr is the VA, rd_pa the PA;
+                                   // epoch-qualified vtag hit + physical-tag reconcile on miss
    parameter PERF_ID  = 0          // perf-trace cache id (0=I$, 1=D$); see perf block
 ) (
    input  wire             clk,
@@ -89,6 +91,8 @@ module rv_cache #(
    input  wire             inv_req,
    input  wire             inv_clean,   // inv_req variant: write back dirty lines but KEEP them
                                         // valid+clean (PTW coherency on sfence; not a full flush)
+   input  wire             ep_bump,     // VIRT: advance the I$ epoch (a mapping change: retains
+                                        // lines, only virtually-stales them; reconcile recovers content)
    output reg              inv_busy,
    output reg              l2_req,
    output reg              l2_we,
@@ -107,6 +111,7 @@ module rv_cache #(
    localparam RDB   = RDW/8;
    localparam WRB   = WDW/8;
    localparam NW    = WAYS*SETS;
+   localparam EPW   = 2;             // VIRT: epoch generation width (roll-over full-flushes)
    localparam FW    = $clog2(NW);
    // flat() concatenates {way, index}, which is only the flat index when WAYS is 2.
    initial if (WAYS != 2) $fatal(1, "rv_cache: flat() assumes WAYS==2, got %0d", WAYS);
@@ -128,13 +133,17 @@ module rv_cache #(
    localparam LZB    = $clog2(CBY);
    localparam BAW    = IDXB + PAIRB;
 
-   reg [PTAGB-1:0] tagm [0:NW-1];
+   reg [PTAGB-1:0] tagm [0:NW-1];        // VIRT: this holds the VIRTUAL tag (rd_addr is the VA)
+   reg [PTAGB-1:0] ptagm[0:NW-1];        // VIRT: physical tag, for the miss-path reconcile (else dead)
+   reg [EPW-1:0]   epm  [0:NW-1];        // VIRT: per-line epoch generation (else dead)
+   reg [EPW-1:0]   cur_epoch;            // VIRT: current epoch; a mapping change advances it
    reg             valm [0:NW-1];
    reg             dirm [0:NW-1];
    reg             vicm [0:SETS-1];
    integer i;
    initial begin
-      for (i=0;i<NW;i=i+1)   begin valm[i]=1'b0; dirm[i]=1'b0; tagm[i]=0; end
+      cur_epoch=0;
+      for (i=0;i<NW;i=i+1)   begin valm[i]=1'b0; dirm[i]=1'b0; tagm[i]=0; ptagm[i]=0; epm[i]=0; end
       for (i=0;i<SETS;i=i+1) vicm[i]=1'b0;
    end
 
@@ -147,7 +156,7 @@ module rv_cache #(
       // line-crossing access even as cur_line advances from line0 to line1.
       begin t = tag_of(a); way_idx = base_idx(a); end
 `else
-      begin t = tag_of(a); way_idx = (w==0) ? base_idx(a) : (base_idx(a) ^ t[IDXB-1:0]); end
+      begin t = tag_of(a); way_idx = (VIRT || w==0) ? base_idx(a) : (base_idx(a) ^ t[IDXB-1:0]); end
 `endif
    endfunction
    // {way, index}, not (w!=0)*SETS+ix: the multiply-add is a 32-bit expression that only
@@ -199,8 +208,18 @@ module rv_cache #(
    wire [IDXB-1:0]  ci0  = way_idx(0, cur_line);
    wire [IDXB-1:0]  ci1  = way_idx(1, cur_line);
    wire [PTAGB-1:0] ctag = tag_of(cur_line);
-   wire hit0 = valm[flat(0,ci0)] & (tagm[flat(0,ci0)]==ctag);
-   wire hit1 = valm[flat(1,ci1)] & (tagm[flat(1,ci1)]==ctag);
+   // VIRT: the virtual hit is epoch-qualified; a virtual miss whose PHYSICAL tag matches is a
+   // RECONCILE -- the resident line holds the right physical bytes under a since-changed mapping,
+   // so it is served like a hit (and keeps reconciling by physical tag until eviction or a
+   // fence.i clear -- no re-stamp). ptag_r is the request PA's tag off r_pa (a REGISTER), so the
+   // reconcile compare is not translation on the hit path.
+   wire [PTAGB-1:0] ptag_r = r_pa[OFFB+IDXB +: PTAGB];
+   wire vh0 = valm[flat(0,ci0)] & (tagm[flat(0,ci0)]==ctag) & (~VIRT | (epm[flat(0,ci0)]==cur_epoch));
+   wire vh1 = valm[flat(1,ci1)] & (tagm[flat(1,ci1)]==ctag) & (~VIRT | (epm[flat(1,ci1)]==cur_epoch));
+   wire rc0 = VIRT & valm[flat(0,ci0)] & (ptagm[flat(0,ci0)]==ptag_r);
+   wire rc1 = VIRT & valm[flat(1,ci1)] & (ptagm[flat(1,ci1)]==ptag_r);
+   wire hit0 = vh0 | rc0;
+   wire hit1 = vh1 | rc1;
    wire       hit  = hit0 | hit1;
    wire       hway = hit1;
    wire [IDXB-1:0] cih = hit1 ? ci1 : ci0;
@@ -211,7 +230,7 @@ module rv_cache #(
 `ifdef OOO2_UNSKEWED
    wire [IDXB-1:0]  vbase = vi;                       // unskewed: base == index
 `else
-   wire [IDXB-1:0]  vbase = vw ? (vi ^ vtag[IDXB-1:0]) : vi;
+   wire [IDXB-1:0]  vbase = (vw && !VIRT) ? (vi ^ vtag[IDXB-1:0]) : vi;
 `endif
 
    reg            flush_clean;        // current flush is clean-only (keep lines valid)
@@ -222,7 +241,7 @@ module rv_cache #(
 `ifdef OOO2_UNSKEWED
    wire [IDXB-1:0]  fbase = fidx;                     // unskewed: base == index
 `else
-   wire [IDXB-1:0]  fbase = fway ? (fidx ^ ftag[IDXB-1:0]) : fidx;
+   wire [IDXB-1:0]  fbase = (fway && !VIRT) ? (fidx ^ ftag[IDXB-1:0]) : fidx;
 `endif
 
    // ---- window + line buffers ----
@@ -290,7 +309,7 @@ module rv_cache #(
                      // interlocks assume the FSM's only L2 state is the S_FILL fill path
    // PF_EN implies WRITABLE==0: the pf-hit install path (S_PFI) skips S_WB, sound
    // only when a victim can never be dirty -- i.e. the I$.
-   wire pf_hit = PF_EN & pf_val & (pf_addr == cur_line[PAW-1:OFFB])
+   wire pf_hit = PF_EN & pf_val & (pf_addr == r_pa[PAW-1:OFFB])   // VIRT-safe: match by PHYSICAL addr
                & ~r_uncached & ~r_cbo;
    reg [3:0] st;         // lookup pipeline
    reg [4:0] fst;        // fill machine
@@ -317,6 +336,7 @@ module rv_cache #(
    // no full-line read"). A replay costs one pipeline pass and no mux at all.
    reg            f_v;                        // a fill is in progress
    reg [PAW-1:0]  f_line;                     // the line being fetched (line1, for a span)
+   reg [EPW-1:0]  f_epoch;                    // VIRT: epoch at fill ISSUE (poisons a fill across a bump)
    reg [PAW-1:0]  f_addr;                     // ...and the request to re-issue when it lands
    reg [PAW-1:0]  f_pa;                       // fill PA (= f_line for PIPT; the real PA for a virtual-hit I$)
    reg [RTW-1:0]  f_tag;
@@ -329,7 +349,7 @@ module rv_cache #(
    // The fill machine's own view of the stream buffer. pf_hit below is the PIPELINE's
    // question, asked about cur_line at the miss; this is the same question asked about the
    // line the fill machine is actually fetching, and they are different lines.
-   wire pf_hit_f = PF_EN & pf_val & (pf_addr == f_line[PAW-1:OFFB]) & ~f_uncached & ~f_cbo;
+   wire pf_hit_f = PF_EN & pf_val & (pf_addr == f_pa[PAW-1:OFFB]) & ~f_uncached & ~f_cbo;
 
    // Answering a missing READ out of the landed line. The two chunks it needs are selected
    // from linebuf into wlo/whi and then run through win_sh, the SAME network a hit uses --
@@ -652,6 +672,10 @@ module rv_cache #(
          // fence.i / sfence flush. Raising inv_busy now also keeps the requester waiting
          // until the invalidate actually runs (it polls !inv_busy).
          if (inv_req) begin inv_pend <= 1'b1; inv_busy <= 1'b1; end
+         if (VIRT && ep_bump) begin                                   // mapping change: advance the epoch
+            cur_epoch <= cur_epoch + 1'b1;                            // retains lines; reconcile recovers content
+            if (cur_epoch == {EPW{1'b1}}) begin inv_pend <= 1'b1; inv_busy <= 1'b1; end  // wrap -> flush stale-epoch lines
+         end
          if ((st == S_IDLE) | fin_wr) begin
             phase <= 0;
             // THE REQUEST REGISTERS ARE CAPTURED EVERY CYCLE THE DOOR IS OPEN -- S_IDLE, and a
@@ -715,7 +739,7 @@ module rv_cache #(
               // it was under the old `hit` qualifier. A hit simply overwrites a copy nobody
               // reads. Never while f_v: those fields belong to the fill in flight.
               if (!f_v) begin
-                 f_line <= cur_line;  f_addr <= r_addr;  f_tag <= r_tag;  f_pa <= r_pa;
+                 f_line <= cur_line;  f_addr <= r_addr;  f_tag <= r_tag;  f_pa <= r_pa;  f_epoch <= cur_epoch;
                  f_is_wr <= r_is_wr;  f_uncached <= r_uncached;  f_span <= r_span;
                  f_cbo <= r_cbo;  f_cbo_zero <= r_cbo_zero;  f_cbo_keep <= r_cbo_keep;
                  f_wdata <= r_wdata;  f_wmask <= r_wmask;
@@ -985,7 +1009,7 @@ module rv_cache #(
               linebuf <= l2_rdata; pc <= 0;                 // a write miss merges its chunk at the install
               fst <= F_FILLI;
               if (PF_EN && !f_uncached && !f_cbo_zero) begin
-                 pf_want <= 1; pf_next <= f_line[PAW-1:OFFB] + 1'b1;  // arm next-line
+                 pf_want <= 1; pf_next <= f_pa[PAW-1:OFFB] + 1'b1;  // arm next-line
               end
            end
 
@@ -1000,7 +1024,7 @@ module rv_cache #(
               // is the one fill entry that owes the victim invalidate itself. Reaching it
               // FROM F_FILL invalidates twice, which is idempotent.
               v_we=1; v_wa=vflat; v_wd=1'b0;
-              pf_want <= 1; pf_next <= f_line[PAW-1:OFFB] + 1'b1;
+              pf_want <= 1; pf_next <= f_pa[PAW-1:OFFB] + 1'b1;
               fst <= F_FILLI;
            end
            F_FILLI: begin                  // install pair pc (bank writes combinational)
@@ -1012,7 +1036,8 @@ module rv_cache #(
                  // visible". cbo.zero installs a line that is dirty by construction: it was
                  // never read from L2, so L2 does not have these zeros.
                  tagm[vflat] <= tag_of(f_line);
-                 v_we=1; v_wa=vflat; v_wd=1'b1;
+                 if (VIRT) begin ptagm[vflat] <= f_pa[OFFB+IDXB +: PTAGB]; epm[vflat] <= cur_epoch; end
+                 v_we=1; v_wa=vflat; v_wd = (VIRT && (f_epoch != cur_epoch)) ? 1'b0 : 1'b1;  // poison a fill from a stale epoch
                  d_we=1; d_wa=vflat; d_wd=f_cbo_zero | f_wmerge;
                  k_we=1; k_wa=base_idx(f_line); k_wd=~vicm[base_idx(f_line)];
                  // HOW THE MISSING REQUEST IS COMPLETED, and there are two answers because

@@ -85,6 +85,28 @@ ld.so page-cross bug) + a brbench re-baseline.
    `imem_avail` from the cache); the buffer becomes the depth-1 alignment latch. Response matched
    by `rd_tag` (rule B1; already echoed). Always-on invariant assertions. Gate: cosim clean at
    `CYC=300000000`, brbench re-baseline.
+
+   **LANDED 2026-09-13** (`wip/fe-stage2`). `rv_cache.v` `VIRT=1`: virtual index+tag +
+   2-bit epoch hit, physical tag (`ptagm`) + epoch (`epm`) per line, miss-path physical-tag
+   reconcile, fill poison on epoch mismatch, unskewed under VIRT, prefetch re-keyed VIRT-safe
+   (`r_pa`/`f_pa`). The ~500-line run-ahead fetch buffer (`rv_soc_top.v`) is gone, replaced by
+   the two-slot VA-tagged alignment adapter + the fence.i FSM + `ep_bump = imem_ctx_chg`
+   (narrowed to satp/sfence in `ooo2_core.v`). **The clean scope shifted from the plan on two
+   points, both correctness:** (1) the hit compare is `valid & vtag & epoch` — **ASID and perms
+   are NOT on it** (perms stay the iMMU's `immu_fault`, so a bare priv change needs no I$
+   action; no ASID tag was added). (2) A mapping change must **retain + reconcile**, never
+   full-flush: a virtual-hit I$ over a write-back D$ that flushed on `satp` diverged (nop vs
+   ret at retire 6,203,500, the paging transition) because the old PIPT I$ retained physical
+   lines across `satp` for free and the flush lost them — root-caused, the requirement made
+   explicit in `docs/VHPR.md` (§"Instruction-Cache Coherence…"), then built as the
+   epoch-retain + physical reconcile above. Lockstep clean to 60 M. **−7.2% of retires on the
+   boot** (60 M: 14,461,521 → 13,424,357; `cosim-expected.txt` re-baselined with the reason in
+   the same commit): the adapter is single-outstanding + a 2-chunk window vs the buffer's
+   two-in-flight, three-slot run-ahead — a **known, recoverable MLP gap**, taken deliberately
+   ("clean implementation first; IPC recovery when everything has landed"). Not the prefetch
+   (VIRT-safe, on) nor the reconcile/epoch (negligible). Gates: lint clean, 240/0, 60 M cosim
+   +0.00% at the new number. The **300 M cosim + `brbench` re-baseline + board** are the
+   stage-close gates (increment 4). Straddle FSM retire + page-cap bit are still increment 3.
 3. **Page-cap bit + retire the straddle FSM** (`rv_cache` line metadata, `src/fetch.v`). Store the
    4K/2M bit per line at fill (increment 1); cap fetch at the enclosing page boundary; the
    aligner's carry replaces the `strad`/`ipc_q` FSM that Stage 1 kept. Gate: a page-boundary

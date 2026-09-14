@@ -59,7 +59,7 @@ module tb;
       .rd_ack(rd_ack), .rd_uncached(1'b0),
       .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_acc(), .wr_cpl(),
       .wr_uncached(1'b0), .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
-      .inv_req(inv_req), .inv_clean(1'b0), .inv_busy(inv_busy),
+      .inv_req(inv_req), .inv_clean(1'b0), .ep_bump(1'b0), .inv_busy(inv_busy),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
       .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss());
 

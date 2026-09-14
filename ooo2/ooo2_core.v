@@ -371,7 +371,10 @@ module ooo2_core
    end
    assign imem_vaddr    = imem_va;
    assign imem_xlate_ok = immu_ready & ~immu_fault;
-   assign imem_ctx_chg  = mmu_flush | (ipriv_q != mmu_priv) | (isatp_q != satp_fetch);
+   // MAPPING change only (satp write / sfence.vma / M-mode bare transition, all folded into
+   // satp_fetch). The priv-only term is GONE: with the VHPR I$ the iMMU still translates every
+   // fetch and immu_fault gates permissions, so a U<->S change needs no I$ invalidation.
+   assign imem_ctx_chg  = mmu_flush | (isatp_q != satp_fetch);
    assign fe_redirect   = fe_red_pulse;
    assign imem_satp_q   = isatp_q;
    assign imem_priv_q   = ipriv_q;
