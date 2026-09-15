@@ -144,3 +144,47 @@ free-return following.
   mid-window rollback it needs). Tracked separately.
 - **The −8.6% adapter-MLP recovery** (Stage 2 follow-up) — orthogonal, still separate.
 - `IW=4` — the banking and shards already support it; a later experiment if `IW=3` closes.
+
+## RESULTS (2026-09-15) — machine complete, IW=3 measured, experiment concluded here
+
+The parametric machine is DONE and correct: it builds/runs 1/2/3-wide from one source
+(`VDEFS="-DOOO2_IW=3"`; `OOO2_IW` is an `ifndef`/`define` in ooo2_core.v + rv_soc_top.v). At
+IW=2 every increment is BIT-IDENTICAL (60M Linux lockstep 13423520; run-ooo2-vl 240/0). At IW=3
+it passes 240/0 AND boots Ubuntu 60M cycles in lockstep with Simmerv, zero divergence.
+
+Increment-5 commits (the 2->3 port widening): ROB `7ce9ecd3`, frontend compacting IR buffer
+`bfa44bfd`, C1 shard-field 3-bit `22dfe83d`, C2 rename 3rd port `532037ff`, C3a SH_IE3 shard
+`dac42ead`, C3b 3rd ALU exec pipe `6018ac43`, C4 slot-C dispatch `61936735`, C5 flip-correct +
+measured `36ae53a2`. C4 restricts slot C to ALU ops -> its own scheduler i3 (no class-field
+widening, no shared-queue 3:1 muxes -- both remain future work).
+
+**MEASURED IPC (tiny128 boot, 60M): IW=2 = 13423520, IW=3 = 11850961 = -11.7%.** The third pipe
+COSTS throughput as built. Root cause (investigated, counters reverted): NOT stalls (SB-WHERE
+near-identical: d_hold 32.5M/33.0M, M-stall/M-empty/sq-full within ~2%) and NOT a big predictor
+regression (redirects +5%, dispatched-uops equal). It is MIS-SPECULATION WASTE: wrong-path
+(dispatched minus retired) is 6.7% at IW=2 vs 20.1% at IW=3 (~7 vs ~19 uops squashed per
+redirect). The wider front-end runs dispatch ahead faster on this dependence/memory-bound boot,
+so speculative branches sit longer before resolving and each mispredict (1 per ~300 cyc) throws
+away a fuller window; the 16-entry ROB + ~30-cyc load latency deepen the shadow. Present
+throughout the boot (-14% at 10M -> -11.5% at 50M), not an idle artifact. CAVEAT: tiny128 boot is
+a PESSIMISTIC workload; a compute-bound gb5 run is untested and could differ.
+
+**THE REAL FIX = faster mispredict recovery, and it is a MAJOR REDESIGN (deferred).** The
+frontend already resteers at branch-resolve (`fr_set`) and dispatch already freezes then
+(`~fr_v`), but the BACKEND flush waits for the ROB head (`redirect` gated by `m_needs_head`;
+`rd_wait = m_valid & m_redirect & ~m_at_head`). So from resolve to head, dispatch is frozen (a
+bubble that costs 3-wide ~1.5x more) and the wrong-path sits in the ROB. Flushing + resuming
+dispatch at `fr_set` needs MID-WINDOW ROLLBACK -- squash younger-than-the-branch-slot while
+older-than-it survives -- of the ROB (squash-to-slot, not reset-to-head), the free list (roll
+h_* back to the branch's alloc point: per-branch snapshot OR bitvector reconstruct, NOT today's
+h<=hc committed-head), and the map (lv rollback to the branch, not lv<=0). 166 MHz timing risk.
+This is the next stage. Bigger-ROB / wide-retire (inc-3b) attack STALLS, which are NOT the
+bottleneck here, so they do not lead -- and a bigger ROB WITHOUT faster recovery deepens each
+flush (worse). Better prediction reduces the base rate but helps both widths ~equally.
+
+Status: IW=2 is the shipping deliverable (the plan always framed IW=3 @166 as a stretch
+experiment). MERGE PREREQUISITE: the inc-5 tip is cosim-bit-identical at IW=2 but NOT board-gated
+(board was deferred to the flip, which measured -11.7% so was not built) -- a board gate at IW=2
+(tools/gate.sh: build shipping config, boot Ubuntu to login:, 0 faults, WNS>=0) is required
+before merging inc-5 to main, since the frontend restructure + PBITS 9->10 change the IW=2
+netlist even though behaviour is identical.
