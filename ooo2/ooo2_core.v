@@ -525,7 +525,7 @@ module ooo2_core
    wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
    wire                rn_lv1, rn_lv2, rn_lv3;
    wire                rn_stall;
-   wire [3:0]          rn_shard_low;
+   wire [4:0]          rn_shard_low;   // 5 shards (SH_IE3 added, Stage 3)
    // Rename exactly when the instruction is dispatched (d_take: structural room, no fault
    // replay, not the cycle after a redirect). It MAY be renamed in the redirect cycle
    // itself: that instruction is younger than the redirecting op and the rename's flush arm
@@ -584,6 +584,7 @@ module ooo2_core
       .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
       .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .we_ie2(alu2_q_v), .wa_ie2(alu2_q_prd), .wd_ie2(alu2_q_val),   // the second ALU (10d-ii)
+      .we_ie3(1'b0), .wa_ie3({RN_PBITS{1'b0}}), .wd_ie3(64'b0),      // the third ALU: dead until C3b
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.

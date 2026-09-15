@@ -38,6 +38,7 @@ module ooo2_rename
     parameter N_LD  = 128,
     parameter N_FE  = 128,
     parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
+    parameter N_IE3 = 64,                 // the third ALU's shard (Stage 3)
     parameter LOWAT = 4,                  // stall fetch when any shard has < LOWAT free
     parameter IW    = 2)                  // pipeline width -> FLNB = next_pow2(IW) free-list banks
    (input  wire             clk,
@@ -123,9 +124,9 @@ module ooo2_rename
 
     // ---- back pressure and instrumentation ----
     output wire             stall,        // ANY shard low -- see the note below
-        output wire [3:0]       shard_low);   // per-shard, for the hpm counters
+        output wire [4:0]       shard_low);   // per-shard (5 shards), for the hpm counters
 
-      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3;   // SH_IE3=3'd4 added with the 3rd ALU
+      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
    localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
 
    // ---- the map -------------------------------------------------------------------
@@ -194,6 +195,7 @@ module ooo2_rename
    localparam integer PW_LD = $clog2(N_LD) + 1;
    localparam integer PW_FE = $clog2(N_FE) + 1;
    localparam integer PW_I2 = $clog2(N_IE2) + 1;
+   localparam integer PW_I3 = $clog2(N_IE3) + 1;
    localparam integer FLNB = 1 << $clog2(IW);   // free-list banks = next_pow2(IW); >=2
    localparam integer FLLB = $clog2(FLNB);
 
@@ -203,6 +205,7 @@ module ooo2_rename
    reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
    reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
    reg [PW_I2-1:0] h_i2, hc_i2, t_i2;
+   reg [PW_I3-1:0] h_i3, hc_i3, t_i3;
    // NO FUNCTION READS THESE ARRAYS (rule F4, 2026-09-06): Vivado keeps one read port for a
    // function that reads a RAM, the last call site's, and folds the earlier call to 0 -- port
    // A's r_prd[6:0] was 0 on V4, V7 and W2. One continuous assign per reader, below.
@@ -212,6 +215,7 @@ module ooo2_rename
    localparam [PW_LD-1:0] T0_LD = N_LD;
    localparam [PW_FE-1:0] T0_FE = (N_FE - 32);
    localparam [PW_I2-1:0] T0_I2 = N_IE2;             // nothing maps there at reset: wholly free
+   localparam [PW_I3-1:0] T0_I3 = N_IE3;             // likewise the third ALU's shard
 
    genvar gS;
    // ---- shard ie free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
@@ -290,6 +294,25 @@ module ooo2_rename
    assign hb_rd_i2  = flrd_i2[hb_i2[FLLB-1:0]];
    assign hcc_rd_i2 = flrd_i2[hcc_i2[FLLB-1:0]];
 
+   // ---- shard i3 free list (the third ALU, Stage 3): identical shape to i2 ----
+   wire [IDXB-1:0] ha_rd_i3, hb_rd_i3, hcc_rd_i3;
+   wire [IDXB-1:0] flrd_i3 [0:FLNB-1];
+   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i3
+      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE3/FLNB-1];
+      integer jj; integer pp; initial for (jj = 0; jj < N_IE3/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
+      wire w0 = fre_i3  & (t_i3 [FLLB-1:0] == gS);
+      wire w1 = fre2_i3 & (t2_i3[FLLB-1:0] == gS);
+      wire w2 = fre3_i3 & (t3_i3[FLLB-1:0] == gS);
+      always @(posedge clk)
+         if (w0 | w1 | w2) mem[w0 ? t_i3[PW_I3-2:FLLB] : w1 ? t2_i3[PW_I3-2:FLLB] : t3_i3[PW_I3-2:FLLB]]
+                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+      assign flrd_i3[gS] = mem[(h_i3[FLLB-1:0] == gS) ? h_i3[PW_I3-2:FLLB]
+                             : (hb_i3[FLLB-1:0] == gS) ? hb_i3[PW_I3-2:FLLB] : hcc_i3[PW_I3-2:FLLB]];
+   end endgenerate
+   assign ha_rd_i3  = flrd_i3[h_i3 [FLLB-1:0]];
+   assign hb_rd_i3  = flrd_i3[hb_i3[FLLB-1:0]];
+   assign hcc_rd_i3 = flrd_i3[hcc_i3[FLLB-1:0]];
+
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
    // instructions behind it are squashed.  The restore target must therefore be the
@@ -325,51 +348,62 @@ module ooo2_rename
    wire fre2_fe = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
    wire cmt2_i2 = c2_valid & c2_rd_v & (c2_shard == SH_IE2);
    wire fre2_i2 = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
+   wire cmt2_i3 = c2_valid & c2_rd_v & (c2_shard == SH_IE3);
+   wire fre2_i3 = c2_valid & c2_rd_v & (pold2_sh == SH_IE3);
    wire [2:0] c3_shard  = c3_prd[PBITS-1:IDXB];
    wire [2:0] pold3_sh  = c3_pold[PBITS-1:IDXB];
    wire cmt3_ie = c3_valid & c3_rd_v & (c3_shard == SH_IE);
    wire cmt3_ld = c3_valid & c3_rd_v & (c3_shard == SH_LD);
    wire cmt3_fe = c3_valid & c3_rd_v & (c3_shard == SH_FE);
    wire cmt3_i2 = c3_valid & c3_rd_v & (c3_shard == SH_IE2);
+   wire cmt3_i3 = c3_valid & c3_rd_v & (c3_shard == SH_IE3);
    wire fre3_ie = c3_valid & c3_rd_v & (pold3_sh == SH_IE);
    wire fre3_ld = c3_valid & c3_rd_v & (pold3_sh == SH_LD);
    wire fre3_fe = c3_valid & c3_rd_v & (pold3_sh == SH_FE);
    wire fre3_i2 = c3_valid & c3_rd_v & (pold3_sh == SH_IE2);
+   wire fre3_i3 = c3_valid & c3_rd_v & (pold3_sh == SH_IE3);
    wire [2:0] c_shard = c_prd[PBITS-1:IDXB];
    wire [2:0] pold_sh = c_pold[PBITS-1:IDXB];
    wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
    wire cmt_ld = c_valid & c_rd_v & (c_shard == SH_LD);
    wire cmt_fe = c_valid & c_rd_v & (c_shard == SH_FE);
    wire cmt_i2 = c_valid & c_rd_v & (c_shard == SH_IE2);
+   wire cmt_i3 = c_valid & c_rd_v & (c_shard == SH_IE3);
    wire fre_ie = c_valid & c_rd_v & (pold_sh == SH_IE);   // free push: the register's shard
    wire fre_ld = c_valid & c_rd_v & (pold_sh == SH_LD);
    wire fre_fe = c_valid & c_rd_v & (pold_sh == SH_FE);
    wire fre_i2 = c_valid & c_rd_v & (pold_sh == SH_IE2);
+   wire fre_i3 = c_valid & c_rd_v & (pold_sh == SH_IE3);
    wire [PW_IE-1:0] hc_ie_n = hc_ie + {{(PW_IE-1){1'b0}}, cmt_ie} + {{(PW_IE-1){1'b0}}, cmt2_ie} + {{(PW_IE-1){1'b0}}, cmt3_ie};
    wire [PW_LD-1:0] hc_ld_n = hc_ld + {{(PW_LD-1){1'b0}}, cmt_ld} + {{(PW_LD-1){1'b0}}, cmt2_ld} + {{(PW_LD-1){1'b0}}, cmt3_ld};
    wire [PW_FE-1:0] hc_fe_n = hc_fe + {{(PW_FE-1){1'b0}}, cmt_fe} + {{(PW_FE-1){1'b0}}, cmt2_fe} + {{(PW_FE-1){1'b0}}, cmt3_fe};
    wire [PW_I2-1:0] hc_i2_n = hc_i2 + {{(PW_I2-1){1'b0}}, cmt_i2} + {{(PW_I2-1){1'b0}}, cmt2_i2} + {{(PW_I2-1){1'b0}}, cmt3_i2};
+   wire [PW_I3-1:0] hc_i3_n = hc_i3 + {{(PW_I3-1){1'b0}}, cmt_i3} + {{(PW_I3-1){1'b0}}, cmt2_i3} + {{(PW_I3-1){1'b0}}, cmt3_i3};
 
    wire [PW_IE-2:0] t2_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie};   // the second free's slot
    wire [PW_LD-2:0] t2_ld = t_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, fre_ld};
    wire [PW_FE-2:0] t2_fe = t_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, fre_fe};
    wire [PW_I2-2:0] t2_i2 = t_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, fre_i2};
+   wire [PW_I3-2:0] t2_i3 = t_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, fre_i3};
    // the third free's slot = tail + (# of earlier frees this cycle)
    wire [PW_IE-2:0] t3_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie} + {{(PW_IE-2){1'b0}}, fre2_ie};
    wire [PW_LD-2:0] t3_ld = t_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, fre_ld} + {{(PW_LD-2){1'b0}}, fre2_ld};
    wire [PW_FE-2:0] t3_fe = t_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, fre_fe} + {{(PW_FE-2){1'b0}}, fre2_fe};
    wire [PW_I2-2:0] t3_i2 = t_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, fre_i2} + {{(PW_I2-2){1'b0}}, fre2_i2};
+   wire [PW_I3-2:0] t3_i3 = t_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, fre_i3} + {{(PW_I3-2){1'b0}}, fre2_i3};
    wire [PW_IE-1:0] avail_ie = t_ie - h_ie;
    wire [PW_LD-1:0] avail_ld = t_ld - h_ld;
    wire [PW_FE-1:0] avail_fe = t_fe - h_fe;
    wire [PW_I2-1:0] avail_i2 = t_i2 - h_i2;
+   wire [PW_I3-1:0] avail_i3 = t_i3 - h_i3;
    // STALL WHEN *ANY* SHARD IS LOW, not when the destination's shard is.  A shard that runs
    // dry stalls rename regardless of which one the next instruction wants, so throttling on
    // the minimum is what actually prevents the stall; throttling per-destination only
    // discovers it one instruction too late.  The cost is that the stall probability is the
    // union across shards -- which is the argument for sizing them unequally rather than
    // adding more of them.
-   assign shard_low = {avail_i2 < LOWAT[PW_I2-1:0],
+   assign shard_low = {avail_i3 < LOWAT[PW_I3-1:0],
+                       avail_i2 < LOWAT[PW_I2-1:0],
                        avail_fe < LOWAT[PW_FE-1:0],
                        avail_ld < LOWAT[PW_LD-1:0],
                        avail_ie < LOWAT[PW_IE-1:0]};
@@ -378,13 +412,14 @@ module ooo2_rename
    wire alloc   = r_valid   & r_rd_v   & ~stall;
    wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
    wire alloc_c = r_valid_c & r_rd_v_c & ~stall;
-   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2);
-   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2);
-   wire c_ie = alloc_c & (r_shard_c == SH_IE), c_ld = alloc_c & (r_shard_c == SH_LD), c_fe = alloc_c & (r_shard_c == SH_FE), c_i2 = alloc_c & (r_shard_c == SH_IE2);
+   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2), a_i3 = alloc & (r_shard == SH_IE3);
+   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2), b_i3 = alloc_b & (r_shard_b == SH_IE3);
+   wire c_ie = alloc_c & (r_shard_c == SH_IE), c_ld = alloc_c & (r_shard_c == SH_LD), c_fe = alloc_c & (r_shard_c == SH_FE), c_i2 = alloc_c & (r_shard_c == SH_IE2), c_i3 = alloc_c & (r_shard_c == SH_IE3);
    wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
                             : (r_shard == SH_LD) ? ha_rd_ld
                             : (r_shard == SH_FE) ? ha_rd_fe
-                                                 : ha_rd_i2;
+                            : (r_shard == SH_IE2)? ha_rd_i2
+                                                 : ha_rd_i3;
    assign r_prd = {r_shard, head_idx};
    // B's entry: the head, or the one after it when A allocates from the same shard. A second
    // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
@@ -392,10 +427,12 @@ module ooo2_rename
    wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
    wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
    wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2};
+   wire [PW_I3-2:0] hb_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, a_i3};
    wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
                               : (r_shard_b == SH_LD) ? hb_rd_ld
                               : (r_shard_b == SH_FE) ? hb_rd_fe
-                                                     : hb_rd_i2;
+                              : (r_shard_b == SH_IE2)? hb_rd_i2
+                                                     : hb_rd_i3;
    assign r_prd_b = {r_shard_b, head_idx_b};
    // C's entry: the head plus the number of EARLIER allocations from the same shard this cycle.
    // A third LUTRAM read port; LOWAT >= 3 keeps all three inside the free set.
@@ -403,10 +440,12 @@ module ooo2_rename
    wire [PW_LD-2:0] hcc_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld} + {{(PW_LD-2){1'b0}}, b_ld};
    wire [PW_FE-2:0] hcc_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe} + {{(PW_FE-2){1'b0}}, b_fe};
    wire [PW_I2-2:0] hcc_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2} + {{(PW_I2-2){1'b0}}, b_i2};
+   wire [PW_I3-2:0] hcc_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, a_i3} + {{(PW_I3-2){1'b0}}, b_i3};
    wire [IDXB-1:0] head_idx_c = (r_shard_c == SH_IE) ? hcc_rd_ie
                               : (r_shard_c == SH_LD) ? hcc_rd_ld
                               : (r_shard_c == SH_FE) ? hcc_rd_fe
-                                                     : hcc_rd_i2;
+                              : (r_shard_c == SH_IE2)? hcc_rd_i2
+                                                     : hcc_rd_i3;
    assign r_prd_c = {r_shard_c, head_idx_c};
 
    // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
@@ -460,6 +499,7 @@ module ooo2_rename
       h_ld = {PW_LD{1'b0}}; hc_ld = {PW_LD{1'b0}}; t_ld = T0_LD;
       h_fe = {PW_FE{1'b0}}; hc_fe = {PW_FE{1'b0}}; t_fe = T0_FE;
       h_i2 = {PW_I2{1'b0}}; hc_i2 = {PW_I2{1'b0}}; t_i2 = T0_I2;
+      h_i3 = {PW_I3{1'b0}}; hc_i3 = {PW_I3{1'b0}}; t_i3 = T0_I3;
       lv = 64'd0;
       for (j = 0; j < 64; j = j + 1) begin newer[j] = 2'd0; rnewer[j] = 2'd0; end
    end
@@ -481,9 +521,10 @@ module ooo2_rename
          h_ld <= hc_ld;
          h_fe <= hc_fe;
          h_i2 <= hc_i2;
+         h_i3 <= hc_i3;
       end else begin
          // ---- commit: RMAP takes the committed mapping, the displaced register is freed
-         hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;  hc_i2 <= hc_i2_n;
+         hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;  hc_i2 <= hc_i2_n;  hc_i3 <= hc_i3_n;
          if (c_valid & c_rd_v) begin
             rmap_a[c_rd] <= c_prd;  rnewer[c_rd] <= 2'd0;
          end
@@ -498,6 +539,7 @@ module ooo2_rename
          t_ld <= t_ld + {{(PW_LD-1){1'b0}}, fre_ld} + {{(PW_LD-1){1'b0}}, fre2_ld} + {{(PW_LD-1){1'b0}}, fre3_ld};
          t_fe <= t_fe + {{(PW_FE-1){1'b0}}, fre_fe} + {{(PW_FE-1){1'b0}}, fre2_fe} + {{(PW_FE-1){1'b0}}, fre3_fe};
          t_i2 <= t_i2 + {{(PW_I2-1){1'b0}}, fre_i2} + {{(PW_I2-1){1'b0}}, fre2_i2} + {{(PW_I2-1){1'b0}}, fre3_i2};
+         t_i3 <= t_i3 + {{(PW_I3-1){1'b0}}, fre_i3} + {{(PW_I3-1){1'b0}}, fre2_i3} + {{(PW_I3-1){1'b0}}, fre3_i3};
 
          // ---- rename: SMAP takes the new mapping, the head advances.  A flush in the same
          // cycle squashes this instruction, so the flush arm below wins on the pointers;
@@ -525,11 +567,13 @@ module ooo2_rename
             h_ld <= hc_ld_n;
             h_fe <= hc_fe_n;
             h_i2 <= hc_i2_n;
+            h_i3 <= hc_i3_n;
          end else begin
             h_ie <= h_ie + {{(PW_IE-1){1'b0}}, a_ie} + {{(PW_IE-1){1'b0}}, b_ie} + {{(PW_IE-1){1'b0}}, c_ie};
             h_ld <= h_ld + {{(PW_LD-1){1'b0}}, a_ld} + {{(PW_LD-1){1'b0}}, b_ld} + {{(PW_LD-1){1'b0}}, c_ld};
             h_fe <= h_fe + {{(PW_FE-1){1'b0}}, a_fe} + {{(PW_FE-1){1'b0}}, b_fe} + {{(PW_FE-1){1'b0}}, c_fe};
             h_i2 <= h_i2 + {{(PW_I2-1){1'b0}}, a_i2} + {{(PW_I2-1){1'b0}}, b_i2} + {{(PW_I2-1){1'b0}}, c_i2};
+            h_i3 <= h_i3 + {{(PW_I3-1){1'b0}}, a_i3} + {{(PW_I3-1){1'b0}}, b_i3} + {{(PW_I3-1){1'b0}}, c_i3};
          end
       end
    end
