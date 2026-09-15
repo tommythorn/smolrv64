@@ -469,7 +469,7 @@ module ooo2_core
    // structure rather than a big-bang swap of the core's most load-bearing datapath.
    localparam integer RN_IDXB  = 7;
    localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
-   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3;   // SH_IE3=3'd4 with the 3rd ALU
+   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
 
    wire d_ord   = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
                 | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
@@ -479,6 +479,11 @@ module ooo2_core
    wire d2_ord  = d2_is_mem | d2_is_amo | d2_is_mul | d2_is_fp | d2_is_csr | d2_is_serialize
                 | d2_is_fencei | d2_is_cbo | d2_is_branch | d2_is_jump | d2_is_jalr
                 | d2_illegal | d2_fault | d2_is_irqop;
+   wire d3_is_irqop = (d3_insn[6:2] == 5'b11100) & (d3_insn[14:12] == 3'b000)
+                    & (d3_insn[31:20] == 12'h7F0) & ~d3_illegal & ~d3_fault;
+   wire d3_ord  = d3_is_mem | d3_is_amo | d3_is_mul | d3_is_fp | d3_is_csr | d3_is_serialize
+                | d3_is_fencei | d3_is_cbo | d3_is_branch | d3_is_jump | d3_is_jalr
+                | d3_illegal | d3_fault | d3_is_irqop;
 
    // Destination shard = where the result will be written.  Loads, AMOs and mul/div take
    // SH_LD (see ooo2_prf.v on why mul/div ride with loads and not the ALU).
@@ -512,6 +517,10 @@ module ooo2_core
                        : d2_is_fp                            ? SH_FE
                        : d2_ord                              ? SH_LD
                        :                                       SH_IE2;   // the second ALU's shard
+   wire [2:0] d3_shard = (d3_is_mem | d3_is_amo | d3_is_mul) ? SH_LD
+                       : d3_is_fp                            ? SH_FE
+                       : d3_ord                              ? SH_LD
+                       :                                       SH_IE3;   // the third ALU's shard
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
    wire [RN_PBITS-1:0] rn_prs1_b, rn_prs2_b, rn_prs3_b, rn_prd_b;
@@ -578,20 +587,22 @@ module ooo2_core
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
    wire [63:0] prf_a21, prf_a22;                       // the second ALU port's (10d-ii)
+   wire [63:0] prf_a31, prf_a32;                       // the third ALU port's (Stage 3)
    ooo2_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
      (.clk(clk),
       .we_ie(alu_q_v), .we_ld(we_ld), .we_fe(we_fe),       // int-exec: from the writeback register
       .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
       .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .we_ie2(alu2_q_v), .wa_ie2(alu2_q_prd), .wd_ie2(alu2_q_val),   // the second ALU (10d-ii)
-      .we_ie3(1'b0), .wa_ie3({RN_PBITS{1'b0}}), .wd_ie3(64'b0),      // the third ALU: dead until C3b
+      .we_ie3(alu3_q_v), .wa_ie3(alu3_q_prd), .wd_ie3(alu3_q_val),   // the third ALU (Stage 3)
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
       .ra1(i_ps1), .ra2(i_ps2), .ra3(i_ps3),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
-      .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22));
+      .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
+      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
    // The step from "M is the commit point" to "the ROB head is the commit point" -- the
@@ -605,7 +616,7 @@ module ooo2_core
    // restore. That already supports N uncommitted instructions; N is only ever 1 today
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
    localparam integer ROB_DEPTH = 16, ROB_IDXB = 4;
-   wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2;
+   wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_empty;
    // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
    // redirect may only fire when it is: the trapping instruction is YOUNGER than an
@@ -691,7 +702,7 @@ module ooo2_core
    wire pnd_r1_b = ~rn_byp1_b & (rn_lv1_b ? pnd_s1_b : pnd_m1_b);
    wire pnd_r2_b = ~rn_byp2_b & (rn_lv2_b ? pnd_s2_b : pnd_m2_b);
    wire pnd_r3_b = ~rn_byp3_b & (rn_lv3_b ? pnd_s3_b : pnd_m3_b);
-   ooo2_pending #(.PBITS(RN_PBITS), .NWB(4)) u_pend
+   ooo2_pending #(.PBITS(RN_PBITS), .NWB(NWB_C)) u_pend
      (.clk(clk), .reset(reset),
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
       .a_v2(rn_valid_b & d2_rd_v), .a_preg2(rn_prd_b),
@@ -699,7 +710,7 @@ module ooo2_core
       .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
       .q16(a_ps1), .q17(a_ps2), .r16(pnd_a1), .r17(pnd_a2),
       .q18(a2_ps1), .q19(a2_ps2), .r18(pnd_b1), .r19(pnd_b2),
-      .w_v({we_ie2, we_fe, we_ld, we_ie}), .w_preg({wa_ie2, wa_fe, wa_ld, wa_ie}),
+      .w_v({we_ie3, we_ie2, we_fe, we_ld, we_ie}), .w_preg({wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie}),
       .q1(rn_sprs1), .q2(rn_sprs2), .q3(rn_sprs3),
       .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
       .q7(rn_mprs1), .q8(rn_mprs2), .q9(rn_mprs3),
@@ -811,7 +822,7 @@ module ooo2_core
                                            // the two-wide core closed at exactly 0.000 ns and did not boot; FP gives first
    localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
-   localparam integer NWB_C   = 4;         // writeback ports watched: one per PRF shard (SH_IE2 since 10d-ii)
+   localparam integer NWB_C   = 5;         // writeback ports watched: one per PRF shard (SH_IE3 since Stage 3)
    localparam integer PL_N = NI + NL + NF, PL_IB = 5;
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
    localparam integer SQ_TB = SQ_IB + 1;         // ...and its seqno: the index plus a wrap bit
@@ -885,15 +896,25 @@ module ooo2_core
    wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
    wire       d2_ld_nb = d2_is_mem & ~d2_is_store & ~d2_is_amo & ~d2_is_cbo;
    wire [2:0] d2_srdy = {pnd_r3_b | ~d2_rs3_v, pnd_r2_b | ~d2_rs2_v | d2_st_nb, pnd_r1_b | ~d2_rs1_v};
+   // slot C dispatch (Stage 3): DEAD until the C4 dispatch step drives rn_valid_c. The 3rd
+   // ALU scheduler u_iq_i3 is wired but inert (rn_valid_c=0). C4 replaces rn_valid_c and the
+   // placeholder d3_srdy (source-ready from slot C's pending queries) with the real route.
+   wire rn_valid_c = 1'b0;
+   wire d3_cls_i = ~d3_ord;
+   wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
+   wire [1:0] d3_srdy = 2'b11;   // placeholder (C4)
    wire d_plain  = ~(d_is_serialize  | d_is_fencei  | d_is_cbo  | d_is_amo  | d_is_csr  | d_illegal  | d_fault  | d_is_irqop);
    wire d2_plain = ~(d2_is_serialize | d2_is_fencei | d2_is_cbo | d2_is_amo | d2_is_csr | d2_illegal | d2_fault | d2_is_irqop);
 
-   wire [NWB_C-1:0]        wkv  = {we_ie2, we_fe, we_ld, we_ie};
-   wire [NWB_C*RN_PBITS-1:0] wkp = {wa_ie2, wa_fe, wa_ld, wa_ie};
+   wire [NWB_C-1:0]        wkv  = {we_ie3, we_ie2, we_fe, we_ld, we_ie};
+   wire [NWB_C*RN_PBITS-1:0] wkp = {wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie};
 
    wire ri_ready, ri_iss_v, ri_blk_v;  wire [IBI-1:0] ri_d_ent, ri_iss_ent;
    wire ri2_ready, ri2_iss_v, ri2_blk_v; wire [IBI-1:0] ri2_d_ent, ri2_iss_ent;
    wire [ROB_IDXB-1:0] ri2_iss_rob;  wire [RN_PBITS-1:0] ri2_blk_pr;  wire [IBI:0] ri2_occ;  wire ri2_take;
+   // 3rd integer scheduler (the third ALU, Stage 3): dead at IW=2 (rn_valid_c=0)
+   wire ri3_ready, ri3_iss_v, ri3_blk_v; wire [IBI-1:0] ri3_d_ent, ri3_iss_ent;
+   wire [ROB_IDXB-1:0] ri3_iss_rob;  wire [RN_PBITS-1:0] ri3_blk_pr;  wire [IBI:0] ri3_occ;  wire ri3_take;
    wire [ROB_IDXB-1:0] ri_iss_rob;
    wire [RN_PBITS-1:0] ri_blk_pr;      wire [IBI:0] ri_occ;
    wire rl_ready, rl_iss_v, rl_blk_v;  wire [IBL-1:0] rl_d_ent, rl_iss_ent;
@@ -927,6 +948,12 @@ module ooo2_core
    reg [RN_PBITS-1:0]  a2_ps1, a2_ps2;
    initial begin a2_v = 1'b0; a2_ent = {IBI{1'b0}}; a2_rob = {ROB_IDXB{1'b0}}; a2_ps1 = {RN_PBITS{1'b0}}; a2_ps2 = {RN_PBITS{1'b0}}; end
    wire   iss_alu2 = a2_v & ~redirect;
+   reg                 a3_v;                               // the third ALU's port (Stage 3)
+   reg [IBI-1:0]       a3_ent;
+   reg [ROB_IDXB-1:0]  a3_rob;
+   reg [RN_PBITS-1:0]  a3_ps1, a3_ps2;
+   initial begin a3_v = 1'b0; a3_ent = {IBI{1'b0}}; a3_rob = {ROB_IDXB{1'b0}}; a3_ps1 = {RN_PBITS{1'b0}}; a3_ps2 = {RN_PBITS{1'b0}}; end
+   wire   iss_alu3 = a3_v & ~redirect;
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
@@ -948,6 +975,18 @@ module ooo2_core
      .iss_take(ri2_take),
       .hold_v(a2_v),.hold_ent(a2_ent),
       .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ));
+   // THE THIRD INTEGER SCHEDULER (Stage 3): slot C's ALU ops, into the third ALU. Dead at
+   // IW=2 (rn_valid_c=0); the C4 dispatch step gives it the real slot-C route.
+   ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+             .FIXEDL(1),.INORDER(0)) u_iq_i3
+     (.clk(clk),.reset(reset),
+      .d_valid(rn_valid_c & d3_cls_i),.d_ready(ri3_ready),.d_rob(rob_d_idx3),
+      .d_ps({rn_prs2_c, rn_prs1_c}),.d_r(d3_srdy[1:0]),.d_prd(d3_prd_g),.d_ent(ri3_d_ent),
+      .wb_v(wkv),.wb_preg(wkp),
+      .unit_busy(1'b0),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
+     .iss_take(ri3_take),
+      .hold_v(a3_v),.hold_ent(a3_ent),
+      .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ));
 
    ooo2_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(0),.INORDER(1)) u_iq_l
@@ -997,6 +1036,7 @@ module ooo2_core
    wire pick_f = rf_iss_v & ~pick_l;
    wire pick_i = ri_iss_v;                                // its own port: never waits for M/F
    wire pick_i2 = ri2_iss_v;                              // the second ALU's, likewise
+   wire pick_i3 = ri3_iss_v;                              // the third ALU's, likewise
    wire iq_iss_v = pick_l | pick_f;                       // the M/F port
    wire [1:0] pick_cls = pick_l ? C_L : C_F;
    wire [RS_IDXB-1:0] iq_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
@@ -1040,16 +1080,21 @@ module ooo2_core
    // 3:1 mux, now on three reads instead of three indexes.
    reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_i2 [0:NI-1];
+   reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
    wire [3*RN_PBITS-1:0] ps_out   = pick_l ? psmem_l[rl_iss_ent] : psmem_f[rf_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
+   wire [3*RN_PBITS-1:0] ps_out_a3 = psmem_i3[ri3_iss_ent];
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
+   wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
+   wire c_to_i3 = rn_valid_c & d3_cls_i;                 // slot C -> the third scheduler (dead at IW=2)
    always @(posedge clk) begin
       if (rn_valid & d_cls_i) psmem_i[ri_d_ent]  <= ps_in;
       if (b_to_i2)            psmem_i2[ri2_d_ent] <= ps_in_b;
+      if (c_to_i3)            psmem_i3[ri3_d_ent] <= ps_in_c;
       if ((rn_valid & d_cls_l) | b_to_l) psmem_l[rl_d_ent] <= b_to_l ? ps_in_b : ps_in;
       if ((rn_valid & d_cls_f) | b_to_f) psmem_f[rf_d_ent] <= b_to_f ? ps_in_b : ps_in;
    end
@@ -1059,6 +1104,7 @@ module ooo2_core
    wire iq_iss_take;
    assign ri_take = pick_i;                              // the ALU port takes every cycle; a take in
    assign ri2_take = pick_i2;                            // the redirect cycle dies in a_v/a2_v (cleared)
+   assign ri3_take = pick_i3;                            // the third ALU, likewise (dead at IW=2)
    assign rl_take = pick_l & iq_iss_take;
    assign rf_take = pick_f & iq_iss_take;
    wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
@@ -1121,6 +1167,16 @@ module ooo2_core
          end
       end
    end
+   always @(posedge clk) begin                            // the third ALU port (Stage 3)
+      if (reset | redirect) a3_v <= 1'b0;
+      else begin
+         a3_v <= ri3_take;
+         if (ri3_take) begin
+            a3_ent <= ri3_iss_ent;  a3_rob <= ri3_iss_rob;
+            a3_ps1 <= ps_out_a3[0 +: RN_PBITS];  a3_ps2 <= ps_out_a3[RN_PBITS +: RN_PBITS];
+         end
+      end
+   end
 
    always @(posedge clk) begin
       if (reset | redirect) i_v <= 1'b0;
@@ -1163,11 +1219,23 @@ module ooo2_core
                            d2_alu_op, d2_alu_w, d2_alu_uw, d2_op1_sel, d2_op2_imm, d2_res_link,
                            d2_br_func, d2_mis_taken, d2_mis_nt,
                            d2_rs1_v, d2_rs2_v, d2_rs3_v, d2_ord, sq_d_idx, lq_d_idx};
+   // slot C's payload (Stage 3): identical shape, for the third ALU. Dead at IW=2.
+   wire [PLW-1:0] pl_in_c = {d3_pc, d3_insn, d3_rvc, d3_seq, d3_pdet, d3_pred_npc, d3_rd, d3_rd_v,
+                           (d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}}), d3_shard, d3_rs1, d3_imm,
+                           d3_mem_size, d3_mem_signed, d3_is_mem, d3_is_store, d3_is_amo,
+                           d3_amo_func, d3_is_branch, d3_is_jump, d3_is_jalr, d3_is_mul,
+                           d3_is_csr, d3_csr_func, d3_is_serialize, d3_is_fp, d3_is_fencei,
+                           d3_is_cbo, d3_cbo_zero, d3_cbo_keep, d3_illegal, d3_fault,
+                           d3_fault_cause, d3_fault_tval,
+                           d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
+                           d3_br_func, d3_mis_taken, d3_mis_nt,
+                           d3_rs1_v, d3_rs2_v, d3_rs3_v, d3_ord, sq_d_idx, lq_d_idx};
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_i2 [0:NI-1];
+   reg [PLW-1:0] plmem_i3 [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
    // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
@@ -1180,18 +1248,21 @@ module ooo2_core
    // entry issues no earlier than the cycle after its dispatch, so a read never meets its
    // own write.
    wire [PLW-1:0] pl_cand  = pick_l ? plmem_l[rl_iss_ent] : plmem_f[rf_iss_ent];
-   reg  [PLW-1:0] pl_q, pla_q, pla2_q;
+   reg  [PLW-1:0] pl_q, pla_q, pla2_q, pla3_q;
    always @(posedge clk) begin
       if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
       if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
       if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
+      if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
    end
    wire [PLW-1:0] pl_out   = pl_q;
    wire [PLW-1:0] pla_out  = pla_q;                         // the ALU port's payload
    wire [PLW-1:0] pla2_out = pla2_q;                        // the second ALU port's
+   wire [PLW-1:0] pla3_out = pla3_q;                        // the third ALU port's
    always @(posedge clk) begin
       if (rn_valid & d_cls_i) plmem_i[ri_d_ent]  <= pl_in;
       if (b_to_i2)            plmem_i2[ri2_d_ent] <= pl_in_b;
+      if (c_to_i3)            plmem_i3[ri3_d_ent] <= pl_in_c;
       if ((rn_valid & d_cls_l) | b_to_l) plmem_l[rl_d_ent] <= b_to_l ? pl_in_b : pl_in;
       if ((rn_valid & d_cls_f) | b_to_f) plmem_f[rf_d_ent] <= b_to_f ? pl_in_b : pl_in;
    end
@@ -1291,6 +1362,38 @@ module ooo2_core
            qb_alu_op, qb_alu_w, qb_alu_uw, qb_op1_sel, qb_op2_imm, qb_res_link,
            qb_br_func, qb_mis_taken, qb_mis_nt,
            qb_rs1_v, qb_rs2_v, qb_rs3_v, qb_ord, qb_sq_tag, qb_lq_idx} = pla2_out;
+   // ...and for the third ALU port (Stage 3)
+   wire [PCW-1:0]      qc_pc, qc_pred_npc, qc_fault_tval;
+   wire [31:0]         qc_insn;
+   wire [SQ_IB-1:0]    qc_sq_tag;
+   wire [LQ_IB-1:0]    qc_lq_idx;
+   wire                qc_rvc, qc_rd_v, qc_mem_signed, qc_is_mem, qc_is_store, qc_is_amo;
+   wire [SEQW-1:0]     qc_seq;
+   wire [PDW-1:0]      qc_pdet;
+   wire [5:0]          qc_rd, qc_rs1;
+   wire [RN_PBITS-1:0] qc_prd;
+   wire [2:0]          qc_shard;
+   wire [1:0]          qc_mem_size;
+   wire [63:0]         qc_imm;
+   wire [4:0]          qc_amo_func;
+   wire                qc_is_branch, qc_is_jump, qc_is_jalr, qc_is_mul, qc_is_csr;
+   wire [2:0]          qc_csr_func;
+   wire                qc_is_serialize, qc_is_fp, qc_is_fencei, qc_is_cbo, qc_cbo_zero;
+   wire                qc_cbo_keep, qc_illegal, qc_fault;
+   wire [3:0]          qc_fault_cause;
+   wire [5:0]          qc_alu_op;
+   wire                qc_alu_w, qc_alu_uw, qc_op2_imm, qc_res_link, qc_mis_taken, qc_mis_nt;
+   wire [1:0]          qc_op1_sel;
+   wire [2:0]          qc_br_func;
+   wire                qc_rs1_v, qc_rs2_v, qc_rs3_v, qc_ord;
+   assign {qc_pc, qc_insn, qc_rvc, qc_seq, qc_pdet, qc_pred_npc, qc_rd, qc_rd_v, qc_prd, qc_shard,
+           qc_rs1, qc_imm, qc_mem_size, qc_mem_signed, qc_is_mem, qc_is_store, qc_is_amo,
+           qc_amo_func, qc_is_branch, qc_is_jump, qc_is_jalr, qc_is_mul, qc_is_csr, qc_csr_func,
+           qc_is_serialize, qc_is_fp, qc_is_fencei, qc_is_cbo, qc_cbo_zero, qc_cbo_keep,
+           qc_illegal, qc_fault, qc_fault_cause, qc_fault_tval,
+           qc_alu_op, qc_alu_w, qc_alu_uw, qc_op1_sel, qc_op2_imm, qc_res_link,
+           qc_br_func, qc_mis_taken, qc_mis_nt,
+           qc_rs1_v, qc_rs2_v, qc_rs3_v, qc_ord, qc_sq_tag, qc_lq_idx} = pla3_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -1460,7 +1563,7 @@ module ooo2_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(5)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(6)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
@@ -1471,9 +1574,9 @@ module ooo2_core
       // third alloc port: dead at IW<3 (no third dispatched uop yet); the dispatch-widening
       // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
       // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
-      .d_valid3(1'b0), .d_rd3(6'b0), .d_prd3({RN_PBITS{1'b0}}), .d_noret3(1'b0), .d_ready3(), .d_idx3(),
-      .w_v({iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
-      .w_ix({a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
+      .d_valid3(1'b0), .d_rd3(6'b0), .d_prd3({RN_PBITS{1'b0}}), .d_noret3(1'b0), .d_ready3(), .d_idx3(rob_d_idx3),
+      .w_v({iss_alu3, iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
+      .w_ix({a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
@@ -1615,24 +1718,32 @@ module ooo2_core
    reg  [RN_PBITS-1:0] alu2_q_prd;
    reg  [63:0]         alu2_q_val;
    initial begin alu2_q_v = 1'b0; alu2_q_prd = {RN_PBITS{1'b0}}; alu2_q_val = 64'd0; end
+   // the third ALU's writeback register (Stage 3); its issue port is wired below
+   reg                 alu3_q_v;
+   reg  [RN_PBITS-1:0] alu3_q_prd;
+   reg  [63:0]         alu3_q_val;
+   initial begin alu3_q_v = 1'b0; alu3_q_prd = {RN_PBITS{1'b0}}; alu3_q_val = 64'd0; end
 
-   wire fwd1 = alu_q_v & (i_ps1 == alu_q_prd), fwd1b = alu2_q_v & (i_ps1 == alu2_q_prd);
-   wire fwd2 = alu_q_v & (i_ps2 == alu_q_prd), fwd2b = alu2_q_v & (i_ps2 == alu2_q_prd);
-   wire fwd3 = alu_q_v & (i_ps3 == alu_q_prd), fwd3b = alu2_q_v & (i_ps3 == alu2_q_prd);
-   wire [63:0] x_rs1 = fwd1 ? alu_q_val : fwd1b ? alu2_q_val : prf_rs1;
-   wire [63:0] x_rs2 = fwd2 ? alu_q_val : fwd2b ? alu2_q_val : prf_rs2;
-   wire [63:0] x_rs3 = fwd3 ? alu_q_val : fwd3b ? alu2_q_val : prf_rs3;
+   // 3-producer forward: a source can be waiting on any of the three ALUs' writeback registers.
+   // A physical register has one writer, so at most one of {fwd,fwdb,fwdc} is true -- the mux
+   // order is immaterial.
+   wire fwd1 = alu_q_v & (i_ps1 == alu_q_prd), fwd1b = alu2_q_v & (i_ps1 == alu2_q_prd), fwd1c = alu3_q_v & (i_ps1 == alu3_q_prd);
+   wire fwd2 = alu_q_v & (i_ps2 == alu_q_prd), fwd2b = alu2_q_v & (i_ps2 == alu2_q_prd), fwd2c = alu3_q_v & (i_ps2 == alu3_q_prd);
+   wire fwd3 = alu_q_v & (i_ps3 == alu_q_prd), fwd3b = alu2_q_v & (i_ps3 == alu2_q_prd), fwd3c = alu3_q_v & (i_ps3 == alu3_q_prd);
+   wire [63:0] x_rs1 = fwd1 ? alu_q_val : fwd1b ? alu2_q_val : fwd1c ? alu3_q_val : prf_rs1;
+   wire [63:0] x_rs2 = fwd2 ? alu_q_val : fwd2b ? alu2_q_val : fwd2c ? alu3_q_val : prf_rs2;
+   wire [63:0] x_rs3 = fwd3 ? alu_q_val : fwd3b ? alu2_q_val : fwd3c ? alu3_q_val : prf_rs3;
    // the ALU port's operands, with the same forward
-   wire fwd_a1 = alu_q_v & (a_ps1 == alu_q_prd), fwd_a1b = alu2_q_v & (a_ps1 == alu2_q_prd);
-   wire fwd_a2 = alu_q_v & (a_ps2 == alu_q_prd), fwd_a2b = alu2_q_v & (a_ps2 == alu2_q_prd);
-   wire [63:0] xa_rs1 = fwd_a1 ? alu_q_val : fwd_a1b ? alu2_q_val : prf_a1;
-   wire [63:0] xa_rs2 = fwd_a2 ? alu_q_val : fwd_a2b ? alu2_q_val : prf_a2;
+   wire fwd_a1 = alu_q_v & (a_ps1 == alu_q_prd), fwd_a1b = alu2_q_v & (a_ps1 == alu2_q_prd), fwd_a1c = alu3_q_v & (a_ps1 == alu3_q_prd);
+   wire fwd_a2 = alu_q_v & (a_ps2 == alu_q_prd), fwd_a2b = alu2_q_v & (a_ps2 == alu2_q_prd), fwd_a2c = alu3_q_v & (a_ps2 == alu3_q_prd);
+   wire [63:0] xa_rs1 = fwd_a1 ? alu_q_val : fwd_a1b ? alu2_q_val : fwd_a1c ? alu3_q_val : prf_a1;
+   wire [63:0] xa_rs2 = fwd_a2 ? alu_q_val : fwd_a2b ? alu2_q_val : fwd_a2c ? alu3_q_val : prf_a2;
    wire [63:0] xa_result;
    // the second ALU port's operands and unit (10d-ii)
-   wire fwd_b1 = alu_q_v & (a2_ps1 == alu_q_prd), fwd_b1b = alu2_q_v & (a2_ps1 == alu2_q_prd);
-   wire fwd_b2 = alu_q_v & (a2_ps2 == alu_q_prd), fwd_b2b = alu2_q_v & (a2_ps2 == alu2_q_prd);
-   wire [63:0] xb_rs1 = fwd_b1 ? alu_q_val : fwd_b1b ? alu2_q_val : prf_a21;
-   wire [63:0] xb_rs2 = fwd_b2 ? alu_q_val : fwd_b2b ? alu2_q_val : prf_a22;
+   wire fwd_b1 = alu_q_v & (a2_ps1 == alu_q_prd), fwd_b1b = alu2_q_v & (a2_ps1 == alu2_q_prd), fwd_b1c = alu3_q_v & (a2_ps1 == alu3_q_prd);
+   wire fwd_b2 = alu_q_v & (a2_ps2 == alu_q_prd), fwd_b2b = alu2_q_v & (a2_ps2 == alu2_q_prd), fwd_b2c = alu3_q_v & (a2_ps2 == alu3_q_prd);
+   wire [63:0] xb_rs1 = fwd_b1 ? alu_q_val : fwd_b1b ? alu2_q_val : fwd_b1c ? alu3_q_val : prf_a21;
+   wire [63:0] xb_rs2 = fwd_b2 ? alu_q_val : fwd_b2b ? alu2_q_val : fwd_b2c ? alu3_q_val : prf_a22;
    wire [63:0] xb_result;
    ooo2_exec u_xb
      (.alu_op(qb_alu_op), .alu_w(qb_alu_w), .alu_uw(qb_alu_uw), .op1_sel(qb_op1_sel),
@@ -1641,6 +1752,19 @@ module ooo2_core
       .rs1_val(xb_rs1), .rs2_val(xb_rs2), .imm(qb_imm), .pc(qb_pc),
       .pred_npc(qb_pred_npc), .mis_taken(1'b0), .mis_nt(1'b0),
       .result(xb_result), .addr(), .redirect(), .target(), .taken(), .taken_tgt());
+   // the third ALU port's operands and unit (Stage 3)
+   wire fwd_c1 = alu_q_v & (a3_ps1 == alu_q_prd), fwd_c1b = alu2_q_v & (a3_ps1 == alu2_q_prd), fwd_c1c = alu3_q_v & (a3_ps1 == alu3_q_prd);
+   wire fwd_c2 = alu_q_v & (a3_ps2 == alu_q_prd), fwd_c2b = alu2_q_v & (a3_ps2 == alu2_q_prd), fwd_c2c = alu3_q_v & (a3_ps2 == alu3_q_prd);
+   wire [63:0] xc_rs1 = fwd_c1 ? alu_q_val : fwd_c1b ? alu2_q_val : fwd_c1c ? alu3_q_val : prf_a31;
+   wire [63:0] xc_rs2 = fwd_c2 ? alu_q_val : fwd_c2b ? alu2_q_val : fwd_c2c ? alu3_q_val : prf_a32;
+   wire [63:0] xc_result;
+   ooo2_exec u_xc
+     (.alu_op(qc_alu_op), .alu_w(qc_alu_w), .alu_uw(qc_alu_uw), .op1_sel(qc_op1_sel),
+      .op2_imm(qc_op2_imm), .res_link(qc_res_link), .is_rvc(qc_rvc),
+      .is_branch(1'b0), .is_jump(1'b0), .is_jalr(1'b0), .br_func(3'd0),
+      .rs1_val(xc_rs1), .rs2_val(xc_rs2), .imm(qc_imm), .pc(qc_pc),
+      .pred_npc(qc_pred_npc), .mis_taken(1'b0), .mis_nt(1'b0),
+      .result(xc_result), .addr(), .redirect(), .target(), .taken(), .taken_tgt());
    ooo2_exec u_xa
      (.alu_op(qa_alu_op), .alu_w(qa_alu_w), .alu_uw(qa_alu_uw), .op1_sel(qa_op1_sel),
       .op2_imm(qa_op2_imm), .res_link(qa_res_link), .is_rvc(qa_rvc),
@@ -2471,6 +2595,13 @@ module ooo2_core
    always @(posedge clk) begin
       alu2_q_v <= ~reset & alu2_wb;
       if (alu2_wb) begin alu2_q_prd <= qb_prd; alu2_q_val <= xb_result; end
+   end
+   wire alu3_wb = iss_alu3 & qc_rd_v;                    // the third ALU (Stage 3)
+   wire we_ie3 = alu3_wb;
+   wire [RN_PBITS-1:0] wa_ie3 = qc_prd;
+   always @(posedge clk) begin
+      alu3_q_v <= ~reset & alu3_wb;
+      if (alu3_wb) begin alu3_q_prd <= qc_prd; alu3_q_val <= xc_result; end
    end
    wire we_ie = alu_wb;                    // the ISSUE-timed event: wake, pending clear, snoop
    always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)

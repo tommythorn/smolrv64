@@ -160,10 +160,10 @@ module ooo2_sq
    // had them; only the data register's D input moved from an ALU output to a flop.
    reg [NWB*64-1:0]      wb_q;            // last cycle's writeback data
    reg [NENT-1:0]        ld_v;            // entry k's data lands from wb_q this cycle
-   reg [1:0]             ld_w [0:NENT-1]; // ...from this port (NWB <= 4)
+   reg [2:0]             ld_w [0:NENT-1]; // ...from this port (NWB <= 8)
    integer               li2;
-   initial begin ld_v = {NENT{1'b0}}; for (li2 = 0; li2 < NENT; li2 = li2 + 1) ld_w[li2] = 2'd0; end
-   initial if (NWB > 4) $fatal(1, "ooo2_sq: ld_w holds a port index of at most 2 bits");
+   initial begin ld_v = {NENT{1'b0}}; for (li2 = 0; li2 < NENT; li2 = li2 + 1) ld_w[li2] = 3'd0; end
+   initial if (NWB > 8) $fatal(1, "ooo2_sq: ld_w holds a port index of at most 3 bits");
 
    initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}}; cmt = {NENT{1'b0}};
                  headc = {(IDXB+1){1'b0}}; tailc = {(IDXB+1){1'b0}}; kcc = {(IDXB+1){1'b0}};
@@ -389,7 +389,7 @@ module ooo2_sq
             for (w = 0; w < NWB; w = w + 1)
                if (sn_live & (sn_dpr != {PBITS{1'b0}})
                    & wb_v[w] & (wb_preg[w*PBITS +: PBITS] == sn_dpr)) begin
-                  ld_v[k] <= 1'b1;  ld_w[k] <= w[1:0];
+                  ld_v[k] <= 1'b1;  ld_w[k] <= w[2:0];
                   dv[k]   <= 1'b1;
                end
          end
