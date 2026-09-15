@@ -477,7 +477,7 @@ module ooo2_core
    // completion in front of every dispatch write (gate V3, 2026-09-05).
    wire rn_valid = d_take;      // dispatch is no longer gated on M being free
 
-   ooo2_rename #(.IDXB(RN_IDXB), .N_FE(128)) u_rename
+   ooo2_rename #(.IDXB(RN_IDXB), .N_FE(128), .IW(IW)) u_rename
      (.clk(clk), .reset(reset),
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),

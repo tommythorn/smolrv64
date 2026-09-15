@@ -38,14 +38,16 @@ mem_ie2 : PRF second integer shard, written by the second ALU alone (item 10d-ii
 # look for a reintroduced reset loop first.
 # Two parity banks per free list and two copies of each map since retire-two / dispatch-two
 # (items 10b/10c): one write per bank per cycle is all a LUTRAM has.
-fl_ie0  : free list bank 0, circular FIFO read at head / written at tail
-fl_ie1  : free list bank 1
-fl_ld0  : free list
-fl_ld1  : free list
-fl_fe0  : free list
-fl_fe1  : free list
-fl_i20  : free list, the second integer shard (item 10d-ii)
-fl_i21  : free list
+# FLNB=next_pow2(IW) generate banks per shard since Stage 3 inc 3 (was fl_x0/fl_x1). At IW=2
+# that is 2 banks each; at IW=3 add fl_ie[2..3].mem etc. in the width-flip commit.
+fl_ie[0].mem : free list, IE shard, bank 0 (circular FIFO, head read / tail write)
+fl_ie[1].mem : free list, IE shard, bank 1
+fl_ld[0].mem : free list, LD shard, bank 0
+fl_ld[1].mem : free list, LD shard, bank 1
+fl_fe[0].mem : free list, FE shard, bank 0
+fl_fe[1].mem : free list, FE shard, bank 1
+fl_i2[0].mem : free list, IE2 shard, bank 0 (item 10d-ii)
+fl_i2[1].mem : free list, IE2 shard, bank 1
 rmap_a  : committed map, copy A; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
 rmap_b  : committed map, copy B (the second commit port's write; `rnewer` picks)
 smap_a  : speculative map, copy A; flush clears `lv`, so no wholesale copy is ever needed

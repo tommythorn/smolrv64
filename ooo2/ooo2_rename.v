@@ -38,7 +38,8 @@ module ooo2_rename
     parameter N_LD  = 128,
     parameter N_FE  = 128,
     parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
-    parameter LOWAT = 4)                  // stall fetch when any shard has < LOWAT free
+    parameter LOWAT = 4,                  // stall fetch when any shard has < LOWAT free
+    parameter IW    = 2)                  // pipeline width -> FLNB = next_pow2(IW) free-list banks
    (input  wire             clk,
     input  wire             reset,
 
@@ -149,14 +150,11 @@ module ooo2_rename
    localparam integer PW_LD = $clog2(N_LD) + 1;
    localparam integer PW_FE = $clog2(N_FE) + 1;
    localparam integer PW_I2 = $clog2(N_IE2) + 1;
+   localparam integer FLNB = 1 << $clog2(IW);   // free-list banks = next_pow2(IW); >=2
+   localparam integer FLLB = $clog2(FLNB);
 
-   // TWO PARITY BANKS PER LIST (item 10c): entry i lives in bank i[0] at index i>>1, so the
-   // two pushes of a cycle (tail, tail+1) and the two pops (head, head+1) each touch two
-   // different banks -- one write per bank per cycle, which is all a LUTRAM has.
-   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ie0 [0:N_IE/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ie1 [0:N_IE/2-1];
-   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ld0 [0:N_LD/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_ld1 [0:N_LD/2-1];
-   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_fe0 [0:N_FE/2-1];  (* ram_style = "distributed" *) reg [IDXB-1:0] fl_fe1 [0:N_FE/2-1];
-   (* ram_style = "distributed" *) reg [IDXB-1:0] fl_i20 [0:N_IE2/2-1]; (* ram_style = "distributed" *) reg [IDXB-1:0] fl_i21 [0:N_IE2/2-1];
+   // FLNB=next_pow2(IW) banks per list (Stage 3 inc 3, was the two parity banks): the generate
+   // blocks below hold each shard's list; one muxed write per bank, head/head+1 reads.
    reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
    reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
    reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
@@ -170,6 +168,68 @@ module ooo2_rename
    localparam [PW_LD-1:0] T0_LD = N_LD;
    localparam [PW_FE-1:0] T0_FE = (N_FE - 32);
    localparam [PW_I2-1:0] T0_I2 = N_IE2;             // nothing maps there at reset: wholly free
+
+   genvar gS;
+   // ---- shard ie free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
+   wire [IDXB-1:0] ha_rd_ie, hb_rd_ie;
+   wire [IDXB-1:0] flrd_ie [0:FLNB-1];
+   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ie
+      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE/FLNB-1];
+      integer jj; integer pp; initial for (jj = 0; jj < N_IE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
+      wire w0 = fre_ie  & (t_ie [FLLB-1:0] == gS);
+      wire w1 = fre2_ie & (t2_ie[FLLB-1:0] == gS);
+      always @(posedge clk)
+         if (w0 | w1) mem[w0 ? t_ie[PW_IE-2:FLLB] : t2_ie[PW_IE-2:FLLB]] <= w0 ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+      assign flrd_ie[gS] = mem[(h_ie[FLLB-1:0] == gS) ? h_ie[PW_IE-2:FLLB] : hb_ie[PW_IE-2:FLLB]];
+   end endgenerate
+   assign ha_rd_ie = flrd_ie[h_ie [FLLB-1:0]];
+   assign hb_rd_ie = flrd_ie[hb_ie[FLLB-1:0]];
+
+   // ---- shard ld free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
+   wire [IDXB-1:0] ha_rd_ld, hb_rd_ld;
+   wire [IDXB-1:0] flrd_ld [0:FLNB-1];
+   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ld
+      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_LD/FLNB-1];
+      integer jj; integer pp; initial for (jj = 0; jj < N_LD/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
+      wire w0 = fre_ld  & (t_ld [FLLB-1:0] == gS);
+      wire w1 = fre2_ld & (t2_ld[FLLB-1:0] == gS);
+      always @(posedge clk)
+         if (w0 | w1) mem[w0 ? t_ld[PW_LD-2:FLLB] : t2_ld[PW_LD-2:FLLB]] <= w0 ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+      assign flrd_ld[gS] = mem[(h_ld[FLLB-1:0] == gS) ? h_ld[PW_LD-2:FLLB] : hb_ld[PW_LD-2:FLLB]];
+   end endgenerate
+   assign ha_rd_ld = flrd_ld[h_ld [FLLB-1:0]];
+   assign hb_rd_ld = flrd_ld[hb_ld[FLLB-1:0]];
+
+   // ---- shard fe free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
+   wire [IDXB-1:0] ha_rd_fe, hb_rd_fe;
+   wire [IDXB-1:0] flrd_fe [0:FLNB-1];
+   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_fe
+      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_FE/FLNB-1];
+      integer jj; integer pp; initial for (jj = 0; jj < N_FE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
+      wire w0 = fre_fe  & (t_fe [FLLB-1:0] == gS);
+      wire w1 = fre2_fe & (t2_fe[FLLB-1:0] == gS);
+      always @(posedge clk)
+         if (w0 | w1) mem[w0 ? t_fe[PW_FE-2:FLLB] : t2_fe[PW_FE-2:FLLB]] <= w0 ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+      assign flrd_fe[gS] = mem[(h_fe[FLLB-1:0] == gS) ? h_fe[PW_FE-2:FLLB] : hb_fe[PW_FE-2:FLLB]];
+   end endgenerate
+   assign ha_rd_fe = flrd_fe[h_fe [FLLB-1:0]];
+   assign hb_rd_fe = flrd_fe[hb_fe[FLLB-1:0]];
+
+   // ---- shard i2 free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
+   wire [IDXB-1:0] ha_rd_i2, hb_rd_i2;
+   wire [IDXB-1:0] flrd_i2 [0:FLNB-1];
+   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i2
+      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE2/FLNB-1];
+      integer jj; integer pp; initial for (jj = 0; jj < N_IE2/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
+      wire w0 = fre_i2  & (t_i2 [FLLB-1:0] == gS);
+      wire w1 = fre2_i2 & (t2_i2[FLLB-1:0] == gS);
+      always @(posedge clk)
+         if (w0 | w1) mem[w0 ? t_i2[PW_I2-2:FLLB] : t2_i2[PW_I2-2:FLLB]] <= w0 ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
+      assign flrd_i2[gS] = mem[(h_i2[FLLB-1:0] == gS) ? h_i2[PW_I2-2:FLLB] : hb_i2[PW_I2-2:FLLB]];
+   end endgenerate
+   assign ha_rd_i2 = flrd_i2[h_i2 [FLLB-1:0]];
+   assign hb_rd_i2 = flrd_i2[hb_i2[FLLB-1:0]];
+
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
    // instructions behind it are squashed.  The restore target must therefore be the
@@ -224,31 +284,6 @@ module ooo2_rename
    wire [PW_LD-1:0] avail_ld = t_ld - h_ld;
    wire [PW_FE-1:0] avail_fe = t_fe - h_fe;
    wire [PW_I2-1:0] avail_i2 = t_i2 - h_i2;
-   // ONE WRITE PER BANK, as one {we, addr, data} each. The head's free and the second's land in
-   // different banks by parity (t2 = t + fre), but written as two statements per bank synthesis
-   // sees two write ports and demotes every bank to flops -- gate V2's RAM-inference check
-   // caught all eight (2026-09-05). The ROB's entries had the same shape; same fix there.
-   wire            fw_ie0 = (fre_ie & ~t_ie[0]) | (fre2_ie & ~t2_ie[0]),  fw_ie1 = (fre_ie & t_ie[0]) | (fre2_ie & t2_ie[0]);
-   wire [PW_IE-3:0] fa_ie0 = (fre_ie & ~t_ie[0]) ? t_ie[PW_IE-2:1] : t2_ie[PW_IE-2:1];
-   wire [PW_IE-3:0] fa_ie1 = (fre_ie &  t_ie[0]) ? t_ie[PW_IE-2:1] : t2_ie[PW_IE-2:1];
-   wire [IDXB-1:0]  fd_ie0 = (fre_ie & ~t_ie[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire [IDXB-1:0]  fd_ie1 = (fre_ie &  t_ie[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire            fw_ld0 = (fre_ld & ~t_ld[0]) | (fre2_ld & ~t2_ld[0]),  fw_ld1 = (fre_ld & t_ld[0]) | (fre2_ld & t2_ld[0]);
-   wire [PW_LD-3:0] fa_ld0 = (fre_ld & ~t_ld[0]) ? t_ld[PW_LD-2:1] : t2_ld[PW_LD-2:1];
-   wire [PW_LD-3:0] fa_ld1 = (fre_ld &  t_ld[0]) ? t_ld[PW_LD-2:1] : t2_ld[PW_LD-2:1];
-   wire [IDXB-1:0]  fd_ld0 = (fre_ld & ~t_ld[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire [IDXB-1:0]  fd_ld1 = (fre_ld &  t_ld[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire            fw_fe0 = (fre_fe & ~t_fe[0]) | (fre2_fe & ~t2_fe[0]),  fw_fe1 = (fre_fe & t_fe[0]) | (fre2_fe & t2_fe[0]);
-   wire [PW_FE-3:0] fa_fe0 = (fre_fe & ~t_fe[0]) ? t_fe[PW_FE-2:1] : t2_fe[PW_FE-2:1];
-   wire [PW_FE-3:0] fa_fe1 = (fre_fe &  t_fe[0]) ? t_fe[PW_FE-2:1] : t2_fe[PW_FE-2:1];
-   wire [IDXB-1:0]  fd_fe0 = (fre_fe & ~t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire [IDXB-1:0]  fd_fe1 = (fre_fe &  t_fe[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire            fw_i20 = (fre_i2 & ~t_i2[0]) | (fre2_i2 & ~t2_i2[0]),  fw_i21 = (fre_i2 & t_i2[0]) | (fre2_i2 & t2_i2[0]);
-   wire [PW_I2-3:0] fa_i20 = (fre_i2 & ~t_i2[0]) ? t_i2[PW_I2-2:1] : t2_i2[PW_I2-2:1];
-   wire [PW_I2-3:0] fa_i21 = (fre_i2 &  t_i2[0]) ? t_i2[PW_I2-2:1] : t2_i2[PW_I2-2:1];
-   wire [IDXB-1:0]  fd_i20 = (fre_i2 & ~t_i2[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-   wire [IDXB-1:0]  fd_i21 = (fre_i2 &  t_i2[0]) ? c_pold[IDXB-1:0] : c2_pold[IDXB-1:0];
-
    // STALL WHEN *ANY* SHARD IS LOW, not when the destination's shard is.  A shard that runs
    // dry stalls rename regardless of which one the next instruction wants, so throttling on
    // the minimum is what actually prevents the stall; throttling per-destination only
@@ -265,10 +300,6 @@ module ooo2_rename
    wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
    wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2);
    wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2);
-   wire [IDXB-1:0] ha_rd_ie = h_ie[0] ? fl_ie1[h_ie[PW_IE-2:1]] : fl_ie0[h_ie[PW_IE-2:1]];
-   wire [IDXB-1:0] ha_rd_ld = h_ld[0] ? fl_ld1[h_ld[PW_LD-2:1]] : fl_ld0[h_ld[PW_LD-2:1]];
-   wire [IDXB-1:0] ha_rd_fe = h_fe[0] ? fl_fe1[h_fe[PW_FE-2:1]] : fl_fe0[h_fe[PW_FE-2:1]];
-   wire [IDXB-1:0] ha_rd_i2 = h_i2[0] ? fl_i21[h_i2[PW_I2-2:1]] : fl_i20[h_i2[PW_I2-2:1]];
    wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
                             : (r_shard == SH_LD) ? ha_rd_ld
                             : (r_shard == SH_FE) ? ha_rd_fe
@@ -280,10 +311,6 @@ module ooo2_rename
    wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
    wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
    wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2};
-   wire [IDXB-1:0] hb_rd_ie = hb_ie[0] ? fl_ie1[hb_ie[PW_IE-2:1]] : fl_ie0[hb_ie[PW_IE-2:1]];
-   wire [IDXB-1:0] hb_rd_ld = hb_ld[0] ? fl_ld1[hb_ld[PW_LD-2:1]] : fl_ld0[hb_ld[PW_LD-2:1]];
-   wire [IDXB-1:0] hb_rd_fe = hb_fe[0] ? fl_fe1[hb_fe[PW_FE-2:1]] : fl_fe0[hb_fe[PW_FE-2:1]];
-   wire [IDXB-1:0] hb_rd_i2 = hb_i2[0] ? fl_i21[hb_i2[PW_I2-2:1]] : fl_i20[hb_i2[PW_I2-2:1]];
    wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
                               : (r_shard_b == SH_LD) ? hb_rd_ld
                               : (r_shard_b == SH_FE) ? hb_rd_fe
@@ -332,10 +359,6 @@ module ooo2_rename
       // Slots at or beyond the tail are never read (a circular FIFO only reads between head
       // and tail) but are given a legal index anyway so a pointer bug shows up as an
       // assertion rather than as an out-of-range PRF access.
-      for (j = 0; j < N_IE/2; j = j + 1) begin fl_ie0[j] = OFF32 + 2*j[IDXB-1:0]; fl_ie1[j] = OFF32 + 2*j[IDXB-1:0] + 1'b1; end
-      for (j = 0; j < N_LD/2; j = j + 1) begin fl_ld0[j] = 2*j[IDXB-1:0];         fl_ld1[j] = 2*j[IDXB-1:0] + 1'b1; end
-      for (j = 0; j < N_FE/2; j = j + 1) begin fl_fe0[j] = OFF32 + 2*j[IDXB-1:0]; fl_fe1[j] = OFF32 + 2*j[IDXB-1:0] + 1'b1; end
-      for (j = 0; j < N_IE2/2; j = j + 1) begin fl_i20[j] = 2*j[IDXB-1:0];         fl_i21[j] = 2*j[IDXB-1:0] + 1'b1; end
       // The pointers come from configuration for the same reason the arrays do. They are
       // the ONLY thing that says which slots are free, so resetting them while the arrays
       // keep the previous run's contents would republish stale slots as free and hand out
@@ -375,10 +398,6 @@ module ooo2_rename
             rmap_b[c2_rd] <= c2_prd;  rnewer[c2_rd] <= 1'b1;
          end
          // the frees: the head's at the tail, the second's at the slot after it when both push
-         if (fw_ie0) fl_ie0[fa_ie0] <= fd_ie0;   if (fw_ie1) fl_ie1[fa_ie1] <= fd_ie1;
-         if (fw_ld0) fl_ld0[fa_ld0] <= fd_ld0;   if (fw_ld1) fl_ld1[fa_ld1] <= fd_ld1;
-         if (fw_fe0) fl_fe0[fa_fe0] <= fd_fe0;   if (fw_fe1) fl_fe1[fa_fe1] <= fd_fe1;
-         if (fw_i20) fl_i20[fa_i20] <= fd_i20;   if (fw_i21) fl_i21[fa_i21] <= fd_i21;
          t_ie <= t_ie + {{(PW_IE-1){1'b0}}, fre_ie} + {{(PW_IE-1){1'b0}}, fre2_ie};
          t_ld <= t_ld + {{(PW_LD-1){1'b0}}, fre_ld} + {{(PW_LD-1){1'b0}}, fre2_ld};
          t_fe <= t_fe + {{(PW_FE-1){1'b0}}, fre_fe} + {{(PW_FE-1){1'b0}}, fre2_fe};
