@@ -37,7 +37,9 @@ module ooo2_frontend
     input  wire                    accept,
     input  wire                    consume,           // slot A dispatched (leaves the IR)
     input  wire                    consume_b,         // slot B dispatched (only ever with A)
+    input  wire                    consume_c,         // slot C dispatched (only ever with B) -- IW>=3
     input  wire                    two_wide,          // fill slot B at all; low = the one-IR machine
+    input  wire                    three_wide,        // fill slot C at all (IW>=3); low = the two-IR machine
 
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
@@ -143,6 +145,39 @@ module ooo2_frontend
     output reg                     d2_fault,
     output reg  [3:0]              d2_fault_cause,
     output reg  [PCW-1:0]          d2_fault_tval,
+    // ---- slot C (IW>=3): the third IR. Dead at IW=2 (three_wide=0 keeps it empty) ----
+    output reg                     d3_valid,
+    output reg  [PCW-1:0]          d3_pc,
+    output reg  [31:0]             d3_insn,
+    output reg                     d3_rvc,
+    output reg  [SEQW-1:0]         d3_seq,
+    output reg  [PDW-1:0]          d3_pdet,
+    output reg  [PCW-1:0]          d3_pred_npc,
+    output reg  [5:0]              d3_rd, d3_rs1, d3_rs2, d3_rs3,
+    output reg                     d3_rd_v, d3_rs1_v, d3_rs2_v, d3_rs3_v,
+    output reg  [63:0]             d3_imm,
+    output reg  [5:0]              d3_alu_op,
+    output reg                     d3_alu_w, d3_alu_uw,
+    output reg  [1:0]              d3_op1_sel,
+    output reg                     d3_op2_imm, d3_res_link,
+    output reg                     d3_is_mem, d3_is_store,
+    output reg  [1:0]              d3_mem_size,
+    output reg                     d3_mem_signed,
+    output reg                     d3_is_branch,
+    output reg  [2:0]              d3_br_func,
+    output reg                     d3_is_jump, d3_is_jalr,
+    output reg                     d3_is_mul, d3_is_csr,
+    output reg  [2:0]              d3_csr_func,
+    output reg                     d3_is_serialize,
+    output reg                     d3_is_amo,
+    output reg  [4:0]              d3_amo_func,
+    output reg                     d3_is_fp, d3_is_fencei,
+    output reg                     d3_is_cbo, d3_cbo_zero, d3_cbo_keep,
+    output reg                     d3_illegal,
+    output reg                     d3_mis_taken, d3_mis_nt,
+    output reg                     d3_fault,
+    output reg  [3:0]              d3_fault_cause,
+    output reg  [PCW-1:0]          d3_fault_tval,
     output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
 
    // ---------------------------------------------------------------- fetch
@@ -154,9 +189,11 @@ module ooo2_frontend
    // followed by anything and slot 0 is never a CTI when slot 1 is valid: the bundle's
    // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
    // falls through.
-   localparam FW = IW;              // Stage 3: the width knob. Until increments 2-4 make decode/rename/
-   // queue/ROB width-generic, only IW==2 is supported -- the guard below fires otherwise.
-   initial if (FW != 2) $fatal(1, "ooo2_frontend: IW=%0d unsupported yet (Stage 3 increments 2-4 pending)", FW);
+   localparam FW = IW;              // Stage 3: the width knob. The queue, decode and the IR
+   // compacting buffer below are width-generic (1..4); rename/exec widen in later increments.
+   initial if (FW < 1 || FW > 4) $fatal(1, "ooo2_frontend: IW=%0d out of range 1..4", FW);
+   localparam integer FW3 = (FW >= 3) ? 1 : 0;   // sized gates for the third slot/head/push
+   localparam integer FW2 = (FW >= 2) ? 1 : 0;
    wire               dq_valid, f_brt, bp_v;
    wire [FW-1:0]      dq_sv;                      // per-slot valid
    wire [FW*32-1:0]   dq_inst;
@@ -259,70 +296,110 @@ module ooo2_frontend
    wire [QW-1:0] q_bank_rd [0:QNB-1];
    reg  [QAW-1:0] q_rp, q_wp;
    reg  [QAW:0]   q_cnt;
-   wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - 2);
+   wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - FW[QAW:0]);   // room for a full bundle (<=FW)
    wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
-   reg  [QW-1:0]  pb_in0, pb_in1;
-   reg            pb_two;
+   reg  [QW-1:0]  pb_in0, pb_in1, pb_in2;
+   reg            pb_two, pb_three;
    wire           q_push  = q_room & pb_v;
    wire           q_two   = q_push & pb_two;              // the bundle has a second instruction
+   wire           q_three = q_push & pb_three;            // ...and a third (IW>=3)
    wire           q_have2 = (q_cnt >= 2);
-   // slot 0 falls through when slot 1 exists; the bundle's prediction rides with its last slot
+   wire           q_have3 = (q_cnt >= 3);
+   // slot-2 sources, part-selected only when the bundle can hold three (FW>=3); zero otherwise,
+   // so the FW=2 build never indexes dq_* out of range.
+   wire [31:0]    dq_inst2;  wire [PCW-1:0] dq_pc2;  wire [SEQW-1:0] dq_seq2;  wire dq_sv2;
+   generate if (FW >= 3) begin: g_slot2
+      assign dq_inst2 = dq_inst[2*32   +: 32];
+      assign dq_pc2   = dq_pc  [2*PCW  +: PCW];
+      assign dq_seq2  = dq_seq [2*SEQW +: SEQW];
+      assign dq_sv2   = dq_sv[FW>=3 ? 2 : 0];
+   end else begin: g_noslot2
+      assign dq_inst2 = 32'd0;  assign dq_pc2 = {PCW{1'b0}};  assign dq_seq2 = {SEQW{1'b0}};  assign dq_sv2 = 1'b0;
+   end endgenerate
+   // slot 0 falls through when a later slot exists; the prediction rides with the bundle's LAST
+   // valid slot. Contiguity: dq_sv[1] already covers "a slot 2 follows too", so q_in0 is
+   // unchanged from the two-wide form.
    wire [QW-1:0]  q_in0   = {pd_fetch, (dq_fault ? imem_ipc : dq_pc[0 +: PCW]), dq_inst[0 +: 32], dq_seq[0 +: SEQW],
                              (dq_sv[1] ? 2'd0 : dq_pk), bp_tgt, dq_fault, imem_cause, imem_addr};
-   // slot 1's details carry its offset from the bundle base (slot 0's length in halfwords),
-   // so the predictor trains the entry the prediction was looked up under (see res_base).
-   wire [1:0]     dq_off1 = (dq_inst[1:0] == 2'b11) ? 2'd2 : 2'd1;
+   // a slot's offset from the bundle base (halfwords) trains the predictor entry the prediction
+   // was looked up under (see res_base). slot 1 = len(s0); slot 2 = len(s0)+len(s1).
+   wire [1:0]     dq_len0 = (dq_inst[0  +: 2] == 2'b11) ? 2'd2 : 2'd1;
+   wire [1:0]     dq_len1 = (dq_inst[32 +: 2] == 2'b11) ? 2'd2 : 2'd1;
+   wire [1:0]     dq_off1 = dq_len0;
+   wire [2:0]     dq_off2 = {1'b0, dq_len0} + {1'b0, dq_len1};
+   wire [1:0]     dq_off2s = dq_off2[2] ? 2'd3 : dq_off2[1:0];       // saturate to the 2-bit field
+   // slot 1: falls through if a slot 2 follows (IW>=3), else carries the bundle prediction.
    wire [QW-1:0]  q_in1   = {dq_off1, pd_fetch[PDW-3:0], dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
+                             (dq_sv2 ? 2'd0 : dq_pk), bp_tgt, 1'b0, imem_cause, imem_addr};
+   // slot 2: the bundle's last slot when present, so it carries the prediction.
+   wire [QW-1:0]  q_in2   = {dq_off2s, pd_fetch[PDW-3:0], dq_pc2, dq_inst2, dq_seq2,
                              dq_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
    wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
+   wire [QAW-1:0] q_wp2   = q_wp + 2'd2;
    always @(posedge clk) begin
       if (reset | redirect)  pb_v <= 1'b0;
       else if (pb_load)       pb_v <= 1'b1;
       else if (q_push)       pb_v <= 1'b0;
-      if (pb_load) begin pb_in0 <= q_in0; pb_in1 <= q_in1; pb_two <= dq_sv[1] & dq_valid; end
+      if (pb_load) begin
+         pb_in0 <= q_in0; pb_in1 <= q_in1; pb_in2 <= q_in2;
+         pb_two <= dq_sv[1] & dq_valid; pb_three <= dq_sv2 & dq_valid;
+      end
    end
-   // The head keeps the ORIGINAL names, so decode and the IR register below are unchanged.
+   // The heads keep the ORIGINAL names, so decode and the IR register below are unchanged.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
    wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
    wire [QAW-1:0] q_rp1   = q_rp + 1'b1;
+   wire [QAW-1:0] q_rp2   = q_rp + 2'd2;
    // ---- N-bank queue storage: one muxed write per bank, one muxed read per head ----
    genvar qgb;
    generate for (qgb = 0; qgb < QNB; qgb = qgb + 1) begin: qbank
       reg [QW-1:0] mem [0:QBD-1];
       integer qbi; initial for (qbi = 0; qbi < QBD; qbi = qbi + 1) mem[qbi] = {QW{1'b0}};
-      wire wsel0 = q_push         & (q_wp [QLB-1:0] == qgb);
-      wire wsel1 = q_push & q_two & (q_wp1[QLB-1:0] == qgb);
+      wire wsel0 = q_push  & (q_wp [QLB-1:0] == qgb);
+      wire wsel1 = q_two   & (q_wp1[QLB-1:0] == qgb);
+      wire wsel2 = q_three & (q_wp2[QLB-1:0] == qgb);   // dead at FW<3 (q_three==0)
       always @(posedge clk)
-         if (wsel0 | wsel1)
-            mem[wsel0 ? q_wp[QAW-1:QLB] : q_wp1[QAW-1:QLB]] <= wsel0 ? pb_in0 : pb_in1;
-      wire rsel0 = (q_rp[QLB-1:0] == qgb);
-      assign q_bank_rd[qgb] = mem[rsel0 ? q_rp[QAW-1:QLB] : q_rp1[QAW-1:QLB]];
+         if (wsel0 | wsel1 | wsel2)
+            mem[wsel0 ? q_wp[QAW-1:QLB] : wsel1 ? q_wp1[QAW-1:QLB] : q_wp2[QAW-1:QLB]]
+               <= wsel0 ? pb_in0 : wsel1 ? pb_in1 : pb_in2;
+      // read: rp / rp+1 / rp+2. At QNB=2 the rp2 arm is unreachable (rp/rp+1 cover both banks)
+      // -> synth drops it, so FW=2 is bit-identical to the two-head form.
+      wire rsel0 = (q_rp [QLB-1:0] == qgb);
+      wire rsel1 = (q_rp1[QLB-1:0] == qgb);
+      assign q_bank_rd[qgb] = mem[rsel0 ? q_rp [QAW-1:QLB]
+                                : rsel1 ? q_rp1[QAW-1:QLB]
+                                :         q_rp2[QAW-1:QLB]];
    end endgenerate
    wire [QW-1:0]  q_head  = q_bank_rd[q_rp [QLB-1:0]];
    wire [QW-1:0]  q_head1 = q_bank_rd[q_rp1[QLB-1:0]];
+   wire [QW-1:0]  q_head2 = q_bank_rd[q_rp2[QLB-1:0]];
    assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
    wire [PDW-1:0] q1_pdet;  wire [PCW-1:0] f1_pc;  wire [31:0] f1_inst;
    wire [SEQW-1:0] f1_seq;  wire [1:0] f1_pk;  wire [PCW-1:0] f1_tgt;  wire fault1_op;
    wire [3:0]     q1_cause; wire [PCW-1:0] q1_tval;
    assign {q1_pdet, f1_pc, f1_inst, f1_seq, f1_pk, f1_tgt, fault1_op, q1_cause, q1_tval} = q_head1;
-   wire [1:0]     q_pop;                       // 0..2 entries leave this cycle (see the IR)
+   wire [PDW-1:0] q2_pdet;  wire [PCW-1:0] f2_pc;  wire [31:0] f2_inst;
+   wire [SEQW-1:0] f2_seq;  wire [1:0] f2_pk;  wire [PCW-1:0] f2_tgt;  wire fault2_op;
+   wire [3:0]     q2_cause; wire [PCW-1:0] q2_tval;
+   assign {q2_pdet, f2_pc, f2_inst, f2_seq, f2_pk, f2_tgt, fault2_op, q2_cause, q2_tval} = q_head2;
+   wire [1:0]     q_pop;                       // 0..3 entries leave this cycle (see the IR)
+   wire [1:0]     q_pushn = {1'b0, q_push} + {1'b0, q_two} + {1'b0, q_three};   // 0..3 pushed
 
    always @(posedge clk) begin
       if (reset | redirect) begin
          q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin
-         if (q_push)
-            q_wp <= q_wp + {{(QAW-1){1'b0}}, q_two} + 1'b1;
+         q_wp  <= q_wp + {{(QAW-2){1'b0}}, q_pushn};
          q_rp  <= q_rp + {{(QAW-2){1'b0}}, q_pop};
-         q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_two} + {{QAW{1'b0}}, q_push} - {{(QAW-1){1'b0}}, q_pop};
+         q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_pushn} - {{(QAW-1){1'b0}}, q_pop};
       end
    end
 
-   // A second slot without a first, or a fault pseudo-op beside a real slot, is a fetch defect.
+   // A slot without its predecessor, or a fault pseudo-op beside a real slot, is a fetch defect.
    always @(posedge clk)
-      if (!reset && ((dq_sv[1] & ~dq_sv[0]) || (dq_fault & dq_valid)))
-         $fatal(1, "ooo2_frontend: malformed bundle sv=%b fault=%b", dq_sv, dq_fault);
+      if (!reset && ((dq_sv[1] & ~dq_sv[0]) || (dq_sv2 & ~dq_sv[1]) || (dq_fault & dq_valid)))
+         $fatal(1, "ooo2_frontend: malformed bundle sv=%b sv2=%b fault=%b", dq_sv, dq_sv2, dq_fault);
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;
@@ -401,25 +478,85 @@ module ooo2_frontend
    wire [PCW-1:0] s1_ft_pc    = f1_pc + (s1_rvc ? 64'd2 : 64'd4);
    wire [PCW-1:0] f1_pnpc     = (f1_pk == 2'd2) ? f1_pc : (f1_pk == 2'd1) ? f1_tgt : s1_ft_pc;
 
+   // ---- the third head, decoded the same way (IW>=3; at IW=2 q_head2 is never valid) ----
+   wire        s2_rvc, s2_rd_v, s2_rs1_v, s2_rs2_v, s2_rs3_v, s2_legal;
+   wire [31:0] s2_exp;
+   wire [5:0]  s2_rd, s2_rs1, s2_rs2, s2_rs3;
+   wire [63:0] s2_imm;
+   wire        s2_has_imm;
+   wire [5:0]  s2_alu_op;
+   wire        s2_alu_w, s2_alu_uw, s2_op2_imm, s2_res_link;
+   wire [1:0]  s2_op1_sel;
+   wire        s2_is_mem, s2_is_store, s2_mem_signed, s2_is_branch, s2_is_jump;
+   wire [1:0]  s2_mem_size;
+   wire [2:0]  s2_br_func, s2_csr_func;
+   wire        s2_is_mul, s2_is_csr, s2_is_serialize, s2_is_amo, s2_is_fencei;
+   wire [4:0]  s2_amo_func;
+   wire        s2_is_cbo, s2_cbo_zero, s2_cbo_keep, s2_illegal;
+   decode_slot #(.SEQW(SEQW)) u_dec2
+     (.inst(f2_inst), .in_valid(1'b1), .seq_in(f2_seq),
+      .valid(), .seq(), .is_rvc(s2_rvc), .expanded(s2_exp),
+      .rd(s2_rd), .rd_v(s2_rd_v), .rs1(s2_rs1), .rs1_v(s2_rs1_v),
+      .rs2(s2_rs2), .rs2_v(s2_rs2_v), .rs3(s2_rs3), .rs3_v(s2_rs3_v),
+      .imm(s2_imm), .has_imm(s2_has_imm), .legal(s2_legal),
+      .alu_op(s2_alu_op), .alu_w(s2_alu_w), .alu_uw(s2_alu_uw), .op1_sel(s2_op1_sel),
+      .op2_imm(s2_op2_imm), .res_link(s2_res_link), .is_mem(s2_is_mem),
+      .is_store(s2_is_store), .mem_size(s2_mem_size), .mem_signed(s2_mem_signed),
+      .is_branch(s2_is_branch), .br_func(s2_br_func), .is_jump(s2_is_jump),
+      .is_mul(s2_is_mul), .is_csr(s2_is_csr), .csr_func(s2_csr_func),
+      .is_serialize(s2_is_serialize), .is_amo(s2_is_amo), .amo_func(s2_amo_func),
+      .is_fencei(s2_is_fencei), .is_cbo(s2_is_cbo), .cbo_zero(s2_cbo_zero),
+      .cbo_keep(s2_cbo_keep), .illegal(s2_illegal));
+   wire s2_is_jalr = (s2_exp[6:2] == 5'b11001);
+   wire [PCW-1:0] s2_taken_pc = f2_pc + s2_imm;
+   wire [PCW-1:0] s2_ft_pc    = f2_pc + (s2_rvc ? 64'd2 : 64'd4);
+   wire [PCW-1:0] f2_pnpc     = (f2_pk == 2'd2) ? f2_pc : (f2_pk == 2'd1) ? f2_tgt : s2_ft_pc;
+
    // fetch-fault pseudo-op: presented only when fetch itself has nothing (an
    // interrupt injection wins -- fetch forces a valid bundle for it, and an
    // interrupt is taken before the instruction that would have faulted).
    wire ld_valid = ~q_empty;      // the head is a real bundle (fault pseudo-op included)
 
-   // ------------------------------------------------------- IR registers (decoupling queue), two slots
-   // Slot A is the instruction dispatch sees first, slot B the one behind it. A frees when
-   // empty or consumed; if B then holds an unconsumed op it SHIFTS into A and B refills from
-   // the queue, else A refills from the first head and B from the second. With two_wide low
-   // B never fills and A's timing is the one-IR machine's, cycle for cycle.
-   wire a_free  = ~d_valid | consume;
-   wire b_free  = ~d2_valid | consume_b;
-   wire shift   = a_free & d2_valid & ~consume_b;
-   wire a_src_q = a_free & ~shift;                       // A takes the first head
-   wire b_load  = two_wide & (b_free | shift);           // B refills: head 2 if A took head 1, else head 1
-   wire b_v_new = a_src_q ? q_have2 : ~q_empty;
-   assign q_pop = {1'b0, a_src_q & ~q_empty} + {1'b0, b_load & b_v_new};
-   always @(posedge clk) if (!reset && consume_b && !consume)
-      $fatal(1, "ooo2_frontend: slot B consumed without slot A");
+   // ------------------------------------------------------- IR registers: a width-generic
+   // COMPACTING BUFFER (Stage 3). Up to W = 1+two_wide+three_wide decoded IRs live in slots
+   // [0..W-1], slot 0 oldest. Each cycle dispatch consumes the oldest `ncons` (contiguous from
+   // slot 0), the survivors compact down, and fresh decoded heads fill from the queue up to W.
+   // At W=2 this reduces bit-for-bit to the old slot-A/slot-B shift (verified retire-identical).
+   //
+   // One PACKED vector per slot keeps the compaction a handful of muxes instead of ~46 per
+   // field. FE_IRV(P) is the field list -- the SINGLE source of truth for pack AND unpack order
+   // (cur[], mh[], and the register write below all use it), so the two can never diverge.
+   `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``mis_taken, P``mis_nt}
+   localparam integer IRW = 3*PCW + PDW + SEQW + 173;   // width of one packed IR slot
+   wire [IRW-1:0] cur [0:3];   // current slot contents, packed (index 3 = 0 guard)
+   wire [IRW-1:0] mh  [0:3];   // fresh decoded heads, packed
+   assign cur[0] = `FE_IRV(d_);
+   assign cur[1] = `FE_IRV(d2_);
+   assign cur[2] = `FE_IRV(d3_);
+   assign cur[3] = {IRW{1'b0}};
+   assign mh[0]  = `FE_IRV(m0_);
+   assign mh[1]  = `FE_IRV(m1_);
+   assign mh[2]  = `FE_IRV(m2_);
+   assign mh[3]  = {IRW{1'b0}};
+   wire [1:0] cur_cnt = {1'b0, d_valid} + {1'b0, d2_valid} + {1'b0, d3_valid};   // 0..3 valid slots
+   wire [1:0] ncons   = {1'b0, consume} + {1'b0, consume_b} + {1'b0, consume_c}; // 0..3 consumed (contiguous)
+   wire [1:0] retain  = cur_cnt - ncons;                                          // survivors
+   wire [1:0] wmax    = 2'd1 + {1'b0, two_wide} + {1'b0, three_wide};             // max slots to fill
+   wire [3:0] hav     = {1'b0, q_have3, q_have2, ~q_empty};                       // head j available; [3]=0 guard
+   // per slot i: retained survivor cur[ncons+i] if i<retain, else fresh head mh[i-retain]
+   wire       fr0 = (2'd0 < retain);  wire [1:0] hj0 = 2'd0 - retain;  wire th0 = (2'd0 < wmax) & hav[hj0];
+   wire       fr1 = (2'd1 < retain);  wire [1:0] hj1 = 2'd1 - retain;  wire th1 = (2'd1 < wmax) & hav[hj1];
+   wire       fr2 = (2'd2 < retain);  wire [1:0] hj2 = 2'd2 - retain;  wire th2 = (2'd2 < wmax) & hav[hj2];
+   wire [IRW-1:0] snext0 = fr0 ? cur[ncons + 2'd0] : mh[hj0];
+   wire [IRW-1:0] snext1 = fr1 ? cur[ncons + 2'd1] : mh[hj1];
+   wire [IRW-1:0] snext2 = fr2 ? cur[ncons + 2'd2] : mh[hj2];
+   wire vnext0 = fr0 ? 1'b1 : th0;
+   wire vnext1 = fr1 ? 1'b1 : th1;
+   wire vnext2 = fr2 ? 1'b1 : th2;
+   // heads actually consumed this cycle = the new-head slots that became valid
+   assign q_pop = {1'b0, vnext0 & ~fr0} + {1'b0, vnext1 & ~fr1} + {1'b0, vnext2 & ~fr2};
+   always @(posedge clk) if (!reset && ((consume_b && !consume) || (consume_c && !consume_b)))
+      $fatal(1, "ooo2_frontend: slot consumed out of order (c=%b b=%b a=%b)", consume_c, consume_b, consume);
    // the two heads, decoded and fault-masked, as slot contents
    wire [PDW-1:0] m0_pdet = q_pdet;                 wire [PDW-1:0] m1_pdet = q1_pdet;
    wire [PCW-1:0] m0_pc   = f_pc;                   wire [PCW-1:0] m1_pc   = f1_pc;
@@ -510,110 +647,68 @@ module ooo2_frontend
    wire  m1_mis_taken = (s1_taken_pc != f1_pnpc);
    wire  m0_mis_nt = (s_ft_pc    != f_pnpc);
    wire  m1_mis_nt = (s1_ft_pc    != f1_pnpc);
+   // ---- slot 2 masked head (IW>=3); q_head2 is never valid at IW=2 so these are dead ----
+   wire [PDW-1:0] m2_pdet = q2_pdet;
+   wire [PCW-1:0] m2_pc   = f2_pc;
+   wire [PCW-1:0] m2_fault_tval = q2_tval;
+   wire m2_is_fp = fault2_op ? 1'b0 : ((s2_exp[6:2] == 5'b10100) | (s2_exp[6:2] == 5'b10000) | (s2_exp[6:2] == 5'b10001) | (s2_exp[6:2] == 5'b10010) | (s2_exp[6:2] == 5'b10011) | (s2_exp[6:2] == 5'b00001) | (s2_exp[6:2] == 5'b01001));
+   wire [SEQW-1:0] m2_seq = f2_seq;
+   wire [PCW-1:0] m2_pred_npc = f2_pnpc;
+   wire  m2_fault = fault2_op;
+   wire [3:0] m2_fault_cause = q2_cause;
+   wire [31:0] m2_insn = fault2_op ? 32'd0 : s2_exp;
+   wire  m2_rvc = fault2_op ? 1'b0 : s2_rvc;
+   wire [5:0] m2_rd = fault2_op ? 6'd0 : s2_rd;
+   wire  m2_rd_v = fault2_op ? 1'b0 : s2_rd_v;
+   wire [5:0] m2_rs1 = fault2_op ? 6'd0 : s2_rs1;
+   wire  m2_rs1_v = fault2_op ? 1'b0 : s2_rs1_v;
+   wire [5:0] m2_rs2 = fault2_op ? 6'd0 : s2_rs2;
+   wire  m2_rs2_v = fault2_op ? 1'b0 : s2_rs2_v;
+   wire [5:0] m2_rs3 = fault2_op ? 6'd0 : s2_rs3;
+   wire  m2_rs3_v = fault2_op ? 1'b0 : s2_rs3_v;
+   wire [63:0] m2_imm = fault2_op ? 64'd0 : s2_imm;
+   wire [5:0] m2_alu_op = s2_alu_op;
+   wire  m2_alu_w = fault2_op ? 1'b0 : s2_alu_w;
+   wire  m2_alu_uw = fault2_op ? 1'b0 : s2_alu_uw;
+   wire [1:0] m2_op1_sel = fault2_op ? 2'd0 : s2_op1_sel;
+   wire  m2_op2_imm = fault2_op ? 1'b0 : s2_op2_imm;
+   wire  m2_res_link = fault2_op ? 1'b0 : s2_res_link;
+   wire  m2_is_mem = fault2_op ? 1'b0 : s2_is_mem;
+   wire  m2_is_store = fault2_op ? 1'b0 : s2_is_store;
+   wire [1:0] m2_mem_size = s2_mem_size;
+   wire  m2_mem_signed = s2_mem_signed;
+   wire  m2_is_branch = fault2_op ? 1'b0 : s2_is_branch;
+   wire [2:0] m2_br_func = s2_br_func;
+   wire  m2_is_jump = fault2_op ? 1'b0 : s2_is_jump;
+   wire  m2_is_jalr = fault2_op ? 1'b0 : s2_is_jalr;
+   wire  m2_is_mul = fault2_op ? 1'b0 : s2_is_mul;
+   wire  m2_is_csr = fault2_op ? 1'b0 : s2_is_csr;
+   wire [2:0] m2_csr_func = s2_csr_func;
+   wire  m2_is_serialize = fault2_op ? 1'b1 : s2_is_serialize;
+   wire  m2_is_amo = fault2_op ? 1'b0 : s2_is_amo;
+   wire [4:0] m2_amo_func = s2_amo_func;
+   wire  m2_is_fencei = fault2_op ? 1'b0 : s2_is_fencei;
+   wire  m2_is_cbo = fault2_op ? 1'b0 : s2_is_cbo;
+   wire  m2_cbo_zero = s2_cbo_zero;
+   wire  m2_cbo_keep = s2_cbo_keep;
+   wire  m2_illegal = fault2_op ? 1'b0 : s2_illegal;
+   wire  m2_mis_taken = (s2_taken_pc != f2_pnpc);
+   wire  m2_mis_nt = (s2_ft_pc    != f2_pnpc);
+   // Compact + refill: always write every slot (a held slot re-loads its own value, since
+   // snext_i == cur[i] when it is a surviving slot with nothing consumed ahead of it).
    always @(posedge clk) begin
       if (reset | redirect) begin
-         d_valid <= 1'b0; d2_valid <= 1'b0;
+         d_valid <= 1'b0; d2_valid <= 1'b0; d3_valid <= 1'b0;
       end else begin
-         if (a_free) begin
-            d_valid <= shift ? 1'b1 : ~q_empty;
-            d_pdet <= shift ? d2_pdet : m0_pdet;
-            d_pc <= shift ? d2_pc : m0_pc;
-            d_fault_tval <= shift ? d2_fault_tval : m0_fault_tval;
-            d_is_fp <= shift ? d2_is_fp : m0_is_fp;
-            d_seq <= shift ? d2_seq : m0_seq;
-            d_pred_npc <= shift ? d2_pred_npc : m0_pred_npc;
-            d_fault <= shift ? d2_fault : m0_fault;
-            d_fault_cause <= shift ? d2_fault_cause : m0_fault_cause;
-            d_insn <= shift ? d2_insn : m0_insn;
-            d_rvc <= shift ? d2_rvc : m0_rvc;
-            d_rd <= shift ? d2_rd : m0_rd;
-            d_rd_v <= shift ? d2_rd_v : m0_rd_v;
-            d_rs1 <= shift ? d2_rs1 : m0_rs1;
-            d_rs1_v <= shift ? d2_rs1_v : m0_rs1_v;
-            d_rs2 <= shift ? d2_rs2 : m0_rs2;
-            d_rs2_v <= shift ? d2_rs2_v : m0_rs2_v;
-            d_rs3 <= shift ? d2_rs3 : m0_rs3;
-            d_rs3_v <= shift ? d2_rs3_v : m0_rs3_v;
-            d_imm <= shift ? d2_imm : m0_imm;
-            d_alu_op <= shift ? d2_alu_op : m0_alu_op;
-            d_alu_w <= shift ? d2_alu_w : m0_alu_w;
-            d_alu_uw <= shift ? d2_alu_uw : m0_alu_uw;
-            d_op1_sel <= shift ? d2_op1_sel : m0_op1_sel;
-            d_op2_imm <= shift ? d2_op2_imm : m0_op2_imm;
-            d_res_link <= shift ? d2_res_link : m0_res_link;
-            d_is_mem <= shift ? d2_is_mem : m0_is_mem;
-            d_is_store <= shift ? d2_is_store : m0_is_store;
-            d_mem_size <= shift ? d2_mem_size : m0_mem_size;
-            d_mem_signed <= shift ? d2_mem_signed : m0_mem_signed;
-            d_is_branch <= shift ? d2_is_branch : m0_is_branch;
-            d_br_func <= shift ? d2_br_func : m0_br_func;
-            d_is_jump <= shift ? d2_is_jump : m0_is_jump;
-            d_is_jalr <= shift ? d2_is_jalr : m0_is_jalr;
-            d_is_mul <= shift ? d2_is_mul : m0_is_mul;
-            d_is_csr <= shift ? d2_is_csr : m0_is_csr;
-            d_csr_func <= shift ? d2_csr_func : m0_csr_func;
-            d_is_serialize <= shift ? d2_is_serialize : m0_is_serialize;
-            d_is_amo <= shift ? d2_is_amo : m0_is_amo;
-            d_amo_func <= shift ? d2_amo_func : m0_amo_func;
-            d_is_fencei <= shift ? d2_is_fencei : m0_is_fencei;
-            d_is_cbo <= shift ? d2_is_cbo : m0_is_cbo;
-            d_cbo_zero <= shift ? d2_cbo_zero : m0_cbo_zero;
-            d_cbo_keep <= shift ? d2_cbo_keep : m0_cbo_keep;
-            d_illegal <= shift ? d2_illegal : m0_illegal;
-            d_mis_taken <= shift ? d2_mis_taken : m0_mis_taken;
-            d_mis_nt <= shift ? d2_mis_nt : m0_mis_nt;
-         end
-         if (b_load) begin
-            d2_valid <= b_v_new;
-            d2_pdet <= a_src_q ? m1_pdet : m0_pdet;
-            d2_pc <= a_src_q ? m1_pc : m0_pc;
-            d2_fault_tval <= a_src_q ? m1_fault_tval : m0_fault_tval;
-            d2_is_fp <= a_src_q ? m1_is_fp : m0_is_fp;
-            d2_seq <= a_src_q ? m1_seq : m0_seq;
-            d2_pred_npc <= a_src_q ? m1_pred_npc : m0_pred_npc;
-            d2_fault <= a_src_q ? m1_fault : m0_fault;
-            d2_fault_cause <= a_src_q ? m1_fault_cause : m0_fault_cause;
-            d2_insn <= a_src_q ? m1_insn : m0_insn;
-            d2_rvc <= a_src_q ? m1_rvc : m0_rvc;
-            d2_rd <= a_src_q ? m1_rd : m0_rd;
-            d2_rd_v <= a_src_q ? m1_rd_v : m0_rd_v;
-            d2_rs1 <= a_src_q ? m1_rs1 : m0_rs1;
-            d2_rs1_v <= a_src_q ? m1_rs1_v : m0_rs1_v;
-            d2_rs2 <= a_src_q ? m1_rs2 : m0_rs2;
-            d2_rs2_v <= a_src_q ? m1_rs2_v : m0_rs2_v;
-            d2_rs3 <= a_src_q ? m1_rs3 : m0_rs3;
-            d2_rs3_v <= a_src_q ? m1_rs3_v : m0_rs3_v;
-            d2_imm <= a_src_q ? m1_imm : m0_imm;
-            d2_alu_op <= a_src_q ? m1_alu_op : m0_alu_op;
-            d2_alu_w <= a_src_q ? m1_alu_w : m0_alu_w;
-            d2_alu_uw <= a_src_q ? m1_alu_uw : m0_alu_uw;
-            d2_op1_sel <= a_src_q ? m1_op1_sel : m0_op1_sel;
-            d2_op2_imm <= a_src_q ? m1_op2_imm : m0_op2_imm;
-            d2_res_link <= a_src_q ? m1_res_link : m0_res_link;
-            d2_is_mem <= a_src_q ? m1_is_mem : m0_is_mem;
-            d2_is_store <= a_src_q ? m1_is_store : m0_is_store;
-            d2_mem_size <= a_src_q ? m1_mem_size : m0_mem_size;
-            d2_mem_signed <= a_src_q ? m1_mem_signed : m0_mem_signed;
-            d2_is_branch <= a_src_q ? m1_is_branch : m0_is_branch;
-            d2_br_func <= a_src_q ? m1_br_func : m0_br_func;
-            d2_is_jump <= a_src_q ? m1_is_jump : m0_is_jump;
-            d2_is_jalr <= a_src_q ? m1_is_jalr : m0_is_jalr;
-            d2_is_mul <= a_src_q ? m1_is_mul : m0_is_mul;
-            d2_is_csr <= a_src_q ? m1_is_csr : m0_is_csr;
-            d2_csr_func <= a_src_q ? m1_csr_func : m0_csr_func;
-            d2_is_serialize <= a_src_q ? m1_is_serialize : m0_is_serialize;
-            d2_is_amo <= a_src_q ? m1_is_amo : m0_is_amo;
-            d2_amo_func <= a_src_q ? m1_amo_func : m0_amo_func;
-            d2_is_fencei <= a_src_q ? m1_is_fencei : m0_is_fencei;
-            d2_is_cbo <= a_src_q ? m1_is_cbo : m0_is_cbo;
-            d2_cbo_zero <= a_src_q ? m1_cbo_zero : m0_cbo_zero;
-            d2_cbo_keep <= a_src_q ? m1_cbo_keep : m0_cbo_keep;
-            d2_illegal <= a_src_q ? m1_illegal : m0_illegal;
-            d2_mis_taken <= a_src_q ? m1_mis_taken : m0_mis_taken;
-            d2_mis_nt <= a_src_q ? m1_mis_nt : m0_mis_nt;
-         end else if (consume_b) d2_valid <= 1'b0;
+         d_valid  <= vnext0;
+         d2_valid <= vnext1;
+         d3_valid <= vnext2;
+         `FE_IRV(d_)  <= snext0;
+         `FE_IRV(d2_) <= snext1;
+         `FE_IRV(d3_) <= snext2;
       end
    end
+   `undef FE_IRV
 endmodule
 
 `default_nettype wire

@@ -293,13 +293,50 @@ module ooo2_core
    wire [3:0] d2_fault_cause;
    wire [PCW-1:0] d2_fault_tval;
    wire rn_valid_b;
+   // ---- slot C IR (IW>=3): the frontend's third decoded slot. Dead at IW=2 ----
+   wire d3_valid;
+   wire [PCW-1:0] d3_pc;
+   wire [31:0] d3_insn;
+   wire d3_rvc;
+   wire [SEQW-1:0] d3_seq;
+   wire [PDW-1:0] d3_pdet;
+   wire [PCW-1:0] d3_pred_npc;
+   wire [5:0] d3_rd, d3_rs1, d3_rs2, d3_rs3;
+   wire d3_rd_v, d3_rs1_v, d3_rs2_v, d3_rs3_v;
+   wire [63:0] d3_imm;
+   wire [5:0] d3_alu_op;
+   wire d3_alu_w, d3_alu_uw;
+   wire [1:0] d3_op1_sel;
+   wire d3_op2_imm, d3_res_link;
+   wire d3_is_mem, d3_is_store;
+   wire [1:0] d3_mem_size;
+   wire d3_mem_signed;
+   wire d3_is_branch;
+   wire [2:0] d3_br_func;
+   wire d3_is_jump, d3_is_jalr;
+   wire d3_is_mul, d3_is_csr;
+   wire [2:0] d3_csr_func;
+   wire d3_is_serialize;
+   wire d3_is_amo;
+   wire [4:0] d3_amo_func;
+   wire d3_is_fp, d3_is_fencei;
+   wire d3_is_cbo, d3_cbo_zero, d3_cbo_keep;
+   wire d3_illegal;
+   wire d3_mis_taken, d3_mis_nt;
+   wire d3_fault;
+   wire [3:0] d3_fault_cause;
+   wire [PCW-1:0] d3_fault_tval;
    ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
       // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
    // slot B (item 10b): dispatched beside A when the rules below allow
       .consume_b(rn_valid_b), .two_wide(1'b1),
+      // slot C (IW>=3): dead at IW=2. The dispatch-widening step connects consume_c to the
+      // third rename valid and three_wide to (IW>=3); d3_* outputs stay open until then.
+      .consume_c(1'b0), .three_wide(1'b0),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
+      .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
@@ -324,6 +361,21 @@ module ooo2_core
       .d_illegal(d_illegal), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
       .cur_seq(fe_cur_seq));
+
+   // Slot C invariant + reader. Until dispatch/rename widen to consume slot C, the backend is
+   // two-wide (three_wide tied 0 above), so the frontend must never present a third IR. This
+   // reads every d3_* field (so none dangles) AND asserts the dead-at-IW=2 property; the
+   // dispatch-widening step replaces this by routing slot C into the third rename port.
+   wire d3_touch = ^{d3_pc, d3_insn, d3_rvc, d3_seq, d3_pdet, d3_pred_npc,
+                     d3_rd, d3_rs1, d3_rs2, d3_rs3, d3_rd_v, d3_rs1_v, d3_rs2_v, d3_rs3_v,
+                     d3_imm, d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
+                     d3_is_mem, d3_is_store, d3_mem_size, d3_mem_signed, d3_is_branch, d3_br_func,
+                     d3_is_jump, d3_is_jalr, d3_is_mul, d3_is_csr, d3_csr_func, d3_is_serialize,
+                     d3_is_amo, d3_amo_func, d3_is_fp, d3_is_fencei, d3_is_cbo, d3_cbo_zero,
+                     d3_cbo_keep, d3_illegal, d3_mis_taken, d3_mis_nt, d3_fault, d3_fault_cause,
+                     d3_fault_tval};
+   always @(posedge clk) if (!reset && d3_valid)
+      $fatal(1, "ooo2_core: frontend presented slot C (d3_valid) while the backend is two-wide (touch=%b)", d3_touch);
 
    // Valid-DRAM window for the MMU's unbacked-PA access-fault check. Enforced only
    // under cosim, sized to the modeled DDR so an out-of-range access faults exactly as
