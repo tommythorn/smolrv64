@@ -517,6 +517,10 @@ module ooo2_core
    wire [RN_PBITS-1:0] rn_prs1_b, rn_prs2_b, rn_prs3_b, rn_prd_b;
    wire [RN_PBITS-1:0] rn_sprs1_b, rn_sprs2_b, rn_sprs3_b, rn_mprs1_b, rn_mprs2_b, rn_mprs3_b;
    wire                rn_lv1_b, rn_lv2_b, rn_lv3_b, rn_byp1_b, rn_byp2_b, rn_byp3_b;
+   // ---- 3rd rename port outputs (IW>=3): dead at IW=2, consumed by the slot-C invariant ----
+   wire [RN_PBITS-1:0] rn_prs1_c, rn_prs2_c, rn_prs3_c, rn_prd_c;
+   wire [RN_PBITS-1:0] rn_sprs1_c, rn_sprs2_c, rn_sprs3_c, rn_mprs1_c, rn_mprs2_c, rn_mprs3_c;
+   wire                rn_lv1_c, rn_lv2_c, rn_lv3_c, rn_byp1_c, rn_byp2_c, rn_byp3_c;
    wire [RN_PBITS-1:0] rn_sprs1, rn_sprs2, rn_sprs3;   // the two map candidates, and
    wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
    wire                rn_lv1, rn_lv2, rn_lv3;
@@ -545,13 +549,31 @@ module ooo2_core
       .r_mprs1_b(rn_mprs1_b), .r_mprs2_b(rn_mprs2_b), .r_mprs3_b(rn_mprs3_b),
       .r_lv1_b(rn_lv1_b), .r_lv2_b(rn_lv2_b), .r_lv3_b(rn_lv3_b),
       .r_byp1_b(rn_byp1_b), .r_byp2_b(rn_byp2_b), .r_byp3_b(rn_byp3_b), .r_prd_b(rn_prd_b),
+      // port C (IW>=3): dead at IW=2 (r_valid_c tied 0); the dispatch-widening step connects
+      // it to the third dispatched uop. Outputs go to the slot-C invariant below until then.
+      .r_valid_c(1'b0), .r_rs1_c(6'b0), .r_rs2_c(6'b0), .r_rs3_c(6'b0), .r_rd_c(6'b0), .r_rd_v_c(1'b0),
+      .r_shard_c(3'b0), .r_prs1_c(rn_prs1_c), .r_prs2_c(rn_prs2_c), .r_prs3_c(rn_prs3_c),
+      .r_sprs1_c(rn_sprs1_c), .r_sprs2_c(rn_sprs2_c), .r_sprs3_c(rn_sprs3_c),
+      .r_mprs1_c(rn_mprs1_c), .r_mprs2_c(rn_mprs2_c), .r_mprs3_c(rn_mprs3_c),
+      .r_lv1_c(rn_lv1_c), .r_lv2_c(rn_lv2_c), .r_lv3_c(rn_lv3_c),
+      .r_byp1_c(rn_byp1_c), .r_byp2_c(rn_byp2_c), .r_byp3_c(rn_byp3_c), .r_prd_c(rn_prd_c),
       // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
       // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
       // way rename itself was switched over once its shadow had earned it.
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_prd(rob_c_prd),
       .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd),
+      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
+
+   // Rename port C is inert until the dispatch-widening step drives r_valid_c. This reads its
+   // outputs (so none dangles) and asserts slot C never reaches rename while the backend is
+   // two-wide -- gated on d3_valid, which the frontend holds at 0 at IW=2.
+   wire rn_c_touch = ^{rn_prs1_c, rn_prs2_c, rn_prs3_c, rn_prd_c,
+                       rn_sprs1_c, rn_sprs2_c, rn_sprs3_c, rn_mprs1_c, rn_mprs2_c, rn_mprs3_c,
+                       rn_lv1_c, rn_lv2_c, rn_lv3_c, rn_byp1_c, rn_byp2_c, rn_byp3_c};
+   always @(posedge clk) if (!reset && d3_valid)
+      $fatal(1, "ooo2_core: slot C reached rename while the backend is two-wide (rnc=%b)", rn_c_touch);
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
@@ -594,6 +616,10 @@ module ooo2_core
    wire                rob_c2_valid, rob_c2_rd_v, rob_c2_noret;
    wire [5:0]          rob_c2_rd;
    wire [RN_PBITS-1:0] rob_c2_prd;
+   // 3rd commit (IW>=3): dead at IW=2 (ROB gates c3_valid on GE3). Fed to rename's c3 port.
+   wire                rob_c3_valid, rob_c3_rd_v;
+   wire [5:0]          rob_c3_rd;
+   wire [RN_PBITS-1:0] rob_c3_prd;
    // Mirrors m_is_irqop one stage earlier. That signal is
    //   m_is_sys & funct3==0 & imm==0x7F0, with m_is_sys carrying ~m_ill_eff & ~m_fault,
    // and m_ill_eff reduces to m_illegal here because a SYSTEM op is never m_is_fp -- so
@@ -1453,7 +1479,7 @@ module ooo2_core
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
       .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
       .c3_kill(1'b0),
-      .c3_valid(), .c3_rd(), .c3_rd_v(), .c3_prd(), .c3_noret(),
+      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd), .c3_noret(),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
