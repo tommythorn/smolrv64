@@ -53,6 +53,17 @@ module ooo2_rob
     input  wire             d_noret2,
     output wire             d_ready2,     // room for TWO
     output wire [IDXB-1:0]  d_idx2,
+    // third allocation, same cycle, YOUNGEST -- present only at IW>=3. The core ties
+    // d_valid3 low at IW<3 and d_ready3 is force-0 below, so this port is provably dead and
+    // synth-pruned at IW=2 (the entry store, head/tail march and commit stream stay
+    // bit-for-bit the two-wide machine). At IW=3 NBANKS = next_pow2(3) = 4, so the <=3
+    // consecutive tail positions land in DISTINCT banks exactly as <=2 do at NBANKS=2.
+    input  wire             d_valid3,
+    input  wire [5:0]       d_rd3,
+    input  wire [PBITS-1:0] d_prd3,
+    input  wire             d_noret3,
+    output wire             d_ready3,     // room for THREE
+    output wire [IDXB-1:0]  d_idx3,
 
     // ---- completion: out of order, names its slot by the tag it was given ----
     // NW ports. One was enough while a single stage completed everything; with units
@@ -82,6 +93,13 @@ module ooo2_rob
     output wire             c2_rd_v,
     output wire [PBITS-1:0] c2_prd,
     output wire             c2_noret,
+    // the THIRD entry, retired the same cycle when done -- IW>=3 only (gated dead below)
+    input  wire             c3_kill,
+    output wire             c3_valid,
+    output wire [5:0]       c3_rd,
+    output wire             c3_rd_v,
+    output wire [PBITS-1:0] c3_prd,
+    output wire             c3_noret,
 
     // ---- recovery ----
     // Younger-than-the-committing-entry dies. Pointer-only, to match the free list's own
@@ -117,6 +135,7 @@ module ooo2_rob
    // one write statement per LUTRAM bank, else Vivado demotes it to flops -- gate V2). At IW=2
    // this is NBANKS=2 == the old ent0/ent1 parity, bit-for-bit.
    localparam integer NBANKS = 1 << $clog2(IW);   // >= 2 for IW >= 2
+   localparam         GE3    = (IW >= 3) ? 1'b1 : 1'b0;   // sized 1-bit "third port is live"
    localparam integer LB     = $clog2(NBANKS);
    localparam integer BD     = DEPTH / NBANKS;
    localparam integer BAW    = IDXB - LB;
@@ -140,7 +159,12 @@ module ooo2_rob
    assign d_idx   = tidx;
    wire [IDXB-1:0] tidx2 = tidx + 1'b1;
    assign d_idx2  = tidx2;
+   wire [IDXB-1:0] tidx3 = tidx + 2'd2;
+   assign d_idx3  = tidx3;
+   // force-0 at IW<3 so the third port is dead even if a caller wrongly drives d_valid3
+   assign d_ready3 = GE3 & (occ <= DEPTH_S - 3'd3);
    wire [IDXB-1:0] h2idx = hidx + 1'b1;
+   wire [IDXB-1:0] h3idx = hidx + 2'd2;
 
    // ---- N-bank entry storage: one muxed write per bank, one muxed read per head ----
    genvar gb;
@@ -151,16 +175,26 @@ module ooo2_rob
       // distinct mod NBANKS, so at most one does, hence a single write statement.
       wire wsel0 = do_alloc  & (tidx [LB-1:0] == gb);
       wire wsel1 = do_alloc2 & (tidx2[LB-1:0] == gb);
+      wire wsel2 = do_alloc3 & (tidx3[LB-1:0] == gb);   // dead at IW<3 (do_alloc3 == 0)
       always @(posedge clk)
-         if (wsel0 | wsel1)
-            mem[wsel0 ? tidx[IDXB-1:LB] : tidx2[IDXB-1:LB]]
-               <= wsel0 ? {d_noret, d_rd, d_prd} : {d_noret2, d_rd2, d_prd2};
-      // read: this bank's entry at whichever head position maps here (head or head+1)
-      wire rsel_h = (hidx[LB-1:0] == gb);
-      assign bank_brd[gb] = mem[rsel_h ? hidx[IDXB-1:LB] : h2idx[IDXB-1:LB]];
+         if (wsel0 | wsel1 | wsel2)
+            mem[wsel0 ? tidx[IDXB-1:LB] : wsel1 ? tidx2[IDXB-1:LB] : tidx3[IDXB-1:LB]]
+               <= wsel0 ? {d_noret,  d_rd,  d_prd}
+                : wsel1 ? {d_noret2, d_rd2, d_prd2}
+                :         {d_noret3, d_rd3, d_prd3};
+      // read: this bank's entry at whichever head position maps here (head, head+1 or
+      // head+2). At NBANKS=2 the three positions cover only two distinct banks and the
+      // h3idx arm is unreachable (head/head+1 already cover both banks) -> synth drops it,
+      // so the read mux is bit-identical to the two-position form at IW=2.
+      wire rsel_h  = (hidx [LB-1:0] == gb);
+      wire rsel_h2 = (h2idx[LB-1:0] == gb);
+      assign bank_brd[gb] = mem[rsel_h  ? hidx [IDXB-1:LB]
+                              : rsel_h2 ? h2idx[IDXB-1:LB]
+                              :           h3idx[IDXB-1:LB]];
    end endgenerate
    wire [EW-1:0] he  = bank_brd[hidx [LB-1:0]];
    wire [EW-1:0] he2 = bank_brd[h2idx[LB-1:0]];
+   wire [EW-1:0] he3 = bank_brd[h3idx[LB-1:0]];
 
    // Write-forward on the head's done bit. An op that completes IN the cycle its entry is at
    // the head must commit that same cycle, or every completion costs an extra cycle -- and
@@ -203,17 +237,34 @@ module ooo2_rob
    assign c2_rd    = he2[PBITS +: 6];
    assign c2_noret = he2[PBITS+6];
    assign c2_rd_v  = |c2_prd;
+   wire            head3_done = v[h3idx] & (done[h3idx] | w_hits(h3idx));
+   // IW>=3 gate: v[h3idx] can be set by ordinary two-wide allocations, so without this gate
+   // a two-wide build would wrongly retire three per cycle. Constant-folds to 0 at IW=2.
+   assign c3_valid = GE3 & c2_valid & head3_done & ~c3_kill & ~flush;
+   assign c3_prd   = he3[PBITS-1:0];
+   assign c3_rd    = he3[PBITS +: 6];
+   assign c3_noret = he3[PBITS+6];
+   assign c3_rd_v  = |c3_prd;
    wire do_alloc  = d_valid & d_ready;                  // in a flush cycle too: the flush arm below wins
    wire do_alloc2 = do_alloc & d_valid2 & d_ready2;
+   wire do_alloc3 = do_alloc2 & d_valid3 & d_ready3;    // dead at IW<3 (d_ready3 == 0)
    wire do_commit = c_valid;
    wire do_commit2 = c2_valid;
-   wire [IDXB:0] head_n = head + {{IDXB{1'b0}}, do_commit} + {{IDXB{1'b0}}, do_commit2};
+   wire do_commit3 = c3_valid;
+   wire [IDXB:0] head_n = head + {{IDXB{1'b0}}, do_commit}
+                               + {{IDXB{1'b0}}, do_commit2}
+                               + {{IDXB{1'b0}}, do_commit3};
    // the irrevocable pointer never falls behind the head: two entries retiring in one cycle
    // are both done, so the pointer is at least past them
    wire [IDXB:0] irr_step = irr_done ? irr + 1'b1 : irr;
-   wire [IDXB:0] irr_n    = (do_commit2 && ((irr_step == head) || (irr_step == head + 1'b1))) ? head + 2'd2 : irr_step;
+   wire [IDXB:0] irr_n    =
+        (do_commit3 && ((irr_step == head) || (irr_step == head + 1'b1) || (irr_step == head + 2'd2))) ? head + 2'd3
+      : (do_commit2 && ((irr_step == head) || (irr_step == head + 1'b1)))                              ? head + 2'd2
+      :                                                                                                   irr_step;
    always @(posedge clk) if (!reset && d_valid2 && !d_valid)
       $fatal(1, "ooo2_rob: second allocation without a first");
+   always @(posedge clk) if (!reset && d_valid3 && !d_valid2)
+      $fatal(1, "ooo2_rob: third allocation without a second");
 
    always @(posedge clk) begin
       if (reset) begin
@@ -222,17 +273,22 @@ module ooo2_rob
          if (do_alloc) begin
             v[tidx]    <= 1'b1;
             done[tidx] <= 1'b0;
-            tail       <= tail + 1'b1 + {{IDXB{1'b0}}, do_alloc2};
+            tail       <= tail + 1'b1 + {{IDXB{1'b0}}, do_alloc2} + {{IDXB{1'b0}}, do_alloc3};
          end
          if (do_alloc2) begin
             v[tidx2]    <= 1'b1;
             done[tidx2] <= 1'b0;
+         end
+         if (do_alloc3) begin
+            v[tidx3]    <= 1'b1;
+            done[tidx3] <= 1'b0;
          end
          for (ri = 0; ri < NW; ri = ri + 1)
             if (w_v[ri]) done[w_ix[ri*IDXB +: IDXB]] <= 1'b1;
                   if (do_commit) begin
             v[hidx] <= 1'b0;
             if (do_commit2) v[h2idx] <= 1'b0;
+            if (do_commit3) v[h3idx] <= 1'b0;
             head    <= head_n;
          end
          irr <= irr_n;

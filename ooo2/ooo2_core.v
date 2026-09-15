@@ -1386,6 +1386,10 @@ module ooo2_core
       .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
       .d_ready(rob_ready), .d_idx(rob_d_idx),
       .d_valid2(rn_valid_b), .d_rd2(d2_rd), .d_prd2(d2_prd_g), .d_noret2(1'b0), .d_ready2(rob_ready2), .d_idx2(rob_d_idx2),
+      // third alloc port: dead at IW<3 (no third dispatched uop yet); the dispatch-widening
+      // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
+      // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
+      .d_valid3(1'b0), .d_rd3(6'b0), .d_prd3({RN_PBITS{1'b0}}), .d_noret3(1'b0), .d_ready3(), .d_idx3(),
       .w_v({iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
       .w_ix({a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
@@ -1393,6 +1397,8 @@ module ooo2_core
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
       .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
+      .c3_kill(1'b0),
+      .c3_valid(), .c3_rd(), .c3_rd_v(), .c3_prd(), .c3_noret(),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
