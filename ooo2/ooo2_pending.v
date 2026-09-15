@@ -24,6 +24,8 @@ module ooo2_pending
     input  wire [PBITS-1:0]      a_preg,
     input  wire                  a_v2,       // slot B's destination (item 10b), the same cycle
     input  wire [PBITS-1:0]      a_preg2,
+    input  wire                  a_v3,       // slot C's destination (Stage 3), the same cycle
+    input  wire [PBITS-1:0]      a_preg3,
 
     // ---- writeback: the value has landed ----
     input  wire [NWB-1:0]        w_v,
@@ -48,6 +50,8 @@ module ooo2_pending
     output wire                  r16, r17,
     input  wire [PBITS-1:0]      q18, q19,        // the second ALU port's operands (item 10d-ii)
     output wire                  r18, r19,
+    input  wire [PBITS-1:0]      q20, q21, q22, q23, q24, q25,   // slot C's six candidates (Stage 3)
+    output wire                  r20, r21, r22, r23, r24, r25,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -85,6 +89,8 @@ module ooo2_pending
    assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
    assign r16 = rdy_of(q16); assign r17 = rdy_of(q17);
    assign r18 = rdy_of(q18); assign r19 = rdy_of(q19);
+   assign r20 = rdy_of(q20); assign r21 = rdy_of(q21); assign r22 = rdy_of(q22);
+   assign r23 = rdy_of(q23); assign r24 = rdy_of(q24); assign r25 = rdy_of(q25);
 
    always @(posedge clk) begin
       if (reset) begin
@@ -97,6 +103,7 @@ module ooo2_pending
          // new producer owns it.
          if (a_v)  pend[a_preg]  <= 1'b1;
          if (a_v2) pend[a_preg2] <= 1'b1;
+         if (a_v3) pend[a_preg3] <= 1'b1;
          // Total recovery, ordered LAST so it wins over an allocation made in the flush
          // cycle (dispatch is no longer gated on the redirect, gate V3 2026-09-05).
          // Everything uncommitted dies, and every COMMITTED register's value is by
@@ -116,6 +123,10 @@ module ooo2_pending
          $fatal(1, "ooo2_pending: physical register 0 allocated (B)");
       if (a_v2 & (pend[a_preg2] | (a_v & (a_preg == a_preg2))) & ~flush)
          $fatal(1, "ooo2_pending: p%0d allocated (B) while already pending", a_preg2);
+      if (a_v3 & (a_preg3 == {PBITS{1'b0}}))
+         $fatal(1, "ooo2_pending: physical register 0 allocated (C)");
+      if (a_v3 & (pend[a_preg3] | (a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))) & ~flush)
+         $fatal(1, "ooo2_pending: p%0d allocated (C) while already pending", a_preg3);
       for (i = 0; i < NWB; i = i + 1)
          if (w_v[i] & ~pend[w_preg[i*PBITS +: PBITS]] & ~flush)
             $fatal(1, "ooo2_pending: writeback to p%0d, which was not pending",

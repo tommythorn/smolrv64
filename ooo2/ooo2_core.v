@@ -293,6 +293,7 @@ module ooo2_core
    wire [3:0] d2_fault_cause;
    wire [PCW-1:0] d2_fault_tval;
    wire rn_valid_b;
+   wire rn_valid_c;   // slot C dispatched (Stage 3); driven by d3_take in the steering below
    // ---- slot C IR (IW>=3): the frontend's third decoded slot. Dead at IW=2 ----
    wire d3_valid;
    wire [PCW-1:0] d3_pc;
@@ -332,9 +333,9 @@ module ooo2_core
       // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
    // slot B (item 10b): dispatched beside A when the rules below allow
       .consume_b(rn_valid_b), .two_wide(1'b1),
-      // slot C (IW>=3): dead at IW=2. The dispatch-widening step connects consume_c to the
-      // third rename valid and three_wide to (IW>=3); d3_* outputs stay open until then.
-      .consume_c(1'b0), .three_wide(1'b0),
+      // slot C (IW>=3): consume_c is the third rename valid; three_wide=(IW>=3) is the master
+      // enable. At IW=2 three_wide=0, so the frontend never presents slot C.
+      .consume_c(rn_valid_c), .three_wide(three_wide),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
@@ -362,20 +363,6 @@ module ooo2_core
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
       .cur_seq(fe_cur_seq));
 
-   // Slot C invariant + reader. Until dispatch/rename widen to consume slot C, the backend is
-   // two-wide (three_wide tied 0 above), so the frontend must never present a third IR. This
-   // reads every d3_* field (so none dangles) AND asserts the dead-at-IW=2 property; the
-   // dispatch-widening step replaces this by routing slot C into the third rename port.
-   wire d3_touch = ^{d3_pc, d3_insn, d3_rvc, d3_seq, d3_pdet, d3_pred_npc,
-                     d3_rd, d3_rs1, d3_rs2, d3_rs3, d3_rd_v, d3_rs1_v, d3_rs2_v, d3_rs3_v,
-                     d3_imm, d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
-                     d3_is_mem, d3_is_store, d3_mem_size, d3_mem_signed, d3_is_branch, d3_br_func,
-                     d3_is_jump, d3_is_jalr, d3_is_mul, d3_is_csr, d3_csr_func, d3_is_serialize,
-                     d3_is_amo, d3_amo_func, d3_is_fp, d3_is_fencei, d3_is_cbo, d3_cbo_zero,
-                     d3_cbo_keep, d3_illegal, d3_mis_taken, d3_mis_nt, d3_fault, d3_fault_cause,
-                     d3_fault_tval};
-   always @(posedge clk) if (!reset && d3_valid)
-      $fatal(1, "ooo2_core: frontend presented slot C (d3_valid) while the backend is two-wide (touch=%b)", d3_touch);
 
    // Valid-DRAM window for the MMU's unbacked-PA access-fault check. Enforced only
    // under cosim, sized to the modeled DDR so an out-of-range access faults exactly as
@@ -560,8 +547,8 @@ module ooo2_core
       .r_byp1_b(rn_byp1_b), .r_byp2_b(rn_byp2_b), .r_byp3_b(rn_byp3_b), .r_prd_b(rn_prd_b),
       // port C (IW>=3): dead at IW=2 (r_valid_c tied 0); the dispatch-widening step connects
       // it to the third dispatched uop. Outputs go to the slot-C invariant below until then.
-      .r_valid_c(1'b0), .r_rs1_c(6'b0), .r_rs2_c(6'b0), .r_rs3_c(6'b0), .r_rd_c(6'b0), .r_rd_v_c(1'b0),
-      .r_shard_c(3'b0), .r_prs1_c(rn_prs1_c), .r_prs2_c(rn_prs2_c), .r_prs3_c(rn_prs3_c),
+      .r_valid_c(rn_valid_c), .r_rs1_c(d3_rs1), .r_rs2_c(d3_rs2), .r_rs3_c(d3_rs3), .r_rd_c(d3_rd), .r_rd_v_c(d3_rd_v),
+      .r_shard_c(d3_shard), .r_prs1_c(rn_prs1_c), .r_prs2_c(rn_prs2_c), .r_prs3_c(rn_prs3_c),
       .r_sprs1_c(rn_sprs1_c), .r_sprs2_c(rn_sprs2_c), .r_sprs3_c(rn_sprs3_c),
       .r_mprs1_c(rn_mprs1_c), .r_mprs2_c(rn_mprs2_c), .r_mprs3_c(rn_mprs3_c),
       .r_lv1_c(rn_lv1_c), .r_lv2_c(rn_lv2_c), .r_lv3_c(rn_lv3_c),
@@ -574,15 +561,6 @@ module ooo2_core
       .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
-
-   // Rename port C is inert until the dispatch-widening step drives r_valid_c. This reads its
-   // outputs (so none dangles) and asserts slot C never reaches rename while the backend is
-   // two-wide -- gated on d3_valid, which the frontend holds at 0 at IW=2.
-   wire rn_c_touch = ^{rn_prs1_c, rn_prs2_c, rn_prs3_c, rn_prd_c,
-                       rn_sprs1_c, rn_sprs2_c, rn_sprs3_c, rn_mprs1_c, rn_mprs2_c, rn_mprs3_c,
-                       rn_lv1_c, rn_lv2_c, rn_lv3_c, rn_byp1_c, rn_byp2_c, rn_byp3_c};
-   always @(posedge clk) if (!reset && d3_valid)
-      $fatal(1, "ooo2_core: slot C reached rename while the backend is two-wide (rnc=%b)", rn_c_touch);
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
    wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
@@ -617,7 +595,7 @@ module ooo2_core
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
    localparam integer ROB_DEPTH = 16, ROB_IDXB = 4;
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
-   wire                rob_ready, rob_ready2, rob_empty;
+   wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
    // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
    // redirect may only fire when it is: the trapping instruction is YOUNGER than an
    // outstanding load, and `flush` would otherwise kill that older entry and lose its
@@ -706,8 +684,11 @@ module ooo2_core
      (.clk(clk), .reset(reset),
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
       .a_v2(rn_valid_b & d2_rd_v), .a_preg2(rn_prd_b),
+      .a_v3(rn_valid_c & d3_rd_v), .a_preg3(rn_prd_c),
       .q10(rn_sprs1_b), .q11(rn_sprs2_b), .q12(rn_sprs3_b), .r10(pnd_s1_b), .r11(pnd_s2_b), .r12(pnd_s3_b),
       .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
+      .q20(rn_sprs1_c), .q21(rn_sprs2_c), .q22(rn_sprs3_c), .r20(pnd_s1_c), .r21(pnd_s2_c), .r22(pnd_s3_c),
+      .q23(rn_mprs1_c), .q24(rn_mprs2_c), .q25(rn_mprs3_c), .r23(pnd_m1_c), .r24(pnd_m2_c), .r25(pnd_m3_c),
       .q16(a_ps1), .q17(a_ps2), .r16(pnd_a1), .r17(pnd_a2),
       .q18(a2_ps1), .q19(a2_ps2), .r18(pnd_b1), .r19(pnd_b2),
       .w_v({we_ie3, we_ie2, we_fe, we_ld, we_ie}), .w_preg({wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie}),
@@ -896,13 +877,20 @@ module ooo2_core
    wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
    wire       d2_ld_nb = d2_is_mem & ~d2_is_store & ~d2_is_amo & ~d2_is_cbo;
    wire [2:0] d2_srdy = {pnd_r3_b | ~d2_rs3_v, pnd_r2_b | ~d2_rs2_v | d2_st_nb, pnd_r1_b | ~d2_rs1_v};
-   // slot C dispatch (Stage 3): DEAD until the C4 dispatch step drives rn_valid_c. The 3rd
-   // ALU scheduler u_iq_i3 is wired but inert (rn_valid_c=0). C4 replaces rn_valid_c and the
-   // placeholder d3_srdy (source-ready from slot C's pending queries) with the real route.
-   wire rn_valid_c = 1'b0;
+   // slot C dispatch (Stage 3). three_wide (= IW>=3) is the master enable; at IW=2 it is 0,
+   // so the frontend never presents slot C and d3_take/rn_valid_c stay 0 -- retire-identical.
+   // rn_valid_c itself is defined at the d3_take steering below; used forward here (a net).
+   localparam TW3 = (IW >= 3) ? 1'b1 : 1'b0;
+   wire three_wide = TW3;
    wire d3_cls_i = ~d3_ord;
    wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
-   wire [1:0] d3_srdy = 2'b11;   // placeholder (C4)
+   // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
+   wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
+   wire pnd_r1_c = ~rn_byp1_c & (rn_lv1_c ? pnd_s1_c : pnd_m1_c);
+   wire pnd_r2_c = ~rn_byp2_c & (rn_lv2_c ? pnd_s2_c : pnd_m2_c);
+   wire pnd_r3_c = ~rn_byp3_c & (rn_lv3_c ? pnd_s3_c : pnd_m3_c);
+   wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v, pnd_r1_c | ~d3_rs1_v};
+   wire d3_plain = ~(d3_is_serialize | d3_is_fencei | d3_is_cbo | d3_is_amo | d3_is_csr | d3_illegal | d3_fault | d3_is_irqop);
    wire d_plain  = ~(d_is_serialize  | d_is_fencei  | d_is_cbo  | d_is_amo  | d_is_csr  | d_illegal  | d_fault  | d_is_irqop);
    wire d2_plain = ~(d2_is_serialize | d2_is_fencei | d2_is_cbo | d2_is_amo | d2_is_csr | d2_illegal | d2_fault | d2_is_irqop);
 
@@ -1574,7 +1562,7 @@ module ooo2_core
       // third alloc port: dead at IW<3 (no third dispatched uop yet); the dispatch-widening
       // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
       // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
-      .d_valid3(1'b0), .d_rd3(6'b0), .d_prd3({RN_PBITS{1'b0}}), .d_noret3(1'b0), .d_ready3(), .d_idx3(rob_d_idx3),
+      .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
       .w_v({iss_alu3, iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
       .w_ix({a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
@@ -3037,11 +3025,20 @@ module ooo2_core
                 | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));
    wire d2_take = d2_valid & d_take & ~d2_hold;
    assign rn_valid_b = d2_take;
+   // slot C (Stage 3): dispatches ONLY as an ALU op into its own scheduler i3 (which A/B never
+   // use, so there is no class hazard). Anything else holds and dispatches next cycle as slot
+   // A. three_wide is the master enable (0 at IW=2 -> C never dispatches -> retire-identical).
+   wire d3_hold = ~three_wide | ~d3_cls_i | ~d_plain | ~d2_plain | ~d3_plain
+                | ~ri3_ready | ~rob_ready3 | rn_stall;
+   wire d3_take = d3_valid & d2_take & ~d3_hold;
+   assign rn_valid_c = d3_take;
    always @(posedge clk) if (!reset) begin
       if (rn_valid_b & ~rn_valid)       $fatal(1, "ooo2_core: slot B dispatched without slot A");
       if (rn_valid_b & (d2_cls == d_cls)) $fatal(1, "ooo2_core: slot B dispatched to slot A's scheduler");
       if (rn_valid_b & ((d_st_nb & d2_st_nb) | (d_ld_nb & d2_ld_nb)))
          $fatal(1, "ooo2_core: two allocations into one memory queue");
+      if (rn_valid_c & ~rn_valid_b)     $fatal(1, "ooo2_core: slot C dispatched without slot B");
+      if (rn_valid_c & ~d3_cls_i)       $fatal(1, "ooo2_core: slot C dispatched but not an ALU op");
    end
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
