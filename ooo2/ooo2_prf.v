@@ -39,7 +39,7 @@
 
 module ooo2_prf
   #(parameter IDXB  = 7,                   // index bits within a shard
-    parameter PBITS = IDXB + 2,            // physical register number width
+    parameter PBITS = IDXB + 3,            // physical register number width (3 shard bits: room for 5 shards)
     parameter N_IE  = 64,                  // > 32 (integer arch regs)
     parameter N_LD  = 128,                  // > 64 (integer AND fp arch regs can land here)
     parameter N_FE  = 128,                  // > 64: the FPU writes INTEGER regs too
@@ -99,7 +99,7 @@ module ooo2_prf
     output wire [63:0]      rd6,
     output wire [63:0]      rd7);
 
-      localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2, SH_IE2 = 2'd3;
+      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3;   // SH_IE3=3'd4 added with the 3rd ALU
 
    // Sized to the largest shard; the smaller shards simply never index above their
    // capacity, which ooo2_rename's free list enforces and the assertion below checks.
@@ -117,9 +117,9 @@ module ooo2_prf
    reg [63:0] mem_fe [0:N_FE-1];
    reg [63:0] mem_ie2 [0:N_IE2-1];
 
-   wire [1:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
+   wire [2:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
    wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
-   wire [1:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB], sh6 = ra6[PBITS-1:IDXB], sh7 = ra7[PBITS-1:IDXB];
+   wire [2:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB], sh6 = ra6[PBITS-1:IDXB], sh7 = ra7[PBITS-1:IDXB];
    wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0],     ix6 = ra6[IDXB-1:0],     ix7 = ra7[IDXB-1:0];
 
    // WRITE-THROUGH, and why it is OFF by default.
@@ -141,7 +141,7 @@ module ooo2_prf
    // Turning it on is NOT something to remember: ooo2_core asserts on a read that collides
    // with the writeback and is not bypassed, so the machine says when this becomes needed.
    function automatic [63:0] rd_shard;
-      input [1:0]      sh;
+      input [2:0]      sh;
       input [IDXB-1:0] ix;
       input [63:0]     m_ie, m_ld, m_fe, m_ie2;
       begin

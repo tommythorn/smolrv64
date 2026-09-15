@@ -33,7 +33,7 @@
 
 module ooo2_rename
   #(parameter IDXB  = 7,
-    parameter PBITS = IDXB + 2,
+    parameter PBITS = IDXB + 3,               // 3 shard bits: room for a 5th shard (the 3rd ALU)
     parameter N_IE  = 64,
     parameter N_LD  = 128,
     parameter N_FE  = 128,
@@ -50,7 +50,7 @@ module ooo2_rename
     input  wire [5:0]       r_rs3,
     input  wire [5:0]       r_rd,
     input  wire             r_rd_v,       // writes a register (x0 destinations excluded)
-    input  wire [1:0]       r_shard,      // destination shard, from the instruction class
+    input  wire [2:0]       r_shard,      // destination shard, from the instruction class
     output wire [PBITS-1:0] r_prs1,
     output wire [PBITS-1:0] r_prs2,
     output wire [PBITS-1:0] r_prs3,
@@ -72,7 +72,7 @@ module ooo2_rename
     input  wire [5:0]       r_rs3_b,
     input  wire [5:0]       r_rd_b,
     input  wire             r_rd_v_b,
-    input  wire [1:0]       r_shard_b,
+    input  wire [2:0]       r_shard_b,
     output wire [PBITS-1:0] r_prs1_b,
     output wire [PBITS-1:0] r_prs2_b,
     output wire [PBITS-1:0] r_prs3_b,
@@ -100,7 +100,7 @@ module ooo2_rename
     output wire             stall,        // ANY shard low -- see the note below
         output wire [3:0]       shard_low);   // per-shard, for the hpm counters
 
-      localparam [1:0] SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2, SH_IE2 = 2'd3;
+      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3;   // SH_IE3=3'd4 added with the 3rd ALU
    localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
 
    // ---- the map -------------------------------------------------------------------
@@ -251,8 +251,8 @@ module ooo2_rename
    wire [PBITS-1:0] c_pold  = (rnewer[c_rd] ? rmap_b[c_rd] : rmap_a[c_rd]);
    // the second commit displaces the FIRST's mapping when both write one architectural register
    wire [PBITS-1:0] c2_pold = (c_valid & c_rd_v & (c2_rd == c_rd)) ? c_prd : (rnewer[c2_rd] ? rmap_b[c2_rd] : rmap_a[c2_rd]);
-   wire [1:0] c2_shard  = c2_prd[PBITS-1:IDXB];
-   wire [1:0] pold2_sh  = c2_pold[PBITS-1:IDXB];
+   wire [2:0] c2_shard  = c2_prd[PBITS-1:IDXB];
+   wire [2:0] pold2_sh  = c2_pold[PBITS-1:IDXB];
    wire cmt2_ie = c2_valid & c2_rd_v & (c2_shard == SH_IE);
    wire cmt2_ld = c2_valid & c2_rd_v & (c2_shard == SH_LD);
    wire cmt2_fe = c2_valid & c2_rd_v & (c2_shard == SH_FE);
@@ -261,8 +261,8 @@ module ooo2_rename
    wire fre2_fe = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
    wire cmt2_i2 = c2_valid & c2_rd_v & (c2_shard == SH_IE2);
    wire fre2_i2 = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
-   wire [1:0] c_shard = c_prd[PBITS-1:IDXB];
-   wire [1:0] pold_sh = c_pold[PBITS-1:IDXB];
+   wire [2:0] c_shard = c_prd[PBITS-1:IDXB];
+   wire [2:0] pold_sh = c_pold[PBITS-1:IDXB];
    wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
    wire cmt_ld = c_valid & c_rd_v & (c_shard == SH_LD);
    wire cmt_fe = c_valid & c_rd_v & (c_shard == SH_FE);

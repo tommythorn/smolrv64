@@ -468,8 +468,8 @@ module ooo2_core
    // operand source and deleting rv_regfile is then a one-line change against a proven
    // structure rather than a big-bang swap of the core's most load-bearing datapath.
    localparam integer RN_IDXB  = 7;
-   localparam integer RN_PBITS = RN_IDXB + 2;
-   localparam [1:0]   SH_IE = 2'd0, SH_LD = 2'd1, SH_FE = 2'd2, SH_IE2 = 2'd3;
+   localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
+   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3;   // SH_IE3=3'd4 with the 3rd ALU
 
    wire d_ord   = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
                 | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
@@ -504,11 +504,11 @@ module ooo2_core
    // With this line the ALU is SH_IE's only writer, m_wb_ie is identically 0 (asserted
    // below, not assumed), and the integer scheduler has no unit_busy term at all.
    // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
-   wire [1:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
+   wire [2:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
                       : d_is_fp                          ? SH_FE
                       : d_ord                            ? SH_LD   // CSR, jumps: M writes
                       :                                    SH_IE;  // the ALU, alone
-   wire [1:0] d2_shard = (d2_is_mem | d2_is_amo | d2_is_mul) ? SH_LD
+   wire [2:0] d2_shard = (d2_is_mem | d2_is_amo | d2_is_mul) ? SH_LD
                        : d2_is_fp                            ? SH_FE
                        : d2_ord                              ? SH_LD
                        :                                       SH_IE2;   // the second ALU's shard
@@ -1108,7 +1108,7 @@ module ooo2_core
 
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
    // width or ordering mistake is a lint error rather than a wrong instruction.
-   localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 2 + 6
+   localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 3 + 6   // shard is 3 bits
                           + 64 + 2 + 1 + 1 + 1 + 1 + 5 + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1
                           + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 64
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
@@ -1178,7 +1178,8 @@ module ooo2_core
    wire [PDW-1:0]      q_pdet;
    wire [5:0]          q_rd, q_rs1;
    wire [RN_PBITS-1:0] q_prd;
-   wire [1:0]          q_shard, q_mem_size;
+   wire [2:0]          q_shard;
+   wire [1:0]          q_mem_size;
    wire [63:0]         q_imm;
    wire [4:0]          q_amo_func;
    wire                q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr;
@@ -1209,7 +1210,8 @@ module ooo2_core
    wire [PDW-1:0]      qa_pdet;
    wire [5:0]          qa_rd, qa_rs1;
    wire [RN_PBITS-1:0] qa_prd;
-   wire [1:0]          qa_shard, qa_mem_size;
+   wire [2:0]          qa_shard;
+   wire [1:0]          qa_mem_size;
    wire [63:0]         qa_imm;
    wire [4:0]          qa_amo_func;
    wire                qa_is_branch, qa_is_jump, qa_is_jalr, qa_is_mul, qa_is_csr;
@@ -1240,7 +1242,8 @@ module ooo2_core
    wire [PDW-1:0]      qb_pdet;
    wire [5:0]          qb_rd, qb_rs1;
    wire [RN_PBITS-1:0] qb_prd;
-   wire [1:0]          qb_shard, qb_mem_size;
+   wire [2:0]          qb_shard;
+   wire [1:0]          qb_mem_size;
    wire [63:0]         qb_imm;
    wire [4:0]          qb_amo_func;
    wire                qb_is_branch, qb_is_jump, qb_is_jalr, qb_is_mul, qb_is_csr;
@@ -1471,7 +1474,7 @@ module ooo2_core
    reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
    reg  [5:0]       m_rd, m_rs1;
    reg  [RN_PBITS-1:0] m_prd;           // rename result, carried X->M
-   reg  [1:0]       m_shard;
+   reg  [2:0]       m_shard;
    reg  [63:0]      m_imm, m_result, m_addr, m_st_data, m_rs1_val, m_rs3_val;
    reg  [1:0]       m_mem_size;
    reg              m_mem_signed, m_is_mem, m_is_store, m_is_amo;
@@ -1964,10 +1967,10 @@ module ooo2_core
    // Each scheduler's blocking source is classified on its own shard and OR-ed. A cycle can
    // now count in more than one event, which is correct -- the machine really is waiting on
    // both -- and matches how these events already behaved (the stack sums past 100%).
-   wire [1:0] bsh_l = rl_blk_pr[RN_PBITS-1:RN_IDXB];
-   wire [1:0] bsh_f = rf_blk_pr[RN_PBITS-1:RN_IDXB];
-   wire [1:0] bsh_i = ri_blk_pr[RN_PBITS-1:RN_IDXB];
-   wire [1:0] bsh_i2 = ri2_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [2:0] bsh_l = rl_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [2:0] bsh_f = rf_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [2:0] bsh_i = ri_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [2:0] bsh_i2 = ri2_blk_pr[RN_PBITS-1:RN_IDXB];
    // Gated on "nothing issued", NOT on m_advance. The old `m_advance &` gate dated from M
    // being the only unit, where "M could accept" was the same thing as "issue could
    // proceed". With three units it silently masks: on workloads/mlbench M is busy with
