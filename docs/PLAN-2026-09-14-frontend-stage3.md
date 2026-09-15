@@ -122,6 +122,15 @@ free-return following.
    (2 banks == today's parity). Board-clean.
 3. **Bitvector free lists** (per shard) + committed-shadow recovery, replacing the parity-banked
    FIFO free lists. Retire-identical at IW=2. Board-clean.
+3b. **Wide retire (IPC, not retire-identical)** — decouple retire width from `IW`: fix the ROB at
+   `NBANKS >= 4` regardless of `IW` (the generic banking gives the read ports for free), commit
+   the whole done-prefix of `head..head+3` each cycle, and widen the committed-map writes + the
+   free-list return to 4 (the bitvector return from inc 3 is free; the committed rmap needs 4
+   write ports, pairing with inc 4's map work). Drains the ROB faster -> attacks `ST_ROB`
+   (`rob_full` was 5.25 M in the 300 M cosim) and the post-miss retire burst; and it is REQUIRED
+   for IW=3 to breathe (dispatch-3 outpaces retire-2). Does NOT help the `RD_WAIT`-behind-a-miss
+   drain (the head is blocked on a not-done load; retire width can't pass it). Gate: measure the
+   `ST_ROB`/`rob_full`/retire delta in the cosim; board. Sequence after inc 3, pairs with inc 4.
 4. **Steer-then-rename** — decoder numbers + resolves deps + steers; per-pipe scalar rename; flop
    speculative livemap. The big one. **Retire-identical at IW=2** (same width, restructured) —
    this increment proves the restructure does not regress the working 2-wide. Board-clean.
