@@ -607,7 +607,8 @@ module ooo2_core
    wire [5:0]          rob_c2_rd;
    wire [RN_PBITS-1:0] rob_c2_prd;
    // 3rd commit (IW>=3): dead at IW=2 (ROB gates c3_valid on GE3). Fed to rename's c3 port.
-   wire                rob_c3_valid, rob_c3_rd_v;
+   wire                rob_c3_valid, rob_c3_rd_v, rob_c3_noret;
+   wire                retire3;   // 3rd retire this cycle (Stage 3, cosim-only)
    wire [5:0]          rob_c3_rd;
    wire [RN_PBITS-1:0] rob_c3_prd;
    // Mirrors m_is_irqop one stage earlier. That signal is
@@ -1434,7 +1435,7 @@ module ooo2_core
       .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
-      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie2, wb_fe, wb_ld, wb_ie}),
+      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
       .kc_v(sq_kc_v), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .k_take(sq_k_take),
@@ -1571,7 +1572,7 @@ module ooo2_core
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
       .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
       .c3_kill(1'b0),
-      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd), .c3_noret(),
+      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd), .c3_noret(rob_c3_noret),
       .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
@@ -2521,6 +2522,7 @@ module ooo2_core
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
    assign wb_ie = xa_result;                      // one writer: the ALU, on its own port
    wire [63:0] wb_ie2 = xb_result;                // ...and the second ALU's shard, its own writer
+   wire [63:0] wb_ie3 = xc_result;                // ...and the third ALU's (Stage 3)
    // SH_LD is now M's shard outright, so this mux carries every result M produces, not
    // just the memory and mul/div ones it started as. The two new arms are the two classes
    // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
@@ -2635,7 +2637,9 @@ module ooo2_core
    // With M still blocking the two coincide, which is what makes this step checkable.
    assign retire      = rob_c_valid & ~rob_c_noret;
    assign retire2     = rob_c2_valid & ~rob_c2_noret;
+   assign retire3     = rob_c3_valid & ~rob_c3_noret;
    wire [ROB_IDXB-1:0] rob_head2_idx = rob_head_idx + 1'b1;
+   wire [ROB_IDXB-1:0] rob_head3_idx = rob_head_idx + 2'd2;
 
    // retire_pc/retire_insn are verification payload -- tb_ooo2_riscv traces them and
    // rv_soc_top leaves both unconnected -- so they come from a simulation-only side array
@@ -2647,6 +2651,7 @@ module ooo2_core
    always @(posedge clk) begin
       if (rn_valid)   begin cs_pc[rob_d_idx]  <= d_pc;  cs_insn[rob_d_idx]  <= d_insn;  end
       if (rn_valid_b) begin cs_pc[rob_d_idx2] <= d2_pc; cs_insn[rob_d_idx2] <= d2_insn; end
+      if (rn_valid_c) begin cs_pc[rob_d_idx3] <= d3_pc; cs_insn[rob_d_idx3] <= d3_insn; end
    end
    assign retire_pc   = cs_pc[rob_head_idx];
    assign retire_insn = cs_insn[rob_head_idx];
@@ -2707,6 +2712,11 @@ module ooo2_core
          cs_mkind[a2_rob] <= 2'd0;
          cs_mpa[a2_rob]   <= 56'd0;
       end
+      if (iss_alu3) begin               // the third ALU port (Stage 3)
+         cs_val[a3_rob]   <= xc_result;
+         cs_mkind[a3_rob] <= 2'd0;
+         cs_mpa[a3_rob]   <= 56'd0;
+      end
       if (iss_alu) begin                // completed at issue on the ALU port, never saw M
          cs_val[a_rob]   <= xa_result;
          cs_mkind[a_rob] <= 2'd0;
@@ -2723,22 +2733,26 @@ module ooo2_core
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (a_rob == rob_head_idx);
    wire        cs_hit_alu2 = iss_alu2 & (a2_rob == rob_head_idx);
+   wire        cs_hit_alu3 = iss_alu3 & (a3_rob == rob_head_idx);
    wire [63:0] cs_val_h   = cs_hit_sq ? 64'd0          // a store writes no register
                           : cs_hit_ld ? lsu_rd_val
                           : cs_hit_alu ? xa_result
                           : cs_hit_alu2 ? xb_result
+                          : cs_hit_alu3 ? xc_result
                           : cs_hit_fp ? fp_wval
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_sq ? 2'd2
                           : cs_hit_ld ? 2'd1
                           : cs_hit_alu ? 2'd0
                           : cs_hit_alu2 ? 2'd0
+                          : cs_hit_alu3 ? 2'd0
                           : cs_hit_fp ? 2'd0
                           : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
    wire [55:0] cs_mpa_h   = cs_hit_sq ? sq_kc_addr
                           : cs_hit_ld ? lq_l_pa
                           : cs_hit_alu ? 56'd0
                           : cs_hit_alu2 ? 56'd0
+                          : cs_hit_alu3 ? 56'd0
                           : cs_hit_fp ? 56'd0
                           : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
    // ...and for the entry behind the head, retiring in the same cycle (item 10c)
@@ -2748,12 +2762,29 @@ module ooo2_core
    wire        cs2_hit_fp  = fp_land & (ft_rob == rob_head2_idx);
    wire        cs2_hit_alu = iss_alu & (a_rob == rob_head2_idx);
    wire        cs2_hit_alu2 = iss_alu2 & (a2_rob == rob_head2_idx);
+   wire        cs2_hit_alu3 = iss_alu3 & (a3_rob == rob_head2_idx);
    wire [63:0] cs_val_h2   = cs2_hit_sq ? 64'd0 : cs2_hit_ld ? lsu_rd_val : cs2_hit_alu ? xa_result : cs2_hit_alu2 ? xb_result
+                           : cs2_hit_alu3 ? xc_result
                            : cs2_hit_fp ? fp_wval : cs2_hit_m ? m_wb_val : cs_val[rob_head2_idx];
-   wire [1:0]  cs_mkind_h2 = cs2_hit_sq ? 2'd2 : cs2_hit_ld ? 2'd1 : cs2_hit_alu ? 2'd0 : cs2_hit_alu2 ? 2'd0 : cs2_hit_fp ? 2'd0
+   wire [1:0]  cs_mkind_h2 = cs2_hit_sq ? 2'd2 : cs2_hit_ld ? 2'd1 : cs2_hit_alu ? 2'd0 : cs2_hit_alu2 ? 2'd0 : cs2_hit_alu3 ? 2'd0 : cs2_hit_fp ? 2'd0
                            : cs2_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head2_idx];
-   wire [55:0] cs_mpa_h2   = cs2_hit_sq ? sq_kc_addr : cs2_hit_ld ? lq_l_pa : cs2_hit_alu ? 56'd0 : cs2_hit_alu2 ? 56'd0 : cs2_hit_fp ? 56'd0
+   wire [55:0] cs_mpa_h2   = cs2_hit_sq ? sq_kc_addr : cs2_hit_ld ? lq_l_pa : cs2_hit_alu ? 56'd0 : cs2_hit_alu2 ? 56'd0 : cs2_hit_alu3 ? 56'd0 : cs2_hit_fp ? 56'd0
                            : cs2_hit_m ? lsu_cos_pa : cs_mpa[rob_head2_idx];
+   // ...and the third entry, retiring in the same cycle (Stage 3, IW=3)
+   wire        cs3_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith & (m_rob_idx == rob_head3_idx);
+   wire        cs3_hit_ld  = ld_land & (lq_l_rob == rob_head3_idx);
+   wire        cs3_hit_sq  = sq_k_take & (sq_kc_rob == rob_head3_idx);
+   wire        cs3_hit_fp  = fp_land & (ft_rob == rob_head3_idx);
+   wire        cs3_hit_alu = iss_alu & (a_rob == rob_head3_idx);
+   wire        cs3_hit_alu2 = iss_alu2 & (a2_rob == rob_head3_idx);
+   wire        cs3_hit_alu3 = iss_alu3 & (a3_rob == rob_head3_idx);
+   wire [63:0] cs_val_h3   = cs3_hit_sq ? 64'd0 : cs3_hit_ld ? lsu_rd_val : cs3_hit_alu ? xa_result : cs3_hit_alu2 ? xb_result
+                           : cs3_hit_alu3 ? xc_result
+                           : cs3_hit_fp ? fp_wval : cs3_hit_m ? m_wb_val : cs_val[rob_head3_idx];
+   wire [1:0]  cs_mkind_h3 = cs3_hit_sq ? 2'd2 : cs3_hit_ld ? 2'd1 : cs3_hit_alu ? 2'd0 : cs3_hit_alu2 ? 2'd0 : cs3_hit_alu3 ? 2'd0 : cs3_hit_fp ? 2'd0
+                           : cs3_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head3_idx];
+   wire [55:0] cs_mpa_h3   = cs3_hit_sq ? sq_kc_addr : cs3_hit_ld ? lq_l_pa : cs3_hit_alu ? 56'd0 : cs3_hit_alu2 ? 56'd0 : cs3_hit_alu3 ? 56'd0 : cs3_hit_fp ? 56'd0
+                           : cs3_hit_m ? lsu_cos_pa : cs_mpa[rob_head3_idx];
 `else
    assign retire_pc   = {PCW{1'b0}};
    assign retire_insn = 32'd0;
@@ -2888,6 +2919,7 @@ module ooo2_core
    // carries rd/rd_v, so this needs no side array.
    wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
    wire [1:0] ck_rk2 = ~rob_c2_rd_v ? 2'd0 : rob_c2_rd[5] ? 2'd2 : 2'd1;
+   wire [1:0] ck_rk3 = ~rob_c3_rd_v ? 2'd0 : rob_c3_rd[5] ? 2'd2 : 2'd1;
    reg        e_v, e_trap;
    reg [63:0] e_pc, e_val, e_cause, e_tval;
    reg [31:0] e_insn;
@@ -2902,6 +2934,14 @@ module ooo2_core
    reg [4:0]  e2_ri;
    reg [55:0] e2_mpa;
    initial    e2_v = 1'b0;
+   // the third retire of the cycle (Stage 3, IW=3): its own record
+   reg        e3_v;
+   reg [63:0] e3_pc, e3_val;
+   reg [31:0] e3_insn;
+   reg [1:0]  e3_rk, e3_mkind;
+   reg [4:0]  e3_ri;
+   reg [55:0] e3_mpa;
+   initial    e3_v = 1'b0;
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
@@ -2934,6 +2974,13 @@ module ooo2_core
             e2_rk <= ck_rk2;  e2_ri <= rob_c2_rd[4:0];  e2_val <= cs_val_h2;
             e2_mkind <= cs_mkind_h2;  e2_mpa <= cs_mpa_h2;
          end
+         e3_v <= 1'b0;
+         if (retire3 && !(m_valid && m_done && cot_fire)) begin
+            e3_v <= 1'b1;
+            e3_pc <= cs_pc[rob_head3_idx];  e3_insn <= cs_insn[rob_head3_idx];
+            e3_rk <= ck_rk3;  e3_ri <= rob_c3_rd[4:0];  e3_val <= cs_val_h3;
+            e3_mkind <= cs_mkind_h3;  e3_mpa <= cs_mpa_h3;
+         end
       end
       // emit one cycle later, so this instruction's own CSR writes have landed
       if (e_v)
@@ -2948,6 +2995,12 @@ module ooo2_core
                       {6'd0, e_prv}, 8'd0, e2_val, 64'd0, 64'd0,
                       64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
                       {6'd0, e2_mkind}, {8'd0, e2_mpa});
+      if (e3_v)
+         probe_retire(e3_pc, e3_insn, {6'd0, e3_rk},
+                      (e3_rk == 2'd0) ? 8'd0 : {3'd0, e3_ri},
+                      {6'd0, e_prv}, 8'd0, e3_val, 64'd0, 64'd0,
+                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
+                      {6'd0, e3_mkind}, {8'd0, e3_mpa});
    end
 `endif
 
