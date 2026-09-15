@@ -25,10 +25,14 @@
 `ifndef OOO2_HW
  `define OOO2_HW 8                 // fetch window halfwords: 16 bytes, the shipping build since 2026-09-05 (4 before)
 `endif
+`ifndef OOO2_IW
+ `define OOO2_IW 2                 // pipeline width (instructions/cycle); 2 = shipping. Stage 3 width knob.
+`endif
 module ooo2_core
   #(parameter PCW  = 64,
     parameter SEQW = 8,
     parameter HW   = `OOO2_HW,
+    parameter IW   = `OOO2_IW,
     parameter AW   = 64,
     parameter PDW   = 18,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
     parameter [PCW-1:0] RESET_PC = 0,
@@ -289,7 +293,7 @@ module ooo2_core
    wire [3:0] d2_fault_cause;
    wire [PCW-1:0] d2_fault_tval;
    wire rn_valid_b;
-   ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .PDW(PDW),
+   ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
       // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly

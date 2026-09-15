@@ -39,8 +39,11 @@
 `ifndef OOO2_HW
  `define OOO2_HW 8                 // fetch window halfwords (must match ooo2_core.v)
 `endif
+`ifndef OOO2_IW
+ `define OOO2_IW 2                 // pipeline width (must match ooo2_core.v)
+`endif
 module rv_soc_top #(
-   parameter HW=`OOO2_HW, PCW=64, SEQW=8,   // fetch window halfwords (must match ooo2_core.v)
+   parameter HW=`OOO2_HW, IW=`OOO2_IW, PCW=64, SEQW=8,   // fetch window halfwords / pipeline width
    parameter [63:0] BASE     = 64'h8000_0000,   // DDR
    parameter        RAM_LG2  = 21,              // 2 MiB DDR
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
@@ -130,7 +133,7 @@ module rv_soc_top #(
    wire                ptw_rvalid, dptw_rvalid;
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
-   ooo2_core #(.HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2)) core
+   ooo2_core #(.HW(HW), .IW(IW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(imem_lvl_srv), .imem_xlvl(immu_xlvl), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),

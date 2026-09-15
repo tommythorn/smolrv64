@@ -18,6 +18,7 @@ module ooo2_frontend
   #(parameter PCW   = 64,
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
+    parameter IW    = 2,             // pipeline width (instructions/cycle); threaded from OOO2_IW (Stage 3)
     parameter PDW   = 18,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
@@ -153,7 +154,9 @@ module ooo2_frontend
    // followed by anything and slot 0 is never a CTI when slot 1 is valid: the bundle's
    // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
    // falls through.
-   localparam FW = 2;
+   localparam FW = IW;              // Stage 3: the width knob. Until increments 2-4 make decode/rename/
+   // queue/ROB width-generic, only IW==2 is supported -- the guard below fires otherwise.
+   initial if (FW != 2) $fatal(1, "ooo2_frontend: IW=%0d unsupported yet (Stage 3 increments 2-4 pending)", FW);
    wire               dq_valid, f_brt, bp_v;
    wire [FW-1:0]      dq_sv;                      // per-slot valid
    wire [FW*32-1:0]   dq_inst;
