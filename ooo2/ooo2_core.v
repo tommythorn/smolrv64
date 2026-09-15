@@ -2223,7 +2223,7 @@ module ooo2_core
    initial begin hpm_ev_q = 31'd0; hpm_ret_q = 6'd0; end
    always @(posedge clk) begin
       hpm_ev_q  <= reset ? 31'd0 : hpm_ev;
-      hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2};
+      hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2} + {5'd0, retire3};
    end
 
    csr_file u_csr
@@ -2252,7 +2252,9 @@ module ooo2_core
       // input -- with m_done here the LSU's whole done sat inside csr_redir_v -> redirect.
       .xtrap_v(xtrap_v & m_done_red), .xtrap_intr(1'b0), .xtrap_cause(xtrap_cause),
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({5'd0, retire} + {5'd0, retire2}),
+      // retire3 (3rd commit port, IW>=3) must be summed too or minstret undercounts at
+      // 3-wide; retire3 is hard 0 at IW<3, so this stays bit-identical at the shipping width.
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({5'd0, retire} + {5'd0, retire2} + {5'd0, retire3}),
       .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The SoC puts no ILA on the CSR file, so these
