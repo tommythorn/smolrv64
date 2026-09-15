@@ -26,6 +26,7 @@ module ooo2_rob
   #(parameter DEPTH = 16,
     parameter IDXB  = 4,              // $clog2(DEPTH)
     parameter PBITS = 9,
+    parameter IW    = 2,              // pipeline width -> NBANKS = next_pow2(IW)
     parameter NW    = 3)              // simultaneous completion ports
    (input  wire             clk,
     input  wire             reset,
@@ -110,19 +111,22 @@ module ooo2_rob
    localparam EW = 1 + 6 + PBITS;                  // {noret, rd, prd}
    localparam [IDXB:0] DEPTH_S = DEPTH[IDXB:0];   // sized, so the occupancy check cannot truncate
 
-   // TWO PARITY BANKS for the entries since the second allocation (item 10b): tail and tail+1
-   // differ in parity, so each bank takes one write per cycle -- expressed as ONE {we, addr,
-   // data} per bank; as two statements synthesis saw two write ports and demoted the array
-   // to flops (gate V2's RAM-inference check, 2026-09-05). Entry i is bank i[0], index i>>1.
-   reg [EW-1:0]    ent0 [0:DEPTH/2-1];
-   reg [EW-1:0]    ent1 [0:DEPTH/2-1];
+   // N-BANK ENTRY STORE (Stage 3 inc 2, generalising the old two parity banks): NBANKS =
+   // next_pow2(IW), so the <= IW consecutive allocations always land in DISTINCT banks
+   // (bank = pos[LB-1:0], index = pos[IDXB-1:LB]) -- ONE muxed {we,addr,data} per bank (rule:
+   // one write statement per LUTRAM bank, else Vivado demotes it to flops -- gate V2). At IW=2
+   // this is NBANKS=2 == the old ent0/ent1 parity, bit-for-bit.
+   localparam integer NBANKS = 1 << $clog2(IW);   // >= 2 for IW >= 2
+   localparam integer LB     = $clog2(NBANKS);
+   localparam integer BD     = DEPTH / NBANKS;
+   localparam integer BAW    = IDXB - LB;
+   wire [EW-1:0] bank_brd [0:NBANKS-1];            // each bank's entry at its selected read index
    reg [DEPTH-1:0] v, done;                     // bulk-cleared on flush, so flops by necessity
    reg [IDXB:0]    head, tail;                  // one extra MSB: full and empty differ by it
    reg [IDXB:0]    irr;                         // head <= irr <= tail, same width
    integer         ri, rj;
    initial begin
       v = {DEPTH{1'b0}}; done = {DEPTH{1'b0}}; head = 0; tail = 0; irr = 0;
-      for (ri = 0; ri < DEPTH/2; ri = ri + 1) begin ent0[ri] = {EW{1'b0}}; ent1[ri] = {EW{1'b0}}; end
    end
 
    wire [IDXB-1:0] hidx = head[IDXB-1:0];
@@ -136,6 +140,27 @@ module ooo2_rob
    assign d_idx   = tidx;
    wire [IDXB-1:0] tidx2 = tidx + 1'b1;
    assign d_idx2  = tidx2;
+   wire [IDXB-1:0] h2idx = hidx + 1'b1;
+
+   // ---- N-bank entry storage: one muxed write per bank, one muxed read per head ----
+   genvar gb;
+   generate for (gb = 0; gb < NBANKS; gb = gb + 1) begin: bank
+      reg [EW-1:0] mem [0:BD-1];
+      integer bi; initial for (bi = 0; bi < BD; bi = bi + 1) mem[bi] = {EW{1'b0}};
+      // write: whichever of the (<=IW) allocations targets this bank -- the positions are
+      // distinct mod NBANKS, so at most one does, hence a single write statement.
+      wire wsel0 = do_alloc  & (tidx [LB-1:0] == gb);
+      wire wsel1 = do_alloc2 & (tidx2[LB-1:0] == gb);
+      always @(posedge clk)
+         if (wsel0 | wsel1)
+            mem[wsel0 ? tidx[IDXB-1:LB] : tidx2[IDXB-1:LB]]
+               <= wsel0 ? {d_noret, d_rd, d_prd} : {d_noret2, d_rd2, d_prd2};
+      // read: this bank's entry at whichever head position maps here (head or head+1)
+      wire rsel_h = (hidx[LB-1:0] == gb);
+      assign bank_brd[gb] = mem[rsel_h ? hidx[IDXB-1:LB] : h2idx[IDXB-1:LB]];
+   end endgenerate
+   wire [EW-1:0] he  = bank_brd[hidx [LB-1:0]];
+   wire [EW-1:0] he2 = bank_brd[h2idx[LB-1:0]];
 
    // Write-forward on the head's done bit. An op that completes IN the cycle its entry is at
    // the head must commit that same cycle, or every completion costs an extra cycle -- and
@@ -164,14 +189,11 @@ module ooo2_rob
    // redirect that follows flushes it, which returns its allocation through the free list's
    // own pointer rollback. So a trapping instruction is simply never committed; there is no
    // separate "retire without freeing" path to get wrong.
-   wire [EW-1:0] he = hidx[0] ? ent1[hidx[IDXB-1:1]] : ent0[hidx[IDXB-1:1]];
    assign c_valid = head_done & ~c_kill;
    assign c_prd   = he[PBITS-1:0];
    assign c_rd    = he[PBITS +: 6];
    assign c_noret = he[PBITS+6];
       assign c_rd_v  = |c_prd;
-   wire [IDXB-1:0] h2idx = hidx + 1'b1;
-   wire [EW-1:0]   he2   = h2idx[0] ? ent1[h2idx[IDXB-1:1]] : ent0[h2idx[IDXB-1:1]];
    wire            head2_done = v[h2idx] & (done[h2idx] | w_hits(h2idx));
       // ...and never in a flush cycle: a mispredicted branch COMMITS and redirects in the same
    // cycle, and the entry behind it is the wrong path (rv64ui-v-add retired the fall-through
@@ -192,19 +214,11 @@ module ooo2_rob
    wire [IDXB:0] irr_n    = (do_commit2 && ((irr_step == head) || (irr_step == head + 1'b1))) ? head + 2'd2 : irr_step;
    always @(posedge clk) if (!reset && d_valid2 && !d_valid)
       $fatal(1, "ooo2_rob: second allocation without a first");
-   wire            ew0 = (do_alloc & ~tidx[0]) | (do_alloc2 & ~tidx2[0]);
-   wire            ew1 = (do_alloc &  tidx[0]) | (do_alloc2 &  tidx2[0]);
-   wire [IDXB-2:0] ea0 = (do_alloc & ~tidx[0]) ? tidx[IDXB-1:1] : tidx2[IDXB-1:1];
-   wire [IDXB-2:0] ea1 = (do_alloc &  tidx[0]) ? tidx[IDXB-1:1] : tidx2[IDXB-1:1];
-   wire [EW-1:0]   ed0 = (do_alloc & ~tidx[0]) ? {d_noret, d_rd, d_prd} : {d_noret2, d_rd2, d_prd2};
-   wire [EW-1:0]   ed1 = (do_alloc &  tidx[0]) ? {d_noret, d_rd, d_prd} : {d_noret2, d_rd2, d_prd2};
 
    always @(posedge clk) begin
       if (reset) begin
          v <= {DEPTH{1'b0}}; done <= {DEPTH{1'b0}}; head <= 0; tail <= 0;
       end else begin
-         if (ew0) ent0[ea0] <= ed0;
-         if (ew1) ent1[ea1] <= ed1;
          if (do_alloc) begin
             v[tidx]    <= 1'b1;
             done[tidx] <= 1'b0;

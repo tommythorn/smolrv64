@@ -249,11 +249,14 @@ module ooo2_frontend
    localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
    wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
    wire           pb_load  = pb_ready & (dq_valid | dq_fault);   // the register takes a bundle or the fault op
-   // TWO ENTRIES PER CYCLE INTO A LUTRAM: banked on entry parity, so each bank takes one write
-   // per cycle (entry q_wp goes to bank q_wp[0], entry q_wp+1 to the other) and the head is a
-   // 2:1 mux on q_rp[0]. `q_room` asks for two free entries, so a bundle never has to split.
-   reg  [QW-1:0]  q_dat0 [0:QDEPTH/2-1];
-   reg  [QW-1:0]  q_dat1 [0:QDEPTH/2-1];
+   // UP TO IW ENTRIES PER CYCLE INTO A LUTRAM (Stage 3 inc 2, generalising the old two parity
+   // banks): QNB = next_pow2(FW) consecutive-write banks, bank = pos[QLB-1:0], index = pos>>QLB,
+   // ONE muxed write per bank (rule: one write statement per LUTRAM bank). `q_room` asks for two
+   // free entries so a bundle never splits. At FW=2 this is QNB=2 == the old q_dat0/q_dat1.
+   localparam integer QNB = 1 << $clog2(FW);
+   localparam integer QLB = $clog2(QNB);
+   localparam integer QBD = QDEPTH / QNB;
+   wire [QW-1:0] q_bank_rd [0:QNB-1];
    reg  [QAW-1:0] q_rp, q_wp;
    reg  [QAW:0]   q_cnt;
    wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - 2);
@@ -282,11 +285,23 @@ module ooo2_frontend
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
    wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
-   wire [QW-1:0]  q_head  = q_rp[0] ? q_dat1[q_rp[QAW-1:1]] : q_dat0[q_rp[QAW-1:1]];
-   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
-   // the second head, from the other bank at the next index (no mux beyond the head's own)
    wire [QAW-1:0] q_rp1   = q_rp + 1'b1;
-   wire [QW-1:0]  q_head1 = q_rp1[0] ? q_dat1[q_rp1[QAW-1:1]] : q_dat0[q_rp1[QAW-1:1]];
+   // ---- N-bank queue storage: one muxed write per bank, one muxed read per head ----
+   genvar qgb;
+   generate for (qgb = 0; qgb < QNB; qgb = qgb + 1) begin: qbank
+      reg [QW-1:0] mem [0:QBD-1];
+      integer qbi; initial for (qbi = 0; qbi < QBD; qbi = qbi + 1) mem[qbi] = {QW{1'b0}};
+      wire wsel0 = q_push         & (q_wp [QLB-1:0] == qgb);
+      wire wsel1 = q_push & q_two & (q_wp1[QLB-1:0] == qgb);
+      always @(posedge clk)
+         if (wsel0 | wsel1)
+            mem[wsel0 ? q_wp[QAW-1:QLB] : q_wp1[QAW-1:QLB]] <= wsel0 ? pb_in0 : pb_in1;
+      wire rsel0 = (q_rp[QLB-1:0] == qgb);
+      assign q_bank_rd[qgb] = mem[rsel0 ? q_rp[QAW-1:QLB] : q_rp1[QAW-1:QLB]];
+   end endgenerate
+   wire [QW-1:0]  q_head  = q_bank_rd[q_rp [QLB-1:0]];
+   wire [QW-1:0]  q_head1 = q_bank_rd[q_rp1[QLB-1:0]];
+   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
    wire [PDW-1:0] q1_pdet;  wire [PCW-1:0] f1_pc;  wire [31:0] f1_inst;
    wire [SEQW-1:0] f1_seq;  wire [1:0] f1_pk;  wire [PCW-1:0] f1_tgt;  wire fault1_op;
    wire [3:0]     q1_cause; wire [PCW-1:0] q1_tval;
@@ -297,16 +312,8 @@ module ooo2_frontend
       if (reset | redirect) begin
          q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin
-         if (q_push) begin
-            if (q_wp[0]) begin
-               q_dat1[q_wp[QAW-1:1]]  <= pb_in0;
-               if (q_two) q_dat0[q_wp1[QAW-1:1]] <= pb_in1;
-            end else begin
-               q_dat0[q_wp[QAW-1:1]]  <= pb_in0;
-               if (q_two) q_dat1[q_wp1[QAW-1:1]] <= pb_in1;
-            end
+         if (q_push)
             q_wp <= q_wp + {{(QAW-1){1'b0}}, q_two} + 1'b1;
-         end
          q_rp  <= q_rp + {{(QAW-2){1'b0}}, q_pop};
          q_cnt <= q_cnt + {{(QAW-1){1'b0}}, q_two} + {{QAW{1'b0}}, q_push} - {{(QAW-1){1'b0}}, q_pop};
       end

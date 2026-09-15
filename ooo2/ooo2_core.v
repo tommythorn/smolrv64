@@ -1378,7 +1378,7 @@ module ooo2_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .NW(5)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(5)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
