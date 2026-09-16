@@ -34,7 +34,7 @@ module ooo2_core
     parameter HW   = `OOO2_HW,
     parameter IW   = `OOO2_IW,
     parameter AW   = 64,
-    parameter PDW   = 21,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
+    parameter PDW   = 19,          // ooo2_predictor predict-detail width (BIMW+YW+BOW): YAGS 8192->2048
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
     parameter        LRAM_LG2 = 18)

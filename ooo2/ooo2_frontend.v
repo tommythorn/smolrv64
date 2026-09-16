@@ -19,7 +19,8 @@ module ooo2_frontend
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter IW    = 2,             // pipeline width (instructions/cycle); threaded from OOO2_IW (Stage 3)
-    parameter PDW   = 21,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
+    parameter PDW   = 19,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW); YW
+                                     // shrank 16->14 when the YAGS corrector went 8192->2048
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures

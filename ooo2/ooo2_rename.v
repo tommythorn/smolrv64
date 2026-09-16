@@ -229,7 +229,7 @@ module ooo2_rename
       wire w2 = fre3_ie & (t3_ie[FLLB-1:0] == gS);   // 3rd free (IW>=3; dead otherwise)
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_ie[PW_IE-2:FLLB] : w1 ? t2_ie[PW_IE-2:FLLB] : t3_ie[PW_IE-2:FLLB]]
-                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
       assign flrd_ie[gS] = mem[(h_ie[FLLB-1:0] == gS) ? h_ie[PW_IE-2:FLLB]
                              : (hb_ie[FLLB-1:0] == gS) ? hb_ie[PW_IE-2:FLLB] : hcc_ie[PW_IE-2:FLLB]];
    end endgenerate
@@ -248,7 +248,7 @@ module ooo2_rename
       wire w2 = fre3_ld & (t3_ld[FLLB-1:0] == gS);
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_ld[PW_LD-2:FLLB] : w1 ? t2_ld[PW_LD-2:FLLB] : t3_ld[PW_LD-2:FLLB]]
-                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
       assign flrd_ld[gS] = mem[(h_ld[FLLB-1:0] == gS) ? h_ld[PW_LD-2:FLLB]
                              : (hb_ld[FLLB-1:0] == gS) ? hb_ld[PW_LD-2:FLLB] : hcc_ld[PW_LD-2:FLLB]];
    end endgenerate
@@ -267,7 +267,7 @@ module ooo2_rename
       wire w2 = fre3_fe & (t3_fe[FLLB-1:0] == gS);
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_fe[PW_FE-2:FLLB] : w1 ? t2_fe[PW_FE-2:FLLB] : t3_fe[PW_FE-2:FLLB]]
-                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
       assign flrd_fe[gS] = mem[(h_fe[FLLB-1:0] == gS) ? h_fe[PW_FE-2:FLLB]
                              : (hb_fe[FLLB-1:0] == gS) ? hb_fe[PW_FE-2:FLLB] : hcc_fe[PW_FE-2:FLLB]];
    end endgenerate
@@ -286,7 +286,7 @@ module ooo2_rename
       wire w2 = fre3_i2 & (t3_i2[FLLB-1:0] == gS);
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_i2[PW_I2-2:FLLB] : w1 ? t2_i2[PW_I2-2:FLLB] : t3_i2[PW_I2-2:FLLB]]
-                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
       assign flrd_i2[gS] = mem[(h_i2[FLLB-1:0] == gS) ? h_i2[PW_I2-2:FLLB]
                              : (hb_i2[FLLB-1:0] == gS) ? hb_i2[PW_I2-2:FLLB] : hcc_i2[PW_I2-2:FLLB]];
    end endgenerate
@@ -305,7 +305,7 @@ module ooo2_rename
       wire w2 = fre3_i3 & (t3_i3[FLLB-1:0] == gS);
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_i3[PW_I3-2:FLLB] : w1 ? t2_i3[PW_I3-2:FLLB] : t3_i3[PW_I3-2:FLLB]]
-                              <= w0 ? c_pold[IDXB-1:0] : w1 ? c2_pold[IDXB-1:0] : c3_pold[IDXB-1:0];
+                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
       assign flrd_i3[gS] = mem[(h_i3[FLLB-1:0] == gS) ? h_i3[PW_I3-2:FLLB]
                              : (hb_i3[FLLB-1:0] == gS) ? hb_i3[PW_I3-2:FLLB] : hcc_i3[PW_I3-2:FLLB]];
    end endgenerate
@@ -343,13 +343,13 @@ module ooo2_rename
    wire cmt2_ie = c2_valid & c2_rd_v & (c2_shard == SH_IE);
    wire cmt2_ld = c2_valid & c2_rd_v & (c2_shard == SH_LD);
    wire cmt2_fe = c2_valid & c2_rd_v & (c2_shard == SH_FE);
-   wire fre2_ie = c2_valid & c2_rd_v & (pold2_sh == SH_IE);
-   wire fre2_ld = c2_valid & c2_rd_v & (pold2_sh == SH_LD);
-   wire fre2_fe = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
+   wire fre2_ie_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE);
+   wire fre2_ld_c = c2_valid & c2_rd_v & (pold2_sh == SH_LD);
+   wire fre2_fe_c = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
    wire cmt2_i2 = c2_valid & c2_rd_v & (c2_shard == SH_IE2);
-   wire fre2_i2 = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
+   wire fre2_i2_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
    wire cmt2_i3 = c2_valid & c2_rd_v & (c2_shard == SH_IE3);
-   wire fre2_i3 = c2_valid & c2_rd_v & (pold2_sh == SH_IE3);
+   wire fre2_i3_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE3);
    wire [2:0] c3_shard  = c3_prd[PBITS-1:IDXB];
    wire [2:0] pold3_sh  = c3_pold[PBITS-1:IDXB];
    wire cmt3_ie = c3_valid & c3_rd_v & (c3_shard == SH_IE);
@@ -357,11 +357,11 @@ module ooo2_rename
    wire cmt3_fe = c3_valid & c3_rd_v & (c3_shard == SH_FE);
    wire cmt3_i2 = c3_valid & c3_rd_v & (c3_shard == SH_IE2);
    wire cmt3_i3 = c3_valid & c3_rd_v & (c3_shard == SH_IE3);
-   wire fre3_ie = c3_valid & c3_rd_v & (pold3_sh == SH_IE);
-   wire fre3_ld = c3_valid & c3_rd_v & (pold3_sh == SH_LD);
-   wire fre3_fe = c3_valid & c3_rd_v & (pold3_sh == SH_FE);
-   wire fre3_i2 = c3_valid & c3_rd_v & (pold3_sh == SH_IE2);
-   wire fre3_i3 = c3_valid & c3_rd_v & (pold3_sh == SH_IE3);
+   wire fre3_ie_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE);
+   wire fre3_ld_c = c3_valid & c3_rd_v & (pold3_sh == SH_LD);
+   wire fre3_fe_c = c3_valid & c3_rd_v & (pold3_sh == SH_FE);
+   wire fre3_i2_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE2);
+   wire fre3_i3_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE3);
    wire [2:0] c_shard = c_prd[PBITS-1:IDXB];
    wire [2:0] pold_sh = c_pold[PBITS-1:IDXB];
    wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
@@ -369,11 +369,44 @@ module ooo2_rename
    wire cmt_fe = c_valid & c_rd_v & (c_shard == SH_FE);
    wire cmt_i2 = c_valid & c_rd_v & (c_shard == SH_IE2);
    wire cmt_i3 = c_valid & c_rd_v & (c_shard == SH_IE3);
-   wire fre_ie = c_valid & c_rd_v & (pold_sh == SH_IE);   // free push: the register's shard
-   wire fre_ld = c_valid & c_rd_v & (pold_sh == SH_LD);
-   wire fre_fe = c_valid & c_rd_v & (pold_sh == SH_FE);
-   wire fre_i2 = c_valid & c_rd_v & (pold_sh == SH_IE2);
-   wire fre_i3 = c_valid & c_rd_v & (pold_sh == SH_IE3);
+   wire fre_ie_c = c_valid & c_rd_v & (pold_sh == SH_IE);   // free push: the register's shard
+   wire fre_ld_c = c_valid & c_rd_v & (pold_sh == SH_LD);
+   wire fre_fe_c = c_valid & c_rd_v & (pold_sh == SH_FE);
+   wire fre_i2_c = c_valid & c_rd_v & (pold_sh == SH_IE2);
+   wire fre_i3_c = c_valid & c_rd_v & (pold_sh == SH_IE3);
+
+   // ---- FLOP THE REGISTER RELEASE (2026-09-15) --------------------------------------
+   // The freelist FREE (write + tail advance) is registered one cycle off the retire cone.
+   // c_valid rides m_addr -> dTLB -> lsu_done -> retire, and fanning it to all five free
+   // lists' write ports and tails combinationally was ~1400 of the IW=3 near-critical
+   // endpoints (m_addr -> u_rename/fl_*.mem_reg).  The physreg is released one cycle later,
+   // which is free here: the free lists are never the allocation bottleneck (shard_low
+   // throttles the HEAD, and avail = tail - head simply counts a committed free one cycle
+   // later, which is strictly MORE conservative).  ROLLBACK-SAFE WITH NO EXTRA HANDLING:
+   // the tail advances ONLY on committed frees (fre_* come from c_valid) and flush never
+   // touches the tail -- it restores the HEAD to hc_* -- so a pending free is always a
+   // committed one that must complete, exactly what a plain register does.  c_pold is
+   // captured HERE, at commit, while RMAP[c_rd] still holds the old mapping (a cycle later
+   // RMAP[c_rd] is c_prd), so the registered copy frees the right register.
+   reg fre_ie, fre_ld, fre_fe, fre_i2, fre_i3;
+   reg fre2_ie, fre2_ld, fre2_fe, fre2_i2, fre2_i3;
+   reg fre3_ie, fre3_ld, fre3_fe, fre3_i2, fre3_i3;
+   reg [PBITS-1:0] c_pold_q, c2_pold_q, c3_pold_q;
+   initial begin
+      fre_ie=1'b0; fre_ld=1'b0; fre_fe=1'b0; fre_i2=1'b0; fre_i3=1'b0;
+      fre2_ie=1'b0; fre2_ld=1'b0; fre2_fe=1'b0; fre2_i2=1'b0; fre2_i3=1'b0;
+      fre3_ie=1'b0; fre3_ld=1'b0; fre3_fe=1'b0; fre3_i2=1'b0; fre3_i3=1'b0;
+      c_pold_q={PBITS{1'b0}}; c2_pold_q={PBITS{1'b0}}; c3_pold_q={PBITS{1'b0}};
+   end
+   always @(posedge clk) begin
+      fre_ie  <= ~reset & fre_ie_c;   fre_ld  <= ~reset & fre_ld_c;   fre_fe  <= ~reset & fre_fe_c;
+      fre_i2  <= ~reset & fre_i2_c;   fre_i3  <= ~reset & fre_i3_c;
+      fre2_ie <= ~reset & fre2_ie_c;  fre2_ld <= ~reset & fre2_ld_c;  fre2_fe <= ~reset & fre2_fe_c;
+      fre2_i2 <= ~reset & fre2_i2_c;  fre2_i3 <= ~reset & fre2_i3_c;
+      fre3_ie <= ~reset & fre3_ie_c;  fre3_ld <= ~reset & fre3_ld_c;  fre3_fe <= ~reset & fre3_fe_c;
+      fre3_i2 <= ~reset & fre3_i2_c;  fre3_i3 <= ~reset & fre3_i3_c;
+      c_pold_q <= c_pold;  c2_pold_q <= c2_pold;  c3_pold_q <= c3_pold;
+   end
    wire [PW_IE-1:0] hc_ie_n = hc_ie + {{(PW_IE-1){1'b0}}, cmt_ie} + {{(PW_IE-1){1'b0}}, cmt2_ie} + {{(PW_IE-1){1'b0}}, cmt3_ie};
    wire [PW_LD-1:0] hc_ld_n = hc_ld + {{(PW_LD-1){1'b0}}, cmt_ld} + {{(PW_LD-1){1'b0}}, cmt2_ld} + {{(PW_LD-1){1'b0}}, cmt3_ld};
    wire [PW_FE-1:0] hc_fe_n = hc_fe + {{(PW_FE-1){1'b0}}, cmt_fe} + {{(PW_FE-1){1'b0}}, cmt2_fe} + {{(PW_FE-1){1'b0}}, cmt3_fe};

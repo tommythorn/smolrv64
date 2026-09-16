@@ -64,12 +64,15 @@ module ooo2_predictor
     // The five extra tiles were paid for by m_addr -> u_iq_i/i_ps* and i_ps2 -> u_prf,
     // which were already sitting at exactly 0.000 -- congestion is charged to whatever is
     // marginal, never to the block that grew. Raise this only with slack in hand.
-    parameter BTBB  = 13,            // log2 BTB entries (8192; entry-shrink pending for FMAX)
+    parameter BTBB  = 11,            // log2 BTB entries (2048; shrunk from 8192 for FMAX -- the
+                                     // BTB-BRAM write-address was the #1 IW=3 critical path)
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
-    parameter GHL   = 12,            // global history length (dormant until Phase 1)
+    parameter GHL   = 11,            // global history length (dormant until Phase 1). <= YBITS:
+                                     // yidx folds the whole history, so GHL tracks the 2048 shrink.
     parameter RASB  = 3,             // log2 RAS entries
-    parameter YBITS = 13,            // 8192-entry corrector; in the header so PDW can be a port width
+    parameter YBITS = 11,            // 2048-entry corrector (shrunk from 8192 for FMAX); in the
+                                     // header so PDW can be a port width
     parameter YTAGW = 8,
     // Carried predict details. INDEPENDENT OF BTBB, TAGW and YTAGW -- see `training`:
     // an index or a PC-only tag is recomputed at resolve from res_pc instead of riding
