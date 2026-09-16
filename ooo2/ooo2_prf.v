@@ -105,7 +105,13 @@ module ooo2_prf
     input  wire [PBITS-1:0] ra8,      // the third ALU port (Stage 3)
     input  wire [PBITS-1:0] ra9,
     output wire [63:0]      rd8,
-    output wire [63:0]      rd9);
+    output wire [63:0]      rd9,
+    input  wire [PBITS-1:0] ra10,     // the independent F/CTF port -- its own three reads
+    input  wire [PBITS-1:0] ra11,     // (rs1/rs2 for a branch or FMA, rs3 for FMA) so the F
+    input  wire [PBITS-1:0] ra12,     // stage no longer borrows M's read ports (CTF-on-FP)
+    output wire [63:0]      rd10,
+    output wire [63:0]      rd11,
+    output wire [63:0]      rd12);
 
       localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
 
@@ -132,6 +138,8 @@ module ooo2_prf
    wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0],     ix6 = ra6[IDXB-1:0],     ix7 = ra7[IDXB-1:0];
    wire [2:0]      sh8 = ra8[PBITS-1:IDXB], sh9 = ra9[PBITS-1:IDXB];
    wire [IDXB-1:0] ix8 = ra8[IDXB-1:0],     ix9 = ra9[IDXB-1:0];
+   wire [2:0]      sh10 = ra10[PBITS-1:IDXB], sh11 = ra11[PBITS-1:IDXB], sh12 = ra12[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix10 = ra10[IDXB-1:0],     ix11 = ra11[IDXB-1:0],     ix12 = ra12[IDXB-1:0];
 
    // WRITE-THROUGH, and why it is OFF by default.
    //
@@ -204,6 +212,15 @@ module ooo2_prf
    assign rd9 = (ra9 == {PBITS{1'b0}}) ? 64'd0
               : rd_shard(sh9, ix9, mem_ie[ix9[AB_IE-1:0]], mem_ld[ix9[AB_LD-1:0]],
                          mem_fe[ix9[AB_FE-1:0]], mem_ie2[ix9[AB_IE2-1:0]], mem_ie3[ix9[AB_IE3-1:0]]);
+   assign rd10 = (ra10 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh10, ix10, mem_ie[ix10[AB_IE-1:0]], mem_ld[ix10[AB_LD-1:0]],
+                         mem_fe[ix10[AB_FE-1:0]], mem_ie2[ix10[AB_IE2-1:0]], mem_ie3[ix10[AB_IE3-1:0]]);
+   assign rd11 = (ra11 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh11, ix11, mem_ie[ix11[AB_IE-1:0]], mem_ld[ix11[AB_LD-1:0]],
+                         mem_fe[ix11[AB_FE-1:0]], mem_ie2[ix11[AB_IE2-1:0]], mem_ie3[ix11[AB_IE3-1:0]]);
+   assign rd12 = (ra12 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh12, ix12, mem_ie[ix12[AB_IE-1:0]], mem_ld[ix12[AB_LD-1:0]],
+                         mem_fe[ix12[AB_FE-1:0]], mem_ie2[ix12[AB_IE2-1:0]], mem_ie3[ix12[AB_IE3-1:0]]);
 
    integer j;
    initial begin

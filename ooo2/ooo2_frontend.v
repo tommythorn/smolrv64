@@ -19,7 +19,7 @@ module ooo2_frontend
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter IW    = 2,             // pipeline width (instructions/cycle); threaded from OOO2_IW (Stage 3)
-    parameter PDW   = 18,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
+    parameter PDW   = 21,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW)
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -199,7 +199,7 @@ module ooo2_frontend
    wire [FW*32-1:0]   dq_inst;
    wire [FW*PCW-1:0]  dq_pc;
    wire [FW*SEQW-1:0] dq_seq;
-   wire [PCW-1:0]     f_ftn, bp_tgt;
+   wire [PCW-1:0]     f_ftn, bp_tgt, f_pc_next;   // f_pc_next: fetch's next-PC -> predictor read-ahead
    wire [1:0]         dq_pk;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
@@ -216,7 +216,7 @@ module ooo2_frontend
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
       // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
       // predictor reads its arrays combinationally at base_pc (= imem_ipc).
-      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt),
+      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(dq_valid),
@@ -256,7 +256,7 @@ module ooo2_frontend
    wire [PDW-1:0] pd_fetch;
    ooo2_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
      (.clk(clk), .reset(reset),
-      .fire(fire), .base_pc(imem_ipc), .ft_npc(f_ftn), .cti_ok(f_brt),
+      .fire(fire), .base_pc(imem_ipc), .rd_pc(f_pc_next), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
       .rollback(redirect), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),

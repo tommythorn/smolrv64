@@ -72,6 +72,7 @@ module ooo2_lsu
     output wire            pt_ack,         // accepted this cycle -- the requester may advance
     output wire            pt_is_store,    // direction of the access IN FLIGHT
     output wire            pt_ld_done,     // pt_done for a LOAD, from the load terms alone (see acc_done)
+    output wire            pt_ld_kill,     // ...and that landing is wrong-path (squashed): do not write it back
 
     // ---- TRANSLATE-ONLY: the address pass of a buffered store or a queued load ------
     // Neither accesses memory when it executes: it translates, hands the PA to ooo2_sq or
@@ -86,6 +87,7 @@ module ooo2_lsu
     input  wire            req_early,
     output wire [55:0]     xo_pa,
     output wire            xo_unc,
+    output wire            xo_mem,         // the translated PA is DRAM/LRAM (idempotent, speculatable)
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
     output wire            xo_early,       // ...and the access started here too (req_early
                                            // honoured: the FSM was idle and the port free)
@@ -97,6 +99,8 @@ module ooo2_lsu
     input  wire            xl_sum,
     input  wire            xl_mxr,
     input  wire            xl_flush,
+    input  wire            flush,          // a backend redirect: squash a speculative LOAD in flight
+    input  wire            m_head,         // M's op is the ROB head (non-speculative) -- gates non-DRAM access
     output wire [55:0]     ptw_addr,
     output wire            ptw_read,
     input  wire [63:0]     ptw_rdata,
@@ -331,12 +335,17 @@ module ooo2_lsu
    // start is an FSM matter, so it is the one translate-only thing that still needs S_IDLE
    // and yields to the port; when it yields, the load simply goes the queue's way, and
    // ooo2_lq is told which happened through xo_early rather than re-deriving it.
-   wire xl_early = xo_ok & req_early & (st == S_IDLE) & ~pt_start;
+   // A speculative early access to NON-DRAM (device/MMIO) must not happen: the read has side
+   // effects (e.g. popping a UART RX byte on the wrong path). Only DRAM/LRAM speculate early;
+   // a non-DRAM load waits until M is the ROB head (non-speculative). See ooo2_lq for the
+   // queued path's matching gate.
+   wire xl_early = xo_ok & req_early & (pa_mem | m_head) & (st == S_IDLE) & ~pt_start;
    wire start_ok = pt_start | xl_ok_f | xl_early;
    assign xo_v     = xo_ok;
    assign xo_early = xl_early;
    assign xo_pa  = t_paddr;
    assign xo_unc = t_uncached;
+   assign xo_mem = pa_mem;                // eff_pa == t_paddr on a translate pass, so this is the fill PA's region
 
    // ------------------------------------------------------- AMO RMW datapath
    wire        a_isw   = (req_size == 2'd2);
@@ -474,6 +483,19 @@ module ooo2_lsu
    always @(posedge clk)
       if (!reset && (pt_ld_done !== (pt_done & ~pt_is_store)))
          $fatal(1, "ooo2_lsu: pt_ld_done %b != pt_done & ~store %b (st=%0d)", pt_ld_done, pt_done & ~pt_is_store, st);
+
+   // SPECULATIVE-LOAD SQUASH. With control flow off the M pipe, M now executes loads past an
+   // unresolved branch, so a wrong-path load can be walking/accessing when a redirect fires.
+   // Its landing must NOT write back (its physreg has been rolled back -- ooo2_pending's zombie
+   // check). Stores/AMOs set own_pt_st and are commit-gated, so they are never speculative here.
+   // The FSM still completes the access (own_pt clears on ld_fin); only the LANDING is killed.
+   wire ld_inflight = own_pt & ~own_pt_st;
+   reg  ld_sq;  initial ld_sq = 1'b0;
+   always @(posedge clk)
+      if (reset)                    ld_sq <= 1'b0;
+      else if (flush)               ld_sq <= 1'b1;   // a redirect: any load already in flight is wrong-path
+      else if (pt_start | xl_early) ld_sq <= 1'b0;   // a fresh access start (incl. the early path) is correct-path
+   assign pt_ld_kill = ld_inflight & (ld_sq | flush);
    assign pt_ack  = pt_start | take_next;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);

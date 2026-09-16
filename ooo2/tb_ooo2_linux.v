@@ -204,11 +204,11 @@ module tb;
          $write("pv %0d |", pv_c);
          if (dut.core.d_take)      $write(" DIS:%0d", dut.core.rob_d_idx);   else $write("        ");
          if (dut.core.iq_iss_take) $write(" ISS:%s%0d",
-              dut.core.pick_l ? "L" : dut.core.pick_f ? "F" : "I", dut.core.iq_iss_rob);
+              dut.core.pick_l ? "L" : "I", dut.core.iq_iss_rob);   // M-only port now; F issues via rf_take
                                                                              else $write("        ");
          if (dut.core.iss_alu)     $write(" ALU:%0d", dut.core.i_rob);       else $write("        ");
          if (dut.core.iss_m)       $write(" M:%0d",   dut.core.i_rob);       else $write("      ");
-         if (dut.core.iss_f)       $write(" F:%0d",   dut.core.i_rob);       else $write("      ");
+         if (dut.core.iss_f)       $write(" F:%0d",   dut.core.j_rob);       else $write("      ");
          if (dut.core.ld_land)     $write(" LD:%0d",  dut.core.lq_l_rob);    else $write("       ");
          if (dut.core.fp_land)     $write(" FP:%0d",  dut.core.ft_rob);      else $write("       ");
          if (dut.core.rob_c_valid) $write(" RET:%0d", dut.core.rob_head_idx);else $write("        ");

@@ -64,12 +64,12 @@ module ooo2_predictor
     // The five extra tiles were paid for by m_addr -> u_iq_i/i_ps* and i_ps2 -> u_prf,
     // which were already sitting at exactly 0.000 -- congestion is charged to whatever is
     // marginal, never to the block that grew. Raise this only with slack in hand.
-    parameter BTBB  = 10,            // log2 BTB entries
+    parameter BTBB  = 13,            // log2 BTB entries (8192; entry-shrink pending for FMAX)
     parameter TAGW  = 12,
     parameter TGTW  = 38,            // stored target bits [38:1] (canonical VA, sign-extended)
     parameter GHL   = 12,            // global history length (dormant until Phase 1)
     parameter RASB  = 3,             // log2 RAS entries
-    parameter YBITS = 10,            // in the header so PDW can be a port width
+    parameter YBITS = 13,            // 8192-entry corrector; in the header so PDW can be a port width
     parameter YTAGW = 8,
     // Carried predict details. INDEPENDENT OF BTBB, TAGW and YTAGW -- see `training`:
     // an index or a PC-only tag is recomputed at resolve from res_pc instead of riding
@@ -80,6 +80,7 @@ module ooo2_predictor
     // ---- fetch side (cycle T) ----
     input  wire                 fire,       // fetch handshake: bundle leaves fetch this cycle
     input  wire [PCW-1:0]       base_pc,    // presented bundle's base PC (= pc_q)
+    input  wire [PCW-1:0]       rd_pc,      // NEXT fetch PC: the synchronous BTB/YAGS read-ahead address
     input  wire [PCW-1:0]       ft_npc,     // presented bundle's fall-through (= call return address)
     input  wire                 cti_ok,     // bundle ends on a real branch/jump (aligner br_term):
                                             // ONLY such bundles have the exec-side compare, so a
@@ -139,7 +140,9 @@ module ooo2_predictor
    // do anyway. Configuration INIT zeroes the array, so a cold FPGA and a fresh simulation
    // both start with every entry untagged.
    localparam EW = TAGW + 3 + TGTW;
-   (* ram_style = "distributed" *)
+   // No forced ram_style: the read is SYNCHRONOUS now (registered btb_q, read a cycle ahead
+   // at rd_pc), so the tool infers block RAM for a table this deep -- the 128-deep LUTRAM
+   // read mux at 8192 entries was the timing wall. Let the tool choose the RAM style.
    reg [EW-1:0]   btb   [0:NBTB-1];          // {tag, type, target} -- validity IS the tag match
    integer bi;
    initial begin
@@ -167,7 +170,10 @@ module ooo2_predictor
    // on a bimodal miss, refine on a corrector hit.
    localparam NYAGS = 1 << YBITS, YEW = YTAGW + 2;
    function [YBITS-1:0]  yidx (input [PCW-1:0] a, input [GHL-1:0] h);
-      yidx  = a[YBITS:1] ^ h[YBITS-1:0] ^ {{(YBITS-2){1'b0}}, h[GHL-1:YBITS]};
+      // YBITS >= GHL now (8192-entry corrector, 12-bit history): fold the whole history
+      // into the low GHL bits of the index; the top YBITS-GHL bits are PC only. Clean
+      // gshare -- no history left over to fold down (the old form assumed YBITS < GHL).
+      yidx  = a[YBITS:1] ^ {{(YBITS-GHL){1'b0}}, h};
    endfunction
    // The index is PC ^ history, so the PC bits it consumes (a[YBITS:1]) are not recoverable
    // from the slot and MUST be in the tag: without them every branch within 2^(YBITS+1)
@@ -175,7 +181,7 @@ module ooo2_predictor
    // history is polluted by an unpredictable neighbour reads cold and foreign counters as its
    // own (the loop back edge in workloads/brbench: 66 of 300 mispredicts, 50 of them this).
    function [YTAGW-1:0] ytagf(input [PCW-1:0] a);
-      ytagf = a[YTAGW:1] ^ {{(YTAGW-2){1'b0}}, a[YBITS:YTAGW+1]}
+      ytagf = a[YTAGW:1] ^ {{(2*YTAGW-YBITS){1'b0}}, a[YBITS:YTAGW+1]}
             ^ a[YBITS+YTAGW:YBITS+1] ^ a[YBITS+2*YTAGW:YBITS+YTAGW+1] ^ {{(YTAGW-1){1'b0}}, a[63]};
    endfunction
    // NO VALID BIT, unlike the BTB above: the tag already carries it. An entry that has
@@ -186,23 +192,23 @@ module ooo2_predictor
    // counter, and the entry is right from then on. A corrector is a hint whose whole job
    // is to be repaired by training; a valid bit here only buys the first execution of
    // 0.4% of cold branches, and costs a bit of array plus a term in the yhit AND.
-   (* ram_style = "distributed" *)
-   reg [YEW-1:0]  ycorr [0:NYAGS-1];         // {tag, ctr} -- validity IS the tag match
+   reg [YEW-1:0]  ycorr [0:NYAGS-1];         // {tag, ctr}; synchronous read (ycorr_q) -> tool infers block RAM
    integer yi;
    initial begin
       for (yi = 0; yi < NYAGS; yi = yi + 1) ycorr[yi] = {YEW{1'b0}};
    end
 
-   // ---------------------------------------- combinational read at the presented base PC
-   // The array is read where the bundle is presented, not a cycle ahead of a guessed
-   // successor, so there is no ahead-PC to guess wrong and no read register to forward
-   // around: a training write that lands on one edge is visible to the very next cycle's
-   // combinational read (the mispredict refetch that retrained the entry reads the new
-   // value). Distributed (LUTRAM), because an asynchronous read cannot be block RAM --
-   // confirmed to close 166.667 MHz with margin by the Stage 1 BTB spike. (ghr is declared
-   // just below; a continuous assign may reference it.)
-   wire [EW-1:0]  btb_q    = btb[bidx(base_pc)];
-   wire [YEW-1:0] ycorr_q  = ycorr[yidx(base_pc, ghr)];
+   // ---------------------------------------- SYNCHRONOUS read-ahead at the NEXT fetch PC
+   // btb_q/ycorr_q are REGISTERED reads issued last cycle at rd_pc (fetch's next PC), so this
+   // cycle they hold the entry for base_pc -- because rd_pc a cycle ago IS this cycle's
+   // base_pc. Every tag/predict term below keys off base_pc unchanged, and pd_fetch's carried
+   // yidx(base_pc,ghr) still equals the read index (at presentation base_pc=rd_pc-ago and
+   // ghr=ghr_nx-ago). The reads live in the speculate block below, where ghr_nx (the history
+   // that will be current when rd_pc is presented) is available. This is what lets the tool
+   // put these deep tables in BLOCK RAM (a BRAM read is synchronous; LUTRAM's depth mux is not
+   // needed). YARVI's predictor is all block RAM for exactly this reason.
+   reg [EW-1:0]  btb_q;    initial btb_q   = {EW{1'b0}};
+   reg [YEW-1:0] ycorr_q;  initial ycorr_q = {YEW{1'b0}};
 
    // ------------------------------------------------- speculative state {ghr,ras}
    reg [GHL-1:0]  ghr;
@@ -267,6 +273,12 @@ module ooo2_predictor
    wire            p_yhit   = yhit    & cti_ok;
    assign pred_v   = apred_v & cti_ok;      // uncond, or predicted-taken cond
    wire            pred_dir = cbr_taken;                    // GHR shifts the committed direction
+   // The history that will be current when rd_pc is presented: the read-ahead YAGS index uses
+   // it, and it is the single source for the ghr flop below (folds the rollback + speculate
+   // arms into one next-value, so ghr and the read stay consistent).
+   wire [GHL-1:0]  ghr_nx = rollback ? ((res_rep & res_cbr) ? {ghr_c[GHL-2:0], res_taken} : ghr_c)
+                          : (fire & p_cbr) ? {ghr[GHL-2:0], pred_dir}
+                          : ghr;
 
    // ------------------------------ predict details (for training), carried inline
    // Captured at fetch (cycle T) and presented on pd_fetch at T+1, where the frontend
@@ -309,7 +321,15 @@ module ooo2_predictor
       if (reset) begin
          ghr <= {GHL{1'b0}}; ras_ptr <= {RASB{1'b0}};
          ghr_c <= {GHL{1'b0}}; rptr_c <= {RASB{1'b0}};
+         btb_q <= {EW{1'b0}}; ycorr_q <= {YEW{1'b0}};
       end else begin
+         // SYNCHRONOUS READ-AHEAD (block RAM): read BTB/YAGS at the NEXT fetch PC so the
+         // registered output is this bundle's prediction one cycle later, when rd_pc has
+         // become base_pc. ghr_nx is the history that will be current then, and also the
+         // single next-value for the ghr flop -- so the read index and ghr never disagree.
+         btb_q   <= btb[bidx(rd_pc)];
+         ycorr_q <= ycorr[yidx(rd_pc, ghr_nx)];
+         ghr     <= ghr_nx;
          // COMMIT: the committed copies advance on every resolved CTI, redirect or not.
          // They are the only rollback state this core needs.
          if (res_v) begin
@@ -317,21 +337,17 @@ module ooo2_predictor
             if (res_call) rptr_c <= rptr_c + 1'b1;
             if (res_ret)  rptr_c <= rptr_c - 1'b1;
          end
-
+         // RAS POINTER (the ghr restore/speculate is folded into ghr_nx above).
          if (rollback) begin
-            // RESTORE from the committed scalars. This cycle's commit update has not
-            // landed yet, so apply the resolving CTI's own effect here -- the same repair
-            // the checkpoint version made to the snapshot's bit 0.
-            ghr     <= (res_rep & res_cbr)  ? {ghr_c[GHL-2:0], res_taken} : ghr_c;
+            // RESTORE the pointer from the committed scalar, applying the resolving CTI's own
+            // effect (this cycle's commit has not landed yet).
             ras_ptr <= (res_rep & res_call) ? rptr_c + 1'b1
                      : (res_rep & res_ret)  ? rptr_c - 1'b1 : rptr_c;
             // The RAS ARRAY is deliberately NOT restored. With the pointer back where it
             // belongs, a wrong-path push wrote at ptr+1 -- above the live region, where it
             // is unreachable. Only a wrong-path pop-then-push can clobber a live entry, and
-            // the RAS is a hint: the cost is a mispredicted return, never a wrong answer,
-            // because M resolves the truth.
+            // the RAS is a hint: the cost is a mispredicted return, never a wrong answer.
          end else if (fire) begin            // SPECULATE: only on the fetch handshake
-            if (p_cbr)  ghr <= {ghr[GHL-2:0], pred_dir};
             if (p_call) begin ras[ras_ptr + 1'b1] <= ft_npc; ras_ptr <= ras_ptr + 1'b1; end
             if (p_ret)  ras_ptr <= ras_ptr - 1'b1;
          end

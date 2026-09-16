@@ -57,6 +57,11 @@ def inferred_rams(logpath):
 
 def _base(qualified):
     n = qualified.split("/")[-1].strip()
+    # A deep block RAM is split into a cascade of primitives named <array>_reg_0, _reg_1, ...
+    # (e.g. the 8K BTB -> btb_reg_0..13). Strip that trailing cascade index so it reduces to
+    # the array base like the single-primitive case. This only broadens what counts as a RAM,
+    # so it can never turn a genuine flop-demotion into a false pass.
+    n = re.sub(r"_\d+$", "", n)
     return n[:-4] if n.endswith("_reg") else n
 
 

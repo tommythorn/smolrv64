@@ -63,8 +63,8 @@ bank[1].mem  : ROB entries, bank 1
 qbank[0].mem : fetch queue data, bank 0 (of NBANKS=next_pow2(IW))
 qbank[1].mem : fetch queue data, bank 1
 ras     : return address stack
-btb     : branch target buffer, 1024 x 53 -- would be larger than the whole design in flops
-ycorr   : YAGS correlated table (Block RAM)
+btb     : branch target buffer, 8192 x 53 (Block RAM) -- synchronous read-ahead at rd_pc; a LUTRAM depth mux this deep is the timing wall
+ycorr   : YAGS correlated table, 8192 x 10 (Block RAM) -- synchronous read-ahead
 prd     : load queue destination tag
 rdn     : load queue
 tlb_tag : iTLB/dTLB

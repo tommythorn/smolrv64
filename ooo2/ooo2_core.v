@@ -34,7 +34,7 @@ module ooo2_core
     parameter HW   = `OOO2_HW,
     parameter IW   = `OOO2_IW,
     parameter AW   = 64,
-    parameter PDW   = 18,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
+    parameter PDW   = 21,          // ooo2_predictor predict-detail width (BIMW+YW+BOW: base offset for two-wide fetch)
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
     parameter        LRAM_LG2 = 18)
@@ -187,6 +187,11 @@ module ooo2_core
    wire                     fe_red_pulse, fr_set;
    wire [PCW-1:0]           fe_red_tgt;
    wire [SEQW-1:0]          fe_red_seq;
+   // decode-stage direct-CTI redirect (static JAL / backward-branch resteer): assigned
+   // after the dispatch steering; detection wires dcr0/1/2 are just after the frontend.
+   wire                     dec_red;
+   wire [PCW-1:0]           dec_red_tgt;
+   wire [SEQW-1:0]          dec_red_seq;
 
    // ---- FMAX: the predictor's training bundle lands one cycle later --------------
    // res_v is gated by m_done, which depends on lsu_done -- so the D$/dTLB hit path
@@ -209,9 +214,9 @@ module ooo2_core
       res_call_q  <= res_call;
       res_ret_q   <= res_ret;
       res_taken_q <= res_taken;
-      res_pdet_q  <= m_pdet;
+      res_pdet_q  <= cf_pdet;    // control flow resolves on the CTF pipe now, not M
       res_tgt_q   <= res_tgt;
-      res_pc_q    <= m_pc;
+      res_pc_q    <= cf_pc;
    end
 
    // ---- FMAX: the frontend sees the redirect one cycle late ----------------------
@@ -236,12 +241,19 @@ module ooo2_core
    reg                      fe_red_q;
    reg [PCW-1:0]            fe_red_tgt_q;
    reg [SEQW-1:0]           fe_red_seq_q;
-   initial fe_red_q = 1'b0;
+   // dec_red_q shadows the decode-redirect exactly as redirect_q shadows the backend
+   // redirect: the frontend flush + fetch resteer land one cycle late (registered fe_red_q),
+   // so the cycle AFTER dec_red the frontend still holds the stale wrong-path slots. dec_red
+   // sets no fr_v freeze (there is no backend flush pending), so without this the wrong path
+   // would dispatch in that one-cycle window. dec_red_q holds dispatch for that cycle.
+   reg                      dec_red_q;
+   initial begin fe_red_q = 1'b0; dec_red_q = 1'b0; end
    always @(posedge clk) begin
       if (reset) fe_red_q <= 1'b0;
       else       fe_red_q <= fe_red_pulse;
       fe_red_tgt_q <= fe_red_tgt;
       fe_red_seq_q <= fe_red_seq;
+      dec_red_q    <= reset ? 1'b0 : dec_red;
    end
 
    // ---- slot B, the second IR (item 10b) ----
@@ -362,6 +374,31 @@ module ooo2_core
       .d_illegal(d_illegal), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
       .cur_seq(fe_cur_seq));
+
+   // ---- decode-stage direct-CTI redirect (static) -------------------------------------
+   // Take a control transfer the predictor called fall-through AT DISPATCH, instead of
+   // eating a full exec-resolved mispredict: a JAL (unconditionally taken) or a BACKWARD
+   // conditional branch (the loop-back bet). d_mis_taken is the frontend's precomputed
+   // (taken_target != pred_npc), so it is 1 exactly when the BTB did not already steer to
+   // the taken target. d_pdet[DCR_HIT] is the BTB hit bit ({hit,ctr} = the low BIMW bits of
+   // the carried details): gate BACKWARD BRANCHES on a MISS so a TRAINED not-taken bimodal
+   // is never overridden by the static-taken bet; a JAL fires on any miss/wrong-target.
+   // The target (dec_red_tgt below) is d_pc+d_imm -- a registered decode-stage value, off
+   // the guarded fetch array cone (docs/rtl-rules.md, ooo2_predictor's timing note).
+   localparam DCR_HIT = 2;   // BIMW-1: the BTB-hit bit inside the carried predict details
+   localparam DCR_BACK = 1'b1;   // static-taken for a BACKWARD conditional branch on a BTB miss (loop back-edge bet)
+   // Suppress the decode-redirect while an interrupt pseudo-op is being presented or is in
+   // flight: fe_red would flush it out of the frontend without the irq FSM's redirect_q/fr_v
+   // ever seeing it, wedging inject_inflight forever (the rv64mi-p-illegal vectored-interrupt
+   // spin). The interrupt must make progress; a JAL that coincides falls back to the exec
+   // redirect -- rare, and cheaper than a livelock.
+   wire dcr_arm = ~irq_inject & ~inject_inflight;
+   wire dcr0 = dcr_arm & ((d_is_jump   & ~d_is_jalr  & d_mis_taken)
+             | (DCR_BACK & d_is_branch  & d_imm[63]   & d_mis_taken & ~d_pdet[DCR_HIT]));
+   wire dcr1 = dcr_arm & ((d2_is_jump  & ~d2_is_jalr & d2_mis_taken)
+             | (DCR_BACK & d2_is_branch & d2_imm[63]  & d2_mis_taken & ~d2_pdet[DCR_HIT]));
+   wire dcr2 = dcr_arm & ((d3_is_jump  & ~d3_is_jalr & d3_mis_taken)
+             | (DCR_BACK & d3_is_branch & d3_imm[63]  & d3_mis_taken & ~d3_pdet[DCR_HIT]));
 
 
    // Valid-DRAM window for the MMU's unbacked-PA access-fault check. Enforced only
@@ -498,10 +535,12 @@ module ooo2_core
    // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
    wire [2:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
                       : d_is_fp                          ? SH_FE
-                      : d_ord                            ? SH_LD   // CSR, jumps: M writes
+                      : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
+                      : d_ord                            ? SH_LD   // CSR: M writes
                       :                                    SH_IE;  // the ALU, alone
    wire [2:0] d2_shard = (d2_is_mem | d2_is_amo | d2_is_mul) ? SH_LD
                        : d2_is_fp                            ? SH_FE
+                       : d2_cls_c                            ? SH_FE   // jal/jalr link: FP/CTF pipe's slice
                        : d2_ord                              ? SH_LD
                        :                                       SH_IE2;   // the second ALU's shard
    wire [2:0] d3_shard = (d3_is_mem | d3_is_amo | d3_is_mul) ? SH_LD
@@ -563,6 +602,7 @@ module ooo2_core
       .stall(rn_stall), .shard_low(rn_shard_low));
 
    wire [63:0] prf_rs1, prf_rs2, prf_rs3;
+   wire [63:0] prf_f1, prf_f2, prf_f3;                 // the independent F/CTF port's reads
    wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
    wire [63:0] prf_a21, prf_a22;                       // the second ALU port's (10d-ii)
    wire [63:0] prf_a31, prf_a32;                       // the third ALU port's (Stage 3)
@@ -580,7 +620,8 @@ module ooo2_core
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
       .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
-      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32));
+      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32),
+      .ra10(j_ps1), .ra11(j_ps2), .ra12(j_ps3), .rd10(prf_f1), .rd11(prf_f2), .rd12(prf_f3));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
    // The step from "M is the commit point" to "the ROB head is the commit point" -- the
@@ -841,9 +882,17 @@ module ooo2_core
 
    wire d_cls_f = d_fp_valid & d_use_fpu & ~d_is_mem & ~d_is_amo
                 & ~fs_off & ~d_illegal & ~d_fault & ~d_is_irqop;
-   wire d_cls_l = d_ord & ~d_cls_f;
+   // Control flow (jal/jalr/bXX) is its OWN class now: it leaves the ordered/M pipe for the
+   // FP/CTF pipe so a branch co-issues with a load (CTF-on-FP). A fetch-faulted CTI or an
+   // irqop pseudo-op stays ordered (d_cls_l), so M keeps the single trap site; a real CTI
+   // never traps at execute (RVC targets are 2-byte aligned, jalr clears bit 0).
+   wire d_cls_c = (d_is_branch | d_is_jump | d_is_jalr) & ~d_illegal & ~d_fault & ~d_is_irqop;
+   wire d_cls_l = d_ord & ~d_cls_f & ~d_cls_c;
    wire d_cls_i = ~d_ord;
+   wire d_cls_fc = d_cls_f | d_cls_c;      // both share the FP/CTF issue queue (u_iq_f)
 
+   // Control flow falls to C_F here so d2_hold treats FP and CTF as one class: they share the
+   // FP/CTF queue's single dispatch port, so A and B cannot both go there in a cycle.
    wire [1:0] d_cls = d_cls_i ? C_I : d_cls_l ? C_L : C_F;
 
    wire [RN_PBITS-1:0] d_prd_g = d_rd_v ? rn_prd : {RN_PBITS{1'b0}};
@@ -871,9 +920,11 @@ module ooo2_core
       .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
    wire d2_cls_f = d2_fp_valid & d2_use_fpu & ~d2_is_mem & ~d2_is_amo
                  & ~fs_off & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
-   wire d2_cls_l = d2_ord & ~d2_cls_f;
+   wire d2_cls_c = (d2_is_branch | d2_is_jump | d2_is_jalr) & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
+   wire d2_cls_l = d2_ord & ~d2_cls_f & ~d2_cls_c;
    wire d2_cls_i = ~d2_ord;
-   wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // never slot A's integer scheduler
+   wire d2_cls_fc = d2_cls_f | d2_cls_c;
+   wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // CTF falls to C_F (shares u_iq_f)
    wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
    wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
    wire       d2_ld_nb = d2_is_mem & ~d2_is_store & ~d2_is_amo & ~d2_is_cbo;
@@ -912,11 +963,11 @@ module ooo2_core
    wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
    wire [ROB_IDXB-1:0] rf_iss_rob;
    wire [RN_PBITS-1:0] rf_blk_pr;      wire [IBF:0] rf_occ;
-
    wire ri_take, rl_take, rf_take;
    wire i_needs_m;                     // the issue register holds an M-class op
    wire i_needs_f;                     // ...or an F-class one
    wire f_advance;
+   wire cf_advance;                    // the control-flow completion stage can take a new op
 
    // ---- THE ALU'S OWN ISSUE PORT (item 10d-i, 2026-09-05) -----------------------------
    // One issue register served every scheduler, so the machine issued ONE instruction per
@@ -999,21 +1050,22 @@ module ooo2_core
    ooo2_iq #(.NENT(NF),.IDXB(IBF),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(0),.INORDER(0)) u_iq_f
      (.clk(clk),.reset(reset),
-      .d_valid((rn_valid & d_cls_f) | (rn_valid_b & d2_cls_f)),.d_ready(rf_ready),
+      // FP-arith AND control flow (jal/jalr/bXX) share this one queue and issue slot.
+      .d_valid((rn_valid & d_cls_fc) | (rn_valid_b & d2_cls_fc)),.d_ready(rf_ready),
       .d_rob(b_to_f ? rob_d_idx2 : rob_d_idx),
       .d_ps(b_to_f ? {rn_prs3_b, rn_prs2_b, rn_prs1_b} : {rn_prs3, rn_prs2, rn_prs1}),.d_r(b_to_f ? d2_srdy : d_srdy),
       .d_prd(b_to_f ? d2_prd_g : d_prd_g),.d_ent(rf_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(~f_advance | (i_v & i_needs_f)),
+      .unit_busy(j_v & ~j_adv),           // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
      .iss_take(rf_take),
-      .hold_v(i_v & (i_cls == C_F)),.hold_ent(i_ent[IBF-1:0]),
+      .hold_v(j_v),.hold_ent(j_ent),
       .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
 
    // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
-   wire iq_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;
+   wire iq_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;   // CTF falls to rf (shared queue)
    wire iq_ready_b = d2_cls_i ? ri2_ready : d2_cls_l ? rl_ready : rf_ready;
-   wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_l = rn_valid_b & d2_cls_l, b_to_f = rn_valid_b & d2_cls_f;
+   wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_l = rn_valid_b & d2_cls_l, b_to_f = rn_valid_b & d2_cls_fc;
    wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
                                : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
                                :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
@@ -1022,15 +1074,15 @@ module ooo2_core
    // win: they are gated on M being free anyway, so they only bid when they can make
    // progress, while an ALU op can always go next cycle instead.
    wire pick_l = rl_iss_v;
-   wire pick_f = rf_iss_v & ~pick_l;
-   wire pick_i = ri_iss_v;                                // its own port: never waits for M/F
+   wire pick_i = ri_iss_v;                                // its own port: never waits for M
    wire pick_i2 = ri2_iss_v;                              // the second ALU's, likewise
    wire pick_i3 = ri3_iss_v;                              // the third ALU's, likewise
-   wire iq_iss_v = pick_l | pick_f;                       // the M/F port
-   wire [1:0] pick_cls = pick_l ? C_L : C_F;
-   wire [RS_IDXB-1:0] iq_iss_ent = pick_l ? {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent}
-                                 :          {{(RS_IDXB-IBF){1'b0}}, rf_iss_ent};
-   wire [ROB_IDXB-1:0] iq_iss_rob = pick_l ? rl_iss_rob : rf_iss_rob;
+   // The F scheduler no longer shares this port: it issues into its own select register
+   // j_* (CTF-on-FP). i_* is M-only now, so no arbitration and no class mux here.
+   wire iq_iss_v = pick_l;                                // the M port
+   wire [1:0] pick_cls = C_L;                             // i_* only ever holds an ordered op
+   wire [RS_IDXB-1:0] iq_iss_ent = {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent};
+   wire [ROB_IDXB-1:0] iq_iss_rob = rl_iss_rob;
    // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
    // with it. The source tags used to come OUT of each queue as `iss_ps` -- an async read of
    // the entry array (e_ps[sel], a 16:1 mux over FLOPS) then a 3-way class mux, two levels
@@ -1072,7 +1124,8 @@ module ooo2_core
    reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
-   wire [3*RN_PBITS-1:0] ps_out   = pick_l ? psmem_l[rl_iss_ent] : psmem_f[rf_iss_ent];
+   wire [3*RN_PBITS-1:0] ps_out   = psmem_l[rl_iss_ent];
+   wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
    wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a3 = psmem_i3[ri3_iss_ent];
@@ -1085,7 +1138,7 @@ module ooo2_core
       if (b_to_i2)            psmem_i2[ri2_d_ent] <= ps_in_b;
       if (c_to_i3)            psmem_i3[ri3_d_ent] <= ps_in_c;
       if ((rn_valid & d_cls_l) | b_to_l) psmem_l[rl_d_ent] <= b_to_l ? ps_in_b : ps_in;
-      if ((rn_valid & d_cls_f) | b_to_f) psmem_f[rf_d_ent] <= b_to_f ? ps_in_b : ps_in;
+      if ((rn_valid & d_cls_fc) | b_to_f) psmem_f[rf_d_ent] <= b_to_f ? ps_in_b : ps_in;
    end
    wire [RN_PBITS-1:0] iq_iss_ps1 = ps_out[0 +: RN_PBITS];
    wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
@@ -1095,7 +1148,15 @@ module ooo2_core
    assign ri2_take = pick_i2;                            // the redirect cycle dies in a_v/a2_v (cleared)
    assign ri3_take = pick_i3;                            // the third ALU, likewise (dead at IW=2)
    assign rl_take = pick_l & iq_iss_take;
-   assign rf_take = pick_f & iq_iss_take;
+   // The shared FP/CTF queue feeds j_* directly (single source). j_isctf, from the picked op's
+   // payload, routes the drain: control flow to cf_*, FP to f_valid. (CTF-over-FP priority is a
+   // later addition; for now the queue picks by its own policy.)
+   wire j_isctf   = qf_is_branch | qf_is_jump | qf_is_jalr;  // valid when j_v (qf_* = j_*'s payload)
+   wire j_needs_c = j_v & j_isctf;                       // j_* holds a control-flow op...
+   wire j_needs_f = j_v & ~j_isctf;                      // ...or an FP op
+   wire j_adv     = j_needs_c ? cf_advance : (j_needs_f ? f_advance : 1'b1);
+   wire j_ready   = ~j_v | j_adv;
+   assign rf_take = rf_iss_v;   // rf_iss_v is already gated by unit_busy = j_v & ~j_adv
    wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
    wire [RN_PBITS-1:0] iq_blk_pr = rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr;
 
@@ -1122,6 +1183,17 @@ module ooo2_core
    reg [RN_PBITS-1:0]  i_ps1, i_ps2, i_ps3;
    initial i_v = 1'b0;
 
+   // The independent FP/CTF select register (CTF-on-FP). i_* is M-only now; this port has its
+   // OWN three PRF read ports, so a branch or FP op issues in the same cycle as a load instead
+   // of contending for the M select slot. Shared by the FP scheduler (rf) and the control-flow
+   // scheduler (rc), with CTF winning the slot (pick_ctf). j_isctf says which side it holds:
+   // a control-flow op drains into cf_* (the branch completion stage), an FP op into f_valid.
+   reg                 j_v;
+   reg [IBF-1:0]       j_ent;
+   reg [ROB_IDXB-1:0]  j_rob;
+   reg [RN_PBITS-1:0]  j_ps1, j_ps2, j_ps3;
+   initial j_v = 1'b0;
+
    // An ordered op completes when M takes it; an ALU op completes unconditionally, because
    // SH_IE has exactly one writer and it is this one. Nothing can be in the way.
    assign i_needs_f   = i_v & (i_cls == C_F);
@@ -1135,7 +1207,8 @@ module ooo2_core
    // rolling that physical register back. That is the zombie writeback in miniature, and it
    // is what failed all 61 virtual-memory tests: they are the ones that trap often.
    wire   iss_m       = i_needs_m & m_advance & ~redirect;     // loads M this cycle
-   wire   iss_f       = i_needs_f & f_advance & ~redirect;     // loads the F stage
+   wire   iss_f       = j_needs_f & f_advance & ~redirect;    // j_* drains an FP op into f_valid
+   wire   iss_c       = j_needs_c & cf_advance & ~redirect;   // ...or a control-flow op into cf_*
       always @(posedge clk) begin                            // the ALU port (see above)
       if (reset | redirect) a_v <= 1'b0;
       else begin
@@ -1178,6 +1251,20 @@ module ooo2_core
       end
    end
 
+   // j_* loads the FP/CTF queue's pick when it can accept (empty, or its op draining into
+   // cf_*/f_valid this cycle).
+   always @(posedge clk) begin
+      if (reset | redirect) j_v <= 1'b0;
+      else if (j_ready) begin
+         j_v <= rf_take;
+         if (rf_take) begin
+            j_ent <= rf_iss_ent;  j_rob <= rf_iss_rob;
+            j_ps1 <= ps_out_f[0 +: RN_PBITS];  j_ps2 <= ps_out_f[RN_PBITS +: RN_PBITS];
+            j_ps3 <= ps_out_f[2*RN_PBITS +: RN_PBITS];
+         end
+      end
+   end
+
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
    // width or ordering mistake is a lint error rather than a wrong instruction.
    localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 3 + 6   // shard is 3 bits
@@ -1196,7 +1283,10 @@ module ooo2_core
                            d_is_cbo, d_cbo_zero, d_cbo_keep, d_illegal, d_fault,
                            d_fault_cause, d_fault_tval,
                            d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
-                           d_br_func, d_mis_taken, d_mis_nt,
+                           // decode-redirect (dcr0) makes taken the prediction: taken now
+                           // matches (mis_taken=0), and a not-taken resolve must redirect
+                           // back to fall-through (mis_nt=1). See dcr0/dec_red above.
+                           d_br_func, (dcr0 ? 1'b0 : d_mis_taken), (dcr0 ? 1'b1 : d_mis_nt),
                            d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_idx, lq_d_idx};
    wire [PLW-1:0] pl_in_b = {d2_pc, d2_insn, d2_rvc, d2_seq, d2_pdet, d2_pred_npc, d2_rd, d2_rd_v,
                            (d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}}), d2_shard, d2_rs1, d2_imm,
@@ -1206,7 +1296,7 @@ module ooo2_core
                            d2_is_cbo, d2_cbo_zero, d2_cbo_keep, d2_illegal, d2_fault,
                            d2_fault_cause, d2_fault_tval,
                            d2_alu_op, d2_alu_w, d2_alu_uw, d2_op1_sel, d2_op2_imm, d2_res_link,
-                           d2_br_func, d2_mis_taken, d2_mis_nt,
+                           d2_br_func, (dcr1 ? 1'b0 : d2_mis_taken), (dcr1 ? 1'b1 : d2_mis_nt),
                            d2_rs1_v, d2_rs2_v, d2_rs3_v, d2_ord, sq_d_idx, lq_d_idx};
    // slot C's payload (Stage 3): identical shape, for the third ALU. Dead at IW=2.
    wire [PLW-1:0] pl_in_c = {d3_pc, d3_insn, d3_rvc, d3_seq, d3_pdet, d3_pred_npc, d3_rd, d3_rd_v,
@@ -1217,7 +1307,7 @@ module ooo2_core
                            d3_is_cbo, d3_cbo_zero, d3_cbo_keep, d3_illegal, d3_fault,
                            d3_fault_cause, d3_fault_tval,
                            d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
-                           d3_br_func, d3_mis_taken, d3_mis_nt,
+                           d3_br_func, (dcr2 ? 1'b0 : d3_mis_taken), (dcr2 ? 1'b1 : d3_mis_nt),
                            d3_rs1_v, d3_rs2_v, d3_rs3_v, d3_ord, sq_d_idx, lq_d_idx};
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
@@ -1236,24 +1326,26 @@ module ooo2_core
    // address is the scheduler's select, not the pick), and the port's load captures it. An
    // entry issues no earlier than the cycle after its dispatch, so a read never meets its
    // own write.
-   wire [PLW-1:0] pl_cand  = pick_l ? plmem_l[rl_iss_ent] : plmem_f[rf_iss_ent];
-   reg  [PLW-1:0] pl_q, pla_q, pla2_q, pla3_q;
+   wire [PLW-1:0] pl_cand  = plmem_l[rl_iss_ent];   // i_* is M-only now
+   reg  [PLW-1:0] pl_q, pla_q, pla2_q, pla3_q, plf_q;
    always @(posedge clk) begin
       if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
       if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
       if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
       if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
+      if (rf_take)                 plf_q  <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
    end
    wire [PLW-1:0] pl_out   = pl_q;
    wire [PLW-1:0] pla_out  = pla_q;                         // the ALU port's payload
    wire [PLW-1:0] pla2_out = pla2_q;                        // the second ALU port's
    wire [PLW-1:0] pla3_out = pla3_q;                        // the third ALU port's
+   wire [PLW-1:0] plf_out  = plf_q;                         // the F/CTF port's
    always @(posedge clk) begin
       if (rn_valid & d_cls_i) plmem_i[ri_d_ent]  <= pl_in;
       if (b_to_i2)            plmem_i2[ri2_d_ent] <= pl_in_b;
       if (c_to_i3)            plmem_i3[ri3_d_ent] <= pl_in_c;
       if ((rn_valid & d_cls_l) | b_to_l) plmem_l[rl_d_ent] <= b_to_l ? pl_in_b : pl_in;
-      if ((rn_valid & d_cls_f) | b_to_f) plmem_f[rf_d_ent] <= b_to_f ? pl_in_b : pl_in;
+      if ((rn_valid & d_cls_fc) | b_to_f) plmem_f[rf_d_ent] <= b_to_f ? pl_in_b : pl_in;
    end
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
@@ -1383,6 +1475,39 @@ module ooo2_core
            qc_alu_op, qc_alu_w, qc_alu_uw, qc_op1_sel, qc_op2_imm, qc_res_link,
            qc_br_func, qc_mis_taken, qc_mis_nt,
            qc_rs1_v, qc_rs2_v, qc_rs3_v, qc_ord, qc_sq_tag, qc_lq_idx} = pla3_out;
+   // ...and for the independent F/CTF port (CTF-on-FP). Full unpack, same concatenation; the
+   // F stage uses insn/rd/rd_v/prd/shard today, the CTF exec will use the branch fields.
+   wire [PCW-1:0]      qf_pc, qf_pred_npc, qf_fault_tval;
+   wire [31:0]         qf_insn;
+   wire [SQ_IB-1:0]    qf_sq_tag;
+   wire [LQ_IB-1:0]    qf_lq_idx;
+   wire                qf_rvc, qf_rd_v, qf_mem_signed, qf_is_mem, qf_is_store, qf_is_amo;
+   wire [SEQW-1:0]     qf_seq;
+   wire [PDW-1:0]      qf_pdet;
+   wire [5:0]          qf_rd, qf_rs1;
+   wire [RN_PBITS-1:0] qf_prd;
+   wire [2:0]          qf_shard;
+   wire [1:0]          qf_mem_size;
+   wire [63:0]         qf_imm;
+   wire [4:0]          qf_amo_func;
+   wire                qf_is_branch, qf_is_jump, qf_is_jalr, qf_is_mul, qf_is_csr;
+   wire [2:0]          qf_csr_func;
+   wire                qf_is_serialize, qf_is_fp, qf_is_fencei, qf_is_cbo, qf_cbo_zero;
+   wire                qf_cbo_keep, qf_illegal, qf_fault;
+   wire [3:0]          qf_fault_cause;
+   wire [5:0]          qf_alu_op;
+   wire                qf_alu_w, qf_alu_uw, qf_op2_imm, qf_res_link, qf_mis_taken, qf_mis_nt;
+   wire [1:0]          qf_op1_sel;
+   wire [2:0]          qf_br_func;
+   wire                qf_rs1_v, qf_rs2_v, qf_rs3_v, qf_ord;
+   assign {qf_pc, qf_insn, qf_rvc, qf_seq, qf_pdet, qf_pred_npc, qf_rd, qf_rd_v, qf_prd, qf_shard,
+           qf_rs1, qf_imm, qf_mem_size, qf_mem_signed, qf_is_mem, qf_is_store, qf_is_amo,
+           qf_amo_func, qf_is_branch, qf_is_jump, qf_is_jalr, qf_is_mul, qf_is_csr, qf_csr_func,
+           qf_is_serialize, qf_is_fp, qf_is_fencei, qf_is_cbo, qf_cbo_zero, qf_cbo_keep,
+           qf_illegal, qf_fault, qf_fault_cause, qf_fault_tval,
+           qf_alu_op, qf_alu_w, qf_alu_uw, qf_op1_sel, qf_op2_imm, qf_res_link,
+           qf_br_func, qf_mis_taken, qf_mis_nt,
+           qf_rs1_v, qf_rs2_v, qf_rs3_v, qf_ord, qf_sq_tag, qf_lq_idx} = plf_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -1411,7 +1536,7 @@ module ooo2_core
    wire [55:0]         sq_c_addr;
    wire [63:0]         sq_c_data;
    wire [1:0]          sq_c_size;
-   wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_xo_v, lsu_xo_unc;
+   wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_pt_ld_kill, lsu_xo_v, lsu_xo_unc, lsu_xo_mem;
    wire [55:0]         lsu_xo_pa;
    wire st_b = rn_valid_b & d2_st_nb;                 // B is the store of the pair
    wire d_st_alloc = (rn_valid & d_st_nb) | st_b;
@@ -1482,7 +1607,7 @@ module ooo2_core
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_size(m_mem_size),
-      .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc),
+      .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem),
       .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
@@ -1490,7 +1615,7 @@ module ooo2_core
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
-      .occupancy(lq_occ), .flush(redirect));
+      .occupancy(lq_occ), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // The queue costs a load two cycles -- one to register the address, one to select the
@@ -1531,7 +1656,7 @@ module ooo2_core
    wire pt_v      = sq_go | lq_x_v;
    wire pt_store  = sq_go;
    wire lq_x_take = lq_x_v & ~sq_go & lsu_pt_ack;
-   wire ld_land   = lsu_pt_ld_done;        // the load terms alone (ooo2_lsu pt_ld_done, T1 (L) 3)
+   wire ld_land   = lsu_pt_ld_done & ~lsu_pt_ld_kill;   // ...unless it was a wrong-path speculative load (squashed)
    // The registered alias block the queue's candidate select reads may only ever be the
    // MORE conservative: a load that starts (x_v, on the copy) is never one the live block holds.
    always @(posedge clk)
@@ -1552,7 +1677,7 @@ module ooo2_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
-   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(6)) u_rob
+   ooo2_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(7)) u_rob
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
@@ -1564,8 +1689,8 @@ module ooo2_core
       // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
       // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
       .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
-      .w_v({iss_alu3, iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
-      .w_ix({a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
+      .w_v({cf_land, iss_alu3, iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
+      .w_ix({cf_land_rob, a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
       .c_kill(m_valid & m_done & m_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
@@ -1722,6 +1847,14 @@ module ooo2_core
    wire [63:0] x_rs1 = fwd1 ? alu_q_val : fwd1b ? alu2_q_val : fwd1c ? alu3_q_val : prf_rs1;
    wire [63:0] x_rs2 = fwd2 ? alu_q_val : fwd2b ? alu2_q_val : fwd2c ? alu3_q_val : prf_rs2;
    wire [63:0] x_rs3 = fwd3 ? alu_q_val : fwd3b ? alu2_q_val : fwd3c ? alu3_q_val : prf_rs3;
+   // The F/CTF port's operands, forwarded from the ALUs exactly like M's x_rs* (an FP op with
+   // an integer source, or a CTF op, may consume an ALU result produced the same cycle).
+   wire fwdf1 = alu_q_v & (j_ps1 == alu_q_prd), fwdf1b = alu2_q_v & (j_ps1 == alu2_q_prd), fwdf1c = alu3_q_v & (j_ps1 == alu3_q_prd);
+   wire fwdf2 = alu_q_v & (j_ps2 == alu_q_prd), fwdf2b = alu2_q_v & (j_ps2 == alu2_q_prd), fwdf2c = alu3_q_v & (j_ps2 == alu3_q_prd);
+   wire fwdf3 = alu_q_v & (j_ps3 == alu_q_prd), fwdf3b = alu2_q_v & (j_ps3 == alu2_q_prd), fwdf3c = alu3_q_v & (j_ps3 == alu3_q_prd);
+   wire [63:0] xf_rs1 = fwdf1 ? alu_q_val : fwdf1b ? alu2_q_val : fwdf1c ? alu3_q_val : prf_f1;
+   wire [63:0] xf_rs2 = fwdf2 ? alu_q_val : fwdf2b ? alu2_q_val : fwdf2c ? alu3_q_val : prf_f2;
+   wire [63:0] xf_rs3 = fwdf3 ? alu_q_val : fwdf3b ? alu2_q_val : fwdf3c ? alu3_q_val : prf_f3;
    // the ALU port's operands, with the same forward
    wire fwd_a1 = alu_q_v & (a_ps1 == alu_q_prd), fwd_a1b = alu2_q_v & (a_ps1 == alu2_q_prd), fwd_a1c = alu3_q_v & (a_ps1 == alu3_q_prd);
    wire fwd_a2 = alu_q_v & (a_ps2 == alu_q_prd), fwd_a2b = alu2_q_v & (a_ps2 == alu2_q_prd), fwd_a2c = alu3_q_v & (a_ps2 == alu3_q_prd);
@@ -1820,20 +1953,20 @@ module ooo2_core
       // memory is written later, from the buffer's commit port below.
       // Loads AND buffered stores translate here and go no further; the access itself
       // comes back through the pre-translated port, from ooo2_lq or ooo2_sq.
-      .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_v(lsu_xo_v),
+      .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_mem(lsu_xo_mem), .xo_v(lsu_xo_v),
       .xo_early(lsu_xo_early),
       .pt_v(pt_v), .pt_store(pt_store),
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
       .pt_unc(pt_store ? sq_c_unc : lq_x_unc), .pt_done(lsu_pt_done),
-      .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store), .pt_ld_done(lsu_pt_ld_done),
+      .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store), .pt_ld_done(lsu_pt_ld_done), .pt_ld_kill(lsu_pt_ld_kill),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
       .req_vaddr(m_addr), .req_size(m_mem_size), .req_signed(m_mem_signed),
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
-      .xl_flush(mmu_flush),
+      .xl_flush(mmu_flush), .flush(redirect), .m_head(m_at_head),
       .ptw_addr(dptw_addr), .ptw_read(dptw_read),
       .ptw_rdata(dptw_rdata), .ptw_rvalid(dptw_rvalid),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
@@ -1858,13 +1991,17 @@ module ooo2_core
    wire        mul_done, div_done, mul_busy, div_busy;
    wire [63:0] mul_result, div_result;
 
+   // abort(redirect): with control flow off M, M can speculate a wrong-path mul/div past a
+   // branch. A redirect is head-gated, so any in-flight mul/div is younger than the redirecting
+   // op = wrong-path; abort it (unit -> idle, no done) so it can't corrupt the next divide, and
+   // md_started clears with it (below).
    mul3 u_mul
-     (.clk(clk), .reset(reset), .start(mul_start), .abort(1'b0),
+     (.clk(clk), .reset(reset), .start(mul_start), .abort(redirect),
       .rs1(m_rs1_val), .rs2(m_st_data), .f3(md_f3), .is_w(md_is_w),
       .busy(mul_busy), .done(mul_done), .result(mul_result));
 
    divider u_div
-     (.clk(clk), .reset(reset), .start(div_start), .abort(1'b0),
+     (.clk(clk), .reset(reset), .start(div_start), .abort(redirect),
       .rs1(m_rs1_val), .rs2(m_st_data), .f3(md_f3), .is_w(md_is_w),
       .busy(div_busy), .done(div_done), .result(div_result));
 
@@ -1987,9 +2124,9 @@ module ooo2_core
       if (reset | redirect) f_valid <= 1'b0;
       else if (f_advance) begin
          f_valid   <= iss_f;
-         f_insn    <= q_insn;   f_rd    <= q_rd;    f_rd_v <= q_rd_v;
-         f_prd     <= q_prd;    f_rob   <= i_rob;
-         f_rs1_val <= x_rs1;    f_rs2_val <= x_rs2; f_rs3_val <= x_rs3;
+         f_insn    <= qf_insn;  f_rd    <= qf_rd;   f_rd_v <= qf_rd_v;
+         f_prd     <= qf_prd;   f_rob   <= j_rob;
+         f_rs1_val <= xf_rs1;   f_rs2_val <= xf_rs2; f_rs3_val <= xf_rs3;
       end
    end
 
@@ -1999,7 +2136,7 @@ module ooo2_core
       // payload and the classification came from different instructions.
       if (f_valid & ~(ff_valid_d & ff_use_fpu))
          $fatal(1, "ooo2_core: F stage holds a non-FPU op (insn %08x)", f_insn);
-      if (iss_f & (q_shard != SH_FE))
+      if (iss_f & (qf_shard != SH_FE))
          $fatal(1, "ooo2_core: F-class op is not SH_FE");
       // fp_arith is dead by construction now; if one ever reaches M it would sit there
       // forever, since m_unit_ok no longer has an arm for it.
@@ -2024,6 +2161,77 @@ module ooo2_core
       // cannot be lost silently.
       if (m_valid & m_is_csr & (fpu_busy | f_valid))
          $fatal(1, "ooo2_core: a CSR op is in M while FP work is in flight -- frm may change under it");
+   end
+
+   // =========================================================== stage CTF (control flow)
+   // A completion stage parallel to M and the F stage, for jal/jalr/bXX, fed from j_* (iss_c).
+   // It MIRRORS M's branch handling one-for-one: resolve on its own AGU/comparator, fire the
+   // early frontend restart (fr_set) as soon as the mispredict is known, and -- only on a
+   // mispredict -- hold until ROB head for the squash, exactly as head_block does for M. So the
+   // whole redirect / fr_v / BTB-training block downstream stays structurally identical, just
+   // sourced from cf_* instead of m_*. u_iq_c is IN-ORDER, so the oldest branch resolves first
+   // and the fr_v "oldest wins" interlock still holds without doc 12's age compare.
+   wire [63:0] xf_result, xf_target, xf_taken_tgt;
+   wire        xf_redirect, xf_taken;
+   ooo2_exec u_xf
+     (.alu_op(qf_alu_op), .alu_w(qf_alu_w), .alu_uw(qf_alu_uw), .op1_sel(qf_op1_sel),
+      .op2_imm(qf_op2_imm), .res_link(qf_res_link), .is_rvc(qf_rvc),
+      .is_branch(qf_is_branch), .is_jump(qf_is_jump), .is_jalr(qf_is_jalr),
+      .br_func(qf_br_func),
+      .rs1_val(xf_rs1), .rs2_val(xf_rs2), .imm(qf_imm), .pc(qf_pc),
+      .pred_npc(qf_pred_npc), .mis_taken(qf_mis_taken), .mis_nt(qf_mis_nt),
+      .result(xf_result), .addr(), .redirect(xf_redirect), .target(xf_target),
+      .taken(xf_taken), .taken_tgt(xf_taken_tgt));
+
+   reg                cf_valid;
+   reg [ROB_IDXB-1:0] cf_rob;
+   reg [SEQW-1:0]     cf_seq;
+   reg [PCW-1:0]      cf_pc, cf_target, cf_taken_tgt;
+   reg [63:0]         cf_link;
+   reg                cf_redirect, cf_taken, cf_is_branch, cf_is_jump, cf_is_jalr, cf_rvc;
+   reg [5:0]          cf_rd, cf_rs1;
+   reg                cf_rd_v;
+   reg [RN_PBITS-1:0] cf_prd;
+   reg [PDW-1:0]      cf_pdet;      // predictor snapshot, for BTB/YAGS/RAS training (res_pdet_q)
+   reg                cf_link_wrote;
+   initial begin cf_valid = 1'b0; cf_link_wrote = 1'b0; end
+
+   // RESOLVE-AND-FREE: the branch does NOT hold the stage until head (that would deadlock an
+   // out-of-order pipe where a younger branch could occupy it ahead of an older one). It
+   // resolves, writes its link, marks its ROB entry done, records any mispredict into the
+   // restart tracker (fr_* below), and frees. The squash fires later when that ROB entry heads.
+   wire cf_link_pend  = cf_valid & cf_rd_v & ~cf_link_wrote;    // a jal/jalr link still to write
+   wire cf_link_wb    = cf_link_pend & ~fp_wb & ~m_wb_fe;       // write it when SH_FE is free (FP wins)
+   wire cf_done       = cf_valid & ~cf_link_pend;               // resolved + link written -> free stage
+   assign cf_advance  = ~cf_valid | cf_done;
+   // ROB completion. A correctly-predicted branch completes at resolve and retires in order. A
+   // MISPREDICT must NOT retire before its squash -- otherwise rob_head advances past fr_rob and
+   // cf_red_fire never fires -- so it is marked done only at the squash (cf_red_fire, at head),
+   // by fr_rob (the stage has since freed, so cf_rob no longer names it). See the ROB w_ix mux.
+   wire cf_land       = (cf_done & ~cf_redirect) | cf_red_fire;
+   wire [ROB_IDXB-1:0] cf_land_rob = cf_red_fire ? fr_rob : cf_rob;
+   // call/return classification for the RAS, mirroring M's m_link_rd/m_link_rs
+   wire cf_link_rd    = cf_rd_v & ((cf_rd == 6'd1) | (cf_rd == 6'd5));
+   wire cf_link_rs    = (cf_rs1 == 6'd1) | (cf_rs1 == 6'd5);
+
+   always @(posedge clk) begin
+      if (reset | redirect) cf_valid <= 1'b0;
+      else if (cf_advance) begin
+         cf_valid <= iss_c;
+         if (iss_c) begin
+            cf_rob <= j_rob;  cf_seq <= qf_seq;  cf_pc <= qf_pc;  cf_rvc <= qf_rvc;
+            cf_redirect <= xf_redirect;  cf_target <= xf_target;
+            cf_taken <= xf_taken;  cf_taken_tgt <= xf_taken_tgt;
+            cf_is_branch <= qf_is_branch;  cf_is_jump <= qf_is_jump;  cf_is_jalr <= qf_is_jalr;
+            cf_link <= xf_result;  cf_rd <= qf_rd;  cf_rd_v <= qf_rd_v;  cf_prd <= qf_prd;
+            cf_rs1 <= qf_rs1;  cf_pdet <= qf_pdet;  cf_link_wrote <= 1'b0;
+         end
+      end else if (cf_link_wb) cf_link_wrote <= 1'b1;   // link landed while the branch waits for head
+   end
+
+   always @(posedge clk) if (!reset & cf_valid) begin
+      if (~(cf_is_branch | cf_is_jump | cf_is_jalr))
+         $fatal(1, "ooo2_core: CTF stage holds a non-control-flow op");
    end
 
    // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
@@ -2172,9 +2380,9 @@ module ooo2_core
    // predictor work would have been tuning blind.  csr_red wins the priority: a trap that
    // lands on a branch is a trap.  REDIR total minus these three is the remainder
    // (fence.i and direct-jal mispredicts), so nothing needs a fourth counter.
-   wire red_trap  = redirect &  csr_red;
-   wire red_br    = redirect & ~csr_red & m_is_branch;
-   wire red_jalr  = redirect & ~csr_red & ~m_is_branch & m_is_jalr;
+   wire red_trap  = m_red_fire &  csr_red;
+   wire red_br    = cf_red_fire & cf_is_branch;
+   wire red_jalr  = cf_red_fire & cf_is_jalr;
 
    // ST_ROB: dispatch has an instruction and the ROB has no room. Split out of ST_SER
    // because that event's name says "serializing op" while it actually absorbed EVERY
@@ -2187,7 +2395,7 @@ module ooo2_core
    // The mispredict DRAIN (plan item 5, 2026-09-05): a redirect resolved in M waits for the
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
-   wire rd_wait = m_valid & m_redirect & ~m_at_head;
+   wire rd_wait = fr_v & ~cf_red_fire;   // a tracked branch restart still waiting to reach head
    wire [30:0] hpm_ev = {st_srz, st_lq, st_sq, st_rn, st_iq,
                          lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
@@ -2389,6 +2597,8 @@ module ooo2_core
    // gating them through csr_red would close a combinational loop. Every term here is either
    // registered or decoded from m_insn.
    reg  fr_v;   initial fr_v = 1'b0;
+   reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
+   reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
    wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
                      | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
    wire head_block   = m_valid & m_needs_head & ~m_at_head;
@@ -2413,12 +2623,19 @@ module ooo2_core
                         : m_md_op             ? (md_div ? div_done : mul_done)
                         :                       1'b1;
    assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
-   assign redirect = m_valid & m_done_red & (csr_red | m_redirect | m_is_fencei);
-   wire   redirect_ref = m_valid & m_done & (csr_red | m_redirect | m_is_fencei);
+   // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
+   // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
+   // now; the branch squash comes from the CTF pipe (cf_red_fire).
+   wire m_red_fire = m_valid & m_done_red & (csr_red | m_is_fencei);
+   wire m_red_ref  = m_valid & m_done     & (csr_red | m_is_fencei);
+   // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
+   // m_red_fire and cf_red_fire are mutually exclusive.
+   wire cf_red_fire = fr_v & (rob_head_idx == fr_rob);
+   assign redirect = m_red_fire | cf_red_fire;
    always @(posedge clk) if (!reset) begin
-      if (redirect != redirect_ref)
-         $fatal(1, "ooo2_core: redirect from the non-memory done disagrees with m_done (%b vs %b)",
-                redirect, redirect_ref);
+      if (m_red_fire != m_red_ref)
+         $fatal(1, "ooo2_core: M redirect from the non-memory done disagrees with m_done (%b vs %b)",
+                m_red_fire, m_red_ref);
       if ((xtrap_v & m_done_red) != (xtrap_v & m_done))
          $fatal(1, "ooo2_core: trap request from the non-memory done disagrees with m_done");
       if ((m_is_sys & m_done_red) != (m_is_sys & m_done))
@@ -2439,70 +2656,56 @@ module ooo2_core
    // renaming ahead would not merely waste work, it would lose the instructions. Frozen,
    // the correct path accumulates in the decoupling queue, which the squash does not touch.
    //
-   // fr_v is the "frozen by an older redirect" interlock: a younger mispredict that
-   // executes while one is pending is wrong-path by construction and must not retarget
-   // the frontend. Oldest wins, and here the oldest is simply the one that got there
-   // first -- M holds a single instruction until it is head, so no younger event can
-   // reach M ahead of it. When units issue independently this needs the explicit age
-   // compare of doc 12.
+   // fr_v is the "frozen by an older redirect" interlock: a mispredict that resolves while one
+   // is pending must not retarget the frontend unless it is OLDER. Control flow resolves out of
+   // order now (parallel pipe), so "first resolved is oldest" no longer holds -- this is doc 12.
+   // We TRACK THE SEQNO OF THE OLDEST RESTART and ignore younger ones: a resolving mispredict
+   // (re)starts the frontend only if it is older (smaller seqno, wrap-safe) than the pending one,
+   // and the backend squash fires when the tracked branch reaches head (cf_red_fire above).
    //
    // Measured motivation: FE_BUB per redirect went 9.6 -> 54.4 cycles when the window
    // grew from ~2 instructions to 16, while mispredicts fell 37% (docs/OOO2-Spec.md).
-   assign fr_set    = m_valid & m_redirect & ~m_trap & ~fr_v & ~redirect;
+   wire        cf_mis   = cf_valid & cf_redirect;                    // a resolved mispredicting branch
+   wire        cf_older = ~fr_v | ($signed(cf_seq - fr_seq) < 0);    // wrap-safe: the oldest restart wins
+   assign fr_set    = cf_mis & cf_older & ~redirect;
    always @(posedge clk) begin
       if (reset)         fr_v <= 1'b0;
       else if (redirect) fr_v <= 1'b0;      // the squash consumes it
-      else if (fr_set)   fr_v <= 1'b1;
+      else if (fr_set)   begin fr_v <= 1'b1; fr_seq <= cf_seq; fr_rob <= cf_rob; end
    end
 
    // Exactly one frontend flush per event. Re-flushing at the squash would discard the
    // correct path this whole mechanism exists to have fetched early.
-   assign fe_red_pulse = fr_set | (redirect & ~fr_v);
-   assign fe_red_tgt   = fr_set ? m_target        : redirect_target;
-   assign fe_red_seq   = fr_set ? (m_seq + 1'b1)  : redirect_seq;
-   assign redirect_target  = csr_red     ? csr_redir_tgt
-                           : m_is_fencei ? (m_pc + (m_rvc ? 64'd2 : 64'd4))
-                           :               m_target;
-   assign redirect_is_trap = m_trap;
+   // dec_red is the decode-stage direct-CTI resteer. Backend wins (older instruction): a
+   // co-firing fr_set/redirect flushes the dispatch stage anyway, and dec_red requires
+   // d_take (~redirect_q & ~fr_v), so it never fires under a live freeze.
+   // m_red_fire is at head (oldest) and ALWAYS flushes the frontend -- it overrides a younger
+   // branch that already early-restarted (which the parallel branch pipe now makes possible),
+   // and clears fr_v below. A branch's own squash (cf_red_fire) does NOT re-flush: its fr_set
+   // already did. Exactly one frontend flush per event.
+   assign fe_red_pulse = m_red_fire | fr_set | dec_red;
+   assign fe_red_tgt   = m_red_fire ? redirect_target : fr_set ? cf_target     : dec_red_tgt;
+   assign fe_red_seq   = m_red_fire ? redirect_seq    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
+   assign redirect_target  = csr_red ? csr_redir_tgt
+                           :           (m_pc + (m_rvc ? 64'd2 : 64'd4));   // fence.i
+   assign redirect_is_trap = m_red_fire & m_trap;
    assign redirect_seq     = m_trap ? m_seq : (m_seq + 1'b1);
    assign ifence           = m_valid & m_done & m_is_fencei;
 
-   // ---- branch resolve / BTB training ----
-   wire m_link_rd = m_rd_v & ((m_rd == 6'd1) | (m_rd == 6'd5));   // x1/x5 = link registers
-   wire m_link_rs = (m_rs1 == 6'd1) | (m_rs1 == 6'd5);
-   // FMAX: res_v is qualified ONLY on M-stage flops. `m_done` and `~m_trap` are both
-   // implied by the (branch|jump) term this signal already carries, so ANDing them in
-   // bought nothing and cost everything: res_v is the D-input mux select of
-   // u_bp/btb_q (the write-forward `t_fwd`), so it put the LSU (via m_done -> lsu_done)
-   // and the CSR file (via m_trap -> csr_redir_trap) in the branch predictor's cone.
-   // That was the worst path in the design at 6 ns, 226 of them.
-   //   m_done : a CTI is not m_mem_op / m_md_op / fp_arith, so the mux collapses to 1'b1
-   //   m_trap : xtrap_v's lsu_fault term needs m_mem_op; m_ill_eff's FP term needs
-   //            m_is_fp; csr_redir_trap needs m_is_sys (opcode SYSTEM) -- none can hold
-   //            for a branch or jump. What survives is m_fault | m_illegal.
-   // Equivalence, not heuristic -- asserted below on every cycle.
-   // The de-qualification survives, but it now needs the two gates that can hold a branch in
-   // M for more than a cycle -- without them res_v asserts on EVERY stalled cycle and trains
-   // the BTB and GHR repeatedly for one branch. Re-adding plain m_done would undo the Fmax
-   // win the de-qualification exists for (it drags the LSU and the CSR file back into the
-   // predictor's cone). It does not have to: for a BRANCH OR JUMP, csr_red and m_is_fencei
-   // are 0 and m_trap reduces to m_fault | m_illegal, both already excluded here -- so
-   // head_block collapses to the registered m_redirect against a 4-bit head compare.
-   wire res_block   = (m_redirect & ~m_at_head) | ld_land | fp_land;
-   assign res_v     = m_valid & (m_is_branch | m_is_jump) & ~m_fault & ~m_illegal & ~res_block;
-   assign res_cbr   = m_is_branch;
-   assign res_call  = m_is_jump & m_link_rd;
-   assign res_ret   = m_is_jalr & m_link_rs & ~m_link_rd;
-   assign res_taken = m_taken;
-   assign res_tgt   = m_taken_tgt;
-   assign res_rep   = res_v & res_cbr & m_redirect;   // ~csr_red: 0 under res_v, see above
-
-   // The de-qualification is only safe while the implications above hold; a new M-stage
-   // completion term (another multi-cycle unit, an FP branch) would break it silently.
-   always @(posedge clk)
-     if (!reset && (res_v !== (m_valid & m_done & (m_is_branch | m_is_jump) & ~m_trap)))
-       $fatal(1, "ooo2_core: res_v de-qualification broken (pc=%h insn=%h done=%b trap=%b)",
-              m_pc, m_insn, m_done, m_trap);
+   // ---- branch resolve / BTB training (from the CTF pipe, cf_*) ----
+   // Train exactly once per branch, at completion (cf_land = resolved and no longer held for a
+   // mispredict squash or a pending link write). res_pc_q / res_pdet_q carry the branch's PC
+   // and the predictor snapshot to u_bp one cycle later. Control flow is a single-cycle pipe
+   // of its own now, so cf_land is the natural once-per-branch training pulse -- the old M-stage
+   // res_v de-qualification (which existed to keep the LSU/CSR cones out of the predictor) is
+   // gone with the branches that made it necessary.
+   assign res_v     = cf_land & (cf_is_branch | cf_is_jump);
+   assign res_cbr   = cf_is_branch;
+   assign res_call  = cf_is_jump & cf_link_rd;
+   assign res_ret   = cf_is_jalr & cf_link_rs & ~cf_link_rd;
+   assign res_taken = cf_taken;
+   assign res_tgt   = cf_taken_tgt;
+   assign res_rep   = res_v & res_cbr & cf_redirect;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing
@@ -2536,6 +2739,7 @@ module ooo2_core
                 : m_is_mul                  ? (md_div ? div_result : mul_result)
                 :                             m_result;
    assign wb_fe = fp_wb         ? fp_wval
+                : cf_link_wb    ? cf_link         // jal/jalr link, when the FPU isn't landing
                 : m_unit_done_q ? m_unit_res_q
                 :                 fp_incore_res;
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
@@ -2601,10 +2805,10 @@ module ooo2_core
       if (alu_wb) begin alu_q_prd <= qa_prd; alu_q_val <= xa_result; end
    end
    wire we_ld = m_wb_ld | ld_wb;
-   wire we_fe = m_wb_fe | fp_wb;
+   wire we_fe = m_wb_fe | fp_wb | cf_link_wb;
    wire [RN_PBITS-1:0] wa_ie = qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
-   wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : m_prd;
+   wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : cf_link_wb ? cf_prd : m_prd;
    always @(posedge clk) if (!reset) begin
       if (m_wb_ld & ld_wb)
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
@@ -2708,6 +2912,14 @@ module ooo2_core
          cs_val[ft_rob]   <= fp_wval;
          cs_mkind[ft_rob] <= 2'd0;      // an FP op has no memory effect
          cs_mpa[ft_rob]   <= 56'd0;
+      end
+      // The CTF pipe's link write (jal/jalr rd). Captured at the link writeback (cf_link_wb),
+      // which the link-pend gap guarantees is at least a cycle before the branch retires, so
+      // cs_val[cf_rob] holds the link when the head reads it. No mem effect.
+      if (cf_link_wb) begin
+         cs_val[cf_rob]   <= cf_link;
+         cs_mkind[cf_rob] <= 2'd0;
+         cs_mpa[cf_rob]   <= 56'd0;
       end
       if (iss_alu2) begin               // the second ALU port
          cs_val[a2_rob]   <= xb_result;
@@ -3074,19 +3286,29 @@ module ooo2_core
    // queue's drain), and through fr_active it re-imported the whole completion cone this
    // gate had just been freed of. The registered fr_v holds dispatch from the cycle after
    // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
-   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v;
+   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
    // slot B's own hold (see the rules where d2_cls is defined); d_take carries the redirect terms
    wire d2_hold = ~d_plain | ~d2_plain | (d2_cls == d_cls) | ~iq_ready_b | ~rob_ready2 | rn_stall
                 | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));
-   wire d2_take = d2_valid & d_take & ~d2_hold;
+   wire d2_take = d2_valid & d_take & ~d2_hold & ~dcr0;   // ~dcr0: slot 0 decode-redirects -> squash the younger slots packed after it
    assign rn_valid_b = d2_take;
    // slot C (Stage 3): dispatches ONLY as an ALU op into its own scheduler i3 (which A/B never
    // use, so there is no class hazard). Anything else holds and dispatches next cycle as slot
    // A. three_wide is the master enable (0 at IW=2 -> C never dispatches -> retire-identical).
    wire d3_hold = ~three_wide | ~d3_cls_i | ~d_plain | ~d2_plain | ~d3_plain
                 | ~ri3_ready | ~rob_ready3 | rn_stall;
-   wire d3_take = d3_valid & d2_take & ~d3_hold;
+   wire d3_take = d3_valid & d2_take & ~d3_hold & ~dcr1;  // ~dcr1 (and ~dcr0 via d2_take): squash slots after a decode-redirect CTI
    assign rn_valid_c = d3_take;
+   // The oldest DISPATCHED decode-redirect CTI drives the frontend resteer (fe_red below).
+   // d2_take already carries ~dcr0 and d3_take ~dcr0&~dcr1, so at most one dr* is high.
+   wire dr0 = d_take  & dcr0;
+   wire dr1 = d2_take & dcr1;
+   wire dr2 = d3_take & dcr2;
+   assign dec_red     = dr0 | dr1 | dr2;
+   assign dec_red_tgt = dr0 ? (d_pc  + d_imm)
+                      : dr1 ? (d2_pc + d2_imm)
+                      :       (d3_pc + d3_imm);
+   assign dec_red_seq = (dr0 ? d_seq : dr1 ? d2_seq : d3_seq) + 1'b1;
    always @(posedge clk) if (!reset) begin
       if (rn_valid_b & ~rn_valid)       $fatal(1, "ooo2_core: slot B dispatched without slot A");
       if (rn_valid_b & (d2_cls == d_cls)) $fatal(1, "ooo2_core: slot B dispatched to slot A's scheduler");
@@ -3106,8 +3328,16 @@ module ooo2_core
       if (reset) begin
          m_valid <= 1'b0; md_started <= 1'b0;
       end else begin
-         if (m_advance) md_started <= 1'b0;
+         if (m_advance | redirect) md_started <= 1'b0;   // a redirect aborts a wrong-path mul/div too
          else if (mul_start | div_start) md_started <= 1'b1;
+
+         // Flush a wrong-path op M is HOLDING across a redirect. With control flow off M, M now
+         // speculates past an unresolved branch, so its held op (a walking load, a mul/div) can
+         // be younger than a branch that squashes -- m_advance=0 would otherwise keep it, and its
+         // late LSU fill/land would hit a flushed lq slot. A redirect is head-gated, so a held
+         // op that is not the redirecting op is younger, hence wrong-path. (m_red_fire retires
+         // its own op via the m_advance path below, as before.)
+         if (~m_advance & redirect) m_valid <= 1'b0;
 
          if (m_advance) begin
             m_valid       <= iss_m;

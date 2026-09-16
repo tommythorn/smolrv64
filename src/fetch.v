@@ -77,6 +77,8 @@ module fetch
     output wire [PCW-1:0]          ft_npc,      // presented bundle's fall-through (RAS ret addr)
     output wire                    br_term,     // presented bundle ends on a real branch/jump
                                                 // (prediction is only safe on such bundles)
+    output wire [PCW-1:0]          pc_next,     // pc_q's NEXT-value: the predictor's synchronous read-ahead
+                                                // address (HINT only -- a mismatch costs a stale prediction)
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
@@ -240,6 +242,18 @@ module fetch
                    :              norm_npc;
    // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
    assign pnpc_kind = irq_go ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
+
+   // pc_next mirrors the pc_q flop's next-value (the always block below) as a combinational
+   // output, so the predictor can read the BTB/YAGS one cycle AHEAD at the address that will
+   // be presented next -- a synchronous (block-RAM) read. HINT address only: a disagreement
+   // with the flop costs a stale prediction, never correctness. Arms match the flop exactly.
+   assign pc_next = reset         ? RESET_PC
+                  : redirect      ? redirect_pc
+                  : strad         ? (fire ? pc_plus[1] : pc_q)
+                  : irq_go        ? pc_q
+                  : straddle_det  ? pc_plus[1]
+                  : fire          ? norm_npc
+                  :                 pc_q;
 
    always @(posedge clk) begin
       if (reset) begin

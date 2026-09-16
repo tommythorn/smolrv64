@@ -74,6 +74,7 @@ module ooo2_lq
     input  wire                  a_signed,
     input  wire                  a_fp,
     input  wire                  a_unc,       // Svpbmt NC/IO: decided by the translation, travels with the entry
+    input  wire                  a_mem,       // the PA is DRAM/LRAM (idempotent) -> may access speculatively
 
     // ---- disambiguation: a BIT PER ENTRY, maintained by ooo2_sq -----------------------
     // The entries are exported so ooo2_sq can run the alias test where an ADDRESS ARRIVES
@@ -128,6 +129,7 @@ module ooo2_lq
     output wire [PAW-1:0]        l_pa,
 
     output wire [IDXB:0]         occupancy,
+    input  wire [ROBB-1:0]       rob_head,    // head-gate an uncached (device) load's access (non-speculative)
     input  wire                  flush);
 
    // Two pointers and a per-entry `sent` bit. acc..tail are waiting to go to memory; what
@@ -143,6 +145,7 @@ module ooo2_lq
    // not a head!" on the board, 2026-09-04, with no simulation able to see it (the cosim's
    // guest maps nothing NC). The store queue had carried its own bit all along.
    reg [NENT-1:0]        sgn, isfp, unc;
+   reg [NENT-1:0]        mem;                 // PA is DRAM/LRAM (idempotent): may access speculatively
    reg [PBITS-1:0]       prd  [0:NENT-1];
    reg [5:0]             rdn  [0:NENT-1];
    reg [NENT-1:0]        rdv;
@@ -195,7 +198,9 @@ module ooo2_lq
    endgenerate
    assign e_av = av;
    // ONE 4:1 mux from acc, into a flop-sourced bit. That is the whole point.
-   assign x_v     = cand_v & ~e_block[acc];
+   // An UNCACHED (device/MMIO) load must not access speculatively -- its read has side effects.
+   // Hold it until its op is the ROB head (non-speculative); DRAM/cached loads issue freely (MLP).
+   assign x_v     = cand_v & ~e_block[acc] & (mem[acc] | (rob[acc] == rob_head));
    assign x_block = cand_v &  e_block[acc];   // instrumentation only
    assign x_idx   = acc;
    assign x_pa    = pa[acc];
@@ -232,7 +237,7 @@ module ooo2_lq
 
          if (a_v) begin
             pa[a_idx] <= a_pa;  sz[a_idx] <= a_size;
-            sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  av[a_idx] <= 1'b1;
+            sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  mem[a_idx] <= a_mem;  av[a_idx] <= 1'b1;
          end
          // Filled AND already gone. It cannot collide with x_take above: that one needs
          // av[acc], and a_sent is asserted only while b_ok says ~av[acc].
