@@ -545,8 +545,9 @@ module ooo2_core
                        :                                       SH_IE2;   // the second ALU's shard
    wire [2:0] d3_shard = (d3_is_mem | d3_is_amo | d3_is_mul) ? SH_LD
                        : d3_is_fp                            ? SH_FE
+                       : d3_cls_c                            ? SH_FE   // jal/jalr link: the FP/CTF slice
                        : d3_ord                              ? SH_LD
-                       :                                       SH_IE3;   // the third ALU's shard
+                       :                        (d2_cls_i ? SH_IE : SH_IE2);  // ALU: swizzled -- ALUa if I2 is ALU, else ALUb (ALUb preferred)
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
    wire [RN_PBITS-1:0] rn_prs1_b, rn_prs2_b, rn_prs3_b, rn_prd_b;
@@ -934,14 +935,28 @@ module ooo2_core
    // rn_valid_c itself is defined at the d3_take steering below; used forward here (a net).
    localparam TW3 = (IW >= 3) ? 1'b1 : 1'b0;
    wire three_wide = TW3;
+   // Slot C full classes: the dispatch swizzle lets slot C reach ANY pipe now (the 3rd ALU is
+   // gone), so it needs the same LS/FC/ALU split as slots A and B, not just "ALU-only".
+   wire d3_fp_valid, d3_use_fpu;
+   decode_fp u_d3fp_disp
+     (.insn(d3_insn), .fp_valid(d3_fp_valid), .use_fpu(d3_use_fpu), .fp_class(),
+      .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
+      .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
+   wire d3_cls_f = d3_fp_valid & d3_use_fpu & ~d3_is_mem & ~d3_is_amo
+                 & ~fs_off & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
+   wire d3_cls_c = (d3_is_branch | d3_is_jump | d3_is_jalr) & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
+   wire d3_cls_l = d3_ord & ~d3_cls_f & ~d3_cls_c;
    wire d3_cls_i = ~d3_ord;
+   wire d3_cls_fc = d3_cls_f | d3_cls_c;
    wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
    // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
    wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
    wire pnd_r1_c = ~rn_byp1_c & (rn_lv1_c ? pnd_s1_c : pnd_m1_c);
    wire pnd_r2_c = ~rn_byp2_c & (rn_lv2_c ? pnd_s2_c : pnd_m2_c);
    wire pnd_r3_c = ~rn_byp3_c & (rn_lv3_c ? pnd_s3_c : pnd_m3_c);
-   wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v, pnd_r1_c | ~d3_rs1_v};
+   wire       d3_st_nb = d3_is_store & ~d3_is_amo & ~d3_is_cbo;
+   wire       d3_ld_nb = d3_is_mem & ~d3_is_store & ~d3_is_amo & ~d3_is_cbo;
+   wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v | d3_st_nb, pnd_r1_c | ~d3_rs1_v};
    wire d3_plain = ~(d3_is_serialize | d3_is_fencei | d3_is_cbo | d3_is_amo | d3_is_csr | d3_illegal | d3_fault | d3_is_irqop);
    wire d_plain  = ~(d_is_serialize  | d_is_fencei  | d_is_cbo  | d_is_amo  | d_is_csr  | d_illegal  | d_fault  | d_is_irqop);
    wire d2_plain = ~(d2_is_serialize | d2_is_fencei | d2_is_cbo | d2_is_amo | d2_is_csr | d2_illegal | d2_fault | d2_is_irqop);
@@ -994,11 +1009,41 @@ module ooo2_core
    reg [RN_PBITS-1:0]  a3_ps1, a3_ps2;
    initial begin a3_v = 1'b0; a3_ent = {IBI{1'b0}}; a3_rob = {ROB_IDXB{1'b0}}; a3_ps1 = {RN_PBITS{1'b0}}; a3_ps2 = {RN_PBITS{1'b0}}; end
    wire   iss_alu3 = a3_v & ~redirect;
+
+   // ---- DISPATCH STAGE (cycle boundary) -------------------------------------------------
+   // The swizzle crossbar (slot->pipe mux, selects gated by the deep d3_take accept chain)
+   // fed the schedulers' e_r/e_ps registers combinationally, and that mux+hit sat on the
+   // dispatch->e_r critical path (-0.42 ns vs the pre-swizzle 2-ALU core). This stage is a
+   // per-pipe register between the crossbar output and each scheduler: the crossbar (and the
+   // per-slot same-cycle wakeup fold, below) resolve into stg_* at T; the scheduler, psmem
+   // and plmem consume the REGISTERED stg_* at T+1. Cost: +1 cycle to refill after a redirect.
+   // Each pipe takes at most one dispatch per cycle (the swizzle's <=1 LS, <=1 FC, <=1 per
+   // ALU), so each stage is 1-deep. Back-pressure stays at the frontend: iq_ready becomes
+   // "~stg_v | sched_room" so a stuck stage (scheduler full) holds dispatch, never drops it.
+   // Wakeup-catch: an op waiting in the stage must not miss a writeback that fires while it
+   // waits. The dispatch-cycle (T) writeback is folded per-slot into stg_r at load (srdy_hit
+   // below, computed from the early slot pregs so it stays off the mux->register path); every
+   // later stuck cycle ORs a fresh wkv snoop of the stage's own pregs; and the move cycle is
+   // caught by the scheduler's own fill hit(d_ps). See docs/OOO2-Spec.md 15.
+   reg              stg_v_ia, stg_v_ib, stg_v_l, stg_v_f;
+   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_l, stg_rob_f;
+   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_l, stg_ps_f;
+   reg [1:0]        stg_r_ia, stg_r_ib;
+   reg [2:0]        stg_r_l, stg_r_f;
+   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_l, stg_prd_f;
+   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_l, stg_pl_f;
+   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_l=1'b0; stg_v_f=1'b0; end
+   // The scheduler accepts the stage op when it has room; back-pressure to the frontend below.
+   wire mv_ia = stg_v_ia & ri_ready;
+   wire mv_ib = stg_v_ib & ri2_ready;
+   wire mv_l  = stg_v_l  & rl_ready;
+   wire mv_f  = stg_v_f  & rf_ready;
+
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
-      .d_valid(rn_valid & d_cls_i),.d_ready(ri_ready),.d_rob(rob_d_idx),
-      .d_ps({rn_prs2, rn_prs1}),.d_r(d_srdy[1:0]),.d_prd(d_prd_g),.d_ent(ri_d_ent),
+      .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
+      .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_ent(ri_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
@@ -1008,8 +1053,8 @@ module ooo2_core
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i2
      (.clk(clk),.reset(reset),
-      .d_valid(rn_valid_b & d2_cls_i),.d_ready(ri2_ready),.d_rob(rob_d_idx2),
-      .d_ps({rn_prs2_b, rn_prs1_b}),.d_r(d2_srdy[1:0]),.d_prd(d2_prd_g),.d_ent(ri2_d_ent),
+      .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
+      .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_ent(ri2_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
      .iss_take(ri2_take),
@@ -1020,7 +1065,7 @@ module ooo2_core
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i3
      (.clk(clk),.reset(reset),
-      .d_valid(rn_valid_c & d3_cls_i),.d_ready(ri3_ready),.d_rob(rob_d_idx3),
+      .d_valid(1'b0),.d_ready(ri3_ready),.d_rob(rob_d_idx3),   // DEAD: the 3rd ALU is removed; slot-3 ALU swizzles to ALUa/ALUb
       .d_ps({rn_prs2_c, rn_prs1_c}),.d_r(d3_srdy[1:0]),.d_prd(d3_prd_g),.d_ent(ri3_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
@@ -1031,10 +1076,10 @@ module ooo2_core
    ooo2_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(0),.INORDER(1)) u_iq_l
      (.clk(clk),.reset(reset),
-      .d_valid((rn_valid & d_cls_l) | (rn_valid_b & d2_cls_l)),.d_ready(rl_ready),
-      .d_rob(b_to_l ? rob_d_idx2 : rob_d_idx),
-      .d_ps(b_to_l ? {rn_prs3_b, rn_prs2_b, rn_prs1_b} : {rn_prs3, rn_prs2, rn_prs1}),.d_r(b_to_l ? d2_srdy : d_srdy),
-      .d_prd(b_to_l ? d2_prd_g : d_prd_g),.d_ent(rl_d_ent),
+      .d_valid(mv_l),.d_ready(rl_ready),
+      .d_rob(stg_rob_l),
+      .d_ps(stg_ps_l),.d_r(stg_r_l),
+      .d_prd(stg_prd_l),.d_ent(rl_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(~m_advance | (i_v & i_needs_m)),
       .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
@@ -1051,10 +1096,10 @@ module ooo2_core
              .FIXEDL(0),.INORDER(0)) u_iq_f
      (.clk(clk),.reset(reset),
       // FP-arith AND control flow (jal/jalr/bXX) share this one queue and issue slot.
-      .d_valid((rn_valid & d_cls_fc) | (rn_valid_b & d2_cls_fc)),.d_ready(rf_ready),
-      .d_rob(b_to_f ? rob_d_idx2 : rob_d_idx),
-      .d_ps(b_to_f ? {rn_prs3_b, rn_prs2_b, rn_prs1_b} : {rn_prs3, rn_prs2, rn_prs1}),.d_r(b_to_f ? d2_srdy : d_srdy),
-      .d_prd(b_to_f ? d2_prd_g : d_prd_g),.d_ent(rf_d_ent),
+      .d_valid(mv_f),.d_ready(rf_ready),
+      .d_rob(stg_rob_f),
+      .d_ps(stg_ps_f),.d_r(stg_r_f),
+      .d_prd(stg_prd_f),.d_ent(rf_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(j_v & ~j_adv),           // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
@@ -1063,9 +1108,31 @@ module ooo2_core
       .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
 
    // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
-   wire iq_ready = d_cls_i ? ri_ready : d_cls_l ? rl_ready : rf_ready;   // CTF falls to rf (shared queue)
-   wire iq_ready_b = d2_cls_i ? ri2_ready : d2_cls_l ? rl_ready : rf_ready;
+   // Stage-aware: a slot may dispatch iff its target pipe's dispatch stage is empty OR drains
+   // into the scheduler this cycle (~stg_v | sched_room). A stuck stage (scheduler full) thus
+   // holds dispatch at the frontend rather than losing the op behind the stage register.
+   wire alua_room = ~stg_v_ia | ri_ready;
+   wire alub_room = ~stg_v_ib | ri2_ready;
+   wire m_room    = ~stg_v_l  | rl_ready;
+   wire f_room    = ~stg_v_f  | rf_ready;
+   wire iq_ready = d_cls_i ? alua_room : d_cls_l ? m_room : f_room;   // CTF falls to F (shared queue)
+   wire iq_ready_b = d2_cls_i ? alub_room : d2_cls_l ? m_room : f_room;
    wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_l = rn_valid_b & d2_cls_l, b_to_f = rn_valid_b & d2_cls_fc;
+   // ---- dispatch swizzle: slot C reaches ANY pipe (the 3rd ALU is gone) ----
+   // ALUa <- I1 if ALU, else I3(ALU & ALU2); ALUb <- I2 if ALU, else I3(ALU & ~ALU2).
+   // I3's ALU PREFERS ALUb (falls to ALUa only when ALUb is taken by an I2 ALU): I1 always
+   // takes ALUa, so ALUa is busier under the fetch-length bias; this evens the two ALUs.
+   // LS/FC <- whichever slot is LS/FC (the accepted prefix has <=1 of each).
+   wire c_to_ib = rn_valid_c & d3_cls_i & ~d2_cls_i;  // slot3 ALU -> ALUb (PREFERRED: free unless I2 is ALU)
+   wire c_to_ia = rn_valid_c & d3_cls_i &  d2_cls_i;  // slot3 ALU -> ALUa (ALUb taken by an I2 ALU)
+   wire c_to_l  = rn_valid_c & d3_cls_l;              // slot3 LS  -> M
+   wire c_to_f  = rn_valid_c & d3_cls_fc;             // slot3 FC  -> F/CTF
+   wire l_slot0 = rn_valid   & d_cls_l;               // slot1 -> M
+   wire f_slot0 = rn_valid   & d_cls_fc;              // slot1 -> F/CTF
+   // slot-3's destination-scheduler ready (by class, NOT rn_valid_c -> no combinational loop
+   // through d3_take): ALU->ALUa/ALUb by I1's class, LS->M, FC->F.
+   wire iq_ready_c = d3_cls_i ? (d2_cls_i ? alua_room : alub_room)
+                   : d3_cls_l ? m_room : f_room;
    wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
                                : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
                                :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
@@ -1132,13 +1199,13 @@ module ooo2_core
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
    wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
-   wire c_to_i3 = rn_valid_c & d3_cls_i;                 // slot C -> the third scheduler (dead at IW=2)
    always @(posedge clk) begin
-      if (rn_valid & d_cls_i) psmem_i[ri_d_ent]  <= ps_in;
-      if (b_to_i2)            psmem_i2[ri2_d_ent] <= ps_in_b;
-      if (c_to_i3)            psmem_i3[ri3_d_ent] <= ps_in_c;
-      if ((rn_valid & d_cls_l) | b_to_l) psmem_l[rl_d_ent] <= b_to_l ? ps_in_b : ps_in;
-      if ((rn_valid & d_cls_fc) | b_to_f) psmem_f[rf_d_ent] <= b_to_f ? ps_in_b : ps_in;
+      // Written when the stage op moves into its scheduler (T+1), at the entry that scheduler
+      // allocates (*_d_ent), from the REGISTERED stage payload -- co-timed with the e_ps write.
+      if (mv_ia) psmem_i[ri_d_ent]  <= stg_ps_ia;
+      if (mv_ib) psmem_i2[ri2_d_ent] <= stg_ps_ib;
+      if (mv_l)  psmem_l[rl_d_ent]  <= stg_ps_l;
+      if (mv_f)  psmem_f[rf_d_ent]  <= stg_ps_f;
    end
    wire [RN_PBITS-1:0] iq_iss_ps1 = ps_out[0 +: RN_PBITS];
    wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
@@ -1309,6 +1376,74 @@ module ooo2_core
                            d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
                            d3_br_func, (dcr2 ? 1'b0 : d3_mis_taken), (dcr2 ? 1'b1 : d3_mis_nt),
                            d3_rs1_v, d3_rs2_v, d3_rs3_v, d3_ord, sq_d_idx, lq_d_idx};
+   // ---- dispatch-stage load + wakeup snoop ----------------------------------------------
+   // The dispatch-cycle (T) writeback fold, computed PER SLOT from the early slot pregs so the
+   // wkv compare parallels the accept chain and stays off the crossbar-mux->stg_r path. d_srdy
+   // reflects writebacks up to T-1 (the pending read is pure); wk(p) contributes T's.
+   function automatic wk;
+      input [RN_PBITS-1:0] p;
+      wk = (wkv[0] & (wkp[0*RN_PBITS +: RN_PBITS] == p))
+         | (wkv[1] & (wkp[1*RN_PBITS +: RN_PBITS] == p))
+         | (wkv[2] & (wkp[2*RN_PBITS +: RN_PBITS] == p))
+         | (wkv[3] & (wkp[3*RN_PBITS +: RN_PBITS] == p))
+         | (wkv[4] & (wkp[4*RN_PBITS +: RN_PBITS] == p));
+   endfunction
+   wire [2:0] srdy_hit0 = d_srdy  | {wk(rn_prs3),   wk(rn_prs2),   wk(rn_prs1)};
+   wire [2:0] srdy_hit1 = d2_srdy | {wk(rn_prs3_b), wk(rn_prs2_b), wk(rn_prs1_b)};
+   wire [2:0] srdy_hit2 = d3_srdy | {wk(rn_prs3_c), wk(rn_prs2_c), wk(rn_prs1_c)};
+   // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
+   wire [1:0] snp_ia = {wk(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
+   wire [1:0] snp_ib = {wk(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
+   wire [2:0] snp_l  = {wk(stg_ps_l[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[0*RN_PBITS +: RN_PBITS])};
+   wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
+   always @(posedge clk) begin
+      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+      else begin
+         // ALUa: I1(ALU)->ALUa, or I3(ALU & I2 ALU)->ALUa. Single-in (the swizzle's <=2 ALU).
+         if ((rn_valid & d_cls_i) | c_to_ia) begin
+            stg_v_ia   <= 1'b1;
+            stg_rob_ia <= c_to_ia ? rob_d_idx3 : rob_d_idx;
+            stg_ps_ia  <= c_to_ia ? ps_in_c : ps_in;
+            stg_r_ia   <= c_to_ia ? srdy_hit2[1:0] : srdy_hit0[1:0];
+            stg_prd_ia <= c_to_ia ? d3_prd_g : d_prd_g;
+            stg_pl_ia  <= c_to_ia ? pl_in_c : pl_in;
+         end else if (mv_ia) stg_v_ia <= 1'b0;
+         else if (stg_v_ia) stg_r_ia <= stg_r_ia | snp_ia;
+         // ALUb: I2(ALU)->ALUb, or I3(ALU & ~I2 ALU)->ALUb.
+         if (b_to_i2 | c_to_ib) begin
+            stg_v_ib   <= 1'b1;
+            stg_rob_ib <= c_to_ib ? rob_d_idx3 : rob_d_idx2;
+            stg_ps_ib  <= c_to_ib ? ps_in_c : ps_in_b;
+            stg_r_ib   <= c_to_ib ? srdy_hit2[1:0] : srdy_hit1[1:0];
+            stg_prd_ib <= c_to_ib ? d3_prd_g : d2_prd_g;
+            stg_pl_ib  <= c_to_ib ? pl_in_c : pl_in_b;
+         end else if (mv_ib) stg_v_ib <= 1'b0;
+         else if (stg_v_ib) stg_r_ib <= stg_r_ib | snp_ib;
+         // M (load/store): whichever slot is the (single) LS.
+         if (l_slot0 | b_to_l | c_to_l) begin
+            stg_v_l   <= 1'b1;
+            stg_rob_l <= l_slot0 ? rob_d_idx : b_to_l ? rob_d_idx2 : rob_d_idx3;
+            stg_ps_l  <= l_slot0 ? ps_in : b_to_l ? ps_in_b : ps_in_c;
+            stg_r_l   <= l_slot0 ? srdy_hit0 : b_to_l ? srdy_hit1 : srdy_hit2;
+            stg_prd_l <= l_slot0 ? d_prd_g : b_to_l ? d2_prd_g : d3_prd_g;
+            stg_pl_l  <= l_slot0 ? pl_in : b_to_l ? pl_in_b : pl_in_c;
+         end else if (mv_l) stg_v_l <= 1'b0;
+         else if (stg_v_l) stg_r_l <= stg_r_l | snp_l;
+         // F (FP/CTF): whichever slot is the (single) FC.
+         if (f_slot0 | b_to_f | c_to_f) begin
+            stg_v_f   <= 1'b1;
+            stg_rob_f <= f_slot0 ? rob_d_idx : b_to_f ? rob_d_idx2 : rob_d_idx3;
+            stg_ps_f  <= f_slot0 ? ps_in : b_to_f ? ps_in_b : ps_in_c;
+            stg_r_f   <= f_slot0 ? srdy_hit0 : b_to_f ? srdy_hit1 : srdy_hit2;
+            stg_prd_f <= f_slot0 ? d_prd_g : b_to_f ? d2_prd_g : d3_prd_g;
+            stg_pl_f  <= f_slot0 ? pl_in : b_to_f ? pl_in_b : pl_in_c;
+         end else if (mv_f) stg_v_f <= 1'b0;
+         else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
+         // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
+         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+      end
+   end
+
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
@@ -1341,11 +1476,11 @@ module ooo2_core
    wire [PLW-1:0] pla3_out = pla3_q;                        // the third ALU port's
    wire [PLW-1:0] plf_out  = plf_q;                         // the F/CTF port's
    always @(posedge clk) begin
-      if (rn_valid & d_cls_i) plmem_i[ri_d_ent]  <= pl_in;
-      if (b_to_i2)            plmem_i2[ri2_d_ent] <= pl_in_b;
-      if (c_to_i3)            plmem_i3[ri3_d_ent] <= pl_in_c;
-      if ((rn_valid & d_cls_l) | b_to_l) plmem_l[rl_d_ent] <= b_to_l ? pl_in_b : pl_in;
-      if ((rn_valid & d_cls_fc) | b_to_f) plmem_f[rf_d_ent] <= b_to_f ? pl_in_b : pl_in;
+      // Co-timed with the scheduler fill (T+1), from the REGISTERED stage payload.
+      if (mv_ia) plmem_i[ri_d_ent]  <= stg_pl_ia;
+      if (mv_ib) plmem_i2[ri2_d_ent] <= stg_pl_ib;
+      if (mv_l)  plmem_l[rl_d_ent]  <= stg_pl_l;
+      if (mv_f)  plmem_f[rf_d_ent]  <= stg_pl_f;
    end
 
    wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
@@ -1538,8 +1673,10 @@ module ooo2_core
    wire [1:0]          sq_c_size;
    wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_pt_ld_kill, lsu_xo_v, lsu_xo_unc, lsu_xo_mem;
    wire [55:0]         lsu_xo_pa;
-   wire st_b = rn_valid_b & d2_st_nb;                 // B is the store of the pair
-   wire d_st_alloc = (rn_valid & d_st_nb) | st_b;
+   wire st_a = rn_valid   & d_st_nb;
+   wire st_b = rn_valid_b & d2_st_nb;
+   wire st_c = rn_valid_c & d3_st_nb;                 // slot C store (swizzle)
+   wire d_st_alloc = st_a | st_b | st_c;              // <=1 LS/cycle -> at most one true
    // The head entry may go to memory only once it IS the ROB head: that is the point at
    // which no older instruction can still trap and no redirect can still squash it.
    // A committed store drains whenever the port is free: it was released by the ROB's
@@ -1556,7 +1693,7 @@ module ooo2_core
    ooo2_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
      (.clk(clk), .reset(reset),
-      .d_alloc(d_st_alloc), .d_rob(st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_b ? rn_prs2_b : rn_prs2),
+      .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2),
       .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
@@ -1594,16 +1731,18 @@ module ooo2_core
    wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;
    wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
-   wire ld_b = rn_valid_b & d2_ld_nb;                 // B is the load of the pair
-   wire d_ld_alloc = (rn_valid & d_ld_nb) | ld_b;
+   wire ld_a = rn_valid   & d_ld_nb;
+   wire ld_b = rn_valid_b & d2_ld_nb;
+   wire ld_c = rn_valid_c & d3_ld_nb;                 // slot C load (swizzle)
+   wire d_ld_alloc = ld_a | ld_b | ld_c;              // <=1 LS/cycle -> at most one true
    // a load behind a store in the same cycle captures the tag AFTER that store's
-   wire [SQ_TB-1:0] ld_sqtag = sq_d_tag + {{(SQ_TB-1){1'b0}}, ld_b & rn_valid & d_st_nb};
+   wire [SQ_TB-1:0] ld_sqtag = sq_d_tag;   // <=1 LS/cycle: a store and a load never co-dispatch
 
    ooo2_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .SQIB(SQ_TB)) u_lq
      (.clk(clk), .reset(reset),
-      .d_alloc(d_ld_alloc), .d_rob(ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_b ? d2_prd_g : d_prd_g),
-      .d_rd(ld_b ? d2_rd : d_rd), .d_rd_v(ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
+      .d_alloc(d_ld_alloc), .d_rob(ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_c ? d3_prd_g : ld_b ? d2_prd_g : d_prd_g),
+      .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_size(m_mem_size),
@@ -3288,15 +3427,20 @@ module ooo2_core
    // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
    wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
    // slot B's own hold (see the rules where d2_cls is defined); d_take carries the redirect terms
-   wire d2_hold = ~d_plain | ~d2_plain | (d2_cls == d_cls) | ~iq_ready_b | ~rob_ready2 | rn_stall
+   wire d2_hold = ~d_plain | ~d2_plain | ((d_cls_l & d2_cls_l) | (d_cls_fc & d2_cls_fc)) | ~iq_ready_b | ~rob_ready2 | rn_stall
                 | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));
    wire d2_take = d2_valid & d_take & ~d2_hold & ~dcr0;   // ~dcr0: slot 0 decode-redirects -> squash the younger slots packed after it
    assign rn_valid_b = d2_take;
-   // slot C (Stage 3): dispatches ONLY as an ALU op into its own scheduler i3 (which A/B never
-   // use, so there is no class hazard). Anything else holds and dispatches next cycle as slot
-   // A. three_wide is the master enable (0 at IW=2 -> C never dispatches -> retire-identical).
-   wire d3_hold = ~three_wide | ~d3_cls_i | ~d_plain | ~d2_plain | ~d3_plain
-                | ~ri3_ready | ~rob_ready3 | rn_stall;
+   // slot C (dispatch swizzle): reaches ANY pipe now (the 3rd ALU is gone). It is accepted per
+   // the take3 rule and swizzled -- LS->M, FC->F, ALU->ALUb if I1 is ALU else ALUa. three_wide
+   // is the master enable (0 at IW=2 -> C never dispatches -> retire-identical to the 2-wide core).
+   // take3 class-accept (spec): ALU3 ok unless I1&I2 both ALU; LS3/FC3 ok unless already used.
+   wire d3_accept = (d3_cls_i  & ~(d_cls_i & d2_cls_i))
+                  | (d3_cls_l  & ~d_cls_l  & ~d2_cls_l)
+                  | (d3_cls_fc & ~d_cls_fc & ~d2_cls_fc);
+   wire d3_hold = ~three_wide | ~d3_accept | ~d_plain | ~d2_plain | ~d3_plain
+                | ~iq_ready_c | ~rob_ready3 | rn_stall
+                | (d3_st_nb & ~sq_d_ready) | (d3_ld_nb & ~lq_d_ready);
    wire d3_take = d3_valid & d2_take & ~d3_hold & ~dcr1;  // ~dcr1 (and ~dcr0 via d2_take): squash slots after a decode-redirect CTI
    assign rn_valid_c = d3_take;
    // The oldest DISPATCHED decode-redirect CTI drives the frontend resteer (fe_red below).
@@ -3315,7 +3459,11 @@ module ooo2_core
       if (rn_valid_b & ((d_st_nb & d2_st_nb) | (d_ld_nb & d2_ld_nb)))
          $fatal(1, "ooo2_core: two allocations into one memory queue");
       if (rn_valid_c & ~rn_valid_b)     $fatal(1, "ooo2_core: slot C dispatched without slot B");
-      if (rn_valid_c & ~d3_cls_i)       $fatal(1, "ooo2_core: slot C dispatched but not an ALU op");
+      // swizzle mutual-exclusion: no two dispatched ops can target the same pipe.
+      if (c_to_ia & (rn_valid & d_cls_i))   $fatal(1, "ooo2_core: swizzle put two ops on ALUa");
+      if (c_to_ib & b_to_i2)                $fatal(1, "ooo2_core: swizzle put two ops on ALUb");
+      if ((l_slot0 + b_to_l + c_to_l) > 2'd1) $fatal(1, "ooo2_core: swizzle put two ops on the M pipe");
+      if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "ooo2_core: swizzle put two ops on the F pipe");
    end
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
