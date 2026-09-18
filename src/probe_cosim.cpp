@@ -219,6 +219,36 @@ int csr_read_to_override(uint32_t insn) {
 }
 
 // Step simmerv for one buffered DUT retire P and compare.
+// STORE DATA (B5, 2026-09-17). The PA compare alone cannot see a wrong byte or a wrong byte
+// enable: a store that lands the right address with the wrong bytes corrupts memory just as
+// silently. The reference reads back the aligned 64-bit word AFTER its store (mem_rdback,
+// RAM only); the DUT reports the raw value and the log2 size of every plain store (size 0xF
+// = an AMO's RMW, an SC, a cbo: not checkable this way). Every byte lane the DUT wrote within
+// that word must equal the reference word's byte, and the sizes must agree. The count of
+// checked and unchecked stores is printed with the progress line so a class that is never
+// checked is visible, not silent.
+static unsigned long long g_st_checked = 0, g_st_unchecked = 0;
+static bool store_data_ok(const SimmervRetire& dut, const SimmervRetire& ref) {
+    if (dut.mem_kind != 2 || ref.mem_kind != 2) return true;
+    if (!ref.mem_ram || dut.mem_size == 0xF) { g_st_unchecked++; return true; }
+    g_st_checked++;
+    // +st_corrupt=<seqno>: flip a byte of that retirement's reported value -- the check's own
+    // self-test (a corrupted byte must abort at ITS retire), not a DUT fault.
+    static const unsigned long long corrupt_at =
+        plusarg("st_corrupt") ? std::strtoull(plusarg("st_corrupt"), nullptr, 10) : 0ull;
+    const uint64_t val = dut.mem_rdback ^ ((corrupt_at && dut.seqno == corrupt_at) ? 0x80u : 0u);
+    const unsigned n = 1u << dut.mem_size, off = (unsigned)(ref.mem_pa & 7);
+    bool ok = (n == ref.mem_size);
+    for (unsigned i = 0; ok && i < n && off + i < 8; i++)
+        ok = ((val >> (8 * i)) & 0xff) == ((ref.mem_rdback >> (8 * (off + i))) & 0xff);
+    if (!ok)
+        std::fprintf(stderr, "cosim: STORE DATA MISMATCH pc=%016llx pa=%012llx dut size=%u value=%016llx"
+                             " ref size=%u word-after=%016llx\n", (unsigned long long)dut.pc,
+                     (unsigned long long)ref.mem_pa, n, (unsigned long long)val,
+                     (unsigned)ref.mem_size, (unsigned long long)ref.mem_rdback);
+    return ok;
+}
+
 void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
     simmerv_set_mtime(g_ctx, dut.mtime);
     const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
@@ -283,14 +313,15 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
         // Compare the PA on both loads and stores; only when BOTH sides agree an access
         // happened, so a model that reports no access never forces a false abort.
         (dut.mem_kind == 0 || ref.mem_kind == 0 ||
-         (dut.mem_kind == ref.mem_kind && dut.mem_pa == ref.mem_pa));
+         (dut.mem_kind == ref.mem_kind && dut.mem_pa == ref.mem_pa)) &&
+        store_data_ok(dut, ref);
 
     g_ring[g_ring_idx] = { dut, ref, true };
     g_ring_idx = (g_ring_idx + 1) % RING_N;
 
     if (g_seqno == 1 || (g_seqno % 1'000'000) == 0)
-        std::fprintf(stderr, "cosim: %llu retirements ok (pc=%016llx)\n",
-                     (unsigned long long)g_seqno, (unsigned long long)dut.pc);
+        std::fprintf(stderr, "cosim: %llu retirements ok (pc=%016llx) stores checked=%llu unchecked=%llu\n",
+                     (unsigned long long)g_seqno, (unsigned long long)dut.pc, g_st_checked, g_st_unchecked);
 
     if (!ok) mismatch_abort(dut, ref);
 }
@@ -370,7 +401,9 @@ extern "C" void probe_retire(
     unsigned long long mepc,
     unsigned char      seip,
     unsigned char      mem_kind,
-    unsigned long long mem_pa)
+    unsigned long long mem_pa,
+    unsigned long long mem_data,
+    unsigned char      mem_size)
 {
     if (!g_inited) cosim_init();
 
@@ -384,6 +417,7 @@ extern "C" void probe_retire(
     e.prv = prv; e.trapped = trapped; e.rd_val = rd_val;
     e.trap_cause = trap_cause; e.trap_tval = trap_tval; e.mtime = mtime; e.mepc = mepc;
     e.mem_kind = mem_kind; e.mem_pa = mem_pa;   // memory effect, compared below
+    e.mem_size = mem_size; e.mem_rdback = mem_data;   // the DUT record carries the store's raw value here
 
     if (g_have_prev) {
         g_prev.next_pc = pc;            // in-order commit: this retire's pc

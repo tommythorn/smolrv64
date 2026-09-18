@@ -58,6 +58,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ "$(cat $STAMP 2>/dev/null)" != 
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
+      ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v ../src/sd_dpi.cpp \
       tb_ooo2_linux.v > /tmp/ooo2linuxbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/ooo2linuxbuild.log | head -20; exit 1; fi
    echo "$want" > "$STAMP"

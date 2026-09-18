@@ -22,7 +22,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **two-wide** (plan items 10a-10c, 2026-09-05/06; one-wide before) |
-| Issue | **dynamic**: ALU ops (two schedulers, two ALUs) and FP ops reorder freely; memory, mul/div, CSR, branches and jumps issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Issue | **dynamic**: ALU ops (two schedulers, two ALUs) reorder freely; FP ops, branches, jumps and mul/div reorder on the F/CTF/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to 2/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
@@ -72,8 +72,9 @@ and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2` and `u_iq_f` resp
 integer schedulers since item 10d-ii, 2026-09-05: slot A's ALU ops and slot B's, each with its
 own ALU). An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
 
-Everything else carries an `ord` bit and keeps program order in `u_iq_l` — memory, AMO,
-mul, div, CSR, `fence.i`, cbo, branches, jumps, and anything already known to fault. Only
+Everything else carries an `ord` bit; of those, memory, AMO, CSR, `fence.i`, cbo and
+anything already known to fault keep program order in `u_iq_l`, while FP, branches, jumps
+and (since C1, 2026-09-17) mul/div are pulled out into the F/CTF/MD queue (§7). Only
 memory actually requires that ordering; the rest inherit it because they share M (§6.1).
 
 That split is what makes the rest unnecessary rather than merely deferred:
@@ -362,8 +363,9 @@ core's pending lookup indexes the MAP's candidate and masks its result with `r_b
 ### 5.1 Sharding
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
-read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
-the F stage (FPU results, integer destinations included), the CTF link, and M for the
+read ports only; sharding by *writer* is what buys write ports. SH_FE has four writers:
+the F stage (FPU results, integer destinations included), the CTF link, the MD stage
+(mul/div results by tag, since C1 of the memory backend program, 2026-09-17), and M for the
 in-core FP ops (FSGNJ, FMIN/FMAX, the compares, FMV, FCLASS). **Since 2026-09-17 the link
 never waits on M**: `cf_link_wb = pend & ~fp_wb`, and M yields the cycle when its FE-shard
 write would collide (`m_fe_yield = cf_link_wb & (m_shard == SH_FE)` in `m_done`,
@@ -377,8 +379,8 @@ rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are t
 |---|---|---|---|
 | IE | 64 | **the ALU, alone** (slot A's ALU ops) | > 32 (integer arch regs) |
 | IE2 | 64 | **the second ALU, alone** (slot B's ALU ops, item 10d-ii, 2026-09-05) | > 32, like IE; code 3 of the shard field was free |
-| LD | 128 | everything M completes: LSU, mul, div, CSR, jump link | > 64: can hold integer *and* FP mappings |
-| FE | 128 | FPU | > 64: the FPU writes integer regs too (`fcvt.w.d`, `fmv.x.d`, `fle.d`) |
+| LD | 128 | everything M completes: LSU, CSR | > 64: can hold integer *and* FP mappings |
+| FE | 128 | FPU, the CTF link register, the MD stage (mul/div, C1) | > 64: the FPU writes integer regs too (`fcvt.w.d`, `fmv.x.d`, `fle.d`) |
 
 **A destination's shard is chosen by the UNIT that writes it, never by the data type.** A
 CSR read and a jump's link register are integer results, but M produces them, so they take
@@ -706,15 +708,14 @@ runs inside every 240-test and cosim run.
 | second ALU (slot B's ALU ops, item 10d-ii) | 1 cycle (at issue) | — | no | IE2 shard |
 | jump link (`jal`/`jalr`) | 1 cycle | 1 | yes | LD shard (M writes it) |
 | CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
-| mul (`mul3`) | 3 cycles, pipelined | 1 | yes | LD shard |
-| div (`divider`) | ~64 cycles, FSM | 1 | yes | LD shard |
+| mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
+| div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
 | FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | FE shard |
 | LSU load | see §8 | 1 | **no** | LD shard |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
-Only loads and FP are non-blocking. mul, div, stores and AMOs still hold M — for mul/div
-because they are rare enough not to have paid for the work yet, for stores because a store
-has no destination register so a scoreboard slot buys it nothing.
+Only loads, FP and (since C1) mul/div are non-blocking. Stores and AMOs still hold M: a
+store has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
 
@@ -747,6 +748,22 @@ load wins, FP waits. Safe without a ROB walk because an FP op cannot trap (it re
 once FP stopped blocking M the two can coincide, and a mux silently dropped the compare's NV.
 
 ---
+
+### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
+
+A mul/div is class M at dispatch (`d_cls_m`), shares `u_iq_f` (NF 5 → 8) with FP arithmetic
+and control flow, and drains from the select register `j_*` into the MD stage (`iss_md`, the
+port's third drain) with the port's forwarded reads as its operands. The stage holds one op:
+`mul3` (3 cycles) or the divider (~64) starts in the issue cycle, the result is latched on the
+unit's done pulse (`md_pend`, `md_res_q`) and written to SH_FE by the stage's own tag when the
+FPU and the CTF link are not writing (`md_wr`; M yields the shard as it does to the link); the
+ROB completes through a ninth port (`md_wb`). `abort(redirect)` on the units and the flush arm
+last keep it sound while redirects fire at the ROB head. What it removes: the ordered queue
+no longer holds a divide in front of every younger load, and M's completion cone, the
+load-shard write port and `wb_ld` no longer know a multiplier exists. Invariants: an issue
+never starts a busy unit, never lands on a shard other than SH_FE, never reaches M; the
+writeback's clear precedes the issue's set in the stage register (an issue in the writeback
+cycle is legal and was lost once).
 
 ## 8. Load/store unit and MMU
 
@@ -1116,6 +1133,9 @@ arbiter disappears". Half of that holds: IE takes only the ALU/CSR result and FE
 FPU, but **LD has two writers** — a landing load and M's mul/div — so LD still needs an
 arbiter, or mul/div needs its own shard. It costs nothing today because `m_done` is forced
 low on `ld_land`/`fp_land`, and an assertion fires the moment that stops being true.
+(Resolved by C1, 2026-09-17: mul/div write FE from the MD stage; LD's writers are the
+landing load and M's CSR result, and FE's are the FPU, the CTF link and the MD stage, muxed
+before the shard with M yielding.)
 
 The **ROB completion port** is `NW`=5 wide since 10d-ii (M, the ALU, the FPU, the store
 queue's commit, the second ALU); the only yield left is M's, to a landing load or FP result.
@@ -1212,6 +1232,7 @@ an event to a run means dropping one.
 | `FB_HIT` / `FB_RHIT` | r0315 / r0316 | **retired with the fetch buffer (Stage 2): tied to 0.** The token/bit is kept so the board perf map stays stable; the alignment latch has no equivalent served-hit event yet |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
+| `ST_MUL` / `ST_DIV` | r0302 / r0301 | since C1: cycles the MD stage holds a multiply / a divide (occupancy on the F/CTF/MD port), no longer an M stall |
 | `MEM_HITSER` | r0319 | a ready load candidate the LSU door did not take (hit serialization) |
 | `MEM_LDINFL` | r031a | a load access in flight; a hit is ~3 cycles, the rest is miss wait |
 | `MEM_STDOOR` | r031b | a store at the D$ door, unaccepted |
@@ -1235,7 +1256,7 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | lint | `src/lint.sh` | `lint: clean` |
 | riscv-tests | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | unit benches of the shared blocks and devices | `src/run-tb.sh` | `tb pass=19 / 19` |
-| Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt` |
+| Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17, the D$ stream buffer T18-T20 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
@@ -1243,6 +1264,8 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | Ethernet RX engine (MACs + the slot ring, two clocks) | `ooo2/run-ooo2-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
+| disk-backed lockstep: virtio-blk, non-coherent DMA (B6, 2026-09-17) | `make -C workloads/tiny128 cosim-blk` | no divergence, `BLKCHECK-OK` on the console (the initrd's S99blkcheck mounts the 4 MiB ext4 image, verifies every byte, writes a copy back and re-reads it past the page cache); the runner fails on `BLKCHECK-FAIL` or its absence |
+| DDR-latency sweep (B7, 2026-09-17) | `tools/mem-sweep.sh docs/measurements/<date>-mem-sweep.txt` | the table of retires at 60 M for latency 4 / measured / 80 at IW=2 and IW=3; an MLP increment is judged by how much of the gap to latency 4 it closes |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
 | the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, rtl= recorded |
 
@@ -1257,6 +1280,19 @@ DDR model is the measured shape by default (`+ddr_lat=N` for a flat sweep).
 
 Invariant assertions are **always on** (`$fatal`, never `` `ifdef ``). Only flood-volume
 tracers and stats are gated.
+
+**The lockstep compares stores byte-exact (B5, 2026-09-17).** Until then the memory effect of
+a retiring instruction was its kind and PA only: a store that landed the right address with
+wrong bytes or wrong byte enables corrupted both memories in silence and surfaced, if ever, as
+an unrelated fault much later. Now the reference reads back the aligned 64-bit word after each
+RAM store (`mem_rdback`, `mem_size`), the DUT reports the raw value and log2 size of every
+plain store (the store queue's committing entry through its landing bypass, or the LSU's
+M-path store), and `probe_cosim.cpp` requires the sizes to agree and every byte lane the DUT
+wrote within that word to equal the reference word's byte. An AMO's read-modify-write, an SC,
+a cbo and an MMIO store are not checkable this way and are counted, not skipped silently: the
+progress line prints `stores checked=N unchecked=M` (tiny128 at 60 M: 3,051,638 checked, 4,469
+unchecked). `+st_corrupt=<retire#>` flips a byte of that retirement's reported value and must
+abort at that retire (the check's self-test; it does on retire 35, the boot's first store).
 
 ---
 
@@ -1300,6 +1336,8 @@ lockstep cosims):
 | w1p2 | the same RTL at `OOO2_IW=2` (the shipping width) | **+0.035** | 0 | 0 |
 | f1iw3 | + the D12 fix (device loads classified by their own translate PA; boots the board clean) | **+0.017** | 0 | 0 |
 | f1iw2 | the same at `OOO2_IW=2` | **+0.039** | 0 | 0 |
+| c1iw3 | C1 (mul/div on the F/CTF/MD port, NF 8) + B5 (store-data capture, sim-only) | **0.000** | 0 | 0 |
+| c1iw2 | the same at `OOO2_IW=2` (core; the top-level +0.010 is the virtio_blk backend) | **+0.070** | 0 | 0 |
 
 Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
@@ -1318,9 +1356,10 @@ closure above is real; the branch cannot ship until that defect is found (handof
 
 ## 14. Known limits
 
-- **One load and one mul/div outstanding.** FP is no longer among them: `NFLIGHT`=4 and
+- **One load outstanding, and one mul/div in the MD stage** (the stage holds one tag; a
+  second one waits in the F/CTF/MD queue). FP is no longer among them: `NFLIGHT`=4 and
   results return by tag, out of issue order (§7).
-- **ALU and FP ops reorder** (§2.1); memory, mul, div, CSR, branches and jumps still issue
+- **ALU, FP, CTF and mul/div reorder** (§2.1, §7); memory, AMO, CSR and fences still issue
   in program order from `u_iq_l`. A long-latency op in M still blocks *other M-class ops*
   behind it. Freeing those needs the load queue and store buffer, and `head_block` gone.
 - **M is a single execute slot** for everything except ALU ops (which complete at issue) and

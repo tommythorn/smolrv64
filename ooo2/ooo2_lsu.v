@@ -147,6 +147,8 @@ module ooo2_lsu
     // reference model reports the exact address.  Unused outside cosim (DCE'd).
     output reg  [55:0]     cos_pa,
     output reg  [1:0]      cos_kind,      // 0 = none, 1 = load, 2 = store
+    output reg  [63:0]     cos_data,      // a plain store's value (raw rs2) and log2 size; size 4'hF = not a
+    output reg  [3:0]      cos_size,      //   plain store's write (load, AMO's RMW, SC, cbo): not data-checked
     output wire            ld_busy,        // a LOAD access is in flight, hit or miss (MEM_LDINFL; counters only)
     output wire            idle);          // no memory op in flight (fence.i drain)
 
@@ -524,7 +526,7 @@ module ooo2_lsu
    always @(posedge clk) begin
       if (reset) begin
          st <= S_IDLE; mem_ren <= 1'b0; rsv_v <= 1'b0; mem_runcached <= 1'b0;
-         cos_pa <= 56'd0; cos_kind <= 2'd0;
+         cos_pa <= 56'd0; cos_kind <= 2'd0; cos_data <= 64'd0; cos_size <= 4'hF;
       end else begin
          mem_ren <= 1'b0;                                  // one-cycle request pulse
          case (st)
@@ -548,6 +550,10 @@ module ooo2_lsu
                 cos_pa        <= eff_pa;                      // exact, pre-alignment
                 cos_kind      <= ((pt_start & pt_store) | req_store) ? 2'd2
                                : req_amo ? 2'd2 : 2'd1;
+                cos_data      <= pt_start ? pt_data : req_st_data;
+                // a cbo is a store class with no data of its own (cbo.zero: the reference sees eight
+                // 8-byte stores, the DUT one line operation of size field 0): not data-checked
+                cos_size      <= (((pt_start & pt_store) | req_store) & ~eff_cbo) ? {2'b0, eff_size} : 4'hF;
                 xword_q <= xword;
                 nb_q    <= nb;  sgn_q <= eff_signed;  fp_q <= eff_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
@@ -590,7 +596,7 @@ module ooo2_lsu
                      if (take_next) begin                 // the next queued store, from here
                         own_pt <= 1'b1; own_pt_st <= 1'b1; src_pt <= 1'b1;
                         nc_q <= pt_unc; mem_runcached <= pt_unc;
-                        cos_pa <= pt_pa; cos_kind <= 2'd2;
+                        cos_pa <= pt_pa; cos_kind <= 2'd2; cos_data <= pt_data; cos_size <= {2'b0, pt_size};
                         xword_q <= xword; nb_q <= nb; boff_q <= xl_can ? boff : 3'd0;
                         pa2_q <= (pt_pa & ~56'd7) + 56'd8;
                         pa_q  <= xl_can ? (pt_pa & ~56'd7) : pt_pa;

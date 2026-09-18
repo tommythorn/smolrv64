@@ -6,12 +6,13 @@
 // so the monitor is bypassed and the DUT starts where the reference model would.
 // Console output comes out of rv_soc_top's UART $write.
 //
-//   +fw=<path> +dtb=<path> [+initrd=<path>]
+//   +fw=<path> +dtb=<path> [+initrd=<path>] [+disk=<image> [+disk_ro]] [+vio_trace] [+dma_rand=<seed>]
 //   [+dtb_off=<hex>] [+initrd_off=<hex>] [+a1=<hex>] [+cycles=N]   (0 = unbounded)
 //
-// VIRTIO IS TIED OFF: the tiny128 workload is initrd-based and its DTB carries no
-// virtio node, so the region is never touched. A disk-backed workload needs the
-// virtio-blk subsystem ported in from the retired sharded core's tb_cosim_linux.v.
+// virtio-blk (virtio_mmio + virtio_blk + a file-backed SD card model) is instantiated below;
+// it DMAs non-coherently into the behavioral DDR and mirrors every write into the reference
+// (B6, 2026-09-17). The default tiny128 DTB carries no virtio node, so without +disk the
+// region is never touched and the run is the plain initrd boot.
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
 `ifdef OOO2_MEM_SIZE_LG2
@@ -60,8 +61,9 @@ module tb;
       .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready),
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
-      .virtio_addr(), .virtio_read(), .virtio_write(), .virtio_wdata(), .virtio_be(),
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .irq_dbg());
+      .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
+      .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .irq_dbg());
 
    // THE DDR MODEL IS THE MEASURED ONE BY DEFAULT. Until 2026-09-04 the default was a flat
    // 4-cycle line latency, which is not this machine: the D$ admitted two requests under a
@@ -133,6 +135,159 @@ module tb;
          end else d_cnt <= d_cnt - 1;
       end
    end
+
+
+   // ==================== virtio-blk (B6, 2026-09-17; from the retired tb_cosim_linux.v) ====================
+   // +disk=<image> attaches a file-backed SPI-mode SD card behind virtio_blk (virtio_mmio at
+   // 0x10002000, PLIC source 11; the DTB must carry the node). The device DMAs straight into
+   // lram[] -- non-coherent, as on the board -- and every write beat is mirrored into simmerv
+   // (cosim_dma_write, drained between the two retires it separates), so the reference sees the
+   // same bytes the DUT's cache does not. Without +disk the region answers as a device with no
+   // media and the default DTB never touches it. +disk_ro keeps the image's writes in RAM.
+   //
+   // soc's window is 8 KiB: addr[12] selects blk(+0)/net(+0x1000). The sim has no net backend:
+   // net-window reads return 0 (magic 0 -> the kernel skips the node cleanly); truncating bit 12
+   // instead aliased net onto blk = a ghost vdb probe (seen in the retired tb_virtio).
+   wire [12:0] virtio_addr;  wire virtio_read, virtio_write;
+   wire [31:0] virtio_wdata; wire [3:0] virtio_be;
+   wire [31:0] virtio_rdata_comb; wire virtio_irq;
+   wire        vio_net = virtio_addr[12];
+   wire [31:0] vio_rdata = vio_net ? 32'd0 : virtio_rdata_comb;
+   reg vio_trace = 1'b0;
+   // FPGA-CDC-shaped latency: the response (reads AND writes) lands 3 cycles after the request
+   reg  [31:0] virtio_rd_q;  reg virtio_rvalid;  reg [2:0] vio_lat;
+   always @(posedge clk) begin
+      virtio_rvalid <= 1'b0;
+      if (reset) begin vio_lat <= 3'd0; virtio_rd_q <= 32'd0; end
+      else if (virtio_read || virtio_write) begin virtio_rd_q <= vio_rdata; vio_lat <= 3'd3; end
+      else if (vio_lat != 3'd0) begin vio_lat <= vio_lat - 3'd1; if (vio_lat == 3'd1) virtio_rvalid <= 1'b1; end
+      if ((virtio_read || virtio_write) && vio_trace)   // low-rate (probe/config/notify); +vio_trace
+         $display("[VIO c=%0d %s a=%h d=%h]", c, virtio_read ? "R" : "W", virtio_addr,
+                  virtio_read ? vio_rdata : virtio_wdata);
+   end
+
+   wire        v_notify_pulse;   wire [31:0] v_notify_value;
+   wire        v_used_irq;       wire [31:0] v_capacity;
+   wire  [7:0] v_dev_status;
+   wire [31:0] v_q0_num;  wire v_q0_ready;
+   wire [63:0] v_q0_desc, v_q0_driver, v_q0_device;
+   virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
+     (.clock(clk), .reset(reset),
+      .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
+      .write(virtio_write && !vio_net), .write_data(virtio_wdata), .byteenable(virtio_be),
+      .config_capacity_sectors(v_capacity),
+      .irq(virtio_irq),
+      .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
+      .used_buffer_interrupt(v_used_irq), .config_change_interrupt(1'b0),
+      .driver_features_0(), .driver_features_1(),
+      .queue_num(), .queue_ready(), .queue_desc(), .queue_driver(), .queue_device(),
+      .queue0_num(v_q0_num), .queue0_ready(v_q0_ready), .queue0_desc(v_q0_desc),
+      .queue0_driver(v_q0_driver), .queue0_device(v_q0_device),
+      .queue1_num(), .queue1_ready(), .queue1_desc(), .queue1_driver(), .queue1_device(),
+      .device_status(v_dev_status));
+
+   wire [2:0]  ax_awid;   wire [30:0] ax_awaddr; wire [7:0] ax_awlen;  wire [2:0] ax_awsize;
+   wire [1:0]  ax_awburst; wire ax_awlock; wire [3:0] ax_awcache; wire [2:0] ax_awprot;
+   wire [3:0]  ax_awqos;  wire ax_awvalid;  wire ax_awready;
+   wire [63:0] ax_wdata;  wire [7:0] ax_wstrb; wire ax_wlast; wire ax_wvalid; wire ax_wready;
+   wire [2:0]  ax_bid;    wire [1:0] ax_bresp; wire ax_bvalid; wire ax_bready;
+   wire [2:0]  ax_arid;   wire [30:0] ax_araddr; wire [7:0] ax_arlen;  wire [2:0] ax_arsize;
+   wire [1:0]  ax_arburst; wire ax_arlock; wire [3:0] ax_arcache; wire [2:0] ax_arprot;
+   wire [3:0]  ax_arqos;  wire ax_arvalid;  wire ax_arready;
+   wire [2:0]  ax_rid;    wire [63:0] ax_rdata; wire [1:0] ax_rresp; wire ax_rlast; wire ax_rvalid; wire ax_rready;
+   wire        blk_sck, blk_mosi, blk_cs_n;  reg blk_miso = 1'b1;
+
+   virtio_blk #(.QUEUE_SIZE(32'd8), .SD_SLOW_HALF(16'd4), .SD_FAST_HALF(16'd2), .SD_INIT_TICKS(16'd10)) u_vblk
+     (.clock(clk), .reset(reset),
+      .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
+      .queue_num(v_q0_num), .queue_ready(v_q0_ready), .queue_desc(v_q0_desc),
+      .queue_driver(v_q0_driver), .queue_device(v_q0_device),
+      .device_status(v_dev_status), .used_buffer_interrupt(v_used_irq),
+      .capacity_sectors(v_capacity), .sd_fast_half(16'd4),  // >=3: miso_sync sampling margin
+      .debug_sel(2'd0), .debug_word(),
+      .sd_sck(blk_sck), .sd_mosi(blk_mosi), .sd_miso(blk_miso), .sd_cs_n(blk_cs_n),
+      .m_axi_awid(ax_awid), .m_axi_awaddr(ax_awaddr), .m_axi_awlen(ax_awlen), .m_axi_awsize(ax_awsize),
+      .m_axi_awburst(ax_awburst), .m_axi_awlock(ax_awlock), .m_axi_awcache(ax_awcache),
+      .m_axi_awprot(ax_awprot), .m_axi_awqos(ax_awqos), .m_axi_awvalid(ax_awvalid), .m_axi_awready(ax_awready),
+      .m_axi_wdata(ax_wdata), .m_axi_wstrb(ax_wstrb), .m_axi_wlast(ax_wlast), .m_axi_wvalid(ax_wvalid), .m_axi_wready(ax_wready),
+      .m_axi_bid(ax_bid), .m_axi_bresp(ax_bresp), .m_axi_bvalid(ax_bvalid), .m_axi_bready(ax_bready),
+      .m_axi_arid(ax_arid), .m_axi_araddr(ax_araddr), .m_axi_arlen(ax_arlen), .m_axi_arsize(ax_arsize),
+      .m_axi_arburst(ax_arburst), .m_axi_arlock(ax_arlock), .m_axi_arcache(ax_arcache),
+      .m_axi_arprot(ax_arprot), .m_axi_arqos(ax_arqos), .m_axi_arvalid(ax_arvalid), .m_axi_arready(ax_arready),
+      .m_axi_rid(ax_rid), .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast),
+      .m_axi_rvalid(ax_rvalid), .m_axi_rready(ax_rready));
+
+   // behavioral always-ready single-beat AXI slave into lram[] (non-coherent DMA);
+   // ax_*addr[30:0] is the DDR byte offset (guest_pa - BASE).
+   reg axi_rvalid, axi_bvalid;  reg [63:0] axi_rdata;  integer ka;
+   reg [63:0] ar_line, aw_line;  reg [9:0] ar_bp, aw_bp;  integer n_dma_rd = 0, n_dma_wr = 0;
+   assign ax_arready = 1'b1; assign ax_awready = 1'b1; assign ax_wready = 1'b1;
+   assign ax_rvalid = axi_rvalid; assign ax_rdata = axi_rdata; assign ax_rresp = 2'd0;
+   assign ax_rlast = 1'b1; assign ax_rid = 3'd1;
+   assign ax_bvalid = axi_bvalid; assign ax_bresp = 2'd0; assign ax_bid = 3'd1;
+`ifdef OOO2_COSIM
+   import "DPI-C" function void cosim_dma_write(input longint off, input longint data, input byte strb);
+`endif
+   always @(posedge clk) begin
+      if (reset) begin axi_rvalid<=1'b0; axi_bvalid<=1'b0; end
+      else begin
+         if (ax_arvalid && ax_arready && !axi_rvalid) begin
+            ar_line = ((ax_araddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            ar_bp   = (ax_araddr & 6'h3f) << 3;
+            axi_rdata <= lram[ar_line][ar_bp +: 64];
+            axi_rvalid <= 1'b1;  n_dma_rd = n_dma_rd + 1;
+         end else if (axi_rvalid && ax_rready) axi_rvalid <= 1'b0;
+         if (ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid) begin
+            aw_line = ((ax_awaddr & (DDR_BYTES-1)) >> 6) & (NLINES-1);
+            aw_bp   = (ax_awaddr & 6'h3f) << 3;
+            for (ka=0;ka<8;ka=ka+1) if (ax_wstrb[ka]) lram[aw_line][aw_bp + ka*8 +: 8] <= ax_wdata[ka*8 +: 8];
+`ifdef OOO2_COSIM
+            cosim_dma_write({33'd0, ax_awaddr}, ax_wdata, ax_wstrb);   // mirror into simmerv
+`endif
+            axi_bvalid <= 1'b1;  n_dma_wr = n_dma_wr + 1;
+         end else if (axi_bvalid && ax_bready) axi_bvalid <= 1'b0;
+      end
+   end
+
+
+   // ---- the DMA agent (B4 memrand, 2026-09-17): +dma_rand=<seed> ---------------------------------
+   // A device that DMAs on its own schedule: every 20-100 k cycles it writes a 64-byte burst of
+   // random bytes into a random line of the 4 KiB DMA window (DDR offset 0x120_0000; the last line
+   // holds the ack word), mirrors each beat into the reference (the same DPI-ordered queue as the
+   // virtio-blk slave), and raises PLIC source 11 (shared with virtio-blk's irq). The program's
+   // S-mode handler sums the window through its NC mapping, writes the burst count to the ack word
+   // and completes; the agent drops the irq once the ack word in lram shows the count, then
+   // schedules the next burst. Race-free by protocol: the interrupt orders every read of the window
+   // after the beats on both sides (a polled flag would not be: a beat landing between a poll's
+   // execution and its retire is applied to the reference before that poll is compared).
+   localparam [63:0] DMA_OFF = 64'h0120_0000;
+   reg         dma_on = 1'b0, dma_irq = 1'b0;
+   reg  [31:0] dma_seed = 32'd1, dma_lfsr = 32'hACE1_5EED, dma_ctr = 32'd0, dl;
+   reg  [63:0] dma_next = 64'd50000, dma_line;  reg [63:0] dma_beat;  integer dk;
+   wire [63:0] dma_ack = lram[(DMA_OFF >> 6) + 64'd63][448 +: 64];
+   always @(posedge clk) if (dma_on && !reset) begin
+      if (!dma_irq && c >= dma_next) begin
+         dl = dma_lfsr;
+         dma_line = (DMA_OFF >> 6) + {58'd0, dl[5:0] == 6'd63 ? 6'd0 : dl[5:0]};
+         for (dk = 0; dk < 8; dk = dk + 1) begin
+            dl = dl ^ (dl << 13); dl = dl ^ (dl >> 17); dl = dl ^ (dl << 5);
+            dma_beat = {dl, dl ^ 32'h9E37_79B9};
+            lram[dma_line][dk*64 +: 64] <= dma_beat;
+`ifdef OOO2_COSIM
+            cosim_dma_write((dma_line << 6) + dk*8, dma_beat, 8'hFF);
+`endif
+         end
+         dma_lfsr <= dl;  dma_ctr <= dma_ctr + 1;  dma_irq <= 1'b1;
+      end else if (dma_irq && dma_ack == {32'd0, dma_ctr}) begin
+         dma_irq <= 1'b0;  dma_next <= c + 64'd20000 + {48'd0, dma_lfsr[15:0]};
+      end
+   end
+
+   // DPI: the file-backed SpiSdCard (src/sd_dpi.cpp) clocked by the SD-SPI pins each cycle
+   import "DPI-C" function void sd_attach(input string path);
+   import "DPI-C" function int  sd_clock(input int sck, input int cs_n, input int mosi);
+   import "DPI-C" function void sd_readonly();
+   always @(posedge clk) blk_miso <= sd_clock({31'd0, blk_sck}, {31'd0, blk_cs_n}, {31'd0, blk_mosi}) > 0 ? 1'b1 : 1'b0;
 
    // $fread fills a packed array MSB-first within each element, so each 64-byte line
    // comes out byte-reversed; swap it back to little-endian.
@@ -310,7 +465,7 @@ module tb;
       if (dut.core.ld_land)                         n_ldland  <= n_ldland + 1;
    end
 
-   reg [8*256-1:0] fw, dtb, initrd;
+   reg [8*256-1:0] fw, dtb, initrd, disk;
    reg [63:0] ncyc, c, nret;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
    initial begin
@@ -338,6 +493,12 @@ module tb;
       load_bin(fw,  OFF_FW);
       load_bin(dtb, off_dtb);
       if ($value$plusargs("initrd=%s", initrd)) load_bin(initrd, off_initrd);
+      if ($value$plusargs("disk=%s", disk)) begin
+         sd_attach(disk);
+         if ($test$plusargs("disk_ro")) begin sd_readonly(); $display("[sd: SNAPSHOT mode -- image writes stay in RAM]"); end
+      end
+      if ($test$plusargs("vio_trace")) vio_trace = 1'b1;
+      if ($value$plusargs("dma_rand=%d", dma_seed)) begin dma_on = 1'b1; dma_lfsr = {dma_seed[15:0], 16'hACE1} ^ 32'h5EED_0000; end
 
       reset = 1; @(negedge clk); @(negedge clk); reset = 0;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
@@ -355,6 +516,8 @@ module tb;
       end
       $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
                dut.imem_addr);
+      $display("[blk: dma rd=%0d wr=%0d]", n_dma_rd, n_dma_wr);   // virtio-blk beats (B6); 0/0 without +disk
+      $display("[dma-agent: bursts=%0d]", dma_ctr);   // B4 memrand; 0 without +dma_rand
       // B3: perf-stat text, the shape tools/perf-cpi-stack.py parses (`<count> r<code>`).
       $display("perf-stat-sim: begin");
       $display("%0d cycles", ncyc);

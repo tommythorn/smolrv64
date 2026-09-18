@@ -52,17 +52,17 @@
   {
     "EventName": "ST_DIV",
     "EventCode": "0x0301",
-    "BriefDescription": "M stalled on the iterative divider"
+    "BriefDescription": "the MD stage holds a divide (occupancy; since C1 mul/div are off M)"
   },
   {
     "EventName": "ST_MUL",
     "EventCode": "0x0302",
-    "BriefDescription": "M stalled on the 3-cycle multiplier"
+    "BriefDescription": "the MD stage holds a multiply (occupancy)"
   },
   {
     "EventName": "ST_FPU",
     "EventCode": "0x0303",
-    "BriefDescription": "M stalled on the CVFPU, + X held for a pending FP result"
+    "BriefDescription": "the MD stage holds a multiply (occupancy) on the CVFPU, + X held for a pending FP result"
   },
   {
     "EventName": "ST_DSP",

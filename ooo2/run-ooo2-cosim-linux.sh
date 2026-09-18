@@ -12,6 +12,10 @@
 #   CYC=0 ./run-ooo2-cosim-linux.sh        unbounded (wrap in `timeout`)
 #   BUILD=1 ./run-ooo2-cosim-linux.sh      force a rebuild
 #   FW=... DTB=... INITRD=... OFF_DTB=... OFF_INITRD=... A1=... MEM_LG2=...
+#   DISK=<image>   a virtio-blk disk (the DTB must carry the node); the image is read-only
+#                  (writes stay in RAM) unless DISK_RW=1. The console must print BLKCHECK-OK
+#                  (workloads/tiny128/blkcheck.sh) and never BLKCHECK-FAIL; no retire-count row
+#                  applies (a disk boot retires a different count).
 #
 # MEM_LG2 sizes THREE things that must agree: the RTL DDR array (OOO2_MEM_SIZE_LG2),
 # the C-side bound + simmerv's memory (COSIM_MEM_SIZE_LG2), and ooo2_core's valid-DRAM
@@ -84,7 +88,7 @@ STAMP="obj_dir_ooo2_clinux/.config-stamp"
 # name from the -I paths and a list of the top-level files missed ooo2_lq.v on the first
 # try (the hash did not move when the queue changed, 2026-09-04, the same afternoon).
 # Any edit forces the rebuild; BUILD=1 is only for a wiped or foreign tree.
-srchash=$(cat *.v ../src/*.v ../src/*.sv ../src/probe_cosim.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
+srchash=$(cat *.v ../src/*.v ../src/*.sv ../src/probe_cosim.cpp ../src/sd_dpi.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
 echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>} model-src=$srchash"
 need_build=0
@@ -116,12 +120,13 @@ if [ "$need_build" = 1 ]; then
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
+      ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v ../src/sd_dpi.cpp \
       tb_ooo2_linux.v ../src/probe_cosim.cpp > obj_dir_ooo2_clinux/build.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' obj_dir_ooo2_clinux/build.log | head -20; exit 1; fi
    printf '%s' "$want" > "$STAMP"
 fi
 
-echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_LG2 ==="
+echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} disk=${DISK:-none} a1=$A1 mem=2^$MEM_LG2 ==="
 
 # Not `exec`: the run's THROUGHPUT is checked below. Correctness is checked continuously by
 # the lockstep, but a change can be perfectly correct and quietly slower, and that has
@@ -129,8 +134,17 @@ echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_
 # the only instrument that sees it.
 set -o pipefail
 "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC ${PLUSARGS:-} 2>&1 | tee "$RUNOUT"
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC ${PLUSARGS:-} \
+     ${DISK:+ +disk="$DISK"} $( [ -n "${DISK:-}" ] && [ -z "${DISK_RW:-}" ] && echo +disk_ro ) 2>&1 | tee "$RUNOUT"
 rc=$?
+# The disk workload's own verdict: its init mounts the disk, checks every byte, writes a copy
+# back and re-reads it past the page cache (BLKCHECK-OK). Absent or FAIL = the run failed,
+# whatever the lockstep said: a DMA that lands wrong bytes in BOTH memories is invisible to it.
+if [ -n "${DISK:-}" ]; then
+   if grep -q 'BLKCHECK-FAIL' "$RUNOUT" || ! grep -q 'BLKCHECK-OK' "$RUNOUT"; then
+      echo "BLKCHECK FAIL: the disk check did not pass on the console (DISK=$DISK)"; rc=1
+   else echo "blkcheck: BLKCHECK-OK on the console (dma beats: $(grep -o 'dma rd=[0-9]* wr=[0-9]*' "$RUNOUT" | tail -1))"; fi
+fi
 
 # OOO2_HW, not INO_HW: the define was renamed with the core and this line was not, so it
 # reported the DEFAULT width no matter what VDEFS actually set. That is not cosmetic -- the
@@ -153,6 +167,7 @@ tol=$(awk -v c="$CYC" -v h="$hw" -v w="$iw" '{sub(/#.*/,"")} NF>=4 && $1==c && $
 [ -z "$exp" ] && echo "cosim-perf: no expectation row for CYC=$CYC OOO2_HW=$hw OOO2_IW=$iw -- the lockstep is the verdict"
 
 # an expectation that is not a number is no expectation (a placeholder row passed as "ok" once)
+[ -n "${DISK:-}" ] && exp=""     # a disk boot has no row: the lockstep and BLKCHECK are its verdict
 case "$exp" in ''|*[!0-9]*) exp="";; esac
 if [ -n "$got" ] && [ -n "$exp" ]; then
    floor=$(awk -v e="$exp" -v t="$tol" 'BEGIN{printf "%d", e*(100-t)/100}')

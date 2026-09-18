@@ -5,8 +5,13 @@
 #   BIT=/var/tmp/x.bit tools/board-gate.sh <resultdir> # a banked one
 #   BOOT_WAIT=1500 ...                                 # seconds to allow for login: (default 1800)
 #   REPLAY=<byte> tools/board-gate.sh <resultdir>       # judge an old boot from that console offset, no board
+#   STRESS_S=900 ...                                  # seconds of post-login userspace stress (0 = skip)
+#   STRESS_ONLY=1 tools/board-gate.sh <resultdir>        # no program/boot: run the stress on the board as it is
 #
-# PASS = `login:` reached with ZERO faults. FAIL fast on the first line that already decides
+# PASS = `login:` reached with ZERO faults, AND (since 2026-09-17) a bounded USERSPACE STRESS
+# over ssh (Geekbench 5 for STRESS_S seconds) that produces no fault in dmesg or on the console:
+# the committed IW=2 stack passed at login and crashed GB5 6.9 h later (an instruction page
+# fault at kernel text), so a login-only PASS is not a verdict on the core. FAIL fast on the first line that already decides
 # it: a kernel panic or Oops, a userspace fault, or virtio dying ("id N is not a head!",
 # NETDEV WATCHDOG, `nfs: server not responding`) -- the first two sat unrecognised for ten
 # minutes per boot on 2026-09-04 while the gate waited for a login that could not come, and
@@ -27,6 +32,34 @@ REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG|nfs: server .* not responding'
 MARK='riscv: base ISA extensions'
+
+# ---- the post-login userspace stress (B10) --------------------------------------------------
+# The board is the NFS peer of this host on 192.168.1.x (see the memory note: its address is DHCP);
+# sshd comes up a few minutes after login:. Geekbench runs its subtests in order under a timeout
+# (124 = the budget ended, the expected exit); the verdict is the exit status plus every fault
+# line dmesg and the console gained during the run.
+stress() {
+   [ "${STRESS_S:-900}" -gt 0 ] || { echo "stress: skipped (STRESS_S=0)"; return 0; }
+   local ip="" i rc pre_d pre_c faults
+   for i in $(seq 1 40); do
+      ip=$(ss -tan 2>/dev/null | awk '$1=="ESTAB" && $4 ~ /:2049$/ {print $5}' | grep -o '192\.168\.1\.[0-9]*' | sort -u | head -1)
+      [ -n "$ip" ] && timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no tommy@$ip true 2>/dev/null && break
+      sleep 10
+   done
+   [ -n "$ip" ] || { echo "BOARD: FAIL (stress: no ssh to the board within 400 s)"; return 1; }
+   pre_d=$(timeout 20 ssh -o BatchMode=yes tommy@$ip 'dmesg | wc -l' 2>/dev/null); pre_c=$(wc -c < "$UB/screenlog.0")
+   echo "stress: $ip, ${STRESS_S:-900}s of Geekbench (dmesg lines before: $pre_d)"
+   timeout $(( ${STRESS_S:-900} + 120 )) ssh -o BatchMode=yes -o ServerAliveInterval=30 tommy@$ip \
+      "cd ~/Geekbench-5.4.1-LinuxRISCVPreview && timeout ${STRESS_S:-900} ./geekbench_riscv64 > /var/tmp/gate-stress.log 2>&1; echo RC=\$?; dmesg | tail -n +$((pre_d+1)) | grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG'" > "$RES/stress.log" 2>&1
+   rc=$(grep -o 'RC=[0-9]*' "$RES/stress.log" | tail -1 | cut -d= -f2)
+   faults=$(( $(grep -cE 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG' "$RES/stress.log") ))
+   faults=$(( faults + $(tail -c +$((pre_c+1)) "$UB/screenlog.0" | tr -d '\r' | grep -acE "$BAD") ))
+   echo "stress: rc=${rc:-?} (124 = ran the whole budget) faults=$faults  subtests: $(timeout 20 ssh -o BatchMode=yes tommy@$ip 'grep -c "^  Running" /var/tmp/gate-stress.log' 2>/dev/null)"
+   if [ "$faults" -eq 0 ] && { [ "${rc:-1}" = 124 ] || [ "${rc:-1}" = 0 ]; }; then return 0; fi
+   grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$RES/stress.log" | head -4
+   echo "BOARD: FAIL (stress: rc=${rc:-?} faults=$faults)"; return 1
+}
+if [ -n "${STRESS_ONLY:-}" ]; then RES=${1:?result dir}; mkdir -p "$RES"; stress && { echo "BOARD: PASS (stress only)"; exit 0; }; exit 1; fi
 
 if [ -n "${REPLAY:-}" ]; then PRE=$REPLAY; BOOT_WAIT=0; echo "replay from byte $PRE"; else
 PRE=$(wc -c < "$UB/screenlog.0")
@@ -70,6 +103,10 @@ RTL=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-
 FAULTS=$(printf '%s' "$NEW" | grep -acE "$BAD")
 LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
 echo "login: $LOGIN   faults: $FAULTS   ${RTL:-rtl=?}   last: $(printf '%s' "$NEW" | grep -aoE '^\[ *[0-9]+\.[0-9]+\]' | tail -1)"
-if [ "$LOGIN" -ge 1 ] && [ "$FAULTS" -eq 0 ]; then echo "BOARD: PASS"; exit 0; fi
+if [ "$LOGIN" -ge 1 ] && [ "$FAULTS" -eq 0 ]; then
+   if [ -n "${REPLAY:-}" ]; then echo "BOARD: PASS"; exit 0; fi
+   stress || exit 1
+   echo "BOARD: PASS"; exit 0
+fi
 printf '%s' "$NEW" | grep -aE "$BAD|epc :" | head -4
 echo "BOARD: FAIL login=$LOGIN faults=$FAULTS"; exit 1

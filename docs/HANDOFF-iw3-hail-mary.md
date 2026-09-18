@@ -367,3 +367,130 @@ instrument's per-cycle logic reads registers only; decode at the write, never at
 With the registered select the C0 IW=3 build closes at **post-route WNS +0.025** (the counter
 family is gone from the census); IW=2 60 M 13,494,359, IW=3 60 M 13,367,267 and IW=2 300 M
 72,713,900 are exact with the instruments in; riscv-tests 240/0. Committed as C0.
+
+## C1: mul/div off the ordered pipe (2026-09-17 evening)
+
+A mul/div is dispatch class M (`d_cls_m`), shares the F/CTF queue (NF 5 → 8) and drains from
+its select register into an MD stage (`iss_md`, the port's third drain): the units start from
+the port's forwarded reads, the result is latched on the unit's done pulse and written to SH_FE
+by the stage's own tag when the FPU and the CTF link are not writing (M yields the shard as it
+does to the link); the ROB completes through a ninth port. M, `wb_ld`, `m_unit_ok` and the
+ordered queue no longer know a multiplier exists; ST_MUL/ST_DIV now mean "the MD stage holds
+one". One defect, found by a five-signal trace on `rv64um-p-mul`: an issue and a writeback in
+the same cycle, with the writeback's clear written after the issue's set, lost the op while
+mul3 computed it; the next issue started into a busy multiplier, which ignores starts, and the
+stage waited forever. The clear now precedes the set, and "a start into a busy unit" is an
+always-on assertion. The two LOAD/STORE completion events were re-sourced from registered
+landings (they were the last counter family on the worst path).
+
+Verified: lint clean; riscv-tests 240/0 (the rv64um set included); every unit bench; IW=2
+60 M 13,490,465 (−0.03% on the boot: few multiplies there, and the port now shares with every
+branch), IW=3 60 M 13,371,386 (+0.03%); the 500 M storm clean. Builds and the board gate (with
+the new stress) follow.
+
+## B10: the board gate's PASS now includes a userspace stress (2026-09-17 21:00)
+
+Tommy's red alert: the committed IW=2 stack passed the gate at `login:` and crashed Geekbench
+6.9 h later (an instruction page fault at kernel text `ffffffff804a09f6`, cause 0xc, in the
+geekbench process; not debugged, per Tommy). `tools/board-gate.sh` now finds the board as this
+host's NFS peer on 192.168.1.x, waits for sshd, and runs Geekbench 5 over ssh for `STRESS_S`
+seconds (default 900); PASS needs the run to use its whole budget (exit 124) with zero fault
+lines in dmesg and on the console during it. `STRESS_ONLY=1` runs the stress on the board as it
+is (the plumbing was proved on the live board: 180 s, two subtests, PASS). The full Geekbench
+run remains the release gate; a 15-minute slice does not cover a 7-hour crash.
+
+## B5: the lockstep is byte-exact on stores (2026-09-17 22:30)
+
+`probe_retire` carries the store's raw value and log2 size (the SQ's committing entry through
+its landing bypass; the LSU's `cos_data/cos_size` for M-path stores; 4'hF = not checkable);
+simmerv's record gained `mem_size` beside its existing `mem_rdback` (the aligned word after the
+store, which nobody had used). `store_data_ok()` requires equal sizes and equal bytes on every
+lane the DUT wrote within the word; unchecked classes are counted on the progress line.
+Verified: 60 M IW=2 clean with 3,051,638 stores checked and 4,469 unchecked (the AMO/SC/cbo/MMIO
+classes), retire count unchanged (observation only); `+st_corrupt=35` aborts at retire 35 with
+`STORE DATA MISMATCH ... value=...80044080 ... word-after=...80044000`. The first run reported
+value 0 for the boot's first `sd`: the commit-time read of `data[kc]` missed the landing bypass
+that `c_data` has (rule G9's corollary). Simmerv change: `cosim_mem_size` in `mmu.rs`/`cpu.rs`
+and the header (uncommitted in ~/simmerv, on top of the MMIO-diagnostic edit already there).
+
+## C1 on the board and the timing (2026-09-17 22:45)
+
+IW=3 build: post-route WNS **0.000** (met with no margin; C0 had +0.025). Worst path
+`fe/d2_rs3_reg[2] -> stg_r_l_reg[2]`, 15 levels (4 MUXF7 + 2 MUXF8: a PRF read mux), 79% route:
+the third-source read the dispatch stage now feeds for the mul/div class as well. Not a
+rejection (the rule is WNS >= 0) but the margin is gone; the census is banked (`ps_out_reg -> m_result_reg`
+63 paths at 0.000, `md_rd_v_reg -> u_iq_i/e_r_reg` at +0.022 is the one new family). IW=2 build:
+core WNS **+0.070** (the top-level +0.010 is `virtio_blk_inst -> virtio_blk_backend`, outside the
+core). Board, IW=3: `login: 1 faults: 0`, then 900 s of Geekbench (3 subtests) with zero faults --
+**BOARD: PASS** (23:14). IW=2 gate chained behind it.
+
+## B4 as built: memrand, a generated program under the lockstep (2026-09-17 22:45)
+
+The plan's B4 was a unit bench of LQ+SQ+LSU+D$+MMU with its own golden model. That model would
+have to replay the core's own protocols (M's translate pass, the ROB's irrevocable pointer, the
+dispatch stamps), and every one of them changes in C3-C8. The lockstep already judges every load
+(rd) and, since B5, every store byte, so the bench is a PROGRAM instead: `workloads/memrand/gen.py`
+emits a straight-line stream of 200 k random ops (loads/stores of every size, aligned and not,
+line and page straddles; AMOs; LR/SC pairs; FP loads/stores; cbo.zero/clean/flush; fence,
+fence.i, sfence.vma; pointer chases whose next address arrives with a load's data; a rare remap
+of a megapage under live accesses) over a 128 KiB region reachable through three VA aliases
+(identity, W0, W1) in S-mode under Sv39, plus an NC window over a DMA region. The testbench's
+DMA agent (`+dma_rand=<seed>`) bursts random bytes into that region on its own schedule, mirrors
+each beat into simmerv and raises PLIC source 11; the program's handler sums the window through
+the NC mapping and acks -- race-free by protocol, where a polled flag would not be (a beat
+landing between a poll's execution and its retire is applied to the reference before that poll
+is compared). Each seed is ~1.5 M cycles: `make -C workloads/memrand sweep SEEDS="1 2 3 4"`.
+Invariants stay where they belong (always-on assertions in the RTL); the bench supplies the
+orderings. The unit-level random benches (`tb_ooo2_lqsq_rand`, `tb_ooo2_cache`) remain for the
+structures they cover.
+
+## Retrospective: C1 and C2 (Tommy's rule: what would have made this faster)
+
+- **The store check found two things in its first hour that no gate had seen in a year**: a
+  commit-time read that missed a landing bypass, and cbo.zero's size. Neither was a core defect,
+  both were holes in the instrument. The lesson is the one already in G9: a compare that skips a
+  class silently is not a compare. The unused `mem_rdback` had been exported by simmerv since
+  2026-08-20 and never read -- an exported observable nobody consumes should be an assertion in
+  the runner ("the reference exports N fields, the DUT supplies N").
+- **Editing a running shell script corrupts its own run.** The 300 M runner printed a syntax
+  error at its end because its file was rewritten under it (bash reads incrementally). Scratch
+  copies for long runs, or edit the file only between runs; the same rule as "never rebuild an
+  obj_dir a run is using".
+- **One obj_dir serialises every cosim.** Tonight's queue (300 M x2, blk, storm, sweep, memrand)
+  is two hours of wall time on a 32-core box because the runner owns one build directory. A
+  per-config obj_dir (`obj_dir_ooo2_clinux.<hash>`) would let the IW=2 and IW=3 binaries and the
+  storm coexist and cut the verification wall time by 3x. Worth doing before C3.
+- **A unit bench that replays the core's protocols is a second core.** B4 as planned (LQ+SQ+LSU+
+  D$+MMU with a golden model) would have re-implemented M's translate pass, the ROB pointer and
+  the dispatch stamps -- everything C3-C8 change. The lockstep with byte-exact stores is the
+  golden model; the bench is a program. Ask "what already judges this?" before writing a model.
+- **Timing margin is a budget, not a verdict.** C1 spent the whole +0.025 (WNS 0.000 at IW=3)
+  on the third PRF read the dispatch stage now feeds for mul/div. The census names it
+  (`d2_rs3_reg -> stg_r_l_reg`); the next increment that touches dispatch reads must find slack
+  first (rule I2: OOC before redesign).
+
+## C3 (SYSQ) design notes, from the RTL as it is (2026-09-17)
+
+What M still does besides memory, with the signals to move (`ooo2_core.v`):
+- **Traps**: `xtrap_v = m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt))`; cause/tval from
+  the fetch fault, the illegal latch or the LSU (`m_lsu_fc`, `lsu_fault_tval`); `cot_fire =
+  u_csr.trap_v`. System ops: `m_is_sys` (opcode 11100), `m_is_irqop` (the irqop encoding),
+  `csr_redir_v/_trap/_tgt` from `csr_file`.
+- **Ordering at head**: `head_block = m_valid & ((m_needs_head & ~m_at_head) | (m_instret_rd &
+  ~m_head_q))` -- only a CSR read of instret takes the second cycle at head (M1b).
+- **Completion**: `m_unit_ok` (fault/illegal immediate; memory = `lsu_done`; else single cycle),
+  sticky in `m_unit_done_q` with the result and fault latched (a pulse in a held cycle was lost).
+- **Redirect**: `m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land
+  & ~m_fe_yield`; `m_red_fire = m_valid & m_done_red & (csr_red | m_is_fencei)`, `csr_red = xtrap_v |
+  (m_is_sys & csr_redir_v)`; `redirect = m_red_fire | cf_red_fire` (the branch squash at head,
+  mutually exclusive by the head's uniqueness). The invariant assertions compare `m_red_fire`
+  against `m_red_ref` (the memory-inclusive done) every cycle.
+- **CSR**: `m_wb & m_is_csr` writes `csr_rdata` at the second cycle; `m_fe_yield` and the LD shard
+  write (`m_shard`) carry the CSR result.
+- **Drains**: `m_cbo_wait = m_is_cbo & sq_av_any`; fence.i FSM on `dmem_idle`.
+SYSQ shape: keyed by ROB index, written (a) at dispatch for decode faults/irqop/illegal (already
+known at decode), (b) by the F/CTF port at issue for CSR/system ops (three PRF reads, `xf_rs1`),
+(c) by the LQ/SQ translate fault; executed when its entry is the ROB head from a registered
+condition; `xtrap_v`, `upd_valid`, `m_red_fire` sourced from it; brought up as a shadow beside M
+with an every-cycle equality assertion, then switched (retire-identical at both widths).
+

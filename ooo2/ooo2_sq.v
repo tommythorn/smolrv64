@@ -87,6 +87,8 @@ module ooo2_sq
     output wire                  kc_v,        // the first uncommitted entry exists and has address + data
     output wire [ROBB-1:0]       kc_rob,
     output wire [PAW-1:0]        kc_addr,     // ...its PA, for the cosim's retire record
+    output wire [63:0]           kc_data,     // ...its value and size, for the cosim's store-data check
+    output wire [1:0]            kc_size,
     input  wire                  k_take,      // commit it
 
     // ---- load disambiguation: a CONFLICT MATRIX, not a compare at issue ----------------
@@ -188,6 +190,10 @@ module ooo2_sq
    assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc];
    assign kc_rob = rob[kc];
    assign kc_addr= addr[kc];
+   // The same landing bypass as c_data: the entry commits in the cycle its bytes are still
+   // in wb_q, and data[kc] holds the previous occupant's until the next edge.
+   assign kc_data= ld_v[kc] ? wb_q[ld_w[kc]*64 +: 64] : data[kc];
+   assign kc_size= sz[kc];
    assign c_rob  = rob[head];
    assign c_addr = addr[head];
    // the landing bypass: the cycle dv rose, the bytes are still in wb_q

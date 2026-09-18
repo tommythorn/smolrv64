@@ -658,6 +658,24 @@ flow runs synthesis and implementation as separate processes, so a log line such
 "Exiting Vivado" fires mid-build, and `pgrep -f` matches the shell running the wait and
 hangs it -- both happened the same day, the second for the third time in this project.
 
+**G8. A board verdict is a userspace run, not a login prompt.** The committed IW=2 stack of
+2026-09-17 reached `login:` with zero faults and crashed Geekbench 6.9 hours later (an
+instruction page fault at kernel text, cause 0xc). `tools/board-gate.sh` therefore runs
+Geekbench over ssh for `STRESS_S` seconds after login (default 900) and passes only when the
+run uses its whole budget with no fault in dmesg or on the console; the full Geekbench run is
+the release gate. A gate whose criterion is weaker than the failure it is meant to catch is
+a false verdict with a timestamp.
+
+**G9. A memory effect is compared byte-exact, and a class the check cannot cover is counted,
+never skipped in silence.** The lockstep compared a store's kind and PA only until 2026-09-17;
+wrong bytes or wrong byte enables at the right address were invisible until an unrelated
+fault. The reference's post-store word and the DUT's raw value and size make every plain RAM
+store exact; AMO/SC/cbo/MMIO stores are tallied on the progress line (`unchecked=`) so a
+class that never gets checked is a number someone reads, and `+st_corrupt=<retire#>` proves
+the check fires. Corollary of rule B2: the first implementation read the store queue's data
+register in the cycle the bytes were still in the landing flop and reported zero for the
+boot's first store -- a value captured at commit goes through the same bypass the drain uses.
+
 **G7. No cosim had ever taken a PLIC interrupt; the interrupt storm is a gate.**
 `tb_ooo2_linux` ties virtio off and the tiny128 UART never enables RX, so through 700 M
 cycles of the GB5 boot `seip` was 0: every external-interrupt path -- the irqop injection

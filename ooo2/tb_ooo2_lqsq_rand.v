@@ -53,6 +53,7 @@ module tb;
    wire [NENT-1:0]  l_older;   // the registered per-load copy of ld_older (ooo2_core reads this one)
    wire [NENT-1:0]  l_block_q;  // the registered block copy (what ooo2_lq reads in the core)
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
+   wire [63:0]      sq_kc_data; wire [1:0] sq_kc_size;   // the cosim's store-data capture
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
 
@@ -79,7 +80,7 @@ module tb;
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
-      .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.k_take(sq_k_take),
+      .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
@@ -242,6 +243,8 @@ module tb;
                     if (st[i] != 4 && ((!is_st[i] && st[i] != 3) || (is_st[i] && st[i] != 2 && st[i] != 5))) j = 0;
                  if (j && st[op] == 1) begin
                     if (sq_kc_addr !== addr[op]) fail("the first unreleased entry is not the model's oldest unreleased store", op);
+                    // the commit-time capture the cosim's store-data check reads: the entry's own value and size
+                    if (sq_kc_data !== {32'hDA7A, op[31:0]} || sq_kc_size !== sz[op]) fail("the releasing entry's data/size are not the model's", op);
                     sq_k_take = 1; st[op] = 2;
                  end
               end

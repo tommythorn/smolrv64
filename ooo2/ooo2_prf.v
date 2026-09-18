@@ -13,7 +13,8 @@
 // THREE SHARDS, one writer each:
 //
 //   SH_IE  int-exec   ALU                     integer regs last written by the ALU
-//   SH_LD  load       LSU + mul/div           int AND fp regs last written by mem or mul/div
+//   SH_LD  load       LSU (+ M's CSR result)  int AND fp regs last written by mem
+//   (mul/div wrote SH_LD until C1, 2026-09-17; they land on SH_FE from the MD stage now)
 //   SH_FE  fp-exec    FPU                     fp AND int regs last written by the FPU
 //                                             (fcvt.w.d/fmv.x.w/fclass write x regs)
 //
@@ -81,7 +82,7 @@ module ooo2_prf
     input  wire [PBITS-1:0] wa_ie3,
 
     input  wire [63:0]      wd_ie,    // ALU / CSR result
-    input  wire [63:0]      wd_ld,    // LSU load data, mul, div
+    input  wire [63:0]      wd_ld,    // LSU load data, M's CSR result
     input  wire [63:0]      wd_fe,    // FPU result
     input  wire [63:0]      wd_ie2,   // the second ALU's result
     input  wire [63:0]      wd_ie3,   // the third ALU's result
