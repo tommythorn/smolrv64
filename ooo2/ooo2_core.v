@@ -104,6 +104,8 @@ module ooo2_core
     output wire [PCW-1:0]          retire_pc,
     output wire [31:0]             retire_insn,
     output wire                    retire2,            // ...and a second one behind it (item 10c)
+    output wire                    retire3,            // ...and a third (IW>=3; hard 0 below): a testbench that
+                                                       // sums retire+retire2 undercounts a 3-wide core (2026-09-17)
     output wire [PCW-1:0]          retire2_pc,
     output wire [31:0]             retire2_insn,
     output wire                    redirect,
@@ -645,7 +647,8 @@ module ooo2_core
    wire [RN_PBITS-1:0] rob_c2_prd;
    // 3rd commit (IW>=3): dead at IW=2 (ROB gates c3_valid on GE3). Fed to rename's c3 port.
    wire                rob_c3_valid, rob_c3_rd_v, rob_c3_noret;
-   wire                retire3;   // 3rd retire this cycle (Stage 3, cosim-only)
+   // retire3 is a port now (see the port list): every IW=3 retire count taken before 2026-09-17
+   // summed two of the three commit ports.
    wire [5:0]          rob_c3_rd;
    wire [RN_PBITS-1:0] rob_c3_prd;
    // Mirrors m_is_irqop one stage earlier. That signal is
@@ -1673,6 +1676,7 @@ module ooo2_core
    wire [LQ_N-1:0]     sq_l_older;       // per load, registered: an older store is live
    wire [LQ_N-1:0]     sq_l_block_live;  // the live alias block, the oracle for the registered copy the queue reads
    wire [SQ_IB:0]      sq_occ;
+   wire [LQ_N-1:0]     sq_l_block_unk_q;   // counters: the candidate's block is an UNKNOWN older address
    wire                sq_av_any;
    wire [SQ_IB-1:0]    sq_d_idx;
    wire [SQ_TB-1:0]    sq_d_tag;
@@ -1717,7 +1721,7 @@ module ooo2_core
       .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
       .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
-      .occupancy(sq_occ), .flush(redirect));
+      .l_block_unk_q(sq_l_block_unk_q), .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
    // its access only when ~ld_block, so a start with an older store still live is exactly
@@ -1739,6 +1743,7 @@ module ooo2_core
    wire [ROB_IDXB-1:0] lq_l_rob;
    wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;
+   wire                lq_x_devwait;        // counters: a device load waiting for the head
    wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
    wire ld_a = rn_valid   & d_ld_nb;
    wire ld_b = rn_valid_b & d2_ld_nb;
@@ -1763,7 +1768,7 @@ module ooo2_core
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_head(lq_x_head), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
-      .occupancy(lq_occ), .rob_head(rob_head_idx), .flush(redirect));
+      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // The queue costs a load two cycles -- one to register the address, one to select the
@@ -2072,7 +2077,7 @@ module ooo2_core
    // lsu_started is the point after which a load cannot fault -- what lets M let go of it
    // without a ROB walk. Not consumed yet: cutting m_done over to it is the next step.
    wire        lsu_started;
-   wire        lsu_done, lsu_done_acc, lsu_fault, lsu_idle, lsu_xo_early;
+   wire        lsu_done, lsu_done_acc, lsu_fault, lsu_idle, lsu_xo_early, lsu_ld_busy;
    wire [55:0] lsu_cos_pa;  wire [1:0] lsu_cos_kind;   // cosim memory-effect capture
    wire [63:0] lsu_rd_val, lsu_fault_tval;
    wire        lsu_dtlb_walking, lsu_dtlb_walk_beg;   // HPM: DT_WALK / DTLB_MISS
@@ -2130,7 +2135,7 @@ module ooo2_core
       .mem_wready(dmem_wready), .mem_waccept(dmem_waccept),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
-      .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .idle(lsu_idle));
+      .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_busy(lsu_ld_busy), .idle(lsu_idle));
    assign dmem_idle = lsu_idle;
 
    // ---- multiply / divide (both start/busy/done units; they own the stall) ----
@@ -2558,7 +2563,20 @@ module ooo2_core
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
    wire rd_wait = fr_v & ~cf_red_fire;   // a tracked branch restart still waiting to reach head
-   wire [30:0] hpm_ev = {st_srz, st_lq, st_sq, st_rn, st_iq,
+   // THE MEMORY BUCKETS (2026-09-17, program C0/B2): ST_MEM was one bit for everything the
+   // backend did, and a backend rewrite would move one number. Each of these is a fact the
+   // queues already compute, registered here like the rest; none is in any completion cone.
+   wire mem_hitser    = lq_x_v & ~lq_x_take;                 // a ready load candidate the door did not take
+   wire mem_ldinfl    = lsu_ld_busy;                          // a load access in flight (hit ~3 cycles; the rest is miss wait)
+   wire mem_stdoor    = dmem_wen & ~dmem_waccept;             // a store at the D$ door, unaccepted
+   wire mem_alias_unk = sq_ld_block &  sq_l_block_unk_q[lq_x_idx];   // blocked: an older store's address is unknown
+   wire mem_alias_ovl = sq_ld_block & ~sq_l_block_unk_q[lq_x_idx];   // blocked: a known older store overlaps
+   wire mem_reord     = sq_ld_reorder;                        // a load issued past an uncommitted older store (the payoff)
+   wire mem_wpkill    = lsu_pt_ld_done & lsu_pt_ld_kill;      // a wrong-path load's landing killed after its access ran
+   wire mem_devwait   = lq_x_devwait;                         // a device load waiting to be the head
+   wire [38:0] hpm_ev = {mem_devwait, mem_wpkill, mem_reord, mem_alias_ovl, mem_alias_unk,
+                         mem_stdoor, mem_ldinfl, mem_hitser,
+                         st_srz, st_lq, st_sq, st_rn, st_iq,
                          lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
@@ -2589,11 +2607,14 @@ module ooo2_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [30:0] hpm_ev_q;
+   reg [38:0] hpm_ev_q;
+   reg [5:0]  hpm_lqocc_q, hpm_sqocc_q;   // queue occupancies, per cycle (MEM_LQOCC / MEM_SQOCC)
    reg [5:0]  hpm_ret_q;
-   initial begin hpm_ev_q = 31'd0; hpm_ret_q = 6'd0; end
+   initial begin hpm_ev_q = 39'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 31'd0 : hpm_ev;
+      hpm_ev_q  <= reset ? 39'd0 : hpm_ev;
+      hpm_lqocc_q <= reset ? 6'd0 : {{(6-LQ_IB-1){1'b0}}, lq_occ};
+      hpm_sqocc_q <= reset ? 6'd0 : {{(6-SQ_IB-1){1'b0}}, sq_occ};
       hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2} + {5'd0, retire3};
    end
 
@@ -2629,7 +2650,7 @@ module ooo2_core
       // in its second cycle at the ROB head (m_head_q), by which time every older retirement
       // has been counted; csr_file drops the CSR op's own retirement after a minstret write.
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(hpm_ret_q),
-      .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
+      .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q), .hpm_lqocc(hpm_lqocc_q), .hpm_sqocc(hpm_sqocc_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The SoC puts no ILA on the CSR file, so these
       // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build

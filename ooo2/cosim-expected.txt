@@ -9,9 +9,13 @@
 #   * a request tag captured pre-flip and compared post-flip, discarding good responses
 # The first and third cost 3-4% of throughput each.
 #
-# Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
+# Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%> [<OOO2_IW>]  # provenance
+#   The 5th column is the pipeline width (2 when absent). IW=3 rows exist since 2026-09-17,
+#   when the testbench started summing the third commit port (every earlier IW=3 count is low).
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
+60000000  8  13367267  0.5  3   # IW=3 (2026-09-17): the TRUE 3-wide count, all three commit ports summed;
+                                  # -0.9% vs IW=2 on this boot (the -11.7% on record was the missing third port).
 60000000  8  13494359  0.5   # W1' (2026-09-17): the CTF link never waits on M, M yields instead (+0.02%);
                               # the D12 fix (device loads classified by their own translate PA) moves nothing here.
                               # Previously 13491763: IW=3 timing closure (2026-09-17): the second cycle at head, the served-slot hint,
@@ -99,6 +103,7 @@
                               # fail no matter what landed.  A throughput floor nothing can trip
                               # is not a gate.
 400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background. NOTE: predates the Stage 2 VHPR I-cache landing (2026-09-13) -- re-baseline when this per-batch gate next runs.
+300000000  8   71067434  0.5  3   # IW=3 (2026-09-17): the true 3-wide count at 300 M (all three commit ports).
 300000000  8   72184767  0.5   # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): re-baselined from 78964298 -- SAME VHPR landing as the
                                # 60M/HW=8 row above. The run-ahead fetch buffer is gone, replaced by the 2-chunk alignment adapter. Lockstep
                                # CLEAN to 300 M with the interrupt path exercised (inj first nonzero at c=99M, 2799 by c=299M) -- the correctness

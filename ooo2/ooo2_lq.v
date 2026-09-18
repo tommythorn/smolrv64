@@ -94,6 +94,7 @@ module ooo2_lq
     output wire [NENT-1:0]       e_av,
     input  wire [NENT-1:0]       e_block,     // per entry: an older store aliases it
     output wire                  x_block,     // ...and the candidate is one, held right now
+    output wire                  x_devwait,   // the candidate is a device load waiting to be the head (counters only)
     // ...and the seqno of the entry being tested, for ooo2_sq's ld_older. That one is
     // pointer arithmetic against head, with no address and no adder in it.
     output wire [SQIB-1:0]       q_tag,
@@ -209,6 +210,7 @@ module ooo2_lq
    assign x_head  = (rob[acc] == rob_head);
    assign x_v     = cand_v & ~e_block[acc] & (mem[acc] | x_head);
    assign x_block = cand_v &  e_block[acc];   // instrumentation only
+   assign x_devwait = cand_v & ~e_block[acc] & ~mem[acc] & ~x_head;   // instrumentation only
    assign x_idx   = acc;
    assign x_pa    = pa[acc];
    assign x_size  = sz[acc];

@@ -25,7 +25,7 @@ module tb;
 
    reg clk = 0; always #5 clk = ~clk;
    reg reset;
-      wire        retire, retire2, dmem_wen;
+      wire        retire, retire2, retire3, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
    reg  [511:0] ddr_rdata;  reg ddr_ack;
@@ -53,7 +53,7 @@ module tb;
  `define TB_RESET_PC 64'h8000_0000
 `endif
    rv_soc_top #(.RESET_PC(`TB_RESET_PC)) dut
-     (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2),
+     (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
@@ -195,6 +195,23 @@ module tb;
    //   LD   a load landed                      FP   an FP result landed
    //   RET  retired at the ROB head            RED  redirect
    integer pv_from = -1, pv_n = 0, pv_cnt = 0;
+   // The event bus counted per cycle (B3). pcode(bit) mirrors src/csr_file.v's hpm_inc map;
+   // tools/gen-perf-events.py --check keeps the JSON honest, and perf-cpi-stack.py's identity
+   // check exposes a bit that drifted from its code.
+   integer pe;  reg [63:0] pev [0:40];
+   function [15:0] pcode; input integer b; begin
+      case (b)
+        0: pcode=16'h0003; 1: pcode=16'h0004; 2: pcode=16'h0005; 3: pcode=16'h0100; 4: pcode=16'h0102;
+        5: pcode=16'h0110; 6: pcode=16'h0112; 7: pcode=16'h0300; 8: pcode=16'h0301; 9: pcode=16'h0302;
+        10: pcode=16'h0303; 11: pcode=16'h0304; 12: pcode=16'h0310; 13: pcode=16'h0311; 14: pcode=16'h0312;
+        15: pcode=16'h0006; 16: pcode=16'h0007; 17: pcode=16'h0008; 18: pcode=16'h0313; 19: pcode=16'h0314;
+        20: pcode=16'h0315; 21: pcode=16'h0316; 22: pcode=16'h0305; 23: pcode=16'h0317; 24: pcode=16'h0318;
+        25: pcode=16'h0104; 26: pcode=16'h0306; 27: pcode=16'h0307; 28: pcode=16'h0308; 29: pcode=16'h0309;
+        30: pcode=16'h030a; 31: pcode=16'h0319; 32: pcode=16'h031a; 33: pcode=16'h031b; 34: pcode=16'h031c;
+        35: pcode=16'h031d; 36: pcode=16'h031e; 37: pcode=16'h031f; 38: pcode=16'h0320; 39: pcode=16'h0321;
+        40: pcode=16'h0322; default: pcode=16'hffff;
+      endcase end endfunction
+   initial for (pe = 0; pe < 41; pe = pe + 1) pev[pe] = 64'd0;
    reg [63:0] trace_from, trace_to;             // +trace_from/+trace_to, see the plusargs
    integer pv_c;
    initial pv_c = 0;
@@ -326,7 +343,11 @@ module tb;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
       for (c = 0; (ncyc == 0) || (c < ncyc); c = c + 1) begin
          @(negedge clk);
-                  nret = nret + retire + retire2;
+                  nret = nret + retire + retire2 + retire3;   // all three commit ports (IW=3 undercounted before 2026-09-17)
+                  // B3 (2026-09-17): the CPI stack from the RTL's own event bus, so the same tool
+                  // (tools/perf-cpi-stack.py) grades a simulation and a board run.
+                  for (pe = 0; pe < 39; pe = pe + 1) if (dut.core.hpm_ev_q[pe]) pev[pe] = pev[pe] + 1;
+                  pev[39] = pev[39] + dut.core.hpm_lqocc_q;  pev[40] = pev[40] + dut.core.hpm_sqocc_q;
          if ((c % 1000000) == 0)
             $display("[c=%0d retires=%0d va=%h pa=%h prv=%0d satp=%h inj=%0d uirq=%0d seip=%0d ier=%h]",
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,
@@ -334,6 +355,13 @@ module tb;
       end
       $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
                dut.imem_addr);
+      // B3: perf-stat text, the shape tools/perf-cpi-stack.py parses (`<count> r<code>`).
+      $display("perf-stat-sim: begin");
+      $display("%0d cycles", ncyc);
+      $display("%0d instructions", nret);
+      for (pe = 0; pe < 41; pe = pe + 1) $display("%0d r%04h", pev[pe], pcode(pe));
+      $display("perf-stat-sim: end");
+
       $display("SQ  loads=%0d reordered=%0d (%0d.%0d%%)  ld_block cycles=%0d (%0d.%0d%%)  mean occ=%0d.%02d  full=%0d",
                n_ldstart, n_ldreord,
                n_ldstart ? (100*n_ldreord)/n_ldstart : 0,

@@ -147,6 +147,7 @@ module ooo2_lsu
     // reference model reports the exact address.  Unused outside cosim (DCE'd).
     output reg  [55:0]     cos_pa,
     output reg  [1:0]      cos_kind,      // 0 = none, 1 = load, 2 = store
+    output wire            ld_busy,        // a LOAD access is in flight, hit or miss (MEM_LDINFL; counters only)
     output wire            idle);          // no memory op in flight (fence.i drain)
 
    localparam S_IDLE = 3'd0, S_LD = 3'd1, S_ST = 3'd2,
@@ -517,6 +518,7 @@ module ooo2_lsu
    assign pt_ack  = pt_start | take_next;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
+   assign ld_busy = ld_inflight;
 
    // ------------------------------------------------------------------- FSM
    always @(posedge clk) begin

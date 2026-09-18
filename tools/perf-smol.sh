@@ -31,6 +31,9 @@ case "$SET" in
   cpi) EV=r0300,r0301,r0302,r0303,r0304,r0305,r0311,r0312,r0313,r0314,r0317,r0005,r0102 ;;
   # + the dTLB: walks begun (r0104) and cycles walking (r0318), a subset of ST_MEM.
   mem) EV=r0003,r0004,r0100,r0102,r0110,r0112,r0104,r0318 ;;
+  # What ST_MEM is made of (2026-09-17): the door, the miss wait, the alias blocks, the reorders,
+  # the wrong-path kills, the device waits and the queue occupancies, with loads and misses beside.
+  memcpi) EV=r0300,r0319,r031a,r031b,r031c,r031d,r031e,r031f,r0320,r0321,r0322,r0003,r0102 ;;
   br)  EV=r0005,r0006,r0007,r0008,r0317 ;;
   # The dispatch hold (ST_DSP) broken down: scheduler / rename / store queue / load queue /
   # serializing, with the ROB and the redirects beside them (2026-09-07).

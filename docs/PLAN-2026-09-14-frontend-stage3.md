@@ -147,6 +147,11 @@ free-return following.
 
 ## RESULTS (2026-09-15) — machine complete, IW=3 measured, experiment concluded here
 
+> **Correction (2026-09-17):** the −11.7% below was measured with a testbench that summed
+> two of the three commit ports (`tb_ooo2_linux.v` `nret = retire + retire2`); with `retire3`
+> summed the tiny128 60 M count at IW=3 is 13,367,267 against 13,494,359 at IW=2, i.e. −0.9%.
+> The wrong-path-fraction measurement stands; the throughput conclusion does not.
+
 The parametric machine is DONE and correct: it builds/runs 1/2/3-wide from one source
 (`VDEFS="-DOOO2_IW=3"`; `OOO2_IW` is an `ifndef`/`define` in ooo2_core.v + rv_soc_top.v). At
 IW=2 every increment is BIT-IDENTICAL (60M Linux lockstep 13423520; run-ooo2-vl 240/0). At IW=3

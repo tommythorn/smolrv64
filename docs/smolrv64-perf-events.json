@@ -163,5 +163,55 @@
     "EventName": "DTLB_MISS",
     "EventCode": "0x0104",
     "BriefDescription": "dTLB miss: a data page-table walk began"
+  },
+  {
+    "EventName": "MEM_HITSER",
+    "EventCode": "0x0319",
+    "BriefDescription": "a ready load candidate the LSU door did not take"
+  },
+  {
+    "EventName": "MEM_LDINFL",
+    "EventCode": "0x031a",
+    "BriefDescription": "a load access in flight (hit ~3 cycles each; the rest is miss wait)"
+  },
+  {
+    "EventName": "MEM_STDOOR",
+    "EventCode": "0x031b",
+    "BriefDescription": "a store at the D$ door, unaccepted"
+  },
+  {
+    "EventName": "MEM_ALIAS_UNK",
+    "EventCode": "0x031c",
+    "BriefDescription": "load candidate blocked: an older store's address is unknown"
+  },
+  {
+    "EventName": "MEM_ALIAS_OVL",
+    "EventCode": "0x031d",
+    "BriefDescription": "load candidate blocked: a known older store overlaps"
+  },
+  {
+    "EventName": "MEM_REORD",
+    "EventCode": "0x031e",
+    "BriefDescription": "loads issued past an uncommitted older store (count)"
+  },
+  {
+    "EventName": "MEM_WPKILL",
+    "EventCode": "0x031f",
+    "BriefDescription": "wrong-path loads killed after their access ran (count)"
+  },
+  {
+    "EventName": "MEM_DEVWAIT",
+    "EventCode": "0x0320",
+    "BriefDescription": "a device load waiting to be the ROB head"
+  },
+  {
+    "EventName": "MEM_LQOCC",
+    "EventCode": "0x0321",
+    "BriefDescription": "load-queue occupancy, summed per cycle"
+  },
+  {
+    "EventName": "MEM_SQOCC",
+    "EventCode": "0x0322",
+    "BriefDescription": "store-queue occupancy, summed per cycle"
   }
 ]

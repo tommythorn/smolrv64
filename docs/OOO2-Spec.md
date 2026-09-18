@@ -1212,6 +1212,14 @@ an event to a run means dropping one.
 | `FB_HIT` / `FB_RHIT` | r0315 / r0316 | **retired with the fetch buffer (Stage 2): tied to 0.** The token/bit is kept so the board perf map stays stable; the alignment latch has no equivalent served-hit event yet |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
+| `MEM_HITSER` | r0319 | a ready load candidate the LSU door did not take (hit serialization) |
+| `MEM_LDINFL` | r031a | a load access in flight; a hit is ~3 cycles, the rest is miss wait |
+| `MEM_STDOOR` | r031b | a store at the D$ door, unaccepted |
+| `MEM_ALIAS_UNK` / `MEM_ALIAS_OVL` | r031c / r031d | the load candidate blocked by an older store whose address is unknown / that is known to overlap |
+| `MEM_REORD` | r031e | loads issued past an uncommitted older store (count) |
+| `MEM_WPKILL` | r031f | wrong-path loads whose landing was killed after their access ran (count) |
+| `MEM_DEVWAIT` | r0320 | a device load waiting to be the ROB head |
+| `MEM_LQOCC` / `MEM_SQOCC` | r0321 / r0322 | load / store queue occupancy summed per cycle (mean = count / cycles) |
 
 `ST_MEM` and `ST_FPU` deliberately include the *dependent* wait, charged to the unit that
 owns the register being waited on: when a unit stopped blocking M, the wait did not go away,
@@ -1297,7 +1305,11 @@ Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipel
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
 commit +0.08, the PRF read into the ALUs +0.085. Cosim: IW=3 retires 11,682,439 (−0.02%
 vs the base: the second cycle at head), IW=2 13,491,763 (+0.5%). `docs/HANDOFF-iw3-hail-mary.md`
-has the per-round record and the rejected cuts. **Board (2026-09-17): every bitstream of
+has the per-round record and the rejected cuts. **The IW=3 counts above were LOW**: the
+testbench summed two of the three commit ports until 2026-09-17 (`retire3` is a port of
+the core and the SoC now); the true 60 M count at IW=3 is 13,367,267 against 13,494,359 at
+IW=2 (−0.9%, not the −11.7%/−13.4% on record), and `cosim-expected.txt` rows carry the width
+in a 5th column. **Board (2026-09-17): every bitstream of
 this branch, the base dd371e6d included, kills the NIC (NFS stalls, virtio-net TX watchdog)
 while the last board-clean main bitstream boots clean the same morning; bisected on the board
 at 111 MHz to 5ef15e3d (CTF-on-FP) -- 760fe336 boots clean, 5ef15e3d with either loop cut does

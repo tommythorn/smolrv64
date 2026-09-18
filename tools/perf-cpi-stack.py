@@ -53,6 +53,17 @@ BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
 # ST_IQ..ST_SRZ are the disjoint parts of ST_DSP (the `hold` set): a breakdown underneath it.
 DSP_SUB = [("ST_IQ", "the scheduler is full"), ("ST_RN", "rename: a free list is empty"),
            ("ST_SQ", "store queue full"), ("ST_LQ", "load queue full"), ("ST_SRZ", "serializing op")]
+# What ST_MEM is made of (2026-09-17, the memory backend program): cycle buckets printed
+# underneath it as shares of all cycles, never added (they overlap ST_MEM and each other),
+# plus the per-1k counts and the mean queue occupancies that go with them.
+MEM_SUB = [("MEM_HITSER", "a ready load the door did not take"),
+           ("MEM_LDINFL", "a load access in flight (hit ~3 cycles; the rest is miss wait)"),
+           ("MEM_STDOOR", "a store at the D$ door, unaccepted"),
+           ("MEM_ALIAS_UNK", "load blocked: older store address unknown"),
+           ("MEM_ALIAS_OVL", "load blocked: known older store overlaps"),
+           ("MEM_DEVWAIT", "device load waiting for the head")]
+MEM_CNT = [("MEM_REORD", "loads issued past an uncommitted older store"),
+           ("MEM_WPKILL", "wrong-path loads killed after their access ran")]
 FE_SUB  = [("FE_MMU", "iMMU walking"), ("FE_IC", "no fetch bytes at all"),
            ("FE_ALN", "bytes, but no whole insn"), ("FE_QUE", "insn ready, decoupling queue empty")]
 REDIR_SUB = [("RED_BR", "conditional branch"), ("RED_JLR", "indirect jump (jalr)"),
@@ -129,6 +140,19 @@ def main():
             # walk per load with no D$ miss to show for it (2026-09-05).
             if k == "ST_MEM" and v.get("DT_WALK") is not None:
                 print("      %-28s %10.3f  %5.1f%%" % ("- of which dTLB walking", g("DT_WALK")/ins, 100.0*g("DT_WALK")/cyc))
+            if k == "ST_MEM" and any(v.get(kk) is not None for kk, _ in MEM_SUB):
+                for kk, ll in MEM_SUB:
+                    if v.get(kk) is not None:
+                        print("      %-28s %10.3f  %5.1f%%" % ("- " + ll, g(kk)/ins, 100.0*g(kk)/cyc))
+                if v.get("MEM_LDINFL") is not None and v.get("LOAD") is not None and g("LOAD"):
+                    est = g("MEM_LDINFL") - 3 * g("LOAD")
+                    print("      %-28s %10.3f  %5.1f%%   (LDINFL - 3 x loads: estimate)" % ("- ...of which miss wait", est/ins, 100.0*est/cyc))
+                for kk, ll in MEM_CNT:
+                    if v.get(kk) is not None:
+                        print("      %-28s %10.3f per 1k insns" % ("- " + ll, per_k(g(kk))))
+                for kk, ll in (("MEM_LQOCC", "load queue"), ("MEM_SQOCC", "store queue")):
+                    if v.get(kk) is not None:
+                        print("      %-28s %10.2f entries" % ("- mean %s occupancy" % ll, g(kk)/cyc))
             # ST_DSP's disjoint parts (the `hold` set): a breakdown, never added alongside it.
             if k == "ST_DSP" and any(v.get(kk) is not None for kk, _ in DSP_SUB):
                 for kk, ll in DSP_SUB:

@@ -77,7 +77,9 @@ module csr_file
     // [6:0] are the original per-op/cache taps. [30:7] are ooo2_core's STALL-ATTRIBUTION
     // taps (see ooo2_core.v and docs/OOO2-Spec.md section 11): they turn a CPI number into
     // a CPI stack.
-    input  wire [30:0] hpm_ev,
+    input  wire [38:0] hpm_ev,
+    input  wire [5:0]  hpm_lqocc,        // load-queue occupancy this cycle (MEM_LQOCC)
+    input  wire [5:0]  hpm_sqocc,        // store-queue occupancy this cycle (MEM_SQOCC)
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -213,11 +215,59 @@ module csr_file
                       HPMEV_FB_RHIT= 16'h0316,   // ...on the first fetch after a redirect
                       HPMEV_RD_WAIT= 16'h0317,   // Redirect resolved in M, waiting for the ROB head (the mispredict drain)
                      HPMEV_DT_WALK= 16'h0318,   // Data MMU walking (cycles; inside ST_MEM)
-                     HPMEV_DTLB_MISS=16'h0104;  // dTLB miss: a data page-table walk began
+                     HPMEV_DTLB_MISS=16'h0104,  // dTLB miss: a data page-table walk began
+                     // The memory buckets (2026-09-17): what ST_MEM is made of. Cycles unless noted.
+                     HPMEV_MEM_HITSER   = 16'h0319,   // a ready load candidate the LSU door did not take
+                     HPMEV_MEM_LDINFL   = 16'h031a,   // a load access in flight (hit ~3 cycles each; the rest is miss wait)
+                     HPMEV_MEM_STDOOR   = 16'h031b,   // a store at the D$ door, unaccepted
+                     HPMEV_MEM_ALIAS_UNK= 16'h031c,   // load candidate blocked: an older store's address is unknown
+                     HPMEV_MEM_ALIAS_OVL= 16'h031d,   // load candidate blocked: a known older store overlaps
+                     HPMEV_MEM_REORD    = 16'h031e,   // loads issued past an uncommitted older store (count)
+                     HPMEV_MEM_WPKILL   = 16'h031f,   // wrong-path loads killed after their access ran (count)
+                     HPMEV_MEM_DEVWAIT  = 16'h0320,   // a device load waiting to be the ROB head
+                     HPMEV_MEM_LQOCC    = 16'h0321,   // load-queue occupancy, summed per cycle
+                     HPMEV_MEM_SQOCC    = 16'h0322;   // store-queue occupancy, summed per cycle
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    // EVERY input here is a register as far as this module is concerned: `hpm_ev` and
    // `hpm_retire_cnt` are both the caller's delayed copies. That is what keeps the mux and
    // the 64-bit adder below a path that starts at the top of the cycle.
+   // THE EVENT SELECT IS DECODED WHEN mhpmeventN IS WRITTEN, into a registered index (hpm_esel).
+   // The per-cycle increment is then a mux on a 6-bit register, not a 16-bit event-code case per
+   // counter per cycle: with the bus at 41 sources that case was a 644-endpoint family at +0.006 ns
+   // (`m_imm_reg -> mhpmcounter_reg`, the C0 IW=3 census) and took the build to WNS 0.000.
+   // hpm_inc (the code form) stays as the oracle the assertion below holds hpm_val to.
+   localparam [5:0] HSEL_NONE = 6'd63, HSEL_CYC = 6'd0, HSEL_RET = 6'd1, HSEL_LQ = 6'd41, HSEL_SQ = 6'd42;
+   function [5:0] hpm_sel_of;   // event code -> index: 0 cycles, 1 instret, 2+b = hpm_ev[b], 41/42 the occupancies
+      input [15:0] ev;
+      case (ev)
+        HPMEV_CYCLES: hpm_sel_of = HSEL_CYC;    HPMEV_INSTRET: hpm_sel_of = HSEL_RET;
+        HPMEV_LOAD: hpm_sel_of = 6'd2+0;   HPMEV_STORE: hpm_sel_of = 6'd2+1;   HPMEV_REDIR: hpm_sel_of = 6'd2+2;
+        HPMEV_DCACC: hpm_sel_of = 6'd2+3;  HPMEV_DCMISS: hpm_sel_of = 6'd2+4;  HPMEV_ICACC: hpm_sel_of = 6'd2+5;
+        HPMEV_ICMISS: hpm_sel_of = 6'd2+6; HPMEV_ST_MEM: hpm_sel_of = 6'd2+7;  HPMEV_ST_DIV: hpm_sel_of = 6'd2+8;
+        HPMEV_ST_MUL: hpm_sel_of = 6'd2+9; HPMEV_ST_FPU: hpm_sel_of = 6'd2+10; HPMEV_ST_DSP: hpm_sel_of = 6'd2+11;
+        HPMEV_FE_BUB: hpm_sel_of = 6'd2+12; HPMEV_FE_MMU: hpm_sel_of = 6'd2+13; HPMEV_FE_IC: hpm_sel_of = 6'd2+14;
+        HPMEV_RED_BR: hpm_sel_of = 6'd2+15; HPMEV_RED_JLR: hpm_sel_of = 6'd2+16; HPMEV_RED_TRP: hpm_sel_of = 6'd2+17;
+        HPMEV_FE_ALN: hpm_sel_of = 6'd2+18; HPMEV_FE_QUE: hpm_sel_of = 6'd2+19; HPMEV_FB_HIT: hpm_sel_of = 6'd2+20;
+        HPMEV_FB_RHIT: hpm_sel_of = 6'd2+21; HPMEV_ST_ROB: hpm_sel_of = 6'd2+22; HPMEV_RD_WAIT: hpm_sel_of = 6'd2+23;
+        HPMEV_DT_WALK: hpm_sel_of = 6'd2+24; HPMEV_DTLB_MISS: hpm_sel_of = 6'd2+25; HPMEV_ST_IQ: hpm_sel_of = 6'd2+26;
+        HPMEV_ST_RN: hpm_sel_of = 6'd2+27; HPMEV_ST_SQ: hpm_sel_of = 6'd2+28; HPMEV_ST_LQ: hpm_sel_of = 6'd2+29;
+        HPMEV_ST_SRZ: hpm_sel_of = 6'd2+30; HPMEV_MEM_HITSER: hpm_sel_of = 6'd2+31; HPMEV_MEM_LDINFL: hpm_sel_of = 6'd2+32;
+        HPMEV_MEM_STDOOR: hpm_sel_of = 6'd2+33; HPMEV_MEM_ALIAS_UNK: hpm_sel_of = 6'd2+34; HPMEV_MEM_ALIAS_OVL: hpm_sel_of = 6'd2+35;
+        HPMEV_MEM_REORD: hpm_sel_of = 6'd2+36; HPMEV_MEM_WPKILL: hpm_sel_of = 6'd2+37; HPMEV_MEM_DEVWAIT: hpm_sel_of = 6'd2+38;
+        HPMEV_MEM_LQOCC: hpm_sel_of = HSEL_LQ; HPMEV_MEM_SQOCC: hpm_sel_of = HSEL_SQ;
+        default: hpm_sel_of = HSEL_NONE;
+      endcase
+   endfunction
+   function [5:0] hpm_val;      // index -> this cycle's increment
+      input [5:0] sel;
+      if (sel == HSEL_CYC)       hpm_val = 6'd1;
+      else if (sel == HSEL_RET)  hpm_val = hpm_retire_cnt;
+      else if (sel == HSEL_LQ)   hpm_val = hpm_lqocc;
+      else if (sel == HSEL_SQ)   hpm_val = hpm_sqocc;
+      else if (sel <= 6'd40)     hpm_val = {5'd0, hpm_ev[sel - 6'd2]};
+      else                       hpm_val = 6'd0;
+   endfunction
+   reg [5:0] hpm_esel [0:HPMN-1];
    function [5:0] hpm_inc;
       input [15:0] ev;
       case (ev)
@@ -254,9 +304,24 @@ module csr_file
         HPMEV_RD_WAIT: hpm_inc = {5'd0, hpm_ev[23]};
         HPMEV_DT_WALK: hpm_inc = {5'd0, hpm_ev[24]};
         HPMEV_DTLB_MISS: hpm_inc = {5'd0, hpm_ev[25]};
+        HPMEV_MEM_HITSER:    hpm_inc = {5'd0, hpm_ev[31]};
+        HPMEV_MEM_LDINFL:    hpm_inc = {5'd0, hpm_ev[32]};
+        HPMEV_MEM_STDOOR:    hpm_inc = {5'd0, hpm_ev[33]};
+        HPMEV_MEM_ALIAS_UNK: hpm_inc = {5'd0, hpm_ev[34]};
+        HPMEV_MEM_ALIAS_OVL: hpm_inc = {5'd0, hpm_ev[35]};
+        HPMEV_MEM_REORD:     hpm_inc = {5'd0, hpm_ev[36]};
+        HPMEV_MEM_WPKILL:    hpm_inc = {5'd0, hpm_ev[37]};
+        HPMEV_MEM_DEVWAIT:   hpm_inc = {5'd0, hpm_ev[38]};
+        HPMEV_MEM_LQOCC:     hpm_inc = hpm_lqocc;
+        HPMEV_MEM_SQOCC:     hpm_inc = hpm_sqocc;
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction
+   // The registered select is asserted equal to the code form every cycle (rule I3: a shadow
+   // proves the cut before the oracle is deleted).
+   always @(posedge clk) if (!reset) for (i=0; i<HPMN; i=i+1)
+      if (hpm_val(hpm_esel[i]) != hpm_inc(mhpmevent[i][15:0]))
+         $fatal(1, "csr_file: hpm counter %0d: registered select %0d gives %0d, the code form %0d", i, hpm_esel[i], hpm_val(hpm_esel[i]), hpm_inc(mhpmevent[i][15:0]));
    reg [63:0] mcountinhibit;
    reg [63:0] mhpmevent  [0:HPMN-1];
    reg [63:0] mhpmcounter[0:HPMN-1];
@@ -769,17 +834,17 @@ module csr_file
       // 0 (the counter holds) -- the extension point for branch/cache/TLB events.
       if (reset) begin
          mcountinhibit <= 64'd0;
-         for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
+         for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; hpm_esel[i] <= HSEL_NONE; end
       end else begin
          if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= newv & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMEVENT3+i))
-               mhpmevent[i] <= newv;
+               begin mhpmevent[i] <= newv;  hpm_esel[i] <= hpm_sel_of(newv[15:0]); end
             if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMCOUNTER3+i))
                mhpmcounter[i] <= newv;
             else if (!mcountinhibit[i+3])
-               mhpmcounter[i] <= mhpmcounter[i] + {58'd0, hpm_inc(mhpmevent[i][15:0])};
+               mhpmcounter[i] <= mhpmcounter[i] + {58'd0, hpm_val(hpm_esel[i])};
          end
       end
    end

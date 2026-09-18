@@ -320,3 +320,50 @@ us more efficient and effective at it, and act on the cheap ones in the same com
 3. Commit outside Mon-Fri 09:00-17:00 PDT, explicit paths, `.xpr` excluded (scheduled 17:05 PDT).
 4. Open for the branch: `tb_fetch_pagecross.v` (pre-existing FAIL at 5ef15e3d too); the −8.6%
    adapter-MLP recovery from Stage 2; a real virtio-net model in the cosim tb.
+
+## The memory backend program, C0: measurement (2026-09-17 evening)
+
+Plan: `~/.claude/plans/cosmic-splashing-jellyfish.md` (approved). C0 built the instruments
+before any backend RTL changes:
+
+- **B1** `retire3` is a port of the core and the SoC; the testbench sums all three commit
+  ports. Every IW=3 count before this summed two: the true tiny128 60 M count at IW=3 is
+  **13,367,267** against 13,494,359 at IW=2 (−0.9%), not the −11.7%/−13.4% on record.
+  `cosim-expected.txt` rows carry the width in a 5th column and the runner grades IW=3.
+- **B2** the memory buckets in RTL: `MEM_HITSER`, `MEM_LDINFL`, `MEM_STDOOR`, `MEM_ALIAS_UNK`,
+  `MEM_ALIAS_OVL`, `MEM_REORD`, `MEM_WPKILL`, `MEM_DEVWAIT` (r0319-r0320) and the queue
+  occupancies `MEM_LQOCC`/`MEM_SQOCC` (r0321/r0322, values); `hpm_ev` is 39 bits; the SQ
+  exports `l_block_unk_q`, the LQ `x_devwait`, the LSU `ld_busy`; `tools/perf-smol.sh memcpi`.
+- **B3** the testbench prints a `perf stat`-shaped block (`perf-stat-sim`) from `hpm_ev_q`, and
+  `tools/perf-cpi-stack.py` prints the composition of ST_MEM underneath it.
+- **B8** OOC baselines and the census of the last passing IW=2 build:
+  `docs/measurements/ooc-baselines-2026-09-17.md` (LQ 604, SQ 240/246 at 8/16, LSU 236,
+  D$ 203, I$ 202 MHz at 6 ns). The worst placed family is `m_addr_reg -> hpm_ev_q_reg`.
+- **B9** `tools/trace-limit.py` gained the backend knobs (load-use, load/store port
+  occupancy, miss rate/latency/MLP, a mispredict drain); the sweep is
+  `scratchpad/limit-sweep.txt`.
+
+First reading (tiny128 boot, 60 M, IW=2, `scratchpad/c0-iw2-60m.perf`): dispatch held by a
+FULL STORE QUEUE 37.5% of cycles; a store unaccepted at the D$ door 44.0% (this bucket
+includes the one-cycle registered accept every store pays); a load access in flight 43.0%
+(estimated miss wait 31.1%); a ready load the door did not take 12.0%; ST_MEM 11.5%; frontend
+bubble 33.9%; mean occupancy LQ 0.62 of 4, SQ 3.76 of 8; reorders 5.6 and wrong-path kills 4.4
+per 1k instructions; alias blocks negligible. This boot is store-drain-bound at the door
+first (P8's wall), miss-bound second. The counters are the argument for C4a's one-access-per-
+cycle door and C5's MSHRs in that order.
+
+B9's sweep (in the measurements doc): the pipelined door alone is worth 40-70% at the ceiling
+on integer code at IW=3; the store drain another 5-20%; W32 10-20%; the FP subtests are bound
+elsewhere. The model cannot see MLP (uniform misses); C5 is judged on the cosim sweep.
+
+**The counters are not free.** The first IW=3 build of C0 met timing at WNS 0.000 against
++0.017 before it: widening the event bus to 41 sources made `csr_file`'s per-counter,
+per-cycle 16-bit event-code case a 644-endpoint family at +0.006 ns (`m_imm_reg ->
+mhpmcounter_reg`, the census). The fix decodes the event code into a 6-bit registered index
+when `mhpmeventN` is written (`hpm_esel`), so the per-cycle increment is a mux on a register;
+the code form is kept as a shadow the cosim asserts against every cycle (it caught a bare
+`if` covering one of two statements within a minute). Rule for the rest of the program: an
+instrument's per-cycle logic reads registers only; decode at the write, never at the use.
+With the registered select the C0 IW=3 build closes at **post-route WNS +0.025** (the counter
+family is gone from the census); IW=2 60 M 13,494,359, IW=3 60 M 13,367,267 and IW=2 300 M
+72,713,900 are exact with the instruments in; riscv-tests 240/0. Committed as C0.

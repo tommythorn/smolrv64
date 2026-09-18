@@ -109,6 +109,8 @@ module ooo2_sq
     input  wire [LQIB-1:0]       l_fill_ix,   // ...into this entry
     input  wire [PAW-1:0]        l_fill_pa,
     input  wire [1:0]            l_fill_size,
+    output wire [LQN-1:0]        l_block_unk_q, // per entry, REGISTERED: blocked by an older store whose ADDRESS IS
+                                              // UNKNOWN (the rest of l_block_q is a known overlap). Counters only.
     output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
     output wire [LQN-1:0]        l_older,     // per entry, REGISTERED: an older store is live (see below)
     output wire [LQN-1:0]        l_block_q,   // per entry, REGISTERED: l_block one cycle old, never the less
@@ -271,6 +273,9 @@ module ooo2_sq
                    ? (|(oldm & (fill_row | ~av_next)))
                    : (l_av[gl] & (|(oldm & (conf[gl] | ~av))));
          assign l_block_q[gl] = blk_q;
+         reg unk_q;  initial unk_q = 1'b0;      // MEM_ALIAS_UNK: the unknown-address arm alone, a cycle old
+         always @(posedge clk) unk_q <= l_av[gl] & (|(oldm & ~av));
+         assign l_block_unk_q[gl] = unk_q;
          // THE OLDER-STORE ANSWER IS A REGISTER, PER LOAD (plan item T1 (L), 2026-09-07).
          // The query port below (ld_tag -> ld_older) reads sqt[acc] from the load queue's
          // LUTRAM, subtracts headc and compares NENT distances, and its answer licensed M's

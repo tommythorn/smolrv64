@@ -32,6 +32,9 @@ INITRD=${INITRD:-$W/tiny128.cpio}
 OFF_DTB=${OFF_DTB:-1ff00000}; OFF_INITRD=${OFF_INITRD:-1f52c000}; A1=${A1:-9ff00000}
 MEM_LG2=${MEM_LG2:-29}
 CYC=${CYC:-0}
+# THIS run's output, not a shared file: two runs that overlap on one obj_dir (a rule already, and
+# broken on 2026-09-17) graded each other's retire count through obj_dir_ooo2_clinux/last-run.out.
+RUNOUT=$(mktemp -t ooo2-cosim-run.XXXXXX); trap 'rm -f "$RUNOUT"' EXIT
 BIN=$(pwd)/obj_dir_ooo2_clinux/tb_ooo2_clinux
 
 # ALWAYS ask cargo -- do NOT test for the file's existence.  A stale libsimmerv_cosim.a
@@ -126,7 +129,7 @@ echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} a1=$A1 mem=2^$MEM_
 # the only instrument that sees it.
 set -o pipefail
 "$BIN" +fw="$FW" +dtb="$DTB" ${INITRD:+ +initrd="$INITRD"} \
-     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC ${PLUSARGS:-} 2>&1 | tee obj_dir_ooo2_clinux/last-run.out
+     +dtb_off=$OFF_DTB +initrd_off=$OFF_INITRD +a1=$A1 +cycles=$CYC ${PLUSARGS:-} 2>&1 | tee "$RUNOUT"
 rc=$?
 
 # OOO2_HW, not INO_HW: the define was renamed with the core and this line was not, so it
@@ -139,10 +142,15 @@ hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${
 # retires a different count and has no row, so its verdict is the lockstep alone -- comparing it
 # against the IW=2 row printed COSIM-PERF FAIL three times on 2026-09-17 for runs that were clean.
 iw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_IW=\([0-9]*\).*/\1/p'); iw=${iw:-2}
-[ "$iw" != 2 ] && { echo "cosim-perf: retires=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_dir_ooo2_clinux/last-run.out | tail -1) (no expectation row for OOO2_IW=$iw; the lockstep is the verdict)"; exit 0; }
-got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_dir_ooo2_clinux/last-run.out | tail -1)
-exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
-tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
+# A row's optional 5th column is the pipeline width it was measured at (2 when absent), so
+# IW=3 has its own rows since 2026-09-17 -- and its own count, now that the testbench sums
+# the third commit port. A width with no row is judged by the lockstep alone.
+got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' "$RUNOUT" | tail -1)
+# The trailing `# provenance` is stripped before the fields are counted, or the `#` reads as the
+# width column and every commented row silently stops grading (it did, for one evening).
+exp=$(awk -v c="$CYC" -v h="$hw" -v w="$iw" '{sub(/#.*/,"")} NF>=4 && $1==c && $2==h && (NF>=5 ? $5 : 2)==w {print $3; exit}' cosim-expected.txt)
+tol=$(awk -v c="$CYC" -v h="$hw" -v w="$iw" '{sub(/#.*/,"")} NF>=4 && $1==c && $2==h && (NF>=5 ? $5 : 2)==w {print $4; exit}' cosim-expected.txt)
+[ -z "$exp" ] && echo "cosim-perf: no expectation row for CYC=$CYC OOO2_HW=$hw OOO2_IW=$iw -- the lockstep is the verdict"
 
 # an expectation that is not a number is no expectation (a placeholder row passed as "ok" once)
 case "$exp" in ''|*[!0-9]*) exp="";; esac
