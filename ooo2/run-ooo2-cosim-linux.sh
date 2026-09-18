@@ -135,6 +135,11 @@ rc=$?
 # aligner stalls 37% of cycles against 8% at HW=4. A whole priority list was built on the
 # wrong number before this was caught. Measure at the width the hardware uses.
 hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${hw:-8}
+# The rows are keyed by cycles and fetch width only; a non-default PIPELINE width (OOO2_IW=3, or 1)
+# retires a different count and has no row, so its verdict is the lockstep alone -- comparing it
+# against the IW=2 row printed COSIM-PERF FAIL three times on 2026-09-17 for runs that were clean.
+iw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_IW=\([0-9]*\).*/\1/p'); iw=${iw:-2}
+[ "$iw" != 2 ] && { echo "cosim-perf: retires=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_dir_ooo2_clinux/last-run.out | tail -1) (no expectation row for OOO2_IW=$iw; the lockstep is the verdict)"; exit 0; }
 got=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' obj_dir_ooo2_clinux/last-run.out | tail -1)
 exp=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $3; exit}' cosim-expected.txt)
 tol=$(awk -v c="$CYC" -v h="$hw" '!/^#/ && NF>=4 && $1==c && $2==h {print $4; exit}' cosim-expected.txt)
