@@ -1264,7 +1264,8 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | Ethernet RX engine (MACs + the slot ring, two clocks) | `ooo2/run-ooo2-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
-| disk-backed lockstep: virtio-blk, non-coherent DMA (B6, 2026-09-17) | `make -C workloads/tiny128 cosim-blk` | no divergence, `BLKCHECK-OK` on the console (the initrd's S99blkcheck mounts the 4 MiB ext4 image, verifies every byte, writes a copy back and re-reads it past the page cache); the runner fails on `BLKCHECK-FAIL` or its absence |
+| disk-backed lockstep: virtio-blk, non-coherent DMA (B6, 2026-09-18; 1.5 G cycles, ~80 min: userspace starts after ~1.3 G) | `make -C workloads/tiny128 cosim-blk` | no divergence, `BLKCHECK-OK` on the console (the initrd's S99blkcheck mounts the 4 MiB ext4 image, verifies every byte, writes a copy back and re-reads it past the page cache); the runner fails on `BLKCHECK-FAIL` or its absence |
+| memrand: random memory ordering under the lockstep (B4, 2026-09-18) | `make -C workloads/memrand sweep SEEDS="1 2 3 4"` (and `sweep-iw3`) | `MEMRAND seed=N: PASS` for every seed: a 50 k-op random stream of loads/stores/AMOs/LR-SC/FP/cbo/fences/sfence.vma/pointer chases/megapage remaps over three VA aliases in S-mode, with the testbench's DMA agent interrupting through PLIC source 11; every load and every store byte judged by the lockstep |
 | DDR-latency sweep (B7, 2026-09-17) | `tools/mem-sweep.sh docs/measurements/<date>-mem-sweep.txt` | the table of retires at 60 M for latency 4 / measured / 80 at IW=2 and IW=3; an MLP increment is judged by how much of the gap to latency 4 it closes |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
 | the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, rtl= recorded |
@@ -1273,7 +1274,8 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 never reaches the first interrupt — and three defects that wedged hardware were invisible at
 that budget. The runner rebuilds whenever any source changed (its stamp hashes them) and
 prints the model's source hash on the verdict line; a verdict whose log lacks
-`building obj_dir_ooo2_clinux` after an RTL edit is not a verdict (rule G5). tiny128 is a
+`building obj_dir_ooo2_clinux` after an RTL edit is not a verdict (rule G5; a non-default
+MEM_LG2/VDEFS builds `obj_dir_ooo2_clinux.<hash>` and runs in parallel with the others, rule G10). tiny128 is a
 small guest: it never lined up the store-queue age defect of 2026-09-04 in 60 M cycles,
 the Geekbench boot did at 447 M, so the long-guest run is a standing per-batch gate. The
 DDR model is the measured shape by default (`+ddr_lat=N` for a flat sweep).

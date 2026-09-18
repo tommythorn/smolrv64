@@ -494,3 +494,54 @@ known at decode), (b) by the F/CTF port at issue for CSR/system ops (three PRF r
 condition; `xtrap_v`, `upd_valid`, `m_red_fire` sourced from it; brought up as a shadow beside M
 with an every-cycle equality assertion, then switched (retire-identical at both widths).
 
+## memrand's first night (2026-09-18 00:15): three program fixes, one reference bug, no core defect
+
+Seed 1 at IW=2 passes (50 k ops, 1.95 M retires, 95 DMA bursts handled through the interrupt
+protocol). On the way:
+- **mstatus read-modify-write**: MPP's reset value is not architected; the DUT has 0, simmerv M.
+  No real software reads it before writing it, so the lockstep never saw it. The program writes
+  mstatus whole.
+- **A 64 KiB-aligned megapage**: the remap wrote a level-1 leaf with PPN[0] != 0. The DUT raised
+  the page fault the spec requires; **simmerv accepted it** -- its misaligned-superpage mask was
+  `(1 << j) - 1`, one bit per level, instead of `(1 << 9j) - 1`. Fixed in `~/simmerv/src/mmu.rs`
+  (Tommy: "we should fix it"); `gen.py --misaligned-megapage` keeps the case as a test where both
+  models must fault at the same retire -- verified after the fix: `MEMRAND-TRAP cause=d` with no
+  divergence (`make cosim SEED=1 TAG=-mm GENFLAGS=--misaligned-megapage`). ~/simmerv is behind
+  upstream (Tommy: update at a convenient point, not now); the fix and the `mem_size` field must
+  survive that update.
+- **Page-straddling misaligned accesses**: the LSU raises address-misaligned for a misaligned
+  access whose span leaves the page (documented in `ooo2_lsu.v`, Linux emulates it). The pointer
+  chases now stay inside the pointer's page; simmerv agreed with the DUT's trap.
+- A zero-initialised region let zero loads wipe the value pool within a few hundred ops; the
+  region is seeded with random data now (`region_init`, 128 KiB in .rodata).
+The stream is memory-bound by design: ~16 cycles per instruction (straddles, AMOs, fence.i every
+~250 ops, sfence.vma, divides), so 50 k ops is ~4 M cycles per seed.
+Seeds 1-4 at IW=2 and 1-3 at IW=3 pass (00:13); the same seed's final region checksum is identical
+at both widths (the DMA sums differ only by burst timing). Runs of different configs now proceed in
+parallel (rule G10), so the six seeds took under two minutes.
+
+## The DDR-latency sweep (B7, 2026-09-17, `docs/measurements/2026-09-17-mem-sweep.txt`)
+
+| IW | lat 4 | measured | lat 80 |
+|---|---|---|---|
+| 2 | 19,609,228 | 13,490,465 (−31.2%) | 10,134,592 (−48.3%) |
+| 3 | 18,946,720 | 13,371,386 (−29.4%) | 10,159,647 (−46.4%) |
+
+Retires at 60 M cycles on the tiny128 boot. Two facts for the program: the measured DDR shape
+costs the boot 31% of its retires against a 4-cycle memory (the MLP ceiling C5 is judged against),
+and **IW=3 retires 3.4% FEWER than IW=2 with a 4-cycle memory** -- with memory out of the way the
+3-wide pipe is slower on this boot, which points at the dispatch stage / the shared F-CTF-MD port
+rather than at width; worth its own census before C7 widens the memory path.
+
+## B6 verified (2026-09-18 01:40): the disk-backed lockstep
+
+`make -C workloads/tiny128 cosim-blk` at 1.5 G cycles: the kernel probes virtio-blk (`[vda] 8192
+512-byte logical blocks`), the initrd's S99blkcheck mounts the ext4 image at 7.6 s of guest time,
+`data.bin: OK`, the write-back copy re-read past the page cache matches, `BLKCHECK-OK`. Lockstep
+clean throughout: 488,157,252 retires, 66,857,823 stores byte-checked, 13,700 DMA read beats and
+28,956 write beats mirrored into the reference. The first grading missed the verdict because the
+testbench's `[c=...]` progress line landed inside the word (`BLKCHEC[c=...]\nK-OK`): the runner
+and the memrand Makefile now read the console with those lines removed and the newlines joined.
+A 300 M run cannot reach the check (the kernel is at 0.24 s then), so this is a per-batch gate
+like the long guest, not a per-edit one.
+

@@ -95,3 +95,5 @@ workloads/tiny128/tiny128-blk.img
 workloads/memrand/ops-*.S
 workloads/memrand/memrand-*.elf
 workloads/memrand/memrand-*.bin
+# per-config cosim build directories and their locks (ooo2/run-ooo2-cosim-linux.sh)
+ooo2/obj_dir_ooo2_clinux*

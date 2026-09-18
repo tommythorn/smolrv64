@@ -666,6 +666,16 @@ run uses its whole budget with no fault in dmesg or on the console; the full Gee
 the release gate. A gate whose criterion is weaker than the failure it is meant to catch is
 a false verdict with a timestamp.
 
+**G10. One build directory per configuration, one lock per directory.** The cosim runner
+builds `obj_dir_ooo2_clinux` for the default config and `obj_dir_ooo2_clinux.<hash of MEM_LG2|VDEFS>`
+for every other. A run holds the directory's lock SHARED; a rebuild (sources, config or the
+reference library changed) upgrades to EXCLUSIVE, which waits for every run of that config in
+flight, and only then wipes and rebuilds -- the linker cannot rewrite a running executable, and
+a wipe under a run would take its stamp with it. So runs of different configs (the widths, the
+storm, a sweep) and same-config runs on unchanged sources proceed in parallel, and nothing ever
+rebuilds under a run. Before 2026-09-17 every run wiped the one directory and the night's
+verification was a hand-made serial queue; two overlapping runs once graded each other's count.
+
 **G9. A memory effect is compared byte-exact, and a class the check cannot cover is counted,
 never skipped in silence.** The lockstep compared a store's kind and PA only until 2026-09-17;
 wrong bytes or wrong byte enables at the right address were invisible until an unrelated

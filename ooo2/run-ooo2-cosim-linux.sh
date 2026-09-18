@@ -39,7 +39,19 @@ CYC=${CYC:-0}
 # THIS run's output, not a shared file: two runs that overlap on one obj_dir (a rule already, and
 # broken on 2026-09-17) graded each other's retire count through obj_dir_ooo2_clinux/last-run.out.
 RUNOUT=$(mktemp -t ooo2-cosim-run.XXXXXX); trap 'rm -f "$RUNOUT"' EXIT
-BIN=$(pwd)/obj_dir_ooo2_clinux/tb_ooo2_clinux
+# ONE BUILD DIRECTORY PER CONFIG (2026-09-17): the default config keeps the plain name (every log
+# grep for `building obj_dir_ooo2_clinux` still matches, rule G5); any other MEM_LG2/VDEFS gets
+# obj_dir_ooo2_clinux.<hash>, so the IW=2 and IW=3 binaries, the storm and a sweep coexist and run
+# in parallel instead of wiping each other. Runs of the SAME config share the binary under a SHARED
+# lock and a rebuild takes the lock EXCLUSIVELY (waiting for the runs in flight; the linker cannot
+# rewrite a running executable), so two runs of one config proceed together when nothing changed
+# and never rebuild under each other when something did: the hand-made queue is the runner's now.
+OBJ=obj_dir_ooo2_clinux
+if [ "$MEM_LG2" != 29 ] || [ -n "${VDEFS:-}" ]; then
+   OBJ=obj_dir_ooo2_clinux.$(printf '%s|%s' "$MEM_LG2" "${VDEFS:-}" | sha1sum | cut -c1-8)
+fi
+BIN=$(pwd)/$OBJ/tb_ooo2_clinux
+mkdir -p "$OBJ"; exec 9>"$OBJ.flock"; flock -s 9
 
 # ALWAYS ask cargo -- do NOT test for the file's existence.  A stale libsimmerv_cosim.a
 # silently relinks against old REF behaviour, and that has now cost two hunts: a stale
@@ -49,9 +61,10 @@ BIN=$(pwd)/obj_dir_ooo2_clinux/tb_ooo2_clinux
 echo "building simmerv cosim lib ..."
 (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
 # Relink if the archive is newer than the binary -- verilator's make does not track it.
+wipe=0
 if [ -f "$BIN" ] && [ "$SIMMERV_LIB" -nt "$BIN" ]; then
    echo "simmerv lib is newer than $BIN -- forcing a rebuild"
-   rm -rf obj_dir_ooo2_clinux
+   wipe=1
 fi
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
@@ -75,7 +88,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
 #
 # So: record the compile-time config, and when it changes WIPE THE OBJECT DIRECTORY.
 # A stamp alone is not enough -- the whole point is that make will not redo the work.
-STAMP="obj_dir_ooo2_clinux/.config-stamp"
+STAMP="$OBJ/.config-stamp"
 # G1: echo the config THIS RUN consumed, every run -- not only when it rebuilds. A run that
 # reuses a binary is exactly the one whose config you cannot see, and reading it back out of
 # .config-stamp after the fact is how you end up trusting a number you did not verify.
@@ -97,18 +110,27 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
 elif [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
    need_build=1
    echo "cosim config or sources changed ($want) -> full rebuild"
-   rm -rf obj_dir_ooo2_clinux
+   wipe=1
 fi
 # Even on BUILD=1, a config difference means stale objects: wipe rather than trust make.
-if [ "$need_build" = 1 ] && [ -d obj_dir_ooo2_clinux ] \
+if [ "$need_build" = 1 ] && [ -f "$STAMP" ] \
    && [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
-   echo "cosim config differs from the built objects -> wiping obj_dir_ooo2_clinux"
-   rm -rf obj_dir_ooo2_clinux
+   echo "cosim config differs from the built objects -> wiping $OBJ"
+   wipe=1
 fi
+[ "$wipe" = 1 ] && need_build=1
 
 if [ "$need_build" = 1 ]; then
-   echo "building obj_dir_ooo2_clinux/tb_ooo2_clinux (MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>}) ..."
-   mkdir -p obj_dir_ooo2_clinux
+   # upgrade to the exclusive lock (waits for every run of this config in flight), then re-check:
+   # the run we waited for may have been the rebuild we needed.
+   flock -n -x 9 || { echo "cosim: waiting for the runs of this config in flight before rebuilding $OBJ ..."; flock -x 9; }
+   [ "$(cat "$STAMP" 2>/dev/null)" = "$want" ] && [ -x "$BIN" ] && ! [ "$SIMMERV_LIB" -nt "$BIN" ] && need_build=0
+   # the wipe happens HERE, under the exclusive lock: never under a run of this config in flight
+   [ "$need_build" = 1 ] && rm -rf "$OBJ"
+fi
+if [ "$need_build" = 1 ]; then
+   echo "building $OBJ/tb_ooo2_clinux (MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>}) ..."
+   mkdir -p "$OBJ"
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
       -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
@@ -116,15 +138,16 @@ if [ "$need_build" = 1 ]; then
       -DOOO2_COSIM -DOOO2_MEM_SIZE_LG2=$MEM_LG2 -DCOSIM_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
-      -I. -I../src --top-module tb --Mdir obj_dir_ooo2_clinux -o tb_ooo2_clinux \
+      -I. -I../src --top-module tb --Mdir "$OBJ" -o tb_ooo2_clinux \
       rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
       ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v ../src/sd_dpi.cpp \
-      tb_ooo2_linux.v ../src/probe_cosim.cpp > obj_dir_ooo2_clinux/build.log 2>&1
-   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' obj_dir_ooo2_clinux/build.log | head -20; exit 1; fi
+      tb_ooo2_linux.v ../src/probe_cosim.cpp > "$OBJ/build.log" 2>&1
+   if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' "$OBJ/build.log" | head -20; exit 1; fi
    printf '%s' "$want" > "$STAMP"
 fi
+flock -s 9      # back to shared for the run
 
 echo "=== cosim-linux: fw=$FW dtb=$DTB initrd=${INITRD:-none} disk=${DISK:-none} a1=$A1 mem=2^$MEM_LG2 ==="
 
@@ -140,8 +163,12 @@ rc=$?
 # The disk workload's own verdict: its init mounts the disk, checks every byte, writes a copy
 # back and re-reads it past the page cache (BLKCHECK-OK). Absent or FAIL = the run failed,
 # whatever the lockstep said: a DMA that lands wrong bytes in BOTH memories is invisible to it.
+# The console is written a character at a time and the testbench's `[c=...]` progress line can
+# land INSIDE a word ("BLKCHEC[c=1461000000 ...]\nK-OK" on the first 1.5 G run), so the verdict is
+# read from the console with those lines removed and the newlines joined.
+console() { sed 's/\[c=[^]]*\]//g' "$RUNOUT" | tr -d '\n'; }
 if [ -n "${DISK:-}" ]; then
-   if grep -q 'BLKCHECK-FAIL' "$RUNOUT" || ! grep -q 'BLKCHECK-OK' "$RUNOUT"; then
+   if console | grep -q 'BLKCHECK-FAIL' || ! console | grep -q 'BLKCHECK-OK'; then
       echo "BLKCHECK FAIL: the disk check did not pass on the console (DISK=$DISK)"; rc=1
    else echo "blkcheck: BLKCHECK-OK on the console (dma beats: $(grep -o 'dma rd=[0-9]* wr=[0-9]*' "$RUNOUT" | tail -1))"; fi
 fi
