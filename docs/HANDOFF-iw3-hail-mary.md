@@ -545,3 +545,75 @@ and the memrand Makefile now read the console with those lines removed and the n
 A 300 M run cannot reach the check (the kernel is at 0.24 s then), so this is a per-batch gate
 like the long guest, not a per-edit one.
 
+## C3 step plan (2026-09-18 01:50), from the interfaces as they are
+
+`csr_file` already has the two ports the SYSQ needs to drive: `upd_{valid,is_csr,func,addr,src,pc}`
+(today `upd_valid = m_is_sys & m_done_red`, `upd_src = m_csr_func[2] ? zimm : m_rs1_val`,
+`upd_addr = m_imm[11:0]`) and `xtrap_{v,cause,epc,tval}` (today `xtrap_v & m_done_red`, epc = `m_pc`);
+its redirect outputs (`csr_redir_v/_tgt/_trap`, `csr_illegal`) are combinational from those. So a
+SYSQ entry is exactly that payload keyed by ROB index: `{v, kind: SYS | XTRAP (| REPLAY in C4b),
+is_csr, func, addr[11:0], src, pc, cause[3:0], tval}`; `raddr` (the CSR read) is `addr` of the
+firing entry.
+
+1. **Shadow** (`ooo2_sysq.v`, no behaviour change): written (a) at dispatch for `d_illegal`,
+   `d_fault` (cause/tval from decode), `d_is_irqop` (the three slots' ROB indices), (b) at M's entry
+   capture (`m_*  <= q_*/x_*`, ~line 3640) for `q_is_sys`: `{x_rs1, q_imm, q_csr_func, q_pc}`, (c) at
+   the LSU's latched fault (`m_flt_pulse`: `m_lsu_fc`, `lsu_fault_tval`). Cleared on `redirect`
+   (every entry is younger than the head or already retired). Every cycle: when M drives
+   `upd_valid`, the entry at `m_rob_idx` is valid, kind SYS and equal in every field; when
+   `xtrap_v & m_done_red`, the entry is kind XTRAP with the same cause/tval/pc. `$fatal` otherwise.
+   Gates: lint, 240/0, 60 M both widths (parallel now), the storm.
+2. **Switch the drives**: `upd_*` and `xtrap_*` come from the SYSQ entry at `rob_head_idx`, fired by
+   a registered `sysq_fire` = head entry valid & M's own done-gates for that op (`~head_block`,
+   `~ld_land`, `~fp_land`, `~m_fe_yield`, i.e. the same cycle M would have fired); M's `csr_red`/
+   `m_red_fire` become the SYSQ's. Retire-identical at both widths by construction (the shadow
+   proved the fields; the fire cycle is M's). Gates as 1, plus the board.
+3. **Issue through the F/CTF port**: `d_cls_m`-style class for CSR/system ops (the MD drain's
+   pattern: a fourth drain `iss_sys` writes the SYSQ entry from the port's forwarded rs1 instead
+   of executing); `d_cls_l` loses them; M loses `m_is_sys/m_is_csr/m_is_serialize` arms and the
+   `head_block` instret hold moves to the SYSQ's fire condition. Retire count changes (record it).
+4. **Delete** the dead M arms; the trap-target cone now starts at a LUTRAM read at `rob_head_idx`
+   (a flop) -- the timing lever the plan named.
+
+## C3 step 1 done, step 2 tried and rejected for timing (2026-09-18 02:30 / 08:00)
+
+Step 1 (the shadow, `sysq_*` arrays in `ooo2_core.v` keyed by ROB index, written at dispatch for
+decode faults/illegal, at M's take for a SYSTEM-opcode op's operands and the FP-off illegal, at
+the LSU's fault pulse) held under every gate without a single assertion: 240/0, 60 M and 300 M
+at both widths bit-identical, the 500 M storm, memrand. Step 2 makes `csr_file`'s `upd_*` and
+`xtrap_*` payloads the entry's (read at `m_rob_idx`, a flop) with `upd_valid`/`xtrap_v` derived
+from the entry's kind; M's own classification and payload stay as every-cycle equalities. The
+CSR READ address (`raddr`) stays M's `m_imm` flop on purpose: `m_imm -> csr read mux ->
+csr_rdata -> m_wb_val -> x_rs1` is a recorded FMAX path and a LUTRAM read in front of it is
+step 3's problem to solve (read the head entry's address into a flop a cycle ahead).
+
+**Step 2's verdict (08:00):** retire-identical under every gate (240/0, 60 M and 300 M at both
+widths, the storm, memrand), IW=2 core WNS +0.030 with a board PASS (900 s stress) -- and IW=3
+**−0.030** (from 0.000), no bitstream. The IW=2 census shows the new worst family:
+`m_rob_idx_reg_rep -> u_iq_i2/e_r_reg` (19 levels): the LUTRAM read of the entry sits in front
+of `csr_file`'s combinational `csr_illegal`/`redir_valid`, which reach the schedulers' kills. So
+step 2 is reverted (the shadow stays; the arrays have no synthesis reader) and its lesson is
+the design constraint for step 3: **the payload csr_file consumes must be flops**, registered
+from the head entry a cycle ahead of the fire (the head is known a cycle ahead: `rob_head_idx`
+is a flop and the entry is written long before). The reverted edit is the inverse of
+`$S/c3-step2.py` (payload ports `upd_{is_csr,func,addr,src,pc}`, `xtrap_{cause,epc,tval}` from
+`sysq_*[m_rob_idx]`, `upd_valid`/`xtrap_v` from the entry's kind) -- twelve lines, easy to redo
+once the payload is a flop.
+
+## Step 3 facts, for the next session
+
+- Serialization is already at dispatch: `ser_block = ser_inflight | (d_valid & d_is_serialize &
+  ~drained)` (~line 3625) holds younger dispatch until a serializing op has drained; M's
+  `m_is_serialize` assertion only checks it. Moving the op off M does not change this.
+- A CSR read's value reaches the register file through M's writeback (`m_wb_val = m_is_csr ?
+  csr_rdata : m_byp_val`, `m_wb_{ie,ld,fe}` by `m_shard`); a trap retires through
+  `c_kill(m_valid & m_done & m_trap)`, `m_trap = xtrap_v | (m_is_sys & csr_redir_trap)`. In step 3
+  the SYSQ fire must supply both: a completion port into the ROB (a tenth `w_v`, the MD stage's
+  pattern) with the CSR read's value onto SH_LD through the yield that M uses today, and the
+  kill.
+- `m_needs_head = m_is_sys | m_redirect | m_is_fencei | m_fault | m_ill_eff | (m_mem_op &
+  m_lsu_flt)` with the instret second-cycle hold: the SYSQ fire condition inherits exactly this
+  for its own ops; fence.i, AMO and cbo stay M's (memory-side) until C4b.
+- The F port's fourth drain (`iss_sys`, the `iss_md` pattern at ~line 1302) writes the entry from
+  `xf_rs1`, `j_*`'s imm/func/pc; the op then owns nothing but its ROB slot until the head.
+

@@ -749,6 +749,22 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 
 ---
 
+### 7.y The SYSQ, the system-op side queue (C3 steps 1-2, 2026-09-18)
+
+A per-ROB-slot record `{kind: NONE | SYS | XTRAP, is_csr, func, addr, src, pc, cause, tval}` --
+exactly the payload `csr_file` takes on its `upd_*` and `xtrap_*` ports -- written at dispatch
+(a decode fault or an illegal instruction), at M's take of a SYSTEM-opcode op (its rs1 value or
+zimm, CSR address, funct3, PC; the FP-off illegal is decided there too) and at the LSU's fault
+pulse (cause, tval); flushed by a redirect. Every cycle M drives `csr_file`'s `upd_*` or
+`xtrap_*` port, the entry at `m_rob_idx` must exist with that kind and agree in every field
+(always on; synthesis removes the arrays, which have no reader). Step 2 -- `csr_file` reading
+those payloads from the arrays at `m_rob_idx` -- was retire-identical under every gate and
+**rejected for timing**: IW=3 went from 0.000 to −0.030 because the LUTRAM read sits in front of
+`csr_file`'s combinational redirect (`m_rob_idx -> read -> csr_illegal/redir -> the schedulers'
+kill` became the worst family; IW=2 kept +0.030 and booted the board). The payload `csr_file`
+consumes must be flops: step 3 registers the head entry a cycle ahead of its fire, issues these
+ops through the F/CTF port into the queue and fires them at the ROB head; step 4 deletes M's arms.
+
 ### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
 
 A mul/div is class M at dispatch (`d_cls_m`), shares `u_iq_f` (NF 5 → 8) with FP arithmetic

@@ -2850,6 +2850,97 @@ module ooo2_core
    assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land & ~m_flt_pulse & ~m_fe_yield;
    assign m_advance = ~m_valid | m_done;
 
+
+   // ---- SYSQ, the system-op side queue: SHADOW (C3 step 1, 2026-09-18) --------------------------
+   // Everything M feeds csr_file with -- the upd_* payload of a CSR/system op and the xtrap_*
+   // payload of a trap -- is captured here per ROB slot at the point it becomes known: a decode
+   // fault or an illegal instruction at dispatch, a system op's operands as M takes it, a data
+   // fault as the LSU reports it. Nothing reads these entries yet. Every cycle M drives one of
+   // the two ports, the entry at m_rob_idx must exist with the right kind and agree in every
+   // field; a silent disagreement here would be a wrong trap once csr_file reads the entry
+   // instead of M. Always on (docs/rtl-rules.md A6). Synthesis removes the arrays (no reader).
+   // TRIED AND REJECTED (step 2, 2026-09-18): feeding csr_file's upd_*/xtrap_* from these arrays
+   // read at m_rob_idx was retire-identical everywhere but cost IW=3 its closure (0.000 -> -0.030):
+   // the LUTRAM read sits in front of csr_file's combinational redirect, and m_rob_idx -> read ->
+   // csr_illegal/redir -> the schedulers' kill became the worst family. The payload csr_file
+   // consumes must be FLOPS: step 3 registers the head entry a cycle ahead of its fire.
+   localparam [1:0] SYK_NONE = 2'd0, SYK_SYS = 2'd1, SYK_XTRAP = 2'd2;
+   reg [1:0]     sysq_kind   [0:ROB_DEPTH-1];
+   reg           sysq_is_csr [0:ROB_DEPTH-1];
+   reg [2:0]     sysq_func   [0:ROB_DEPTH-1];
+   reg [11:0]    sysq_addr   [0:ROB_DEPTH-1];
+   reg [63:0]    sysq_src    [0:ROB_DEPTH-1];
+   reg [PCW-1:0] sysq_pc     [0:ROB_DEPTH-1];
+   reg [3:0]     sysq_cause  [0:ROB_DEPTH-1];
+   reg [63:0]    sysq_tval   [0:ROB_DEPTH-1];
+   integer sqi;
+   initial for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) sysq_kind[sqi] = SYK_NONE;
+   wire        sy_q_is_sys = (q_insn[6:2] == 5'b11100);
+   wire [63:0] sy_q_src    = q_csr_func[2] ? {59'b0, q_imm[16:12]} : x_rs1;   // csr_file's upd_src
+   always @(posedge clk) if (!reset) begin
+      // (a) dispatch: a decode fault or an illegal instruction traps with what decode knows
+      if (rn_valid) begin
+         sysq_kind[rob_d_idx]  <= (d_fault | d_illegal) ? SYK_XTRAP : SYK_NONE;
+         sysq_cause[rob_d_idx] <= d_fault ? d_fault_cause : 4'd2;
+         sysq_tval[rob_d_idx]  <= d_fault ? {{(64-PCW){1'b0}}, d_fault_tval} : 64'd0;
+         sysq_pc[rob_d_idx]    <= d_pc;
+      end
+      if (rn_valid_b) begin
+         sysq_kind[rob_d_idx2]  <= (d2_fault | d2_illegal) ? SYK_XTRAP : SYK_NONE;
+         sysq_cause[rob_d_idx2] <= d2_fault ? d2_fault_cause : 4'd2;
+         sysq_tval[rob_d_idx2]  <= d2_fault ? {{(64-PCW){1'b0}}, d2_fault_tval} : 64'd0;
+         sysq_pc[rob_d_idx2]    <= d2_pc;
+      end
+      if (rn_valid_c) begin
+         sysq_kind[rob_d_idx3]  <= (d3_fault | d3_illegal) ? SYK_XTRAP : SYK_NONE;
+         sysq_cause[rob_d_idx3] <= d3_fault ? d3_fault_cause : 4'd2;
+         sysq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
+         sysq_pc[rob_d_idx3]    <= d3_pc;
+      end
+      // (b) M takes a system op: its operands are known now (the FP-off illegal is decided here too)
+      if (iss_m & ~q_illegal & ~q_fault) begin
+         if (q_is_fp & fs_off) begin
+            sysq_kind[i_rob] <= SYK_XTRAP;  sysq_cause[i_rob] <= 4'd2;  sysq_tval[i_rob] <= 64'd0;
+         end else if (sy_q_is_sys) begin
+            sysq_kind[i_rob]   <= SYK_SYS;
+            sysq_is_csr[i_rob] <= q_is_csr;  sysq_func[i_rob] <= q_csr_func;
+            sysq_addr[i_rob]   <= q_imm[11:0];  sysq_src[i_rob] <= sy_q_src;
+         end
+      end
+      // (c) the LSU reports a data fault for M's op
+      if (m_flt_pulse) begin
+         sysq_kind[m_rob_idx]  <= SYK_XTRAP;
+         sysq_cause[m_rob_idx] <= lsu_fault_cause;
+         sysq_tval[m_rob_idx]  <= lsu_fault_tval;
+      end
+      // flush arm last (rule I11): a redirect fires at the head, every live entry is younger
+      if (redirect) for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) sysq_kind[sqi] <= SYK_NONE;
+   end
+   always @(posedge clk) if (!reset) begin
+      if (m_is_sys & m_done_red) begin
+         if (sysq_kind[m_rob_idx] != SYK_SYS)
+            $fatal(1, "sysq shadow: M drives upd_valid for rob %0d (pc %h) but the entry's kind is %0d",
+                   m_rob_idx, m_pc, sysq_kind[m_rob_idx]);
+         if (sysq_is_csr[m_rob_idx] != m_is_csr || sysq_func[m_rob_idx] != m_csr_func
+             || sysq_addr[m_rob_idx] != m_imm[11:0] || sysq_pc[m_rob_idx] != m_pc
+             || sysq_src[m_rob_idx] != (m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val))
+            $fatal(1, "sysq shadow: upd payload differs for rob %0d pc %h: csr %b/%b func %h/%h addr %h/%h src %h/%h",
+                   m_rob_idx, m_pc, sysq_is_csr[m_rob_idx], m_is_csr, sysq_func[m_rob_idx], m_csr_func,
+                   sysq_addr[m_rob_idx], m_imm[11:0], sysq_src[m_rob_idx],
+                   (m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val));
+      end
+      if (xtrap_v & m_done_red) begin
+         if (sysq_kind[m_rob_idx] != SYK_XTRAP)
+            $fatal(1, "sysq shadow: M traps rob %0d (pc %h cause %0d) but the entry's kind is %0d",
+                   m_rob_idx, m_pc, xtrap_cause, sysq_kind[m_rob_idx]);
+         if (sysq_cause[m_rob_idx] != xtrap_cause || sysq_tval[m_rob_idx] != xtrap_tval
+             || sysq_pc[m_rob_idx] != m_pc)
+            $fatal(1, "sysq shadow: trap payload differs for rob %0d pc %h/%h: cause %0d/%0d tval %h/%h",
+                   m_rob_idx, sysq_pc[m_rob_idx], m_pc, sysq_cause[m_rob_idx], xtrap_cause,
+                   sysq_tval[m_rob_idx], xtrap_tval);
+      end
+   end
+
    // ---- trap / redirect ----
    wire m_trap = xtrap_v | (m_is_sys & csr_redir_trap);
    wire csr_red = xtrap_v | (m_is_sys & csr_redir_v);
