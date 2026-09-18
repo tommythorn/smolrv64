@@ -23,7 +23,6 @@ psmem_i : source tags; added 3b518832 after e_ps was demoted by the wakeup broad
 psmem_i2: source tags, slot B's integer scheduler
 psmem_l : source tags, the in-order scheduler
 psmem_f : source tags, the FP scheduler
-e_prd   : issue-queue destination tag, read only at [sel]
 e_rob   : issue-queue ROB index, read only at [sel]
 
 # ---- the physical register file: the largest array in the design ------------------------

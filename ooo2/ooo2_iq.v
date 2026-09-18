@@ -38,7 +38,13 @@ module ooo2_iq
     // there is disambiguation. Allocation becomes circular and only the head may issue, so
     // "oldest" is a pointer compare and not an age comparison. This is the whole reason no
     // scheduler needs age: the one ordering constraint that survives belongs to one class.
-    parameter INORDER = 0)
+    parameter INORDER = 0,
+    // 1: d_ready is a REGISTER -- "at least two entries were free last cycle", which
+    // guarantees one free now (a cycle admits one dispatch, and the held entry only ever
+    // moves). The live |freem sat at the root of the frontend's dispatch decision: a_ent
+    // -> held -> freem -> d_ready -> iq_ready -> d_take -> rename -> u_pend, 16 levels.
+    // The price is the last entry: the scheduler refuses dispatch at NENT-1 occupied.
+    parameter REGRDY = 0)
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -104,7 +110,15 @@ module ooo2_iq
       for (k = NENT-1; k >= 0; k = k - 1) if (freem[k]) lowfree = k[IDXB-1:0];
    end
    wire [IDXB-1:0] fsel    = (INORDER != 0) ? qtail : lowfree;
-   assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail]) : |freem;
+   reg [IDXB:0] nfree;
+   always @* begin
+      nfree = {(IDXB+1){1'b0}};
+      for (k = 0; k < NENT; k = k + 1) nfree = nfree + {{IDXB{1'b0}}, freem[k]};
+   end
+   reg d_ready_q;  initial d_ready_q = 1'b0;
+   always @(posedge clk) d_ready_q <= ~reset & (nfree >= 2);
+   assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail])
+                           : (REGRDY != 0) ? d_ready_q : |freem;
 
    // ---- wakeup: NSRC * NWB comparators per entry. Linear in N. ----
    function automatic hit;
@@ -175,10 +189,26 @@ module ooo2_iq
    wire do_disp = d_valid & d_ready;
    wire do_iss  = iss_v & iss_take;
 
-   // Wake-at-select, for a fixed-latency unit only. Internal, and it only ever writes
-   // registered ready bits -- so selection never feeds back into readiness.
+   // WAKE-AT-SELECT AS A DEPENDENCY MATRIX (fixed-latency schedulers). dep[k*NSRC+q][j] says
+   // entry k's source q is produced by entry j OF THIS SCHEDULER. Rows are written at
+   // dispatch by comparing the new entry's sources against every live destination -- register
+   // against register, off the select path -- and read at select as ONE COLUMN. The previous
+   // form read e_prd at the selected index (a LUTRAM read the select decides, fan-out 248) and
+   // compared that tag against every source: sel -> RADR -> self_pr -> compare -> e_r was the
+   // tail of every path into e_r. Results from other units still arrive by tag on wb_v/wb_preg.
+   // (Wong's matrix scheduler, applied to the intra-queue wake alone.) A source can only be
+   // produced by an OLDER entry, so "producer live when the consumer dispatched" is exact.
    wire             self_v  = (FIXEDL != 0) & do_iss;
-   wire [PBITS-1:0] self_pr = e_prd[isel];
+   wire [NENT-1:0]  isel_oh = {{(NENT-1){1'b0}}, 1'b1} << isel;
+   reg  [NENT-1:0]  dep [0:NENT*NSRC-1];
+   reg  [NENT-1:0]  drow [0:NSRC-1];                 // the dispatching entry's rows
+   integer dj, dq;
+   always @* begin
+      for (dq = 0; dq < NSRC; dq = dq + 1)
+         for (dj = 0; dj < NENT; dj = dj + 1)
+            drow[dq][dj] = v[dj] & (e_prd[dj] == d_ps[dq*PBITS +: PBITS]);
+   end
+   initial for (dq = 0; dq < NENT*NSRC; dq = dq + 1) dep[dq] = {NENT{1'b0}};
 
    // Stall attribution: the lowest-indexed live entry that is not ready, and the first
    // source it is waiting on. Counters only.
@@ -205,7 +235,7 @@ module ooo2_iq
          for (k = 0; k < NENT; k = k + 1) if (v[k])
             for (q = 0; q < NSRC; q = q + 1)
                if (hit(e_ps[k][q*PBITS +: PBITS])
-                   || (self_v && (self_pr == e_ps[k][q*PBITS +: PBITS])))
+                   || (self_v && |(dep[k*NSRC+q] & isel_oh)))
                   e_r[k][q] <= 1'b1;
          if (do_iss) begin
             v[isel] <= 1'b0;
@@ -217,10 +247,18 @@ module ooo2_iq
             e_rob[fsel] <= d_rob;
             e_ps[fsel]  <= d_ps;
             e_prd[fsel] <= d_prd;
-            for (q = 0; q < NSRC; q = q + 1)
+            for (q = 0; q < NSRC; q = q + 1) begin
+               dep[fsel*NSRC+q] <= drow[q];               // registers only; the column clear below wins over it
                e_r[fsel][q] <= d_r[q] | hit(d_ps[q*PBITS +: PBITS])
-                             | (self_v && (self_pr == d_ps[q*PBITS +: PBITS]));
+                             | (self_v && |(drow[q] & isel_oh));
+            end
          end
+         // The column of the issuing entry, AFTER the row write so it wins for the row that
+         // was written this cycle too: its slot's next occupant is a stranger. Ordered here,
+         // not inside the do_iss arm, so the row write's D input is the register compare
+         // alone -- masking it by the select put the load-landing cone (D$ response tag ->
+         // wakeup -> select) on 359 dep endpoints.
+         if (do_iss) for (k = 0; k < NENT*NSRC; k = k + 1) dep[k][isel] <= 1'b0;
          if (flush) begin                                  // last: wins over the dispatch above
             v <= {NENT{1'b0}};
             qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
@@ -229,7 +267,17 @@ module ooo2_iq
    end
 
    // ---- invariants (always on: docs/rtl-rules.md A1) ---------------------------------
+   integer ak, aq;
+   always @(posedge clk) if (!reset && self_v) begin
+      for (ak = 0; ak < NENT; ak = ak + 1) if (v[ak] && (ak != isel))
+         for (aq = 0; aq < NSRC; aq = aq + 1)
+            if ((e_ps[ak][aq*PBITS +: PBITS] != {PBITS{1'b0}})
+                && (dep[ak*NSRC+aq][isel] != (e_prd[isel] == e_ps[ak][aq*PBITS +: PBITS])))
+               $fatal(1, "ooo2_iq: dependency matrix disagrees with the tag compare (entry %0d src %0d, producer %0d)", ak, aq, isel);
+   end
    always @(posedge clk) if (!reset) begin
+      if ((REGRDY != 0) & (INORDER == 0) & d_ready_q & ~|freem)
+         $fatal(1, "ooo2_iq: the registered ready promised a free entry and there is none");
       if (d_valid & ~d_ready & ~flush)
          $fatal(1, "ooo2_iq: dispatch into a full scheduler");
       if (do_disp & v[fsel])

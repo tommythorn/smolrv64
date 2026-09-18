@@ -77,7 +77,7 @@ module ooo2_rename
     output wire [PBITS-1:0] r_prs1_b,
     output wire [PBITS-1:0] r_prs2_b,
     output wire [PBITS-1:0] r_prs3_b,
-    output wire [PBITS-1:0] r_sprs1_b, r_sprs2_b, r_sprs3_b, // speculative candidate (A's prd when bypassed)
+    output wire [PBITS-1:0] r_sprs1_b, r_sprs2_b, r_sprs3_b, // speculative candidate, the MAP's (the bypass is applied at r_prs*_b)
     output wire [PBITS-1:0] r_mprs1_b, r_mprs2_b, r_mprs3_b, // committed candidate
     output wire             r_lv1_b, r_lv2_b, r_lv3_b,       // 1 = take the speculative
     output wire             r_byp1_b, r_byp2_b, r_byp3_b,    // the source IS A's destination: not ready
@@ -97,7 +97,7 @@ module ooo2_rename
     output wire [PBITS-1:0] r_prs1_c,
     output wire [PBITS-1:0] r_prs2_c,
     output wire [PBITS-1:0] r_prs3_c,
-    output wire [PBITS-1:0] r_sprs1_c, r_sprs2_c, r_sprs3_c, // speculative candidate (A's/B's prd when bypassed)
+    output wire [PBITS-1:0] r_sprs1_c, r_sprs2_c, r_sprs3_c, // speculative candidate, the MAP's (the bypass is applied at r_prs*_c)
     output wire [PBITS-1:0] r_mprs1_c, r_mprs2_c, r_mprs3_c, // committed candidate
     output wire             r_lv1_c, r_lv2_c, r_lv3_c,       // 1 = take the speculative
     output wire             r_byp1_c, r_byp2_c, r_byp3_c,    // source IS A's or B's destination: not ready
@@ -167,12 +167,17 @@ module ooo2_rename
    assign r_byp1_b = a_writes & (r_rs1_b == r_rd);
    assign r_byp2_b = a_writes & (r_rs2_b == r_rd);
    assign r_byp3_b = a_writes & (r_rs3_b == r_rd);
-   assign r_sprs1_b = r_byp1_b ? r_prd : `RN_SMAP(r_rs1_b);  assign r_mprs1_b = `RN_RMAP(r_rs1_b);  assign r_lv1_b = r_byp1_b | lv[r_rs1_b];
-   assign r_sprs2_b = r_byp2_b ? r_prd : `RN_SMAP(r_rs2_b);  assign r_mprs2_b = `RN_RMAP(r_rs2_b);  assign r_lv2_b = r_byp2_b | lv[r_rs2_b];
-   assign r_sprs3_b = r_byp3_b ? r_prd : `RN_SMAP(r_rs3_b);  assign r_mprs3_b = `RN_RMAP(r_rs3_b);  assign r_lv3_b = r_byp3_b | lv[r_rs3_b];
-   assign r_prs1_b = r_lv1_b ? r_sprs1_b : r_mprs1_b;
-   assign r_prs2_b = r_lv2_b ? r_sprs2_b : r_mprs2_b;
-   assign r_prs3_b = r_lv3_b ? r_sprs3_b : r_mprs3_b;
+   // r_sprs*_b / r_lv*_b are the MAP's candidate and select; the bypass is applied at r_prs*_b
+   // only. The core's pending lookup indexes r_sprs*_b and masks its result with r_byp*_b (A's
+   // new register is pending by definition), so the lookup no longer waits for A's free-list
+   // read: d_insn -> class -> free list -> r_prd -> r_sprs_b -> pend -> the dispatch stage's
+   // ready bit was 26 levels, the second family of the IW=3 census after round 1.
+   assign r_sprs1_b = `RN_SMAP(r_rs1_b);  assign r_mprs1_b = `RN_RMAP(r_rs1_b);  assign r_lv1_b = lv[r_rs1_b];
+   assign r_sprs2_b = `RN_SMAP(r_rs2_b);  assign r_mprs2_b = `RN_RMAP(r_rs2_b);  assign r_lv2_b = lv[r_rs2_b];
+   assign r_sprs3_b = `RN_SMAP(r_rs3_b);  assign r_mprs3_b = `RN_RMAP(r_rs3_b);  assign r_lv3_b = lv[r_rs3_b];
+   assign r_prs1_b = r_byp1_b ? r_prd : r_lv1_b ? r_sprs1_b : r_mprs1_b;
+   assign r_prs2_b = r_byp2_b ? r_prd : r_lv2_b ? r_sprs2_b : r_mprs2_b;
+   assign r_prs3_b = r_byp3_b ? r_prd : r_lv3_b ? r_sprs3_b : r_mprs3_b;
    // Port C is younger than A and B: a source equal to B's rd takes B's new register, and one
    // equal to A's rd takes A's -- B wins a tie (A and B writing the same reg), being younger.
    wire byp1_c_b = b_writes & (r_rs1_c == r_rd_b),  byp1_c_a = a_writes & (r_rs1_c == r_rd);
@@ -181,12 +186,12 @@ module ooo2_rename
    assign r_byp1_c = byp1_c_b | byp1_c_a;
    assign r_byp2_c = byp2_c_b | byp2_c_a;
    assign r_byp3_c = byp3_c_b | byp3_c_a;
-   assign r_sprs1_c = byp1_c_b ? r_prd_b : byp1_c_a ? r_prd : `RN_SMAP(r_rs1_c);  assign r_mprs1_c = `RN_RMAP(r_rs1_c);  assign r_lv1_c = r_byp1_c | lv[r_rs1_c];
-   assign r_sprs2_c = byp2_c_b ? r_prd_b : byp2_c_a ? r_prd : `RN_SMAP(r_rs2_c);  assign r_mprs2_c = `RN_RMAP(r_rs2_c);  assign r_lv2_c = r_byp2_c | lv[r_rs2_c];
-   assign r_sprs3_c = byp3_c_b ? r_prd_b : byp3_c_a ? r_prd : `RN_SMAP(r_rs3_c);  assign r_mprs3_c = `RN_RMAP(r_rs3_c);  assign r_lv3_c = r_byp3_c | lv[r_rs3_c];
-   assign r_prs1_c = r_lv1_c ? r_sprs1_c : r_mprs1_c;
-   assign r_prs2_c = r_lv2_c ? r_sprs2_c : r_mprs2_c;
-   assign r_prs3_c = r_lv3_c ? r_sprs3_c : r_mprs3_c;
+   assign r_sprs1_c = `RN_SMAP(r_rs1_c);  assign r_mprs1_c = `RN_RMAP(r_rs1_c);  assign r_lv1_c = lv[r_rs1_c];
+   assign r_sprs2_c = `RN_SMAP(r_rs2_c);  assign r_mprs2_c = `RN_RMAP(r_rs2_c);  assign r_lv2_c = lv[r_rs2_c];
+   assign r_sprs3_c = `RN_SMAP(r_rs3_c);  assign r_mprs3_c = `RN_RMAP(r_rs3_c);  assign r_lv3_c = lv[r_rs3_c];
+   assign r_prs1_c = byp1_c_b ? r_prd_b : byp1_c_a ? r_prd : r_lv1_c ? r_sprs1_c : r_mprs1_c;
+   assign r_prs2_c = byp2_c_b ? r_prd_b : byp2_c_a ? r_prd : r_lv2_c ? r_sprs2_c : r_mprs2_c;
+   assign r_prs3_c = byp3_c_b ? r_prd_b : byp3_c_a ? r_prd : r_lv3_c ? r_sprs3_c : r_mprs3_c;
 
    // ---- free lists, one per shard ---------------------------------------------------
    // Pointers carry an extra MSB so full and empty are distinguishable without a separate
@@ -221,6 +226,7 @@ module ooo2_rename
    // ---- shard ie free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
    wire [IDXB-1:0] ha_rd_ie, hb_rd_ie, hcc_rd_ie;
    wire [IDXB-1:0] flrd_ie [0:FLNB-1];
+   wire [FLNB-1:0] behind_ie = ~({FLNB{1'b1}} << h_ie[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
    generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ie
       (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE/FLNB-1];
       integer jj; integer pp; initial for (jj = 0; jj < N_IE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
@@ -230,8 +236,10 @@ module ooo2_rename
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_ie[PW_IE-2:FLLB] : w1 ? t2_ie[PW_IE-2:FLLB] : t3_ie[PW_IE-2:FLLB]]
                               <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      assign flrd_ie[gS] = mem[(h_ie[FLLB-1:0] == gS) ? h_ie[PW_IE-2:FLLB]
-                             : (hb_ie[FLLB-1:0] == gS) ? hb_ie[PW_IE-2:FLLB] : hcc_ie[PW_IE-2:FLLB]];
+      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
+      // Registers only -- which slot allocates from which shard (the class decode) selects
+      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
+      assign flrd_ie[gS] = mem[h_ie[PW_IE-2:FLLB] + {{(PW_IE-2-FLLB){1'b0}}, behind_ie[gS]}];
    end endgenerate
    assign ha_rd_ie  = flrd_ie[h_ie [FLLB-1:0]];
    assign hb_rd_ie  = flrd_ie[hb_ie[FLLB-1:0]];
@@ -240,6 +248,7 @@ module ooo2_rename
    // ---- shard ld free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
    wire [IDXB-1:0] ha_rd_ld, hb_rd_ld, hcc_rd_ld;
    wire [IDXB-1:0] flrd_ld [0:FLNB-1];
+   wire [FLNB-1:0] behind_ld = ~({FLNB{1'b1}} << h_ld[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
    generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ld
       (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_LD/FLNB-1];
       integer jj; integer pp; initial for (jj = 0; jj < N_LD/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
@@ -249,8 +258,10 @@ module ooo2_rename
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_ld[PW_LD-2:FLLB] : w1 ? t2_ld[PW_LD-2:FLLB] : t3_ld[PW_LD-2:FLLB]]
                               <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      assign flrd_ld[gS] = mem[(h_ld[FLLB-1:0] == gS) ? h_ld[PW_LD-2:FLLB]
-                             : (hb_ld[FLLB-1:0] == gS) ? hb_ld[PW_LD-2:FLLB] : hcc_ld[PW_LD-2:FLLB]];
+      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
+      // Registers only -- which slot allocates from which shard (the class decode) selects
+      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
+      assign flrd_ld[gS] = mem[h_ld[PW_LD-2:FLLB] + {{(PW_LD-2-FLLB){1'b0}}, behind_ld[gS]}];
    end endgenerate
    assign ha_rd_ld  = flrd_ld[h_ld [FLLB-1:0]];
    assign hb_rd_ld  = flrd_ld[hb_ld[FLLB-1:0]];
@@ -259,6 +270,7 @@ module ooo2_rename
    // ---- shard fe free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
    wire [IDXB-1:0] ha_rd_fe, hb_rd_fe, hcc_rd_fe;
    wire [IDXB-1:0] flrd_fe [0:FLNB-1];
+   wire [FLNB-1:0] behind_fe = ~({FLNB{1'b1}} << h_fe[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
    generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_fe
       (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_FE/FLNB-1];
       integer jj; integer pp; initial for (jj = 0; jj < N_FE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
@@ -268,8 +280,10 @@ module ooo2_rename
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_fe[PW_FE-2:FLLB] : w1 ? t2_fe[PW_FE-2:FLLB] : t3_fe[PW_FE-2:FLLB]]
                               <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      assign flrd_fe[gS] = mem[(h_fe[FLLB-1:0] == gS) ? h_fe[PW_FE-2:FLLB]
-                             : (hb_fe[FLLB-1:0] == gS) ? hb_fe[PW_FE-2:FLLB] : hcc_fe[PW_FE-2:FLLB]];
+      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
+      // Registers only -- which slot allocates from which shard (the class decode) selects
+      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
+      assign flrd_fe[gS] = mem[h_fe[PW_FE-2:FLLB] + {{(PW_FE-2-FLLB){1'b0}}, behind_fe[gS]}];
    end endgenerate
    assign ha_rd_fe  = flrd_fe[h_fe [FLLB-1:0]];
    assign hb_rd_fe  = flrd_fe[hb_fe[FLLB-1:0]];
@@ -278,6 +292,7 @@ module ooo2_rename
    // ---- shard i2 free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
    wire [IDXB-1:0] ha_rd_i2, hb_rd_i2, hcc_rd_i2;
    wire [IDXB-1:0] flrd_i2 [0:FLNB-1];
+   wire [FLNB-1:0] behind_i2 = ~({FLNB{1'b1}} << h_i2[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
    generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i2
       (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE2/FLNB-1];
       integer jj; integer pp; initial for (jj = 0; jj < N_IE2/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
@@ -287,8 +302,10 @@ module ooo2_rename
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_i2[PW_I2-2:FLLB] : w1 ? t2_i2[PW_I2-2:FLLB] : t3_i2[PW_I2-2:FLLB]]
                               <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      assign flrd_i2[gS] = mem[(h_i2[FLLB-1:0] == gS) ? h_i2[PW_I2-2:FLLB]
-                             : (hb_i2[FLLB-1:0] == gS) ? hb_i2[PW_I2-2:FLLB] : hcc_i2[PW_I2-2:FLLB]];
+      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
+      // Registers only -- which slot allocates from which shard (the class decode) selects
+      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
+      assign flrd_i2[gS] = mem[h_i2[PW_I2-2:FLLB] + {{(PW_I2-2-FLLB){1'b0}}, behind_i2[gS]}];
    end endgenerate
    assign ha_rd_i2  = flrd_i2[h_i2 [FLLB-1:0]];
    assign hb_rd_i2  = flrd_i2[hb_i2[FLLB-1:0]];
@@ -297,6 +314,7 @@ module ooo2_rename
    // ---- shard i3 free list (the third ALU, Stage 3): identical shape to i2 ----
    wire [IDXB-1:0] ha_rd_i3, hb_rd_i3, hcc_rd_i3;
    wire [IDXB-1:0] flrd_i3 [0:FLNB-1];
+   wire [FLNB-1:0] behind_i3 = ~({FLNB{1'b1}} << h_i3[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
    generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i3
       (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE3/FLNB-1];
       integer jj; integer pp; initial for (jj = 0; jj < N_IE3/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
@@ -306,8 +324,10 @@ module ooo2_rename
       always @(posedge clk)
          if (w0 | w1 | w2) mem[w0 ? t_i3[PW_I3-2:FLLB] : w1 ? t2_i3[PW_I3-2:FLLB] : t3_i3[PW_I3-2:FLLB]]
                               <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      assign flrd_i3[gS] = mem[(h_i3[FLLB-1:0] == gS) ? h_i3[PW_I3-2:FLLB]
-                             : (hb_i3[FLLB-1:0] == gS) ? hb_i3[PW_I3-2:FLLB] : hcc_i3[PW_I3-2:FLLB]];
+      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
+      // Registers only -- which slot allocates from which shard (the class decode) selects
+      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
+      assign flrd_i3[gS] = mem[h_i3[PW_I3-2:FLLB] + {{(PW_I3-2-FLLB){1'b0}}, behind_i3[gS]}];
    end endgenerate
    assign ha_rd_i3  = flrd_i3[h_i3 [FLLB-1:0]];
    assign hb_rd_i3  = flrd_i3[hb_i3[FLLB-1:0]];
@@ -442,11 +462,22 @@ module ooo2_rename
                        avail_ie < LOWAT[PW_IE-1:0]};
    assign stall = |shard_low;
 
-   wire alloc   = r_valid   & r_rd_v   & ~stall;
-   wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
+   // THE FREE-LIST READ ADDRESSES DO NOT SEE THE STALL. A stall holds every slot, so the
+   // heads do not move and the entries read at h, h+A, h+A+B are simply not consumed; the
+   // stall belongs only on the head ADVANCE and on the alloc outputs. With it in the address
+   // the whole rename decision -- five tail-minus-head subtractions, the low-water compares,
+   // the OR -- sat in front of the LUTRAM read, the read's data in front of the dispatch
+   // stage and the store queue: t_ld -> avail -> stall -> hb -> flrd -> stg_ps -> u_sq/ld_w,
+   // 20-23 levels, eight families of the IW=3 census. (ar_*/br_* address; a_*/b_* advance.)
+   wire alloc_r   = r_valid   & r_rd_v;
+   wire alloc_r_b = r_valid_b & r_rd_v_b;
+   wire alloc   = alloc_r   & ~stall;
+   wire alloc_b = alloc_r_b & ~stall;
    wire alloc_c = r_valid_c & r_rd_v_c & ~stall;
    wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2), a_i3 = alloc & (r_shard == SH_IE3);
    wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2), b_i3 = alloc_b & (r_shard_b == SH_IE3);
+   wire ar_ie = alloc_r & (r_shard == SH_IE), ar_ld = alloc_r & (r_shard == SH_LD), ar_fe = alloc_r & (r_shard == SH_FE), ar_i2 = alloc_r & (r_shard == SH_IE2), ar_i3 = alloc_r & (r_shard == SH_IE3);
+   wire br_ie = alloc_r_b & (r_shard_b == SH_IE), br_ld = alloc_r_b & (r_shard_b == SH_LD), br_fe = alloc_r_b & (r_shard_b == SH_FE), br_i2 = alloc_r_b & (r_shard_b == SH_IE2), br_i3 = alloc_r_b & (r_shard_b == SH_IE3);
    wire c_ie = alloc_c & (r_shard_c == SH_IE), c_ld = alloc_c & (r_shard_c == SH_LD), c_fe = alloc_c & (r_shard_c == SH_FE), c_i2 = alloc_c & (r_shard_c == SH_IE2), c_i3 = alloc_c & (r_shard_c == SH_IE3);
    wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
                             : (r_shard == SH_LD) ? ha_rd_ld
@@ -456,11 +487,11 @@ module ooo2_rename
    assign r_prd = {r_shard, head_idx};
    // B's entry: the head, or the one after it when A allocates from the same shard. A second
    // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
-   wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, a_ie};
-   wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld};
-   wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe};
-   wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2};
-   wire [PW_I3-2:0] hb_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, a_i3};
+   wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, ar_ie};
+   wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, ar_ld};
+   wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, ar_fe};
+   wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, ar_i2};
+   wire [PW_I3-2:0] hb_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, ar_i3};
    wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
                               : (r_shard_b == SH_LD) ? hb_rd_ld
                               : (r_shard_b == SH_FE) ? hb_rd_fe
@@ -469,11 +500,11 @@ module ooo2_rename
    assign r_prd_b = {r_shard_b, head_idx_b};
    // C's entry: the head plus the number of EARLIER allocations from the same shard this cycle.
    // A third LUTRAM read port; LOWAT >= 3 keeps all three inside the free set.
-   wire [PW_IE-2:0] hcc_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, a_ie} + {{(PW_IE-2){1'b0}}, b_ie};
-   wire [PW_LD-2:0] hcc_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, a_ld} + {{(PW_LD-2){1'b0}}, b_ld};
-   wire [PW_FE-2:0] hcc_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, a_fe} + {{(PW_FE-2){1'b0}}, b_fe};
-   wire [PW_I2-2:0] hcc_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, a_i2} + {{(PW_I2-2){1'b0}}, b_i2};
-   wire [PW_I3-2:0] hcc_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, a_i3} + {{(PW_I3-2){1'b0}}, b_i3};
+   wire [PW_IE-2:0] hcc_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, ar_ie} + {{(PW_IE-2){1'b0}}, br_ie};
+   wire [PW_LD-2:0] hcc_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, ar_ld} + {{(PW_LD-2){1'b0}}, br_ld};
+   wire [PW_FE-2:0] hcc_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, ar_fe} + {{(PW_FE-2){1'b0}}, br_fe};
+   wire [PW_I2-2:0] hcc_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, ar_i2} + {{(PW_I2-2){1'b0}}, br_i2};
+   wire [PW_I3-2:0] hcc_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, ar_i3} + {{(PW_I3-2){1'b0}}, br_i3};
    wire [IDXB-1:0] head_idx_c = (r_shard_c == SH_IE) ? hcc_rd_ie
                               : (r_shard_c == SH_LD) ? hcc_rd_ld
                               : (r_shard_c == SH_FE) ? hcc_rd_fe

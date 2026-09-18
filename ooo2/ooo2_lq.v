@@ -48,7 +48,12 @@ module ooo2_lq
     parameter PAW   = 56,
     parameter PBITS = 9,
     parameter ROBB  = 4,
-    parameter SQIB  = 3)               // store-seqno width (ooo2_sq's IDXB)
+    parameter SQIB  = 3,               // store-seqno width (ooo2_sq's IDXB)
+    // The memory map, for the D12 cross-check below only (ooo2_lsu's LSU_DRAM_BASE / LRAM_*).
+    // A unit bench with synthetic addresses declares everything memory: DRAM_BASE = 0.
+    parameter [55:0] DRAM_BASE = 56'h8000_0000,
+    parameter [63:0] LRAM_BASE = 64'h7000_0000,
+    parameter        LRAM_LG2  = 18)
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -108,6 +113,7 @@ module ooo2_lq
     output wire                  x_signed,
     output wire                  x_fp,
     output wire                  x_unc,
+    output wire                  x_head,      // the candidate's op is the ROB head (index compare; the core adds ~rob_empty)
     input  wire                  x_take,      // the LSU accepted it
 
     // ---- land: data back for an entry that was sent to memory ----
@@ -200,7 +206,8 @@ module ooo2_lq
    // ONE 4:1 mux from acc, into a flop-sourced bit. That is the whole point.
    // An UNCACHED (device/MMIO) load must not access speculatively -- its read has side effects.
    // Hold it until its op is the ROB head (non-speculative); DRAM/cached loads issue freely (MLP).
-   assign x_v     = cand_v & ~e_block[acc] & (mem[acc] | (rob[acc] == rob_head));
+   assign x_head  = (rob[acc] == rob_head);
+   assign x_v     = cand_v & ~e_block[acc] & (mem[acc] | x_head);
    assign x_block = cand_v &  e_block[acc];   // instrumentation only
    assign x_idx   = acc;
    assign x_pa    = pa[acc];
@@ -252,6 +259,18 @@ module ooo2_lq
          end
       end
    end
+
+   // D12 (2026-09-17): the "DRAM, idempotent, may issue speculatively" bit names the entry's OWN
+   // address. ooo2_lsu derives it from the translate; here it is recomputed from the PA the
+   // entry stores, so a fill that took ANOTHER access's classification (the port's, the day
+   // the board's NIC died) dies at the fill, in every cosim, on the first device load of a
+   // boot -- not on the board hours later.
+   // (a_pa >= DRAM_BASE as a borrow, so a bench's DRAM_BASE = 0 is not a constant compare)
+   wire [PAW:0] a_dram_off = {1'b0, a_pa} - {1'b0, DRAM_BASE};
+   wire a_mem_chk = ~a_dram_off[PAW] | (a_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]);
+   always @(posedge clk) if (!reset && a_v && (a_mem != a_mem_chk))
+      $fatal(1, "ooo2_lq: fill %0d classifies pa=%h as %0s, its region says %0s (rule D12)",
+             a_idx, a_pa, a_mem ? "memory" : "device", a_mem_chk ? "memory" : "device");
 
    // Invariants (docs/rtl-rules.md A1). Every one of these is something the queue would
    // otherwise do silently and wrongly.

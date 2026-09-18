@@ -166,6 +166,7 @@ module csr_file
    // 0) fit in 39 bits with bit38=0 so they round-trip exactly.  See va_codec.vh.
    reg [39:0] mepc, mtval, sepc, stval;
    reg [63:0] mcycle, minstret;      // Zicntr: free-running cycles + retired instructions
+   reg        minstret_wr_q;         // a minstret write last cycle: drop the writer's own (delayed) retirement
 
    // Zihpm: HPMN programmable counters mhpmcounter3 .. mhpmcounter(2+HPMN) (matches the DTB's
    // event->counter map, counters 3..15). Each counterN adds, per cycle, the retire-count or 1
@@ -747,13 +748,19 @@ module csr_file
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
       // clocks; minstret adds the committing checkpoint's instruction count. An M-mode
       // write to mcycle/minstret loads the value (this cycle's increment is dropped).
+      // retire_cnt may be the caller's DELAYED count (ooo2_core passes the same registered copy
+      // it gives the Zihpm counters, and holds a CSR op at the ROB head for a second cycle so
+      // the lag is invisible to a read). A minstret WRITE then sees the writing instruction's
+      // own retirement arrive one cycle after the write: minstret_wr_q drops it, so the value
+      // after `csrw minstret` is the written value exactly as with a live count.
       if (reset) begin
-         mcycle <= 64'd0; minstret <= 64'd0;
+         mcycle <= 64'd0; minstret <= 64'd0; minstret_wr_q <= 1'b0;
       end else begin
          mcycle   <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MCYCLE)
                        ? newv : mcycle   + (mcountinhibit[0] ? 64'd0 : 64'd1);
+         minstret_wr_q <= upd_valid && upd_is_csr && !trap_v && upd_addr==MINSTRET;
          minstret <= (upd_valid && upd_is_csr && !trap_v && upd_addr==MINSTRET)
-                       ? newv : minstret + (mcountinhibit[2] ? 64'd0 : {58'd0, retire_cnt});
+                       ? newv : minstret + ((mcountinhibit[2] | minstret_wr_q) ? 64'd0 : {58'd0, retire_cnt});
       end
       // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
       // mhpmeventN-selected event's count this cycle unless inhibited (mcountinhibit[N]); an

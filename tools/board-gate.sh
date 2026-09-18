@@ -4,13 +4,18 @@
 #   tools/board-gate.sh <resultdir>                    # impl_1's bitstream
 #   BIT=/var/tmp/x.bit tools/board-gate.sh <resultdir> # a banked one
 #   BOOT_WAIT=1500 ...                                 # seconds to allow for login: (default 1800)
+#   REPLAY=<byte> tools/board-gate.sh <resultdir>       # judge an old boot from that console offset, no board
 #
 # PASS = `login:` reached with ZERO faults. FAIL fast on the first line that already decides
 # it: a kernel panic or Oops, a userspace fault, or virtio dying ("id N is not a head!",
-# NETDEV WATCHDOG) -- the last two sat unrecognised for ten minutes per boot on 2026-09-04
-# while the gate waited for a login that could not come. The console is cumulative across
-# boots, so only bytes past the offset recorded before programming are read; and the
-# monitor's `rtl=` line is captured so the log proves WHICH RTL booted.
+# NETDEV WATCHDOG, `nfs: server not responding`) -- the first two sat unrecognised for ten
+# minutes per boot on 2026-09-04 while the gate waited for a login that could not come, and
+# the NFS stall is how a dying NIC looks before the watchdog. The console is cumulative across
+# boots AND the previous kernel keeps printing while the board is reprogrammed, so the verdict
+# is read from THIS boot's own kernel marker (`riscv: base ISA extensions`) onward: judging
+# everything past the pre-program offset produced false FAILs and one false PASS on 2026-09-17
+# (the old kernel's watchdog lines, the old kernel's login prompt). The monitor's `rtl=` line
+# is captured so the log proves WHICH RTL booted.
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
@@ -20,8 +25,10 @@ REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
 # fall back to the main worktree's copy, which `git worktree list` prints first.
 [ -f "$UB/screenlog.0" ] || UB=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
-BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG'
+BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG|nfs: server .* not responding'
+MARK='riscv: base ISA extensions'
 
+if [ -n "${REPLAY:-}" ]; then PRE=$REPLAY; BOOT_WAIT=0; echo "replay from byte $PRE"; else
 PRE=$(wc -c < "$UB/screenlog.0")
 ( cd "$PLAT" && timeout 900 make program ${BIT:+BIT=$BIT} ) > "$RES/program.log" 2>&1
 grep -qi "programmed successfully" "$RES/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$RES/program.log"; exit 1; }
@@ -38,17 +45,28 @@ echo "banner: rtl=${RTL_BANNER:-?}"
 export RTL_BANNER
 ( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
    || { echo "BOARD: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
+fi
 echo "booting, watching past byte $PRE"
-END=$(( $(date +%s) + BOOT_WAIT ))
+# The boot's own marker: its byte offset anchors everything below.
+END=$(( $(date +%s) + BOOT_WAIT )); POS=""
+while :; do
+   OFF=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | grep -abm1 "$MARK" | cut -d: -f1)
+   [ -n "$OFF" ] && { POS=$((PRE+OFF)); break; }
+   [ "$(date +%s)" -ge "$END" ] && break; sleep 10
+done
+[ -n "$POS" ] || { echo "BOARD: FAIL (no kernel marker past byte $PRE within ${BOOT_WAIT}s)"; exit 1; }
+echo "kernel marker at byte $POS"
 while [ "$(date +%s)" -lt "$END" ]; do
-   NEW=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r')
+   NEW=$(tail -c +$((POS+1)) "$UB/screenlog.0" | tr -d '\r')
    printf '%s' "$NEW" | grep -aq "login:" && break
    printf '%s' "$NEW" | grep -aqE "$BAD" && break
    sleep 10
 done
-NEW=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r')
+NEW=$(tail -c +$((POS+1)) "$UB/screenlog.0" | tr -d '\r')
+# A replayed boot ends where the next programming's monitor banner begins.
+[ -n "${REPLAY:-}" ] && NEW=$(printf '%s' "$NEW" | awk '/smolrv64 monitor/{exit} {print}')
 printf '%s' "$NEW" > "$RES/boot.log"
-RTL=$(printf '%s' "$NEW" | grep -aoE 'rtl=[0-9a-f]+' | head -1)
+RTL=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+' | head -1)   # the banner precedes the marker
 FAULTS=$(printf '%s' "$NEW" | grep -acE "$BAD")
 LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
 echo "login: $LOGIN   faults: $FAULTS   ${RTL:-rtl=?}   last: $(printf '%s' "$NEW" | grep -aoE '^\[ *[0-9]+\.[0-9]+\]' | tail -1)"

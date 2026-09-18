@@ -96,6 +96,7 @@ module fetch
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
     output wire [IW*SEQW-1:0]      seq,
+    output wire [2:0]              adv_kind,    // the next PC's chunk relative to pc_q's (see below)
     output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
 
    localparam PBW = $clog2(HW+2);
@@ -247,6 +248,28 @@ module fetch
    // output, so the predictor can read the BTB/YAGS one cycle AHEAD at the address that will
    // be presented next -- a synchronous (block-RAM) read. HINT address only: a disagreement
    // with the flop costs a stale prediction, never correctness. Arms match the flop exactly.
+   // THE NEXT PC'S CHUNK, AS A KIND. The instruction-memory adapter (rv_soc_top) holds two
+   // 16-byte chunk slots and decides ONE CYCLE EARLY which of them the next PC will read
+   // from, so the served window selects on a register instead of on a 64-bit tag compare
+   // at the head of this loop (pc_q -> compare -> chunk select -> shifter -> aligner ->
+   // next PC was 22 levels, the last family of the IW=3 closure). The arms mirror
+   // pc_next's exactly; the adapter compares its tags against pc_q's chunk, the next
+   // chunk, pred_tgt and redirect_pc in parallel (all registers or a BRAM output) and
+   // picks by this kind. A wrong pick costs one bubble: the live compare still gates imem_ok.
+   localparam [2:0] AK_HOLD = 3'd0, AK_SAME = 3'd1, AK_NEXT = 3'd2, AK_TGT = 3'd3, AK_REDIR = 3'd4;
+   localparam integer CHA = $clog2(HW*2);                               // chunk-align shift
+   wire [PBW:0] ak_off  = {{(PBW-CHA+2){1'b0}}, pc_q[CHA-1:1]};         // halfword offset within the chunk
+   wire [PBW:0] ak_sum1 = ak_off + {{PBW{1'b0}}, 1'b1};                 // one halfword on (the straddle steps)
+   wire [PBW:0] ak_sumc = ak_off + {1'b0, al_consumed};                 // the bundle's fall-through
+   wire [2:0]   ak_ft1  = (ak_sum1 >= HW[PBW:0]) ? AK_NEXT : AK_SAME;
+   wire [2:0]   ak_ftc  = (ak_sumc >= HW[PBW:0]) ? AK_NEXT : AK_SAME;
+   assign adv_kind = reset        ? AK_REDIR     // RESET_PC: the adapter's slots are invalid, any kind serves
+                   : redirect     ? AK_REDIR
+                   : strad        ? (fire ? ak_ft1 : AK_HOLD)
+                   : irq_go       ? AK_HOLD
+                   : straddle_det ? ak_ft1
+                   : fire         ? (pred_v ? AK_TGT : ak_ftc)
+                   :                AK_HOLD;
    assign pc_next = reset         ? RESET_PC
                   : redirect      ? redirect_pc
                   : strad         ? (fire ? pc_plus[1] : pc_q)

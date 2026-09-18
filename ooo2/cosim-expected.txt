@@ -12,7 +12,11 @@
 # Format:  <CYC> <OOO2_HW> <expected-retires> <tolerance-%>  # provenance
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  13424357  0.5   # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): the L1 I$ is virtually hit
+60000000  8  13494359  0.5   # W1' (2026-09-17): the CTF link never waits on M, M yields instead (+0.02%);
+                              # the D12 fix (device loads classified by their own translate PA) moves nothing here.
+                              # Previously 13491763: IW=3 timing closure (2026-09-17): the second cycle at head, the served-slot hint,
+                              # the matrix wake -- +0.5% on the boot at IW=2. Previously 13424357:
+                              # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): the L1 I$ is virtually hit
                               # (epoch-qualified vtag) with a physical-tag reconcile on miss (docs/VHPR.md); the ~500-line run-ahead fetch
                               # buffer is gone, replaced by a 2-chunk alignment adapter. Lockstep clean to 60 M. -7.2% on the boot: the
                               # adapter keeps ONE I$ request in flight + a 2-chunk window vs the buffer's two-in-flight/three-slot run-ahead

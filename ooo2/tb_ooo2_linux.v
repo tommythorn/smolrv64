@@ -213,6 +213,12 @@ module tb;
          if (dut.core.fp_land)     $write(" FP:%0d",  dut.core.ft_rob);      else $write("       ");
          if (dut.core.rob_c_valid) $write(" RET:%0d", dut.core.rob_head_idx);else $write("        ");
          if (dut.core.redirect)    $write(" RED");
+         // 2026-09-17 (the storm repro): the backend state a wrong-path device load needs
+         $write(" | red=%b cfrf=%b mrf=%b frset=%b frv=%b | M v=%b rob=%0d pc=%h ldnb=%b adv=%b done=%b xo_v=%b walk=%b fill=%b | LQ x_v=%b x_pa=%h cnt=%0d | ROB empty=%b head=%0d | iss_m=%b",
+                dut.core.redirect, dut.core.cf_red_fire, dut.core.m_red_fire, dut.core.fr_set, dut.core.fr_v,
+                dut.core.m_valid, dut.core.m_rob_idx, dut.core.m_pc, dut.core.m_ld_nb, dut.core.m_advance, dut.core.m_done,
+                dut.core.lsu_xo_v, dut.core.u_lsu.mmu_walking, dut.core.m_lq_fill,
+                dut.core.lq_x_v, dut.core.lq_x_pa, dut.core.u_lq.cnt, dut.core.rob_empty, dut.core.rob_head_idx, dut.core.iss_m);
          $write("\n");
       end
    end

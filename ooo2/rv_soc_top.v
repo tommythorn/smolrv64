@@ -120,6 +120,8 @@ module rv_soc_top #(
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire                imem_ok;      // the served window is the PC's bytes (late; gates the handshake only)
+   wire [2:0]          imem_adv_kind;            // the next PC's chunk, as a kind (fetch.adv_kind)
+   wire [63:0]         imem_adv_tgt, imem_adv_red;
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
@@ -137,6 +139,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(imem_lvl_srv), .imem_xlvl(immu_xlvl), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
+      .imem_adv_kind(imem_adv_kind), .imem_adv_tgt(imem_adv_tgt), .imem_adv_red(imem_adv_red),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
       .fe_redirect(fe_redirect), .hpm_fb_hit(1'b0), .hpm_fb_rhit(1'b0),   // no fetch buffer (VHPR I$)
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
@@ -311,7 +314,27 @@ module rv_soc_top #(
    wire [7:0] uart_iir = uart_rx_ip    ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h4}
                        : uart_iir_thre ? {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h2}
                        :                 {uart_fcr_fifo, uart_fcr_fifo, 2'b0, 4'h1};
+`ifdef OOO2_IRQ_STIM
+   // SIM-ONLY interrupt stimulus (2026-09-17). Every device IRQ is tied off in the cosim, so no
+   // simulation had ever taken a PLIC interrupt against the out-of-order pipe -- the board's
+   // NIC death under CTF-on-FP was invisible. A spurious level on the UART's PLIC source for
+   // 256 of every 32768 cycles makes the 8250's fasteoi flow run (no action: mask + eoi) --
+   // thousands of external-interrupt entries, claims, completes and irqop injections.
+   // src/plic.v treats source 10 as enabled at priority >= 1 under the same define.
+   // Armed by the kernel's first S-mode write to the UART: the console handover, which comes
+   // after the 8250 probe has mapped hwirq 10. Any earlier claim would hit an unmapped hwirq,
+   // the kernel would never complete it and the gateway would stick in service for good.
+   // Never defined for the FPGA build.
+   reg        stim_on;   initial stim_on = 1'b0;
+   reg [14:0] stim_ctr;  initial stim_ctr = 15'd0;
+   always @(posedge clk) begin
+      stim_ctr <= stim_ctr + 1'b1;
+      if (dmem_wen & is_uart_w & ~dev_wack & (core.mmu_priv == 2'd1)) stim_on <= 1'b1;
+   end
+   assign    uart_irq = uart_rx_ip | uart_thre_ip | (stim_on & (stim_ctr[14:8] == 7'd0));
+`else
    assign    uart_irq = uart_rx_ip | uart_thre_ip;
+`endif
    // Read strobes: UART_BASE is 16-aligned and is_uart_r bounds the window, so the register
    // offset is just the low address bits. RBR read pops DR; IIR read clears THRE-pending
    // when THRE is the cause being reported.
@@ -338,7 +361,7 @@ module rv_soc_top #(
          end
          if (dmem_wen & is_uart_w & ~dev_wack)
             for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
-               case ((dmem_waddr - UART_BASE + ub) & 3'h7)
+               case ((dmem_waddr[2:0] + ub) & 3'h7)   // 16-aligned base, window bounded by is_uart_w: the low bits ARE the offset
                   3'd0: if (!uart_lcr[7]) begin // THR
                            uart_thr <= dmem_wdata[ub*8 +: 8]; uart_thr_full <= 1'b1;
                            uart_thre_pending <= 1'b0;
@@ -642,36 +665,59 @@ module rv_soc_top #(
    wire [63:0] pc_ca   = {imem_va[63:CHA],   {CHA{1'b0}}};
    wire [63:0] pc_paca = {imem_addr[63:CHA], {CHA{1'b0}}};
    wire [63:0] nx_ca   = pc_ca + CHB;
+   wire [63:0] pc_ca_m = pc_ca - CHB;   // only ever latched (rq_vm below): never in the served path
 
    // Two VA-tagged chunk slots -- the alignment window.
+   // EACH SLOT ALSO HOLDS ITS VA MINUS ONE CHUNK (c*_vm), so "is this the PC's NEXT chunk" is
+   // c_vm == pc_ca, a compare of two registers, not c_va == pc_ca + CHB. The adder was inside
+   // the fetch loop: pc_q -> +CHB -> h1 -> have1 -> the served window -> the aligner -> the
+   // next PC and the BTB index, 24 levels, the worst family of the IW=3 census (~1.9 ns from
+   // pc_q to the compare's result). The adder still feeds the demand-read address (want_va),
+   // which is a BRAM address, in parallel with the compares instead of in front of them.
    reg              c0_v, c1_v;
-   reg  [63:0]      c0_va, c1_va;
+   reg  [63:0]      c0_va, c1_va, c0_vm, c1_vm;
    reg  [HW*16-1:0] c0_d,  c1_d;
    reg  [1:0]       c0_lvl, c1_lvl;              // page size of each resident chunk (iMMU leaf level at fill)
    initial begin c0_v=1'b0; c1_v=1'b0; end
 
    wire h0_0 = c0_v & (c0_va == pc_ca);   wire h0_1 = c1_v & (c1_va == pc_ca);
-   wire h1_0 = c0_v & (c0_va == nx_ca);   wire h1_1 = c1_v & (c1_va == nx_ca);
+   wire h1_0 = c0_v & (c0_vm == pc_ca);   wire h1_1 = c1_v & (c1_vm == pc_ca);
    wire             have0    = h0_0 | h0_1;
    wire             have1    = h1_0 | h1_1;
-   wire [HW*16-1:0] pc_chunk = h0_1 ? c1_d : c0_d;
-   wire [HW*16-1:0] nx_chunk = h1_1 ? c1_d : c0_d;
+   // THE SERVED SLOT IS A REGISTER, DECIDED A CYCLE EARLY. sh_q names the slot holding the
+   // PC's chunk and n1_q says the other slot holds the next one; both are picked at the
+   // previous edge from fetch's adv_kind (the next PC's chunk: same, next, predicted
+   // target, redirect target) against the tags AS THEY WILL BE after that edge (the fill
+   // included). The live compares h0_*/h1_* no longer select data -- they only gate
+   // imem_ok, one late bit -- so pc_q -> tag compare -> chunk select leaves the fetch loop.
+   // A wrong pick (none is expected; asserted below) costs one bubble: imem_ok drops, the
+   // fetch holds, and the HOLD arm re-picks from the live tags.
+   localparam [2:0] AK_HOLD = 3'd0, AK_SAME = 3'd1, AK_NEXT = 3'd2, AK_TGT = 3'd3, AK_REDIR = 3'd4;
+   reg sh_q, n1_q;   initial begin sh_q = 1'b0; n1_q = 1'b0; end
+   wire [HW*16-1:0] pc_chunk = sh_q ? c1_d : c0_d;
+   wire [HW*16-1:0] nx_chunk = sh_q ? c0_d : c1_d;                 // the OTHER slot
+   wire ok_slot = sh_q ? h0_1 : h0_0;                              // live: the hinted slot is the PC's chunk
+   wire ok_next = ~n1_q | (sh_q ? h1_0 : h1_1);                    // live: bytes 16..31 promised only if truly the next chunk
    // The served (PC) chunk's page size drives the enclosing-page cap (fetch) and whether the
    // NEXT chunk is still in the same page (samepg): 4 KiB for a 4K leaf, 2 MiB for >=2M (a 1 GiB
    // leaf caps as 2 MiB). Within a superpage the next chunk's PA is pc_paca+CHB (contiguous).
-   wire [1:0]       pc_lvl   = h0_1 ? c1_lvl : c0_lvl;
-   assign           imem_lvl_srv = pc_lvl;
+   // The SERVED window's page size follows the hinted slot (it only matters under imem_ok,
+   // when the hint is right); the DEMAND-READ decision below takes the page size of the slot
+   // that really hits -- a wrong-hint cycle must never turn a 4 KiB boundary into a 2 MiB one
+   // and issue a next-chunk fill whose PA (`pc_paca + CHB`) crosses the page.
+   wire [1:0]       pc_lvl   = h0_1 ? c1_lvl : c0_lvl;             // the slot that hits (live)
+   assign           imem_lvl_srv = sh_q ? c1_lvl : c0_lvl;         // the hinted slot's
    wire             big_pg   = (pc_lvl != 2'd0);
    wire             samepg   = big_pg ? (pc_ca[20:CHA] != {(21-CHA){1'b1}})
                                       : (pc_ca[11:CHA] != {(12-CHA){1'b1}});
 
    // One demand read in flight.
    reg          rq_v, rq_pois;
-   reg  [63:0]  rq_va, rq_pa;
+   reg  [63:0]  rq_va, rq_pa, rq_vm;                 // rq_vm = rq_va - CHB, latched with it
    reg  [1:0]   rq_lvl;                          // page size captured with the in-flight request
    initial begin rq_v=1'b0; rq_pois=1'b0; end
    wire need_pc = ~have0 & ~(rq_v & (rq_va == pc_ca));
-   wire need_nx =  have0 & ~have1 & samepg & ~(rq_v & (rq_va == nx_ca));
+   wire need_nx =  have0 & ~have1 & samepg & ~(rq_v & (rq_vm == pc_ca));
    wire         want    = need_pc | need_nx;
    wire [63:0]  want_va = need_pc ? pc_ca   : nx_ca;
    wire [63:0]  want_pa = need_pc ? pc_paca : (pc_paca + CHB);
@@ -682,31 +728,60 @@ module rv_soc_top #(
    wire         ic_tag     = 1'b0;                     // one request in flight
 
    // ---- serve: {next chunk, PC chunk} shifted to the PC's byte offset ----
-   wire [2*HW*16-1:0] win_pair = {(have1 ? nx_chunk : {(HW*16){1'b0}}), pc_chunk};
+   wire [2*HW*16-1:0] win_pair = {(n1_q ? nx_chunk : {(HW*16){1'b0}}), pc_chunk};
    wire [CHA-1:0]     pc_off   = imem_va[CHA-1:0];
    wire [2*HW*16-1:0] win_shf  = win_pair >> {pc_off, 3'b000};
    assign imem_data = win_shf[HW*16-1:0];
 
    localparam AVW = $clog2(HW+2);
    localparam [AVW-1:0] AV_HW = HW[AVW-1:0];
-   wire [6:0] avail_b  = ~have0 ? 7'd0 : (have1 ? 7'd32 : 7'd16) - {3'b0, pc_off};
+   wire [6:0] avail_b  = (n1_q ? 7'd32 : 7'd16) - {3'b0, pc_off};   // what the served pair holds (imem_ok qualifies)
    wire [6:0] avail_hw = avail_b >> 1;
    wire       freeze   = fi_stall | ic_inv_busy | imem_ctx_chg;
    assign imem_avail = (avail_hw >= HW) ? AV_HW : avail_hw[AVW-1:0];
-   assign imem_ok    = have0 & ~freeze;
+   assign imem_ok    = ok_slot & ok_next & ~freeze;
+
+   // ---- the pick for the NEXT cycle: the tags after this edge, the next PC's chunk by kind ----
+   wire        fill    = ic_rd_valid & ~rq_pois;
+   wire        inval   = fi_stall | ic_inv_busy | imem_ctx_chg;
+   wire        f1      = fill & h0_0, f0 = fill & ~h0_0;           // the fill's slot (see the capture below)
+   wire        c0_v_n  = ~inval & (c0_v | f0),  c1_v_n  = ~inval & (c1_v | f1);
+   wire [63:0] c0_va_n = f0 ? rq_va : c0_va,   c1_va_n = f1 ? rq_va : c1_va;
+   wire [63:0] c0_vm_n = f0 ? rq_vm : c0_vm,   c1_vm_n = f1 ? rq_vm : c1_vm;
+   wire [63:0] tgt_ca  = {imem_adv_tgt[63:CHA], {CHA{1'b0}}};
+   wire [63:0] red_ca  = {imem_adv_red[63:CHA], {CHA{1'b0}}};
+   // per candidate chunk A: {the other slot holds A+CHB, c1 holds A (else serve c0)}
+   `define AK_PICK(A) {((c1_v_n & (c1_va_n == (A))) ? (c0_v_n & (c0_vm_n == (A))) : (c1_v_n & (c1_vm_n == (A)))), (c1_v_n & (c1_va_n == (A)))}
+   wire [1:0] pk_same = `AK_PICK(pc_ca), pk_next = `AK_PICK(nx_ca), pk_tgt = `AK_PICK(tgt_ca), pk_red = `AK_PICK(red_ca);
+   wire [1:0] pk_n = (imem_adv_kind == AK_NEXT)  ? pk_next
+                   : (imem_adv_kind == AK_TGT)   ? pk_tgt
+                   : (imem_adv_kind == AK_REDIR) ? pk_red
+                   :                               pk_same;      // HOLD and SAME: pc_q's own chunk
+   always @(posedge clk)
+      if (reset) begin sh_q <= 1'b0; n1_q <= 1'b0; end
+      else       begin sh_q <= pk_n[0]; n1_q <= pk_n[1]; end
+   // The pick is exact: a hint that is wrong while the chunk IS resident must be fixed by
+   // the very next HOLD re-pick, never two cycles running.
+   reg hint_wrong_q;  initial hint_wrong_q = 1'b0;
+   wire hint_wrong = have0 & ~freeze & ~(ok_slot & ok_next);
+   always @(posedge clk) begin
+      hint_wrong_q <= ~reset & hint_wrong;
+      if (!reset && hint_wrong)   // STRICT (probe): any wrong hint while the chunk is resident
+         $fatal(1, "rv_soc_top: served-slot hint wrong two cycles running (sh_q=%b n1_q=%b h0=%b%b h1=%b%b pc_ca=%h)", sh_q, n1_q, h0_1, h0_0, h1_1, h1_0, pc_ca);
+   end
 
    // ---- window fill + invalidation ----
    always @(posedge clk) begin
       if (reset) begin c0_v<=1'b0; c1_v<=1'b0; rq_v<=1'b0; rq_pois<=1'b0; end
       else begin
          // accept: latch the in-flight demand read
-         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_pa<=want_pa; rq_pois<=1'b0; rq_lvl<=immu_xlvl; end
+         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_vm<=(need_pc ? pc_ca_m : pc_ca); rq_pa<=want_pa; rq_pois<=1'b0; rq_lvl<=immu_xlvl; end
          // response: capture into the slot NOT holding the PC's chunk (keep pc_chunk resident)
          if (ic_rd_valid) begin
             rq_v <= 1'b0;
             if (~rq_pois) begin
-               if (h0_0) begin c1_va<=rq_va; c1_d<=ic_rd_data; c1_lvl<=rq_lvl; c1_v<=1'b1; end
-               else      begin c0_va<=rq_va; c0_d<=ic_rd_data; c0_lvl<=rq_lvl; c0_v<=1'b1; end
+               if (h0_0) begin c1_va<=rq_va; c1_vm<=rq_vm; c1_d<=ic_rd_data; c1_lvl<=rq_lvl; c1_v<=1'b1; end
+               else      begin c0_va<=rq_va; c0_vm<=rq_vm; c0_d<=ic_rd_data; c0_lvl<=rq_lvl; c0_v<=1'b1; end
             end
          end
          // invalidation LAST (wins a same-cycle capture): a mapping change or a flush in
@@ -716,6 +791,12 @@ module rv_soc_top #(
             if (rq_v | (ic_rd_req & ic_rd_ack)) rq_pois<=1'b1;
          end
       end
+   end
+   // The minus-chunk tags are derived state; they must never drift from the VA they shadow.
+   always @(posedge clk) if (!reset) begin
+      if (c0_v && (c0_vm != c0_va - CHB)) $fatal(1, "rv_soc_top: c0_vm %h != c0_va %h - CHB", c0_vm, c0_va);
+      if (c1_v && (c1_vm != c1_va - CHB)) $fatal(1, "rv_soc_top: c1_vm %h != c1_va %h - CHB", c1_vm, c1_va);
+      if (rq_v && (rq_vm != rq_va - CHB)) $fatal(1, "rv_soc_top: rq_vm %h != rq_va %h - CHB", rq_vm, rq_va);
    end
 
 

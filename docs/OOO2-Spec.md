@@ -45,7 +45,7 @@ Three architected stages plus a commit point. `F` is itself pipelined internally
        (the iMMU runs alongside: its PA is the I$ miss-path physical tag, not on the hit) │  decoupling queue (8)
   X  ── rename → PRF read / M→X bypass → ALU, branch resolve ──────────────────────────────┘
   M  ── LSU / mul / div / FPU / CSR ── trap, redirect, BTB train
-  C  ── ROB head: architectural commit, minstret, free-list release
+  C  ── ROB head: architectural commit, minstret (delayed one cycle; a CSR op waits a second cycle at head), free-list release
 ```
 
 | stage | holds | can stall | can stall others | can restart the pipe |
@@ -261,6 +261,14 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   PC (the bundle's PC, a fault's EPC); a pending interrupt waits out a straddle (`irq_go`)
   instead of abandoning it. The alignment window drops on a context change
   (`freeze = fi_stall | ic_inv_busy | imem_ctx_chg`, gating `imem_ok`); a miss still takes the
+  iMMU's fault. **The served slot is a register** (2026-09-17): each chunk slot also stores
+  `va - CHB` so "is this the next chunk" is a compare of two registers, and `fetch` exports
+  the next PC's chunk as a kind (`adv_kind`: hold, same, next, predicted target, redirect)
+  so the adapter picks `{sh_q, n1_q}` -- which slot holds the next PC's chunk, whether the
+  other holds the one after -- against its post-edge tags a cycle early; the live compares
+  only gate `imem_ok` (`ok_slot & ok_next & ~freeze`). A wrong pick costs one bubble and
+  self-corrects; none occurs (the 60 M cosim's retire count is unchanged). The adder and
+  the tag compare used to head the 24-level fetch loop; a miss still takes the
   iMMU's fault. The cap on the aligner's window is `pc_q`'s index against the **enclosing page's**
   last `HW` halfwords (`in_last`, `hw_left`), not `(pgsz - off) >> 1` compared with HW — the sum
   form is kept as the oracle. **Enclosing page** (Stage 2 inc 3): the cap and the straddle
@@ -345,11 +353,25 @@ Architectural registers are a **unified 64-entry space**: 0–31 integer, 32–6
 `ooo2_rename` carries a full speculative/committed split — SMAP/RMAP/lv for the map, and a
 per-shard free list with a speculative head and a committed head. Rollback is `h := hc` in
 **one cycle with no walk**, because rename never writes the free-list array.
+**The free-list read addresses are registers only** (2026-09-17): bank g of each list
+reads at `h_hi + (g < h_lo)`, its next free entry; which slot allocates from which shard
+(the instruction-class decode, and never the stall) selects among the banks' OUTPUTS. The
+intra-bundle bypass (B's source is A's destination) is applied at `r_prs*_b/_c` alone; the
+core's pending lookup indexes the MAP's candidate and masks its result with `r_byp*`.
 
 ### 5.1 Sharding
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
-read ports only; sharding by *writer* is what buys write ports.
+read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
+the F stage (FPU results, integer destinations included), the CTF link, and M for the
+in-core FP ops (FSGNJ, FMIN/FMAX, the compares, FMV, FCLASS). **Since 2026-09-17 the link
+never waits on M**: `cf_link_wb = pend & ~fp_wb`, and M yields the cycle when its FE-shard
+write would collide (`m_fe_yield = cf_link_wb & (m_shard == SH_FE)` in `m_done`,
+`m_done_red` and `m_done_wb`, registers only), so M's completion cone (the SQ's commit, the
+MMU) is off the CTF pipe's wakeup broadcast. Routing the in-core FP ops to SH_LD instead
+was tried and dropped: not a board defect (see 13.x), but no gain over the yield. The
+live read ports are nine: M rs1/rs2, ALUa rs1/rs2, ALUb rs1/rs2, F/CTF rs1/rs2/rs3 -- M's
+rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are tied off.
 
 | shard | entries | written by | why the size |
 |---|---|---|---|
@@ -469,7 +491,12 @@ independent of NF:
 
   Zihpm counters are permitted **arbitrary** read latency — a counter may reflect state N
   cycles ago — so `csr_file` now takes a second `hpm_retire_cnt` port and `ooo2_core`
-  feeds it a registered copy (`hpm_ret_q`). `minstret` keeps the live count. Every input
+  feeds it a registered copy (`hpm_ret_q`). **`minstret` takes the delayed copy too since
+  2026-09-17**: a head-gated op (CSR, trap, fence.i, system) completes only in its SECOND
+  cycle at the ROB head (`m_head_q`), nothing retires while it waits, so the one-cycle lag
+  is invisible to any CSR read; a `csrw minstret` drops the writer's own retirement a cycle
+  later (`minstret_wr_q`). The live count was `m_addr -> dTLB -> lsu_done -> w_hits ->
+  retire -> minstret`, 28 levels, the deepest path in the IW=3 build. Every input
   to `hpm_inc` is now a flop, so the mux and the adder start at the top of the cycle.
   (The retired sharded core passed its live count to both ports and was bit-identical.)
 
@@ -634,6 +661,17 @@ only `fmadd` has: 20 bits/entry against 29.
 - **Wake-at-select**, not wake-at-writeback (`FIXEDL`): a fixed-latency producer broadcasts
   its destination in the cycle it is *selected*, so a dependent issues the very next cycle.
   Back-to-back dependent issue is non-negotiable and is check 7 of the module TB.
+  **As a dependency matrix since 2026-09-17** (Henry Wong's form, for the intra-queue wake
+  only): `dep[k][q][j]` -- entry k's source q is produced by entry j -- is written at
+  dispatch by comparing the new entry's sources against every live destination (register
+  against register) and read at select as one column; the column of an issuing entry is
+  cleared after the row write. The previous form read `e_prd` at the selected index (a
+  LUTRAM read the select decides, fan-out 248) and compared that tag against every source,
+  the tail of every path into `e_r`. `e_prd` is flops now. Results from other units still
+  arrive by tag on `wb_v`/`wb_preg`. An always-on check compares the matrix with the tag
+  compare on every select. The two ALU schedulers also take `REGRDY`=1: `d_ready` is a
+  register ("at least two entries were free last cycle"), so the frontend's dispatch
+  decision does not start at `a_ent -> held -> freem`.
 - **`hold_v`/`hold_ent`**: the payload LUTRAM is read the cycle *after* selection, so an
   entry is not released at select — it is held until the issue register accepts it.
   Releasing at select let a dispatch overwrite `plmem[i_ent]` under a stalled issue stage;
@@ -685,7 +723,8 @@ two-clock-domain wrapper whose toggle handshake and two ASYNC_REG synchronisers 
 cycles for a crossing that does not exist (`fpu_clock` is `clk`); that wrapper left with the
 scalar core in the 2026-09 release.
 
-- `PIPE_REGS`=4, `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
+- `PIPE_REGS`=5 (4 until the IW=3 closure, 2026-09-17: fpnew's own 25-level datapath was
+  the −0.51 ns family; FP gives way), `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
   `DivSqrtSel = THMULTI`.
 - **NONCOMP (min/max, sign-inject, compare, classify) and parts of CONV return
   combinationally** — `out_valid` in the same cycle as `in_valid`, `PipeRegs` notwithstanding.
@@ -794,8 +833,14 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
   with M's completion for every plain load and store, and M's completion is the wakeup
   broadcast, the redirect and the hpm events: 1708 of the 3401 endpoints under +0.35 ns in
   that day's routed checkpoint started at `u_sq/v_reg` for this reason alone. Rule I9.
-- **A queued load carries everything its access needs**: PA, size, sign, fp-ness and the
-  Svpbmt uncached bit, all written into `ooo2_lq` at the translate pass -- and, from
+- **A queued load carries everything its access needs**: PA, size, sign, fp-ness, the
+  Svpbmt uncached bit and the "DRAM/LRAM, idempotent" bit that licenses a speculative
+  access (`mem`; a device load waits for a LIVE ROB head, `x_head & ~rob_empty`), all written
+  into `ooo2_lq` at the translate pass FROM THE TRANSLATE'S OWN PA (`t_paddr`, rule D12: the
+  LSU's `eff_pa` is the port's address in a cycle the port starts, and classifying the
+  translating load by it sent device loads off the wrong path -- the board's dead NIC,
+  2026-09-17; the LSU asserts every non-DRAM start is non-speculative, and the queue
+  recomputes the bit from the PA it stores and dies at the fill on a disagreement) -- and, from
   dispatch, the store-seqno that bounds which store-queue entries are older than it: the
   queue's tail COUNTER, one bit wider than its index (`SQ_TB`), because a full queue's tail
   equals its head and an index-width seqno then counts zero older stores where there are
@@ -1223,6 +1268,41 @@ Read `probe_clk` from the **Intra Clock Table**, not global WNS — global WNS i
 pinned by the MIG's `ui_clk`.
 
 ---
+
+### 13.x IW=3 closure at 166.67 MHz (2026-09-17)
+
+`OOO2_IW=3 OOO2_HW=8 make bit` closes: **WNS +0.007 ns** (from −0.528 on the dispatch-stage
+base dd371e6d), no PRF read-port change. The plateau was late control roots in front of
+ordinary logic, not congestion: a 64-bit adder+compare at the head of the fetch loop, the
+rename stall inside the free-list read address, the redirect in front of a landing load
+(nine combinational loops through `ld_land` -- `redirect` needs `m_done_red`, which yields to
+`ld_land`, which was `~flush` -- and a DRC LUTLP-1 bitstream blocker; synthesis retiming
+stays off regardless, every build log says "no retiming"), M as
+a second writer of SH_FE in front of the CTF link's broadcast, and the live retire count into
+`minstret`. Per build (each verified by lint, riscv-tests 240/0, the IW=3 and IW=2 60 M
+lockstep cosims):
+
+| build | cuts | WNS | TNS | failing |
+|---|---|---|---|---|
+| dd371e6d | dispatch stage | −0.528 | −1275 | 3940 |
+| hm1 | fetch tags, `pt_ld_kill` latch-only, SH_FE = F only, stall-free free-list address, delayed minstret | −0.117 | −5.5 | 90 |
+| hm2 | + fpnew 5, UART decode, REGRDY, M rs3 off, free-list bank index, map-indexed pending lookup, matrix wake | −0.130 | −6.7 | 143 |
+| hm3 | + the served-slot hint, matrix column clear after the row write | **+0.007** | 0 | 0 |
+| w1p3 | hm3 with W1' (in-core FP back on SH_FE; the CTF link has priority, M yields) and the narrow instret hold (M1b) | **+0.034** | 0 | 0 |
+| w1p2 | the same RTL at `OOO2_IW=2` (the shipping width) | **+0.035** | 0 | 0 |
+| f1iw3 | + the D12 fix (device loads classified by their own translate PA; boots the board clean) | **+0.017** | 0 | 0 |
+| f1iw2 | the same at `OOO2_IW=2` | **+0.039** | 0 | 0 |
+
+Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
+ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
+commit +0.08, the PRF read into the ALUs +0.085. Cosim: IW=3 retires 11,682,439 (−0.02%
+vs the base: the second cycle at head), IW=2 13,491,763 (+0.5%). `docs/HANDOFF-iw3-hail-mary.md`
+has the per-round record and the rejected cuts. **Board (2026-09-17): every bitstream of
+this branch, the base dd371e6d included, kills the NIC (NFS stalls, virtio-net TX watchdog)
+while the last board-clean main bitstream boots clean the same morning; bisected on the board
+at 111 MHz to 5ef15e3d (CTF-on-FP) -- 760fe336 boots clean, 5ef15e3d with either loop cut does
+not. No cosim can see it: `tb_ooo2_linux` ties virtio and every PLIC interrupt off. The
+closure above is real; the branch cannot ship until that defect is found (handoff, 'Board').**
 
 ## 14. Known limits
 

@@ -101,6 +101,7 @@ module ooo2_lsu
     input  wire            xl_flush,
     input  wire            flush,          // a backend redirect: squash a speculative LOAD in flight
     input  wire            m_head,         // M's op is the ROB head (non-speculative) -- gates non-DRAM access
+    input  wire            pt_nonspec,     // the port's request is non-speculative (a store, or the LQ's candidate at a live head)
     output wire [55:0]     ptw_addr,
     output wire            ptw_read,
     input  wire [63:0]     ptw_rdata,
@@ -339,13 +340,20 @@ module ooo2_lsu
    // effects (e.g. popping a UART RX byte on the wrong path). Only DRAM/LRAM speculate early;
    // a non-DRAM load waits until M is the ROB head (non-speculative). See ooo2_lq for the
    // queued path's matching gate.
-   wire xl_early = xo_ok & req_early & (pa_mem | m_head) & (st == S_IDLE) & ~pt_start;
+   wire xl_early = xo_ok & req_early & (t_mem | m_head) & (st == S_IDLE) & ~pt_start;   // the translate's region (see xo_mem)
    wire start_ok = pt_start | xl_ok_f | xl_early;
    assign xo_v     = xo_ok;
    assign xo_early = xl_early;
    assign xo_pa  = t_paddr;
    assign xo_unc = t_uncached;
-   assign xo_mem = pa_mem;                // eff_pa == t_paddr on a translate pass, so this is the fill PA's region
+   // THE TRANSLATE'S OWN REGION, NEVER eff_pa's. eff_pa is the PORT's address whenever the port
+   // starts or chains an access in the same cycle a translate completes (pt_start | take_next),
+   // and that is exactly when a load's fill would have taken the PORT's DRAM classification:
+   // a device load recorded as idempotent, issued off the wrong path past ooo2_lq's head gate,
+   // reading a read-to-clear register on the way (2026-09-17: the board's dead NIC under NFS
+   // root; the cosim never took a PLIC interrupt until the OOO2_IRQ_STIM storm caught it).
+   wire t_mem = (t_paddr >= LSU_DRAM_BASE) | (t_paddr[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
+   assign xo_mem = t_mem;
 
    // ------------------------------------------------------- AMO RMW datapath
    wire        a_isw   = (req_size == 2'd2);
@@ -489,13 +497,23 @@ module ooo2_lsu
    // Its landing must NOT write back (its physreg has been rolled back -- ooo2_pending's zombie
    // check). Stores/AMOs set own_pt_st and are commit-gated, so they are never speculative here.
    // The FSM still completes the access (own_pt clears on ld_fin); only the LANDING is killed.
+   // THE LIVE FLUSH DOES NOT REACH THE KILL -- only the latch does. A load that lands in the
+   // redirect cycle itself lands: every consumer orders its flush arm last (scheduler, ROB,
+   // LQ, pending), so the landing completes a ROB slot the same edge drops and writes a
+   // physreg the same edge returns to the free list, both harmless. Gating the landing on the
+   // LIVE flush closed a combinational loop instead: redirect = m_red_fire needs m_done_red,
+   // m_done_red yields to ld_land, ld_land was ~flush. Vivado cut that loop at an arbitrary
+   // arc (nine TIMING-23 loops, every one through ld_land), turned synthesis RETIMING OFF for
+   // the whole design because of it, and the redirect cone (mideleg, the ROB head, the SQ's
+   // commit) sat in front of every scheduler's wakeup: mideleg -> redirect -> ld_land ->
+   // we_ld -> e_r, 25 levels, the IW=3 wall. Verilator saw the same loop as UNOPTFLAT.
    wire ld_inflight = own_pt & ~own_pt_st;
    reg  ld_sq;  initial ld_sq = 1'b0;
    always @(posedge clk)
       if (reset)                    ld_sq <= 1'b0;
       else if (flush)               ld_sq <= 1'b1;   // a redirect: any load already in flight is wrong-path
       else if (pt_start | xl_early) ld_sq <= 1'b0;   // a fresh access start (incl. the early path) is correct-path
-   assign pt_ld_kill = ld_inflight & (ld_sq | flush);
+   assign pt_ld_kill = ld_inflight & ld_sq;
    assign pt_ack  = pt_start | take_next;
    assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
@@ -513,9 +531,13 @@ module ooo2_lsu
                 // See the ASSUMPTION above: non-DRAM traffic is never aligned by this
                 // LSU, so if it straddles, the cache sees a span it is asserted never to
                 // see -- and for MMIO the second beat would address the wrong register.
+                // A NON-DRAM ACCESS IS NEVER SPECULATIVE: the port's request carries the LQ's
+                // head compare (or is a committed store), the early path carries M's.
+                if (~pa_mem & ~(pt_start ? pt_nonspec : m_head))
+                   $fatal(1, "ooo2_lsu: speculative non-DRAM access: pa=%h pt_start=%b xl_early=%b", eff_pa, pt_start, xl_early);
                 if (~pa_mem & (wend > 5'd8))
-                   $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d",
-                          eff_pa, nb, boff);
+                   $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d va=%h unc=%b pt_start=%b xl_early=%b req_early=%b m_head=%b pt_store=%b st=%0d",
+                          eff_pa, nb, boff, req_vaddr, eff_unc, pt_start, xl_early, req_early, m_head, pt_store, st);
                 own_pt        <= pt_start | xl_early;   // ooo2_lq lands it either way
                 own_pt_st     <= pt_start & pt_store;
                 src_pt        <= pt_start;              // ...but the fields are M's

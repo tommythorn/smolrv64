@@ -50,6 +50,10 @@ module ooo2_core
     output wire [PCW-1:0]          imem_vaddr,
     output wire                    imem_xlate_ok,   // PA valid this cycle (not walking/faulting)
     output wire                    imem_ctx_chg,    // drop the buffer: mapping may have changed
+    // The next PC's chunk, one cycle early (fetch.adv_kind): the adapter's served-slot hint.
+    output wire [2:0]              imem_adv_kind,
+    output wire [PCW-1:0]          imem_adv_tgt,    // the predicted target (AK_TGT)
+    output wire [PCW-1:0]          imem_adv_red,    // the redirect target (AK_REDIR)
     // Diagnostic only (FBDIAG_BASE readout).  These are the REGISTERED copies the VA tag
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
@@ -240,6 +244,7 @@ module ooo2_core
    // the mispredict restart moved to execute; see the EARLY FRONTEND RESTART block.
    reg                      fe_red_q;
    reg [PCW-1:0]            fe_red_tgt_q;
+   assign imem_adv_red = fe_red_tgt_q;              // what fetch's redirect arm loads
    reg [SEQW-1:0]           fe_red_seq_q;
    // dec_red_q shadows the decode-redirect exactly as redirect_q shadows the backend
    // redirect: the frontend flush + fetch resteer land one cycle late (registered fe_red_q),
@@ -352,6 +357,7 @@ module ooo2_core
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
+      .imem_adv_kind(imem_adv_kind), .imem_adv_tgt(imem_adv_tgt),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
@@ -512,17 +518,9 @@ module ooo2_core
    // Destination shard = where the result will be written.  Loads, AMOs and mul/div take
    // SH_LD (see ooo2_prf.v on why mul/div ride with loads and not the ALU).
    //
-   // An FP instruction goes to SH_FE only if its DESTINATION IS AN FP REGISTER.  d_rd[5] is
-   // the class bit -- architectural 0..31 are integer, 32..63 are FP (ooo2_rename's reset
-   // arm maps them that way).  fcvt.w.d, fmv.x.w, fclass and the FP compares are FP
-   // instructions that write INTEGER registers; sending those to SH_LD, which already holds
-   // both classes and so needs no extra room, means SH_FE can only ever hold FP mappings.
-   // Its floor drops from 65 to 33, i.e. 128 entries to 64 -- the same 64-entry saving that
-   // was worth 465 ps when mem_ie was cut (docs/rtl-rules.md I1).
-   //
-   // No new contention at this milestone: there is exactly one writeback per cycle.  When
-   // out-of-order issue lands, SH_LD's writers become LSU + mul/div + FP-to-integer, all of
-   // which are rare next to loads and all of which can hold in an output register.
+   // An FP instruction goes to SH_FE only if the F STAGE EXECUTES IT (d_cls_f: the FPU's
+   // arithmetic and conversions, integer destination or not -- the FPU writes integer regs
+   // too, which is why N_FE > 64). The in-core FP ops execute in M and take SH_LD (below).
    // THE RULE IS: shard = the UNIT that writes it, and nothing else. An op routed to M
    // takes SH_LD even when its result is an ordinary integer -- a CSR read and a jump's
    // link register are M's results, not the ALU's. Leaving those two in SH_IE gave that
@@ -533,21 +531,16 @@ module ooo2_core
    // With this line the ALU is SH_IE's only writer, m_wb_ie is identically 0 (asserted
    // below, not assumed), and the integer scheduler has no unit_busy term at all.
    // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
-   wire [2:0] d_shard = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
-                      : d_is_fp                          ? SH_FE
-                      : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
-                      : d_ord                            ? SH_LD   // CSR: M writes
-                      :                                    SH_IE;  // the ALU, alone
-   wire [2:0] d2_shard = (d2_is_mem | d2_is_amo | d2_is_mul) ? SH_LD
-                       : d2_is_fp                            ? SH_FE
-                       : d2_cls_c                            ? SH_FE   // jal/jalr link: FP/CTF pipe's slice
-                       : d2_ord                              ? SH_LD
-                       :                                       SH_IE2;   // the second ALU's shard
-   wire [2:0] d3_shard = (d3_is_mem | d3_is_amo | d3_is_mul) ? SH_LD
-                       : d3_is_fp                            ? SH_FE
-                       : d3_cls_c                            ? SH_FE   // jal/jalr link: the FP/CTF slice
-                       : d3_ord                              ? SH_LD
-                       :                        (d2_cls_i ? SH_IE : SH_IE2);  // ALU: swizzled -- ALUa if I2 is ALU, else ALUb (ALUb preferred)
+   // SH_FE IS THE FP/CTF PIPE'S SLICE AND NOTHING ELSE'S. An FP instruction goes to SH_FE
+   // only when the F stage executes it (d_cls_f); the in-core FP ops (FSGNJ, FMIN/FMAX, the
+   // compares, FMV, FCLASS) execute in M and take SH_LD like every other M result. Routing
+   // them by d_is_fp gave SH_FE a second writer, and the only way to keep one write port was
+   // to hold the CTF link off while M was writing it (cf_link_wb = ... & ~m_wb_fe) -- the same
+   // shape as the m_wb_ie mistake above, with the same consequence: M's whole completion
+   // cone (the SQ's commit, the MMU's state) in front of the CTF pipe's wakeup broadcast,
+   // u_sq/kcc -> m_wb_fe -> cf_link_wb -> we_fe -> e_r, 22 levels. Assigned after the class
+   // wires below (d_cls_f is declared there).
+   wire [2:0] d_shard, d2_shard, d3_shard;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
    wire [RN_PBITS-1:0] rn_prs1_b, rn_prs2_b, rn_prs3_b, rn_prd_b;
@@ -613,15 +606,17 @@ module ooo2_core
       .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
       .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .we_ie2(alu2_q_v), .wa_ie2(alu2_q_prd), .wd_ie2(alu2_q_val),   // the second ALU (10d-ii)
-      .we_ie3(alu3_q_v), .wa_ie3(alu3_q_prd), .wd_ie3(alu3_q_val),   // the third ALU (Stage 3)
+      .we_ie3(1'b0), .wa_ie3({RN_PBITS{1'b0}}), .wd_ie3(64'd0),   // the third ALU is dead since the swizzle: SH_IE3 has no writer (asserted below)
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
-      .ra1(i_ps1), .ra2(i_ps2), .ra3(i_ps3),
+      // ra3 is tied off: M reads two operands. Its only would-be user, an FMA routed to M
+      // under mstatus.FS=Off, traps before it needs a third (op3f is 0 for it).
+      .ra1(i_ps1), .ra2(i_ps2), .ra3({RN_PBITS{1'b0}}),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
       .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
-      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32),
+      .ra8({RN_PBITS{1'b0}}), .ra9({RN_PBITS{1'b0}}), .rd8(prf_a31), .rd9(prf_a32),   // ...and no reader
       .ra10(j_ps1), .ra11(j_ps2), .ra12(j_ps3), .rd10(prf_f1), .rd11(prf_f2), .rd12(prf_f3));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
@@ -948,6 +943,22 @@ module ooo2_core
    wire d3_cls_l = d3_ord & ~d3_cls_f & ~d3_cls_c;
    wire d3_cls_i = ~d3_ord;
    wire d3_cls_fc = d3_cls_f | d3_cls_c;
+   // Destination shard = the UNIT that writes it (declared with its rationale above).
+   assign d_shard  = (d_is_mem | d_is_amo | d_is_mul) ? SH_LD
+                   : d_is_fp                          ? SH_FE   // FP ops, in-core included: the base routing
+                   : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
+                   : d_ord                            ? SH_LD   // CSR, in-core FP: M writes
+                   :                                    SH_IE;  // the ALU, alone
+   assign d2_shard = (d2_is_mem | d2_is_amo | d2_is_mul) ? SH_LD
+                   : d2_is_fp                            ? SH_FE
+                   : d2_cls_c                            ? SH_FE   // jal/jalr link: FP/CTF pipe's slice
+                   : d2_ord                              ? SH_LD
+                   :                                       SH_IE2;   // the second ALU's shard
+   assign d3_shard = (d3_is_mem | d3_is_amo | d3_is_mul) ? SH_LD
+                   : d3_is_fp                            ? SH_FE
+                   : d3_cls_c                            ? SH_FE   // jal/jalr link: the FP/CTF slice
+                   : d3_ord                              ? SH_LD
+                   :                        (d2_cls_i ? SH_IE : SH_IE2);  // ALU: swizzled -- ALUa if I2 is ALU, else ALUb (ALUb preferred)
    wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
    // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
    wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
@@ -1040,7 +1051,7 @@ module ooo2_core
    wire mv_f  = stg_v_f  & rf_ready;
 
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(1),.INORDER(0)) u_iq_i
+             .FIXEDL(1),.INORDER(0),.REGRDY(1)) u_iq_i
      (.clk(clk),.reset(reset),
       .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
       .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_ent(ri_d_ent),
@@ -1051,7 +1062,7 @@ module ooo2_core
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
    // THE SECOND INTEGER SCHEDULER (item 10d-ii): slot B's ALU ops, into the second ALU.
    ooo2_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(1),.INORDER(0)) u_iq_i2
+             .FIXEDL(1),.INORDER(0),.REGRDY(1)) u_iq_i2
      (.clk(clk),.reset(reset),
       .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
       .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_ent(ri2_d_ent),
@@ -1188,14 +1199,13 @@ module ooo2_core
    // 3:1 mux, now on three reads instead of three indexes.
    reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_i2 [0:NI-1];
-   reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
    wire [3*RN_PBITS-1:0] ps_out   = psmem_l[rl_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
    wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
-   wire [3*RN_PBITS-1:0] ps_out_a3 = psmem_i3[ri3_iss_ent];
+   wire [3*RN_PBITS-1:0] ps_out_a3 = {(3*RN_PBITS){1'b0}};   // the third ALU is dead since the swizzle (u_iq_i3 never fills)
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
    wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
@@ -1449,7 +1459,6 @@ module ooo2_core
    // what stop them aliasing.
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_i2 [0:NI-1];
-   reg [PLW-1:0] plmem_i3 [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
    // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
@@ -1467,7 +1476,7 @@ module ooo2_core
       if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
       if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
       if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
-      if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
+      if (ri3_take)                pla3_q <= {PLW{1'b0}};   // dead: the third ALU never issues
       if (rf_take)                 plf_q  <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
    end
    wire [PLW-1:0] pl_out   = pl_q;
@@ -1716,7 +1725,7 @@ module ooo2_core
    wire sq_ld_reorder = lq_x_take & sq_ld_older;
 
    // ------------------------------------------------------------------- LOAD QUEUE
-   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v, lq_b_ok;
+   wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_x_unc, lq_x_head, lq_l_rd_v, lq_b_ok;
    wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
    wire [55:0]         lq_x_pa;
    wire [1:0]          lq_x_size;
@@ -1739,7 +1748,7 @@ module ooo2_core
    wire [SQ_TB-1:0] ld_sqtag = sq_d_tag;   // <=1 LS/cycle: a store and a load never co-dispatch
 
    ooo2_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .SQIB(SQ_TB)) u_lq
+             .ROBB(ROB_IDXB), .SQIB(SQ_TB), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lq
      (.clk(clk), .reset(reset),
       .d_alloc(d_ld_alloc), .d_rob(ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_c ? d3_prd_g : ld_b ? d2_prd_g : d_prd_g),
       .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
@@ -1751,7 +1760,7 @@ module ooo2_core
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
-      .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_take(lq_x_take),
+      .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_head(lq_x_head), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_inflight_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
       .occupancy(lq_occ), .rob_head(rob_head_idx), .flush(redirect));
@@ -2106,6 +2115,11 @@ module ooo2_core
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush), .flush(redirect), .m_head(m_at_head),
+      // A committed store, or the LQ's candidate at head: the LSU asserts every non-DRAM start
+      // is non-speculative against ITS OWN region decode (rule D12). The head compare alone is
+      // exact: a live index is unique, a flush empties the queue, and a candidate whose ROB
+      // slot has already retired (a load released early) is committed.
+      .pt_nonspec(pt_store | lq_x_head),
       .ptw_addr(dptw_addr), .ptw_read(dptw_read),
       .ptw_rdata(dptw_rdata), .ptw_rvalid(dptw_rvalid),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
@@ -2160,7 +2174,7 @@ module ooo2_core
       .op0_int(fp_o0i), .wr_fp(fp_wrfp));
 
    // unified regfile -> the FP sources are just rs1/rs2/rs3 with the fp bit set
-   wire [63:0] op1f = m_rs1_val, op2f = m_st_data, op3f = m_rs3_val;
+   wire [63:0] op1f = m_rs1_val, op2f = m_st_data, op3f = 64'd0;   // no M op reads rs3 (see u_prf's ra3)
 
    function [63:0] fpsel; input [1:0] s; input [63:0] a, b, c;
       fpsel = (s==2'd1) ? a : (s==2'd2) ? b : (s==2'd3) ? c : 64'd0; endfunction
@@ -2196,7 +2210,9 @@ module ooo2_core
    // allocated. 21 bits inside the wrapper's 24: with results returning out of issue order
    // (fpnew's op groups have different latencies), a result must say where it goes rather
    // than be matched against "the one in flight".
-   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4)) u_fpu
+   // PIPE_REGS 5 (fp_unit's default is 4): fpnew's own datapath was a 25-level, -0.51 ns
+   // family at IW=3. One more cycle of FP latency; the integer side does not pay.
+   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(5)) u_fpu
      (.clk(clk), .reset(reset),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
       .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
@@ -2340,7 +2356,14 @@ module ooo2_core
    // resolves, writes its link, marks its ROB entry done, records any mispredict into the
    // restart tracker (fr_* below), and frees. The squash fires later when that ROB entry heads.
    wire cf_link_pend  = cf_valid & cf_rd_v & ~cf_link_wrote;    // a jal/jalr link still to write
-   wire cf_link_wb    = cf_link_pend & ~fp_wb & ~m_wb_fe;       // write it when SH_FE is free (FP wins)
+   // THE LINK NEVER WAITS ON M. The old `& ~m_wb_fe` put M's whole completion cone (the SQ's
+   // commit, the MMU's state) in front of the CTF pipe's wakeup broadcast -- u_sq/kcc -> m_wb_fe
+   // -> cf_link_wb -> we_fe -> e_r, 22 levels. Now the link takes the port when the FPU is not
+   // landing, and M YIELDS its FE-shard write for that cycle (m_fe_yield in m_done, like the
+   // yields to ld_land and fp_land). Routing the in-core FP ops to SH_LD instead (W1) killed
+   // the board's NIC path within seconds while every cosim stayed lockstep-clean.
+   wire cf_link_wb    = cf_link_pend & ~fp_wb;
+   wire m_fe_yield    = cf_link_wb & (m_shard == SH_FE);        // registers only: cf_*, the FPU's out_valid_q, m_shard
    wire cf_done       = cf_valid & ~cf_link_pend;               // resolved + link written -> free stage
    assign cf_advance  = ~cf_valid | cf_done;
    // ROB completion. A correctly-predicted branch completes at resolve and retires in order. A
@@ -2551,7 +2574,8 @@ module ooo2_core
    // became timing-critical when 9a6f8de3 correctly un-gated perf_access/perf_miss from
    // `ifdef PERF_TRACE -- before that the cache events read zero in every bitstream ever
    // built, so this cone did not exist.
-   // minstret is NOT included: retire_cnt stays combinational because it is architectural.
+   // minstret takes the delayed copy too since a head-gated op waits a second cycle at head
+   // (m_head_q), which makes the one-cycle lag invisible to any CSR read.
    //
    // But that argument covers minstret ONLY, and the first version of this fix stopped
    // there -- leaving the OTHER route from the same source alive. `retire` is
@@ -2601,7 +2625,10 @@ module ooo2_core
       .xtrap_epc(m_pc), .xtrap_tval(xtrap_tval),
       // retire3 (3rd commit port, IW>=3) must be summed too or minstret undercounts at
       // 3-wide; retire3 is hard 0 at IW<3, so this stays bit-identical at the shipping width.
-      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt({5'd0, retire} + {5'd0, retire2} + {5'd0, retire3}),
+      // Both counts are the DELAYED copy: minstret is exact because a CSR op completes only
+      // in its second cycle at the ROB head (m_head_q), by which time every older retirement
+      // has been counted; csr_file drops the CSR op's own retirement after a minstret write.
+      .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(hpm_ret_q),
       .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The SoC puts no ILA on the CSR file, so these
@@ -2740,11 +2767,26 @@ module ooo2_core
    reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
    wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
                      | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
-   wire head_block   = m_valid & m_needs_head & ~m_at_head;
+   // A HEAD-GATED OP COMPLETES IN ITS SECOND CYCLE AT HEAD, not its first. Nothing retires
+   // while it waits (retire is in order and it is the head), so by its second cycle every
+   // older retirement is two edges old -- which is what lets minstret take the same delayed
+   // retire count as the Zihpm counters (hpm_ret_q) and still read exactly: the live count
+   // was m_addr -> dTLB -> lsu_done -> rob w_hits -> retire -> minstret, 28 levels, the
+   // deepest path in the IW=3 build. One cycle on a CSR op, a trap, a fence.i or a system op.
+   // ONLY A CSR READ OF instret/minstret TAKES THE SECOND CYCLE (M1b, 2026-09-17): every other
+   // head-gated op (the irqop, sret/ecall, fence.i, traps) completes in its first cycle at
+   // head exactly as before, and a minstret WRITE needs no hold (the retirements the delayed
+   // count still carries are older than the write and are subsumed by it; csr_file drops the
+   // writer's own). Holding every head-gated op broke the board (the NIC path died once init
+   // started) while every cosim stayed lockstep-clean.
+   reg  m_head_q;   initial m_head_q = 1'b0;
+   always @(posedge clk) m_head_q <= ~reset & m_valid & m_at_head & ~m_done;
+   wire m_instret_rd = m_is_csr & ((m_imm[11:0] == 12'hC02) | (m_imm[11:0] == 12'hB02));
+   wire head_block   = m_valid & ((m_needs_head & ~m_at_head) | (m_instret_rd & ~m_head_q));
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
    // ~0.3 cycles per load against the ~2.3 the early release saves.
-   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land & ~m_flt_pulse;
+   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land & ~m_flt_pulse & ~m_fe_yield;
    assign m_advance = ~m_valid | m_done;
 
    // ---- trap / redirect ----
@@ -2761,7 +2803,7 @@ module ooo2_core
                         : m_mem_op            ? 1'b0
                         : m_md_op             ? (md_div ? div_done : mul_done)
                         :                       1'b1;
-   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
+   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land & ~m_fe_yield;
    // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
    // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
    // now; the branch squash comes from the CTF pipe (cf_red_fire).
@@ -2871,14 +2913,21 @@ module ooo2_core
    // just the memory and mul/div ones it started as. The two new arms are the two classes
    // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
    // after the mem/amo/mul arms above is a jump's link register.
+   // A CSR READ TAKES THE LIVE csr_rdata, NEVER THE LATCH: m_unit_res has no CSR arm, and a
+   // CSR op now always sits at head for a cycle before completing (m_head_q), which sets
+   // m_unit_done_q -- the latched arm then handed a stale m_result to the destination. (The
+   // same hazard existed whenever a landing load held a CSR op at head.) Live is also what
+   // makes the delayed minstret read exact: it is sampled in the completion cycle.
    assign wb_ld = ld_wb                     ? lsu_rd_val
                 : (m_is_mem | m_is_amo)     ? lsu_rd_val
-                : m_unit_done_q             ? m_unit_res_q
                 : m_is_csr                  ? csr_rdata
+                : m_unit_done_q             ? m_unit_res_q
                 : m_is_mul                  ? (md_div ? div_result : mul_result)
                 :                             m_result;
+   // SH_FE's writers: the FPU, the CTF link (when the FPU isn't landing) and M's in-core FP ops
+   // (M yields the cycle to the link: m_fe_yield).
    assign wb_fe = fp_wb         ? fp_wval
-                : cf_link_wb    ? cf_link         // jal/jalr link, when the FPU isn't landing
+                : cf_link_wb    ? cf_link
                 : m_unit_done_q ? m_unit_res_q
                 :                 fp_incore_res;
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
@@ -2899,7 +2948,7 @@ module ooo2_core
                      : m_mem_op            ? lsu_done_acc
                      : m_md_op             ? (md_div ? div_done : mul_done)
                      :                       1'b1;
-   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land;
+   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land & ~m_fe_yield;
    wire m_trap_wb = (m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt)))
                   | (m_is_sys & csr_redir_trap);
    wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb & ~fp_arith;
@@ -2951,11 +3000,13 @@ module ooo2_core
    always @(posedge clk) if (!reset) begin
       if (m_wb_ld & ld_wb)
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
-      if (m_wb_fe & fp_wb)
-         $fatal(1, "ooo2_core: FE shard written by both M and a landing FP result");
+      if (m_wb_fe & (fp_wb | cf_link_wb))
+         $fatal(1, "ooo2_core: FE shard written by M together with the FPU or the CTF link");
       // m_wb_ie is dead by construction: d_shard sends every M-routed op to SH_LD or
       // SH_FE. Asserted rather than assumed -- if a future op class reaches M with
       // SH_IE, it would silently drop its result now that we_ie ignores M.
+      if (alu3_q_v)
+         $fatal(1, "ooo2_core: the third ALU wrote back -- it is dead since the swizzle and SH_IE3 is tied off");
       if (m_wb_ie)
          $fatal(1, "ooo2_core: M wrote the IE shard -- d_shard must route M's ops to SH_LD");
    end
@@ -3016,6 +3067,13 @@ module ooo2_core
       // still holds it, and m_done can now assert cycles later off the sticky latch.
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
          cs_val[m_rob_idx]   <= m_wb_val;
+      end
+      // A CSR READ'S VALUE IS THE ONE AT ITS WRITE, not at the unit-ok pulse: the op
+      // completes in its second cycle at head (m_head_q) and reads csr_rdata live then, so
+      // `time`/`cycle` are one tick past the pulse's value. Ordered after the arm above so
+      // it wins. (Found by the 300 M cosim: rdtime retired as t, computed with t+1.)
+      if (m_wb & m_is_csr) cs_val[m_rob_idx] <= csr_rdata;
+      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
          // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
          // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
          // hand the cosim a stale PA under this store's seqno. Worse, it would often be
@@ -3081,13 +3139,18 @@ module ooo2_core
    // Missing it reported rd=0 for the second instruction of the boot.
    wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
                           & (m_rob_idx == rob_head_idx);
+   // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
+   // at head, reading csr_rdata live then -- after cs_hit_m's pulse and before the capture
+   // above lands. `time`/`cycle` differ by a tick between the two: the head takes it live.
+   wire        cs_hit_csr = m_wb & m_is_csr & (m_rob_idx == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
    wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (a_rob == rob_head_idx);
    wire        cs_hit_alu2 = iss_alu2 & (a2_rob == rob_head_idx);
    wire        cs_hit_alu3 = iss_alu3 & (a3_rob == rob_head_idx);
-   wire [63:0] cs_val_h   = cs_hit_sq ? 64'd0          // a store writes no register
+   wire [63:0] cs_val_h   = cs_hit_csr ? csr_rdata     // the CSR read's value at its write
+                          : cs_hit_sq ? 64'd0          // a store writes no register
                           : cs_hit_ld ? lsu_rd_val
                           : cs_hit_alu ? xa_result
                           : cs_hit_alu2 ? xb_result

@@ -52,9 +52,19 @@ module plic #(parameter NSRC = 64)
 
    wire [5:0] best_irq;
    wire       has_irq;
+`ifdef OOO2_IRQ_STIM
+   // SIM-ONLY (see rv_soc_top's OOO2_IRQ_STIM): source 10 counts as enabled at priority >= 1
+   // whatever the kernel wrote (it masks a source by writing priority 0 and never requests the
+   // UART line before the tty opens), so the spurious level becomes a stream of interrupts.
+   wire [63:0]       en_eff   = enabled   | 64'h400;
+   wire [3*NSRC-1:0] prio_eff = prio_flat | ({{(3*NSRC-1){1'b0}}, 1'b1} << (10*3));
+`else
+   wire [63:0]       en_eff   = enabled;
+   wire [3*NSRC-1:0] prio_eff = prio_flat;
+`endif
    smolrv64_plic_arbiter arb
-     (.clock(clk), .pending(pending), .enabled(enabled),
-      .priority_flat(prio_flat), .threshold(threshold),
+     (.clock(clk), .pending(pending), .enabled(en_eff),
+      .priority_flat(prio_eff), .threshold(threshold),
       .best_irq(best_irq), .has_irq(has_irq));
 
    assign meip = has_irq;

@@ -482,6 +482,22 @@ dispatched a cycle earlier that M was not looking at. The same shape serves any 
 proceed" that is a monotone function of registered state: register it, index it by the
 consumer's own registered key, keep the live form as the oracle.
 
+**D12. An attribute of a TRANSLATION is derived from the translation's own address, never
+from a shared "effective" mux.** `ooo2_lsu`'s `eff_pa` is the PORT's address whenever the
+port starts or chains an access (`pt_start | take_next`) and M's translate address otherwise,
+and `xo_mem` -- the "DRAM, idempotent, may issue speculatively" bit `ooo2_lq` records at the
+fill -- was `pa_mem(eff_pa)`. In the one cycle where an older load starts on the port while a
+younger load's translate completes, the younger load was classified by the OLDER load's
+address: a device load recorded as DRAM, issued off the wrong path past the queue's head gate,
+reading a read-to-clear register (a virtio ISR, a PLIC claim) that the right path then found
+empty. That was the branch's dead NIC under NFS root (2026-09-17), invisible to every cosim
+(G7) and latent since CTF-on-FP let M hold a wrong-path load at all. `xo_mem` is now
+`t_mem(t_paddr)`, `xl_early`'s gate likewise, and the LSU asserts at every start that a
+non-DRAM access is non-speculative (`pt_nonspec`: a committed store, or the LQ's candidate at
+a LIVE head -- `x_head & ~rob_empty`, because after a flush the empty ROB's head index equals
+anything). The rule: a mux that exists for the datapath's convenience is not a source of
+truth for a predicate captured into a queue; the predicate names the thing it describes.
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**
@@ -641,6 +657,23 @@ literal. And a waiter for Vivado keys on `pgrep -x vivado` (`tools/wait-vivado.s
 flow runs synthesis and implementation as separate processes, so a log line such as
 "Exiting Vivado" fires mid-build, and `pgrep -f` matches the shell running the wait and
 hangs it -- both happened the same day, the second for the third time in this project.
+
+**G7. No cosim had ever taken a PLIC interrupt; the interrupt storm is a gate.**
+`tb_ooo2_linux` ties virtio off and the tiny128 UART never enables RX, so through 700 M
+cycles of the GB5 boot `seip` was 0: every external-interrupt path -- the irqop injection
+under a deferred CTF squash, PLIC claim/complete, read-to-clear device registers off the
+wrong path -- was exercised only by the board, which reported it as a dead NIC hours into a
+bisection. `-DOOO2_IRQ_STIM` (rv_soc_top + src/plic.v, sim-only) arms a spurious level on
+the UART's PLIC source at the kernel's console handover (after the 8250 has mapped hwirq 10;
+an earlier claim hits an unmapped hwirq and the gateway sticks) and forces the source enabled
+at priority 1, so the 8250's fasteoi flow runs ~45 times per M cycles under the lockstep,
+which follows the DUT's interrupts. It found D12 in 447 M cycles. Run it after any change to
+redirect, squash, the LQ/LSU start gates, the irq FSM or the PLIC: `ooo2/run-ooo2-cosim-storm.sh`
+(`IW=3`, `CYC=`, `DDR_LAT=` for other widths, budgets and DDR latency shapes -- the failing
+interleaving needed a port-busy cycle to meet a translate, so the latency shape is what finds it).
+The D12 class itself no longer needs the storm: ooo2_lq recomputes the region bit from the PA it
+stores and dies at the fill (the cross-check at the consumer is the cheaper layer; the storm is
+for everything else the interrupt path does).
 
 ## H. Process
 
