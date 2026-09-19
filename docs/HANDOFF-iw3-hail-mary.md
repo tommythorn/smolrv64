@@ -617,3 +617,108 @@ once the payload is a flop.
 - The F port's fourth drain (`iss_sys`, the `iss_md` pattern at ~line 1302) writes the entry from
   `xf_rs1`, `j_*`'s imm/func/pc; the op then owns nothing but its ROB slot until the head.
 
+## Step 1 on the board (2026-09-18 09:10) and the step-3 shape that follows from step 2's lesson
+
+The committed tree (390d5028) at IW=3: core WNS **+0.007**, board PASS (login, 0 faults, 900 s
+of Geekbench, 3 subtests). Every increment through C3 step 1 is board-clean at both widths.
+
+Step 2 showed that a payload read from a LUTRAM at `m_rob_idx` is one level too many in front
+of `csr_file`. With the op still in M, M's own flops ARE the registered payload, so there is
+nothing to gain from the arrays until the op leaves M. That fixes step 3's shape:
+
+- **The SYSQ is an in-order FIFO, not a ROB-indexed table.** System-class ops (CSR, ecall/ebreak/
+  xret/wfi/sfence.vma, the irqop, a dispatch-time illegal or fetch fault) take a FIFO slot at
+  dispatch in program order (the three slots allocate in order; depth 4 is plenty, dispatch
+  holds when full). The payload is filled at dispatch (illegal/fault: cause, tval, pc) or by the
+  F/CTF port's fourth drain (`iss_sys`: rs1 or zimm from `xf_rs1`, addr, func, pc). The FIFO's
+  HEAD payload lives in flops, so the fire is a flop compare: `head.v & head.filled &
+  (head.rob == rob_head_idx) & ~ld_land & ~fp_land & ~m_fe_yield` (+ the instret second cycle),
+  and `csr_file` is driven from flops as today. Data faults stay where the faulting op is: in
+  M until C4b, then the LQ/SQ head entry (flops), never in the FIFO.
+- **On fire:** `upd_*`/`xtrap_*` from the head flops; a tenth ROB completion port (`sysq_wb`) or
+  `c_kill` for a trap; a CSR read's value onto SH_LD through M's yield (`m_fe_yield`'s pattern,
+  `we_ld` gains the arm); pop. **On redirect:** clear the FIFO (everything in it is younger than
+  the head, and the firing op has already left).
+- **M loses** `m_is_sys/m_is_csr/m_is_serialize` and `m_needs_head`'s sys arms; `d_cls_l` loses the
+  system class (`d_cls_fc` gains it, like `d_cls_m` in C1). The dispatch-side serialisation
+  (`ser_block`) is untouched. The ROB-indexed shadow of step 1 becomes the FIFO's own
+  always-on check against M until M's arms go (step 4), then a plain invariant set.
+- Retire count changes (CSR ops no longer occupy the ordered queue): record it; storm essential
+  (the storm's interrupt entries are `csr_file`'s own, not the FIFO's).
+
+## C3 step 3 in simulation (2026-09-18 10:12): system ops through the F port, the SYSQ fires at head
+
+Built as the plan above: class S at dispatch (SYSTEM opcode, irqop included, illegal/fault
+excluded), the fourth drain `iss_sys`, one register (serialisation at dispatch makes depth 1
+exact, asserted), `csr_file` driven from its flops, M's ports reused for the SH_LD write and the
+ROB completion (M empty, asserted), `c_kill` for the trap, the one yield gate `port_yield`.
+Two defects on the way, both of the same shape -- **a site that enumerated its sources**:
+- `wb_ld`'s data mux consulted `m_is_mem`/`m_is_amo` before the SYSQ arm; with M empty those
+  bits are the last op's, so a CSR read's value reached SH_LD as load data while the retire
+  record (from `csr_rdata` directly) looked right. Every 240 test failed at retire ~100.
+- `fe_red_pulse = m_red_fire | fr_set | dec_red` did not include the SYSQ's redirect, so the
+  backend flushed and fetch kept its predicted path (OpenSBI's mtopi probe: the illegal-CSR
+  trap killed the op, the frontend never restarted, the next retire was pc+8); and the cosim's
+  trap record was M-based (`m_valid & m_done & cot_fire`), so the SYSQ's traps produced no record.
+  `cot_take = cot_fire & ((m_valid & m_done) | sy_fire)`, `sy_insn` for the record, `red_trap`
+  (the HPM event) includes `sy_trap`.
+Result: 240/0, 60 M at both widths **bit-identical counts** (13,490,465 / 13,371,386: the fire
+cycle is exactly M's first cycle at head); 300 M IW=2 +0.05%, IW=3 −0.14%; the storm clean with
+19,778 interrupts delivered (17,924 before: the irqop no longer waits for M's take); memrand;
+every bench. **Builds: IW=3 core WNS +0.061 (from +0.007), IW=2 +0.058 (from +0.030)** -- taking
+the system class out of M's head-block/needs-head cone is the timing lever the plan named --
+and **BOARD: PASS at both widths** with the 900 s stress (12:17). Rule candidate (I12): a redirect/writeback/record site lists
+its sources in ONE place -- `redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`,
+`c_kill`, `rob_w_valid/idx`, `we_ld/wa_ld/wb_ld`, `cot_take` all had to learn the SYSQ, and
+two of them were missed; a table of "who fires this" would have made the omission visible.
+
+## C4a design notes (2026-09-18 11:00): the pipelined tagged load path, from the interfaces as they are
+
+Facts (ooo2_lsu.v / ooo2_lq.v / rv_cache.v / rv_soc_top.v at 390d5028, and `git show da28895b`):
+- **The D$ read door is already tagged.** `rd_tag[RTW-1:0]` (RTW=4, "room for a load-queue index")
+  is opaque and echoed as `rd_resp_tag`; `rd_ack = accept & rd_req` is COMBINATIONAL (`accept =
+  acc_slot & ~inv_go & ~inv_busy & ~fin_hazard & ~f_replay & ~f_solo & ...`, `acc_slot = (st==S_IDLE
+  | fin_wr) & ~fill_banks`), `rd_valid/rd_data/rd_resp_tag` are registers; the header says a
+  requester must advance on `rd_ack`, never hold for the response. A hit is accept(N) ->
+  S_CHECK(N+1, banks addressed from `a_live` in the accept cycle) -> `rd_valid` in N+1's edge; the
+  door is closed during S_CHECK, hence one read per two cycles -- the P0 door item. A miss copies
+  the request into the ONE MSHR (`f_*`), the FSM returns to S_IDLE, and F_ANS answers the read from
+  `linebuf` by tag; a second miss holds S_CHECK (and the port) until the fill lands.
+- **The LSU's single-access limit is one latch triple** (`own_pt/own_pt_st/src_pt`) naming the one
+  access in flight, `ld_inflight = own_pt & ~own_pt_st`, plus the FSM parking in S_LD; `pt_start`
+  and `xl_early` both require `st == S_IDLE`. **The core's limit is one register**, `ld_inflight_idx`
+  (the LQ index of the one load), feeding `ld_land -> lq_l_*`, the ROB port, `ld_wb`, the record.
+- **The LQ is already written for out-of-order landings**: `l_v/l_idx` land by index, `d_ready`
+  requires the tail slot free (`~v[tail]`), the candidate is `acc` (oldest unsent), and the SQ's
+  alias matrix (`e_block`) is per entry.
+- **da28895b did exactly this on the old tree** (+14.1% at DDR latency 4, +0.63% at 80: one MSHR,
+  so misses never overlap; ldbench 8-stream 4.00 -> 2.25 cycles/load): `LDTW`, per-tag format state
+  `o_v/o_nb/o_sgn/o_fp/o_boff[NLD]`, `ld_fast_ok = start_ok & ((pt_start & ~pt_store) | xl_early) &
+  ~xword & ~eff_unc & pa_dram` starting a tagged read without taking the FSM, `mem_rfast/mem_rtag`
+  beside `mem_ren`, the response `ld_fast_ret = mem_rvalid_c & o_v[mem_rtag_resp]` landing by tag,
+  `port_free = ~mem_rbusy & ~mem_ren` folded into the starts, `~o_v[tag]` against tag reuse; the
+  slow path unchanged with `slow_rv = mem_rvalid & ~ld_fast_ret` (one landing port). In the SoC:
+  `TAG_SLOW = 4'b1100`, `lsu_tag_req = rfast ? {2'b00, tag} : TAG_SLOW`, `lsu_gen` deleted,
+  `c_rd_want` gained `~is_dev_r` (a device read is never acked by the cache: a stuck want froze
+  every load at the UART LSR). Core: `ld_land = fast | slow`, `ld_land_idx = fast ? rtag : ld_inflight_idx`.
+
+C4a on HEAD, in order (each a gate-clean step):
+1. **The tagged fast path** (da28895b re-done; LQ 4 -> 8, RTW stays 4: `{00, idx[2:0]}` + slow
+   `1100` + walkers): the LSU gains `LDTW=3`, the per-tag format array, `ld_fast_ok`, the tag-echo
+   landing; the SoC the tag space and `c_rd_want & ~is_dev_r`; the core the two landing arms and
+   `ld_land_idx`. The B-rules: the tag is the LQ index the LQ allocated, the LQ pins the slot until
+   the landing, `~o_v[tag]` at the start. Expect ldbench 8-stream ~2.25 and the boot +1% at the
+   measured DDR shape (da28895b's numbers; the sweep table is the baseline).
+2. **The door self-loop** (P0): `acc_slot` also true in S_CHECK when the check is a plain cached
+   read hit-or-miss that does not need the banks next cycle (the requester presents the next
+   request during S_CHECK; `fin_hazard`'s row rule extends to "the row S_CHECK will write on a
+   miss"); `wip/cache-selfloop` (baf96dff) has the shape but no ack -- the `rd_ack` contract above
+   is the missing piece. Expect ldbench 8-stream -> ~1.2 and the boot's `MEM_HITSER` bucket to fall.
+3. Everything a straddle, an uncached load, an AMO or LR/SC still parks (the slow path) -- as
+   da28895b left it; C5 (4 MSHRs) is what makes misses overlap; C4b puts the AGU on the ALU ports.
+Assertions to carry: rv_cache.v:1335 (a bank row read and written in the same cycle -- "for the day
+the LSU goes multiple-outstanding"), the LQ's ten (out-of-order landing hazards), the SoC's two
+(two responses at once; a waiting read whose tag/address moved), plus new: a fast response whose
+tag has no `o_v`, a slow response with a fast one in the same cycle (one port), and the alias
+matrix's registered answer never less conservative than the live one (ooo2_core.v:1824).
+

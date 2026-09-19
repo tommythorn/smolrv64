@@ -749,21 +749,24 @@ once FP stopped blocking M the two can coincide, and a mux silently dropped the 
 
 ---
 
-### 7.y The SYSQ, the system-op side queue (C3 steps 1-2, 2026-09-18)
+### 7.y The SYSQ: system ops fire at the ROB head from flops (C3 step 3, 2026-09-18)
 
-A per-ROB-slot record `{kind: NONE | SYS | XTRAP, is_csr, func, addr, src, pc, cause, tval}` --
-exactly the payload `csr_file` takes on its `upd_*` and `xtrap_*` ports -- written at dispatch
-(a decode fault or an illegal instruction), at M's take of a SYSTEM-opcode op (its rs1 value or
-zimm, CSR address, funct3, PC; the FP-off illegal is decided there too) and at the LSU's fault
-pulse (cause, tval); flushed by a redirect. Every cycle M drives `csr_file`'s `upd_*` or
-`xtrap_*` port, the entry at `m_rob_idx` must exist with that kind and agree in every field
-(always on; synthesis removes the arrays, which have no reader). Step 2 -- `csr_file` reading
-those payloads from the arrays at `m_rob_idx` -- was retire-identical under every gate and
-**rejected for timing**: IW=3 went from 0.000 to −0.030 because the LUTRAM read sits in front of
-`csr_file`'s combinational redirect (`m_rob_idx -> read -> csr_illegal/redir -> the schedulers'
-kill` became the worst family; IW=2 kept +0.030 and booted the board). The payload `csr_file`
-consumes must be flops: step 3 registers the head entry a cycle ahead of its fire, issues these
-ops through the F/CTF port into the queue and fires them at the ROB head; step 4 deletes M's arms.
+A CSR or system op (SYSTEM opcode: `csr*`, `ecall`/`ebreak`/`xret`/`wfi`/`sfence.vma`, the
+irqop pseudo-op) is dispatch class S, shares the F/CTF/MD queue and is its fourth drain
+(`iss_sys`). Every one of them is serialising at dispatch (`ser_block` drains the ROB and the
+store queue before it and lets nothing dispatch behind it), so at most one is in flight and it
+is the ROB head the moment it exists: the SYSQ is one register `{rob, prd, rd_v, is_csr, func,
+addr, src (rs1 or zimm from the port's forwarded read), pc, seq, insn}` and its fire is a flop
+compare, `sy_fire = sy_at_head & ~port_yield & (~sy_instret | sy_head_q)` -- the same one yield
+gate M's dones use (`port_yield = ld_land | fp_land | m_fe_yield`, computed once), and the
+instret read's second cycle at head (M1b) kept. `csr_file`'s `raddr` and `upd_*` are the
+register's flops (step 2's lesson: a LUTRAM read in front of `csr_file`'s combinational redirect
+cost IW=3 its closure). The read's value goes to SH_LD and the completion to the ROB through
+M's ports (M is empty by construction, asserted); a trap through `c_kill`; a redirect through
+the one redirect gate (`redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`). M no
+longer holds a system op (asserted), keeps the traps of faulted/illegal/memory ops and fence.i.
+Retire-identical at both widths on the tiny128 boot (the fire cycle is M's first cycle at head).
+The step-1 shadow keeps its trap half (`xtq_*`, M's trap payload asserted equal every cycle).
 
 ### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
 
@@ -1356,6 +1359,10 @@ lockstep cosims):
 | f1iw2 | the same at `OOO2_IW=2` | **+0.039** | 0 | 0 |
 | c1iw3 | C1 (mul/div on the F/CTF/MD port, NF 8) + B5 (store-data capture, sim-only) | **0.000** | 0 | 0 |
 | c1iw2 | the same at `OOO2_IW=2` (core; the top-level +0.010 is the virtio_blk backend) | **+0.070** | 0 | 0 |
+| c3s1iw3 | + C3 step 1 (the SYSQ shadow; no synthesis reader) | **+0.007** | 0 | 0 |
+| c3aiw2 | C3 step 2 (csr_file's payload from the LUTRAM at m_rob_idx) at IW=2 -- rejected: the same at IW=3 was −0.030 | +0.030 | 0 | 0 |
+| c3s3iw3 | C3 step 3: system ops through the F port, the SYSQ fires at head from flops; M's system arms gone | **+0.061** | 0 | 0 |
+| c3s3iw2 | the same at `OOO2_IW=2` | **+0.058** | 0 | 0 |
 
 Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename

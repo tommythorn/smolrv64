@@ -682,8 +682,8 @@ module ooo2_core
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith & ~m_st_nb) | ld_land;
-   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : m_rob_idx;
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith & ~m_st_nb) | ld_land | sy_done;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : sy_done ? sy_rob : m_rob_idx;   // sy_done: M is empty (asserted)
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
    // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
@@ -891,9 +891,10 @@ module ooo2_core
    // A mul/div is the F/CTF port's third drain (C1, 2026-09-17): it leaves the ordered queue,
    // where a 64-cycle divide held every younger load, and lands on SH_FE by tag like the FPU.
    wire d_cls_m = d_is_mul & ~d_illegal & ~d_fault & ~d_is_irqop;
-   wire d_cls_l = d_ord & ~d_cls_f & ~d_cls_c & ~d_cls_m;
+   wire d_cls_s = (d_insn[6:2] == 5'b11100) & ~d_illegal & ~d_fault;   // SYSTEM opcode, the irqop included (C3 step 3)
+   wire d_cls_l = d_ord & ~d_cls_f & ~d_cls_c & ~d_cls_m & ~d_cls_s;
    wire d_cls_i = ~d_ord;
-   wire d_cls_fc = d_cls_f | d_cls_c | d_cls_m;   // all three share the FP/CTF/MD issue queue (u_iq_f)
+   wire d_cls_fc = d_cls_f | d_cls_c | d_cls_m | d_cls_s;   // all four share the FP/CTF/MD/SYS issue queue (u_iq_f)
 
    // Control flow falls to C_F here so d2_hold treats FP and CTF as one class: they share the
    // FP/CTF queue's single dispatch port, so A and B cannot both go there in a cycle.
@@ -926,9 +927,10 @@ module ooo2_core
                  & ~fs_off & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
    wire d2_cls_c = (d2_is_branch | d2_is_jump | d2_is_jalr) & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
    wire d2_cls_m = d2_is_mul & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
-   wire d2_cls_l = d2_ord & ~d2_cls_f & ~d2_cls_c & ~d2_cls_m;
+   wire d2_cls_s = (d2_insn[6:2] == 5'b11100) & ~d2_illegal & ~d2_fault;   // SYSTEM opcode, the irqop included (C3 step 3)
+   wire d2_cls_l = d2_ord & ~d2_cls_f & ~d2_cls_c & ~d2_cls_m & ~d2_cls_s;
    wire d2_cls_i = ~d2_ord;
-   wire d2_cls_fc = d2_cls_f | d2_cls_c | d2_cls_m;
+   wire d2_cls_fc = d2_cls_f | d2_cls_c | d2_cls_m | d2_cls_s;
    wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // CTF falls to C_F (shares u_iq_f)
    wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
    wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
@@ -950,9 +952,10 @@ module ooo2_core
                  & ~fs_off & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
    wire d3_cls_c = (d3_is_branch | d3_is_jump | d3_is_jalr) & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
    wire d3_cls_m = d3_is_mul & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
-   wire d3_cls_l = d3_ord & ~d3_cls_f & ~d3_cls_c & ~d3_cls_m;
+   wire d3_cls_s = (d3_insn[6:2] == 5'b11100) & ~d3_illegal & ~d3_fault;   // SYSTEM opcode, the irqop included (C3 step 3)
+   wire d3_cls_l = d3_ord & ~d3_cls_f & ~d3_cls_c & ~d3_cls_m & ~d3_cls_s;
    wire d3_cls_i = ~d3_ord;
-   wire d3_cls_fc = d3_cls_f | d3_cls_c | d3_cls_m;
+   wire d3_cls_fc = d3_cls_f | d3_cls_c | d3_cls_m | d3_cls_s;
    // Destination shard = the UNIT that writes it (declared with its rationale above).
    assign d_shard  = (d_is_mem | d_is_amo) ? SH_LD
                    : (d_is_fp | d_is_mul)                          ? SH_FE   // FP ops, in-core included: the base routing
@@ -1240,11 +1243,15 @@ module ooo2_core
    // later addition; for now the queue picks by its own policy.)
    wire j_isctf   = qf_is_branch | qf_is_jump | qf_is_jalr;  // valid when j_v (qf_* = j_*'s payload)
    wire j_ismd    = qf_is_mul;                           // ...or a mul/div (C1): the MD stage's drain
+   wire j_issys   = (qf_insn[6:2] == 5'b11100);         // ...or a system op (C3 step 3): the SYSQ's drain
    wire md_advance;                                      // the MD stage can take one (defined with it)
+   wire sy_advance;                                      // the SYSQ can take one (defined with it)
    wire j_needs_c = j_v & j_isctf;                       // j_* holds a control-flow op...
    wire j_needs_m = j_v & j_ismd;                        // ...or a mul/div...
-   wire j_needs_f = j_v & ~j_isctf & ~j_ismd;            // ...or an FP op
-   wire j_adv     = j_needs_c ? cf_advance : j_needs_m ? md_advance : (j_needs_f ? f_advance : 1'b1);
+   wire j_needs_s = j_v & j_issys;                       // ...or a system op...
+   wire j_needs_f = j_v & ~j_isctf & ~j_ismd & ~j_issys; // ...or an FP op
+   wire j_adv     = j_needs_c ? cf_advance : j_needs_m ? md_advance : j_needs_s ? sy_advance
+                  : (j_needs_f ? f_advance : 1'b1);
    wire j_ready   = ~j_v | j_adv;
    assign rf_take = rf_iss_v;   // rf_iss_v is already gated by unit_busy = j_v & ~j_adv
    wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
@@ -1300,6 +1307,7 @@ module ooo2_core
    wire   iss_f       = j_needs_f & f_advance & ~redirect;    // j_* drains an FP op into f_valid
    wire   iss_c       = j_needs_c & cf_advance & ~redirect;   // ...or a control-flow op into cf_*
    wire   iss_md      = j_needs_m & md_advance & ~redirect;   // ...or a mul/div into the MD stage (C1)
+   wire   iss_sys     = j_needs_s & sy_advance & ~redirect;   // ...or a system op into the SYSQ (C3 step 3)
       always @(posedge clk) begin                            // the ALU port (see above)
       if (reset | redirect) a_v <= 1'b0;
       else begin
@@ -1856,7 +1864,7 @@ module ooo2_core
       .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
       .w_v({md_wb, cf_land, iss_alu3, iss_alu2, sq_k_take, fp_land, iss_alu, rob_w_valid}),
       .w_ix({md_rob, cf_land_rob, a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
-      .c_kill(m_valid & m_done & m_trap),
+      .c_kill((m_valid & m_done & m_trap) | sy_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -2206,6 +2214,58 @@ module ooo2_core
    // abort-by-seqno, the FS-dirty commit gate -- is absent here: M is the commit point,
    // so an FP op in flight can never be squashed, and its decode/operands are stable for
    // its whole (multi-cycle) stay. `decode_fp` runs off the registered m_insn.
+
+   // ---- the SYSQ (C3 step 3, 2026-09-18): system ops fire at the ROB head from flops ------------
+   // A CSR/system op (SYSTEM opcode: csr*, ecall/ebreak/xret/wfi/sfence.vma, the irqop pseudo-op)
+   // is the F/CTF/MD port's fourth drain. Every one of them is serialising at dispatch
+   // (ser_block drains the ROB and the store queue before it and lets nothing dispatch behind
+   // it), so at most ONE is in flight and it is the ROB head the moment it exists: the queue is
+   // this one register, and its fire is a flop compare. csr_file's upd_* port is driven from
+   // these flops (step 2's lesson: a LUTRAM read in front of csr_file's combinational redirect
+   // cost IW=3 its closure); the CSR read address is sy_addr, a flop, like m_imm before it.
+   // The read's value goes to SH_LD through M's port (M is empty by construction, asserted);
+   // the completion through M's ROB port; a trap through c_kill; a redirect through the one
+   // redirect gate. A read of instret takes its second cycle at head so the delayed retire
+   // count has every older retirement (M1b), unchanged.
+   reg                sy_v, sy_rd_v, sy_is_csr, sy_head_q;
+   reg [ROB_IDXB-1:0] sy_rob;
+   reg [RN_PBITS-1:0] sy_prd;
+   reg [2:0]          sy_func;
+   reg [11:0]         sy_addr;
+   reg [63:0]         sy_src;
+   reg [PCW-1:0]      sy_pc;
+   reg [SEQW-1:0]     sy_seq;
+   reg [31:0]         sy_insn;   // for the cosim's trap record
+   initial begin sy_v = 1'b0; sy_head_q = 1'b0; end
+   wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
+   wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
+   wire sy_fire    = sy_at_head & ~port_yield & (~sy_instret | sy_head_q);
+   wire sy_red     = sy_fire & csr_redir_v;              // trap, xret, illegal CSR: a redirect
+   wire sy_trap    = sy_fire & csr_redir_trap;           // ...that is an exception: kill, no result
+   wire sy_done    = sy_fire & ~sy_trap;                 // completes through M's ROB port
+   wire sy_wr      = sy_done & sy_rd_v & ~csr_illegal;   // the CSR read's value onto SH_LD
+   assign sy_advance = ~sy_v | sy_fire;
+   always @(posedge clk) begin
+      sy_head_q <= ~reset & sy_at_head & ~sy_fire;
+      if (sy_fire) sy_v <= 1'b0;
+      if (iss_sys) begin
+         sy_v <= 1'b1; sy_rob <= j_rob; sy_prd <= qf_prd; sy_rd_v <= qf_rd_v;
+         sy_is_csr <= qf_is_csr; sy_func <= qf_csr_func; sy_addr <= qf_imm[11:0];
+         sy_src <= qf_csr_func[2] ? {59'b0, qf_imm[16:12]} : xf_rs1;
+         sy_pc <= qf_pc; sy_seq <= qf_seq; sy_insn <= qf_insn;
+      end
+      if (reset | redirect) sy_v <= 1'b0;                // flush arm last (I11); its own redirect included
+   end
+   always @(posedge clk) if (!reset) begin
+      if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "ooo2_core: a system op issued into a busy SYSQ (it is serialising)");
+      if (iss_sys & (qf_shard != SH_LD)) $fatal(1, "ooo2_core: a system op issued with shard %0d, not SH_LD", qf_shard);
+      if (sy_fire & m_valid)             $fatal(1, "ooo2_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
+      if (sy_fire & (fpu_busy | f_valid)) $fatal(1, "ooo2_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      if (sy_fire & ld_land)             $fatal(1, "ooo2_core: a system op fires in a load's landing cycle: the port is not free");
+      if (m_valid & m_is_sys)            $fatal(1, "ooo2_core: a system op reached M (pc %h)", m_pc);
+      if (sy_red & (m_red_fire | cf_red_fire)) $fatal(1, "ooo2_core: the SYSQ redirects together with M or the CTF pipe");
+   end
+
    wire        fp_valid_d, fp_use_fpu, fp_o0i, fp_wrfp, fp_mod;
    wire [2:0]  fp_cls, fp_src, fp_dst, fp_rnd;
    wire [3:0]  fp_op;
@@ -2357,8 +2417,8 @@ module ooo2_core
       // stop being serializing -- an obvious future optimisation, since serialising every
       // CSR read to make frm safe is heavy-handed. Assert the property directly so it
       // cannot be lost silently.
-      if (m_valid & m_is_csr & (fpu_busy | f_valid))
-         $fatal(1, "ooo2_core: a CSR op is in M while FP work is in flight -- frm may change under it");
+      if (m_valid & m_is_csr)
+         $fatal(1, "ooo2_core: a CSR op is in M (they issue through the SYSQ since C3 step 3)");
    end
 
    // =========================================================== stage CTF (control flow)
@@ -2407,6 +2467,10 @@ module ooo2_core
    // the board's NIC path within seconds while every cosim stayed lockstep-clean.
    wire cf_link_wb    = cf_link_pend & ~fp_wb;
    wire m_fe_yield    = (cf_link_wb | md_wr) & (m_shard == SH_FE);   // registers only: cf_*, md_*, the FPU's out_valid_q, m_shard
+   // THE ONE YIELD GATE: every completion that shares M's write and ROB ports (a landing load,
+   // the FPU, the link/MD on SH_FE) is gathered here once and applied at every site -- M's
+   // three dones and the SYSQ's fire -- never re-derived per unit (docs/rtl-rules.md).
+   wire port_yield    = ld_land | fp_land | m_fe_yield;
    wire cf_done       = cf_valid & ~cf_link_pend;               // resolved + link written -> free stage
    assign cf_advance  = ~cf_valid | cf_done;
    // ROB completion. A correctly-predicted branch completes at resolve and retires in order. A
@@ -2478,7 +2542,6 @@ module ooo2_core
 
    // ---- CSR file ----
    wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100) & ~m_ill_eff & ~m_fault;
-   wire        m_is_irqop= m_is_sys & (m_insn[14:12] == 3'b000) & (m_insn[31:20] == 12'h7F0);
    wire [63:0] csr_rdata, csr_redir_tgt;
    wire        csr_redir_v, csr_redir_trap, csr_illegal;
    wire        csr_irq_v;
@@ -2585,7 +2648,7 @@ module ooo2_core
    // predictor work would have been tuning blind.  csr_red wins the priority: a trap that
    // lands on a branch is a trap.  REDIR total minus these three is the remainder
    // (fence.i and direct-jal mispredicts), so nothing needs a fourth counter.
-   wire red_trap  = m_red_fire &  csr_red;
+   wire red_trap  = (m_red_fire & csr_red) | sy_trap;   // a trap redirect: M's or the SYSQ's
    wire red_br    = cf_red_fire & cf_is_branch;
    wire red_jalr  = cf_red_fire & cf_is_jalr;
 
@@ -2662,7 +2725,7 @@ module ooo2_core
 
    csr_file u_csr
      (.clk(clk), .reset(reset),
-      .raddr(m_imm[11:0]), .rdata(csr_rdata),
+      .raddr(sy_addr), .rdata(csr_rdata),
       .redir_target(csr_redir_tgt), .redir_valid(csr_redir_v),
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
@@ -2703,10 +2766,10 @@ module ooo2_core
       // unit's redirect and trap-target logic -- with the full m_done, build D of 2026-09-04
       // had 1357 near-critical endpoints starting at m_addr: dTLB compare -> lsu_done ->
       // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
-      .upd_valid(m_is_sys & m_done_red), .upd_is_csr(m_is_csr), .upd_func(m_csr_func),
-      .upd_addr(m_imm[11:0]),
-      .upd_src(m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val),
-      .upd_pc(m_pc));
+      .upd_valid(sy_fire), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
+      .upd_addr(sy_addr),
+      .upd_src(sy_src),
+      .upd_pc(sy_pc));
 
    // ---- NON-BLOCKING LOADS ------------------------------------------------------------
    // M lets go of a plain load at DISPATCH instead of at data-return. Safe with no ROB walk
@@ -2826,7 +2889,7 @@ module ooo2_core
    reg  fr_v;   initial fr_v = 1'b0;
    reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
    reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
-   wire m_needs_head = m_is_sys | m_redirect | m_is_fencei
+   wire m_needs_head = m_redirect | m_is_fencei
                      | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
    // A HEAD-GATED OP COMPLETES IN ITS SECOND CYCLE AT HEAD, not its first. Nothing retires
    // while it waits (retire is in order and it is the head), so by its second cycle every
@@ -2842,16 +2905,15 @@ module ooo2_core
    // started) while every cosim stayed lockstep-clean.
    reg  m_head_q;   initial m_head_q = 1'b0;
    always @(posedge clk) m_head_q <= ~reset & m_valid & m_at_head & ~m_done;
-   wire m_instret_rd = m_is_csr & ((m_imm[11:0] == 12'hC02) | (m_imm[11:0] == 12'hB02));
-   wire head_block   = m_valid & ((m_needs_head & ~m_at_head) | (m_instret_rd & ~m_head_q));
+   wire head_block   = m_valid & m_needs_head & ~m_at_head;   // the instret second cycle is the SYSQ's now
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
    // ~0.3 cycles per load against the ~2.3 the early release saves.
-   assign m_done = m_done_raw & ~head_block & ~ld_land & ~fp_land & ~m_flt_pulse & ~m_fe_yield;
+   assign m_done = m_done_raw & ~head_block & ~port_yield & ~m_flt_pulse;
    assign m_advance = ~m_valid | m_done;
 
 
-   // ---- SYSQ, the system-op side queue: SHADOW (C3 step 1, 2026-09-18) --------------------------
+   // ---- the trap shadow (C3 step 1, 2026-09-18; the system-op half became the SYSQ in step 3) ------
    // Everything M feeds csr_file with -- the upd_* payload of a CSR/system op and the xtrap_*
    // payload of a trap -- is captured here per ROB slot at the point it becomes known: a decode
    // fault or an illegal instruction at dispatch, a system op's operands as M takes it, a data
@@ -2864,86 +2926,62 @@ module ooo2_core
    // the LUTRAM read sits in front of csr_file's combinational redirect, and m_rob_idx -> read ->
    // csr_illegal/redir -> the schedulers' kill became the worst family. The payload csr_file
    // consumes must be FLOPS: step 3 registers the head entry a cycle ahead of its fire.
-   localparam [1:0] SYK_NONE = 2'd0, SYK_SYS = 2'd1, SYK_XTRAP = 2'd2;
-   reg [1:0]     sysq_kind   [0:ROB_DEPTH-1];
-   reg           sysq_is_csr [0:ROB_DEPTH-1];
-   reg [2:0]     sysq_func   [0:ROB_DEPTH-1];
-   reg [11:0]    sysq_addr   [0:ROB_DEPTH-1];
-   reg [63:0]    sysq_src    [0:ROB_DEPTH-1];
-   reg [PCW-1:0] sysq_pc     [0:ROB_DEPTH-1];
-   reg [3:0]     sysq_cause  [0:ROB_DEPTH-1];
-   reg [63:0]    sysq_tval   [0:ROB_DEPTH-1];
+   localparam [1:0] SYK_NONE = 2'd0, SYK_XTRAP = 2'd2;
+   reg [1:0]     xtq_kind   [0:ROB_DEPTH-1];
+   reg [PCW-1:0] xtq_pc     [0:ROB_DEPTH-1];
+   reg [3:0]     xtq_cause  [0:ROB_DEPTH-1];
+   reg [63:0]    xtq_tval   [0:ROB_DEPTH-1];
    integer sqi;
-   initial for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) sysq_kind[sqi] = SYK_NONE;
-   wire        sy_q_is_sys = (q_insn[6:2] == 5'b11100);
-   wire [63:0] sy_q_src    = q_csr_func[2] ? {59'b0, q_imm[16:12]} : x_rs1;   // csr_file's upd_src
+   initial for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) xtq_kind[sqi] = SYK_NONE;
    always @(posedge clk) if (!reset) begin
       // (a) dispatch: a decode fault or an illegal instruction traps with what decode knows
       if (rn_valid) begin
-         sysq_kind[rob_d_idx]  <= (d_fault | d_illegal) ? SYK_XTRAP : SYK_NONE;
-         sysq_cause[rob_d_idx] <= d_fault ? d_fault_cause : 4'd2;
-         sysq_tval[rob_d_idx]  <= d_fault ? {{(64-PCW){1'b0}}, d_fault_tval} : 64'd0;
-         sysq_pc[rob_d_idx]    <= d_pc;
+         xtq_kind[rob_d_idx]  <= (d_fault | d_illegal) ? SYK_XTRAP : SYK_NONE;
+         xtq_cause[rob_d_idx] <= d_fault ? d_fault_cause : 4'd2;
+         xtq_tval[rob_d_idx]  <= d_fault ? {{(64-PCW){1'b0}}, d_fault_tval} : 64'd0;
+         xtq_pc[rob_d_idx]    <= d_pc;
       end
       if (rn_valid_b) begin
-         sysq_kind[rob_d_idx2]  <= (d2_fault | d2_illegal) ? SYK_XTRAP : SYK_NONE;
-         sysq_cause[rob_d_idx2] <= d2_fault ? d2_fault_cause : 4'd2;
-         sysq_tval[rob_d_idx2]  <= d2_fault ? {{(64-PCW){1'b0}}, d2_fault_tval} : 64'd0;
-         sysq_pc[rob_d_idx2]    <= d2_pc;
+         xtq_kind[rob_d_idx2]  <= (d2_fault | d2_illegal) ? SYK_XTRAP : SYK_NONE;
+         xtq_cause[rob_d_idx2] <= d2_fault ? d2_fault_cause : 4'd2;
+         xtq_tval[rob_d_idx2]  <= d2_fault ? {{(64-PCW){1'b0}}, d2_fault_tval} : 64'd0;
+         xtq_pc[rob_d_idx2]    <= d2_pc;
       end
       if (rn_valid_c) begin
-         sysq_kind[rob_d_idx3]  <= (d3_fault | d3_illegal) ? SYK_XTRAP : SYK_NONE;
-         sysq_cause[rob_d_idx3] <= d3_fault ? d3_fault_cause : 4'd2;
-         sysq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
-         sysq_pc[rob_d_idx3]    <= d3_pc;
+         xtq_kind[rob_d_idx3]  <= (d3_fault | d3_illegal) ? SYK_XTRAP : SYK_NONE;
+         xtq_cause[rob_d_idx3] <= d3_fault ? d3_fault_cause : 4'd2;
+         xtq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
+         xtq_pc[rob_d_idx3]    <= d3_pc;
       end
-      // (b) M takes a system op: its operands are known now (the FP-off illegal is decided here too)
-      if (iss_m & ~q_illegal & ~q_fault) begin
-         if (q_is_fp & fs_off) begin
-            sysq_kind[i_rob] <= SYK_XTRAP;  sysq_cause[i_rob] <= 4'd2;  sysq_tval[i_rob] <= 64'd0;
-         end else if (sy_q_is_sys) begin
-            sysq_kind[i_rob]   <= SYK_SYS;
-            sysq_is_csr[i_rob] <= q_is_csr;  sysq_func[i_rob] <= q_csr_func;
-            sysq_addr[i_rob]   <= q_imm[11:0];  sysq_src[i_rob] <= sy_q_src;
-         end
+      // (b) M takes an op: the FP-off illegal is decided here
+      if (iss_m & ~q_illegal & ~q_fault & q_is_fp & fs_off) begin
+         xtq_kind[i_rob] <= SYK_XTRAP;  xtq_cause[i_rob] <= 4'd2;  xtq_tval[i_rob] <= 64'd0;
       end
       // (c) the LSU reports a data fault for M's op
       if (m_flt_pulse) begin
-         sysq_kind[m_rob_idx]  <= SYK_XTRAP;
-         sysq_cause[m_rob_idx] <= lsu_fault_cause;
-         sysq_tval[m_rob_idx]  <= lsu_fault_tval;
+         xtq_kind[m_rob_idx]  <= SYK_XTRAP;
+         xtq_cause[m_rob_idx] <= lsu_fault_cause;
+         xtq_tval[m_rob_idx]  <= lsu_fault_tval;
       end
       // flush arm last (rule I11): a redirect fires at the head, every live entry is younger
-      if (redirect) for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) sysq_kind[sqi] <= SYK_NONE;
+      if (redirect) for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) xtq_kind[sqi] <= SYK_NONE;
    end
    always @(posedge clk) if (!reset) begin
-      if (m_is_sys & m_done_red) begin
-         if (sysq_kind[m_rob_idx] != SYK_SYS)
-            $fatal(1, "sysq shadow: M drives upd_valid for rob %0d (pc %h) but the entry's kind is %0d",
-                   m_rob_idx, m_pc, sysq_kind[m_rob_idx]);
-         if (sysq_is_csr[m_rob_idx] != m_is_csr || sysq_func[m_rob_idx] != m_csr_func
-             || sysq_addr[m_rob_idx] != m_imm[11:0] || sysq_pc[m_rob_idx] != m_pc
-             || sysq_src[m_rob_idx] != (m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val))
-            $fatal(1, "sysq shadow: upd payload differs for rob %0d pc %h: csr %b/%b func %h/%h addr %h/%h src %h/%h",
-                   m_rob_idx, m_pc, sysq_is_csr[m_rob_idx], m_is_csr, sysq_func[m_rob_idx], m_csr_func,
-                   sysq_addr[m_rob_idx], m_imm[11:0], sysq_src[m_rob_idx],
-                   (m_csr_func[2] ? {59'b0, m_imm[16:12]} : m_rs1_val));
-      end
       if (xtrap_v & m_done_red) begin
-         if (sysq_kind[m_rob_idx] != SYK_XTRAP)
+         if (xtq_kind[m_rob_idx] != SYK_XTRAP)
             $fatal(1, "sysq shadow: M traps rob %0d (pc %h cause %0d) but the entry's kind is %0d",
-                   m_rob_idx, m_pc, xtrap_cause, sysq_kind[m_rob_idx]);
-         if (sysq_cause[m_rob_idx] != xtrap_cause || sysq_tval[m_rob_idx] != xtrap_tval
-             || sysq_pc[m_rob_idx] != m_pc)
+                   m_rob_idx, m_pc, xtrap_cause, xtq_kind[m_rob_idx]);
+         if (xtq_cause[m_rob_idx] != xtrap_cause || xtq_tval[m_rob_idx] != xtrap_tval
+             || xtq_pc[m_rob_idx] != m_pc)
             $fatal(1, "sysq shadow: trap payload differs for rob %0d pc %h/%h: cause %0d/%0d tval %h/%h",
-                   m_rob_idx, sysq_pc[m_rob_idx], m_pc, sysq_cause[m_rob_idx], xtrap_cause,
-                   sysq_tval[m_rob_idx], xtrap_tval);
+                   m_rob_idx, xtq_pc[m_rob_idx], m_pc, xtq_cause[m_rob_idx], xtrap_cause,
+                   xtq_tval[m_rob_idx], xtrap_tval);
       end
    end
 
    // ---- trap / redirect ----
-   wire m_trap = xtrap_v | (m_is_sys & csr_redir_trap);
-   wire csr_red = xtrap_v | (m_is_sys & csr_redir_v);
+   wire m_trap = xtrap_v;                 // a system op's trap is the SYSQ's (sy_trap), since C3 step 3
+   wire csr_red = xtrap_v;
    // THE REDIRECT DOES NOT CARRY THE LSU'S LIVE COMPLETION. A memory op redirects only as a
    // trap, and a trap is taken from the latched copy (m_unit_done_q); a branch, a system op
    // and fence.i never go through the LSU. So the redirect's "done" is m_done with the
@@ -2954,7 +2992,7 @@ module ooo2_core
                         : m_fault | m_ill_eff ? 1'b1
                         : m_mem_op            ? 1'b0
                         :                       1'b1;
-   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land & ~m_fe_yield;
+   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~port_yield;
    // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
    // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
    // now; the branch squash comes from the CTF pipe (cf_red_fire).
@@ -2963,7 +3001,7 @@ module ooo2_core
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
    wire cf_red_fire = fr_v & (rob_head_idx == fr_rob);
-   assign redirect = m_red_fire | cf_red_fire;
+   assign redirect = m_red_fire | sy_red | cf_red_fire;
    always @(posedge clk) if (!reset) begin
       if (m_red_fire != m_red_ref)
          $fatal(1, "ooo2_core: M redirect from the non-memory done disagrees with m_done (%b vs %b)",
@@ -3015,13 +3053,13 @@ module ooo2_core
    // branch that already early-restarted (which the parallel branch pipe now makes possible),
    // and clears fr_v below. A branch's own squash (cf_red_fire) does NOT re-flush: its fr_set
    // already did. Exactly one frontend flush per event.
-   assign fe_red_pulse = m_red_fire | fr_set | dec_red;
-   assign fe_red_tgt   = m_red_fire ? redirect_target : fr_set ? cf_target     : dec_red_tgt;
-   assign fe_red_seq   = m_red_fire ? redirect_seq    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
-   assign redirect_target  = csr_red ? csr_redir_tgt
+   assign fe_red_pulse = m_red_fire | sy_red | fr_set | dec_red;
+   assign fe_red_tgt   = (m_red_fire | sy_red) ? redirect_target : fr_set ? cf_target     : dec_red_tgt;
+   assign fe_red_seq   = (m_red_fire | sy_red) ? redirect_seq    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
+   assign redirect_target  = (csr_red | sy_red) ? csr_redir_tgt
                            :           (m_pc + (m_rvc ? 64'd2 : 64'd4));   // fence.i
-   assign redirect_is_trap = m_red_fire & m_trap;
-   assign redirect_seq     = m_trap ? m_seq : (m_seq + 1'b1);
+   assign redirect_is_trap = (m_red_fire & m_trap) | sy_trap;
+   assign redirect_seq     = sy_red ? (sy_trap ? sy_seq : (sy_seq + 1'b1)) : m_trap ? m_seq : (m_seq + 1'b1);
    assign ifence           = m_valid & m_done & m_is_fencei;
 
    // ---- branch resolve / BTB training (from the CTF pipe, cf_*) ----
@@ -3051,7 +3089,7 @@ module ooo2_core
    // which was the second-worst family at 6 ns (-0.740, 19-32 levels). The invariant
    // that makes this sound is asserted below.
    assign m_byp_val = m_unit_done_q ? m_unit_res_q : m_unit_res;
-   assign m_wb_val = m_is_csr ? csr_rdata : m_byp_val;
+   assign m_wb_val = m_byp_val;           // no CSR op reaches M since C3 step 3
 
    // Per-shard write data: each shard sees only its own writer, so the D$ read data reaches
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
@@ -3070,8 +3108,8 @@ module ooo2_core
    // same hazard existed whenever a landing load held a CSR op at head.) Live is also what
    // makes the delayed minstret read exact: it is sampled in the completion cycle.
    assign wb_ld = ld_wb                     ? lsu_rd_val
-                : (m_is_mem | m_is_amo)     ? lsu_rd_val
-                : m_is_csr                  ? csr_rdata
+                : sy_wr                     ? csr_rdata    // before M's arms: M is EMPTY when the SYSQ
+                : (m_is_mem | m_is_amo)     ? lsu_rd_val   // fires, and its m_is_* are the last op's, stale
                 : m_unit_done_q             ? m_unit_res_q
                 :                             m_result;
    // SH_FE's writers: the FPU, the CTF link (when the FPU isn't landing) and M's in-core FP ops
@@ -3098,9 +3136,8 @@ module ooo2_core
                      : m_fault | m_ill_eff ? 1'b1
                      : m_mem_op            ? lsu_done_acc
                      :                       1'b1;
-   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~ld_land & ~fp_land & ~m_fe_yield;
-   wire m_trap_wb = (m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt)))
-                  | (m_is_sys & csr_redir_trap);
+   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~port_yield;
+   wire m_trap_wb = (m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt)));
    wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb & ~fp_arith;
    wire m_wb_ref = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
    always @(posedge clk) if (!reset && (m_wb != m_wb_ref))
@@ -3142,10 +3179,10 @@ module ooo2_core
       alu_q_v <= ~reset & alu_wb;
       if (alu_wb) begin alu_q_prd <= qa_prd; alu_q_val <= xa_result; end
    end
-   wire we_ld = m_wb_ld | ld_wb;
+   wire we_ld = m_wb_ld | ld_wb | sy_wr;
    wire we_fe = m_wb_fe | fp_wb | cf_link_wb | md_wr;
    wire [RN_PBITS-1:0] wa_ie = qa_prd;
-   wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
+   wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : sy_wr ? sy_prd : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : cf_link_wb ? cf_prd : md_wr ? md_prd : m_prd;
    always @(posedge clk) if (!reset) begin
       if (m_wb_ld & ld_wb)
@@ -3224,7 +3261,7 @@ module ooo2_core
       // completes in its second cycle at head (m_head_q) and reads csr_rdata live then, so
       // `time`/`cycle` are one tick past the pulse's value. Ordered after the arm above so
       // it wins. (Found by the 300 M cosim: rdtime retired as t, computed with t+1.)
-      if (m_wb & m_is_csr) cs_val[m_rob_idx] <= csr_rdata;
+      if (sy_wr) cs_val[sy_rob] <= csr_rdata;
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
          // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
          // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
@@ -3302,7 +3339,7 @@ module ooo2_core
    // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
    // at head, reading csr_rdata live then -- after cs_hit_m's pulse and before the capture
    // above lands. `time`/`cycle` differ by a tick between the two: the head takes it live.
-   wire        cs_hit_csr = m_wb & m_is_csr & (m_rob_idx == rob_head_idx);
+   wire        cs_hit_csr = sy_wr & (sy_rob == rob_head_idx);
    wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
    wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
@@ -3496,6 +3533,7 @@ module ooo2_core
 
    // csr_file internals, tapped exactly as backend_top does
    wire        cot_fire  = u_csr.trap_v;
+   wire        cot_take  = cot_fire & ((m_valid & m_done) | sy_fire);   // the cycle a trap is taken
    wire [63:0] cot_cause = u_csr.trap_cause;
    wire [63:0] cot_tval  = u_csr.trap_tval;
    wire        cot_intr  = cot_cause[63];
@@ -3536,10 +3574,10 @@ module ooo2_core
    always @(posedge clk) begin
       e_v <= 1'b0;
       if (!reset) begin
-         if (m_valid && m_done && cot_fire) begin
+         if (cot_take) begin                     // M's trap, or the SYSQ's (C3 step 3)
             e_v <= 1'b1;  e_trap <= 1'b1;
-            e_pc <= m_pc;
-            e_insn <= (cot_intr | cot_ifault) ? 32'd0 : m_insn;
+            e_pc <= sy_fire ? sy_pc : m_pc;
+            e_insn <= (cot_intr | cot_ifault) ? 32'd0 : sy_fire ? sy_insn : m_insn;
             e_rk <= 2'd0;  e_ri <= 5'd0;  e_val <= 64'd0;
             e_cause <= cot_cause;  e_tval <= cot_tval;
             e_prv <= u_csr.priv;                  // privilege BEFORE the trap
@@ -3558,14 +3596,14 @@ module ooo2_core
             e_mdata <= cs_mdata_h;  e_msz <= cs_msz_h;
          end
          e2_v <= 1'b0;
-         if (retire2 && !(m_valid && m_done && cot_fire)) begin
+         if (retire2 && !cot_take) begin
             e2_v <= 1'b1;
             e2_pc <= cs_pc[rob_head2_idx];  e2_insn <= cs_insn[rob_head2_idx];
             e2_rk <= ck_rk2;  e2_ri <= rob_c2_rd[4:0];  e2_val <= cs_val_h2;
             e2_mkind <= cs_mkind_h2;  e2_mpa <= cs_mpa_h2;  e2_mdata <= cs_mdata_h2;  e2_msz <= cs_msz_h2;
          end
          e3_v <= 1'b0;
-         if (retire3 && !(m_valid && m_done && cot_fire)) begin
+         if (retire3 && !cot_take) begin
             e3_v <= 1'b1;
             e3_pc <= cs_pc[rob_head3_idx];  e3_insn <= cs_insn[rob_head3_idx];
             e3_rk <= ck_rk3;  e3_ri <= rob_c3_rd[4:0];  e3_val <= cs_val_h3;
