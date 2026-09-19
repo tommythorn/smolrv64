@@ -136,6 +136,7 @@ module ooo2_lq
     output wire [PAW-1:0]        l_pa,
 
     output wire [IDXB:0]         occupancy,
+    output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
     input  wire [ROBB-1:0]       rob_head,    // head-gate an uncached (device) load's access (non-speculative)
     input  wire                  flush);
 
@@ -179,6 +180,7 @@ module ooo2_lq
    assign d_ready   = (cnt != NENT[IDXB:0]) & ~v[tail];
    assign d_idx     = tail;
    assign occupancy = cnt;
+   assign av_any    = |(v & av);
 
    // The candidate: the oldest entry not yet sent to memory. Its address must be known --
    // an entry still waiting for translation cannot be tested and must not be skipped, or

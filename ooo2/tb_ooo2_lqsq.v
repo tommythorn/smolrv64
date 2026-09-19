@@ -46,7 +46,7 @@ module tb;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
-   wire             sq_av_any;
+   wire             sq_av_any, lq_av_any;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
    wire [63:0]      sq_kc_data; wire [1:0] sq_kc_size;
@@ -64,7 +64,7 @@ module tb;
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
       .x_fp(lq_x_fp),.x_unc(lq_x_unc), .x_head(lq_x_head),.x_devwait(lq_x_devwait),.x_take(lq_x_take),
       .l_v(lq_l_v),.l_idx(lq_l_idx),.l_prd(lq_l_prd),.l_rd(lq_l_rd),.l_rd_v(lq_l_rd_v),.l_rob(lq_l_rob),
-      .l_pa(lq_l_pa),.occupancy(lq_occ),.flush(flush),
+      .l_pa(lq_l_pa),.occupancy(lq_occ), .av_any(lq_av_any),.flush(flush),
       // every bench address is DRAM (speculates freely), so the device head-gate is never taken
       .a_mem(1'b1),.rob_head({ROBB{1'b0}}));
 

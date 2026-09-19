@@ -14,10 +14,13 @@
 #   when the testbench started summing the third commit port (every earlier IW=3 count is low).
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  13371386  0.5  3   # C1 (2026-09-17): mul/div on the F/CTF port (+0.03%). Previously 13367267:
+60000000  8  13835891  0.5  3   # C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
+                                  # C1 (2026-09-17): mul/div on the F/CTF port (+0.03%). Previously 13367267:
                                   # IW=3 (2026-09-17): the TRUE 3-wide count, all three commit ports summed;
                                   # -0.9% vs IW=2 on this boot (the -11.7% on record was the missing third port).
-60000000  8  13490465  0.5   # C1 (2026-09-17): mul/div leave the ordered pipe for the F/CTF port; -0.03% on
+60000000  8  13975979  0.5   # C4a step 1 (2026-09-18): the tagged fast load path (da28895b re-done), +3.6% on
+                              # the boot at the measured DDR shape. Previously 13490465:
+                              # C1 (2026-09-17): mul/div leave the ordered pipe for the F/CTF port; -0.03% on
                               # this boot (few multiplies; the port now shares with every branch). Previously 13494359:
                               # W1' (2026-09-17): the CTF link never waits on M, M yields instead (+0.02%);
                               # the D12 fix (device loads classified by their own translate PA) moves nothing here.
@@ -106,11 +109,13 @@
                               # fail no matter what landed.  A throughput floor nothing can trip
                               # is not a gate.
 400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background. NOTE: predates the Stage 2 VHPR I-cache landing (2026-09-13) -- re-baseline when this per-batch gate next runs.
-300000000  8   71024349  0.5  3   # C3 step 3 (2026-09-18): system ops through the SYSQ, -0.14% at 300 M (60 M identical;
+300000000  8   74614701  0.5  3   # C4a step 1 (2026-09-18): the tagged fast load path, +5.06% at 300 M. Previously 71024349:
+                                  # C3 step 3 (2026-09-18): system ops through the SYSQ, -0.14% at 300 M (60 M identical;
                                   # the irqop/CSR timing past the boot's first interrupts). Previously 71121056:
                                   # C1 (2026-09-17): mul/div on the F/CTF port, +0.08% at 300 M. Previously 71067434:
                                   # IW=3 (2026-09-17): the true 3-wide count at 300 M (all three commit ports).
-300000000  8   72764424  0.5   # C3 step 3 (2026-09-18): system ops through the SYSQ, +0.05% at 300 M (60 M identical).
+300000000  8   76007711  0.5   # C4a step 1 (2026-09-18): the tagged fast load path, +4.46% at 300 M. Previously 72764424:
+                              # C3 step 3 (2026-09-18): system ops through the SYSQ, +0.05% at 300 M (60 M identical).
                                   # Previously 72730100:
                                # C1 (2026-09-17): mul/div on the F/CTF port, +0.76% at 300 M. Previously 72184767:
                                   # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): re-baselined from 78964298 -- SAME VHPR landing as the

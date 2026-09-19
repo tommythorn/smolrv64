@@ -130,6 +130,9 @@ module rv_soc_top #(
    wire [63:0]         dmem_rdata;
    wire [63:0]         dmem_wabase;   // store base PA, unmuxed by the straddle beat
    wire                dmem_rvalid, dmem_wready, dmem_waccept, dmem_idle, ifence;
+   wire                dmem_rfast, dmem_rvalid_c, dmem_rbusy;      // the tagged fast load path (C4a)
+   wire [1:0]          dmem_rtag, dmem_rtag_resp;
+   wire [63:0]         dmem_rdata_c;
    wire [55:0]         ptw_addr, dptw_addr;
    wire                ptw_read, dptw_read;
    wire [63:0]         ptw_rdata, dptw_rdata;
@@ -146,6 +149,8 @@ module rv_soc_top #(
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid),
+      .dmem_rfast(dmem_rfast), .dmem_rtag(dmem_rtag), .dmem_rvalid_c(dmem_rvalid_c),
+      .dmem_rtag_resp(dmem_rtag_resp), .dmem_rdata_c(dmem_rdata_c), .dmem_rbusy(dmem_rbusy),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wabase(dmem_wabase),
       .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .dmem_wuncached(dmem_wuncached),
@@ -467,18 +472,35 @@ module rv_soc_top #(
    // new address) carries the stale generation and is discarded -- exactly what the address
    // compare achieved, in 4 bits instead of 64.
    localparam DRTW = 4;
-   reg          lsu_gen;
-   always @(posedge clk) if (reset) lsu_gen <= 1'b0; else if (dmem_ren) lsu_gen <= ~lsu_gen;
    // The tag must be CONSTANT for the request's whole lifetime. lsu_gen flips at the clock
    // edge on dmem_ren, so during the request cycle itself the cache would capture the
    // PRE-flip value while every later compare used the POST-flip one -- legitimate responses
    // mismatch, get discarded, and the load re-issues. Present the value lsu_gen is ABOUT to
    // take; compare against the registered one, which equals it from the next cycle on (a
    // response cannot arrive in the capture cycle -- rd_valid is registered).
-   wire [DRTW-1:0] lsu_tag_req = {2'd0, 1'b0, lsu_gen ^ dmem_ren};   // -> the cache
-   wire [DRTW-1:0] lsu_tag     = {2'd0, 1'b0, lsu_gen};              // -> the compare
+   // Tag = {client, ...}: the LSU's FAST reads carry the load-queue index the LSU allocated
+   // ({2'b00, idx}), its FSM's slow reads one fixed tag of their own (TAG_SLOW), and the two
+   // walkers {01,00} and {10,00}. A response is claimed by the tag its requester allocated
+   // (rule B1); the LSU's generation toggle that stood here could name one read in flight and
+   // is gone. A slow read is one at a time by construction (the FSM parks in S_LD for it).
+   localparam [DRTW-1:0] TAG_SLOW = 4'b1100;
+   wire [DRTW-1:0] lsu_tag_req = dmem_rfast ? {2'b00, dmem_rtag} : TAG_SLOW;   // -> the cache
    wire [DRTW-1:0] dc_rd_resp_tag;
-   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_tag == lsu_tag);
+   wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_tag == TAG_SLOW);       // the FSM's
+   wire         dc_rv_fast = dc_rd_valid & (dc_rd_resp_tag[3:2] == 2'b00);     // a queued load's
+   assign       dmem_rvalid_c  = dc_rv_fast;
+   assign       dmem_rtag_resp = dc_rd_resp_tag[1:0];
+   assign       dmem_rdata_c   = dc_rd_data;
+   assign       dmem_rbusy     = c_rd_want;
+`ifdef LSUDBG
+   reg [63:0] soc_dbg_line; initial if (!$value$plusargs("dbg_line=%h", soc_dbg_line)) soc_dbg_line = 64'hFFFF_FFFF_FFFF_FFFF;
+   always @(posedge clk) if (!reset) begin
+      if (dcr_req && (dcr_addr[55:6] == soc_dbg_line[55:6]))
+         $display("[soc t=%0t DOOR req addr=%h tag=%h ack=%b want=%b ren=%b fast=%b]", $time, dcr_addr, dcr_tag, dc_rd_ack, c_rd_want, dmem_ren, dmem_rfast);
+      if (dc_rd_valid && (dc_rd_resp_addr[55:6] == soc_dbg_line[55:6]))
+         $display("[soc t=%0t RESP addr=%h tag=%h data=%h]", $time, dc_rd_resp_addr, dc_rd_resp_tag, dc_rd_data);
+   end
+`endif
    // virtio completes on its req/rsp virtio_rvalid (CDC latency); clint/uart/plic on the fixed
    // 1-cycle dev_rvalid (combinational rdata valid at delivery -- PLIC's registered read lands
    // exactly here, so the side-effecting CLAIM reads correctly); cache on dc_rv_ok.
@@ -522,17 +544,34 @@ module rv_soc_top #(
    wire         c_rd_req = (dmem_ren | c_rd_want) & ~is_dev_r;
    wire         lsu_rd_ack;                       // this cycle's accept belonged to the LSU
    always @(posedge clk) if (reset) c_rd_want<=1'b0;
-      else if (dmem_ren & ~lsu_rd_ack) c_rd_want<=1'b1;
-      else if (lsu_rd_ack)             c_rd_want<=1'b0;
+      // A CACHE read only: a device read never asks the cache and is never acked by it, so a
+      // want set on it would stand until the next cache read cleared it; the LSU reads the
+      // bit as "the read port is busy" and a stuck want stops every load (UART LSR, 2026-09-04).
+      else if (dmem_ren & ~is_dev_r & ~lsu_rd_ack) c_rd_want<=1'b1;
+      else if (lsu_rd_ack)                         c_rd_want<=1'b0;
+   // ...for the FSM's slow reads only: a fast read's response is a one-cycle strobe the LSU
+   // claims by tag, and it must not set a pending bit no slow response will ever clear.
+   wire         dmem_ren_slow = dmem_ren & ~dmem_rfast;
    // ...and c_rd_pend keeps its old meaning and its old users (c_st_ok below reads it as
    // "a response is outstanding"), so it is still cleared by the response, not the accept.
    always @(posedge clk) if (reset) c_rd_pend<=1'b0;
-      else if (dmem_ren) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
+      else if (dmem_ren_slow) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
+   // A slow response nobody asked for is a read that changed its tag while it waited for the
+   // accept: the FSM is idle and would drop it. And the request must not move while it waits:
+   // the cache samples address and tag on the accept, not when the LSU first presented them.
+   always @(posedge clk) if (!reset & dc_rv_ok & ~c_rd_pend)
+      $fatal(1, "rv_soc_top: D$ slow response with no slow read outstanding");
+   reg [DRTW-1:0] want_tag;  reg [63:0] want_addr;
+   always @(posedge clk) if (dmem_ren) begin want_tag <= lsu_tag_req; want_addr <= dmem_raddr; end
+   always @(posedge clk)
+      if (!reset & c_rd_want & ((lsu_tag_req != want_tag) | (dmem_raddr != want_addr)))
+         $fatal(1, "rv_soc_top: D$ read changed under its own accept wait: tag %h->%h addr %h->%h",
+                want_tag, lsu_tag_req, want_addr, dmem_raddr);
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
    always @(posedge clk) if (reset) c_rdv_st<=1'b0;
-      else if (dmem_ren) c_rdv_st<=1'b0;
+      else if (dmem_ren_slow) c_rdv_st<=1'b0;
       else if (raw_rvalid) begin c_rdv_st<=1'b1; c_rdd_st<=raw_rdata; end
-   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren;
+   wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren_slow;
    assign       dmem_rdata  = c_st_ok ? c_rdd_st : raw_rdata;
    assign       dmem_rvalid = raw_rvalid | c_st_ok;
    // virtio store completes only when the bridge has DELIVERED it (virtio_rvalid) -- blocking, so the

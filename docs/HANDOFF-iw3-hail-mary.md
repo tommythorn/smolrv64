@@ -722,3 +722,49 @@ the LSU goes multiple-outstanding"), the LQ's ten (out-of-order landing hazards)
 tag has no `o_v`, a slow response with a fast one in the same cycle (one port), and the alias
 matrix's registered answer never less conservative than the live one (ooo2_core.v:1824).
 
+## C4a step 1 built (2026-09-18 12:30, worktree smolrv64-wt-c4a, branch wip/c4a)
+
+The tagged fast load path, ported from da28895b onto the step-3 tree: the LSU's `LDTW`, the
+per-tag format arrays, `port_free`/`~o_v[tag]` in the starts, `rfast_q/rtag_q` written at the
+`mem_raddr` sites, `slow_rv` for the FSM's own response, `pt_fast_done/pt_rtag`; the SoC's tag
+space (`TAG_SLOW`, `dc_rv_fast`, `c_rd_want & ~is_dev_r`, `dmem_ren_slow`, the two assertions);
+the core's two landing arms and `ld_land_idx`; the riscv bench answers a fast read in the cycle
+it is presented. HEAD already had the LQ's `~v[tail]` allocation rule. One defect: **a fast load
+starting in the redirect cycle was not killed** (the LQ's candidate in that cycle is younger than
+the head, the slow path's `ld_sq` kills that case) -- 114 riscv-tests failed and the pending
+scoreboard saw a writeback to a register that was not pending when the dead load's response
+landed in a reallocated slot; `o_kill` now covers `ld_fast_ok` in the flush cycle. Result: 240/0,
+60 M clean at both widths, **+3.6% (IW=2) / +3.5% (IW=3)** on the boot at the measured DDR shape
+(da28895b had +14.1% at latency 4 and +0.63% at 80 on the old tree). ldbench: latency 5.00
+cycles per load unchanged, throughput 4.00 -> 2.00 (da28895b reached 2.25), overlap 1.24x ->
+2.49x -- the door's one read per two cycles, the P0 item, is now the visible floor. The long
+gates (two storms, one at DDR_LAT=40; 300 M x2; memrand 6 seeds; every bench) and the builds run
+in parallel.
+
+## C4a step 1, the long gates (2026-09-18 14:10): one pre-existing ordering hole, one timing miss
+
+- **memrand seed 2 (both widths) and the 300 M IW=3 boot diverged on a load returning zero.**
+  The plusarg-aimed LSU/door trace (`-DLSUDBG +dbg_line=<PA>`, kept) showed the sequence: a
+  `cbo.zero` two instructions YOUNGER than the load zeroed the line (a solo write, accepted
+  after 30 cycles of waiting for the fill machine), then the older load, still queued, read it.
+  `m_cbo_wait` covered older STORES (`sq_av_any`, rule C5) but not older loads: a load that has
+  passed M sits in the load queue with its address known until it lands, and the cbo in M never
+  waited for it. The hole predates the fast path (a queued load blocked by an older store had
+  the same exposure); the fast path's two-cycle response widened it enough for memrand to hit
+  it in its second seed. Fix: the load queue exports `av_any` (an entry with a known address is
+  older than M's op, since a younger load has not had its translate pass) and
+  `m_cbo_wait = m_is_cbo & (sq_av_any | lq_av_any)`; no deadlock, because a blocked older load
+  waits only on older stores or on being the head, both of which precede the cbo. memrand seed
+  2 passes; the storm, 300 M IW=3, seven memrand seeds and the benches re-run.
+- **IW=3: −0.070, no bitstream** (IW=2 +0.091, board PASS with the stress) on the FIRST build.
+  The IW=2 census named the new worst core family `u_dcache/rd_resp_tag_reg -> u_iq_i2/e_r_reg`
+  (20 levels): the D$'s registered response tag -> `o_v/o_kill[tag]` -> `ld_land` -> the
+  `ld_land_idx` mux -> the load queue's `rdv/prd` arrays -> `we_ld/wa_ld` -> the schedulers'
+  wake compare. Before, the landing index was a flop (`ld_inflight_idx`). Fix: `ld_land_idx`
+  selects on the RAW response (`dmem_rvalid_c ? dmem_rtag_resp : ld_inflight_idx`) instead of
+  on `ld_land_fast` (which goes through the per-tag `o_v`/`o_kill` lookups first), so the array
+  read starts at the clock edge; exactness is asserted (a slow landing never coincides with a
+  fast response, and a fast landing's tag always equals the response's). **Result on the FINAL
+  tree (2026-09-18 16:55): IW=3 core WNS +0.039, IW=2 +0.048 -- both boards PASS with the
+  900 s stress.** C4a step 1 is closed.
+

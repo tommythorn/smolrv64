@@ -711,7 +711,7 @@ runs inside every 240-test and cosim run.
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
 | FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | FE shard |
-| LSU load | see §8 | 1 | **no** | LD shard |
+| LSU load | see §8 | 4 fast (by tag, C4a) + 1 slow | **no** | LD shard |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
 Only loads, FP and (since C1) mul/div are non-blocking. Stores and AMOs still hold M: a
@@ -804,6 +804,26 @@ cycle is legal and was lost once).
   latency -- and doing so shipped a wrong-line-under-a-correct-tag bug that no parity or
   provenance check could see. An always-on invariant now asserts the hazard directly (a
   prefetch in flight while the fill machine awaits an ack). Rules A6, B6 and D9.
+- **Multiple outstanding loads: the fast path (C4a step 1, 2026-09-18).** A queued load that
+  is cached, inside one word and to memory (DRAM or the local SRAM) needs nothing from the
+  LSU's FSM after its read is issued: the address is translated, the fault decided, and the
+  only per-request state is how to format the word when it returns. So it starts from S_IDLE
+  and the FSM STAYS THERE; the next access starts behind it; its D$ read carries the load-queue
+  index as `rd_tag` (`{2'b00, idx}`; the FSM's slow reads one fixed `TAG_SLOW`, the walkers
+  `{01,00}`/`{10,00}`), and the response is claimed by that tag -- never by "only one in
+  flight" (rule B1). The formatting state lives per tag in the LSU (`o_nb/o_sgn/o_fp/o_boff`,
+  `o_v` = a response is still coming), the landing is `ld_land_fast` by `pt_rtag` into the
+  load queue's entry, the ROB, SH_LD and the retire record. A start needs the read buffer free
+  (`port_free = ~mem_rbusy & ~mem_ren`) and the tag not outstanding (`~o_v[tag]`); a store
+  needs neither. A redirect kills every fast load in flight, INCLUDING one starting in that
+  cycle (`o_kill`; the slow path's `ld_sq` does the same) -- the response still comes and is
+  dropped. Straddles, uncached and device loads, AMOs and LR/SC keep the FSM path and its one
+  slow landing (`ld_inflight_idx`), which yields its cycle to a fast landing (one PRF and one
+  ROB port). Re-done from the retired da28895b. tiny128 at 60 M, measured DDR shape: IW=2
+  13,490,465 -> 13,975,979 (+3.6%), IW=3 13,371,386 -> 13,835,891 (+3.5%). ldbench (L1-resident):
+  pointer-chase latency 5.00 cycles per load unchanged, 8-stream throughput 4.00 -> **2.00**
+  cycles per load (overlap 1.24x -> 2.49x) -- exactly the D$ door's one read per two cycles,
+  which still accepts only in S_IDLE; that door (C4a step 2) and the one MSHR (C5) are next.
 - **A plain store and a plain load leave M without touching memory.** Their M pass only
   TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
@@ -1363,6 +1383,9 @@ lockstep cosims):
 | c3aiw2 | C3 step 2 (csr_file's payload from the LUTRAM at m_rob_idx) at IW=2 -- rejected: the same at IW=3 was −0.030 | +0.030 | 0 | 0 |
 | c3s3iw3 | C3 step 3: system ops through the F port, the SYSQ fires at head from flops; M's system arms gone | **+0.061** | 0 | 0 |
 | c3s3iw2 | the same at `OOO2_IW=2` | **+0.058** | 0 | 0 |
+| c4a1iw3 | C4a step 1: the tagged fast load path (da28895b re-done) -- FIRST build | −0.070 | — | no bitstream |
+| c4a3iw3 | + the landing-index fix (selects on the raw response, not the per-tag o_v/o_kill) | **+0.039** | 0 | 0 |
+| c4a3iw2 | the same at `OOO2_IW=2` | **+0.048** | 0 | 0 |
 
 Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
@@ -1381,8 +1404,8 @@ closure above is real; the branch cannot ship until that defect is found (handof
 
 ## 14. Known limits
 
-- **One load outstanding, and one mul/div in the MD stage** (the stage holds one tag; a
-  second one waits in the F/CTF/MD queue). FP is no longer among them: `NFLIGHT`=4 and
+- **Up to `LQ_N`=4 fast loads outstanding (by tag), one slow one, and one mul/div in the MD
+  stage** (the stage holds one tag; a second one waits in the F/CTF/MD queue). FP is no longer among them: `NFLIGHT`=4 and
   results return by tag, out of issue order (§7).
 - **ALU, FP, CTF and mul/div reorder** (§2.1, §7); memory, AMO, CSR and fences still issue
   in program order from `u_iq_l`. A long-latency op in M still blocks *other M-class ops*

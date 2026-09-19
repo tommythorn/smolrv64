@@ -31,7 +31,8 @@ module ooo2_lsu
     parameter [63:0] DRAM_BASE = 64'd0,
     parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF,
     parameter [63:0] LRAM_BASE = 64'h7000_0000,  // the local SRAM: memory behind the D$, aligned like DRAM
-    parameter        LRAM_LG2  = 18)
+    parameter        LRAM_LG2  = 18,
+    parameter        LDTW      = 2)     // the load-queue index width: a fast read's tag; 1<<LDTW loads outstanding
    (input  wire            clk,
     input  wire            reset,
 
@@ -100,6 +101,10 @@ module ooo2_lsu
     input  wire            xl_mxr,
     input  wire            xl_flush,
     input  wire            flush,          // a backend redirect: squash a speculative LOAD in flight
+    input  wire [LDTW-1:0] pt_tag,         // the load-queue entry the port's candidate is (C4a)
+    input  wire [LDTW-1:0] req_tag,        // ...and the one M's own load (req_early) is
+    output wire [LDTW-1:0] pt_rtag,        // the entry whose data lands this cycle (fast path)
+    output wire            pt_fast_done,   // a queued load landed on the fast path
     input  wire            m_head,         // M's op is the ROB head (non-speculative) -- gates non-DRAM access
     input  wire            pt_nonspec,     // the port's request is non-speculative (a store, or the LQ's candidate at a live head)
     output wire [55:0]     ptw_addr,
@@ -112,7 +117,13 @@ module ooo2_lsu
     output reg             mem_ren,
     output reg             mem_runcached,
     input  wire [63:0]     mem_rdata,
-    input  wire            mem_rvalid,
+    input  wire            mem_rvalid,     // the FSM's own response (the slow tag), level-held
+    output wire            mem_rfast,      // this read is a fast one: tag it mem_rtag
+    output wire [LDTW-1:0] mem_rtag,
+    input  wire            mem_rvalid_c,   // a fast-tagged cache response, ONE cycle
+    input  wire [LDTW-1:0] mem_rtag_resp,
+    input  wire [63:0]     mem_rdata_c,
+    input  wire            mem_rbusy,      // the last read is not yet accepted by the cache
     output wire            mem_wen,
     output wire [AW-1:0]   mem_waddr,
     output wire [AW-1:0]   mem_wabase,   // the access base PA (pa_q), NOT the per-beat address
@@ -241,7 +252,13 @@ module ooo2_lsu
    assign dtlb_walking  = mmu_walking;
    assign dtlb_walk_beg = mmu_walking & ~mmu_walking_q;
    wire        xl_want  = req_valid & (st == S_IDLE);
-   wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking;
+   // A read may start only when the read request buffer (mem_raddr/mem_ren, one deep) is free:
+   // not presenting a request this cycle and not still waiting for the cache's accept. And a
+   // fast load may not reuse a tag whose response is still on its way (C4a).
+   wire        port_free = ~mem_rbusy & ~mem_ren;
+   reg [(1<<LDTW)-1:0] o_v;                      // per tag: a response is still coming
+   wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking
+                        & (pt_store | (port_free & ~o_v[pt_tag]));
    // A TRANSLATE-ONLY REQUEST DOES NOT ARBITRATE, AND DOES NOT WAIT FOR THE FSM. It needs the
    // MMU and nothing else: no bank, no pa_q, no state. It used to be gated with everything
    // else on `~pt_start` and `st == S_IDLE`, which put the pre-translated port's grant -- the
@@ -328,7 +345,7 @@ module ooo2_lsu
    assign fault_tval  = req_vaddr;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
-   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage & ~pt_start;
+   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
    wire xo_ok    = xl_x & t_ok & ~t_fault_raw & ~xpage;
    // NO disambiguation here any more. ooo2_lq owns the ordering test, against a REGISTERED
@@ -343,7 +360,8 @@ module ooo2_lsu
    // effects (e.g. popping a UART RX byte on the wrong path). Only DRAM/LRAM speculate early;
    // a non-DRAM load waits until M is the ROB head (non-speculative). See ooo2_lq for the
    // queued path's matching gate.
-   wire xl_early = xo_ok & req_early & (t_mem | m_head) & (st == S_IDLE) & ~pt_start;   // the translate's region (see xo_mem)
+   wire xl_early = xo_ok & req_early & (t_mem | m_head) & (st == S_IDLE) & ~pt_start
+                 & port_free & ~o_v[req_tag];   // the translate's region (see xo_mem)
    wire start_ok = pt_start | xl_ok_f | xl_early;
    assign xo_v     = xo_ok;
    assign xo_early = xl_early;
@@ -470,11 +488,99 @@ module ooo2_lsu
    wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~mmu_walking;   // src_pt: M's op (a CBO) is not a store to chain from
    assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr;
    assign eff_unc = (pt_start | take_next) ? pt_unc : t_uncached;
+
+   // ---------------------------------------------- FAST PATH: a queued load, non-blocking (C4a)
+   // A queued load that is cached, inside one word and to memory (DRAM or the local SRAM) needs
+   // nothing from the FSM after its read is issued: the address is translated, the fault decided,
+   // and the only per-request state is how to format the word when it comes back. So it starts
+   // from S_IDLE and the FSM STAYS THERE; the next access may start behind it, and its response
+   // is claimed by the TAG the load queue allocated (its entry index, rule B1), never by "there
+   // is only one in flight". The formatting state lives per tag (o_*): M and the queue have long
+   // moved on when the data returns. Straddles, device and uncached loads, AMOs and stores keep
+   // the FSM path, whose responses carry one fixed tag of their own (the SoC's TAG_SLOW), so a
+   // slow access and any number of fast ones are in flight together. Re-done from da28895b.
+   localparam NLD = 1 << LDTW;
+   wire [LDTW-1:0] ld_tag     = pt_start ? pt_tag : req_tag;
+   wire            ld_fast_ok = start_ok & ((pt_start & ~pt_store) | xl_early)
+                              & ~xword & ~eff_unc & pa_mem;
+   reg  [3:0]      o_nb   [0:NLD-1];             // per tag: how to format the word
+   reg  [NLD-1:0]  o_sgn, o_fp, o_kill;          // o_kill: the load was squashed while in flight
+   reg  [2:0]      o_boff [0:NLD-1];
+   integer         oi;
+   initial begin o_v = {NLD{1'b0}}; o_sgn = {NLD{1'b0}}; o_fp = {NLD{1'b0}}; o_kill = {NLD{1'b0}};
+                 for (oi = 0; oi < NLD; oi = oi + 1) begin o_nb[oi] = 4'd0; o_boff[oi] = 3'd0; end end
+   // THE TAG IS FIXED FOR THE REQUEST'S WHOLE LIFETIME. mem_ren is registered, so the cache sees
+   // the request one cycle after the start; pt_tag by then names the queue's NEXT candidate. The
+   // tag rides with mem_raddr as a register of its own, written at exactly the sites that write
+   // mem_raddr (the FSM below) -- not on every start. A store starts while the port is busy (it
+   // needs no read); clearing the fast bit on ITS start once re-tagged a read still waiting for
+   // the cache's accept as a slow one (tiny128 froze at 8.3 M retires, 2026-09-04).
+   reg  [LDTW-1:0] rtag_q;
+   reg             rfast_q;
+   initial begin rtag_q = {LDTW{1'b0}}; rfast_q = 1'b0; end
+   assign mem_rtag  = rtag_q;
+   assign mem_rfast = rfast_q;
+   wire ld_fast_ret = mem_rvalid_c & o_v[mem_rtag_resp];
+   assign pt_rtag       = mem_rtag_resp;
+   assign pt_fast_done  = ld_fast_ret & ~o_kill[mem_rtag_resp];   // a squashed load's data is dropped
+   wire [5:0]  f_sh  = {o_boff[mem_rtag_resp], 3'b000};
+   wire [63:0] f_eff = mem_rdata_c >> f_sh;
+   wire [3:0]  f_nb  = o_nb[mem_rtag_resp];
+   wire        f_sgn = o_sgn[mem_rtag_resp], f_fp = o_fp[mem_rtag_resp];
+   wire [63:0] ld_fast_val =
+        (f_nb == 4'd1) ? (f_sgn ? {{56{f_eff[7]}},  f_eff[7:0]}  : {56'd0, f_eff[7:0]})
+      : (f_nb == 4'd2) ? (f_sgn ? {{48{f_eff[15]}}, f_eff[15:0]} : {48'd0, f_eff[15:0]})
+      : (f_nb == 4'd4) ? (f_fp  ? {32'hffffffff, f_eff[31:0]}
+                        : f_sgn ? {{32{f_eff[31]}}, f_eff[31:0]} : {32'd0, f_eff[31:0]})
+      :                  f_eff;
+   always @(posedge clk) begin
+      if (reset) begin o_v <= {NLD{1'b0}}; o_kill <= {NLD{1'b0}}; end
+      else begin
+         if (ld_fast_ret) o_v[mem_rtag_resp] <= 1'b0;
+         if (ld_fast_ok) begin
+            o_v[ld_tag] <= 1'b1;  o_kill[ld_tag] <= 1'b0;  o_nb[ld_tag] <= nb;  o_boff[ld_tag] <= boff;
+            o_sgn[ld_tag] <= eff_signed;  o_fp[ld_tag] <= eff_fp;
+         end
+         // a redirect fires at the ROB head: every fast load in flight is younger, wrong-path --
+         // including one STARTING in this very cycle (the queue's candidate is younger than the
+         // head too; the slow path's ld_sq kills that case the same way). The response still
+         // comes (the tag stays allocated until then) and is dropped.
+         if (flush) o_kill <= o_kill | o_v | (ld_fast_ok ? ({{(NLD-1){1'b0}}, 1'b1} << ld_tag) : {NLD{1'b0}});
+      end
+   end
+   always @(posedge clk) if (!reset) begin
+      if (ld_fast_ok & o_v[ld_tag] & ~(ld_fast_ret & (mem_rtag_resp == ld_tag)))
+         $fatal(1, "ooo2_lsu: tag %0d reissued while its response is outstanding", ld_tag);
+      if (mem_rvalid_c & ~o_v[mem_rtag_resp])
+         $fatal(1, "ooo2_lsu: fast response with tag %0d that nothing is waiting on", mem_rtag_resp);
+      if (ld_fast_ok & ld_fast_ret & (mem_rtag_resp == ld_tag))
+         $fatal(1, "ooo2_lsu: tag %0d lands and restarts in one cycle (the queue reused the slot)", ld_tag);
+   end
+
+`ifdef LSUDBG
+   // +dbg_line=<PA>: every start, landing, kill and write touching that 64-byte line (rule G6: aimed by plusarg)
+   reg [63:0] dbg_line; initial if (!$value$plusargs("dbg_line=%h", dbg_line)) dbg_line = 64'hFFFF_FFFF_FFFF_FFFF;
+   always @(posedge clk) if (!reset) begin
+      if (start_ok && (eff_pa[55:6] == dbg_line[55:6]))
+         $display("[lsu t=%0t START pa=%h fast=%b tag=%0d pt=%b st=%b early=%b nb=%0d boff=%0d unc=%b xword=%b fsm=%0d o_v=%b port_free=%b]",
+                  $time, eff_pa, ld_fast_ok, ld_tag, pt_start, pt_start & pt_store, xl_early, nb, boff, eff_unc, xword, st, o_v, port_free);
+      if (mem_rvalid_c)
+         $display("[lsu t=%0t FASTRESP tag=%0d o_v=%b kill=%b data=%h fmt=%h nb=%0d boff=%0d]", $time, mem_rtag_resp, o_v[mem_rtag_resp], o_kill[mem_rtag_resp], mem_rdata_c, ld_fast_val, f_nb, o_boff[mem_rtag_resp]);
+      if (mem_wen && (mem_wabase[55:6] == dbg_line[55:6]))
+         $display("[lsu t=%0t WRITE addr=%h data=%h mask=%b accept=%b]", $time, mem_waddr, mem_wdata, mem_wmask, mem_waccept);
+      if (flush && |o_v) $display("[lsu t=%0t FLUSH o_v=%b]", $time, o_v);
+   end
+`endif
+   // THE SLOW PATH YIELDS ITS COMPLETION CYCLE TO A FAST LANDING. One PRF write port, one ROB
+   // completion port: a device response (the FSM's, level-held by the SoC until consumed) and a
+   // fast cache response can land in the same cycle; the fast one is a single-cycle strobe, the
+   // slow one waits a cycle.
+   wire slow_rv  = mem_rvalid & ~ld_fast_ret;
    wire acc_done = ((st == S_ST)  & st_fin & ~xword_q)
                  | ((st == S_ST2) & st_fin)
-                 | ((st == S_LD)  & mem_rvalid & ~xword_q)
-                 | ((st == S_LD2) & mem_rvalid)
-                 | ((st == S_ARD) & mem_rvalid & ~a_dowr)
+                 | ((st == S_LD)  & slow_rv & ~xword_q)
+                 | ((st == S_LD2) & slow_rv)
+                 | ((st == S_ARD) & slow_rv & ~a_dowr)
                  | (amo_go & st_fin);
    // done/fault/rd_val are single outputs, so the completion is routed to whoever owns the
    // access. Without this a commit store finishing under M's pending op would be latched by
@@ -489,7 +595,7 @@ module ooo2_lsu
    // st_fin selects on eff_cbo, which selects on pt_start -- this cycle's NEW start -- so
    // every landing wake began at pt_v: on 142 of gate W6's 200 worst paths. The load terms
    // are the FSM state, the D$'s registered rvalid and xword_q. Asserted equal below.
-   wire ld_fin = ((st == S_LD) & mem_rvalid & ~xword_q) | ((st == S_LD2) & mem_rvalid);
+   wire ld_fin = ((st == S_LD) & slow_rv & ~xword_q) | ((st == S_LD2) & slow_rv);
    assign pt_ld_done = ld_fin & own_pt & ~own_pt_st;
    always @(posedge clk)
       if (!reset && (pt_ld_done !== (pt_done & ~pt_is_store)))
@@ -518,7 +624,8 @@ module ooo2_lsu
       else if (pt_start | xl_early) ld_sq <= 1'b0;   // a fresh access start (incl. the early path) is correct-path
    assign pt_ld_kill = ld_inflight & ld_sq;
    assign pt_ack  = pt_start | take_next;
-   assign rd_val = (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
+   assign rd_val = pt_fast_done ? ld_fast_val
+                 : (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
    assign ld_busy = ld_inflight;
 
@@ -542,7 +649,7 @@ module ooo2_lsu
                 if (~pa_mem & (wend > 5'd8))
                    $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d va=%h unc=%b pt_start=%b xl_early=%b req_early=%b m_head=%b pt_store=%b st=%0d",
                           eff_pa, nb, boff, req_vaddr, eff_unc, pt_start, xl_early, req_early, m_head, pt_store, st);
-                own_pt        <= pt_start | xl_early;   // ooo2_lq lands it either way
+                own_pt        <= (pt_start | xl_early) & ~ld_fast_ok;   // ooo2_lq lands it; a fast load's landing is by tag
                 own_pt_st     <= pt_start & pt_store;
                 src_pt        <= pt_start;              // ...but the fields are M's
                 nc_q          <= eff_unc;
@@ -570,25 +677,26 @@ module ooo2_lsu
                    // shifts a .W half-word write 4 bytes past its target.
                    pa_q      <= eff_pa & ~56'd7;
                    mem_raddr <= {{(AW-56){1'b0}}, eff_pa} & ~{{(AW-3){1'b0}}, 3'b111};
-                   mem_ren   <= 1'b1;
+                   mem_ren   <= 1'b1;  rfast_q <= 1'b0;
                    st        <= S_ARD;
                 end else begin
                    pa_q <= xl_can ? (eff_pa & ~56'd7) : eff_pa;
                    mem_raddr <= xl_can ? ({{(AW-56){1'b0}}, eff_pa} & ~{{(AW-3){1'b0}}, 3'b111})
                                        :  {{(AW-56){1'b0}}, eff_pa};
-                   mem_ren   <= 1'b1;
-                   st        <= S_LD;
+                   mem_ren   <= 1'b1;  rfast_q <= ld_fast_ok;  rtag_q <= ld_tag;
+                   // a fast load leaves the FSM idle: everything it still needs is in o_*
+                   st        <= ld_fast_ok ? S_IDLE : S_LD;
                 end
              end
-           S_LD:  if (mem_rvalid) begin
+           S_LD:  if (slow_rv) begin
                      if (xword_q) begin
                         ld_lo_q   <= mem_rdata;
                         mem_raddr <= {{(AW-56){1'b0}}, pa2_q};
-                        mem_ren   <= 1'b1;
+                        mem_ren   <= 1'b1;  rfast_q <= 1'b0;
                         st        <= S_LD2;
                      end else st <= S_IDLE;
                   end
-           S_LD2: if (mem_rvalid) st <= S_IDLE;
+           S_LD2: if (slow_rv) st <= S_IDLE;
            // A plain store leaves on ACCEPT, not on the ack (st_fin above): the cache captured
            // address, data and mask and finishes the write on its own, so the FSM is free for
            // the next request while that happens. Plan item 4, 2026-09-04: 5.00 -> 4.00 per store.
@@ -604,7 +712,7 @@ module ooo2_lsu
                      end else st <= (xword_q ? S_ST2 : S_IDLE);
                   end
            S_ST2: if (st_fin) st <= S_IDLE;
-           S_ARD: if (mem_rvalid) begin
+           S_ARD: if (slow_rv) begin
                      amo_old_q <= a_rdval;
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end
                      if (is_sc) rsv_v <= 1'b0;

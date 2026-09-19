@@ -78,6 +78,12 @@ module ooo2_core
     output wire                    dmem_runcached,
     input  wire [63:0]             dmem_rdata,
     input  wire                    dmem_rvalid,
+    output wire                    dmem_rfast,      // a fast (queued, tagged) read (C4a)
+    output wire [LQ_IB-1:0]        dmem_rtag,       // its tag: the load-queue index
+    input  wire                    dmem_rvalid_c,   // a fast-tagged response, one cycle
+    input  wire [LQ_IB-1:0]        dmem_rtag_resp,
+    input  wire [63:0]             dmem_rdata_c,
+    input  wire                    dmem_rbusy,      // the last read awaits the cache's accept
     output wire                    dmem_wen,
     output wire [AW-1:0]           dmem_waddr,
     output wire [AW-1:0]           dmem_wabase,  // access base PA (device decode)
@@ -1704,6 +1710,7 @@ module ooo2_core
    wire [63:0]         sq_c_data;
    wire [1:0]          sq_c_size;
    wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_pt_ld_kill, lsu_xo_v, lsu_xo_unc, lsu_xo_mem;
+   wire                lsu_pt_fast_done;  wire [LQ_IB-1:0] lsu_pt_rtag;   // the fast path's landing, by tag
    wire [55:0]         lsu_xo_pa;
    wire st_a = rn_valid   & d_st_nb;
    wire st_b = rn_valid_b & d2_st_nb;
@@ -1762,7 +1769,7 @@ module ooo2_core
    wire [5:0]          lq_l_rd;
    wire [ROB_IDXB-1:0] lq_l_rob;
    wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
-   wire [LQ_IB:0]      lq_occ;
+   wire [LQ_IB:0]      lq_occ;  wire lq_av_any;
    wire                lq_x_devwait;        // counters: a device load waiting for the head
    wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
    wire ld_a = rn_valid   & d_ld_nb;
@@ -1786,9 +1793,9 @@ module ooo2_core
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_head(lq_x_head), .x_take(lq_x_take),
-      .l_v(ld_land), .l_idx(ld_inflight_idx),
+      .l_v(ld_land), .l_idx(ld_land_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
-      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .rob_head(rob_head_idx), .flush(redirect));
+      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // The queue costs a load two cycles -- one to register the address, one to select the
@@ -1829,7 +1836,24 @@ module ooo2_core
    wire pt_v      = sq_go | lq_x_v;
    wire pt_store  = sq_go;
    wire lq_x_take = lq_x_v & ~sq_go & lsu_pt_ack;
-   wire ld_land   = lsu_pt_ld_done & ~lsu_pt_ld_kill;   // ...unless it was a wrong-path speculative load (squashed)
+   // Two landing paths (C4a). The FAST one names its entry with the tag the response carried;
+   // the SLOW one (a straddle, a device, an uncached load) still parks the LSU's FSM, so the
+   // one register below identifies it -- there can only be the one.
+   wire ld_land_fast = lsu_pt_fast_done;
+   wire ld_land_slow = lsu_pt_ld_done & ~lsu_pt_ld_kill;   // ...unless it was a wrong-path speculative load (squashed)
+   wire ld_land      = ld_land_fast | ld_land_slow;
+   // The landing INDEX selects on the raw fast response (dmem_rvalid_c: the D$'s registered
+   // rd_valid and tag class), not on ld_land_fast: the load queue's arrays are read at this
+   // index, and putting the per-tag o_v/o_kill lookups in front of that read was the worst
+   // core family of the first C4a build (rd_resp_tag -> e_r, 20 levels; IW=3 -0.070). It is
+   // exact: a fast response with a live tag makes the slow path yield (slow_rv), so a slow
+   // landing never coincides with one, and a killed fast response lands nothing (asserted).
+   wire [LQ_IB-1:0] ld_land_idx = dmem_rvalid_c ? dmem_rtag_resp : ld_inflight_idx;
+   always @(posedge clk) if (!reset) begin
+      if (ld_land_fast && ld_land_slow) $fatal(1, "ooo2_core: a load landed on both the fast and the slow path");
+      if (ld_land_slow && dmem_rvalid_c) $fatal(1, "ooo2_core: a slow landing under a fast response (the index would be wrong)");
+      if (ld_land_fast && (lsu_pt_rtag != dmem_rtag_resp)) $fatal(1, "ooo2_core: the fast landing's tag is not the response's");
+   end
    // The registered alias block the queue's candidate select reads may only ever be the
    // MORE conservative: a load that starts (x_v, on the copy) is never one the live block holds.
    always @(posedge clk)
@@ -2114,8 +2138,13 @@ module ooo2_core
    // younger than the CBO, which then wait for M: the deadlock that hung build L at
    // SLUB init on 2026-09-04. The other M-executed accesses are covered elsewhere: AMO/LR/SC
    // are serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
-   wire m_cbo_wait = m_is_cbo & sq_av_any;
-   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lsu
+   // ...and every older LOAD too (2026-09-18, memrand seed 2 under the fast path): a load that
+   // passed M sits in the load queue with its address known until it lands, and a cbo.zero two
+   // instructions younger zeroed its line first. An entry with av=1 is older than M's op (a
+   // younger load has not had its translate pass); a blocked older load only waits on older
+   // stores or on being the head, both of which precede the cbo, so this cannot deadlock.
+   wire m_cbo_wait = m_is_cbo & (sq_av_any | lq_av_any);
+   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2), .LDTW(LQ_IB)) u_lsu
      (.clk(clk), .reset(reset),
       .dtlb_walking(lsu_dtlb_walking), .dtlb_walk_beg(lsu_dtlb_walk_beg),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on
@@ -2134,6 +2163,7 @@ module ooo2_core
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
       .pt_unc(pt_store ? sq_c_unc : lq_x_unc), .pt_done(lsu_pt_done),
       .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store), .pt_ld_done(lsu_pt_ld_done), .pt_ld_kill(lsu_pt_ld_kill),
+      .pt_tag(lq_x_idx), .req_tag(m_lq_idx), .pt_rtag(lsu_pt_rtag), .pt_fast_done(lsu_pt_fast_done),
       .req_store(m_is_store & ~m_is_amo), .req_amo(m_is_amo),
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
@@ -2150,6 +2180,8 @@ module ooo2_core
       .ptw_rdata(dptw_rdata), .ptw_rvalid(dptw_rvalid),
       .mem_raddr(dmem_raddr), .mem_ren(dmem_ren), .mem_runcached(dmem_runcached),
       .mem_rdata(dmem_rdata), .mem_rvalid(dmem_rvalid),
+      .mem_rfast(dmem_rfast), .mem_rtag(dmem_rtag), .mem_rvalid_c(dmem_rvalid_c),
+      .mem_rtag_resp(dmem_rtag_resp), .mem_rdata_c(dmem_rdata_c), .mem_rbusy(dmem_rbusy),
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wabase(dmem_wabase), .mem_wdata(dmem_wdata),
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),

@@ -39,6 +39,7 @@ module tb;
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
    wire             dmem_ren, dmem_wen;
+   wire             dmem_rfast;  wire [1:0] dmem_rtag;
    wire [7:0]       dmem_wmask;
    wire [55:0]      ptw_addr, dptw_addr;
    wire             ptw_read, dptw_read;
@@ -61,6 +62,10 @@ module tb;
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(),
       .dmem_rdata(dmem_rdata), .dmem_rvalid(1'b1),
+      // the tagged fast path against this always-valid memory: a fast read is answered in
+      // the cycle it is presented, with the tag it carries
+      .dmem_rfast(dmem_rfast), .dmem_rtag(dmem_rtag), .dmem_rvalid_c(dmem_ren & dmem_rfast),
+      .dmem_rtag_resp(dmem_rtag), .dmem_rdata_c(dmem_rdata), .dmem_rbusy(1'b0),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask), .dmem_wuncached(),
       .dmem_cbo(), .dmem_cbo_zero(), .dmem_cbo_keep(), .dmem_wready(1'b1), .dmem_waccept(1'b1),
