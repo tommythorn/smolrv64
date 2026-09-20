@@ -1367,6 +1367,10 @@ a second writer of SH_FE in front of the CTF link's broadcast, and the live reti
 `minstret`. Per build (each verified by lint, riscv-tests 240/0, the IW=3 and IW=2 60 M
 lockstep cosims):
 
+(From C4a step 2 on, **IW=3 is POR and IW=2 is no longer built or board-gated** -- Tommy,
+2026-09-19. Earlier rows carry both widths because IW=2 was the shipping width until IW=3
+closed on 2026-09-17.)
+
 | build | cuts | WNS | TNS | failing |
 |---|---|---|---|---|
 | dd371e6d | dispatch stage | −0.528 | −1275 | 3940 |
@@ -1386,6 +1390,8 @@ lockstep cosims):
 | c4a1iw3 | C4a step 1: the tagged fast load path (da28895b re-done) -- FIRST build | −0.070 | — | no bitstream |
 | c4a3iw3 | + the landing-index fix (selects on the raw response, not the per-tag o_v/o_kill) | **+0.039** | 0 | 0 |
 | c4a3iw2 | the same at `OOO2_IW=2` | **+0.048** | 0 | 0 |
+| c4a2iw3 | C4a step 2 attempt 1: the door self-loop with `hit` in `rd_ack` | −0.270 | — | 6028 near-critical |
+| c4a2skid | + the door's skid buffer (the accept is register-decoded again) | **+0.061** | 0 | 0 |
 
 Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
@@ -2056,6 +2062,31 @@ the run-ahead fetch buffer before it) and each PTW walk are all single-outstandi
 drops its request on the ack with no next address ready and `S_CHECK` never actually
 self-loops. Design the ack together with the
 multi-outstanding LSU that consumes it, not ahead of it.
+
+**ATTEMPTED as C4a step 2 (2026-09-19), NOT YET CLOSED -- uncommitted.** Once C4a step 1 gave
+the LSU multiple outstanding loads to feed it, `rd_ack` already existed as the documented
+combinational accept (§8) and the requester side had already become ack-based
+(`c_rd_want`, cleared on `lsu_rd_ack` not on `dc_rv_ok`) as part of the tagged fast path, so
+neither of this section's two original blockers needed separate work -- only the door's own
+`S_CHECK` admission (`chk_rd`) was missing, and it built cleanly and correctly (the lockstep
+never diverged at any point in this section). Two things this section did NOT anticipate,
+both now documented in the handoff's C4a step 2 section:
+
+1. The self-loop exposed a pre-existing, previously-harmless priority rule (reads always win
+   a tie for the door) as a real fairness bug once reads could claim every cycle instead of
+   every other one -- fixed with `chk_rd & ~wr_req` (rule I13).
+2. **`chk_rd` needs `hit` to decide `rd_ack`, and this is the FIRST time this cache's accept
+   has ever depended on the tag compare** -- every existing admission path (`S_IDLE`,
+   `fin_wr`) was pure state/registered-field decode. `hit`'s ~13-18 levels fan out through
+   `rd_ack` into the whole SoC (the LSU and everything downstream of its decisions), invisible
+   to an isolated OOC check of `rd_ack` as a lightly-loaded port. Full IW=3 build: WNS -0.270
+   (VIOLATED; IW=2 closes at +0.037). This is a second instance of exactly the risk P0 warned
+   about in general ("the accept stays register-decoded") landing on the one signal that
+   cannot tolerate it. Not yet resolved -- see the handoff for a candidate redesign (a
+   dedicated one-cycle delivery state, `fin_wr`-shaped, that needs no `hit`) and for a tried
+   and reverted attempt (splitting only the register capture, not the accept, off of `hit` --
+   wrong, because `pipe_hold`'s hold cases need the captured fields to survive a retry
+   unchanged). wip/c4a's committed tip stays C4a step 1 (493dc343) until this closes.
 
 ### P1 -- triage the regression against 95aff227 (8/22)
 

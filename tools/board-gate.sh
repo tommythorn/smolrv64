@@ -71,10 +71,18 @@ echo "programmed ${BIT:-impl_1}"
 # reads the PREVIOUS build's banner (W7's board turn, 2026-09-07: the DTB said 9b3050f9 on
 # a 6c1eeff1 bitstream).
 for i in $(seq 1 30); do
-   RTL_BANNER=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]{7,12}' | tail -1 | cut -d= -f2)
+   RTL_BANNER=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]{7,12}\+?' | tail -1 | cut -d= -f2)
    [ -n "$RTL_BANNER" ] && break; sleep 2
 done
 echo "banner: rtl=${RTL_BANNER:-?}"
+# A TRAILING '+' MEANS THE BITSTREAM IS NOT THAT COMMIT. The monitor appends it from the
+# build-id's source-dirty word; this gate used to grep only [0-9a-f] and silently drop it,
+# so a dirty build was reported -- and remembered -- as the commit it was built on top of.
+# 2026-09-19: a GB5 crash was attributed to 493dc343 for exactly this reason; the bitstream
+# was 493dc343 + uncommitted C4a step 2. Never record a dirty build as a commit's verdict.
+case "${RTL_BANNER:-}" in
+   *+) echo "WARNING: the loaded bitstream is a DIRTY tree (${RTL_BANNER}) -- its verdict belongs to no commit" ;;
+esac
 export RTL_BANNER
 ( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
    || { echo "BOARD: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
@@ -99,7 +107,7 @@ NEW=$(tail -c +$((POS+1)) "$UB/screenlog.0" | tr -d '\r')
 # A replayed boot ends where the next programming's monitor banner begins.
 [ -n "${REPLAY:-}" ] && NEW=$(printf '%s' "$NEW" | awk '/smolrv64 monitor/{exit} {print}')
 printf '%s' "$NEW" > "$RES/boot.log"
-RTL=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+' | head -1)   # the banner precedes the marker
+RTL=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+\+?' | head -1)   # the banner precedes the marker
 FAULTS=$(printf '%s' "$NEW" | grep -acE "$BAD")
 LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
 echo "login: $LOGIN   faults: $FAULTS   ${RTL:-rtl=?}   last: $(printf '%s' "$NEW" | grep -aoE '^\[ *[0-9]+\.[0-9]+\]' | tail -1)"

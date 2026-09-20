@@ -686,6 +686,35 @@ the check fires. Corollary of rule B2: the first implementation read the store q
 register in the cycle the bytes were still in the landing flop and reported zero for the
 boot's first store -- a value captured at commit goes through the same bypass the drain uses.
 
+**G12. A verdict belongs to the BITSTREAM, and a dirty bitstream belongs to no commit.**
+The build already records dirtiness (`build.tcl`: `SMOLRV64_GIT_DIRTY`, from `git status
+--porcelain` over src/ooo2/srcs/workloads), the bitstream carries it at build-id word 5, and
+`workloads/monitor/monitor.c` prints it as a trailing `+`: `rtl=493dc343+`. Every layer told
+the truth. `tools/board-gate.sh` then matched `rtl=[0-9a-f]{7,12}` -- which matches the hex
+and DROPS the `+` -- and printed `banner: rtl=493dc343`. On 2026-09-19 a Geekbench crash was
+therefore attributed to commit 493dc343 when the loaded RTL was 493dc343 plus an uncommitted
+C4a step 2; the console had said `rtl=493dc343+` all along. Two of the three bitstreams in
+play that day misreported this way. A gate that discards the one character distinguishing
+"this commit" from "this commit plus unknown work" turns every result it records into a
+misattribution. The regexes now keep `\+?` and the gate warns explicitly. Corollary for
+anyone reading a board result: `rtl=<sha>` is a claim about the bitstream, not about the
+repository -- check for the `+` before you believe a commit passed or failed anything.
+
+**G11. A bitstream is a verdict only if it is NEWER than the routed checkpoint it claims
+to come from.** `build.tcl`'s bit step skipped generation whenever the `.bit` merely existed
+and the run's `NEEDS_REFRESH` was false -- but `NEEDS_REFRESH` tracks whether SOURCES changed
+under the run, not whether this `.bit` came from THIS implementation, and `launch_runs impl_1`
+stops after route/physopt with `write_bitstream` a separate step. So a fresh implementation
+plus a leftover `.bit` from an earlier build satisfied both conditions and the flow announced
+"Bitstream already up to date, skipping": the timing report blessed one design while the
+banked bitstream held another. A board gate run against the wrong bitstream is
+indistinguishable from a passing one, which is the whole problem. Caught 2026-09-19 on the
+C4a step 2 skid-buffer build -- routed checkpoint 10:32, `.bit` 02:32, and the 02:32 build
+was DIFFERENT RTL that had MISSED timing. The guard now compares `file mtime` of the `.bit`
+against `rk_xcku5p_postroute_physopt.dcp` (falling back to `rk_xcku5p_routed.dcp`) and
+deletes a stale one before regenerating. Same family as the stale-`obj_dir` rules (G5, G10):
+a verdict from an artifact that does not contain the change is not a verdict.
+
 **G7. No cosim had ever taken a PLIC interrupt; the interrupt storm is a gate.**
 `tb_ooo2_linux` ties virtio off and the tiny128 UART never enables RX, so through 700 M
 cycles of the GB5 boot `seip` was 0: every external-interrupt path -- the irqop injection

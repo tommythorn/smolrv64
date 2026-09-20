@@ -29,6 +29,12 @@ module tb;
 `ifndef JIT
  `define JIT 0
 `endif
+`ifndef NOPS
+ `define NOPS 3000
+`endif
+`ifndef RSEED
+ `define RSEED 11
+`endif
    localparam LAT = `LAT;
    localparam JIT = `JIT;
    reg clk=0, reset=1;
@@ -116,6 +122,33 @@ module tb;
    end
    task issue_nb(input [PAW-1:0] a, input [3:0] t);   // issue, do not wait for the answer
       begin rd_addr=a; rd_tag=t; req_pend=1'b1; while (req_pend) @(negedge clk); end
+   endtask
+
+   // A requester that ALWAYS has another cached read ready: it presents the next address in
+   // the same negedge the door took the last one (req_pend is cleared by rd_ack above). This
+   // is the streaming shape the port doc asks for -- advance on the ack, never hold for the
+   // response -- and it is what the door's accept rate is measured against in T21.
+   integer str_acks, str_guard;
+   task stream_reads(input [PAW-1:0] base, input integer n, output integer cycles);
+      begin
+         str_acks = 0; str_guard = 0;
+         rd_addr = base; rd_tag = 4'd0; req_pend = 1'b1;
+         cycles = tcyc;
+         while (str_acks < n && str_guard < 4000) begin
+            @(negedge clk);
+            str_guard = str_guard + 1;
+            if (!req_pend) begin                       // taken at the last edge
+               str_acks = str_acks + 1;
+               if (str_acks < n) begin
+                  rd_addr  = base + (str_acks << OFFB);   // next LINE, so a different set
+                  rd_tag   = str_acks[3:0];
+                  req_pend = 1'b1;
+               end
+            end
+         end
+         cycles = tcyc - cycles;
+         req_pend = 1'b0;
+      end
    endtask
 
    integer errors, i, k, g14, tcyc;
@@ -468,13 +501,13 @@ module tb;
          reg [7:0]  gold [0:8191];          // 8 KiB golden image of the region
          reg [PAW-1:0] R0, ra; integer op, n, len, seed2, b, m, ln, w, s;
          reg [63:0] rv, wv; reg [7:0] wm;
-         R0 = 64'h8009_0000; seed2 = 11;
+         R0 = 64'h8009_0000; seed2 = `RSEED;
          for (n = 0; n < 8192; n = n + 1) begin
             ra = R0 + (n & ~7);                                          // the word this byte is in
             rv = expect_word(ra);                                        // what L2 holds for it
             gold[n] = rv[(n & 7)*8 +: 8];
          end
-         for (op = 0; op < 3000; op = op + 1) begin
+         for (op = 0; op < `NOPS; op = op + 1) begin
             // address: 4 sets (index bits from the line address), ways via +64K, lines +/-64
             s = $urandom(seed2) % 4; seed2 = seed2 + 1;
             w = $urandom(seed2) % 2; seed2 = seed2 + 1;
@@ -534,6 +567,41 @@ module tb;
             end
          end
          $display("rv_cache D$ random: %0d ops, %0d errors", op, errors);
+      end
+
+      // ---- T21: THE DOOR'S ACCEPT RATE UNDER A SATURATING READ STREAM (C4a step 2) ------
+      // The self-loop exists so that a requester with another cached read ready every cycle
+      // is TAKEN every cycle instead of every other one. Without it the door accepts only in
+      // S_IDLE and the machine alternates S_IDLE/S_CHECK -- 2.00 cycles per read, whatever
+      // the requester does. Everything here is warmed first and every read is on its own
+      // line (a different set), so nothing misses, holds or collides: this measures the door
+      // and nothing else. It is also the regression test that says the self-loop is still
+      // there, which a boot retire count at one AGU port cannot show (the door sits at ~10%
+      // utilisation there; three AGUs are what will saturate it -- docs/HANDOFF...).
+      begin : t21
+         integer scyc, t21i; reg [PAW-1:0] SB;
+         // A DEDICATED loop variable: do_load uses `i` for its own timeout, so warming with
+         // `i` here never terminates (it reset the outer counter every call).
+         SB = 64'h8000_0000 + 64'h8000;
+         for (t21i = 0; t21i < 32; t21i = t21i + 1) do_load(SB + (t21i << OFFB), 4'd1);   // warm: all hits
+         stream_reads(SB, 32, scyc);
+         $display("T21 door accept rate: 32 streamed read hits in %0d cycles (%0d.%02d cyc/read)",
+                  scyc, scyc/32, ((scyc%32)*100)/32);
+         // TODAY the door accepts only in S_IDLE, so a saturating stream is pinned at 2.00
+         // cycles per read (measured: 63/32 = 1.96) whatever the requester does. This bound
+         // locks that in as a REGRESSION test -- anything worse means the door lost the
+         // fin_wr/S_IDLE cadence it already has. It is deliberately NOT a 1.00 bound: the
+         // self-loop that would reach ~1.00 is shelved (see the handoff's C4a step 2), and a
+         // test that fails until an unshipped feature lands is a broken gate, not a target.
+         // WHEN the door does gain a per-cycle accept, this is the test that proves it:
+         // the number drops to 1.00 and the bound below should tighten to match.
+         if (str_acks != 32) begin
+            $display("FAIL T21: only %0d of 32 reads were taken (the door stalled)", str_acks);
+            errors = errors + 1;
+         end else if (scyc > 70) begin   // 2.19/read: the S_IDLE-only door plus slack
+            $display("FAIL T21: %0d cycles for 32 streamed hits -- the door lost its cadence", scyc);
+            errors = errors + 1;
+         end
       end
 
       if (errors==0) $display("rv_cache D$ directed: PASS");

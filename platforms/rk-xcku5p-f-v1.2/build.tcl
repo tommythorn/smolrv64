@@ -555,9 +555,27 @@ if {$step in {bit}} {
     set bit_dir [get_property DIRECTORY [get_runs impl_1]]
     set bit_file "$bit_dir/rk_xcku5p.bit"
     set run [get_runs impl_1]
-    if {[file exists $bit_file] && ![get_property NEEDS_REFRESH $run]} {
+    # THE BITSTREAM MUST BE NEWER THAN THE IMPLEMENTATION THAT PRODUCED IT.
+    # `NEEDS_REFRESH` tracks whether SOURCES changed under the run -- it says nothing about
+    # whether this .bit came from THIS implementation. After a fresh impl (which stops after
+    # route/physopt; write_bitstream is a separate step) a .bit left over from an earlier
+    # build satisfies both of the old conditions, and the flow happily "skips" -- banking a
+    # bitstream of different RTL than the timing report just blessed. That is a board gate
+    # run against the wrong design, which is indistinguishable from a passing one.
+    # 2026-09-19: caught exactly that -- a 02:32 .bit surviving a 10:32 implementation.
+    set routed_dcp "$bit_dir/rk_xcku5p_postroute_physopt.dcp"
+    if {![file exists $routed_dcp]} { set routed_dcp "$bit_dir/rk_xcku5p_routed.dcp" }
+    set bit_stale 1
+    if {[file exists $bit_file] && [file exists $routed_dcp]} {
+        set bit_stale [expr {[file mtime $bit_file] < [file mtime $routed_dcp]}]
+    }
+    if {[file exists $bit_file] && ![get_property NEEDS_REFRESH $run] && !$bit_stale} {
         puts "  Bitstream already up to date, skipping."
     } else {
+        if {$bit_stale && [file exists $bit_file]} {
+            puts "  Bitstream is OLDER than the routed checkpoint -- regenerating."
+            file delete -force $bit_file
+        }
         launch_runs impl_1 -to_step write_bitstream -jobs 12
         wait_on_run impl_1
         if {[get_property PROGRESS $run] != "100%"} {

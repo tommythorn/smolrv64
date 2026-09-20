@@ -768,3 +768,279 @@ in parallel.
   tree (2026-09-18 16:55): IW=3 core WNS +0.039, IW=2 +0.048 -- both boards PASS with the
   900 s stress.** C4a step 1 is closed.
 
+## C4a step 2 (2026-09-18/19): the D$ door self-loop -- correct on the first try, generically
+## slower on the first try too, both for the SAME reason: a shared resource with no fairness rule
+
+Built as the design notes said: `chk_rd` is true in exactly the cycle S_CHECK's own case arm
+takes the "fast read delivery: skip S_FIN" branch (a plain cached read hit, not held by
+`pipe_hold`), and it joins `fin_wr` in `acc_slot` -- the same admission-widening shape the
+door already used for a store's last cycle (item 4b). The register-capture block (`r_*`,
+`cur_line`, `phase<=0`) and the bank-address drive (`bk_rd_drv = accept | do_replay`) already
+keyed off `accept`/state membership rather than a fixed S_IDLE check, so chk_rd only needed
+three touch points: the admission wire itself, the capture block's condition, and the S_CHECK
+arm's own `st <= S_IDLE` becoming `st <= accept ? S_CHECK : S_IDLE` (mirroring `fin_wr`'s
+identical line in S_FIN). `rd_ack` is already `accept & rd_req`, so this alone flows through
+for free. No RAM address, no invalidate gate, no fill-machine interaction needed touching --
+`~fill_banks` and the shared `accept` qualifiers (`~inv_go`, `~f_replay`, `~f_solo`) already
+apply to every acc_slot arm uniformly.
+
+**First full-length result (2026-09-18 22:52): both widths clean at every correctness gate
+(lint, 240/0, 8 benches, both storms, 7 memrand seeds) but a 300 M tiny128 boot retired
+10.4% FEWER instructions than the recorded C4a-step-1 baseline at BOTH widths** (IW=2:
+68,115,004 vs 76,007,711 expected; IW=3: 67,052,468 vs 74,614,701 expected) -- the tooling's
+own verdict: "A correct-but-slower change." The 60 M checkpoint had looked fine (+2.58%
+IW=2), so the regression is cumulative, not immediate -- ruled out flakiness by reproducing
+it at both widths and by direct A/B: a throwaway worktree at 493dc343 (pre-self-loop) run
+with the IDENTICAL 300 M config reproduced the recorded 76,007,711 exactly (+0.00%).
+
+**Root cause: the self-loop has no fairness term, and the door already had a documented
+priority rule that only worked because the door was never more than 50% available.**
+`r_is_wr <= wr_req && !rd_req` (the register-capture mux) has ALWAYS let a live read starve
+a live write when both are asserted the same cycle -- this predates C4a entirely and is
+inherited from the original I$/D$ share. Before the self-loop, a read stream -- even a
+continuous one, since C4a step 1's tagged path already lets the LSU re-present a pending
+request every cycle via `c_rd_want` -- could still only WIN the door every other cycle (the
+S_CHECK cycle was a mandatory, uncontested gap). A waiting store queue drain or PTW walk got
+real, if infrequent, openings in the gaps where the read stream's OWN presentation happened
+to lapse. The self-loop removes that gap: a dense read burst can now claim every single
+cycle, shrinking the fraction of cycles genuinely up for grabs and pushing an
+already-marginal balance measurably further from the write/PTW side -- not a hard freeze (the
+lockstep never diverged, `for(;;)`-style livelock never triggered, SQ-full/door-unaccepted
+counters were only modestly higher, not order-of-magnitude), just a broader tax across a long
+boot that a 60 M window is too short to show.
+
+**Fix: `chk_rd` also requires `~wr_req`.** A self-loop continuation yields the door the
+instant a competing store wants it, falling back to `S_IDLE` where the existing (unmodified,
+decades-tested) tie-break decides -- so a self-loop cycle can never leave a waiting write
+worse off than the pre-self-loop door already could. This is deliberately NOT a new
+round-robin/age-based arbiter: it is the narrowest change that provably cannot regress
+fairness relative to the code that already shipped and passed every prior gate, while still
+capturing the win whenever nothing else wants the door. (A PTW-vs-LSU-read priority rule
+exists too, entirely at the SoC level in `rv_soc_top.v`'s `pw_ack`/`c_rd_req` arbitration,
+outside `rv_cache.v` and outside this fix's reach; the fixed numbers below don't show a
+residual PTW-starvation signature, so it was not chased further, but it is the next place to
+look if a future window-growth increment (C5/C7) reopens this class of problem.)
+
+**Result with the fix (2026-09-19, full re-verification against a clean rebuild): lint
+clean, 240/0, all 8 benches, both 500 M storms clean, all 7 memrand seeds (both widths), the
+1.5 G disk-backed cosim BLKCHECK-OK. 300 M IW=2: retires=76,913,505 vs 76,007,711 expected
+(+1.19%, a genuine net win, not just recovered). 300 M IW=3: retires=74,597,923 vs 74,614,701
+expected (-0.02%, neutral, within the 0.5% floor).** OOC: `rv_cache` (D$ shape: SIZE_KB=64,
+WRITABLE=1, WRTHRU=0, PREFETCH=0) WNS +1.252 (worst family `cur_line_reg -> r_addr_reg/CE`,
+13 levels, route-dominated); `ooo2_lsu` (LDTW=2) WNS +1.859 (worst path inside `u_mmu`,
+unrelated to the self-loop). Both healthy margins at the 6.000 ns OOC period.
+
+## C4a step 2's timing DOES NOT CLOSE at IW=3 -- NOT COMMITTED, open item
+
+**Full builds (2026-09-19 03:05): IW=2 WNS +0.037 (met, thin); IW=3 WNS -0.270 (VIOLATED).**
+Both board gates happened to PASS anyway (a timing violation does not reliably fail a boot in
+one run -- it is a probability, not a certainty, and is not a basis for shipping). Per the
+project's own hard rule (WNS>=0 both widths before commit), **this does not ship. wip/c4a's
+tip stays 493dc343 (C4a step 1); the self-loop sits UNCOMMITTED in the worktree**, correct and
+a genuine simulated win, but blocked on IW=3 timing.
+
+**Root cause, and why OOC missed it.** `rv_cache`'s OOC (+1.252) measures the MODULE's own
+internal critical path with `rd_ack` as an ordinary, lightly-loaded primary output. In the
+full build `rd_ack` fans out through the SoC into `c_rd_want`/`lsu_rd_ack` and from there into
+the LSU's own FSM and every scheduler that reads its results -- a small addition to `rd_ack`'s
+OWN logic depth (chk_rd's `hit`/`pipe_hold` term) costs every one of those downstream
+consumers the same amount, which OOC's isolated port cannot see. Census confirms the shape:
+818 -> 6028 near-critical (<+0.35 ns) endpoints at IW=3; by STARTPOINT MODULE, `u_lsu` alone
+went 3 -> 1280, `u_dcache/rd_resp_tag_reg` 359 -> 782, `u_rob` 0 -> 864 -- a broad congestion
+increase downstream of the door, not one bad path.
+
+**And this was foreseeable: the plan's own I8 reference says "the accept stays
+register-decoded."** `chk_rd` is the FIRST time this cache's `accept`/`rd_ack` has ever
+depended on `hit` -- every existing admission path (`S_IDLE`, `fin_wr`) is built entirely from
+STATE and already-registered fields, decoded fast; `hit` (the tag compare, ~13-18 levels) was
+until now used only INSIDE the S_CHECK case arm, gating internal register writes that are
+allowed to be wrong and silently discarded (I8's original point). Wiring it into the ACK
+itself breaks that property, because a requester cannot silently discard an ack: once told
+"accepted," it advances and never revisits that cycle. `rd_ack` is exactly the "the compare
+DECIDES, it does not ENABLE" boundary I8 warns about, and the self-loop's admission decision
+is a hit-dependent enable by its very nature -- there may be no way to keep it purely
+register-decoded without more structural change than "just gate it right."
+
+**Tried and reverted (2026-09-19): making the CAPTURE (not the accept) hit-independent.**
+The theory: since a capture that turns out unneeded is normally silently discarded (matches
+S_IDLE's own documented property), maybe only the capture block's wide, ~150-bit `chk_rd`
+gate -- not `accept`/`rd_ack` itself -- was the actual congestion source, and it could be
+replaced by a cheap `chk_cap` built from state + already-registered fields alone (dropping
+`hit`/`pipe_hold`). WRONG: `pipe_hold`'s hold cases (the banks weren't actually addressed
+last cycle, F_ANS is busy, the one MSHR is occupied, a write-hit-victim collision) all mean
+the FSM is RETRYING THE SAME REQUEST next cycle and r_addr/r_tag/cur_line/etc. must survive
+unchanged -- a hit-independent capture clobbers them regardless of which case it is, and
+`ooo2_lsu.v:555`'s own B-rule assertion ("fast response with tag N that nothing is waiting
+on") caught it on the very first cosim run. Reverted in full; `chk_rd` is the sole admission
+wire again, exactly as the working version above. OOC for `chk_cap` alone (+1.206, barely
+different from the un-split version) suggests the capture's own width was NOT actually the
+dominant congestion source anyway -- consistent with the `rd_ack`-fanout theory above.
+
+**What the boot numbers say, and what they do NOT say.** The self-loop measures:
+
+| 300 M boot | IW=2 | IW=3 |
+|---|---:|---:|
+| C4a step 1 (baseline) | 76,007,711 | 74,614,701 |
+| + the self-loop | 76,913,505 (**+1.19%**) | 74,597,923 (**−0.02%**) |
+
+with the 60 M checkpoints agreeing (+2.6% / +0.11%). **This is NOT a verdict on the
+self-loop.** It is a statement about the machine that exists TODAY: with ONE AGU port only
+one address is generated per cycle, so the LSU physically cannot present enough demand to
+saturate a 1-per-cycle door, and C4a step 1 already collected what the current port count can
+reach. In the END STATE this program is building (§ the plan: 3 ALU/AGU ports, C4b then C7),
+loads issue from each of three ALUs, so cycles with several loads waiting to execute are
+routine and a door that accepts once every two cycles is a hard ceiling on all three. The
+self-loop is a PREREQUISITE for that machine, not an optimization of this one -- do not
+retire it because today's single AGU cannot feel it. (Tommy, 2026-09-19, correcting exactly
+this mistake in an earlier draft of this section.)
+
+So: the increment continues. What actually blocks it is the timing structure above --
+`rd_ack` must stop depending on `hit` -- and that has a known fix.
+
+**THE FIX: a one-deep SKID BUFFER at the door.** (Recorded first, because the obvious "just
+add a delivery state" idea does NOT work: accept -> S_CHECK -> a new one-cycle S_RDDELIV with
+the door open there would still be one accept every two cycles -- the same cadence as today,
+for an extra cycle of latency. Worthless; do not build it.) The skid-buffer shape instead:
+- The door accepts during S_CHECK on the CHEAP, register-decoded condition alone (`chk_cap`
+  above: state + already-registered request fields + `wr_req`, no `hit`), so `rd_ack` never
+  sees the tag compare and I8 holds.
+- The accepted request lands in a SECOND request register set `n_*` (a one-deep skid slot),
+  NOT in `r_*` -- which is exactly what makes it safe where the reverted attempt was not:
+  `r_*` is never clobbered, so `pipe_hold`'s retry cases keep their live request.
+- `~n_v` joins the accept condition (a register, cheap): the slot holds at most one.
+- When the pipeline frees (a self-looped hit, or a return to S_IDLE), it takes from `n_*`
+  before the door -- older wins, the same priority shape `f_replay` already uses.
+- The bank read address mux gains `n_addr` as a source, selected by `n_v` -- a REGISTER, so
+  rule I6 (nothing late on a BRAM address) still holds.
+Cost: ~220 bits of duplicate request registers plus that mux. Cheap on this part, and it is
+the shape that makes the accept honest.
+
+**BUILT (2026-09-19).** `n_v`/`n_*` in `rv_cache.v`, and the door's one question split into
+two:
+- `door_take` -- "I took your request" -- is `door_ok & ~n_v & ~fill_banks & ~inv_go &
+  ~inv_busy & ~fin_hazard & ~f_replay & ~f_solo & (rd_req | req_wr) & ~(req_solo & f_v)`,
+  where `door_ok = (st == S_IDLE) | fin_wr | (slot_ok & ~req_solo)`. Every term is a state
+  bit, an already-registered field or a module input: **`hit` and `pipe_hold` appear
+  nowhere**, so `rd_ack` is register-decoded end to end, which was the whole point.
+- `do_pull` -- "I am starting your lookup" -- is `pipe_free & ~f_replay & (n_v | door_take)`
+  with `pipe_free = ((st == S_IDLE) | fin_wr | pull_hit) & ...`, and `pull_hit` is the
+  self-loop (`slot_ok & ~pipe_hold & hit`). This one may be late: it drives only `r_*`,
+  `cur_line`, `st`, `n_v`, `b_live` and the bank address -- all inside the module.
+`do_pull` replaced `accept` at every one of its old sites (`bk_rd_drv`, `b_live`, the capture
+enable, the three `st <=` arms); `door_take` replaced it at the ones that are really about
+what came IN (`wr_acc`, the chunk-alignment/solo/PAW_SIG assertions, the perf stamp).
+
+The BYPASS is what keeps a streaming hit at today's latency: in the cycle S_CHECK resolves a
+hit, the banks are already being addressed from the live door address (`a_live`'s new
+`n_v ? n_addr : door` select), `door_take` and `do_pull` both fire, `r_*` loads straight from
+the door and `n_v` stays 0 -- the slot is skipped entirely. The slot only fills when a
+request is taken in a cycle the pipeline does NOT free up (a miss, a hold), which is exactly
+the case where the old door would have made the requester wait at its own port instead.
+
+Four new always-on assertions state the slot's hazards: a second request taken onto a full
+slot (the first would vanish, and the requester cannot see that -- it already advanced on the
+ack), a pull with nothing at the door and nothing in the slot, a SOLO request found in the
+slot (they are taken only at S_IDLE/fin_wr, which is what lets the pull re-check nothing
+about them), and a pull overtaking an owed fill replay.
+
+**THE GATE SET CHANGED HERE: IW=3 is POR, IW=2 is dropped completely** (Tommy,
+2026-09-19). The both-widths rule existed because IW=2 was the SHIPPING width while IW=3
+could not close; that inverted on 2026-09-17 when IW=3 closed board-clean. Gate each
+increment on IW=3 alone -- one `make bit`, one board gate. IW=2 cosims are optional and never
+block. The IW=2 build+gate was the dominant wall-clock cost of every increment (~40 min +
+~20 min) and bought only timing coverage for a configuration we do not ship; the
+width-parameterisation bugs it was credited with are functional and come from cosims.
+
+**And the bitstream that gate reads must be fresh -- see rule G11.** This increment is where
+`build.tcl`'s "Bitstream already up to date, skipping" was caught lying: the routed
+checkpoint was 10:32 (the skid buffer) and the `.bit` beside it was 02:32, from a DIFFERENT
+build that had MISSED timing at -0.270. The timing report and the bitstream disagreed, and a
+board gate cannot tell you that. Guard fixed to compare mtimes against the routed checkpoint.
+
+**T21 in `tb_ooo2_dcache.v` is the regression test this increment was missing.** It warms 32
+lines, then streams 32 read hits with a requester that presents the next address in the same
+edge the door took the last one, and measures cycles per accepted read: an S_IDLE-only door
+is pinned at 2.00 whatever the requester does, a self-looping one approaches 1.00. It fails
+under 32 acks or over 48 cycles. This matters because a BOOT retire count cannot see the
+door at one AGU port -- both designs sit at ~10% door utilisation there (5.8-5.9 M accesses
+in 60 M cycles), which is precisely why the end-state argument above, not a boot delta, is
+what justifies the increment.
+
+**Aside, ruled out and not chased:** `workloads/ldbench` hangs identically (pc~0x20,
+retires=61,904,704 at the 200 M cutoff, no console text at all) on BOTH this tree and the
+untouched 493dc343 baseline via `FW=ldbench.bin ../../ooo2/run-ooo2-linux.sh` -- a
+pre-existing harness/invocation issue (mtvec is never programmed in `ldbench`'s crt0.s; a
+guess is some other trap reaches an unmapped address 0x0-ish and free-loops), not a self-loop
+defect. ldbench's own numbers in the C4a design notes above must have come from a different
+invocation than the one tried here; re-deriving the right one is a follow-up, not a blocker
+(every OTHER measurement -- the 300 M retire counts, the OOC margins -- already answers "did
+the self-loop help" without it).
+
+**Rule candidate (I13): a shared door/arbiter that grants one class priority over another
+needs that priority re-examined every time the winning class's access rate changes** -- not
+just when the LOSING class's request rate changes, which is the usual thing a code review
+checks for. `r_is_wr <= wr_req && !rd_req` was reviewed and accepted when reads could only
+ever claim 50% of cycles; doubling that ceiling (the self-loop) needed the SAME rule
+revisited even though nothing about writes changed at all.
+
+## Future consideration (Tommy, 2026-09-19, deferred until everything else here is done)
+
+**CTF as ALU + occasional side effect, on the ALU ports.** (Tommy's end-state strawman,
+2026-09-19: `LSA (Load,Store,Atomic) + ALU/CTF + ALU/CTF + FP/MULDIV/CSR/fence`. Note this
+SUPERSEDES the plan's C4b/C7 "AGU on the ALU ports": loads stay in a dedicated pipe, because
+an ALU scheduler entry that produces no result of its own -- `e_prd = 0`, excluded from the
+FIXEDL wakeup matrix, dependents woken from the SH_LD landing instead -- is a special case in
+the most timing-critical structure there is, paid for only to buy address bandwidth. Stores
+stay there too: they are not ALU-shaped (no register result) and their one ALU-ish part, the
+address add, is already bought off by the memory-dependence speculation, which has loads
+issue past unknown-address stores and replay on violation. One LSA pipe also means at most
+one address per cycle, which is exactly what the 1-per-cycle door above serves.) Today's control-transfer
+resolution (`u_xf`, mirroring M one-for-one, fed from `j_*`/`iss_c`) is ONE pipe: `u_iq_c` is
+in-order, so exactly one branch/jump resolves per cycle and the "oldest wins" interlock on
+`fr_v` is free (there is only ever one). Tommy's idea: treat a CTF op as an ALU op with an
+occasional side effect (the link write, the redirect) and let it execute on either
+ALU port instead of the single shared CTF pipe.
+
+**THE LINK VALUE IS ALREADY THERE, AND IT IS NOT PC+4.** `src/exec_alu.v:42` computes
+`next_pc = pc + (is_rvc ? 2 : 4)` and `result = res_link ? next_pc : alu_r`, and the ALU
+ports ALREADY wire it: `u_xa` takes `.res_link(qa_res_link) .is_rvc(qa_rvc) .pc(qa_pc)` (the
+payload carries the PC for AUIPC regardless). `ooo2_exec` is the same module the CTF pipe
+instantiates as `u_xf`. So there is no payload widening, no new adder, and no `cf_link_wb`
+arm on SH_FE -- the link just uses the ALU's own write port. What has to move is only the
+comparator/target side (`xf_redirect`/`xf_taken`/`xf_taken_tgt`) and the resolution
+bookkeeping. Carry the `is_rvc` term explicitly: C.JALR links x1 = PC+2 (and C.JAL likewise
+on RV32; on RV64 that encoding is C.ADDIW), so a re-derived "PC+4" would be a silent wrong
+link value that only a lockstep divergence would eventually expose. (Tommy caught exactly
+this in an earlier draft of this note.)
+
+**The costs, and how big each really is:**
+- **Multi-redirect is smaller than it looks.** The SQUASH already fires at ROB head, so two
+  squashes cannot collide -- oldest-wins is implicit there. What needs a real age compare is
+  the EARLY frontend restart (`fr_set`/`fr_v`), which today gets oldest-wins for free from
+  `u_iq_c` being in-order. One compare, on a non-head path -- and C6 (mid-window rollback)
+  builds exactly that machinery, so doing this AFTER C6 is much cheaper than before it.
+- **Predictor/BTB TRAINING doubles to 2/cycle** (mispredict redirects stay <=1/cycle at head;
+  per-branch counter training does not). **Just buffer it** (Tommy): two same-cycle
+  resolutions are rare, so a 1-deep skid absorbs them and drains at 1/cycle. A buffer is the
+  RIGHT answer and not merely the cheap one because a training update is DROPPABLE -- it
+  feeds a hint structure, so an overflow may discard rather than stall, and a cycle or two of
+  staleness costs essentially nothing in accuracy.
+- **Slot contention** is modest: ~0.3 branches/cycle at IW=3 IPC against two ALU ports.
+
+**The real prize is not bandwidth.** One CTF pipe already has ~3x headroom on the average
+branch rate. The win is that `u_iq_c` is IN-ORDER today, so a branch whose operands are ready
+waits behind an older branch whose are not, and every cycle of delayed resolution is
+wrong-path work; resolving out-of-order on the ALU ports cuts mispredict LATENCY. A bonus:
+taking CTF off the shared F queue drops it from four drains (`iss_f`/`iss_c`/`iss_md`/
+`iss_sys`) to three, and that queue is on the critical path -- the CTF-on-FP-port change was
+part of the -0.528 plateau -- so this may RECOVER timing rather than cost it. Not started;
+sequence it after C6.
+
+**WHICH SIGNALS MAY BE LATE, WRONG OR LOST -- the taxonomy C4a step 2 paid to learn.**
+`rd_ack` may be neither late nor lossy: a requester acts on it irrevocably (it advances and
+never revisits), which is why `hit` in its cone cost IW=3 its closure. An `r_*` capture may
+be WRONG provided it is overwritten before anything reads it (I8's original point, and what
+S_IDLE's own capture has always relied on) -- but NOT while a `pipe_hold` retry still needs
+it. Predictor training may be late AND dropped outright. Classify a new signal into one of
+those three before deciding what is allowed to gate it.
+
