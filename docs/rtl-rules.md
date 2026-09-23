@@ -534,6 +534,25 @@ outside the state the redirect resets. The cosim caught nothing for 300 M cycles
 Linux boot is integer code with predictable calls; the reproducer is FP-dense with indirect
 calls, and it stays in the sweep (`make sweep-iw3 GENFLAGS=--fpmix TAG=-fp`).
 
+**D14. Recovery state is a snapshot the redirecting instruction carries, or state that moves
+at retirement -- never a count accumulated at resolve.** A pipe that resolves out of order,
+or resolves wrong-path instructions before their squash, sees neither program order nor only
+the program: a counter advanced at resolve drifts by every wrong-path event and every
+reordering, and a redirect that restores from it lands somewhere the speculative state never
+was. The predictor's RAS pointer is the case: each bundle carries the pointer it saw at fetch,
+a mid-window redirect restores from the redirecting instruction's copy, a head redirect from a
+pointer the retiring calls and returns move. The same applies to any state a redirect
+restores (history registers, free-list heads, queue tails): name the instruction whose view
+it is, and carry that view with it.
+
+**D15. A field that carries a position is as wide as the largest position.** The predictor's
+slot offset was 2 bits and saturated at 3, while at IW=3 slot 2 sits up to 4 halfwords from
+its bundle base: every CTI there trained the BTB at an address no lookup used, so it never hit,
+and a call there never pushed the RAS. Size such fields from the parameter that bounds them
+(`clog2(2*IW-1)` for a halfword offset within an IW-slot bundle), assert the producer and
+consumer agree on the width, and never saturate a position: an unrepresentable value is an
+assertion, not a clamp.
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

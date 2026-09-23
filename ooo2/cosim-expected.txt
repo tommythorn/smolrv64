@@ -14,11 +14,11 @@
 #   when the testbench started summing the third commit port (every earlier IW=3 count is low).
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  13835891  0.5  3   # C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
+60000000  8  13977876  0.5  3   # Predictor (2026-09-22): slot-offset field sized for IW=3, RAS restored from the redirecting instruction's snapshot, +1.03%. Previously 13835891: C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
                                   # C1 (2026-09-17): mul/div on the F/CTF port (+0.03%). Previously 13367267:
                                   # IW=3 (2026-09-17): the TRUE 3-wide count, all three commit ports summed;
                                   # -0.9% vs IW=2 on this boot (the -11.7% on record was the missing third port).
-60000000  8  13975979  0.5   # C4a step 1 (2026-09-18): the tagged fast load path (da28895b re-done), +3.6% on
+60000000  8  14131980  0.5   # Predictor (2026-09-22): RAS restored from the redirecting instruction's snapshot, +1.12%. Previously 13975979: C4a step 1 (2026-09-18): the tagged fast load path (da28895b re-done), +3.6% on
                               # the boot at the measured DDR shape. Previously 13490465:
                               # C1 (2026-09-17): mul/div leave the ordered pipe for the F/CTF port; -0.03% on
                               # this boot (few multiplies; the port now shares with every branch). Previously 13494359:

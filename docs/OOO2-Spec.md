@@ -295,8 +295,11 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   a chunk whose successor had not landed, the pair register's stale bytes could end the
   bundle after slot 0 -- a shape the code did not determine, and a third bundle base for the
   loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) The bundle's prediction
-  belongs to its last slot; slot 1 carries its offset from the bundle base in the predict
-  details (`BOW`, PDW 16 → 18) so training recomputes the key from the base (§4.2).
+  belongs to its last slot; every slot carries its offset from the bundle base in the predict
+  details so training recomputes the key from the base (§4.2). The field is
+  `clog2(2*IW-1)` bits wide (2 at IW=2, 3 at IW=3: slot 2 sits up to 4 halfwords from the
+  base behind two 32-bit ops), and `ooo2_predictor` asserts it matches what the frontend
+  stamps. `PDW` = 17 (BIMW+YW) + 3 (the RAS-top snapshot) + that field: 22 at IW=2, 23 at IW=3.
 - **Combinational read at `base_pc`** (Stage 1, 2026-09-13): the predictor addresses its BTB
   and YAGS arrays directly with the presented bundle's base PC (`base_pc` = fetch's `pc_q`, a
   register), not with a cycle-ahead guess. The arrays are distributed LUTRAM (asynchronous
@@ -328,6 +331,16 @@ found under slot 0's, and mispredicted every execution.
 | YAGS corrector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | distributed LUTRAM, async read |
 | GHR | 12 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
+
+**RAS recovery.** Each bundle's predict details carry the RAS top the bundle saw at fetch,
+before its own push or pop. A redirect restores the pointer (`rb_rsp`, formed in `ooo2_core`
+beside the redirect target and registered with it) from the redirecting instruction itself:
+a CTF-stage restart from the mispredicting CTI's snapshot plus its own push or pop; a decode
+resteer from the redirected slot's snapshot plus its push when it is a call; a redirect at
+the ROB head from `rsp_r`, the pointer the retired calls and returns leave (two class bits
+per ROB entry, written at dispatch and read at commit). The array itself is not restored. A
+count kept at resolve cannot serve as the committed pointer: control flow resolves out of
+order on its own pipe, and a wrong-path call or return resolves before its squash (rule D14).
 
 **The corrector's tag carries the PC bits its index consumes** (2026-09-10): the index is
 PC[10:1] xor the history, so those PC bits are not recoverable from the slot; the tag used to
@@ -1170,7 +1183,7 @@ shipping configuration (`SIZE_KB`=64, `OOO2_HW`=8, `PAW`=64 into the caches).
 | `u_iq_f` entry | `ooo2_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `ooo2_core` | 37 (10+10+12+5) | 413 | 15 281 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
 | `pend` | `ooo2_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
-| `q_dat` | `ooo2_frontend` | 8 | 257 | 2 056 | LUTRAM | the decoupling queue: `QW = PDW(18)+PCW+32+SEQW+2+PCW+1+4+PCW`; carries the prediction's choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
+| `q_dat` | `ooo2_frontend` | 8 | 257 | 2 056 | LUTRAM | the decoupling queue: `QW = PDW+PCW+32+SEQW+2+PCW+1+4+PCW` (PDW 22 at IW=2, 23 at IW=3); carries the prediction's choice and target, not `pred_npc`; decode rebuilds it from the length it decodes |
 
 Each PRF shard now has **its own write address** (`wa_ie`/`wa_ld`/`wa_fe`), which is §7 of
 `Area-Efficient-Scalar-OoO.md`'s "give each file its own port and a single writer and the

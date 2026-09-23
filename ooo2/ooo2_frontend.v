@@ -19,7 +19,8 @@ module ooo2_frontend
     parameter SEQW  = 8,
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter IW    = 2,             // pipeline width (instructions/cycle); threaded from OOO2_IW (Stage 3)
-    parameter PDW   = 19,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW); YW
+    parameter RASB  = 3,             // log2 RAS entries (ooo2_predictor)
+    parameter PDW   = 23,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW); YW
                                      // shrank 16->14 when the YAGS corrector went 8192->2048
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
@@ -46,6 +47,7 @@ module ooo2_frontend
     input  wire                    redirect,
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
+    input  wire [RASB-1:0]         redirect_rsp,      // the RAS top the redirect restores
     input  wire                    irq_inject,        // present the interrupt pseudo-op
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
     output wire                    fe_dq_valid,       // fetch produced an instruction this cycle
@@ -258,11 +260,11 @@ module ooo2_frontend
 
    // ------------------------------------------------------- branch predictor
    wire [PDW-1:0] pd_fetch;
-   ooo2_predictor #(.PCW(PCW), .PDW(PDW)) u_bp
+   ooo2_predictor #(.PCW(PCW), .PDW(PDW), .OFW(OFW), .RASB(RASB)) u_bp
      (.clk(clk), .reset(reset),
       .fire(fire), .base_pc(imem_ipc), .rd_pc(f_pc_next), .ft_npc(f_ftn), .cti_ok(f_brt),
       .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .rollback(redirect), .pd_fetch(pd_fetch),
+      .rollback(redirect), .rb_rsp(redirect_rsp), .pd_fetch(pd_fetch),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),
       .res_rep(res_rep));
@@ -327,16 +329,21 @@ module ooo2_frontend
                              (dq_sv[1] ? 2'd0 : dq_pk), bp_tgt, dq_fault, imem_cause, imem_addr};
    // a slot's offset from the bundle base (halfwords) trains the predictor entry the prediction
    // was looked up under (see res_base). slot 1 = len(s0); slot 2 = len(s0)+len(s1).
+   // The field is OFW bits, the predictor's BOW: slot 2 sits up to 4 halfwords from the base
+   // (two 32-bit ops before it), so IW=3 needs 3 bits. An offset the field cannot hold would
+   // train the BTB at a base no lookup ever uses.
+   localparam integer OFW = (IW <= 1) ? 1 : $clog2(2*IW-1);
    wire [1:0]     dq_len0 = (dq_inst[0  +: 2] == 2'b11) ? 2'd2 : 2'd1;
    wire [1:0]     dq_len1 = (dq_inst[32 +: 2] == 2'b11) ? 2'd2 : 2'd1;
-   wire [1:0]     dq_off1 = dq_len0;
-   wire [2:0]     dq_off2 = {1'b0, dq_len0} + {1'b0, dq_len1};
-   wire [1:0]     dq_off2s = dq_off2[2] ? 2'd3 : dq_off2[1:0];       // saturate to the 2-bit field
+   wire [2:0]     dq_off1w = {1'b0, dq_len0};
+   wire [2:0]     dq_off2w = {1'b0, dq_len0} + {1'b0, dq_len1};
+   wire [OFW-1:0] dq_off1 = dq_off1w[OFW-1:0];   // slots that exist at this IW always fit
+   wire [OFW-1:0] dq_off2 = dq_off2w[OFW-1:0];
    // slot 1: falls through if a slot 2 follows (IW>=3), else carries the bundle prediction.
-   wire [QW-1:0]  q_in1   = {dq_off1, pd_fetch[PDW-3:0], dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
+   wire [QW-1:0]  q_in1   = {dq_off1, pd_fetch[PDW-OFW-1:0], dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
                              (dq_sv2 ? 2'd0 : dq_pk), bp_tgt, 1'b0, imem_cause, imem_addr};
    // slot 2: the bundle's last slot when present, so it carries the prediction.
-   wire [QW-1:0]  q_in2   = {dq_off2s, pd_fetch[PDW-3:0], dq_pc2, dq_inst2, dq_seq2,
+   wire [QW-1:0]  q_in2   = {dq_off2, pd_fetch[PDW-OFW-1:0], dq_pc2, dq_inst2, dq_seq2,
                              dq_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
    wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
    wire [QAW-1:0] q_wp2   = q_wp + 2'd2;

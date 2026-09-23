@@ -35,7 +35,10 @@ module ooo2_core
     parameter HW   = `OOO2_HW,
     parameter IW   = `OOO2_IW,
     parameter AW   = 64,
-    parameter PDW   = 19,          // ooo2_predictor predict-detail width (BIMW+YW+BOW): YAGS 8192->2048
+    // ooo2_predictor's predict-detail width: BIMW+YW (17), the RAS-top snapshot (3 bits, RASB
+    // below), and the slot-offset field, which holds slot IW-1's distance from its bundle base,
+    // up to 2*(IW-1) halfwords.
+    parameter PDW   = 20 + ((IW <= 1) ? 1 : $clog2(2*IW-1)),
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
     parameter        LRAM_LG2 = 18)
@@ -201,6 +204,12 @@ module ooo2_core
    wire                     redirect_is_trap;
    wire [SEQW-1:0]          redirect_seq;
    wire                     fe_red_pulse, fr_set;
+   // The predict details' fields the core reads: the RAS-top snapshot sits just below the
+   // slot-offset field (ooo2_predictor's pd_fetch).
+   localparam integer RASB   = 3;
+   localparam integer PD_OFW = (IW <= 1) ? 1 : $clog2(2*IW-1);
+   localparam integer PD_RSP = PDW - PD_OFW - RASB;          // the snapshot's LSB
+   reg  [RASB-1:0]          fe_red_rsp_q;                    // the RAS top the redirect restores
    wire [PCW-1:0]           fe_red_tgt;
    wire [SEQW-1:0]          fe_red_seq;
    // decode-stage direct-CTI redirect (static JAL / backward-branch resteer): assigned
@@ -356,7 +365,7 @@ module ooo2_core
    wire d3_fault;
    wire [3:0] d3_fault_cause;
    wire [PCW-1:0] d3_fault_tval;
-   ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW),
+   ooo2_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW), .RASB(RASB),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
       // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
@@ -367,7 +376,7 @@ module ooo2_core
       .consume_c(rn_valid_c), .three_wide(three_wide),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
-      .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q),
+      .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_adv_kind(imem_adv_kind), .imem_adv_tgt(imem_adv_tgt),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
@@ -3782,6 +3791,52 @@ module ooo2_core
                       : dr1 ? (d2_pc + d2_imm)
                       :       (d3_pc + d3_imm);
    assign dec_red_seq = (dr0 ? d_seq : dr1 ? d2_seq : d3_seq) + 1'b1;
+
+   // ---- the RAS top every frontend redirect restores (ooo2_predictor rb_rsp) ----------------
+   // A redirect restores the RAS pointer to where the redirecting instruction leaves it:
+   //   head (M, SYSQ): every older instruction has retired, so the pointer the retired calls
+   //                   and returns leave: rsp_r, below.
+   //   CTF restart:    the mispredicting CTI's fetch-time snapshot plus its own push or pop.
+   //   decode resteer: the redirected slot's snapshot, plus its push when it is a call.
+   // A call or return is x1/x5 linkage: a call writes a link register, a return is a jalr that
+   // reads one and writes none.
+   function [1:0] cti_cls;     // {call, ret}
+      input is_jump, is_jalr, rd_v;  input [5:0] rd, rs1;
+      reg lrd, lrs;
+      begin
+         lrd = rd_v & ((rd == 6'd1) | (rd == 6'd5));
+         lrs = (rs1 == 6'd1) | (rs1 == 6'd5);
+         cti_cls = {is_jump & lrd, is_jalr & lrs & ~lrd};
+      end
+   endfunction
+   wire [1:0] d_cls1 = cti_cls(d_is_jump,  d_is_jalr,  d_rd_v,  d_rd,  d_rs1);
+   wire [1:0] d_cls2 = cti_cls(d2_is_jump, d2_is_jalr, d2_rd_v, d2_rd, d2_rs1);
+   wire [1:0] d_cls3 = cti_cls(d3_is_jump, d3_is_jalr, d3_rd_v, d3_rd, d3_rs1);
+   // The retired pointer: each ROB entry's {call, ret}, written at dispatch, read at commit.
+   reg [1:0]      rcls [0:ROB_DEPTH-1];
+   reg [RASB-1:0] rsp_r;
+   integer ri;
+   initial begin rsp_r = {RASB{1'b0}}; for (ri = 0; ri < ROB_DEPTH; ri = ri + 1) rcls[ri] = 2'b00; end
+   always @(posedge clk) begin
+      if (rn_valid)   rcls[rob_d_idx]  <= d_cls1;
+      if (rn_valid_b) rcls[rob_d_idx2] <= d_cls2;
+      if (rn_valid_c) rcls[rob_d_idx3] <= d_cls3;
+   end
+   function [RASB-1:0] rsp_step;    // +1 for a call, -1 for a return
+      input [1:0] cls;
+      rsp_step = cls[1] ? {{(RASB-1){1'b0}}, 1'b1} : cls[0] ? {RASB{1'b1}} : {RASB{1'b0}};
+   endfunction
+   wire [RASB-1:0] rsp_c1 = rob_c_valid  ? rsp_step(rcls[rob_head_idx])  : {RASB{1'b0}};
+   wire [RASB-1:0] rsp_c2 = rob_c2_valid ? rsp_step(rcls[rob_head2_idx]) : {RASB{1'b0}};
+   wire [RASB-1:0] rsp_c3 = rob_c3_valid ? rsp_step(rcls[rob_head3_idx]) : {RASB{1'b0}};
+   always @(posedge clk) rsp_r <= reset ? {RASB{1'b0}} : rsp_r + rsp_c1 + rsp_c2 + rsp_c3;
+   wire [RASB-1:0] cf_rsp  = cf_pdet[PD_RSP +: RASB]
+                           + rsp_step({cf_is_jump & cf_link_rd, cf_is_jalr & cf_link_rs & ~cf_link_rd});
+   wire [RASB-1:0] dec_rsp = dr0 ? d_pdet[PD_RSP +: RASB]  + rsp_step({d_cls1[1],  1'b0})
+                           : dr1 ? d2_pdet[PD_RSP +: RASB] + rsp_step({d_cls2[1], 1'b0})
+                           :       d3_pdet[PD_RSP +: RASB] + rsp_step({d_cls3[1], 1'b0});
+   wire [RASB-1:0] fe_red_rsp = (m_red_fire | sy_red) ? rsp_r : fr_set ? cf_rsp : dec_rsp;
+   always @(posedge clk) fe_red_rsp_q <= fe_red_rsp;
    always @(posedge clk) if (!reset) begin
       if (rn_valid_b & ~rn_valid)       $fatal(1, "ooo2_core: slot B dispatched without slot A");
       if (rn_valid_b & (d2_cls == d_cls)) $fatal(1, "ooo2_core: slot B dispatched to slot A's scheduler");

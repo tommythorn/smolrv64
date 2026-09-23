@@ -1,20 +1,12 @@
 `default_nettype none
 
-// Frontend branch predictor. Forked from the retired sharded core's predictor.v, which
-// checkpointed {ghr, ras, ras_ptr} into an NCHK-deep ring keyed by rename checkpoint.
-// This core has NO checkpoints and needs none:
+// Frontend branch predictor: BTB, YAGS corrector and RAS, with no checkpoint ring.
 //
-//   M is the only commit point, so at most one instruction can be redirecting and
-//   everything younger is squashed wholesale. There is never a second speculative
-//   state to choose between, so there is nothing for a ring INDEX to select.
-//
-// What replaces it: two committed scalars (ghr_c, rptr_c) advanced at resolve and
-// restored on redirect, and NO committed RAS array at all. The per-bundle predict
-// details ride the pipeline with their instruction (pd_fetch -> res_pdet) instead of
-// sitting in a side ring keyed by a checkpoint tag.
-//
-// Forked rather than parameterised so this core's needs were never negotiated against the
-// sharded core's (that core and its predictor.v are gone since the 2026-09 release).
+// Recovery state travels with instructions instead. Each bundle's predict details
+// (pd_fetch) carry the RAS top it saw, and ride the pipeline with their instruction to
+// resolve (res_pdet), so a redirect restores the RAS pointer from the redirecting
+// instruction's own snapshot (rb_rsp, formed in ooo2_core). The committed history ghr_c
+// advances at resolve. There is no committed RAS array.
 //
 // Everything here is a HINT, never architectural: the mispredict check is the
 // exec-side `actual_npc != pred_npc` compare (branch_unit), so a stale BTB entry,
@@ -77,7 +69,8 @@ module ooo2_predictor
     // Carried predict details. INDEPENDENT OF BTBB, TAGW and YTAGW -- see `training`:
     // an index or a PC-only tag is recomputed at resolve from res_pc instead of riding
     // the pipeline. Only yidx must be carried, because it folds the PREDICT-time GHR.
-    parameter PDW   = (1+2) + (1+2+YBITS))
+    parameter PDW   = (1+2) + (1+2+YBITS) + RASB + 2,
+    parameter OFW   = 2)             // the frontend's slot-offset field; must equal BOW below
    (input  wire                 clk,
     input  wire                 reset,
     // ---- fetch side (cycle T) ----
@@ -92,6 +85,8 @@ module ooo2_predictor
     output wire [PCW-1:0]       pred_tgt,
     // ---- redirect ----
     input  wire                 rollback,     // a redirect is entering the frontend this cycle
+    input  wire [RASB-1:0]      rb_rsp,       // ...and the RAS top it restores: the redirecting
+                                              // instruction's own snapshot (see `restore`)
     // ---- predict details, CARRIED WITH THE INSTRUCTION (no checkpoint ring) ----
     output wire [PDW-1:0]       pd_fetch,     // this bundle's details; capture it where the
                                               // frontend latches the bundle (one cycle after fire)
@@ -217,18 +212,19 @@ module ooo2_predictor
    reg [GHL-1:0]  ghr;
    reg [PCW-1:0]  ras [0:RASN-1];
    reg [RASB-1:0] ras_ptr;                   // top of stack
-   // No checkpoint ring. The in-order core has ONE commit point (M), so at most one
-   // instruction can be redirecting and everything younger is squashed wholesale --
-   // there is never a second speculative state to choose between. A committed copy of
-   // the two scalars is all a redirect needs, and the RAS ARRAY needs nothing: with the
-   // pointer restored, a wrong-path push landed above it and is unreachable.
+   // No checkpoint ring. The RAS top a redirect restores (rb_rsp) comes with the redirect:
+   // each bundle's pre-push pointer rides in its predict details (pd_fetch), so the core
+   // restores from the redirecting instruction's own snapshot, or, for a redirect at the ROB
+   // head, from a pointer that moves only as calls and returns retire. A count kept at resolve
+   // is not a committed state here: control flow resolves out of order and wrong-path CTIs
+   // resolve before their squash. The RAS ARRAY is not restored: with the pointer back, a
+   // wrong-path push sits above it and is unreachable.
    reg [GHL-1:0]  ghr_c;                     // committed history  (advanced at resolve)
-   reg [RASB-1:0] rptr_c;                    // committed RAS top  (advanced at resolve)
    integer ii;
    initial begin
       ghr = {GHL{1'b0}}; ras_ptr = {RASB{1'b0}};
       for (ii = 0; ii < RASN; ii = ii + 1) ras[ii] = {PCW{1'b0}};
-      ghr_c = {GHL{1'b0}}; rptr_c = {RASB{1'b0}};
+      ghr_c = {GHL{1'b0}};
    end
 
    // ------------------------------------------------------------------- predict
@@ -302,19 +298,21 @@ module ooo2_predictor
    localparam BIMW = 1 + 2;
    localparam YW   = 1 + 2 + YBITS;
    // BASE OFFSET (2026-09-05, two-wide fetch): the instruction's distance from its bundle's
-   // base PC in halfwords (0 for slot 0; 1 or 2 for slot 1), stamped by the frontend into
+   // base PC in halfwords (0 for slot 0, 1-2 for slot 1, 2-4 for slot 2), stamped by the frontend into
    // the top BOW bits of the details. Prediction is looked up under the bundle's BASE PC
    // (base_pc); training recomputes the index and tags from res_pc, the CTI's OWN PC,
    // which at IW=1 was the same address. At IW=2 a branch in slot 1 was trained under its
    // own PC and looked up under slot 0's -- never a hit, a mispredict every execution (the
    // sha256 kernel: 0.003 -> 1.36 redirects per thousand). res_base undoes the offset.
-   localparam BOW  = PDW - BIMW - YW;
+   localparam BOW  = PDW - BIMW - YW - RASB;
+   initial if (BOW != OFW)
+      $fatal(1, "ooo2_predictor: BOW=%0d (PDW=%0d) but the frontend stamps a %0d-bit slot offset", BOW, PDW, OFW);
    // COMBINATIONAL, not registered: every term is a fetch-time value of the bundle being
    // presented right now, so the consumer latches it in the SAME cycle as `fire` and gets
    // this bundle's details. src/predictor.v registers it into pdet_f and writes the ring a
    // cycle later at `create`, which is why that version needs the lag; carrying the payload
    // removes both the lag and the ring.
-   assign pd_fetch = {{BOW{1'b0}}, p_yhit, yctr_eff, yidx(base_pc, ghr), hit, ctr_eff};
+   assign pd_fetch = {{BOW{1'b0}}, ras_ptr, p_yhit, yctr_eff, yidx(base_pc, ghr), hit, ctr_eff};
    wire [1:0]    ctr_eff  = hit    ? q_type[1:0]  : 2'b01;  // miss -> install weakly-not-taken base
    wire [1:0]    yctr_eff = p_yhit ? ycorr_q[1:0] : 2'b01;  // p_yhit, not yhit: pd_fetch is the
                                                             // CTI cone's payload, unchanged
@@ -323,7 +321,7 @@ module ooo2_predictor
    always @(posedge clk) begin
       if (reset) begin
          ghr <= {GHL{1'b0}}; ras_ptr <= {RASB{1'b0}};
-         ghr_c <= {GHL{1'b0}}; rptr_c <= {RASB{1'b0}};
+         ghr_c <= {GHL{1'b0}};
          btb_q <= {EW{1'b0}}; ycorr_q <= {YEW{1'b0}};
       end else begin
          // SYNCHRONOUS READ-AHEAD (block RAM): read BTB/YAGS at the NEXT fetch PC so the
@@ -333,23 +331,15 @@ module ooo2_predictor
          btb_q   <= btb[bidx(rd_pc)];
          ycorr_q <= ycorr[yidx(rd_pc, ghr_nx)];
          ghr     <= ghr_nx;
-         // COMMIT: the committed copies advance on every resolved CTI, redirect or not.
-         // They are the only rollback state this core needs.
-         if (res_v) begin
-            if (res_cbr)  ghr_c  <= {ghr_c[GHL-2:0], res_taken};
-            if (res_call) rptr_c <= rptr_c + 1'b1;
-            if (res_ret)  rptr_c <= rptr_c - 1'b1;
-         end
+         // The committed history advances on every resolved conditional branch.
+         if (res_v & res_cbr) ghr_c <= {ghr_c[GHL-2:0], res_taken};
          // RAS POINTER (the ghr restore/speculate is folded into ghr_nx above).
          if (rollback) begin
-            // RESTORE the pointer from the committed scalar, applying the resolving CTI's own
-            // effect (this cycle's commit has not landed yet).
-            ras_ptr <= (res_rep & res_call) ? rptr_c + 1'b1
-                     : (res_rep & res_ret)  ? rptr_c - 1'b1 : rptr_c;
-            // The RAS ARRAY is deliberately NOT restored. With the pointer back where it
-            // belongs, a wrong-path push wrote at ptr+1 -- above the live region, where it
-            // is unreachable. Only a wrong-path pop-then-push can clobber a live entry, and
-            // the RAS is a hint: the cost is a mispredicted return, never a wrong answer.
+            // RESTORE the pointer the redirect carries. The array is not restored: a wrong-path
+            // push wrote above the restored top, where it is unreachable; only a wrong-path
+            // pop-then-push can clobber a live entry, and the RAS is a hint -- the cost is a
+            // mispredicted return, never a wrong answer.
+            ras_ptr <= rb_rsp;
          end else if (fire) begin            // SPECULATE: only on the fetch handshake
             if (p_call) begin ras[ras_ptr + 1'b1] <= ft_npc; ras_ptr <= ras_ptr + 1'b1; end
             if (p_ret)  ras_ptr <= ras_ptr - 1'b1;
@@ -426,8 +416,7 @@ module ooo2_predictor
                   t_idx, t_type, y_wr, y_nudge, ghr_c);
       if (bpt_on & rollback)
          $display("[BP] c=%0d ROLLBACK ghr<=%h ras_ptr<=%0d", bpt_cyc,
-                  (res_rep & res_cbr) ? {ghr_c[GHL-2:0], res_taken} : ghr_c,
-                  (res_rep & res_call) ? rptr_c + 1'b1 : (res_rep & res_ret) ? rptr_c - 1'b1 : rptr_c);
+                  (res_rep & res_cbr) ? {ghr_c[GHL-2:0], res_taken} : ghr_c, rb_rsp);
    end
 `endif
    always @(posedge clk) begin
