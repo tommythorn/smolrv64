@@ -3102,6 +3102,19 @@ module ooo2_core
       else if (redirect) fr_v <= 1'b0;      // the squash consumes it
       else if (fr_set)   begin fr_v <= 1'b1; fr_seq <= cf_seq; fr_rob <= cf_rob; end
    end
+   // The tracked restart's CTI trains the predictor before its squash fires (rule D16): in its
+   // resolve cycle, or for a jal/jalr once its link is written.
+   reg  fr_trn;
+   wire fr_trn_now = res_v & (cf_seq == fr_seq);
+   initial fr_trn = 1'b0;
+   always @(posedge clk) begin
+      if (reset | redirect)          fr_trn <= 1'b0;
+      else if (fr_set)               fr_trn <= res_v;
+      else if (fr_v & fr_trn_now)    fr_trn <= 1'b1;
+      if (!reset && cf_red_fire && !(fr_trn | fr_trn_now))
+         $fatal(1, "ooo2_core: squash of rob %0d (seq %0d) fires but its CTI never trained the predictor",
+                fr_rob, fr_seq);
+   end
 
    // Exactly one frontend flush per event. Re-flushing at the squash would discard the
    // correct path this whole mechanism exists to have fetched early.
@@ -3122,19 +3135,20 @@ module ooo2_core
    assign ifence           = m_valid & m_done & m_is_fencei;
 
    // ---- branch resolve / BTB training (from the CTF pipe, cf_*) ----
-   // Train exactly once per branch, at completion (cf_land = resolved and no longer held for a
-   // mispredict squash or a pending link write). res_pc_q / res_pdet_q carry the branch's PC
-   // and the predictor snapshot to u_bp one cycle later. Control flow is a single-cycle pipe
-   // of its own now, so cf_land is the natural once-per-branch training pulse -- the old M-stage
-   // res_v de-qualification (which existed to keep the LSU/CSR cones out of the predictor) is
-   // gone with the branches that made it necessary.
-   assign res_v     = cf_land & (cf_is_branch | cf_is_jump);
+   // Train exactly once per CTI, as it leaves the CTF stage (cf_done), mispredicted or not: the
+   // res_* fields below are the stage's own occupant, so the pulse must fire while the CTI is
+   // still in it. A mispredict's squash (cf_red_fire) comes later, after the stage has freed and
+   // holds another instruction, so cf_land cannot be the training pulse. res_pc_q / res_pdet_q
+   // carry the CTI's PC and predictor snapshot to u_bp one cycle later, in step with the
+   // frontend redirect. res_rep marks the resolve that is this cycle's early restart (fr_set),
+   // so the predictor's restored history includes the branch's own outcome.
+   assign res_v     = cf_done & (cf_is_branch | cf_is_jump);
    assign res_cbr   = cf_is_branch;
    assign res_call  = cf_is_jump & cf_link_rd;
    assign res_ret   = cf_is_jalr & cf_link_rs & ~cf_link_rd;
    assign res_taken = cf_taken;
    assign res_tgt   = cf_taken_tgt;
-   assign res_rep   = res_v & res_cbr & cf_redirect;
+   assign res_rep   = fr_set & cf_is_branch;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing

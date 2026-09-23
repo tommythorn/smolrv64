@@ -553,6 +553,20 @@ and a call there never pushed the RAS. Size such fields from the parameter that 
 consumer agree on the width, and never saturate a position: an unrepresentable value is an
 assertion, not a clamp.
 
+**D16. An event reads an instruction's fields while the instruction still holds them.** B3
+for pipeline stages. The CTF stage frees a CTI at resolve, so by the time a later event about
+that CTI fires (its squash at the ROB head), the stage holds the next occupant, or the stale
+registers of the last one. Training the predictor at the squash from the stage's fields
+therefore trains some other CTI, usually a wrong-path one dispatched behind the mispredict.
+The mispredicting CTI's own BTB, YAGS or RAS entry is never written, so it mispredicts again
+on every pass. Its early restart also rolls the history back without its own outcome. The
+damage grows with the window: at ROB 32 Proc_8's `ret` in Dhrystone never trains, and it
+costs a 22-cycle drain per iteration, enough to make the deeper ROB slower than ROB 16. An
+event fires while its instruction is in the stage (training at resolve), or it reads only a
+copy the instruction carried out (`fr_rob`, the RAS snapshot). An always-on check confirms
+the event belongs to the instruction it names (a tracked restart has trained before its
+squash fires, `fr_trn`).
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

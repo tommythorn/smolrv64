@@ -342,6 +342,14 @@ per ROB entry, written at dispatch and read at commit). The array itself is not 
 count kept at resolve cannot serve as the committed pointer: control flow resolves out of
 order on its own pipe, and a wrong-path call or return resolves before its squash (rule D14).
 
+**Training.** Every CTI trains the predictor once, as it leaves the CTF stage (`cf_done`),
+mispredicted or not, from its own stage fields. A mispredict's squash at the ROB head comes
+later, when the stage holds another instruction, and trains nothing (rule D16). A mispredicting
+conditional branch's early restart rolls the speculative history back to `ghr_c` plus its own
+outcome (`res_rep` = `fr_set`). Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3): 1.06
+redirects per iteration, the strcmp loop exit; 3 102 919 cycles. The Linux lockstep (IW=3)
+retires 15 607 214 instructions in 60 M cycles and 81 175 485 in 300 M.
+
 **The corrector's tag carries the PC bits its index consumes** (2026-09-10): the index is
 PC[10:1] xor the history, so those PC bits are not recoverable from the slot; the tag used to
 be built from PC[26:11] alone, which is 0 for every branch within the same 2 KiB, so every
@@ -1841,6 +1849,12 @@ What was swept at 22.08 and did NOT move it -- each of these is a hypothesis kil
 Re-confirmed after the store buffer: **ROB 16 -> 32** takes `ST_ROB` 58% -> 0% with cyc/elem
 unchanged at 17.08, and store-buffer `NENT` 4 -> 8 takes "full" from 426 514 cycles to 62,
 also unchanged. The ROB fills *because* something downstream is slow.
+
+On Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3), ROB 16 -> 32 takes `be:rob-full` from
+13.1% to 2.3% of cycles and the run time moves +0.5% (3 102 919 -> 3 118 298 cycles). The
+freed cycles become frontend bubbles (`fe:*` +63 cycles per iteration, against -67 of
+`rob-full`) and load-queue stalls (`be:lq-full` +18 per iteration). The frontend cannot fill
+the deeper window, so it is the limit here; the LQ has to grow with the ROB.
 
 `ST_ROB` goes 68% -> 0% at ROB=32 **with no change in speed**, which settles it: the ROB
 filled *because* something downstream was slow, not the reverse. And `FE_BUB` is 0%, so the
