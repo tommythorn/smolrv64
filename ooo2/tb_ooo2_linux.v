@@ -474,6 +474,19 @@ module tb;
    reg [63:0] ncyc, c, nret;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
 
+   // +tohost=<hex addr>: a bare-metal program's EXIT, the riscv-tests convention (tohost =
+   // code<<1 | 1, an 8-byte store). The run ends there instead of spinning to +cycles, and the
+   // end-of-run block reports the cycles actually run (workloads/rvbench). A store to tohost
+   // with bit 0 clear is an HTIF syscall, which this harness does not serve: rvbench routes
+   // the console to the UART.
+   reg [63:0] tohost_addr, tohost_code;  reg tohost_on, tohost_done;
+   initial begin tohost_on = $value$plusargs("tohost=%h", tohost_addr); tohost_done = 1'b0; tohost_code = 64'd0; end
+   always @(posedge clk) if (!reset && tohost_on && !tohost_done && dmem_wen
+                             && dmem_waddr[63:3] == tohost_addr[63:3]) begin
+      if (!dmem_wdata[0]) $fatal(1, "tb: HTIF syscall store to tohost (%h) -- not served; route the console to the UART", dmem_wdata);
+      tohost_done <= 1'b1;  tohost_code <= dmem_wdata >> 1;
+   end
+
    // +watch_pc=<hex pc>: follow ONE instruction through the F/CTF pipe -- its F issue (the link the
    // unit computed), its CTF landing, and every FE-shard PRF write to the physreg it was given.
    // Built for a jal whose link retired as another instruction's data (2026-09-21); a generated
@@ -505,6 +518,21 @@ module tb;
          $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b cf_link_wb=%b md_wr=%b m_wb_fe=%b",
                   c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.cf_link_wb, dut.core.md_wr, dut.core.m_wb_fe);
       if (dut.core.redirect && watch_prd_v) $display("[c=%0d] watch redirect (prd %0d still watched)", c, watch_prd);
+      // the control-flow path: issue into the CTF stage, each cycle it sits there, and retirement
+      // on any of the three commit ports
+      if (dut.core.iss_c && dut.core.qf_pc == watch_pc)
+         $display("[c=%0d] watch CTF-issue pc=%h rob=%0d", c, dut.core.qf_pc, dut.core.j_rob);
+      if (dut.core.cf_valid && dut.core.cf_pc == watch_pc)
+         $display("[c=%0d] watch CTF-stage rob=%0d done=%b redirect=%b land=%b red_fire=%b res_v=%b fr_v=%b fr_set=%b redirect_any=%b head=%0d",
+                  c, dut.core.cf_rob, dut.core.cf_done, dut.core.cf_redirect, dut.core.cf_land, dut.core.cf_red_fire,
+                  dut.core.res_v, dut.core.fr_v, dut.core.fr_set, dut.core.redirect, dut.core.rob_head_idx);
+      if ((dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc) ||
+          (dut.core.rob_c2_valid && dut.core.cs_pc[dut.core.rob_head2_idx] == watch_pc) ||
+          (dut.core.rob_c3_valid && dut.core.cs_pc[dut.core.rob_head3_idx] == watch_pc))
+         $display("[c=%0d] watch COMMIT ports=%b%b%b", c,
+                  dut.core.rob_c3_valid && dut.core.cs_pc[dut.core.rob_head3_idx] == watch_pc,
+                  dut.core.rob_c2_valid && dut.core.cs_pc[dut.core.rob_head2_idx] == watch_pc,
+                  dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc);
    end
    initial begin
       ncyc = 200000000; nret = 0;
@@ -540,7 +568,7 @@ module tb;
 
       reset = 1; @(negedge clk); @(negedge clk); reset = 0;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
-      for (c = 0; (ncyc == 0) || (c < ncyc); c = c + 1) begin
+      for (c = 0; ((ncyc == 0) || (c < ncyc)) && !tohost_done; c = c + 1) begin
          @(negedge clk);
                   nret = nret + retire + retire2 + retire3;   // all three commit ports (IW=3 undercounted before 2026-09-17)
                   // B3 (2026-09-17): the CPI stack from the RTL's own event bus, so the same tool
@@ -552,13 +580,16 @@ module tb;
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,
                      dut.core.mmu_satp, n_inject, n_uirq, n_seip, dut.uart_ier);
       end
-      $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
-               dut.imem_addr);
+      if (tohost_done)
+         $display("TOHOST exit=%0d after %0d cycles (retires=%0d pc~%h)", tohost_code, c, nret, dut.imem_addr);
+      else
+         $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
+                  dut.imem_addr);
       $display("[blk: dma rd=%0d wr=%0d]", n_dma_rd, n_dma_wr);   // virtio-blk beats (B6); 0/0 without +disk
       $display("[dma-agent: bursts=%0d]", dma_ctr);   // B4 memrand; 0 without +dma_rand
       // B3: perf-stat text, the shape tools/perf-cpi-stack.py parses (`<count> r<code>`).
       $display("perf-stat-sim: begin");
-      $display("%0d cycles", ncyc);
+      $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)
       $display("%0d instructions", nret);
       for (pe = 0; pe < 41; pe = pe + 1) $display("%0d r%04h", pev[pe], pcode(pe));
       $display("perf-stat-sim: end");

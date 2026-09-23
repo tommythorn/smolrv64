@@ -38,4 +38,4 @@ tiny128-cosim-blk.dtb: tiny128-cosim-blk.dts
 	dtc -I dts -O dtb < $^ > $@
 ref: tiny128.dtb $(FW) tiny128.cpio
 	(cd $(SIMMERV); cargo b -rq)
-	$(SIMMERV)/target/release/simmerv_cli -m 512 -d tiny128-simmerv.dtb,0x9ff00000 $(FW),0x80000000 tiny128.cpio,0x9f52c000
+	$(SIMMERV)/target/release/simmerv-cli -m 512 -d tiny128-simmerv.dtb,0x9ff00000 $(FW),0x80000000 tiny128.cpio,0x9f52c000
