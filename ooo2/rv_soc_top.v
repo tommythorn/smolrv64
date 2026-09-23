@@ -160,7 +160,7 @@ module rv_soc_top #(
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(), .retire_insn(),
       .retire2(retire2), .retire2_pc(), .retire2_insn(), .retire3(retire3),
-      .redirect(redirect), .redirect_target(redirect_target));
+      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err));
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
    localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
@@ -169,9 +169,11 @@ module rv_soc_top #(
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
    localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio, 8 KiB: blk @+0x0000, net @+0x1000
    localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
-   // Fetch-buffer diagnostic snapshot, 256 B read-only.  Like HPM_BASE it is deliberately
-   // NOT in the DTB: the kernel must never touch it, and the only reader is the ROM monitor
-   // after a CPU reset (R1000E008 etc).  See the capture block by the fetch buffer.
+   // Integrity log, 256 B read-only -- the design's own invariants, latched so software can
+   // read them (see the INTEGRITY LOG block below).  Like HPM_BASE it is deliberately NOT in
+   // the DTB: the kernel must never touch it.  Readers are the ROM monitor's banner
+   // (R1000E008 = the sticky vector) and a /dev/mem read from Linux after a crash.  The
+   // window and its name are inherited from the deleted fetch-buffer diagnostic.
    localparam [63:0] FBDIAG_BASE  = 64'h1000_E000;
    // ONE address for every device.  Each device used to mux its own
    //     (dmem_wen & is_<dev>_w) ? dmem_waddr : dmem_raddr
@@ -633,7 +635,7 @@ module rv_soc_top #(
       .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl), .inv_req(dc_inv_req), .inv_clean(1'b1), .ep_bump(1'b0), .inv_busy(dc_inv_busy),
       .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
       .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
-      .perf_access(dc_access), .perf_miss(dc_miss));
+      .perf_access(dc_access), .perf_miss(dc_miss), .err(dc_err));
 
    // D$ clean-flush on fence.i ONLY: drain the store buffer, then clean-flush the D$ (write back
    // dirty lines, keep them valid). FENCE.I needs this because the I$ reads L2/DDR directly: with
@@ -678,8 +680,55 @@ module rv_soc_top #(
    wire             ic_l2_req, ic_l2_we;   wire [LAW-1:0] ic_l2_addr;   wire [511:0] ic_l2_wdata;
    wire [511:0]     ic_l2_rdata;   wire ic_l2_ack;
 
-   // The deleted FBDIAG readout window and its self-reset: tied off (no buffer to observe).
-   assign fbdiag_rdata     = 64'd0;
+   // ================= INTEGRITY LOG (rv_errlog) ======================================
+   // docs/rtl-rules.md A1 makes every invariant always-on -- in simulation. On hardware
+   // $fatal is a no-op and synthesis deletes the condition, so the bitstream that ships
+   // enforces none of them, and the longest simulation this project can run (~1.5e9
+   // cycles) is two and a half orders of magnitude short of one Geekbench run (~3e11).
+   // A fault too rare for any gate we own still kills the board in half an hour -- as a
+   // wild jump with nothing attached to it, which is how C4a step 2 ended.
+   //
+   // So the conditions are latched and published. Each unit registers its own error
+   // vector (nothing combinational crosses a hierarchy boundary for this) and the log
+   // keeps a sticky bit per invariant plus the index and cycle stamp of the FIRST one to
+   // fire. Read-only over MMIO: the monitor prints it in its banner, and Linux userland
+   // reads it through /dev/mem after a crash. Either answer is worth having -- "D$
+   // invariant 6, 4 billion cycles before the Oops" locates the bug, and "nothing fired"
+   // exonerates the whole memory backend in one read.
+   //
+   // BIT ASSIGNMENT -- fixed, so an index read off a dead board keeps its meaning:
+   //   [15: 0] D$   rv_cache err[] (see the INTEGRITY LOG block in rv_cache.v)
+   //   [31:16] I$   the same cache, the same numbering
+   //   [47:32] LSU  ooo2_lsu err[]
+   //   [63:48] reserved -- the next units plug in here without moving anything
+   // The units are ordered so that on a simultaneous violation first_idx names the one
+   // closest to the data.
+   wire [15:0] dc_err, ic_err, lsu_err;
+   wire [63:0] err_sticky;
+   wire [7:0]  err_first_idx;
+   wire [47:0] err_first_cyc;
+   rv_errlog #(.N(64), .CW(48)) u_errlog
+     (.clk(clk), .reset(reset),
+      .err({16'd0, lsu_err, ic_err, dc_err}),
+      .sticky(err_sticky), .first_idx(err_first_idx), .first_cyc(err_first_cyc));
+
+   // The readout, in the window the deleted fetch-buffer diagnostic used to occupy: it is
+   // already decoded, already read-only, already in is_dev_r, and the ROM monitor already
+   // knows the address. Reusing it adds NO comparator to the dmem_raddr -> is_dev_r cone,
+   // which is on the LSU's critical path (see the decode notes above) -- a recorder that
+   // costs the design timing would not survive its first build.
+   //   +0x00  {version, "ERRL"}  -- magic, so a reader can tell the window is populated
+   //   +0x08  sticky[63:0]
+   //   +0x10  {8'd0, first_idx[7:0], first_cyc[47:0]}
+   // 64-bit reads. The LSU right-aligns a narrower load, so a 32-bit read at +0x00 still
+   // gets the magic; every other register is one whole 64-bit word by design.
+   assign fbdiag_rdata = (dmem_raddr[4:3] == 2'd0) ? 64'h0000_0001_4552_524c
+                       : (dmem_raddr[4:3] == 2'd1) ? err_sticky
+                       : (dmem_raddr[4:3] == 2'd2) ? {8'd0, err_first_idx, err_first_cyc}
+                       : 64'd0;
+   // The fetch-buffer invariant's self-reset went with the buffer. An integrity fault does
+   // NOT reset the machine: resetting into the monitor would destroy the run that produced
+   // the evidence, and the cycle stamp already says when it happened.
    assign fbdiag_reset_req = 1'b0;
 
    // fence.i: drain the store buffer + D$ clean-flush (df, above), THEN invalidate the I$ so a
@@ -854,7 +903,7 @@ module rv_soc_top #(
       .inv_req(ic_inv_req), .inv_clean(1'b0), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
-      .perf_access(ic_access), .perf_miss(ic_miss));
+      .perf_access(ic_access), .perf_miss(ic_miss), .err(ic_err));
 
    // ---------------- PTW adapters: PTE word reads routed THROUGH the D$ ----------------
    // g=0 iPTW, 1 dPTW (loads, stores and atomics -- the in-order LSU has one memory op

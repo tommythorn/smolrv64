@@ -51,6 +51,9 @@ module tb;
    reg              l2_ack=0;
    always @(posedge clk) if (reset) req_pend <= 1'b0; else if (rd_ack) req_pend <= 1'b0;
 
+   wire [15:0] cache_err;   // the integrity log's view: never nonzero in a passing run (see tb_ooo2_dcache)
+   always @(posedge clk) if (|cache_err)
+      $fatal(1, "tb: rv_cache err=%h rose without its $fatal -- an integrity-log condition is wired wrong", cache_err);
    rv_cache #(.PAW(PAW), .SIZE_KB(128), .RDW(RDW), .WDW(64),
               .WRITABLE(0), .PREFETCH(0), .PERF_ID(0)) dut
      (.clk(clk), .reset(reset),
@@ -61,7 +64,7 @@ module tb;
       .wr_uncached(1'b0), .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
       .inv_req(inv_req), .inv_clean(1'b0), .ep_bump(1'b0), .inv_busy(inv_busy),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
-      .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss());
+      .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss(), .err(cache_err));
 
    // Memory: word w of line L reads {L, w, 5a5a5a5}, so every 64-bit word in the space is
    // distinct and a wrong one names the line it actually came from.

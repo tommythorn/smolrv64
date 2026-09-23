@@ -101,7 +101,11 @@ module rv_cache #(
    input  wire [LINEB-1:0] l2_rdata,
    input  wire             l2_ack,
    output wire             perf_access, // 1-cycle: a line lookup resolved (hit or miss) this cycle
-   output wire             perf_miss    // 1-cycle: that lookup missed -> Zihpm cache-miss event
+   output wire             perf_miss,   // 1-cycle: that lookup missed -> Zihpm cache-miss event
+   // This cache's invariants, made visible to hardware (rv_errlog). One bit per check,
+   // registered here so nothing downstream lands on a lookup path; see the INTEGRITY LOG
+   // block at the bottom of the file for the bit assignment.
+   output wire [15:0]      err
 );
    localparam WORDB = LINEB/8;
    localparam SETS  = (SIZE_KB*1024)/(WAYS*WORDB);
@@ -1159,12 +1163,19 @@ module rv_cache #(
          for (pi=0; pi<(1<<BAW); pi=pi+1) par_mem[pb][pi] = 1'b0;
       end
    end
+`endif
+
    // ---- ADDRESS PROVENANCE (the half parity is blind to) ----------------------------
    // Parity proves the array returned what was stored AT THE ADDRESS PRESENTED. It cannot
    // see the wrong address being presented -- and that is exactly the defect class already
    // found here: a held stage B delivered bank ROW 0, which is valid data with valid parity
    // for row 0. The board's remaining fault survived a parity-clean boot, so it is in the
    // addressing, not the bits.
+   //
+   // ALWAYS ON, unlike the parity array above it. Parity costs a bit per bank word and is
+   // an opt-in diagnostic bitstream; this costs 2*WAYS bank-address registers and four
+   // comparators, and it covers the defect class the board has actually produced. It feeds
+   // the integrity log (err[12]) as well as the ILA trigger.
    //
    // This is the simulation-only WINDOW PROVENANCE assertion at the bottom of this file,
    // made synthesizable and folded into the same error pulse: on the cycle a hit consumes
@@ -1210,6 +1221,7 @@ module rv_cache #(
       end
    end
 
+`ifdef CACHE_PARITY
    reg par_err;  reg par_sticky;  reg [BAW-1:0] par_addr;  reg [2:0] par_bank;
    wire [15:0] par_addr16 = {{(16-BAW){1'b0}}, par_addr};
    initial begin par_err=1'b0; par_sticky=1'b0; par_addr={BAW{1'b0}}; par_bank=3'd0; end
@@ -1250,33 +1262,97 @@ module rv_cache #(
    // inv_busy being high is bounded too, and BOTH ways this cache has lost a scan end the
    // same way -- inv_busy high forever with every requester polling it. That has exactly one
    // symptom on a board, which is that the board stops, so the bound is checked here where
-   // it can name the cache and the state it died in. Nothing but the $fatal reads inv_age,
-   // so synthesis drops it; simulation keeps it.
+   // it can name the cache and the state it died in. The counter used to be dead in
+   // synthesis (nothing but the $fatal read it); err[8] reads it now, so a board that
+   // stops says WHY it stopped instead of just stopping.
    localparam INV_MAX = NW * 1024;
    reg [$clog2(INV_MAX+1)-1:0] inv_age;
    always @(posedge clk)
       if (reset || !inv_busy)        inv_age <= 0;
       else if (inv_age != INV_MAX)   inv_age <= inv_age + 1'b1;
 
+   // ---- INTEGRITY LOG: each condition is named once and read twice ------------------
+   // The $fatal below explains the rule; err[] records it on hardware. Both read the SAME
+   // wire, so the rule cannot drift from the thing that detects it -- and the numbering
+   // here is the numbering rv_soc_top publishes over MMIO, so a bit index read off a dead
+   // board names a line in this file.
+   //   0 lb_owner   write-through push and fill machine both own linebuf
+   //   1 wr_align   a plain write is not chunk-aligned
+   //   2 solo_fill  a solo request accepted while a fill is live
+   //   3 pa_range   a request above the tagged physical range
+   //   4 line_gone  the line a solo request hit vanished after S_CHECK
+   //   5 cbo_fill   a CBO in stage B while a fill is live
+   //   6 replay     a replay owed with no fill in flight
+   //   7 l2_2cons   prefetch and fill machine both awaiting one l2_ack
+   //   8 inv_stuck  an invalidate scan that will never finish
+   //   9 fill_scan  a fill live during the invalidate scan (the scan is being abandoned)
+   //  10 bank_rw    a bank row read and written in the same cycle
+   //  11 st_undef   the lookup FSM outside its encoding
+   //  12 fst_undef  the fill machine outside its encoding
+   //  13 adr_bad    address provenance: the bank returned a row this hit did not ask for
+   //  14 rd_align   a wide read that is not chunk-pair aligned
+   //  15 span       NO-SPAN violated: the D$ saw a spanning cached request
+   wire e_lb_owner  = pipe_uses_lb && (fst != F_IDLE);
+   wire e_wr_align  = accept && req_wr_plain && (wr_addr[2:0] != 3'd0);
+   wire e_solo_fill = accept && req_solo && f_v;
+   wire e_pa_range  = (PAW > PAW_SIG) && accept && (|a_live[PAW-1:PAW_SIG]);
+   wire e_line_gone = (st == S_FIN || st == S_SPANW || st == S_NCI) && !hit;
+   wire e_cbo_fill  = (st == S_CHECK) && r_cbo && f_v;
+   wire e_replay    = f_replay && !f_v;
+   wire e_l2_2cons  = PF_EN && pf_infl && ((fst==F_FILLW) || (fst==F_WBA) || (fst==F_FLUSHA));
+   wire e_inv_stuck = (inv_age == INV_MAX);
+   wire e_fill_scan = f_v && (fst == F_FLUSH || fst == F_FLUSHR || fst == F_FLUSHW
+                              || fst == F_FLUSHI || fst == F_FLUSHA);
+   // The two FSM `default:` arms, as a condition hardware can evaluate: strictly outside
+   // the encoding, which is a subset of "the default arm fired" and needs no knowledge of
+   // which states a given parameterisation actually lists.
+   wire e_st_undef  = (st  > S_WTA);
+   wire e_fst_undef = (fst > F_ANS);
+   // These two are asserted at the bottom of the file, under `ifndef SYNTHESIS` because
+   // their $fatal is; the CONDITION is cheap and belongs in the log like the rest.
+   wire e_rd_align  = (RDW > BANKW) && (st == S_CHECK) && !r_is_wr && !r_cbo
+                    && (r_off[$clog2(RDB)-1:0] != {$clog2(RDB){1'b0}});
+   wire e_span      = (WRITABLE != 0) && (st == S_CHECK) && r_span && !r_uncached;
+   integer abi;
+   reg e_bank_rw;
+   always @* begin
+      e_bank_rw = 1'b0;
+      for (abi=0; abi<2*WAYS; abi=abi+1)
+         if (bk_rd_drv && bk_wren[abi] && (bk_rdaddr[abi] == bk_wraddr[abi])) e_bank_rw = 1'b1;
+   end
+
+   // REGISTERED AT THE SOURCE. The conditions above read this cache's state and its hit
+   // path; the log itself lives in rv_soc_top. Crossing that boundary combinationally
+   // would hang a long route off a lookup signal to buy nothing -- a recorder has no
+   // deadline. One flop here; everything after it is flop-to-flop.
+   reg [15:0] err_q;
+   initial err_q = 16'd0;
+   always @(posedge clk)
+      err_q <= reset ? 16'd0
+             : {e_span, e_rd_align, adr_bad, e_fst_undef, e_st_undef, e_bank_rw,
+                e_fill_scan, e_inv_stuck, e_l2_2cons, e_replay, e_cbo_fill, e_line_gone,
+                e_pa_range, e_solo_fill, e_wr_align, e_lb_owner};
+   assign err = err_q;
+
    integer ai;
    always @(posedge clk) if (!reset) begin
       // linebuf/pc/wb_* are ONE set of registers with two users -- the fill machine's
       // writeback and the pipeline's write-through push. They are kept apart by the solo
       // rule, not by a mux, so the day that rule is loosened this is what says so.
-      if (pipe_uses_lb && (fst != F_IDLE))
+      if (e_lb_owner)
          $fatal(1, "[cache id=%0d] write-through push and fill machine both own linebuf (st=%0d fst=%0d)",
                 PERF_ID, st, fst);
       // A solo request's miss is replayed through this pipeline, which is only sound while
       // the pipeline is empty for it.
-      if (accept && req_wr_plain && (wr_addr[2:0] != 3'd0))
+      if (e_wr_align)
          $fatal(1, "[cache id=%0d] a plain write is not chunk-aligned (a=%h): the fill merge takes one chunk", PERF_ID, wr_addr);
-      if (accept && req_solo && f_v)
+      if (e_solo_fill)
          $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
       // THE TAG IS PAW_SIG BITS WIDE. Two addresses that differ only above bit PAW_SIG-1
       // would hit the same line; the platform has no memory there, so such an address is a
       // defect somewhere upstream (a wild PTE, a device decode that let something through)
       // and the cache is where it would become silent corruption. It is a fault here instead.
-      if (PAW > PAW_SIG && accept && (|a_live[PAW-1:PAW_SIG]))
+      if (e_pa_range)
          $fatal(1, "[cache id=%0d] request %h lies above the %0d-bit tagged physical range",
                 PERF_ID, a_live, PAW_SIG);
       // THE LINE A SOLO REQUEST HIT IS STILL THERE IN THE STATES AFTER S_CHECK. The store
@@ -1285,13 +1361,13 @@ module rv_cache #(
       // re-evaluate the compare; that is sound because a solo request is alone in the cache
       // -- no fill is live, no invalidate scan can start while st != S_IDLE -- so the tag
       // cannot move under it. This is that assumption, checked every cycle.
-      if ((st == S_FIN || st == S_SPANW || st == S_NCI) && !hit)
+      if (e_line_gone)
          $fatal(1, "[cache id=%0d] line %h vanished between S_CHECK and st=%0d", PERF_ID, cur_line, st);
       // A CBO is solo; the MSHR copy taken in S_CHECK assumes no fill owns f_* while one is
       // in stage B, and the replay's select assumes f_replay implies a fill in flight.
-      if ((st == S_CHECK) && r_cbo && f_v)
+      if (e_cbo_fill)
          $fatal(1, "[cache id=%0d] a CBO is in stage B while a fill is live", PERF_ID);
-      if (f_replay && !f_v)
+      if (e_replay)
          $fatal(1, "[cache id=%0d] replay owed with no fill in flight", PERF_ID);
       // TWO RAISERS, ONE CYCLE. 5ce1666a asserted "a second L2 request while one is
       // outstanding" (l2_req && l2_out && !l2_ack) and concluded the race does not occur in
@@ -1306,10 +1382,10 @@ module rv_cache #(
       // parity (computed on the write) and to address provenance (the row read is the row
       // asked for). Checking the ISSUE condition instead would only restate whichever gate
       // is currently in the guard, and would stop firing the moment the guard changed.
-      if (PF_EN && pf_infl && ((fst==F_FILLW) || (fst==F_WBA) || (fst==F_FLUSHA)))
+      if (e_l2_2cons)
          $fatal(1, "[cache id=%0d] prefetch and fill machine both awaiting l2_ack (fst=%0d pf_ia=%h f_line=%h)",
                 PERF_ID, fst, pf_ia, f_line[PAW-1:OFFB]);
-      if (inv_age == INV_MAX)
+      if (e_inv_stuck)
          $fatal(1, "[cache id=%0d] invalidate has not finished in %0d cycles -- the scan was lost (fscan=%0d/%0d st=%0d fst=%0d f_v=%b f_replay=%b inv_pend=%b)",
                 PERF_ID, INV_MAX, fscan, NW, st, fst, f_v, f_replay, inv_pend);
       // THE SCAN OWNS THE FILL MACHINE. A miss taken during an invalidate hands off with
@@ -1317,8 +1393,7 @@ module rv_cache #(
       // scan is abandoned -- with inv_pend already clear, leaving inv_busy high for good
       // and the fence.i FSM waiting on it forever. acc_slot's ~inv_busy is what stops it;
       // this is the check that says so, because the silent version of this is a dead board.
-      if (f_v && (fst == F_FLUSH || fst == F_FLUSHR || fst == F_FLUSHW
-                  || fst == F_FLUSHI || fst == F_FLUSHA))
+      if (e_fill_scan)
          $fatal(1, "[cache id=%0d] a fill is live during the invalidate scan (fscan=%0d) -- the scan is being abandoned",
                 PERF_ID, fscan);
       // NO BANK ROW IS READ AND WRITTEN IN THE SAME CYCLE, whoever the reader is. It was
@@ -1438,8 +1513,7 @@ module rv_cache #(
    // while the cache idles. A request is in S_CHECK once, in each phase, so that is where
    // the check belongs (it fired on a PLIC store at offset 0x3c, 2026-09-04).
    // RDW > BANKW: the read is the whole chunk pair, so it must start on a pair boundary.
-   always @(posedge clk) if (!reset && (RDW > BANKW) && (st == S_CHECK) && !r_is_wr && !r_cbo
-                              && (r_off[$clog2(RDB)-1:0] != {$clog2(RDB){1'b0}}))
+   always @(posedge clk) if (!reset && e_rd_align)
       $fatal(1, "[cache id=%0d] a %0d-bit read must be %0d-byte aligned: addr=%h", PERF_ID, RDW, RDB, r_addr);
    // Cached requests only: the LSU aligns those to their word. An UNCACHED read carries its
    // own byte address and size to the bus (the ROM monitor's byte loads from the local SRAM
@@ -1447,7 +1521,7 @@ module rv_cache #(
    // that a span. It fired on main's RTL booting the monitor in simulation on 2026-09-05
    // while the same RTL booted the monitor on the board -- the first time the monitor was
    // ever simulated on this core.
-   always @(posedge clk) if (!reset && (WRITABLE != 0) && (st == S_CHECK) && r_span && !r_uncached)
+   always @(posedge clk) if (!reset && e_span)
       $fatal(1, "[cache id=%0d] NO-SPAN VIOLATED: D$ saw a spanning request addr=%h", PERF_ID, r_addr);
 
    // SPAN-LOW-STALE: the exposure this fork actually has. A line-crossing store writes

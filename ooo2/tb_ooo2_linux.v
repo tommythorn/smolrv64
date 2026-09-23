@@ -53,6 +53,11 @@ module tb;
 `ifndef TB_RESET_PC
  `define TB_RESET_PC 64'h8000_0000
 `endif
+   // The SoC's integrity log (rv_errlog). Every logged invariant also $fatals a cycle earlier
+   // in simulation, so a sticky bit here means a condition is wired wrong, not that a rule
+   // broke -- and that is exactly what must never reach a bitstream.
+   always @(posedge clk) if (|dut.u_errlog.sticky)
+      $fatal(1, "tb: integrity log sticky=%h first=%0d @%0d rose without a $fatal", dut.u_errlog.sticky, dut.u_errlog.first_idx, dut.u_errlog.first_cyc);
    rv_soc_top #(.RESET_PC(`TB_RESET_PC)) dut
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),

@@ -142,6 +142,23 @@ this still catch the bug?** If the check restates the gate's own condition, the
 answer is no, and it is decoration that costs trust. Assert the state that must
 never hold, never the transition you believe leads there.
 
+**A7. An invariant the bitstream cannot see enforces nothing on the thing that ships.**
+`$fatal` is a no-op in synthesis and the condition folds away with it, so every A1 check is
+a simulation-only check unless something in hardware reads it. The scale of the gap: the
+longest simulation this project runs is 1.5 G cycles; Geekbench runs ~300-800 G on the board.
+A fault at 1e-11 per cycle passes every gate we own and kills the board in an hour, as a
+wild jump with nothing attached (C4a step 2, 2026-09-19: `epc == ra == badaddr`, root cause
+never found; 390d5028+ under GB6, 2026-09-20: the same signature). Since 2026-09-20 the
+memory backend's invariants are also `e_*` wires that feed `rv_errlog` through a registered
+`err` port per unit (`rv_cache`, `ooo2_lsu`), and the SoC publishes the sticky vector and the
+first fault's index and cycle at `0x1000_E000` (spec §11.1). The rule for a new invariant in
+those units: name the condition once as a wire, read it from both the `$fatal` and the log,
+and never let the two drift. A unit outside the log (the ROB, rename, the schedulers) still
+enforces its rules in simulation only; adding it means an `err` port and a bit range, not a
+second mechanism. The cost discipline is the address-provenance check's: the condition feeds
+a flop and nothing else, and it reads registered state where the live signal is on a lookup
+path.
+
 ---
 
 ## B. Identity and ownership

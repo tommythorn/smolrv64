@@ -40,7 +40,7 @@ MARK='riscv: base ISA extensions'
 # line dmesg and the console gained during the run.
 stress() {
    [ "${STRESS_S:-900}" -gt 0 ] || { echo "stress: skipped (STRESS_S=0)"; return 0; }
-   local ip="" i rc pre_d pre_c faults
+   local i rc pre_d pre_c faults; ip=""            # ip stays visible: the integrity log is read after
    for i in $(seq 1 40); do
       ip=$(ss -tan 2>/dev/null | awk '$1=="ESTAB" && $4 ~ /:2049$/ {print $5}' | grep -o '192\.168\.1\.[0-9]*' | sort -u | head -1)
       [ -n "$ip" ] && timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no tommy@$ip true 2>/dev/null && break
@@ -55,9 +55,20 @@ stress() {
    faults=$(( $(grep -cE 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG' "$RES/stress.log") ))
    faults=$(( faults + $(tail -c +$((pre_c+1)) "$UB/screenlog.0" | tr -d '\r' | grep -acE "$BAD") ))
    echo "stress: rc=${rc:-?} (124 = ran the whole budget) faults=$faults  subtests: $(timeout 20 ssh -o BatchMode=yes tommy@$ip 'grep -c "^  Running" /var/tmp/gate-stress.log' 2>/dev/null)"
-   if [ "$faults" -eq 0 ] && { [ "${rc:-1}" = 124 ] || [ "${rc:-1}" = 0 ]; }; then return 0; fi
+   if [ "$faults" -eq 0 ] && { [ "${rc:-1}" = 124 ] || [ "${rc:-1}" = 0 ]; }; then errlog || return 1; return 0; fi
    grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$RES/stress.log" | head -4
    echo "BOARD: FAIL (stress: rc=${rc:-?} faults=$faults)"; return 1
+}
+# ---- the integrity log (rv_errlog; docs/OOO2-Spec.md) --------------------------------------
+# The design's own invariants, latched in hardware and read back from Linux once the stress is
+# over. A nonzero vector is a FAIL whatever the console says: a run can look clean and still
+# have broken a rule the core relies on -- and this is the only gate that sees a violation
+# whose consequence would have surfaced hours later. A bitstream without the log is reported
+# as such, not as clean.
+errlog() {
+   local out; out=$("$REPO/tools/errlog-read.sh" "$ip" 2>&1); echo "$out"
+   case "$out" in "errlog: FAULT"*) echo "BOARD: FAIL (integrity log)"; return 1;; esac
+   return 0
 }
 if [ -n "${STRESS_ONLY:-}" ]; then RES=${1:?result dir}; mkdir -p "$RES"; stress && { echo "BOARD: PASS (stress only)"; exit 0; }; exit 1; fi
 

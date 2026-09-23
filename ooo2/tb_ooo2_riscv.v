@@ -49,6 +49,9 @@ module tb;
    wire [PCW-1:0]   retire_pc, retire2_pc, redirect_target;
    wire [31:0]      retire_insn, retire2_insn;
 
+   wire [15:0]      lsu_err;   // the LSU's integrity-log bits: never nonzero in a passing run
+   always @(posedge clk) if (|lsu_err)
+      $fatal(1, "tb: ooo2_lsu err=%h rose without its $fatal -- an integrity-log condition is wired wrong", lsu_err);
    ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       // The SoC's fetch buffer holds bytes only of a translation that succeeded, so a served
@@ -76,7 +79,7 @@ module tb;
       .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(retire_pc), .retire_insn(retire_insn),
       .retire2(retire2), .retire2_pc(retire2_pc), .retire2_insn(retire2_insn),
-      .redirect(redirect), .redirect_target(redirect_target));
+      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err));
 
    // ---------------------------------------------------------- byte memory
    reg [7:0] mem [0:SIZE-1];

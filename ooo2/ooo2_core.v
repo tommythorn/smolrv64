@@ -116,7 +116,10 @@ module ooo2_core
     output wire [PCW-1:0]          retire2_pc,
     output wire [31:0]             retire2_insn,
     output wire                    redirect,
-    output wire [PCW-1:0]          redirect_target);
+    output wire [PCW-1:0]          redirect_target,
+    // The LSU's invariants, on their way to the SoC's integrity log (rv_errlog). Pure
+    // pass-through: registered in the LSU, read in rv_soc_top, nothing in between.
+    output wire [15:0]             lsu_err);
 
    // =========================================================== stage F
    wire                     d_valid, d_rvc, d_rd_v, d_rs1_v, d_rs2_v, d_rs3_v;
@@ -2188,7 +2191,8 @@ module ooo2_core
       .mem_wready(dmem_wready), .mem_waccept(dmem_waccept),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind), .cos_data(lsu_cos_data), .cos_size(lsu_cos_size),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
-      .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_busy(lsu_ld_busy), .idle(lsu_idle));
+      .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_busy(lsu_ld_busy),
+      .err(lsu_err), .idle(lsu_idle));
    assign dmem_idle = lsu_idle;
 
    // ---- the MD stage: mul/div off the ordered pipe (C1, 2026-09-17) ----

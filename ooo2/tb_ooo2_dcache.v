@@ -60,6 +60,13 @@ module tb;
    reg              l2_ack=0;
    always @(posedge clk) if (reset) req_pend<=1'b0; else if (rd_ack) req_pend<=1'b0;
 
+   // The integrity log's view of this cache. Every invariant's $fatal fires a cycle before
+   // its err bit is registered, so in a passing run this is never nonzero -- which is the
+   // point: a bit that rises here without a $fatal is a condition wired wrong, and on the
+   // board that is a recorder that cries wolf.
+   wire [15:0] cache_err;
+   always @(posedge clk) if (|cache_err)
+      $fatal(1, "tb: rv_cache err=%h rose without its $fatal -- an integrity-log condition is wired wrong", cache_err);
    rv_cache #(.PAW(PAW), .SIZE_KB(128), .RDW(RDW), .WDW(64),
               .WRITABLE(1), .WRTHRU(0), .PREFETCH(1), .PERF_ID(1)) dut
      (.clk(clk), .reset(reset),
@@ -71,7 +78,7 @@ module tb;
       .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep),
       .inv_req(1'b0), .inv_clean(1'b0), .ep_bump(1'b0), .inv_busy(),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
-      .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss());
+      .l2_rdata(l2_rdata), .l2_ack(l2_ack), .perf_access(), .perf_miss(), .err(cache_err));
 
    // Backing store: a real memory, so a WRITEBACK that streams the wrong bytes is caught on
    // the next fill of that line rather than being invisible.

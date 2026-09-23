@@ -57,6 +57,15 @@ typedef unsigned long      uint64_t;
 #define BUILD_ID_BASE   ((volatile uint32_t *)0x1000F000)
 #define BUILD_ID_MAGIC  0x534d4f4cu
 
+// Integrity log (rv_soc_top.v, the window the fetch-buffer diagnostic used to own,
+// 0x1000E000): the design's own invariants, latched in hardware by rv_errlog. 64-bit words:
+// [0]={version,"ERRL"} magic, [1]=sticky, one bit per invariant that has fired since reset
+// (D$ [15:0], I$ [31:16], LSU [47:32]; the bit numbers are the ones in rv_cache.v's and
+// ooo2_lsu.v's INTEGRITY LOG blocks), [2]={idx[55:48], cycle[47:0]} of the FIRST to fire.
+// Linux userland reads the same words through /dev/mem (tools/errlog-read.sh).
+#define ERRLOG_BASE     ((volatile uint64_t *)0x1000E000)
+#define ERRLOG_MAGIC    0x4552524cu
+
 #define SD_SPI_RXDATA   0
 #define SD_SPI_TXDATA   1
 #define SD_SPI_STATUS   2
@@ -798,6 +807,13 @@ int main(void)
     }
     puts_(" fw=");
     puthex64(MONITOR_BUILD_STAMP);
+    // err= is the integrity log's sticky vector: 0 is the normal case; anything else is an
+    // invariant that fired since reset, and 'E' says which one and when. A board that has
+    // run for hours and comes back to this prompt carries its verdict in this one word.
+    if ((uint32_t)ERRLOG_BASE[0] == ERRLOG_MAGIC) {
+        puts_(" err=");
+        puthex64(ERRLOG_BASE[1]);
+    }
     putc_('\n');
 
     for (;;) {
@@ -942,6 +958,17 @@ int main(void)
             ((fn_t2)addr)(a0, a1);
             puts_("returned\n");
 
+        } else if (*p == 'E' || *p == 'e') {
+            if ((uint32_t)ERRLOG_BASE[0] != ERRLOG_MAGIC) { puts_("no integrity log\n"); continue; }
+            uint64_t st = ERRLOG_BASE[1], fi = ERRLOG_BASE[2];
+            puts_("errlog sticky="); puthex64(st);
+            puts_("  (D$ [15:0]  I$ [31:16]  LSU [47:32])\n");
+            if (st) {
+                puts_("first: bit "); puthex64((fi >> 48) & 0xff);
+                puts_(" at cycle "); puthex64(fi & 0xffffffffffffull);
+                putc_('\n');
+            }
+
         } else if (*p == 'P' || *p == 'p') {
             uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
             uint64_t build_stamp = read_build_stamp();
@@ -1010,6 +1037,7 @@ int main(void)
             puts_("SL<sec> <n> <addr> read n SD sectors into memory\n");
             puts_("X<addr> [a0 [a1]] execute from address\n");
             puts_("P                dump core debug counters; Pc clears them\n");
+            puts_("E                integrity log: which invariant fired, and when\n");
 
         } else if (*p != 0) {
             puts_("unknown command (? for help)\n");

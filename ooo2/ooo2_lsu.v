@@ -161,6 +161,9 @@ module ooo2_lsu
     output reg  [63:0]     cos_data,      // a plain store's value (raw rs2) and log2 size; size 4'hF = not a
     output reg  [3:0]      cos_size,      //   plain store's write (load, AMO's RMW, SC, cbo): not data-checked
     output wire            ld_busy,        // a LOAD access is in flight, hit or miss (MEM_LDINFL; counters only)
+    // This LSU's invariants, made visible to hardware (rv_errlog); registered here, see
+    // the INTEGRITY LOG block at the bottom of the file for the bit assignment.
+    output wire [15:0]     err,
     output wire            idle);          // no memory op in flight (fence.i drain)
 
    localparam S_IDLE = 3'd0, S_LD = 3'd1, S_ST = 3'd2,
@@ -548,12 +551,19 @@ module ooo2_lsu
          if (flush) o_kill <= o_kill | o_v | (ld_fast_ok ? ({{(NLD-1){1'b0}}, 1'b1} << ld_tag) : {NLD{1'b0}});
       end
    end
+   // B-rule protocol: a response is matched by a tag the requester allocated. These three
+   // are the checks that caught C4a step 2's first attempt on its first simulation run,
+   // and they are the ones that matter most once the D$ grows MSHRs (C5) -- so they are
+   // wires, and the integrity log carries them onto the board.
+   wire e_tag_reissue = ld_fast_ok & o_v[ld_tag] & ~(ld_fast_ret & (mem_rtag_resp == ld_tag));
+   wire e_tag_orphan  = mem_rvalid_c & ~o_v[mem_rtag_resp];
+   wire e_tag_reuse   = ld_fast_ok & ld_fast_ret & (mem_rtag_resp == ld_tag);
    always @(posedge clk) if (!reset) begin
-      if (ld_fast_ok & o_v[ld_tag] & ~(ld_fast_ret & (mem_rtag_resp == ld_tag)))
+      if (e_tag_reissue)
          $fatal(1, "ooo2_lsu: tag %0d reissued while its response is outstanding", ld_tag);
-      if (mem_rvalid_c & ~o_v[mem_rtag_resp])
+      if (e_tag_orphan)
          $fatal(1, "ooo2_lsu: fast response with tag %0d that nothing is waiting on", mem_rtag_resp);
-      if (ld_fast_ok & ld_fast_ret & (mem_rtag_resp == ld_tag))
+      if (e_tag_reuse)
          $fatal(1, "ooo2_lsu: tag %0d lands and restarts in one cycle (the queue reused the slot)", ld_tag);
    end
 
@@ -597,6 +607,9 @@ module ooo2_lsu
    // are the FSM state, the D$'s registered rvalid and xword_q. Asserted equal below.
    wire ld_fin = ((st == S_LD) & slow_rv & ~xword_q) | ((st == S_LD2) & slow_rv);
    assign pt_ld_done = ld_fin & own_pt & ~own_pt_st;
+   // `!==` in the assertion (an X on either side is a defect too); `!=` in the err bit,
+   // because hardware has no X to find.
+   wire e_ld_done = (pt_ld_done != (pt_done & ~pt_is_store));
    always @(posedge clk)
       if (!reset && (pt_ld_done !== (pt_done & ~pt_is_store)))
          $fatal(1, "ooo2_lsu: pt_ld_done %b != pt_done & ~store %b (st=%0d)", pt_ld_done, pt_done & ~pt_is_store, st);
@@ -629,6 +642,12 @@ module ooo2_lsu
    assign idle   = (st == S_IDLE);
    assign ld_busy = ld_inflight;
 
+   // The FSM below asserts these two inline; they are qualified by the state that
+   // evaluates them, so the integrity-log bit means the same thing the $fatal does and
+   // not merely "the address is odd". Declared here, where the FSM reads them.
+   wire e_dev_spec = (st == S_IDLE) & start_ok & ~pa_mem & ~(pt_start ? pt_nonspec : m_head);
+   wire e_dev_span = (st == S_IDLE) & start_ok & ~pa_mem & (wend > 5'd8);
+
    // ------------------------------------------------------------------- FSM
    always @(posedge clk) begin
       if (reset) begin
@@ -644,9 +663,9 @@ module ooo2_lsu
                 // see -- and for MMIO the second beat would address the wrong register.
                 // A NON-DRAM ACCESS IS NEVER SPECULATIVE: the port's request carries the LQ's
                 // head compare (or is a committed store), the early path carries M's.
-                if (~pa_mem & ~(pt_start ? pt_nonspec : m_head))
+                if (e_dev_spec)
                    $fatal(1, "ooo2_lsu: speculative non-DRAM access: pa=%h pt_start=%b xl_early=%b", eff_pa, pt_start, xl_early);
-                if (~pa_mem & (wend > 5'd8))
+                if (e_dev_span)
                    $fatal(1, "ooo2_lsu: non-DRAM access straddles a word: pa=%h nb=%0d boff=%0d va=%h unc=%b pt_start=%b xl_early=%b req_early=%b m_head=%b pt_store=%b st=%0d",
                           eff_pa, nb, boff, req_vaddr, eff_unc, pt_start, xl_early, req_early, m_head, pt_store, st);
                 own_pt        <= (pt_start | xl_early) & ~ld_fast_ok;   // ooo2_lq lands it; a fast load's landing is by tag
@@ -736,10 +755,31 @@ module ooo2_lsu
    // req_early is a claim about the requester's own bookkeeping -- that ooo2_lq will land
    // this access -- so it is only meaningful on a translate-only LOAD. On anything else the
    // access would start and then be reported to nobody.
+   wire e_req_early = req_early & ~(req_xlate & ~req_store & ~req_amo & ~req_cbo);
    always @(posedge clk) if (!reset) begin
-      if (req_early & ~(req_xlate & ~req_store & ~req_amo & ~req_cbo))
+      if (e_req_early)
          $fatal(1, "ooo2_lsu: req_early on an access that is not a translate-only load");
    end
+
+   // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------
+   // Every condition above, latched into a sticky bit that software can read off a board
+   // that has already crashed. A1 makes these always-on in simulation; on hardware $fatal
+   // is a no-op and the cone is deleted, so without this the shipping design enforces
+   // nothing -- and simulation reaches ~1.5e9 cycles where Geekbench reaches ~3e11.
+   //   0 dev_spec    a speculative access to a non-DRAM address
+   //   1 dev_span    a non-DRAM access straddling an 8-byte word
+   //   2 tag_reissue a load tag reissued while its response is outstanding
+   //   3 tag_orphan  a fast response carrying a tag nothing is waiting on
+   //   4 tag_reuse   a tag lands and restarts in one cycle (the queue reused the slot)
+   //   5 ld_done     pt_ld_done disagrees with pt_done & ~store
+   //   6 req_early   req_early on an access that is not a translate-only load
+   reg [15:0] err_q;
+   initial err_q = 16'd0;
+   always @(posedge clk)
+      err_q <= reset ? 16'd0
+             : {9'd0, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
+                e_dev_span, e_dev_spec};
+   assign err = err_q;
 endmodule
 
 `default_nettype wire

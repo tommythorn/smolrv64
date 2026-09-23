@@ -1286,6 +1286,38 @@ owns the register being waited on: when a unit stopped blocking M, the wait did 
 it moved to X, and charging it to `ST_SER` made a data dependency read as a serializing op.
 A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 
+### 11.1 The integrity log (`rv_errlog`, 2026-09-20)
+
+The memory backend's invariants, latched in hardware. Rule A1 makes every check always-on in
+simulation; on hardware `$fatal` is a no-op and synthesis deletes the condition, so until this
+existed the bitstream enforced none of them — and the longest simulation this project runs
+(1.5 G cycles) is two and a half orders of magnitude short of a Geekbench run (the GB5 crash of
+C4a step 2 came after ~290 G cycles, the GB6 crash of 390d5028+ after 831 G). Each unit names
+its conditions once (`e_*` wires read by both the `$fatal` and the log, so the message and the
+detector cannot drift), registers them (`err_q`, one flop per bit: nothing crosses a hierarchy
+boundary combinationally, nothing lands on a lookup path), and `rv_soc_top`'s single
+`rv_errlog` keeps a sticky bit per invariant plus the index and 48-bit cycle stamp of the first
+one to fire. The D$'s address-provenance check (`adr_bad`, formerly `-DCACHE_PARITY` only) is
+always on now and is bit 13; the parity array stays opt-in.
+
+| bits | unit | source of the numbering |
+|---|---|---|
+| `[15:0]` | D$ | `rv_cache.v`, INTEGRITY LOG block (16 conditions: linebuf ownership, alignment, solo/fill exclusion, tagged range, line vanished, replay, two consumers of one `l2_ack`, a lost invalidate scan, bank read/write collision, both FSMs outside their encoding, address provenance, no-span) |
+| `[31:16]` | I$ | the same cache, the same numbering |
+| `[47:32]` | LSU | `ooo2_lsu.v` (7 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`) |
+| `[63:48]` | reserved | the next units plug in without moving anything |
+
+Read-only MMIO, 64-bit words, in the window the deleted fetch-buffer diagnostic owned so no
+comparator was added to the `dmem_raddr → is_dev_r` cone (a load-path critical cone): `0x1000_E000`
+`{version, "ERRL"}`, `+0x08` the sticky vector, `+0x10` `{idx[55:48], cycle[47:0]}` of the first
+fault. Not in the DTB. Readers: the ROM monitor prints `err=` in its banner and `E` decodes it;
+`tools/errlog-read.sh <ip>` reads it from Linux through `/dev/mem` and names the bits; the board
+gate reads it after the userspace stress and FAILs on a nonzero vector whatever the console
+says. The two things a nonzero word buys: *which* rule broke and *when* — and a zero word after a
+crash exonerates the whole logged set in one read. Simulation keeps the log honest: every bench
+`$fatal`s if a bit ever rises, which in a passing run can only mean a condition is wired wrong
+(its own `$fatal` would have fired a cycle earlier).
+
 ---
 
 ## 12. Verification
@@ -1307,7 +1339,8 @@ A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
 | memrand: random memory ordering under the lockstep (B4, 2026-09-18) | `make -C workloads/memrand sweep SEEDS="1 2 3 4"` (and `sweep-iw3`) | `MEMRAND seed=N: PASS` for every seed: a 50 k-op random stream of loads/stores/AMOs/LR-SC/FP/cbo/fences/sfence.vma/pointer chases/megapage remaps over three VA aliases in S-mode, with the testbench's DMA agent interrupting through PLIC source 11; every load and every store byte judged by the lockstep |
 | DDR-latency sweep (B7, 2026-09-17) | `tools/mem-sweep.sh docs/measurements/<date>-mem-sweep.txt` | the table of retires at 60 M for latency 4 / measured / 80 at IW=2 and IW=3; an MLP increment is judged by how much of the gap to latency 4 it closes |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
-| the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, rtl= recorded |
+| the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, the userspace stress (B10), the integrity log read back clean from Linux (§11.1, 2026-09-20), rtl= recorded — a `+` on it means a dirty tree and no commit's verdict (G12) |
+| a Geekbench 6 bisection step (2026-09-20) | `tools/gb6-bisect.sh <bit> <tag> [PASS_S]` | one line, `GB6-BISECT: PASS <tag> ... survived 16200 s` or `FAIL <tag> ... after <s> s at subtest <n>`; GB6's PDF Renderer kills 390d5028+ at 87 min where GB5 completes, so a pass is 3× that |
 
 **`CYC=300000000` is the required tiny128 cosim length.** At 40e6 the run reports `inj=0` — it
 never reaches the first interrupt — and three defects that wedged hardware were invisible at
