@@ -3036,7 +3036,21 @@ module ooo2_core
    wire m_red_ref  = m_valid & m_done     & (csr_red | m_is_fencei);
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
-   wire cf_red_fire = fr_v & (rob_head_idx == fr_rob);
+   // THE SQUASH WAITS FOR THE LINK IT OWES. A mispredicting jal/jalr resolves, early-restarts
+   // the frontend (fr_set) and stays in the CTF stage until its link is written -- and the link
+   // waits for the FE shard's write port whenever the FPU is landing (cf_link_wb = ~fp_wb). If the
+   // branch reaches the ROB head first, the squash below fired anyway, `redirect` cleared the
+   // stage (the reset arm above), and the link was never written: the branch retired with its
+   // rd's physreg holding whatever it held before -- zero, an old FP value, a stale sp -- and the
+   // next `ret` jumped there. Geekbench 6 PDF Renderer (virtual calls in FP-dense code) died
+   // that way on every IW=3 bitstream, ~90 min in, with epc == ra == 0 (2026-09-20/21);
+   // memrand --fpmix reproduces it in ~1 M ops at either width. cf_link_pend is registers only
+   // (cf_valid, cf_rd_v, cf_link_wrote), so the fire's cone gains one AND. The wait is bounded:
+   // the head does not retire, the ROB fills behind it, dispatch stops, the FPU drains, the
+   // port frees. The stage holds the tracked branch exactly while its link is pending (a
+   // written link advances it out), so a pending link in the stage is the tracked branch's own
+   // or a younger wrong-path one -- either way the fire waits, never the reverse.
+   wire cf_red_fire = fr_v & (rob_head_idx == fr_rob) & ~cf_link_pend;
    assign redirect = m_red_fire | sy_red | cf_red_fire;
    always @(posedge clk) if (!reset) begin
       if (m_red_fire != m_red_ref)
@@ -3380,6 +3394,10 @@ module ooo2_core
    wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
    wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
    wire        cs_hit_md  = md_wb & (md_rob == rob_head_idx);
+   // The CTF link can write in the very cycle its mispredicted, red-firing branch retires (the
+   // "link-pend gap" comment at the capture assumes otherwise), so the head bypasses it like the
+   // rest (2026-09-21: four `memrand --fpmix` seeds read a stale cs_val for a jalr's link).
+   wire        cs_hit_cf  = cf_link_wb & (cf_rob == rob_head_idx);
    wire        cs_hit_alu = iss_alu & (a_rob == rob_head_idx);
    wire        cs_hit_alu2 = iss_alu2 & (a2_rob == rob_head_idx);
    wire        cs_hit_alu3 = iss_alu3 & (a3_rob == rob_head_idx);
@@ -3389,7 +3407,7 @@ module ooo2_core
                           : cs_hit_alu ? xa_result
                           : cs_hit_alu2 ? xb_result
                           : cs_hit_alu3 ? xc_result
-                          : cs_hit_md ? md_res_q : cs_hit_fp ? fp_wval
+                          : cs_hit_md ? md_res_q : cs_hit_fp ? fp_wval : cs_hit_cf ? cf_link
                           : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
    wire [1:0]  cs_mkind_h = cs_hit_sq ? 2'd2
                           : cs_hit_ld ? 2'd1

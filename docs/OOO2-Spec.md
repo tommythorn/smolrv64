@@ -371,7 +371,13 @@ never waits on M**: `cf_link_wb = pend & ~fp_wb`, and M yields the cycle when it
 write would collide (`m_fe_yield = cf_link_wb & (m_shard == SH_FE)` in `m_done`,
 `m_done_red` and `m_done_wb`, registers only), so M's completion cone (the SQ's commit, the
 MMU) is off the CTF pipe's wakeup broadcast. Routing the in-core FP ops to SH_LD instead
-was tried and dropped: not a board defect (see 13.x), but no gain over the yield. The
+was tried and dropped: not a board defect (see 13.x), but no gain over the yield. **And since 2026-09-21 the squash waits for the link it owes**: `cf_red_fire = fr_v &
+(rob_head_idx == fr_rob) & ~cf_link_pend`. A mispredicting `jal`/`jalr` early-restarts the
+frontend at resolve and stays in the CTF stage until its link is written; if it reached the
+ROB head while the FPU still held the FE port, the squash fired, `redirect` cleared the stage,
+and the branch retired with its link unwritten -- its rd's physreg kept its old contents and
+the next `ret` jumped there (Geekbench 6 PDF Renderer, every IW=3 bitstream, ~90 min in,
+`epc == ra == 0`; rule D13). The wait is bounded by the ROB filling behind the head. The
 live read ports are nine: M rs1/rs2, ALUa rs1/rs2, ALUb rs1/rs2, F/CTF rs1/rs2/rs3 -- M's
 rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are tied off.
 

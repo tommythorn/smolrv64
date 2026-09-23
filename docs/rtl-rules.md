@@ -515,6 +515,25 @@ a LIVE head -- `x_head & ~rob_empty`, because after a flush the empty ROB's head
 anything). The rule: a mux that exists for the datapath's convenience is not a source of
 truth for a predicate captured into a queue; the predicate names the thing it describes.
 
+**D13. A squash may not fire while the squashing instruction still owes a write.** The
+CTF stage's mispredicting `jal`/`jalr` restarts the frontend at resolve (`fr_set`) and squashes
+when it reaches the ROB head (`cf_red_fire`); its link write waits for the FE shard's port
+(`cf_link_wb = pend & ~fp_wb`). The squash never asked whether the link had landed. When the
+FPU was landing every cycle (FP-dense code) and an indirect call mispredicted (a virtual
+call), the branch reached the head first, `redirect` cleared the stage -- the stage's own
+reset arm -- and the branch retired with its rd's physreg never written. The physreg kept
+what it held before (0, an old FP result, a stale sp) and the next `ret` jumped there.
+Geekbench 6 PDF Renderer died that way on every IW=3 bitstream at the same minute
+(2026-09-20/21, eight bitstreams, `epc == ra == badaddr == 0` or garbage), after a day spent
+bisecting RTL that was never at fault. Found by `memrand --fpmix` under the lockstep in ~1 M
+ops at EITHER width, then a `+watch_pc` on the failing jalr: link correct in the stage,
+`wrote=0`, retired in the fire cycle. Fix: `cf_red_fire = ... & ~cf_link_pend` (registers
+only). The rule: a redirect that retires its own source must first collect everything that
+source still owes -- a register write, a queue entry, a completion -- or hold the write
+outside the state the redirect resets. The cosim caught nothing for 300 M cycles because the
+Linux boot is integer code with predictable calls; the reproducer is FP-dense with indirect
+calls, and it stays in the sweep (`make sweep-iw3 GENFLAGS=--fpmix TAG=-fp`).
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

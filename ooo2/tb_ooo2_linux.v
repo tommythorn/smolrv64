@@ -473,6 +473,39 @@ module tb;
    reg [8*256-1:0] fw, dtb, initrd, disk;
    reg [63:0] ncyc, c, nret;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
+
+   // +watch_pc=<hex pc>: follow ONE instruction through the F/CTF pipe -- its F issue (the link the
+   // unit computed), its CTF landing, and every FE-shard PRF write to the physreg it was given.
+   // Built for a jal whose link retired as another instruction's data (2026-09-21); a generated
+   // straight-line program executes a PC once, so the three lines are the whole story.
+   reg [63:0] watch_pc;  reg watch_on;  reg [15:0] watch_prd;  reg watch_prd_v;  reg [15:0] watch_rob;
+   initial begin watch_on = $value$plusargs("watch_pc=%h", watch_pc); watch_prd_v = 1'b0; watch_prd = 16'd0; end
+   always @(posedge clk) if (!reset && watch_on) begin
+      if (dut.core.iss_f && dut.core.qf_pc == watch_pc) begin
+         $display("[c=%0d] watch F-issue pc=%h rob=%0d rd=x%0d rd_v=%b prd=%0d res_link=%b xf_result=%h xf_target=%h",
+                  c, dut.core.qf_pc, dut.core.j_rob, dut.core.qf_rd, dut.core.qf_rd_v, dut.core.qf_prd,
+                  dut.core.qf_res_link, dut.core.xf_result, dut.core.xf_target);
+         watch_prd <= dut.core.qf_prd;  watch_prd_v <= dut.core.qf_rd_v;
+      end
+      if (dut.core.cf_valid && dut.core.cf_pc == watch_pc && dut.core.cf_link_wb) begin
+         $display("[c=%0d] watch link-wb  pc=%h cf_link=%h cf_prd=%0d cf_rob=%0d fp_wb=%b md_wr=%b m_wb_fe=%b we_fe=%b wa_fe=%0d wb_fe=%h head=%0d",
+                  c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_rob, dut.core.fp_wb, dut.core.md_wr,
+                  dut.core.m_wb_fe, dut.core.we_fe, dut.core.wa_fe, dut.core.wb_fe, dut.core.rob_head_idx);
+         watch_prd <= dut.core.cf_prd;  watch_prd_v <= 1'b1;  watch_rob <= dut.core.cf_rob;
+      end
+      // the watched op retires: the value the cosim REPORTS beside the physreg's REAL contents
+      if (dut.core.retire && dut.core.retire_pc == watch_pc)
+         $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h hit_cf=%b cs_val[head]=%h  prf_fe[%0d]=%h",
+                  c, dut.core.retire_pc, dut.core.rob_head_idx, dut.core.cs_val_h, dut.core.cs_hit_cf,
+                  dut.core.cs_val[dut.core.rob_head_idx], watch_prd[6:0], dut.core.u_prf.mem_fe[watch_prd[6:0]]);
+      if (dut.core.cf_land && dut.core.cf_pc == watch_pc)
+         $display("[c=%0d] watch CTF-land pc=%h cf_link=%h cf_prd=%0d wrote=%b redirect=%b land_rob=%0d",
+                  c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_link_wrote, dut.core.cf_redirect, dut.core.cf_land_rob);
+      if (watch_prd_v && dut.core.we_fe && dut.core.wa_fe == watch_prd)
+         $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b cf_link_wb=%b md_wr=%b m_wb_fe=%b",
+                  c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.cf_link_wb, dut.core.md_wr, dut.core.m_wb_fe);
+      if (dut.core.redirect && watch_prd_v) $display("[c=%0d] watch redirect (prd %0d still watched)", c, watch_prd);
+   end
    initial begin
       ncyc = 200000000; nret = 0;
       n_inject = 0; n_uirq = 0; n_seip = 0;

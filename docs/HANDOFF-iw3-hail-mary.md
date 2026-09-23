@@ -1044,3 +1044,435 @@ S_IDLE's own capture has always relied on) -- but NOT while a `pipe_hold` retry 
 it. Predictor training may be late AND dropped outright. Classify a new signal into one of
 those three before deciding what is allowed to gate it.
 
+
+## GB6 fails where GB5 completes; the integrity log; the bisection (2026-09-20)
+
+**The finding.** Tommy ran the bitstream left on the board after the C4a A/B —
+`/var/tmp/ooo2_c4a3iw3.bit`, banner `390d5028+`, i.e. 390d5028 + C3 step 3 + C4a step 1
+uncommitted, the content of 493dc343 at IW=3 — through Geekbench 5 to completion (integer 6, a
+new high) and then Geekbench 6, which segfaulted in **PDF Renderer** (the fourth subtest) after
+**87 min / 831 G cycles**:
+
+    epc : 000000000000015c ra : 000000000000015c ... badaddr: 000000000000015c cause: 000000000000000c
+
+A `ret` popped a garbage return address. That is the **same signature as the skid-buffer GB5
+crash** (`epc == ra == badaddr`, cause 12, U-mode), on a tree that never had the skid buffer.
+The likeliest reading is that the door self-loop was never the culprit: it raised the rate of a
+bug C4a step 1 already had (a load returned the wrong word, or a store wrote the wrong slot, and
+the stack slot holding `ra` was the victim). The bisection decides; the reading only sets its
+order.
+
+**The known-good end is newer than the run Tommy started.** 384fd599 (the release, IW=2)
+completed GB6 in full on 2026-09-10 (55.5 h, result 19145035). 9d027fee is older than that and
+its ooo2 RTL is the same, so the four-hour run on it (`gate-results/6c1eeff1/rk_xcku5p.bit`, a
+directory named for one commit holding a bitstream that identifies as another -- the G11/G12
+class again) could not narrow anything; stopped, board shut down cleanly, taken over.
+
+**The range and the candidates.** 384fd599..390d5028+ is 30 RTL commits in four blocks: the
+Sep-10 predictor/aligner fixes; the VHPR I$ (stage 2, board-gated at `login:` only); the IW=3
+widening (stage 3 through 5bffd3d9); the memory backend C0/C1/C3/C4a. Every increment's
+bitstream is banked in `/var/tmp` (`ooo2_c0iw3`, `c1iw3`, `c3s1iw3`, `c3s3iw3`, `c4a3iw3`, and
+`ooo2_REL_release_166MHz_384fd599`), so no step needs a build. A step is `tools/gb6-bisect.sh
+<bit> <tag>`: program, boot, launch `/var/tmp/gb6-bisect.sh <tag>` on the board (GB6 single-core
+under perf, per-tag logs), watch dmesg / the raw log / the console once a minute, one verdict
+line. FAIL arrives in ~1.5 h; PASS is 4.5 h (three times the failure time). Order: `c3s3iw3`
+first (everything but C4a1: a pass convicts C4a1 outright), then `c0iw3` on a fail (splits
+frontend+IW=3 from the memory backend), then whichever half is left.
+
+**The integrity log (C5 step 0, built today, this worktree).** The sim-only assertions are now
+also hardware: `rv_errlog.v`, `e_*` wires in `rv_cache.v`/`ooo2_lsu.v` read by both the
+`$fatal` and a registered `err[15:0]` port, one log in `rv_soc_top` at the dead FBDIAG window
+(`0x1000_E000`: magic, sticky vector, first index + 48-bit cycle stamp), the D$ address-provenance
+check always on (bit 13). Monitor banner `err=`, `E` command; `tools/errlog-read.sh <ip>` names
+the bits from Linux; `board-gate.sh` FAILs on a nonzero log after the stress; every bench
+`$fatal`s if a bit rises. Spec §11.1, rule A7. It goes onto the board as soon as it has a
+build: whatever the bisection says, the recorder turns the next crash into a bit index and a
+cycle, or a zero that exonerates the whole logged set.
+
+**Bisection verdicts so far (2026-09-20).** Step 1, `c3s3iw3` (390d5028 + C3 step 3, IW=3,
+banner `390d5028+`): FAIL at PDF Renderer after 92 min, cause 13, `badaddr 0xcd9`,
+`ra = c37ee5da43a1f333`. C4a step 1 is exonerated, and with it the reading that the skid buffer
+was the culprit. Step 2, `c0iw3` (46621661 + C0, IW=3, banner `46621661+`): FAIL at PDF Renderer
+after 88 min, `epc == ra == badaddr == 0`, cause 12. C1 and C3 are exonerated. Three failures,
+three different garbage return addresses, the same subtest at the same minute on every tree:
+the stack slot that holds `ra` is being corrupted (a load returning the wrong word or a store
+landing in the wrong slot), which points at the data path, not the predictor. The range is now
+384fd599..46621661 + C0: the Sep-10 fixes, VHPR stage 2, the IW=3 widening (stage 3) and C0's
+third retire port and CPI buckets. Step 3 is `st2end` (43fbcfce, the end of stage 2, IW=2,
+`/var/tmp/ooo2_st2end_iw2_43fbcfce.bit`): a pass convicts stage 3 or C0, a fail convicts the
+Sep-10 fixes or stages 1-2. The hedge for a pass, 5bffd3d9 at IW=3, is built from
+`smolrv64-wt-bisect` and banked as `/var/tmp/ooo2_st3end_iw3_5bffd3d9.bit`. Per-step evidence:
+`gate-results/gb6-bisect-<tag>/` (`fault.log` holds the dmesg lines and the errlog readout).
+
+**Step 3 replaced (Tommy, 16:45).** An IW=2 pass on 43fbcfce would not convict stage 3: no IW=3
+tree has ever passed GB6 and no IW=2 tree has ever failed it, so a pre-stage-3 defect that
+IW=3 merely exposes (more in-flight state, a different retire cadence) would read the same as
+a stage-3 bug. The step that decides whether width matters is the NEWEST tree at
+IW=2: `c4a3iw2` (C4a step 1, the content of Tommy's original failure, IW=2). A fail makes the
+IW=2 bisection down the range legitimate; a pass means the defect is IW=3-only in one of the
+two senses, and the remaining instruments are IW=3 builds of the stage-3 increments (36ae53a2
+is the first tree that boots IW=3) and the integrity log. The st2end run was stopped in its
+programming phase and `c4a3iw2` launched in its place.
+
+**Step 3 verdict: `c4a3iw2` PASS (2026-09-20, 20:58).** 390d5028+ at IW=2 survived 13047 s and
+seven subtests (File Compression, Navigation, HTML5 Browser, PDF Renderer, Photo Library,
+Clang, Text Processing) with zero faults, through the minute-90 PDF Renderer window that
+killed all three IW=3 trees. Width matters: the newest content is clean at IW=2, so nothing
+below stage 3 fails on its own and the IW=2 axis is closed. The defect is IW=3-only in one of
+the two senses above (stage-3 code, or older code that only IW=3 drives into the failing
+case), and the bisection continues at IW=3 down the stage-3 range. Step 4 launched 21:01:
+`st3end` = 5bffd3d9 at IW=3 (`/var/tmp/ooo2_st3end_iw3_5bffd3d9.bit`, stage-3 end, no C0).
+A FAIL exonerates C0 for good and points at the stage-3 increments (36ae53a2 is the first
+IW=3-bootable tree); a PASS convicts C0's retire3 port / CPI buckets (46621661) at IW=3.
+
+**Step 4 verdict: `st3end` PASS (2026-09-21, 01:16).** 5bffd3d9 at IW=3, clean banner, survived
+14180 s and seven subtests with zero faults -- the first IW=3 tree to clear PDF Renderer (the
+two IW=3 deaths were at 5299 s and 5521 s). The stage-3 widening, VHPR stage 2 and the Sep-10
+fixes are exonerated at IW=3. Every failing tree contains C0, and C0's RTL diff
+(46621661..4a3b0d05) is instrumentation only: the retire3 port, eight memory HPM event wires
+from the LQ/SQ/LSU, two occupancy taps, and a registered mhpmevent select in csr_file. The one
+C0 verdict so far came from a DIRTY banner (46621661+), so step 5 re-tests the committed C0
+on a clean one: `c0commit` = 4a3b0d05 at IW=3 (`/var/tmp/ooo2_c0commit_iw3_4a3b0d05.bit`,
+built 23:40, WNS +0.055), launched 01:17. A FAIL puts the defect inside that 130-line diff
+(bisect it: csr_file's registered select vs the core-side wires); a PASS means the `+` in the
+c0iw3 banner carried something 4a3b0d05 does not, or the failure is not a reliable property of
+a bitstream, and the next run repeats c0iw3 itself.
+
+**Step 5 verdict: `c0commit` FAIL (2026-09-21, 03:06).** 4a3b0d05 at IW=3, clean banner, died
+at 5369 s in PDF Renderer: `epc == ra == badaddr == 0`, cause 12, the same signature as c0iw3
+(5299 s). The C0 verdict stands on a clean banner. That brackets the failure between 5bffd3d9
+(one IW=3 pass) and 4a3b0d05, whose RTL diff is instrumentation only (retire3 port, eight
+memory HPM wires, two occupancy taps, the registered mhpmevent select) -- and the on-board
+perf command programs none of the new events, so both trees execute the SAME architectural
+program with the SAME counter semantics. No RTL mechanism turns that diff into a corrupted
+`ra`. The reading that fits every fact instead: the failure is a per-run RACE, not a per-tree
+property, and the single 5bffd3d9 pass may be luck (four IW=3 failures, one pass; under a
+tree-independent failure rate the odds of the one pass landing on the one C0-free run are
+about one in five). The trigger that fits "same subtest, same minute, `ra` reverts to 0 or
+to stale stack junk": PDF Renderer's NFS file reads. The board's DMA is non-coherent
+(`dma-noncoherent` in the DTS, Zicbom advertised, cbom-block-size 64), so the kernel
+reconciles every DMA buffer with cbo.inval/cbo.flush, and cbo.zero is clear_page. A CBO that
+races a fill, a writeback or a pending store in the D$ and drops or invalidates the WRONG
+dirty line explains `ra` reading 0 (never-written memory) or old stack contents
+(c37ee5da43a1f333, 0x15c) -- a dirty stack line discarded, the next `ld ra` re-reading DRAM.
+Same mechanism family as the D$-prefetch-under-DMA defect. Step 6 (03:10): repeat 5bffd3d9 at
+IW=3 (`st3end2`). A FAIL proves the race reading, exonerates C0 and puts the defect in every
+IW=3 tree (and the IW=2 passes become a rate difference, not an absence); a second PASS makes
+the tree effect real and the instrumentation diff gets split. Either way the next instrument
+is a DIRECTED test: heavy NFS reads (DMA + CBO) against a program that checks its own return
+addresses, minutes instead of 90, and the integrity-log bitstream as the recorder.
+
+**Step 6 so far (2026-09-21, 05:24): `st3end2` cleared PDF Renderer.** The 5bffd3d9 repeat at
+IW=3 is in Photo Library at 6940 s with zero faults. Two clears out of two on 5bffd3d9 against
+four deaths out of four on trees with C0, all in PDF Renderer's first minutes: under a
+tree-independent failure rate that split has odds of about 1 in 15, so the tree effect is now
+real enough to act on even though no RTL mechanism explains it. What was checked while it ran:
+`report_cdc` on the routed 4a3b0d05 checkpoint (`tmp/cdc-4a3b0d05.rpt` in the job dir) --
+every Critical is in `eth_tx_engine`/`eth_rx_engine` (toggle handshakes and quasi-static
+payload: `len_g`, `len_latch`, the frame RAMs, the counters) plus one CDC-10 on
+`ui_cpu_reset_sync`; the received frame length is written at the same edge as the done toggle
+and consumed only after three DMA reads, so none of these can put a wrong value on a user
+stack. The core/DDR crossings (`ddr_line_cdc`, the MMIO XPM FIFO) are constrained and timed.
+Found on the way, a real defect NOT in this failure's shape: `virtio_net` S_RX_WAIT_DESC takes
+only the descriptor's address and DMAs `rx_frame_len + 12` bytes with no bound by the
+descriptor's length, so a frame longer than the posted buffer overruns kernel memory. Fix
+later (clamp to desc.len, drop otherwise); noted here so it is not lost.
+
+**Next on the board, in order.** (1) `/var/tmp/dmastress/dma-cbo-stress.sh` on the
+`c0commit` bitstream: NFS reads with the page cache dropped (DMA + cbo.inval), anonymous page
+churn (cbo.zero), two `rachk` instances (deep stacks of saved `ra`, checksum self-check),
+verdict by dmesg fault or mismatch, 10-30 min. If it reproduces, it replaces the 90-minute
+Geekbench step and a RATE comparison between 4a3b0d05 and 5bffd3d9 costs an hour. (2) If it
+does not, GB6 on the integrity-log bitstream (`/var/tmp/ooo2_errlog_iw3.bit`, 8f59c4b2+):
+the next crash comes with a bit index and a cycle stamp, or a zero that exonerates the D$
+address-provenance and LSU protocol checks. (3) Only then split C0's diff.
+
+**Step 6 verdict: `st3end2` PASS (07:26).** 5bffd3d9 at IW=3 survived 14248 s and seven subtests
+a second time. Scoreboard at IW=3: 5bffd3d9 2/2 passes; every tree with C0 (c3s3iw3, c0iw3,
+c0commit, and Tommy's original c4a3iw3) 4/4 deaths in PDF Renderer's first minutes. Directed
+stress on `c0commit` launched next (tools/dma-stress-step.sh, uncommitted).
+
+**Directed stress: PASS on `c0commit` (08:17).** 1500 s on 4a3b0d05 at IW=3: NFS reads at
+~2.3 MB/s of receive DMA with the page cache dropped every round (7 rounds), 67 rounds of
+32 MiB anonymous page churn, two `rachk` instances (2744 passes at depth 20000, 13271 at
+depth 4000), zero dmesg faults, no checksum mismatch. So DMA + cbo.inval + cbo.zero + deep
+stacks, as built, do NOT reproduce what PDF Renderer does in its first five minutes; the
+trigger is more specific (its working set, its FP/stack mix, or its exact file-read pattern).
+The 90-minute Geekbench step stays the detector for now. Launched next (08:19): GB6 on the
+integrity-log bitstream `/var/tmp/ooo2_errlog_iw3.bit` (8f59c4b2+: C0..C4a + rv_errlog, IW=3),
+`tools/gb6-bisect.sh ... errlog`, which reads the log after the fault (`errlog:` line): a
+nonzero sticky vector names the D$/LSU check that fired and the cycle; a zero exonerates the
+whole logged set and points the search elsewhere (the queues, the PRF, the frontend).
+
+**THE INTEGRITY LOG FIRED (08:45, errlog bitstream, during the Linux boot).** Read live while
+GB6 ran: `sticky=0000000000000008`, first index 3 at cycle `0xc4af816e5` = 52.8 G cycles =
+~317 s after reset, i.e. mid-boot, before `login:`. Bit 3 is `dcache.pa_range`: "a request
+above the tagged physical range" (`e_pa_range = accept && |a_live[PAW-1:PAW_SIG]`). The D$
+accepted a request whose physical address has bits set above what its tags cover -- that
+request is aliased under a truncated tag. Two reader defects found on the way: (1)
+`tools/errlog-read.sh` read the window with python (byte loads) and got lane 0 replicated
+(`4c4c4c4c4c4c4c4c` for the magic), so every earlier "errlog: absent" on THIS bitstream was
+the reader, not the log; it now uses `/var/tmp/errlog/rdwin` (64-bit volatile loads, built on
+the board). (2) Sub-word loads through the device path return wrong lanes generally (the
+buildid window reads `534d4f4c534d4f4c` by 64-bit loads and `010101014c4c4c4c` by byte loads);
+drivers hide it with 32-bit accesses. Not this bug, but a defect to assert on.
+
+**What bit 3 means in this geometry.** The D$ is `PAW=64, PAW_SIG=34`: its tag is 34 bits and
+rv_cache.v line 35 says a PA at or above 2^34 "cannot be tagged and is asserted never to
+arrive". The LSU's DRAM test is `pa_dram = (eff_pa >= 0x8000_0000)` with NO upper bound
+(ooo2_lsu.v line 204), so any 56-bit PA from 2 GiB up to 2^56 is "memory": cacheable, and
+allowed to start SPECULATIVELY (`e_dev_spec` blocks only `~pa_mem`). A wrong-path load whose
+address register holds garbage above 2^34 -- routine in out-of-order execution of user code --
+therefore reaches the D$, which tags it with the low 34 bits: it hits or fills the ALIAS line
+(the fill address is rebuilt from the truncated tag, lines 985/1099), i.e. it behaves like a
+load of the alias, and the wrong-path load is killed. No corruption path was found in that
+walk: a resident alias hits, a missing alias fills from its own DRAM, stores are never
+speculative. But the assumption the rest of the cache's provenance logic rests on is violated
+on real hardware from the Linux boot on, the first time at 317 s. The fix is the LSU's, rule
+D12's shape: classify by the range the D$ can represent (`pa_dram` bounded by 2^PAW_SIG, or
+better by DRAM_TOP), so a wild speculative load above it is held like a device access and a
+non-speculative one takes an access fault. Whether this is THE GB6 defect is decided by the
+post-crash read: a new bit (adr_bad 13, line_gone 4, the LSU tag checks 34-36) is a
+diagnosis; bit 3 alone says the aliasing is real but the corruption is elsewhere.
+
+**errlog run verdict: FAIL, sticky = bit 3 ONLY (10:09).** 8f59c4b2+ died at 5093 s in PDF
+Renderer: `epc = badaddr = ffffffff43ae4de4`, `ra = ffffffff43ae4de5`, cause 12, U-mode --
+a `ret` into a garbage pointer again (this one a sign-extended 32-bit pattern). The post-crash
+read is `sticky=0000000000000008`: none of the other 47 logged checks fired -- no D$ protocol
+violation, no address-provenance mismatch (bit 13), no LSU tag reissue/orphan/reuse, no
+device-speculation leak. The recorder has exonerated everything it logs except the one
+assumption it found violated at boot. The fill for an out-of-range request reads memory at
+the FULL wild address (`l2_addr <= f_pa[PAW-1:OFFB]`, rv_cache.v 1017) and installs the line
+under the 34-bit tag; whether that poisons a real line depends on what the line port returns
+for an address beyond DRAM: a plain wrap returns the alias's own data (harmless phantom or
+identical line), anything else -- zeros, another region -- is exactly a corrupted alias line
+that a later correct-path load hits. That is being read next (ddr_line_axi).
+
+**Closed (10:30):** `ddr_line_axi` forms the AXI address as PA[30:0] (`{i_addr[AXI_AW-7:0],
+6'b0}`), so memory wraps on exactly the bits the 34-bit tag keeps: a wild fill installs the
+data the alias line should hold, and pa_range is benign for data (a phantom line or an
+identical one). Also closed: no RTL combinational loop in any build log (only the clock-tree
+note); the GB6 preview CLI has no `--workload` (Pro only), so PDF Renderer cannot run alone;
+no PDF renderer is installed on the board. **Splitting C0 (10:45).** `c0sel` = 4a3b0d05 with
+ONE line reverted -- `mhpmcounter[i] <= ... + hpm_inc(mhpmevent[i][15:0])`, the code-form
+select the counters used before C0 -- everything else in C0 kept (the 39-bit bus, the eight
+wires, the occupancy taps, `hpm_esel` still written, retire3 port). Lint clean, built in
+smolrv64-wt-bisect (WNS +0.029, banked fresh `/var/tmp/ooo2_c0sel_iw3_4a3b0d05p.bit`), GB6
+launched 10:45 (`tools/gb6-bisect.sh ... c0sel`). PASS -> the registered select's netlist is
+the difference and gets read at the netlist; FAIL -> the wires/bus/port, next variant drops
+them (5bffd3d9 + retire3 port only).
+
+**c0sel verdict: FAIL (12:45).** 4a3b0d05+ (code-form counter select) died at 5938 s in PDF
+Renderer at `0xffffffff00000000`. The registered select is exonerated; what remains of C0 is
+the 39-bit event bus, the eight event wires (ooo2_lq `x_devwait`, ooo2_sq `l_block_unk_q`,
+ooo2_lsu `ld_busy`, plus five wires computed in the core from existing signals), the two
+occupancy taps, and the retire3 port. Two more instruments were built meanwhile, both banked
+fresh: `c0port` = 5bffd3d9 + the retire3 port alone (WNS +0.029,
+`/var/tmp/ooo2_c0port_iw3_5bffd3d9p.bit`), and `c0nosrc` = 4a3b0d05 with ooo2_lq/sq/lsu at
+5bffd3d9 and the three module-side sources tied to 0 (default directive missed timing at
+-0.158 and wrote no bitstream; Explore closed, `/var/tmp/ooo2_c0nosrc_iw3_4a3b0d05p.bit`).
+c0nosrc launched 12:47: PASS -> the three module edits are the difference (the SQ's per-entry
+`unk_q` register, the LQ's `x_devwait`, the LSU's `ld_busy`); FAIL -> bus/port/plumbing, then
+c0port.
+
+**c0nosrc verdict: FAIL (14:35).** Died at 5300 s in PDF Renderer, `epc = ra = badaddr = 0`.
+The three module-side sources are exonerated too. Left in C0: the 39-bit `hpm_ev` bus and
+its core-side wires (`mem_hitser`, `mem_stdoor`, `mem_alias_*`, `mem_reord`, `mem_wpkill`, all
+computed from existing core signals), the two occupancy taps (`hpm_lqocc_q`/`hpm_sqocc_q`),
+csr_file's wider bus and new event decode, and the retire3 port. c0port (5bffd3d9 + the port
+alone) launched 14:37: FAIL -> the port alone reproduces it (then the rv_soc_top/platform
+netlist around that output is the place to look); PASS -> the bus and its wires.
+
+**c0port verdict: FAIL (16:25) -- AND THAT ENDS THE RTL BISECTION.** 5bffd3d9 + one unconnected
+output port died at 5619 s in PDF Renderer, `epc = ra = 0`. An unconnected port cannot change
+function, so the seven failures and the two passes sort by BITSTREAM, not by RTL: the two
+5bffd3d9 passes were two runs of ONE bitstream; seven distinct bitstreams (c3s3iw3, c0iw3,
+c0commit, errlog, c0sel, c0nosrc, c0port -- three of them functionally identical to 5bffd3d9
+or to each other) failed one for one, all in PDF Renderer's first ten minutes. Under a per-run
+coin flip that split has odds under 1 in 100; under "the outcome is a property of the
+placed-and-routed bitstream" it is what you expect. Every one of these bitstreams met timing,
+so STA-covered paths are not the difference; what is left is exactly what STA does not check
+in this design: the clock groups declared asynchronous (eth_rxc <-> the ui/core tree, analysed
+above as protocol-safe), the false-pathed XPM reset, the CDC-10 reset synchronizer with
+combinational logic in front of it (`ui_cpu_reset_sync`), and any endpoint with no clock or no
+constraint at all (`check_timing`). Next: (1) `check_timing`, `report_clock_networks`,
+`report_timing_summary -report_unconstrained` on a routed checkpoint (any build; the
+constraints are common); (2) a SECOND bitstream of 5bffd3d9 itself with the Explore
+directives -- if it fails, "5bffd3d9 is clean" was one lucky placement and the RTL range
+384fd599..HEAD is un-bisected by this method; if it passes, 5bffd3d9's netlist places into a
+passing region reliably and the port's netlist difference matters after all.
+
+**check_timing on a routed checkpoint (16:40, c0bus build; the constraints are common to all
+builds):** 0 no_clock, 0 constant_clock, 0 unconstrained internal endpoints, 0 multiple-clock
+pins, 0 generated clocks without a source, 0 combinational loops. The only unconstrained items
+are I/O: no input delay on `key[0..1]`, `rxd`, `sd_cd`, `sd_d[0]`; no output delay on
+`c0_ddr4_reset_n`, `eth_txd[3:0]`, `eth_tx_ctl`, `sd_*`, `txd` (the RGMII transmit side, whose
+worst case is a corrupted OUTGOING frame that the peer's checksum drops). So STA covers every
+internal path in every one of these bitstreams; the reset synchronizer's only asynchronous
+input is the physical button `key[1]`, static, and `ui_cpu_reset` is re-synchronized in
+probe_clk with async assert / sync release. What remains unchecked by STA is the eth_rxc
+group, analysed as protocol-safe. A second bitstream of 5bffd3d9 itself (Explore directives,
+`/var/tmp/ooo2_st3end_explore_iw3_5bffd3d9.bit`) is building for the decisive board run.
+
+**CORRECTION (16:50): THE PASSING 5bffd3d9 BITSTREAM WAS IW=2.** Its build log
+(`tmp/build-5bffd3d9-iw3-bit.log` in the job dir) says `pipeline width = 2 (OOO2_IW=2) -- the
+shipping build.`: the re-run after the stale-bitstream (G11) fix was `make bit` without
+`OOO2_IW=3` in the environment, and the monitor banner carries only the git hash, not the
+width. So `st3end` and `st3end2` -- the two passes that made 5bffd3d9 "the defect-free commit
+at IW=3" and put C0 on trial -- were IW=2 runs. Everything built on them is void: C0 was never
+implicated, the c0sel/c0nosrc/c0port split was a split of nothing, and the "bitstream
+property" reading above was the wrong explanation of a right observation (all those
+bitstreams are IW=3 and IW=3 fails). The consistent scoreboard is the simple one:
+
+    IW=3: c4a3iw3 (Tommy), c3s3iw3, c0iw3, c0commit, errlog, c0sel, c0nosrc, c0port -- 8/8 FAIL
+          in PDF Renderer's first ten minutes, ra = 0 / stale junk.
+    IW=2: release 384fd599, c4a3iw2 (390d5028+), st3end x2 (5bffd3d9)          -- 4/4 PASS.
+
+The defect is IW=3-only (or IW=3-exposed) and is already present at 5bffd3d9, the stage-3
+end. The IW=3 range below it is un-bisected: the stage-3 increments from 36ae53a2 (the first
+tree that boots IW=3) to 5bffd3d9. The build now running (`ooo2_st3end_explore_iw3_5bffd3d9`,
+launched WITH `OOO2_IW=3`, Explore directives) is therefore the FIRST genuine IW=3 test of
+5bffd3d9 and the bisection's next step; a FAIL sends the search into the stage-3 increments.
+What stands from the last 24 hours: the integrity log (47 D$/LSU checks clean at an IW=3
+crash; pa_range benign), the CDC and check_timing audits, the reader fixes, the virtio-net RX
+length defect, and the width trap itself. RULE FROM THIS: a banked bitstream's width is read
+from its build log's `pipeline width` line before it is named `_iw3_`; and the banner must
+carry the width (`rtl=<hash>[+] iw=<N>`) so a boot log proves it -- that is the tooling fix
+to make with the next RTL commit.
+
+**The IW=3 range below 5bffd3d9, and its caveat.** Seven commits: 36ae53a2 (stage 3 inc 5,
+the first tree that boots IW=3 lockstep-clean), 3b3e786a (docs), 760fe336 (minstret counts the
+3rd retire port), 5ef15e3d (control flow on the FP-shared pipe + block-RAM read-ahead
+predictor), 4ee73d23 (BTB/YAGS to 2048 + flop the freelist release), dd371e6d (dispatch
+swizzle + dispatch stage), 5bffd3d9 (timing closure + the D12 device-load fix). The caveat:
+D12 is the fix for the NIC that died under interrupt storms on the IW=3 branch, so every tree
+below 5bffd3d9 boots with a NIC that can die mid-run, and GB6 over NFS on such a tree can fail
+for THAT reason. An IW=3 bisection below 5bffd3d9 therefore carries the D12 hunk (the LSU's
+device-load classification) onto each older increment, or it is not a bisection of this
+defect. The mislabeled bank is now `/var/tmp/ooo2_st3end_iw2_5bffd3d9_MISLABELED.bit`; older
+banks of unknown provenance (`ooo2_iw3_hm3.bit`, `ooo2_f1iw3.bit`) are named by intent only --
+their build logs, not their names, say what they are.
+
+**Instruments for below 5bffd3d9, and a second caveat (17:30).** Built: 5bffd3d9 at IW=3 and
+111.11 MHz (`/var/tmp/ooo2_st3end_iw3_111MHz_5bffd3d9.bit`, PROBE_CLK_DIV8=72; DTB
+`workloads/ubuntu/ubuntu-nfs-111.dtb`, timebase 502765, untracked in the main checkout) -- the
+CONTROL for any lower-clock bisection. Building: dd371e6d + the functional half of D12 (the
+LSU's `t_mem` classification; the `x_head`/`pt_nonspec` parts of D12 feed only simulation
+assertions and are left out) at IW=3 and 111 MHz. The second caveat: dd371e6d and every tree
+below it still carry the combinational loop through `ld_land` that 5bffd3d9 removed
+(`pt_ld_kill` no longer sees the live flush; nine TIMING-23 loops, Verilator UNOPTFLAT
+`m_done_red`). Vivado cuts such a loop at an arbitrary arc, so those trees' hardware is not
+the RTL's semantics by construction and a verdict on them is confounded; dd371e6d's lint
+did not print its clean line for that reason. The clean way to localise INSIDE 5bffd3d9 is
+therefore not to go below it but to revert its hunks one at a time on top of it at 111 MHz,
+where every variant meets timing -- with the `pt_ld_kill` change the first candidate, since
+it is the one that changes what a load landing around a redirect does, and the failure is a
+load of `ra` returning stale or zero data.
+
+**Two better candidates inside 5bffd3d9 (17:45), from reading its diff.** Both produce exactly
+"a register read stale" and both are new in the first tree that fails: (1) `ooo2_rename.v`'s
+freelist read was restructured -- each shard's per-port bank read went from a three-way
+select on `h`/`hb`/`hcc` to `mem[h_row + behind[g]]` with `behind[g] = (g < h's bank)`, and the
+row advance for port B now uses `ar_*` (stall-independent) instead of `a_*`. A wrong hand-out
+here gives two live instructions one physical register, and the loser's consumer -- a `ret`
+reading `ra` -- gets the other's data. It is the IW-dependent one: three allocations per
+cycle wrap the banks differently from two, and IW=2 passes. (2) `ooo2_iq.v` grew a
+dependency matrix (`dep[k*NSRC+q]`, rows captured at dispatch from `d_ps` against `e_prd`)
+that replaces the tag compare for the self-wakeup, plus a registered `d_ready_q`
+(`nfree >= 2`). A stale row wakes a consumer on the wrong producer and it reads its source
+before the write lands. Both carry sim-only `$fatal` cross-checks (matrix vs compare; ready vs
+free) that 300 M cosim cycles never tripped; GB6 runs 50 G. The instrument that fits is a
+DIRECTED UNIT BENCH of the rename freelist at IW=3 (random alloc/free/stall/flush patterns
+against a model that asserts no physreg is handed out twice), seconds instead of hours; the
+IQ matrix has its assertion already and needs a long randomized issue-queue run.
+
+**The instrument, built (18:05): `memrand --fpmix` under the IW=3 lockstep.** PDF Renderer is
+the first FP-dense subtest, the FP shard's freelist sees three allocations per cycle only in
+FP-dense code at IW=3, and no cosim to date runs FP-dense user code -- the Linux boots are
+integer. `workloads/memrand/gen.py` now has `--fpmix` (uncommitted, wip/c4a): 40% FP
+arithmetic (three-operand, fused, FP->INT moves and compares through the FP-shared pipe, a
+rare divide), real calls into four generated subroutines that save and reload `ra` through the
+stack and `ret` -- the failing shape -- unpredictable branches over FP/ALU ops, and the usual
+loads, stores and pointer chases at lower weight. `make cosim SEED=<n> OPS=50000
+GENFLAGS=--fpmix TAG=-fp VDEFS=-DOOO2_IW=3` runs one seed in minutes against Simmerv; the
+lockstep's retire compare catches a stale register on the first wrong `ret` or FP result.
+memrand-1-fp.bin is assembled (4813 FP/call/ret instructions in 50 k ops); the run waits for
+Vivado to finish (no Verilator while it builds).
+
+**Below 5bffd3d9 is closed (17:30):** the dd371e6d + D12 build at IW=3 and 111 MHz met timing
+but Vivado refused the bitstream on DRC `LUTLP-1` -- "16 LUT cells form a combinatorial loop"
+-- the `ld_land` loop that 5bffd3d9 removed. No tree below 5bffd3d9 builds at IW=3 at any
+clock without carrying that fix too, and carrying it removes the very hunk under suspicion.
+So the search is INSIDE 5bffd3d9 (its rename freelist read, its IQ dependency matrix, its
+`pt_ld_kill` change) and the tools are the FP-dense lockstep and, if needed, hunk reverts on
+top of 5bffd3d9 at 111 MHz.
+
+**ROOT CAUSE (18:12, simulation; rule D13).** `memrand --fpmix` at 1 M ops diverged on every
+seed at IW=3 (2, 3, 4, 5) AND at IW=2, always at a `jal`/`jalr` whose reported link was
+another value. The first four were a cosim REPORTING race (the head read `cs_val` before the
+same-cycle link capture; fixed with a `cs_hit_cf` bypass like the other producers). With that
+fixed the divergences moved later but stayed -- and a `+watch_pc` hook (new, tb_ooo2_linux.v)
+on seed 5's jalr at 0x80178eba showed the machine's fault: in cycle 7898274 the branch
+RETIRED and fired its redirect at the ROB head (`cf_red_fire`, `redirect=1`) with its link
+still pending (`wrote=0`, the correct link 0x80178ebe waiting in the stage for the FE port,
+`cf_link_wb = pend & ~fp_wb`, the FPU landing). `if (reset | redirect) cf_valid <= 0` then
+dropped the stage with the link in it. Physreg 291 -- from that cycle `ra`'s committed
+mapping -- was never written; the callee saved and reloaded whatever it held and `ret`
+jumped there. Zero, an old FP value, a stale `sp`: exactly the board's `ra` values.
+Ingredients: an indirect mispredict (virtual calls), FP results landing every cycle (the
+port busy), the branch reaching head first -- PDF Renderer. IW=3 gets there far more often
+than IW=2 (three-wide, more FP landings per cycle), which is the whole width story. FIX:
+`cf_red_fire = fr_v & (rob_head_idx == fr_rob) & ~cf_link_pend` (registers only; the wait
+is bounded by the ROB filling behind the head). Lint clean; the fpmix sweep at IW=3 is
+running as the first verdict, then riscv-tests, the benches, IW=2 seeds, the 300 M Linux
+cosim, a 166 MHz IW=3 build, and Geekbench on the board. Spec 5.1 and rule D13 written.
+
+**st3iw3 verdict (18:42): FAIL** -- 5bffd3d9 at a VERIFIED IW=3 died at 5368 s in PDF Renderer,
+signal 11 at 0. That is the formal control the mislabeled bank never gave: the defect is present
+at the stage-3 end, IW=3 is now nine bitstreams out of nine, and rule D13's mechanism is the one
+they share. Simulation with the fix: `memrand --fpmix` seeds 2-5 at IW=3 all PASS (each
+diverged before). The fixed tree (C4a + integrity log + D13) is building at IW=3/166.67 MHz
+(Explore) as `/var/tmp/ooo2_d13fix_iw3.bit`; it goes on the board for Geekbench next, with
+the integrity log reading along.
+
+**Sim gates on the fixed tree (18:58):** `memrand --fpmix` seeds 2 and 3 at IW=2 PASS (both
+diverged before the fix); riscv-tests 240/0; all eight ooo2 benches PASS (cache, cbozero,
+ethrx, iq, lqsq-rand, lqsq, vnet, dcache). `src/run-tb.sh` is 18/19: `tb_fetch_pagecross.v`
+dies at once with `fetch.v:138: fetch: hw_cap 8 != x at off=000000` -- the bench does not
+drive the halfword cap that 5bffd3d9's `src/fetch.v` change asserts on; `src/` is untouched
+here, so that is HEAD's state since 5bffd3d9, a stale bench, not this fix (worth its own
+one-line repair).
+**300 M Linux cosim at IW=3 on the fixed tree (19:16): lockstep-clean to the end**, retires
+74,382,417 against the recorded 74,614,701 (-0.31%): the squash now waits a cycle or two for
+each mispredicted call whose link was queued behind the FPU, which is the price of the
+correct link. The expectation row moves to the measured value in the fix's commit. Every
+simulation gate is green; the board's Geekbench on `ooo2_d13fix_iw3.bit` (running since
+19:07, integrity log along, bit 3 only at boot as before) is the last gate before the two
+commits: (A) the integrity log + reader + bisection tooling, (B) rule D13's fix + the fpmix
+reproducer + the cosim link bypass + `+watch_pc`.
+
+**Board, the fixed tree (2026-09-22 12:22): the complete single-core suite PASSED.** All
+sixteen Geekbench 6 workloads on `ooo2_d13fix_iw3.bit` (IW=3, 166.67 MHz), zero faults, the
+integrity log unchanged from its boot-time bit 3, about seventeen hours from 19:07 to 12:22
+(Object Detection ~2 h and Background Blur ~5 h on this core). PDF Renderer, where nine of
+nine unfixed IW=3 bitstreams died in their first minutes, passed at minute 94. Per Tommy the
+run continues through the multi-core section to its natural end and the score is logged
+(`gate-results/gb6-bisect-d13fix/score.log`, the raw log with the result URL).
+
+**REPRODUCED IN SIMULATION (17:36).** `memrand --fpmix` at 1 M ops, IW=3 lockstep: seeds 2, 3
+and 4 each diverge within ~700 k retires, thirty seconds of simulation. Seed 2's diverging
+retire (seq 687271, `/tmp/tmp.lOdOTgiCdC`):
+
+    DUT pc=80100b68 insn=990080e7 (jalr ra, -1648(ra))  npc=800004f4  rd x1 = 0000000000000000
+    REF pc=80100b68 insn=990080e7                       npc=800004f4  rd x1 = 0000000080100b6c
+
+The jump goes to the right target; the LINK value written to `ra` is ZERO instead of pc+4.
+This is the `call sub_k` expansion, `auipc ra, hi` then `jalr ra, lo(ra)`: rd == rs1, the
+source produced by the instruction just before it, both in one rename group. Seed 1 at 50 k
+ops used `jal x1` (no rs1) and passed. The callee then does `sd x1, 0(sp)` (saving the zero),
+`ld x1, 0(sp)`, `ret` -- and jumps to 0: `epc = ra = badaddr = 0, cause 12`, the exact GB6
+signature, on every failing tree. `call` is what every far call in a userspace binary
+expands to; PDF Renderer is dense with them. Next: the same program at IW=2 (running) to
+show the width dependence, then the writeback of the link value on the CTF/FP-shared pipe
+at IW=3 for rd == rs1 with the source bypassed from the same group -- 5ef15e3d put control
+flow on the FP-shared pipe and 5bffd3d9 reordered the rename bypass muxes.

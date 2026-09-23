@@ -21,6 +21,9 @@ ap.add_argument('--seed', type=int, default=1)
 ap.add_argument('--ops', type=int, default=200000)
 ap.add_argument('--misaligned-megapage', action='store_true',
                 help='the first remap installs a 64 KiB-aligned megapage: both models must page-fault there')
+ap.add_argument('--fpmix', action='store_true',
+                help='FP-dense mix: FP arithmetic chains, real call/return through the stack, unpredictable '
+                     'branches -- the 3-wide FP-shard + control-flow pattern of GB6 PDF Renderer (2026-09-21)')
 a = ap.parse_args()
 R = random.Random(a.seed)
 
@@ -43,7 +46,36 @@ ptrs = [R.choice(ALIASES) + R.randrange(4096, REGION - 4096, 8) for _ in range(P
 e('.section .rodata'); e('.globl region_init'); e('.align 3'); out.append('region_init:')
 for p in ptrs: e(f'.quad 0x{p:x}')
 for _ in range((REGION - 4096) // 8): e(f'.quad 0x{R.getrandbits(64):x}')
-e('.text'); e('.globl run_ops'); e('.align 2'); out.append('run_ops:')
+e('.text')
+NSUB = 4
+FPOPS3 = ['fadd.d', 'fsub.d', 'fmul.d', 'fmin.d', 'fmax.d', 'fsgnj.d', 'fsgnjn.d', 'fsgnjx.d']
+def fpalu():
+    r = R.random()
+    if r < 0.55:
+        e(f'{R.choice(FPOPS3)} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+    elif r < 0.75:
+        e(f'{R.choice(["fmadd.d", "fmsub.d", "fnmadd.d", "fnmsub.d"])} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+    elif r < 0.85:
+        e(f'{R.choice(["fmv.x.d", "fclass.d"])} x{R.choice(VALS)}, f{R.choice(FREGS)}')      # FP -> INT (the CTF/FP-shared pipe)
+    elif r < 0.93:
+        e(f'{R.choice(["feq.d", "flt.d", "fle.d"])} x{R.choice(VALS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+    elif r < 0.98:
+        e(f'fmv.d.x f{R.choice(FREGS)}, x{R.choice(VALS)}')
+    else:
+        e(f'fdiv.d f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+if a.fpmix:
+    # NSUB subroutines: a real call saves ra on the stack, churns FP and integer state, restores ra, returns.
+    # The failure under study is a `ret` whose reloaded ra is stale (2026-09-21).
+    for k in range(NSUB):
+        e('.align 2'); out.append(f'sub_{k}:')
+        e('addi sp, sp, -32'); e('sd x1, 0(sp)'); e(f'sd x{R.choice(VALS)}, 8(sp)')
+        for _ in range(R.randint(3, 9)):
+            if R.random() < 0.7: fpalu()
+            else:
+                d, s_, t = R.choice(VALS), R.choice(VALS), R.choice(VALS)
+                e(f'{R.choice(["add", "xor", "sub", "or", "sll", "srl"])} x{d}, x{s_}, x{t}')
+        e('ld x1, 0(sp)'); e(f'ld x{R.choice(VALS)}, 8(sp)'); e('addi sp, sp, 32'); e('ret')
+e('.globl run_ops'); e('.align 2'); out.append('run_ops:')
 e('addi sp, sp, -112')
 for i, r in enumerate([1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]): e(f'sd x{r}, {i*8}(sp)')
 e('la x29, l1_w1')                      # the remap target: W1's L1 table, through the identity alias
@@ -121,9 +153,23 @@ def remap(state):
     e('sd x29, 0(x28)'); e('sfence.vma')
     # after a remap the W1 bases point into the other page: plain RAM, zero-initialised, still checkable
 
+def call():
+    e(f'call sub_{R.randrange(NSUB)}')          # auipc+jalr through ra: unlimited reach, and the indirect-jump path real calls take
+def branch():
+    """an unpredictable branch over 1-3 ops: random value registers rarely compare equal, so the mix
+    of taken/not-taken is set by the opcode; the skipped ops are FP/ALU, no memory"""
+    e(f'{R.choice(["beq", "bne", "blt", "bge", "bltu", "bgeu"])} x{R.choice(VALS)}, x{R.choice(VALS)}, 1f')
+    for _ in range(R.randint(1, 3)):
+        if R.random() < 0.6: fpalu()
+        else: alu()
+    out.append('1:')
 state = {'half': 0}
-MIX = [(load, 30), (store, 22), (fload, 4), (fstore, 4), (amo, 4), (lrsc, 2), (cbo, 2),
-       (alu, 18), (div, 1), (pointer_chase, 10), (fences, 2), (remap, 0.3)]
+if a.fpmix:
+    MIX = [(fpalu, 40), (fload, 7), (fstore, 6), (call, 8), (branch, 10), (alu, 12), (load, 8), (store, 6),
+           (pointer_chase, 2), (fences, 0.5)]
+else:
+    MIX = [(load, 30), (store, 22), (fload, 4), (fstore, 4), (amo, 4), (lrsc, 2), (cbo, 2),
+           (alu, 18), (div, 1), (pointer_chase, 10), (fences, 2), (remap, 0.3)]
 ops_, wts = zip(*MIX)
 for i in range(a.ops):
     if i % 16 == 0: chunk_base(R.choice(BASES))
