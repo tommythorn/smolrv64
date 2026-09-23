@@ -1337,6 +1337,26 @@ crash exonerates the whole logged set in one read. Simulation keeps the log hone
 `$fatal`s if a bit ever rises, which in a passing run can only mean a condition is wired wrong
 (its own `$fatal` would have fired a cycle earlier).
 
+### 11.2 Simulation cycle accounting and the pipe view
+
+`tb_ooo2_linux` puts every cycle into exactly one cause: the Top-Down Variant A partition,
+split down to the core's own stall taps. Bad
+speculation (`bs:redirect`, `bs:drain` = `rd_wait`) wins over frontend (`fe:immu`, `fe:icache`,
+`fe:align`, `fe:queue`), which wins over backend (`be:M-mem`, `be:M-other`, `be:rob-full`,
+`be:dep-load`, `be:dep-fp`, `be:iq-full`, `be:rename`, `be:sq-full`, `be:lq-full`,
+`be:serialize`, in `d_hold`'s order). Any other cycle is `ok:N`, where N is the number of
+instructions dispatched that cycle. The run prints the totals as `TOPDOWN-SIM` lines, and
+`closed: <cycles>` confirms the causes sum to the run's cycle count.
+
+`+kanata=<file>` writes the same stream as a Konata pipe view (github.com/shioyadan/Konata),
+limited to the `+trace_from`/`+trace_to` window. There is one row per dispatched instruction:
+`Ds` (dispatched), the issue port (`Xa`/`Xb` ALUs, `M`, `F`, `Ct` control flow), `Cm`
+(complete), then retired or flushed. There is also one `St` row per run of non-producing
+cycles, labelled with its cause (`** fe:icache`), so each stall appears in program order at the
+point where it happened. `tools/kanata-disasm.py view.kanata prog.elf` swaps the raw
+instruction words for the ELF's disassembly and symbols. For example, in `workloads/rvbench`:
+`make run B=dhrystone PLUSARGS="+kanata=$PWD/d.kanata +trace_from=2000000 +trace_to=2002000"`.
+
 ---
 
 ## 12. Verification

@@ -61,7 +61,7 @@ run: $(B).bin
 	 FW=$(CURDIR)/$(B).bin INITRD= CYC=$(CYC) VDEFS="$(VDEFS)" PLUSARGS="+tohost=$$th $(PLUSARGS)" \
 	   ../../ooo2/run-ooo2-cosim-linux.sh > $$out 2>&1; \
 	 grep -a -E 'building|Diverging|STORE DATA|fatal|TOHOST exit|TIMEOUT after|mcycle|minstret|Dhrystones|Microseconds' $$out; \
-	 if grep -aq 'TOHOST exit=0 ' $$out && ! grep -aqE 'Diverging retire|STORE DATA MISMATCH'; then echo "RVBENCH $(B): PASS"; \
+	 if grep -aq 'TOHOST exit=0 ' $$out && ! grep -aqE 'Diverging retire|STORE DATA MISMATCH' $$out; then echo "RVBENCH $(B): PASS"; \
 	 else echo "RVBENCH $(B): FAIL (log: $$out)"; exit 1; fi
 
 runall:

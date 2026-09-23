@@ -343,18 +343,6 @@ module tb;
    // Was byp1/2/3 -- "the next instruction wants the value M is producing". With dispatch
    // decoupled that test moved into the scheduler, which reports whether its OLDEST entry
    // is blocked on a source. Same question, asked where the waiting now happens.
-   // ---- PIPEVIEW: cycle-by-cycle waterfall, +pipe=<start> [+pipe_n=<cycles>] ---------
-   // Peeks the core; no DUT change. Aggregate counters stopped being trustworthy when the
-   // schedulers split -- ST_FPU counts only dep_fp now that FP never enters M, and
-   // iq_blk_pr gives the LD scheduler priority, so an FP dependency behind a load is
-   // charged to ST_MEM. A waterfall does not have that problem: it shows which stage each
-   // instruction sat in, per cycle, and where the gaps are.
-   //
-   //   DIS  dispatched (rename+ROB alloc)      ISS  selected into the issue register
-   //   ALU  completed at issue                 M/F  entered the M or F execute stage
-   //   LD   a load landed                      FP   an FP result landed
-   //   RET  retired at the ROB head            RED  redirect
-   integer pv_from = -1, pv_n = 0, pv_cnt = 0;
    // The event bus counted per cycle (B3). pcode(bit) mirrors src/csr_file.v's hpm_inc map;
    // tools/gen-perf-events.py --check keeps the JSON honest, and perf-cpi-stack.py's identity
    // check exposes a bit that drifted from its code.
@@ -373,33 +361,6 @@ module tb;
       endcase end endfunction
    initial for (pe = 0; pe < 41; pe = pe + 1) pev[pe] = 64'd0;
    reg [63:0] trace_from, trace_to;             // +trace_from/+trace_to, see the plusargs
-   integer pv_c;
-   initial pv_c = 0;
-   always @(posedge clk) if (!reset) begin
-      pv_c <= pv_c + 1;
-      if (trace_on && pv_from >= 0 && pv_c >= pv_from && pv_c < pv_from + pv_n) begin
-         $write("pv %0d |", pv_c);
-         if (dut.core.d_take)      $write(" DIS:%0d", dut.core.rob_d_idx);   else $write("        ");
-         if (dut.core.iq_iss_take) $write(" ISS:%s%0d",
-              dut.core.pick_l ? "L" : "I", dut.core.iq_iss_rob);   // M-only port now; F issues via rf_take
-                                                                             else $write("        ");
-         if (dut.core.iss_alu)     $write(" ALU:%0d", dut.core.i_rob);       else $write("        ");
-         if (dut.core.iss_m)       $write(" M:%0d",   dut.core.i_rob);       else $write("      ");
-         if (dut.core.iss_f)       $write(" F:%0d",   dut.core.j_rob);       else $write("      ");
-         if (dut.core.ld_land)     $write(" LD:%0d",  dut.core.lq_l_rob);    else $write("       ");
-         if (dut.core.fp_land)     $write(" FP:%0d",  dut.core.ft_rob);      else $write("       ");
-         if (dut.core.rob_c_valid) $write(" RET:%0d", dut.core.rob_head_idx);else $write("        ");
-         if (dut.core.redirect)    $write(" RED");
-         // 2026-09-17 (the storm repro): the backend state a wrong-path device load needs
-         $write(" | red=%b cfrf=%b mrf=%b frset=%b frv=%b | M v=%b rob=%0d pc=%h ldnb=%b adv=%b done=%b xo_v=%b walk=%b fill=%b | LQ x_v=%b x_pa=%h cnt=%0d | ROB empty=%b head=%0d | iss_m=%b",
-                dut.core.redirect, dut.core.cf_red_fire, dut.core.m_red_fire, dut.core.fr_set, dut.core.fr_v,
-                dut.core.m_valid, dut.core.m_rob_idx, dut.core.m_pc, dut.core.m_ld_nb, dut.core.m_advance, dut.core.m_done,
-                dut.core.lsu_xo_v, dut.core.u_lsu.mmu_walking, dut.core.m_lq_fill,
-                dut.core.lq_x_v, dut.core.lq_x_pa, dut.core.u_lq.cnt, dut.core.rob_empty, dut.core.rob_head_idx, dut.core.iss_m);
-         $write("\n");
-      end
-   end
-
    wire sb_dep    = dut.core.iq_blk_v;
    wire sb_recov  = dut.core.st_mem & dut.core.d_valid
                   & ~dut.core.d_is_mem & ~dut.core.d_is_amo & ~dut.core.d_is_serialize
@@ -473,6 +434,150 @@ module tb;
    reg [8*256-1:0] fw, dtb, initrd, disk;
    reg [63:0] ncyc, c, nret;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
+
+   // ---- per-cycle accounting: every cycle is exactly one of BADSPEC / FRONTEND / BACKEND /
+   // PRODUCED (Top-Down Variant A, docs/OOO2-Spec.md §11.2), with a depth cause.
+   // The same code drives the pipe views' stall rows and the TOPDOWN-SIM totals at the end.
+   localparam integer TD_N = 22;
+   function [8*14-1:0] td_name;   // the cause's printable name
+      input integer k;
+      case (k)
+        0: td_name = "ok:1";          1: td_name = "ok:2";         2: td_name = "ok:3";
+        3: td_name = "bs:redirect";   4: td_name = "bs:drain";
+        5: td_name = "fe:immu";       6: td_name = "fe:icache";    7: td_name = "fe:align";
+        8: td_name = "fe:queue";      9: td_name = "fe:other";
+        10: td_name = "be:M-mem";     11: td_name = "be:M-other";  12: td_name = "be:rob-full";
+        13: td_name = "be:dep-load";  14: td_name = "be:dep-fp";   15: td_name = "be:iq-full";
+        16: td_name = "be:rename";    17: td_name = "be:sq-full";  18: td_name = "be:lq-full";
+        19: td_name = "be:serialize"; 20: td_name = "be:held";     21: td_name = "ok:0";
+        default: td_name = "?";
+      endcase
+   endfunction
+   wire td_bspc = dut.core.redirect | dut.core.rd_wait;
+   wire td_fe   = ~td_bspc & dut.core.fe_bub;
+   wire td_be   = ~td_bspc & (dut.core.st_m | (dut.core.d_valid & ~dut.core.d_take));
+   wire [1:0] td_ndisp = {1'b0, dut.core.rn_valid} + {1'b0, dut.core.rn_valid_b} + {1'b0, dut.core.rn_valid_c};
+   reg  [4:0] td_k;
+   always @* begin
+      if (td_bspc)                   td_k = dut.core.redirect ? 5'd3 : 5'd4;
+      else if (td_fe)                td_k = dut.core.fe_mmu ? 5'd5 : dut.core.fe_ic ? 5'd6
+                                          : dut.core.fe_aln ? 5'd7 : dut.core.fe_que ? 5'd8 : 5'd9;
+      else if (td_be)                td_k = dut.core.st_m ? (dut.core.m_mem_op ? 5'd10 : 5'd11)
+                                          : dut.core.st_rob ? 5'd12 : dut.core.dep_ld ? 5'd13
+                                          : dut.core.dep_fp ? 5'd14 : dut.core.st_iq ? 5'd15
+                                          : dut.core.st_rn ? 5'd16 : dut.core.st_sq ? 5'd17
+                                          : dut.core.st_lq ? 5'd18 : dut.core.st_srz ? 5'd19 : 5'd20;
+      else                           td_k = (td_ndisp == 2'd0) ? 5'd21 : {3'b0, td_ndisp} - 5'd1;
+   end
+   reg [63:0] td_cnt [0:TD_N-1];
+   integer tdi;
+   initial for (tdi = 0; tdi < TD_N; tdi = tdi + 1) td_cnt[tdi] = 64'd0;
+   always @(posedge clk) if (!reset) td_cnt[td_k] <= td_cnt[td_k] + 64'd1;
+
+   // ---- +kanata=<file>: a pipe view for Konata (github.com/shioyadan/Konata) ----------------
+   // One row per dispatched instruction: Ds (dispatched, waiting to issue), its issue port
+   // (Xa/Xb = the two ALUs, M, F, Ct = control flow), Cm (complete, waiting to retire),
+   // then retired or flushed. One more row per run of non-producing cycles, named by the
+   // cause above, so a stall reads as a bar in program order where it happened. Honors
+   // +trace_from/+trace_to. tools/kanata-disasm.py swaps the raw instruction words for
+   // disassembly from the ELF.
+   integer    kf;  reg kan_on;  reg [63:0] kan_last, kan_next, kan_rid;
+   // sized for a ROB of up to 32 entries; ROB indices are zero-extended to 5 bits
+   reg [63:0] kan_id [0:31];  reg kan_live [0:31];  reg [8*2-1:0] kan_stg [0:31];
+   reg [63:0] kan_sid;  reg kan_sopen;  reg [4:0] kan_sk;
+   reg [8*256-1:0] kan_path;
+   initial begin
+      kan_on = $value$plusargs("kanata=%s", kan_path);
+      kan_last = 64'd0; kan_next = 64'd0; kan_rid = 64'd0; kan_sopen = 1'b0; kan_sk = 5'd0; kan_sid = 64'd0;
+      for (tdi = 0; tdi < 32; tdi = tdi + 1) begin kan_live[tdi] = 1'b0; kan_id[tdi] = 64'd0; kan_stg[tdi] = "--"; end
+      if (kan_on) begin
+         kf = $fopen(kan_path, "w");
+         if (kf == 0) begin $display("FATAL: cannot open +kanata=%0s", kan_path); $finish; end
+         $fdisplay(kf, "Kanata\t0004\nC=\t0");
+      end
+   end
+   task kan_tick;                 // advance the view's clock to this cycle
+      begin
+         if (c != kan_last) begin $fdisplay(kf, "C\t%0d", c - kan_last); kan_last = c; end
+      end
+   endtask
+   task kan_stage;                // an instruction moves to a new stage
+      input [4:0] ix; input [8*2-1:0] stg;
+      begin
+         if (kan_live[ix] && kan_stg[ix] != stg) begin
+            kan_tick;
+            $fdisplay(kf, "E\t%0d\t0\t%0s", kan_id[ix], kan_stg[ix]);
+            $fdisplay(kf, "S\t%0d\t0\t%0s", kan_id[ix], stg);
+            kan_stg[ix] = stg;
+         end
+      end
+   endtask
+   task kan_end;                  // retire (0) or flush (1)
+      input [4:0] ix; input flushed;
+      begin
+         if (kan_live[ix]) begin
+            kan_tick;
+            $fdisplay(kf, "E\t%0d\t0\t%0s", kan_id[ix], kan_stg[ix]);
+            $fdisplay(kf, "R\t%0d\t%0d\t%0d", kan_id[ix], kan_rid, flushed);
+            kan_rid = kan_rid + 64'd1;  kan_live[ix] = 1'b0;
+         end
+      end
+   endtask
+   task kan_new;                  // a dispatched instruction
+      input [4:0] ix; input [63:0] pc; input [31:0] insn;
+      begin
+         kan_tick;
+         kan_id[ix] = kan_next;  kan_next = kan_next + 64'd1;  kan_live[ix] = 1'b1;  kan_stg[ix] = "Ds";
+         $fdisplay(kf, "I\t%0d\t%0d\t0", kan_id[ix], kan_id[ix]);
+         $fdisplay(kf, "L\t%0d\t0\t%h: %h", kan_id[ix], pc, insn);
+         $fdisplay(kf, "S\t%0d\t0\tDs", kan_id[ix]);
+      end
+   endtask
+   // completion is shown the cycle after the ROB's write port fires (an ALU op issues and
+   // completes in one cycle, and would otherwise have no visible execute stage)
+   reg [7:0]  kan_wv_q;  reg [8*5-1:0] kan_wix_q;
+   integer    kw;
+   always @(posedge clk) if (!reset && kan_on) begin
+      // 1. retire (up to three), then flush every live entry a backend redirect squashes
+      if (dut.core.rob_c_valid)  kan_end(5'(dut.core.rob_head_idx),  1'b0);
+      if (dut.core.rob_c2_valid) kan_end(5'(dut.core.rob_head2_idx), 1'b0);
+      if (dut.core.rob_c3_valid) kan_end(5'(dut.core.rob_head3_idx), 1'b0);
+      if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
+      // 2. completions registered last cycle, then this cycle's issues
+      for (kw = 0; kw < 8; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
+      if (dut.core.iss_alu)  kan_stage(5'(dut.core.a_rob),  "Xa");
+      if (dut.core.iss_alu2) kan_stage(5'(dut.core.a2_rob), "Xb");
+      if (dut.core.iss_m)    kan_stage(5'(dut.core.i_rob),  "M");
+      if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
+      if (dut.core.iss_c)    kan_stage(5'(dut.core.j_rob),  "Ct");
+      kan_wv_q  <= {dut.core.md_wb, dut.core.cf_land, dut.core.iss_alu3, dut.core.iss_alu2,
+                    dut.core.sq_k_take, dut.core.fp_land, dut.core.iss_alu, dut.core.rob_w_valid};
+      kan_wix_q <= {5'(dut.core.md_rob), 5'(dut.core.cf_land_rob), 5'(dut.core.a3_rob), 5'(dut.core.a2_rob),
+                    5'(dut.core.sq_kc_rob), 5'(dut.core.ft_rob), 5'(dut.core.a_rob), 5'(dut.core.rob_w_idx)};
+      // 3. dispatch, oldest slot first
+      if (trace_on) begin
+         if (dut.core.rn_valid)   kan_new(5'(dut.core.rob_d_idx),  dut.core.d_pc,  dut.core.d_insn);
+         if (dut.core.rn_valid_b) kan_new(5'(dut.core.rob_d_idx2), dut.core.d2_pc, dut.core.d2_insn);
+         if (dut.core.rn_valid_c) kan_new(5'(dut.core.rob_d_idx3), dut.core.d3_pc, dut.core.d3_insn);
+      end
+      // 4. the stall row: one per run of cycles with the same non-producing cause
+      if (trace_on && td_k != kan_sk) begin
+         if (kan_sopen) begin
+            kan_tick;
+            $fdisplay(kf, "E\t%0d\t0\tSt", kan_sid);
+            $fdisplay(kf, "R\t%0d\t%0d\t1", kan_sid, kan_rid);  kan_rid = kan_rid + 64'd1;
+            kan_sopen = 1'b0;
+         end
+         if (td_k > 5'd2 && td_k != 5'd21) begin
+            kan_tick;
+            kan_sid = kan_next;  kan_next = kan_next + 64'd1;  kan_sopen = 1'b1;
+            $fdisplay(kf, "I\t%0d\t%0d\t0", kan_sid, kan_sid);
+            $fdisplay(kf, "L\t%0d\t0\t** %0s", kan_sid, td_name(td_k));
+            $fdisplay(kf, "S\t%0d\t0\tSt", kan_sid);
+         end
+      end
+      kan_sk = td_k;
+   end
 
    // +tohost=<hex addr>: a bare-metal program's EXIT, the riscv-tests convention (tohost =
    // code<<1 | 1, an 8-byte store). The run ends there instead of spinning to +cycles, and the
@@ -548,8 +653,6 @@ module tb;
       // `ifdef` traces read the same two plusargs themselves (rule G6).
       if (!$value$plusargs("trace_from=%d", trace_from)) trace_from = 64'd0;
       if (!$value$plusargs("trace_to=%d",   trace_to))   trace_to   = 64'hFFFF_FFFF_FFFF_FFFF;
-      if ($value$plusargs("pipe=%d", pv_from)) pv_n = 200;
-      if ($value$plusargs("pipe_n=%d", pv_cnt))  pv_n = pv_cnt;
       if (!$value$plusargs("fw=%s", fw))   begin $display("FATAL: +fw");  $finish; end
       if (!$value$plusargs("dtb=%s", dtb)) begin $display("FATAL: +dtb"); $finish; end
       if ($value$plusargs("cycles=%d", ncyc)) ;
@@ -588,6 +691,18 @@ module tb;
       $display("[blk: dma rd=%0d wr=%0d]", n_dma_rd, n_dma_wr);   // virtio-blk beats (B6); 0/0 without +disk
       $display("[dma-agent: bursts=%0d]", dma_ctr);   // B4 memrand; 0 without +dma_rand
       // B3: perf-stat text, the shape tools/perf-cpi-stack.py parses (`<count> r<code>`).
+      $display("TOPDOWN-SIM: every cycle in exactly one cause (docs/OOO2-Spec.md 11.2)");
+      begin : td_totals
+         reg [63:0] tsum;  tsum = 64'd0;
+         for (tdi = 0; tdi < TD_N; tdi = tdi + 1) tsum = tsum + td_cnt[tdi];
+         for (tdi = 0; tdi < TD_N; tdi = tdi + 1)
+            if (td_cnt[tdi] != 0)
+               $display("TOPDOWN-SIM  %14s %12d  %6.2f%%", td_name(tdi), td_cnt[tdi],
+                        100.0 * $itor(td_cnt[tdi]) / $itor(c));
+         if (tsum != c) $display("TOPDOWN-SIM  NOT CLOSED: %0d counted vs %0d cycles", tsum, c);
+         else           $display("TOPDOWN-SIM  closed: %0d cycles", tsum);
+      end
+      if (kan_on) $fclose(kf);
       $display("perf-stat-sim: begin");
       $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)
       $display("%0d instructions", nret);
