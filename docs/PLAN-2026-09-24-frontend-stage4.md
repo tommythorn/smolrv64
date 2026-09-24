@@ -143,11 +143,27 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
      what it fetched past the branch). Until 1d the stream runs ahead only inside `pc_q`'s page,
      whose PA the iMMU already has. Removes the chunk-tail stall (sillyfp); taken branches gain a
      cycle at most, because prediction still happens at the aligner.
-   - **1b. Prediction moves to the fetch stream.** The BTB keyed by the last-halfword granule,
-     looked up at the stream's address; the RAS pushed with the return address the key gives
-     directly (the call's last halfword + 2); the ring carries each instruction's predicted next
-     PC; `fetch.v`'s prediction is retired. The zero-bubble taken branch: sillyloop's IPC 2.0.
-2. The YAGS override against the ring.
+   **1a done (a4f6db73, 061a6027):** rvbench Dhrystone 616 -> 513 us, sillyfp IPC 1.31 -> 2.27,
+     sillyloop 1.79 -> 1.89; 60 M lockstep 17259093; 300 M -0.63% (every jump empties the ring,
+     where the old adapter kept two chunks: fe:icache +5.7 M against fe:align -16.0 M). The first
+     build missed by 0.637 ns because the jump gated the I$ request and the ring's writes; with
+     that removed it builds at +0.005 (post-route phys_opt).
+   - **1b. Prediction moves to the fetch stream -- the whole predictor, not the BTB alone.**
+     Today BTB, YAGS and RAS read combinationally from `pc_q` (a register) and close 166.67 MHz;
+     reading them from the stream's address register (`rg_fa`) is the same cone. Per cycle the
+     stream looks up the two 8-byte granules its pair covers (the BTB split odd/even; each entry
+     keyed by the granule holding a CTI's LAST halfword, holding the tag, type, target, the last
+     halfword's index in the granule and the bimodal counter; YAGS indexed from the granule and
+     the stream's speculative GHR). The first predicted-taken CTI at or after the stream address
+     ends the append and steers the stream (target, or the RAS top for a return); a predicted call
+     pushes its last halfword + 2. The ring carries the prediction: a bit per slot, "a
+     predicted-taken CTI ends here", and a small FIFO of {target, RAS and GHR snapshots, predict
+     details} per such CTI, so the aligner cuts the bundle there and takes `pred_v`/`pred_tgt`
+     from the ring instead of computing them. Training keys by the resolving CTI's last halfword
+     (its PC + length - 2), so the carried slot-offset field goes. A redirect restores the stream's
+     RAS pointer and GHR from the redirecting instruction's snapshots, as today. The zero-bubble
+     taken branch: sillyloop at 17 cycles per iteration (IPC 2.0), and the 300 M loss of 1a back.
+2. (Folded into 1b: YAGS moves with the rest of the predictor.)
 3. Translate on a miss, and each line's execute and user bits cached and checked on a hit: the
    stream runs ahead across pages and the iMMU leaves the fetch path.
 4. Delete the bundle register, the decoupling queue and `pc_q`'s consumption-driven advance;
