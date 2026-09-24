@@ -19,11 +19,11 @@ stage the instruction is in during that cycle:
     M  in the M port (memory, CSR, mul/div)      F  in the FP port
     c  in the control-flow (branch) unit
     =  complete, waiting to retire
-    R  retired at the end of the previous cycle (the column after its last cycle)
-    x  flushed at the end of the previous cycle (a squash or a frontend redirect)
-
-    An ALU op can issue and retire in the same cycle (the ROB forwards the writeback to its
-    head), so 'aR' is an op that left the machine the cycle it executed.
+    R  retired in this cycle (committed at the ROB head)
+    A B C  executed on ALU a / ALU b / the branch unit AND retired in this same cycle: an
+       ALU op writes the ROB the cycle it computes, and the ROB forwards that write to its
+       head, so when the op is the head it commits in its execute cycle ('dddA')
+    x  flushed in this cycle (a squash, or a frontend redirect before dispatch)
 
 Stall rows ('** cause', dimmed yellow) cover each run of cycles in which nothing was
 dispatched, filled with '#', and name the cause:
@@ -76,10 +76,10 @@ impl Row {
     fn last(&self) -> u64 {
         self.end.unwrap_or_else(|| self.stages.last().map(|s| s.0).unwrap_or(0))
     }
-    // The row's letter for cycle c. A stage letter covers every cycle the instruction spends in
-    // that stage, up to and including its last cycle in the machine (the retire or flush cycle);
-    // R or x sits in the column after it, the clock edge it left on. A stall row fills its own
-    // cycles, [start, end).
+    // The row's letter for cycle c: the stage the instruction is in during that cycle. R or x
+    // marks the cycle it retired or was flushed in; when it also executed in that cycle (an ALU
+    // op commits the cycle it computes, since the ROB forwards the writeback to its head), the
+    // cell is the unit's letter in upper case. A stall row fills its own cycles, [start, end).
     fn glyph_at(&self, c: u64) -> u8 {
         if c < self.start() {
             return b' ';
@@ -88,11 +88,16 @@ impl Row {
             return if self.end.map_or(true, |e| c < e) { b'#' } else { b' ' };
         }
         if let Some(e) = self.end {
-            if c == e + 1 {
-                return if self.flushed { b'x' } else { b'R' };
-            }
-            if c > e + 1 {
+            if c > e {
                 return b' ';
+            }
+            if c == e {
+                if let Some(&(_, g)) = self.stages.iter().rev().find(|s| s.0 == c) {
+                    if !self.flushed && b"abc".contains(&g) {
+                        return g.to_ascii_uppercase();
+                    }
+                }
+                return if self.flushed { b'x' } else { b'R' };
             }
         }
         let mut g = b' ';

@@ -1379,9 +1379,10 @@ ROB index. There is also one `St` row per run of non-producing cycles, labelled 
 `pipeview run.kanata [prog.elf]` is interactive (scroll, search by PC, mnemonic, symbol or cause,
 with IPC and the stall causes recomputed over the visible rows), `--text N` prints the first N
 rows, and `?` (or `--help`) shows the legend. One letter per cycle: `f q i d` fetch, queue, IR,
-dispatched; `a b M F c` the issue ports; `=` complete; `R`/`x` retired/flushed, in the column
-after the instruction's last cycle (an ALU op can issue and retire in one cycle, since the ROB
-forwards a writeback to its head, so `aR`). With the ELF, labels are objdump's disassembly and
+dispatched; `a b M F c` the issue ports; `=` complete; `R`/`x` the cycle it retired or was
+flushed in. An ALU op commits in the cycle it computes when it is the ROB head (the ALU writes
+the ROB that cycle, and the ROB forwards the write to its head), and that cell is the unit's
+letter in upper case, `A B C`. With the ELF, labels are objdump's disassembly and
 symbols; without it, `tools/rvdisasm` decodes the instruction word. `tools/kanata-disasm.py`
 does the same for Konata. For example, in `workloads/rvbench`, where `local/<name>.c` builds a
 program of your own:
