@@ -71,9 +71,20 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    RAS / +16 -> `fa`). The single-lookup form of this cone closed OOC with 2.6-3.5 ns to spare at
    every BTB depth (2026-09-13 spike) and ships today reading from `pc_q`. The second lookup and the
    select are a few hundred ps; spike it only if the integrated build says otherwise.
-2. **The ring head window into the aligner and the IR** at IW=3. The head rotation replaces
-   today's window-offset mux in front of the aligner, so this is today's FA cone with a different
-   mux; spike it OOC at 6 ns on both directives before building the ring into the core.
+2. **The ring's consumption loop** at IW=3: the registered head selects the aligner's window
+   (the rotation), the aligner carves the bundle, and what it consumed advances the head, its PC
+   and sequence number. **Spike result (2026-09-24, `src/ooo2_ring_spike.v`, OOC at 6 ns, default
+   placement), against today's loop measured the same way:**
+
+   | loop | WNS | Fmax | levels | worst path |
+   |---|---:|---:|---:|---|
+   | today, `fetch` IW=3 HW=8 (`pc_q` -> window -> aligner -> `pc_q`) | +0.889 | 196 MHz | 16 | `pc_q` -> `ipc_q` |
+   | ring, 32 bytes (`RS=16`) | +1.409 | 218 MHz | 20 | `head` -> the 64-bit head-PC add |
+   | ring, 64 bytes (`RS=32`) | +1.139 | 206 MHz | 21 | `head` -> the 64-bit head-PC add |
+
+   The ring's loop is faster than today's at either size; its worst path is the carry chain of
+   the full-width head-PC increment (8 CARRY8), not the rotation or the aligner, and the real
+   design splits it (the page offset added, the page number incremented on a carry).
 
 ## Increments, each gated (lint, riscv-tests, benches, memrand/fpmix, rvbench, 60 M and 300 M lockstep, board gate)
 
