@@ -18,6 +18,31 @@ tree):
 | `sillyfp` (22 `c.nop`, 10 `fcvt.d.w`) | 1.31 | a chunk tail holding less than a full bundle does not fire; fetch waits 2 cycles for the next chunk, every 16 bytes: `fe:align` 23% + `fe:queue` 27% of cycles |
 | Dhrystone (5,000 runs) | 0.64 | `fe:icache` 22-27% of cycles, one bubble run per taken CTI |
 
+## The I$ is the first limit, not the adapter
+
+`rv_cache`, the one module behind both the D$ and the I$, takes a request only when its lookup
+pipeline is empty (`acc_slot = (st == S_IDLE) | fin_wr`); a read hit spends `S_CHECK` there and
+responds the cycle after, so the I$ delivers **one 16-byte chunk per 2 cycles at best**. The
+alignment adapter in `rv_soc_top` then keeps **one** demand read in flight (`rq_v`), asks only for
+the PC's chunk or the next one, and serves from two registered chunk slots picked a cycle early:
+about 4 cycles per chunk in practice, and after a taken branch the target's read is not even
+requested until `pc_q` holds the target. The serialization is there for the D$'s sake -- writes,
+line spans, CBOs and fill replays share the pipeline -- and the I$ role, read-only and aligned,
+needs none of it.
+
+So Stage 4 starts at the I$: **a read path that accepts a new 16-byte pair every cycle** (lookup
+in one cycle, compare and respond in the next, the next request already in the first). Two ways
+to get it, Tommy's call:
+
+1. **Pipeline `rv_cache`'s I$ role**: accept a plain aligned read during `S_CHECK` when the cache is
+   read-only. Keeps one cache module, but the accept then depends on the older request's hit
+   (known late in `S_CHECK`), or the younger must be squashed and replayed on an older miss.
+2. **A dedicated read-only VHPR I$ module**: odd/even 64-bit banks, tags and data read in one
+   cycle, compared in the next, one request per cycle; misses stall the fetch stream and a fill
+   machine brings the line (the L2 port, the VHPR epoch and reconcile, and the stream-buffer
+   prefetch move over from `rv_cache`). More code moved, but the D$ keeps its machine untouched
+   and the I$ loses every D$-only case.
+
 ## The design
 
 - **I$ reads at 8-byte alignment.** The two I$ banks are addressed by their own rows (`pair_e`,
@@ -88,6 +113,8 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
 
 ## Increments, each gated (lint, riscv-tests, benches, memrand/fpmix, rvbench, 60 M and 300 M lockstep, board gate)
 
+0. The I$ reads one 16-byte pair every cycle (above; option 1 or 2), with an OOC spike of its
+   lookup at 6 ns first.
 1. The ring and `fa`, sequential only (predictor forced not-taken on the fetch side, resolve
    redirects everything): sillyfp's chunk-tail stall must go.
 2. Granule-keyed BTB with the training key; the RAS on the fetch-time prediction.
