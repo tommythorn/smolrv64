@@ -14,7 +14,7 @@
 #   when the testbench started summing the third commit port (every earlier IW=3 count is low).
 # Checked by run-ooo2-cosim-linux.sh when the run reaches its cycle limit.
 # RAISE these numbers when a change legitimately improves them, in the same commit.
-60000000  8  15607214  0.5  3   # D16: each CTI trains the predictor as it leaves the CTF stage, +11.66%. Previously 13977876: Predictor (2026-09-22): slot-offset field sized for IW=3, RAS restored from the redirecting instruction's snapshot, +1.03%. Previously 13835891: C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
+60000000  8  15733782  0.5  3   # ROB 32 entries: +0.81%. Previously 15607214: D16: each CTI trains the predictor as it leaves the CTF stage, +11.66%. Previously 13977876: Predictor (2026-09-22): slot-offset field sized for IW=3, RAS restored from the redirecting instruction's snapshot, +1.03%. Previously 13835891: C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
                                   # C1 (2026-09-17): mul/div on the F/CTF port (+0.03%). Previously 13367267:
                                   # IW=3 (2026-09-17): the TRUE 3-wide count, all three commit ports summed;
                                   # -0.9% vs IW=2 on this boot (the -11.7% on record was the missing third port).
@@ -109,7 +109,7 @@
                               # fail no matter what landed.  A throughput floor nothing can trip
                               # is not a gate.
 400000000  8  102214267  0.5   # The Geekbench image (run-ooo2-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background. NOTE: predates the Stage 2 VHPR I-cache landing (2026-09-13) -- re-baseline when this per-batch gate next runs.
-300000000  8   81175485  0.5  3   # D16: each CTI trains the predictor as it leaves the CTF stage, +9.13% at 300 M. Previously 74382417: D13 (2026-09-21): the squash waits for the link it owes, -0.31% at 300 M (a cycle or two per mispredicted call queued behind the FPU). Previously 74614701: C4a step 1 (2026-09-18): the tagged fast load path, +5.06% at 300 M. Previously 71024349:
+300000000  8   81494225  0.5  3   # ROB 32 entries: +0.39% at 300 M. Previously 81175485: D16: each CTI trains the predictor as it leaves the CTF stage, +9.13% at 300 M. Previously 74382417: D13 (2026-09-21): the squash waits for the link it owes, -0.31% at 300 M (a cycle or two per mispredicted call queued behind the FPU). Previously 74614701: C4a step 1 (2026-09-18): the tagged fast load path, +5.06% at 300 M. Previously 71024349:
                                   # C3 step 3 (2026-09-18): system ops through the SYSQ, -0.14% at 300 M (60 M identical;
                                   # the irqop/CSR timing past the boot's first interrupts). Previously 71121056:
                                   # C1 (2026-09-17): mul/div on the F/CTF port, +0.08% at 300 M. Previously 71067434:

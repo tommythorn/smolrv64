@@ -651,7 +651,7 @@ module ooo2_core
    // free list with separate speculative and committed heads, where rollback is a pointer
    // restore. That already supports N uncommitted instructions; N is only ever 1 today
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
-   localparam integer ROB_DEPTH = 16, ROB_IDXB = 4;
+   localparam integer ROB_DEPTH = 32, ROB_IDXB = 5;
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
    // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
@@ -1992,8 +1992,8 @@ module ooo2_core
    // rn_stall IS in the stall path now (see d_hold). It used to be a $fatal, on the grounds
    // that only ~2 instructions are ever in flight so no shard can run dry -- an argument that
    // expired when M stopped blocking and the ROB started filling behind a waiting load. It
-   // should still never fire at these sizes (ROB_DEPTH=16 against a 32-entry smallest free
-   // pool), but "should never" is now handled rather than fatal.
+   // can fire at ROB_DEPTH=32: the IE shard holds 32 free registers beyond the architectural
+   // set, and LOWAT stops fetch before they run out. It is a stall, handled here, not a fault.
 
    // OPERANDS NOW COME FROM THE SHARDED PRF.  The bypass is retained rather than leaning
    // on ooo2_prf's write-through: both deliver the same value in the M->X case, and keeping

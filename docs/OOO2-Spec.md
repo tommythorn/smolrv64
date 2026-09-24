@@ -140,7 +140,7 @@ complements.
 | cause | meaning |
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
-| `~rob_ready` | ROB full (16 entries) |
+| `~rob_ready` | ROB full (32 entries) |
 | `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (8 from 2026-08-28 to gate V4 on 2026-09-05; the two-wide core closed at exactly 0.000 ns and did not boot, and FP gives first) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
 | `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits |
@@ -428,7 +428,7 @@ A physical register's shard is encoded in its number and never changes, so a com
 
 ## 6. Reorder buffer
 
-- **16 entries**, status only — no result values, no PC, no operands.
+- **32 entries**, status only — no result values, no PC, no operands.
 
 **Entry format — 16 bits.** `ent[]` is `{noret, rd, prd}`, plus `v` and `done` as separate
 bulk-clearable bit vectors.
@@ -673,7 +673,7 @@ until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 | field | bits | meaning |
 |---|---|---|
 | `v` | 1 | entry live |
-| `e_rob` | `ROBB`=4 | ROB slot, carried to completion |
+| `e_rob` | `ROBB`=5 | ROB slot, carried to completion |
 | `e_ps[NSRC]` | `NSRC` × `PBITS`=9 | source **physical** registers |
 | `e_r[NSRC]` | `NSRC` | per-source ready bits |
 
@@ -1579,6 +1579,11 @@ registers are the architectural integer set, so only 32 are free, and the free l
 dry via `LOWAT` before a 32-entry ROB fills), and both are `$clog2`-wide in the FP tag,
 the payload index and every scheduler entry. Revisit only when a measurement shows the
 window binding.
+
+**The ROB is 32 entries (the plan of record)**, sized for the end state rather than
+today's measurements: on Dhrystone it is neutral against 16 (the frontend cannot fill it yet),
+and the wider machine the memory program builds needs the window. The free-list exposure
+above is a rename stall (`be:rename`), not a fault; the Linux lockstep measures it.
 
 ### Open question: mul/div were conflated with loads. How much does it matter?
 
