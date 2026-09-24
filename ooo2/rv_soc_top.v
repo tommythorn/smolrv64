@@ -799,7 +799,10 @@ module rv_soc_top #(
    wire [2:0]  rq_skip = {fa[3] & pg_end, fa[2:1]};                    // halfwords before fa
    wire [3:0]  rq_n    = 4'd8 - {1'b0, rq_skip};                       // halfwords it appends
    wire [63:0] rq_pa   = big_pg ? {imem_addr[63:21], rq_a[20:0]} : {imem_addr[63:12], rq_a[11:0]};
-   wire         ic_rd_req  = ~flush & imem_xlate_ok & inpg
+   // NOT gated by a jump: the jump comes out of the whole fetch cone (window -> aligner ->
+   // predictor -> fire), and the I$ door must not wait for it. A request taken in a jump's cycle
+   // belongs to the old stream and is dropped by the count below like any other in flight.
+   wire         ic_rd_req  = ~freeze & imem_xlate_ok & inpg
                            & ({1'b0, rg_resv} + {{(RSB-3){1'b0}}, rq_n} <= RS[RSB+1:0]);
    wire [63:0]  ic_rd_addr = {25'b0, rq_a[38:0]};          // VIRTUAL: canonical Sv39 VA (sign ext masked)
    wire [63:0]  ic_rd_pa   = rq_pa;
@@ -807,7 +810,9 @@ module rv_soc_top #(
 
    // the answer: the halfwords from its skip on, appended at the tail
    wire         rq_acc  = ic_rd_req & ic_rd_ack;
-   wire         rp_ok   = ic_rd_valid & (rg_drop == 3'd0) & ~flush;
+   // an answer landing in a jump's cycle is written and then emptied by the flush's reset of the
+   // count: the write enable does not wait for the jump either
+   wire         rp_ok   = ic_rd_valid & (rg_drop == 3'd0);
    wire [2:0]   rp_skip = ic_rsp_tag[GW +: 3];
    wire [3:0]   rp_n    = rp_ok ? (4'd8 - {1'b0, rp_skip}) : 4'd0;
    wire [RSB-1:0] tail  = rg_head + rg_cnt[RSB-1:0];
