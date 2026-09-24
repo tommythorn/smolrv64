@@ -5,6 +5,8 @@
 #   make                          build them all (<name>.elf/.bin/.dump)
 #   make run B=dhrystone          one, IW=3 lockstep; prints the benchmark's own mcycle/minstret
 #   make runall                   all of them, serially (one Verilator job at a time)
+#   make run B=<name>             also a program of your own, local/<name>.c: main(0, 0) is called
+#                                 and its return value is the tohost exit
 #
 # Sources stay upstream (RVT); only syscall() is swapped for the UART (uart-syscalls.py).
 # Left out: mt-* (multi-hart), pmp (no PMP), vec-* (no V).
@@ -37,7 +39,7 @@ syscalls-uart.c: $(RVT)/common/syscalls.c uart-syscalls.py
 
 %.elf: syscalls-uart.c $(RVT)/common/crt.S
 	$(RV)gcc $(CFLAGS) -I$(RVT)/$* -o $@ $(wildcard $(RVT)/$*/*.c) $(wildcard $(RVT)/$*/*.S) \
-	   syscalls-uart.c $(RVT)/common/crt.S $(LDFLAGS)
+	   $(wildcard local/$*.c) syscalls-uart.c $(RVT)/common/crt.S $(LDFLAGS)
 	$(RV)objdump -d $@ > $*.dump
 
 # Dhrystone's run count is an unguarded #define in dhrystone.h, so the three sources are

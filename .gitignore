@@ -97,3 +97,6 @@ workloads/memrand/memrand-*.elf
 workloads/memrand/memrand-*.bin
 # per-config cosim build directories and their locks (ooo2/run-ooo2-cosim-linux.sh)
 ooo2/obj_dir_ooo2_clinux*
+
+# cargo build output of the in-tree Rust tools (tools/pipeview, tools/rvdisasm)
+tools/*/target/

@@ -1367,13 +1367,26 @@ instructions dispatched that cycle. The run prints the totals as `TOPDOWN-SIM` l
 `closed: <cycles>` confirms the causes sum to the run's cycle count.
 
 `+kanata=<file>` writes the same stream as a Konata pipe view (github.com/shioyadan/Konata),
-limited to the `+trace_from`/`+trace_to` window. There is one row per dispatched instruction:
-`Ds` (dispatched), the issue port (`Xa`/`Xb` ALUs, `M`, `F`, `Ct` control flow), `Cm`
-(complete), then retired or flushed. There is also one `St` row per run of non-producing
-cycles, labelled with its cause (`** fe:icache`), so each stall appears in program order at the
-point where it happened. `tools/kanata-disasm.py view.kanata prog.elf` swaps the raw
-instruction words for the ELF's disassembly and symbols. For example, in `workloads/rvbench`:
-`make run B=dhrystone PLUSARGS="+kanata=$PWD/d.kanata +trace_from=2000000 +trace_to=2002000"`.
+limited to the `+trace_from`/`+trace_to` window. There is one row per fetched instruction:
+`Fe` (fetched, in the bundle register), `Dq` (in the decoupling queue), `Ir` (in the
+instruction register), `Ds` (dispatched), the issue port (`Xa`/`Xb` ALUs, `M`, `F`, `Ct` control
+flow), `Cm` (complete), then retired or flushed; a frontend redirect flushes every row not yet
+dispatched. The fetch-side stages are keyed by the fetch sequence number until dispatch binds a
+ROB index. There is also one `St` row per run of non-producing cycles, labelled with its cause
+(`** fe:icache`), so each stall appears in program order at the point where it happened.
+
+`tools/pipeview` (Rust, `cargo build --release`) is the terminal viewer:
+`pipeview run.kanata [prog.elf]` is interactive (scroll, search by PC, mnemonic, symbol or cause,
+with IPC and the stall causes recomputed over the visible rows), `--text N` prints the first N
+rows, and `?` (or `--help`) shows the legend. One letter per cycle: `f q i d` fetch, queue, IR,
+dispatched; `a b M F c` the issue ports; `=` complete; `R`/`x` retired/flushed, in the column
+after the instruction's last cycle (an ALU op can issue and retire in one cycle, since the ROB
+forwards a writeback to its head, so `aR`). With the ELF, labels are objdump's disassembly and
+symbols; without it, `tools/rvdisasm` decodes the instruction word. `tools/kanata-disasm.py`
+does the same for Konata. For example, in `workloads/rvbench`, where `local/<name>.c` builds a
+program of your own:
+`make run B=sillyloop PLUSARGS="+kanata=$PWD/s.kanata +trace_from=2000000 +trace_to=2001000"`,
+then `../../tools/pipeview/target/release/pipeview s.kanata sillyloop.elf`.
 
 ---
 

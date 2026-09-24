@@ -475,9 +475,9 @@ module tb;
    always @(posedge clk) if (!reset) td_cnt[td_k] <= td_cnt[td_k] + 64'd1;
 
    // ---- +kanata=<file>: a pipe view for Konata (github.com/shioyadan/Konata) ----------------
-   // One row per dispatched instruction: Ds (dispatched, waiting to issue), its issue port
-   // (Xa/Xb = the two ALUs, M, F, Ct = control flow), Cm (complete, waiting to retire),
-   // then retired or flushed. One more row per run of non-producing cycles, named by the
+   // One row per fetched instruction: Fe (fetched), Dq (in the decoupling queue), Ir (in the
+   // instruction register), Ds (dispatched, waiting to issue), its issue port (Xa/Xb = the two
+   // ALUs, M, F, Ct = control flow), Cm (complete, waiting to retire), then retired or flushed. One more row per run of non-producing cycles, named by the
    // cause above, so a stall reads as a bar in program order where it happened. Honors
    // +trace_from/+trace_to. tools/kanata-disasm.py swaps the raw instruction words for
    // disassembly from the ELF.
@@ -523,12 +523,65 @@ module tb;
          end
       end
    endtask
-   task kan_new;                  // a dispatched instruction
-      input [4:0] ix; input [63:0] pc; input [31:0] insn;
+   // ---- the frontend's side of each row, keyed by the fetch sequence number until dispatch binds
+   // a ROB index: Fe (fetched this cycle into the bundle register), Dq (in the decoupling queue),
+   // Ir (in the instruction register, waiting to dispatch). A frontend redirect clears all three,
+   // so it flushes every row not dispatched by then.
+   reg [63:0] kq_id [0:255];  reg kq_live [0:255];  reg [8*2-1:0] kq_stg [0:255];
+   reg [63:0] kq_pc [0:255];  reg [31:0] kq_raw [0:255];
+   reg [7:0]  pbm_seq [0:2];  reg [2:0] pbm_v;       // mirror of the bundle register's slots
+   reg [7:0]  psh_seq [0:2];  reg [2:0] psh_v;       // ...pushed into the queue last cycle
+   integer    kqi;
+   initial begin
+      pbm_v = 3'b0;  psh_v = 3'b0;
+      for (kqi = 0; kqi < 256; kqi = kqi + 1) begin kq_live[kqi] = 1'b0; kq_id[kqi] = 64'd0; end
+   end
+   task kq_new;                   // a fetched instruction
+      input [7:0] sq; input [63:0] pc; input [31:0] raw;
       begin
          kan_tick;
-         kan_id[ix] = kan_next;  kan_next = kan_next + 64'd1;  kan_live[ix] = 1'b1;  kan_stg[ix] = "Ds";
-         $fdisplay(kf, "I\t%0d\t%0d\t0", kan_id[ix], kan_id[ix]);
+         if (kq_live[sq]) kq_flush(sq);
+         kq_id[sq] = kan_next;  kan_next = kan_next + 64'd1;  kq_live[sq] = 1'b1;  kq_stg[sq] = "Fe";
+         kq_pc[sq] = pc;  kq_raw[sq] = raw;
+         $fdisplay(kf, "I\t%0d\t%0d\t0", kq_id[sq], kq_id[sq]);
+         $fdisplay(kf, "S\t%0d\t0\tFe", kq_id[sq]);
+      end
+   endtask
+   task kq_stage;
+      input [7:0] sq; input [8*2-1:0] stg;
+      begin
+         if (kq_live[sq] && kq_stg[sq] != stg) begin
+            kan_tick;
+            $fdisplay(kf, "E\t%0d\t0\t%0s", kq_id[sq], kq_stg[sq]);
+            $fdisplay(kf, "S\t%0d\t0\t%0s", kq_id[sq], stg);
+            kq_stg[sq] = stg;
+         end
+      end
+   endtask
+   task kq_flush;                 // gone from the frontend without dispatching
+      input [7:0] sq;
+      begin
+         if (kq_live[sq]) begin
+            kan_tick;
+            $fdisplay(kf, "L\t%0d\t0\t%h: %h", kq_id[sq], kq_pc[sq], kq_raw[sq]);
+            $fdisplay(kf, "E\t%0d\t0\t%0s", kq_id[sq], kq_stg[sq]);
+            $fdisplay(kf, "R\t%0d\t%0d\t1", kq_id[sq], kan_rid);
+            kan_rid = kan_rid + 64'd1;  kq_live[sq] = 1'b0;
+         end
+      end
+   endtask
+   task kan_new;                  // a dispatched instruction: continues its fetch-side row if it has one
+      input [4:0] ix; input [63:0] pc; input [31:0] insn; input [7:0] sq;
+      begin
+         kan_tick;
+         kan_live[ix] = 1'b1;  kan_stg[ix] = "Ds";
+         if (kq_live[sq]) begin
+            kan_id[ix] = kq_id[sq];  kq_live[sq] = 1'b0;
+            $fdisplay(kf, "E\t%0d\t0\t%0s", kan_id[ix], kq_stg[sq]);
+         end else begin
+            kan_id[ix] = kan_next;  kan_next = kan_next + 64'd1;
+            $fdisplay(kf, "I\t%0d\t%0d\t0", kan_id[ix], kan_id[ix]);
+         end
          $fdisplay(kf, "L\t%0d\t0\t%h: %h", kan_id[ix], pc, insn);
          $fdisplay(kf, "S\t%0d\t0\tDs", kan_id[ix]);
       end
@@ -538,12 +591,7 @@ module tb;
    reg [7:0]  kan_wv_q;  reg [8*5-1:0] kan_wix_q;
    integer    kw;
    always @(posedge clk) if (!reset && kan_on) begin
-      // 1. retire (up to three), then flush every live entry a backend redirect squashes
-      if (dut.core.rob_c_valid)  kan_end(5'(dut.core.rob_head_idx),  1'b0);
-      if (dut.core.rob_c2_valid) kan_end(5'(dut.core.rob_head2_idx), 1'b0);
-      if (dut.core.rob_c3_valid) kan_end(5'(dut.core.rob_head3_idx), 1'b0);
-      if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
-      // 2. completions registered last cycle, then this cycle's issues
+      // 1. completions registered last cycle, then this cycle's issues
       for (kw = 0; kw < 8; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
       if (dut.core.iss_alu)  kan_stage(5'(dut.core.a_rob),  "Xa");
       if (dut.core.iss_alu2) kan_stage(5'(dut.core.a2_rob), "Xb");
@@ -554,11 +602,43 @@ module tb;
                     dut.core.sq_k_take, dut.core.fp_land, dut.core.iss_alu, dut.core.rob_w_valid};
       kan_wix_q <= {5'(dut.core.md_rob), 5'(dut.core.cf_land_rob), 5'(dut.core.a3_rob), 5'(dut.core.a2_rob),
                     5'(dut.core.sq_kc_rob), 5'(dut.core.ft_rob), 5'(dut.core.a_rob), 5'(dut.core.rob_w_idx)};
-      // 3. dispatch, oldest slot first
+      // 2. retire (up to three), then flush every live entry a backend redirect squashes. After
+      // the issues: the ROB write-forwards a writeback to the head, so an ALU op can issue and
+      // retire in the same cycle.
+      if (dut.core.rob_c_valid)  kan_end(5'(dut.core.rob_head_idx),  1'b0);
+      if (dut.core.rob_c2_valid) kan_end(5'(dut.core.rob_head2_idx), 1'b0);
+      if (dut.core.rob_c3_valid) kan_end(5'(dut.core.rob_head3_idx), 1'b0);
+      if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
+      // 3. the frontend: last cycle's queue pushes, the instruction register, then dispatch
+      for (kw = 0; kw < 3; kw = kw + 1) if (psh_v[kw]) kq_stage(psh_seq[kw], "Dq");
+      if (dut.core.fe.d_valid)  kq_stage(dut.core.d_seq,  "Ir");
+      if (dut.core.fe.d2_valid) kq_stage(dut.core.d2_seq, "Ir");
+      if (dut.core.fe.d3_valid) kq_stage(dut.core.d3_seq, "Ir");
       if (trace_on) begin
-         if (dut.core.rn_valid)   kan_new(5'(dut.core.rob_d_idx),  dut.core.d_pc,  dut.core.d_insn);
-         if (dut.core.rn_valid_b) kan_new(5'(dut.core.rob_d_idx2), dut.core.d2_pc, dut.core.d2_insn);
-         if (dut.core.rn_valid_c) kan_new(5'(dut.core.rob_d_idx3), dut.core.d3_pc, dut.core.d3_insn);
+         if (dut.core.rn_valid)   kan_new(5'(dut.core.rob_d_idx),  dut.core.d_pc,  dut.core.d_insn,  dut.core.d_seq);
+         if (dut.core.rn_valid_b) kan_new(5'(dut.core.rob_d_idx2), dut.core.d2_pc, dut.core.d2_insn, dut.core.d2_seq);
+         if (dut.core.rn_valid_c) kan_new(5'(dut.core.rob_d_idx3), dut.core.d3_pc, dut.core.d3_insn, dut.core.d3_seq);
+      end
+      // ...a frontend redirect clears the bundle register, the queue and the IR; else this
+      // cycle's push is recorded (it shows next cycle) and a fetched bundle opens its rows
+      psh_v <= 3'b0;
+      if (dut.core.fe.redirect) begin
+         for (kqi = 0; kqi < 256; kqi = kqi + 1) kq_flush(kqi[7:0]);
+         pbm_v = 3'b0;
+      end else begin
+         if (dut.core.fe.q_push) begin
+            psh_v <= pbm_v;
+            for (kw = 0; kw < 3; kw = kw + 1) psh_seq[kw] <= pbm_seq[kw];
+            pbm_v = 3'b0;
+         end
+         if (dut.core.fe.pb_load & dut.core.fe.dq_valid & trace_on) begin
+            for (kw = 0; kw < 3; kw = kw + 1) begin
+               pbm_v[kw] = dut.core.fe.dq_sv[kw];
+               pbm_seq[kw] = dut.core.fe.dq_seq[kw*8 +: 8];
+               if (dut.core.fe.dq_sv[kw])
+                  kq_new(dut.core.fe.dq_seq[kw*8 +: 8], dut.core.fe.dq_pc[kw*64 +: 64], dut.core.fe.dq_inst[kw*32 +: 32]);
+            end
+         end
       end
       // 4. the stall row: one per run of cycles with the same non-producing cause
       if (trace_on && td_k != kan_sk) begin

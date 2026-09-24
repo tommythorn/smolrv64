@@ -1,0 +1,15 @@
+[package]
+name = "pipeview"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal pipe viewer for the ooo2 testbench's Kanata stream"
+
+[[bin]]
+name = "pipeview"
+path = "src/main.rs"
+
+[dependencies]
+rvdisasm = { path = "../rvdisasm" }
+
+[profile.release]
+opt-level = 3
