@@ -97,6 +97,7 @@ module fetch
     output wire [IW*PCW-1:0]       pc,
     output wire [IW*SEQW-1:0]      seq,
     output wire [2:0]              adv_kind,    // the next PC's chunk relative to pc_q's (see below)
+    output wire [$clog2(HW+2)-1:0] adv_hw,      // halfwords pc_q advances SEQUENTIALLY this cycle (0 on a jump)
     output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
 
    localparam PBW = $clog2(HW+2);
@@ -270,6 +271,14 @@ module fetch
                    : straddle_det ? ak_ft1
                    : fire         ? (pred_v ? AK_TGT : ak_ftc)
                    :                AK_HOLD;
+   // How far pc_q moves in sequence this cycle: the fetch ring (rv_soc_top) advances its head by
+   // it, and treats AK_TGT/AK_REDIR as a jump. The arms mirror pc_next's.
+   assign adv_hw  = (reset | redirect) ? {PBW{1'b0}}
+                  : strad         ? {{(PBW-1){1'b0}}, fire}
+                  : irq_go        ? {PBW{1'b0}}
+                  : straddle_det  ? {{(PBW-1){1'b0}}, 1'b1}
+                  : (fire & ~pred_v) ? al_consumed
+                  :                 {PBW{1'b0}};
    assign pc_next = reset         ? RESET_PC
                   : redirect      ? redirect_pc
                   : strad         ? (fire ? pc_plus[1] : pc_q)

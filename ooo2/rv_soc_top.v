@@ -124,8 +124,8 @@ module rv_soc_top #(
    wire [HW*16-1:0]    imem_data;
    wire [$clog2(HW+2)-1:0] imem_avail;   // sized to the frontend port ($clog2(HW+2)); drive HW, not a literal
    wire                imem_ok;      // the served window is the PC's bytes (late; gates the handshake only)
-   wire [2:0]          imem_adv_kind;            // the next PC's chunk, as a kind (fetch.adv_kind)
-   wire [63:0]         imem_adv_tgt, imem_adv_red;
+   wire [2:0]          imem_adv_kind;            // how pc_q moves: a jump or in sequence (fetch.adv_kind)
+   wire [$clog2(HW+2)-1:0] imem_adv_hw;          // ...and by how many halfwords in sequence
    wire [63:0]         dmem_raddr;
    wire                dmem_ren;
    wire                dmem_runcached, dmem_wuncached;   // Svpbmt: NC/IO read/write attribute
@@ -147,7 +147,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(imem_lvl_srv), .imem_xlvl(immu_xlvl), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
-      .imem_adv_kind(imem_adv_kind), .imem_adv_tgt(imem_adv_tgt), .imem_adv_red(imem_adv_red),
+      .imem_adv_kind(imem_adv_kind), .imem_adv_hw(imem_adv_hw),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
       .fe_redirect(fe_redirect), .hpm_fb_hit(1'b0), .hpm_fb_rhit(1'b0),   // no fetch buffer (VHPR I$)
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
@@ -680,7 +680,7 @@ module rv_soc_top #(
    localparam integer CHA = $clog2(HW*2);      // chunk-align shift (=4)
 
    wire [HW*16-1:0] ic_rd_data;   wire ic_rd_valid, ic_inv_busy;
-   wire [63:0]      ic_rd_resp_addr;   wire [3:0] ic_rsp_tag;   wire ic_rd_ack;
+   wire [63:0]      ic_rd_resp_addr;   wire [5:0] ic_rsp_tag;   wire ic_rd_ack;
    wire             ic_l2_req, ic_l2_we;   wire [LAW-1:0] ic_l2_addr;   wire [511:0] ic_l2_wdata;
    wire [511:0]     ic_l2_rdata;   wire ic_l2_ack;
 
@@ -753,150 +753,116 @@ module rv_soc_top #(
       end
    wire ic_inv_req = fi_inv;   // fence.i AND mapping changes go through fi (after the D$ clean-flush)
 
-   // The PC's 16-byte chunk (VA) and its PA (the iMMU translated the PC; aligning to 16 stays
-   // in the same page), and the next chunk's VA.
-   wire [63:0] pc_ca   = {imem_va[63:CHA],   {CHA{1'b0}}};
-   wire [63:0] pc_paca = {imem_addr[63:CHA], {CHA{1'b0}}};
-   wire [63:0] nx_ca   = pc_ca + CHB;
-   wire [63:0] pc_ca_m = pc_ca - CHB;   // only ever latched (rq_vm below): never in the served path
+   // ---------------- THE FETCH RING (Stage 4 increment 1a) ----------------
+   // RS halfword slots holding the instruction stream from the PC on. Its head IS the PC: fetch
+   // reports how pc_q moves each cycle (imem_adv_kind, imem_adv_hw), the head advances by the
+   // halfwords consumed, and a jump (a predicted-taken fire or a redirect) empties the ring and
+   // restarts the stream at the new PC, which the iMMU translates that cycle. The window fetch
+   // aligns is a rotation of the ring from its registered head: no address compare on the fetch
+   // loop.
+   //
+   // THE STREAM. One 16-byte pair per accepted I$ request, 8-byte aligned (16-byte aligned in a
+   // 4 KiB frame's last chunk: a pair never crosses 4 KiB), running ahead of the PC while the ring has
+   // room for everything in flight. It stays inside the PC's enclosing page (4 KiB, or 2 MiB for
+   // a >= 2 MiB leaf), whose PA the iMMU holds for the PC; increment 1d translates on an I$ miss
+   // instead. Answers come back in order, so a flush marks every request then in flight stale and
+   // that many answers are dropped (rg_drop); the generation in the tag only cross-checks it. A
+   // fence.i or a mapping change empties the ring while it runs.
+   localparam [2:0] AK_TGT = 3'd3, AK_REDIR = 3'd4;       // fetch.adv_kind: the jumps
+   localparam integer RS  = 32;                            // ring slots (halfwords): 64 bytes
+   localparam integer RSB = $clog2(RS);
+   localparam integer GW  = 3;                             // stream generation
+   localparam integer AVW = $clog2(HW+2);
+   reg  [15:0]     ring [0:RS-1];
+   reg  [RSB-1:0]  rg_head;
+   reg  [RSB:0]    rg_cnt, rg_resv;                        // halfwords held; held + in flight
+   reg  [GW-1:0]   rg_gen;
+   reg  [63:0]     rg_fa;                                  // the stream's next VA
+   reg             rg_rst;                                 // restart the stream at the PC
+   reg  [1:0]      rg_lvl;                                 // page size of the bytes held
+   reg  [63:0]     rg_hva;                                 // the head's VA (checked, never used)
+   reg  [2:0]      rg_infl, rg_drop;                       // requests in flight; of them, stale
+   initial begin rg_head = 0; rg_cnt = 0; rg_resv = 0; rg_gen = 0; rg_rst = 1'b1; rg_lvl = 2'd0;
+                 rg_infl = 0; rg_drop = 0; end
+   wire            freeze = fi_stall | ic_inv_busy | imem_ctx_chg;
+   wire            jump   = (imem_adv_kind == AK_TGT) | (imem_adv_kind == AK_REDIR);
+   wire            flush  = jump | freeze;
 
-   // Two VA-tagged chunk slots -- the alignment window.
-   // EACH SLOT ALSO HOLDS ITS VA MINUS ONE CHUNK (c*_vm), so "is this the PC's NEXT chunk" is
-   // c_vm == pc_ca, a compare of two registers, not c_va == pc_ca + CHB. The adder was inside
-   // the fetch loop: pc_q -> +CHB -> h1 -> have1 -> the served window -> the aligner -> the
-   // next PC and the BTB index, 24 levels, the worst family of the IW=3 census (~1.9 ns from
-   // pc_q to the compare's result). The adder still feeds the demand-read address (want_va),
-   // which is a BRAM address, in parallel with the compares instead of in front of them.
-   reg              c0_v, c1_v;
-   reg  [63:0]      c0_va, c1_va, c0_vm, c1_vm;
-   reg  [HW*16-1:0] c0_d,  c1_d;
-   reg  [1:0]       c0_lvl, c1_lvl;              // page size of each resident chunk (iMMU leaf level at fill)
-   initial begin c0_v=1'b0; c1_v=1'b0; end
+   // the request: the stream's address, or the PC after a restart
+   wire [63:0] fa      = rg_rst ? imem_va : rg_fa;
+   wire        big_pg  = (immu_xlvl != 2'd0);
+   wire        inpg    = big_pg ? (fa[63:21] == imem_va[63:21]) : (fa[63:12] == imem_va[63:12]);
+   // a pair never crosses 4 KiB, whatever the page size: rv_icache takes both lines' physical tag
+   // from the request's 4 KiB frame
+   wire        pg_end  = &fa[11:3];                                     // fa is in a 4 KiB frame's last chunk
+   wire [63:0] rq_a    = {fa[63:4], fa[3] & ~pg_end, 3'b000};          // the pair's first byte
+   wire [2:0]  rq_skip = {fa[3] & pg_end, fa[2:1]};                    // halfwords before fa
+   wire [3:0]  rq_n    = 4'd8 - {1'b0, rq_skip};                       // halfwords it appends
+   wire [63:0] rq_pa   = big_pg ? {imem_addr[63:21], rq_a[20:0]} : {imem_addr[63:12], rq_a[11:0]};
+   wire         ic_rd_req  = ~flush & imem_xlate_ok & inpg
+                           & ({1'b0, rg_resv} + {{(RSB-3){1'b0}}, rq_n} <= RS[RSB+1:0]);
+   wire [63:0]  ic_rd_addr = {25'b0, rq_a[38:0]};          // VIRTUAL: canonical Sv39 VA (sign ext masked)
+   wire [63:0]  ic_rd_pa   = rq_pa;
+   wire [5:0]   ic_tag     = {rq_skip, rg_gen};
 
-   wire h0_0 = c0_v & (c0_va == pc_ca);   wire h0_1 = c1_v & (c1_va == pc_ca);
-   wire h1_0 = c0_v & (c0_vm == pc_ca);   wire h1_1 = c1_v & (c1_vm == pc_ca);
-   wire             have0    = h0_0 | h0_1;
-   wire             have1    = h1_0 | h1_1;
-   // THE SERVED SLOT IS A REGISTER, DECIDED A CYCLE EARLY. sh_q names the slot holding the
-   // PC's chunk and n1_q says the other slot holds the next one; both are picked at the
-   // previous edge from fetch's adv_kind (the next PC's chunk: same, next, predicted
-   // target, redirect target) against the tags AS THEY WILL BE after that edge (the fill
-   // included). The live compares h0_*/h1_* no longer select data -- they only gate
-   // imem_ok, one late bit -- so pc_q -> tag compare -> chunk select leaves the fetch loop.
-   // A wrong pick (none is expected; asserted below) costs one bubble: imem_ok drops, the
-   // fetch holds, and the HOLD arm re-picks from the live tags.
-   localparam [2:0] AK_HOLD = 3'd0, AK_SAME = 3'd1, AK_NEXT = 3'd2, AK_TGT = 3'd3, AK_REDIR = 3'd4;
-   reg sh_q, n1_q;   initial begin sh_q = 1'b0; n1_q = 1'b0; end
-   wire [HW*16-1:0] pc_chunk = sh_q ? c1_d : c0_d;
-   wire [HW*16-1:0] nx_chunk = sh_q ? c0_d : c1_d;                 // the OTHER slot
-   wire ok_slot = sh_q ? h0_1 : h0_0;                              // live: the hinted slot is the PC's chunk
-   wire ok_next = ~n1_q | (sh_q ? h1_0 : h1_1);                    // live: bytes 16..31 promised only if truly the next chunk
-   // The served (PC) chunk's page size drives the enclosing-page cap (fetch) and whether the
-   // NEXT chunk is still in the same page (samepg): 4 KiB for a 4K leaf, 2 MiB for >=2M (a 1 GiB
-   // leaf caps as 2 MiB). Within a superpage the next chunk's PA is pc_paca+CHB (contiguous).
-   // The SERVED window's page size follows the hinted slot (it only matters under imem_ok,
-   // when the hint is right); the DEMAND-READ decision below takes the page size of the slot
-   // that really hits -- a wrong-hint cycle must never turn a 4 KiB boundary into a 2 MiB one
-   // and issue a next-chunk fill whose PA (`pc_paca + CHB`) crosses the page.
-   wire [1:0]       pc_lvl   = h0_1 ? c1_lvl : c0_lvl;             // the slot that hits (live)
-   assign           imem_lvl_srv = sh_q ? c1_lvl : c0_lvl;         // the hinted slot's
-   wire             big_pg   = (pc_lvl != 2'd0);
-   wire             samepg   = big_pg ? (pc_ca[20:CHA] != {(21-CHA){1'b1}})
-                                      : (pc_ca[11:CHA] != {(12-CHA){1'b1}});
+   // the answer: the halfwords from its skip on, appended at the tail
+   wire         rq_acc  = ic_rd_req & ic_rd_ack;
+   wire         rp_ok   = ic_rd_valid & (rg_drop == 3'd0) & ~flush;
+   wire [2:0]   rp_skip = ic_rsp_tag[GW +: 3];
+   wire [3:0]   rp_n    = rp_ok ? (4'd8 - {1'b0, rp_skip}) : 4'd0;
+   wire [RSB-1:0] tail  = rg_head + rg_cnt[RSB-1:0];
+   wire [AVW-1:0] adv   = imem_adv_hw;
+   wire [RSB:0]   adv_w = {{(RSB+1-AVW){1'b0}}, adv};
 
-   // One demand read in flight.
-   reg          rq_v, rq_pois;
-   reg  [63:0]  rq_va, rq_pa, rq_vm;                 // rq_vm = rq_va - CHB, latched with it
-   reg  [1:0]   rq_lvl;                          // page size captured with the in-flight request
-   initial begin rq_v=1'b0; rq_pois=1'b0; end
-   wire need_pc = ~have0 & ~(rq_v & (rq_va == pc_ca));
-   wire need_nx =  have0 & ~have1 & samepg & ~(rq_v & (rq_vm == pc_ca));
-   wire         want    = need_pc | need_nx;
-   wire [63:0]  want_va = need_pc ? pc_ca   : nx_ca;
-   wire [63:0]  want_pa = need_pc ? pc_paca : (pc_paca + CHB);
+   // the window: the ring from its head
+   genvar gw;
+   generate for (gw = 0; gw < HW; gw = gw + 1) begin : win
+      wire [RSB-1:0] ix = rg_head + gw[RSB-1:0];
+      assign imem_data[gw*16 +: 16] = ring[ix];
+   end endgenerate
+   assign imem_avail   = (rg_cnt >= HW[RSB:0]) ? HW[AVW-1:0] : rg_cnt[AVW-1:0];
+   assign imem_ok      = ~freeze & (rg_cnt != {(RSB+1){1'b0}});
+   assign imem_lvl_srv = rg_lvl;
 
-   wire         ic_rd_req  = want & ~rq_v & ~ic_inv_busy & imem_xlate_ok;
-   wire [63:0]  ic_rd_addr = {25'b0, want_va[38:0]};  // VIRTUAL: canonical Sv39 VA (sign ext masked)
-   wire [63:0]  ic_rd_pa   = want_pa;                  // PA for the L2 fill
-   wire         ic_tag     = 1'b0;                     // one request in flight
-
-   // ---- serve: {next chunk, PC chunk} shifted to the PC's byte offset ----
-   wire [2*HW*16-1:0] win_pair = {(n1_q ? nx_chunk : {(HW*16){1'b0}}), pc_chunk};
-   wire [CHA-1:0]     pc_off   = imem_va[CHA-1:0];
-   wire [2*HW*16-1:0] win_shf  = win_pair >> {pc_off, 3'b000};
-   assign imem_data = win_shf[HW*16-1:0];
-
-   localparam AVW = $clog2(HW+2);
-   localparam [AVW-1:0] AV_HW = HW[AVW-1:0];
-   wire [6:0] avail_b  = (n1_q ? 7'd32 : 7'd16) - {3'b0, pc_off};   // what the served pair holds (imem_ok qualifies)
-   wire [6:0] avail_hw = avail_b >> 1;
-   wire       freeze   = fi_stall | ic_inv_busy | imem_ctx_chg;
-   assign imem_avail = (avail_hw >= HW) ? AV_HW : avail_hw[AVW-1:0];
-   assign imem_ok    = ok_slot & ok_next & ~freeze;
-
-   // ---- the pick for the NEXT cycle: the tags after this edge, the next PC's chunk by kind ----
-   wire        fill    = ic_rd_valid & ~rq_pois;
-   wire        inval   = fi_stall | ic_inv_busy | imem_ctx_chg;
-   wire        f1      = fill & h0_0, f0 = fill & ~h0_0;           // the fill's slot (see the capture below)
-   wire        c0_v_n  = ~inval & (c0_v | f0),  c1_v_n  = ~inval & (c1_v | f1);
-   wire [63:0] c0_va_n = f0 ? rq_va : c0_va,   c1_va_n = f1 ? rq_va : c1_va;
-   wire [63:0] c0_vm_n = f0 ? rq_vm : c0_vm,   c1_vm_n = f1 ? rq_vm : c1_vm;
-   wire [63:0] tgt_ca  = {imem_adv_tgt[63:CHA], {CHA{1'b0}}};
-   wire [63:0] red_ca  = {imem_adv_red[63:CHA], {CHA{1'b0}}};
-   // per candidate chunk A: {the other slot holds A+CHB, c1 holds A (else serve c0)}
-   `define AK_PICK(A) {((c1_v_n & (c1_va_n == (A))) ? (c0_v_n & (c0_vm_n == (A))) : (c1_v_n & (c1_vm_n == (A)))), (c1_v_n & (c1_va_n == (A)))}
-   wire [1:0] pk_same = `AK_PICK(pc_ca), pk_next = `AK_PICK(nx_ca), pk_tgt = `AK_PICK(tgt_ca), pk_red = `AK_PICK(red_ca);
-   wire [1:0] pk_n = (imem_adv_kind == AK_NEXT)  ? pk_next
-                   : (imem_adv_kind == AK_TGT)   ? pk_tgt
-                   : (imem_adv_kind == AK_REDIR) ? pk_red
-                   :                               pk_same;      // HOLD and SAME: pc_q's own chunk
-   always @(posedge clk)
-      if (reset) begin sh_q <= 1'b0; n1_q <= 1'b0; end
-      else       begin sh_q <= pk_n[0]; n1_q <= pk_n[1]; end
-   // The pick is exact: a hint that is wrong while the chunk IS resident must be fixed by
-   // the very next HOLD re-pick, never two cycles running.
-   reg hint_wrong_q;  initial hint_wrong_q = 1'b0;
-   wire hint_wrong = have0 & ~freeze & ~(ok_slot & ok_next);
+   integer j;
    always @(posedge clk) begin
-      hint_wrong_q <= ~reset & hint_wrong;
-      if (!reset && hint_wrong)   // STRICT (probe): any wrong hint while the chunk is resident
-         $fatal(1, "rv_soc_top: served-slot hint wrong two cycles running (sh_q=%b n1_q=%b h0=%b%b h1=%b%b pc_ca=%h)", sh_q, n1_q, h0_1, h0_0, h1_1, h1_0, pc_ca);
-   end
-
-   // ---- window fill + invalidation ----
-   always @(posedge clk) begin
-      if (reset) begin c0_v<=1'b0; c1_v<=1'b0; rq_v<=1'b0; rq_pois<=1'b0; end
-      else begin
-         // accept: latch the in-flight demand read
-         if (ic_rd_req & ic_rd_ack) begin rq_v<=1'b1; rq_va<=want_va; rq_vm<=(need_pc ? pc_ca_m : pc_ca); rq_pa<=want_pa; rq_pois<=1'b0; rq_lvl<=immu_xlvl; end
-         // response: capture into the slot NOT holding the PC's chunk (keep pc_chunk resident)
-         if (ic_rd_valid) begin
-            rq_v <= 1'b0;
-            if (~rq_pois) begin
-               if (h0_0) begin c1_va<=rq_va; c1_vm<=rq_vm; c1_d<=ic_rd_data; c1_lvl<=rq_lvl; c1_v<=1'b1; end
-               else      begin c0_va<=rq_va; c0_vm<=rq_vm; c0_d<=ic_rd_data; c0_lvl<=rq_lvl; c0_v<=1'b1; end
-            end
-         end
-         // invalidation LAST (wins a same-cycle capture): a mapping change or a flush in
-         // progress drops the window and poisons the in-flight response (it is the old mapping).
-         if (fi_stall | ic_inv_busy | imem_ctx_chg) begin  // fence.i flush OR a mapping change
-            c0_v<=1'b0; c1_v<=1'b0;                           // the window holds old-mapping lines -> drop
-            if (rq_v | (ic_rd_req & ic_rd_ack)) rq_pois<=1'b1;
-         end
+      // requests in flight, and how many of them a flush made stale (answers come in order)
+      rg_infl <= reset ? 3'd0 : rg_infl + {2'd0, rq_acc} - {2'd0, ic_rd_valid};
+      rg_drop <= reset ? 3'd0
+               : flush ? rg_infl + {2'd0, rq_acc} - {2'd0, ic_rd_valid}
+               : rg_drop - {2'd0, ic_rd_valid & (rg_drop != 3'd0)};
+      if (reset | flush) begin
+         rg_cnt <= 0;  rg_resv <= 0;  rg_head <= 0;  rg_rst <= 1'b1;
+         if (flush) rg_gen <= rg_gen + 1'b1;
+      end else begin
+         rg_head <= rg_head + adv_w[RSB-1:0];
+         rg_cnt  <= rg_cnt + {{(RSB-3){1'b0}}, rp_n} - adv_w;
+         rg_resv <= rg_resv + (rq_acc ? {{(RSB-3){1'b0}}, rq_n} : {(RSB+1){1'b0}}) - adv_w;
+         // the ring is empty while the stream restarts, so nothing is consumed then
+         rg_hva  <= (rg_rst & rq_acc) ? imem_va : rg_hva + {{(63-AVW){1'b0}}, adv, 1'b0};
+         if (rq_acc) begin rg_fa <= rq_a + 64'd16;  rg_rst <= 1'b0;  rg_lvl <= immu_xlvl; end
+         for (j = 0; j < HW; j = j + 1)
+            if (rp_ok && j >= rp_skip) ring[tail + j[RSB-1:0] - {{(RSB-3){1'b0}}, rp_skip}] <= ic_rd_data[j*16 +: 16];
       end
    end
-   // The minus-chunk tags are derived state; they must never drift from the VA they shadow.
-   always @(posedge clk) if (!reset) begin
-      if (c0_v && (c0_vm != c0_va - CHB)) $fatal(1, "rv_soc_top: c0_vm %h != c0_va %h - CHB", c0_vm, c0_va);
-      if (c1_v && (c1_vm != c1_va - CHB)) $fatal(1, "rv_soc_top: c1_vm %h != c1_va %h - CHB", c1_vm, c1_va);
-      if (rq_v && (rq_vm != rq_va - CHB)) $fatal(1, "rv_soc_top: rq_vm %h != rq_va %h - CHB", rq_vm, rq_va);
+   // The ring's head is the PC, and what it holds and has in flight fits.
+   always @(posedge clk) if (!reset && !flush) begin
+      if (rg_cnt != 0 && rg_hva != imem_va)
+         $fatal(1, "rv_soc_top: the fetch ring's head %h is not the PC %h", rg_hva, imem_va);
+      if ({1'b0, adv} > rg_cnt)
+         $fatal(1, "rv_soc_top: fetch consumed %0d halfwords of a ring holding %0d", adv, rg_cnt);
+      if (rg_cnt + rp_n > rg_resv)
+         $fatal(1, "rv_soc_top: the fetch ring holds more (%0d) than it reserved (%0d)", rg_cnt + rp_n, rg_resv);
+      if (rp_ok && ic_rsp_tag[GW-1:0] != rg_gen)
+         $fatal(1, "rv_soc_top: a kept I$ answer is from generation %0d, the stream is %0d", ic_rsp_tag[GW-1:0], rg_gen);
+      if (ic_rd_valid && rg_infl == 3'd0)
+         $fatal(1, "rv_soc_top: an I$ answer with no fetch-ring request in flight");
    end
 
-
    // The read-only VHPR I$ (ooo2/rv_icache.v): a pair per cycle, hit on the virtual tag alone.
-   rv_icache #(.SIZE_KB(SIZE_KB), .HW(HW), .RTW(4)) u_icache
+   rv_icache #(.SIZE_KB(SIZE_KB), .HW(HW), .RTW(6)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_tag({3'd0, ic_tag}),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_tag(ic_tag),
       .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr), .rd_resp_tag(ic_rsp_tag),
       .inv_req(ic_inv_req), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),

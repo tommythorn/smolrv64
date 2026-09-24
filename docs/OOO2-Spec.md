@@ -41,7 +41,7 @@ they were written and say so.
 Three architected stages plus a commit point. `F` is itself pipelined internally.
 
 ```
-  F  ── PC → I$ (VHPR: virtual hit) → alignment latch → aligner → RVC expand → decode ──┐
+  F  ── PC → I$ (VHPR: virtual hit) → fetch ring → aligner → RVC expand → decode ──────┐
        (the iMMU runs alongside: its PA is the I$ miss-path physical tag, not on the hit) │  decoupling queue (8)
   X  ── rename → PRF read / M→X bypass → ALU, branch resolve ──────────────────────────────┘
   M  ── LSU / mul / div / FPU / CSR ── trap, redirect, BTB train
@@ -50,7 +50,7 @@ Three architected stages plus a commit point. `F` is itself pipelined internally
 
 | stage | holds | can stall | can stall others | can restart the pipe |
 |---|---|---|---|---|
-| F | PC, predictor read, VHPR I$ hit, alignment latch, aligner | yes | no | no |
+| F | PC, predictor read, fetch ring window, aligner | yes | no | no |
 | decoupling queue | up to 8 decoded instructions | — | back-pressures F when full | no |
 | X | one decoded+renamed instruction | yes (`d_hold`) | holds F via `accept` | no |
 | M | one instruction | yes (`m_done` low) | holds X via `m_advance` | **yes** (`redirect`) |
@@ -242,41 +242,38 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   (`v_wd = 0` when `f_epoch != cur_epoch`). Prefetch (next-line stream) is kept and re-keyed
   VIRT-safe (probe by `r_pa`/`f_pa`, arm by `f_pa`). The single-copy invariant (≤1 valid line
   per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
-- **Alignment latch (replaces the run-ahead buffer)** (Stage 2, 2026-09-13). The ~500-line
-  VA-tagged run-ahead fetch buffer (three chunk-aligned 16-byte slots, two requests in
-  flight) is **deleted**; its virtual-tag job folded into the VHPR I$. What remains is a small
-  alignment adapter: two VA-tagged 16-byte chunk slots holding the recent I$ reads, the
-  aligner windowed across the PC's chunk and the next, and **one demand I$ read in flight**
-  (plus prefetch). Gone with it: the `rq_pois`/`fb_samepg` machinery, the FBDIAG readout +
-  self-reset, `FB_TRACE`, and the forward-only page-crossing slide that was the ld.so bug's
-  home (the run-ahead buffer slid across a page by physical addition; only the glibc cosim
-  caught it, 2026-09-07 — the whole slide mechanism is now gone). **Cost:** the adapter keeps
-  one request in flight + a two-chunk window against the buffer's two-in-flight, three-slot
-  run-ahead, so it exposes less memory-level parallelism — **−7.2% of retires on the boot**
-  (60 M cosim: 14,461,521 → 13,424,357, lockstep clean, §12). This is a **known, recoverable**
-  gap (clean structure first; deeper adapter run-ahead / more in-flight I$ requests is a
-  tracked follow-up), not the prefetch (VIRT-safe, on) nor the reconcile/epoch (negligible).
+- **The fetch ring** (Stage 4 increment 1a, `rv_soc_top`). A ring of 32 halfword slots holds the
+  instruction stream from the PC on, filled by an address stream that reads one 16-byte pair per
+  accepted `rv_icache` request (8-byte aligned; 16-byte aligned in a 4 KiB frame's last chunk, so
+  a pair never crosses 4 KiB) and runs ahead of the PC while the ring has room for everything in
+  flight. **Its head is the PC by construction:** `fetch` reports how `pc_q` moves each cycle --
+  `adv_kind` AK_TGT/AK_REDIR is a jump (a predicted-taken fire or a redirect), which empties the
+  ring and restarts the stream at the new PC; otherwise the head advances by `adv_hw` halfwords
+  (a bundle's `consumed`, or one halfword per step of a page straddle) -- so the window fetch
+  aligns is a rotation of the ring from its registered head, with no address compare on the
+  fetch loop. Answers come back in order; a flush marks every request then in flight stale and
+  that many answers are dropped (a generation in the tag cross-checks it). A `fence.i` or a
+  mapping change (`freeze`) empties the ring. **The stream stays inside the PC's enclosing page**
+  (4 KiB, or 2 MiB for a >= 2 MiB leaf) and takes its PA from the iMMU's translation of the PC;
+  increment 1d translates on an I$ miss instead. The ring replaced Stage 2's alignment adapter
+  (two chunk slots, one demand read in flight): the 60 M boot +1.25% (17,277,202),
+  `workloads/rvbench` Dhrystone 616 -> 513 us per run, `local/sillyfp` IPC 1.31 -> 2.27 (the
+  chunk-tail wait is gone), `local/sillyloop` 1.79 -> 1.89 (one bubble per taken branch left:
+  prediction still happens at the aligner, increment 1b).
 - **The fetch address is the PC register, bare** (plan item T1 (F) steps 4-6, 2026-09-07; the
   buffer's translation-carry is gone with the buffer). `imem_addr = pc_q` in every state: a
   page straddle steps pc_q to the high halfword's address and `ipc_q` keeps the instruction's
   PC (the bundle's PC, a fault's EPC); a pending interrupt waits out a straddle (`irq_go`)
   instead of abandoning it. The alignment window drops on a context change
   (`freeze = fi_stall | ic_inv_busy | imem_ctx_chg`, gating `imem_ok`); a miss still takes the
-  iMMU's fault. **The served slot is a register** (2026-09-17): each chunk slot also stores
-  `va - CHB` so "is this the next chunk" is a compare of two registers, and `fetch` exports
-  the next PC's chunk as a kind (`adv_kind`: hold, same, next, predicted target, redirect)
-  so the adapter picks `{sh_q, n1_q}` -- which slot holds the next PC's chunk, whether the
-  other holds the one after -- against its post-edge tags a cycle early; the live compares
-  only gate `imem_ok` (`ok_slot & ok_next & ~freeze`). A wrong pick costs one bubble and
-  self-corrects; none occurs (the 60 M cosim's retire count is unchanged). The adder and
-  the tag compare used to head the 24-level fetch loop; a miss still takes the
-  iMMU's fault. The cap on the aligner's window is `pc_q`'s index against the **enclosing page's**
+  iMMU's fault. `imem_ok` is "the ring holds bytes and nothing is flushing"; a miss still
+  takes the iMMU's fault. The cap on the aligner's window is `pc_q`'s index against the **enclosing page's**
   last `HW` halfwords (`in_last`, `hw_left`), not `(pgsz - off) >> 1` compared with HW — the sum
   form is kept as the oracle. **Enclosing page** (Stage 2 inc 3): the cap and the straddle
   boundary are the 4 KiB boundary for a 4K leaf and the **2 MiB** boundary for a ≥2 MiB leaf (a
   1 GiB leaf caps conservatively as 2 MiB). The page size is the **served chunk's** — carried by
-  the VHPR I$ off the hit path (per-chunk in the alignment adapter, stamped from the iMMU leaf
-  level at fill; the iMMU is never on the hit cone, §9.1), never re-translated on a hit. Inside a
+  the fetch ring off the fetch loop (captured from the iMMU's leaf level at each I$ request, a
+  register; the ring holds only the PC's enclosing page), never re-translated on a hit. Inside a
   2 MiB page the window is no longer chopped every 4 KiB, and the `strad`/`ipc_q` FSM Stage 1 kept
   now fires **only at the true enclosing-page boundary** (a 32-bit op whose high half is in the
   next page, a different translation), not at every 4 KiB sub-boundary within a superpage — where
@@ -1036,8 +1033,8 @@ virtio} faults rather than being silently dropped.
 
 Each `mmu` also drives **`t_lvl`** (the resolved leaf level, from the walk or the hit TLB
 entry; Stage 2 increment 1). The iMMU's `t_lvl` (`imem_xlvl` out of the core) is stamped onto
-the alignment adapter's chunk slot at fill (Stage 2 increment 3) and read back on a hit as the
-served chunk's page size (`imem_lvl` into the core → fetch), so the fetch's **enclosing-page
+the fetch ring at each I$ request (`rg_lvl`, Stage 4 increment 1a) and served as the
+held bytes' page size (`imem_lvl` into the core → fetch), so the fetch's **enclosing-page
 cap** (§4.1) uses the actual 4K/≥2M page size without putting the iMMU on the hit cone. Storing
 it per adapter chunk (not per cache line) suffices because the window drops on `imem_ctx_chg`,
 so a slot's page size is always the current mapping's.

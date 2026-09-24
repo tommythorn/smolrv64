@@ -52,7 +52,7 @@ module ooo2_frontend
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
     output wire                    fe_dq_valid,       // fetch produced an instruction this cycle
     output wire [2:0]              imem_adv_kind,     // the next PC's chunk relative to imem_addr's (fetch.adv_kind)
-    output wire [PCW-1:0]          imem_adv_tgt,      // ...and the predicted target it may be (AK_TGT)
+    output wire [$clog2(HW+2)-1:0] imem_adv_hw,       // ...and how far pc_q moves in sequence (fetch.adv_hw)
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
     output wire [PCW-1:0]          imem_addr,         // VA to translate
@@ -205,7 +205,6 @@ module ooo2_frontend
    wire [FW*PCW-1:0]  dq_pc;
    wire [FW*SEQW-1:0] dq_seq;
    wire [PCW-1:0]     f_ftn, bp_tgt, f_pc_next;   // f_pc_next: fetch's next-PC -> predictor read-ahead
-   assign imem_adv_tgt = bp_tgt;
    wire [1:0]         dq_pk;
 
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
@@ -222,7 +221,7 @@ module ooo2_frontend
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
       // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
       // predictor reads its arrays combinationally at base_pc (= imem_ipc).
-      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next), .adv_kind(imem_adv_kind),
+      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next), .adv_kind(imem_adv_kind), .adv_hw(imem_adv_hw),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(dq_valid),

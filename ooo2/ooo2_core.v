@@ -55,10 +55,10 @@ module ooo2_core
     output wire [PCW-1:0]          imem_vaddr,
     output wire                    imem_xlate_ok,   // PA valid this cycle (not walking/faulting)
     output wire                    imem_ctx_chg,    // drop the buffer: mapping may have changed
-    // The next PC's chunk, one cycle early (fetch.adv_kind): the adapter's served-slot hint.
+    // How pc_q moves this cycle, for the fetch ring (rv_soc_top): a jump (AK_TGT/AK_REDIR) or
+    // a sequential advance of imem_adv_hw halfwords.
     output wire [2:0]              imem_adv_kind,
-    output wire [PCW-1:0]          imem_adv_tgt,    // the predicted target (AK_TGT)
-    output wire [PCW-1:0]          imem_adv_red,    // the redirect target (AK_REDIR)
+    output wire [$clog2(HW+2)-1:0] imem_adv_hw,
     // Diagnostic only (FBDIAG_BASE readout).  These are the REGISTERED copies the VA tag
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
@@ -266,7 +266,6 @@ module ooo2_core
    // the mispredict restart moved to execute; see the EARLY FRONTEND RESTART block.
    reg                      fe_red_q;
    reg [PCW-1:0]            fe_red_tgt_q;
-   assign imem_adv_red = fe_red_tgt_q;              // what fetch's redirect arm loads
    reg [SEQW-1:0]           fe_red_seq_q;
    // dec_red_q shadows the decode-redirect exactly as redirect_q shadows the backend
    // redirect: the frontend flush + fetch resteer land one cycle late (registered fe_red_q),
@@ -379,7 +378,7 @@ module ooo2_core
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
-      .imem_adv_kind(imem_adv_kind), .imem_adv_tgt(imem_adv_tgt),
+      .imem_adv_kind(imem_adv_kind), .imem_adv_hw(imem_adv_hw),
       .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok_g),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
