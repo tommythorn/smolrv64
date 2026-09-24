@@ -1373,12 +1373,12 @@ instruction words for the ELF's disassembly and symbols. For example, in `worklo
 |---|---|---|
 | lint | `src/lint.sh` | `lint: clean` |
 | riscv-tests | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
-| unit benches of the shared blocks and devices | `src/run-tb.sh` | `tb pass=19 / 19` |
+| unit benches of the shared blocks and devices, under Verilator | `src/run-tb.sh` | `tb pass=20 / 20` |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
 | cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17, the D$ stream buffer T18-T20 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
-| virtio-net DMA, both directions | `ooo2/run-ooo2-vnet-tb.sh` | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |
+| virtio-net DMA, both directions | `src/run-tb.sh` (`tb_virtio_net.v`) | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |
 | Ethernet RX engine (MACs + the slot ring, two clocks) | `ooo2/run-ooo2-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
