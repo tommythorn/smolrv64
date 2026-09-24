@@ -45,20 +45,18 @@ module ooo2_core
     parameter        PABITS   = 36)              // the architectural physical-address width
    (input  wire                    clk,
     input  wire                    reset,
-    // ---- instruction memory (combinational window at the translated PA) ----
-    output wire [PCW-1:0]          imem_addr,
-    output wire [1:0]              imem_xlvl,       // iMMU leaf level of imem_addr (0=4K,else>=2M): the adapter stamps it per chunk
-    // VA-tagged fetch buffer (rv_soc_top): the buffer hit test compares the VIRTUAL
-    // address so a hit does not wait on address translation.  It therefore needs to know
-    // (a) the VA, (b) when this cycle's PA is actually trustworthy, and (c) when the fetch
-    // translation context changed underneath it.
-    output wire [PCW-1:0]          imem_vaddr,
-    output wire                    imem_xlate_ok,   // PA valid this cycle (not walking/faulting)
-    output wire                    imem_ctx_chg,    // drop the buffer: mapping may have changed
-    // How pc_q moves this cycle, for the fetch ring (rv_soc_top): a jump (AK_TGT/AK_REDIR) or
-    // a sequential advance of imem_adv_hw halfwords.
-    output wire [2:0]              imem_adv_kind,
-    output wire [$clog2(HW+2)-1:0] imem_adv_hw,
+    // ---- instruction memory: the fetch ring's stream into the I$ (rv_icache) ----
+    output wire [PCW-1:0]          imem_addr,       // the fetch PC's PA (diagnostics)
+    output wire                    imem_ctx_chg,    // a mapping change: the I$ advances its epoch
+    input  wire                    ic_busy,         // fence.i or an I$ invalidation in progress
+    output wire                    ic_req,
+    output wire [63:0]             ic_va,           // the pair's first byte, 8-byte aligned
+    output wire [63:0]             ic_pa,
+    output wire [5:0]              ic_tag,
+    input  wire                    ic_ack,
+    input  wire                    ic_valid,
+    input  wire [127:0]            ic_data,
+    input  wire [5:0]              ic_rtag,
     // Diagnostic only (FBDIAG_BASE readout).  These are the REGISTERED copies the VA tag
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
@@ -68,10 +66,6 @@ module ooo2_core
     output wire                    fe_redirect,
     input  wire                    hpm_fb_hit,
     input  wire                    hpm_fb_rhit,
-    input  wire [HW*16-1:0]        imem_data,
-    input  wire [$clog2(HW+2)-1:0] imem_avail,
-    input  wire [1:0]              imem_lvl,        // served chunk's page size (0=4K,else>=2M) -- VHPR enclosing-page cap
-    input  wire                    imem_ok,         // the window is the PC's bytes (late; handshake only)
     // ---- platform interrupt lines + time ----
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,
@@ -155,50 +149,20 @@ module ooo2_core
    wire                     immu_ready, immu_fault;
    wire [3:0]               immu_cause;
    wire [1:0]               immu_lvl;    // iMMU leaf level (0=4K,1=2M,2=1G) -- VHPR I$ page cap (Stage 2)
-   // ~imem_ctx_chg IS PART OF "IS THIS CYCLE'S FETCH DATA TRUSTWORTHY".  The VA-tagged
-   // buffer is invalidated by imem_ctx_chg in rv_soc_top, but that invalidation lands at
-   // the END of the cycle while fb_hit is combinational -- so for exactly one cycle the
-   // buffer can still serve bytes fetched under the PREVIOUS translation while the iMMU has
-   // already switched to the new one.  Found on silicon at 111 MHz, first boot, in under a
-   // second of kernel time: va=ffffffff80012370 hit with pa_cached=0000000080212370 (Sv39)
-   // while the iMMU returned pa=00ffffff80012370 -- the UNTRANSLATED va, i.e. bare mode.
-   // Gated here and not on fb_hit for two reasons: this is the one site that already decides
-   // whether fetch data may be consumed (rule: one precondition, one site), and putting
-   // imem_ctx_chg -- which contains a 64-bit satp compare -- into the fb_hit cone would put
-   // back exactly the compare the VA tag was introduced to remove.
-   // Costs one fetch bubble per satp write / sfence.vma / privilege change.
-   // THE CONTEXT CHANGE GATES THE WINDOW A CYCLE LATE (2026-09-05, gate V4 at 0.000 ns). Live,
-   // imem_ctx_chg is M's completion -- the CSR op's satp/sfence write, the trap's privilege
-   // change -- and through this gate it ran on into the aligner and the decoupling queue's data
-   // pins: M's address register to the queue in one cycle, 20 levels. Every context change
-   // arrives with the redirect that ends the serializing op or takes the trap, so the bytes
-   // consumed in that cycle are wrong-path and the flush takes them; the fetch buffer drops
-   // its slots at the same edge, so the cycle after has nothing to consume anyway. The
-   // registered gate keeps the belt on the braces at no cost.
-   reg imem_ctx_chg_q;
-   always @(posedge clk) imem_ctx_chg_q <= reset ? 1'b0 : imem_ctx_chg;
-   // THE iMMU'S VERDICT IS NOT PART OF A HIT (2026-09-07). A served hit is bytes the buffer
-   // captured under a real translation of this very VA (fb_tagv, rv_soc_top) and has held
-   // through no context change since -- the translation is IN the hit. `immu_ready` is the
-   // iMMU's 64-bit request match and its TLB compare on the live fetch address, and through
-   // this gate it reached every aligner enable and the bundle count in one cycle: gate
-   // W5fix's worst path (-0.271 ns, 20 levels) went fetch address -> that match -> served
-   // window -> straddle -> pc_q. A miss is not served at all (imem_ok is low), so a fault
-   // is still delivered on the miss it belongs to (imem_fault below); a hit on a faulting
-   // translation is impossible by construction and asserted. The context gate stays: it is
-   // the one-cycle window between the change and the buffer's drop (above). The count is
-   // register-derived in rv_soc_top and reaches the aligner ungated (item T1 (F)).
-   wire                     imem_ok_g = imem_ok & ~imem_ctx_chg_q;
-   // The one cycle a hit may meet a fault is the context change's own (the buffer still
-   // serves the OLD context's bytes while the iMMU already answers for the new one): the
-   // tiny128 boot shows it at every satp switch, as an access fault on kernel text. That
-   // cycle's bundle is wrong-path by the argument above and the redirect flushes it, so it
-   // is excluded here and nowhere else.
+   // The fetch ring (ooo2_fring, in the frontend) holds bytes read under a real translation of
+   // their VA, and a mapping change empties it (imem_ctx_chg is part of its freeze), so the iMMU's
+   // verdict is not part of consuming them: the ring's window is served while the iMMU looks at
+   // the PC, and a fault is delivered only when the ring has nothing for the PC (imem_fault, in
+   // the frontend). A window served on a faulting translation is asserted impossible, except in
+   // a mapping change's own cycle, when the ring still holds the old mapping's bytes, the iMMU
+   // already answers for the new one, and the ring's freeze withholds the window.
+   wire [$clog2(HW+2)-1:0]  imem_avail;
+   wire                     imem_ok;
    always @(posedge clk)
       if (!reset && imem_ok && ~imem_ctx_chg && immu_ready && immu_fault)
-         $fatal(1, "ooo2_core: the fetch buffer serves a hit on a faulting translation (va=%h cause=%0d)", imem_va, immu_cause);
-   // The gated count survives for the counters only (FE_QUE's "no bytes" attribution below).
-   wire [$clog2(HW+2)-1:0]  imem_avail_g = imem_ok_g ? imem_avail : {$clog2(HW+2){1'b0}};
+         $fatal(1, "ooo2_core: the fetch ring serves a window on a faulting translation (va=%h cause=%0d)", imem_va, immu_cause);
+   // The count, for the counters only (FE_QUE's "no bytes" attribution below).
+   wire [$clog2(HW+2)-1:0]  imem_avail_g = imem_ok ? imem_avail : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
    wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
    wire [PCW-1:0]           res_tgt;
@@ -378,9 +342,11 @@ module ooo2_core
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
-      .imem_adv_kind(imem_adv_kind), .imem_adv_hw(imem_adv_hw),
-      .imem_addr(imem_va), .imem_ipc(), .imem_data(imem_data),
-      .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok_g),
+      .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
+      .imem_xlate_ok(immu_ready & ~immu_fault), .imem_freeze(ic_busy | imem_ctx_chg),
+      .fe_avail(imem_avail), .fe_ok(imem_ok),
+      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
+      .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
       .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),
@@ -458,34 +424,18 @@ module ooo2_core
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw());
    assign imem_addr = {8'd0, immu_pa};
-   assign imem_xlvl = immu_lvl;   // leaf page size of this fetch's translation (for the adapter's per-chunk stamp)
 
-   // ---- VA-tagged fetch buffer support ------------------------------------------------
-   // The buffer caches instruction bytes under a VA tag, so it must be dropped on every
-   // event that can change what that VA maps to, or what may be executed from it:
-   //   satp write / sfence.vma -> mmu_flush        (csr_file o_tlb_flush)
-   //   privilege change        -> priv != priv_q   (different translation AND different X)
-   //   fence.i                 -> ic_inv_req       (already handled in rv_soc_top)
-   // mstatus.SUM/MXR are deliberately NOT here: they gate DATA accesses, not fetch.
-   // satp_fetch already folds in the M-mode bare case, so comparing it covers a
-   // privilege change that switches translation off entirely; priv is compared as well
-   // because S->U keeps satp but changes the U permission bit.
-   //
-   // imem_xlate_ok is the other half, and it is not optional.  Mid-walk the iMMU presents a
-   // STALE LEAF as t_paddr.  Under the old PA tag a fill from it was self-correcting -- the
-   // wrong bytes were tagged with the wrong PA, so the next lookup simply missed.  Under a
-   // VA tag those same wrong bytes would carry the RIGHT VA and hit, executing garbage.
+   // ---- a mapping change ------------------------------------------------------------
+   // What a VA maps to changes with a satp write, an sfence.vma, or a switch to or from M-mode's
+   // bare translation (all folded into satp_fetch). It empties the fetch ring and advances the
+   // I$ epoch. A privilege change alone does not: the iMMU checks permissions on every fetch.
+   // mstatus.SUM/MXR gate data accesses, not fetch.
    reg  [1:0]  ipriv_q;
    reg  [63:0] isatp_q;
    always @(posedge clk) begin
       ipriv_q <= mmu_priv;
       isatp_q <= satp_fetch;
    end
-   assign imem_vaddr    = imem_va;
-   assign imem_xlate_ok = immu_ready & ~immu_fault;
-   // MAPPING change only (satp write / sfence.vma / M-mode bare transition, all folded into
-   // satp_fetch). The priv-only term is GONE: with the VHPR I$ the iMMU still translates every
-   // fetch and immu_fault gates permissions, so a U<->S change needs no I$ invalidation.
    assign imem_ctx_chg  = mmu_flush | (isatp_q != satp_fetch);
    assign fe_redirect   = fe_red_pulse;
    assign imem_satp_q   = isatp_q;

@@ -680,7 +680,7 @@ module tb;
    always @(posedge clk) if (!reset && fe_tr_on && trace_on)
       $display("FE c=%0d pc=%h avail=%0d ok=%b adv=%0d taken=%b fire=%b pb=%b q=%0d room=%b ir=%b%b%b disp=%b%b%b red=%b",
                c, dut.core.fe.u_fetch.pc_q, dut.core.fe.imem_avail, dut.core.fe.imem_ok,
-               dut.core.fe.imem_adv_kind, dut.core.fe.bp_v, dut.core.fe.fire, dut.core.fe.pb_v,
+               dut.core.fe.f_adv_kind, dut.core.fe.bp_v, dut.core.fe.fire, dut.core.fe.pb_v,
                dut.core.fe.q_cnt, dut.core.fe.q_room,
                dut.core.fe.d_valid, dut.core.fe.d2_valid, dut.core.fe.d3_valid,
                dut.core.rn_valid, dut.core.rn_valid_b, dut.core.rn_valid_c, dut.core.fe.redirect);

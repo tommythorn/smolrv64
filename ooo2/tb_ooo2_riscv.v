@@ -32,10 +32,14 @@ module tb;
    reg  clk = 0; always #5 clk = ~clk;
    reg  reset;
 
-   wire [PCW-1:0]   imem_addr;
-   reg  [HW*16-1:0] imem_data;
-   wire [AVW-1:0]   imem_avail = HW[AVW-1:0];   // window always full from this TB memory
-   wire             imem_xlate_ok;             // the core's iMMU verdict on imem_addr's VA
+   wire [PCW-1:0]   imem_addr;                 // the fetch PC's PA
+   wire             ic_req;                    // the fetch ring's I$ port: a pair per request,
+   wire [63:0]      ic_pa;                     // answered the next cycle, in order
+   wire [5:0]       ic_tag;
+   reg              ic_valid;
+   reg  [63:0]      ic_pa_q;
+   reg  [5:0]       ic_rtag;
+   reg  [127:0]     ic_data;
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
    wire             dmem_ren, dmem_wen;
@@ -54,13 +58,9 @@ module tb;
       $fatal(1, "tb: ooo2_lsu err=%h rose without its $fatal -- an integrity-log condition is wired wrong", lsu_err);
    ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
-      // The SoC's fetch buffer holds bytes only of a translation that succeeded, so a served
-      // hit carries its translation and the core no longer consults the iMMU's verdict on a
-      // hit (2026-09-07, imem_ok_g). This memory answers every address; its "ok" is that
-      // same contract: the bytes are the PC's iff the translation is.
-      .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(2'd0), .imem_xlvl(),
-      .imem_ok(imem_xlate_ok),
-      .imem_xlate_ok(imem_xlate_ok),
+      .imem_addr(imem_addr), .imem_ctx_chg(), .ic_busy(1'b0),
+      .ic_req(ic_req), .ic_va(), .ic_pa(ic_pa), .ic_tag(ic_tag),
+      .ic_ack(1'b1), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(),
@@ -95,12 +95,12 @@ module tb;
    // elaborator enumerate every word and hang. `wtick` re-evaluates after a store.
    reg wtick = 0;
    integer m;
-   always @(imem_addr or wtick) begin
-      for (m=0;m<HW;m=m+1) begin
-         imem_data[m*16   +: 8] = mem[(imem_addr-BASE)+2*m];
-         imem_data[m*16+8 +: 8] = mem[(imem_addr-BASE)+2*m+1];
-      end
+   always @(posedge clk) begin
+      ic_valid <= ~reset & ic_req;
+      if (ic_req) begin ic_pa_q <= ic_pa; ic_rtag <= ic_tag; end
    end
+   always @(ic_pa_q or wtick)
+      for (m=0;m<16;m=m+1) ic_data[m*8 +: 8] = mem[(ic_pa_q-BASE)+m];
    always @(dmem_raddr or wtick) dmem_rdata = rd64(dmem_raddr);
 
    // page-table walkers (instruction side + data side): registered PTE reads

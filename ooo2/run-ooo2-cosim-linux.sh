@@ -139,7 +139,7 @@ if [ "$need_build" = 1 ]; then
       -CFLAGS "-O2 -I$SIMMERV_INC -DCOSIM_MEM_SIZE_LG2=$MEM_LG2" \
       -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../src --top-module tb --Mdir "$OBJ" -o tb_ooo2_clinux \
-      rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
+      rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_fring.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
       ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v ../src/sd_dpi.cpp \

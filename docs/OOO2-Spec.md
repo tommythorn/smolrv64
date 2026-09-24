@@ -242,7 +242,8 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   (`v_wd = 0` when `f_epoch != cur_epoch`). Prefetch (next-line stream) is kept and re-keyed
   VIRT-safe (probe by `r_pa`/`f_pa`, arm by `f_pa`). The single-copy invariant (≤1 valid line
   per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
-- **The fetch ring** (Stage 4 increment 1a, `rv_soc_top`). A ring of 32 halfword slots holds the
+- **The fetch ring** (Stage 4 increment 1a, `ooo2_fring`, in the frontend; the core's instruction
+  port is the I$ request and its answer). A ring of 32 halfword slots holds the
   instruction stream from the PC on, filled by an address stream that reads one 16-byte pair per
   accepted `rv_icache` request (8-byte aligned; 16-byte aligned in a 4 KiB frame's last chunk, so
   a pair never crosses 4 KiB) and runs ahead of the PC while the ring has room for everything in

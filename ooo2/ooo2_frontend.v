@@ -51,16 +51,25 @@ module ooo2_frontend
     input  wire                    irq_inject,        // present the interrupt pseudo-op
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
     output wire                    fe_dq_valid,       // fetch produced an instruction this cycle
-    output wire [2:0]              imem_adv_kind,     // the next PC's chunk relative to imem_addr's (fetch.adv_kind)
-    output wire [$clog2(HW+2)-1:0] imem_adv_hw,       // ...and how far pc_q moves in sequence (fetch.adv_hw)
 
     // ---- instruction memory (combinational read, iMMU-translated by the core) ----
     output wire [PCW-1:0]          imem_addr,         // VA to translate
     output wire [PCW-1:0]          imem_ipc,          // PC of the instruction (fault EPC)
-    input  wire [HW*16-1:0]        imem_data,
-    input  wire [$clog2(HW+2)-1:0] imem_avail,        // register-derived count (item T1 (F))
-    input  wire [1:0]              imem_lvl,          // served chunk's page size (0=4K,else>=2M): enclosing-page cap
-    input  wire                    imem_ok,           // late: the window is the PC's bytes; gates fire
+    input  wire [PCW-1:0]          imem_pa,           // its PA (the iMMU)
+    input  wire [1:0]              imem_xlvl,         // its leaf level: 0 = 4 KiB, else >= 2 MiB
+    input  wire                    imem_xlate_ok,     // the iMMU holds a good translation of imem_addr
+    input  wire                    imem_freeze,       // fence.i, an I$ invalidation, a mapping change
+    output wire [$clog2(HW+2)-1:0] fe_avail,          // the fetch ring's window: halfwords held (counters)
+    output wire                    fe_ok,             // ...and the window is the PC's bytes
+    // ---- the I$ (rv_icache): the fetch ring's stream ----
+    output wire                    ic_req,
+    output wire [63:0]             ic_va,
+    output wire [63:0]             ic_pa,
+    output wire [5:0]              ic_tag,
+    input  wire                    ic_ack,
+    input  wire                    ic_valid,
+    input  wire [127:0]            ic_data,
+    input  wire [5:0]              ic_rtag,
     input  wire                    imem_fault,        // iMMU fault on this fetch (qualified ready)
     input  wire [3:0]              imem_cause,
 
@@ -207,6 +216,22 @@ module ooo2_frontend
    wire [PCW-1:0]     f_ftn, bp_tgt, f_pc_next;   // f_pc_next: fetch's next-PC -> predictor read-ahead
    wire [1:0]         dq_pk;
 
+   // ------------------------------------------------------------- the fetch ring
+   wire [2:0]          f_adv_kind;
+   wire [$clog2(HW+2)-1:0] f_adv_hw, imem_avail;
+   wire [HW*16-1:0]    imem_data;
+   wire [1:0]          imem_lvl;
+   wire                imem_ok;
+   ooo2_fring #(.HW(HW)) u_ring
+     (.clk(clk), .reset(reset), .freeze(imem_freeze),
+      .adv_kind(f_adv_kind), .adv_hw(f_adv_hw),
+      .pc_va(imem_addr), .pc_pa(imem_pa), .pc_lvl(imem_xlvl), .xlate_ok(imem_xlate_ok),
+      .win(imem_data), .avail(imem_avail), .ok(imem_ok), .lvl(imem_lvl),
+      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
+      .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag));
+   assign fe_avail = imem_avail;
+   assign fe_ok    = imem_ok;
+
    // No checkpoint ring, no `cur`, no `create`, no rb_idx. ooo2_predictor keeps committed
    // scalars instead, and this bundle's predict details ride WITH it as d_pdet -- so there
    // is no tag to allocate and nothing to pin against reuse.
@@ -221,7 +246,7 @@ module ooo2_frontend
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
       // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
       // predictor reads its arrays combinationally at base_pc (= imem_ipc).
-      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next), .adv_kind(imem_adv_kind), .adv_hw(imem_adv_hw),
+      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next), .adv_kind(f_adv_kind), .adv_hw(f_adv_hw),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(dq_valid),

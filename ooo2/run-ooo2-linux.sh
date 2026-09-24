@@ -55,7 +55,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ "$(cat $STAMP 2>/dev/null)" != 
       -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT \
       -DOOO2_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -I. -I../src --top-module tb --Mdir obj_dir_ooo2_linux -o tb_ooo2_linux \
-      rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
+      rv_soc_top.v ooo2_core.v ooo2_pending.v ooo2_frontend.v ooo2_fring.v ooo2_predictor.v ooo2_exec.v ooo2_lsu.v rv_regfile.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
       ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/axi_single_beat_master.v ../src/sd_dpi.cpp \
