@@ -122,6 +122,17 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    compare and way select (78% route). Integrated first behind today's adapter with the same
    request/response contract as `rv_cache`'s I$ role, so the gates prove the cache alone; the
    ring (increment 1) then streams it.
+
+   **No translation on a hit (Tommy, 2026-09-24).** `rv_cache`'s I$ role folded the physical
+   reconcile into every lookup (`hit = vhit | ptag == rd_pa`), which needs the iTLB's PA on every
+   request. `ooo2/rv_icache.v` hits on valid + virtual tag + the request's epoch only; reconcile is
+   the MISS path (the same set's physical tags against the PA; a match is re-stamped and replays).
+   Increment 1 finishes it: each line caches its execute and user bits (with the page-size bit),
+   checked on a hit against the current privilege, and the I$ asks the iMMU only on a miss -- so
+   the fetch stream never translates, and an I$ hit whose page is not in the iTLB is still a hit,
+   never a walk. `ooo2/run-ooo2-icache-tb.sh` stresses it: random and sequential pairs (including
+   line-crossing ones), mapping changes that keep most pages (so resident lines reconcile), code
+   changes behind fence.i, at L2 latencies 4 and 40.
 1. The ring and `fa`, sequential only (predictor forced not-taken on the fetch side, resolve
    redirects everything): sillyfp's chunk-tail stall must go.
 2. Granule-keyed BTB with the training key; the RAS on the fetch-time prediction.
