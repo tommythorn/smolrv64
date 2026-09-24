@@ -133,12 +133,25 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    never a walk. `ooo2/run-ooo2-icache-tb.sh` stresses it: random and sequential pairs (including
    line-crossing ones), mapping changes that keep most pages (so resident lines reconcile), code
    changes behind fence.i, at L2 latencies 4 and 40.
-1. The ring and `fa`, sequential only (predictor forced not-taken on the fetch side, resolve
-   redirects everything): sillyfp's chunk-tail stall must go.
-2. Granule-keyed BTB with the training key; the RAS on the fetch-time prediction.
-3. The YAGS override against the ring.
-4. Delete the bundle register, the decoupling queue, the alignment latch and `pc_q`'s
-   consumption-driven advance; re-measure the stage count.
+   **Done 2026-09-24 (252e1b66, fe529096):** 60 M lockstep +8.45%, 300 M +1.60%, both clean; built
+   at WNS +0.007 (default placer); board gate PASS, integrity log clean.
+1. The ring, in two steps:
+   - **1a. The ring and a sequential fetch stream.** The two-slot alignment adapter in
+     `rv_soc_top` becomes the halfword ring, filled by an address stream that runs ahead
+     sequentially, one pair per cycle, while the ring has room; `fetch.v`'s window is the ring
+     from `pc_q`, and a predicted-taken fire moves the stream to the target (the ring drops
+     what it fetched past the branch). Until 1d the stream runs ahead only inside `pc_q`'s page,
+     whose PA the iMMU already has. Removes the chunk-tail stall (sillyfp); taken branches gain a
+     cycle at most, because prediction still happens at the aligner.
+   - **1b. Prediction moves to the fetch stream.** The BTB keyed by the last-halfword granule,
+     looked up at the stream's address; the RAS pushed with the return address the key gives
+     directly (the call's last halfword + 2); the ring carries each instruction's predicted next
+     PC; `fetch.v`'s prediction is retired. The zero-bubble taken branch: sillyloop's IPC 2.0.
+2. The YAGS override against the ring.
+3. Translate on a miss, and each line's execute and user bits cached and checked on a hit: the
+   stream runs ahead across pages and the iMMU leaves the fetch path.
+4. Delete the bundle register, the decoupling queue and `pc_q`'s consumption-driven advance;
+   re-measure the stage count.
 
 **Done when:** sillyloop runs at 17 cycles per iteration (IPC 2.0), sillyfp near 3, Dhrystone's
 `fe:icache` under 5% of cycles, and GB5 on the board validates the tip.
