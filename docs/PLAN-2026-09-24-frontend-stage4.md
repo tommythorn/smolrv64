@@ -113,8 +113,15 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
 
 ## Increments, each gated (lint, riscv-tests, benches, memrand/fpmix, rvbench, 60 M and 300 M lockstep, board gate)
 
-0. The I$ reads one 16-byte pair every cycle (above; option 1 or 2), with an OOC spike of its
-   lookup at 6 ns first.
+0. **A dedicated read-only VHPR I$ (option 2, Tommy's choice, 2026-09-24)** that reads one 16-byte
+   pair every cycle. **Spike result (`src/ooo2_icache_spike.v`, OOC at 6 ns):** 64 KiB, 2 ways,
+   64-byte lines, even and odd 8-byte chunks in separate block-RAM banks with a tag lookup per
+   bank (a pair at a line's last chunk takes its even chunk from the next line); the pair address
+   registered at t, data + tag compare + way select + fetch-order swap registered at t+1: **WNS
+   +2.251 ns (267 MHz), 7 levels, 16 RAMB36**, the worst path the distributed-RAM tag read into the
+   compare and way select (78% route). Integrated first behind today's adapter with the same
+   request/response contract as `rv_cache`'s I$ role, so the gates prove the cache alone; the
+   ring (increment 1) then streams it.
 1. The ring and `fa`, sequential only (predictor forced not-taken on the fetch side, resolve
    redirects everything): sillyfp's chunk-tail stall must go.
 2. Granule-keyed BTB with the training key; the RAS on the fetch-time prediction.
