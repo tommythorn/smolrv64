@@ -41,7 +41,8 @@ module ooo2_core
     parameter PDW   = 20 + ((IW <= 1) ? 1 : $clog2(2*IW-1)),
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
-    parameter        LRAM_LG2 = 18)
+    parameter        LRAM_LG2 = 18,
+    parameter        PABITS   = 36)              // the architectural physical-address width
    (input  wire                    clk,
     input  wire                    reset,
     // ---- instruction memory (combinational window at the translated PA) ----
@@ -428,17 +429,19 @@ module ooo2_core
              | (DCR_BACK & d3_is_branch & d3_imm[63]  & d3_mis_taken & ~d3_pdet[DCR_HIT]));
 
 
-   // Valid-DRAM window for the MMU's unbacked-PA access-fault check. Enforced only
-   // under cosim, sized to the modeled DDR so an out-of-range access faults exactly as
-   // the simmerv golden model does; the FPGA/test default stays fully permissive, so
-   // no new faults appear outside cosim. (Same rule as backend_top.)
+   // THE PHYSICAL-ADDRESS CAP. DRAM starts at 0x8000_0000 and is 2^DRAM_LG2 bytes; a PA at or
+   // above its top does not exist and takes an access fault in both MMUs (src/mmu.v), so no
+   // access to it reaches a cache or the bus. DRAM_LG2 is the instance's configuration: the
+   // board's 2 GiB (its DTS memory node, checked by src/lint.sh), or the cosim's modeled DDR,
+   // which Simmerv faults beyond in the same way. PABITS bounds every instance.
 `ifdef COSIM_MEM_SIZE_LG2
-   localparam [63:0] DRAM_BASE = 64'h8000_0000;
-   localparam [63:0] DRAM_TOP  = 64'h8000_0000 + (64'd1 << `COSIM_MEM_SIZE_LG2);
+   localparam integer DRAM_LG2 = `COSIM_MEM_SIZE_LG2;
 `else
-   localparam [63:0] DRAM_BASE = 64'd0;
-   localparam [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF;
+   localparam integer DRAM_LG2 = 31;
 `endif
+   localparam [63:0] DRAM_TOP = 64'h8000_0000 + (64'd1 << DRAM_LG2);
+   initial if (DRAM_TOP > (64'd1 << PABITS))
+      $fatal(1, "ooo2_core: DRAM_TOP=%h lies beyond the %0d-bit physical address space", DRAM_TOP, PABITS);
 
    // instruction-side translation. M-mode fetches are physical (satp forced Bare).
    wire [63:0] mmu_satp;
@@ -447,7 +450,7 @@ module ooo2_core
    wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
 
-   mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_immu
+   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP)) u_immu
      (.clk(clk), .reset(reset),
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
       .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
@@ -2156,7 +2159,7 @@ module ooo2_core
    // younger load has not had its translate pass); a blocked older load only waits on older
    // stores or on being the head, both of which precede the cbo, so this cannot deadlock.
    wire m_cbo_wait = m_is_cbo & (sq_av_any | lq_av_any);
-   ooo2_lsu #(.AW(AW), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2), .LDTW(LQ_IB)) u_lsu
+   ooo2_lsu #(.AW(AW), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2), .LDTW(LQ_IB)) u_lsu
      (.clk(clk), .reset(reset),
       .dtlb_walking(lsu_dtlb_walking), .dtlb_walk_beg(lsu_dtlb_walk_beg),
       // NOT m_mem_op alone. While M holds a COMPLETED op (its done pulse latched, waiting on

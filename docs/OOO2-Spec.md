@@ -1244,13 +1244,23 @@ aligned 1.28, 2-byte-offset 0.98, compressed 1.95, mixed 1.40 -- the adapter MAT
 on straight-line throughput (0.98 at the 2-byte offset); its reduced run-ahead shows on
 taken-branch refetch (the mispredict table, §3), not straight-line fetch.
 
-**The tag is `PAW_SIG - IDXB - OFFB` = 34 - 9 - 6 = 19 bits, not the port width's 49.** The
-ports are 64 wide because a PA rides in a 64-bit bus, but the platform decodes 34 bits (2 GiB
-of DDR at `0x8000_0000`, every device below it), so 30 of the 49 tag bits were structurally
-zero: a 49-bit compare on the hit path, a 1K x 49 array (`RAM64M8` x 224 per read port) and
-an index fanning out to all of it. `PAW_SIG` is a parameter of `rv_cache` set at both
-instantiations; a request at or above `2^PAW_SIG` is an always-on `$fatal` at the door, and
-the writeback address is rebuilt from the tag and zero-extended, exact under that check.
+**The tag is `PAW_SIG - IDXB - OFFB` = 36 - 9 - 6 = 21 bits, not the port width's 49.** The
+ports are 64 wide because a PA rides in a 64-bit bus, but the architecture has `PABITS` = 36
+physical-address bits (64 GiB; `rv_soc_top` sets the D$'s `PAW_SIG` from it). `PAW_SIG` is a
+parameter of `rv_cache` set at both instantiations; a request at or above `2^PAW_SIG` is an
+always-on `$fatal` at the door (the integrity log's `dcache.pa_range`), and the writeback
+address is rebuilt from the tag and zero-extended, exact under that check.
+
+**The physical-address cap.** DRAM starts at `0x8000_0000` and is `2^DRAM_LG2` bytes, a
+configuration of the instance: 31 on the board (2 GiB; `src/lint.sh` checks the board DTS memory
+nodes against it with `tools/check-dts-memory.py`), the modeled DDR's size under cosim. A PA
+at or above `DRAM_TOP` = `0x8000_0000 + 2^DRAM_LG2` does not exist and takes an access fault
+(cause 1/5/7), so no access to it reaches a cache or the bus; every device lies below DRAM, and
+the SoC's decode owns that hole. `DRAM_TOP` may not exceed `2^PABITS`. Both MMUs enforce it
+where a PA is created, never on the TLB hit path: Bare mode compares the address beside the
+non-canonical test; the walker faults a table pointer or a leaf access at or above the top, and
+installs a leaf only when its whole page lies below it, so no TLB entry names a PA that does
+not exist (a page reaching past the top answers its own access and is not cached).
 
 Address translation, two instances (iTLB in `ooo2_core`, dTLB in `ooo2_lsu`):
 

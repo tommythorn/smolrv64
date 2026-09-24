@@ -616,6 +616,16 @@ class; it is currently suppressed.
 
 ---
 
+**E5. An address is as wide as the architecture's address space, and nothing above it
+exists.** The physical address space is `PABITS` = 36 bits, and each instance caps it at its
+top of DRAM. A PA at or above the cap is an access fault taken where the PA is created (Bare
+translation, the page walker), so no structure downstream ever holds one. Every field that
+carries a PA is `PABITS` wide, and a cache tags exactly `PABITS`. The case: FPGA builds had no
+upper bound, so a wild speculative load with a PA above the D$'s 34 tagged bits reached the
+D$ and set the integrity log's `dcache.pa_range` at every boot. Its data was right only
+because the DDR bridge happened to wrap on the same bits. A cap checked on the TLB hit path
+costs timing on every access; checked at the walker's fill, it costs nothing.
+
 ## F. Sim/synth divergence
 
 **F1. One source per memory.**

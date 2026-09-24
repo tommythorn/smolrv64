@@ -28,8 +28,7 @@
 //     0x0F/0xF0/0xFF mask; `.W` selects its half with addr[2].
 module ooo2_lsu
   #(parameter AW = 64,
-    parameter [63:0] DRAM_BASE = 64'd0,
-    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF,
+    parameter [63:0] DRAM_TOP  = 64'd1 << 56,   // the MMU's physical-address cap (ooo2_core)
     parameter [63:0] LRAM_BASE = 64'h7000_0000,  // the local SRAM: memory behind the D$, aligned like DRAM
     parameter        LRAM_LG2  = 18,
     parameter        LDTW      = 2)     // the load-queue index width: a fast read's tag; 1<<LDTW loads outstanding
@@ -194,9 +193,7 @@ module ooo2_lsu
    //            and may become conditional, which would retire this case entirely).
    // An assumption that holds by luck on one address range is exactly what
    // docs/rtl-rules.md says must be an assertion, so it is one.
-   // NB: DRAM_BASE/DRAM_TOP cannot be used here -- on FPGA builds they are 0 and
-   // all-ones (they exist for the MMU's unbacked-PA check), so they would make this
-   // gate always true. This SoC puts every device below 0x8000_0000 (CLINT 0x0200_0000,
+   // This SoC puts every device below 0x8000_0000 (CLINT 0x0200_0000,
    // PLIC 0x0C00_0000, UART 0x1000_0000, virtio 0x1000_2000/3000) and DRAM above it.
    localparam [55:0] LSU_DRAM_BASE = 56'h8000_0000;
    // The effective physical address: the MMU's for an M request, ooo2_sq's for a commit.
@@ -317,7 +314,7 @@ module ooo2_lsu
    // translate-only answers below are ANDed with xl_x alone and never see xl_f's gating.
    wire        xl_req = xl_x | xl_f;
 
-   mmu #(.AW(56), .DRAM_BASE(DRAM_BASE), .DRAM_TOP(DRAM_TOP)) u_mmu
+   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP)) u_mmu
      (.clk(clk), .reset(reset),
       .req_valid(xl_req), .req_vaddr(req_vaddr),
       .req_access(is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1),

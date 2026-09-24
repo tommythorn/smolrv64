@@ -18,12 +18,10 @@ module mmu
   #(parameter AW   = 56,           // physical address width produced
     parameter TLBN = 16,           // TLB entries (direct-mapped)
     parameter TLBI = 4,            // clog2(TLBN)
-    // Valid-DRAM window for the physical-address check below. Default is fully
-    // permissive (base 0, unbounded top) so unit TBs / FPGA see no new faults; the
-    // cosim build narrows it to the modeled DDR so an out-of-range PA access-faults
-    // exactly as the simmerv golden model does.
-    parameter [63:0] DRAM_BASE = 64'd0,
-    parameter [63:0] DRAM_TOP  = 64'hFFFF_FFFF_FFFF_FFFF)
+    // The top of physical memory: a PA at or above it does not exist and takes an access
+    // fault. Every device lies below DRAM, so everything below the top is addressable and the
+    // SoC's decode owns the device hole. The default is the whole AW-bit space (unit benches).
+    parameter [63:0] DRAM_TOP  = 64'd1 << AW)
    (input  wire        clk,
     input  wire        reset,
     // request (combinational; held by the caller until t_ready)
@@ -75,27 +73,15 @@ module mmu
    wire [3:0]  af_cause = (req_access == 2'd0) ? 4'd1 :
                           (req_access == 2'd1) ? 4'd5 : 4'd7;
 
-   // -------- physical-address validity (mirrors the simmerv golden memory map) --------
-   // A resolved PA (identity in Bare, leaf in Sv39) that is neither RAM nor a mapped
-   // device is unaddressable -> ACCESS fault, exactly as simmerv's load/store_mmio returns
-   // Err for any PA outside {RAM | CLINT | PLIC | UART}.  The DRAM window is parameterized
-   // (cosim sizes it from the modeled DDR; default unbounded = no fault); the device ranges
-   // are fixed SoC constants mirrored from soc_top, and the on-chip boot SRAM at LBASE is
-   // included so the FPGA monitor's own fetches/loads don't fault (never touched in cosim).
-   localparam [63:0] CLINT_LO=64'h0200_0000, CLINT_HI=64'h0201_0000;   // 64 KiB
-   localparam [63:0] PLIC_LO =64'h0c00_0000, PLIC_HI =64'h1000_0000;   // 64 MiB
-   localparam [63:0] UART_LO =64'h1000_0000, UART_HI =64'h1000_0008;   // 8 NS16550 byte regs
-   localparam [63:0] LSRAM_LO=64'h7000_0000, LSRAM_HI=64'h7004_0000;   // 256 KiB on-chip SRAM
-   localparam [63:0] VIRTIO_LO=64'h1000_2000, VIRTIO_HI=64'h1000_4000; // virtio-mmio 8 KiB (blk+net)
-   function pa_valid;
-      input [63:0] pa;
-      pa_valid = (pa >= DRAM_BASE && pa < DRAM_TOP)
-              || (pa >= CLINT_LO  && pa < CLINT_HI)
-              || (pa >= PLIC_LO   && pa < PLIC_HI)
-              || (pa >= UART_LO   && pa < UART_HI)
-              || (pa >= LSRAM_LO  && pa < LSRAM_HI)
-              || (pa >= VIRTIO_LO && pa < VIRTIO_HI);
-   endfunction
+   // -------- the physical-address cap --------
+   // Enforced where a PA is created, never on the TLB hit path: Bare mode compares the
+   // address itself (beside the non-canonical test, which it subsumes for PAs); the walker
+   // faults a table pointer or a leaf access at or above DRAM_TOP, and installs a leaf only
+   // when its whole page lies below it, so no TLB entry can name a PA that does not exist.
+   localparam [44:0] TOP_PPN = DRAM_TOP[56:12];   // one bit wider: the cap may be 2^AW
+   initial if (DRAM_TOP[11:0] != 12'd0 || DRAM_TOP > (64'd1 << AW))
+      $fatal(1, "mmu: DRAM_TOP=%h must be page-aligned and within the %0d-bit PA space", DRAM_TOP, AW);
+   wire        bare_oob = ({1'b0, req_vaddr} >= {1'b0, DRAM_TOP});
 
    // -------------------- TLB (direct-mapped on VPN[3:0] of vpn0) --------------------
    reg              tlb_v   [0:TLBN-1];
@@ -158,6 +144,11 @@ module mmu
    reg [63:0] satp_q;
    // cause for the in-flight walk (access type was latched at start)
    wire [3:0] pf_cause_q = (acc_q == 2'd0) ? 4'd12 : (acc_q == 2'd1) ? 4'd13 : 4'd15;
+   wire [3:0] af_cause_q = (acc_q == 2'd0) ? 4'd1  : (acc_q == 2'd1) ? 4'd5  : 4'd7;
+   // the leaf's page, as its last PPN: a page is installed only if that is below TOP_PPN
+   wire [43:0] leaf_last = ptw_rdata[53:10] | ((lvl == 2'd2) ? 44'h3FFFF : (lvl == 2'd1) ? 44'h1FF
+                                             : ptw_rdata[63] ? 44'hF : 44'h0);
+   wire [AW-1:0] leaf_acc = leaf_pa(ptw_rdata[53:10], lvl, va_q, ptw_rdata[63]);
    // Ssvnapot: a recognized NAPOT leaf. Sv39 defines exactly one encoding -- a level-0
    // leaf whose ppn[3:0] (= pte[13:10]) is 0b1000, i.e. a 64 KiB page.
    wire       napot_ok = (lvl == 2'd0) && (ptw_rdata[13:10] == 4'b1000);
@@ -218,16 +209,13 @@ module mmu
                     !xlate    ? req_vaddr[AW-1:0] :
                                 leaf_pa(tlb_ppn[tlb_idx], tlb_lvl[tlb_idx], req_vaddr,
                                         tlb_n[tlb_idx]);
-   // base (translation) fault: page/perm fault (Sv39, fresh-walk only) or non-canonical.
-   wire        base_fault = wdm ? w_fault : noncanon;
+   // the fault: the finished walk's verdict, else non-canonical (Sv39, a page fault) or a PA
+   // above the cap (Bare, an access fault). A TLB hit cannot fault on its PA (see above).
+   wire        base_fault = wdm ? w_fault : (xlate ? noncanon : bare_oob);
    wire [3:0]  base_cause = wdm ? w_cause : (xlate ? pf_cause : af_cause);
-   // PA-validity fault: only when the translation actually RESOLVES this cycle (t_ready) and
-   // didn't already fault -- an unbacked resolved PA is an access fault.  t_ready-gating is
-   // essential: mid-walk t_paddr is a stale leaf and must not raise a (spurious) fault.
-   wire        pa_ok = pa_valid({{(64-AW){1'b0}}, t_paddr});
-   assign t_fault     = base_fault | (t_ready & ~pa_ok);
-   assign t_fault_raw = base_fault | (t_ok_w  & ~pa_ok);
-   assign t_cause = base_fault ? base_cause : af_cause;
+   assign t_fault     = base_fault;
+   assign t_fault_raw = base_fault;
+   assign t_cause     = base_cause;
    // Svpbmt memory type: NC/IO leaf -> uncached. Bare/non-canonical = normal (cacheable);
    // MMIO device regions are routed around the D$ by soc_top's address decode, not here.
    assign t_uncached = wdm ? w_nc : (xlate & tlb_hit & tlb_nc[tlb_idx]);
@@ -256,7 +244,9 @@ module mmu
               walk_ppn<=satp[43:0]; lvl<=2'd2; st<=REQ;
            end
            REQ: if (!req_match) st<=IDLE;           // request changed -> abort stale walk
-                else begin ptw_addr<=pte_addr; ptw_read<=1'b1; st<=RCV; end
+                else if ({1'b0, walk_ppn} >= TOP_PPN) begin   // the table itself is above the cap
+                   w_fault<=1'b1; w_cause<=af_cause_q; w_done<=1'b1; st<=IDLE;
+                end else begin ptw_addr<=pte_addr; ptw_read<=1'b1; st<=RCV; end
            RCV: if (ptw_rvalid) begin
               // DRAIN the in-flight PTW read before honoring an abort: leaving RCV while a read
               // is still outstanding leaks its response into the NEXT walk's read (a stale wrong
@@ -277,15 +267,18 @@ module mmu
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
                  end else if (perm_fault(ptw_rdata, acc_q, prv_q, sum_q, mxr_q)) begin
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
+                 end else if ({{(64-AW){1'b0}}, leaf_acc} >= DRAM_TOP) begin
+                    w_fault<=1'b1; w_cause<=af_cause_q; w_done<=1'b1; st<=IDLE; // PA above the cap
                  end else begin
-                    w_paddr <= leaf_pa(ptw_rdata[53:10], lvl, va_q, ptw_rdata[63]);
+                    w_paddr <= leaf_acc;
                     w_lvl  <= lvl;
                     w_fault<=1'b0; w_done<=1'b1; st<=IDLE;
                     w_nc   <= ptw_rdata[62] | ptw_rdata[61];   // Svpbmt PBMT != 0
                     // fill TLB. A NAPOT page still occupies one entry per 4 KiB VA (the tag
                     // is the full VPN); the N bit rides along so the hit path substitutes
-                    // va[15:12] for the PTE's size-encoded ppn[3:0].
-                    tlb_v[va_q[12+:TLBI]]   <= 1'b1;
+                    // va[15:12] for the PTE's size-encoded ppn[3:0]. A page reaching past the
+                    // cap is answered for this access only and never installed.
+                    tlb_v[va_q[12+:TLBI]]   <= ({1'b0, leaf_last} < TOP_PPN);
                     tlb_tag[va_q[12+:TLBI]] <= va_q[38:12];
                     tlb_ppn[va_q[12+:TLBI]] <= ptw_rdata[53:10];
                     tlb_lvl[va_q[12+:TLBI]] <= lvl;

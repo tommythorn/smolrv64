@@ -108,6 +108,9 @@ module rv_soc_top #(
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
+   // The architectural physical-address width (64 GiB): the core faults any PA beyond its
+   // instance's DRAM, so the D$ tags exactly PABITS bits (ooo2_core, THE PHYSICAL-ADDRESS CAP).
+   localparam integer PABITS = 36;
    localparam LAW  = AW-6;                  // line address width = 58
 
    // ---------------- core <-> caches nets ----------------
@@ -139,7 +142,8 @@ module rv_soc_top #(
    wire                ptw_rvalid, dptw_rvalid;
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
-   ooo2_core #(.HW(HW), .IW(IW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2)) core
+   ooo2_core #(.HW(HW), .IW(IW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
+               .PABITS(PABITS)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_data(imem_data), .imem_avail(imem_avail), .imem_lvl(imem_lvl_srv), .imem_xlvl(immu_xlvl), .imem_ok(imem_ok), .hw_ip(hw_ip), .mtime(clint_mtime),
       .imem_vaddr(imem_va), .imem_xlate_ok(imem_xlate_ok), .imem_ctx_chg(imem_ctx_chg),
@@ -620,7 +624,7 @@ module rv_soc_top #(
    wire dc_inv_req, dc_inv_busy;
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
-   rv_cache #(.PAW(64), .PAW_SIG(34), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
+   rv_cache #(.PAW(64), .PAW_SIG(PABITS), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_pa(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_ack(dc_rd_ack),
