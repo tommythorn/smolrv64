@@ -1048,18 +1048,19 @@ so a slot's page size is always the current mapping's.
 
 ### 9.1 L1 caches
 
-Both are the **same module** (`rv_cache`), specialised by parameter.
+The D$ is `rv_cache`; the I$ is `rv_icache`, a read-only module of its own (Stage 4 increment 0,
+`docs/PLAN-2026-09-24-frontend-stage4.md`).
 
-| | I$ | D$ |
+| | I$ (`rv_icache`) | D$ (`rv_cache`) |
 |---|---|---|
 | Size | 64 KB | 64 KB |
-| Associativity | 2-way (**not** skewed under VIRT) | **2-way skew-associative** |
+| Associativity | 2-way, not skewed | **2-way skew-associative** |
 | Sets | 512 | 512 |
 | Line | 64 B (512 bit) | 64 B |
-| Indexing | **VHPR** (virtual index+tag, physical reconcile) | **PIPT** |
-| Read width | `OOO2_HW*16` = 128 bit, two 64-bit banks | 64 bit |
-| Write policy | fill-only (`WRITABLE=0`) | **write-back** (`WRTHRU=0`) |
-| Prefetch | next-line stream, **on**, re-keyed VIRT-safe (Stage 2) | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
+| Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | **PIPT** |
+| Read | a 16-byte pair at any 8-byte alignment, a new one taken every cycle, answered the next | 64 bit |
+| Write policy | fill-only | **write-back** (`WRTHRU=0`) |
+| Prefetch | next line, **on**, within the 4 KiB page | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
 
 **Not UltraRAM.** Data is even/odd **banks** of `BANKW` bits per way — `2*WAYS` sync-read
@@ -1073,18 +1074,23 @@ Skew (D$): way 1 XORs low tag bits into the index; a victim's base index is reco
 reconcile probes the same-offset synonym candidates by a straight index, and a tag-XORed index
 would scatter them across sets. Both ways use the plain virtual index.
 
-**VHPR I$ (`VIRT=1`, Stage 2, 2026-09-13).** The I$ is virtually indexed and virtually tagged
-so translation is off the hit path (§4.1). Per line it stores, besides the virtual tag: the
-**physical tag** (`ptagm`) and a **2-bit epoch** (`epm`). A hit is `valid & (vtag == VA) &
-(epoch == cur_epoch)`. A `satp`/`sfence.vma` (`ep_bump = imem_ctx_chg`) advances `cur_epoch`,
-staling every line in one cycle; on the next **miss** the physical tag is compared against the
-translated PA (`ptagm == r_pa[tag]`) and a physical match is re-validated in place under the
-new epoch (**reconcile**) rather than refetched — so physically-resident code survives a
-mapping change, matching what the old PIPT I$ got for free. The single-copy invariant (≤1
-valid line per physical line) holds it together; a fill taken under the old mapping is poisoned
-(`v_wd=0` when `f_epoch != cur_epoch`). Epoch roll-over (2-bit wrap) triggers a one-shot
-invalidate walk before publishing epoch 0. `fence.i` still invalidates after the D$ writeback
-drains. Full design and always-on assertions: `docs/VHPR.md`.
+**VHPR I$ (`rv_icache`).** Each way's data is two BRAM banks, the even and the odd 8-byte
+chunks of every line, so a pair at any 8-byte alignment is one read of each; a pair starting at a
+line's last chunk takes its even chunk from the next line, so each bank has its own line and tag
+lookup (a pair never crosses a 4 KiB page, asserted). Per line: valid, the **virtual tag**, the
+**physical tag** (PA above the 4 KiB offset) and a **2-bit epoch**. Every request carries the
+epoch it was taken in, and **a hit is `valid & (vtag == VA) & (epoch == the request's)` -- no
+translation and no physical tag on the hit path**, so an I$ hit never waits on the iTLB. A
+`satp`/`sfence.vma` (`ep_bump = imem_ctx_chg`) advances the epoch, staling every line in one
+cycle. **Reconcile is the miss path:** a virtual miss compares the same set's physical tags against
+the request's PA, and a match is re-stamped with the new virtual tag and epoch and replays (one
+cycle), so physically resident code survives a mapping change; otherwise the line is filled
+(prefetch buffer or L2) and installs stamped with the request's epoch, so a request taken before
+a mapping change never makes its line current. A miss parks at most one younger request and both
+replay in order. Epoch roll-over and `fence.i` (after the D$ writeback drains) clear the valid
+bits one set per cycle. Today every request still carries the iMMU's PA (`rd_pa`) and the iMMU
+still checks every fetch; Stage 4 increment 1 caches each line's execute and user bits and
+translates only on a miss. Unit bench: `ooo2/run-ooo2-icache-tb.sh`. Design: `docs/VHPR.md`.
 
 Measured D$: **3.24 cycles per access** at a **0.195% miss rate** — i.e. the LSU cost is hit
 latency, not misses.
@@ -1340,7 +1346,7 @@ always on now and is bit 13; the parity array stays opt-in.
 | bits | unit | source of the numbering |
 |---|---|---|
 | `[15:0]` | D$ | `rv_cache.v`, INTEGRITY LOG block (16 conditions: linebuf ownership, alignment, solo/fill exclusion, tagged range, line vanished, replay, two consumers of one `l2_ack`, a lost invalidate scan, bank read/write collision, both FSMs outside their encoding, address provenance, no-span) |
-| `[31:16]` | I$ | the same cache, the same numbering |
+| `[31:16]` | I$ | `rv_icache.v`, invariants block (9 conditions: a line hitting in both ways, a pair across a page, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
 | `[47:32]` | LSU | `ooo2_lsu.v` (7 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`) |
 | `[63:48]` | reserved | the next units plug in without moving anything |
 

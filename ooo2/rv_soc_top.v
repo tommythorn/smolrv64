@@ -893,18 +893,13 @@ module rv_soc_top #(
    end
 
 
-   rv_cache #(.PAW(64), .PAW_SIG(39), .SIZE_KB(SIZE_KB), .RDW(HW*16), .WDW(64), .WRITABLE(0), .PREFETCH(1), .VIRT(1),
-           .PERF_ID(0)) u_icache
+   // The read-only VHPR I$ (ooo2/rv_icache.v): a pair per cycle, hit on the virtual tag alone.
+   rv_icache #(.SIZE_KB(SIZE_KB), .HW(HW), .RTW(4)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
-      .rd_resp_addr(ic_rd_resp_addr),
-      // The tag names the request entry (two in flight, item 10e); the fetch buffer still
-      // matches the answer to a SLOT by address (fb_al/fb_pa..fb_pa3), and asserts the two agree.
-      .rd_ack(ic_rd_ack), .rd_tag({3'd0, ic_tag}), .rd_resp_tag(ic_rsp_tag),
-      .rd_uncached(1'b0),
-      .wr_req(1'b0), .wr_addr(64'd0), .wr_data(64'd0), .wr_mask(8'd0), .wr_ack(), .wr_acc(), .wr_cpl(), .wr_uncached(1'b0),
-      .cbo_req(1'b0), .cbo_zero(1'b0), .cbo_keep(1'b0),
-      .inv_req(ic_inv_req), .inv_clean(1'b0), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_tag({3'd0, ic_tag}),
+      .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
+      .rd_resp_addr(ic_rd_resp_addr), .rd_resp_tag(ic_rsp_tag),
+      .inv_req(ic_inv_req), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss), .err(ic_err));

@@ -72,7 +72,7 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_fp.v ../src/exec_alu.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv \
-            rv_cache.v rv_errlog.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
+            rv_cache.v rv_icache.v rv_errlog.v rv_l2_arbiter.v ../src/clint.v ../src/plic.v \
             ../src/ddr_hpm.v"
 
 # STALE-BUILD GUARD.  MEM_LG2 and VDEFS are compile-time -D's, and the C side gets
