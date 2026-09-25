@@ -18,7 +18,7 @@ zero faults before it lands.
 |---|---|
 | Geekbench 5.4.1, board, 2026-09-25 | **7** single-core (Integer 8, Crypto 1, Floating Point 0), 6 multi-core; the whole suite in 4 h 17 min at IPC 0.51, against 5 h 35 min at IPC 0.40 on 2026-09-07 and a score of 0.9 for the sequential core in June ([result 24664943](https://browser.geekbench.com/v5/cpu/24664943)) |
 | Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
-| `sha256sum` of a 30 MB file, board | IPC 1.32 to 1.39 |
+| `sha256sum` of a 30 MB file, board, 2026-09-25 | IPC 1.56 to 1.63 over three runs, 43 cycles per byte |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
 | Area | 96,664 LUTs (45% of the part), 53,442 flip-flops, 129 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
