@@ -192,6 +192,8 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
        the next read index.
      - The corrector allocates only for a conditional the BTB knew (only those carry an index).
        A CTI younger than a pending early restart trains nothing.
+     **1b-ii board-clean** at bb13d16a (IW=3, WNS +0.011, WHS +0.010): login with zero faults,
+     900 s of Geekbench stress, errlog clean. The I$ then lost its next-line read (eaec92b2).
      Target: the zero-bubble taken branch -- sillyloop at 17 cycles per iteration (IPC 2.0) -- and
      1a's 300 M loss back.
 2. (Folded into 1b: YAGS moves with the rest of the predictor.)
@@ -199,6 +201,27 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    stream runs ahead across pages and the iMMU leaves the fetch path.
 4. Delete the bundle register, the decoupling queue and `pc_q`'s consumption-driven advance;
    re-measure the stage count.
+   **1e design (2026-09-24, before RTL).** The decoupling queue has two jobs, and the ring takes
+   over only one. It BUFFERS fetch against dispatch -- the ring does that now. It also COMPACTS:
+   a bundle ends at its first CTI, so bundles are often one or two instructions, and the queue
+   (with the IR's retained slots) lets dispatch see three instructions across bundle
+   boundaries. Deleting the queue alone would drop dispatch width on branchy code. So 1e is:
+   - The aligner spans not-taken and unknown CTIs: a bundle ends at a mark whose prediction is
+     taken, before a solo op (SYSTEM/AMO/FENCE), at IW instructions, or at the window's end. A
+     bundle may hold several not-taken marks, and fetch pops one queue entry per mark it
+     consumes (the queue reads its first IW entries).
+   - Each slot carries its own next-PC kind (fall-through, or the target for the bundle's last
+     slot) and its own details. A slot's snapshot is the pre-state of the first queue entry at
+     or after it, so every slot is exact without a per-slot state machine.
+   - The bundle register stays: it is the cut between the aligner and decode. The queue goes;
+     decode reads the bundle register straight into the IR, whose retained slots keep the
+     compacting it does today. Back-pressure is the ring holding its bytes.
+   - What it buys: one cycle off every refill (fire -> register -> decode -> IR, where today it
+     is fire -> register -> queue -> decode -> IR), and three-wide dispatch through not-taken
+     branches.
+   - What to check first: nothing in the core still assumes one CTI per dispatch group (the
+     swizzle already refuses two ops on the F pipe); the decode-stage resteer (DCR) is per slot
+     already.
 
 **Done when:** sillyloop runs at 17 cycles per iteration (IPC 2.0), sillyfp near 3, Dhrystone's
 `fe:icache` under 5% of cycles, and GB5 on the board validates the tip.
