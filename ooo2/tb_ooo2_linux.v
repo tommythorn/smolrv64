@@ -474,6 +474,49 @@ module tb;
    initial for (tdi = 0; tdi < TD_N; tdi = tdi + 1) td_cnt[tdi] = 64'd0;
    always @(posedge clk) if (!reset) td_cnt[td_k] <= td_cnt[td_k] + 64'd1;
 
+   // ---- MEM-SIM: what the next memory-backend step could recover, printed with TOPDOWN-SIM ----
+   // D$: cycles a fill is in flight (the one MSHR), fills started, cycles a SECOND miss is parked in
+   // the lookup pipeline behind that fill (every request behind it waits too), and how many of the
+   // core's ST_MEM cycles overlap each. u_iq_l (in order): cycles its head is not ready, and of
+   // those, cycles a younger entry -- a load (it has a destination) -- is ready and could issue if
+   // the queue issued out of order; split by whether the blocked head is a load or a store.
+   localparam integer MS_NL = 12;            // u_iq_l's entries (ooo2_core NL)
+   reg [63:0] ms_fill, ms_fills, ms_park, ms_stmem, ms_stmem_fill, ms_stmem_park;
+   reg [63:0] ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth;
+   reg        ms_fv_q, ms_park_q;
+   initial begin ms_fill = 0; ms_fills = 0; ms_park = 0; ms_stmem = 0; ms_stmem_fill = 0; ms_stmem_park = 0;
+                 ms_hblk = 0; ms_byp = 0; ms_byp_ldh = 0; ms_byp_sth = 0; ms_fv_q = 0; ms_park_q = 0; end
+   always @(posedge clk) if (!reset) begin : memsim
+      reg fv, chk, park, hrdy, yld;
+      integer g, h;
+      fv   = dut.u_dcache.f_v;
+      chk  = (dut.u_dcache.st == 4'd2);                          // S_CHECK
+      park = chk ? (~dut.u_dcache.hit & fv) : ms_park_q;         // a miss waiting on the MSHR, until it resolves
+      ms_park_q <= park;  ms_fv_q <= fv;
+      if (fv)             ms_fill  <= ms_fill + 1;
+      if (fv & ~ms_fv_q)  ms_fills <= ms_fills + 1;
+      if (park)           ms_park  <= ms_park + 1;
+      if (dut.core.st_mem) begin
+         ms_stmem <= ms_stmem + 1;
+         if (fv)   ms_stmem_fill <= ms_stmem_fill + 1;
+         if (park) ms_stmem_park <= ms_stmem_park + 1;
+      end
+      h    = dut.core.u_iq_l.qhead;
+      hrdy = &dut.core.u_iq_l.srdy[h*3 +: 3];
+      if (dut.core.u_iq_l.v[h] & ~hrdy) begin
+         yld = 1'b0;
+         for (g = 0; g < MS_NL; g = g + 1)
+            if ((g != h) && dut.core.u_iq_l.v[g] && (&dut.core.u_iq_l.srdy[g*3 +: 3])
+                && (dut.core.u_iq_l.e_prd[g] != 0)) yld = 1'b1;
+         ms_hblk <= ms_hblk + 1;
+         if (yld) begin
+            ms_byp <= ms_byp + 1;
+            if (dut.core.u_iq_l.e_prd[h] != 0) ms_byp_ldh <= ms_byp_ldh + 1;
+            else                               ms_byp_sth <= ms_byp_sth + 1;
+         end
+      end
+   end
+
    // ---- FRING-SIM: the fetch stream and its predictions, printed with TOPDOWN-SIM ----------
    // pairs requested and the halfwords they append; marks taken and honoured, not taken, dropped;
    // restarts by the rejected mark's kind; cycles the stream could have asked for a pair but the
@@ -851,6 +894,11 @@ module tb;
       $display("FRING-EMPTY immu=%0d page=%0d icache-door=%0d in-flight=%0d other=%0d",
                fe_mmu, fe_page, fe_door, fe_infl, fe_oth);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
+      $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-fill=%0.1f parked-2nd-miss=%0d | st_mem=%0d with-fill=%0d with-parked=%0d",
+               ms_fill, ms_fills, (ms_fills != 0) ? $itor(ms_fill) / $itor(ms_fills) : 0.0, ms_park,
+               ms_stmem, ms_stmem_fill, ms_stmem_park);
+      $display("MEM-SIM iq_l head-not-ready=%0d younger-load-ready=%0d (head a load=%0d, head a store=%0d)",
+               ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth);
       if (kan_on) $fclose(kf);
       $display("perf-stat-sim: begin");
       $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)
