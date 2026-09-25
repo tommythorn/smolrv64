@@ -65,20 +65,37 @@ stage verification, never the shape.
 
 ### Geometry and arrays
 
-Keep the shape: 64 KiB, 2 ways, 64-byte lines, 512 sets indexed by VA[14:6]. This gives 8 colours
-(VA[14:12]), matching `rv_icache`, and is unskewed so a physical line's candidates stay findable. All
-widths are parameters.
+**128 KiB, 2 ways, 64-byte lines, 1024 sets indexed by VA[15:6]**: 16 colours (VA[15:12]), unskewed
+so a physical line's candidates stay findable. All widths are parameters.
+
+**Why 128 KiB (measured 2026-09-25):** the 300 M Linux lockstep at IW=3 (0790196c, today's PIPT
+`rv_cache` with only `SIZE_KB` changed):
+
+| configuration | retires | change | D$ misses |
+|---|---|---|---|
+| 64 KiB (today) | 85,894,028 | | 1.278 M |
+| 128 KiB D$ | 89,349,163 | +4.02% | 1.036 M (-19%) |
+| 128 KiB I$ | 85,550,054 | -0.40% | |
+| both at 128 KiB | 88,198,468 | +2.68% | 1.027 M |
+
+The I$ stays at 64 KiB: the boot's I$ stalls are not capacity misses.
+
+**Placement is the known risk.** The last 128 KB D$ (`rv_cache`) spread over most of the die, and its
+worst internal route was 5.7 ns, 82% of it wire; that is why `SIZE_KB` went to 64. So the new
+module is floorplanned from the first build: the data banks in one block-RAM column pair, the tags
+beside them, the hit path registered at the bank outputs.
 
 | array | shape | holds |
 |---|---|---|
-| data | 4 BRAM banks (way × chunk parity), 1R1W, 2048 × 64 | one read port for lookups and the victim read-out, one write port for store writes and fill beats |
-| virtual tag | LUTRAM, per way, 512 deep | `vtag` = VA[38:15], `ep` (2 bits), `vvalid`, perms `{R, W, X, U, D}` (X for MXR loads) |
-| physical tag | LUTRAM, **16 arrays of 64 × PTB**, one per (way, colour), all read at VA[11:6] | `ptag` = PA[35:12], `pvalid`, `dirty` |
+| data | 4 BRAM banks (way × chunk parity), 1R1W, 4096 × 64 | one read port for lookups and the victim read-out, one write port for store writes and fill beats |
+| virtual tag | LUTRAM, per way, 1024 deep | `vtag` = VA[38:16], `ep` (2 bits), `vvalid`, perms `{R, W, X, U, D}` (X for MXR loads) |
+| physical tag | LUTRAM, **32 arrays of 64 × PTB**, one per (way, colour), all read at VA[11:6] | `ptag` = PA[35:12], `pvalid`, `dirty` |
 | replacement | one bit per set | round-robin |
 
-**The 16-array physical tag is the design's key structure.** The 16 lines a physical line can live
-in (2 ways × 8 colours) share VA[11:6] = PA[11:6]. So one read at that row returns all 16
-candidates, and **the synonym probe is one cycle**, with no replicas and no multi-cycle walk. Each
+**The per-(way, colour) physical tag is the design's key structure.** The 32 lines a physical line
+can live in (2 ways × 16 colours) share VA[11:6] = PA[11:6]. So one read at that row returns all 32
+candidates, with no replicas and no walk. The 32 compares take one cycle, or two of 16 if timing
+wants it (Tommy: the probe may take a few cycles; it is on the miss path only). Each
 array has its own write enable (one write statement each, I10). A line is written by selecting its
 (way, colour) array.
 
@@ -98,7 +115,7 @@ still correct. This removes VHPR.md's "walk and write back every dirty line befo
 ### The hit pipeline
 
 - **T:** the door accepts a request (a registered accept, register-decoded door, as today). The
-  data banks and the virtual-tag arrays are read at VA[14:6].
+  data banks and the virtual-tag arrays are read at VA[15:6].
 - **T+1:**
   - compare `vtag`/`ep`/`vvalid` per way;
   - check the perms against priv/SUM/MXR, captured with the request;
@@ -137,7 +154,7 @@ A miss:
 1. **Translate.** The PA comes with the request in phase 1 (the core still translates, as for the
    I$). In phase 2 it comes from the D$'s translate port (the dTLB), when the load path stops
    translating.
-2. **Probe, one cycle.** The 16 candidates at PA[11:6], compared with the PA's `ptag`:
+2. **Probe, one or two cycles.** The 32 candidates at PA[11:6], compared with the PA's `ptag`:
    - **Match in the request's own set** (the common case after an epoch bump or a new mapping of
      the same page): re-stamp `vtag`/`ep`/perms (one cycle, the I$'s reconcile) and replay.
      This is not a memory access.
@@ -150,10 +167,20 @@ A miss:
    added to the waiter list; a store merges into the buffer. A request to a set whose reserved
    way is taken by another MSHR, or when all MSHRs are busy, goes to a small retry queue. It never
    parks in the pipeline.
-4. **Victim.** The reserved way's line, if `pvalid` and dirty, is read out (4 cycles) into the
-   **write-back buffer** (`NWB`, default 2 lines). The fill read is issued at allocation, in
-   parallel, not after the write-back. A later miss to a line sitting in the write-back buffer
-   is served from it.
+4. **Victim: the demand read goes first; the write-back waits for it.**
+   - The fill read is issued in the allocation cycle.
+   - The reserved way's line, if `pvalid` and dirty, is read out in the next 4 cycles into the
+     **write-back buffer** (`NWB`, default 2 lines), long before the first fill beat can land
+     in those rows.
+   - The buffered write-back is sent to memory only **after the demand fill has returned**.
+     Reads have priority over write-backs all the way down the memory path. A write-back is
+     sent when no demand read is waiting, or when the buffer is full and a new victim needs
+     the slot.
+   - With the MIG serving in order, a write-back sent first would put its whole transfer ahead
+     of the read the load is waiting for. Today's D$ does exactly that: serially, about 30
+     cycles per dirty miss.
+   - A later miss to a line sitting in the write-back buffer is served from the buffer.
+     A CBO or fence.i that must reach DRAM forces the buffer out first.
 5. **Fill.** The read goes to memory as a critical-chunk-first WRAP burst starting at the waiting
    load's chunk.
    - Each 64-bit beat is written into its bank row as it arrives.
@@ -177,12 +204,12 @@ response port suffices.
   allocate / flush-around / read-modify-write-the-line. NC accesses stay in order with each other
   through one NC queue. Devices below 0x8000_0000 still never reach the D$.
 - **CBOs, by physical address.** They issue only at the ROB head (D17), so they are never
-  speculative. The one-cycle probe finds the line from the PA alone.
+  speculative. The physical probe finds the line from the PA alone.
   - `clean`/`flush`: a dirty line goes to the write-back buffer; `wr_cpl` is raised when the
     memory write's B response returns, so the data is in DRAM before a later doorbell.
   - `inval`: implemented as flush (as today).
   - `zero`: a full-mask store-merge MSHR; it installs without a memory read.
-- **Page-table walker reads, by physical address.** Probe the 16 candidates and read the matching
+- **Page-table walker reads, by physical address.** Probe the 32 candidates and read the matching
   line's chunk, so a dirty PTE is always seen. On a miss, fill into the PA's own colour, then
   answer. Walker requests keep their fixed tags.
 
@@ -191,12 +218,20 @@ response port suffices.
 - **Epochs.** An `sfence.vma` or a satp change bumps the D$ epoch (today the D$'s `ep_bump` is
   tied 0 because the D$ is PIPT). A wrap clears `vvalid` over a 512-cycle scan with the door shut.
   No write-back is needed; physical lines survive.
-- **fence.i, two options:**
-  - **(a) today's model:** clean the whole D$ (write back every dirty line, 1024-cycle scan), then
-    invalidate the I$.
-  - **(b) recommended:** give the I$'s miss path a probe port into the D$'s physical tags. An I$
-    fill whose line is dirty in the D$ takes the D$'s copy. Then fence.i only invalidates the I$.
-    The probe structure already exists; it costs one more read of the 16 physical-tag arrays.
+- **fence.i becomes a pipeline-only operation: the I$ is made coherent with stores** (Tommy,
+  2026-09-25). The I$ gets the D$'s per-(way, colour) physical-tag layout (16 arrays at 64 KiB). A store probes it by PA (one
+  cycle), filtered by a small set of physical pages the I$ has fetched from, and a match
+  invalidates that I$ line.
+  - The filter is one bit per hashed physical page (1024 bits, LUTRAM). An I$ fill sets its
+    page's bit; a store probes only when its page's bit is set. A stale or aliased bit only costs
+    an extra probe, never a missed one, so bits are cleared only when the whole I$ is invalidated.
+    There is no compare on the store path and no overflow case.
+  - Stores to code pages are rare, so a probe is rare.
+  - There is no inclusion and no D$ capacity spent on code.
+  - Then fence.i only flushes the fetch ring and predictions.
+
+  Until that increment lands, fence.i keeps today's model: a clean of the D$ (write back every
+  dirty line, now through the write-back buffer), then an invalidation of the I$.
 - **DMA stays software-coherent**: the virtio rings are NC, and Zicbom maintains the rest, as
   today. Hardware snooping would use the same physical probe, but is out of scope unless the DMA
   cosim (B6) shows it is needed.
@@ -205,7 +240,8 @@ response port suffices.
 
 Every piece is single-outstanding today; all of them change:
 
-1. **`rv_l2_arbiter` becomes `rv_mem_arbiter`.** It is not an L2. It gets:
+1. **`rv_l2_arbiter` becomes `rv_mem_arbiter`.** It is not an L2. Reads have priority over
+   write-backs. It gets:
    - tagged requests, several outstanding;
    - reads, writes, and masked single-beat NC writes;
    - beat-streaming read responses `{tag, beat index, last, data}`;
@@ -251,7 +287,7 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - memrand gains a synonym-alias op, which it already half has: three aliases of one region.
 3. **The store port.** The SQ drains one store per cycle: the LSU's S_ST/`take_next` chain
    becomes a stream.
-4. **fence.i by probe (option b),** if approved.
+4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.
 5. **Phase 2, with the queue-side translate:** the load path stops translating; the D$ translates
    on a miss through its translate port. This is where the dTLB leaves the load's hit path; it
    folds into C4b step 3.
@@ -259,7 +295,7 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
 ## Verification specific to this design
 
 - The single-copy invariant, checked on every install and every re-stamp (`pvalid` count per
-  physical line ≤ 1 over the 16 candidates).
+  physical line ≤ 1 over the 32 candidates).
 - The integrity log keeps bits 0-15 for the D$, renumbered to the new invariants:
   - MSHR tag reuse;
   - response with no waiter;
@@ -273,12 +309,12 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
   buffer full, response-queue waits, probe outcomes. So the first lockstep says whether `NMSHR`,
   `NWB` or `NOUT` binds.
 
-## Open questions for Tommy
+## Decisions (Tommy, 2026-09-25)
 
-1. **Geometry:** keep 64 KiB 2-way (8 colours, the I$'s shape)? The alternative, 32 KiB 8-way
-   VIPT, has no colours and no probe, but puts the dTLB back on every hit. The recorded plan
-   decision is VHPR, so this document assumes it.
-2. **fence.i:** option (b), I$ misses probe the D$, recommended.
-3. **Sizes:** `NMSHR` 8, `NWB` 2 and `NOUT` 8 as starting points, set by the first MEM-SIM run.
-4. **The open-source memory controller:** out of scope here. The tagged path is built so it can be
-   tried later without touching the caches.
+1. **VHPR, not VIPT.** Two large ways and no dTLB on the hit path are the point. Cache size is
+   decided by measurement; a 128 KiB D$ and I$ is under test, with the probe allowed to take a
+   few cycles.
+2. **fence.i:** the I$ becomes coherent with stores (a filtered physical probe), so fence.i is a
+   pipeline-only operation. This is its own increment after the D$.
+3. **Sizes:** `NMSHR` 8, `NWB` 2, `NOUT` 8, if they fit and time.
+4. **The open-source memory controller** is out of scope; the tagged path keeps the door open.
