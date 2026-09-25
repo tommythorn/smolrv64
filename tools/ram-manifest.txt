@@ -62,8 +62,23 @@ bank[1].mem  : ROB entries, bank 1
 qbank[0].mem : fetch queue data, bank 0 (of NBANKS=next_pow2(IW))
 qbank[1].mem : fetch queue data, bank 1
 ras     : return address stack
-btb     : branch target buffer, 2048 x 53 (Block RAM) -- synchronous read-ahead at rd_pc; a LUTRAM depth mux this deep is the timing wall
-ycorr   : YAGS correlated table, 2048 x 10 (Block RAM) -- synchronous read-ahead
+bank[0].btb : branch target buffer, halfword bank 0 of 8, 256 x 53 -- read as the fetch stream moves
+bank[1].btb : branch target buffer, halfword bank 1 of 8, 256 x 53 -- read as the fetch stream moves
+bank[2].btb : branch target buffer, halfword bank 2 of 8, 256 x 53 -- read as the fetch stream moves
+bank[3].btb : branch target buffer, halfword bank 3 of 8, 256 x 53 -- read as the fetch stream moves
+bank[4].btb : branch target buffer, halfword bank 4 of 8, 256 x 53 -- read as the fetch stream moves
+bank[5].btb : branch target buffer, halfword bank 5 of 8, 256 x 53 -- read as the fetch stream moves
+bank[6].btb : branch target buffer, halfword bank 6 of 8, 256 x 53 -- read as the fetch stream moves
+bank[7].btb : branch target buffer, halfword bank 7 of 8, 256 x 53 -- read as the fetch stream moves
+bank[0].yc  : YAGS corrector, halfword bank 0 of 8, 256 x 10 -- read as the fetch stream moves
+bank[1].yc  : YAGS corrector, halfword bank 1 of 8, 256 x 10 -- read as the fetch stream moves
+bank[2].yc  : YAGS corrector, halfword bank 2 of 8, 256 x 10 -- read as the fetch stream moves
+bank[3].yc  : YAGS corrector, halfword bank 3 of 8, 256 x 10 -- read as the fetch stream moves
+bank[4].yc  : YAGS corrector, halfword bank 4 of 8, 256 x 10 -- read as the fetch stream moves
+bank[5].yc  : YAGS corrector, halfword bank 5 of 8, 256 x 10 -- read as the fetch stream moves
+bank[6].yc  : YAGS corrector, halfword bank 6 of 8, 256 x 10 -- read as the fetch stream moves
+bank[7].yc  : YAGS corrector, halfword bank 7 of 8, 256 x 10 -- read as the fetch stream moves
+pq      : the predictor's queue of predictions, one per fetch-ring mark
 prd     : load queue destination tag
 rdn     : load queue
 tlb_tag : iTLB/dTLB
