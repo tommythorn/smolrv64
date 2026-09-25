@@ -1,0 +1,11 @@
+# Geekbench 5.4.1 single-core score on the board, one row per result (YYYYMMDD<TAB>score).
+# tools/gb5-progress-chart.py renders it as docs/images/gb5-progress.svg for the README.
+20260628	0.9
+20260817	2
+20260822	4
+20260825	4
+20260827	4
+20260828	4
+20260907	5
+20260924	6
+20260925	7

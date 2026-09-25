@@ -1,5 +1,7 @@
 # SmolRV64
 
+![Geekbench 5 single-core score over time](docs/images/gb5-progress.svg)
+
 SmolRV64 is a 64-bit RISC-V application processor, written from scratch in Verilog, that
 boots stock Ubuntu on a Kintex UltraScale+ FPGA at 166.67 MHz and runs Geekbench on it.
 The name is a leftover: the project began as a small sequential core, and what ships today
