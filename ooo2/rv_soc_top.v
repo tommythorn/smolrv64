@@ -160,7 +160,7 @@ module rv_soc_top #(
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(), .retire_insn(),
       .retire2(retire2), .retire2_pc(), .retire2_insn(), .retire3(retire3),
-      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err));
+      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err));
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
    localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
@@ -691,16 +691,16 @@ module rv_soc_top #(
    //   [15: 0] D$   rv_cache err[] (see the INTEGRITY LOG block in rv_cache.v)
    //   [31:16] I$   the same cache, the same numbering
    //   [47:32] LSU  ooo2_lsu err[]
-   //   [63:48] reserved -- the next units plug in here without moving anything
+   //   [63:48] the frontend: ooo2_frontend fe_err (the fetch ring, the predictor, fetch)
    // The units are ordered so that on a simultaneous violation first_idx names the one
    // closest to the data.
-   wire [15:0] dc_err, ic_err, lsu_err;
+   wire [15:0] dc_err, ic_err, lsu_err, fe_err;
    wire [63:0] err_sticky;
    wire [7:0]  err_first_idx;
    wire [47:0] err_first_cyc;
    rv_errlog #(.N(64), .CW(48)) u_errlog
      (.clk(clk), .reset(reset),
-      .err({16'd0, lsu_err, ic_err, dc_err}),
+      .err({fe_err, lsu_err, ic_err, dc_err}),
       .sticky(err_sticky), .first_idx(err_first_idx), .first_cyc(err_first_cyc));
 
    // The readout, in the window the deleted fetch-buffer diagnostic used to occupy: it is

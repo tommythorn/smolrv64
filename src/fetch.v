@@ -112,7 +112,8 @@ module fetch
     output wire [IW*PCW-1:0]       pc,
     output wire [IW*SEQW-1:0]      seq,
     output wire [$clog2(HW+2)-1:0] adv_hw,      // halfwords fetch consumed from the window this cycle
-    output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
+    output wire [SEQW-1:0]         cur_seq,     // PC register's seqno (for trap resume)
+    output wire [1:0]              err);        // its invariants, registered (the integrity log)
 
    localparam PBW = $clog2(HW+2);
    // SYSTEM, funct3=000, imm[11:0]=OP_IRQ(0x7F0), rs1=rd=0 -> the interrupt pseudo-op.
@@ -148,9 +149,9 @@ module fetch
    wire [20:0]    off_pg   = big ? off : {9'b0, off[11:0]};      // offset within the ENCLOSING page (mask to 4K)
    wire [21:0]    hw_bound = (pgsz - {1'b0, off_pg}) >> 1;       // the oracle: halfwords to the boundary
    wire [PBW-1:0] hw_cap_ref = (hw_bound > HW) ? HW[PBW-1:0] : hw_bound[PBW-1:0];
+   wire e_cap = ~reset & (hw_cap != hw_cap_ref);
    always @(posedge clk)
-     if (!reset && hw_cap !== hw_cap_ref)
-       $fatal(1, "fetch: hw_cap %0d != %0d at off=%h", hw_cap, hw_cap_ref, off);
+     if (e_cap) $fatal(1, "fetch: hw_cap %0d != %0d at off=%h", hw_cap, hw_cap_ref, off);
 
    assign cur_seq   = seq_q;
    // THE FETCH ADDRESS IS THE PC REGISTER, BARE (2026-09-07). It was `(strad & ~irq_inject)
@@ -304,9 +305,12 @@ module fetch
    // ipc_q is pc_q except during a straddle, where the fetch address is one halfword on.
    // A pending interrupt never sees a straddle (irq_go), so no arm above reads irq_inject
    // while strad is high.
+   wire e_pc = ~reset & (pc_q != (strad ? ipc_q + 64'd2 : ipc_q));
+   reg  [1:0] err_q;
+   always @(posedge clk) err_q <= reset ? 2'd0 : {e_pc, e_cap};
+   assign err = err_q;
    always @(posedge clk)
-     if (!reset && (pc_q !== (strad ? ipc_q + 64'd2 : ipc_q)))
-       $fatal(1, "fetch: pc_q/ipc_q disagree (pc_q=%h ipc_q=%h strad=%b)", pc_q, ipc_q, strad);
+     if (e_pc) $fatal(1, "fetch: pc_q/ipc_q disagree (pc_q=%h ipc_q=%h strad=%b)", pc_q, ipc_q, strad);
 endmodule
 
 `default_nettype wire

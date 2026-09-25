@@ -28,6 +28,8 @@ CACHE=(lb_owner wr_align solo_fill pa_range line_gone cbo_fill replay l2_2cons i
 CDESC=("write-through push and fill machine both own linebuf" "a plain write is not chunk-aligned" "a solo request accepted while a fill is live" "a request above the tagged physical range" "the line a solo request hit vanished after S_CHECK" "a CBO in stage B while a fill is live" "a replay owed with no fill in flight" "prefetch and fill machine both awaiting one l2_ack" "an invalidate scan that will never finish" "a fill live during the invalidate scan" "a bank row read and written in the same cycle" "the lookup FSM outside its encoding" "the fill machine outside its encoding" "address provenance: the bank returned a row this hit did not ask for" "a wide read that is not chunk-pair aligned" "NO-SPAN violated: a spanning cached request")
 ICACHE=(dual pair_page l2_orphan align skid_full pa_offset l2_both stamp_dup rc_both)
 IDESC=("one line hits in both ways" "a pair crossing a 4 KiB page" "an L2 answer with no read outstanding" "a pair not 8-byte aligned" "a request into a full skid" "VA and PA disagree in the page offset" "a demand read and a prefetch outstanding together" "stamping a line the other way already holds" "one physical line resident in both ways")
+FE=(ring_head ring_over ring_hold ring_gen ring_orphan ring_marks pq_full pq_empty pair_end fetch_cap fetch_pc bundle slot_order)
+FDESC=("the fetch ring's head is not the fetch PC" "fetch consumed more halfwords than the ring holds" "the ring holds more than it reserved" "a kept I\$ answer from a stale generation" "an I\$ answer with no request in flight" "marks held + in flight != predictions queued" "a prediction pushed into a full queue" "the aligner popped an empty prediction queue" "a pair ends before the stream's address" "fetch's page cap disagrees with its oracle" "fetch's pc_q and ipc_q disagree" "a malformed bundle (slot without predecessor, fault beside a slot)" "a slot consumed out of order")
 LSU=(dev_spec dev_span tag_reissue tag_orphan tag_reuse ld_done req_early)
 LDESC=("a speculative access to a non-DRAM address" "a non-DRAM access straddling an 8-byte word" "a load tag reissued while its response is outstanding" "a fast response carrying a tag nothing is waiting on" "a tag lands and restarts in one cycle" "pt_ld_done disagrees with pt_done & ~store" "req_early on an access that is not a translate-only load")
 name() {   # <bit> -> unit.name and description
@@ -35,7 +37,7 @@ name() {   # <bit> -> unit.name and description
    if   [ "$b" -lt 16 ]; then echo "dcache.${CACHE[$b]:-?}|${CDESC[$b]:-}"
    elif [ "$b" -lt 32 ]; then echo "icache.${ICACHE[$((b-16))]:-?}|${IDESC[$((b-16))]:-}"
    elif [ "$b" -lt 48 ]; then echo "lsu.${LSU[$((b-32))]:-?}|${LDESC[$((b-32))]:-}"
-   else echo "reserved.$b|"; fi
+   else echo "frontend.${FE[$((b-48))]:-?}|${FDESC[$((b-48))]:-}"; fi
 }
 if [ "$STICKY" = "0000000000000000" ]; then echo "errlog: clean  sticky=$STICKY"; exit 0; fi
 fidx=$(( (16#$FIRST >> 48) & 0xff )); fcyc=$(( 16#$FIRST & 0xffffffffffff ))

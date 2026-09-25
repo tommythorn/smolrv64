@@ -193,7 +193,10 @@ module ooo2_frontend
     output reg                     d3_fault,
     output reg  [3:0]              d3_fault_cause,
     output reg  [PCW-1:0]          d3_fault_tval,
-    output wire [SEQW-1:0]         cur_seq);          // fetch PC's seqno (trap resume)
+    output wire [SEQW-1:0]         cur_seq,           // fetch PC's seqno (trap resume)
+    // The frontend's invariants for the integrity log (rv_errlog bits 48..63), registered in
+    // each unit: [5:0] the ring, [8:6] the predictor, [10:9] fetch, [12:11] this module.
+    output wire [15:0]             fe_err);
 
    // ---------------------------------------------------------------- fetch
    // TWO-WIDE FETCH (2026-09-05, plan item 10a): the aligner emits up to two instructions per
@@ -234,6 +237,9 @@ module ooo2_frontend
    wire [HW-1:0]       imem_mk;
    wire [1:0]          imem_lvl;
    wire                imem_ok;
+   wire [5:0]          ring_err;
+   wire [2:0]          bp_err;
+   wire [1:0]          f_err;
    wire                pr_adv, p_cut, pq_room;
    wire [63:0]         st_sa;
    wire [2:0]          st_sk, p_end;
@@ -251,7 +257,7 @@ module ooo2_frontend
       .sa(st_sa), .sk(st_sk), .p_cut(p_cut), .p_end(p_end), .pr_adv(pr_adv),
       .pq_room(pq_room), .pq_cnt(pq_cnt),
       .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
-      .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag));
+      .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag), .err(ring_err));
    assign fe_avail = imem_avail;
    assign fe_ok    = imem_ok;
 
@@ -272,7 +278,7 @@ module ooo2_frontend
       .pred_npc(), .pnpc_kind(dq_pk), .adv_hw(f_adv_hw),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
-      .ready(pb_ready), .valid(dq_valid),
+      .err(f_err), .ready(pb_ready), .valid(dq_valid),
       .slot_valid(dq_sv), .inst(dq_inst), .pc(dq_pc), .seq(dq_seq), .cur_seq(cur_seq));
 
    // THE BUNDLE IS REGISTERED BEFORE THE QUEUE WRITE (plan item T1 (F), step 2, 2026-09-06).
@@ -316,7 +322,7 @@ module ooo2_frontend
       .rollback(redirect), .rb_rsp(redirect_rsp), .rb_ghr(redirect_ghr),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),
-      .res_rvc(res_rvc));
+      .res_rvc(res_rvc), .err(bp_err));
 
    // ------------------------------------------------------------- decoupling queue
    // THE point of this module's shape. fetch's .ready() used to be `accept`, which is
@@ -445,9 +451,9 @@ module ooo2_frontend
    end
 
    // A slot without its predecessor, or a fault pseudo-op beside a real slot, is a fetch defect.
+   wire e_bundle = ~reset & ((dq_sv[1] & ~dq_sv[0]) | (dq_sv2 & ~dq_sv[1]) | (dq_fault & dq_valid));
    always @(posedge clk)
-      if (!reset && ((dq_sv[1] & ~dq_sv[0]) || (dq_sv2 & ~dq_sv[1]) || (dq_fault & dq_valid)))
-         $fatal(1, "ooo2_frontend: malformed bundle sv=%b sv2=%b fault=%b", dq_sv, dq_sv2, dq_fault);
+      if (e_bundle) $fatal(1, "ooo2_frontend: malformed bundle sv=%b sv2=%b fault=%b", dq_sv, dq_sv2, dq_fault);
 
    // ---------------------------------------------------------------- decode
    wire        s_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal;
@@ -603,8 +609,12 @@ module ooo2_frontend
    wire vnext2 = fr2 ? 1'b1 : th2;
    // heads actually consumed this cycle = the new-head slots that became valid
    assign q_pop = {1'b0, vnext0 & ~fr0} + {1'b0, vnext1 & ~fr1} + {1'b0, vnext2 & ~fr2};
-   always @(posedge clk) if (!reset && ((consume_b && !consume) || (consume_c && !consume_b)))
-      $fatal(1, "ooo2_frontend: slot consumed out of order (c=%b b=%b a=%b)", consume_c, consume_b, consume);
+   wire e_order = ~reset & ((consume_b & ~consume) | (consume_c & ~consume_b));
+   always @(posedge clk)
+      if (e_order) $fatal(1, "ooo2_frontend: slot consumed out of order (c=%b b=%b a=%b)", consume_c, consume_b, consume);
+   reg  [1:0] fe_err_q;
+   always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
+   assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
    // the two heads, decoded and fault-masked, as slot contents
    wire [PDW-1:0] m0_pdet = q_pdet;                 wire [PDW-1:0] m1_pdet = q1_pdet;
    wire [PCW-1:0] m0_pc   = f_pc;                   wire [PCW-1:0] m1_pc   = f1_pc;

@@ -115,7 +115,8 @@ module ooo2_core
     output wire [PCW-1:0]          redirect_target,
     // The LSU's invariants, on their way to the SoC's integrity log (rv_errlog). Pure
     // pass-through: registered in the LSU, read in rv_soc_top, nothing in between.
-    output wire [15:0]             lsu_err);
+    output wire [15:0]             lsu_err,
+    output wire [15:0]             fe_err);        // the frontend's invariants (ooo2_frontend)
 
    // =========================================================== stage F
    wire                     d_valid, d_rvc, d_rd_v, d_rs1_v, d_rs2_v, d_rs3_v;
@@ -365,7 +366,7 @@ module ooo2_core
       .d_is_cbo(d_is_cbo), .d_cbo_zero(d_cbo_zero), .d_cbo_keep(d_cbo_keep),
       .d_illegal(d_illegal), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
-      .cur_seq(fe_cur_seq));
+      .cur_seq(fe_cur_seq), .fe_err(fe_err));
 
    // ---- decode-stage direct-CTI redirect (static) -------------------------------------
    // Take a control transfer the predictor called fall-through AT DISPATCH, instead of

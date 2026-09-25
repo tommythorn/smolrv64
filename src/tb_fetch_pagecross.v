@@ -57,7 +57,7 @@ module tb;
       .imem_addr(f_imem_va), .imem_ipc(f_imem_ipc),
       .imem_data(imem_data), .imem_avail(imem_avail_g), .imem_lvl(2'd0), .imem_ok(1'b1),
       .ready(ready), .valid(f_valid), .slot_valid(slot_valid),
-      .inst(f_inst), .pc(f_pc), .seq(f_seq), .cur_seq(cur_seq));
+      .inst(f_inst), .pc(f_pc), .seq(f_seq), .err(), .cur_seq(cur_seq));
 
    mmu #(.AW(AW)) u_immu
      (.clk(clk), .reset(reset), .req_valid(1'b1), .req_vaddr(f_imem_va), .req_access(2'd0),

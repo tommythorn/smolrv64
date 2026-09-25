@@ -85,7 +85,8 @@ module ooo2_predictor
     input  wire [PDW-1:0]       res_pdet,   // the resolving instruction's own details
     input  wire [PCW-1:0]       res_tgt,    // taken-target (train the BTB)
     input  wire [PCW-1:0]       res_pc,     // the resolving CTI's own PC...
-    input  wire                 res_rvc);   // ...and its length
+    input  wire                 res_rvc,    // ...and its length
+    output wire [2:0]           err);       // its invariants, registered (the integrity log)
 
    localparam RB   = BTBB - 3;              // row bits per BTB bank
    localparam YB   = YBITS - 3;             // row bits per corrector bank
@@ -303,13 +304,16 @@ module ooo2_predictor
          end
       end
    end
-   always @(posedge clk) if (!reset) begin
-      if (push && !pq_room)
-         $fatal(1, "ooo2_predictor: a prediction pushed into a full queue");
-      if (pop && pq_e && !flush)
-         $fatal(1, "ooo2_predictor: the aligner popped an empty prediction queue");
-      if (p_cut && hk < sk_q)
-         $fatal(1, "ooo2_predictor: a pair ends (%0d) before the stream's address (%0d)", hk, sk_q);
+   wire e_full = ~reset & push & ~pq_room;
+   wire e_empt = ~reset & pop & pq_e & ~flush;
+   wire e_end  = ~reset & p_cut & (hk < sk_q);
+   reg  [2:0] err_q;
+   always @(posedge clk) err_q <= reset ? 3'd0 : {e_end, e_empt, e_full};
+   assign err = err_q;
+   always @(posedge clk) begin
+      if (e_full) $fatal(1, "ooo2_predictor: a prediction pushed into a full queue");
+      if (e_empt) $fatal(1, "ooo2_predictor: the aligner popped an empty prediction queue");
+      if (e_end)  $fatal(1, "ooo2_predictor: a pair ends (%0d) before the stream's address (%0d)", hk, sk_q);
    end
 
 `ifdef BP_TRACE

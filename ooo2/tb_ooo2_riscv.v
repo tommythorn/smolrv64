@@ -56,6 +56,9 @@ module tb;
    wire [15:0]      lsu_err;   // the LSU's integrity-log bits: never nonzero in a passing run
    always @(posedge clk) if (|lsu_err)
       $fatal(1, "tb: ooo2_lsu err=%h rose without its $fatal -- an integrity-log condition is wired wrong", lsu_err);
+   wire [15:0]      fe_err;    // the frontend's integrity-log bits, likewise
+   always @(posedge clk) if (|fe_err)
+      $fatal(1, "tb: ooo2_frontend fe_err=%h rose without its $fatal -- an integrity-log condition is wired wrong", fe_err);
    ooo2_core #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(), .ic_busy(1'b0),
@@ -79,7 +82,7 @@ module tb;
       .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(retire_pc), .retire_insn(retire_insn),
       .retire2(retire2), .retire2_pc(retire2_pc), .retire2_insn(retire2_insn),
-      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err));
+      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err));
 
    // ---------------------------------------------------------- byte memory
    reg [7:0] mem [0:SIZE-1];

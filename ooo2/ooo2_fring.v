@@ -64,7 +64,8 @@ module ooo2_fring
     input  wire                    ic_ack,
     input  wire                    ic_valid,
     input  wire [127:0]            ic_data,
-    input  wire [9:0]              ic_rtag);
+    input  wire [9:0]              ic_rtag,
+    output wire [5:0]              err);      // its invariants, registered (the integrity log)
 
    localparam integer RS  = 32;                            // ring slots (halfwords): 64 bytes
    localparam integer RSB = $clog2(RS);
@@ -159,19 +160,23 @@ module ooo2_fring
       for (k = 0; k < RS; k = k + 1)
          if (k < rg_cnt) n_mk = n_mk + {{(PQB+1){1'b0}}, rmk[rg_head + k[RSB-1:0]]};
    end
-   always @(posedge clk) if (!reset && !flush) begin
-      if (rg_cnt != 0 && rg_hva != pc_va)
-         $fatal(1, "ooo2_fring: the ring's head %h is not the PC %h", rg_hva, pc_va);
-      if ({1'b0, adv_hw} > rg_cnt)
-         $fatal(1, "ooo2_fring: fetch consumed %0d halfwords of a ring holding %0d", adv_hw, rg_cnt);
-      if (rg_cnt + rp_n > rg_resv)
-         $fatal(1, "ooo2_fring: the ring holds more (%0d) than it reserved (%0d)", rg_cnt + rp_n, rg_resv);
-      if (rp_ok && ic_rtag[GW-1:0] != rg_gen)
-         $fatal(1, "ooo2_fring: a kept I$ answer is from generation %0d, the stream is %0d", ic_rtag[GW-1:0], rg_gen);
-      if (ic_valid && rg_infl == 3'd0)
-         $fatal(1, "ooo2_fring: an I$ answer with no request in flight");
-      if (n_mk + {1'b0, rg_mfl} != {1'b0, pq_cnt})
-         $fatal(1, "ooo2_fring: %0d marks held and %0d in flight, but %0d predictions queued", n_mk, rg_mfl, pq_cnt);
+   wire chk     = ~reset & ~flush;
+   wire e_head  = chk & (rg_cnt != 0) & (rg_hva != pc_va);
+   wire e_over  = chk & ({1'b0, adv_hw} > rg_cnt);
+   wire e_hold  = chk & (rg_cnt + rp_n > rg_resv);
+   wire e_gen   = chk & rp_ok & (ic_rtag[GW-1:0] != rg_gen);
+   wire e_orph  = chk & ic_valid & (rg_infl == 3'd0);
+   wire e_marks = chk & (n_mk + {1'b0, rg_mfl} != {1'b0, pq_cnt});
+   reg  [5:0] err_q;
+   always @(posedge clk) err_q <= reset ? 6'd0 : {e_marks, e_orph, e_gen, e_hold, e_over, e_head};
+   assign err = err_q;
+   always @(posedge clk) begin
+      if (e_head)  $fatal(1, "ooo2_fring: the ring's head %h is not the PC %h", rg_hva, pc_va);
+      if (e_over)  $fatal(1, "ooo2_fring: fetch consumed %0d halfwords of a ring holding %0d", adv_hw, rg_cnt);
+      if (e_hold)  $fatal(1, "ooo2_fring: the ring holds more (%0d) than it reserved (%0d)", rg_cnt + rp_n, rg_resv);
+      if (e_gen)   $fatal(1, "ooo2_fring: a kept I$ answer is from generation %0d, the stream is %0d", ic_rtag[GW-1:0], rg_gen);
+      if (e_orph)  $fatal(1, "ooo2_fring: an I$ answer with no request in flight");
+      if (e_marks) $fatal(1, "ooo2_fring: %0d marks held and %0d in flight, but %0d predictions queued", n_mk, rg_mfl, pq_cnt);
    end
 endmodule
 
