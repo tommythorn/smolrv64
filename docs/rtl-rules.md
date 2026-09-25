@@ -519,8 +519,8 @@ empty. That was the branch's dead NIC under NFS root (2026-09-17), invisible to 
 (G7) and latent since CTF-on-FP let M hold a wrong-path load at all. `xo_mem` is now
 `t_mem(t_paddr)`, `xl_early`'s gate likewise, and the LSU asserts at every start that a
 non-DRAM access is non-speculative (`pt_nonspec`: a committed store, or the LQ's candidate at
-a LIVE head -- `x_head & ~rob_empty`, because after a flush the empty ROB's head index equals
-anything). The rule: a mux that exists for the datapath's convenience is not a source of
+the head -- `x_head`; an LQ entry's op is in the ROB and a flush clears both at one edge, so
+the compare never meets an empty ROB). The rule: a mux that exists for the datapath's convenience is not a source of
 truth for a predicate captured into a queue; the predicate names the thing it describes.
 
 **D13. A squash may not fire while the squashing instruction still owes a write.** The
@@ -574,6 +574,30 @@ event fires while its instruction is in the stage (training at resolve), or it r
 copy the instruction carried out (`fr_rob`, the RAS snapshot). An always-on check confirms
 the event belongs to the instruction it names (a tracked restart has trained before its
 squash fires, `fr_trn`).
+
+**D17. An access that changes memory starts only when it is non-speculative, and the LSU
+asserts it at every start path.** A CBO executes from M, and M speculates past unresolved
+branches. Nothing held a CBO for the ROB head, so a wrong-path `cbo.zero` or `cbo.inval`
+rewrote a line the right path never touched. `clear_page`'s mispredicted loop exit, for
+example, zeroes the first line of the next page. The lockstep judges only retired effects, so
+the damage surfaced only if a later load read the line. The integrity log watched only the
+device half of the predicate (`dev_spec`, a speculative non-DRAM access).
+
+GB5 found the bug twice on 2026-09-24:
+- On the Stage 4 1b bitstream, Speech Recognition miscompared a word after two hours, with
+  every integrity bit clean.
+- The ring-only bitstream set `dev_spec` 47 minutes in. By elimination, that was a wrong-path
+  CBO whose address reached a device.
+
+memrand never put a CBO on a wrong path: its default mix had no branches, and the `--fpmix`
+mix has no CBOs. Its `shadow` op now does exactly that: a late, always-taken branch over a
+`cbo.zero` or a store, then a load of the line. Seed 1 diverged at the first zeroed load on
+the unfixed core.
+
+The fix: an M-direct access (AMO, LR/SC, CBO) starts only at the ROB head. `m_cbo_wait`
+enforces this for CBOs, and AMOs are serialized. The LSU asserts it at the start (`m_spec`,
+integrity bit 39). A queued access is a committed store or the LQ's head candidate
+(`pt_nonspec`).
 
 ## E. Widths and lint
 

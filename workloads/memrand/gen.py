@@ -8,7 +8,8 @@ first 4 KiB of the region is a POINTER PAGE whose entries are random addresses i
 through random aliases: a pointer load followed by an access through it is a store or load
 whose address arrives late (the shape the speculative-load work of C4b must get right). Misaligned
 loads and stores (line and page straddles included), AMOs, LR/SC pairs, FP loads/stores, cbo.zero/
-clean/flush, fence/fence.i, sfence.vma, and a rare REMAP of W1's megapage to the region's second
+clean/flush, a cbo.zero or store on the wrong path of a late always-taken branch (rule D17),
+fence/fence.i, sfence.vma, and a rare REMAP of W1's megapage to the region's second
 half (a mapping change under live accesses) are all in the mix. Register x5-x31 and f0-f31 are the
 value pool; sp/gp/tp are never touched. The DMA agent's interrupts land anywhere in the stream.
 
@@ -123,6 +124,16 @@ def lrsc(base):
 def cbo(base):
     e(f'addi x28, x{base}, {R.randrange(-2048, 2048, 64)}')
     e(f'{R.choice(["cbo.zero", "cbo.clean", "cbo.flush", "cbo.clean"])} (x28)')
+def shadow(base):
+    """a CBO or a store on the WRONG PATH: a branch that is always taken, resolved late (it waits on
+    a divide), and predicted not-taken on first sight, over a cbo.zero or a store to a live line --
+    then a load of that line. The skipped op must leave no trace in memory (rule D17)."""
+    t, off = R.choice(VALS), R.randrange(-2048, 2048, 64)
+    e(f'ori x{t}, x{t}, 1'); e(f'divu x29, x{t}, x{t}'); e('bnez x29, 1f')
+    e(f'addi x28, x{base}, {off}')
+    e('cbo.zero (x28)' if R.random() < 0.7 else f'sd x{R.choice(VALS)}, 0(x28)')
+    out.append('1:')
+    e(f'ld x{R.choice(VALS)}, {off}(x{base})')
 def alu():
     d, s, t = R.choice(VALS), R.choice(VALS), R.choice(VALS)
     e(f'{R.choice(["add", "xor", "sub", "or", "sll", "srl", "mul"])} x{d}, x{s}, x{t}')
@@ -168,14 +179,14 @@ if a.fpmix:
     MIX = [(fpalu, 40), (fload, 7), (fstore, 6), (call, 8), (branch, 10), (alu, 12), (load, 8), (store, 6),
            (pointer_chase, 2), (fences, 0.5)]
 else:
-    MIX = [(load, 30), (store, 22), (fload, 4), (fstore, 4), (amo, 4), (lrsc, 2), (cbo, 2),
+    MIX = [(load, 30), (store, 22), (fload, 4), (fstore, 4), (amo, 4), (lrsc, 2), (cbo, 2), (shadow, 1.5),
            (alu, 18), (div, 1), (pointer_chase, 10), (fences, 2), (remap, 0.3)]
 ops_, wts = zip(*MIX)
 for i in range(a.ops):
     if i % 16 == 0: chunk_base(R.choice(BASES))
     f = R.choices(ops_, weights=wts)[0]
     if f is remap: remap(state)
-    elif f in (load, store, fload, fstore, amo, lrsc, cbo): f(R.choice(BASES))
+    elif f in (load, store, fload, fstore, amo, lrsc, cbo, shadow): f(R.choice(BASES))
     else: f()
 e('fence rw,rw')
 for i, r in enumerate([1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]): e(f'ld x{r}, {i*8}(sp)')

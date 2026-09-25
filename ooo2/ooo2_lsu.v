@@ -753,9 +753,14 @@ module ooo2_lsu
    // this access -- so it is only meaningful on a translate-only LOAD. On anything else the
    // access would start and then be reported to nobody.
    wire e_req_early = req_early & ~(req_xlate & ~req_store & ~req_amo & ~req_cbo);
+   // M's own accesses (AMO, LR/SC, CBO) write memory or reserve it: they start only at the
+   // ROB head, never off a path a branch may still squash (rule D17).
+   wire e_m_spec = (st == S_IDLE) & xl_ok_f & ~m_head;
    always @(posedge clk) if (!reset) begin
       if (e_req_early)
          $fatal(1, "ooo2_lsu: req_early on an access that is not a translate-only load");
+      if (e_m_spec)
+         $fatal(1, "ooo2_lsu: an AMO or CBO started off the ROB head: va=%h cbo=%b amo=%b", req_vaddr, req_cbo, req_amo);
    end
 
    // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------
@@ -770,11 +775,12 @@ module ooo2_lsu
    //   4 tag_reuse   a tag lands and restarts in one cycle (the queue reused the slot)
    //   5 ld_done     pt_ld_done disagrees with pt_done & ~store
    //   6 req_early   req_early on an access that is not a translate-only load
+   //   7 m_spec      an AMO or CBO started off the ROB head
    reg [15:0] err_q;
    initial err_q = 16'd0;
    always @(posedge clk)
       err_q <= reset ? 16'd0
-             : {9'd0, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
+             : {8'd0, e_m_spec, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
                 e_dev_span, e_dev_spec};
    assign err = err_q;
 endmodule

@@ -901,6 +901,10 @@ cycle is legal and was lost once).
   frees -- a CBO waiting for an empty queue deadlocked build L at SLUB init (2026-09-04;
   `workloads/fphammer/cbozero.c` is that shape, 129 retires then silence on the unfixed
   RTL). Only an older store can have an address, because M translates in program order.
+  A CBO also waits for the ROB head: it writes memory and M speculates past unresolved
+  branches, so M's direct accesses (AMO, LR/SC, CBO) start only at the head, asserted at the
+  start (integrity bit 39, rule D17). At the head no older load is live, so the load queue
+  needs no term (asserted).
   For a younger load nothing changes: an entry in the queue, committed or not, is a store
   whose bytes are not in the cache yet, and the alias matrix holds the load behind it.
   **The drain ends at the D$'s ACCEPT** (`wr_acc`, 2026-09-05, plan item 4a): the cache has
@@ -1430,7 +1434,7 @@ then `../../tools/pipeview/target/release/pipeview s.kanata sillyloop.elf`.
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 ooo2/run-ooo2-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `ooo2/run-ooo2-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | disk-backed lockstep: virtio-blk, non-coherent DMA (B6, 2026-09-18; 1.5 G cycles, ~80 min: userspace starts after ~1.3 G) | `make -C workloads/tiny128 cosim-blk` | no divergence, `BLKCHECK-OK` on the console (the initrd's S99blkcheck mounts the 4 MiB ext4 image, verifies every byte, writes a copy back and re-reads it past the page cache); the runner fails on `BLKCHECK-FAIL` or its absence |
-| memrand: random memory ordering under the lockstep (B4, 2026-09-18) | `make -C workloads/memrand sweep SEEDS="1 2 3 4"` (and `sweep-iw3`) | `MEMRAND seed=N: PASS` for every seed: a 50 k-op random stream of loads/stores/AMOs/LR-SC/FP/cbo/fences/sfence.vma/pointer chases/megapage remaps over three VA aliases in S-mode, with the testbench's DMA agent interrupting through PLIC source 11; every load and every store byte judged by the lockstep |
+| memrand: random memory ordering under the lockstep (B4, 2026-09-18) | `make -C workloads/memrand sweep SEEDS="1 2 3 4"` (and `sweep-iw3`) | `MEMRAND seed=N: PASS` for every seed: a 50 k-op random stream of loads/stores/AMOs/LR-SC/FP/cbo/wrong-path cbo.zero and stores behind a late always-taken branch/fences/sfence.vma/pointer chases/megapage remaps over three VA aliases in S-mode, with the testbench's DMA agent interrupting through PLIC source 11; every load and every store byte judged by the lockstep |
 | DDR-latency sweep (B7, 2026-09-17) | `tools/mem-sweep.sh docs/measurements/<date>-mem-sweep.txt` | the table of retires at 60 M for latency 4 / measured / 80 at IW=2 and IW=3; an MLP increment is judged by how much of the gap to latency 4 it closes |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST iteration=4`, same checksum every run; init at ~1.05 G cycles |
 | the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, the userspace stress (B10), the integrity log read back clean from Linux (§11.1, 2026-09-20), rtl= recorded — a `+` on it means a dirty tree and no commit's verdict (G12) |

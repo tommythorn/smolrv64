@@ -2094,20 +2094,19 @@ module ooo2_core
    wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
 
    // A CBO executes from M and is not serialized (cbo.zero clears every page the kernel
-   // hands out), so it would start while an older store still sits in the queue -- and with
-   // the senior store queue that includes stores already RETIRED. "An older store is live"
-   // is `sq_av_any`, an entry WITH AN ADDRESS: M translates in program order, so every
-   // entry older than M's op has one and no younger entry can get one while M is held.
-   // NOT the occupancy -- entries are allocated at dispatch, so the queue can hold stores
-   // younger than the CBO, which then wait for M: the deadlock that hung build L at
-   // SLUB init on 2026-09-04. The other M-executed accesses are covered elsewhere: AMO/LR/SC
-   // are serializing (`drained`), a load's early start asks `ld_older`. Rule C5.
-   // ...and every older LOAD too (2026-09-18, memrand seed 2 under the fast path): a load that
-   // passed M sits in the load queue with its address known until it lands, and a cbo.zero two
-   // instructions younger zeroed its line first. An entry with av=1 is older than M's op (a
-   // younger load has not had its translate pass); a blocked older load only waits on older
-   // stores or on being the head, both of which precede the cbo, so this cannot deadlock.
-   wire m_cbo_wait = m_is_cbo & (sq_av_any | lq_av_any);
+   // hands out), but it writes memory (cbo.zero, cbo.inval), and M speculates past unresolved
+   // branches: it starts only when its op is the ROB head, and the LSU asserts that (rule D17).
+   // At the head every older load has landed, so no load-queue entry is older than the CBO
+   // (asserted below). Older stores can still sit in the queue -- the senior store queue holds
+   // RETIRED stores until they drain -- and "an older store is live" is `sq_av_any`, an entry
+   // WITH AN ADDRESS, never the occupancy: entries are allocated at dispatch, so the queue can
+   // hold stores younger than the CBO, which wait for M (rule C5). The other M-executed
+   // accesses are covered elsewhere: AMO/LR/SC are serializing (`drained`), a load's early
+   // start asks `ld_older`.
+   wire m_cbo_wait = m_is_cbo & (~m_at_head | sq_av_any);
+   always @(posedge clk)
+      if (!reset && m_mem_op && m_is_cbo && m_at_head && lq_av_any)
+         $fatal(1, "ooo2_core: a load with an address is live under a CBO at the ROB head (pc %h)", m_pc);
    ooo2_lsu #(.AW(AW), .DRAM_TOP(DRAM_TOP), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2), .LDTW(LQ_IB)) u_lsu
      (.clk(clk), .reset(reset),
       .dtlb_walking(lsu_dtlb_walking), .dtlb_walk_beg(lsu_dtlb_walk_beg),
