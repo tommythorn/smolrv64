@@ -805,10 +805,16 @@ instret read's second cycle at head (M1b) kept. `csr_file`'s `raddr` and `upd_*`
 register's flops (step 2's lesson: a LUTRAM read in front of `csr_file`'s combinational redirect
 cost IW=3 its closure). The read's value goes to SH_LD and the completion to the ROB through
 M's ports (M is empty by construction, asserted); a trap through `c_kill`; a redirect through
-the one redirect gate (`redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`). M no
-longer holds a system op (asserted), keeps the traps of faulted/illegal/memory ops and fence.i.
-Retire-identical at both widths on the tiny128 boot (the fire cycle is M's first cycle at head).
-The step-1 shadow keeps its trap half (`xtq_*`, M's trap payload asserted equal every cycle).
+the one redirect gate (`redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`).
+
+The SYSQ also takes FENCE and FENCE.I and every instruction that traps at dispatch (a fetch fault,
+an illegal instruction) -- `is_sysq()`, one definition for dispatch and the port (C4b step 1). All
+serialise. A trap from dispatch drives `csr_file`'s `xtrap_*` inputs from the register's
+`{xt, xcause, xtval}` flops and is its own redirect (`csr_file` leaves `xtrap` out of
+`redir_valid`; an always-on check asserts that every trap presented to it redirects). FENCE
+completes at its fire; FENCE.I pulses `ifence` and redirects to its PC + 4. M holds no system
+op, fence or dispatch-time trap (all asserted); it keeps memory ops, AMOs, CBOs, the in-core FP
+ops and data faults. The `xtq_*` shadow checks both M's trap payload and the SYSQ's.
 
 ### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
 
