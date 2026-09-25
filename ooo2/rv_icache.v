@@ -2,12 +2,9 @@
 // rv_icache: the read-only VHPR instruction cache (docs/VHPR.md), one 16-byte pair per cycle
 // (docs/PLAN-2026-09-24-frontend-stage4.md, increment 0).
 //
-// GEOMETRY. SIZE_KB (64) in 2 ways of 64-byte lines. Each way's data lives in two block-RAM
-// banks, the even and the odd 8-byte chunks of every line, so a pair at any 8-byte alignment
-// reads one row from each bank. The pair's odd chunk is always in the first chunk's line; its
-// even chunk is in the NEXT line when the pair starts at a line's last chunk, so each bank has its
-// own line, set and tag lookup. A request must not cross a 4 KiB page (asserted): the next line
-// then shares the request's physical page, and so its physical tag.
+// GEOMETRY. SIZE_KB (64) in 2 ways of 64-byte lines. A pair is a 16-byte-aligned quarter of a
+// line (asserted), so a pair is one line's lookup, and each way's data is two block-RAM banks,
+// the even and the odd 8-byte chunks, read at the same row.
 //
 // HIT. Virtual only: valid, the virtual tag and the request's epoch -- no translation and no
 // physical tag on the hit path (docs/VHPR.md), so an I$ hit never waits on the iTLB.
@@ -52,7 +49,7 @@ module rv_icache #(
    input  wire              clk,
    input  wire              reset,
    input  wire              rd_req,
-   input  wire [63:0]       rd_addr,     // VA of the pair's first byte, 8-byte aligned
+   input  wire [63:0]       rd_addr,     // VA of the pair's first byte, 16-byte aligned
    input  wire [63:0]       rd_pa,       // its PA
    input  wire [RTW-1:0]    rd_tag,
    output wire              rd_ack,      // taken this cycle
@@ -80,21 +77,12 @@ module rv_icache #(
    localparam VTB  = VAW - OFFB - IB;          // virtual tag
    localparam PTB  = PGW - 12;                 // physical tag: PA above the 4 KiB page offset
    localparam EPW  = 2;
-   localparam RB   = IB + 2;                   // bank row: {set, chunk pair}
+   localparam RB   = IB + 2;                   // bank row: {set, pair}
    assign l2_we    = 1'b0;
    assign l2_wdata = 512'd0;
 
    // ---------------------------------------------------------------- the arrays
-   // data: bank index = way*2 + parity
-   reg  [RB-1:0] bk_ra [0:3];   wire [63:0] bk_rd [0:3];
-   reg           bk_we [0:3];   reg  [RB-1:0] bk_wa [0:3];   reg [63:0] bk_wd [0:3];
-   genvar gb;
-   generate for (gb = 0; gb < 4; gb = gb + 1) begin : bank
-      smolrv64_sdpram #(.ADDR_WIDTH(RB), .DATA_WIDTH(64), .READ_LATENCY(1)) u_bank
-        (.clock(clk), .rd_addr(bk_ra[gb]), .rd_data(bk_rd[gb]),
-         .wr_en(bk_we[gb]), .wr_addr(bk_wa[gb]), .wr_data(bk_wd[gb]));
-   end endgenerate
-   // tags, per way, in distributed RAM (two read ports each: the even and the odd line)
+   // tags, per way, in distributed RAM
    reg [VTB-1:0] vt0 [0:SETS-1], vt1 [0:SETS-1];
    reg [PTB-1:0] pt0 [0:SETS-1], pt1 [0:SETS-1];
    reg [EPW-1:0] ep0 [0:SETS-1], ep1 [0:SETS-1];
@@ -106,12 +94,7 @@ module rv_icache #(
    initial cur_ep = {EPW{1'b0}};
 
    // ---------------------------------------------------------------- address split
-   // a pair at VA a: first chunk c = a[5:3]; odd chunk = c or c+1 (always a's line); even chunk
-   // = c+1 of the NEXT line when c == 7, else in a's line.
    function [IB+VTB-1:0] line_of;   input [63:0] a; line_of = a[OFFB +: IB+VTB];   endfunction
-   function en_next;                input [63:0] a; en_next = (a[5:3] == 3'd7);     endfunction
-   function [1:0] epair;            input [63:0] a; epair   = a[3] ? a[5:4] + 2'd1 : a[5:4]; endfunction
-   function [1:0] opair;            input [63:0] a; opair   = a[5:4];               endfunction
 
    // ---------------------------------------------------------------- state
    localparam S_RUN = 3'd0, S_FILL = 3'd1, S_INST = 3'd2, S_RPL = 3'd3, S_CHK = 3'd4,
@@ -150,38 +133,30 @@ module rv_icache #(
    wire [RTW-1:0] a_tag = rp_f ? f_tag : rp_s ? sk_tag : rd_tag;
    wire [EPW-1:0] a_ep  = rp_f ? f_ep  : rp_s ? sk_ep  : cur_ep;
    wire        a_take = rp_f | rp_s | rd_ack;
-   wire [IB+VTB-1:0] a_ol = line_of(a_va);
-   wire [IB+VTB-1:0] a_el = a_ol + {{(IB+VTB-1){1'b0}}, en_next(a_va)};
-   integer b;
-   always @* begin
-      for (b = 0; b < 4; b = b + 1) begin
-         // even banks (0, 2) read the even line's pair, odd banks (1, 3) the odd line's
-         bk_ra[b] = b[0] ? {a_ol[IB-1:0], opair(a_va)} : {a_el[IB-1:0], epair(a_va)};
-         bk_we[b] = (st == S_INST) & (f_way == b[1]);
-         bk_wa[b] = {f_line[IB-1:0], f_k};
-         bk_wd[b] = f_data[{f_k, b[0]} * 64 +: 64];      // chunk 2k (even) or 2k+1 (odd)
-      end
-   end
+   // data: per way, the even and the odd 8-byte chunk of a pair, in two 64-bit banks read at one
+   // row (bank = way*2 + parity)
+   wire [IB+VTB-1:0] a_line = line_of(a_va);
+   wire [RB-1:0]  bk_ra = {a_line[IB-1:0], a_va[5:4]};
+   wire [RB-1:0]  bk_wa = {f_line[IB-1:0], f_k};
+   wire [63:0]    bk_rd [0:3];
+   genvar gb;
+   generate for (gb = 0; gb < 4; gb = gb + 1) begin : bank
+      smolrv64_sdpram #(.ADDR_WIDTH(RB), .DATA_WIDTH(64), .READ_LATENCY(1)) u_bank
+        (.clock(clk), .rd_addr(bk_ra), .rd_data(bk_rd[gb]),
+         .wr_en((st == S_INST) & (f_way == gb[1])), .wr_addr(bk_wa),
+         .wr_data(f_data[{f_k, gb[0]} * 64 +: 64]));             // chunk 2k (even) or 2k+1 (odd)
+   end endgenerate
 
    // ---------------------------------------------------------------- the lookup
-   wire [IB+VTB-1:0] s1_ol = line_of(s1_va);
-   wire [IB+VTB-1:0] s1_el = s1_ol + {{(IB+VTB-1){1'b0}}, en_next(s1_va)};
-   wire [IB-1:0]  set_o = s1_ol[IB-1:0],        set_e = s1_el[IB-1:0];
-   wire [VTB-1:0] vtg_o = s1_ol[IB +: VTB],     vtg_e = s1_el[IB +: VTB];
-   wire [PTB-1:0] ptg   = s1_pa[12 +: PTB];     // both lines: one 4 KiB page
-   wire h_e0 = vl0[set_e] & (vt0[set_e] == vtg_e) & (ep0[set_e] == s1_ep);
-   wire h_e1 = vl1[set_e] & (vt1[set_e] == vtg_e) & (ep1[set_e] == s1_ep);
-   wire h_o0 = vl0[set_o] & (vt0[set_o] == vtg_o) & (ep0[set_o] == s1_ep);
-   wire h_o1 = vl1[set_o] & (vt1[set_o] == vtg_o) & (ep1[set_o] == s1_ep);
-   wire hit_e = h_e0 | h_e1,  hit_o = h_o0 | h_o1;
-   wire hit   = hit_e & hit_o;
-   wire miss  = s1_v & ~hit;
-   wire [63:0] ev = h_e1 ? bk_rd[2] : bk_rd[0];
-   wire [63:0] od = h_o1 ? bk_rd[3] : bk_rd[1];
-   // the line to fill: the odd chunk's (the request's own) line first, then the even chunk's
-   wire        m_odd   = ~hit_o;
-   wire [IB+VTB-1:0] m_line = m_odd ? s1_ol : s1_el;
-   wire [57:0]       m_pl   = {s1_pa[63:OFFB]} + {57'd0, ~m_odd & en_next(s1_va)};
+   wire [IB+VTB-1:0] m_line = line_of(s1_va);      // the line, and the one a miss fills
+   wire [IB-1:0]  s1_set = m_line[IB-1:0];
+   wire [VTB-1:0] s1_vtg = m_line[IB +: VTB];
+   wire [PTB-1:0] ptg    = s1_pa[12 +: PTB];
+   wire h0   = vl0[s1_set] & (vt0[s1_set] == s1_vtg) & (ep0[s1_set] == s1_ep);
+   wire h1   = vl1[s1_set] & (vt1[s1_set] == s1_vtg) & (ep1[s1_set] == s1_ep);
+   wire hit  = h0 | h1;
+   wire miss = s1_v & ~hit;
+   wire [57:0]       m_pl   = s1_pa[63:OFFB];
    // the reconcile probe: the missing line's set, both ways, by physical tag
    wire [IB-1:0]     m_set  = m_line[IB-1:0];
    wire              rc0    = vl0[m_set] & (pt0[m_set] == ptg);
@@ -235,7 +210,7 @@ module rv_icache #(
          // a hit answers; a miss parks the request (and a request taken this cycle in the skid)
          if (s1_v & hit) begin
             rd_valid <= 1'b1;
-            rd_data  <= s1_va[3] ? {ev, od} : {od, ev};
+            rd_data  <= h1 ? {bk_rd[3], bk_rd[2]} : {bk_rd[1], bk_rd[0]};
             rd_resp_addr <= s1_va;  rd_resp_tag <= s1_tag;
          end
          if (miss) begin
@@ -302,10 +277,9 @@ module rv_icache #(
 
    // ---------------------------------------------------------------- invariants
    // Always on; the integrity log carries the same conditions (rv_errlog bits 16..31).
-   wire e_dual   = s1_v & ((h_e0 & h_e1) | (h_o0 & h_o1));               // one line in both ways
-   wire e_page   = rd_ack & (rd_addr[11:3] == 9'h1ff);                   // a pair crossing a 4 KiB page
+   wire e_dual   = s1_v & h0 & h1;                                       // one line in both ways
    wire e_ack    = l2_ack & ~f_l2 & ~pf_infl;                            // an L2 answer nobody asked for
-   wire e_align  = rd_ack & (rd_addr[2:0] != 3'd0);                      // a pair not 8-byte aligned
+   wire e_align  = rd_ack & (rd_addr[3:0] != 4'd0);                      // a pair not 16-byte aligned
    wire e_skid   = miss & rd_ack & sk_v;                                 // a second request into a full skid
    wire e_pa     = rd_ack & (rd_pa[11:0] != rd_addr[11:0]);              // VA and PA disagree in the page offset
    wire e_two    = f_l2 & pf_infl;                                       // a demand read and a prefetch both outstanding
@@ -313,15 +287,14 @@ module rv_icache #(
    wire h_dup1   = vl1[f_set] & (vt1[f_set] == f_line[IB +: VTB]) & (ep1[f_set] == f_ep);
    wire e_dup    = t_vt & ((~f_way & h_dup1) | (f_way & h_dup0));        // stamping a line the other way holds
    wire e_rc2    = miss & rc0 & rc1;                                     // one physical line in both ways
-   wire [15:0] e_now = {7'd0, e_rc2, e_dup, e_two, e_pa, e_skid, e_align, e_ack, e_page, e_dual};
+   wire [15:0] e_now = {7'd0, e_rc2, e_dup, e_two, e_pa, e_skid, e_align, e_ack, 1'b0, e_dual};
    reg  [15:0] err_q;
    always @(posedge clk) err_q <= reset ? 16'd0 : e_now;
    assign err = err_q;
    always @(posedge clk) if (!reset) begin
       if (e_dual)  $fatal(1, "rv_icache: a line hits in both ways (va %h)", s1_va);
-      if (e_page)  $fatal(1, "rv_icache: a pair crosses a 4 KiB page (va %h)", rd_addr);
       if (e_ack)   $fatal(1, "rv_icache: an L2 answer with no read outstanding");
-      if (e_align) $fatal(1, "rv_icache: a pair not 8-byte aligned (va %h)", rd_addr);
+      if (e_align) $fatal(1, "rv_icache: a pair not 16-byte aligned (va %h)", rd_addr);
       if (e_skid)  $fatal(1, "rv_icache: a request into a full skid");
       if (e_pa)    $fatal(1, "rv_icache: VA %h and PA %h disagree in the page offset", rd_addr, rd_pa);
       if (e_two)   $fatal(1, "rv_icache: a demand read and a prefetch outstanding together");
