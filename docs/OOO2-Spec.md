@@ -406,12 +406,9 @@ writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4
 one cycle off the stage's operand registers into a one-entry result register (`icr_*`) that
 lands through the FPU's own landing in any cycle the FPU is not landing; a waiting result
 holds the stage. An FP op with mstatus.FS off is illegal at dispatch and traps from the SYSQ.
-M holds no FP op (its FE-shard yield below is inert). **Since 2026-09-17 the link
-never waits on M**: `cf_link_wb = pend & ~fp_wb`, and M yields the cycle when its FE-shard
-write would collide (`m_fe_yield = cf_link_wb & (m_shard == SH_FE)` in `m_done`,
-`m_done_red` and `m_done_wb`, registers only), so M's completion cone (the SQ's commit, the
-MMU) is off the CTF pipe's wakeup broadcast. Routing the in-core FP ops to SH_LD instead
-was tried and dropped: not a board defect (see 13.x), but no gain over the yield. **And since 2026-09-21 the squash waits for the link it owes**: `cf_red_fire = fr_v &
+M writes SH_LD alone (asserted), so **the link never waits on M**: `cf_link_wb = pend &
+~fp_wb`, and M's completion cone (the SQ's commit, the MMU) is off the CTF pipe's wakeup
+broadcast. **And since 2026-09-21 the squash waits for the link it owes**: `cf_red_fire = fr_v &
 (rob_head_idx == fr_rob) & ~cf_link_pend`. A mispredicting `jal`/`jalr` early-restarts the
 frontend at resolve and stays in the CTF stage until its link is written; if it reached the
 ROB head while the FPU still held the FE port, the squash fired, `redirect` cleared the stage,
@@ -804,7 +801,7 @@ store queue before it and lets nothing dispatch behind it), so at most one is in
 is the ROB head the moment it exists: the SYSQ is one register `{rob, prd, rd_v, is_csr, func,
 addr, src (rs1 or zimm from the port's forwarded read), pc, seq, insn}` and its fire is a flop
 compare, `sy_fire = sy_at_head & ~port_yield & (~sy_instret | sy_head_q)` -- the same one yield
-gate M's dones use (`port_yield = ld_land | fp_land | m_fe_yield`, computed once), and the
+gate M's dones use (`port_yield = ld_land | fp_land`, computed once), and the
 instret read's second cycle at head (M1b) kept. `csr_file`'s `raddr` and `upd_*` are the
 register's flops (step 2's lesson: a LUTRAM read in front of `csr_file`'s combinational redirect
 cost IW=3 its closure). The read's value goes to SH_LD and the completion to the ROB through

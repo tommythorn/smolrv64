@@ -750,9 +750,9 @@ module tb;
          watch_prd <= dut.core.qf_prd;  watch_prd_v <= dut.core.qf_rd_v;
       end
       if (dut.core.cf_valid && dut.core.cf_pc == watch_pc && dut.core.cf_link_wb) begin
-         $display("[c=%0d] watch link-wb  pc=%h cf_link=%h cf_prd=%0d cf_rob=%0d fp_wb=%b md_wr=%b m_wb_fe=%b we_fe=%b wa_fe=%0d wb_fe=%h head=%0d",
+         $display("[c=%0d] watch link-wb  pc=%h cf_link=%h cf_prd=%0d cf_rob=%0d fp_wb=%b md_wr=%b we_fe=%b wa_fe=%0d wb_fe=%h head=%0d",
                   c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_rob, dut.core.fp_wb, dut.core.md_wr,
-                  dut.core.m_wb_fe, dut.core.we_fe, dut.core.wa_fe, dut.core.wb_fe, dut.core.rob_head_idx);
+                  dut.core.we_fe, dut.core.wa_fe, dut.core.wb_fe, dut.core.rob_head_idx);
          watch_prd <= dut.core.cf_prd;  watch_prd_v <= 1'b1;  watch_rob <= dut.core.cf_rob;
       end
       // the watched op retires: the value the cosim REPORTS beside the physreg's REAL contents
@@ -764,8 +764,8 @@ module tb;
          $display("[c=%0d] watch CTF-land pc=%h cf_link=%h cf_prd=%0d wrote=%b redirect=%b land_rob=%0d",
                   c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_link_wrote, dut.core.cf_redirect, dut.core.cf_land_rob);
       if (watch_prd_v && dut.core.we_fe && dut.core.wa_fe == watch_prd)
-         $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b cf_link_wb=%b md_wr=%b m_wb_fe=%b",
-                  c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.cf_link_wb, dut.core.md_wr, dut.core.m_wb_fe);
+         $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b cf_link_wb=%b md_wr=%b",
+                  c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.cf_link_wb, dut.core.md_wr);
       if (dut.core.redirect && watch_prd_v) $display("[c=%0d] watch redirect (prd %0d still watched)", c, watch_prd);
       // the control-flow path: issue into the CTF stage, each cycle it sits there, and retirement
       // on any of the three commit ports
