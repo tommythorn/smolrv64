@@ -16,11 +16,11 @@ zero faults before it lands.
 
 | | |
 |---|---|
-| Geekbench 5.4.1, board, 2026-09-25 | **7** single-core (Integer 8, Crypto 1, Floating Point 0), 6 multi-core; the whole suite in 4 h 24 min at IPC 0.50, against 5 h 35 min at IPC 0.40 on 2026-09-07 and a score of 0.9 for the sequential core in June ([result 24664277](https://browser.geekbench.com/v5/cpu/24664277)) |
+| Geekbench 5.4.1, board, 2026-09-25 | **7** single-core (Integer 8, Crypto 1, Floating Point 0), 6 multi-core; the whole suite in 4 h 17 min at IPC 0.51, against 5 h 35 min at IPC 0.40 on 2026-09-07 and a score of 0.9 for the sequential core in June ([result 24664943](https://browser.geekbench.com/v5/cpu/24664943)) |
 | Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
 | `sha256sum` of a 30 MB file, board | IPC 1.32 to 1.39 |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
-| Area | 97,484 LUTs (45% of the part), 53,045 flip-flops, 128 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
+| Area | 96,664 LUTs (45% of the part), 53,442 flip-flops, 129 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
 
 **Why three bars are so short.** Gaussian Blur, Structure from Motion and Machine
@@ -50,9 +50,9 @@ RTL or measured with the workload named):
   Squash is pointer-only; there is nothing to walk.
 - **A unified physical register file in four shards, one write port each.** Duplication
   buys read ports; sharding by writer is what buys write ports. Each ALU owns a shard
-  alone; loads and the system queue share one, and the FPU, the multiply/divide stage, the
-  jump link and the simple FP operations the memory stage executes share the last, taking
-  turns through one yield gate. So the integer
+  alone; loads and the system queue share one, and the FP stage (the FPU and the one-cycle
+  FP operations beside it), the multiply/divide stage and the jump link share the last,
+  taking turns through one yield gate. So the integer
   schedulers carry no unit-busy term at all. Taking a second writer off one shard was worth
   0.4 ns of cycle time.
 - **Four schedulers, no age matrix.** Two integer schedulers (one per ALU), one in-order
@@ -68,14 +68,15 @@ RTL or measured with the workload named):
   and leaves; the load queue and the store queue reach memory later through one
   pre-translated port, the store winning. A load with no older store in the queue starts
   its access in the same cycle; the queue holds a load behind an older store only when the
-  addresses may alias. Up to four loads are in flight to the data cache at once, matched
+  addresses may alias. Up to eight loads are in flight to the data cache at once, matched
   by the load-queue tag they carry. The store queue is senior to retirement: a committed
   store's ROB slot retires while its bytes drain behind it, and a redirect flushes only the
   uncommitted tail.
-- **System operations at the head, from flops.** CSR accesses and the other serializing
-  operations wait in a one-entry system queue and fire when they reach the ROB head, from
-  registers, so none of them sits in the memory stage's completion path. Multiplies and
-  divides run in their own stage and land by tag.
+- **System operations at the head, from flops.** CSR accesses, fences and the traps decided
+  at dispatch (illegal instructions, fetch faults) wait in a one-entry system queue and fire
+  when they reach the ROB head, from registers, so none of them sits in the memory stage's
+  completion path; the memory stage holds only loads, stores, AMOs and cache operations.
+  Multiplies and divides run in their own stage and land by tag.
 - **A tagged, four-deep FPU.** CVFPU (fpnew) with four operations in flight, results
   returned by tag and out of order, and its own scheduler and execute stage, so FP
   arithmetic never enters the memory stage and cannot block it. Reordering the FP issue
@@ -91,8 +92,8 @@ RTL or measured with the workload named):
   only on a miss, so fetch needs no translation per access; it reads a 16-byte pair every
   cycle. A 64 KB two-way skew-associative physically tagged data cache, write-back, with a
   lookup pipeline and a separate fill machine: a plain read overlaps a fill, a write is
-  accepted under a fill and a write miss is completed by the fill machine, and stores
-  stream at one per two cycles. Both use 64-byte lines in even/odd 64-bit block-RAM banks.
+  accepted under a fill and a write miss is completed by the fill machine, the door takes a
+  read every cycle, and stores stream at one per two cycles. Both use 64-byte lines in even/odd 64-bit block-RAM banks.
   Page-table walks read through the data cache, so a walk always sees dirty page-table
   entries.
 - **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, two
@@ -175,19 +176,22 @@ comparable number across builds, and the subtest rates are what the scores follo
 | 2026-08-28 | dynamic issue, one-wide | 166.67 MHz | 9 h 05 min | 0.26 | |
 | 2026-09-07 | two-wide, the full stack | 166.67 MHz | 5 h 35 min | 0.40 | 5 |
 | 2026-09-24 | three-wide, 36-bit physical addresses | 166.67 MHz | 4 h 34 min | 0.49 | 6 |
-| 2026-09-25 | + the decoupled fetch stream, the VHPR instruction cache | 166.67 MHz | 4 h 24 min | 0.50 | **7** |
+| 2026-09-25 | + the decoupled fetch stream, the VHPR instruction cache | 166.67 MHz | 4 h 24 min | 0.50 | 7 |
+| 2026-09-25 | + an 8-entry load queue, a data-cache read every cycle, an empty memory stage | 166.67 MHz | 4 h 17 min | 0.51 | **7** |
 
 Geekbench 6.7.1 on 27f03a7f, three-wide ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188),
 2026-09-21 to 23): 4 single-core, 4 multi-core. Geekbench 6 is more load-bound than
 Geekbench 5 and multiplies far more.
 
-The CPI stack of the 2026-09-25 Geekbench 5 run: 1.99 cycles per instruction. Charged per
-cycle, with overlap where two units block at once, the load/store unit holds up 53% of
-cycles, the FPU 25%, a full ROB 17%, dispatch holds 10%, the multiplier 2% and the
-frontend 5%, 3% of it waiting on the instruction cache. The data cache misses 8.2 times
-per thousand instructions, and there are 3.3 redirects per thousand. Geekbench is bound by
-the data side: the data cache has one miss outstanding at a time and a second miss blocks
-every access behind it, which is what the next work removes. The three SIMD-shaped
+The CPI stack of the latest Geekbench 5 run (0790196c): 1.94 cycles per instruction.
+Charged per cycle, with overlap where two units block at once, the load/store unit holds
+up 52% of cycles, the FPU 25%, a full ROB 30%, dispatch holds 7%, the multiplier 2% and
+the frontend 5.5%, 3% of it waiting on the instruction cache. The data cache misses 8.2
+times per thousand instructions, and there are 3.3 redirects per thousand. Geekbench is
+bound by the data side: the data cache has one miss outstanding at a time and a second
+miss blocks every access behind it, so the eight-entry load queue mostly fills the window
+(ROB full went from 17% to 30% of cycles) instead of overlapping misses. That is what the
+next work removes. The three SIMD-shaped
 subtests are the ISA's, as explained above.
 
 The plans that produced this, with every item justified by a measurement on this core,
