@@ -399,10 +399,14 @@ core's pending lookup indexes the MAP's candidate and masks its result with `r_b
 ### 5.1 Sharding
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
-read ports only; sharding by *writer* is what buys write ports. SH_FE has four writers:
-the F stage (FPU results, integer destinations included), the CTF link, the MD stage
-(mul/div results by tag, since C1 of the memory backend program, 2026-09-17), and M for the
-in-core FP ops (FSGNJ, FMIN/FMAX, the compares, FMV, FCLASS). **Since 2026-09-17 the link
+read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
+the F stage (FPU results, integer destinations included), the CTF link and the MD stage
+(mul/div results by tag, since C1 of the memory backend program, 2026-09-17). The F stage's
+writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4b step 1(c)):
+one cycle off the stage's operand registers into a one-entry result register (`icr_*`) that
+lands through the FPU's own landing in any cycle the FPU is not landing; a waiting result
+holds the stage. An FP op with mstatus.FS off is illegal at dispatch and traps from the SYSQ.
+M holds no FP op (its FE-shard yield below is inert). **Since 2026-09-17 the link
 never waits on M**: `cf_link_wb = pend & ~fp_wb`, and M yields the cycle when its FE-shard
 write would collide (`m_fe_yield = cf_link_wb & (m_shard == SH_FE)` in `m_done`,
 `m_done_red` and `m_done_wb`, registers only), so M's completion cone (the SQ's commit, the
@@ -813,8 +817,7 @@ serialise. A trap from dispatch drives `csr_file`'s `xtrap_*` inputs from the re
 `{xt, xcause, xtval}` flops and is its own redirect (`csr_file` leaves `xtrap` out of
 `redir_valid`; an always-on check asserts that every trap presented to it redirects). FENCE
 completes at its fire; FENCE.I pulses `ifence` and redirects to its PC + 4. M holds no system
-op, fence or dispatch-time trap (all asserted); it keeps memory ops, AMOs, CBOs, the in-core FP
-ops and data faults. The `xtq_*` shadow checks both M's trap payload and the SYSQ's.
+op, fence or dispatch-time trap (all asserted); it keeps memory ops, AMOs, CBOs and data faults. The `xtq_*` shadow checks both M's trap payload and the SYSQ's.
 
 ### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
 
