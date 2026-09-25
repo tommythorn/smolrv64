@@ -20,7 +20,7 @@ zero faults before it lands.
 | Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
 | `sha256sum` of a 30 MB file, board | IPC 1.32 to 1.39 |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
-| Area | 82,540 LUTs (38% of the part), 49,498 flip-flops, 122 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
+| Area | 97,484 LUTs (45% of the part), 53,045 flip-flops, 128 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
 
 **Why three bars are so short.** Gaussian Blur, Structure from Motion and Machine
