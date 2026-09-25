@@ -37,9 +37,9 @@ module ooo2_ring_spike #(parameter IW=3, HW=8, RS=16, PCW=64, SEQW=8)
    wire [IW-1:0]      al_v;   wire [IW*32-1:0] al_inst;  wire [IW*PCW-1:0] al_pc;
    wire [IW*PBW-1:0]  al_offs;  wire [IW*SEQW-1:0] al_seq;  wire [PBW-1:0] al_cons;  wire al_brt;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
-     (.hwin(win), .avail(avail), .base_pc(hpc), .base_seq(hseq), .solo_all(1'b0), .bytes_late(1'b0),
+     (.hwin(win), .avail(avail), .base_pc(hpc), .base_seq(hseq), .solo_all(1'b0), .bytes_late(1'b0), .mk({HW{1'b0}}),
       .valid(al_v), .inst(al_inst), .pc(al_pc), .offs(al_offs), .seq(al_seq),
-      .consumed(al_cons), .br_term(al_brt));
+      .consumed(al_cons), .br_term(al_brt), .mk_term());
 
    wire [PBW-1:0] cons  = take_q ? al_cons : {PBW{1'b0}};
    wire [RB-1:0]  cons_r = {{(RB-PBW+1){1'b0}}, cons[PBW-2:0]};   // consumed <= HW < RS

@@ -50,7 +50,7 @@ Three architected stages plus a commit point. `F` is itself pipelined internally
 
 | stage | holds | can stall | can stall others | can restart the pipe |
 |---|---|---|---|---|
-| F | PC, predictor read, fetch ring window, aligner | yes | no | no |
+| F | the stream and its predictor, fetch ring window, aligner | yes | no | no |
 | decoupling queue | up to 8 decoded instructions | — | back-pressures F when full | no |
 | X | one decoded+renamed instruction | yes (`d_hold`) | holds F via `accept` | no |
 | M | one instruction | yes (`m_done` low) | holds X via `m_advance` | **yes** (`redirect`) |
@@ -245,14 +245,17 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
 - **The fetch ring** (Stage 4 increment 1a, `ooo2_fring`, in the frontend; the core's instruction
   port is the I$ request and its answer). A ring of 32 halfword slots holds the
   instruction stream from the PC on, filled by an address stream that reads one 16-byte pair per
-  accepted `rv_icache` request (8-byte aligned; 16-byte aligned in a 4 KiB frame's last chunk, so
-  a pair never crosses 4 KiB) and runs ahead of the PC while the ring has room for everything in
-  flight. **Its head is the PC by construction:** `fetch` reports how `pc_q` moves each cycle --
-  `adv_kind` AK_TGT/AK_REDIR is a jump (a predicted-taken fire or a redirect), which empties the
-  ring and restarts the stream at the new PC; otherwise the head advances by `adv_hw` halfwords
-  (a bundle's `consumed`, or one halfword per step of a page straddle) -- so the window fetch
-  aligns is a rotation of the ring from its registered head, with no address compare on the
-  fetch loop. Answers come back in order; a flush marks every request then in flight stale and
+  accepted `rv_icache` request (16-byte aligned, so a pair never crosses 4 KiB; the stream address
+  is the predictor's, §4.2) and runs ahead of the PC while the ring has room for a whole pair and
+  the predictor's queue has room. **Its head is the PC by construction:** the head
+  advances by the halfwords fetch consumed (`adv_hw`: a bundle's `consumed`, or one halfword per
+  step of a page straddle), and a predicted-taken branch does not empty it -- the predictor
+  (§4.2) already steered the stream to the target, whose halfwords follow the branch's; a restart
+  (a redirect, or, a cycle later, a mark fetch rejects) empties it and restarts the stream at the
+  redirect's target or the PC.
+  So the window fetch aligns is a rotation of the ring from its registered head, with no address
+  compare on the fetch loop, and each halfword carries a mark bit: it ends a pair at a CTI the
+  predictor knows. Answers come back in order; a flush marks every request then in flight stale and
   that many answers are dropped (a generation in the tag cross-checks it). A `fence.i` or a
   mapping change (`freeze`) empties the ring. **The stream stays inside the PC's enclosing page**
   (4 KiB, or 2 MiB for a >= 2 MiB leaf) and takes its PA from the iMMU's translation of the PC;
@@ -287,51 +290,65 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   the page's: `bytes_late`) the bundle WAITS rather than cutting (item 10e; until then slot 1
   could not cross a 16-byte chunk boundary, which made 338 of the sha256 kernel's 934 bundles
   singles), so a bundle's shape is a function of the code alone, never of chunk-arrival
-  timing -- which is what the predictor, keyed by the bundle base, requires. (One hole in
+  timing. (One hole in
   that, closed 2026-09-10: the aligner's "a SYSTEM/AMO/FENCE op starts a fresh bundle" test
   ran on slot 1's halfwords before checking they were in the window, so after a restart into
   a chunk whose successor had not landed, the pair register's stale bytes could end the
   bundle after slot 0 -- a shape the code did not determine, and a third bundle base for the
-  loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) The bundle's prediction
-  belongs to its last slot; every slot carries its offset from the bundle base in the predict
-  details so training recomputes the key from the base (§4.2). The field is
-  `clog2(2*IW-1)` bits wide (2 at IW=2, 3 at IW=3: slot 2 sits up to 4 halfwords from the
-  base behind two 32-bit ops), and `ooo2_predictor` asserts it matches what the frontend
-  stamps. `PDW` = 17 (BIMW+YW) + 3 (the RAS-top snapshot) + that field: 22 at IW=2, 23 at IW=3.
-- **Combinational read at `base_pc`** (Stage 1, 2026-09-13): the predictor addresses its BTB
-  and YAGS arrays directly with the presented bundle's base PC (`base_pc` = fetch's `pc_q`, a
-  register), not with a cycle-ahead guess. The arrays are distributed LUTRAM (asynchronous
-  read); a training write that lands on one edge is visible to the very next cycle's read, so a
-  mispredict's redirected refetch reads its own retrained entry with no write-forward. The
-  Stage 1 BTB spike confirmed this cone closes 166.667 MHz with 2.6–3.5 ns of margin at every
-  depth. This replaced the register-only ahead-PC (`apc`) and its length table (`lenp`);
-  reading each bundle's own entry with the current GHR gained **+1.12% of retires** on the boot
-  (§12), well above the +0.13% the ahead scheme's misses had cost.
-  - The read address is register-derived (`pc_q`), so nothing on the array-address path depends
-    on the aligner (rule I6). `cti_ok` (the aligner's "this bundle ends on a control transfer")
-    enters only at `pred_v = apred_v & cti_ok` and `hit`, which steer the real PC and end at
-    `pc_q`'s flops — never at an array address.
-  - `apred_v` is the tag-cone steer without `cti_ok`; `pred_v` adds it. They differ only on a
-    BTB alias, and the exec-side compare turns that into at most one lost prediction, never a
-    wrong one.
-
+  loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) A
+  bundle also ends at the first mark in the window (the aligner sees the window only up to it),
+  so a bundle holds at most one prediction, belonging to its last slot. `PDW` = 31:
+  {RAS-pointer snapshot 3, history snapshot 11, yhit, yctr 2, yidx 11, hit, ctr 2}.
 ### 4.2 Branch prediction
 
-**Keyed by the bundle base.** Prediction is looked up under the bundle's base PC (`base_pc`,
-read combinationally); training recomputes the BTB index and tags from the resolving CTI's PC
-minus its carried offset from that base (`res_base`). At one instruction per bundle
-the two were the same address; with two, a branch in slot 1 trained under its own PC was never
-found under slot 0's, and mispredicted every execution.
+**At the fetch stream, keyed by the last halfword** (Stage 4 increment 1b). The predictor is the
+fetch stream: it holds the stream's address (a registered 16-byte pair and the halfwords of it to
+skip), looks the pair up as the fetch ring asks the I$ for it, and steers the stream to the next
+pair. A BTB entry belongs to its CTI's last halfword; a pair covers eight halfwords, so the BTB and
+the corrector are each eight banks, one per halfword position, and all eight read the same row,
+the next pair's address above its 16 bytes, whenever the stream moves. No two CTIs share an entry
+(rule B10). Every position evaluates its own hit, corrector hit and direction from registers, and
+the one-hot first hit selects. **A pair ends at its first known CTI**, taken or not: the first
+entry at or after the stream's address cuts it at its halfword, and the stream goes on at the
+target (the RAS top for a return) or at the halfword after the CTI; a predicted call pushes its
+last halfword + 2. A pair therefore holds at most one prediction and the history shifts at most
+once per pair. The corrector is read with the history before the current pair's own shift (a
+pair of lag), and the index read is the one carried for training. Training recomputes the key
+from the resolving CTI's PC and length.
+
+The ring marks the pair's last halfword, and the prediction enters an 8-entry queue: taken, the
+target, the corrector details training needs, and the RAS pointer and history as they stand
+before the CTI. The aligner ends a bundle at an instruction that ends on a marked halfword, like
+at a CTI; a bundle ending there pops the head and, when its last instruction is a real branch or
+jump and the prediction is taken, takes it. A mark that does not fit the code is rejected and
+costs a restart a cycle later, as a one-cycle freeze: taken on anything but a branch or jump (a
+page straddler included), the bundle falls through and the stream restarts at its fall-through;
+taken inside a 32-bit instruction, the stream restarts at the PC predicting nothing in its first
+pair; not taken inside a 32-bit instruction, the ring clears the mark and the head is popped.
+Between marks the stream's state does not change, so the queue head's pre-state -- or the
+stream's own registers, when the queue is empty -- is the state as of fetch: every instruction's
+snapshot, and what every restart of the stream (a rejected mark, a freeze) goes back to.
+
+**The history** is the directions of the conditionals the BTB knew, in program order, as
+predicted and then corrected. Every instruction carries the history from before it; a redirect
+restores the redirecting instruction's snapshot, plus its outcome when it is such a conditional,
+and a redirect at the head (a trap, an xret, a serializing op) restarts it at zero. Nothing is
+rebuilt from resolves, which arrive out of order and include wrong-path branches (rule D14).
+
+The 60 M boot (IW=3): 17,784,535 retires (+3.04% over the ring alone), 59,797 redirects
+(63,515); the stream waits on a full ring in 39.5 M of its cycles. Out of context at 4.5 ns the
+frontend reaches 214.6 MHz (196.5 with the ring alone).
 
 | structure | size | organisation | storage |
 |---|---|---|---|
-| BTB | **1024 entries** (`BTBB`=10) | 12-bit tag + 3-bit type + 38-bit target | distributed LUTRAM, async read |
-| YAGS corrector | 1024 entries (`YBITS`=10) | 8-bit tag + 2-bit counter | distributed LUTRAM, async read |
-| GHR | 12 bits (`GHL`) | global history | flops |
+| BTB | **2048 entries** (`BTBB`=11), 8 halfword banks of 256 | 12-bit tag + 3-bit type + 38-bit target | block RAM, read as the stream moves |
+| YAGS corrector | 2048 entries (`YBITS`=11), 8 halfword banks | 8-bit tag + 2-bit counter | distributed RAM, read as the stream moves |
+| GHR | 11 bits (`GHL`) | global history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
+| prediction queue | 8 entries (`PQB`=3) | one per mark, in order | LUTRAM or flops |
 
-**RAS recovery.** Each bundle's predict details carry the RAS top the bundle saw at fetch,
-before its own push or pop. A redirect restores the pointer (`rb_rsp`, formed in `ooo2_core`
+**RAS recovery.** Each instruction's predict details carry the RAS pointer from before it, before
+its own push or pop. A redirect restores the pointer (`rb_rsp`, formed in `ooo2_core`
 beside the redirect target and registered with it) from the redirecting instruction itself:
 a CTF-stage restart from the mispredicting CTI's snapshot plus its own push or pop; a decode
 resteer from the redirected slot's snapshot plus its push when it is a call; a redirect at
@@ -343,8 +360,8 @@ order on its own pipe, and a wrong-path call or return resolves before its squas
 **Training.** Every CTI trains the predictor once, as it leaves the CTF stage (`cf_done`),
 mispredicted or not, from its own stage fields. A mispredict's squash at the ROB head comes
 later, when the stage holds another instruction, and trains nothing (rule D16). A mispredicting
-conditional branch's early restart rolls the speculative history back to `ghr_c` plus its own
-outcome (`res_rep` = `fr_set`). Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3): 1.06
+conditional branch's early restart restores its own history snapshot plus its outcome. The key
+is the CTI's last halfword (its PC and length). Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3): 1.06
 redirects per iteration, the strcmp loop exit; 3 102 919 cycles. The Linux lockstep (IW=3)
 retires 15 607 214 instructions in 60 M cycles and 81 175 485 in 300 M.
 
@@ -1214,11 +1231,13 @@ queue's commit, the second ALU); the only yield left is M's, to a landing load o
 
 | array | module | shape | width | bits | storage |
 |---|---|---|---|---|---|
-| `btb` | `ooo2_predictor` | **1024** | 53 | 54 272 | distributed LUTRAM, async read |
-| `ycorr` | `ooo2_predictor` | 1024 | 10 | 10 240 | distributed LUTRAM, async read |
+| `bank[b].btb` | `ooo2_predictor` | 8 x 256 | 53 | 108 544 | block RAM, read as the stream moves |
+| `bank[b].yc` | `ooo2_predictor` | 8 x 256 | 10 | 20 480 | distributed RAM, read as the stream moves |
 | `ras` | `ooo2_predictor` | 8 | 64 | 512 | flops |
+| `pq` | `ooo2_predictor` | 8 | 95 | 760 | the prediction queue |
+| `ring`, `rmk` | `ooo2_fring` | 32 | 17 | 544 | flops |
 
-Neither `btb` nor `ycorr` has a valid bit — validity is the tag match (§4.2).
+Neither BTB nor corrector bank has a valid bit — validity is the tag match (§4.2).
 
 ### 10.3 Memory system
 

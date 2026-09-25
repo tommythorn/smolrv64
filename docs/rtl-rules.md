@@ -303,6 +303,14 @@ next to an unpredictable branch read cold and foreign counters as its own, 50 of
 iterations mispredicted (30984a0e; found in one run of `BP_TRACE` on `workloads/brbench`).
 The BTB's tag may omit PC[10:1] only because its index is PC[10:1] itself.
 
+**B10. A table that describes instructions is keyed by one instruction's address.** A coarser
+key (a granule, a word) gives two instructions one entry, and two that alternate evict each
+other on every pass. The stream predictor's 8-byte key put 28.7% of the kernel's CTIs beside
+another; its 4-byte key still put every `jal f; c.bnez a0, loop` in one entry, and in one boot
+window the branch mispredicted 3367 of 3368 times (one `BP_TRACE`). Bank by position within the
+fetch block instead -- one bank per halfword position of the pair -- so a block's lookups stay
+one row per bank.
+
 ## C. Cross-cutting predicates
 
 **C1. Computed once, applied at one site.**

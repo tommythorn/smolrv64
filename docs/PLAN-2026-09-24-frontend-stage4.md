@@ -56,19 +56,20 @@ to get it, Tommy's call:
   dropped). Decode reads a window from the registered head and consumption only advances the
   head: no data moves on the critical path. The ring replaces the bundle register, the 8-entry
   decoupling queue and the 16-byte alignment latch.
-- **Prediction keyed by the aligned 8-byte granule holding the branch's last halfword**, never by
-  where the fetch began: the fetch start depends on how the stream arrived (after a redirect it is
-  the target's granule), which is exactly the train/lookup mismatch of D15 and of Proc_8's `ret`.
-  A read covers two granules, so the BTB splits odd/even like the I$ and does two lookups per
-  cycle; the entry holds the tag, type, target and the last halfword's offset in the granule; the
-  first predicted-taken branch at or after `fa` in fetch order wins. The RAS pushes and pops on
+- **Prediction keyed by the branch's last halfword**, never by where the fetch began: the fetch
+  start depends on how the stream arrived (after a redirect it is the target's granule), which is
+  exactly the train/lookup mismatch of D15 and of Proc_8's `ret`. A read covers eight halfwords, so
+  the BTB is eight banks, one per halfword position, and does eight lookups per cycle (as first
+  drafted, an 8-byte granule with the halfword offset in the entry, two banks; 1b measured that
+  two CTIs per granule are common and evict each other, rule B10); the first known branch at or
+  after `fa` in fetch order wins. The RAS pushes and pops on
   the fetch-time prediction as now. YAGS overrides a cycle later: a disagreement truncates the ring
   after the branch and redirects `fa`.
 - **Page end.** A read whose odd chunk lies on the next page appends only the even chunk (the
   VHPR enclosing-page bit, 4 K or 2 M, as now); the straddling instruction completes from the next
   page's read.
-- **Training** carries each CTI's PC and length, so resolve computes the same granule and offset
-  the lookup used.
+- **Training** carries each CTI's PC and length, so resolve computes the same halfword the
+  lookup used.
 
 ## Stages: shorter by two on every refill
 
@@ -149,20 +150,50 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
      build missed by 0.637 ns because the jump gated the I$ request and the ring's writes; with
      that removed it builds at +0.005 (post-route phys_opt).
    - **1b. Prediction moves to the fetch stream -- the whole predictor, not the BTB alone.**
-     Today BTB, YAGS and RAS read combinationally from `pc_q` (a register) and close 166.67 MHz;
-     reading them from the stream's address register (`rg_fa`) is the same cone. Per cycle the
-     stream looks up the two 8-byte granules its pair covers (the BTB split odd/even; each entry
-     keyed by the granule holding a CTI's LAST halfword, holding the tag, type, target, the last
-     halfword's index in the granule and the bimodal counter; YAGS indexed from the granule and
-     the stream's speculative GHR). The first predicted-taken CTI at or after the stream address
-     ends the append and steers the stream (target, or the RAS top for a return); a predicted call
-     pushes its last halfword + 2. The ring carries the prediction: a bit per slot, "a
-     predicted-taken CTI ends here", and a small FIFO of {target, RAS and GHR snapshots, predict
-     details} per such CTI, so the aligner cuts the bundle there and takes `pred_v`/`pred_tgt`
-     from the ring instead of computing them. Training keys by the resolving CTI's last halfword
-     (its PC + length - 2), so the carried slot-offset field goes. A redirect restores the stream's
-     RAS pointer and GHR from the redirecting instruction's snapshots, as today. The zero-bubble
-     taken branch: sillyloop at 17 cycles per iteration (IPC 2.0), and the 300 M loss of 1a back.
+     1b-i (20d192ef) moved the ring into the frontend as `ooo2_fring`, bit-identical, so the core's
+     instruction port is the I$ request and its answer and the predictor can sit beside the ring.
+     1b-ii, as built:
+     - The predictor is the stream: it holds the stream's address (a registered 16-byte pair and
+       skip), looks each pair up as the ring asks the I$ for it, and steers the stream. The BTB and
+       the corrector are eight banks, one per halfword position: an entry belongs to its CTI's
+       last halfword, so no two CTIs share one (rule B10; an 8-byte key put 28.7% of the kernel's
+       CTIs beside another, a 4-byte key every `jal f; c.bnez a0, loop`). All banks read one row,
+       the next pair's address above its 16 bytes, whenever the stream moves. Training keys the
+       same way from the resolving CTI's PC and length, so the carried slot-offset field is gone.
+     - **A pair ends at its first known CTI**, taken or not; the stream goes on at the target
+       (the RAS top for a return) or the halfword after it. At most one prediction per pair, one
+       history shift per pair. Every halfword position evaluates its hit, corrector hit and
+       direction from registers in parallel; a one-hot of the first hit selects.
+     - Pairs are 16-byte aligned, not 8: with the ring decoupling fetch the shorter first pair
+       after a jump into a chunk's upper half costs nothing measurable (60 M: 17,784,535 against
+       17,778,950 at 8-byte alignment), and every bank then reads the same row, which took the
+       row arithmetic out of the stream loop (out-of-context frontend 181.9 -> 214.6 MHz at
+       4.5 ns; the ring alone was 196.5). The I$'s odd/even next-line reads are unused by the
+       stream now: a candidate simplification.
+     - The ring marks the pair's last halfword; a queue (8 entries; the stream stops when it is
+       full) holds each mark's prediction in order: taken, target, the corrector details training
+       needs, and the RAS pointer and history as they stand BEFORE the CTI. The aligner ends a
+       bundle at an instruction that ends on a mark, like at a CTI; a bundle ending there pops the
+       head and, if its last instruction is a real branch or jump predicted taken, takes the
+       prediction -- the target's halfwords already follow in the ring, which does not empty.
+     - A mark that does not fit the code is rejected, and the stream restarts a cycle later as a
+       one-cycle freeze (registered, so the aligner stays out of the stream's next address): taken
+       on a non-branch (a page straddler included) -- the bundle falls through and the stream
+       restarts at its fall-through; taken inside a 32-bit instruction -- the stream restarts at
+       the PC predicting nothing in its first pair; not taken inside a 32-bit instruction -- the
+       ring clears the mark and the head is popped. 477 rejections in the 60 M boot.
+     - Between marks the stream's state is constant, so the queue head's pre-state (the stream's
+       own registers when the queue is empty) is every instruction's snapshot and what a restart
+       restores; there is no separate aligner-side state.
+     - The history travels with each instruction (PDW 31): a redirect restores the redirecting
+       instruction's snapshot plus its own outcome, and `ghr_c`, a history rebuilt from resolves in
+       resolve order with wrong-path branches in it, is gone (rule D14). The corrector is read with
+       the history before the current pair's shift (a pair of lag), so a direction never reaches
+       the next read index.
+     - The corrector allocates only for a conditional the BTB knew (only those carry an index).
+       A CTI younger than a pending early restart trains nothing.
+     Target: the zero-bubble taken branch -- sillyloop at 17 cycles per iteration (IPC 2.0) -- and
+     1a's 300 M loss back.
 2. (Folded into 1b: YAGS moves with the rest of the predictor.)
 3. Translate on a miss, and each line's execute and user bits cached and checked on a hit: the
    stream runs ahead across pages and the iMMU leaves the fetch path.

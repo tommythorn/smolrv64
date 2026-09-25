@@ -34,6 +34,9 @@ module aligner
     input  wire [SEQW-1:0]         base_seq, // seq of slot 0
     input  wire                    solo_all, // force one instruction per bundle (fault replay)
     input  wire                    bytes_late, // the window is short of the page end: more is coming
+    input  wire [HW-1:0]           mk,       // halfwords that end a CTI the predictor knows (ooo2_fring):
+                                             // an instruction ending on one ends the bundle, and one
+                                             // whose FIRST halfword is marked does not fit
     output wire [IW-1:0]           valid,
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
@@ -42,14 +45,18 @@ module aligner
                                              // for the benches, and off the fetch path)
     output wire [IW*SEQW-1:0]      seq,
     output wire [$clog2(HW+2)-1:0] consumed,
-    output wire                    br_term);  // bundle ends on a genuine branch/jump (not a
+    output wire                    br_term,   // bundle ends on a genuine branch/jump (not a
                                               // window cut or a SYSTEM/AMO/FENCE terminator)
+    output wire                    mk_term);  // bundle ends on a marked halfword
 
    localparam PBW = $clog2(HW+2);        // holds a position 0..HW (+1 for lookahead)
 
    // halfword read with out-of-window guard (returns 0 past the window)
    function [15:0] hwr(input [PBW-1:0] idx);
       hwr = (idx < HW) ? hwin[idx*16 +: 16] : 16'b0;
+   endfunction
+   function mkr(input [PBW-1:0] idx);
+      mkr = (idx < HW) ? mk[idx[$clog2(HW)-1:0]] : 1'b0;
    endfunction
 
    // End-of-bundle predecode (opcode bits only -- no full RVC expansion). A control
@@ -105,13 +112,13 @@ module aligner
    reg  [PBW-1:0]   ofv  [0:IW-1];
    reg  [SEQW-1:0]  sqv  [0:IW-1];
    reg  [PBW-1:0]   cons;
-   reg              bt;
+   reg              bt, mt;
 
    integer k;
    reg [PBW-1:0] pos;
    reg           run;
    reg [15:0]    h0;
-   reg           is32, have, is_sys;
+   reg           is32, have, is_sys, mkin;
    // Explicit sensitivity: hwin is read via the hwr() function, which iverilog's
    // @* does not pull into the list -- name it so the block re-evaluates on it.
    // A BUNDLE WAITS FOR ITS BYTES RATHER THAN CUTTING AT THEM (item 10e, 2026-09-05). The
@@ -127,16 +134,18 @@ module aligner
    // runs two chunks ahead now (rv_soc_top), so the wait is rare; at the page end the
    // window is cut as before, deterministic because the page boundary is the code's too.
    reg wt;
-   always @(hwin or avail or base_pc or base_seq or solo_all or bytes_late) begin
+   always @(hwin or avail or base_pc or base_seq or solo_all or bytes_late or mk) begin
       pos = 0;
       run = 1'b1;
       bt  = 1'b0;
+      mt  = 1'b0;
       wt  = 1'b0;
       for (k = 0; k < IW; k = k + 1) begin
          h0   = hwr(pos);
          is32 = (h0[1:0] == 2'b11);
          // all needed halfwords present?  first always, second only if 32-bit
          have = (pos < avail) && (!is32 || ((pos + 1'b1) < avail));
+         mkin = is32 & mkr(pos);              // a mark inside it: what follows is another path's
          // A SYSTEM op (ecall/ebreak/csr/xret), an AMO, or a FENCE is SOLO in its bundle:
          // terminate the bundle BEFORE it (if not slot 0) as well as after (via is_cti). Solo
          // SYSTEM lets a trap roll back TO that checkpoint and precisely annul the faulting op's
@@ -158,19 +167,22 @@ module aligner
          // prediction (workloads/brbench near: 15 of 300 iterations, BP_TRACE, 2026-09-10).
          if ((k != 0) && (solo_all || (have && is_sys))) begin
             v[k] = 1'b0; run = 1'b0;           // SYSTEM (or fault replay) begins a fresh (solo) bundle
+         end else if (mkin) begin
+            v[k] = 1'b0; run = 1'b0;           // it does not fit, and no more of it is coming
          end else begin
             v[k] = run & have;
             if (v[k]) begin
                pos = pos + (is32 ? 2'd2 : 2'd1);
                if (is_cti(h0)) run = 1'b0;  // CTI / SYSTEM / FENCE ends the bundle (youngest)
                if (is_br(h0))  bt  = 1'b1;  // ... and it is a real branch/jump (is_br implies is_cti)
+               if (mkr(pos - 1'b1)) begin run = 1'b0; mt = 1'b1; end   // it ends on a mark
             end else begin                     // prefix: stop at the first that doesn't fit...
                if ((k != 0) && run && bytes_late) wt = 1'b1;   // ...or wait, when it is coming
                run = 1'b0;
             end
          end
       end
-      if (wt) begin v = {IW{1'b0}}; bt = 1'b0; end
+      if (wt) begin v = {IW{1'b0}}; bt = 1'b0; mt = 1'b0; end
       cons = wt ? {PBW{1'b0}} : pos;          // halfwords consumed (straddler excluded)
    end
 
@@ -186,6 +198,7 @@ module aligner
    assign valid    = v;
    assign consumed = cons;
    assign br_term  = bt;
+   assign mk_term  = mt;
 endmodule
 
 `default_nettype wire

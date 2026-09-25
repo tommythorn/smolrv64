@@ -118,7 +118,7 @@ module rv_soc_top #(
    wire                imem_ctx_chg;
    wire                ic_rd_req, ic_rd_ack, ic_rd_valid, ic_inv_busy, fi_stall;
    wire [63:0]         ic_rd_addr, ic_rd_pa;
-   wire [5:0]          ic_tag, ic_rsp_tag;
+   wire [9:0]          ic_tag, ic_rsp_tag;
    wire [127:0]        ic_rd_data;
    wire [63:0]         imem_satp_q;  wire [1:0] imem_priv_q;
    wire                fe_redirect;
@@ -741,7 +741,7 @@ module rv_soc_top #(
    wire ic_inv_req = fi_inv;   // fence.i AND mapping changes go through fi (after the D$ clean-flush)
 
    // The read-only VHPR I$ (ooo2/rv_icache.v): a pair per cycle, hit on the virtual tag alone.
-   rv_icache #(.SIZE_KB(SIZE_KB), .HW(8), .RTW(6)) u_icache
+   rv_icache #(.SIZE_KB(SIZE_KB), .HW(8), .RTW(10)) u_icache
      (.clk(clk), .reset(reset),
       .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_tag(ic_tag),
       .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),

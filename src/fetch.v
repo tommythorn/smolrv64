@@ -2,9 +2,26 @@
 
 // Minimal fetch unit: sequences the PC, reads an HW-halfword window starting at
 // PC, and aligns it into a bundle for decode. Runs fall-through unless the
-// frontend predictor overrides (pred_v/pred_tgt, for a bundle ending on a
-// predicted-taken CTI); corrected by `redirect` (branch mispredict / exception /
-// CPR rollback). PC is the only architectural state here.
+// predictor steered the stream (a marked halfword whose prediction is taken);
+// corrected by `redirect` (branch mispredict / exception / CPR rollback). PC is
+// the only architectural state here.
+//
+// PREDICTION. The fetch ring (ooo2_fring) marks each halfword that ends a pair at a CTI the
+// predictor knows, and the head of the predictor's queue is the first mark's prediction. A
+// bundle ends at the first mark: the aligner ends it at an instruction ending on one. When the bundle's
+// last instruction ends exactly there, fetch consumes the mark (pop) and, if it is a real branch
+// or jump predicted taken, takes the prediction: the ring already holds the target's halfwords
+// after the mark. A mark that does not fit the code is rejected (`reject`), and the frontend
+// restarts the stream a cycle later, withholding the window meanwhile:
+//   - taken, on an instruction that is not a branch or jump (a straddler included): the bundle
+//     goes on falling through, and the ring, which holds the target's halfwords after it, restarts
+//     at its fall-through;
+//   - taken, inside a 32-bit instruction (slot 0 marked, and 32 bits long): nothing is consumed,
+//     and the stream restarts at the PC predicting nothing in its first pair, whose lookup
+//     produced the mark.
+// A not-taken mark on anything else is consumed and ignored, and one inside a 32-bit instruction
+// is dropped (the ring clears it) without consuming anything: the ring's halfwords after it are
+// the fall-through's either way.
 //
 // Carry-free windowing: the window always *starts at PC*, and PC advances by
 // 2*consumed. The aligner excludes a window-straddling 32-bit op from
@@ -55,30 +72,28 @@ module fetch
     input  wire                    irq_inject,
     output wire                    irq_pres,    // ...and it is the presented bundle this cycle: a
                                                 // pending injection waits out a straddle (see irq_go)
-    // branch prediction: when the presented bundle ends on a predicted-taken CTI,
-    // the predictor overrides the fall-through advance. The predictor reads its
-    // arrays combinationally at base_pc, so there is no separately-computed read
-    // address here any more. `pred_npc` is the next PC actually chosen for the
-    // PRESENTED bundle; it rides to dispatch and is the exec-side mispredict
-    // reference (branch_unit redirects iff actual_npc != pred_npc).
-    input  wire                    pred_v,
-    input  wire [PCW-1:0]          pred_tgt,
+    // branch prediction (see PREDICTION above). `pred_npc` is the next PC actually chosen for
+    // the PRESENTED bundle; it rides to dispatch and is the exec-side mispredict reference
+    // (branch_unit redirects iff actual_npc != pred_npc).
+    input  wire [HW-1:0]           imem_mk,     // the window's marks
+    input  wire                    pq_tk,       // the first mark's prediction: taken...
+    input  wire [PCW-1:0]          pq_tgt,      // ...to here
+    output wire                    pop,         // fetch took the first mark's prediction, or dropped it
+    output wire                    drop,        // ...dropped it: the ring clears the mark
+    output wire                    at_mark,     // the presented bundle's last instruction ends at the first mark
+    output wire                    reject,      // the first mark does not fit the code: restart the stream...
+    output wire                    reject_np,   // ...predicting nothing in its first pair
     output wire [PCW-1:0]          pred_npc,
-    // pred_npc WITHOUT THE SUM: which of {pc + length, pred_tgt, pc} pred_npc is. A consumer
+    // pred_npc WITHOUT THE SUM: which of {pc + length, pq_tgt, pc} pred_npc is. A consumer
     // that already knows the instruction's length (decode does) rebuilds pred_npc from this
-    // and pred_tgt and leaves the +2*consumed adder -- eight CARRY8 at the END of the fetch
+    // and pq_tgt and leaves the +2*consumed adder -- eight CARRY8 at the END of the fetch
     // cloud -- out of whatever it stores. ooo2_frontend's decoupling queue is that consumer: its
     // write data was the design's second-worst family on 2026-09-03 (342 endpoints, 25
     // levels, 13 CARRY8, iMMU -> fetch buffer -> aligner -> this adder -> LUTRAM data pin).
     //   0 = fall-through: pc + the presented instruction's length (also the straddle's +4)
-    //   1 = the predicted target (pred_tgt)
+    //   1 = the predicted target (pq_tgt)
     //   2 = this PC (the interrupt pseudo-op holds it)
     output wire [1:0]              pnpc_kind,
-    output wire [PCW-1:0]          ft_npc,      // presented bundle's fall-through (RAS ret addr)
-    output wire                    br_term,     // presented bundle ends on a real branch/jump
-                                                // (prediction is only safe on such bundles)
-    output wire [PCW-1:0]          pc_next,     // pc_q's NEXT-value: the predictor's synchronous read-ahead
-                                                // address (HINT only -- a mismatch costs a stale prediction)
     // instruction memory (combinational read of HW halfwords at imem_addr)
     output wire [PCW-1:0]          imem_addr,
     output wire [PCW-1:0]          imem_ipc,    // PC of the instruction being fetched (fault EPC)
@@ -96,8 +111,7 @@ module fetch
     output wire [IW*32-1:0]        inst,
     output wire [IW*PCW-1:0]       pc,
     output wire [IW*SEQW-1:0]      seq,
-    output wire [2:0]              adv_kind,    // the next PC's chunk relative to pc_q's (see below)
-    output wire [$clog2(HW+2)-1:0] adv_hw,      // halfwords pc_q advances SEQUENTIALLY this cycle (0 on a jump)
+    output wire [$clog2(HW+2)-1:0] adv_hw,      // halfwords fetch consumed from the window this cycle
     output wire [SEQW-1:0]         cur_seq);    // PC register's seqno (for trap resume)
 
    localparam PBW = $clog2(HW+2);
@@ -128,7 +142,7 @@ module fetch
    wire           in_last  = big ? (&off[20:HB+1]) : (&off[11:HB+1]);  // last HW halfwords of the page
    wire [HB:0]    hw_left  = HW[HB:0] - {1'b0, off[HB:1]};       // 1..HW of them from pc_q (page-size independent)
    wire [PBW-1:0] hw_cap   = in_last ? {{(PBW-HB-1){1'b0}}, hw_left} : HW[PBW-1:0];
-   wire           bytes_late = (imem_avail < hw_cap);          // short of the page end: the buffer's shortfall
+   wire           bytes_late = (imem_avail < hw_cap);          // short of the page end: more is coming
    wire [PBW-1:0] eff_avail  = bytes_late ? imem_avail : hw_cap;
    wire [21:0]    pgsz     = big ? 22'h200000 : 22'h001000;     // enclosing page size (2 MiB or 4 KiB)
    wire [20:0]    off_pg   = big ? off : {9'b0, off[11:0]};      // offset within the ENCLOSING page (mask to 4K)
@@ -160,12 +174,12 @@ module fetch
    wire [IW*PCW-1:0] al_pc;
    wire [IW*PBW-1:0] al_offs;
    wire [IW*SEQW-1:0] al_seq;
-   wire al_br_term;
+   wire al_br_term, al_mk_term;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(eff_avail), .base_pc(pc_q), .base_seq(seq_q),
-      .solo_all(solo_all), .bytes_late(bytes_late),
+      .solo_all(solo_all), .bytes_late(bytes_late), .mk(imem_mk),
       .valid(al_valid), .inst(al_inst), .pc(al_pc), .offs(al_offs), .seq(al_seq), .consumed(al_consumed),
-      .br_term(al_br_term));
+      .br_term(al_br_term), .mk_term(al_mk_term));
    // THE FALL-THROUGH AND THE SLOT PCs ARE MUXES, NOT ADDERS (2026-09-05). Gate U, the first
    // build of the two-wide fetch, failed at -0.620 ns on pc_q -> iMMU -> fetch buffer ->
    // aligner -> +2*consumed -> the RAS write and the decoupling queue's slot-1 PC: 23 levels with
@@ -201,13 +215,13 @@ module fetch
    end
    // straddle/irq bundles bypass the aligner: never predict on them (the straddle
    // FSM owns its +4 advance; the pseudo-op holds PC).
-   assign br_term = al_br_term & ~strad & ~irq_go;
+   wire   br_term = al_br_term & ~strad & ~irq_go;
 
    // slot-0 page-boundary straddler: pc_q at the last halfword, a 32-bit op (low2==11),
    // and that low halfword actually present (an I$ hit). The aligner excludes it (the
    // capped window has only one halfword), so we take over with the two-step fetch.
    wire lo_avail     = imem_ok & (imem_avail >= 1'b1);
-   wire straddle_det = ~strad & at_bound & (imem_data[1:0] == 2'b11) & lo_avail & ~irq_go;
+   wire straddle_det = ~strad & at_bound & (imem_data[1:0] == 2'b11) & lo_avail & ~irq_go & ~imem_mk[0];
 
    // straddle output: the high halfword has arrived (PC+2's page resolved) in imem_data[15:0].
    wire              strad_ready = strad & lo_avail;
@@ -226,6 +240,15 @@ module fetch
    assign valid = |slot_valid;          // a bundle is present iff >=1 instr aligned
    wire   fire  = ready && valid;        // advance only on a downstream handshake
 
+   // the first mark (see PREDICTION): where the bundle ends, what it takes, what it rejects
+   assign at_mark   = (strad & imem_mk[0]) | (~strad & ~irq_go & al_mk_term);
+   wire   pred_v    = at_mark & pq_tk & br_term;
+   wire   mid       = imem_ok & ~strad & ~irq_go & imem_mk[0] & (imem_data[1:0] == 2'b11);
+   assign drop      = mid & ~pq_tk;
+   assign reject    = ~reset & ~redirect & ((fire & at_mark & pq_tk & ~pred_v) | (mid & pq_tk));
+   assign reject_np = mid & pq_tk;
+   assign pop       = (fire & at_mark & ~(pq_tk & ~pred_v)) | drop;
+
    integer c;
    reg [SEQW-1:0] nvalid;
    always @* begin
@@ -236,8 +259,8 @@ module fetch
    // normal-path advance: predicted-taken CTI -> target, else fall-through. The
    // straddle/irq arms of the advance chain come first, so pred_v is naturally
    // ignored there (the straddle FSM owns its +4; the pseudo-op holds PC).
-   assign         ft_npc   = ft_sel;                                            // += 2*consumed, by selection
-   wire [PCW-1:0] norm_npc = pred_v ? pred_tgt : ft_npc;
+   wire [PCW-1:0] ft_npc   = ft_sel;                                            // += 2*consumed, by selection
+   wire [PCW-1:0] norm_npc = pred_v ? pq_tgt : ft_npc;
    // the presented bundle's chosen next PC (mispredict reference at execute)
    assign pred_npc = irq_go     ? ipc_q
                    : strad      ? pc_plus[1]           // ipc_q + 4: the straddler's length
@@ -245,47 +268,14 @@ module fetch
    // the same choice, as a selector (the straddle's +4 IS its 32-bit instruction's length)
    assign pnpc_kind = irq_go ? 2'd2 : strad ? 2'd0 : pred_v ? 2'd1 : 2'd0;
 
-   // pc_next mirrors the pc_q flop's next-value (the always block below) as a combinational
-   // output, so the predictor can read the BTB/YAGS one cycle AHEAD at the address that will
-   // be presented next -- a synchronous (block-RAM) read. HINT address only: a disagreement
-   // with the flop costs a stale prediction, never correctness. Arms match the flop exactly.
-   // THE NEXT PC'S CHUNK, AS A KIND. The instruction-memory adapter (rv_soc_top) holds two
-   // 16-byte chunk slots and decides ONE CYCLE EARLY which of them the next PC will read
-   // from, so the served window selects on a register instead of on a 64-bit tag compare
-   // at the head of this loop (pc_q -> compare -> chunk select -> shifter -> aligner ->
-   // next PC was 22 levels, the last family of the IW=3 closure). The arms mirror
-   // pc_next's exactly; the adapter compares its tags against pc_q's chunk, the next
-   // chunk, pred_tgt and redirect_pc in parallel (all registers or a BRAM output) and
-   // picks by this kind. A wrong pick costs one bubble: the live compare still gates imem_ok.
-   localparam [2:0] AK_HOLD = 3'd0, AK_SAME = 3'd1, AK_NEXT = 3'd2, AK_TGT = 3'd3, AK_REDIR = 3'd4;
-   localparam integer CHA = $clog2(HW*2);                               // chunk-align shift
-   wire [PBW:0] ak_off  = {{(PBW-CHA+2){1'b0}}, pc_q[CHA-1:1]};         // halfword offset within the chunk
-   wire [PBW:0] ak_sum1 = ak_off + {{PBW{1'b0}}, 1'b1};                 // one halfword on (the straddle steps)
-   wire [PBW:0] ak_sumc = ak_off + {1'b0, al_consumed};                 // the bundle's fall-through
-   wire [2:0]   ak_ft1  = (ak_sum1 >= HW[PBW:0]) ? AK_NEXT : AK_SAME;
-   wire [2:0]   ak_ftc  = (ak_sumc >= HW[PBW:0]) ? AK_NEXT : AK_SAME;
-   assign adv_kind = reset        ? AK_REDIR     // RESET_PC: the adapter's slots are invalid, any kind serves
-                   : redirect     ? AK_REDIR
-                   : strad        ? (fire ? ak_ft1 : AK_HOLD)
-                   : irq_go       ? AK_HOLD
-                   : straddle_det ? ak_ft1
-                   : fire         ? (pred_v ? AK_TGT : ak_ftc)
-                   :                AK_HOLD;
-   // How far pc_q moves in sequence this cycle: the fetch ring (rv_soc_top) advances its head by
-   // it, and treats AK_TGT/AK_REDIR as a jump. The arms mirror pc_next's.
+   // How far fetch consumed the window this cycle: the fetch ring advances its head by it (a taken
+   // prediction included: its target's halfwords follow the mark in the ring).
    assign adv_hw  = (reset | redirect) ? {PBW{1'b0}}
                   : strad         ? {{(PBW-1){1'b0}}, fire}
                   : irq_go        ? {PBW{1'b0}}
                   : straddle_det  ? {{(PBW-1){1'b0}}, 1'b1}
-                  : (fire & ~pred_v) ? al_consumed
+                  : fire          ? al_consumed
                   :                 {PBW{1'b0}};
-   assign pc_next = reset         ? RESET_PC
-                  : redirect      ? redirect_pc
-                  : strad         ? (fire ? pc_plus[1] : pc_q)
-                  : irq_go        ? pc_q
-                  : straddle_det  ? pc_plus[1]
-                  : fire          ? norm_npc
-                  :                 pc_q;
 
    always @(posedge clk) begin
       if (reset) begin

@@ -8,11 +8,11 @@
 // scalar (IW=1), so the aligner's cross-slot machinery collapses to one slot and
 // `decode_xslot` is not needed at all.
 //
-// CHECKPOINTS. `predictor` keeps its speculative {ghr, ras, ras_ptr} in a
-// predict-details flow: ooo2_predictor captures this bundle's details at `fire` and
-// presents them on pd_fetch; the IR latches that as d_pdet, and it rides the pipeline
-// to M, coming back as res_pdet when the op resolves. No checkpoint ring, no tag: the
-// details are matched to their instruction by BEING the instruction's payload.
+// CHECKPOINTS. ooo2_predictor predicts at the fetch stream and queues its predictions; fetch
+// takes the head's details with the bundle that ends at its mark (pd_mk, else pd_no), the IR
+// latches them as d_pdet, and they ride the pipeline to M, coming back as res_pdet when the op
+// resolves. No checkpoint ring, no tag: the details are matched to their instruction by BEING
+// the instruction's payload.
 
 module ooo2_frontend
   #(parameter PCW   = 64,
@@ -20,8 +20,8 @@ module ooo2_frontend
     parameter HW    = 2,             // fetch window halfwords (one 32-bit instruction)
     parameter IW    = 2,             // pipeline width (instructions/cycle); threaded from OOO2_IW (Stage 3)
     parameter RASB  = 3,             // log2 RAS entries (ooo2_predictor)
-    parameter PDW   = 23,            // ooo2_predictor's predict-detail width (BIMW+YW+BOW); YW
-                                     // shrank 16->14 when the YAGS corrector went 8192->2048
+    parameter GHL   = 11,            // the predictor's history length
+    parameter PDW   = 31,            // ooo2_predictor's predict-detail width
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -48,6 +48,7 @@ module ooo2_frontend
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire [RASB-1:0]         redirect_rsp,      // the RAS top the redirect restores
+    input  wire [GHL-1:0]          redirect_ghr,      // ...and the history
     input  wire                    irq_inject,        // present the interrupt pseudo-op
     output wire                    irq_taken,         // ...and fetch CONSUMED it this cycle
     output wire                    fe_dq_valid,       // fetch produced an instruction this cycle
@@ -65,11 +66,11 @@ module ooo2_frontend
     output wire                    ic_req,
     output wire [63:0]             ic_va,
     output wire [63:0]             ic_pa,
-    output wire [5:0]              ic_tag,
+    output wire [9:0]              ic_tag,
     input  wire                    ic_ack,
     input  wire                    ic_valid,
     input  wire [127:0]            ic_data,
-    input  wire [5:0]              ic_rtag,
+    input  wire [9:0]              ic_rtag,
     input  wire                    imem_fault,        // iMMU fault on this fetch (qualified ready)
     input  wire [3:0]              imem_cause,
 
@@ -80,9 +81,9 @@ module ooo2_frontend
     input  wire                    res_ret,
     input  wire                    res_taken,
     input  wire [PDW-1:0]          res_pdet,        // resolving op's predict details (carried)
-    input  wire [PCW-1:0]          res_pc,          // resolving op's own PC (index/tag recompute)
+    input  wire [PCW-1:0]          res_pc,          // resolving op's own PC...
+    input  wire                    res_rvc,         // ...and length (the predictor's key)
     input  wire [PCW-1:0]          res_tgt,
-    input  wire                    res_rep,
 
     // ================= IR register: the decoupling-queue boundary =================
     output reg                     d_valid,
@@ -208,25 +209,47 @@ module ooo2_frontend
    initial if (FW < 1 || FW > 4) $fatal(1, "ooo2_frontend: IW=%0d out of range 1..4", FW);
    localparam integer FW3 = (FW >= 3) ? 1 : 0;   // sized gates for the third slot/head/push
    localparam integer FW2 = (FW >= 2) ? 1 : 0;
-   wire               dq_valid, f_brt, bp_v;
+   wire               dq_valid;
    wire [FW-1:0]      dq_sv;                      // per-slot valid
    wire [FW*32-1:0]   dq_inst;
    wire [FW*PCW-1:0]  dq_pc;
    wire [FW*SEQW-1:0] dq_seq;
-   wire [PCW-1:0]     f_ftn, bp_tgt, f_pc_next;   // f_pc_next: fetch's next-PC -> predictor read-ahead
+   wire [PCW-1:0]     bp_tgt;
    wire [1:0]         dq_pk;
 
    // ------------------------------------------------------------- the fetch ring
-   wire [2:0]          f_adv_kind;
+   wire                f_pop, f_drop, f_at_mk, f_rej, f_rej_np, bp_tk;
+   // A rejected mark restarts the stream a cycle later, as a freeze of one cycle: the ring
+   // withholds its window, empties and restarts at the PC, and the predictor goes back to the
+   // aligner's state. It is rare, and registering it keeps the aligner out of the stream's next
+   // address (the table rows, the history).
+   reg                 rej_q, rej_np_q;
+   initial begin rej_q = 1'b0; rej_np_q = 1'b0; end
+   always @(posedge clk) begin
+      rej_q    <= f_rej & ~reset;
+      rej_np_q <= f_rej_np;
+   end
    wire [$clog2(HW+2)-1:0] f_adv_hw, imem_avail;
    wire [HW*16-1:0]    imem_data;
+   wire [HW-1:0]       imem_mk;
    wire [1:0]          imem_lvl;
    wire                imem_ok;
-   ooo2_fring #(.HW(HW)) u_ring
-     (.clk(clk), .reset(reset), .freeze(imem_freeze),
-      .adv_kind(f_adv_kind), .adv_hw(f_adv_hw),
-      .pc_va(imem_addr), .pc_pa(imem_pa), .pc_lvl(imem_xlvl), .xlate_ok(imem_xlate_ok),
-      .win(imem_data), .avail(imem_avail), .ok(imem_ok), .lvl(imem_lvl),
+   wire                pr_adv, p_cut, pq_room;
+   wire [63:0]         st_sa;
+   wire [2:0]          st_sk, p_end;
+   localparam integer  PQB = 3;
+   wire [PQB:0]        pq_cnt;
+   // A restart of the stream: reset, a redirect, or a freeze (fence.i, an I$ invalidation, a
+   // mapping change, a rejected mark). It begins at the redirect's target, else at the PC.
+   wire                st_flush = reset | redirect | imem_freeze | rej_q;
+   wire [63:0]         st_rst_a = redirect ? redirect_pc : imem_addr;
+   ooo2_fring #(.HW(HW), .PQB(PQB)) u_ring
+     (.clk(clk), .reset(reset), .freeze(imem_freeze | rej_q), .restart(reset | redirect),
+      .adv_hw(f_adv_hw), .pop(f_pop), .drop(f_drop), .pq_tk(bp_tk), .pq_tgt(bp_tgt),
+      .pc_va(imem_addr), .rst_a(st_rst_a), .pc_pa(imem_pa), .pc_lvl(imem_xlvl), .xlate_ok(imem_xlate_ok),
+      .win(imem_data), .mk(imem_mk), .avail(imem_avail), .ok(imem_ok), .lvl(imem_lvl),
+      .sa(st_sa), .sk(st_sk), .p_cut(p_cut), .p_end(p_end), .pr_adv(pr_adv),
+      .pq_room(pq_room), .pq_cnt(pq_cnt),
       .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag));
    assign fe_avail = imem_avail;
@@ -241,12 +264,12 @@ module ooo2_frontend
       .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
       .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
       .irq_inject(irq_inject), .irq_pres(irq_pres),
-      .pred_v(bp_v), .pred_tgt(bp_tgt),
+      .imem_mk(imem_mk), .pq_tk(bp_tk), .pq_tgt(bp_tgt),
+      .pop(f_pop), .drop(f_drop), .at_mark(f_at_mk), .reject(f_rej), .reject_np(f_rej_np),
       // `pred_npc` (the chosen next PC, with its adder) is left unconnected: the queue
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
-      // the length it decodes anyway. See the queue below. `npc`/`apc` are gone -- the
-      // predictor reads its arrays combinationally at base_pc (= imem_ipc).
-      .pred_npc(), .pnpc_kind(dq_pk), .ft_npc(f_ftn), .br_term(f_brt), .pc_next(f_pc_next), .adv_kind(f_adv_kind), .adv_hw(f_adv_hw),
+      // the length it decodes anyway. See the queue below.
+      .pred_npc(), .pnpc_kind(dq_pk), .adv_hw(f_adv_hw),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
       .ready(pb_ready), .valid(dq_valid),
@@ -283,15 +306,17 @@ module ooo2_frontend
    assign fe_dq_valid = dq_valid;
 
    // ------------------------------------------------------- branch predictor
-   wire [PDW-1:0] pd_fetch;
-   ooo2_predictor #(.PCW(PCW), .PDW(PDW), .OFW(OFW), .RASB(RASB)) u_bp
+   wire [PDW-1:0] pd_mk, pd_no;
+   wire [PDW-1:0] pd_fetch = f_at_mk ? pd_mk : pd_no;   // one bundle's details, all its slots
+   ooo2_predictor #(.PCW(PCW), .PDW(PDW), .RASB(RASB), .GHL(GHL), .PQB(PQB)) u_bp
      (.clk(clk), .reset(reset),
-      .fire(fire), .base_pc(imem_ipc), .rd_pc(f_pc_next), .ft_npc(f_ftn), .cti_ok(f_brt),
-      .pred_v(bp_v), .pred_tgt(bp_tgt),
-      .rollback(redirect), .rb_rsp(redirect_rsp), .pd_fetch(pd_fetch),
+      .flush(st_flush), .rst_a(st_rst_a), .rst_np(rej_np_q & ~redirect), .adv(pr_adv),
+      .sa(st_sa), .sk(st_sk), .p_cut(p_cut), .p_end(p_end), .pq_room(pq_room), .pq_cnt(pq_cnt),
+      .pq_tk(bp_tk), .pq_tgt(bp_tgt), .pd_mk(pd_mk), .pd_no(pd_no), .pop(f_pop),
+      .rollback(redirect), .rb_rsp(redirect_rsp), .rb_ghr(redirect_ghr),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
       .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_pc(res_pc),
-      .res_rep(res_rep));
+      .res_rvc(res_rvc));
 
    // ------------------------------------------------------------- decoupling queue
    // THE point of this module's shape. fetch's .ready() used to be `accept`, which is
@@ -351,23 +376,11 @@ module ooo2_frontend
    // unchanged from the two-wide form.
    wire [QW-1:0]  q_in0   = {pd_fetch, (dq_fault ? imem_ipc : dq_pc[0 +: PCW]), dq_inst[0 +: 32], dq_seq[0 +: SEQW],
                              (dq_sv[1] ? 2'd0 : dq_pk), bp_tgt, dq_fault, imem_cause, imem_addr};
-   // a slot's offset from the bundle base (halfwords) trains the predictor entry the prediction
-   // was looked up under (see res_base). slot 1 = len(s0); slot 2 = len(s0)+len(s1).
-   // The field is OFW bits, the predictor's BOW: slot 2 sits up to 4 halfwords from the base
-   // (two 32-bit ops before it), so IW=3 needs 3 bits. An offset the field cannot hold would
-   // train the BTB at a base no lookup ever uses.
-   localparam integer OFW = (IW <= 1) ? 1 : $clog2(2*IW-1);
-   wire [1:0]     dq_len0 = (dq_inst[0  +: 2] == 2'b11) ? 2'd2 : 2'd1;
-   wire [1:0]     dq_len1 = (dq_inst[32 +: 2] == 2'b11) ? 2'd2 : 2'd1;
-   wire [2:0]     dq_off1w = {1'b0, dq_len0};
-   wire [2:0]     dq_off2w = {1'b0, dq_len0} + {1'b0, dq_len1};
-   wire [OFW-1:0] dq_off1 = dq_off1w[OFW-1:0];   // slots that exist at this IW always fit
-   wire [OFW-1:0] dq_off2 = dq_off2w[OFW-1:0];
    // slot 1: falls through if a slot 2 follows (IW>=3), else carries the bundle prediction.
-   wire [QW-1:0]  q_in1   = {dq_off1, pd_fetch[PDW-OFW-1:0], dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
+   wire [QW-1:0]  q_in1   = {pd_fetch, dq_pc[PCW +: PCW], dq_inst[32 +: 32], dq_seq[SEQW +: SEQW],
                              (dq_sv2 ? 2'd0 : dq_pk), bp_tgt, 1'b0, imem_cause, imem_addr};
    // slot 2: the bundle's last slot when present, so it carries the prediction.
-   wire [QW-1:0]  q_in2   = {dq_off2, pd_fetch[PDW-OFW-1:0], dq_pc2, dq_inst2, dq_seq2,
+   wire [QW-1:0]  q_in2   = {pd_fetch, dq_pc2, dq_inst2, dq_seq2,
                              dq_pk, bp_tgt, 1'b0, imem_cause, imem_addr};
    wire [QAW-1:0] q_wp1   = q_wp + 1'b1;
    wire [QAW-1:0] q_wp2   = q_wp + 2'd2;

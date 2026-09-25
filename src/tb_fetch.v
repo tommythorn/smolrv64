@@ -36,7 +36,8 @@ module tb;
    fetch #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(0)) dut
      (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc),
       .redirect_seq(redirect_seq), .solo_all(1'b0), .irq_inject(1'b0), .irq_pres(),
-      .pred_v(1'b0), .pred_tgt(64'd0),
+      .imem_mk({HW{1'b0}}), .pq_tk(1'b0), .pq_tgt(64'd0),
+      .pop(), .drop(), .at_mark(), .reject(), .reject_np(),
       .imem_addr(imem_addr), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(2'd0), .imem_ok(1'b1), .ready(ready), .valid(valid),
       .slot_valid(slot_valid), .inst(inst), .pc(pc), .seq(seq));

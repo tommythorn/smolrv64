@@ -35,10 +35,8 @@ module ooo2_core
     parameter HW   = `OOO2_HW,
     parameter IW   = `OOO2_IW,
     parameter AW   = 64,
-    // ooo2_predictor's predict-detail width: BIMW+YW (17), the RAS-top snapshot (3 bits, RASB
-    // below), and the slot-offset field, which holds slot IW-1's distance from its bundle base,
-    // up to 2*(IW-1) halfwords.
-    parameter PDW   = 20 + ((IW <= 1) ? 1 : $clog2(2*IW-1)),
+    // ooo2_predictor's predict-detail width: {rsp, ghr, yhit, yctr, yidx, hit, ctr}, 3+11+14+3 bits.
+    parameter PDW   = 31,
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
     parameter        LRAM_LG2 = 18,
@@ -52,11 +50,11 @@ module ooo2_core
     output wire                    ic_req,
     output wire [63:0]             ic_va,           // the pair's first byte, 8-byte aligned
     output wire [63:0]             ic_pa,
-    output wire [5:0]              ic_tag,
+    output wire [9:0]              ic_tag,
     input  wire                    ic_ack,
     input  wire                    ic_valid,
     input  wire [127:0]            ic_data,
-    input  wire [5:0]              ic_rtag,
+    input  wire [9:0]              ic_rtag,
     // Diagnostic only (FBDIAG_BASE readout).  These are the REGISTERED copies the VA tag
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
@@ -164,17 +162,19 @@ module ooo2_core
    // The count, for the counters only (FE_QUE's "no bytes" attribution below).
    wire [$clog2(HW+2)-1:0]  imem_avail_g = imem_ok ? imem_avail : {$clog2(HW+2){1'b0}};
    // resolve/training port (driven from M, below)
-   wire                     res_v, res_cbr, res_call, res_ret, res_taken, res_rep;
+   wire                     res_v, res_cbr, res_call, res_ret, res_taken;
    wire [PCW-1:0]           res_tgt;
    wire                     redirect_is_trap;
    wire [SEQW-1:0]          redirect_seq;
    wire                     fe_red_pulse, fr_set;
-   // The predict details' fields the core reads: the RAS-top snapshot sits just below the
-   // slot-offset field (ooo2_predictor's pd_fetch).
+   // The predict details' fields the core reads: the RAS-top snapshot is the top field, the
+   // history snapshot the next (ooo2_predictor's pd_mk/pd_no).
    localparam integer RASB   = 3;
-   localparam integer PD_OFW = (IW <= 1) ? 1 : $clog2(2*IW-1);
-   localparam integer PD_RSP = PDW - PD_OFW - RASB;          // the snapshot's LSB
+   localparam integer GHL    = 11;
+   localparam integer PD_RSP = PDW - RASB;                   // the RAS snapshot's LSB
+   localparam integer PD_GHR = PD_RSP - GHL;                 // the history snapshot's LSB
    reg  [RASB-1:0]          fe_red_rsp_q;                    // the RAS top the redirect restores
+   reg  [GHL-1:0]           fe_red_ghr_q;                    // ...and the history
    wire [PCW-1:0]           fe_red_tgt;
    wire [SEQW-1:0]          fe_red_seq;
    // decode-stage direct-CTI redirect (static JAL / backward-branch resteer): assigned
@@ -189,17 +189,15 @@ module ooo2_core
    // cycle costs no correctness and no bubble; kept in step with redirect_q so u_bp
    // sees resolve and rollback in their original relative order.
    reg                      res_v_q, res_cbr_q, res_call_q, res_ret_q;
-   reg                      res_taken_q, res_rep_q;
+   reg                      res_taken_q;
    reg [PDW-1:0]            res_pdet_q;
    reg [PCW-1:0]            res_tgt_q;
-   reg [PCW-1:0]            res_pc_q;     // the resolving CTI's own PC. u_bp recomputes its
-                                          // BTB index and its PC-only tags from this instead
-                                          // of carrying them, which is what keeps PDW at 16
-                                          // while the BTB holds 4096 entries.
-   initial begin res_v_q = 1'b0; res_rep_q = 1'b0; end
+   reg [PCW-1:0]            res_pc_q;     // the resolving CTI's own PC and length: u_bp
+   reg                      res_rvc_q;    // recomputes its BTB key and its PC-only tags from
+                                          // them instead of carrying them.
+   initial res_v_q = 1'b0;
    always @(posedge clk) begin
-      if (reset) begin res_v_q <= 1'b0; res_rep_q <= 1'b0; end
-      else       begin res_v_q <= res_v; res_rep_q <= res_rep; end
+      res_v_q     <= ~reset & res_v;
       res_cbr_q   <= res_cbr;
       res_call_q  <= res_call;
       res_ret_q   <= res_ret;
@@ -207,6 +205,7 @@ module ooo2_core
       res_pdet_q  <= cf_pdet;    // control flow resolves on the CTF pipe now, not M
       res_tgt_q   <= res_tgt;
       res_pc_q    <= cf_pc;
+      res_rvc_q   <= cf_rvc;
    end
 
    // ---- FMAX: the frontend sees the redirect one cycle late ----------------------
@@ -340,7 +339,7 @@ module ooo2_core
       .consume_c(rn_valid_c), .three_wide(three_wide),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
-      .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q),
+      .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
       .imem_xlate_ok(immu_ready & ~immu_fault), .imem_freeze(ic_busy | imem_ctx_chg),
@@ -350,7 +349,7 @@ module ooo2_core
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
       .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),
-      .res_pc(res_pc_q), .res_rep(res_rep_q),
+      .res_pc(res_pc_q), .res_rvc(res_rvc_q),
       .d_valid(d_valid), .d_pc(d_pc), .d_insn(d_insn), .d_rvc(d_rvc), .d_seq(d_seq),
       .d_pdet(d_pdet), .d_pred_npc(d_pred_npc),
       .d_rd(d_rd), .d_rs1(d_rs1), .d_rs2(d_rs2), .d_rs3(d_rs3),
@@ -3092,15 +3091,17 @@ module ooo2_core
    // still in it. A mispredict's squash (cf_red_fire) comes later, after the stage has freed and
    // holds another instruction, so cf_land cannot be the training pulse. res_pc_q / res_pdet_q
    // carry the CTI's PC and predictor snapshot to u_bp one cycle later, in step with the
-   // frontend redirect. res_rep marks the resolve that is this cycle's early restart (fr_set),
-   // so the predictor's restored history includes the branch's own outcome.
-   assign res_v     = cf_done & (cf_is_branch | cf_is_jump);
+   // frontend redirect.
+   // A CTI younger than a pending restart (fr_v) is on the wrong path the restart already left:
+   // it resolves on operands that path computed, and it trains nothing. (Wrong-path CTIs that
+   // resolve before the older mispredict does still train: control flow resolves out of order.)
+   wire   cf_wp     = fr_v & ($signed(cf_seq - fr_seq) > 0);
+   assign res_v     = cf_done & (cf_is_branch | cf_is_jump) & ~cf_wp;
    assign res_cbr   = cf_is_branch;
    assign res_call  = cf_is_jump & cf_link_rd;
    assign res_ret   = cf_is_jalr & cf_link_rs & ~cf_link_rd;
    assign res_taken = cf_taken;
    assign res_tgt   = cf_taken_tgt;
-   assign res_rep   = fr_set & cf_is_branch;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing
@@ -3803,6 +3804,16 @@ module ooo2_core
                            :       d3_pdet[PD_RSP +: RASB] + rsp_step({d_cls3[1], 1'b0});
    wire [RASB-1:0] fe_red_rsp = (m_red_fire | sy_red) ? rsp_r : fr_set ? cf_rsp : dec_rsp;
    always @(posedge clk) fe_red_rsp_q <= fe_red_rsp;
+   // ---- the history every frontend redirect restores (ooo2_predictor rb_ghr) ------------------
+   // The redirecting instruction's snapshot, plus its outcome when it is a conditional the BTB
+   // knew (the only ones the history holds): a CTF restart's own branch, or none for a decode
+   // resteer (a jal, or a backward branch the BTB missed). A redirect at the head (a trap, an
+   // xret, a serializing op) starts a new context and restarts the history at zero.
+   wire [GHL-1:0] cf_ghr  = cf_pdet[PD_GHR +: GHL];
+   wire [GHL-1:0] fr_ghr  = (cf_is_branch & cf_pdet[DCR_HIT]) ? {cf_ghr[GHL-2:0], cf_taken} : cf_ghr;
+   wire [GHL-1:0] dec_ghr = dr0 ? d_pdet[PD_GHR +: GHL] : dr1 ? d2_pdet[PD_GHR +: GHL] : d3_pdet[PD_GHR +: GHL];
+   wire [GHL-1:0] fe_red_ghr = (m_red_fire | sy_red) ? {GHL{1'b0}} : fr_set ? fr_ghr : dec_ghr;
+   always @(posedge clk) fe_red_ghr_q <= fe_red_ghr;
    always @(posedge clk) if (!reset) begin
       if (rn_valid_b & ~rn_valid)       $fatal(1, "ooo2_core: slot B dispatched without slot A");
       if (rn_valid_b & (d2_cls == d_cls)) $fatal(1, "ooo2_core: slot B dispatched to slot A's scheduler");

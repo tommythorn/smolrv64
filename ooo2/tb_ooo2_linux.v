@@ -474,6 +474,43 @@ module tb;
    initial for (tdi = 0; tdi < TD_N; tdi = tdi + 1) td_cnt[tdi] = 64'd0;
    always @(posedge clk) if (!reset) td_cnt[td_k] <= td_cnt[td_k] + 64'd1;
 
+   // ---- FRING-SIM: the fetch stream and its predictions, printed with TOPDOWN-SIM ----------
+   // pairs requested and the halfwords they append; marks taken and honoured, not taken, dropped;
+   // restarts by the rejected mark's kind; cycles the stream could have asked for a pair but the
+   // prediction queue or the ring was full.
+   reg [63:0] fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull;
+   initial begin fr_req = 0; fr_hw = 0; fr_tk = 0; fr_nt = 0; fr_drop = 0; fr_rft = 0; fr_rmid = 0;
+                 fr_pqfull = 0; fr_rgfull = 0; end
+   // Trainings, and how many of them came from an instruction that never retired (a wrong-path
+   // CTI resolves out of order and trains before the older mispredict squashes it): resolve marks
+   // the ROB entry, dispatch into it clears the mark, a commit of a marked entry counts.
+   reg [31:0] tr_mk;
+   reg [63:0] tr_n, tr_ret;
+   initial begin tr_mk = 0; tr_n = 0; tr_ret = 0; end
+   always @(posedge clk) if (!reset) begin
+      if (dut.core.rn_valid)   tr_mk[dut.core.rob_d_idx]  <= 1'b0;
+      if (dut.core.rn_valid_b) tr_mk[dut.core.rob_d_idx2] <= 1'b0;
+      if (dut.core.rn_valid_c) tr_mk[dut.core.rob_d_idx3] <= 1'b0;
+      if (dut.core.res_v) begin tr_mk[dut.core.cf_rob] <= 1'b1;  tr_n <= tr_n + 1; end
+      tr_ret <= tr_ret + (dut.core.rob_c_valid  & tr_mk[dut.core.rob_head_idx])
+                       + (dut.core.rob_c2_valid & tr_mk[dut.core.rob_head2_idx])
+                       + (dut.core.rob_c3_valid & tr_mk[dut.core.rob_head3_idx]);
+   end
+   wire fr_open = ~dut.core.fe.u_ring.freeze & dut.core.fe.u_ring.xlate_ok & dut.core.fe.u_ring.inpg;
+   wire fr_rej  = dut.core.fe.f_rej;
+   always @(posedge clk) if (!reset) begin
+      if (dut.core.fe.u_ring.rq_acc) begin
+         fr_req <= fr_req + 1;  fr_hw <= fr_hw + dut.core.fe.u_ring.rq_n;
+      end
+      if (dut.core.fe.f_pop & dut.core.fe.bp_tk & ~fr_rej)  fr_tk <= fr_tk + 1;
+      if (dut.core.fe.f_pop & ~dut.core.fe.bp_tk & ~dut.core.fe.f_drop) fr_nt <= fr_nt + 1;
+      if (dut.core.fe.f_drop)                                fr_drop <= fr_drop + 1;
+      if (fr_rej & ~dut.core.fe.f_rej_np)                    fr_rft  <= fr_rft + 1;
+      if (fr_rej &  dut.core.fe.f_rej_np)                    fr_rmid <= fr_rmid + 1;
+      if (fr_open & ~dut.core.fe.pq_room)                    fr_pqfull <= fr_pqfull + 1;
+      if (fr_open & dut.core.fe.pq_room & ~dut.core.fe.u_ring.ic_req) fr_rgfull <= fr_rgfull + 1;
+   end
+
    // ---- +kanata=<file>: a pipe view for Konata (github.com/shioyadan/Konata) ----------------
    // One row per fetched instruction: Fe (fetched), Dq (in the decoupling queue), Ir (in the
    // instruction register), Ds (dispatched, waiting to issue), its issue port (Xa/Xb = the two
@@ -672,15 +709,17 @@ module tb;
       tohost_done <= 1'b1;  tohost_code <= dmem_wdata >> 1;
    end
 
-   // +fe_trace: the frontend each cycle inside +trace_from/+trace_to -- the fetch PC (the I$
-   // address), the bytes the I$ window holds for it and whether they are its bytes, the
-   // predictor's taken bit, fetch firing, the bundle register, the queue, the IR and dispatch.
+   // +fe_trace: the frontend each cycle inside +trace_from/+trace_to -- the fetch PC, the halfwords
+   // the fetch ring holds for it and whether they are its bytes, the window's marks, what fetch
+   // consumed, a prediction taken, a stream restart, the predictions queued, fetch firing, the
+   // bundle register, the queue, the IR and dispatch.
    reg fe_tr_on;
    initial fe_tr_on = $test$plusargs("fe_trace");
    always @(posedge clk) if (!reset && fe_tr_on && trace_on)
-      $display("FE c=%0d pc=%h avail=%0d ok=%b adv=%0d taken=%b fire=%b pb=%b q=%0d room=%b ir=%b%b%b disp=%b%b%b red=%b",
+      $display("FE c=%0d pc=%h avail=%0d ok=%b mk=%b adv=%0d taken=%b rej=%b pq=%0d fire=%b pb=%b q=%0d room=%b ir=%b%b%b disp=%b%b%b red=%b",
                c, dut.core.fe.u_fetch.pc_q, dut.core.fe.imem_avail, dut.core.fe.imem_ok,
-               dut.core.fe.f_adv_kind, dut.core.fe.bp_v, dut.core.fe.fire, dut.core.fe.pb_v,
+               dut.core.fe.imem_mk, dut.core.fe.f_adv_hw, dut.core.fe.f_pop & dut.core.fe.bp_tk,
+               dut.core.fe.f_rej, dut.core.fe.pq_cnt, dut.core.fe.fire, dut.core.fe.pb_v,
                dut.core.fe.q_cnt, dut.core.fe.q_room,
                dut.core.fe.d_valid, dut.core.fe.d2_valid, dut.core.fe.d3_valid,
                dut.core.rn_valid, dut.core.rn_valid_b, dut.core.rn_valid_c, dut.core.fe.redirect);
@@ -795,6 +834,9 @@ module tb;
          if (tsum != c) $display("TOPDOWN-SIM  NOT CLOSED: %0d counted vs %0d cycles", tsum, c);
          else           $display("TOPDOWN-SIM  closed: %0d cycles", tsum);
       end
+      $display("FRING-SIM pairs=%0d halfwords=%0d taken=%0d not-taken=%0d dropped=%0d restart-fallthrough=%0d restart-inside=%0d pq-full=%0d ring-full=%0d",
+               fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull);
+      $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
       if (kan_on) $fclose(kf);
       $display("perf-stat-sim: begin");
       $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)

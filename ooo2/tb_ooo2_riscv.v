@@ -35,10 +35,10 @@ module tb;
    wire [PCW-1:0]   imem_addr;                 // the fetch PC's PA
    wire             ic_req;                    // the fetch ring's I$ port: a pair per request,
    wire [63:0]      ic_pa;                     // answered the next cycle, in order
-   wire [5:0]       ic_tag;
+   wire [9:0]       ic_tag;
    reg              ic_valid;
    reg  [63:0]      ic_pa_q;
-   reg  [5:0]       ic_rtag;
+   reg  [9:0]       ic_rtag;
    reg  [127:0]     ic_data;
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
