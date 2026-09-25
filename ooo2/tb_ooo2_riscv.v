@@ -43,7 +43,7 @@ module tb;
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
    reg  [63:0]      dmem_rdata;
    wire             dmem_ren, dmem_wen;
-   wire             dmem_rfast;  wire [1:0] dmem_rtag;
+   wire             dmem_rfast;  wire [2:0] dmem_rtag;
    wire [7:0]       dmem_wmask;
    wire [55:0]      ptw_addr, dptw_addr;
    wire             ptw_read, dptw_read;

@@ -111,6 +111,7 @@ module rv_soc_top #(
    // The architectural physical-address width (64 GiB): the core faults any PA beyond its
    // instance's DRAM, so the D$ tags exactly PABITS bits (ooo2_core, THE PHYSICAL-ADDRESS CAP).
    localparam integer PABITS = 36;
+   localparam integer LQ_IB  = 3;    // the core's load-queue index width: the D$ read tag carries it
    localparam LAW  = AW-6;                  // line address width = 58
 
    // ---------------- core <-> caches nets ----------------
@@ -130,7 +131,7 @@ module rv_soc_top #(
    wire [63:0]         dmem_wabase;   // store base PA, unmuxed by the straddle beat
    wire                dmem_rvalid, dmem_wready, dmem_waccept, dmem_idle, ifence;
    wire                dmem_rfast, dmem_rvalid_c, dmem_rbusy;      // the tagged fast load path (C4a)
-   wire [1:0]          dmem_rtag, dmem_rtag_resp;
+   wire [LQ_IB-1:0]    dmem_rtag, dmem_rtag_resp;
    wire [63:0]         dmem_rdata_c;
    wire [55:0]         ptw_addr, dptw_addr;
    wire                ptw_read, dptw_read;
@@ -139,7 +140,7 @@ module rv_soc_top #(
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
    ooo2_core #(.HW(HW), .IW(IW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
-               .PABITS(PABITS)) core
+               .PABITS(PABITS), .LQ_IB(LQ_IB)) core
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .hw_ip(hw_ip), .mtime(clint_mtime),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
@@ -473,7 +474,7 @@ module rv_soc_top #(
    // toggles on every new read, so a response to a SUPERSEDED load (a squash re-issues at a
    // new address) carries the stale generation and is discarded -- exactly what the address
    // compare achieved, in 4 bits instead of 64.
-   localparam DRTW = 4;
+   localparam DRTW = LQ_IB + 2;
    // The tag must be CONSTANT for the request's whole lifetime. lsu_gen flips at the clock
    // edge on dmem_ren, so during the request cycle itself the cache would capture the
    // PRE-flip value while every later compare used the POST-flip one -- legitimate responses
@@ -482,16 +483,16 @@ module rv_soc_top #(
    // response cannot arrive in the capture cycle -- rd_valid is registered).
    // Tag = {client, ...}: the LSU's FAST reads carry the load-queue index the LSU allocated
    // ({2'b00, idx}), its FSM's slow reads one fixed tag of their own (TAG_SLOW), and the two
-   // walkers {01,00} and {10,00}. A response is claimed by the tag its requester allocated
+   // walkers {01,0} and {10,0}. A response is claimed by the tag its requester allocated
    // (rule B1); the LSU's generation toggle that stood here could name one read in flight and
    // is gone. A slow read is one at a time by construction (the FSM parks in S_LD for it).
-   localparam [DRTW-1:0] TAG_SLOW = 4'b1100;
+   localparam [DRTW-1:0] TAG_SLOW = {2'b11, {LQ_IB{1'b0}}};
    wire [DRTW-1:0] lsu_tag_req = dmem_rfast ? {2'b00, dmem_rtag} : TAG_SLOW;   // -> the cache
    wire [DRTW-1:0] dc_rd_resp_tag;
    wire         dc_rv_ok   = dc_rd_valid & (dc_rd_resp_tag == TAG_SLOW);       // the FSM's
-   wire         dc_rv_fast = dc_rd_valid & (dc_rd_resp_tag[3:2] == 2'b00);     // a queued load's
+   wire         dc_rv_fast = dc_rd_valid & (dc_rd_resp_tag[DRTW-1 -: 2] == 2'b00);     // a queued load's
    assign       dmem_rvalid_c  = dc_rv_fast;
-   assign       dmem_rtag_resp = dc_rd_resp_tag[1:0];
+   assign       dmem_rtag_resp = dc_rd_resp_tag[LQ_IB-1:0];
    assign       dmem_rdata_c   = dc_rd_data;
    assign       dmem_rbusy     = c_rd_want;
 `ifdef LSUDBG
@@ -620,7 +621,7 @@ module rv_soc_top #(
    wire dc_inv_req, dc_inv_busy;
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
-   rv_cache #(.PAW(64), .PAW_SIG(PABITS), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
+   rv_cache #(.RTW(DRTW), .PAW(64), .PAW_SIG(PABITS), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
      (.clk(clk), .reset(reset),
       .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_pa(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
       .rd_ack(dc_rd_ack),
@@ -772,7 +773,7 @@ module rv_soc_top #(
    genvar g;
    generate for (g=0; g<2; g=g+1) begin : ptw_adapt
       assign pw_match[g] = dc_rd_valid & pw_busy[g]
-                         & (dc_rd_resp_tag == {(g ? 2'd2 : 2'd1), 2'b00});
+                         & (dc_rd_resp_tag == {(g ? 2'd2 : 2'd1), {LQ_IB{1'b0}}});
       assign pw_ack[g] = dc_rd_ack & ~c_rd_req & (g ? (~pw_rq[0] & pw_rq[1]) : pw_rq[0]);
       always @(posedge clk) if (reset) begin pw_busy[g]<=1'b0; pw_sent[g]<=1'b0; pw_rvalid[g]<=1'b0; end
          else begin
@@ -807,8 +808,8 @@ module rv_soc_top #(
                    :             {8'd0, pw_addr[1*56 +: 56]};
    // ...and the tag that names the requester, selected by the SAME priority.
    wire [DRTW-1:0] dcr_tag = c_rd_req ? lsu_tag_req
-                           : pw_rq[0] ? {2'd1, 2'b00}
-                           :            {2'd2, 2'b00};
+                           : pw_rq[0] ? {2'd1, {LQ_IB{1'b0}}}
+                           :            {2'd2, {LQ_IB{1'b0}}};
 
    // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
    // PTW reads no longer reach the arbiter -- they go through the D$ (dcr_* above), and a D$ miss

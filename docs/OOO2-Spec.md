@@ -1546,9 +1546,12 @@ closure above is real; the branch cannot ship until that defect is found (handof
 
 ## 14. Known limits
 
-- **Up to `LQ_N`=4 fast loads outstanding (by tag), one slow one, and one mul/div in the MD
-  stage** (the stage holds one tag; a second one waits in the F/CTF/MD queue). FP is no longer among them: `NFLIGHT`=4 and
-  results return by tag, out of issue order (§7).
+- **Up to `LQ_N`=8 fast loads outstanding (by tag), one slow one, and one mul/div in the MD
+  stage** (the stage holds one tag; a second one waits in the F/CTF/MD queue). FP is no longer
+  among them: `NFLIGHT`=4 and results return by tag, out of issue order (§7). `LQ_N = 1 << LQ_IB`;
+  `LQ_IB`=3 is a parameter of `ooo2_core` that `rv_soc_top` sets, and the D$ read tag is
+  `{client[1:0], lq_idx}`, `DRTW = LQ_IB + 2`. 4 -> 8 entries measured +2.42% retires at the 60M
+  Linux lockstep and +0.46% at 300M (IW=3, 2026-09-25).
 - **ALU, FP, CTF and mul/div reorder** (§2.1, §7); memory, AMO, CSR and fences still issue
   in program order from `u_iq_l`. A long-latency op in M still blocks *other M-class ops*
   behind it. Freeing those needs the load queue and store buffer, and `head_block` gone.
