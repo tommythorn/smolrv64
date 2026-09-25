@@ -24,8 +24,8 @@
 // Banks are synchronous (READ_LATENCY=1): an address presented in one cycle is captured
 // the next, so multi-word reads serialize a pair (even+odd) per two cycles.
 module rv_cache #(
-   parameter RTW      = 4,      // opaque request-tag width (see rd_tag). 4 leaves room for
-                               // a load-queue index when multiple outstanding loads land.
+   parameter RTW      = 4,      // opaque request-tag width (see rd_tag): the requester's
+                               // name for a read, returned with its response.
    parameter PAW      = 34,
    // THE TAG COVERS THE SIGNIFICANT PHYSICAL ADDRESS BITS, NOT THE PORT WIDTH. The SoC's
    // ports are 64 wide (a PA rides in a 64-bit bus), but the platform decodes 34 bits: 2 GiB

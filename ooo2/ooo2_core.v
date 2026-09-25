@@ -40,7 +40,8 @@ module ooo2_core
     parameter [PCW-1:0] RESET_PC = 0,
     parameter [63:0] LBASE    = 64'h7000_0000,   // the local SRAM, for the LSU's alignment rule
     parameter        LRAM_LG2 = 18,
-    parameter        PABITS   = 36)              // the architectural physical-address width
+    parameter        PABITS   = 36,              // the architectural physical-address width
+    parameter        LQ_IB    = 3)               // the load queue's index width: 1<<LQ_IB entries
    (input  wire                    clk,
     input  wire                    reset,
     // ---- instruction memory: the fetch ring's stream into the I$ (rv_icache) ----
@@ -810,7 +811,7 @@ module ooo2_core
                                                  // (ooo2_sq's head/tail counters), so that a load
                                                  // dispatched against a FULL queue counts NENT
                                                  // older stores, not zero
-   localparam integer LQ_N = 4, LQ_IB = 2;      // load queue:   entries, index width
+   localparam integer LQ_N = 1 << LQ_IB;         // load queue entries
    localparam [1:0] C_I = 2'd0, C_L = 2'd1, C_F = 2'd2, C_I2 = 2'd3;   // C_I2: slot B's ALU ops, the second integer scheduler (10d-ii)
 
    // ORDERED: anything that can trap, redirect, touch memory or hold a unit for more than a
