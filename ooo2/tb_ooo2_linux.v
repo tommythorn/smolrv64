@@ -479,6 +479,18 @@ module tb;
    // restarts by the rejected mark's kind; cycles the stream could have asked for a pair but the
    // prediction queue or the ring was full.
    reg [63:0] fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull;
+   // Cycles the ring is empty and not frozen, by why the stream is not delivering: the iMMU has no
+   // translation of the PC, the stream waits for the PC to reach its page, the I$ holds its door
+   // (a miss being filled), a pair is in flight, or none of these (the restart's own cycle).
+   reg [63:0] fe_mmu, fe_page, fe_door, fe_infl, fe_oth;
+   initial begin fe_mmu = 0; fe_page = 0; fe_door = 0; fe_infl = 0; fe_oth = 0; end
+   always @(posedge clk) if (!reset && dut.core.fe.u_ring.rg_cnt == 0 && !dut.core.fe.u_ring.freeze) begin
+      if (!dut.core.fe.u_ring.xlate_ok)                               fe_mmu  <= fe_mmu + 1;
+      else if (!dut.core.fe.u_ring.inpg)                              fe_page <= fe_page + 1;
+      else if (dut.core.fe.u_ring.ic_req & ~dut.core.fe.u_ring.ic_ack) fe_door <= fe_door + 1;
+      else if (dut.core.fe.u_ring.rg_infl != 0)                       fe_infl <= fe_infl + 1;
+      else                                                            fe_oth  <= fe_oth + 1;
+   end
    initial begin fr_req = 0; fr_hw = 0; fr_tk = 0; fr_nt = 0; fr_drop = 0; fr_rft = 0; fr_rmid = 0;
                  fr_pqfull = 0; fr_rgfull = 0; end
    // Trainings, and how many of them came from an instruction that never retired (a wrong-path
@@ -836,6 +848,8 @@ module tb;
       end
       $display("FRING-SIM pairs=%0d halfwords=%0d taken=%0d not-taken=%0d dropped=%0d restart-fallthrough=%0d restart-inside=%0d pq-full=%0d ring-full=%0d",
                fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull);
+      $display("FRING-EMPTY immu=%0d page=%0d icache-door=%0d in-flight=%0d other=%0d",
+               fe_mmu, fe_page, fe_door, fe_infl, fe_oth);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
       if (kan_on) $fclose(kf);
       $display("perf-stat-sim: begin");
