@@ -253,18 +253,17 @@ if {1} {
         puts "fetch window = 8 halfwords (OOO2_HW=8) -- the shipping build."
         lappend vdefines "OOO2_HW=8"
     }
-    # Pipeline width. 2 is the shipping build AND the RTL default (the ifndef OOO2_IW in
-    # ooo2_core.v / rv_soc_top.v). 3 is the wide config (a 3rd ALU + 5th PRF shard, IW=3);
-    # 1 is the narrow one. One knob drives the whole width-generic frontend + backend.
+    # Pipeline width. 3 is the shipping build AND the RTL default (the ifndef OOO2_IW in
+    # ooo2_core.v / rv_soc_top.v); 2 and 1 are the narrower configurations. One knob drives the whole width-generic frontend + backend.
     if {[info exists env(OOO2_IW)] && $env(OOO2_IW) ne ""} {
         if {$env(OOO2_IW) != 1 && $env(OOO2_IW) != 2 && $env(OOO2_IW) != 3} {
-            error "OOO2_IW=$env(OOO2_IW): only 1, 2 or 3 (pipeline width); 2 is the shipping build."
+            error "OOO2_IW=$env(OOO2_IW): only 1, 2 or 3 (pipeline width); 3 is the shipping build."
         }
-        puts "OOO2_IW override: pipeline width = $env(OOO2_IW) (the shipping build is 2)."
+        puts "OOO2_IW override: pipeline width = $env(OOO2_IW) (the shipping build is 3)."
         lappend vdefines "OOO2_IW=$env(OOO2_IW)"
     } else {
-        puts "pipeline width = 2 (OOO2_IW=2) -- the shipping build."
-        lappend vdefines "OOO2_IW=2"
+        puts "pipeline width = 3 (OOO2_IW=3) -- the shipping build."
+        lappend vdefines "OOO2_IW=3"
     }
 }
 set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]

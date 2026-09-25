@@ -179,10 +179,10 @@ fi
 # aligner stalls 37% of cycles against 8% at HW=4. A whole priority list was built on the
 # wrong number before this was caught. Measure at the width the hardware uses.
 hw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_HW=\([0-9]*\).*/\1/p'); hw=${hw:-8}
-# The rows are keyed by cycles and fetch width only; a non-default PIPELINE width (OOO2_IW=3, or 1)
-# retires a different count and has no row, so its verdict is the lockstep alone -- comparing it
-# against the IW=2 row printed COSIM-PERF FAIL three times on 2026-09-17 for runs that were clean.
-iw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_IW=\([0-9]*\).*/\1/p'); iw=${iw:-2}
+# The rows are keyed by cycles, fetch width and PIPELINE width: a run at another pipeline width
+# retires a different count, so it is graded only against its own width's rows. The width is the
+# RTL default (3) unless VDEFS names another.
+iw=$(printf '%s' "${VDEFS:-}" | sed -n 's/.*-DOOO2_IW=\([0-9]*\).*/\1/p'); iw=${iw:-3}
 # A row's optional 5th column is the pipeline width it was measured at (2 when absent), so
 # IW=3 has its own rows since 2026-09-17 -- and its own count, now that the testbench sums
 # the third commit port. A width with no row is judged by the lockstep alone.

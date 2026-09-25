@@ -27,7 +27,7 @@
  `define OOO2_HW 8                 // fetch window halfwords: 16 bytes, the shipping build since 2026-09-05 (4 before)
 `endif
 `ifndef OOO2_IW
- `define OOO2_IW 2                 // pipeline width (instructions/cycle); 2 = shipping. Stage 3 width knob.
+ `define OOO2_IW 3                 // pipeline width (instructions/cycle); 3 = shipping. Stage 3 width knob.
 `endif
 module ooo2_core
   #(parameter PCW  = 64,

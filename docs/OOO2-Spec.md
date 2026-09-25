@@ -21,17 +21,17 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
-| Fetch / dispatch / retire | **two-wide** (plan items 10a-10c, 2026-09-05/06; one-wide before) |
+| Fetch / dispatch / retire | **three-wide** (`OOO2_IW=3`, the RTL and build default; `OOO2_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops (two schedulers, two ALUs) reorder freely; FP ops, branches, jumps and mul/div reorder on the F/CTF/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
-| Commit | in order, from the ROB head, up to 2/cycle |
+| Commit | in order, from the ROB head, up to `IW`/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
 | Target | AMD XCKU5P, `probe_clk` **166.67 MHz** (6.000 ns) at `PROBE_CLK_DIV8=48` |
 
 It is called OOO2 because it was the second out-of-order core in this tree (the sharded
 one it replaced kept the plain `ooo` name until it was deleted). It began life in 2026-08 as
-an in-order pipeline that only completed out of order; issue went dynamic on 2026-08-27 and
-the machine went two-wide on 2026-09-05. Older sections below describe it as it was when
+an in-order pipeline that only completed out of order; issue went dynamic on 2026-08-27,
+the machine went two-wide on 2026-09-05, and three-wide closed timing on 2026-09-17. Older sections below describe it as it was when
 they were written and say so.
 
 ---
@@ -1569,8 +1569,8 @@ CONFIGURATION it was measured in; anything unmeasured says so.
 
 ### Measurement discipline (read before adding a number here)
 
-**THE SHIPPING `OOO2_HW` IS THE DEFAULT EVERYWHERE** (8 since 2026-09-05, 4 before) -- the RTL, `build.tcl` and the sim
-runners -- because a shipping configuration that has to be remembered is one that will be
+**THE SHIPPING `OOO2_HW` AND `OOO2_IW` ARE THE DEFAULTS EVERYWHERE** (`OOO2_HW` 8 since 2026-09-05, 4 before;
+`OOO2_IW` 3 since 2026-09-25, 2 before) -- the RTL, `build.tcl` and the sim runners -- because a shipping configuration that has to be remembered is one that will be
 forgotten, and this one was: `OOO2_HW` and `PROBE_CLK_DIV8` live only on the command line
 (`build.tcl` rebuilds the define list from scratch every run, so the `.xpr` records the
 last build and carries nothing forward), and the command anybody actually types is

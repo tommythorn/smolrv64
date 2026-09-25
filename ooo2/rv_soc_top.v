@@ -40,7 +40,7 @@
  `define OOO2_HW 8                 // fetch window halfwords (must match ooo2_core.v)
 `endif
 `ifndef OOO2_IW
- `define OOO2_IW 2                 // pipeline width (must match ooo2_core.v)
+ `define OOO2_IW 3                 // pipeline width (must match ooo2_core.v)
 `endif
 module rv_soc_top #(
    parameter HW=`OOO2_HW, IW=`OOO2_IW, PCW=64, SEQW=8,   // fetch window halfwords / pipeline width
