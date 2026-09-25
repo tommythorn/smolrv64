@@ -136,6 +136,11 @@ module ooo2_core
    wire [4:0]               d_amo_func;
    wire                     d_is_fp, d_is_fencei, d_is_cbo, d_cbo_zero, d_cbo_keep;
    wire                     d_illegal, d_mis_taken, d_mis_nt, d_fault;
+   // AN FP INSTRUCTION WITH mstatus.FS OFF IS ILLEGAL AT DISPATCH. FS changes only by a CSR write,
+   // which serialises, so at dispatch it already reflects every older instruction; the op then
+   // traps from the SYSQ like any other illegal instruction. One site: every core use of
+   // d*_illegal below sees it.
+   wire                     d_illegal_fe, d2_illegal_fe, d3_illegal_fe;
    wire [3:0]               d_fault_cause;
    wire [SEQW-1:0]          fe_cur_seq;
 
@@ -289,6 +294,8 @@ module ooo2_core
    wire d2_cbo_zero;
    wire d2_cbo_keep;
    wire d2_illegal;
+   assign d_illegal  = d_illegal_fe  | (d_is_fp  & fs_off);
+   assign d2_illegal = d2_illegal_fe | (d2_is_fp & fs_off);
    wire d2_mis_taken;
    wire d2_mis_nt;
    wire d2_fault;
@@ -325,6 +332,7 @@ module ooo2_core
    wire d3_is_fp, d3_is_fencei;
    wire d3_is_cbo, d3_cbo_zero, d3_cbo_keep;
    wire d3_illegal;
+   assign d3_illegal = d3_illegal_fe | (d3_is_fp & fs_off);
    wire d3_mis_taken, d3_mis_nt;
    wire d3_fault;
    wire [3:0] d3_fault_cause;
@@ -338,8 +346,8 @@ module ooo2_core
       // slot C (IW>=3): consume_c is the third rename valid; three_wide=(IW>=3) is the master
       // enable. At IW=2 three_wide=0, so the frontend never presents slot C.
       .consume_c(rn_valid_c), .three_wide(three_wide),
-      .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
-      .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
+      .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal_fe), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
+      .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal_fe), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -364,7 +372,7 @@ module ooo2_core
       .d_csr_func(d_csr_func), .d_is_serialize(d_is_serialize), .d_is_amo(d_is_amo),
       .d_amo_func(d_amo_func), .d_is_fp(d_is_fp), .d_is_fencei(d_is_fencei),
       .d_is_cbo(d_is_cbo), .d_cbo_zero(d_cbo_zero), .d_cbo_keep(d_cbo_keep),
-      .d_illegal(d_illegal), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
+      .d_illegal(d_illegal_fe), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
       .cur_seq(fe_cur_seq), .fe_err(fe_err));
 
@@ -845,13 +853,13 @@ module ooo2_core
    // value read at dispatch is the one every in-flight FP op will retire under. When FS is
    // off, FP arith routes to M as before and takes its illegal-instruction trap there --
    // unchanged, and the reason the F stage needs no trap path.
-   wire d_fp_valid, d_use_fpu;
+   wire d_fp_valid;
    decode_fp u_dfp_disp
-     (.insn(d_insn), .fp_valid(d_fp_valid), .use_fpu(d_use_fpu), .fp_class(),
+     (.insn(d_insn), .fp_valid(d_fp_valid), .use_fpu(), .fp_class(),
       .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
       .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
 
-   wire d_cls_f = d_fp_valid & d_use_fpu & ~d_is_mem & ~d_is_amo
+   wire d_cls_f = d_fp_valid & ~d_is_mem & ~d_is_amo
                 & ~fs_off & ~d_illegal & ~d_fault & ~d_is_irqop;
    // Control flow (jal/jalr/bXX) is its OWN class now: it leaves the ordered/M pipe for the
    // FP/CTF pipe so a branch co-issues with a load (CTF-on-FP). A fetch-faulted CTI or an
@@ -894,12 +902,12 @@ module ooo2_core
    //     a load in B behind a store in A captures the tag AFTER that store's, so it sees it
    //     as older (the queue's d_tag is the tail before this cycle's allocation);
    //   * room for two in the ROB, and nothing in flight is being redirected.
-   wire d2_fp_valid, d2_use_fpu;
+   wire d2_fp_valid;
    decode_fp u_dfp_disp2
-     (.insn(d2_insn), .fp_valid(d2_fp_valid), .use_fpu(d2_use_fpu), .fp_class(),
+     (.insn(d2_insn), .fp_valid(d2_fp_valid), .use_fpu(), .fp_class(),
       .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
       .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
-   wire d2_cls_f = d2_fp_valid & d2_use_fpu & ~d2_is_mem & ~d2_is_amo
+   wire d2_cls_f = d2_fp_valid & ~d2_is_mem & ~d2_is_amo
                  & ~fs_off & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
    wire d2_cls_c = (d2_is_branch | d2_is_jump | d2_is_jalr) & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
    wire d2_cls_m = d2_is_mul & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
@@ -919,12 +927,12 @@ module ooo2_core
    wire three_wide = TW3;
    // Slot C full classes: the dispatch swizzle lets slot C reach ANY pipe now (the 3rd ALU is
    // gone), so it needs the same LS/FC/ALU split as slots A and B, not just "ALU-only".
-   wire d3_fp_valid, d3_use_fpu;
+   wire d3_fp_valid;
    decode_fp u_d3fp_disp
-     (.insn(d3_insn), .fp_valid(d3_fp_valid), .use_fpu(d3_use_fpu), .fp_class(),
+     (.insn(d3_insn), .fp_valid(d3_fp_valid), .use_fpu(), .fp_class(),
       .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
       .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
-   wire d3_cls_f = d3_fp_valid & d3_use_fpu & ~d3_is_mem & ~d3_is_amo
+   wire d3_cls_f = d3_fp_valid & ~d3_is_mem & ~d3_is_amo
                  & ~fs_off & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
    wire d3_cls_c = (d3_is_branch | d3_is_jump | d3_is_jalr) & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
    wire d3_cls_m = d3_is_mul & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
@@ -2276,7 +2284,7 @@ module ooo2_core
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "ooo2_core: a system op issued into a busy SYSQ (it is serialising)");
       if (iss_sys & (qf_shard != SH_LD)) $fatal(1, "ooo2_core: a system op issued with shard %0d, not SH_LD", qf_shard);
       if (sy_fire & m_valid)             $fatal(1, "ooo2_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
-      if (sy_fire & (fpu_busy | f_valid)) $fatal(1, "ooo2_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      if (sy_fire & (fpu_busy | f_valid | icr_v)) $fatal(1, "ooo2_core: a system op fires with FP work in flight -- frm/fflags may change under it");
       if (sy_fire & ld_land)             $fatal(1, "ooo2_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "ooo2_core: a system op reached M (pc %h)", m_pc);
       if (m_valid & (m_fault | m_illegal)) $fatal(1, "ooo2_core: an op that traps at dispatch reached M (pc %h)", m_pc);
@@ -2360,7 +2368,10 @@ module ooo2_core
       // (work list P2), this needs an age or epoch tag instead.
       .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy));
 
-   wire fp_complete = fp_res_valid;
+   wire fp_complete = fp_res_valid | icr_v;             // a result lands: the FPU's, else the in-core one
+   wire [FTAGW-1:0] fl_tag    = fp_res_valid ? fp_res_tag    : icr_tag;
+   wire [63:0]      fl_data   = fp_res_valid ? fp_res_data   : icr_data;
+   wire [4:0]       fl_fflags = fp_res_valid ? fp_res_fflags : {icr_nv, 4'd0};
 
    // ============================================================== stage F (FP arith)
    // A one-entry execute stage parallel to M, fed by u_iq_f. An FP arith op is loaded here
@@ -2398,9 +2409,54 @@ module ooo2_core
    wire [63:0] ffo2 = ff_src32 ? {32'hffffffff, unbox_s(ffo2r)} : ffo2r;
    wire        ff_dst32 = (ff_dst == 3'd0) & ff_wrfp;
 
-   wire        fp_start = f_valid & ~redirect;
+   // THE IN-CORE FP OPS (FSGNJ/N/X, FEQ/FLT/FLE, FCLASS, FMV both ways) run here in one cycle, off
+   // the stage's operand registers, into a one-entry result register that lands through the
+   // FPU's own landing (fp_land: the FE shard, the ROB port, the flags) in any cycle the FPU is
+   // not landing. The FPU keeps priority, so its handshake is unchanged; a waiting in-core
+   // result holds the stage.
+   wire        f_ic     = f_valid & ~ff_use_fpu;
+   wire        fp_start = f_valid & ff_use_fpu & ~redirect;
    wire        fp_disp  = fp_start & fp_iss_ready;   // accepted by the unit this cycle
-   assign      f_advance = ~f_valid | fp_disp;
+   reg         icr_v, icr_nv;
+   reg  [63:0] icr_data;
+   reg  [FTAGW-1:0] icr_tag;
+   initial icr_v = 1'b0;
+   wire        icr_land  = icr_v & ~fp_res_valid;
+   wire        icr_take  = f_ic & ~redirect & (~icr_v | icr_land);
+   assign      f_advance = ~f_valid | fp_disp | icr_take;
+   wire        fi_isd = f_insn[25];                  // 0=single 1=double
+   wire [2:0]  fi_f3  = f_insn[14:12];
+   wire [31:0] fi_u1  = unbox_s(f_rs1_val);          // FMV.X.W is a raw bit-move: never unboxed
+   wire [31:0] fi_u2  = unbox_s(f_rs2_val);
+   wire [1:0]  fi_cd  = fcmp_d(fi_f3, f_rs1_val, f_rs2_val);
+   wire [1:0]  fi_cs  = fcmp_s(fi_f3, fi_u1, fi_u2);
+   reg  [63:0] fi_res;
+   always @* begin
+      case (ff_cls)
+        3'd1: fi_res = fi_isd                                          // FSGNJ/N/X .D / .S
+               ? (fi_f3==3'b000 ? { f_rs2_val[63],               f_rs1_val[62:0]}
+                : fi_f3==3'b001 ? {~f_rs2_val[63],               f_rs1_val[62:0]}
+                :                 { f_rs2_val[63]^f_rs1_val[63], f_rs1_val[62:0]})
+               : {32'hffffffff, (fi_f3==3'b000 ? { fi_u2[31],            fi_u1[30:0]}
+                               : fi_f3==3'b001 ? {~fi_u2[31],            fi_u1[30:0]}
+                               :                 { fi_u2[31]^fi_u1[31],  fi_u1[30:0]})};
+        3'd2: fi_res = {63'd0, (fi_isd ? fi_cd[0] : fi_cs[0])};          // FEQ/FLT/FLE -> int
+        3'd3: fi_res = fi_isd ? f_rs1_val : {{32{f_rs1_val[31]}}, f_rs1_val[31:0]}; // FMV.X.D/W -> int (raw)
+        3'd4: fi_res = fi_isd ? f_rs1_val : {32'hffffffff, f_rs1_val[31:0]};        // FMV.D/W.X -> fp (box)
+        3'd5: fi_res = fi_isd ? fclass_d(f_rs1_val) : fclass_s(f_rs1_val);           // FCLASS -> int
+        default: fi_res = 64'd0;
+      endcase
+   end
+   always @(posedge clk) begin
+      if (icr_land) icr_v <= 1'b0;
+      if (icr_take) begin
+         icr_v <= 1'b1;  icr_data <= fi_res;
+         icr_tag <= {1'b0, f_rd_v, f_rd, f_rob, f_prd};   // the FPU's tag layout, never re-boxed
+         icr_nv <= (ff_cls == 3'd2) & (fi_isd ? fi_cd[1] : fi_cs[1]);
+      end
+      // younger than the redirecting head: wrong-path. Ordered last, on the valid bit alone (rule I11)
+      if (reset | redirect) icr_v <= 1'b0;
+   end
 
    always @(posedge clk) begin
       if (reset | redirect) f_valid <= 1'b0;
@@ -2416,8 +2472,10 @@ module ooo2_core
       // The F stage only ever holds an FPU op. d_cls_f is decided from decode_fp on d_insn
       // and the same decoder runs here on the payload's insn, so a disagreement means the
       // payload and the classification came from different instructions.
-      if (f_valid & ~(ff_valid_d & ff_use_fpu))
-         $fatal(1, "ooo2_core: F stage holds a non-FPU op (insn %08x)", f_insn);
+      if (f_valid & ~ff_valid_d)
+         $fatal(1, "ooo2_core: F stage holds a non-FP op (insn %08x)", f_insn);
+      if (m_valid & m_is_fp & ~m_is_mem)
+         $fatal(1, "ooo2_core: a non-memory FP op reached M (pc %h)", m_pc);
       if (iss_f & (qf_shard != SH_FE))
          $fatal(1, "ooo2_core: F-class op is not SH_FE");
       // fp_arith is dead by construction now; if one ever reaches M it would sit there
@@ -2561,7 +2619,7 @@ module ooo2_core
    // in-core compare could not be in M while an FPU op was completing there. With the FPU
    // released at issue they can, and the mux silently DROPPED the compare's NV flag.
    wire       fp_flags_we = fp_complete | fp_icmp;
-   wire [4:0] fp_flags    = (fp_complete ? fp_res_fflags      : 5'd0)
+   wire [4:0] fp_flags    = (fp_complete ? fl_fflags          : 5'd0)
                           | (fp_icmp     ? {fp_icmp_nv, 4'd0} : 5'd0);
 
    // ---- CSR file ----
@@ -2829,12 +2887,12 @@ module ooo2_core
    // result for the cycle a load stole the ROB port) is GONE. Every field it carried now
    // rides in the tag and comes back with the result, which is what lets more than one op
    // be in flight at all -- fpnew returns them out of issue order across op groups.
-   wire        ft_dst32 = fp_res_tag[FTAGW-1];
-   wire        ft_rd_v  = fp_res_tag[FTAGW-2];
-   wire [5:0]  ft_rd    = fp_res_tag[FTAGW-3 -: 6];
-   wire [ROB_IDXB-1:0]  ft_rob = fp_res_tag[RN_PBITS +: ROB_IDXB];
-   wire [RN_PBITS-1:0]  ft_prd = fp_res_tag[RN_PBITS-1:0];
-   wire [63:0] fp_wval  = ft_dst32 ? {32'hffffffff, fp_res_data[31:0]} : fp_res_data;
+   wire        ft_dst32 = fl_tag[FTAGW-1];
+   wire        ft_rd_v  = fl_tag[FTAGW-2];
+   wire [5:0]  ft_rd    = fl_tag[FTAGW-3 -: 6];
+   wire [ROB_IDXB-1:0]  ft_rob = fl_tag[RN_PBITS +: ROB_IDXB];
+   wire [RN_PBITS-1:0]  ft_prd = fl_tag[RN_PBITS-1:0];
+   wire [63:0] fp_wval  = ft_dst32 ? {32'hffffffff, fl_data[31:0]} : fl_data;
    // No ~ld_land: FP has its own ROB completion port now, so a load landing in the same
    // cycle no longer displaces it and there is nothing to hold.
    wire        fp_land  = fp_complete;
