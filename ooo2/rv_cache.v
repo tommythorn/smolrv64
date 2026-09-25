@@ -205,6 +205,34 @@ module rv_cache #(
    wire [PAW-1:0] line0 = {r_addr[PAW-1:OFFB], {OFFB{1'b0}}};
    wire [PAW-1:0] line1 = line0 + (1<<OFFB);
 
+   // ---- the door's one-deep SKID SLOT (C4a step 2, the self-loop) ----------------------
+   // WHY A SLOT AND NOT JUST A WIDER ACCEPT: serving a hit every cycle means accepting a new
+   // request in the SAME cycle S_CHECK resolves the current one, and "does this cycle
+   // resolve?" is `hit` -- the tag compare, the last signal the cycle produces. Putting that
+   // on `rd_ack` is what cost IW=3 its closure (WNS -0.270, near-critical endpoints 818 ->
+   // 6028), because an ack is the one output a requester cannot un-hear: it advances and
+   // never revisits, so the ack may not be speculative and may not be late. rule I8 and the
+   // plan's "the accept stays register-decoded".
+   //
+   // So the two questions are SPLIT. "Did you take my request?" is answered by this slot
+   // being free -- `~n_v`, a register -- and nothing else. "Am I looking it up this cycle?"
+   // still waits for `hit`, but that decision now only drives r_*/st/n_v INSIDE this module,
+   // never the handshake. A request taken while the pipeline is busy waits here; one taken
+   // while it frees up bypasses straight into r_* in the same cycle, so the common streaming
+   // case costs no extra latency.
+   //
+   // ONLY A PLAIN CACHED REQUEST EVER LANDS HERE. A solo access (NC, span, CBO,
+   // write-through) is taken only at S_IDLE (see `door_take`), where it is pulled the same
+   // cycle -- so the slot never holds one, `f_solo`/`req_solo` need no stored copy, and "a
+   // solo request is alone in the cache" is unchanged.
+   reg                n_v;
+   reg [PAW-1:0]      n_addr, n_pa;
+   reg [RTW-1:0]      n_tag;
+   reg [WDW-1:0]      n_wdata;
+   reg [WRB-1:0]      n_wmask;
+   reg                n_is_wr, n_uncached, n_cbo, n_cbo_zero, n_cbo_keep, n_span;
+   initial n_v = 1'b0;
+
    wire [CHB-1:0]   clo    = r_off[OFFB-1 -: CHB];
    wire [LZB-1:0]   bwc    = r_off[LZB-1:0];
    wire [PAIRB-1:0] pair_lo = clo[CHB-1:1];
@@ -470,8 +498,11 @@ module rv_cache #(
    // differ only when a replay is owed and the slot is busy, and in those cycles nothing
    // consumes this address: the drive below is overridden by the states that need it, and
    // the FSM reads bk_rddata only in the cycle after it accepted.
-   wire [PAW-1:0]  a_live    = f_replay ? f_addr : (rd_req ? rd_addr : wr_addr);
-   wire [PAW-1:0]  a_pa_live = f_replay ? f_pa   : (rd_req ? rd_pa   : wr_addr);   // PA parallel to a_live
+   // THREE SOURCES, TWO REGISTER SELECTS. A completed fill's replay is oldest, then the skid
+   // slot, then the live door. Both selects (`f_replay`, `n_v`) are REGISTERS, which is what
+   // rule I6 requires of anything reaching a BRAM address pin.
+   wire [PAW-1:0]  a_live    = f_replay ? f_addr : n_v ? n_addr : (rd_req ? rd_addr : wr_addr);
+   wire [PAW-1:0]  a_pa_live = f_replay ? f_pa   : n_v ? n_pa   : (rd_req ? rd_pa   : wr_addr);   // PA parallel to a_live
    wire [CHB-1:0]  a_clo     = a_live[OFFB-1 -: CHB];
    wire [CHB-1:0]  a_chunk_e = a_clo[0] ? (a_clo + 1'b1) : a_clo;
    wire [CHB-1:0]  a_chunk_o = a_clo[0] ? a_clo : (a_clo + 1'b1);
@@ -523,7 +554,40 @@ module rv_cache #(
    // wider than it must be. Replays keep to S_IDLE (rare; their address is the MSHR's).
    wire fin_wr     = (st == S_FIN) & r_is_wr & ~r_cbo & ~r_span & ~r_uncached & (WRTHRU == 0) & ~fill_wr_banks;
    wire fin_hazard = fin_wr & ((way_idx(0, a_live) == w0_idx) | (way_idx(1, a_live) == w0_idx));
-   wire acc_slot = ((st == S_IDLE) | fin_wr) & ~fill_banks;
+   // THE DOOR ALSO OPENS IN A PLAIN READ HIT'S S_CHECK (P0, the self-loop). A hit costs
+   // two cycles -- accept, then deliver -- but the deliver cycle only shifts bk_rddata
+   // (addressed the cycle before) and r_*/cur_line (captured the cycle before): nothing
+   // it does needs the bank READ port a new accept would also use this same cycle, so a
+   // requester that always has work gets a response every cycle instead of every other
+   // one. chk_rd is true in exactly the cycle S_CHECK's case arm below takes the "fast
+   // read delivery: skip S_FIN" branch -- it reuses pipe_hold's hazard decode (b_live,
+   // F_ANS busy, the one-MSHR wait) instead of re-deriving it, so a held or re-looked hit
+   // never falsely opens the door. A store, an NC/span access or a CBO never sets it (the
+   // same exclusions that branch takes), so the write path, the fill machine and fence.i
+   // are unchanged; ~fill_banks and the shared `accept` qualifiers below (~inv_go, a live
+   // f_replay, a solo request) apply to it exactly as they do to S_IDLE and fin_wr.
+   //
+   // ~wr_req: A CONTINUATION NEVER OUTBIDS A WAITING WRITE. Before this bit, a 300 M tiny128
+   // boot retired 10.4% FEWER instructions with the self-loop than without it -- correct
+   // (the lockstep never diverged) but generically slower. `r_is_wr <= wr_req && !rd_req`
+   // already lets a live read starve a live write at S_IDLE, same as before this change; the
+   // self-loop's new failure mode was making that starvation WORSE by handing reads a second
+   // admission state (chk_rd) with no matching one for a waiting store, so a read stream that
+   // never gaps could now claim every cycle instead of every other. This term makes the
+   // self-loop yield its own continuation the instant a store wants the door: from a
+   // requester's view a self-loop cycle is then never worse than the S_IDLE it replaces, so
+   // wr_req can never wait longer under the self-loop than it already could without it. The
+   // I$ instance ties wr_req to 0 (WRITABLE=0), so this is a no-op there.
+   //
+   // TRIED AND REJECTED (2026-09-19), kept because it is the tempting wrong answer: letting
+   // the register CAPTURE run on a cheap hit-independent condition while `accept` kept the
+   // compare. It covers the miss case fine (the MSHR copy below reads r_tag/r_addr's PRE-edge
+   // value, so a miss's fields are copied correctly before r_* is overwritten) but not the
+   // HOLD case: when `pipe_hold` is true the FSM re-evaluates the SAME request next cycle, so
+   // r_addr/r_tag/cur_line must SURVIVE -- a hit-independent capture clobbers them, and
+   // ooo2_lsu's own B-rule assertion caught it on the first cosim run ("fast response with
+   // tag N that nothing is waiting on"). The slot below is the answer instead: it never
+   // touches r_*, so a retry keeps its request no matter what the door does.
    wire req_wr   = wr_req & ~rd_req & (WRITABLE != 0);
    wire req_span = ~cbo_req & (({1'b0,(rd_req ? rd_addr[OFFB-1:0] : wr_addr[OFFB-1:0])}
                      + (rd_req ? RDB : WRB)) > WORDB);
@@ -531,9 +595,40 @@ module rv_cache #(
    wire req_solo = (req_wr & ~req_wr_plain) | (rd_req & rd_uncached) | req_span;
    wire f_solo   = f_v & ((f_is_wr & ~f_wmerge) | f_cbo | f_uncached | f_span);
    wire do_replay = (st == S_IDLE) & ~fill_banks & f_replay;
-   wire accept    = acc_slot & ~inv_go & ~inv_busy & ~fin_hazard
+
+   // ---- TAKING a request (the handshake) vs STARTING one (the lookup) -------------------
+   // THE ACK IS REGISTER-DECODED, END TO END. Every term here is a state bit, an
+   // already-registered request field or a module input -- `hit` appears nowhere, so the
+   // requester's "was I taken?" never waits for the tag compare (rule I8; and see the slot's
+   // declaration for what this cost before the split).
+   //
+   // `slot_ok` is the S_CHECK streaming window: a PLAIN CACHED READ is in stage B, so the
+   // pipeline is one cycle from either freeing up (a hit) or handing off (a miss), and either
+   // way the taken request is servable soon. ~wr_req keeps the fairness rule that cost the
+   // first build 10.4% of the boot: a read stream may not outbid a store waiting at the door
+   // (`r_is_wr <= wr_req && !rd_req` has always let reads win a tie, which was harmless only
+   // while the door was at most half available -- rule candidate I13).
+   //
+   // A SOLO request (NC, span, CBO, write-through) is taken only at S_IDLE/fin_wr, where it
+   // is pulled the same cycle, so it never sits in the slot and "a solo request is alone in
+   // the cache" holds exactly as before.
+   wire slot_ok   = (st == S_CHECK) & ~r_cbo & ~phase & ~r_span & ~r_is_wr & ~r_uncached & ~wr_req;
+   wire door_ok   = (st == S_IDLE) | fin_wr | (slot_ok & ~req_solo);
+   wire door_take = door_ok & ~n_v & ~fill_banks & ~inv_go & ~inv_busy & ~fin_hazard
                   & ~f_replay & ~f_solo & (rd_req | req_wr) & ~(req_solo & f_v);
-   assign rd_ack  = accept & rd_req;
+   assign rd_ack  = door_take & rd_req;
+
+   // STARTING a lookup is the decision that may be late, because it drives only r_*, `st`,
+   // `n_v` and the bank address -- all inside this module. `pull_hit` is the self-loop: the
+   // cycle S_CHECK's own case arm takes its "fast read delivery, skip S_FIN" branch (it
+   // reuses `pipe_hold`'s hazard decode -- b_live, F_ANS busy, the one-MSHR wait -- rather
+   // than re-deriving it, so a held or re-looked hit never starts anything).
+   wire pull_hit  = slot_ok & ~pipe_hold & hit;
+   wire pipe_free = ((st == S_IDLE) | fin_wr | pull_hit)
+                  & ~fill_banks & ~inv_go & ~inv_busy & ~fin_hazard & ~f_solo;
+   // ...and what it starts: the slot if one is waiting (older), else the request being taken
+   // at the door this very cycle (the bypass that keeps a streaming hit at no extra latency).
+   wire do_pull   = pipe_free & ~f_replay & (n_v | door_take);
 
    // ---- combinational bank port drive ----
    always @* begin
@@ -556,7 +651,7 @@ module rv_cache #(
       // ...but the COLLISION CHECK below still means "a read that will be consumed", because
       // a BRAM collision corrupts the read, never the write: an address presented and
       // discarded cannot hurt anything, and flagging it would be a false alarm.
-      bk_rd_drv = accept | do_replay;
+      bk_rd_drv = do_pull | do_replay;
       for (w2=0; w2<WAYS; w2=w2+1) begin
          bk_rdaddr[w2*2+0] = { way_idx(w2, a_live), a_pair_e };
          bk_rdaddr[w2*2+1] = { way_idx(w2, a_live), a_pair_o };
@@ -632,15 +727,16 @@ module rv_cache #(
       v_wd = 1'b0; d_wd = 1'b0; k_wd = 1'b0;
       if (reset) begin
          st <= S_IDLE; fst <= F_IDLE; f_v <= 1'b0; f_replay <= 1'b0; b_live <= 1'b0;
+         n_v <= 1'b0;
          rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; wr_acc <= 0; inv_busy <= 0;
          l2_req <= 0; l2_we <= 0; phase <= 0; fscan <= 0; inv_pend <= 0;
          pf_val <= 0; pf_want <= 0; pf_infl <= 0; pf_drop <= 0;
       end else begin
-         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; wr_acc <= accept & req_wr; l2_req <= 0;
+         rd_valid <= 0; wr_ack <= 0; wr_cpl <= 0; wr_acc <= door_take & req_wr; l2_req <= 0;
          // The three cycles that address the banks for the request S_CHECK will hold next
          // cycle -- and only if the fill machine's victim stream did not take the read port
          // out from under them (that drive is last in the comb block, so it wins).
-         b_live <= (accept | do_replay | (st == S_LOOK)) & ~fill_banks;
+         b_live <= (do_pull | do_replay | (st == S_LOOK)) & ~fill_banks;
          // parallel prefetch engine: issue on the idle L2 port during hit-path
          // states (they never touch L2); mutual exclusion with demand fills is
          // GATED ON fst, NOT st. The original guard read "l2_req is only ever raised in
@@ -690,10 +786,33 @@ module rv_cache #(
             cur_epoch <= cur_epoch + 1'b1;                            // retains lines; reconcile recovers content
             if (cur_epoch == {EPW{1'b1}}) begin inv_pend <= 1'b1; inv_busy <= 1'b1; end  // wrap -> flush stale-epoch lines
          end
-         if ((st == S_IDLE) | fin_wr) begin
+         // ---- the skid slot ----------------------------------------------------------
+         // Taken at the door, started by the pull. The two cannot collide: `door_take`
+         // requires ~n_v and a pull with n_v consumes it, so the slot is never set and
+         // cleared in the same cycle by two different requests. A request TAKEN in a cycle
+         // that also pulls bypasses the slot entirely (n_v stays 0) and goes straight into
+         // r_* through the mux below -- that bypass is what keeps a streaming hit at the
+         // same latency it has today.
+         if (door_take) begin
+            n_addr <= rd_req ? rd_addr : wr_addr;
+            n_pa   <= rd_req ? rd_pa   : wr_addr;
+            n_tag  <= rd_tag;
+            n_is_wr    <= wr_req && !rd_req;
+            n_uncached <= rd_req ? rd_uncached : wr_uncached;
+            n_cbo      <= (wr_req && !rd_req) & cbo_req;
+            n_cbo_zero <= (wr_req && !rd_req) & cbo_zero;
+            n_cbo_keep <= (wr_req && !rd_req) & cbo_keep;
+            n_wdata    <= wr_data;
+            n_wmask    <= wr_mask;
+            n_span     <= req_span;
+         end
+         n_v <= (n_v | door_take) & ~do_pull;
+
+         if ((st == S_IDLE) | fin_wr | pull_hit) begin
             phase <= 0;
-            // THE REQUEST REGISTERS ARE CAPTURED EVERY CYCLE THE DOOR IS OPEN -- S_IDLE, and a
-            // plain write's S_FIN (fin_wr, item 4b), whose arm consumes r_*/cur_line only through
+            // THE REQUEST REGISTERS ARE CAPTURED EVERY CYCLE THE DOOR IS OPEN -- S_IDLE, a
+            // plain write's S_FIN (fin_wr, item 4b) and a plain read hit's S_CHECK (chk_rd,
+            // the self-loop) -- whose arm consumes r_*/cur_line only through
             // this cycle's combinational paths -- FROM THE SAME MUX THAT
             // ADDRESSES THE BANKS. Their clock-enable used to be `accept`, which is the
             // whole front door -- the requester's request (for the I$, the fetch buffer's
@@ -707,23 +826,25 @@ module rv_cache #(
             // A completed fill's own request re-enters the pipeline that was held empty for
             // it; the banks were addressed from f_addr this cycle by the same a_live mux
             // the door uses, so from S_CHECK on it is an ordinary request again.
-            r_is_wr    <= f_replay ? f_is_wr    : (wr_req && !rd_req);
-            r_uncached <= f_replay ? f_uncached : (rd_req ? rd_uncached : wr_uncached);   // Svpbmt
+            // THREE SOURCES in age order -- a completed fill's replay, then the skid slot,
+            // then the live door -- on the same two REGISTER selects a_live above uses.
+            r_is_wr    <= f_replay ? f_is_wr    : n_v ? n_is_wr    : (wr_req && !rd_req);
+            r_uncached <= f_replay ? f_uncached : n_v ? n_uncached : (rd_req ? rd_uncached : wr_uncached);   // Svpbmt
             // CBO flags qualify a write-port maintenance op only. Reads win arbitration
             // (rd_req priority), so a cbo.zero waiting to drain can coincide with a load;
             // gating by (wr_req && !rd_req) stops cbo_zero latching onto that read and
             // making its refill zero-fill the line instead of fetching it.
-            r_cbo      <= f_replay ? f_cbo      : ((wr_req && !rd_req) & cbo_req);
-            r_cbo_zero <= f_replay ? f_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
-            r_cbo_keep <= f_replay ? f_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
+            r_cbo      <= f_replay ? f_cbo      : n_v ? n_cbo      : ((wr_req && !rd_req) & cbo_req);
+            r_cbo_zero <= f_replay ? f_cbo_zero : n_v ? n_cbo_zero : ((wr_req && !rd_req) & cbo_zero);
+            r_cbo_keep <= f_replay ? f_cbo_keep : n_v ? n_cbo_keep : ((wr_req && !rd_req) & cbo_keep);   // Zicbom/Zicboz
             r_addr     <= a_live;
             r_pa       <= a_pa_live;
-            r_tag      <= f_replay ? f_tag      : rd_tag;
-            r_wdata    <= f_replay ? f_wdata    : wr_data;
-            r_wmask    <= f_replay ? f_wmask    : wr_mask;
+            r_tag      <= f_replay ? f_tag      : n_v ? n_tag      : rd_tag;
+            r_wdata    <= f_replay ? f_wdata    : n_v ? n_wdata    : wr_data;
+            r_wmask    <= f_replay ? f_wmask    : n_v ? n_wmask    : wr_mask;
             r_off      <= a_live[OFFB-1:0];
             // a CBO is a single-line op (never spans); req_span is the door's own test
-            r_span     <= f_replay ? f_span     : req_span;
+            r_span     <= f_replay ? f_span     : n_v ? n_span     : req_span;
             cur_line   <= {a_live[PAW-1:OFFB], {OFFB{1'b0}}};
          end
          case (st)
@@ -731,7 +852,7 @@ module rv_cache #(
               if (do_replay) begin
                  f_v <= 1'b0;  f_replay <= 1'b0;
                  st <= S_CHECK;
-              end else if (accept)
+              end else if (do_pull)
                  st <= S_CHECK;    // banks already addressed this cycle (live drive above)
            end
 
@@ -837,9 +958,11 @@ module rv_cache #(
                           // fast read delivery: the window is live on the bank outputs and
                           // was captured above -- skip S_FIN. NC reads keep the slow path
                           // (S_FIN's flush-around). Reaching here means b_live and
-                          // fst != F_ANS: the hold arm above owns both.
+                          // fst != F_ANS: the hold arm above owns both. This is chk_rd's
+                          // own cycle, so a new request self-loops straight into S_CHECK
+                          // instead of idling first -- the door was open (chk_rd).
                           rd_valid <= 1;
-                          st <= S_IDLE;
+                          st <= do_pull ? S_CHECK : S_IDLE;
                        end
                        else st <= S_FIN;
                     end else begin
@@ -906,7 +1029,7 @@ module rv_cache #(
                     // (a line-crossing store always has store_hi -> the S_SPANW arm above,
                     // so no second dirty write can be needed here)
                     d_we=1; d_wa=flat(w0_way,w0_idx); d_wd=1'b1;
-                    wr_ack <= 1; st <= accept ? S_CHECK : S_IDLE;   // the door was open (fin_wr)
+                    wr_ack <= 1; st <= do_pull ? S_CHECK : S_IDLE;   // the door was open (fin_wr)
                  end
               end
            end
@@ -1293,9 +1416,9 @@ module rv_cache #(
    //  14 rd_align   a wide read that is not chunk-pair aligned
    //  15 span       NO-SPAN violated: the D$ saw a spanning cached request
    wire e_lb_owner  = pipe_uses_lb && (fst != F_IDLE);
-   wire e_wr_align  = accept && req_wr_plain && (wr_addr[2:0] != 3'd0);
-   wire e_solo_fill = accept && req_solo && f_v;
-   wire e_pa_range  = (PAW > PAW_SIG) && accept && (|a_live[PAW-1:PAW_SIG]);
+   wire e_wr_align  = door_take && req_wr_plain && (wr_addr[2:0] != 3'd0);
+   wire e_solo_fill = door_take && req_solo && f_v;
+   wire e_pa_range  = (PAW > PAW_SIG) && door_take && (|a_live[PAW-1:PAW_SIG]);
    wire e_line_gone = (st == S_FIN || st == S_SPANW || st == S_NCI) && !hit;
    wire e_cbo_fill  = (st == S_CHECK) && r_cbo && f_v;
    wire e_replay    = f_replay && !f_v;
@@ -1348,6 +1471,24 @@ module rv_cache #(
          $fatal(1, "[cache id=%0d] a plain write is not chunk-aligned (a=%h): the fill merge takes one chunk", PERF_ID, wr_addr);
       if (e_solo_fill)
          $fatal(1, "[cache id=%0d] solo request accepted while a fill is live", PERF_ID);
+      // ---- the door's skid slot, stated as hazards (C4a step 2) ----
+      // The slot is one deep and the ack is "I took it": taking a second request on top of a
+      // live one would drop the first silently, which the requester cannot see because it has
+      // already advanced on the ack.
+      if (door_take && n_v)
+         $fatal(1, "[cache id=%0d] a request was taken while the skid slot is still full", PERF_ID);
+      // A pull with no source would start a lookup on whatever r_* happens to mux to.
+      if (do_pull && !n_v && !door_take)
+         $fatal(1, "[cache id=%0d] a lookup started with nothing at the door and nothing in the slot", PERF_ID);
+      // SOLO REQUESTS NEVER WAIT IN THE SLOT: they are taken only at S_IDLE/fin_wr, where
+      // they are pulled the same cycle. This is what lets the pull re-check nothing about
+      // them -- "a solo request is alone in the cache" is still decided entirely at the door.
+      if (n_v && (n_cbo || n_uncached || n_span))
+         $fatal(1, "[cache id=%0d] the skid slot holds a solo request (cbo=%b unc=%b span=%b)",
+                PERF_ID, n_cbo, n_uncached, n_span);
+      // The replay owns the pipeline outright; it must never be overtaken by the slot.
+      if (do_pull && f_replay)
+         $fatal(1, "[cache id=%0d] the door started a lookup while a fill replay was owed", PERF_ID);
       // THE TAG IS PAW_SIG BITS WIDE. Two addresses that differ only above bit PAW_SIG-1
       // would hit the same line; the platform has no memory there, so such an address is a
       // defect somewhere upstream (a wild PTE, a device decode that let something through)
@@ -1456,7 +1597,7 @@ module rv_cache #(
          if (!hit) perf_miss_cyc <= perf_cyc;
       end
       // capture store accept (for the accept->ack latency)
-      if (st == S_IDLE && wr_req && !rd_req && WRITABLE != 0) perf_st_cyc <= perf_cyc;
+      if (door_take && wr_req && !rd_req && WRITABLE != 0) perf_st_cyc <= perf_cyc;
       // refill complete -> re-lookup: emit the miss penalty
       if (fst == F_FILLI && pc == HALF-1)
          perf_ev(perf_cyc, 8, 2, PERF_ID, 0, 0, 0, 0, {{(64-PAW){1'b0}}, cur_line},
