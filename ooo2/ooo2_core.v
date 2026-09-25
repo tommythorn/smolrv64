@@ -375,7 +375,7 @@ module ooo2_core
       .d_is_cbo(d_is_cbo), .d_cbo_zero(d_cbo_zero), .d_cbo_keep(d_cbo_keep),
       .d_illegal(d_illegal_fe), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
       .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
-      .cur_seq(fe_cur_seq), .fe_err(fe_err));
+      .cur_seq(fe_cur_seq), .fe_err(fe_err_f));
 
    // ---- decode-stage direct-CTI redirect (static) -------------------------------------
    // Take a control transfer the predictor called fall-through AT DISPATCH, instead of
@@ -681,6 +681,13 @@ module ooo2_core
    wire pnd_r1_b = ~rn_byp1_b & (rn_lv1_b ? pnd_s1_b : pnd_m1_b);
    wire pnd_r2_b = ~rn_byp2_b & (rn_lv2_b ? pnd_s2_b : pnd_m2_b);
    wire pnd_r3_b = ~rn_byp3_b & (rn_lv3_b ? pnd_s3_b : pnd_m3_b);
+   // The integrity log's top three bits carry the backend's invariants on the frontend's bus:
+   // a writeback to a register that is not pending (a squashed op's result), a register allocated
+   // while pending, and an FPU result with nothing in flight or overwriting an unconsumed one.
+   wire [1:0]  pend_err;
+   wire        fpu_err;
+   wire [15:0] fe_err_f;
+   assign fe_err = {fpu_err, pend_err, fe_err_f[12:0]};
    ooo2_pending #(.PBITS(RN_PBITS), .NWB(NWB_C)) u_pend
      (.clk(clk), .reset(reset),
       .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
@@ -692,7 +699,7 @@ module ooo2_core
       .q23(rn_mprs1_c), .q24(rn_mprs2_c), .q25(rn_mprs3_c), .r23(pnd_m1_c), .r24(pnd_m2_c), .r25(pnd_m3_c),
       .q16(a_ps1), .q17(a_ps2), .r16(pnd_a1), .r17(pnd_a2),
       .q18(a2_ps1), .q19(a2_ps2), .r18(pnd_b1), .r19(pnd_b2),
-      .w_v({we_ie3, we_ie2, we_fe, we_ld, we_ie}), .w_preg({wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie}),
+      .w_v({we_ie3, we_ie2, we_fe, we_ld, we_ie}), .w_preg({wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie}), .err(pend_err),
       .q1(rn_sprs1), .q2(rn_sprs2), .q3(rn_sprs3),
       .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
       .q7(rn_mprs1), .q8(rn_mprs2), .q9(rn_mprs3),
@@ -2311,7 +2318,7 @@ module ooo2_core
       // redirect fires only when its op is the ROB head, so everything older has already
       // committed, and anything in flight is younger by construction. If head_block goes
       // (work list P2), this needs an age or epoch tag instead.
-      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy));
+      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy), .err(fpu_err));
 
    wire fp_complete = fp_res_valid | icr_v;             // a result lands: the FPU's, else the in-core one
    wire [FTAGW-1:0] fl_tag    = fp_res_valid ? fp_res_tag    : icr_tag;

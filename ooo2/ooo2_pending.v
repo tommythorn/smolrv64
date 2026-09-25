@@ -30,6 +30,9 @@ module ooo2_pending
     // ---- writeback: the value has landed ----
     input  wire [NWB-1:0]        w_v,
     input  wire [NWB*PBITS-1:0]  w_preg,
+    // ---- integrity log (registered): {a register allocated while pending, a writeback to a
+    // register that is not pending -- a squashed op's result landing after its register died}
+    output reg  [1:0]            err,
 
     // ---- read: two sets of three. Dispatch asks "is this source ready?" to seed the
     // scheduler entry; issue asks the same to check what the scheduler selected. Read ports
@@ -114,6 +117,17 @@ module ooo2_pending
    end
 
    // ---- invariants (always on: docs/rtl-rules.md A1) ---------------------------------
+   reg e_zombie;
+   integer iz;
+   always @* begin
+      e_zombie = 1'b0;
+      for (iz = 0; iz < NWB; iz = iz + 1)
+         if (w_v[iz] & ~pend[w_preg[iz*PBITS +: PBITS]] & ~flush) e_zombie = 1'b1;
+   end
+   wire e_realloc = ((a_v  & pend[a_preg]) |
+                     (a_v2 & (pend[a_preg2] | (a_v & (a_preg == a_preg2)))) |
+                     (a_v3 & (pend[a_preg3] | (a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))))) & ~flush;
+   always @(posedge clk) err <= reset ? 2'b00 : {e_realloc, e_zombie};
    always @(posedge clk) if (!reset) begin
       if (a_v & (a_preg == {PBITS{1'b0}}))
          $fatal(1, "ooo2_pending: physical register 0 allocated");

@@ -28,7 +28,8 @@ module fp_unit #(parameter TAGW = 24,
     output wire [4:0]       res_fflags,
     output wire [TAGW-1:0]  res_tag,
     input  wire             flush,
-    output wire             busy);
+    output wire             busy,
+    output wire             err);           // the real unit's integrity bit; the stub has none
 
    localparam LAT = 4;                       // mimic the 4-stage cvfpu pipe latency
 
@@ -85,6 +86,7 @@ module fp_unit #(parameter TAGW = 24,
    assign res_data   = d_pipe[LAT-1];
    assign res_tag    = t_pipe[LAT-1];
    assign res_fflags = 5'd0;
+   assign err = 1'b0;
 endmodule
 
 `default_nettype wire

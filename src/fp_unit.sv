@@ -50,7 +50,8 @@ module fp_unit #(parameter TAGW = 24,
     output wire [4:0]       res_fflags,
     output wire [TAGW-1:0]  res_tag,
     input  wire             flush,          // abort in-flight op(s) (squash)
-    output wire             busy);
+    output wire             busy,
+    output logic            err);           // integrity log (registered): an orphan or overwritten result
 
    localparam fpnew_pkg::fpu_features_t Features = fpnew_pkg::RV64D;
    localparam fpnew_pkg::fpu_implementation_t Implementation = '{
@@ -167,6 +168,9 @@ module fp_unit #(parameter TAGW = 24,
 
    // Invariants (docs/rtl-rules.md A1). Both say the same thing from opposite ends: the
    // one-op-at-a-time contract holds, so no result can arrive unowned or be overwritten.
+   wire e_orphan = fpn_out_valid & (nflight_q == '0) & ~fpn_take;
+   wire e_over   = fpn_out_valid & out_valid_q & ~res_ready;
+   always_ff @(posedge clk) err <= ~reset & (e_orphan | e_over);
    always_ff @(posedge clk) if (!reset) begin
       if (fpn_out_valid & (nflight_q == '0) & ~fpn_take)
          $fatal(1, "fp_unit: fpnew produced a result with no op in flight");
