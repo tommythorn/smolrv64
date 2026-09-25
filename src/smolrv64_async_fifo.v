@@ -70,35 +70,32 @@ module smolrv64_async_fifo #(
       .wr_en         ( wr_valid && wr_ready )
    );
 `else
+   // Simulation: a real two-clock FIFO. Each side keeps its own pointer; the other side sees it
+   // through a two-flop synchronizer (CDC_SYNC_STAGES=2, as the XPM instance above), so full and
+   // empty are conservative by the synchronizer's latency exactly as in hardware. First-word
+   // fall-through: rd_data is the head whenever rd_valid.
    localparam DEPTH = 1 << ADDR_BITS;
-   reg [WIDTH-1:0] fifo_mem [0:DEPTH-1];
-   reg [ADDR_BITS-1:0] wr_ptr = 0;
-   reg [ADDR_BITS-1:0] rd_ptr = 0;
-   reg [ADDR_BITS:0] count = 0;
+   reg [WIDTH-1:0]   fifo_mem [0:DEPTH-1];
+   reg [ADDR_BITS:0] wr_ptr = 0, rd_ptr = 0;             // one wrap bit above the index
+   reg [ADDR_BITS:0] rd_ptr_w0 = 0, rd_ptr_w1 = 0;       // rd_ptr as the write side sees it
+   reg [ADDR_BITS:0] wr_ptr_r0 = 0, wr_ptr_r1 = 0;       // wr_ptr as the read side sees it
    wire wr_fire = wr_valid && wr_ready;
    wire rd_fire = rd_valid && rd_ready;
-
-   assign wr_ready = count != {1'b1, {ADDR_BITS{1'b0}}};
-   assign rd_valid = count != 0;
-   assign rd_data = fifo_mem[rd_ptr];
-
+   assign wr_ready = (wr_ptr - rd_ptr_w1) != DEPTH[ADDR_BITS:0];
+   assign rd_valid = (wr_ptr_r1 != rd_ptr);
+   assign rd_data  = fifo_mem[rd_ptr[ADDR_BITS-1:0]];
    always @(posedge wr_clock) begin
-      if (reset) begin
-         wr_ptr <= 0;
-         rd_ptr <= 0;
-         count <= 0;
-      end else begin
-         if (wr_fire) begin
-            fifo_mem[wr_ptr] <= wr_data;
-            wr_ptr <= wr_ptr + 1'b1;
-         end
-         if (rd_fire)
-            rd_ptr <= rd_ptr + 1'b1;
-         case ({wr_fire, rd_fire})
-           2'b10: count <= count + 1'b1;
-           2'b01: count <= count - 1'b1;
-           default: count <= count;
-         endcase
+      if (reset) begin wr_ptr <= 0; rd_ptr_w0 <= 0; rd_ptr_w1 <= 0; end
+      else begin
+         if (wr_fire) begin fifo_mem[wr_ptr[ADDR_BITS-1:0]] <= wr_data; wr_ptr <= wr_ptr + 1'b1; end
+         rd_ptr_w0 <= rd_ptr; rd_ptr_w1 <= rd_ptr_w0;
+      end
+   end
+   always @(posedge rd_clock) begin
+      if (reset) begin rd_ptr <= 0; wr_ptr_r0 <= 0; wr_ptr_r1 <= 0; end
+      else begin
+         if (rd_fire) rd_ptr <= rd_ptr + 1'b1;
+         wr_ptr_r0 <= wr_ptr; wr_ptr_r1 <= wr_ptr_r0;
       end
    end
 `endif

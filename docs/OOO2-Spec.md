@@ -127,7 +127,7 @@ complements.
 
 | cause | counter | note |
 |---|---|---|
-| I$ miss | `FE_IC` r0312 | line fill through the L2 arbiter |
+| I$ miss | `FE_IC` r0312 | line fill through the memory arbiter |
 | iTLB miss / page-table walk | `FE_MMU` r0311 | PTW runs as a line requester |
 | had bytes, no complete instruction | `FE_ALN` r0313 | window is `OOO2_HW` halfwords |
 | had an instruction, decoupling queue empty | `FE_QUE` r0314 | backend drained the queue |
@@ -1054,7 +1054,7 @@ Two independent `mmu` instances — **iTLB** in `ooo2_core`, **dTLB** in `ooo2_l
 |---|---|
 | TLB | 16 entries, **direct-mapped**, per instance |
 | Scheme | Sv39, 3-level hardware page-table walk |
-| PTW | runs as a line requester through the L2 arbiter |
+| PTW | reads through the D$ read port (§8); a miss fills through the D$ |
 | Superpages | 2 MiB / 1 GiB; misaligned superpage → fault |
 | Ssvnapot | level-0 NAPOT leaves recognised |
 | PA width | 56 bits produced (`AW`), 34 significant to the caches |
@@ -1124,10 +1124,32 @@ latency, not misses.
 
 ### 9.2 Below L1
 
-`rv_l2_arbiter`: a fixed-priority merge, parameterized by `NREQ` (module default 4). The
-shipping instance in `rv_soc_top` is **`NREQ=2`** — the I$ fill and the D$'s single L2 port —
-because the D$ port serializes D$ fill, writeback/write-through and the PTW-as-line (page-table
-walks go through the D$, §8) onto itself. One 512-bit line port to DDR4.
+There is no L2 cache. **`rv_mem_arbiter`** puts the caches onto one tagged **memory port**
+(docs/PLAN-2026-09-25-dcache-vhpr.md, "The memory port"), with three valid/ready channels:
+- **request:** `{id, we, line address, 64-bit byte mask, 512-bit line}`;
+- **read data:** four 128-bit beats `{id, beat, last, data}`;
+- **write done:** `{id}`, raised on the DRAM's write response.
+
+Any number of transactions may be in flight, and a response is matched by the id its request
+carried, never by order. Ids are `{client, slot}`. Among waiting requests a read wins over a
+write; the chosen request is registered before it leaves, and responses are routed to their
+client in the cycle they arrive. The D$ (client 0) and the I$ (client 1) keep their
+single-outstanding line handshake behind `rv_mem_line_client`, so each can have one fill in
+flight at the same time. The D$ port serializes its own fill, write-back and the page-table
+walks' misses (walks go through the D$, §8).
+
+The on-chip SRAM at `LBASE` answers inside `rv_soc_top`. Everything else goes out on the
+`ddr_*` port: the testbench's model, or on the board:
+- `ddr_port_cdc`: three block-RAM async FIFOs into ui_clk;
+- `ddr_port_axi`: one AXI ID, up to 8 reads and 8 writes in flight, 8-beat INCR bursts, an
+  in-order id FIFO per channel, posted writes;
+- `axi_two_master_arbiter`: the core against the virtio DMA, granted per transaction, with R
+  and B routed by an ID bit it stamps.
+
+The testbench model keeps 8 transactions in flight. Each draws the measured latency at
+acceptance, and they are answered in request order as the MIG answers; `+ddr_reorder` answers
+in any order. `tb_ddr_port` proves the board path under random load with a concurrent DMA
+master, in order and reordering.
 
 **LATENCY SENSITIVITY, and why the D$ split did not cash in.** Measured 2026-09-02 on the
 Ubuntu NFS boot, `OOO2_HW=4`, 300 M cycles per point, lockstep clean at every point:

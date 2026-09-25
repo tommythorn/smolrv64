@@ -266,6 +266,40 @@ Every piece is single-outstanding today; all of them change:
    - a knob to reorder across ids, so the design is shown not to depend on order where it must
      not.
 
+## The memory port (increment 1's contract)
+
+One port in the core clock domain, between `rv_mem_arbiter` and whatever serves memory: the
+testbench model, the on-chip SRAM, or the platform's crossing into the DDR4 controller. Three
+valid/ready channels:
+
+| channel | fields | notes |
+|---|---|---|
+| request | `id[4:0]`, `we`, `addr[57:0]` (line address), `wmask[63:0]`, `wdata[511:0]` | a write carries its whole line; `wmask` is per byte (an NC store later sends only its own bytes) |
+| read data | `id[4:0]`, `beat[1:0]`, `last`, `data[127:0]` | four 128-bit beats per line; the beat index says which quarter, so a WRAP burst can return the critical quarter first |
+| write done | `id[4:0]` | raised when the write's AXI B response arrives, so a CBO or a fence completes only when its data is in DRAM |
+
+- **Width.** 128 bits per core cycle on the read side matches the MIG's 64 bits at 333 MHz
+  (2.67 GB/s). A 64-bit core-side beat would cap the path at a line per 8 cycles, less than 8
+  outstanding misses need.
+- **Order.** Responses carry the id their request brought and are matched by it (B1). The
+  MIG returns in order; the on-chip SRAM answers faster than DDR, so across targets the
+  responses do reorder, and the arbiter routes by id either way.
+- **Ids.** `{requester, slot}`. The arbiter owns the id space; a requester never sees
+  another's ids.
+- **Read priority.** Among waiting requests the arbiter prefers reads; a write goes when no
+  read waits, or when its requester says its buffer is full.
+- **Below the port on the board:**
+  - three asynchronous FIFOs into ui_clk (request, read data, write done);
+  - an AXI master that pipelines AR and AW/W, one AXI ID, an in-order tag FIFO per channel,
+    two 64-bit beats packed per 128-bit beat;
+  - the platform's core-vs-DMA arbiter, which grants per transaction and routes R and B by
+    an ID bit it stamps on the way in, so it never holds a channel from AR to `rlast`.
+
+**In increment 1 the old caches sit on top unchanged.** An adapter per cache turns its single
+outstanding `l2_req`/`l2_ack` line handshake into port transactions: it gathers four beats into
+the line, and for a write it acks on write done. So the D$ and the I$ can each have one fill in
+flight at the same time, and the crossing's 4-phase round trips are gone.
+
 ## Increments
 
 Each ends with the full gate set: lint, riscv-tests, the 60 M and 300 M lockstep, memrand (the

@@ -147,7 +147,7 @@ module rk_xcku5p(
    // Fmax: the real Fmax was always somewhere between two rungs and the MMCM is what lets us
    // find out where.
    //
-   // The ddr_* line port crosses back to ui_clk (MIG/arbiter/bridge) via ddr_line_cdc.
+   // The ddr_* memory port crosses into ui_clk (MIG/arbiter/bridge) via ddr_port_cdc.
    // The UART CLK_FREQ below AND the CLINT SCALE_DIV (ooo2/rv_soc_top.v)
    // are derived from the same knob, so they cannot drift out of sync with a sweep.
    wire probe_clk;
@@ -1188,7 +1188,7 @@ module rk_xcku5p(
    // master before the core-vs-device arbiter below. Reusing the proven
    // 2-master arbiter twice keeps each arbiter 2-input (timing-friendly) instead
    // of growing a 3-master mux on the DDR path.
-   axi_two_master_arbiter device_arbiter_inst(
+   axi_two_master_arbiter #(.STAMP(1)) device_arbiter_inst(
       .clock          (ui_clk),
       .reset          (ui_cpu_reset),
 
@@ -1506,12 +1506,15 @@ module rk_xcku5p(
    endgenerate
 
    // ===================== The core: rv_soc_top at probe_clk =====================
-   // rv_soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its 512-bit
-   // line port -> ddr_line_cdc -> ddr_line_axi -> the core_axi_* arbiter input (the MIG
-   // path). virtio-blk/net and the MMIO bridge hang off its virtio passthrough below.
-   wire        pddr_req, pddr_we;  wire [57:0] pddr_addr;  wire [511:0] pddr_wdata, pddr_rdata;  wire pddr_ack;
-   wire        mddr_req, mddr_we;  wire [57:0] mddr_addr;  wire [511:0] mddr_wdata, mddr_rdata;  wire mddr_ack;
-   wire [63:0] pddr_wmask, mddr_wmask;   // per-byte line strobes (NC stores push only their own bytes)
+   // rv_soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its tagged DDR
+   // memory port -> ddr_port_cdc (three async FIFOs) -> ddr_port_axi -> the core_axi_* arbiter
+   // input (the MIG path). virtio-blk/net and the MMIO bridge hang off its virtio passthrough below.
+   wire         pq_valid, pq_ready, pq_we, pr_valid, pr_ready, pr_last, pw_valid, pw_ready;
+   wire [4:0]   pq_id, pr_id, pw_id;  wire [57:0] pq_addr;  wire [63:0] pq_wmask;  wire [511:0] pq_wdata;
+   wire [1:0]   pr_beat;  wire [127:0] pr_data;
+   wire         mq_valid, mq_ready, mq_we, mr_valid, mr_ready, mr_last, mw_valid, mw_ready;
+   wire [4:0]   mq_id, mr_id, mw_id;  wire [57:0] mq_addr;  wire [63:0] mq_wmask;  wire [511:0] mq_wdata;
+   wire [1:0]   mr_beat;  wire [127:0] mr_data;
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
@@ -1536,13 +1539,14 @@ module rk_xcku5p(
    wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
-   // rv_soc_top only ever pushes WHOLE lines, so the per-byte line strobes are all-ones.
-   assign pddr_wmask      = {64{1'b1}};
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
-      .ddr_req(pddr_req), .ddr_we(pddr_we), .ddr_addr(pddr_addr), .ddr_wdata(pddr_wdata),
-      .ddr_rdata(pddr_rdata), .ddr_ack(pddr_ack),
+      .ddr_q_valid(pq_valid), .ddr_q_ready(pq_ready), .ddr_q_id(pq_id), .ddr_q_we(pq_we),
+      .ddr_q_addr(pq_addr), .ddr_q_wmask(pq_wmask), .ddr_q_wdata(pq_wdata),
+      .ddr_r_valid(pr_valid), .ddr_r_ready(pr_ready), .ddr_r_id(pr_id), .ddr_r_beat(pr_beat),
+      .ddr_r_last(pr_last), .ddr_r_data(pr_data),
+      .ddr_w_valid(pw_valid), .ddr_w_ready(pw_ready), .ddr_w_id(pw_id),
       .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg),
@@ -1569,31 +1573,37 @@ module rk_xcku5p(
    // Debug (ILA_CORE=1): capture the probe-clk core/DDR-line steady state to localize a
    // post-root-mount wedge (e.g. systemd "Hostname set"). Intended use is a -trigger_now
    // capture AFTER the board has visibly wedged: the frozen probe levels disambiguate
-   //   - probe1={req,we,ack} stuck at req=1,ack=0  -> DDR-line path deadlock (CDC/bridge/skid)
+   //   - probe1={q_valid,q_ready,q_we} stuck at valid=1,ready=0 -> DDR port back-pressure deadlock
    //   - probe0 commit frozen + probe3 irq pending, never claimed -> interrupt livelock
    //   - probe0 commit still toggling -> core alive, spinning in userspace (SW / rare-insn)
-   //   probe2 = pddr_addr[23:0]: which line the LSU/cache is blocked on (region id).
+   //   probe2 = pq_addr[23:0]: which line the port is asking for (region id).
    ila_core u_ila_core (
       .clk    (probe_clk),
       .probe0 (core_commit),                 // 1: retire pulse
-      .probe1 ({pddr_req, pddr_we, pddr_ack}),// 3: line handshake
-      .probe2 (pddr_addr[23:0]),             // 24: stuck line address (low bits)
+      .probe1 ({pq_valid, pq_ready, pq_we}),  // 3: port request handshake
+      .probe2 (pq_addr[23:0]),               // 24: requested line address (low bits)
       .probe3 (probe_irq_dbg)                // 18: interrupt-path bus (reused decode)
    );
 `endif
 
-   ddr_line_cdc probe_cdc (
+   ddr_port_cdc probe_cdc (
       .clk_p(probe_clk), .reset_p(probe_reset),
-      .p_req(pddr_req), .p_we(pddr_we), .p_addr(pddr_addr), .p_wdata(pddr_wdata),
-      .p_wmask(pddr_wmask), .p_rdata(pddr_rdata), .p_ack(pddr_ack),
+      .p_q_valid(pq_valid), .p_q_ready(pq_ready), .p_q_id(pq_id), .p_q_we(pq_we), .p_q_addr(pq_addr),
+      .p_q_wmask(pq_wmask), .p_q_wdata(pq_wdata),
+      .p_r_valid(pr_valid), .p_r_ready(pr_ready), .p_r_id(pr_id), .p_r_beat(pr_beat), .p_r_last(pr_last),
+      .p_r_data(pr_data), .p_w_valid(pw_valid), .p_w_ready(pw_ready), .p_w_id(pw_id),
       .clk_m(ui_clk), .reset_m(ui_cpu_reset),
-      .m_req(mddr_req), .m_we(mddr_we), .m_addr(mddr_addr), .m_wdata(mddr_wdata),
-      .m_wmask(mddr_wmask), .m_rdata(mddr_rdata), .m_ack(mddr_ack));
+      .m_q_valid(mq_valid), .m_q_ready(mq_ready), .m_q_id(mq_id), .m_q_we(mq_we), .m_q_addr(mq_addr),
+      .m_q_wmask(mq_wmask), .m_q_wdata(mq_wdata),
+      .m_r_valid(mr_valid), .m_r_ready(mr_ready), .m_r_id(mr_id), .m_r_beat(mr_beat), .m_r_last(mr_last),
+      .m_r_data(mr_data), .m_w_valid(mw_valid), .m_w_ready(mw_ready), .m_w_id(mw_id));
 
-   ddr_line_axi probe_bridge (
+   ddr_port_axi probe_bridge (
       .clk(ui_clk), .reset(ui_cpu_reset),
-      .ddr_req(mddr_req), .ddr_we(mddr_we), .ddr_addr(mddr_addr), .ddr_wdata(mddr_wdata),
-      .ddr_wmask(mddr_wmask), .ddr_rdata(mddr_rdata), .ddr_ack(mddr_ack),
+      .q_valid(mq_valid), .q_ready(mq_ready), .q_id(mq_id), .q_we(mq_we), .q_addr(mq_addr),
+      .q_wmask(mq_wmask), .q_wdata(mq_wdata),
+      .r_valid(mr_valid), .r_ready(mr_ready), .r_id(mr_id), .r_beat(mr_beat), .r_last(mr_last),
+      .r_data(mr_data), .w_valid(mw_valid), .w_ready(mw_ready), .w_id(mw_id),
       .m_axi_awid(core_axi_awid), .m_axi_awaddr(core_axi_awaddr), .m_axi_awlen(core_axi_awlen),
       .m_axi_awsize(core_axi_awsize), .m_axi_awburst(core_axi_awburst), .m_axi_awlock(core_axi_awlock),
       .m_axi_awcache(core_axi_awcache), .m_axi_awprot(core_axi_awprot), .m_axi_awqos(core_axi_awqos),

@@ -164,7 +164,7 @@ module decode_exec
                       // it a solo checkpoint. FENCE.I also refetches (the store-to-instruction must be
                       // visible). A plain FENCE is free for CPU-visible ordering on one hart, but NOT
                       // for DMA: the notify store (fast CDC-bridge path) can beat older NC ring writes
-                      // to DDR (slow ddr_line_cdc+AXI path) -> the device would DMA a stale avail_idx.
+                      // to DDR (slow ddr_port_cdc + AXI path) -> the device would DMA a stale avail_idx.
                       // Serializing makes it an ordering point (a drain-wait for global DDR visibility
                       // may still be needed -- ILA_ORD watches the race).
                   else if (f3==3'b010) begin                             // Zicbom/Zicboz CBO

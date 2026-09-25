@@ -2,10 +2,12 @@
 
 // DDR latency hardware performance monitor.
 //
-// Taps rv_soc_top's EXTERNAL DDR line port (ddr_req/ddr_we/ddr_ack) and measures the
-// per-transaction request->ack latency in CORE-CLOCK cycles -- exactly the latency the
-// core sees, and exactly what the sim DDR model approximates with `memlat`. So the HW
-// distribution captured here feeds straight back into a more accurate sim model.
+// Taps rv_soc_top's EXTERNAL DDR memory port and measures each transaction's latency in
+// CORE-CLOCK cycles: from the cycle its request is accepted to the cycle its read's last beat
+// or its write done arrives -- exactly the latency the caches see, and exactly what the sim
+// DDR model draws. So the HW distribution captured here feeds straight back into the model.
+// Transactions overlap: each id's acceptance cycle is kept until that id completes (rule B1:
+// the completion names its id).
 //
 // Per direction (read = ~we, write = we) it keeps:
 //   * an 8-bin log2 histogram: bin = floor(log2(lat))+1 capped at 7. Latency is >=1, so
@@ -21,69 +23,58 @@
 //   0x00..0x38  rd_bin[0..7]      0x40..0x78  wr_bin[0..7]
 //   0x80 rd_sum   0x88 wr_sum   0x90 rd_cnt   0x98 wr_cnt
 module ddr_hpm #(
-   parameter LW = 12                       // latency counter width (caps at 2^LW-1 cycles)
+   parameter LW  = 12,                     // latency width (a wait longer than 2^LW-1 wraps)
+   parameter IDW = 5                       // the port's id width
 )(
-   input  wire        clk,
-   input  wire        reset,
-   // observation taps off the external DDR line port
-   input  wire        ddr_req,
-   input  wire        ddr_we,
-   input  wire        ddr_ack,
+   input  wire           clk,
+   input  wire           reset,
+   // observation taps off the external DDR memory port
+   input  wire           q_fire,           // a request accepted
+   input  wire [IDW-1:0] q_id,
+   input  wire           r_done,           // a read's last beat taken
+   input  wire [IDW-1:0] r_id,
+   input  wire           w_done,           // a write done taken
+   input  wire [IDW-1:0] w_id,
    // MMIO: byte offset within the window, 64-bit read data, and a clear strobe (any write)
-   input  wire [7:0]  raddr,
-   output reg  [63:0] rdata,
-   input  wire        clr
+   input  wire [7:0]     raddr,
+   output reg  [63:0]    rdata,
+   input  wire           clr
 );
    localparam [LW-1:0] ONE = {{(LW-1){1'b0}}, 1'b1};
-
-   // ---- per-transaction latency: count cycles from the first req cycle to the ack ----
-   reg           meas;       // a transaction is being timed
-   reg  [LW-1:0] lat;        // cycles elapsed (1 on the first req cycle)
-   reg           we_l;       // latched direction
-   reg           stb;        // 1-cycle: a transaction completed this cycle
-   reg  [LW-1:0] stb_lat;
-   reg           stb_we;
+   // ---- per-id acceptance cycle; a completion's latency is now - start (>= 1) ----
+   reg  [LW-1:0] now;
+   reg  [LW-1:0] start [0:(1<<IDW)-1];
+   reg           rstb, wstb;               // 1-cycle: a read / a write completed
+   reg  [LW-1:0] rlat, wlat;
    always @(posedge clk) begin
-      stb <= 1'b0;
-      if (reset) meas <= 1'b0;
-      else if (!meas) begin
-         if (ddr_req) begin
-            if (ddr_ack) begin                  // 1-cycle transaction (req & ack same cycle)
-               stb <= 1'b1; stb_lat <= ONE; stb_we <= ddr_we;
-            end else begin                      // start timing
-               meas <= 1'b1; lat <= ONE; we_l <= ddr_we;
-            end
-         end
-      end else begin
-         if (ddr_ack) begin                     // completed: record the latency
-            stb <= 1'b1; stb_lat <= lat; stb_we <= we_l; meas <= 1'b0;
-         end else if (lat != {LW{1'b1}})         // saturate rather than wrap a pathological wait
-            lat <= lat + 1'b1;
-      end
+      now <= reset ? {LW{1'b0}} : now + ONE;
+      if (q_fire) start[q_id] <= now;
+      rstb <= ~reset & r_done;  rlat <= now - start[r_id];
+      wstb <= ~reset & w_done;  wlat <= now - start[w_id];
    end
-
    // ---- log2 bin of the completed latency (highest set bit + 1, capped at 7) ----
    function [2:0] binof; input [LW-1:0] v; integer i; begin
       binof = 3'd0;
       for (i = 0; i < LW; i = i + 1) if (v[i]) binof = (i >= 6) ? 3'd7 : (i[2:0] + 3'd1);
    end endfunction
-   wire [2:0] bin = binof(stb_lat);
+   wire [2:0] rbin = binof(rlat);
+   wire [2:0] wbin = binof(wlat);
 
    // ---- counters ----
    reg [63:0] rdb [0:7];
    reg [63:0] wrb [0:7];
    reg [63:0] rd_sum, wr_sum, rd_cnt, wr_cnt;
-   wire [63:0] lat_ext = {{(64-LW){1'b0}}, stb_lat};
    integer k;
    always @(posedge clk) begin
       if (reset || clr) begin
          for (k = 0; k < 8; k = k + 1) begin rdb[k] <= 64'd0; wrb[k] <= 64'd0; end
          rd_sum <= 64'd0; wr_sum <= 64'd0; rd_cnt <= 64'd0; wr_cnt <= 64'd0;
-      end else if (stb) begin
-         if (stb_we) begin
-            wrb[bin] <= wrb[bin] + 64'd1;  wr_sum <= wr_sum + lat_ext;  wr_cnt <= wr_cnt + 64'd1;
-         end else begin
-            rdb[bin] <= rdb[bin] + 64'd1;  rd_sum <= rd_sum + lat_ext;  rd_cnt <= rd_cnt + 64'd1;
+      end else begin
+         if (rstb) begin
+            rdb[rbin] <= rdb[rbin] + 64'd1;  rd_sum <= rd_sum + {{(64-LW){1'b0}}, rlat};  rd_cnt <= rd_cnt + 64'd1;
+         end
+         if (wstb) begin
+            wrb[wbin] <= wrb[wbin] + 64'd1;  wr_sum <= wr_sum + {{(64-LW){1'b0}}, wlat};  wr_cnt <= wr_cnt + 64'd1;
          end
       end
    end

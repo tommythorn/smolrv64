@@ -28,8 +28,11 @@ module tb;
    reg reset;
       wire        retire, retire2, retire3, dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
-   wire        ddr_req, ddr_we;  wire [57:0] ddr_addr;  wire [511:0] ddr_wdata;
-   reg  [511:0] ddr_rdata;  reg ddr_ack;
+   wire        ddr_q_valid, ddr_q_we, ddr_r_ready, ddr_w_ready;
+   wire [4:0]  ddr_q_id;  wire [57:0] ddr_q_addr;  wire [63:0] ddr_q_wmask;  wire [511:0] ddr_q_wdata;
+   wire        ddr_q_ready;
+   reg         ddr_r_valid, ddr_r_last, ddr_w_valid;
+   reg  [4:0]  ddr_r_id, ddr_w_id;  reg [1:0] ddr_r_beat;  reg [127:0] ddr_r_data;
    wire        rx_ready;
 
    // Model the hardware's 3 Mbps serializer instead of an instant drain: a 10-bit
@@ -62,8 +65,11 @@ module tb;
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
-      .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_addr(ddr_addr),
-      .ddr_wdata(ddr_wdata), .ddr_rdata(ddr_rdata), .ddr_ack(ddr_ack),
+      .ddr_q_valid(ddr_q_valid), .ddr_q_ready(ddr_q_ready), .ddr_q_id(ddr_q_id), .ddr_q_we(ddr_q_we),
+      .ddr_q_addr(ddr_q_addr), .ddr_q_wmask(ddr_q_wmask), .ddr_q_wdata(ddr_q_wdata),
+      .ddr_r_valid(ddr_r_valid), .ddr_r_ready(ddr_r_ready), .ddr_r_id(ddr_r_id), .ddr_r_beat(ddr_r_beat),
+      .ddr_r_last(ddr_r_last), .ddr_r_data(ddr_r_data),
+      .ddr_w_valid(ddr_w_valid), .ddr_w_ready(ddr_w_ready), .ddr_w_id(ddr_w_id),
       .uart_rx_we(1'b0), .uart_rx_data(8'd0), .uart_rx_ready(rx_ready),
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
@@ -115,30 +121,107 @@ module tb;
          end
       end
    endfunction
-   // behavioral DDR, modeled as a 512-bit LINE array: the ddr_* port is 64-byte lines, so
-   // the element count stays under the array-dimension limit even at 2 GiB (a flat byte
-   // array overflows it).
+   // behavioral DDR, modeled as a 512-bit LINE array: the port is 64-byte lines, so the element
+   // count stays under the array-dimension limit even at 2 GiB (a flat byte array overflows it).
+   //
+   // THE MIG'S SHAPE: up to DDR_NOUT transactions outstanding; each draws its latency from the
+   // measured shape at acceptance (request to last beat); reads answer in request order and write
+   // dones in request order, as the DDR4 controller does -- `+ddr_reorder` answers any read or
+   // write whose time has come instead, to show the design does not depend on the order. A read
+   // streams its four 128-bit beats on consecutive cycles, so a line takes four cycles of the
+   // read-data channel. A write lands in the array when it is accepted, so a later read always
+   // sees it; its done comes when its latency has run.
    localparam [63:0] NLINES = DDR_BYTES >> 6;
    localparam [63:0] LBASE  = BASE >> 6;
+   localparam integer DDR_NOUT = 8;
    reg [511:0] lram [0:NLINES-1];
    integer ddr_seed = 1;
-   reg d_busy; reg [15:0] d_cnt; reg d_we_q; reg [57:0] d_ad_q; reg [511:0] d_wd_q;
-   reg [63:0] line;
+   reg         ddr_reorder;
+   initial ddr_reorder = $test$plusargs("ddr_reorder");
+   reg         dq_v   [0:DDR_NOUT-1];
+   reg         dq_we  [0:DDR_NOUT-1];
+   reg [4:0]   dq_id  [0:DDR_NOUT-1];
+   reg [57:0]  dq_ad  [0:DDR_NOUT-1];
+   reg [63:0]  dq_due [0:DDR_NOUT-1];
+   reg [63:0]  dq_seq [0:DDR_NOUT-1];
+   reg [63:0]  d_now, d_seq;
+   reg         d_rs;               // a read is streaming its beats
+   reg [1:0]   d_beat;             // ...this one next
+   integer     d_rk;               // ...from this slot
+   reg [511:0] d_rline;
+   integer     dq_i, dq_k, d_free, d_nv, d_pick, d_wpick;
+   reg [63:0]  line;
+   reg [511:0] wbits;
+   initial begin
+      for (dq_i = 0; dq_i < DDR_NOUT; dq_i = dq_i + 1) dq_v[dq_i] = 1'b0;
+      d_now = 0; d_seq = 0; d_rs = 1'b0;
+   end
+   always @* begin
+      d_nv = 0; d_free = -1;
+      for (dq_i = DDR_NOUT - 1; dq_i >= 0; dq_i = dq_i - 1)
+         if (dq_v[dq_i]) d_nv = d_nv + 1; else d_free = dq_i;
+   end
+   assign ddr_q_ready = (d_free >= 0);
    always @(posedge clk) begin
-      ddr_ack <= 1'b0;
-      if (reset) d_busy <= 1'b0;
-      else if (!d_busy && ddr_req) begin
-         d_busy<=1'b1; d_cnt<={8'd0, ddr_draw(ddr_we)} + ({$random(ddr_seed)} % (`DDR_JIT + 1));
-         dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
-         d_we_q<=ddr_we; d_ad_q<=ddr_addr; d_wd_q<=ddr_wdata;
-      end else if (d_busy) begin
-         if (d_cnt==0) begin
-            line = ({6'd0, d_ad_q} - LBASE) & (NLINES-1);
-            if (d_we_q) lram[line] <= d_wd_q;
-            else        ddr_rdata  <= lram[line];
-            ddr_ack <= 1'b1; d_busy <= 1'b0;
-         end else d_cnt <= d_cnt - 1;
+      ddr_r_valid <= 1'b0;
+      ddr_w_valid <= 1'b0;
+      d_now <= d_now + 1;
+      if (reset) begin
+         for (dq_k = 0; dq_k < DDR_NOUT; dq_k = dq_k + 1) dq_v[dq_k] <= 1'b0;
+         d_rs <= 1'b0;
+      end else begin
+         // accept
+         if (ddr_q_valid && ddr_q_ready) begin
+            dq_v[d_free]  <= 1'b1;  dq_we[d_free] <= ddr_q_we;  dq_id[d_free] <= ddr_q_id;
+            dq_ad[d_free] <= ddr_q_addr;  dq_seq[d_free] <= d_seq;  d_seq <= d_seq + 1;
+            dq_due[d_free] <= d_now + {48'd0, 8'd0, ddr_draw(ddr_q_we)} + ({$random(ddr_seed)} % (`DDR_JIT + 1));
+            dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
+            if (ddr_q_we) begin
+               line = ({6'd0, ddr_q_addr} - LBASE) & (NLINES-1);
+               for (dq_k = 0; dq_k < 64; dq_k = dq_k + 1) wbits[dq_k*8 +: 8] = {8{ddr_q_wmask[dq_k]}};
+               lram[line] <= (lram[line] & ~wbits) | (ddr_q_wdata & wbits);
+            end
+         end
+         // a read streams its beats, one per cycle; the last beat frees its slot
+         if (d_rs) begin
+            if (ddr_r_ready) begin
+               ddr_r_valid <= 1'b1;  ddr_r_id <= dq_id[d_rk];  ddr_r_beat <= d_beat;
+               ddr_r_last  <= (d_beat == 2'd3);  ddr_r_data <= d_rline[d_beat*128 +: 128];
+               d_beat <= d_beat + 2'd1;
+               if (d_beat == 2'd3) begin d_rs <= 1'b0; dq_v[d_rk] <= 1'b0; end
+            end
+         end else begin
+            // the next read: the oldest (or, with +ddr_reorder, any) whose first beat is due
+            d_pick = -1;
+            for (dq_k = DDR_NOUT - 1; dq_k >= 0; dq_k = dq_k - 1)
+               if (dq_v[dq_k] && !dq_we[dq_k] && (ddr_reorder ? 1'b1 : ddr_oldest(dq_k, 1'b0)))
+                  if (dq_due[dq_k] <= d_now + 4) d_pick = dq_k;   // its last beat lands at its due
+            if (d_pick >= 0) begin
+               line = ({6'd0, dq_ad[d_pick]} - LBASE) & (NLINES-1);
+               d_rline <= lram[line];  d_rs <= 1'b1;  d_rk <= d_pick;  d_beat <= 2'd0;
+            end
+         end
+         // the next write done: the oldest (or any) whose latency has run
+         d_wpick = -1;
+         for (dq_k = DDR_NOUT - 1; dq_k >= 0; dq_k = dq_k - 1)
+            if (dq_v[dq_k] && dq_we[dq_k] && (ddr_reorder ? 1'b1 : ddr_oldest(dq_k, 1'b1)))
+               if (dq_due[dq_k] <= d_now) d_wpick = dq_k;
+         if (d_wpick >= 0 && ddr_w_ready) begin
+            ddr_w_valid <= 1'b1;  ddr_w_id <= dq_id[d_wpick];  dq_v[d_wpick] <= 1'b0;
+         end
       end
+   end
+   // slot k is the oldest live transaction of its direction
+   function ddr_oldest(input integer k, input we);
+      integer m;
+      begin
+         ddr_oldest = 1'b1;
+         for (m = 0; m < DDR_NOUT; m = m + 1)
+            if (dq_v[m] && dq_we[m] == we && dq_seq[m] < dq_seq[k]) ddr_oldest = 1'b0;
+      end
+   endfunction
+   always @(posedge clk) if (!reset) begin
+      if (d_nv > DDR_NOUT) $fatal(1, "tb: DDR model holds %0d transactions", d_nv);
    end
 
 

@@ -65,13 +65,25 @@ module rv_soc_top #(
    output wire [63:0]      dmem_waddr,
    output wire [63:0]      dmem_wdata,
    output wire [7:0]       dmem_wmask,
-   // external DDR line port (cache-backed DRAM @ BASE): sim TB / FPGA DDR4 bridge
-   output wire             ddr_req,
-   output wire             ddr_we,
-   output wire [57:0]      ddr_addr,     // line address PA[63:6]
-   output wire [511:0]     ddr_wdata,
-   input  wire [511:0]     ddr_rdata,
-   input  wire             ddr_ack,
+   // external DDR memory port (cache-backed DRAM @ BASE): the sim TB's model, or the FPGA's
+   // crossing into the DDR4 controller. Tagged, several transactions outstanding, three
+   // valid/ready channels (rv_mem_arbiter.v; docs/PLAN-2026-09-25-dcache-vhpr.md).
+   output wire             ddr_q_valid,  // request
+   input  wire             ddr_q_ready,
+   output wire [4:0]       ddr_q_id,
+   output wire             ddr_q_we,
+   output wire [57:0]      ddr_q_addr,   // line address PA[63:6]
+   output wire [63:0]      ddr_q_wmask,  // per byte of the line
+   output wire [511:0]     ddr_q_wdata,
+   input  wire             ddr_r_valid,  // read data: four 128-bit beats per line
+   output wire             ddr_r_ready,
+   input  wire [4:0]       ddr_r_id,
+   input  wire [1:0]       ddr_r_beat,
+   input  wire             ddr_r_last,
+   input  wire [127:0]     ddr_r_data,
+   input  wire             ddr_w_valid,  // write done (the DRAM's write response)
+   output wire             ddr_w_ready,
+   input  wire [4:0]       ddr_w_id,
    // UART receive: the TB/host pushes a byte (uart_rx_we while uart_rx_ready) -> the core
    // reads it from RBR. uart_rx_ready = the holding register is empty (DR clear).
    input  wire             uart_rx_we,
@@ -769,7 +781,6 @@ module rv_soc_top #(
    wire [1:0]   pw_ack;
    reg  [63:0]  pw_rdata [0:1];
    wire [1:0]   pw_match;
-   wire [511:0] arb_rdata;
    genvar g;
    generate for (g=0; g<2; g=g+1) begin : ptw_adapt
       assign pw_match[g] = dc_rd_valid & pw_busy[g]
@@ -811,38 +822,67 @@ module rv_soc_top #(
                            : pw_rq[0] ? {2'd1, {LQ_IB{1'b0}}}
                            :            {2'd2, {LQ_IB{1'b0}}};
 
-   // ---------------- l2_arbiter (2 requesters: D$, I$) ----------------
-   // PTW reads no longer reach the arbiter -- they go through the D$ (dcr_* above), and a D$ miss
-   // on a PTE fills via dc_l2_* here like any other line. So the arbiter serves only the two
-   // caches' line refills/writebacks.
-   localparam NREQ=2;
-   wire [NREQ-1:0]     a_req   = {ic_l2_req, dc_l2_req};
-   wire [NREQ-1:0]     a_we    = {1'b0, dc_l2_we};
-   wire [NREQ*LAW-1:0] a_addr  = {ic_l2_addr, dc_l2_addr};
-   wire [NREQ*512-1:0] a_wdata = {ic_l2_wdata, dc_l2_wdata};
-   wire [NREQ-1:0]     a_ack;
-   wire                m_req, m_we;  wire [LAW-1:0] m_addr;  wire [511:0] m_wdata, m_rdata;  wire m_ack;
-   rv_l2_arbiter #(.NREQ(NREQ), .AW(LAW), .DW(512)) u_arb
+   // ---------------- the memory port: the caches as clients of rv_mem_arbiter ----------------
+   // PTW reads go through the D$ (dcr_* above), and a D$ miss on a PTE fills via dc_l2_* like any
+   // other line. Both caches keep their single-outstanding line handshake behind
+   // rv_mem_line_client; the D$ is client 0, the I$ client 1 (a read of the D$ wins a tie).
+   localparam integer MC = 2, MCB = 1, MSW = 4, MIDW = MCB + MSW;
+   wire [MC-1:0]       mc_q_valid, mc_q_ready, mc_q_we, mc_r_valid, mc_w_valid;
+   wire [MC*MSW-1:0]   mc_q_slot;
+   wire [MC*LAW-1:0]   mc_q_addr;
+   wire [MC*64-1:0]    mc_q_wmask;
+   wire [MC*512-1:0]   mc_q_wdata;
+   wire [MSW-1:0]      mc_r_slot, mc_w_slot;
+   wire [1:0]          mc_r_beat;  wire mc_r_last;  wire [127:0] mc_r_data;
+   rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_dc_mem
      (.clk(clk), .reset(reset),
-      .req(a_req), .we(a_we), .addr(a_addr), .wdata(a_wdata), .ack(a_ack), .rdata(arb_rdata),
-      .mem_req(m_req), .mem_we(m_we), .mem_addr(m_addr), .mem_wdata(m_wdata),
-      .mem_rdata(m_rdata), .mem_ack(m_ack));
-   assign dc_l2_ack = a_ack[0];  assign dc_l2_rdata = arb_rdata;
-   assign ic_l2_ack = a_ack[1];  assign ic_l2_rdata = arb_rdata;
+      .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
+      .l2_ack(dc_l2_ack), .l2_rdata(dc_l2_rdata),
+      .cq_valid(mc_q_valid[0]), .cq_ready(mc_q_ready[0]), .cq_slot(mc_q_slot[0*MSW +: MSW]),
+      .cq_we(mc_q_we[0]), .cq_addr(mc_q_addr[0*LAW +: LAW]), .cq_wmask(mc_q_wmask[0*64 +: 64]),
+      .cq_wdata(mc_q_wdata[0*512 +: 512]),
+      .cr_valid(mc_r_valid[0]), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
+      .cr_data(mc_r_data), .cw_valid(mc_w_valid[0]), .cw_slot(mc_w_slot));
+   rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_ic_mem
+     (.clk(clk), .reset(reset),
+      .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
+      .l2_ack(ic_l2_ack), .l2_rdata(ic_l2_rdata),
+      .cq_valid(mc_q_valid[1]), .cq_ready(mc_q_ready[1]), .cq_slot(mc_q_slot[1*MSW +: MSW]),
+      .cq_we(mc_q_we[1]), .cq_addr(mc_q_addr[1*LAW +: LAW]), .cq_wmask(mc_q_wmask[1*64 +: 64]),
+      .cq_wdata(mc_q_wdata[1*512 +: 512]),
+      .cr_valid(mc_r_valid[1]), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
+      .cr_data(mc_r_data), .cw_valid(mc_w_valid[1]), .cw_slot(mc_w_slot));
+
+   wire            m_q_valid, m_q_ready, m_q_we;
+   wire [MIDW-1:0] m_q_id;  wire [LAW-1:0] m_q_addr;  wire [63:0] m_q_wmask;  wire [511:0] m_q_wdata;
+   wire            m_r_valid, m_r_ready, m_r_last, m_w_valid, m_w_ready;
+   wire [MIDW-1:0] m_r_id, m_w_id;  wire [1:0] m_r_beat;  wire [127:0] m_r_data;
+   rv_mem_arbiter #(.NC(MC), .CB(MCB), .SW(MSW), .AW(LAW)) u_arb
+     (.clk(clk), .reset(reset),
+      .cq_valid(mc_q_valid), .cq_ready(mc_q_ready), .cq_slot(mc_q_slot), .cq_we(mc_q_we),
+      .cq_addr(mc_q_addr), .cq_wmask(mc_q_wmask), .cq_wdata(mc_q_wdata),
+      .cr_valid(mc_r_valid), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
+      .cr_data(mc_r_data), .cw_valid(mc_w_valid), .cw_slot(mc_w_slot),
+      .mq_valid(m_q_valid), .mq_ready(m_q_ready), .mq_id(m_q_id), .mq_we(m_q_we),
+      .mq_addr(m_q_addr), .mq_wmask(m_q_wmask), .mq_wdata(m_q_wdata),
+      .mr_valid(m_r_valid), .mr_ready(m_r_ready), .mr_id(m_r_id), .mr_beat(m_r_beat),
+      .mr_last(m_r_last), .mr_data(m_r_data),
+      .mw_valid(m_w_valid), .mw_ready(m_w_ready), .mw_id(m_w_id));
 
    // ---------------- memory: internal local SRAM (BRAM) + EXTERNAL DDR port ----------------
-   // The arbiter's single line transaction is region-decoded: the on-chip local SRAM at
-   // LBASE (boot/monitor; FPGA = BRAM init'd from mem.even/odd) is served internally; the
-   // DDR region at BASE is forwarded to soc_top's external line port (ddr_*) -- the sim TB's
-   // behavioral DRAM, or the real DDR4/MIG bridge on the FPGA. The cache is PIPT so it fills/
-   // writes either region transparently. (lram is $readmemh-loadable via dut.lram for boot.)
+   // Each request is region-decoded: the on-chip local SRAM at LBASE (boot/monitor; FPGA = BRAM
+   // init'd from mem.even/odd) is served here; the DDR region at BASE goes out on the ddr_*
+   // port -- the sim TB's model, or the FPGA's crossing into the DDR4 controller. The cache is
+   // PIPT so it fills/writes either region transparently. (lmem is $readmemh-loadable.)
    localparam LSIZE = 1<<LRAM_LG2;
-   wire [63:0] m_pa       = {{6{1'b0}}, m_addr} << 6;       // physical byte addr of the line
+   wire [63:0] m_pa       = {{6{1'b0}}, m_q_addr} << 6;     // physical byte addr of the line
    wire        m_is_local = (m_pa >= LBASE) && (m_pa < LBASE + LSIZE);
 
-   // local SRAM responder (on-chip BRAM). Stored as 512-bit LINES (the L2 port is
-   // line-granular) so it infers a clean single-read/single-write BRAM -- a byte array
-   // with a 64-byte for-loop access does NOT (Vivado can't template it).
+   // local SRAM responder (on-chip BRAM). Stored as 512-bit LINES (the port is line-granular)
+   // so it infers a clean single-read/single-write BRAM -- a byte array with a 64-byte for-loop
+   // access does NOT (Vivado can't template it). One transaction at a time: it reads the line,
+   // then hands out its four beats (or one write done) whenever the DDR side is not answering
+   // in that cycle; the DDR side has no reason to wait, the boot SRAM's traffic is rare.
    localparam NLLINE = LSIZE/64;                 // number of 64-byte lines
    localparam LLW    = $clog2(NLLINE);           // ...and the bits needed to index them
    // LBASE[AW-1:6], not LBASE >> 6: the shift is a 64-bit expression silently truncated
@@ -855,47 +895,71 @@ module rv_soc_top #(
 `ifdef SOC_BOOT_HEX
    initial $readmemh(`SOC_BOOT_HEX, lmem);
 `endif
-   reg l_busy; reg [3:0] l_cnt; reg l_we_q; reg [LLW-1:0] l_li_q; reg [511:0] l_wd_q;
-   reg [511:0] l_rdata; reg l_ack;
-   wire [LAW-1:0] l_line = m_addr - LLBASE;       // local line index
-   wire l_req = m_req & m_is_local;
+   wire [LAW-1:0] l_line = m_q_addr - LLBASE;    // local line index
+   reg            l_busy, l_rd, l_wd;           // taken; a read's beats / a write's done owed
+   reg            l_ld;                          // the line is being read out of lmem this cycle
+   reg  [MIDW-1:0] l_id;
+   reg  [1:0]     l_beat;
+   reg  [511:0]   l_q;
+   wire           l_take   = m_q_valid & m_is_local & ~l_busy;
+   wire           l_r_go   = l_rd & ~ddr_r_valid;               // a beat leaves this cycle
+   wire           l_w_go   = l_wd & ~ddr_w_valid;
    always @(posedge clk) begin
-      l_ack <= 1'b0;
-      if (reset) l_busy<=1'b0;
-      else if (!l_busy && l_req) begin
+      if (l_take) begin
          // lmem has NLLINE entries, so a LAW-bit (58) index at the array bracket is a silent
          // truncation -- an out-of-range line would WRAP onto a valid one. m_is_local bounds
          // l_line, so narrow explicitly and assert the precondition rather than trust it.
          if (|l_line[LAW-1:LLW])
             $fatal(1, "rv_soc_top: local SRAM line %h out of range (NLLINE=%0d)", l_line, NLLINE);
-         l_busy<=1'b1; l_cnt<=4'd1; l_we_q<=m_we; l_li_q<=l_line[LLW-1:0]; l_wd_q<=m_wdata;
+         if (m_q_we && m_q_wmask != {64{1'b1}})
+            $fatal(1, "rv_soc_top: a partial-line write to the local SRAM (mask %h)", m_q_wmask);
+         if (m_q_we) lmem[l_line[LLW-1:0]] <= m_q_wdata;
+         else        l_q <= lmem[l_line[LLW-1:0]];
+         l_id <= m_q_id;
       end
-      else if (l_busy) begin
-         if (l_cnt==0) begin
-            if (l_we_q) lmem[l_li_q] <= l_wd_q;
-            else        l_rdata     <= lmem[l_li_q];
-            l_ack<=1'b1; l_busy<=1'b0;
-         end else l_cnt <= l_cnt-1;
+      if (reset) begin l_busy <= 1'b0; l_rd <= 1'b0; l_wd <= 1'b0; l_ld <= 1'b0; end
+      else begin
+         l_ld <= l_take & ~m_q_we;
+         if (l_take) begin l_busy <= 1'b1; l_beat <= 2'd0; l_wd <= m_q_we; end
+         if (l_ld) l_rd <= 1'b1;
+         if (l_r_go) begin
+            l_beat <= l_beat + 2'd1;
+            if (l_beat == 2'd3) begin l_rd <= 1'b0; l_busy <= 1'b0; end
+         end
+         if (l_w_go) begin l_wd <= 1'b0; l_busy <= 1'b0; end
       end
    end
 
-   // external DDR line port (sim TB drives it; FPGA = DDR4 bridge)
-   assign ddr_req   = m_req & ~m_is_local;
-   assign ddr_we    = m_we;
-   assign ddr_addr  = m_addr;
-   assign ddr_wdata = m_wdata;
+   // the external DDR port: requests outside the SRAM go out as they are
+   assign ddr_q_valid = m_q_valid & ~m_is_local;
+   assign ddr_q_id    = m_q_id;
+   assign ddr_q_we    = m_q_we;
+   assign ddr_q_addr  = m_q_addr;
+   assign ddr_q_wmask = m_q_wmask;
+   assign ddr_q_wdata = m_q_wdata;
+   assign m_q_ready   = m_is_local ? ~l_busy : ddr_q_ready;
+   assign ddr_r_ready = m_r_ready;
+   assign ddr_w_ready = m_w_ready;
 
-   // DDR latency HPM: time ddr_req->ddr_ack (core cycles) into read/write log2 histograms,
-   // read-only at HPM_BASE (any write clears). Observation-only; off the core critical path.
-   ddr_hpm u_ddr_hpm
+   // responses: the DDR side's, else the SRAM's
+   assign m_r_valid = ddr_r_valid | l_r_go;
+   assign m_r_id    = ddr_r_valid ? ddr_r_id   : l_id;
+   assign m_r_beat  = ddr_r_valid ? ddr_r_beat : l_beat;
+   assign m_r_last  = ddr_r_valid ? ddr_r_last : (l_beat == 2'd3);
+   assign m_r_data  = ddr_r_valid ? ddr_r_data : l_q[l_beat*128 +: 128];
+   assign m_w_valid = ddr_w_valid | l_w_go;
+   assign m_w_id    = ddr_w_valid ? ddr_w_id : l_id;
+
+   // DDR latency HPM: per request id, the cycles from the request's acceptance to its read's last
+   // beat or its write done (core cycles), into read/write log2 histograms, read-only at
+   // HPM_BASE (any write clears). Observation-only; off the core critical path.
+   ddr_hpm #(.IDW(MIDW)) u_ddr_hpm
      (.clk(clk), .reset(reset),
-      .ddr_req(ddr_req), .ddr_we(ddr_we), .ddr_ack(ddr_ack),
+      .q_fire(ddr_q_valid & ddr_q_ready), .q_id(ddr_q_id),
+      .r_done(ddr_r_valid & ddr_r_ready & ddr_r_last), .r_id(ddr_r_id),
+      .w_done(ddr_w_valid & ddr_w_ready), .w_id(ddr_w_id),
       .raddr(dmem_raddr[7:0]), .rdata(hpm_rdata),
       .clr(dmem_wen & is_hpm_w & ~dev_wack));
-
-   // response mux back to the arbiter (m_addr held by the arbiter through the transaction)
-   assign m_ack   = m_is_local ? l_ack   : ddr_ack;
-   assign m_rdata = m_is_local ? l_rdata : ddr_rdata;
 endmodule
 
 `default_nettype wire
