@@ -5,10 +5,10 @@
 SmolRV64 is a 64-bit RISC-V application processor, written from scratch in Verilog, that
 boots stock Ubuntu on a Kintex UltraScale+ FPGA at 166.67 MHz and runs Geekbench on it.
 The name is a leftover: the project began as a small sequential core, and what ships today
-is **OOO2**, a two-wide out-of-order machine with register renaming, four schedulers, a
-load queue and a store queue, non-blocking loads, a tagged four-deep FPU pipeline, and a
-memory system that lets the Linux kernel run non-coherent virtio DMA without a coherent
-fabric. Every committed instruction is checked in lockstep against an independent ISA
+is **OOO2**, a three-wide out-of-order machine with register renaming, a decoupled fetch
+stream over a virtually tagged instruction cache, four schedulers, a load queue and a senior
+store queue, non-blocking tagged loads, a tagged four-deep FPU pipeline, and a memory system
+that lets the Linux kernel run non-coherent virtio DMA without a coherent fabric. Every committed instruction is checked in lockstep against an independent ISA
 model, and every non-trivial change has to boot Ubuntu to a login prompt on the board with
 zero faults before it lands.
 
@@ -16,15 +16,16 @@ zero faults before it lands.
 
 | | |
 |---|---|
-| Geekbench 5.4.1 single-core, board, 2026-09-07 | **5** (Integer 5, Crypto 1, Floating Point 0); the whole suite in 5 h 35 min at IPC 0.40, against 9 h 05 min at IPC 0.26 two weeks earlier and a score of 0.9 for the sequential core in June ([result 24610038](https://browser.geekbench.com/v5/cpu/24610038)) |
+| Geekbench 5.4.1, board, 2026-09-25 | **7** single-core (Integer 8, Crypto 1, Floating Point 0), 6 multi-core; the whole suite in 4 h 24 min at IPC 0.50, against 5 h 35 min at IPC 0.40 on 2026-09-07 and a score of 0.9 for the sequential core in June ([result 24664277](https://browser.geekbench.com/v5/cpu/24664277)) |
+| Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
 | `sha256sum` of a 30 MB file, board | IPC 1.32 to 1.39 |
-| Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed with dynamic issue and two-wide dispatch; DDR4 at 333 MHz |
+| Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
 | Area | 82,540 LUTs (38% of the part), 49,498 flip-flops, 122 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
-| Software | OpenSBI, mainline Linux, Ubuntu 25.04 over an NFS root through the core's own virtio-net; Geekbench 5, 6 and 7 installed on it |
+| Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
 
 **Why three bars are so short.** Gaussian Blur, Structure from Motion and Machine
-Learning score 1, 2 and 0, and Machine Learning's 0.01 images per second has not moved
-since June while every other subtest moved four to ten times. Its counter trace says why:
+Learning score 1, 3 and 0, and Machine Learning's 0.01 images per second has not moved
+since June while the other subtests have moved several times over. Its counter trace says why:
 IPC 0.36, no trap storm, a 4.4% data-cache miss rate, and about six billion scalar
 instructions per image. Geekbench's reference machine does that work with SIMD; this core
 has no vector extension, so it executes the scalar fallback instruction by instruction, and
@@ -39,22 +40,25 @@ like when every structure is chosen by what a Kintex LUT, LUTRAM or block RAM do
 (docs/OOO2-Spec.md is the normative description, and every number below is read off the
 RTL or measured with the workload named):
 
-- **Two-wide fetch, dispatch and retire.** A 16-byte fetch window over a three-chunk
-  run-ahead fetch buffer with two I$ requests in flight; an aligner that emits up to two
-  RVC or 32-bit instructions per cycle into an 8-entry decoupling queue; two ROB entries
-  allocated and up to two retired per cycle.
-- **A status-only reorder buffer.** 16 entries of 16 bits each: no values, no PCs, no
+- **Three-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
+  reads one 16-byte pair per cycle from the instruction cache into a fetch ring, ahead of
+  decode; an aligner emits up to three RVC or 32-bit instructions per cycle into an 8-entry
+  decoupling queue; three ROB entries are allocated and up to three retired per cycle.
+- **A status-only reorder buffer.** 32 entries of 17 bits each: no values, no PCs, no
   operands. A second, *irrevocable* pointer walks ahead of the head over completed entries
   and commits stores early, so a store never holds retirement for the cache's write.
   Squash is pointer-only; there is nothing to walk.
-- **A unified physical register file in four shards, one writer each.** Duplication buys
-  read ports; sharding by writer is what buys write ports. Each shard has exactly one
-  writer (ALU A, ALU B, everything stage M completes, the FPU), so there is no write
-  arbitration anywhere and the integer scheduler carries no unit-busy term at all. Taking a
-  second writer off one shard was worth 0.4 ns of cycle time.
+- **A unified physical register file in four shards, one write port each.** Duplication
+  buys read ports; sharding by writer is what buys write ports. Each ALU owns a shard
+  alone; loads and the system queue share one, and the FPU, the multiply/divide stage, the
+  jump link and the simple FP operations the memory stage executes share the last, taking
+  turns through one yield gate. So the integer
+  schedulers carry no unit-busy term at all. Taking a second writer off one shard was worth
+  0.4 ns of cycle time.
 - **Four schedulers, no age matrix.** Two integer schedulers (one per ALU), one in-order
-  memory scheduler and one FP scheduler, each with fixed-priority select and
-  wake-at-select, so a dependent issues the cycle after its producer. Entries hold only
+  memory scheduler, and one for FP arithmetic, branches, jumps, multiplies and divides that
+  reorders them freely. Each has fixed-priority select and wake-at-select, so a dependent
+  issues the cycle after its producer. Entries hold only
   physical register tags and ready bits; the execute payload sits in a separate LUTRAM
   indexed by scheduler entry, never by ROB slot.
 - **Rename with one-cycle rollback.** Speculative and committed maps, per-shard free lists
@@ -64,32 +68,40 @@ RTL or measured with the workload named):
   and leaves; the load queue and the store queue reach memory later through one
   pre-translated port, the store winning. A load with no older store in the queue starts
   its access in the same cycle; the queue holds a load behind an older store only when the
-  addresses may alias. The store queue is senior to retirement: a committed store's ROB
-  slot retires while its bytes drain behind it, and a redirect flushes only the
+  addresses may alias. Up to four loads are in flight to the data cache at once, matched
+  by the load-queue tag they carry. The store queue is senior to retirement: a committed
+  store's ROB slot retires while its bytes drain behind it, and a redirect flushes only the
   uncommitted tail.
+- **System operations at the head, from flops.** CSR accesses and the other serializing
+  operations wait in a one-entry system queue and fire when they reach the ROB head, from
+  registers, so none of them sits in the memory stage's completion path. Multiplies and
+  divides run in their own stage and land by tag.
 - **A tagged, four-deep FPU.** CVFPU (fpnew) with four operations in flight, results
   returned by tag and out of order, and its own scheduler and execute stage, so FP
   arithmetic never enters the memory stage and cannot block it. Reordering the FP issue
   took a Geekbench Gaussian Blur kernel from 39.5 to 29.4 cycles per pixel.
-- **Prediction a cycle ahead.** The BTB (1024 entries), a YAGS corrector (1024 entries), a
-  12-bit global history, an 8-entry return stack and a length predictor are read from a
-  register-only *ahead* PC, so the whole prediction loop has a full cycle of slack. Neither
-  array has a valid bit: validity is the tag match, which is what let both live in block
-  RAM. Prediction is keyed by the bundle base and trained from the resolving branch's
-  offset within it, so two-wide fetch cost no prediction accuracy.
-- **Caches built from what the part has.** 64 KB two-way skew-associative PIPT
-  instruction and data caches with 64-byte lines in even/odd 64-bit block-RAM banks, so any
-  read at any byte offset spans at most two banks and needs no wide multiplexer. The data
-  cache is write-back with a lookup pipeline and a separate fill machine: a plain read
-  overlaps a fill, a write is accepted under a fill and a write miss is completed by the
-  fill machine, and the cache's door is open in a write's last cycle so stores stream at
-  one per two cycles. Page-table walks run as line requesters through the same L2 arbiter.
+- **Prediction at the fetch stream.** A 2048-entry BTB and a 2048-entry YAGS corrector in
+  eight block-RAM banks, an 11-bit global history carried with each instruction, and an
+  8-entry return stack predict each 16-byte pair as it is fetched, keyed by a
+  control-transfer instruction's last halfword; an 8-entry prediction queue carries each
+  prediction's state to the instruction it names. Neither table has a valid bit: validity
+  is the tag match.
+- **Caches built from what the part has.** A 64 KB two-way instruction cache that is
+  virtually indexed and hits on its virtual tag and an epoch, reconciling by physical tag
+  only on a miss, so fetch needs no translation per access; it reads a 16-byte pair every
+  cycle. A 64 KB two-way skew-associative physically tagged data cache, write-back, with a
+  lookup pipeline and a separate fill machine: a plain read overlaps a fill, a write is
+  accepted under a fill and a write miss is completed by the fill machine, and stores
+  stream at one per two cycles. Both use 64-byte lines in even/odd 64-bit block-RAM banks.
+  Page-table walks read through the data cache, so a walk always sees dirty page-table
+  entries.
 - **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, two
   16-entry TLBs, superpages, Ssvnapot leaves, Svpbmt non-cacheable mappings plus Zicbom
   and Zicboz cache-management operations, so the kernel drives non-coherent virtio DMA
   rings with its standard machinery. Misaligned loads and stores are handled in hardware,
-  including across cache lines. The MMU range-checks every resolved physical address and
-  faults rather than dropping the access.
+  including across cache lines. The physical address space is 36 bits, capped at the
+  instance's top of DRAM: the MMU range-checks every resolved physical address and faults
+  rather than dropping the access.
 - **Interrupts through the trap path.** An external or timer interrupt is injected as a
   pseudo-op that traps in stage M, so traps, faults and interrupts share one precise
   mechanism; a pending interrupt waits out a page-straddling fetch rather than abandoning
@@ -111,16 +123,25 @@ time.
   a glibc userspace harness (ld.so, dash, coreutils, four iterations of a checksum), and
   systemd's own loader through 20 shared libraries, because the defects that reached the
   board were all in code the small boot never ran.
-- **151 always-on invariants.** Every "this cannot happen" in the core is a `$fatal`, never
+- **218 always-on invariants.** Every "this cannot happen" in the RTL is a `$fatal`, never
   an `ifdef`: tagged responses matched to their requester, a load never starting while the
   live alias check holds it, the scheduler's payload compared against the pipeline every
-  cycle, the two ROB pointers never crossing. Detection latency, not defect rate, is what
-  costs days.
+  cycle, the two ROB pointers never crossing, nothing that changes memory started off the
+  ROB head. Detection latency, not defect rate, is what costs days.
+- **The same invariants on the board.** An integrity log latches the caches', the LSU's and
+  the frontend's invariants into sticky hardware bits, with the first one's cycle; Linux
+  reads it back after every board run, and a nonzero log fails the gate however clean the
+  console looked.
+- **Random programs in lockstep.** `workloads/memrand` generates random streams of loads,
+  stores, AMOs, LR/SC, FP, CBOs, fences, page remaps over aliased mappings and wrong-path
+  memory operations, with a DMA agent interrupting through the PLIC, and judges every load
+  and store byte against the ISA model.
 - **A lint gate with teeth.** Width truncation, incomplete case, latches, combinational
   loops, undriven and multiply-driven nets, missing pins: all errors, with waivers that must
   name a file. A generated perf-event file and the device tree's timebase are checked in
   the same gate, because each had drifted once.
-- **Unit benches** for the cache (directed, at four memory latencies), the load and store
+- **Unit benches** for the data cache (directed, at four memory latencies), the
+  instruction cache (random remaps and fence.i against a byte image), the load and store
   queues together (85 directed checks plus a constrained-random program-order model), the
   scheduler, the CBO-behind-stores hang, the virtio-net DMA at every alignment and the
   Ethernet receive engine across two clocks; 240 riscv-tests under Verilator with the real
@@ -135,7 +156,7 @@ time.
 - **The rules are written down.** [docs/rtl-rules.md](docs/rtl-rules.md) derives every
   rule from the project's own defect record, with the commit that paid for it.
 
-**Observability on hardware.** 33 performance events through 13 `mhpmcounter`s, exposed to
+**Observability on hardware.** 43 performance events through 13 `mhpmcounter`s, exposed to
 Linux `perf` by a generated event file. The counters charge every non-retiring cycle to
 exactly one cause, so a `perf stat` run turns into a CPI stack: issue floor, LSU, FPU,
 multiplier and divider, serialization, dispatch holds by cause, ROB full, the mispredict
@@ -152,23 +173,26 @@ comparable number across builds, and the subtest rates are what the scores follo
 | 2026-06-26 | the sequential core | 66.67 MHz | | | 0.9 (after the timer correction) |
 | 2026-08-17 | OOO2 as an in-order pipeline | 111.11 MHz | 25.4 h | | Integer 0 |
 | 2026-08-28 | dynamic issue, one-wide | 166.67 MHz | 9 h 05 min | 0.26 | |
-| 2026-09-07 | two-wide, the full stack | 166.67 MHz | 5 h 35 min | 0.40 | **5** |
+| 2026-09-07 | two-wide, the full stack | 166.67 MHz | 5 h 35 min | 0.40 | 5 |
+| 2026-09-24 | three-wide, 36-bit physical addresses | 166.67 MHz | 4 h 34 min | 0.49 | 6 |
+| 2026-09-25 | + the decoupled fetch stream, the VHPR instruction cache | 166.67 MHz | 4 h 24 min | 0.50 | **7** |
 
-Geekbench 6.7.1 on the same bitstream ([result 19145035](https://browser.geekbench.com/v6/cpu/19145035),
-2026-09-10): 10.9 T instructions at IPC 0.335, single-core in 18.5 h. Its stack is more
-load-bound than Geekbench 5's (LSU 56% of cycles), the 16-entry window binds on it (ROB
-full 16%), and it multiplies nine times as much (multiplier 9%).
+Geekbench 6.7.1 on 27f03a7f, three-wide ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188),
+2026-09-21 to 23): 4 single-core, 4 multi-core. Geekbench 6 is more load-bound than
+Geekbench 5 and multiplies far more.
 
-The CPI stack of the 2026-09-07 run: 2.49 cycles per instruction, of which 0.50 is the
-two-wide issue floor, 1.18 the load/store unit, 0.48 the FPU, 0.16 serializing operations,
-0.05 multiply and divide and 0.10 the frontend. Geekbench is now bound by the data-side
-hit latency; the frontend is 4% of cycles. Text Compression and Navigation score 10; Clang
-and SQLite, which spend over 20% of their cycles in the frontend on some 40 redirects per
-thousand instructions, are where a better predictor would pay next; the three SIMD-shaped
+The CPI stack of the 2026-09-25 Geekbench 5 run: 1.99 cycles per instruction. Charged per
+cycle, with overlap where two units block at once, the load/store unit holds up 53% of
+cycles, the FPU 25%, a full ROB 17%, dispatch holds 10%, the multiplier 2% and the
+frontend 5%, 3% of it waiting on the instruction cache. The data cache misses 8.2 times
+per thousand instructions, and there are 3.3 redirects per thousand. Geekbench is bound by
+the data side: the data cache has one miss outstanding at a time and a second miss blocks
+every access behind it, which is what the next work removes. The three SIMD-shaped
 subtests are the ISA's, as explained above.
 
-The plan that produced this, with every item justified by a measurement on this core,
-is [docs/PLAN-2026-09-05-ipc.md](docs/PLAN-2026-09-05-ipc.md). Geekbench 6 and SPEC
+The plans that produced this, with every item justified by a measurement on this core,
+are [docs/PLAN-2026-09-05-ipc.md](docs/PLAN-2026-09-05-ipc.md) and
+[docs/PLAN-2026-09-24-frontend-stage4.md](docs/PLAN-2026-09-24-frontend-stage4.md). SPEC
 results will be added as they are run.
 
 ## Quick start
@@ -184,9 +208,12 @@ ooo2/run-ooo2-linux.sh                        # boot Linux (tiny128 initramfs) u
 CYC=300000000 ooo2/run-ooo2-cosim-linux.sh    # the same boot in lockstep with simmerv
 ```
 
+The machine is three-wide by default; `VDEFS=-DOOO2_IW=2` (simulation) or `OOO2_IW=2` (the
+FPGA build) selects the two-wide configuration.
+
 The lockstep runs need a [Simmerv](https://github.com/tommythorn/simmerv) checkout at
-`~/simmerv` (or `SIMMERV_DIR`) built with its cosim library. Verilator 5.x and Icarus
-Verilog are the simulators; the cross toolchain is `riscv64-linux-gnu-gcc`.
+`~/simmerv` (or `SIMMERV_DIR`) built with its cosim library. Verilator 5.x is the
+simulator; the cross toolchain is `riscv64-linux-gnu-gcc`.
 
 The FPGA flow is headless Vivado 2025.1 in `platforms/rk-xcku5p-f-v1.2/`:
 
@@ -208,7 +235,7 @@ turns the output into a CPI stack.
 
 | Path | Contents |
 |---|---|
-| `ooo2/` | The core and its SoC top (`rv_soc_top.v`), the caches and L2 arbiter, the core's testbenches and run scripts |
+| `ooo2/` | The core and its SoC top (`rv_soc_top.v`), the caches and the memory-port arbiter, the core's testbenches and run scripts |
 | `src/` | The blocks the core shares (fetch, aligner, decode, ALU, MMU, CSRs, the FPU wrapper), the SoC devices (CLINT, PLIC, UART, virtio, Ethernet, SD, the DDR line bridge), their benches, the lint gate, the cosim DPI |
 | `platforms/rk-xcku5p-f-v1.2/` | The FPGA build: top level, constraints, the scripted Vivado flow, the timing and utilization reports, the ILA debug cores |
 | `tools/` | The gate, the netlist boot, the RAM and function-read checks, the perf event sets and CPI stack, the Geekbench trace and chart tools, the frontend and predictor models |
@@ -219,17 +246,19 @@ turns the output into a CPI stack.
 
 ## What comes next
 
-- The ROB at 32 entries (built on a branch; the 16-entry window is not the measured
-  limiter, so it waits for a measurement that says otherwise).
-- Store-to-load forwarding for stack-heavy code such as Clang, now that the store queue
-  exists to hold it.
-- The data-cache next-line prefetcher, built and measured in simulation (+34% on the
-  kernel's memory init) but off because it faults under real DMA on the board.
+- A non-blocking data cache, virtually indexed and physically reconciled like the
+  instruction cache: several misses outstanding, hits under misses, write-backs deferred
+  behind the demand fill, the critical chunk first, and a memory path below it that
+  pipelines requests into the DDR4 controller
+  ([docs/PLAN-2026-09-25-dcache-vhpr.md](docs/PLAN-2026-09-25-dcache-vhpr.md)). Then an
+  instruction cache kept coherent with stores, so `fence.i` touches no cache.
+- One out-of-order load/store pipe: loads and stores issued out of order, translated in
+  their queues, with memory speculation and replay.
+- A review of the clock: 250 MHz would be worth 50%, with the memory controller's 333 MHz
+  behind a clock crossing.
 - An L2 in UltraRAM, which the part has 64 blocks of and the design uses none of.
-- Beyond two-wide: a predecoded packet cache and a fetch-target queue
-  (`wip/fe-ideas`), and the question of whether a vector unit fits without giving up the
-  clock.
-- Geekbench 6 and SPEC CPU on the board.
+- The question of whether a vector unit fits without giving up the clock.
+- SPEC CPU on the board.
 
 ## Licensing
 

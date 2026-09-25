@@ -22,13 +22,13 @@ CATS = [("Crypto", "#b5651d", ["AES-XTS"]),
 def read(path):
     rows = {}
     for line in open(path):
-        m = re.match(r"\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", line)
+        m = re.match(r"\|\s*([^|]+?)\s*\|\s*\**(\d+)\**\s*\|\s*([^|]*?)\s*\|", line)
         if m: rows[m.group(1).strip("* ")] = (int(m.group(2)), m.group(3))
     return rows
 
 def svg(rows, title, subtitle):
     left, bar0, rowh, barmax, w = 150, 160, 18, 260, 640
-    ymax = 10
+    ymax = max(10, 2 * -(-max(sc for sc, _ in rows.values()) // 2))   # the top score, rounded up to even
     lines = [f'<text x="12" y="24" font-size="15" font-weight="bold">{title}</text>']
     for i, s in enumerate(subtitle):
         lines.append(f'<text x="12" y="{41+14*i}" fill="#555">{s}</text>')
@@ -59,4 +59,5 @@ if __name__ == "__main__":
     date = re.search(r"(\d{4}-\d{2}-\d{2})", path)
     print(svg(rows, "Geekbench 5.4.1 single-core, score per subtest",
               [f"SmolRV64 OOO2 on the XCKU5P at 166.67 MHz, {date.group(1) if date else path}",
-               "single-core 5: Integer 5, Crypto 1, Floating Point 0 (a geometric mean; one 0 zeroes it)"]))
+               f"single-core {rows['Single-Core'][0]}: Integer {rows['Integer'][0]}, Crypto {rows['Crypto'][0]}, "
+               f"Floating Point {rows['Floating Point'][0]} (a geometric mean; one 0 zeroes it)"]))
