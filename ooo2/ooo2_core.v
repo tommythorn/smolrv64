@@ -496,31 +496,14 @@ module ooo2_core
                 | d3_is_fencei | d3_is_cbo | d3_is_branch | d3_is_jump | d3_is_jalr
                 | d3_illegal | d3_fault | d3_is_irqop;
 
-   // Destination shard = where the result will be written.  Loads and AMOs take SH_LD;
-   // mul/div take SH_FE with the FPU (C1, 2026-09-17: the MD stage lands them by tag).
-   //
-   // An FP instruction goes to SH_FE only if the F STAGE EXECUTES IT (d_cls_f: the FPU's
-   // arithmetic and conversions, integer destination or not -- the FPU writes integer regs
-   // too, which is why N_FE > 64). The in-core FP ops execute in M and take SH_LD (below).
-   // THE RULE IS: shard = the UNIT that writes it, and nothing else. An op routed to M
-   // takes SH_LD even when its result is an ordinary integer -- a CSR read and a jump's
-   // link register are M's results, not the ALU's. Leaving those two in SH_IE gave that
-   // shard a second writer, and the only way to keep one write port was to hold the ALU
-   // off whenever M was writing it (`unit_busy = m_wb_ie`). That put the whole LSU
-   // completion cone into the INTEGER scheduler's ready bits: the post-route critical path
-   // was m_addr -> lsu -> m_done -> m_wb_ie -> u_iq_i/e_r[9][1], 24 levels, -0.383 ns.
-   // With this line the ALU is SH_IE's only writer, m_wb_ie is identically 0 (asserted
-   // below, not assumed), and the integer scheduler has no unit_busy term at all.
-   // SH_LD absorbs it free: 128 registers against a 16-entry ROB.
-   // SH_FE IS THE FP/CTF PIPE'S SLICE AND NOTHING ELSE'S. An FP instruction goes to SH_FE
-   // only when the F stage executes it (d_cls_f); the in-core FP ops (FSGNJ, FMIN/FMAX, the
-   // compares, FMV, FCLASS) execute in M and take SH_LD like every other M result. Routing
-   // them by d_is_fp gave SH_FE a second writer, and the only way to keep one write port was
-   // to hold the CTF link off while M was writing it (cf_link_wb = ... & ~m_wb_fe) -- the same
-   // shape as the m_wb_ie mistake above, with the same consequence: M's whole completion
-   // cone (the SQ's commit, the MMU's state) in front of the CTF pipe's wakeup broadcast,
-   // u_sq/kcc -> m_wb_fe -> cf_link_wb -> we_fe -> e_r, 22 levels. Assigned after the class
-   // wires below (d_cls_f is declared there).
+   // Destination shard = the UNIT that writes it, and nothing else. Loads and AMOs take SH_LD
+   // (M, a landing load), and so do the SYSQ's results (a CSR read). mul/div and every FP op
+   // take SH_FE (the MD stage and the F stage: the FPU writes integer regs too, which is why
+   // N_FE > 64), and so does a jal/jalr link (the CTF pipe). Each ALU is its own shard's only
+   // writer. A second writer on a shard costs a port arbiter on the wakeup broadcast: M on
+   // SH_IE put the LSU's completion cone into the integer scheduler's ready bits (24 levels),
+   // M on SH_FE put it in front of the CTF link (22 levels). Assigned after the class wires
+   // below (d_cls_f is declared there).
    wire [2:0] d_shard, d2_shard, d3_shard;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
@@ -591,8 +574,7 @@ module ooo2_core
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
-      // ra3 is tied off: M reads two operands. Its only would-be user, an FMA routed to M
-      // under mstatus.FS=Off, traps before it needs a third (op3f is 0 for it).
+      // ra3 is tied off: M reads two operands.
       .ra1(i_ps1), .ra2(i_ps2), .ra3({RN_PBITS{1'b0}}),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
@@ -630,10 +612,8 @@ module ooo2_core
    // summed two of the three commit ports.
    wire [5:0]          rob_c3_rd;
    wire [RN_PBITS-1:0] rob_c3_prd;
-   // Mirrors m_is_irqop one stage earlier. That signal is
-   //   m_is_sys & funct3==0 & imm==0x7F0, with m_is_sys carrying ~m_ill_eff & ~m_fault,
-   // and m_ill_eff reduces to m_illegal here because a SYSTEM op is never m_is_fp -- so
-   // this decode is exact, not approximate.
+   // Mirrors m_is_irqop (m_is_sys & funct3==0 & imm==0x7F0) one stage earlier; an op that
+   // traps at dispatch never reaches M, so this decode is exact.
    wire d_is_irqop = (d_insn[6:2] == 5'b11100) & (d_insn[14:12] == 3'b000)
                    & (d_insn[31:20] == 12'h7F0) & ~d_illegal & ~d_fault;
    wire [5:0]          rob_c_rd;
@@ -660,7 +640,7 @@ module ooo2_core
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~fp_arith & ~m_st_nb) | ld_land | sy_done;
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : sy_done ? sy_rob : m_rob_idx;   // sy_done: M is empty (asserted)
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
@@ -944,7 +924,7 @@ module ooo2_core
    assign d_shard  = (d_is_mem | d_is_amo | d_illegal | d_fault) ? SH_LD   // a trap writes nothing
                    : (d_is_fp | d_is_mul)                          ? SH_FE   // FP ops, in-core included: the base routing
                    : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
-                   : d_ord                            ? SH_LD   // CSR, in-core FP: M writes
+                   : d_ord                            ? SH_LD   // the SYSQ's CSR read
                    :                                    SH_IE;  // the ALU, alone
    assign d2_shard = (d2_is_mem | d2_is_amo | d2_illegal | d2_fault) ? SH_LD
                    : (d2_is_fp | d2_is_mul)                            ? SH_FE
@@ -1888,7 +1868,7 @@ module ooo2_core
 
    // M-stage registers (declared here: the bypass reads them)
    reg              m_valid, m_rvc, m_rd_v;
-   reg  [PCW-1:0]   m_pc, m_pred_npc, m_fault_tval, m_target, m_taken_tgt;
+   reg  [PCW-1:0]   m_pc, m_pred_npc, m_target, m_taken_tgt;
    reg  [31:0]      m_insn;
    reg  [SEQW-1:0]  m_seq;
    reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
@@ -1903,8 +1883,6 @@ module ooo2_core
    reg              m_is_mul, m_is_csr, m_is_serialize, m_is_fp, m_is_fencei;
    reg  [2:0]       m_csr_func;
    reg              m_is_cbo, m_cbo_zero, m_cbo_keep;
-   reg              m_illegal, m_fault;
-   reg  [3:0]       m_fault_cause;
    // Store-buffer slot, and whether the issue-cycle PRF read of rs2 was valid. A plain
    // store may now issue with rs2 still pending, so m_st_data is meaningful only when
    // m_rs2_rdy -- otherwise ooo2_sq's snoop supplies the value instead.
@@ -2087,14 +2065,8 @@ module ooo2_core
    // =========================================================== stage M
 `include "smolrv64_fp_ops.vh"           // fcmp_s/d, fclass_s/d (in-core FP ops)
 
-   // ---- FS-disabled: any FP instruction (arith, in-core, or FP load/store) executed
-   // with mstatus.FS==Off raises illegal-instruction, like Linux lazy-FP. A write to FS
-   // redirects and refetches younger ops (csr_file do_fschg) and FP ops are not
-   // serializing, but M is the commit point -- so by the time an FP op is here, fs_off
-   // is the retired value. Precise by construction.
-   wire        fs_off, m_ill_eff;
+   wire        fs_off;
    wire [2:0]  csr_frm;
-   assign m_ill_eff = m_illegal | (m_valid & m_is_fp & fs_off);
 
    // ---- LSU ----
    // lsu_started is the point after which a load cannot fault -- what lets M let go of it
@@ -2106,7 +2078,7 @@ module ooo2_core
    wire [63:0] lsu_rd_val, lsu_fault_tval;
    wire        lsu_dtlb_walking, lsu_dtlb_walk_beg;   // HPM: DT_WALK / DTLB_MISS
    wire [3:0]  lsu_fault_cause;
-   wire        m_mem_op = m_valid & (m_is_mem | m_is_amo) & ~m_fault & ~m_ill_eff;
+   wire        m_mem_op = m_valid & (m_is_mem | m_is_amo);
 
    // A CBO executes from M and is not serialized (cbo.zero clears every page the kernel
    // hands out), but it writes memory (cbo.zero, cbo.inval), and M speculates past unresolved
@@ -2287,7 +2259,7 @@ module ooo2_core
       if (sy_fire & (fpu_busy | f_valid | icr_v)) $fatal(1, "ooo2_core: a system op fires with FP work in flight -- frm/fflags may change under it");
       if (sy_fire & ld_land)             $fatal(1, "ooo2_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "ooo2_core: a system op reached M (pc %h)", m_pc);
-      if (m_valid & (m_fault | m_illegal)) $fatal(1, "ooo2_core: an op that traps at dispatch reached M (pc %h)", m_pc);
+      if (iss_m & (q_fault | q_illegal))   $fatal(1, "ooo2_core: an op that traps at dispatch issued to M (pc %h)", q_pc);
       if (m_valid & (m_insn[6:2] == 5'b00011) & (m_insn[14:13] == 2'b00))
                                          $fatal(1, "ooo2_core: a fence reached M (pc %h)", m_pc);
       if (sy_red & (m_red_fire | cf_red_fire)) $fatal(1, "ooo2_core: the SYSQ redirects together with M or the CTF pipe");
@@ -2298,18 +2270,6 @@ module ooo2_core
                 xtrap_v & m_done_red, sy_xfire);
    end
 
-   wire        fp_valid_d, fp_use_fpu, fp_o0i, fp_wrfp, fp_mod;
-   wire [2:0]  fp_cls, fp_src, fp_dst, fp_rnd;
-   wire [3:0]  fp_op;
-   wire [1:0]  fp_int, fp_o0, fp_o1, fp_o2;
-   decode_fp u_dfp
-     (.insn(m_insn), .fp_valid(fp_valid_d), .use_fpu(fp_use_fpu), .fp_class(fp_cls),
-      .op(fp_op), .op_mod(fp_mod), .src_fmt(fp_src), .dst_fmt(fp_dst), .int_fmt(fp_int),
-      .rnd(fp_rnd), .op0_sel(fp_o0), .op1_sel(fp_o1), .op2_sel(fp_o2),
-      .op0_int(fp_o0i), .wr_fp(fp_wrfp));
-
-   // unified regfile -> the FP sources are just rs1/rs2/rs3 with the fp bit set
-   wire [63:0] op1f = m_rs1_val, op2f = m_st_data, op3f = 64'd0;   // no M op reads rs3 (see u_prf's ra3)
 
    function [63:0] fpsel; input [1:0] s; input [63:0] a, b, c;
       fpsel = (s==2'd1) ? a : (s==2'd2) ? b : (s==2'd3) ? c : 64'd0; endfunction
@@ -2318,26 +2278,10 @@ module ooo2_core
    function [31:0] unbox_s; input [63:0] x;
       unbox_s = (x[63:32]==32'hffffffff) ? x[31:0] : 32'h7fc00000; endfunction
 
-   wire [63:0] fpo0r = fpsel(fp_o0, op1f, op2f, op3f);
-   wire [63:0] fpo1r = fpsel(fp_o1, op1f, op2f, op3f);
-   wire [63:0] fpo2r = fpsel(fp_o2, op1f, op2f, op3f);
-   wire        fp_src32 = (fp_src == 3'd0);
-   // op0 may be an INTEGER source (I2F / FMV.W.X) -> pass it through unmolested
-   wire [63:0] fpo0 = (fp_src32 & ~fp_o0i) ? {32'hffffffff, unbox_s(fpo0r)} : fpo0r;
-   wire [63:0] fpo1 = fp_src32 ? {32'hffffffff, unbox_s(fpo1r)} : fpo1r;
-   wire [63:0] fpo2 = fp_src32 ? {32'hffffffff, unbox_s(fpo2r)} : fpo2r;
-
-   // DEAD BY CONSTRUCTION, kept for the assertion below. d_cls_f routes every FPU op to
-   // the F stage, and the only way one reaches M is with FS off -- which makes m_ill_eff
-   // true and so clears this anyway.
-   wire        fp_arith  = m_valid & fp_valid_d &  fp_use_fpu & ~m_ill_eff;
-   wire        fp_incore = m_valid & fp_valid_d & ~fp_use_fpu & ~m_ill_eff;
 
    wire        fp_iss_ready, fp_res_valid, fpu_busy;
    wire [63:0] fp_res_data;
    wire [4:0]  fp_res_fflags;
-   // FP32 result heading for an f-register -> NaN-box it on writeback
-   wire        fp_dst32 = (fp_dst == 3'd0) & fp_wrfp;
    localparam integer FTAGW = 2 + 6 + ROB_IDXB + RN_PBITS;   // dst32, rd_v, rd, rob, prd
    wire [FTAGW-1:0] fp_res_tag;
 
@@ -2478,10 +2422,6 @@ module ooo2_core
          $fatal(1, "ooo2_core: a non-memory FP op reached M (pc %h)", m_pc);
       if (iss_f & (qf_shard != SH_FE))
          $fatal(1, "ooo2_core: F-class op is not SH_FE");
-      // fp_arith is dead by construction now; if one ever reaches M it would sit there
-      // forever, since m_unit_ok no longer has an arm for it.
-      if (fp_arith)
-         $fatal(1, "ooo2_core: an FPU op reached M -- d_cls_f must route it to the F stage");
       // ROUNDING MODE IS AN FP BARRIER, and out-of-order FP depends on it.
       //
       // Reordering FP is safe for the exception FLAGS because they accumulate: csr_file
@@ -2541,18 +2481,12 @@ module ooo2_core
    // resolves, writes its link, marks its ROB entry done, records any mispredict into the
    // restart tracker (fr_* below), and frees. The squash fires later when that ROB entry heads.
    wire cf_link_pend  = cf_valid & cf_rd_v & ~cf_link_wrote;    // a jal/jalr link still to write
-   // THE LINK NEVER WAITS ON M. The old `& ~m_wb_fe` put M's whole completion cone (the SQ's
-   // commit, the MMU's state) in front of the CTF pipe's wakeup broadcast -- u_sq/kcc -> m_wb_fe
-   // -> cf_link_wb -> we_fe -> e_r, 22 levels. Now the link takes the port when the FPU is not
-   // landing, and M YIELDS its FE-shard write for that cycle (m_fe_yield in m_done, like the
-   // yields to ld_land and fp_land). Routing the in-core FP ops to SH_LD instead (W1) killed
-   // the board's NIC path within seconds while every cosim stayed lockstep-clean.
+   // The link takes SH_FE's port whenever the FPU is not landing; M never writes SH_FE.
    wire cf_link_wb    = cf_link_pend & ~fp_wb;
-   wire m_fe_yield    = (cf_link_wb | md_wr) & (m_shard == SH_FE);   // registers only: cf_*, md_*, the FPU's out_valid_q, m_shard
-   // THE ONE YIELD GATE: every completion that shares M's write and ROB ports (a landing load,
-   // the FPU, the link/MD on SH_FE) is gathered here once and applied at every site -- M's
-   // three dones and the SYSQ's fire -- never re-derived per unit (docs/rtl-rules.md).
-   wire port_yield    = ld_land | fp_land | m_fe_yield;
+   // THE ONE YIELD GATE: every completion that shares M's ROB port (a landing load, the FPU)
+   // is gathered here once and applied at every site -- M's three dones and the SYSQ's fire --
+   // never re-derived per unit (docs/rtl-rules.md).
+   wire port_yield    = ld_land | fp_land;
    wire cf_done       = cf_valid & ~cf_link_pend;               // resolved + link written -> free stage
    assign cf_advance  = ~cf_valid | cf_done;
    // ROB completion. A correctly-predicted branch completes at resolve and retires in order. A
@@ -2585,59 +2519,19 @@ module ooo2_core
          $fatal(1, "ooo2_core: CTF stage holds a non-control-flow op");
    end
 
-   // ---- in-core FP ops (single-cycle, like the ALU): SGNJ/CMP/MVXF/MVFX/FCLASS ----
-   wire        fp_isd = m_insn[25];              // 0=single 1=double
-   wire [2:0]  fp_f3  = m_insn[14:12];
-   wire [31:0] us1 = unbox_s(op1f);              // FMV.X.W is a raw bit-move: never unboxed
-   wire [31:0] us2 = unbox_s(op2f);
-   wire [1:0]  cmp_d2 = fcmp_d(fp_f3, op1f, op2f);
-   wire [1:0]  cmp_s2 = fcmp_s(fp_f3, us1, us2);
-   reg  [63:0] fp_incore_res;
-   always @* begin
-      case (fp_cls)
-        3'd1: fp_incore_res = fp_isd                                    // FSGNJ/N/X .D / .S
-               ? (fp_f3==3'b000 ? { op2f[63],            op1f[62:0]}
-                : fp_f3==3'b001 ? {~op2f[63],            op1f[62:0]}
-                :                 { op2f[63]^op1f[63],   op1f[62:0]})
-               : {32'hffffffff, (fp_f3==3'b000 ? { us2[31],          us1[30:0]}
-                               : fp_f3==3'b001 ? {~us2[31],          us1[30:0]}
-                               :                 { us2[31]^us1[31],  us1[30:0]})};
-        3'd2: fp_incore_res = {63'd0, (fp_isd ? cmp_d2[0] : cmp_s2[0])};    // FEQ/FLT/FLE -> int
-        3'd3: fp_incore_res = fp_isd ? op1f : {{32{op1f[31]}}, op1f[31:0]}; // FMV.X.D/W -> int (raw)
-        3'd4: fp_incore_res = fp_isd ? op1f : {32'hffffffff, op1f[31:0]};   // FMV.D/W.X -> fp (box)
-        3'd5: fp_incore_res = fp_isd ? fclass_d(op1f) : fclass_s(op1f);     // FCLASS -> int
-        default: fp_incore_res = 64'd0;
-      endcase
-   end
-
-   // fcsr.fflags accumulation: a CVFPU completion, or an in-core compare's NV bit.
-   // (in-core ops other than compares raise no flags.) Both are one-cycle events: the
-   // completion pulses once, and an in-core op occupies M for exactly one cycle.
-   wire       fp_icmp    = fp_incore & (fp_cls == 3'd2);
-   wire       fp_icmp_nv = fp_isd ? cmp_d2[1] : cmp_s2[1];
-   // OR, not a priority mux. While the FPU blocked M these two could never coincide -- an
-   // in-core compare could not be in M while an FPU op was completing there. With the FPU
-   // released at issue they can, and the mux silently DROPPED the compare's NV flag.
-   wire       fp_flags_we = fp_complete | fp_icmp;
-   wire [4:0] fp_flags    = (fp_complete ? fl_fflags          : 5'd0)
-                          | (fp_icmp     ? {fp_icmp_nv, 4'd0} : 5'd0);
 
    // ---- CSR file ----
-   wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100) & ~m_ill_eff & ~m_fault;
+   wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100);
    wire [63:0] csr_rdata, csr_redir_tgt;
    wire        csr_redir_v, csr_redir_trap, csr_illegal;
    wire        csr_irq_v;
    wire [3:0]  csr_irq_cause;
 
-   // external (non-system-op) traps: fetch fault, illegal instruction, data fault
-   wire        xtrap_v     = m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt));
+   // M's only trap is a data fault: a fetch fault and an illegal instruction trap from the SYSQ
+   wire        xtrap_v     = m_mem_op & m_lsu_flt;
    wire        m_done_red;                // M's done with the LSU arm removed; defined with redirect
-   wire [3:0]  xtrap_cause = m_fault  ? m_fault_cause
-                           : m_ill_eff? 4'd2                     // illegal instruction
-                           :            m_lsu_fc;
-   wire [63:0] xtrap_tval  = m_fault  ? m_fault_tval
-                           : m_ill_eff? 64'd0
-                           :            lsu_fault_tval;
+   wire [3:0]  xtrap_cause = m_lsu_fc;
+   wire [63:0] xtrap_tval  = lsu_fault_tval;
 
    // ---- stall attribution: turn CPI into a CPI stack ----
    // The pipe fails to retire on a given cycle for exactly one of two reasons: M is
@@ -2686,11 +2580,8 @@ module ooo2_core
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v &  md_div;                 // the MD stage holds a divide (C1: occupancy, not an M stall)
    wire st_mul    = md_v & ~md_div;                 // ...a multiply
-   // ST_FPU MUST WATCH STAGE F. It used to be `(st_m & fp_arith) | dep_fp`, and fp_arith is
-   // identically 0 since FP stopped entering M -- so the FPU's own occupancy vanished from
-   // the stack the moment it got its own stage. `f_valid & ~fp_disp` is stage F holding an
-   // op the unit will not yet take, which is exactly the old `st_m & fp_arith` term in its
-   // new home. (~f_advance is the same expression; written out for clarity.)
+   // ST_FPU watches stage F: `f_valid & ~fp_disp` is stage F holding an op the unit will not
+   // yet take. (~f_advance is the same expression; written out for clarity.)
    wire st_fpu    = (f_valid & ~fp_disp) | dep_fp;  // ...on the FPU
    // ~st_rob: the two are now disjoint, so the stack does not count a ROB-full cycle
    // twice under two different names.
@@ -2812,7 +2703,7 @@ module ooo2_core
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
-      .fp_fflags_we(fp_flags_we), .fp_fflags(fp_flags),
+      .fp_fflags_we(fp_complete), .fp_fflags(fl_fflags),
       // mstatus.FS -> Dirty when an FP-state writer RETIRES. In-order that is exactly
       // "a retiring instruction wrote an f-register" (arch 32..63), which covers FP
       // arith, the in-core FP writers and FP loads -- and excludes FSW/FSD, which
@@ -2909,7 +2800,6 @@ module ooo2_core
 
    // ---- completion ----
    wire m_unit_ok = ~m_valid             ? 1'b1
-                 : m_fault | m_ill_eff   ? 1'b1   // poisoned: traps immediately
                  // `done` is now M's alone: it is fault | translate-only | an access this
                  // stage started, and every access ooo2_lq or ooo2_sq starts reports on
                  // pt_done instead (the own_pt latch in ooo2_lsu). The ~sb_busy qualifier
@@ -2934,11 +2824,7 @@ module ooo2_core
    reg        m_unit_flt_q;
    reg [3:0]  m_unit_fc_q;
    initial begin m_unit_done_q = 1'b0; m_unit_flt_q = 1'b0; end
-   wire [63:0] m_unit_res = (m_is_mem | m_is_amo) ? lsu_rd_val
-                          : fp_arith              ? (fp_dst32 ? {32'hffffffff, fp_res_data[31:0]}
-                                                              : fp_res_data)
-                          : fp_incore             ? fp_incore_res
-                          :                         m_result;
+   wire [63:0] m_unit_res = (m_is_mem | m_is_amo) ? lsu_rd_val : m_result;
    always @(posedge clk)
       if (reset | m_advance)  m_unit_done_q <= 1'b0;
       else if (m_unit_ok) begin
@@ -2972,8 +2858,7 @@ module ooo2_core
    reg  fr_v;   initial fr_v = 1'b0;
    reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
    reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
-   wire m_needs_head = m_redirect | m_is_fencei
-                     | m_fault | m_ill_eff | (m_mem_op & m_lsu_flt);
+   wire m_needs_head = m_redirect | m_is_fencei | (m_mem_op & m_lsu_flt);
    // A HEAD-GATED OP COMPLETES IN ITS SECOND CYCLE AT HEAD, not its first. Nothing retires
    // while it waits (retire is in order and it is the head), so by its second cycle every
    // older retirement is two edges old -- which is what lets minstret take the same delayed
@@ -3036,11 +2921,7 @@ module ooo2_core
          xtq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
          xtq_pc[rob_d_idx3]    <= d3_pc;
       end
-      // (b) M takes an op: the FP-off illegal is decided here
-      if (iss_m & ~q_illegal & ~q_fault & q_is_fp & fs_off) begin
-         xtq_kind[i_rob] <= SYK_XTRAP;  xtq_cause[i_rob] <= 4'd2;  xtq_tval[i_rob] <= 64'd0;
-      end
-      // (c) the LSU reports a data fault for M's op
+      // (b) the LSU reports a data fault for M's op
       if (m_flt_pulse) begin
          xtq_kind[m_rob_idx]  <= SYK_XTRAP;
          xtq_cause[m_rob_idx] <= lsu_fault_cause;
@@ -3080,7 +2961,6 @@ module ooo2_core
    // can fire, asserted below, and structurally free of dTLB -> lsu_done -> m_unit_ok, which
    // was the head of the u_sq/v_reg -> fe/q_dat family (326 endpoints, 26 levels).
    wire m_unit_ok_nomem = ~m_valid            ? 1'b1
-                        : m_fault | m_ill_eff ? 1'b1
                         : m_mem_op            ? 1'b0
                         :                       1'b1;
    assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~port_yield;
@@ -3234,13 +3114,11 @@ module ooo2_core
                 : (m_is_mem | m_is_amo)     ? lsu_rd_val   // fires, and its m_is_* are the last op's, stale
                 : m_unit_done_q             ? m_unit_res_q
                 :                             m_result;
-   // SH_FE's writers: the FPU, the CTF link (when the FPU isn't landing) and M's in-core FP ops
-   // (M yields the cycle to the link: m_fe_yield).
+   // SH_FE's writers: the F stage's landing, the CTF link (when the F stage isn't landing) and
+   // the MD stage (when neither is).
    assign wb_fe = fp_wb         ? fp_wval
                 : cf_link_wb    ? cf_link
-                : md_wr         ? md_res_q        // a mul/div result (C1)
-                : m_unit_done_q ? m_unit_res_q
-                :                 fp_incore_res;
+                :                 md_res_q;       // a mul/div result (C1)
    // Two writers now: M's own completion, and a load landing after M has moved on. They can
    // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
    // address still holds and ooo2_prf keeps its one-write-per-cycle property.
@@ -3255,32 +3133,21 @@ module ooo2_core
    // The trap qualifier likewise takes the latched fault. m_wb_ref below is the old
    // expression, kept only for the assertion that the two never differ.
    wire m_unit_ok_wb = ~m_valid            ? 1'b1
-                     : m_fault | m_ill_eff ? 1'b1
                      : m_mem_op            ? lsu_done_acc
                      :                       1'b1;
    wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~port_yield;
-   wire m_trap_wb = (m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt)));
-   wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb & ~fp_arith;
-   wire m_wb_ref = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb & ~fp_arith;
+   wire m_trap_wb = m_mem_op & m_lsu_flt;
+   wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb;
+   wire m_wb_ref = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb;
    always @(posedge clk) if (!reset && (m_wb != m_wb_ref))
       $fatal(1, "ooo2_core: writeback valid from the access-only done disagrees with m_done (%b vs %b)",
              m_wb, m_wb_ref);
    wire ld_wb = ld_land & lq_l_rd_v;
 
    // PER-SHARD WRITE PORTS. Each shard is driven by its OWN writers rather than through a
-   // muxed address: IE by M's ALU/CSR result, LD by a landing load or M's mul/div, FE by a
-   // landing FP result or M's in-core FP. Nothing changes yet -- m_done is still forced low
-   // on ld_land/fp_land, so no shard sees two writers in a cycle, and the ROB's single
-   // completion port remains the reason a cycle has to be yielded at all. What this buys is
-   // the precondition: doc 7's "give each file its own write port and a single writer, and
-   // the arbiter disappears" cannot even be attempted while one address is shared. The
-   // one-writer-per-cycle property is asserted below rather than assumed.
-   wire m_wb_ie = m_wb & (m_shard == SH_IE);
-   wire m_wb_ld = m_wb & (m_shard == SH_LD);
-   wire m_wb_fe = m_wb & (m_shard == SH_FE);
-   // IE is written by M (a jump's link register, a CSR result) and by an ALU op completing
-   // at issue. They cannot collide: unit_busy holds the ALU off in any cycle m_wb_ie is
-   // set, which is asserted below.
+   // muxed address: IE by the ALUs, LD by M, a landing load or the SYSQ, FE by the F stage's
+   // landing, the CTF link or the MD stage. m_done is forced low on ld_land/fp_land, so no
+   // shard sees two writers in a cycle; the one-writer-per-cycle property is asserted below.
    wire alu_wb = iss_alu & qa_rd_v;
    wire alu2_wb = iss_alu2 & qb_rd_v;
    wire we_ie2 = alu2_wb;
@@ -3301,23 +3168,20 @@ module ooo2_core
       alu_q_v <= ~reset & alu_wb;
       if (alu_wb) begin alu_q_prd <= qa_prd; alu_q_val <= xa_result; end
    end
-   wire we_ld = m_wb_ld | ld_wb | sy_wr;
-   wire we_fe = m_wb_fe | fp_wb | cf_link_wb | md_wr;
+   wire we_ld = m_wb | ld_wb | sy_wr;
+   wire we_fe = fp_wb | cf_link_wb | md_wr;
    wire [RN_PBITS-1:0] wa_ie = qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : sy_wr ? sy_prd : m_prd;
-   wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : cf_link_wb ? cf_prd : md_wr ? md_prd : m_prd;
+   wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : cf_link_wb ? cf_prd : md_prd;
    always @(posedge clk) if (!reset) begin
-      if (m_wb_ld & ld_wb)
+      if (m_wb & ld_wb)
          $fatal(1, "ooo2_core: LD shard written by both M and a landing load");
-      if (m_wb_fe & (fp_wb | cf_link_wb | md_wr))
-         $fatal(1, "ooo2_core: FE shard written by M together with the FPU or the CTF link");
-      // m_wb_ie is dead by construction: d_shard sends every M-routed op to SH_LD or
-      // SH_FE. Asserted rather than assumed -- if a future op class reaches M with
-      // SH_IE, it would silently drop its result now that we_ie ignores M.
+      // M writes SH_LD alone (d_shard: memory ops and AMOs). An op reaching M with another
+      // shard would drop its result silently: we_ie and we_fe ignore M.
       if (alu3_q_v)
          $fatal(1, "ooo2_core: the third ALU wrote back -- it is dead since the swizzle and SH_IE3 is tied off");
-      if (m_wb_ie)
-         $fatal(1, "ooo2_core: M wrote the IE shard -- d_shard must route M's ops to SH_LD");
+      if (m_wb & (m_shard != SH_LD))
+         $fatal(1, "ooo2_core: M wrote shard %0d -- d_shard must route M's ops to SH_LD", m_shard);
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
@@ -3376,7 +3240,7 @@ module ooo2_core
    always @(posedge clk) if (!reset) begin
       // On the completion PULSE, not on m_done: lsu_cos_* are only this op's while the LSU
       // still holds it, and m_done can now assert cycles later off the sticky latch.
-      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
+      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          cs_val[m_rob_idx]   <= m_wb_val;
       end
       // A CSR READ'S VALUE IS THE ONE AT ITS WRITE, not at the unit-ok pulse: the op
@@ -3384,7 +3248,7 @@ module ooo2_core
       // `time`/`cycle` are one tick past the pulse's value. Ordered after the arm above so
       // it wins. (Found by the 300 M cosim: rdtime retired as t, computed with t+1.)
       if (sy_wr) cs_val[sy_rob] <= csr_rdata;
-      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb && !fp_arith) begin
+      if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
          // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
          // hand the cosim a stale PA under this store's seqno. Worse, it would often be
@@ -3456,7 +3320,7 @@ module ooo2_core
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
    // be captured in the very cycle it commits, so the array read returns pre-edge contents.
    // Missing it reported rd=0 for the second instruction of the boot.
-   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith
+   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb
                           & (m_rob_idx == rob_head_idx);
    // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
    // at head, reading csr_rdata live then -- after cs_hit_m's pulse and before the capture
@@ -3498,7 +3362,7 @@ module ooo2_core
    wire [63:0] cs_mdata_h = cs_hit_sq ? sq_kc_data : cs_hit_m ? lsu_cos_data : cs_mdata[rob_head_idx];
    wire [3:0]  cs_msz_h   = cs_hit_sq ? {2'b0, sq_kc_size} : cs_hit_m ? lsu_cos_size : cs_msz[rob_head_idx];
    // ...and for the entry behind the head, retiring in the same cycle (item 10c)
-   wire        cs2_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith & (m_rob_idx == rob_head2_idx);
+   wire        cs2_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == rob_head2_idx);
    wire        cs2_hit_ld  = ld_land & (lq_l_rob == rob_head2_idx);
    wire        cs2_hit_sq  = sq_k_take & (sq_kc_rob == rob_head2_idx);
    wire        cs2_hit_fp  = fp_land & (ft_rob == rob_head2_idx);
@@ -3516,7 +3380,7 @@ module ooo2_core
    wire [63:0] cs_mdata_h2 = cs2_hit_sq ? sq_kc_data : cs2_hit_m ? lsu_cos_data : cs_mdata[rob_head2_idx];
    wire [3:0]  cs_msz_h2   = cs2_hit_sq ? {2'b0, sq_kc_size} : cs2_hit_m ? lsu_cos_size : cs_msz[rob_head2_idx];
    // ...and the third entry, retiring in the same cycle (Stage 3, IW=3)
-   wire        cs3_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & ~fp_arith & (m_rob_idx == rob_head3_idx);
+   wire        cs3_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == rob_head3_idx);
    wire        cs3_hit_ld  = ld_land & (lq_l_rob == rob_head3_idx);
    wire        cs3_hit_sq  = sq_k_take & (sq_kc_rob == rob_head3_idx);
    wire        cs3_hit_fp  = fp_land & (ft_rob == rob_head3_idx);
@@ -3995,10 +3859,6 @@ module ooo2_core
             m_is_cbo      <= q_is_cbo;
             m_cbo_zero    <= q_cbo_zero;
             m_cbo_keep    <= q_cbo_keep;
-            m_illegal     <= q_illegal;
-            m_fault       <= q_fault;
-            m_fault_cause <= q_fault_cause;
-            m_fault_tval  <= q_fault_tval;
          end
       end
    end
