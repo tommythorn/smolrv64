@@ -222,6 +222,15 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    - What to check first: nothing in the core still assumes one CTI per dispatch group (the
      swizzle already refuses two ops on the F pipe); the decode-stage resteer (DCR) is per slot
      already.
+   **PARKED (2026-09-24, Tommy's choice).** Two findings against it. The bundle register cannot
+   simply replace the queue: it would have to keep a partly consumed bundle and take a new one in
+   one cycle, which needs either dispatch's consume in the aligner's cycle (the handshake the
+   frontend keeps registered) or a small queue again. And the prize is about one cycle per
+   redirect: GB5 on fe529096 redirects 3.4 times per thousand instructions, so ~0.2% of its
+   cycles, against a CPI stack of ST_MEM 51%, ST_FPU 25%, ST_ROB 14% and ~12% frontend in all.
+   The 60 M boot's ring-empty cycles are I$ misses (3.86 M), iMMU walks (0.48 M), pairs in flight
+   (0.39 M), page waits (0.11 M) and fence.i freezes; 1d is also parked unless GB5 on bb13d16a
+   shows iMMU or page waits mattering. Next: the memory backend.
 
 **Done when:** sillyloop runs at 17 cycles per iteration (IPC 2.0), sillyfp near 3, Dhrystone's
 `fe:icache` under 5% of cycles, and GB5 on the board validates the tip.
