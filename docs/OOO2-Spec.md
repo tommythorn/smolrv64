@@ -1077,7 +1077,7 @@ The D$ is `rv_cache`; the I$ is `rv_icache`, a read-only module of its own (Stag
 | Sets | 512 | 512 |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | **PIPT** |
-| Read | a 16-byte pair at any 8-byte alignment, a new one taken every cycle, answered the next | 64 bit |
+| Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit |
 | Write policy | fill-only | **write-back** (`WRTHRU=0`) |
 | Prefetch | next line, **on**, within the 4 KiB page | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
@@ -1093,10 +1093,9 @@ Skew (D$): way 1 XORs low tag bits into the index; a victim's base index is reco
 reconcile probes the same-offset synonym candidates by a straight index, and a tag-XORed index
 would scatter them across sets. Both ways use the plain virtual index.
 
-**VHPR I$ (`rv_icache`).** Each way's data is two BRAM banks, the even and the odd 8-byte
-chunks of every line, so a pair at any 8-byte alignment is one read of each; a pair starting at a
-line's last chunk takes its even chunk from the next line, so each bank has its own line and tag
-lookup (a pair never crosses a 4 KiB page, asserted). Per line: valid, the **virtual tag**, the
+**VHPR I$ (`rv_icache`).** A pair is a 16-byte-aligned quarter of a line (asserted), so it is one
+line's lookup; each way's data is two BRAM banks, the even and the odd 8-byte chunks, read at the
+same row. Per line: valid, the **virtual tag**, the
 **physical tag** (PA above the 4 KiB offset) and a **2-bit epoch**. Every request carries the
 epoch it was taken in, and **a hit is `valid & (vtag == VA) & (epoch == the request's)` -- no
 translation and no physical tag on the hit path**, so an I$ hit never waits on the iTLB. A
@@ -1367,7 +1366,7 @@ always on now and is bit 13; the parity array stays opt-in.
 | bits | unit | source of the numbering |
 |---|---|---|
 | `[15:0]` | D$ | `rv_cache.v`, INTEGRITY LOG block (16 conditions: linebuf ownership, alignment, solo/fill exclusion, tagged range, line vanished, replay, two consumers of one `l2_ack`, a lost invalidate scan, bank read/write collision, both FSMs outside their encoding, address provenance, no-span) |
-| `[31:16]` | I$ | `rv_icache.v`, invariants block (9 conditions: a line hitting in both ways, a pair across a page, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
+| `[31:16]` | I$ | `rv_icache.v`, invariants block (8 conditions: a line hitting in both ways, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
 | `[47:32]` | LSU | `ooo2_lsu.v` (7 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`) |
 | `[63:48]` | reserved | the next units plug in without moving anything |
 

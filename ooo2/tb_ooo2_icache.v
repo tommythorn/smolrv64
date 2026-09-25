@@ -68,7 +68,7 @@ module tb;
    function [63:0] rnd_va; input dummy;
       reg [63:0] v; begin
          // half the time a hot 32 KiB region, so resident lines outlive mapping changes and reconcile
-         v = {48'd0, (($urandom % 2) != 0) ? 8'($urandom % 8) : 8'($urandom % NVP), 12'($urandom) & 12'hff8};
+         v = {48'd0, (($urandom % 2) != 0) ? 8'($urandom % 8) : 8'($urandom % NVP), 12'($urandom) & 12'hff0};
          if (v[11:3] == 9'h1ff) v[11:3] = 9'h1fe;          // never across a 4 KiB page
          rnd_va = v;
       end endfunction
@@ -106,8 +106,8 @@ module tb;
       if (~rq_v | rd_ack) begin
          rq_v <= 1'b0;
          if (~quiesce && q_n < 12 && ($urandom % 8) != 0) begin
-            va_n = (rq_v && ($urandom % 2)) ? rq_va + (($urandom % 3 == 0) ? 64'd8 : 64'd16) : rnd_va(0);
-            if (va_n[11:3] == 9'h1ff || va_n[11:0] == 12'h000) va_n = rnd_va(0);
+            va_n = (rq_v && ($urandom % 2)) ? rq_va + 64'd16 : rnd_va(0);
+            if (va_n[11:0] == 12'h000) va_n = rnd_va(0);
             pp = ptab[va_n[19:12]];
             rq_v <= 1'b1;  rq_va <= va_n;  rq_pa <= {45'd0, pp, va_n[11:0]};  rq_tag <= rq_tag + 1;
          end
