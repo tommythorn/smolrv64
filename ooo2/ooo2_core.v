@@ -2704,7 +2704,7 @@ module ooo2_core
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
-      .fp_fflags_we(fp_complete), .fp_fflags(fl_fflags),
+      .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an FP-state writer RETIRES. In-order that is exactly
       // "a retiring instruction wrote an f-register" (arch 32..63), which covers FP
       // arith, the in-core FP writers and FP loads -- and excludes FSW/FSD, which
@@ -3210,6 +3210,24 @@ module ooo2_core
    assign retire3     = rob_c3_valid & ~rob_c3_noret;
    wire [ROB_IDXB-1:0] rob_head2_idx = rob_head_idx + 1'b1;
    wire [ROB_IDXB-1:0] rob_head3_idx = rob_head_idx + 2'd2;
+
+   // FP EXCEPTION FLAGS COMMIT WITH THEIR OP. An FP op completes out of order, possibly on a path
+   // that a mispredicted branch older than it squashes later, so its flags wait in its ROB slot
+   // -- cleared when the slot is allocated, written when the result lands -- and reach fcsr only
+   // when the op retires. Completion and commit can be the same cycle (the ROB's w_hits), hence
+   // the bypass from the landing result.
+   reg  [4:0] rob_ff [0:ROB_DEPTH-1];
+   always @(posedge clk) begin
+      if (rn_valid)    rob_ff[rob_d_idx]  <= 5'd0;
+      if (rn_valid_b)  rob_ff[rob_d_idx2] <= 5'd0;
+      if (rn_valid_c)  rob_ff[rob_d_idx3] <= 5'd0;
+      if (fp_complete) rob_ff[ft_rob]     <= fl_fflags;
+   end
+   wire [4:0] ff_h1 = (fp_complete & (ft_rob == rob_head_idx))  ? fl_fflags : rob_ff[rob_head_idx];
+   wire [4:0] ff_h2 = (fp_complete & (ft_rob == rob_head2_idx)) ? fl_fflags : rob_ff[rob_head2_idx];
+   wire [4:0] ff_h3 = (fp_complete & (ft_rob == rob_head3_idx)) ? fl_fflags : rob_ff[rob_head3_idx];
+   wire [4:0] ret_fflags = ({5{rob_c_valid}}  & ff_h1) | ({5{rob_c2_valid}} & ff_h2)
+                         | ({5{rob_c3_valid}} & ff_h3);
 
    // retire_pc/retire_insn are verification payload -- tb_ooo2_riscv traces them and
    // rv_soc_top leaves both unconnected -- so they come from a simulation-only side array

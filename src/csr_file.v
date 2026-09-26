@@ -40,7 +40,7 @@ module csr_file
     output wire [2:0]  o_frm,         // fcsr.frm -> FP units for dynamic rounding
     output wire        o_fs_off,      // mstatus.FS==Off -> FP instructions trap illegal
     // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
-    // (pre-reduced across shards in backend_top at FP completion).
+    // (the flags of the FP ops retiring this cycle, reduced by the caller).
     input  wire        fp_fflags_we,
     input  wire [4:0]  fp_fflags,
     // mstatus.FS -> Dirty when an FP-state writer RETIRES: commit_ctl raises this at the commit
@@ -798,10 +798,9 @@ module csr_file
             mstatus[SPP_B]  <= 1'b0;
          end
       end
-      // FP exception flags accumulate (OoO, off the trap/csr chain). Last write to
-      // fcsr[4:0] this cycle, so it ORs on top of a coincident fcsr CSR write. FP ops
-      // also dirty mstatus.FS (-> SD); harmless when FP is idle.
-      // fcsr exception flags accumulate on flag-producing FP ops only.
+      // FP exception flags accumulate as their ops retire (the caller ORs the retiring ops'
+      // flags). Last write to fcsr[4:0] this cycle, so it ORs on top of a coincident fcsr CSR
+      // write, which is older.
       if (!reset && fp_fflags_we) fcsr[4:0] <= fcsr[4:0] | fp_fflags;
       // FS -> Dirty when a retiring op wrote FP state: an f-register (fp_dirty_commit, raised at
       // commit by commit_ctl for FP arith/compare + in-core FSGNJ/FMV.x.X + FP loads) or an FP CSR

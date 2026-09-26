@@ -653,9 +653,12 @@ and no scheduler is in-order.
 
 ### Out-of-order FP: why the flags are safe and the rounding mode is not
 
-Reordering FP is safe for the exception FLAGS because they **accumulate**: `csr_file` does
-`fcsr[4:0] <= fcsr[4:0] | fp_fflags`, an OR, so the order results land in cannot change the
-architectural answer.
+Reordering FP is safe for the exception FLAGS because they **wait for commit**: a result's
+flags land in its op's ROB slot (`rob_ff`, cleared when the slot is allocated), and the flags
+of the ops retiring in a cycle are ORed into `fcsr[4:0]`. The order results land in cannot
+change the answer (the OR accumulates), and a squashed op's flags never reach `fcsr` (its
+slot never commits). Completion and commit may fall in one cycle, so the landing result
+bypasses the slot.
 
 The **rounding mode is not like that**. A dynamic-rm op (`rnd == 3'b111`) reads `csr_frm`
 when stage F hands it to the unit, so **an frm change must be an FP barrier** -- it must
@@ -787,8 +790,8 @@ register (`fb_val`) and written to the PRF when the single write port is free â€
 load wins, FP waits. Safe without a ROB walk because an FP op cannot trap (it reports via
 `fflags`) and anything older that could trap is head-gated.
 
-`fflags` from an FPU completion and from an in-core compare are **OR**ed, not priority-muxed:
-once FP stopped blocking M the two can coincide, and a mux silently dropped the compare's NV.
+An FPU result and an in-core compare never land in the same cycle (the compare waits,
+`icr_land`), so each landing result writes its own op's `fflags` into that op's ROB slot.
 
 ---
 

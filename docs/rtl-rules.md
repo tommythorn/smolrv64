@@ -325,7 +325,9 @@ LSU. If the gate is in the way, move the gate — do not go around it.
 
 **C3. Speculative state never becomes visible.**
 Visible state (`mstatus.FS`, `fcsr`, BP tables, CSRs) updates at retire. See
-`8fc57f1`; `fcsr` flags are the remaining latent case.
+`8fc57f1`. The `fcsr` flags wait in their op's ROB slot and OR in when it commits; a
+lockstep from a Geekbench 5 checkpoint caught them accumulating at completion, where a
+squashed FP op's underflow reached a later `frcsr`.
 
 **C4. A derived read must never feed its own read-modify-write.**
 Where a register's read value is an overlay of stored state and live hardware,
