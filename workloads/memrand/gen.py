@@ -49,21 +49,25 @@ for p in ptrs: e(f'.quad 0x{p:x}')
 for _ in range((REGION - 4096) // 8): e(f'.quad 0x{R.getrandbits(64):x}')
 e('.text')
 NSUB = 4
-FPOPS3 = ['fadd.d', 'fsub.d', 'fmul.d', 'fmin.d', 'fmax.d', 'fsgnj.d', 'fsgnjn.d', 'fsgnjx.d']
+FPOPS3 = ['fadd', 'fsub', 'fmul', 'fmin', 'fmax', 'fsgnj', 'fsgnjn', 'fsgnjx']
 def fpalu():
+    # each op single or double at random: the single-precision forms read the f-registers' random
+    # 64-bit patterns through NaN-unboxing, and fmv.w.x writes properly boxed singles among them
+    w = R.choice(['s', 'd'])
     r = R.random()
     if r < 0.55:
-        e(f'{R.choice(FPOPS3)} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+        e(f'{R.choice(FPOPS3)}.{w} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
     elif r < 0.75:
-        e(f'{R.choice(["fmadd.d", "fmsub.d", "fnmadd.d", "fnmsub.d"])} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+        e(f'{R.choice(["fmadd", "fmsub", "fnmadd", "fnmsub"])}.{w} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
     elif r < 0.85:
-        e(f'{R.choice(["fmv.x.d", "fclass.d"])} x{R.choice(VALS)}, f{R.choice(FREGS)}')      # FP -> INT (the CTF/FP-shared pipe)
+        e(f'{R.choice(["fmv.x." + ("w" if w == "s" else "d"), "fclass." + w])} x{R.choice(VALS)}, f{R.choice(FREGS)}')      # FP -> INT (the CTF/FP-shared pipe)
     elif r < 0.93:
-        e(f'{R.choice(["feq.d", "flt.d", "fle.d"])} x{R.choice(VALS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+        e(f'{R.choice(["feq", "flt", "fle"])}.{w} x{R.choice(VALS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
     elif r < 0.98:
-        e(f'fmv.d.x f{R.choice(FREGS)}, x{R.choice(VALS)}')
+        e(f'fmv.{"w" if w == "s" else "d"}.x f{R.choice(FREGS)}, x{R.choice(VALS)}')
     else:
-        e(f'fdiv.d f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+        if R.random() < 0.5: e(f'fdiv.{w} f{R.choice(FREGS)}, f{R.choice(FREGS)}, f{R.choice(FREGS)}')
+        else:                e(f'fsqrt.{w} f{R.choice(FREGS)}, f{R.choice(FREGS)}')
 if a.fpmix:
     # NSUB subroutines: a real call saves ra on the stack, churns FP and integer state, restores ra, returns.
     # The failure under study is a `ret` whose reloaded ra is stale (2026-09-21).
