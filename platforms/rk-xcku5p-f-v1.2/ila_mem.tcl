@@ -7,8 +7,9 @@
 # fires (or max_hours, when given, elapses) and writes <out>_p.csv (probe_clk, the core's port)
 # and <out>_m.csv (ui_clk, the CDC's far end and the AXI masters and controller).
 #
-#   Usage: vivado -mode batch -source ila_mem.tcl [-tclargs <out> [<max_hours>]]
-#   (or:   make ila-mem [CSV=<out>] [HOURS=<n>])
+#   Usage: vivado -mode batch -source ila_mem.tcl [-tclargs <out> [<max_hours> | now]]
+#   (or:   make ila-mem [CSV=<out>] [HOURS=<n>|now])
+# `now` snapshots a board that is already wedged: <out>_now_p.csv and <out>_now_m.csv.
 
 set here [file dirname [file normalize [info script]]]
 set ltx  [file join $here rk_xcku5p.runs/impl_1/debug_nets.ltx]
@@ -44,6 +45,17 @@ foreach side {p m} net {ila_trig ila_trig_m*} {
     puts "ILA $side: $ila  trigger probe: $tp"
     lappend ilas $side $ila
 }
+if {$max_hours eq "now"} {
+    # a snapshot of a board already wedged: the frozen levels, no trigger condition
+    foreach {side ila} $ilas {
+        set_property CONTROL.TRIGGER_POSITION 2048 $ila
+        run_hw_ila $ila -trigger_now
+        wait_on_hw_ila -timeout 60 $ila
+        write_hw_ila_data -csv_file -force ${out}_now_$side.csv [upload_hw_ila_data $ila]
+        puts "MEM-NOW-DONE $side -> ${out}_now_$side.csv"
+    }
+    exit 0
+}
 foreach {side ila} $ilas { run_hw_ila $ila }
 puts "MEM-ARMED: waiting for the port watchdog[expr {$max_hours > 0 ? " (max ${max_hours}h)" : " (no deadline)"}]"
 flush stdout
@@ -65,7 +77,6 @@ while {1} {
 
 foreach {side ila} $ilas {
     catch {wait_on_hw_ila -timeout 1 $ila}
-    upload_hw_ila_data $ila
-    write_hw_ila_data -csv_file -force ${out}_$side.csv [current_hw_ila_data]
+    write_hw_ila_data -csv_file -force ${out}_$side.csv [upload_hw_ila_data $ila]
     puts "MEM-TRIG-DONE $side -> ${out}_$side.csv"
 }
