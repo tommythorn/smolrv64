@@ -401,7 +401,7 @@ if {[info exists env(ILA_MEM)] && $env(ILA_MEM) ne "" && $env(ILA_MEM) ne "0"} {
     puts "Enabling ILA_MEM: memory-path debug cores (ila_mem_p, ila_mem_m)."
     lappend vdefines "ILA_MEM"
     # configured on every build, not only when created, so a changed probe list takes effect
-    foreach {name widths} {ila_mem_p {10 17 24 12 18 128} ila_mem_m {8 12 12 17 12 36}} {
+    foreach {name widths} {ila_mem_p {10 17 24 12 18 192} ila_mem_m {8 12 12 17 12 36}} {
         if {[llength [get_ips -quiet $name]] == 0} {
             create_ip -name ila -vendor xilinx.com -library ip -module_name $name
         }

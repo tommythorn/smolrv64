@@ -3892,15 +3892,14 @@ module ooo2_core
    end
    // ---- core_dbg: the state that says what the pipe waits on, for the board's wedge ILA ----
    // [111:90] flags, [89:84] SQ occupancy, [83:78] LQ occupancy, [77:72] ROB head index,
-   // [71:40] M's instruction, [39:0] the last retired PC.
-   reg [39:0] dbg_last_pc;
-   always @(posedge clk) if (reset) dbg_last_pc <= 40'd0; else if (retire) dbg_last_pc <= retire_pc[39:0];
+   // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev (this cycle's event and stall
+   // attribution, the counters' bus).
    assign core_dbg = {rob_empty, rob_c_valid, m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,
                       {(6-SQ_IB-1){1'b0}}, sq_occ, {(6-LQ_IB-1){1'b0}}, lq_occ,
-                      {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, dbg_last_pc};
+                      {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev};
 endmodule
 
 `default_nettype wire

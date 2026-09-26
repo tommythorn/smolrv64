@@ -1539,7 +1539,7 @@ module rk_xcku5p(
    wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
-   wire [127:0] probe_core_dbg;  // the core's wait state (rv_soc_top core_dbg) for ILA_MEM
+   wire [191:0] probe_core_dbg;  // the core's wait state (rv_soc_top core_dbg) for ILA_MEM
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
@@ -1619,7 +1619,7 @@ module rk_xcku5p(
       .probe2 (pq_addr[23:0]),                                        // 24: line index, low bits
       .probe3 ({ila_rd_out, ila_wr_out}),                             // 12
       .probe4 (probe_irq_dbg),                                        // 18
-      .probe5 (probe_core_dbg)                                        // 128: what the core waits on
+      .probe5 (probe_core_dbg)                                        // 192: what the core waits on
    );
    (* ASYNC_REG = "TRUE" *) reg [2:0] ila_trig_m;
    always @(posedge ui_clk) ila_trig_m <= {ila_trig_m[1:0], ila_trig};
