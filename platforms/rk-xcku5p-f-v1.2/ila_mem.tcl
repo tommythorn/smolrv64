@@ -1,7 +1,7 @@
 # ila_mem.tcl -- ARMED capture of a memory-path wedge (a bit built with ILA_MEM=1).
 #
 # Both memory-path ILAs trigger on the port watchdog in rk_xcku5p.v (ila_trig: something owed at
-# the core's port and no handshake for 2047 probe_clk cycles), the top bit of each core's probe0.
+# the core's port and no handshake for 2047 probe_clk cycles; ila_trig_m[2] on the ui_clk side).
 # The trigger sits at the end of the window, so each capture is the ~4000 samples leading into
 # the stop. Arm it after the board boots, then run the workload; it waits until the trigger
 # fires (or max_hours, when given, elapses) and writes <out>_p.csv (probe_clk, the core's port)
@@ -26,20 +26,20 @@ set_property PROBES.FILE      $ltx $dev
 set_property FULL_PROBES.FILE $ltx $dev
 refresh_hw_device $dev
 
-# the two cores by instance name, and in each the trigger probe by its width (probe0)
+# the two cores by instance name, and in each the trigger probe by its net (the probe file
+# names probes by the nets they carry, so probe0's concatenation arrives split)
 set ilas {}
-foreach side {p m} width {10 8} {
+foreach side {p m} net {ila_trig ila_trig_m*} {
     set ila ""
     foreach cand [get_hw_ilas] {
         if {[string match "*u_ila_mem_$side*" [get_property CELL_NAME $cand]]} { set ila $cand }
     }
     if {$ila eq ""} { error "no u_ila_mem_$side core on the device: is this an ILA_MEM=1 bit?" }
-    set tp ""
-    foreach p [get_hw_probes -of $ila] {
-        if {[get_property WIDTH $p] == $width} { set tp $p; break }
+    set tp [lindex [get_hw_probes -of $ila $net] 0]
+    if {$tp eq "" || [get_property WIDTH $tp] != 1} {
+        error "u_ila_mem_$side has no 1-bit probe $net: [get_hw_probes -of $ila]"
     }
-    if {$tp eq ""} { error "u_ila_mem_$side has no $width-bit trigger probe" }
-    set_property TRIGGER_COMPARE_VALUE "eq${width}'b1[string repeat X [expr {$width - 1}]]" $tp
+    set_property TRIGGER_COMPARE_VALUE eq1'b1 $tp
     set_property CONTROL.TRIGGER_POSITION 4000 $ila
     puts "ILA $side: $ila  trigger probe: $tp"
     lappend ilas $side $ila
