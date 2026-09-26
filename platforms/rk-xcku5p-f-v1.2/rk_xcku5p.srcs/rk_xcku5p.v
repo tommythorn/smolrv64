@@ -1625,8 +1625,8 @@ module rk_xcku5p(
       .clk    (ui_clk),
       .probe0 ({ila_trig_m[2], mq_valid, mq_ready, mq_we,
                 mr_valid, mr_ready, mw_valid, mw_ready}),             // 8
-      .probe1 ({core_axi_arvalid, core_axi_arready, core_axi_rvalid_arb, core_axi_rready_arb,
-                core_axi_rlast_arb, core_axi_awvalid, core_axi_awready, core_axi_wvalid,
+      .probe1 ({core_axi_arvalid, core_axi_arready, core_axi_rvalid, core_axi_rready,
+                core_axi_rlast, core_axi_awvalid, core_axi_awready, core_axi_wvalid,
                 core_axi_wready, core_axi_wlast, core_axi_bvalid, core_axi_bready}),  // 12
       .probe2 ({device_axi_arvalid, device_axi_arready, device_axi_rvalid, device_axi_rready,
                 device_axi_rlast, device_axi_awvalid, device_axi_awready, device_axi_wvalid,
