@@ -116,7 +116,8 @@ module rv_soc_top #(
    // corruption, rather than the kernel Oops millions of cycles downstream, which is the
    // only evidence the board has offered so far and is far beyond any pre-trigger depth.
    output wire [1:0]       cache_par_err,   // {I$, D$} 1-cycle error pulse
-   output wire [63:0]      cache_par_dbg    // {sticky, bank, addr} of the first failure
+   output wire [63:0]      cache_par_dbg,   // {sticky, bank, addr} of the first failure
+   output wire [127:0]     core_dbg         // the core's wait state for the board's wedge ILA (ILA_MEM)
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -173,7 +174,7 @@ module rv_soc_top #(
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(), .retire_insn(),
       .retire2(retire2), .retire2_pc(), .retire2_insn(), .retire3(retire3),
-      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err));
+      .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err), .core_dbg(core_dbg_c));
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
    localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
@@ -708,6 +709,11 @@ module rv_soc_top #(
    // The units are ordered so that on a simultaneous violation first_idx names the one
    // closest to the data.
    wire [15:0] dc_err, ic_err, lsu_err, fe_err;
+   wire [111:0] core_dbg_c;
+   // core_dbg: [117:112] the device path (virtio response, virtio write/read pending, the fixed
+   // devices' read response, a store, a device read), [111:0] the core's (see ooo2_core)
+   assign core_dbg = {10'd0, virtio_rvalid, vio_wpending, vio_pending, dev_rvalid, dmem_wen,
+                      dmem_ren & is_dev_r, core_dbg_c};
    wire [63:0] err_sticky;
    wire [7:0]  err_first_idx;
    wire [47:0] err_first_cyc;

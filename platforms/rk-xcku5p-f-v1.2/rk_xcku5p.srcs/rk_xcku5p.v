@@ -1539,6 +1539,7 @@ module rk_xcku5p(
    wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
    wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
+   wire [127:0] probe_core_dbg;  // the core's wait state (rv_soc_top core_dbg) for ILA_MEM
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
@@ -1554,7 +1555,7 @@ module rk_xcku5p(
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq));
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .core_dbg(probe_core_dbg));
 
 `ifdef ILA_IRQ
    // Debug (ILA_IRQ=1): capture the virtio_blk interrupt lifecycle on probe_clk. probe_irq_dbg =
@@ -1617,7 +1618,8 @@ module rk_xcku5p(
       .probe1 ({pq_id, pr_id, pw_id, pr_beat}),                       // 17
       .probe2 (pq_addr[23:0]),                                        // 24: line index, low bits
       .probe3 ({ila_rd_out, ila_wr_out}),                             // 12
-      .probe4 (probe_irq_dbg)                                         // 18
+      .probe4 (probe_irq_dbg),                                        // 18
+      .probe5 (probe_core_dbg)                                        // 128: what the core waits on
    );
    (* ASYNC_REG = "TRUE" *) reg [2:0] ila_trig_m;
    always @(posedge ui_clk) ila_trig_m <= {ila_trig_m[1:0], ila_trig};

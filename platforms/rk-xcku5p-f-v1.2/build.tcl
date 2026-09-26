@@ -400,16 +400,23 @@ if {[info exists env(ILA_CORE)] && $env(ILA_CORE) ne "" && $env(ILA_CORE) ne "0"
 if {[info exists env(ILA_MEM)] && $env(ILA_MEM) ne "" && $env(ILA_MEM) ne "0"} {
     puts "Enabling ILA_MEM: memory-path debug cores (ila_mem_p, ila_mem_m)."
     lappend vdefines "ILA_MEM"
-    foreach {name widths} {ila_mem_p {10 17 24 12 18} ila_mem_m {8 12 12 17 12 36}} {
+    # configured on every build, not only when created, so a changed probe list takes effect
+    foreach {name widths} {ila_mem_p {10 17 24 12 18 128} ila_mem_m {8 12 12 17 12 36}} {
         if {[llength [get_ips -quiet $name]] == 0} {
             create_ip -name ila -vendor xilinx.com -library ip -module_name $name
-            set cfg [list CONFIG.C_NUM_OF_PROBES [llength $widths] CONFIG.C_DATA_DEPTH {4096} \
-                         CONFIG.C_INPUT_PIPE_STAGES {2} CONFIG.C_ADV_TRIGGER {true}]
-            for {set i 0} {$i < [llength $widths]} {incr i} {
-                lappend cfg CONFIG.C_PROBE${i}_WIDTH [lindex $widths $i]
-            }
+        }
+        set cfg [list CONFIG.C_NUM_OF_PROBES [llength $widths] CONFIG.C_DATA_DEPTH {4096} \
+                     CONFIG.C_INPUT_PIPE_STAGES {2} CONFIG.C_ADV_TRIGGER {true}]
+        for {set i 0} {$i < [llength $widths]} {incr i} {
+            lappend cfg CONFIG.C_PROBE${i}_WIDTH [lindex $widths $i]
+        }
+        set stale 0
+        foreach {k v} $cfg { if {[get_property $k [get_ips $name]] ne $v} { set stale 1 } }
+        if {$stale} {
+            puts "  $name: probe list changed -- reconfiguring and re-synthesizing it."
             set_property -dict $cfg [get_ips $name]
             generate_target {instantiation_template synthesis} [get_ips $name]
+            synth_ip -force [get_ips $name]
         }
     }
 }
