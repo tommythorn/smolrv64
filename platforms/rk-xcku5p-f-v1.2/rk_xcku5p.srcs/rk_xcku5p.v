@@ -1586,6 +1586,60 @@ module rk_xcku5p(
    );
 `endif
 
+`ifdef ILA_MEM
+   // Debug (ILA_MEM=1): the memory path from the core's port to the DDR4 controller, captured at
+   // the ONSET of a wedge. ila_trig rises when the port has had something waiting (a request not
+   // taken, or a read or write owed) with no handshake on any of its channels for 2047 probe_clk
+   // cycles (12 us; a DDR read takes ~30), and stays up. Each ILA triggers on it (ila_mem_m
+   // through a synchronizer), so with the trigger at the end of the window the 4096 samples
+   // before it show how the path stopped. ila_mem_p is the core side, ila_mem_m the ui_clk side:
+   // the CDC's far end, the core's and the devices' AXI masters, and the arbiter's AXI into the
+   // controller (m_axi_*, and the AW/W slice's output, mig_*).
+   reg  [5:0]  ila_rd_out, ila_wr_out;   // reads and writes the port owes a response
+   reg  [10:0] ila_quiet;                // cycles waiting with no handshake, saturating
+   reg         ila_trig;
+   wire ila_waiting  = (pq_valid & ~pq_ready) | (ila_rd_out != 6'd0) | (ila_wr_out != 6'd0);
+   wire ila_progress = (pq_valid & pq_ready) | (pr_valid & pr_ready) | (pw_valid & pw_ready);
+   always @(posedge probe_clk) begin
+      if (probe_reset) begin
+         ila_rd_out <= 6'd0; ila_wr_out <= 6'd0; ila_quiet <= 11'd0; ila_trig <= 1'b0;
+      end else begin
+         ila_rd_out <= ila_rd_out + {5'd0, pq_valid & pq_ready & ~pq_we} - {5'd0, pr_valid & pr_ready & pr_last};
+         ila_wr_out <= ila_wr_out + {5'd0, pq_valid & pq_ready &  pq_we} - {5'd0, pw_valid & pw_ready};
+         ila_quiet  <= (ila_waiting & ~ila_progress) ? ila_quiet + {10'd0, ~&ila_quiet} : 11'd0;
+         if (&ila_quiet) ila_trig <= 1'b1;
+      end
+   end
+   ila_mem_p u_ila_mem_p (
+      .clk    (probe_clk),
+      .probe0 ({ila_trig, core_commit, pq_valid, pq_ready, pq_we,
+                pr_valid, pr_ready, pr_last, pw_valid, pw_ready}),   // 10
+      .probe1 ({pq_id, pr_id, pw_id, pr_beat}),                       // 17
+      .probe2 (pq_addr[23:0]),                                        // 24: line index, low bits
+      .probe3 ({ila_rd_out, ila_wr_out}),                             // 12
+      .probe4 (probe_irq_dbg)                                         // 18
+   );
+   (* ASYNC_REG = "TRUE" *) reg [2:0] ila_trig_m;
+   always @(posedge ui_clk) ila_trig_m <= {ila_trig_m[1:0], ila_trig};
+   ila_mem_m u_ila_mem_m (
+      .clk    (ui_clk),
+      .probe0 ({ila_trig_m[2], mq_valid, mq_ready, mq_we,
+                mr_valid, mr_ready, mw_valid, mw_ready}),             // 8
+      .probe1 ({core_axi_arvalid, core_axi_arready, core_axi_rvalid_arb, core_axi_rready_arb,
+                core_axi_rlast_arb, core_axi_awvalid, core_axi_awready, core_axi_wvalid,
+                core_axi_wready, core_axi_wlast, core_axi_bvalid, core_axi_bready}),  // 12
+      .probe2 ({device_axi_arvalid, device_axi_arready, device_axi_rvalid, device_axi_rready,
+                device_axi_rlast, device_axi_awvalid, device_axi_awready, device_axi_wvalid,
+                device_axi_wready, device_axi_wlast, device_axi_bvalid, device_axi_bready}),  // 12
+      .probe3 ({m_axi_arvalid, m_axi_arready, m_axi_rvalid, m_axi_rready, m_axi_rlast,
+                m_axi_awvalid, m_axi_awready, m_axi_wvalid, m_axi_wready, m_axi_wlast,
+                m_axi_bvalid, m_axi_bready,
+                mig_awvalid, mig_awready, mig_wvalid, mig_wready, mig_wlast}),        // 17
+      .probe4 ({m_axi_arid, m_axi_rid, m_axi_awid, m_axi_bid}),      // 12
+      .probe5 ({m_axi_araddr[23:6], m_axi_awaddr[23:6]})              // 36: line index, low bits
+   );
+`endif
+
    ddr_port_cdc probe_cdc (
       .clk_p(probe_clk), .reset_p(probe_reset),
       .p_q_valid(pq_valid), .p_q_ready(pq_ready), .p_q_id(pq_id), .p_q_we(pq_we), .p_q_addr(pq_addr),

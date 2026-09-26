@@ -394,6 +394,25 @@ if {[info exists env(ILA_CORE)] && $env(ILA_CORE) ne "" && $env(ILA_CORE) ne "0"
         generate_target {instantiation_template synthesis} [get_ips ila_core]
     }
 }
+# ILA_MEM=1: two ILAs on the memory path (core port on probe_clk; CDC far end, core/device AXI
+# masters and the AXI into the controller on ui_clk), both triggered at the onset of a wedge by a
+# port watchdog in rk_xcku5p.v. Arm with `make ila-mem` before the board wedges.
+if {[info exists env(ILA_MEM)] && $env(ILA_MEM) ne "" && $env(ILA_MEM) ne "0"} {
+    puts "Enabling ILA_MEM: memory-path debug cores (ila_mem_p, ila_mem_m)."
+    lappend vdefines "ILA_MEM"
+    foreach {name widths} {ila_mem_p {10 17 24 12 18} ila_mem_m {8 12 12 17 12 36}} {
+        if {[llength [get_ips -quiet $name]] == 0} {
+            create_ip -name ila -vendor xilinx.com -library ip -module_name $name
+            set cfg [list CONFIG.C_NUM_OF_PROBES [llength $widths] CONFIG.C_DATA_DEPTH {4096} \
+                         CONFIG.C_INPUT_PIPE_STAGES {2} CONFIG.C_ADV_TRIGGER {true}]
+            for {set i 0} {$i < [llength $widths]} {incr i} {
+                lappend cfg CONFIG.C_PROBE${i}_WIDTH [lindex $widths $i]
+            }
+            set_property -dict $cfg [get_ips $name]
+            generate_target {instantiation_template synthesis} [get_ips $name]
+        }
+    }
+}
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
 configure_cvfpu_sources $repo_root $src_dir

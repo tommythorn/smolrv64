@@ -73,7 +73,14 @@ ifneq ($(strip $(ILA_CORE)),)
 export ILA_CORE
 endif
 
-.PHONY: all synth impl bit program load clean timing ila-capture fmax-report
+# Debug: ILA_MEM=1 inserts two ILAs on the memory path (the core's port on probe_clk; the CDC's
+# far end, the core/device AXI masters and the AXI into the DDR4 controller on ui_clk), triggered
+# at the onset of a wedge by a port watchdog. Arm with `make ila-mem` once the board is up.
+ifneq ($(strip $(ILA_MEM)),)
+export ILA_MEM
+endif
+
+.PHONY: all synth impl bit program load clean timing ila-capture ila-mem fmax-report
 
 all: bit
 
@@ -145,6 +152,11 @@ cdc:
 # CSV=<path> overrides the output. No GUI. See ila_capture.tcl.
 ila-capture:
 	$(VIVADO) $(VFLAGS) -source ila_capture.tcl $(if $(CSV),-tclargs $(CSV),)
+
+# ARMED capture of a memory-path wedge (needs a bit built ILA_MEM=1): blocks until the port
+# watchdog fires, then writes <CSV>_p.csv and <CSV>_m.csv. See ila_mem.tcl.
+ila-mem:
+	$(VIVADO) $(VFLAGS) -source ila_mem.tcl -tclargs $(if $(CSV),$(CSV),ila_mem) $(if $(HOURS),$(HOURS),0)
 
 # Per-clock achievable Fmax from the routed checkpoint. Global WNS is often pinned by the
 # virtio/MIG ui_clk domain, so this is the number that tells us what the CORE can clock.
