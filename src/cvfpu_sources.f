@@ -34,6 +34,7 @@
 ../third_party/cvfpu/src/fpnew_divsqrt_th_64_multi.sv
 ../third_party/cvfpu/src/fpnew_divsqrt_multi.sv
 ../third_party/cvfpu/src/fpnew_fma.sv
+../third_party/cvfpu/vendor/cvw/fma/fmalza.sv
 ../third_party/cvfpu/src/fpnew_fma_multi.sv
 ../third_party/cvfpu/src/fpnew_noncomp.sv
 ../third_party/cvfpu/src/fpnew_opgroup_block.sv
