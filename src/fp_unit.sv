@@ -51,7 +51,8 @@ module fp_unit #(parameter TAGW = 24,
     output wire [TAGW-1:0]  res_tag,
     input  wire             flush,          // abort in-flight op(s) (squash)
     output wire             busy,
-    output logic            err);           // integrity log (registered): an orphan or overwritten result
+    output logic            err,            // integrity log (registered): an orphan or overwritten result
+    output wire  [15:0]     dbg);           // wait state for the board's wedge ILA (core_dbg)
 
    localparam fpnew_pkg::fpu_features_t Features = fpnew_pkg::RV64D;
    localparam fpnew_pkg::fpu_implementation_t Implementation = '{
@@ -168,6 +169,10 @@ module fp_unit #(parameter TAGW = 24,
 
    // Invariants (docs/rtl-rules.md A1). Both say the same thing from opposite ends: the
    // one-op-at-a-time contract holds, so no result can arrive unowned or be overwritten.
+   // {request held, result held, fpnew ready / busy / valid / early, issue ready, 0,
+   //  ops in flight, the held request's op}
+   assign dbg = {req_v_q, out_valid_q, fpn_in_ready, fpn_busy, fpn_out_valid, fpn_early, iss_ready,
+                 1'b0, 4'(nflight_q), req_op_q};
    wire e_orphan = fpn_out_valid & (nflight_q == '0) & ~fpn_take;
    wire e_over   = fpn_out_valid & out_valid_q & ~res_ready;
    always_ff @(posedge clk) err <= ~reset & (e_orphan | e_over);

@@ -117,7 +117,7 @@ module rv_soc_top #(
    // only evidence the board has offered so far and is far beyond any pre-trigger depth.
    output wire [1:0]       cache_par_err,   // {I$, D$} 1-cycle error pulse
    output wire [63:0]      cache_par_dbg,   // {sticky, bank, addr} of the first failure
-   output wire [191:0]     core_dbg         // the core's wait state for the board's wedge ILA (ILA_MEM)
+   output wire [199:0]     core_dbg         // the core's wait state for the board's wedge ILA (ILA_MEM)
 );
    localparam SIZE = 1<<RAM_LG2;
    localparam AW   = 64;
@@ -709,12 +709,12 @@ module rv_soc_top #(
    // The units are ordered so that on a simultaneous violation first_idx names the one
    // closest to the data.
    wire [15:0] dc_err, ic_err, lsu_err, fe_err;
-   wire [111:0] core_dbg_c;
+   wire [127:0] core_dbg_c;
    wire [63:0] err_sticky;
-   // core_dbg: [191:128] the integrity log's sticky vector, [117:112] the device path (virtio
+   // core_dbg: [199:136] the integrity log's sticky vector, [133:128] the device path (virtio
    // response, virtio write/read pending, the fixed devices' read response, a store, a device
-   // read), [111:0] the core's (see ooo2_core)
-   assign core_dbg = {err_sticky, 10'd0, virtio_rvalid, vio_wpending, vio_pending, dev_rvalid,
+   // read), [127:0] the core's (see ooo2_core)
+   assign core_dbg = {err_sticky, 2'd0, virtio_rvalid, vio_wpending, vio_pending, dev_rvalid,
                       dmem_wen, dmem_ren & is_dev_r, core_dbg_c};
    wire [7:0]  err_first_idx;
    wire [47:0] err_first_cyc;

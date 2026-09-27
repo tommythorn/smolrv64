@@ -118,7 +118,7 @@ module ooo2_core
     // pass-through: registered in the LSU, read in rv_soc_top, nothing in between.
     output wire [15:0]             lsu_err,
     output wire [15:0]             fe_err,         // the frontend's invariants (ooo2_frontend)
-    output wire [111:0]            core_dbg);      // why nothing retires: the board's wedge ILA (ILA_MEM)
+    output wire [127:0]            core_dbg);      // why nothing retires: the board's wedge ILA (ILA_MEM)
 
    // =========================================================== stage F
    wire                     d_valid, d_rvc, d_rd_v, d_rs1_v, d_rs2_v, d_rs3_v;
@@ -2319,7 +2319,7 @@ module ooo2_core
       // redirect fires only when its op is the ROB head, so everything older has already
       // committed, and anything in flight is younger by construction. If head_block goes
       // (work list P2), this needs an age or epoch tag instead.
-      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy), .err(fpu_err));
+      .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .flush(redirect), .busy(fpu_busy), .err(fpu_err), .dbg(fpu_dbg));
 
    wire fp_complete = fp_res_valid | icr_v;             // a result lands: the FPU's, else the in-core one
    wire [FTAGW-1:0] fl_tag    = fp_res_valid ? fp_res_tag    : icr_tag;
@@ -3891,10 +3891,11 @@ module ooo2_core
       end
    end
    // ---- core_dbg: the state that says what the pipe waits on, for the board's wedge ILA ----
-   // [111:90] flags, [89:84] SQ occupancy, [83:78] LQ occupancy, [77:72] ROB head index,
+   // [127:112] the FPU's state (fp_unit dbg), [111:90] flags, [89:84] SQ occupancy, [83:78] LQ occupancy, [77:72] ROB head index,
    // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev (this cycle's event and stall
    // attribution, the counters' bus).
-   assign core_dbg = {rob_empty, rob_c_valid, m_valid, m_done, m_at_head, head_block, m_needs_head,
+   wire [15:0] fpu_dbg;
+   assign core_dbg = {fpu_dbg, rob_empty, rob_c_valid, m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,
