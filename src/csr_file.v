@@ -43,9 +43,9 @@ module csr_file
     // (the flags of the FP ops retiring this cycle, reduced by the caller).
     input  wire        fp_fflags_we,
     input  wire [4:0]  fp_fflags,
-    // mstatus.FS -> Dirty when an FP-state writer RETIRES: commit_ctl raises this at the commit
-    // of any checkpoint that held an f-register write (FP arith/compare, in-core FSGNJ/FMV.x.X,
-    // FP loads FLW/FLD). Commit-gated (never speculative) so a squashed FP op never dirties FS.
+    // mstatus.FS -> Dirty when an op that changes FP state RETIRES: the caller raises this in the
+    // cycle any committing op wrote an f-register or retired flags into fcsr. Commit-gated (never
+    // speculative) so a squashed FP op never dirties FS.
     input  wire        fp_dirty_commit,
     output wire        o_tlb_flush,   // 1-cycle: sfence.vma or satp write -> flush TLBs
     // ---- external trap injection (page faults from the iMMU/LSU; precise) ----
@@ -802,9 +802,9 @@ module csr_file
       // flags). Last write to fcsr[4:0] this cycle, so it ORs on top of a coincident fcsr CSR
       // write, which is older.
       if (!reset && fp_fflags_we) fcsr[4:0] <= fcsr[4:0] | fp_fflags;
-      // FS -> Dirty when a retiring op wrote FP state: an f-register (fp_dirty_commit, raised at
-      // commit by commit_ctl for FP arith/compare + in-core FSGNJ/FMV.x.X + FP loads) or an FP CSR
-      // write (fcsr/fflags/frm, itself commit-serialized). Guarded to FP-enabled (FS != Off).
+      // FS -> Dirty when a retiring op changed FP state: an f-register or retired flags
+      // (fp_dirty_commit) or an FP CSR write (fcsr/fflags/frm, itself commit-serialized).
+      // Guarded to FP-enabled (FS != Off).
       if (!reset && (mstatus[14:13] != 2'b00) &&
           (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
                               & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))

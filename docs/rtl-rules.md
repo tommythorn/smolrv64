@@ -369,6 +369,16 @@ one of these three gates or adds its own by name; it never assumes the head or
 
 ## D. Staleness
 
+**C6. A retirement effect covers every commit port.**
+The ROB commits up to three ops a cycle (`rob_c_valid`, `rob_c2_valid`,
+`rob_c3_valid`). Any architectural effect of retiring -- instret, `mstatus.FS`,
+the `fcsr` flags, the return-stack commit -- is the OR (or sum) over all of them,
+never the head port alone. `fp_dirty_commit` was `retire & rob_c_rd[5]`: an FP
+load retiring beside an older op left FS Clean, so the kernel could skip saving
+that task's f-registers at the next context switch. A lockstep from a Geekbench 5
+checkpoint caught it at the kernel's `sstatus` read (Clean against Dirty), inside
+Speech Recognition, the subtest that miscompares on the board.
+
 **D1. One epoch mechanism, not one per engine.**
 A global epoch bumps on redirect / sfence / checkpoint close. Every
 long-latency engine latches the epoch it started in. A result delivers only on

@@ -2705,12 +2705,13 @@ module ooo2_core
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
-      // mstatus.FS -> Dirty when an FP-state writer RETIRES. In-order that is exactly
-      // "a retiring instruction wrote an f-register" (arch 32..63), which covers FP
-      // arith, the in-core FP writers and FP loads -- and excludes FSW/FSD, which
-      // write memory, not FP state. Commit-gated by construction: `retire` is the
-      // commit event, so a trapping op never dirties FS.
-      .fp_dirty_commit(retire & rob_c_rd_v & rob_c_rd[5]),
+      // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
+      // that wrote an f-register (arch 32..63: FP arith, the in-core FP writers, FP loads; not
+      // FSW/FSD, which write memory) or whose flags reach fcsr. Linux saves a task's f-registers
+      // on a context switch only when FS is Dirty. Commit-gated by construction: the commit
+      // valids exclude a trapping op, so it never dirties FS.
+      .fp_dirty_commit((retire  & rob_c_rd_v  & rob_c_rd[5])  | (retire2 & rob_c2_rd_v & rob_c2_rd[5])
+                     | (retire3 & rob_c3_rd_v & rob_c3_rd[5]) | (|ret_fflags)),
       .o_tlb_flush(mmu_flush),
       // GATED BY m_done. Neither of these was, because a SYSTEM op or a poisoned instruction
       // always completed in its single M cycle -- so `in M` and `completing` were the same
