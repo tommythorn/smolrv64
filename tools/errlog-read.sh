@@ -7,7 +7,7 @@
 #     errlog: FAULT  sticky=0000000000000040 first=dcache.replay (bit 6) at cycle 0x2f1a3b0c00
 #             bit 6  dcache.replay      a replay owed with no fill in flight
 #
-# The bit names are the INTEGRITY LOG tables in rv_cache.v (D$), rv_icache.v (I$) and ooo2_lsu.v,
+# The bit names are the INTEGRITY LOG tables in rv_dcache.v (D$), rv_icache.v (I$) and ooo2_lsu.v,
 # in the SoC's fixed assignment (D$ [15:0], I$ [31:16], LSU [47:32]); keep them in step. On a
 # bitstream without the log the window reads zero and this says so instead of "clean".
 set -u
@@ -24,8 +24,8 @@ W=$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyCheckin
 set -- $W
 MAGIC=$1; STICKY=$2; FIRST=$3
 [ "${MAGIC: -8}" = "4552524c" ] || { echo "errlog: absent (window reads $MAGIC: a bitstream without rv_errlog)"; exit 2; }
-CACHE=(lb_owner wr_align solo_fill pa_range line_gone cbo_fill replay l2_2cons inv_stuck fill_scan bank_rw st_undef fst_undef adr_bad rd_align span)
-CDESC=("write-through push and fill machine both own linebuf" "a plain write is not chunk-aligned" "a solo request accepted while a fill is live" "a request above the tagged physical range" "the line a solo request hit vanished after S_CHECK" "a CBO in stage B while a fill is live" "a replay owed with no fill in flight" "prefetch and fill machine both awaiting one l2_ack" "an invalidate scan that will never finish" "a fill live during the invalidate scan" "a bank row read and written in the same cycle" "the lookup FSM outside its encoding" "the fill machine outside its encoding" "address provenance: the bank returned a row this hit did not ask for" "a wide read that is not chunk-pair aligned" "NO-SPAN violated: a spanning cached request")
+CACHE=(orphan slot wdone beat two span tag_reuse dead_wait ro_race vv_no_pv vhit_other)
+CDESC=("a fill beat for no MSHR" "a read response nothing awaits" "a write completion for no write sent" "beats out of order within a burst" "two pvalid copies of one physical line" "VA and PA disagree in the page offset" "a requester tag reused while outstanding" "a waiter parked on an MSHR that is not live" "a fill beat into a line being read out" "vvalid without pvalid" "a current-epoch virtual hit on another physical line")
 ICACHE=(dual unused1 l2_orphan align skid_full pa_offset l2_both stamp_dup rc_both)
 IDESC=("one line hits in both ways" "(unused)" "an L2 answer with no read outstanding" "a pair not 16-byte aligned" "a request into a full skid" "VA and PA disagree in the page offset" "a demand read and a prefetch outstanding together" "stamping a line the other way already holds" "one physical line resident in both ways")
 FE=(ring_head ring_over ring_hold ring_gen ring_orphan ring_marks pq_full pq_empty pair_end fetch_cap fetch_pc bundle slot_order be_zombie be_realloc fp_orphan)

@@ -837,24 +837,23 @@ cycle is legal and was lost once).
 
 ## 8. Load/store unit and MMU
 
-- **Blocking store/AMO, non-blocking load.** The D$ is no longer a single-request FSM.
-  `rv_cache.v` is a LOOKUP pipeline plus a FILL machine: a miss hands its request to the one
-  MSHR and leaves, so stage B empties and the next request resolves while the line is
-  fetched, and a missing read is answered by the fill machine (`F_ANS`) rather than replayed.
-  Two requests can be in flight -- one in the pipeline, one in the MSHR. A store, an NC
-  access, a CBO and a line-spanning access are SOLO: each shares state with the fill machine,
-  so it is taken only while that machine is idle. A plain cached read shares none of it,
-  which is exactly why it is the one allowed to overlap a fill.
-- **The cache's L2 port is single-outstanding, and that is a CONTRACT, not an observation.**
-  `l2_ack` carries no tag, so the only thing binding a response to its requester is that
-  exactly one request is in flight. Two things in the cache fetch lines -- the fill machine
-  and, on the I$, the next-line prefetcher -- and they are serialised by `fill_l2_busy`
-  (`F_FILL`, `F_FILLW`, `F_WBI`, `F_WBA`, `F_FLUSHI`, `F_FLUSHA`, `S_WTI`, `S_WTA`: issued
-  OR outstanding) together with the prefetcher's own `pf_infl`. Gating on the `l2_req` pulse
-  is NOT sufficient -- it is a single cycle, so the port reads as free for the whole memory
-  latency -- and doing so shipped a wrong-line-under-a-correct-tag bug that no parity or
-  provenance check could see. An always-on invariant now asserts the hazard directly (a
-  prefetch in flight while the fill machine awaits an ack). Rules A6, B6 and D9.
+- **The D$ is non-blocking** (`rv_dcache.v`, 2026-09-27; its header is the full description).
+  One lookup a cycle -- a released waiter, else the store-port op, else a load -- reads the
+  banks at T and resolves at T+1; a load's answer is `rd_valid` at T+2, by its tag, and a hit
+  behind a miss answers first. A miss never holds the lookup: it parks in the **waiter table**
+  (one entry per requester tag, one for the store) on the MSHR filling its line, or on the next
+  MSHR, write-back entry, NC slot or store to free. 8 MSHRs, each with a 64-byte **merge
+  buffer**, so a store miss completes into the buffer at once; 2 **write-back** lines, a dirty
+  victim read out in the 4 cycles after its miss and written only when no read waits for the
+  port; one **NC slot**. Every response is matched by the tag its request carried, on the D$'s
+  side (`rd_tag`) and on the memory port's (slot ids, §9.2) -- rule B1 by construction.
+- **Ordering inside the D$.** A store is accepted (`wr_acc`) before it resolves, so a load to
+  the line of the store in flight waits for it (`blk_st`); the store's completion is a
+  freeing that releases it. The lookup that read a bank row at the edge a store wrote it takes
+  the store's chunk from the write register (`w1`), the one bypass. The lookup yields in the
+  cycle a line's last beat is written, so no lookup ever meets an install, and an array has
+  one write statement. Waiters released by their MSHR replay before those waiting on any
+  freeing, and those replay round robin: a fixed order starved the store under slow memory.
 - **Multiple outstanding loads: the fast path (C4a step 1, 2026-09-18).** A queued load that
   is cached, inside one word and to memory (DRAM or the local SRAM) needs nothing from the
   LSU's FSM after its read is issued: the address is translated, the fault decided, and the
@@ -873,8 +872,8 @@ cycle is legal and was lost once).
   ROB port). Re-done from the retired da28895b. tiny128 at 60 M, measured DDR shape: IW=2
   13,490,465 -> 13,975,979 (+3.6%), IW=3 13,371,386 -> 13,835,891 (+3.5%). ldbench (L1-resident):
   pointer-chase latency 5.00 cycles per load unchanged, 8-stream throughput 4.00 -> **2.00**
-  cycles per load (overlap 1.24x -> 2.49x) -- exactly the D$ door's one read per two cycles,
-  which still accepts only in S_IDLE; that door (C4a step 2) and the one MSHR (C5) are next.
+  cycles per load (overlap 1.24x -> 2.49x) -- exactly `rv_cache`'s door, one read per two
+  cycles; `rv_dcache` takes a read every cycle and has 8 MSHRs.
 - **A plain store and a plain load leave M without touching memory.** Their M pass only
   TRANSLATES; the PA is filled into `ooo2_sq` (stores) or `ooo2_lq` (loads) and M is released
   on `xo_v`. Memory is reached later through the one pre-translated port `pt_*`, shared by
@@ -926,7 +925,7 @@ cycle is legal and was lost once).
   The queue pops at the HANDOFF (`c_take` = `pt_ack` for a store) and the LSU registers the
   data (`st_data_q`); nothing can pass a store parked in the LSU, since every access goes
   through its FSM. Two classes wait for COMPLETION instead, `wr_cpl`, which
-  the D$ raises only for them: a CBO, whose flush must be in L2 before the doorbell store
+  the D$ raises only for them: a CBO, whose flush must be in memory before the doorbell store
   behind it, and an uncached write, whose bytes must be in DDR before a later device write
   starts the DMA that reads them. The plain write's `wr_ack` is a counter pulse nobody waits
   on, and it must not reach `dmem_wready`: it used to land while the LSU waited on a device
@@ -992,57 +991,25 @@ cycle is legal and was lost once).
   writeback valids `we_ld`/`we_fe` (the wakeup broadcast) use `lsu_done_acc`, the completion
   of an access this stage started: a translate pass or a fault never writes a register.
   Both are asserted equal to the full expressions every cycle.
-- **The D$'s door is open in a plain write's last cycle** (`fin_wr`, 2026-09-05, plan item
-  4b). `S_FIN` writes the chunk from registers captured at the lookup and needs nothing from
-  the door, and the next request's bank read is presented unconditionally, so `acc_slot`
-  admits it there and a write costs the pipeline two cycles (`S_CHECK`, `S_FIN`), stores
-  streaming at one per two. The request registers are captured in every door-open cycle,
-  `S_IDLE` or `fin_wr`, on the state alone as before. The one hazard is the bank: a read of
-  the row being written this cycle returns the OLD chunk, so a request into the SET being
-  written (`fin_hazard`, both ways, conservatively) waits for `S_IDLE`; replays keep to
-  `S_IDLE`. `tb_ooo2_dcache` T14 measures both doors by the load's wait at the door.
-- **A plain cached write is not SOLO** (2026-09-05, plan item 4c). Its miss is completed by
-  the fill machine: the chunk is merged into the line as it lands from L2 (`F_FILLW`,
-  `l2_merged`, one byte-masked chunk -- the LSU aligns every DRAM store to its 8-byte word,
-  asserted at the door) and the line installs dirty; the request never replays, so a write
-  in the MSHR no longer blocks every other request for the length of a fill, and a write is
-  accepted under a fill like a read, holding in `S_CHECK` on a miss like a read. `F_ANS` has
-  its own window (`f_wlo`/`f_whi`) because a write's `wlo`/`whi` can be live under the fill
-  that answers a read. Two holds keep the banks honest: a write's `S_FIN` waits out an
-  install (`fill_wr_banks`: `F_FILLI` owns the bank write ports and the dirty port, and the
-  door is shut meanwhile), and a write that HITS the fill's victim re-looks until the fill
-  is over (the writeback would otherwise stream the line out from under it). Still solo: an
-  NC or write-through write, a CBO, a span. `tb_ooo2_dcache` T15-T17: the merged miss and
-  its writeback, a store under a read's fill and a hit under the store's, two stores to one
-  missing line.
-- **The D$ has the I$'s next-line stream buffer, OFF** (`PREFETCH(0)` in `rv_soc_top`,
-  2026-09-05, plan item 6): on the board the same core faults with it on (P1: a corrupted
-  preempt count and a wild pointer during network setup; O: a python segfault and a
-  dentry-LRU Oops) and boots clean with it off (P3), while the DMA-blind cosim and every
-  bench, the random stress included, pass. Something a real kernel with DMA does to a line
-  the buffer holds is not covered by the rules below; until it is named, the buffer is off.
-  What was built and how it is meant to work: a demand fill
-  arms a prefetch of the next line on the idle L2 port; a miss on that line takes it from
-  the buffer instead of L2. What a writable cache adds, each asserted or tested: the
-  buffered line can be STALE against a dirty resident copy, so a writeback of that line
-  drops the buffer (`F_WB`, and the NC push at `S_WTI`); a CBO drops it (cbo.zero rewrites
-  the line, Zicbom reconciles DMA memory); a write miss that takes the buffered line merges
-  its chunk at the install (the item-4c merge moved from `F_FILLW` to `F_FILLI`, one site for
-  both line sources); the D$ takes the buffer through `F_WB -> F_FILL` because its victim
-  may be dirty, not `S_CHECK`'s shortcut; and the L2 port stays one request at a time, so
-  `F_WBI`, `S_WTI` and `F_FLUSHI` wait out a prefetch in flight. `workloads/membench` (1 MiB
-  streams through the 64 KiB D$, the measured DDR model): fill 92.8 -> 60.7 cycles per
-  line, sum 75.7 -> 43.4, copy 156 unchanged (one buffer and one L2 port cannot overlap a
-  read and a write stream). tiny128 boot at 60 M cycles +34.3% (14,132,961 -> 18,979,633
-  at HW=8): the kernel's memory init walks memory linearly. `tb_ooo2_dcache` T18-T20.
-- **Zicbom clean/flush/inval on a resident line take their dirty test in `S_FIN`**, one cycle
-  after the lookup, on the way/index registered there. Reading `dirm[flat(hway,cih)]` in
-  `S_CHECK` was a second array read addressed by the first one's compare -- the D$'s own
-  worst path alone on the part (19 levels). cbo.zero is unchanged in cycles: its zeros come
-  from masking the install loop's write data on `f_cbo_zero`, not from zeroing `linebuf` at
-  the lookup. Rule I8.
-- **No line-spanning access**: the LSU splits a line-crossing access, and the cache resolves
-  the two halves internally via a two-phase lookup.
+- **Stores stream at one per two cycles.** A store takes the lookup like a load; a hit merges
+  its bytes into the chunk its own lookup read and writes the chunk back (no byte enables), a
+  miss completes into its MSHR's merge buffer, whose bytes override the fill's beats. The next
+  store is taken once this one resolves. One store per cycle is increment 3 of the plan.
+- **NC, CBOs and page-table walks are looked up by PA**, in the PA's own colour, and never
+  stamp. An NC access drops any cached copy (a dirty one written back first) and then goes to
+  memory alone through the NC slot, a store with only its bytes -- coherent with a cacheable
+  alias, as `rv_cache`'s flush-around was, and nothing allocates. cbo.clean writes a dirty
+  copy back and keeps it clean; cbo.flush/inval drop it, written back if dirty; cbo.zero drops
+  it unwritten and fills an MSHR whose merge buffer is a line of zeros. A CBO or NC store
+  completes at `wr_cpl`, once memory has its write. `fence.i`'s clean (`inv_req`) waits for
+  the store in flight and any dirty merge buffer, then walks every physical slot and writes
+  each dirty line back, keeping it; `inv_busy` holds until memory has them all.
+- **Phase 1: every request by PA** (`VIRT=0` in `rv_soc_top`). The core translates before it
+  asks, so a virtual hit would shorten nothing yet: the D$ runs as a 128 KiB, 2-way PIPT
+  cache and its virtual stamps stay empty. Phase 2 of the plan, with the queue-side
+  translate (C4b), presents VAs and turns on the virtual hit.
+- **No access spans an 8-byte chunk**: the LSU splits them (the no-span alignment), and the
+  D$ answers the chunk shifted to the access's byte.
 - Load-format controls (`nb`, signed, fp) are **latched at dispatch**, not read at
   completion — the stage they came from has moved on by then.
 
@@ -1076,19 +1043,20 @@ so a slot's page size is always the current mapping's.
 
 ### 9.1 L1 caches
 
-The D$ is `rv_cache`; the I$ is `rv_icache`, a read-only module of its own (Stage 4 increment 0,
-`docs/PLAN-2026-09-24-frontend-stage4.md`).
+The D$ is `rv_dcache` (docs/PLAN-2026-09-25-dcache-vhpr.md, increment 2); the I$ is `rv_icache`, a
+read-only module of its own (Stage 4 increment 0, `docs/PLAN-2026-09-24-frontend-stage4.md`).
 
-| | I$ (`rv_icache`) | D$ (`rv_cache`) |
+| | I$ (`rv_icache`) | D$ (`rv_dcache`) |
 |---|---|---|
-| Size | 64 KB | 64 KB |
-| Associativity | 2-way, not skewed | **2-way skew-associative** |
-| Sets | 512 | 512 |
+| Size | 64 KB | **128 KB** (`DC_KB`) |
+| Associativity | 2-way, not skewed | 2-way, not skewed |
+| Sets | 512 | 1024, 16 colours (VA[15:12]) |
 | Line | 64 B (512 bit) | 64 B |
-| Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | **PIPT** |
-| Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit |
-| Write policy | fill-only | **write-back** (`WRTHRU=0`) |
-| Prefetch | next line, **on**, within the 4 KiB page | built (plan item 6) but OFF: it faults on the board, 2026-09-05 |
+| Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | VHPR built; **PIPT** in phase 1 (`VIRT=0`) |
+| Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one lookup a cycle, answered at T+2 by tag |
+| Misses | one demand read + prefetch | **non-blocking**: 8 MSHRs with merge buffers, a waiter per tag |
+| Write policy | fill-only | **write-back**, 2 write-back lines |
+| Prefetch | next line, **on**, within the 4 KiB page | none |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | same |
 
 **Not UltraRAM.** Data is even/odd **banks** of `BANKW` bits per way — `2*WAYS` sync-read
@@ -1097,10 +1065,17 @@ consecutive chunks, which have opposite parity and therefore live in different b
 read serves it, with a byte shift instead of a full-line mux. A byte-masked store is a
 read-modify-write of one chunk, no cross-bank RMW.
 
-Skew (D$): way 1 XORs low tag bits into the index; a victim's base index is recovered as
-`skewed_index ^ victim_tag`. The **VHPR I$ does not skew** (`VIRT=1`): the miss-path physical
-reconcile probes the same-offset synonym candidates by a straight index, and a tag-XORed index
-would scatter them across sets. Both ways use the plain virtual index.
+Neither cache skews: a VHPR cache's physical probe finds the same-offset synonym candidates by a
+straight index, and a tag-XORed index would scatter them across sets.
+
+**The D$ (`rv_dcache`).** Physical state per (way, colour): 32 LUTRAM arrays of 64 rows, all read
+at PA[11:6], hold the physical tag, pvalid and dirty, so the 32 places a line can live come out
+of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
+(tag, 2-bit epoch, vvalid per way and set) sit beside them for phase 2. A miss's fill is a
+four-beat burst into the reserved way, a cycle after each beat; the line installs the cycle
+after its last beat is written and its waiters replay: a load's answer comes 5 cycles after
+the last beat. Unit bench: `ooo2/run-ooo2-dcache-tb.sh` (48 runs; memory equal to a golden image
+after every `fence.i` clean).
 
 **VHPR I$ (`rv_icache`).** A pair is a 16-byte-aligned quarter of a line (asserted), so it is one
 line's lookup; each way's data is two BRAM banks, the even and the odd 8-byte chunks, read at the
@@ -1119,8 +1094,8 @@ bits one set per cycle. Today every request still carries the iMMU's PA (`rd_pa`
 still checks every fetch; Stage 4 increment 1 caches each line's execute and user bits and
 translates only on a miss. Unit bench: `ooo2/run-ooo2-icache-tb.sh`. Design: `docs/VHPR.md`.
 
-Measured D$: **3.24 cycles per access** at a **0.195% miss rate** — i.e. the LSU cost is hit
-latency, not misses.
+Measured D$ (`rv_cache`, 64 KiB, before 2026-09-27): **3.24 cycles per access** at a **0.195% miss
+rate** — i.e. the LSU cost is hit latency, not misses.
 
 ### 9.2 Below L1
 
@@ -1133,10 +1108,10 @@ There is no L2 cache. **`rv_mem_arbiter`** puts the caches onto one tagged **mem
 Any number of transactions may be in flight, and a response is matched by the id its request
 carried, never by order. Ids are `{client, slot}`. Among waiting requests a read wins over a
 write; the chosen request is registered before it leaves, and responses are routed to their
-client in the cycle they arrive. The D$ (client 0) and the I$ (client 1) keep their
-single-outstanding line handshake behind `rv_mem_line_client`, so each can have one fill in
-flight at the same time. The D$ port serializes its own fill, write-back and the page-table
-walks' misses (walks go through the D$, §8).
+client in the cycle they arrive. The D$ (client 0) names its own transactions: slots 0-7 its
+MSHRs' fills, 8-9 its write-backs, 10 the NC slot, so up to 11 are in flight. The I$ (client 1)
+keeps its single-outstanding line handshake behind `rv_mem_line_client`. Page-table walks go
+through the D$ (§8), so their misses are D$ fills.
 
 The on-chip SRAM at `LBASE` answers inside `rv_soc_top`. Everything else goes out on the
 `ddr_*` port: the testbench's model, or on the board:
@@ -1275,18 +1250,20 @@ Neither BTB nor corrector bank has a valid bit — validity is the tag match (§
 
 ### 10.3 Memory system
 
-Per cache instance; there are two (I$, D$), identical geometry.
+The D$ (`rv_dcache`, 128 KiB):
 
 | array | shape | width | bits | storage |
 |---|---|---|---|---|
-| data banks | 4 × 2048 | 64 | 524 288 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
-| `tagm` | 1024 | 19 | 19 456 | LUTRAM (three read ports on the D$: two lookups, one victim/scan) |
-| `valm` | 1024 | 1 | 1 024 | LUTRAM (`RAM256X1D`, one copy per read port) |
-| `dirm` | 1024 | 1 | 1 024 | LUTRAM (D$ only in effect) |
-| `vicm` | 512 | 1 | 512 | LUTRAM — victim/replacement bit per set |
+| data banks | 4 × 4096 | 64 | 1 048 576 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
+| `pt` / `pv` / `pd` | 32 × 64 | 24 / 1 / 1 | 53 248 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
+| `rr` | 1024 | 1 | 1 024 | LUTRAM — round-robin victim per set |
+| `vt`/`ep`/`vv` ×2 | 1024 | 23 / 2 / 1 | 53 248 | LUTRAM, unused at `VIRT=0` (pruned) |
+| MSHRs, merge buffers | 8, 8 × 8 chunks | -- / 72 | ~5 400 | flops |
+| waiters | 33 | ~135 | ~4 500 | flops (one per requester tag, one for the store) |
+| write-back lines | 2 | 512 | 1 024 | flops |
 
-Data is 4 banks (`2*WAYS`) of `2048 × 64`, which is the 64 KB: even/odd chunk banking per
-way, so any read at any byte offset is served by one access (§9.1).
+The I$ (`rv_icache`, 64 KiB): data 4 banks of `2048 × 64` (524 288 bits, BRAM), even/odd chunk
+banking per way, so any read at any byte offset is served by one access (§9.1).
 
 **The bank is never wider than 64 bits, whatever the port width.** The I$ at `HW=8` reads
 128 bits: the even/odd chunk pair at a 16-byte-aligned address, which is the 2*BANKW window
@@ -1301,12 +1278,10 @@ aligned 1.28, 2-byte-offset 0.98, compressed 1.95, mixed 1.40 -- the adapter MAT
 on straight-line throughput (0.98 at the 2-byte offset); its reduced run-ahead shows on
 taken-branch refetch (the mispredict table, §3), not straight-line fetch.
 
-**The tag is `PAW_SIG - IDXB - OFFB` = 36 - 9 - 6 = 21 bits, not the port width's 49.** The
-ports are 64 wide because a PA rides in a 64-bit bus, but the architecture has `PABITS` = 36
-physical-address bits (64 GiB; `rv_soc_top` sets the D$'s `PAW_SIG` from it). `PAW_SIG` is a
-parameter of `rv_cache` set at both instantiations; a request at or above `2^PAW_SIG` is an
-always-on `$fatal` at the door (the integrity log's `dcache.pa_range`), and the writeback
-address is rebuilt from the tag and zero-extended, exact under that check.
+**The D$'s physical tag is `PABITS - 12` = 24 bits, not the port width's 52.** The ports are 64
+wide because a PA rides in a 64-bit bus, but the architecture has `PABITS` = 36 physical-address
+bits (64 GiB; `rv_soc_top` passes it to the D$), and a write-back's address is rebuilt from the
+tag and the row.
 
 **The physical-address cap.** DRAM starts at `0x8000_0000` and is `2^DRAM_LG2` bytes, a
 configuration of the instance: 31 on the board (2 GiB; `src/lint.sh` checks the board DTS memory
@@ -1391,12 +1366,11 @@ its conditions once (`e_*` wires read by both the `$fatal` and the log, so the m
 detector cannot drift), registers them (`err_q`, one flop per bit: nothing crosses a hierarchy
 boundary combinationally, nothing lands on a lookup path), and `rv_soc_top`'s single
 `rv_errlog` keeps a sticky bit per invariant plus the index and 48-bit cycle stamp of the first
-one to fire. The D$'s address-provenance check (`adr_bad`, formerly `-DCACHE_PARITY` only) is
-always on now and is bit 13; the parity array stays opt-in.
+one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has none.
 
 | bits | unit | source of the numbering |
 |---|---|---|
-| `[15:0]` | D$ | `rv_cache.v`, INTEGRITY LOG block (16 conditions: linebuf ownership, alignment, solo/fill exclusion, tagged range, line vanished, replay, two consumers of one `l2_ack`, a lost invalidate scan, bank read/write collision, both FSMs outside their encoding, address provenance, no-span) |
+| `[15:0]` | D$ | `rv_dcache.v`, invariants block (11 conditions: an orphan fill beat, a response nothing awaits, a write completion nothing sent, beats out of order, two pvalid copies of a line, VA/PA page-offset mismatch, a tag reused while outstanding, a waiter on a dead MSHR, a beat into a line being read out, vvalid without pvalid, a current-epoch virtual hit on another line) |
 | `[31:16]` | I$ | `rv_icache.v`, invariants block (8 conditions: a line hitting in both ways, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
 | `[47:32]` | LSU | `ooo2_lsu.v` (7 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`) |
 | `[63:48]` | reserved | the next units plug in without moving anything |
@@ -1456,7 +1430,8 @@ then `../../tools/pipeview/target/release/pipeview s.kanata sillyloop.elf`.
 | riscv-tests | `ooo2/run-ooo2-vl.sh` | `pass=240 fail=0` |
 | unit benches of the shared blocks and devices, under Verilator | `src/run-tb.sh` | `tb pass=20 / 20` |
 | Linux lockstep vs simmerv | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
-| cache, both shapes | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200, incl. the DMA-coherence cases T8-T13, the write-door timing T14 and the write-under-fill cases T15-T17, the D$ stream buffer T18-T20 |
+| the D$ | `ooo2/run-ooo2-dcache-tb.sh` | `DCACHE-TB: 48 of 48 runs pass` (6 seeds × in-order/reordering memory × default, slow, fast-with-stores, remap-heavy; every outcome occurs; memory equals gold after every clean) |
+| `rv_cache`, both shapes (no longer instantiated) | `ooo2/run-ooo2-cache-tb.sh` | PASS at LAT=4/20/100/200 |
 | load/store queues | `ooo2/run-ooo2-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `ooo2/run-ooo2-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | virtio-net DMA, both directions | `src/run-tb.sh` (`tb_virtio_net.v`) | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |

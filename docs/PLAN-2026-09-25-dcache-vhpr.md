@@ -319,11 +319,42 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      in one colour, accessed from another), and walker reads. Run at several latencies, in-order
      and reordering memory, every answer checked, every invariant live.
    - memrand gains a synonym-alias op, which it already half has: three aliases of one region.
+
+   **As built (2026-09-27, `wip/dcache`).** `ooo2/rv_dcache.v`, bench `tb_rv_dcache.v` (96 runs:
+   VIRT=1 and VIRT=0 × 6 seeds × in-order/reordering memory × 4 shapes). Where it departs from
+   the text above, and why:
+   - **The core presents PAs only (`VIRT=0`), and the VA plumbing moves to increment 5.** The LSU
+     has translated before it asks, so a virtual hit shortens nothing in phase 1; at `VIRT=0`
+     every request is looked up by PA in its own colour and the D$ is a 128 KiB 2-way PIPT
+     cache. The swap is then a drop-in with no LSU, LQ or SQ change and no epoch plumbing.
+   - **A match in the request's own set answers at once** (both ways' data was read with the
+     lookup) and re-stamps; replaying it let two aliases trade the line forever.
+   - **The retry queue is the waiter table**: one entry per requester tag and one for the store,
+     waiting on an MSHR or on any MSHR, write-back entry, NC slot or store freeing. Waiters on
+     any freeing replay round robin; a fixed order starved the store under slow memory.
+   - **A load to the line of the store in flight waits for it**: the store is accepted before it
+     resolves.
+   - **Stores go through the one lookup** (one per two cycles, as today, until increment 3). A
+     hit writes the whole chunk its lookup read; a one-entry bypass covers the row written at
+     the edge a later lookup read it.
+   - **A miss to a line in the write-back buffer waits** for the write rather than being served
+     from it; **cbo.zero reads the line** it then overwrites; there is **no early restart** and
+     **no response queue** (an NC answer waits for a cycle the lookup does not answer). Each is
+     a later optimisation.
+   - **NC drops any cached copy first**, so NC stays coherent with a cacheable alias.
+   - **fence.i's clean waits** for the store in flight and every dirty merge buffer.
+   - **The allocation state is written speculatively**: a free MSHR's fields, its merge buffer
+     and the lookup's own waiter entry are dead, so they are written whenever the lookup is
+     busy, and only the bits that make them live wait for the probe (OOC WNS -0.381 -> +0.182
+     ns at 6 ns).
+   First measurement, IW=3 Linux lockstep (tiny128 boot): 19,122,783 -> 29,278,185 retires at
+   60 M cycles (+53.1%), 91,331,479 -> 123,843,694 at 300 M (+35.6%).
 3. **The store port.** The SQ drains one store per cycle: the LSU's S_ST/`take_next` chain
    becomes a stream.
 4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.
-5. **Phase 2, with the queue-side translate:** the load path stops translating; the D$ translates
-   on a miss through its translate port. This is where the dTLB leaves the load's hit path; it
+5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
+   (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
+   D$ translates on a miss through its translate port. This is where the dTLB leaves the load's hit path; it
    folds into C4b step 3.
 
 ## Verification specific to this design

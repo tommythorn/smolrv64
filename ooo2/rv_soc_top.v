@@ -49,11 +49,9 @@ module rv_soc_top #(
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
    parameter        LRAM_LG2 = 18,              // 256 KiB local SRAM
    parameter [63:0] RESET_PC = BASE,            // tests link @DDR; the platform boots @LBASE
-   parameter        SIZE_KB  = 64               // each cache. 128 KB spread the D$ over
-                                                 // X 6..72 Y 29..193 -- most of the die -- and
-                                                 // its worst INTERNAL route (vw0 -> bank WEA)
-                                                 // was 5.7 ns, 82% of it wire.  D$ miss rate
-                                                 // on GB5 is 0.195%, so halving costs little.
+   parameter        SIZE_KB  = 64,              // the I$. Its boot stalls are not capacity misses.
+   parameter        DC_KB    = 128              // the D$: +4.02% retired in the 300 M lockstep over
+                                                 // 64 KiB (docs/PLAN-2026-09-25-dcache-vhpr.md)
 ) (
    input  wire             clk,
    input  wire             reset,
@@ -298,13 +296,13 @@ module rv_soc_top #(
    // something other than what was stored) or an address-provenance failure (the array
    // returned the wrong ROW, which parity cannot see and which is the class the board's
    // surviving fault belongs to).
-   assign cache_par_err = {u_icache.par_err | u_icache.adr_err,
-                           u_dcache.par_err | u_dcache.adr_err};
-   assign cache_par_dbg = {u_dcache.par_sticky, u_icache.par_sticky,
-                           u_dcache.adr_sticky, u_icache.adr_sticky,
-                           u_dcache.par_bank, u_icache.par_bank,
+   // (the D$ half is tied off: rv_dcache carries no parity taps; its invariants are in the log)
+   assign cache_par_err = {u_icache.par_err | u_icache.adr_err, 1'b0};
+   assign cache_par_dbg = {1'b0, u_icache.par_sticky,
+                           1'b0, u_icache.adr_sticky,
+                           2'd0, u_icache.par_bank,
                            {(64-8-2*16){1'b0}},
-                           u_dcache.par_addr16, u_icache.par_addr16};
+                           16'd0, u_icache.par_addr16};
 `else
    assign cache_par_err = 2'd0;
    assign cache_par_dbg = 64'd0;
@@ -468,11 +466,9 @@ module rv_soc_top #(
    always @(posedge clk) if (reset) dev_rvalid_q <= 1'b0;
       else begin dev_rvalid_q <= dev_rvalid; dev_rdata_q <= dev_rdata; end
 
-   // ---------------- D$ (write-through) + read/write adapters (proven in tb_vl), device-muxed ----------------
+   // ---------------- the D$ + read/write adapters, device-muxed ----------------
    reg          c_rd_pend;
-   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_ack, dc_wr_acc, dc_wr_cpl;  wire [63:0] dc_rd_resp_addr;
-   wire         dc_l2_req, dc_l2_we;  wire [LAW-1:0] dc_l2_addr;  wire [511:0] dc_l2_wdata;
-   wire [511:0] dc_l2_rdata;  wire dc_l2_ack;
+   wire [63:0]  dc_rd_data;  wire dc_rd_valid, dc_wr_acc, dc_wr_cpl;  wire [63:0] dc_rd_resp_addr;
    // The LSU is single-outstanding but a SQUASH abandons an in-flight load and issues a new one
    // ("a new mem_ren supersedes any prior unfinished read"). The cache, already committed to the
    // squashed address, would otherwise deliver that stale line to the new load. Match the cache's
@@ -625,30 +621,46 @@ module rv_soc_top #(
          $fatal(1, "rv_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
                 vio_wack, dev_wack, dc_wr_cpl);
 
-   // D$ is WRITE-BACK (WRTHRU=0): stores ack into the line (dirty), evicted lazily -- the
-   // store buffer drains in ~1-2c instead of a full L2 round-trip. PTW reads are routed THROUGH
-   // the D$ (the dcr_* read-port arbiter below), so a page-table walk always sees dirty PTEs --
-   // the D$ is the coherency point. sfence.vma therefore needs NO D$ flush (just a TLB flush);
-   // only fence.i still clean-flushes (the I$ reads L2 directly) -- see the df_* FSM below.
+   // The D$ (rv_dcache, docs/PLAN-2026-09-25-dcache-vhpr.md) is write-back and non-blocking: a
+   // miss parks in its waiter table and hits behind it answer first, by tag. It is a client of
+   // rv_mem_arbiter in its own right, up to 8 fills, 2 write-backs and an NC access in flight.
+   // VIRT=0: the core translates before it asks, so every request is presented by PA. PTW reads
+   // are routed THROUGH the D$ (the dcr_* read-port arbiter below), so a page-table walk always
+   // sees dirty PTEs -- the D$ is the coherency point. sfence.vma therefore needs NO D$ flush
+   // (just a TLB flush); only fence.i still clean-flushes (the I$ reads memory directly) -- see
+   // the df_* FSM below.
    wire        dcr_req;  wire [63:0] dcr_addr;     // muxed D$ read port (LSU + 3 PTW), assigned below
    wire dc_inv_req, dc_inv_busy;
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
-   rv_cache #(.RTW(DRTW), .PAW(64), .PAW_SIG(PABITS), .SIZE_KB(SIZE_KB), .RDW(64), .WDW(64), .WRITABLE(1), .WRTHRU(0), .PREFETCH(0), .PERF_ID(1)) u_dcache
+   // the D$'s memory-port client wires (client 0 of the arbiter below)
+   localparam integer MC = 2, MCB = 1, MSW = 4, MIDW = MCB + MSW;
+   wire [MC-1:0]       mc_q_valid, mc_q_ready, mc_q_we, mc_r_valid, mc_w_valid;
+   wire [MC*MSW-1:0]   mc_q_slot;
+   wire [MC*LAW-1:0]   mc_q_addr;
+   wire [MC*64-1:0]    mc_q_wmask;
+   wire [MC*512-1:0]   mc_q_wdata;
+   wire [MSW-1:0]      mc_r_slot, mc_w_slot;
+   wire [1:0]          mc_r_beat;  wire mc_r_last;  wire [127:0] mc_r_data;
+   rv_dcache #(.SIZE_KB(DC_KB), .RTW(DRTW), .PABITS(PABITS), .SW(MSW), .VIRT(0)) u_dcache
      (.clk(clk), .reset(reset),
-      .rd_req(dcr_req), .rd_addr(dcr_addr), .rd_pa(dcr_addr), .rd_data(dc_rd_data), .rd_valid(dc_rd_valid),
-      .rd_ack(dc_rd_ack),
-      .rd_resp_addr(dc_rd_resp_addr), .rd_tag(dcr_tag), .rd_resp_tag(dc_rd_resp_tag),
+      .rd_req(dcr_req), .rd_va(dcr_addr), .rd_pa(dcr_addr), .rd_tag(dcr_tag), .rd_ack(dc_rd_ack),
       // Svpbmt: only a LSU load read can be NC (PTW reads share dcr but are always cacheable -> 0
       // when c_rd_req is low). The store's NC bit qualifies the write port.
-      .rd_uncached(c_rd_req & dmem_runcached), .wr_uncached(dmem_wuncached),
+      .rd_phys(1'b1), .rd_nc(c_rd_req & dmem_runcached),
+      .rd_valid(dc_rd_valid), .rd_data(dc_rd_data), .rd_resp_tag(dc_rd_resp_tag), .rd_resp_addr(dc_rd_resp_addr),
       // ~dc_wr_cpl: a CBO or uncached write holds its request through the cycle its completion
       // is registered, and the D$ is idle again in that cycle -- without this it is taken twice.
+      .wr_req(dmem_wen & ~dc_wr_cpl & ~is_dev_w), .wr_va(dmem_waddr), .wr_pa(dmem_waddr),
+      .wr_data(dmem_wdata), .wr_mask(dmem_wmask), .wr_nc(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
-      .wr_req(dmem_wen & ~dc_wr_cpl & ~is_dev_w), .wr_addr(dmem_waddr), .wr_data(dmem_wdata),
-      .wr_mask(dmem_wmask), .wr_ack(dc_wr_ack), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl), .inv_req(dc_inv_req), .inv_clean(1'b1), .ep_bump(1'b0), .inv_busy(dc_inv_busy),
-      .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
-      .l2_rdata(dc_l2_rdata), .l2_ack(dc_l2_ack),
+      .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl),
+      .ep_bump(1'b0), .inv_req(dc_inv_req), .inv_busy(dc_inv_busy),
+      .cq_valid(mc_q_valid[0]), .cq_ready(mc_q_ready[0]), .cq_slot(mc_q_slot[0*MSW +: MSW]),
+      .cq_we(mc_q_we[0]), .cq_addr(mc_q_addr[0*LAW +: LAW]), .cq_wmask(mc_q_wmask[0*64 +: 64]),
+      .cq_wdata(mc_q_wdata[0*512 +: 512]),
+      .cr_valid(mc_r_valid[0]), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
+      .cr_data(mc_r_data), .cw_valid(mc_w_valid[0]), .cw_slot(mc_w_slot),
       .perf_access(dc_access), .perf_miss(dc_miss), .err(dc_err));
 
    // D$ clean-flush on fence.i ONLY: drain the store buffer, then clean-flush the D$ (write back
@@ -830,26 +842,9 @@ module rv_soc_top #(
                            :            {2'd2, {LQ_IB{1'b0}}};
 
    // ---------------- the memory port: the caches as clients of rv_mem_arbiter ----------------
-   // PTW reads go through the D$ (dcr_* above), and a D$ miss on a PTE fills via dc_l2_* like any
-   // other line. Both caches keep their single-outstanding line handshake behind
-   // rv_mem_line_client; the D$ is client 0, the I$ client 1 (a read of the D$ wins a tie).
-   localparam integer MC = 2, MCB = 1, MSW = 4, MIDW = MCB + MSW;
-   wire [MC-1:0]       mc_q_valid, mc_q_ready, mc_q_we, mc_r_valid, mc_w_valid;
-   wire [MC*MSW-1:0]   mc_q_slot;
-   wire [MC*LAW-1:0]   mc_q_addr;
-   wire [MC*64-1:0]    mc_q_wmask;
-   wire [MC*512-1:0]   mc_q_wdata;
-   wire [MSW-1:0]      mc_r_slot, mc_w_slot;
-   wire [1:0]          mc_r_beat;  wire mc_r_last;  wire [127:0] mc_r_data;
-   rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_dc_mem
-     (.clk(clk), .reset(reset),
-      .l2_req(dc_l2_req), .l2_we(dc_l2_we), .l2_addr(dc_l2_addr), .l2_wdata(dc_l2_wdata),
-      .l2_ack(dc_l2_ack), .l2_rdata(dc_l2_rdata),
-      .cq_valid(mc_q_valid[0]), .cq_ready(mc_q_ready[0]), .cq_slot(mc_q_slot[0*MSW +: MSW]),
-      .cq_we(mc_q_we[0]), .cq_addr(mc_q_addr[0*LAW +: LAW]), .cq_wmask(mc_q_wmask[0*64 +: 64]),
-      .cq_wdata(mc_q_wdata[0*512 +: 512]),
-      .cr_valid(mc_r_valid[0]), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
-      .cr_data(mc_r_data), .cw_valid(mc_w_valid[0]), .cw_slot(mc_w_slot));
+   // PTW reads go through the D$ (dcr_* above), and a D$ miss on a PTE fills like any other line.
+   // The D$ is client 0 with its own slots (above); the I$ keeps its single-outstanding line
+   // handshake behind rv_mem_line_client as client 1 (a read of the D$ wins a tie).
    rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_ic_mem
      (.clk(clk), .reset(reset),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),

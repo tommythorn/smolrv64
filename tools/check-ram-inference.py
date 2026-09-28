@@ -77,6 +77,15 @@ def load_manifest(path):
     return req
 
 
+def required_present(entry, have):
+    """An entry names one array, or `block[*].array xN`: N generate instances, every one a RAM."""
+    m = re.fullmatch(r"(.+)\s+x(\d+)", entry)
+    if not m:
+        return entry in have
+    pat = re.compile(re.escape(m.group(1).strip()).replace(r"\[\*\]", r"\[\d+\]") + "$")
+    return sum(1 for n in have if pat.match(n)) == int(m.group(2))
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit("usage: check-ram-inference.py <synth-runme.log> [manifest]")
@@ -92,7 +101,7 @@ def main():
         print("           That is not a pass -- the log format changed or synthesis did not")
         print("           run. A check that cannot fail must not report success.")
         return 1
-    missing = [(n, w) for n, w in load_manifest(manifest) if n not in have]
+    missing = [(n, w) for n, w in load_manifest(manifest) if not required_present(n, have)]
     if missing:
         print("\n*** RAM INFERENCE REGRESSED ***")
         for n, why in missing:

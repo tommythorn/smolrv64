@@ -36,6 +36,9 @@
 // does, with nothing in flight and nothing presented until it is done: then memory must equal
 // gold, every word.
 `include "tb_rand.vh"
+`ifndef DC_VIRT
+ `define DC_VIRT 1
+`endif
 module tb;
    reg clk = 0, reset = 1;
    always #5 clk = ~clk;
@@ -43,6 +46,7 @@ module tb;
    localparam [63:0] PBASE = 64'h8000_0000;
    integer seed, cycles, reorder, latmin, latmax, remap, timeout, stpct, fence;
    localparam NCS = 10;                         // the NC slot's memory-port id (NMSHR + NWB)
+   localparam FN_BUDGET = 1000000;              // a clean writes back up to every line, NWB at a time
    localparam K_ST = 0, K_NC = 1, K_CLN = 2, K_FL = 3, K_Z = 4;
    `TB_RAND(rnd, rs)
 
@@ -57,7 +61,7 @@ module tb;
    reg         cr_valid, cr_last;  reg [3:0] cr_slot;  reg [1:0] cr_beat;  reg [127:0] cr_data;
    reg         cw_valid;  reg [3:0] cw_slot;
    wire        perf_access, perf_miss;  wire [15:0] err;
-   rv_dcache dut (.clk(clk), .reset(reset),
+   rv_dcache #(.VIRT(`DC_VIRT)) dut (.clk(clk), .reset(reset),
       .rd_req(rd_req), .rd_va(rd_va), .rd_pa(rd_pa), .rd_tag(rd_tag), .rd_phys(rd_phys), .rd_nc(rd_nc), .rd_ack(rd_ack),
       .rd_valid(rd_valid), .rd_data(rd_data), .rd_resp_tag(rd_resp_tag), .rd_resp_addr(rd_resp_addr),
       .wr_req(wr_req), .wr_va(wr_va), .wr_pa(wr_pa), .wr_data(wr_data), .wr_mask(wr_mask),
@@ -185,7 +189,7 @@ module tb;
       while (dut.inv_busy) @(posedge clk);
       // run, then drain -- every request taken is answered within TIMEOUT of the last one -- then clean
       n_out = 1;
-      for (now = 0; now < cycles || ((n_out != 0 || !fn_done) && now < cycles + 4 * timeout); now = now + 1) begin
+      for (now = 0; now < cycles || ((n_out != 0 || !fn_done) && now < cycles + 4 * timeout + FN_BUDGET); now = now + 1) begin
          @(negedge clk);
          // ---- this cycle's load answer (registered by the DUT at the last edge), against gold
          if (rd_valid) begin
@@ -285,7 +289,7 @@ module tb;
             for (w = 0; w < NWD; w = w + 8) check_line(PBASE + 64'(w) * 8, "the clean");
             if (fn_final) fn_done = 1;
          end
-         if (fn_wait && now - fn_t > 4 * timeout) begin $display("FAIL c=%0d: the clean not done", now); errors = errors + 1; fn_wait = 0; fn_done = 1; end
+         if (fn_wait && now - fn_t > FN_BUDGET) begin $display("FAIL c=%0d: the clean not done", now); errors = errors + 1; fn_wait = 0; fn_done = 1; end
          // ---- a remap: one mapping changes, and the cache hears of it
          ep_bump = 1'b0;
          if ((now % remap) == remap - 1) rm_due = 1;

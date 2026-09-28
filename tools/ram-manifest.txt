@@ -8,6 +8,7 @@
 #
 # Format:  <array-name> : why it must not become flops
 # The name is the declared reg array, without the _reg suffix synthesis appends.
+# `block[*].array xN` requires N generate instances of an array, every one a RAM.
 #
 # To REMOVE a line you must have decided the array is allowed to be flops -- say so in the
 # commit message, with the reason. Do not delete a line to make a build pass.
@@ -85,8 +86,8 @@ tlb_tag : iTLB/dTLB
 tlb_ppn : iTLB/dTLB
 tlb_perm: iTLB/dTLB
 
-# ---- cache tag/state arrays --------------------------------------------------------------
-tagm    : cache tags
-dirm    : dirty bits
-valm    : valid bits
-vicm    : victim/replacement state
+# ---- the D$'s physical state: one LUTRAM per (way, colour), 64 rows, read at two rows -------
+ptw[*].pt_k x32 : D$ physical tags; the probe reads all 32 at one row, one array each
+ptw[*].pv_k x32 : D$ pvalid
+ptw[*].pd_k x32 : D$ dirty
+wrr     : D$ round-robin victim per set
