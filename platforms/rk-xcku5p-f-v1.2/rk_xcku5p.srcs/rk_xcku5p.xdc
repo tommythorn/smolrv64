@@ -221,52 +221,6 @@ set_false_path \
     -through [get_pins -hier -filter {NAME =~ *mmio_clock_bridge_inst*xpm_fifo_rst_inst*/D}]
 
 
-# ---- ddr_line_cdc: MCP payload crossings (src/ddr_line_cdc.v) ----
-# The 512-bit line port crosses probe_clk <-> ui_clk with a 4-phase FULL HANDSHAKE:
-# only the request/done LEVELS are 2-FF synchronized. The payload -- p_we/p_addr/
-# p_wdata/p_wmask going out, m_rdata_q coming back -- is a plain free-running sample
-# that the initiator holds STABLE for the entire round trip ("launch: hold req payload
-# stable" / "stable: held while m_done asserted"), and the far side consumes it only
-# after the synchronized level arrives, >= 2 destination clocks later. So it is a
-# multi-cycle path, not a single-cycle transfer.
-#
-# probe_clk is an MMCM derivative of ui_clk, so without this Vivado times the
-# 512-bit bus as one 3 ns ui_clk hop: ZERO logic levels, ~90% routing. That
-# over-constraint -- not core logic -- was the sole thing keeping the in-order core
-# off 111 MHz (probe_clk->probe_clk met at +0.003 ns while this CDC missed at
-# -0.020 ns). Same reasoning as the mmio_clock_bridge false path above.
-#
-# 6 ns = 2x ui_clk, far inside the guaranteed stability window in both directions.
-#
-# Find the clock by OBJECT, not by literal name.  An auto-derived clock is named after the
-# net at its source pin, so a change to how probe_clk is generated can rename it -- and a
-# bare `get_clocks probe_clk` that matches nothing does not fail, it returns an empty list
-# and SILENTLY DROPS this constraint, restoring the exact over-constraint that cost us
-# 111 MHz.  probe_clk_check.tcl (a hook, because an `if` in an .xdc is ignored with only a
-# CRITICAL WARNING) asserts that this lookup finds exactly one clock.
-set_max_delay -datapath_only 6.000 \
-    -from [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *probe_clk_buf/O}]] \
-    -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_we_m_reg*/D || NAME =~ *probe_cdc/p_addr_m_reg*/D || NAME =~ *probe_cdc/p_wdata_m_reg*/D || NAME =~ *probe_cdc/p_wmask_m_reg*/D}]
-# The RETURN half. This one had no -from at all, and `set_max_delay -datapath_only`
-# REQUIRES one -- Vivado has been answering it with
-#
-#   CRITICAL WARNING: [Constraints 18-540] set_max_delay -datapath_only requires
-#   -from to be non-empty
-#
-# and dropping the constraint, in every build there has ever been, including the one
-# that shipped the 25-hour Geekbench 5 run. So while the outbound payload was correctly
-# treated as multicycle, the 512-bit read data coming BACK has always been timed as a
-# single ui_clk -> probe_clk hop: the same over-constraint, on the same bus, in the other
-# direction. It met anyway at 9 ns. It is exactly the kind of thing that does not meet
-# at 6 ns, and it is not core logic.
-#
-# -from names the launching flops rather than a clock, which is both more precise (this
-# is one specific MCP payload, not the whole ui_clk domain) and immune to the clock
-# renaming that silently broke the outbound constraint above.
-set_max_delay -datapath_only 6.000 \
-    -from [get_cells -hier -filter {NAME =~ *probe_cdc/m_rdata_q_reg*}] \
-    -to   [get_pins -hier -filter {NAME =~ *probe_cdc/p_rdata_reg*/D}]
-
 # ---- probe_clk clock root ------------------------------------------------------------
 # MEASURED 2026-08-20, same RTL, DIV8=48 (166.67 MHz), only the clock source differing:
 #
